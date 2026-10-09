@@ -51,7 +51,7 @@ vi.mock("../../middleware/logger.js", () => ({
 }));
 
 import { roleQueueRows } from "./queue.js";
-import { rolesOfQueueRow } from "./idle-queue.js";
+import { listIdleRolePairs } from "./matcher.js";
 import { projectService } from "../../services/projects.js";
 import { issueService } from "../../services/issues.js";
 import { instanceSettingsService } from "../../services/instance-settings.js";
@@ -353,7 +353,7 @@ describeEmbeddedPostgres("F-27 pheromone: the SQL twins agree with the shared he
     }
   });
 
-  it("the routing twin sends each task to exactly the castes the JS twin names", async () => {
+  it("the routing sends each task to exactly one caste, and the matcher pools read the same routing", async () => {
     const { companyId } = await seedCompany();
     const [qaProject] = await db
       .insert(projects)
@@ -403,20 +403,28 @@ describeEmbeddedPostgres("F-27 pheromone: the SQL twins agree with the shared he
         new Set(keys.map((key) => ids.get(key)!)),
       );
     }
-    // The JS twin (the idle pass) names the same single caste for every fixture.
-    for (const fixture of fixtures) {
-      const castes = rolesOfQueueRow({
-        candidate: {} as never,
-        assigneeAgentId: null,
-        assigneeRole: null,
-        labels: fixture.label ? [fixture.label.toLowerCase()] : [],
-        casteKey: fixture.casteKey,
-        projectDefaultCasteKey: fixture.projectDefault,
+    // The matcher's pools read the queue through the same routing predicate
+    // (there is no JS twin of it): with an agent in every caste, each pool holds
+    // exactly the SQL queue of its caste.
+    for (const role of ["reviewer", "qa", "docs"]) {
+      await db.insert(agents).values({
+        id: randomUUID(),
+        companyId,
+        name: `agent-${role}`,
+        role,
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
       });
-      const sqlCastes = Object.entries(expected)
-        .filter(([, keys]) => keys.includes(fixture.key))
-        .map(([role]) => role);
-      expect(castes, fixture.key).toEqual(sqlCastes);
+    }
+    const pairs = await listIdleRolePairs(db, companyId);
+    for (const [role, keys] of Object.entries(expected)) {
+      const pool = pairs.find((pair) => pair.role === role);
+      expect(new Set(pool?.queue.map((row) => row.issueId) ?? []), `matcher pool of ${role}`).toEqual(
+        new Set(keys.map((key) => ids.get(key)!)),
+      );
     }
   });
 
