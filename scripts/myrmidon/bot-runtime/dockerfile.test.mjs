@@ -237,7 +237,7 @@ describe("docker/bot-runtime/Dockerfile", () => {
     // build-time run; 09-run-scoped-github-broker has
     // github_broker_run_scope.py (contextvar binding + child-env bridge).
     const patchTestRuns = [...dockerfileInstructions.matchAll(/^RUN [^\n]*\/tmp\/patch-tests\/(\S+\.py)\s+\/opt\/hermes-src$/gm)].map((m) => m[1]);
-    for (const regression of ["state_db_fd_probe_budget.py", "github_broker_run_scope.py"]) {
+    for (const regression of ["state_db_fd_probe_budget.py", "github_broker_run_scope.py", "run_skills.py"]) {
       assert.ok(
         patchTestRuns.includes(regression),
         `expected a build-time run of docker/bot-runtime/tests/${regression}`,
