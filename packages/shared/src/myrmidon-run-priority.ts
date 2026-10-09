@@ -85,6 +85,14 @@ export const DEFAULT_RUN_PRIORITY_AGING_STEP_WEIGHT = 5;
  * within its role band without lifting it past a heavier role.
  */
 export const DEFAULT_RUN_PRIORITY_PHEROMONE_WEIGHT = 1;
+/**
+ * The most effective-pheromone points the run score counts. The strength is a
+ * task field the poster (a person, or an agent through the API) sets up to
+ * `MAX_PHEROMONE_STRENGTH`, so an unbounded term would let one task lift its
+ * run over the role and release bands. Bounding it to a budget that the band
+ * width includes keeps the invariant "the sum never reaches the next band".
+ */
+export const RUN_PRIORITY_PHEROMONE_MAX_POINTS = 100;
 export const DEFAULT_RUN_PRIORITY_AGING_MAX_BONUS = 50;
 export const DEFAULT_RUN_PRIORITY_STARVATION_LIMIT_MINUTES = 90;
 export const DEFAULT_RUN_PRIORITY_STARVATION_TOP_WEIGHT = 10_000;
@@ -328,6 +336,11 @@ export interface RunPriorityRunInput {
 
 const MINUTE_MS = 60_000;
 
+/** The most the pheromone term can add to a run's score (a part of the band). */
+export function runPriorityPheromoneBudget(settings: RunPrioritySettings): number {
+  return Math.max(0, settings.pheromoneWeight) * RUN_PRIORITY_PHEROMONE_MAX_POINTS;
+}
+
 /**
  * The width of one role band: wider than every refinement a run can earn inside
  * it — the heaviest issue weight, the release bonus and the whole aging budget,
@@ -338,7 +351,13 @@ const MINUTE_MS = 60_000;
 export function runPriorityBandWidth(settings: RunPrioritySettings): number {
   const issueMax = Math.max(0, ...Object.values(settings.issuePriorityWeights));
   const agingMax = Math.max(settings.agingMaxBonus, settings.starvationTopWeight);
-  return issueMax + Math.max(0, settings.releaseBonus) + agingMax + 1;
+  return (
+    issueMax +
+    Math.max(0, settings.releaseBonus) +
+    agingMax +
+    runPriorityPheromoneBudget(settings) +
+    1
+  );
 }
 
 /** The heaviest role weight the settings declare (review/release by default). */
@@ -392,7 +411,10 @@ export function runPriorityWeight(
   // 1.6.5 (F-27 rework 09.10, design §4): the pheromone term — the effective
   // strength the swarm queue already ranks the issue by (the caller feeds it;
   // absent reads as 0) times the configured weight, inside the role band.
-  const pheromoneBonus = Math.max(0, Math.floor(input.effectivePheromone ?? 0)) * settings.pheromoneWeight;
+  const pheromoneBonus = Math.min(
+    runPriorityPheromoneBudget(settings),
+    Math.max(0, Math.floor(input.effectivePheromone ?? 0)) * Math.max(0, settings.pheromoneWeight),
+  );
   const waitedMs = Math.max(0, nowMs - input.createdAtMs);
   // The role band plus its refinements: the sum never reaches the next band.
   let weight = roleWeight * band + issueWeight + pheromoneBonus;

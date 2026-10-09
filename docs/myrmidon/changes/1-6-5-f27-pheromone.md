@@ -17,8 +17,11 @@ settings-section: 1.6.1 — SWARM-SETTINGS-UI: очереди ролей как 
   → legacy `role:` label (compatibility).
 - Effective pheromone (design §2.3): the stored strength plus aging
   (+1 per 24 h waiting, cap +5) minus a penalty (−10 per failed run since the last
-  task change), floored at 0; the SQL twin in
-  `server/src/myrmidon/swarm-claim/effective-pheromone.ts` keeps ORDER BY honest.
+  task change), floored at 0. A "task change" is a comment, or an audit row by a
+  person or an agent, written after the failed run (the system actor and the run's
+  own release stamp do not count). The SQL twin in
+  `server/src/myrmidon/swarm-claim/effective-pheromone.ts` orders every queue read
+  (before the candidate LIMIT), so a strong fresh task is never cut off.
   Parameters live in `instance_settings.general.swarmClaim.pheromoneDynamics`.
 - API: `casteKey`/`pheromoneStrength` on issue create/update; an unknown caste key
   is rejected with 422 `issue_caste_unknown`; null strength resets to the priority
@@ -26,7 +29,8 @@ settings-section: 1.6.1 — SWARM-SETTINGS-UI: очереди ролей как 
 - UI: the issue card has "Caste" (directory select), "Pheromone strength" (number
   with an effective-strength hint) and a "P0" checkbox bound to `priority=critical`;
   the project card has "Default caste". The run-priority scoring gains a
-  `pheromoneWeight × eff` term (default weight 1).
+  `pheromoneWeight × eff` term (default weight 1), bounded to 100 points so a huge
+  strength cannot lift a run over the role and release bands.
 
 ## changelog-ru
 
@@ -42,8 +46,11 @@ settings-section: 1.6.1 — SWARM-SETTINGS-UI: очереди ролей как 
   Роутинг очереди: caste_key → каста проекта → метка `role:` (совместимость).
 - Эффективная сила (design §2.3): хранимая сила плюс накопление по возрасту
   (+1 за 24 ч ожидания, кап +5) минус штраф (−10 за неудачный прогон после последнего
-  изменения задачи), пол 0; SQL-двойник —
-  `server/src/myrmidon/swarm-claim/effective-pheromone.ts`. Параметры — в
+  изменения задачи), пол 0. «Изменение задачи» — комментарий либо запись аудита от
+  человека или агента после упавшего прогона (системный актор и собственная отметка
+  релиза прогона не считаются). SQL-двойник —
+  `server/src/myrmidon/swarm-claim/effective-pheromone.ts` — упорядочивает все чтения
+  очереди до LIMIT, сильная свежая задача не отсекается. Параметры — в
   `instance_settings.general.swarmClaim.pheromoneDynamics`.
 - API: `casteKey`/`pheromoneStrength` в create/update задачи; неизвестная каста —
   422 `issue_caste_unknown`; null силы сбрасывает к дефолту приоритета. У проекта —
@@ -51,7 +58,8 @@ settings-section: 1.6.1 — SWARM-SETTINGS-UI: очереди ролей как 
 - UI: карточка задачи — «Каста» (выбор из справочника), «Сила феромона» (число с
   подсказкой эффективной силы), флажок «P0» ↔ `priority=critical`; карточка проекта —
   «Default caste». В скоринге очереди прогонов — слагаемое `pheromoneWeight × eff`
-  (вес по умолчанию 1).
+  (вес по умолчанию 1), ограничено 100 очками: огромная сила не поднимает прогон над
+  полосами роли и релиза.
 
 ## settings-en-new
 
