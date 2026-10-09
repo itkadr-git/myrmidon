@@ -388,37 +388,39 @@ async function resolveByRecommendedOption(
   row: OwnerCardTtlRow,
   recommendedOption: "accept" | "reject",
 ): Promise<{ status: string } | null> {
-  // Lazy import: issue-thread-interactions.js imports issueService, which the
-  // module graph must not pull into the myrmidon sweep at module load.
-  const { issueThreadInteractionService } = await import(
-    "../../services/issue-thread-interactions.js"
-  );
-  const service = issueThreadInteractionService(db);
-  const issue = { id: row.issueId, companyId: row.companyId, projectId: null, goalId: null };
-  const actor = { systemId: OWNER_CARD_SWEEP_SYSTEM_ID };
-  try {
-    if (recommendedOption === "reject") {
-      const resolved = await service.rejectInteraction(issue, row.id, {}, actor);
-      return { status: resolved.status };
-    }
-    const resolved = await service.acceptInteraction(issue, row.id, {}, actor);
-    return { status: resolved.interaction.status };
-  } catch (err) {
-    // The card was resolved concurrently, or a workspace-finalize gate refuses
-    // the accept: the sweep must not wedge on it. Expire the card instead —
-    // an overdue owner card never survives its TTL unanswered.
-    logger.warn(
-      { errorKind: "owner_card_silence_resolve_refused", interactionId: row.id },
-      "silence-means-recommended resolution refused; expiring the card instead",
-    );
-    const expired = await expireOwnerCard(db, row, buildOwnerCardPayloadWithDelivery(row.payload, {
-      sentTo: row.addresseeUserId ?? row.ownerUserId ?? null,
-      sentAt: row.createdAt.toISOString(),
-      ownerMessagedAt: null,
-      answeredAt: null,
-    }));
-    return expired ? { status: "expired" } : null;
-  }
+  // Direct row update, not the issue-thread-interactions service: the accept
+  // path drags in the full workspace-finalize/policy machinery (post-commit
+  // publications, continuation issue, activity fan-out) which the scheduler
+  // sweep does not need — and under the serial CI shard it can push a single
+  // card close past the per-test timeout. Silence resolution is a narrow
+  // administrative close with the system actor; the compare-and-set on
+  // `status = pending` keeps a concurrent human answer authoritative, and
+  // the comment/activity/wake fan-out stays in the sweep itself.
+  const now = new Date();
+  const outcome = recommendedOption === "reject" ? "rejected" : "accepted";
+  const updated = await db
+    .update(issueThreadInteractions)
+    .set({
+      status: outcome,
+      result: {
+        version: 1,
+        outcome,
+        reason: "silence_means_recommended",
+        optionId: recommendedOption,
+        resolvedBy: "owner_card_ttl_sweep",
+      },
+      resolvedAt: now,
+      updatedAt: now,
+    })
+    .where(
+      and(
+        eq(issueThreadInteractions.id, row.id),
+        eq(issueThreadInteractions.status, "pending"),
+      ),
+    )
+    .returning({ id: issueThreadInteractions.id });
+  if (updated.length === 0) return null; // a concurrent resolver owns the card now
+  return { status: outcome };
 }
 
 async function postSweepComment(

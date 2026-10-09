@@ -216,6 +216,11 @@ describeEmbeddedPostgres("owner card TTL sweep (embedded PG)", () => {
 
     const resolved = await readCard(card);
     expect(resolved.status).toBe("accepted");
+    expect(resolved.result).toMatchObject({
+      outcome: "accepted",
+      reason: "silence_means_recommended",
+      optionId: "accept",
+    });
 
     const comments = await commentsWithReason("myrmidon_owner_card_ttl");
     expect(comments).toHaveLength(1);
