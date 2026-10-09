@@ -1,6 +1,6 @@
 ## changelog-ru
 
-### 1.6.5 F-26 SWARM (OPE-6608): доска сама сопоставляет задачу со свободным агентом
+### 1.6.5 F-26 SWARM: доска сама сопоставляет задачу со свободным агентом
 
 - На доске появился сопоставитель (`server/src/myrmidon/swarm-claim/matcher.ts`, проект §3):
   по готовой задаче он находит свободного агента её касты в её гнезде, в одной
@@ -37,7 +37,7 @@
 
 ## changelog-en
 
-### 1.6.5 F-26 SWARM (OPE-6608): the board pairs a task with a free agent itself
+### 1.6.5 F-26 SWARM: the board pairs a task with a free agent itself
 
 - The board now has a matcher (`server/src/myrmidon/swarm-claim/matcher.ts`, design §3): for a
   ready task it finds a free agent of the task's caste in its nest, writes the lease
@@ -75,19 +75,19 @@
 
 ## settings-ru-replace
 
-| `MYRMIDON_SWARM_CLAIM_ENABLED_ROLES` | 1.6.1-SWARM-SETTINGS-UI | удалена | **Удалена в 1.6.5 (OPE-6608)**: пилотного набора ролей больше нет, код переменную не читает. Участие агента в рое определяет справочник каст (`swarmEligible`) и переключатель в карточке агента | Значение игнорируется |
-| `MYRMIDON_SWARM_CLAIM_ENABLED_COMPANY_IDS` | 1.6.1-SWARM-SETTINGS-UI | удалена | **Удалена в 1.6.5 (OPE-6608)** по той же причине: пилотного набора компаний больше нет, рой включается одним переключателем | Значение игнорируется |
-| `MYRMIDON_SWARM_IDLE_WAKE_BATCH` | 1.6.1 SWARM-IDLE-WAKE | удалена | **Удалена в 1.6.5 (OPE-6608)**: idle-прохода с пачкой побудок больше нет, его место занял сопоставитель на доске — свободный агент получает задачу сразу, без очередей и ротации. Поле панели `idleWakeBatch` удалено | Значение игнорируется |
+| `MYRMIDON_SWARM_CLAIM_ENABLED_ROLES` | 1.6.1-SWARM-SETTINGS-UI | удалена | **Удалена в 1.6.5**: пилотного набора ролей больше нет, код переменную не читает. Участие агента в рое определяет справочник каст (`swarmEligible`) и переключатель в карточке агента | Значение игнорируется |
+| `MYRMIDON_SWARM_CLAIM_ENABLED_COMPANY_IDS` | 1.6.1-SWARM-SETTINGS-UI | удалена | **Удалена в 1.6.5** по той же причине: пилотного набора компаний больше нет, рой включается одним переключателем | Значение игнорируется |
+| `MYRMIDON_SWARM_IDLE_WAKE_BATCH` | 1.6.1 SWARM-IDLE-WAKE | удалена | **Удалена в 1.6.5**: idle-прохода с пачкой побудок больше нет, его место занял сопоставитель на доске — свободный агент получает задачу сразу, без очередей и ротации. Поле панели `idleWakeBatch` удалено | Значение игнорируется |
 
 ## settings-en-replace
 
-| `MYRMIDON_SWARM_CLAIM_ENABLED_ROLES` | 1.6.1-SWARM-SETTINGS-UI | removed | **Removed in 1.6.5 (OPE-6608)**: there is no pilot role set any more and the code does not read the variable. Whether an agent takes part in the swarm is decided by the caste directory (`swarmEligible`) and the switch in the agent's card | The value is ignored |
-| `MYRMIDON_SWARM_CLAIM_ENABLED_COMPANY_IDS` | 1.6.1-SWARM-SETTINGS-UI | removed | **Removed in 1.6.5 (OPE-6608)** for the same reason: there is no pilot company set, the swarm is turned on by one switch | The value is ignored |
-| `MYRMIDON_SWARM_IDLE_WAKE_BATCH` | 1.6.1 SWARM-IDLE-WAKE | removed | **Removed in 1.6.5 (OPE-6608)**: the idle pass with its wake batch is gone — the board-side matcher gives a free agent its task at once, with no queues and no rotation. The panel field `idleWakeBatch` is removed | The value is ignored |
+| `MYRMIDON_SWARM_CLAIM_ENABLED_ROLES` | 1.6.1-SWARM-SETTINGS-UI | removed | **Removed in 1.6.5**: there is no pilot role set any more and the code does not read the variable. Whether an agent takes part in the swarm is decided by the caste directory (`swarmEligible`) and the switch in the agent's card | The value is ignored |
+| `MYRMIDON_SWARM_CLAIM_ENABLED_COMPANY_IDS` | 1.6.1-SWARM-SETTINGS-UI | removed | **Removed in 1.6.5** for the same reason: there is no pilot company set, the swarm is turned on by one switch | The value is ignored |
+| `MYRMIDON_SWARM_IDLE_WAKE_BATCH` | 1.6.1 SWARM-IDLE-WAKE | removed | **Removed in 1.6.5**: the idle pass with its wake batch is gone — the board-side matcher gives a free agent its task at once, with no queues and no rotation. The panel field `idleWakeBatch` is removed | The value is ignored |
 
 ## settings-ru-new
 
-### 1.6.5 — SWARM (OPE-6608): сопоставление на доске, без побудок «поищи работу»
+### 1.6.5 — SWARM: сопоставление на доске, без побудок «поищи работу»
 
 Разбор `ops/audit/swarmdiag-20261009.md`: за 7 дней 3259 прогонов `swarm_claim_queue`
 отменены и **ни одна** неназначенная задача не взята в работу. Причина — порядок действий
@@ -123,12 +123,12 @@
 записи для переменных, которые читает код и которые до сих пор нигде не были классифицированы —
 `MYRMIDON_BOT_SCOPE_SUBDIR` (подкаталог рабочей области бота, F-12), а также
 `MYRMIDON_CONTINUATION_MESSAGE_CHARS` и `MYRMIDON_CONTINUATION_MESSAGE_BODY_CHARS`
-(лимиты символов истории продолжения, DBC-3 OPE-5941). Они не входят в роевую настройку и
+(лимиты символов истории продолжения, DBC-3). Они не входят в роевую настройку и
 приведены здесь только ради зелёного гейта.
 
 ## settings-en-new
 
-### 1.6.5 — SWARM (OPE-6608): the board pairs tasks with free agents, no "look for work" wakes
+### 1.6.5 — SWARM: the board pairs tasks with free agents, no "look for work" wakes
 
 The analysis in `ops/audit/swarmdiag-20261009.md`: over 7 days 3259 `swarm_claim_queue` runs
 were cancelled and **not one** unassigned task was taken into work. The cause was the order of
@@ -161,5 +161,4 @@ Env classification (the full server test run checks every `MYRMIDON_*` name read
 code against FLAGS.md / SETTINGS.md / the change fragments): entries restored for variables the
 code reads and that were never classified — `MYRMIDON_BOT_SCOPE_SUBDIR` (the bot workspace
 subdirectory, F-12), plus `MYRMIDON_CONTINUATION_MESSAGE_CHARS` and
-`MYRMIDON_CONTINUATION_MESSAGE_BODY_CHARS` (continuation-history character budgets, DBC-3
-OPE-5941). They are not part of the swarm settings and are listed here only for the gate.
+`MYRMIDON_CONTINUATION_MESSAGE_BODY_CHARS` (continuation-history character budgets, DBC-3). They are not part of the swarm settings and are listed here only for the gate.

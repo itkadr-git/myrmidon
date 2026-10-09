@@ -1,6 +1,6 @@
 ## changelog-ru
 
-### 1.6.5 F-26 SWARM (OPE-6608, ревью 09.10): петля, транзакция назначения, касты и гейт хоста, аренда с побудкой
+### 1.6.5 F-26 SWARM (ревью 09.10): петля, транзакция назначения, касты и гейт хоста, аренда с побудкой
 
 - Петля на пути освобождения закрыта: освободившийся агент не получает обратно задачу,
   прогон которой только что кончился (`excludeIssueId`), его собственная назначенная
@@ -36,7 +36,7 @@
 
 ## changelog-en
 
-### 1.6.5 F-26 SWARM (OPE-6608, review of 09.10): the loop, the assignment transaction, castes and the host gate, a lease with a wake
+### 1.6.5 F-26 SWARM (review of 09.10): the loop, the assignment transaction, castes and the host gate, a lease with a wake
 
 - The loop on the release path is closed: a freed agent is not offered the task whose run has
   just ended (`excludeIssueId`); its own assigned `todo` task is woken only while idle pickup is

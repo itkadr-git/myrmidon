@@ -6,15 +6,6 @@ settings-section: 1.6.1 — SWARM-SETTINGS-UI: очереди ролей как 
 
 ### Task pheromone strength and task caste (1.6.5 F-27 PHEROMONE, rework per architect project 09.10)
 
-- A task carries a numeric pheromone strength (`issues.pheromone_strength`, int ≥ 0):
-  the swarm queue orders P0 first, then effective pheromone descending, then age.
-  New tasks get their strength from the priority mapping in swarm settings
-  (default critical 100 / high 30 / medium 10 / low 1).
-- The task's caste is a first-class field `issues.caste_key` (a key of the company
-  caste directory), with `projects.default_caste_key` as the project-level default;
-  migration 0384 backfills strength from priority and moves `role:<key>` labels of
-  known castes into `caste_key`. Queue routing resolves caste_key → project default
-  → legacy `role:` label (compatibility).
 - Effective pheromone (design §2.3): the stored strength plus aging
   (+1 per 24 h waiting, cap +5) minus a penalty (−10 per failed run since the last
   task change), floored at 0. A "task change" is a comment, or an audit row by a
@@ -23,9 +14,6 @@ settings-section: 1.6.1 — SWARM-SETTINGS-UI: очереди ролей как 
   `server/src/myrmidon/swarm-claim/effective-pheromone.ts` orders every queue read
   (before the candidate LIMIT), so a strong fresh task is never cut off.
   Parameters live in `instance_settings.general.swarmClaim.pheromone`.
-- API: `casteKey`/`pheromoneStrength` on issue create/update; an unknown caste key
-  is rejected with 422 `issue_caste_unknown`; null strength resets to the priority
-  default. Projects accept `defaultCasteKey` with the same directory validation.
 - UI: the issue card has "Caste" (directory select), "Pheromone strength" (number
   with an effective-strength hint) and a "P0" checkbox bound to `priority=critical`;
   the project card has "Default caste". The run-priority scoring gains a
@@ -36,14 +24,6 @@ settings-section: 1.6.1 — SWARM-SETTINGS-UI: очереди ролей как 
 
 ### Сила феромона задачи и каста задачи (1.6.5 F-27 PHEROMONE, доработка по проекту архитектора 09.10)
 
-- У задачи есть числовая сила феромона (`issues.pheromone_strength`, целое ≥ 0):
-  очередь роя упорядочена — P0 первым, затем эффективная сила по убыванию, затем возраст.
-  Новая задача получает силу из маппинга приоритета в настройках роя
-  (по умолчанию critical 100 / high 30 / medium 10 / low 1).
-- Каста задачи — поле `issues.caste_key` (ключ справочника каст компании) с
-  умолчанием на уровне проекта `projects.default_caste_key`; миграция 0384 бэкфиллит
-  силу из приоритета и переносит метки `role:<key>` известных каст в `caste_key`.
-  Роутинг очереди: caste_key → каста проекта → метка `role:` (совместимость).
 - Эффективная сила (design §2.3): хранимая сила плюс накопление по возрасту
   (+1 за 24 ч ожидания, кап +5) минус штраф (−10 за неудачный прогон после последнего
   изменения задачи), пол 0. «Изменение задачи» — комментарий либо запись аудита от
@@ -52,9 +32,6 @@ settings-section: 1.6.1 — SWARM-SETTINGS-UI: очереди ролей как 
   `server/src/myrmidon/swarm-claim/effective-pheromone.ts` — упорядочивает все чтения
   очереди до LIMIT, сильная свежая задача не отсекается. Параметры — в
   `instance_settings.general.swarmClaim.pheromone`.
-- API: `casteKey`/`pheromoneStrength` в create/update задачи; неизвестная каста —
-  422 `issue_caste_unknown`; null силы сбрасывает к дефолту приоритета. У проекта —
-  `defaultCasteKey` с той же валидацией по справочнику.
 - UI: карточка задачи — «Каста» (выбор из справочника), «Сила феромона» (число с
   подсказкой эффективной силы), флажок «P0» ↔ `priority=critical`; карточка проекта —
   «Default caste». В скоринге очереди прогонов — слагаемое `pheromoneWeight × eff`

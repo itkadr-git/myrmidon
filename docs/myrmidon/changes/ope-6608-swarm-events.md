@@ -1,6 +1,6 @@
 ## changelog-ru
 
-### 1.6.5 F-26 SWARM (OPE-6608): события доски доходят до сопоставителя
+### 1.6.5 F-26 SWARM: события доски доходят до сопоставителя
 
 - Сервис задач (`services/issues.ts`) после создания и после изменения зовёт хук
   `notifySwarmIssueEvent` (`server/src/myrmidon/swarm-claim/events.ts`): созданная готовая
@@ -19,7 +19,7 @@
 
 ## changelog-en
 
-### 1.6.5 F-26 SWARM (OPE-6608): board events reach the matcher
+### 1.6.5 F-26 SWARM: board events reach the matcher
 
 - The issue service (`services/issues.ts`) calls `notifySwarmIssueEvent`
   (`server/src/myrmidon/swarm-claim/events.ts`) after a create and after an update: a ready

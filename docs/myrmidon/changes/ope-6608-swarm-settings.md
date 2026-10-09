@@ -1,6 +1,6 @@
 ## changelog-ru
 
-### 1.6.5 SWARM-SETTINGS (OPE-6608): рой включается одним переключателем, пилота нет
+### 1.6.5 SWARM-SETTINGS: рой включается одним переключателем, пилота нет
 
 - Instance → General → **«Self-organisation (swarm)»**: один переключатель `Swarm enabled`
   (по умолчанию выключен; на бою включается переменной `MYRMIDON_SWARM_CLAIM_ENABLED=1` или
@@ -23,7 +23,7 @@
 
 ## changelog-en
 
-### 1.6.5 SWARM-SETTINGS (OPE-6608): the swarm has one switch, there is no pilot
+### 1.6.5 SWARM-SETTINGS: the swarm has one switch, there is no pilot
 
 - Instance → General → **"Self-organisation (swarm)"**: one `Swarm enabled` switch (off by
   default; in production it is turned on by `MYRMIDON_SWARM_CLAIM_ENABLED=1` or here). Which
@@ -47,7 +47,7 @@
 ## settings-en-append
 
 <!-- section: 1.6.1 — SWARM-SETTINGS-UI: queues of roles as instance settings -->
-Since 1.6.5 (OPE-6608) the panel is called "Self-organisation (swarm)"; the settings stay under
+Since 1.6.5 the panel is called "Self-organisation (swarm)"; the settings stay under
 `general.swarmClaim`.
 The pilot is gone: there are no role or company lists and no idle-wake batch — the variables
 `MYRMIDON_SWARM_CLAIM_ENABLED_ROLES`, `MYRMIDON_SWARM_CLAIM_ENABLED_COMPANY_IDS` and
@@ -58,7 +58,7 @@ fields is read with them dropped. Who takes part in the swarm is decided by the 
 ## settings-ru-append
 
 <!-- section: 1.6.1 — SWARM-SETTINGS-UI: очереди ролей как настройки инстанса -->
-С 1.6.5 (OPE-6608) панель называется «Self-organisation (swarm)»; настройки по-прежнему
+С 1.6.5 панель называется «Self-organisation (swarm)»; настройки по-прежнему
 хранятся под ключом `general.swarmClaim`.
 Пилота нет: нет списков ролей и компаний и пачки idle-побудок — переменные
 `MYRMIDON_SWARM_CLAIM_ENABLED_ROLES`, `MYRMIDON_SWARM_CLAIM_ENABLED_COMPANY_IDS` и

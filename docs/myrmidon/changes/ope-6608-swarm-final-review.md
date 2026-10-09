@@ -1,6 +1,6 @@
 ## changelog-ru
 
-### 1.6.5 F-26 SWARM (OPE-6608, финальное ревью): касты в ребалансе супервизора, остатки пилота, реальный путь побудки
+### 1.6.5 F-26 SWARM (финальное ревью): касты в ребалансе супервизора, остатки пилота, реальный путь побудки
 
 - Матчер ребалансировки супервизора (`swarm-claim-supervisor/routes.ts`) собирается со справочником
   каст (`createCasteDirectoryReader`), как проход страховки и API захвата: освобождённая супервизором
@@ -14,7 +14,7 @@
 
 ## changelog-en
 
-### 1.6.5 F-26 SWARM (OPE-6608, final review): castes in the supervisor rebalance, pilot leftovers, the real wake path
+### 1.6.5 F-26 SWARM (final review): castes in the supervisor rebalance, pilot leftovers, the real wake path
 
 - The supervisor's rebalance matcher (`swarm-claim-supervisor/routes.ts`) is built with the caste
   directory (`createCasteDirectoryReader`), like the sweep and the claim API: a task released by the
