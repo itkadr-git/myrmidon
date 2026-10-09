@@ -46,10 +46,13 @@ divergence
 Related: the **WIP limit** caps how many tasks one agent holds in flight —
 **Company Settings → WIP limit**, with the live load on every agent row
 ([wip-limit](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/wip-limit.md)).
-Role queue parameters (lease TTL, per-agent active-task ceiling, sweep
-interval, P0 preemption) are edited live in **Instance → General → Role
-queues (SWARM-CLAIM)**
-([swarm-claim-settings](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/swarm-claim-settings.md)).
+Swarm self-organization parameters (task pheromones, agent pick by scent,
+cooldown after a failed run, lease TTL, per-agent active-task ceiling, P0
+preemption) are edited live in **Instance → General → Self-organization
+(swarm)**; how to switch the swarm on and verify it in three steps —
+[swarm-self-organization](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/swarm-self-organization.md).
+Lower-level queue details —
+[swarm-claim-settings](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/swarm-claim-settings.md).
 
 ## Agent castes (the company role directory)
 

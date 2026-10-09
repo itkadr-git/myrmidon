@@ -48,7 +48,7 @@ A track writes only into its own section. A row is added in the same PR as the s
 | `MYRMIDON_OUTBOX_SWEEP_AGE_MS` | O1 | `45000` | The backup sweep pass of the continuation-wake outbox takes only intents older than the threshold: a just-created intent belongs to the direct post-commit delivery, an early sweep must not overtake it with a truncated envelope | `0` — immediate sweep (1.1.0 behavior). Non-numeric, negative or fractional — the default. Direct delivery (tryDeliver) is not bounded by the threshold |
 | `MYRMIDON_PENDING_INTERACTION_WAKE_GRACE_MS` | P12 | `600000` (10 minutes) | How long a card wake parked for lack of an addressee waits after the last delivery before the backup pass resolves its receipt: the card is still answering, it must not be deferred; too early — the wake is extinguished before the addressee has time to accept it | Smaller — faster extinguishing with a silent addressee (coarser); `0` — resolution on the nearest scheduler tick. Non-numeric/negative — the default |
 | `MYRMIDON_PENDING_INTERACTION_WAKE_RE_ADMISSIONS` | P12 | `1` | How many times the backup pass may re-admit a parked card wake (create a deferred run) against the same receipt while the card still awaits the addressee: the wake cannot storm the task every tick | `0` — re-admission disabled (the card waits only for direct delivery); larger — more retries with a silent addressee. The value is rounded down to an integer, non-numeric — the default |
-| `MYRMIDON_IDLE_PICKUP_INTERVAL_SEC` | IDLE-PICKUP | `30` | How often (sec) the board itself wakes an agent with assigned `todo`/`in_progress` tasks and no live run: the top ready task by priority gets an `idle_pickup` wake bound to the task (issueId in context, without 403 cross-issue). A wake also fires right after a finished run releases the task execution lock. A ready task = without open blockers (`issue_relations` type `blocks` with an open blocker, including a cancelled one) and not a container (no open children). One run per pass; pause, maintenance mode, admission limits (C0), parallelism and agent daily ceilings are respected — checked by the wake admission path itself, not this pass | Values below 5 — 5. Non-numeric, `0`, negative or fractional — the default |
+| `MYRMIDON_IDLE_PICKUP_INTERVAL_SEC` | IDLE-PICKUP | `30` | How often (sec) the board itself wakes an agent with assigned `todo`/`in_progress` tasks and no live run: the top ready task by priority gets an `idle_pickup` wake bound to the task (issueId in context, without 403 cross-issue). A wake also fires right after a finished run releases the task execution lock. A ready task = without open blockers (`issue_relations` type `blocks` with an open blocker, including a cancelled one), not a container (no open children) and, since 1.6.5, not in swarm cooldown (after a failed run with no changes the task waits `cooldownBaseMin × 2^(n−1)` minutes, up to 24 h; any change to the task lifts the cooldown — see "1.6.5 — Self-organization (swarm)"). One run per pass; pause, maintenance mode, admission limits (C0), parallelism and agent daily ceilings are respected — checked by the wake admission path itself, not this pass | Values below 5 — 5. Non-numeric, `0`, negative or fractional — the default |
 | `MYRMIDON_IDLE_PICKUP_ENABLED` | IDLE-PICKUP | `1` (on) | Master switch of auto-pickup: off — the board does not wake an idle agent with ready tasks (vendor behavior: only assignment, comment and timer) | `0`/`false`/`off`/`no` — disable (vendor behavior). Unset or unrecognized — enabled: a typo does not silently extinguish the fix |
 | `MYRMIDON_IDLE_PICKUP_RECENT_SUCCESS_WINDOW_MS` | IDLE-PICKUP | `900000` (15 min) | How many milliseconds after a successful run on a task idle-pickup does not wake THIS SAME task: a fresh success without disposition is handled by vendor paths (successful-run-handoff, stranded-recovery) — they send an instructive wake, and a duplicate one creates a race. Other tasks of the agent are not delayed by this | `0` — suppression off (wake even after a fresh success). Non-numeric, negative or fractional — the default |
 | `MYRMIDON_WORKSPACE_MERGED_COOLDOWN_MS` | WH-B | `1800000` (30 min) | A workspace whose branch is already merged (`deliveryState` = `merged_via_pr`/`merged_by_ancestry`) is archived after this short cooldown instead of the general terminal one (`PAPERCLIP_WORKSPACE_REAPER_COOLDOWN_DAYS`, 7 days) — merged workspaces do not linger on disk for a week. The "do not delete unpushed or dirty" protection is not weakened: such workspaces are not archived at any cooldown | `0` — archive on the next pass. Non-numeric or negative — the default of 30 min |
@@ -805,24 +805,6 @@ The flow end to end — how the owner asks from the portal or the Telegram DM,
 what the proposal and the approval card look like, and what acceptance
 creates — is the operator guide
 [guides/cto-chat-planner.md](guides/cto-chat-planner.md).
-## 1.6 — SWARM-CLAIM supervisor and pilot report (part B)
-
-Settings of `server/src/myrmidon/swarm-claim-supervisor/` — the lead's supervisor
-view over the per-role claim queues, the rebalance action and the pilot report
-of the SWARM-CLAIM epic, part B (`GET /api/myrmidon/companies/:companyId/swarm-claim/supervisor/overview`,
-`POST .../supervisor/release-lease`, `GET .../pilot-report`). The claim table
-`issue_claims` and its write path belong to part A
-(`server/src/myrmidon/swarm-claim/`); this module only reads them, so while part
-A is unmerged the supervisor answers `{ enabled: false }`.
-
-| Variable | Function | Default | What it does | How to disable / special |
-|---|---|---|---|---|
-| `MYRMIDON_SWARM_SUPERVISOR_TASK_MAX` | 1.6-SWARM-CLAIM-B | `500` | Row cap of queue candidates reported per role in the supervisor overview; a ceiling, not a page size | Positive integer from 1 to 5000; anything else — the default (500). Values above the 5000 ceiling are clamped to it, so a typo cannot ask for an unbounded scan |
-| `MYRMIDON_SWARM_PILOT_BASELINE_DOC` | 1.6-SWARM-CLAIM-B | `baseline-snapshot-14d` | Issue document key the pilot report reads the frozen BASELINE snapshot from before comparing a window against it | Empty, blank or unset — the default key. Until a document under the key exists the pilot report answers `baseline: null` (there is nothing to compare the window against yet) |
-| `MYRMIDON_SWARM_CLAIM_ENABLED` | 1.6-SWARM-CLAIM-B | unset (on when part A's claim table exists) | Master switch of the swarm claim supervisor view and pilot report: the overview reports the claim/lease state, and the pilot report only compares a window when claims are live. Read as enabled unless the value is exactly `0`, `false`, `off` or `no`; with any other value the module still checks that part A's `issue_claims` table exists before answering enabled | Exact `0`/`false`/`off`/`no` — the supervisor answers `{ enabled: false }` and the pilot report is skipped; any typo or other value is treated as enabled, so an error cannot silently kill the pilot |
-| `MYRMIDON_SWARM_LEASE_TTL_SEC` | 1.6-SWARM-CLAIM-B | unset (module default) | Lease time-to-live, in seconds, reported for each active claim in the supervisor overview and used by the pilot report's lease metrics. A positive integer env value wins over everything else | Unset, empty or not a positive integer — falls back to `instance_settings.general.swarmClaim.MYRMIDON_SWARM_LEASE_TTL_SEC` when present, else the module's own default |
-| `MYRMIDON_SWARM_MAX_ACTIVE_TASKS` | 1.6-SWARM-CLAIM-B | unset (module default) | Per-agent cap of active claimed tasks reported by the supervisor overview and used by the pilot report's workload metrics. A positive integer env value wins over everything else | Unset, empty or not a positive integer — falls back to `instance_settings.general.swarmClaim.MYRMIDON_SWARM_MAX_ACTIVE_TASKS` when present, else the module's own default |
-
 ## 1.6 — FORAGING (source registry, snapshot comparison, skill candidates)
 
 Settings of `server/src/myrmidon/foraging/` (the 1.6 track). The feature is off by default:
@@ -1057,37 +1039,68 @@ default host is recreated with the new binds on the next pass. Full guide:
 
 | `MYRMIDON_MCP_TOKEN_*` | MCP-* | Secret value | MCP server authentication tokens generated per bot profile from `MYRMIDON_BOT_MCP_SERVERS` configuration | These are secret tokens that go to bot containers'.env files with 0600 permissions, where Hermes expands the references in config.yaml at load time |
 | `permissions.boardAdmin` | ADMIN-AGENT (1.6.1) | flag absent — reads as `false` | The board administrator flag on the agent record. Enabling through `PATCH /api/agents/:id/permissions` with the `boardAdmin` field (or the "Board administrator" toggle on the agent card's Permissions tab) grants the fixed 17-key operator set (`BOARD_ADMIN_PERMISSION_KEYS`) and snapshots the pre-existing set keys into `permissions.boardAdminSavedGrantKeys`; disabling revokes only the keys the switch added. Flipping needs the company `users:manage_permissions` right (board actors) or the same grant (agent actors); an agent cannot grant board admin to itself (403). `GET /api/agents/:id` resolves `access.boardAdmin` for the CEO, the stored flag, or a pre-existing full set (read-time migration). Details: [guides/agent-board-admin.md](guides/agent-board-admin.md) | Clear the flag with the same PATCH and `boardAdmin: false` — keys outside the set and keys in the snapshot are untouched; both readers are fail-closed — an unreadable value reads as `false` |
-## 1.6.1 — SWARM-SETTINGS-UI: queues of roles as instance settings
+## 1.6.5 — Self-organization (swarm)
 
-The pilot of the per-role queues is set in the interface, without a restart:
-Instance → General → "Role queues (SWARM-CLAIM)" writes
-`instance_settings.general.swarmClaim` (`GET`/`PATCH /api/myrmidon/swarm-claim`,
-board reads, instance-admin writes). The server re-resolves the row on every
-claim, checkout, sweep tick and supervisor read, so enabling a role takes
-effect within a minute, and switching the pilot off releases the live leases
-at once (the PATCH response reports how many). Every change appends a journal
-entry — who changed what, and when — rendered by the settings screen and kept
-under `general.swarmClaimJournal` (activity log stays the audit trail).
+Since 1.6.5 the swarm is a shipped feature, not a pilot: the board itself
+matches every unassigned ready task with a free agent of the right caste and
+wakes it with that task already in hand (wake reason `swarm_matched`). The
+flow: an event (a run finishes, a pause lifts, a task is created or updated,
+a lease expires or is released) → the matcher finds a task–agent pair →
+assignee and lease are written → the wake goes out bound to the task. A
+safety pass on the scheduler tick picks up anything the events might have
+missed. There are no "wake up and look for work" wakeups: an automatic run
+without an `issueId` in context closes as `skipped` with code
+`run_without_task` before the adapter starts (0 tokens). The user page on
+how this works and why a task waits:
+[guides/swarm-self-organization.md](guides/swarm-self-organization.md).
 
-The environment variables below are now **forced overrides**, not the primary
-source: a variable set in the process environment beats the stored value for
-that key only, so an operator can pin a contour without touching the database.
-Each key of the `GET` answer carries its source — `settings` (the UI value),
-`env` (the override) or `default` — and both the settings screen and the
-Swarm supervisor screen render that origin.
+Managed from the interface, without a restart: Instance → General →
+"Self-organization (swarm)" writes `instance_settings.general.swarm`
+(`GET`/`PATCH /api/myrmidon/swarm-claim`, board reads, instance-admin
+writes). The server re-resolves the settings on every match and sweep tick,
+so enabling applies within a minute, and disabling releases the live leases
+at once (the PATCH response reports how many); assignees are not stripped
+from tasks. Every change appends a journal entry — who changed what, and
+when — rendered by the settings screen. Values stored under the pre-1.6.5
+key `general.swarmClaim` migrate into `general.swarm`; the pilot fields
+(`enabledRoles`, `enabledCompanyIds`) are not migrated and are removed
+together with the variables `MYRMIDON_SWARM_CLAIM_ENABLED_ROLES` /
+`MYRMIDON_SWARM_CLAIM_ENABLED_COMPANY_IDS` and the supervisor pilot report
+(`MYRMIDON_SWARM_PILOT_BASELINE_DOC`). The batch-wake pass of idle agents is
+removed together with `MYRMIDON_SWARM_IDLE_WAKE_BATCH`.
+
+Panel fields (1.6.5 defaults):
+
+| Field (`general.swarm.*` key) | Default | What it does |
+|---|---|---|
+| Enabled (`enabled`) | on | The swarm master switch: off — no matching, live leases are released at once |
+| Pheromones: priority → strength (`pheromoneDefaults`) | critical 100 / high 30 / medium 10 / low 1 | The pheromone strength of a task when the task card does not set it explicitly |
+| Aging: step hours / increment / cap (`agingStepHours`, `agingStep`, `agingCap`) | 24 h / +1 / +5 | While the task waits, its effective strength grows: +`agingStep` per `agingStepHours` hours of waiting, capped at `agingCap` total |
+| Evaporation: failed-run penalty (`failPenalty`) | 10 | The effective strength drops by the penalty for every failed run (failed/blocked/needs_followup/timed_out) in a row after which the task did not change; never below zero |
+| Cooldown: base pause / cap (`cooldownBaseMin`, cap 24 h) | 30 min / 24 h | A task after a failed run without changes is not matched for `cooldownBaseMin × 2^(n−1)` minutes (n — the count of such runs in a row); any change to the task lifts the cooldown |
+| P0 preemption (`p0Preemption`) | on | A `critical` task goes first in the queue regardless of strength |
+| Advanced: lease TTL, sec (`leaseTtlSec`) | 900 | How long a lease stays valid without a heartbeat; the run refreshes it on checkout |
+| Advanced: per-agent active-task ceiling (`maxActiveTasks`) | 3 | The ceiling of live leases per agent; the caste ceiling (in the caste directory) overrides it for the caste's agents |
+| Advanced: safety-pass interval, sec (`sweepIntervalSec`) | 30 | How often the sweep releases expired leases and catches missed events |
+| Scent: matching weights (`scent.tagWeight`, `scent.tierFit`, `scent.seriousThreshold`, `scent.consequencesBonus`) | 10 / 20 / 0.4 / +10 | How one agent is picked among several free agents of the caste: scent-tag overlap × `tagWeight` plus `tierFit` when the task's consequences ≥ `seriousThreshold`, plus `consequencesBonus` |
+
+Environment variables are **forced overrides** of individual keys only (for
+pinning a contour without touching the database); the panel is the primary
+source. Every key of the `GET` answer carries its source — `settings`, `env`
+or `default`.
 
 | Variable | Function | Default | What it does | How to disable / special |
 |---|---|---|---|---|
-| `MYRMIDON_SWARM_CLAIM_ENABLED` | 1.6-SWARM | `0` (off) | Override of the master switch of the per-role task queues: on — an agent claims the top task of its own role's queue behind a lease (TTL + heartbeat), an expired lease returns the task to the queue and the sweep wakes the next agent of the role; the checkout writes the run's claim, the finishing run releases it. Off — no claim is written; a disable also releases the live leases (reason `pilot_disabled`) | `1`/`true`/`on`/`yes` — force on. `0`/`false`/`off`/`no` — force off. Unset — the UI value applies; nothing stored — off, the pilot must be turned on deliberately |
-| `MYRMIDON_SWARM_CLAIM_ENABLED_ROLES` | 1.6.1-SWARM-SETTINGS-UI | unset (no restriction) | Override of the pilot role set: comma-separated role names (e.g. `engineer`). Only agents of the listed roles claim; an empty value means every role. The UI field holds the same list | Unset — the UI value applies. Empty — no restriction. Whitespace around an entry is trimmed |
-| `MYRMIDON_SWARM_CLAIM_ENABLED_COMPANY_IDS` | 1.6.1-SWARM-SETTINGS-UI | unset (no restriction) | Override of the pilot company set: comma-separated company ids. Only the listed companies claim; an empty value means every company | Unset — the UI value applies. Empty — no restriction |
-| `MYRMIDON_SWARM_LEASE_TTL_SEC` | 1.6-SWARM | `900` | Override of the lease TTL (sec): how long a claim's lease stays valid without a heartbeat; the run refreshes it on every checkout pass. The acceptance window (idle agent with a non-empty queue of its role) is one TTL plus one sweep interval | From 60 to 86400. Unset or unreadable — the UI value applies; nothing stored — 900 |
-| `MYRMIDON_SWARM_MAX_ACTIVE_TASKS` | 1.6-SWARM | `3` | Override of the per-agent ceiling of live claims; a capped agent is not handed new work until a lease finishes, expires or is released | From 1 to 100; `none`/`0` — no ceiling. Unset or unreadable — the UI value applies; nothing stored — 3 |
-| `MYRMIDON_SWARM_CLAIM_SWEEP_INTERVAL_SEC` | 1.6-SWARM | `30` | Override of the sweep interval (sec): how often the expired-claim sweep runs on the scheduler tick. Read live — a stored change spreads the passes without a restart; the constructed interval stays the floor | From 5. Unset or unreadable — the UI value applies; nothing stored — 30 |
-| `MYRMIDON_SWARM_CLAIM_P0_PREEMPTION` | 1.6.1-SWARM-SETTINGS-UI | `1` (on) | Override of the P0 preemption: on — a `critical` task is the top of the queue; off — the queue is strictly oldest-first | `1`/`true`/`on`/`yes` — on. `0`/`false`/`off`/`no` — off. Unset — the UI value applies |
-| `MYRMIDON_SWARM_IDLE_WAKE_BATCH` | 1.6.1 SWARM-IDLE-WAKE | `5` | Upper bound of agents one idle-wake pass of the swarm sweep may wake: for every role with a non-empty ready queue and free agents (no live claim, under the ceiling, not paused, no live run) the pass wakes the missing number, each wake bound to the top queue task (critical first) | From 1 to 25; out of range or non-numeric — clamped/falls back to the default |
-The flow end to end — the registry, how a pass works, the screen and the API — is
-the operator guide [guides/foraging.md](guides/foraging.md).
+| `MYRMIDON_SWARM_CLAIM_ENABLED` | 1.6.5-SWARM | unset (the panel value applies; default on) | Forced override of the swarm master switch | `1`/`true`/`on`/`yes` — force on; `0`/`false`/`off`/`no` — force off (leases are released). Unset — the UI value applies |
+| `MYRMIDON_SWARM_LEASE_TTL_SEC` | 1.6.5-SWARM | unset (panel; default 900) | Override of the lease TTL (sec) | From 60 to 86400. Unset or unreadable — the UI value applies |
+| `MYRMIDON_SWARM_MAX_ACTIVE_TASKS` | 1.6.5-SWARM | unset (panel; default 3) | Override of the per-agent live-lease ceiling | From 1 to 100; `none`/`0` — no ceiling. Unset or unreadable — the UI value applies |
+| `MYRMIDON_SWARM_CLAIM_SWEEP_INTERVAL_SEC` | 1.6.5-SWARM | unset (panel; default 30) | Override of the safety-pass interval (sec) | From 5. Unset or unreadable — the UI value applies |
+| `MYRMIDON_SWARM_CLAIM_P0_PREEMPTION` | 1.6.5-SWARM | unset (panel; default on) | Override of the P0 preemption | `1`/`true`/`on`/`yes` — on; `0`/`false`/`off`/`no` — off. Unset — the UI value applies |
+| `MYRMIDON_SWARM_SUPERVISOR_TASK_MAX` | 1.6-SWARM-CLAIM-B | `500` | The ceiling of queue-candidate rows per caste in the Swarm screen overview; a cap, not a page size | A positive integer from 1 to 5000; anything else — the default (500) |
+
+Removed: `MYRMIDON_SWARM_CLAIM_ENABLED_ROLES`,
+`MYRMIDON_SWARM_CLAIM_ENABLED_COMPANY_IDS`, `MYRMIDON_SWARM_IDLE_WAKE_BATCH`,
+`MYRMIDON_SWARM_PILOT_BASELINE_DOC` — set values are ignored.
 
 
 ## 1.6.1 — BOT-RUNTIME-TUNING D: model fallback attention signal
