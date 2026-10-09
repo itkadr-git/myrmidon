@@ -117,7 +117,8 @@ export type QueuedRunStalenessErrorCode =
   | "issue_execution_lock_changed"
   | "issue_blocked"
   | "issue_review_participant_changed"
-  | "issue_continuation_waiting_on_review";
+  | "issue_continuation_waiting_on_review"
+  | "queued_run_issue_not_startable";
 
 export type StalenessDecision =
   | { stale: false }
@@ -642,6 +643,22 @@ export function decideQueuedRunStaleness(
         issueId: facts.issueId,
         currentStatus: facts.issueStatus,
         requiredStatus: "in_progress",
+      },
+    };
+  }
+
+  // myrmidon(1.6.5-F-09): a queued run whose task was moved to backlog is not
+  // startable. Cancel it with a dedicated code so the sweep can distinguish
+  // it from terminal-status cancellations (done/cancelled stay
+  // issue_terminal_status).
+  if (facts.issueStatus === "backlog") {
+    return {
+      stale: true,
+      errorCode: "queued_run_issue_not_startable",
+      reason: `Cancelled because issue ${facts.issueId} is in backlog (not startable)`,
+      details: {
+        issueId: facts.issueId,
+        currentStatus: facts.issueStatus,
       },
     };
   }

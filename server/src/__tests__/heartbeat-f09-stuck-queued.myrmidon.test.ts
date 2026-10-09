@@ -533,10 +533,14 @@ describeEmbeddedPostgres("heartbeat F-09 stuck-queued sweep", () => {
     const { setMaintenanceDocumentCache, resetMaintenanceGateCaches } = await import(
       "../myrmidon/maintenance/gate.js"
     );
-    const companyId = await seedCompany();
-    const agentId = await seedAgent(companyId);
-    const issueId = await seedIssue(companyId, agentId, { status: "todo" });
-    const runId = await seedRun(companyId, agentId, issueId, "queued");
+    const { companyId, agentId } = await seedCompanyAndAgent({ name: "Eng", role: "engineer" });
+    const issueId = await seedIssue(companyId, {
+      title: "Maintenance test",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      status: "todo",
+    });
+    const run = await wakeAndQueue(agentId, issueId);
     applyRunAdmissionLimits({ ...currentRunAdmissionLimits(), maxConcurrentRuns: 10 });
     const heartbeat = heartbeatService(db);
     try {
@@ -556,7 +560,7 @@ describeEmbeddedPostgres("heartbeat F-09 stuck-queued sweep", () => {
 
       await heartbeat.resumeQueuedRuns();
       await heartbeat.drainActiveRunExecutions();
-      const stored = await runRow(runId);
+      const stored = await runRow(run.id);
       expect(stored?.status).toBe("queued");
       expect(stored?.waitReason).toBe("maintenance");
     } finally {
@@ -566,7 +570,7 @@ describeEmbeddedPostgres("heartbeat F-09 stuck-queued sweep", () => {
   }, 30_000);
 
   it("marks queued runs with agent_not_invokable when the agent has no adapter", async () => {
-    const companyId = await seedCompany();
+    const { companyId } = await seedCompanyAndAgent({ name: "Eng", role: "engineer" });
     // Agent with an adapterType that has no adapter registered.
     const [agent] = await db
       .insert(agents)
@@ -579,14 +583,19 @@ describeEmbeddedPostgres("heartbeat F-09 stuck-queued sweep", () => {
         status: "idle",
       })
       .returning();
-    const issueId = await seedIssue(companyId, agent.id, { status: "todo" });
-    const runId = await seedRun(companyId, agent.id, issueId, "queued");
+    const issueId = await seedIssue(companyId, {
+      title: "Agent not invokable test",
+      priority: "medium",
+      assigneeAgentId: agent.id,
+      status: "todo",
+    });
+    const run = await wakeAndQueue(agent.id, issueId);
     applyRunAdmissionLimits({ ...currentRunAdmissionLimits(), maxConcurrentRuns: 10 });
     const heartbeat = heartbeatService(db);
     try {
       await heartbeat.resumeQueuedRuns();
       await heartbeat.drainActiveRunExecutions();
-      const stored = await runRow(runId);
+      const stored = await runRow(run.id);
       expect(stored?.status).toBe("queued");
       expect(stored?.waitReason).toBe("agent_not_invokable");
     } finally {
@@ -595,10 +604,14 @@ describeEmbeddedPostgres("heartbeat F-09 stuck-queued sweep", () => {
   }, 30_000);
 
   it("marks queued runs with scheduling_suppressed when scheduling is suppressed", async () => {
-    const companyId = await seedCompany();
-    const agentId = await seedAgent(companyId);
-    const issueId = await seedIssue(companyId, agentId, { status: "todo" });
-    const runId = await seedRun(companyId, agentId, issueId, "queued");
+    const { companyId, agentId } = await seedCompanyAndAgent({ name: "Eng", role: "engineer" });
+    const issueId = await seedIssue(companyId, {
+      title: "Scheduling suppressed test",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      status: "todo",
+    });
+    const run = await wakeAndQueue(agentId, issueId);
     applyRunAdmissionLimits({ ...currentRunAdmissionLimits(), maxConcurrentRuns: 10 });
     const heartbeat = heartbeatService(db);
     const originalEnv = process.env.PAPERCLIP_IN_WORKTREE;
@@ -606,7 +619,7 @@ describeEmbeddedPostgres("heartbeat F-09 stuck-queued sweep", () => {
       process.env.PAPERCLIP_IN_WORKTREE = "1";
       await heartbeat.resumeQueuedRuns();
       await heartbeat.drainActiveRunExecutions();
-      const stored = await runRow(runId);
+      const stored = await runRow(run.id);
       expect(stored?.status).toBe("queued");
       expect(stored?.waitReason).toBe("scheduling_suppressed");
     } finally {
@@ -621,9 +634,13 @@ describeEmbeddedPostgres("heartbeat F-09 stuck-queued sweep", () => {
 
   it("canReadDecisionSource resolves queue_stall with run id", async () => {
     const { canReadDecisionSource } = await import("../services/decision-queues.js");
-    const companyId = await seedCompany();
-    const agentId = await seedAgent(companyId);
-    const issueId = await seedIssue(companyId, agentId, { status: "todo" });
+    const { companyId, agentId } = await seedCompanyAndAgent({ name: "Eng", role: "engineer" });
+    const issueId = await seedIssue(companyId, {
+      title: "Decision source test",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      status: "todo",
+    });
     const [run] = await db
       .insert(heartbeatRuns)
       .values({
@@ -648,9 +665,13 @@ describeEmbeddedPostgres("heartbeat F-09 stuck-queued sweep", () => {
 
   it("canReadDecisionSource returns exists=false for a queue_stall with a non-run id", async () => {
     const { canReadDecisionSource } = await import("../services/decision-queues.js");
-    const companyId = await seedCompany();
-    const agentId = await seedAgent(companyId);
-    const issueId = await seedIssue(companyId, agentId, { status: "todo" });
+    const { companyId, agentId } = await seedCompanyAndAgent({ name: "Eng", role: "engineer" });
+    const issueId = await seedIssue(companyId, {
+      title: "Decision source negative test",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      status: "todo",
+    });
 
     // A task id should NOT resolve as a queue_stall source (source is the run).
     const result = await canReadDecisionSource(
