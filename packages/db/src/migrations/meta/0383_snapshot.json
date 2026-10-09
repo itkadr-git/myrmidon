@@ -1,5 +1,5 @@
 {
-  "id": "f9b20a18-498b-4ffd-8b3d-011e1d876d5c",
+  "id": "69340adf-9fb8-41f9-99e8-1064c9cc70de",
   "prevId": "eadeb93e-5f4f-4cbf-b8e2-857d40a4c830",
   "version": "7",
   "dialect": "postgresql",
@@ -33378,6 +33378,27 @@
           "method": "btree",
           "with": {}
         },
+        "issues_company_caste_idx": {
+          "name": "issues_company_caste_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "caste_key",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
         "issues_company_execution_run_idx": {
           "name": "issues_company_execution_run_idx",
           "columns": [
@@ -33712,27 +33733,6 @@
           ],
           "isUnique": true,
           "where": "\"issues\".\"origin_kind\" = 'onboarding_first_task'",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "issues_company_caste_idx": {
-          "name": "issues_company_caste_idx",
-          "columns": [
-            {
-              "expression": "company_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "caste_key",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
           "concurrently": false,
           "method": "btree",
           "with": {}
