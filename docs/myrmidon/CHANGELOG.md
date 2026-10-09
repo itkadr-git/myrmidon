@@ -12,6 +12,43 @@ version file to edit. Base Paperclip version is in the image label
 
 ## 1.6.5
 
+### Wizard endpoints stuck in `verifying` are finished by live traffic (1.6.5 F-10 A)
+
+- An endpoint whose setup wizard stopped at the test step no longer needs the
+  owner to press "Finish setup" once real traffic has proven both halves of the
+  round trip: the board delivered an outgoing message through it
+  (`chat_publications` in the `published` state) and an incoming turn came back.
+  Such an endpoint becomes `active` on its own, with the test step completed,
+  the test timestamp cleared and the health line `Verified by live traffic`;
+  its tool connection turns active and healthy. The completion is recorded in
+  the activity journal (`chat_endpoint.auto_activated`, trigger
+  `live_traffic`) and can never happen twice or half-way: an endpoint with only
+  incoming or only outgoing traffic stays where the wizard put it, and for the
+  first minutes after a test starts the wizard keeps its endpoint (the owner is
+  looking at it).
+- The endpoint detail and list responses now carry `verifyingStale` — an
+  endpoint that has been sitting in the test step for more than a day while
+  deliveries keep succeeding. It is an attention flag for the interface and for
+  diagnostics, never a status change and never an error.
+
+### LITELLM-WORKERS-UI: the "Gateway workers" tab on the Costs page (1.6.6)
+
+- The Costs page gains a third gateway tab, "Gateway workers", beside
+  "Gateway" and "Gateway keys": an input for the desired LiteLLM process
+  count (seeded from the server's `target`), the CPU and memory ceilings
+  shown as hints, an Apply button behind a confirm step, and a status line
+  while `current` moves to `target`. A target above `maxByMemory` is caught
+  on the client; a 400 from the server is shown with the server's own text.
+- Metrics card: per-worker CPU bars, median response time and the request
+  queue depth, refreshed every 30 seconds from
+  `GET /api/myrmidon/companies/:id/litellm/workers`.
+- Auto-select card: shows the switch state and turns it on or off through
+  the same `PUT …/workers` (the threshold logic itself runs on the server).
+  When the backend does not carry the optional `auto` field, the switch is
+  disabled with an explanation — manual control keeps working.
+
+## 1.6.5
+
 ### Central session history for gateway bots (MEMORY-CENTRAL-B)
 
 - With `MYRMIDON_BOT_CENTRAL_HISTORY=1` (off by default) the Hermes gateway
