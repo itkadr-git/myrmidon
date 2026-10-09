@@ -5,6 +5,7 @@ import {
   companySkillCommentCreateSchema,
   companySkillCommentUpdateSchema,
   companySkillCreateSchema,
+  companySkillDiscoverSchema,
   companySkillFileDeleteSchema,
   companySkillFileUpdateSchema,
   companySkillForkSchema,
@@ -1135,13 +1136,45 @@ export function companySkillRoutes(db: Db) {
   );
 
   router.post(
+    "/companies/:companyId/skills/discover",
+    validate(companySkillDiscoverSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      const source = String(req.body.source ?? "");
+      await assertCanMutateCompanySkills(req, companyId, "skills.import", () => skillImportPolicyResource(source));
+      const result = await svc.discoverSkills(companyId, source);
+
+      const actor = getActorInfo(req);
+      await logActivity(db, {
+        companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
+        action: "company.skills_discovered",
+        entityType: "company",
+        entityId: companyId,
+        details: {
+          source,
+          discoveredCount: result.skills.length,
+          skillNames: result.skills.map((skill) => skill.name),
+        },
+      });
+
+      res.json(result);
+    },
+  );
+
+  router.post(
     "/companies/:companyId/skills/import",
     validate(companySkillImportSchema),
     async (req, res) => {
       const companyId = req.params.companyId as string;
       const source = String(req.body.source ?? "");
+      const skillName = typeof req.body.skillName === "string" ? req.body.skillName : null;
       await assertCanMutateCompanySkills(req, companyId, "skills.import", () => skillImportPolicyResource(source));
-      const result = await svc.importFromSource(companyId, source);
+      const result = await svc.importFromSource(companyId, source, { skillName });
 
       const actor = getActorInfo(req);
       await logActivity(db, {
@@ -1156,6 +1189,7 @@ export function companySkillRoutes(db: Db) {
         entityId: companyId,
         details: {
           source,
+          ...(skillName ? { skillName } : {}),
           importedCount: result.imported.length,
           importedSlugs: result.imported.map((skill) => skill.slug),
           warningCount: result.warnings.length,

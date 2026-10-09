@@ -1,13 +1,13 @@
 import type { IssueAttachment, IssueDocument } from "./issue.js";
 import type { IssueWorkProduct } from "./work-product.js";
 
-export type CompanySkillSourceType = "local_path" | "github" | "url" | "catalog" | "skills_sh";
+export type CompanySkillSourceType = "local_path" | "github" | "url" | "catalog" | "skills_sh" | "well_known";
 
 export type CompanySkillTrustLevel = "markdown_only" | "assets" | "scripts_executables";
 
 export type CompanySkillCompatibility = "compatible" | "unknown" | "invalid";
 
-export type CompanySkillSourceBadge = "paperclip" | "github" | "local" | "url" | "catalog" | "skills_sh";
+export type CompanySkillSourceBadge = "paperclip" | "github" | "local" | "url" | "catalog" | "skills_sh" | "well_known";
 
 export type CompanySkillSharingScope = "private" | "company" | "public_link";
 
@@ -125,6 +125,23 @@ export interface CompanySkillUsageAgent {
   versionId: string | null;
 }
 
+/**
+ * One entry of an agentskills.io discovery index
+ * (`https://<host>/.well-known/agent-skills/index.json`). `url` and `digest`
+ * come from the index; the archive URL is resolved against the source origin
+ * by the server so clients can show the absolute location.
+ */
+export interface CompanySkillDiscoveredSkill {
+  name: string;
+  description: string | null;
+  url: string;
+  digest: string;
+}
+
+export interface CompanySkillDiscoverResult {
+  skills: CompanySkillDiscoveredSkill[];
+}
+
 export interface CompanySkillDetail extends CompanySkill {
   attachedAgentCount: number;
   usedByAgents: CompanySkillUsageAgent[];
@@ -136,6 +153,11 @@ export interface CompanySkillDetail extends CompanySkill {
   sourcePath: string | null;
   currentVersion: CompanySkillVersion | null;
   starredByCurrentActor: boolean;
+  /**
+   * Environment variable names extracted from the skill's SKILL.md text
+   *. Stored in skill metadata under `requiredEnv`.
+   */
+  requiredEnv: string[];
 }
 
 export interface CompanySkillListQuery {
@@ -325,6 +347,12 @@ export interface CompanySkillResetRequest {
 
 export interface CompanySkillImportRequest {
   source: string;
+  /**
+   * Selects one skill from an agentskills.io well-known discovery index by
+   * its `name`. Only used when the source is a well-known discovery site;
+   * ignored for GitHub, skills.sh, URL and local sources.
+   */
+  skillName?: string;
 }
 
 export interface CompanySkillImportResult {

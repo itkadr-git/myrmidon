@@ -180,6 +180,7 @@ function makeDetail(currentVersion: CompanySkillVersion, overrides: Partial<Comp
     sourcePath: null,
     currentVersion,
     starredByCurrentActor: false,
+    requiredEnv: [],
     ...overrides,
   };
 }
