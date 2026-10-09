@@ -14,8 +14,8 @@
 //
 // Pure data and one pure predicate only — no database, no cache. The server
 // reads the pairs fresh on every matcher pass (server/src/myrmidon/castes/
-// nests.ts), so saving the multi-select in the agent card changes the match
-// without a restart. This file is the single source of truth for the API shape,
+// nests-store.ts and resolve.ts), so saving the multi-select in the agent card
+// changes the match without a restart. This file is the single source of truth for the API shape,
 // the UI field and the matcher's predicate.
 
 import { z } from "zod";

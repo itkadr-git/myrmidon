@@ -25,6 +25,13 @@ export interface CasteView {
   /** null = the global swarm limit applies. */
   maxActiveTasks: number | null;
   builtIn: boolean;
+  /**
+   * myrmidon(1.6.5 F-26 T3 CASTES-AND-NESTS): exactly one caste of a company
+   * carries this flag — the caste the swarm matcher falls back to when neither
+   * the task nor its project names one. Optional: a server that predates the
+   * 0382 migration omits it, and the screen then reads "no default".
+   */
+  isDefault?: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -52,6 +59,12 @@ export interface UpdateCasteInput {
   defaultModel?: string | null;
   swarmEligible?: boolean;
   maxActiveTasks?: number | null;
+  /**
+   * myrmidon(1.6.5 F-26 T3): `true` moves the company default to this caste
+   * (the server clears the old one in the same transaction); `false` on the
+   * caste that currently holds the flag is a 409 — set another one first.
+   */
+  isDefault?: boolean;
 }
 
 const base = (companyId: string) =>
