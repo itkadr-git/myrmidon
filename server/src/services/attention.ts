@@ -2976,27 +2976,24 @@ async function buildAttentionFeedSnapshot(
           add(createItem({
             companyId,
             sourceKind: "queue_stall",
-            subject: signal.issueId
-              ? {
-                  kind: "issue",
-                  id: signal.issueId,
-                  companyId,
-                  title: signal.issueTitle ?? "Task",
-                  identifier: signal.issueIdentifier,
-                  status: null,
-                  href: signal.issueIdentifier ? `/${prefix}/issues/${signal.issueIdentifier}` : null,
-                  metadata: { runId: signal.runId, agentId: signal.agentId },
-                }
-              : {
-                  kind: "agent",
-                  id: signal.agentId,
-                  companyId,
-                  title: signal.agentName ?? "Agent",
-                  identifier: null,
-                  status: null,
-                  href: null,
-                  metadata: { runId: signal.runId },
-                },
+            subject: {
+              kind: "run",
+              id: signal.runId,
+              companyId,
+              title: `${signal.agentName ?? "Agent"} run queued`,
+              identifier: signal.issueIdentifier,
+              status: "queued",
+              href: `/${prefix}/agents/${signal.agentId}/runs/${signal.runId}`,
+              metadata: {
+                runId: signal.runId,
+                agentId: signal.agentId,
+                agentName: signal.agentName,
+                issueId: signal.issueId,
+                issueIdentifier: signal.issueIdentifier,
+                issueTitle: signal.issueTitle,
+                queuedSec: signal.queuedSec,
+              },
+            },
             whyNow: queueStallSignalWhyNow(signal),
             decisionVerbs: decisionVerbs(
               { id: "inspect", label: "Inspect", description: "Open the run and check why it has no waitReason." },

@@ -1,8 +1,9 @@
 // myrmidon(1.6.5 F-09): the stuck-queued sweep tests. A queued run whose task
-// is in backlog or hidden is cancelled with `queued_run_issue_not_startable`; a
-// queued run older than the explain threshold without waitReason gets one; a
-// queued run older than the stall threshold raises a queue_stall attention
-// card; a run whose task is in todo starts when the admission gate opens.
+// is in backlog is cancelled with `queued_run_issue_not_startable`; a queued
+// run older than the explain threshold without waitReason gets one when a real
+// denial was observed; a queued run older than the stall threshold raises a
+// queue_stall attention card; a run whose task is in todo starts when the
+// admission gate opens.
 import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
@@ -39,6 +40,7 @@ import {
   type RunPrioritySettings,
 } from "@paperclipai/shared";
 import { heartbeatService } from "../services/heartbeat.ts";
+import { attentionService } from "../services/attention.js";
 import { runningProcesses } from "../adapters/index.ts";
 import {
   applyRunAdmissionLimits,
@@ -366,5 +368,138 @@ describeEmbeddedPostgres("heartbeat F-09 stuck-queued sweep", () => {
 
     const stored = await runRow(run.id);
     expect(stored?.status).not.toBe("queued");
+  }, 30_000);
+
+  it("keeps waitReason null when no admission denial was observed", async () => {
+    // Red-side: the sweep must not fabricate a waitReason. When no admission
+    // denial was observed (e.g. the run simply hasn't been reached yet), the
+    // waitReason stays null so the queue_stall card can find it.
+    pinAdmission({ maxConcurrentRuns: 0 });
+    applyRunPrioritySettings(readRunPriorityFromEnv({}));
+
+    const { companyId, agentId } = await seedCompanyAndAgent({ name: "Eng", role: "engineer" });
+    const issueId = await seedIssue(companyId, {
+      title: "No denial work",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      status: "todo",
+    });
+
+    const run = await wakeAndQueue(agentId, issueId);
+    await backdateRun(run.id, 120); // 2 hours > 60s explain threshold
+
+    // Run the sweep with admission closed — no denial is recorded because
+    // resumeQueuedRuns returns early when maxConcurrentRuns is 0 without
+    // calling sharedRunAdmission().reserve().
+    await heartbeat.resumeQueuedRuns();
+    await heartbeat.drainActiveRunExecutions();
+
+    const stored = await runRow(run.id);
+    expect(stored?.status).toBe("queued");
+    // The waitReason must NOT be fabricated — it stays null when no denial
+    // was observed. The queue_stall card (not a fake reason) surfaces this run.
+    const context = stored?.contextSnapshot as Record<string, unknown> | null;
+    expect(context?.waitReason ?? null).toBeNull();
+  }, 30_000);
+
+  it("raises a queue_stall attention card for a run older than the stall threshold", async () => {
+    // A run queued longer than QUEUED_RUN_STALE_AFTER_SEC (default 3600s) with
+    // no waitReason raises a queue_stall attention card.
+    pinAdmission({ maxConcurrentRuns: 0 });
+    applyRunPrioritySettings(readRunPriorityFromEnv({}));
+
+    const { companyId, agentId } = await seedCompanyAndAgent({ name: "Eng", role: "engineer" });
+    const issueId = await seedIssue(companyId, {
+      title: "Stall card work",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      status: "todo",
+    });
+
+    const run = await wakeAndQueue(agentId, issueId);
+    // Backdate past the stall threshold (default 3600s = 60 min).
+    await backdateRun(run.id, 120); // 2 hours > 60 min stall threshold
+
+    // Run the sweep so the run stays queued with no waitReason.
+    await heartbeat.resumeQueuedRuns();
+    await heartbeat.drainActiveRunExecutions();
+
+    // Check the attention feed for the queue_stall card.
+    const feed = await attentionService(db).list(companyId, { userId: "board-user" });
+    const card = feed.items.find((item) => item.sourceKind === "queue_stall");
+    expect(card).toBeTruthy();
+    expect(card?.subject.kind).toBe("run");
+    expect(card?.subject.id).toBe(run.id);
+    expect(card?.subject.metadata?.runId).toBe(run.id);
+    expect(card?.subject.metadata?.agentId).toBe(agentId);
+  }, 30_000);
+
+  it("does not raise a queue_stall card for a run younger than the stall threshold", async () => {
+    // A run queued for less than QUEUED_RUN_STALE_AFTER_SEC must NOT raise a
+    // queue_stall card — it's not stalled yet.
+    pinAdmission({ maxConcurrentRuns: 0 });
+    applyRunPrioritySettings(readRunPriorityFromEnv({}));
+
+    const { companyId, agentId } = await seedCompanyAndAgent({ name: "Eng", role: "engineer" });
+    const issueId = await seedIssue(companyId, {
+      title: "Fresh work",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      status: "todo",
+    });
+
+    const run = await wakeAndQueue(agentId, issueId);
+    // Backdate past the explain threshold (60s) but NOT the stall threshold (3600s).
+    await backdateRun(run.id, 5); // 5 minutes > 60s explain, < 60min stall
+
+    await heartbeat.resumeQueuedRuns();
+    await heartbeat.drainActiveRunExecutions();
+
+    const stored = await runRow(run.id);
+    expect(stored?.status).toBe("queued");
+
+    // No queue_stall card for a fresh run.
+    const feed = await attentionService(db).list(companyId, { userId: "board-user" });
+    const card = feed.items.find((item) => item.sourceKind === "queue_stall");
+    expect(card).toBeUndefined();
+  }, 30_000);
+
+  it("clears the queue_stall card once the run starts", async () => {
+    // When a stalled run finally starts, its queue_stall card must disappear
+    // from the attention feed.
+    pinAdmission({ maxConcurrentRuns: 0 });
+    applyRunPrioritySettings(readRunPriorityFromEnv({}));
+
+    const { companyId, agentId } = await seedCompanyAndAgent({ name: "Eng", role: "engineer" });
+    const issueId = await seedIssue(companyId, {
+      title: "Clears card work",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      status: "todo",
+    });
+
+    const run = await wakeAndQueue(agentId, issueId);
+    await backdateRun(run.id, 120); // 2 hours > stall threshold
+
+    await heartbeat.resumeQueuedRuns();
+    await heartbeat.drainActiveRunExecutions();
+
+    // Card should be present.
+    let feed = await attentionService(db).list(companyId, { userId: "board-user" });
+    let card = feed.items.find((item) => item.sourceKind === "queue_stall");
+    expect(card).toBeTruthy();
+
+    // Open the gate and run the sweep again — the run starts.
+    pinAdmission({ maxConcurrentRuns: 1 });
+    await heartbeat.resumeQueuedRuns();
+    await heartbeat.drainActiveRunExecutions();
+
+    const stored = await runRow(run.id);
+    expect(stored?.status).not.toBe("queued");
+
+    // Card should be gone — the run is no longer queued.
+    feed = await attentionService(db).list(companyId, { userId: "board-user" });
+    card = feed.items.find((item) => item.sourceKind === "queue_stall");
+    expect(card).toBeUndefined();
   }, 30_000);
 });
