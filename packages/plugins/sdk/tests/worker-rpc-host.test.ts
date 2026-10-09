@@ -312,6 +312,130 @@ describe("worker unknown-key errors", () => {
       stop();
     }
   });
+
+  it("drops err.data on non-UNKNOWN_ACTION codes so a plugin cannot leak payloads through the bridge", async () => {
+    const { callWorker, initialize, stop } = createWorkerPair(async (ctx) => {
+      ctx.actions.register("leaky", async () => {
+        // e.g. an ofetch FetchError: `.data` holds the external service's
+        // response body — it must never reach the caller.
+        throw Object.assign(new Error("upstream exploded"), {
+          data: { upstreamBody: "secret-token-xyz" },
+        });
+      });
+    });
+
+    try {
+      await initialize();
+
+      const error = await callWorker("performAction", {
+        key: "leaky",
+        params: {},
+      }).then(
+        () => { throw new Error("expected performAction to reject"); },
+        (err) => err as Error & { code?: number; data?: unknown },
+      );
+
+      expect(error.code).toBe(PLUGIN_RPC_ERROR_CODES.WORKER_ERROR);
+      expect(error.message).toBe("upstream exploded");
+      expect(error.data).toBeUndefined();
+    } finally {
+      stop();
+    }
+  });
+
+  it("drops a cyclic UNKNOWN_ACTION data payload instead of hanging the host", async () => {
+    const { callWorker, initialize, stop } = createWorkerPair(async (ctx) => {
+      ctx.actions.register("cyclic", async () => {
+        const cyclic: { self?: unknown } = {};
+        cyclic.self = cyclic;
+        throw Object.assign(new Error("cyclic payload"), {
+          code: PLUGIN_RPC_ERROR_CODES.UNKNOWN_ACTION,
+          data: cyclic,
+        });
+      });
+    });
+
+    try {
+      await initialize();
+
+      // A bare `JSON.stringify` on the cyclic payload throws inside
+      // `sendMessage`; the outer `.catch` then used to retry with the same
+      // payload and swallow — the host waited for the RPC timeout. The call
+      // must now reject promptly with the code and no data.
+      const startedAt = Date.now();
+      const error = await callWorker("performAction", {
+        key: "cyclic",
+        params: {},
+      }).then(
+        () => { throw new Error("expected performAction to reject"); },
+        (err) => err as Error & { code?: number; data?: unknown },
+      );
+
+      expect(Date.now() - startedAt).toBeLessThan(5_000);
+      expect(error.code).toBe(PLUGIN_RPC_ERROR_CODES.UNKNOWN_ACTION);
+      expect(error.message).toBe("cyclic payload");
+      expect(error.data).toBeUndefined();
+    } finally {
+      stop();
+    }
+  });
+
+  it("drops a BigInt-bearing UNKNOWN_ACTION data payload instead of hanging the host", async () => {
+    const { callWorker, initialize, stop } = createWorkerPair(async (ctx) => {
+      ctx.actions.register("bigint", async () => {
+        throw Object.assign(new Error("bigint payload"), {
+          code: PLUGIN_RPC_ERROR_CODES.UNKNOWN_ACTION,
+          data: { total: 10n },
+        });
+      });
+    });
+
+    try {
+      await initialize();
+
+      const error = await callWorker("performAction", {
+        key: "bigint",
+        params: {},
+      }).then(
+        () => { throw new Error("expected performAction to reject"); },
+        (err) => err as Error & { code?: number; data?: unknown },
+      );
+
+      expect(error.code).toBe(PLUGIN_RPC_ERROR_CODES.UNKNOWN_ACTION);
+      expect(error.message).toBe("bigint payload");
+      expect(error.data).toBeUndefined();
+    } finally {
+      stop();
+    }
+  });
+
+  it("still delivers a JSON-safe UNKNOWN_ACTION data payload to the caller", async () => {
+    const { callWorker, initialize, stop } = createWorkerPair(async (ctx) => {
+      ctx.actions.register("typed-unknown", async () => {
+        throw Object.assign(new Error("typed unknown"), {
+          code: PLUGIN_RPC_ERROR_CODES.UNKNOWN_ACTION,
+          data: { error: "unknown_action", known: ["a", "b"] },
+        });
+      });
+    });
+
+    try {
+      await initialize();
+
+      const error = await callWorker("performAction", {
+        key: "typed-unknown",
+        params: {},
+      }).then(
+        () => { throw new Error("expected performAction to reject"); },
+        (err) => err as Error & { code?: number; data?: { error?: string; known?: string[] } },
+      );
+
+      expect(error.code).toBe(PLUGIN_RPC_ERROR_CODES.UNKNOWN_ACTION);
+      expect(error.data).toEqual({ error: "unknown_action", known: ["a", "b"] });
+    } finally {
+      stop();
+    }
+  });
 });
 
 describe("worker invocation scope propagation", () => {

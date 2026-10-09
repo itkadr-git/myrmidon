@@ -113,6 +113,7 @@ import { maybePersistWorktreeRuntimePorts } from "./worktree-config.js";
 import { initTelemetry, getTelemetryClient } from "./telemetry.js";
 import { conflict } from "./errors.js";
 import { ensureDecisionSigningSecret } from "./services/decision-signing.js";
+import { decisionRetentionSyncScheduler } from "./services/decision-retention-sync.js";
 import { createDecisionRetentionNotifyOriginAgent, createDecisionWakeOriginAgent } from "./services/decision-wakeup.js";
 import {
   closeHttpListenerForShutdown,
@@ -1520,6 +1521,9 @@ async function startServerWithDatabaseTeardown(
     const retentionExecutor = decisionRetentionService(db as any, {
       notifyOriginAgent: createDecisionRetentionNotifyOriginAgent(heartbeat.wakeup),
     });
+    // myrmidon(1.6.5-F-15-C): the attention feed read path parks its retention
+    // snapshot instead of writing it, so this sweep is also that writer.
+    const retentionSync = decisionRetentionSyncScheduler(db as any);
     drainHeartbeatRunsForShutdown = (signal, runIds) => (
       heartbeat.drainRunningRunsForShutdown(signal, new Date(), runIds)
     );
@@ -1913,6 +1917,12 @@ async function startServerWithDatabaseTeardown(
     await runEnvironmentLeaseCleanupSweep(0);
 
     const runRetentionSweep = async () => {
+      // Store the snapshots the feed reads have parked since the last tick, so
+      // the pass below renders and archives against the stored retention state.
+      const synced = await retentionSync.drainDue();
+      if (synced > 0) {
+        logger.info({ companies: synced }, "decision retention sync stored parked feed snapshots");
+      }
       const activeCompanies = await db.select({ id: companies.id }).from(companies).where(eq(companies.status, "active"));
       let archived = 0;
       for (const company of activeCompanies) {

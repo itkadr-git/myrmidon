@@ -54,6 +54,44 @@ export function assertBoardOrgAccess(req: Request) {
   throw forbidden("Company membership or instance admin access required");
 }
 
+/**
+ * Agent-grant predicate injected into `assertBoardOrAgentGrant`. Structurally
+ * satisfied by `accessService(db).hasPermission`, so route modules do not need
+ * to import the service barrel into `authz.ts` (import-cycle rule below).
+ */
+export type AgentGrantPermissionChecker = (
+  companyId: string,
+  principalType: "agent",
+  principalId: string,
+  permissionKey: PermissionKey,
+) => Promise<boolean>;
+
+/**
+ * myrmidon(1.6.5-F22): board actors pass as they do under assertBoard,
+ * while an agent actor is admitted only with an explicit company grant of one
+ * of `permissionKeys` (active membership + decidePrincipalGrant, enforced by
+ * the access service). Routes without a companyId in the path must call this
+ * after loading the entity, with the entity's companyId. Denial is 403.
+ * The permission predicate is injected (accessService(db).hasPermission) so
+ * this module keeps no service-runtime import.
+ */
+export async function assertBoardOrAgentGrant(
+  req: Request,
+  hasPermission: AgentGrantPermissionChecker,
+  companyId: string,
+  ...permissionKeys: PermissionKey[]
+): Promise<void> {
+  assertAuthenticated(req);
+  if (req.actor.type === "board") return;
+  if (req.actor.type !== "agent" || !req.actor.agentId) {
+    throw forbidden("Board access or an authenticated agent key required");
+  }
+  for (const permissionKey of permissionKeys) {
+    if (await hasPermission(companyId, "agent", req.actor.agentId, permissionKey)) return;
+  }
+  throw forbidden(`Missing permission: ${permissionKeys.join(" or ")}`);
+}
+
 export function assertBoardOrAgent(req: Request) {
   if (req.actor.type === "agent") {
     return;
