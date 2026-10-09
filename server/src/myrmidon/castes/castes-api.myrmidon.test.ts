@@ -31,6 +31,7 @@ const casteView = (key: string): CasteView => ({
   swarmEligible: true,
   maxActiveTasks: null,
   builtIn: true,
+  isDefault: true, // myrmidon(1.6.5 F-26 T3): the shared view carries the flag
   createdAt: "2026-01-01T00:00:00.000Z",
   updatedAt: "2026-01-01T00:00:00.000Z",
 });
@@ -157,5 +158,11 @@ describe("myrmidon(1.6.1 CUSTOM-CASTES) routes: parsing", () => {
     const { server, calls } = app(member);
     await request(server).delete(`${base}/engineer`).send({ reassignTo: "Nope!" }).expect(400);
     expect(calls).toHaveLength(0);
+  });
+
+  it("passes the default flag through on PATCH (myrmidon 1.6.5 F-26 T3)", async () => {
+    const { server, calls } = app(member);
+    await request(server).patch(`${base}/engineer`).send({ isDefault: true }).expect(200);
+    expect(calls[0]).toMatchObject({ op: "update", key: "engineer", body: { isDefault: true } });
   });
 });
