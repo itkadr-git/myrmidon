@@ -2222,42 +2222,42 @@
       "breakpoints": true
     },
     {
-      "idx": 317,
+      "idx": 380,
       "version": "7",
       "when": 1791500380000,
       "tag": "0380_remove_execution_continuation_duplication",
       "breakpoints": true
     },
     {
-      "idx": 318,
+      "idx": 381,
       "version": "7",
       "when": 1791500381000,
       "tag": "0381_attention_exhausted_lifecycle_idx",
       "breakpoints": true
     },
     {
-      "idx": 319,
+      "idx": 382,
       "version": "7",
       "when": 1791500382000,
       "tag": "0382_issues_pheromone_strength",
       "breakpoints": true
     },
     {
-      "idx": 320,
+      "idx": 383,
       "version": "7",
       "when": 1791528256161,
       "tag": "0383_issues_caste_key_and_pheromone_backfill",
       "breakpoints": true
     },
     {
-      "idx": 321,
+      "idx": 384,
       "version": "7",
       "when": 1791500384000,
       "tag": "0384_agent_castes_default_and_nests",
       "breakpoints": true
     },
     {
-      "idx": 322,
+      "idx": 385,
       "version": "7",
       "when": 1791602400000,
       "tag": "0385_swarm_scent",
