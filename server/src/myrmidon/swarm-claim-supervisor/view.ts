@@ -388,6 +388,10 @@ export function swarmSupervisorView(
       projectId: row.project_id,
       createdAt: toIso(row.created_at) ?? new Date(0).toISOString(),
       blockedTransitionAt: toIso(row.blocked_transition_at),
+      // The real eff/nest are folded in by effOf below; these are the
+      // pre-enrichment defaults (0 / the assignee).
+      eff: 0,
+      nestAgentId: row.assignee_agent_id ?? null,
     });
 
     const unclaimedRows = queueRows.filter((row) => !claimedIssueIds.has(row.issue_id));
@@ -757,9 +761,12 @@ async function readClaimEnabled(db: Db, env: NodeJS.ProcessEnv): Promise<boolean
 interface ResolvedSwarmRow {
   settings: {
     enabled: boolean;
-    enabledRoles: string[];
     leaseTtlSec: number;
     maxActiveTasks: number | null;
+    sweepIntervalSec: number;
+    p0Preemption: boolean;
+    /** myrmidon(1.6.5 SWARM-T4): the pheromone subset (design §5.1). */
+    pheromone: Record<string, number>;
   };
   sources: Record<string, string>;
 }
