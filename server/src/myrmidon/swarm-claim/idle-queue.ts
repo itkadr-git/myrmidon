@@ -9,13 +9,20 @@
 // both paths, with the extra columns the idle pass needs (agents.id,
 // agents.status, the live-run set of heartbeat_runs).
 
-import { and, asc, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 import { agents, companies, heartbeatRuns, issues, type Db } from "@paperclipai/db";
 import {
   SWARM_CLAIM_QUEUE_ISSUE_STATUSES,
   swarmRoleForUnassignedTask,
 } from "@paperclipai/shared";
 import type { SwarmIdleQueueCandidate } from "./idle-wake.js";
+import {
+  failedRunsDerivedSql,
+  failedRunsJoinOnSql,
+  failedRunsSinceLastChangeSql,
+  swarmQueueOrderBy,
+  type SwarmQueueOrderOptions,
+} from "./effective-pheromone.js";
 import { issueHasNoExecutionHold } from "../settled-holds/ready-predicate.js";
 
 /** The read-ready role pairs of one company: queue + its agents' idle state. */
@@ -42,9 +49,10 @@ const LIVE_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as 
 export async function listIdleRolePairs(
   db: Db,
   companyId: string,
+  order?: SwarmQueueOrderOptions,
 ): Promise<SwarmIdleRolePair[]> {
   const [queueRows, agentRows, liveRunAgentIds] = await Promise.all([
-    listReadyQueueCandidates(db, companyId),
+    listReadyQueueCandidates(db, companyId, order),
     db
       .select({
         id: agents.id,
@@ -118,17 +126,26 @@ interface ReadyQueueRow {
   candidate: SwarmIdleQueueCandidate;
   assigneeAgentId: string | null;
   assigneeRole: string | null;
-  /** Lower-cased names of the issue's labels (the `role:<key>` tag lives here). */
+  /** Lower-cased names of the issue's labels (the legacy `role:<key>` tag lives here). */
   labels: string[];
+  /** 1.6.5 (F-27 rework 09.10): the task's own caste key, and its nest's. */
+  casteKey?: string | null;
+  projectDefaultCasteKey?: string | null;
 }
 
 /** The ready queue of a company (both assigned-to-role and unassigned rows). */
-async function listReadyQueueCandidates(db: Db, companyId: string) {
+async function listReadyQueueCandidates(
+  db: Db,
+  companyId: string,
+  order?: SwarmQueueOrderOptions,
+) {
   const rows = await db
     .select({
       issueId: issues.id,
       identifier: issues.identifier,
       priority: issues.priority,
+      pheromoneStrength: issues.pheromoneStrength,
+      failedRunsSinceLastChange: failedRunsSinceLastChangeSql(),
       queuedAt: issues.createdAt,
       assigneeAgentId: issues.assigneeAgentId,
       assigneeRole: agents.role,
@@ -138,9 +155,18 @@ async function listReadyQueueCandidates(db: Db, companyId: string) {
           join labels l on l.id = il.label_id
         where il.issue_id = ${issues.id}
       ), array[]::text[])`,
+      // 1.6.5 (F-27 rework 09.10, design §2.1): the caste columns — the task's
+      // own key, and the nest's default (null when no project).
+      casteKey: issues.casteKey,
+      projectDefaultCasteKey: sql<string | null>`(
+        select p.default_caste_key from projects p where p.id = ${issues.projectId}
+      )`,
     })
     .from(issues)
     .leftJoin(agents, eq(agents.id, issues.assigneeAgentId))
+    // One bounded pass over the recent evaporating runs, joined once — not a
+    // correlated subquery per candidate (review #1047).
+    .leftJoin(failedRunsDerivedSql(companyId, order?.now), failedRunsJoinOnSql())
     .where(
       and(
         eq(issues.companyId, companyId),
@@ -196,19 +222,23 @@ async function listReadyQueueCandidates(db: Db, companyId: string) {
         )`,
       ),
     )
-    .orderBy(asc(issues.createdAt))
+    .orderBy(...swarmQueueOrderBy(order))
     .limit(500);
   return rows.map((row): ReadyQueueRow => ({
     candidate: {
       issueId: row.issueId,
       identifier: row.identifier,
       priority: row.priority,
+      pheromoneStrength: row.pheromoneStrength,
+      failedRunsSinceLastChange: row.failedRunsSinceLastChange,
       queuedAt: row.queuedAt,
       assigneeAgentId: row.assigneeAgentId,
     },
     assigneeAgentId: row.assigneeAgentId,
     assigneeRole: row.assigneeRole ?? null,
     labels: row.labels ?? [],
+    casteKey: row.casteKey ?? null,
+    projectDefaultCasteKey: row.projectDefaultCasteKey ?? null,
   }));
 }
 
@@ -223,6 +253,12 @@ function rolesOfQueueRow(row: ReadyQueueRow): string[] {
   if (row.assigneeAgentId) {
     return row.assigneeRole ? [row.assigneeRole] : [];
   }
+  // 1.6.5 (F-27 rework 09.10, design §2.1): the caste the task routes to —
+  // its own key, then the nest's default, then the legacy role: label.
+  // First non-blank of the two — the SQL twin (`unassignedTaskRoutedToRole`)
+  // reads the same rule, so the two cannot route one task to different castes.
+  const caste = row.casteKey?.trim() || row.projectDefaultCasteKey?.trim() || null;
+  if (caste) return [caste.toLowerCase()];
   return [swarmRoleForUnassignedTask(row.labels)];
 }
 

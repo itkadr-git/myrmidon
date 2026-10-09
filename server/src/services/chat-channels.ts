@@ -252,11 +252,19 @@ import { issueService } from "./issues.js";
 import {
   afterTelegramDmMessage,
   decideTelegramDmBinding,
+  editedBridgedCommandText,
   ensureTelegramDmBinding,
   handleTelegramDmCommand,
   refuseUnlinkedTelegramDm,
   type TelegramDmBridgeDeps,
 } from "../myrmidon/agent-chat-bridge/bridge.js";
+// myrmidon(F06-D): the buttons under a `/model` or `/think` list.
+import {
+  CHOOSER_BUTTONS_PER_ROW,
+  handleChooserPick,
+  isChooserActionId,
+  isChooserCardActions,
+} from "../myrmidon/agent-chat-bridge/chooser-actions.js";
 // myrmidon(X9b): @<alias> addressing — addressee resolution for the bridge
 // call site and the leading-token strip for an addressed turn's body (reply
 // prefixing and the mention quote live in issues.ts / cross-channel.ts; the
@@ -278,6 +286,7 @@ import {
   NativeChatReviewPresentationContentionError,
 } from "./native-runtime/native-chat-review-presentation.js";
 import { isExternalChatWaitAuthorizationContention } from "./native-runtime/chat-attachment-reuse.js";
+import { retryChatControlAdmission } from "./chat-control-admission-retry.js";
 import { projectSafeChatPublication } from "./chat-publication-projection.js";
 import { safeChatTaskUrl } from "./chat-task-url.js";
 import {
@@ -397,6 +406,13 @@ import {
   telegramAttachmentOmissionNotice,
 } from "../myrmidon/chat-attachment-omission.js";
 import { TELEGRAM_DM_COMMANDS, telegramDmCommandsForLocale } from "../myrmidon/agent-chat-bridge/commands/index.js";
+import {
+  buildAgentsExpiredScreen,
+  resolveAgentsButtonClick,
+  runAgentsButtonAction,
+  stageAgentsScreenPublication,
+  type AgentsScreen,
+} from "../myrmidon/agent-chat-bridge/commands/agents-buttons.js";
 import { telegramDmMenuLocale } from "../myrmidon/agent-chat-bridge/locales/index.js";
 // myrmidon(CHAT-HOLD): no silent queue in a bridged Telegram chat.
 import {
@@ -2112,7 +2128,18 @@ function safeCardForPublication(
         })
       : LinkButton({ label: action.label, url: action.url }),
   );
-  if (actions.length) children.push(Actions(actions));
+  if (actions.length) {
+    // myrmidon(F06-D): a `/model` or `/think` list carries a dozen or more
+    // buttons with long ids — they go to the keyboard a few to a row, not as
+    // one row Telegram would refuse.
+    if (isChooserCardActions(payload.card.actions)) {
+      for (let index = 0; index < actions.length; index += CHOOSER_BUTTONS_PER_ROW) {
+        children.push(Actions(actions.slice(index, index + CHOOSER_BUTTONS_PER_ROW)));
+      }
+    } else {
+      children.push(Actions(actions));
+    }
+  }
   return Card({ title: payload.card.title, children });
 }
 
@@ -2463,6 +2490,29 @@ function telegramMessageSequence(raw: unknown): number | null {
   return typeof value === "number" && Number.isSafeInteger(value) && value > 0
     ? value
     : null;
+}
+
+/**
+ * myrmidon(F06-D): the message a Telegram message replies to, as the
+ * `<chat id>:<message id>` provider message id the outbound links use.
+ */
+function telegramReplyTargetMessageId(raw: unknown): string | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const value = raw as {
+    chat?: { id?: unknown };
+    reply_to_message?: { message_id?: unknown };
+  };
+  const chatId = value.chat?.id;
+  const targetId = value.reply_to_message?.message_id;
+  if (
+    (typeof chatId !== "string" && typeof chatId !== "number") ||
+    typeof targetId !== "number" ||
+    !Number.isSafeInteger(targetId) ||
+    targetId <= 0
+  ) {
+    return null;
+  }
+  return `${chatId}:${targetId}`;
 }
 
 function telegramMessageId(raw: unknown): string | null {
@@ -4477,7 +4527,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
                 credentials.botToken,
                 "setMyCommands",
                 {
-                  commands: telegramDmCommandsForLocale(telegramDmMenuLocale()),
+                  commands: telegramDmCommandsForLocale(await telegramDmMenuLocale(db)),
                   scope: { type: "all_private_chats" },
                 },
               );
@@ -14780,8 +14830,8 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         });
         return true;
       }
-      const context = await db.transaction((tx) =>
-        authorizeInboundWakeup(tx, claimed),
+      const context = await retryChatControlAdmission(() =>
+        db.transaction((tx) => authorizeInboundWakeup(tx, claimed)),
       );
       if (context.delivery.state !== "processed")
         throw new Error("chat_inbound_wakeup_acceptance_not_committed");
@@ -15840,7 +15890,14 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         // fails, keep the delivery retryable; the committed message link makes
         // the retry resume here without duplicating the task or comment.
         if (addressed && !thread.isDM) await thread.subscribe();
-        await acceptInboundWakeup(activeDelivery.id, attachmentResult);
+        // authorizeInboundWakeup takes the endpoint row NOWAIT (the issue lock is
+        // already held, so waiting would invert the ingress lock order). A
+        // concurrent ingress transaction is a rolled-back, transient refusal:
+        // retry it here instead of failing the delivery into a >=2s durable
+        // backoff that also burns one of its five attempts.
+        await retryChatControlAdmission(() =>
+          acceptInboundWakeup(activeDelivery.id, attachmentResult),
+        );
         // myrmidon(P7): send the notice once the wakeup no longer needs the endpoint lock
         const wakeProcessed = await processInboundWakeup(activeDelivery.id);
         sendOmissionNotice?.();
@@ -16275,6 +16332,11 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           // migration).
           releaseConversationId: x8Dm.releaseConversationId,
           migratedFromIssueId: x8Dm.migratedFromIssueId,
+          // myrmidon(F06-D): a reply to a `/model` or `/think` list picks from it.
+          replyToProviderMessageId:
+            endpoint.provider === "telegram"
+              ? telegramReplyTargetMessageId(message.raw)
+              : null,
         });
         if (dmCommand.done) return;
         x8MessageBody = dmCommand.body;
@@ -17230,7 +17292,14 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       // processed. A retry reuses the committed message link above and tries
       // this idempotent subscription again before completing the delivery.
       if (addressed && !thread.isDM) await thread.subscribe();
-      await acceptInboundWakeup(activeDelivery.id, attachmentResult);
+      // authorizeInboundWakeup takes the endpoint row NOWAIT (the issue lock is
+      // already held, so waiting would invert the ingress lock order). A
+      // concurrent ingress transaction is a rolled-back, transient refusal:
+      // retry it here instead of failing the delivery into a >=2s durable
+      // backoff that also burns one of its five attempts.
+      await retryChatControlAdmission(() =>
+        acceptInboundWakeup(activeDelivery.id, attachmentResult),
+      );
       // myrmidon(P7): send the notice once the wakeup no longer needs the endpoint lock
       const wakeProcessed = await processInboundWakeup(activeDelivery.id);
       sendOmissionNotice?.();
@@ -18557,6 +18626,183 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       : null;
   }
 
+  /**
+   * myrmidon(F06-D): an EDITED bridged-DM command (`/modle` fixed to `/model`,
+   * `/model` made `/model 3`) runs as a new command instead of ending as a
+   * silently filtered "original message was not admitted" lifecycle row.
+   *
+   * The edit is trusted exactly as far as a new message would be: the runtime
+   * fence of the delivery must be current, the editor must be a linked, active,
+   * non-bot member, the DM must still be the standing bridged conversation, and
+   * the command must be one that may be re-run (editedBridgedCommandText). The
+   * command runs through the same handler as a fresh message, with this
+   * lifecycle delivery as its delivery (so the reply is published once, keyed
+   * to the edit). Returns true when the delivery is finished.
+   */
+  async function runEditedBridgedCommand(
+    endpoint: EndpointRow,
+    delivery: DeliveryRow,
+    lifecycle: { actor: { externalId: string } | null; messageId: string; targetProviderEventId: string; text: string; threadId: string },
+  ): Promise<boolean> {
+    if (
+      endpoint.provider !== "telegram" ||
+      delivery.eventKind !== "message_updated" ||
+      !lifecycle.actor
+    )
+      return false;
+    const commandText = editedBridgedCommandText(lifecycle.text);
+    if (!commandText) return false;
+    const fence = lifecycleRuntimeFence(delivery);
+    if (!fence) return false;
+    const currentEndpoint = await db.transaction((tx) =>
+      // Same statuses the lifecycle delivery itself is admitted under: a
+      // connection still verifying runs its test conversation's commands too.
+      runtimeCallbackEndpoint(tx, endpoint.id, fence, ["verifying", "active"]),
+    );
+    if (!currentEndpoint || !currentEndpoint.allowDirectMessages) return false;
+
+    // An edit of a message that became a task comment is an ordinary edit.
+    const inboundLink = await db
+      .select({ id: chatMessageLinks.id })
+      .from(chatMessageLinks)
+      .where(
+        and(
+          eq(chatMessageLinks.companyId, currentEndpoint.companyId),
+          eq(chatMessageLinks.endpointId, currentEndpoint.id),
+          eq(chatMessageLinks.providerMessageId, lifecycle.messageId),
+          eq(chatMessageLinks.direction, "inbound"),
+        ),
+      )
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    if (inboundLink) return false;
+    // The original still being processed: let the standard path wait for it.
+    const original = await db
+      .select({ state: chatDeliveries.state })
+      .from(chatDeliveries)
+      .where(
+        and(
+          eq(chatDeliveries.endpointId, currentEndpoint.id),
+          eq(chatDeliveries.providerEventId, lifecycle.targetProviderEventId),
+        ),
+      )
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    if (original && ["received", "processing", "retry"].includes(original.state))
+      return false;
+
+    const conversation = await db
+      .select()
+      .from(chatConversations)
+      .where(
+        and(
+          eq(chatConversations.companyId, currentEndpoint.companyId),
+          eq(chatConversations.endpointId, currentEndpoint.id),
+          eq(chatConversations.externalThreadId, lifecycle.threadId),
+        ),
+      )
+      .orderBy(desc(chatConversations.sessionGeneration))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    if (
+      !conversation ||
+      !conversation.isDirectMessage ||
+      !["active", "waiting"].includes(conversation.state) ||
+      !conversation.resourceId
+    )
+      return false;
+
+    const principal = await db
+      .select({
+        id: chatExternalPrincipals.id,
+        isBot: chatExternalPrincipals.isBot,
+        kind: chatExternalPrincipals.kind,
+      })
+      .from(chatExternalPrincipals)
+      .where(
+        and(
+          eq(chatExternalPrincipals.companyId, currentEndpoint.companyId),
+          eq(chatExternalPrincipals.provider, currentEndpoint.provider),
+          eq(
+            chatExternalPrincipals.providerAccountId,
+            currentEndpoint.providerAccountId ?? "unknown",
+          ),
+          eq(chatExternalPrincipals.externalId, lifecycle.actor.externalId),
+        ),
+      )
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    if (!principal || principal.kind !== "user" || principal.isBot) return false;
+    const authorization = await db.transaction((tx) =>
+      lockCurrentPrincipalAuthorization(tx, currentEndpoint, principal.id),
+    );
+    if (!authorization.allowed || !authorization.userId) return false;
+
+    const issue = await db
+      .select()
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, currentEndpoint.companyId),
+          eq(issues.id, conversation.issueId),
+        ),
+      )
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    if (!issue) return false;
+    const binding = await decideTelegramDmBinding(db, {
+      endpoint: {
+        provider: currentEndpoint.provider,
+        id: currentEndpoint.id,
+        assignedAgentId: currentEndpoint.assignedAgentId,
+      },
+      isDirectMessage: true,
+      boardUserId: authorization.userId,
+      existingConversation: { id: conversation.id, state: conversation.state },
+      existingIssue: {
+        id: issue.id,
+        conversationAgentId: issue.conversationAgentId,
+        conversationUserId: issue.conversationUserId,
+      },
+    });
+    // Only a conversation that is already this person's standing one; a
+    // migration or release is the business of a fresh message.
+    if (!binding.applies || binding.detachExisting) return false;
+
+    const resource = await db
+      .select({ id: chatEndpointResources.id, label: chatEndpointResources.label })
+      .from(chatEndpointResources)
+      .where(
+        and(
+          eq(chatEndpointResources.companyId, currentEndpoint.companyId),
+          eq(chatEndpointResources.endpointId, currentEndpoint.id),
+          eq(chatEndpointResources.id, conversation.resourceId),
+        ),
+      )
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    if (!resource) return false;
+
+    const outcome = await handleTelegramDmCommand({
+      db,
+      deps: x8TelegramDmBridgeDeps,
+      endpoint: currentEndpoint,
+      resource: { id: resource.id, label: resource.label },
+      thread: {
+        id: conversation.externalThreadId,
+        channelId: conversation.externalConversationId,
+      },
+      providerUrl: conversation.providerUrl,
+      boardUserId: authorization.userId,
+      deliveryId: delivery.id,
+      principalId: principal.id,
+      text: commandText,
+      current: conversation,
+      latestConversation: conversation,
+    });
+    return outcome.done;
+  }
+
   async function processLifecycleDelivery(
     endpoint: EndpointRow,
     candidate: DeliveryRow,
@@ -18594,6 +18840,34 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       .where(and(...claimConditions))
       .returning();
     if (!activeDelivery) return;
+
+    // myrmidon(F06-D): an edited `/model …` runs as a command, not silently
+    // filtered. A failure here retries the delivery like the standard path does.
+    try {
+      if (await runEditedBridgedCommand(endpoint, activeDelivery, lifecycle)) return;
+    } catch (error) {
+      const terminal = activeDelivery.attempts >= 5;
+      await db
+        .update(chatDeliveries)
+        .set({
+          state: terminal ? "failed" : "retry",
+          nextAttemptAt: terminal
+            ? null
+            : new Date(
+                Date.now() +
+                  Math.min(60_000, 1000 * 2 ** activeDelivery.attempts),
+              ),
+          redactedError: redactError(error),
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(chatDeliveries.id, activeDelivery.id),
+            eq(chatDeliveries.state, "processing"),
+          ),
+        );
+      throw error;
+    }
 
     try {
       await db.transaction(async (tx) => {
@@ -20908,6 +21182,118 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     return processed;
   }
 
+  // myrmidon(1.6.5 OPE-6318 part B): runs one /agents button and answers with
+  // the next screen as a new message of the same conversation. Who may click:
+  // the linked board user who owns this very bridged Telegram conversation
+  // (checked again by the bridge's own command context), under the same
+  // current-authorization lock as every other executable chat action.
+  async function handleAgentsButtonClick(
+    record: { endpoint: EndpointRow },
+    event: ChatSdkCallbackEvent<ActionEvent>,
+    runtimeContext: LifecycleRuntimeFence,
+    sender: { userId: string; principalId: string },
+    deny: (safelyKnown?: {
+      conversationId?: string | null;
+      principalId?: string | null;
+    }) => Promise<void>,
+  ): Promise<void> {
+    const endpoint = record.endpoint;
+    const resolution = await resolveAgentsButtonClick(db, {
+      endpointId: endpoint.id,
+      companyId: endpoint.companyId,
+      actionId: event.event.actionId,
+      threadId: event.event.threadId,
+      messageId: event.event.messageId,
+      rawData:
+        event.event.raw && typeof event.event.raw === "object" && "data" in event.event.raw
+          ? (event.event.raw as { data?: unknown }).data
+          : null,
+      value: event.event.value,
+      threadMatches: (actionThreadId, conversationThreadId) =>
+        actionThreadMatchesConversation(
+          event.provider,
+          actionThreadId,
+          conversationThreadId,
+        ),
+    });
+    if (resolution.kind === "deny") {
+      return deny({
+        conversationId: resolution.conversationId,
+        principalId: sender.principalId,
+      });
+    }
+    const { conversation, token } = resolution;
+    const known = {
+      conversationId: conversation.id,
+      principalId: sender.principalId,
+    };
+    const authorize = async (tx: DbTransaction) =>
+      requireCurrentExternalActionAuthorization(tx, {
+        conversationId: conversation.id,
+        endpointId: endpoint.id,
+        expectedUserId: sender.userId,
+        principalId: sender.principalId,
+        runtimeContext,
+      });
+    try {
+      await db.transaction(authorize);
+    } catch (error) {
+      if (isExternalActionAuthorizationChange(error)) return deny(known);
+      throw error;
+    }
+
+    let screen: AgentsScreen;
+    if (resolution.expired) {
+      await db
+        .update(chatActions)
+        .set({
+          status: "expired",
+          result: { code: "agents_button_token_expired" },
+          updatedAt: new Date(),
+        })
+        .where(
+          and(eq(chatActions.id, token.id), eq(chatActions.status, "issued")),
+        );
+      screen = await buildAgentsExpiredScreen(db, sender.userId);
+    } else {
+      screen = await runAgentsButtonAction({
+        db,
+        companyId: endpoint.companyId,
+        conversationAgentId: endpoint.assignedAgentId,
+        conversationIssueId: conversation.issueId,
+        boardUserId: sender.userId,
+        action: resolution.action,
+        cancelRun:
+          x8TelegramDmBridgeDeps.cancelRun ??
+          (async () => {
+            throw new Error("chat_cancel_unavailable");
+          }),
+      });
+    }
+    try {
+      await db.transaction(async (tx) => {
+        await authorize(tx);
+        await stageAgentsScreenPublication({
+          tx: tx as unknown as Db,
+          stage: stageAuthorizedTaskControlPublication,
+          companyId: endpoint.companyId,
+          endpointId: endpoint.id,
+          conversationId: conversation.id,
+          issueId: conversation.issueId,
+          principalId: sender.principalId,
+          idempotencyKey: `control:agents-button:${token.id}:${randomUUID()}`,
+          screen,
+        });
+      });
+    } catch (error) {
+      if (isExternalActionAuthorizationChange(error)) return deny(known);
+      throw error;
+    }
+    scheduleMessageProcessing(async () => {
+      await processPendingPublications();
+    });
+  }
+
   async function handleAction(
     event: ChatSdkCallbackEvent<ActionEvent>,
     runtimeContext: RuntimeContext,
@@ -20966,6 +21352,79 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       principal.principal.isBot
     ) {
       return deny({ principalId: principal.principal.id });
+    }
+    // myrmidon(1.6.5 OPE-6318 part B): a click on an /agents button of the
+    // bridged Telegram DM. The token is its own `agents_button` row; every
+    // other action id falls through to the question/confirmation path below.
+    if (
+      event.provider === "telegram" &&
+      event.event.actionId.startsWith("pca:")
+    ) {
+      return await handleAgentsButtonClick(
+        record,
+        event,
+        runtimeContext,
+        {
+          userId: principal.userId!,
+          principalId: principal.principal.id,
+        },
+        deny,
+      );
+    }
+    // myrmidon(F06-D): a press under a `/model` or `/think` list is not an
+    // issue-interaction answer; it has its own token kind and handler.
+    if (isChooserActionId(event.event.actionId)) {
+      if (event.provider !== "telegram") return deny({ principalId: principal.principal.id });
+      const chooserCallbackData =
+        event.event.raw && typeof event.event.raw === "object" && "data" in event.event.raw
+          ? (event.event.raw as { data?: unknown }).data
+          : null;
+      if (
+        typeof chooserCallbackData !== "string" ||
+        Buffer.byteLength(chooserCallbackData, "utf8") > TELEGRAM_CALLBACK_DATA_LIMIT_BYTES ||
+        chooserCallbackData !== telegramChatSdkCallbackData(event.event.actionId) ||
+        event.event.value !== undefined
+      ) {
+        return deny({ principalId: principal.principal.id });
+      }
+      let chooserOutcome: Awaited<ReturnType<typeof handleChooserPick>>;
+      try {
+        chooserOutcome = await handleChooserPick({
+          db,
+          companyId: record.endpoint.companyId,
+          endpointId: record.endpoint.id,
+          actionId: event.event.actionId,
+          messageId: event.event.messageId,
+          userId: principal.userId!,
+          principalId: principal.principal.id,
+          threadMatches: (conversationThreadId) =>
+            actionThreadMatchesConversation(event.provider, event.event.threadId, conversationThreadId),
+          assertStillAuthorized: (tx, conversationId) =>
+            requireCurrentExternalActionAuthorization(tx as unknown as DbTransaction, {
+              conversationId,
+              endpointId: record.endpoint.id,
+              expectedUserId: principal.userId!,
+              principalId: principal.principal.id,
+              runtimeContext,
+            }),
+          stageTaskControlPublication: stageAuthorizedTaskControlPublication,
+        });
+      } catch (error) {
+        if (isExternalActionAuthorizationChange(error)) {
+          return deny({ principalId: principal.principal.id });
+        }
+        throw error;
+      }
+      if (chooserOutcome.kind === "denied") {
+        return deny({
+          conversationId: chooserOutcome.principalConversationId,
+          principalId: principal.principal.id,
+        });
+      }
+      scheduleMessageProcessing(async () => {
+        await processPendingPublications();
+      });
+      return;
     }
     const isCorrection = isDiscordQuestionFormCorrectionId(
       event.event.actionId,
