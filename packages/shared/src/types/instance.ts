@@ -23,6 +23,7 @@ import type { BotLspSettings } from "../myrmidon-bot-lsp.js";
 // myrmidon(EXTCASE-B): the browser-bridge allowlist stored in instance settings
 import type { BrowserBridgeSettings } from "../myrmidon-browser-bridge.js";
 import type { SwarmClaimSettings } from "../myrmidon-swarm-claim.js";
+import type { SwarmSettings } from "../myrmidon-swarm-wake.js"; // myrmidon(1.6.5 F-26 T5)
 // myrmidon(1.6.1-WIP-LIMIT-A): per-agent WIP limits of the same general settings row.
 import type { AgentMemorySettings } from "../myrmidon-agent-memory.js";
 import type { WipLimitSettings } from "../myrmidon-wip-limit.js";
@@ -219,6 +220,13 @@ export interface InstanceGeneralSettings {
    * validator of the same field (packages/shared/src/validators/instance.ts).
    */
   swarmClaim?: SwarmClaimSettings;
+  /**
+   * myrmidon(1.6.5 F-26 T5): the SWARM wake guard — the run-without-task gate
+   * and the exponential cooling (design 1.6.5 §3.7, §4.3). Absent means the
+   * defaults (gate on, base 30 min, ceiling 24 h). Kept in sync with the
+   * validator of the same field (packages/shared/src/validators/instance.ts).
+   */
+  swarm?: SwarmSettings;
   /**
    * myrmidon(1.6.1-BOT-DISK-D): shared mount settings for bots, changed from
    * the instance settings API. Controls whether bots get a common directory at
