@@ -3373,7 +3373,7 @@ async function buildAttentionFeedSnapshot(
           .from(secretAccessEvents)
           .where(and(
             eq(secretAccessEvents.companyId, companyId),
-            sql`${secretAccessEvents.createdAt} >= ${new Date(now - 24 * 60 * 60 * 1000)}`,
+            sql`${secretAccessEvents.createdAt} >= ${new Date(now - 24 * 60 * 60 * 1000).toISOString()}::timestamptz`,
             sql`${secretAccessEvents.details} ->> 'offRun' = 'true'`,
           ));
         const offRunReadCount = Number(offRunReadRows[0]?.count ?? 0);
