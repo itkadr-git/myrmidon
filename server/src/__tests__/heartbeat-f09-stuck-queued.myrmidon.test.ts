@@ -431,7 +431,12 @@ describeEmbeddedPostgres("heartbeat F-09 stuck-queued sweep", () => {
 
     const { companyId, agentId } = await seedCompanyAndAgent({ name: "Eng", role: "engineer" });
     const busyIssueId = await seedIssue(companyId, { title: "Busy work", priority: "medium", status: "todo" });
-    const backlogIssueId = await seedIssue(companyId, { title: "Backlog work", priority: "medium", status: "backlog" });
+    const backlogIssueId = await seedIssue(companyId, {
+      title: "Backlog work",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      status: "backlog",
+    });
     await db.insert(heartbeatRuns).values({
       companyId,
       agentId,
