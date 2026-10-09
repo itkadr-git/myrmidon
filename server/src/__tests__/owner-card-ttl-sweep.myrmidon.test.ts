@@ -41,7 +41,17 @@ const OLD = new Date(NOW.getTime() - TTL_MS - 3_600_000); // 73 h old — past t
 const FRESH = new Date(NOW.getTime() - 60_000); // 1 min old — inside the TTL
 
 describeEmbeddedPostgres("owner card TTL sweep (embedded PG)", () => {
-  const pg = useEmbeddedPostgres("owner-card-ttl");
+  const pg = useEmbeddedPostgres("owner-card-ttl", {
+    resetEach: async (db) => {
+      await db.delete(agentWakeupRequests);
+      await db.delete(activityLog);
+      await db.delete(issueComments);
+      await db.delete(issueThreadInteractions);
+      await db.delete(issues);
+      await db.delete(agents);
+      await db.delete(companies);
+    },
+  });
 
   beforeEach(async () => {
     await pg.db.insert(companies).values({ id: COMPANY, name: "Acme" });
@@ -60,6 +70,7 @@ describeEmbeddedPostgres("owner card TTL sweep (embedded PG)", () => {
       wakeups.push([agentId, options]);
       const values = [{
         agentId,
+        companyId: COMPANY,
         reason: String(options.reason),
         idempotencyKey: (options.idempotencyKey as string | null) ?? null,
         source: "automation",
@@ -100,7 +111,7 @@ describeEmbeddedPostgres("owner card TTL sweep (embedded PG)", () => {
   }
 
   async function readCard(id: string) {
-    return db
+    return pg.db
       .select()
       .from(issueThreadInteractions)
       .where(eq(issueThreadInteractions.id, id))
@@ -108,7 +119,7 @@ describeEmbeddedPostgres("owner card TTL sweep (embedded PG)", () => {
   }
 
   async function pendingOverdueCount() {
-    const rows = await db
+    const rows = await pg.db
       .select({ id: issueThreadInteractions.id })
       .from(issueThreadInteractions)
       .where(
@@ -121,7 +132,7 @@ describeEmbeddedPostgres("owner card TTL sweep (embedded PG)", () => {
   }
 
   async function commentsWithReason(reason: string) {
-    const rows = await db
+    const rows = await pg.db
       .select()
       .from(issueComments)
       .where(eq(issueComments.issueId, ISSUE))
@@ -232,7 +243,7 @@ describeEmbeddedPostgres("owner card TTL sweep (embedded PG)", () => {
     await insertCard();
     const { run } = makeSweep();
     await run();
-    const rows = await db
+    const rows = await pg.db
       .select()
       .from(activityLog)
       .where(eq(activityLog.entityId, ISSUE));
@@ -243,7 +254,7 @@ describeEmbeddedPostgres("owner card TTL sweep (embedded PG)", () => {
     const card = await insertCard();
     // A human answer landed between the selection and the close: the sweep's
     // compare-and-set on status=pending loses the race and leaves the card.
-    await db
+    await pg.db
       .update(issueThreadInteractions)
       .set({ status: "accepted", resolvedAt: new Date() })
       .where(eq(issueThreadInteractions.id, card));
