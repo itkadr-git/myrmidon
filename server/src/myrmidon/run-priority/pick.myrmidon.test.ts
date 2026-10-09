@@ -45,6 +45,9 @@ function settings(overrides: Partial<RunPrioritySettings> = {}): RunPrioritySett
     agingMaxBonus: 50,
     starvationLimitMinutes: 90,
     starvationTopWeight: 10_000,
+    // 1.6.5 (F-27): the pheromone term is off in these fixtures — no run feeds
+    // an effective pheromone, so the arithmetic below stays the rel one.
+    pheromoneWeight: 1,
     ...overrides,
   };
 }
