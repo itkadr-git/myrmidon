@@ -83,6 +83,7 @@ function makeSkill(over: Partial<CompanySkillDetail> = {}): CompanySkillDetail {
     sourcePath: null,
     currentVersion: null,
     starredByCurrentActor: false,
+    requiredEnv: [],
     existingForks: [],
     ...over,
   };
