@@ -106,14 +106,16 @@ export async function readProjectTokenQuotaStatus(
   companyId: string,
   projectId: string,
 ): Promise<ProjectTokenQuotaStatus> {
-  const quota = await readProjectTokenQuota(db, companyId, projectId);
+  const quota =
+    (await readProjectTokenQuota(db, companyId, projectId)) ??
+    { projectId, dailyTokenLimit: null, weeklyTokenLimit: null };
   const [row] = await db
     .select()
     .from(projectTokenQuotas)
     .where(eq(projectTokenQuotas.projectId, projectId))
     .limit(1);
   return {
-    ...quota,
+    projectId: quota.projectId,
     projectName: (await getProjectRow(db, companyId, projectId))?.name ?? "",
     dailyTokensUsed: Number(row?.dailyTokensUsed ?? 0),
     weeklyTokensUsed: Number(row?.weeklyTokensUsed ?? 0),
