@@ -527,4 +527,139 @@ describeEmbeddedPostgres("heartbeat F-09 stuck-queued sweep", () => {
     card = feed.items.find((item) => item.sourceKind === "queue_stall");
     expect(card).toBeUndefined();
   }, 30_000);
+
+  it("marks queued runs with maintenance when the agent is under a maintenance window", async () => {
+    const { newWindow } = await import("../myrmidon/maintenance/domain.js");
+    const { setMaintenanceDocumentCache, resetMaintenanceGateCaches } = await import(
+      "../myrmidon/maintenance/gate.js"
+    );
+    const companyId = await seedCompany();
+    const agentId = await seedAgent(companyId);
+    const issueId = await seedIssue(companyId, agentId, { status: "todo" });
+    const runId = await seedRun(companyId, agentId, issueId, "queued");
+    applyRunAdmissionLimits({ ...currentRunAdmissionLimits(), maxConcurrentRuns: 10 });
+    const heartbeat = heartbeatService(db);
+    try {
+      // Set an instance-scoped maintenance window in the "on" state.
+      const window = newWindow({
+        id: randomUUID(),
+        scope: { type: "instance" },
+        companyId: null,
+        reason: "test",
+        drainTimeoutSec: 0,
+        onTimeout: "cancel",
+        startedBy: null,
+        now: new Date(),
+      });
+      window.state = "on";
+      setMaintenanceDocumentCache({ version: 1, windows: [window], history: [] });
+
+      await heartbeat.resumeQueuedRuns();
+      await heartbeat.drainActiveRunExecutions();
+      const stored = await runRow(runId);
+      expect(stored?.status).toBe("queued");
+      expect(stored?.waitReason).toBe("maintenance");
+    } finally {
+      resetMaintenanceGateCaches();
+      await heartbeat.drainActiveRunExecutions();
+    }
+  }, 30_000);
+
+  it("marks queued runs with agent_not_invokable when the agent has no adapter", async () => {
+    const companyId = await seedCompany();
+    // Agent with an adapterType that has no adapter registered.
+    const [agent] = await db
+      .insert(agents)
+      .values({
+        id: randomUUID(),
+        companyId,
+        name: "No Adapter Agent",
+        role: "engineer",
+        adapterType: "nonexistent_adapter",
+        status: "idle",
+      })
+      .returning();
+    const issueId = await seedIssue(companyId, agent.id, { status: "todo" });
+    const runId = await seedRun(companyId, agent.id, issueId, "queued");
+    applyRunAdmissionLimits({ ...currentRunAdmissionLimits(), maxConcurrentRuns: 10 });
+    const heartbeat = heartbeatService(db);
+    try {
+      await heartbeat.resumeQueuedRuns();
+      await heartbeat.drainActiveRunExecutions();
+      const stored = await runRow(runId);
+      expect(stored?.status).toBe("queued");
+      expect(stored?.waitReason).toBe("agent_not_invokable");
+    } finally {
+      await heartbeat.drainActiveRunExecutions();
+    }
+  }, 30_000);
+
+  it("marks queued runs with scheduling_suppressed when scheduling is suppressed", async () => {
+    const companyId = await seedCompany();
+    const agentId = await seedAgent(companyId);
+    const issueId = await seedIssue(companyId, agentId, { status: "todo" });
+    const runId = await seedRun(companyId, agentId, issueId, "queued");
+    applyRunAdmissionLimits({ ...currentRunAdmissionLimits(), maxConcurrentRuns: 10 });
+    const heartbeat = heartbeatService(db);
+    const originalEnv = process.env.PAPERCLIP_IN_WORKTREE;
+    try {
+      process.env.PAPERCLIP_IN_WORKTREE = "1";
+      await heartbeat.resumeQueuedRuns();
+      await heartbeat.drainActiveRunExecutions();
+      const stored = await runRow(runId);
+      expect(stored?.status).toBe("queued");
+      expect(stored?.waitReason).toBe("scheduling_suppressed");
+    } finally {
+      if (originalEnv === undefined) {
+        delete process.env.PAPERCLIP_IN_WORKTREE;
+      } else {
+        process.env.PAPERCLIP_IN_WORKTREE = originalEnv;
+      }
+      await heartbeat.drainActiveRunExecutions();
+    }
+  }, 30_000);
+
+  it("canReadDecisionSource resolves queue_stall with run id", async () => {
+    const { canReadDecisionSource } = await import("../services/decision-queues.js");
+    const companyId = await seedCompany();
+    const agentId = await seedAgent(companyId);
+    const issueId = await seedIssue(companyId, agentId, { status: "todo" });
+    const [run] = await db
+      .insert(heartbeatRuns)
+      .values({
+        companyId,
+        agentId,
+        issueId,
+        invocationSource: "assignment",
+        status: "queued",
+      })
+      .returning();
+
+    // The decision queue must find the run by sourceId (run id).
+    const result = await canReadDecisionSource(
+      db,
+      { userId: "board-user", role: "admin" },
+      companyId,
+      "queue_stall",
+      run.id,
+    );
+    expect(result.exists).toBe(true);
+  }, 30_000);
+
+  it("canReadDecisionSource returns exists=false for a queue_stall with a non-run id", async () => {
+    const { canReadDecisionSource } = await import("../services/decision-queues.js");
+    const companyId = await seedCompany();
+    const agentId = await seedAgent(companyId);
+    const issueId = await seedIssue(companyId, agentId, { status: "todo" });
+
+    // A task id should NOT resolve as a queue_stall source (source is the run).
+    const result = await canReadDecisionSource(
+      db,
+      { userId: "board-user", role: "admin" },
+      companyId,
+      "queue_stall",
+      issueId,
+    );
+    expect(result.exists).toBe(false);
+  }, 30_000);
 });
