@@ -148,6 +148,10 @@ export const issues = pgTable(
       )
       .where(sql`${table.hiddenAt} is null and ${table.status} not in ('done', 'cancelled')`),
     companyPriorityIdx: index("issues_company_priority_idx").on(table.companyId, table.priority),
+    // 1.6.5 (F-27 rework 09.10): swarm-claim routing filters ready tasks by
+    // caste per company; the index keeps that lookup off a seq scan. Created in
+    // migration 0383.
+    companyCasteIdx: index("issues_company_caste_idx").on(table.companyId, table.casteKey),
     // myrmidon(DB-AUDIT-INDEXES): the issue claim lockup selects
     // company + (id or execution_run_id or checkout_run_id) FOR UPDATE. Only
     // partial unique indexes covered the run columns, so the statement ran a

@@ -20,11 +20,12 @@
 --    in the company's caste directory (on the production board there are no
 --    such labels; this is for other installs). The first matching label wins,
 --    mirroring `swarmRoleFromLabels`.
+-- 5) `issues_company_caste_idx` — swarm-claim routing filters ready tasks by
+--    caste per company; declared in the drizzle schema so the snapshot test
+--    stays in sync.
 
-ALTER TABLE "issues" ADD COLUMN "caste_key" text;
---> statement-breakpoint
-ALTER TABLE "projects" ADD COLUMN "default_caste_key" text;
---> statement-breakpoint
+ALTER TABLE "issues" ADD COLUMN "caste_key" text;--> statement-breakpoint
+ALTER TABLE "projects" ADD COLUMN "default_caste_key" text;--> statement-breakpoint
 UPDATE "issues"
 SET "pheromone_strength" = CASE lower("priority")
   WHEN 'critical' THEN 100
@@ -33,8 +34,7 @@ SET "pheromone_strength" = CASE lower("priority")
   WHEN 'low' THEN 1
   ELSE 10
 END
-WHERE "pheromone_strength" = 0;
---> statement-breakpoint
+WHERE "pheromone_strength" = 0;--> statement-breakpoint
 UPDATE "issues" i
 SET "caste_key" = sub.caste_key
 FROM (
@@ -53,6 +53,5 @@ FROM (
   ORDER BY il.issue_id, il.label_id
 ) sub
 WHERE i.id = sub.issue_id
-  AND i.caste_key IS NULL;
---> statement-breakpoint
+  AND i.caste_key IS NULL;--> statement-breakpoint
 CREATE INDEX "issues_company_caste_idx" ON "issues" USING btree ("company_id","caste_key");
