@@ -33,7 +33,7 @@ import { supersedeExplicitWakeSettledHold } from "../myrmidon/settled-holds/supe
 // myrmidon(CHAT-HOLD): a chat is never held; an owner message lifts a hold.
 import { isChatBackedIssue, isChatOwnerMessageWake } from "../myrmidon/chat-holds/chat-backed.js";
 // myrmidon(1.6.5 F-26 T5): taskless-wake gate + cooling (design §3.7, §4.3).
-import { tasklessGateReason, readSwarmSettings, isIssueCoolingDown } from "../myrmidon/wake-task-guard.js";
+import { tasklessGateReason, readSwarmSettings } from "../myrmidon/wake-task-guard.js";
 import { clearChatHoldsOnOwnerMessage } from "../myrmidon/chat-holds/clear-on-message.js";
 // myrmidon(L2, round 3 fix): retire the woken agent's own waiting run that the
 // bypassed hold would cancel at its claim, so the wake is not lost with it.

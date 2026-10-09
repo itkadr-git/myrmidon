@@ -10,6 +10,7 @@
 import { and, desc, eq, gte, inArray, isNull, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
+  activityLog,
   heartbeatRuns,
   instanceSettings,
   issueComments,
@@ -77,7 +78,24 @@ export async function tasklessGateReason(
 }
 
 /** Last-run statuses that (with no task movement) start a cooling period. */
-const COOLING_TERMINAL_STATUSES = ["succeeded", "failed", "timed_out", "cancelled"] as const;
+const COOLING_TERMINAL_STATUSES = ["succeeded", "failed", "timed_out"] as const;
+
+/**
+ * Activity actions that are real task movement (§4.3 "любое изменение задачи").
+ * `issues.updatedAt` is deliberately NOT a movement signal: finishing any run
+ * that held the task goes through `releaseIssueExecution`, which bumps
+ * `updatedAt` after `finishedAt` unconditionally, so it would always lift the
+ * window of exactly the runs the cooling exists for.
+ */
+const MOVEMENT_ACTIVITY_ACTIONS = [
+  "issue.updated",
+  "issue.comment_added",
+  "issue.comment.created",
+  "issue.document_updated",
+  "issue.attachment_added",
+  "issue.thread_interaction_answered",
+  "issue.thread_interaction_accepted",
+];
 const HEALTHY_LIVENESS = new Set(["advanced", "completed", "followup_scheduled"]);
 
 export interface IssueCoolingStatus {
@@ -104,8 +122,7 @@ function runIsStale(
   row: { status: string; livenessState: string | null },
   issueStatus: string,
 ): boolean {
-  if (row.status === "failed" || row.status === "timed_out" || row.status === "cancelled")
-    return true;
+  if (row.status === "failed" || row.status === "timed_out") return true;
   if (row.livenessState === "blocked" || row.livenessState === "needs_followup") return true;
   return (
     row.status === "succeeded" &&
@@ -118,10 +135,12 @@ function runIsStale(
  * Cooling evaluation for one issue (§4.3). The issue cools down when its last
  * terminal automatic run ended stale (failed / timed_out / blocked /
  * needs_followup / succeeded-without-advance while the task is still `todo`)
- * AND neither the issue row nor its comment thread moved after that run. The
+ * AND the task did not move after that run (a comment, or `issue.updated`-style
+ * activity: status / assignee / description; never `updatedAt`). The
  * exponent is the number of consecutive stale automatic runs; the period is
  * `cooldownBaseMin * 2^(n-1)` clamped to `cooldownCeilingHours`
- * (`swarmCoolingPeriodMs`). A new comment or issue update resets the window.
+ * (`swarmCoolingPeriodMs`). Movement resets the window, and movement between
+ * two stale runs also resets the exponent: only runs after the last movement count.
  *
  * `now` is injectable so tests pin the clock. Every read failure returns
  * "not cooling": the wake path must never die on the guard.
@@ -141,6 +160,8 @@ export async function isIssueCoolingDown(
         status: heartbeatRuns.status,
         livenessState: heartbeatRuns.livenessState,
         finishedAt: heartbeatRuns.finishedAt,
+        startedAt: heartbeatRuns.startedAt,
+        createdAt: heartbeatRuns.createdAt,
       })
       .from(heartbeatRuns)
       .where(
@@ -160,7 +181,7 @@ export async function isIssueCoolingDown(
     if (!finishedAt) return NOT_COOLING;
 
     const issueRow = await db
-      .select({ status: issues.status, updatedAt: issues.updatedAt })
+      .select({ status: issues.status })
       .from(issues)
       .where(and(eq(issues.id, issueId), eq(issues.companyId, companyId), isNull(issues.hiddenAt)))
       .limit(1)
@@ -169,29 +190,30 @@ export async function isIssueCoolingDown(
 
     if (!runIsStale(last, issueRow.status)) return NOT_COOLING;
 
-    // Movement since the stale run cancels the cooling: an issue update, or a
-    // new comment on the task (acceptance "комментарий по задаче снимает
-    // остывание"). Hidden comments do not count as movement.
-    if (issueRow.updatedAt.getTime() > finishedAt.getTime()) return NOT_COOLING;
-    const movedByComment = await db
-      .select({ id: issueComments.id })
-      .from(issueComments)
-      .where(
-        and(
-          eq(issueComments.issueId, issueId),
-          gte(issueComments.createdAt, new Date(finishedAt.getTime() + 1)),
-          isNull(issueComments.deletedAt),
-        ),
-      )
-      .limit(1)
-      .then((r) => r.length > 0);
-    if (movedByComment) return NOT_COOLING;
+    // Movement since the stale run cancels the cooling (acceptance "комментарий
+    // по задаче снимает остывание"). Deleted comments do not count.
+    const oldestFinished = rows.reduce<Date>(
+      (min, r) => (r.finishedAt && r.finishedAt < min ? r.finishedAt : min),
+      finishedAt,
+    );
+    const moves = await taskMovementTimes(db, companyId, issueId, oldestFinished);
+    if (moves.some((t) => t > finishedAt.getTime())) return NOT_COOLING;
 
+    // Consecutive stale runs counted back from the newest, stopping at a
+    // healthy run or at movement between two runs (after the older one
+    // finished, before the newer one started).
     let staleCount = 0;
-    for (const row of rows) {
+    for (let i = 0; i < rows.length; i += 1) {
+      const row = rows[i]!;
       const healthy =
         row.status === "succeeded" && HEALTHY_LIVENESS.has(row.livenessState ?? "");
       if (healthy) break;
+      if (i > 0 && row.finishedAt) {
+        const newer = rows[i - 1]!;
+        const newerStart = (newer.startedAt ?? newer.createdAt).getTime();
+        const from = row.finishedAt.getTime();
+        if (moves.some((t) => t > from && t < newerStart)) break;
+      }
       staleCount += 1;
     }
     staleCount = Math.max(1, staleCount);
@@ -215,6 +237,41 @@ export async function isIssueCoolingDown(
   } catch {
     return NOT_COOLING;
   }
+}
+
+/** Timestamps (ms) of real task movement after `since`: comments and movement activity. */
+async function taskMovementTimes(
+  db: Db,
+  companyId: string,
+  issueId: string,
+  since: Date,
+): Promise<number[]> {
+  const after = new Date(since.getTime() + 1);
+  const comments = await db
+    .select({ at: issueComments.createdAt })
+    .from(issueComments)
+    .where(
+      and(
+        eq(issueComments.issueId, issueId),
+        gte(issueComments.createdAt, after),
+        isNull(issueComments.deletedAt),
+      ),
+    )
+    .limit(200);
+  const acts = await db
+    .select({ at: activityLog.createdAt })
+    .from(activityLog)
+    .where(
+      and(
+        eq(activityLog.companyId, companyId),
+        eq(activityLog.entityType, "issue"),
+        eq(activityLog.entityId, issueId),
+        inArray(activityLog.action, MOVEMENT_ACTIVITY_ACTIONS),
+        gte(activityLog.createdAt, after),
+      ),
+    )
+    .limit(200);
+  return [...comments, ...acts].map((r) => r.at.getTime());
 }
 
 /** Read the `general.swarm` block; never throws — defaults on any failure. */

@@ -17,12 +17,14 @@ settings-section: Track 5 — operations
   source are untouched: a manual wake of a user always passes, even for a
   deleted task.
 - A task that produces no movement stops being woken in circles. When the
-  last automatic run of a task ended stale — failed, timed out, cancelled,
+  last automatic run of a task ended stale — failed, timed out,
   `blocked`/`needs_followup`, or succeeded without advancing a `todo` task —
-  and neither the task row nor its comment thread moved since, the task
+  and the task did not move since (a comment, or a status / assignee /
+  description change; the row's `updatedAt` is not a signal, a finished run
+  bumps it itself), the task
   cools down for `cooldownBaseMin · 2^(n-1)` minutes (base 30, capped at
-  24 h), where n is the number of consecutive stale runs. Any comment on the
-  task or any task update lifts the window immediately; when it expires the
+  24 h), where n is the number of consecutive stale runs since the last movement.
+  Any comment on the task or any real task update lifts the window immediately; when it expires the
   task becomes a wake candidate again. Idle pickup obeys the window, and the
   new read-only `GET /api/myrmidon/companies/:id/swarm/cooling` lists every
   cooling task with its trigger, window length and next allowed wake time.
@@ -46,11 +48,12 @@ settings-section: Track 5 — operations
   всегда, даже по удалённой задаче.
 - Задача, по которой нет движения, перестаёт будиться по кругу. Если
   последний автоматический прогон задачи завершился «стыло» — failed,
-  timed_out, cancelled, `blocked`/`needs_followup` или succeeded без
-  продвижения задачи в `todo`, — и с тех пор ни строка задачи, ни её
-  обсуждения не менялись, задача остывает `cooldownBaseMin · 2^(n-1)` минут
-  (база 30, потолок 24 ч), где n — число подряд идущих стылых прогонов.
-  Любой комментарий по задаче или любое её обновление снимает окно сразу;
+  timed_out, `blocked`/`needs_followup` или succeeded без
+  продвижения задачи в `todo`, — и с тех пор задача не двигалась (комментарий, смена статуса, исполнителя
+  или описания; `updatedAt` строки не сигнал — завершившийся прогон сам его
+  обновляет), задача остывает `cooldownBaseMin · 2^(n-1)` минут
+  (база 30, потолок 24 ч), где n — число подряд идущих стылых прогонов после последнего движения.
+  Любой комментарий по задаче или реальное её изменение снимает окно сразу;
   после истечения окна задача снова становится кандидатом на побудку. Остывание
   учитывается в idle pickup, а новый read-only эндпоинт
   `GET /api/myrmidon/companies/:id/swarm/cooling` показывает все остывающие

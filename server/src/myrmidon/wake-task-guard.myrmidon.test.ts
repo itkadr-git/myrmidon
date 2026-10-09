@@ -15,6 +15,7 @@ import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
+  activityLog,
   agents,
   companies,
   createDb,
@@ -158,13 +159,12 @@ describeEmbeddedPostgres("myrmidon(1.6.5 F-26 T5) wake guard against Postgres", 
       startedAt: new Date(finishedAt.getTime() - 60_000),
       finishedAt,
     });
-    // The seed inserted the task "now", which is after a backdated run. Pin
-    // the task so the stale run is the movement boundary (§4.3 reads
-    // "no task change AFTER the run"; without this the fresh updatedAt
-    // would legitimately cancel the window).
+    // Finishing a run that held the task goes through releaseIssueExecution,
+    // which bumps issues.updatedAt AFTER finishedAt. Mirror that here: the
+    // cooling must not read it as task movement.
     await db
       .update(issues)
-      .set({ updatedAt: finishedAt })
+      .set({ updatedAt: new Date(finishedAt.getTime() + 1_000) })
       .where(eq(issues.id, issueId));
   }
 
@@ -204,11 +204,6 @@ describeEmbeddedPostgres("myrmidon(1.6.5 F-26 T5) wake guard against Postgres", 
     expect(afterOne.staleCount).toBe(1);
     expect(afterOne.cooldownMin).toBe(30);
 
-    // Pin the task so the second stale run is the last movement boundary.
-    await db
-      .update(issues)
-      .set({ updatedAt: new Date(now.getTime() - 4 * 60_000) })
-      .where(eq(issues.id, issueId));
     await seedAutoRun(issueId, { status: "failed", finishedAt: new Date(now.getTime() - 4 * 60_000) });
     const afterTwo = await isIssueCoolingDown(db, companyId, issueId, settings, now);
     expect(afterTwo.cooling).toBe(true);
@@ -247,6 +242,48 @@ describeEmbeddedPostgres("myrmidon(1.6.5 F-26 T5) wake guard against Postgres", 
       finishedAt: new Date(now.getTime() - 10 * 60_000),
     });
     expect((await isIssueCoolingDown(db, companyId, moving, settings, now)).cooling).toBe(false);
+  });
+
+  it("cooling: movement between runs resets the exponent; cancelled runs do not cool; real activity lifts", async () => {
+    const now = new Date();
+    const settings = resolveSwarmSettings(undefined);
+
+    // failed, then a comment, then failed again: n restarts at 1 (30 min).
+    const reset = await seedIssue("todo");
+    await seedAutoRun(reset, { status: "failed", finishedAt: new Date(now.getTime() - 20 * 60_000) });
+    await db.insert(issueComments).values({
+      companyId,
+      issueId: reset,
+      body: "new context between runs",
+      authorAgentId: agentId,
+      createdAt: new Date(now.getTime() - 15 * 60_000),
+    });
+    await seedAutoRun(reset, { status: "failed", finishedAt: new Date(now.getTime() - 5 * 60_000) });
+    const resetStatus = await isIssueCoolingDown(db, companyId, reset, settings, now);
+    expect(resetStatus.cooling).toBe(true);
+    expect(resetStatus.staleCount).toBe(1);
+    expect(resetStatus.cooldownMin).toBe(30);
+
+    // System cancellations are not stale runs.
+    const cancelled = await seedIssue("todo");
+    await seedAutoRun(cancelled, { status: "cancelled", finishedAt: new Date(now.getTime() - 5 * 60_000) });
+    expect((await isIssueCoolingDown(db, companyId, cancelled, settings, now)).cooling).toBe(false);
+
+    // A status/assignee change logged as activity lifts the window, even
+    // though the release-style updatedAt bump alone never does.
+    const changed = await seedIssue("todo");
+    await seedAutoRun(changed, { status: "failed", finishedAt: new Date(now.getTime() - 10 * 60_000) });
+    expect((await isIssueCoolingDown(db, companyId, changed, settings, now)).cooling).toBe(true);
+    await db.insert(activityLog).values({
+      companyId,
+      actorType: "user",
+      actorId: "user-a",
+      action: "issue.updated",
+      entityType: "issue",
+      entityId: changed,
+      createdAt: new Date(now.getTime() - 2 * 60_000),
+    });
+    expect((await isIssueCoolingDown(db, companyId, changed, settings, now)).cooling).toBe(false);
   });
 
   it("window expired → not cooling", async () => {
