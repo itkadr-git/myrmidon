@@ -67,6 +67,8 @@ import type { IssuePostCommitAction } from "../../services/issues.js";
 import { queueIssueAssignmentWakeup, type IssueAssignmentWakeupDeps } from "../../services/issue-assignment-wakeup.js";
 import { logActivity as logActivityInTx, publishActivity, type ActivityPublication } from "../../services/activity-log.js";
 import { issueHasNoExecutionHold } from "../settled-holds/ready-predicate.js";
+import { evaluateAgentInvokability, evaluateAgentInvokabilityFromDb } from "../../services/agent-invokability.js";
+import { swarmAgentAvailability, type SwarmAgentAvailability } from "./availability.js";
 import { readSwarmCoolingSettings, swarmTaskCoolingDown, type SwarmCoolingSettings } from "./cooling.js";
 import { planClaim } from "./domain.js";
 import {
@@ -192,6 +194,12 @@ export interface SwarmMatcherDeps {
    * window). Absent, the adapter reads them once per call (`readSwarmSettings`).
    */
   coolingSettings?: Pick<SwarmSettings, "cooldownBaseMin" | "cooldownCeilingHours">;
+  /**
+   * Whether a wake of the agent would pass the gates of the wake layer beyond
+   * its own invokability (design §3.2): the maintenance window and the budget
+   * block. Absent, `swarmAgentAvailability(db)` reads them; a test replaces it.
+   */
+  isAgentAvailable?: SwarmAgentAvailability;
   /** T10: the scent pick. Absent, equal scores and the tie by `agents.id`. */
   pickAgentForTask?: (
     task: SwarmMatcherTask,
@@ -249,6 +257,79 @@ function coolingSettingsOf(deps: SwarmMatcherDeps): Promise<SwarmCoolingSettings
  * effective-strength knobs of the `pheromone` settings, at the pass clock — the
  * same three the claim API and the supervisor view hand to `swarmQueueOrderBy`.
  */
+/** One availability reading per agent per pass (the deps object is the pass). */
+const availabilityByPass = new WeakMap<SwarmMatcherDeps, Map<string, Promise<boolean>>>();
+const defaultAvailabilityByDb = new WeakMap<object, SwarmAgentAvailability>();
+
+function isAvailable(deps: SwarmMatcherDeps, companyId: string, agentId: string): Promise<boolean> {
+  let seen = availabilityByPass.get(deps);
+  if (!seen) {
+    seen = new Map();
+    availabilityByPass.set(deps, seen);
+  }
+  let answer = seen.get(agentId);
+  if (!answer) {
+    let read = deps.isAgentAvailable;
+    if (!read) {
+      read = defaultAvailabilityByDb.get(deps.db as object);
+      if (!read) {
+        read = swarmAgentAvailability(deps.db);
+        defaultAvailabilityByDb.set(deps.db as object, read);
+      }
+    }
+    answer = read({ agentId, companyId });
+    seen.set(agentId, answer);
+  }
+  return answer;
+}
+
+/** The free agents of a pool that the wake layer will also accept (design §3.2). */
+async function availableAgents(
+  deps: SwarmMatcherDeps,
+  companyId: string,
+  free: readonly SwarmMatcherAgent[],
+): Promise<SwarmMatcherAgent[]> {
+  const out: SwarmMatcherAgent[] = [];
+  for (const agent of free) {
+    if (await isAvailable(deps, companyId, agent.agentId)) out.push(agent);
+  }
+  return out;
+}
+
+/**
+ * Pair one task with the pool: the pick, the claim, and on a wake the layer
+ * refused the NEXT agent of the pool for the same task (ADM review of
+ * 18a69ff91: one agent that cannot be woken must not starve the task). Returns
+ * the pair, `"lost"` when the task itself is gone, or null when no agent of the
+ * pool took it. Every agent whose wake failed leaves `failed` for the pass.
+ */
+async function pairTaskWithPool(
+  deps: SwarmMatcherDeps,
+  companyId: string,
+  task: SwarmMatcherTask,
+  pool: readonly SwarmMatcherAgent[],
+  failed: Set<string>,
+): Promise<SwarmMatcherAgent | "lost" | null> {
+  const pick = deps.pickAgentForTask ?? pickBySmallestId;
+  let candidates = pool.filter((agent) => !failed.has(agent.agentId));
+  while (candidates.length > 0) {
+    const chosen = pick(task, candidates);
+    if (!chosen) return null;
+    const claimed = await claimTaskForAgent(deps, companyId, {
+      issueId: task.issueId,
+      agentId: chosen.agentId,
+      role: task.role,
+      identifier: task.identifier,
+      waitedMs: waitedMsOf(task, deps.now),
+    });
+    if (claimed === "claimed") return chosen;
+    if (claimed === "lost") return "lost";
+    failed.add(chosen.agentId);
+    candidates = candidates.filter((agent) => agent.agentId !== chosen.agentId);
+  }
+  return null;
+}
+
 function queueOrderOf(deps: SwarmMatcherDeps): SwarmQueueOrderOptions {
   return {
     p0Preemption: deps.settings.p0Preemption,
@@ -281,6 +362,10 @@ function freeAgentsOfPair(
         return false;
       }
       if (agent.hasLiveRun && !opts.ignoreLiveRun) return false;
+      // The vendor invokability (pending approval, a terminated manager, a
+      // reporting cycle…): the wake layer refuses such an agent, so it is not
+      // free work — the pass would pair, fail the wake and roll back forever.
+      if (agent.invokable === false) return false;
       // The agent's own switch, else the caste's `swarmEligible` (the directory
       // read below), else in scope. A caste the company switched off never
       // enters the pool: its ready tasks wait for a caste that may take them,
@@ -530,11 +615,19 @@ export async function matchCompany(
   for (const pair of pairs) {
     const caste = castes.get(pair.role) ?? null;
     if (caste && !caste.swarmEligible) continue;
-    let free = freeAgentsOfPair(pair, deps.settings, caste);
+    let free = await availableAgents(deps, companyId, freeAgentsOfPair(pair, deps.settings, caste));
+    const failed = new Set<string>();
 
     // The pool read is already in the queue order (`swarmQueueOrderBy`).
-    for (const candidate of pair.queue) {
-      if (candidate.assigneeAgentId) continue;
+    const open = pair.queue.filter((candidate) => !candidate.assigneeAgentId);
+    for (let index = 0; index < open.length; index += 1) {
+      const candidate = open[index]!;
+      // Nobody left to take anything: the rest of the caste's queue waits.
+      // No cooling read for tasks that could not be handed out anyway.
+      if (free.length === 0) {
+        result.unmatched += open.length - index;
+        break;
+      }
       if (await isCooling(deps, companyId, candidate.issueId)) {
         result.unmatched += 1;
         continue;
@@ -546,29 +639,14 @@ export async function matchCompany(
         role: pair.role,
         queuedAt: candidate.queuedAt,
       };
-      const pick = deps.pickAgentForTask ?? pickBySmallestId;
-      const chosen = pick(task, free);
-      if (!chosen) {
-        // The pick may refuse one task on its own terms (T10 reads the scent of
-        // this very pair), so the pass goes on to the next candidate rather than
-        // closing the queue: an empty pool refuses every later task anyway.
+      // The pick may refuse one task on its own terms (T10 reads the scent of
+      // this very pair), so the pass goes on to the next candidate rather than
+      // closing the queue.
+      const chosen = await pairTaskWithPool(deps, companyId, task, free, failed);
+      // An agent whose wake failed is not free for the rest of this pass.
+      free = free.filter((agent) => !failed.has(agent.agentId));
+      if (!chosen || chosen === "lost") {
         result.unmatched += 1;
-        continue;
-      }
-
-      const claimed = await claimTaskForAgent(deps, companyId, {
-        issueId: candidate.issueId,
-        agentId: chosen.agentId,
-        role: pair.role,
-        identifier: candidate.identifier ?? null,
-        waitedMs: waitedMsOf(task, deps.now),
-      });
-      if (claimed !== "claimed") {
-        result.unmatched += 1;
-        // An agent that cannot be woken is not free for the rest of this pass.
-        if (claimed === "wake_failed") {
-          free = free.filter((agent) => agent.agentId !== chosen.agentId);
-        }
         continue;
       }
 
@@ -628,18 +706,9 @@ export async function matchIssue(
       role: pair.role,
       queuedAt: candidate.queuedAt,
     };
-    const pick = deps.pickAgentForTask ?? pickBySmallestId;
-    const chosen = pick(task, freeAgentsOfPair(pair, deps.settings, caste));
-    if (!chosen) return null;
-
-    const claimed = await claimTaskForAgent(deps, row.companyId, {
-      issueId,
-      agentId: chosen.agentId,
-      role: pair.role,
-      identifier: candidate.identifier ?? null,
-      waitedMs: waitedMsOf(task, deps.now),
-    });
-    if (claimed !== "claimed") return null;
+    const pool = await availableAgents(deps, row.companyId, freeAgentsOfPair(pair, deps.settings, caste));
+    const chosen = await pairTaskWithPool(deps, row.companyId, task, pool, new Set());
+    if (!chosen || chosen === "lost") return null;
     return { issueId, agentId: chosen.agentId, role: pair.role, identifier: candidate.identifier ?? null };
   }
   return null;
@@ -664,12 +733,18 @@ export async function matchAgent(
       companyId: agents.companyId,
       role: agents.role,
       status: agents.status,
+      name: agents.name,
+      reportsTo: agents.reportsTo,
     })
     .from(agents)
     .where(eq(agents.id, agentId))
     .limit(1);
   if (!agentRow?.companyId) return null;
   if (agentRow.status === "paused" || agentRow.status === "terminated") return null;
+  // An agent the wake layer will refuse is woken for nothing — neither for its
+  // own task nor for a queue task (design §3.2; ADM review of 18a69ff91).
+  if (!(await evaluateAgentInvokabilityFromDb(deps.db, agentRow)).invokable) return null;
+  if (!(await isAvailable(deps, agentRow.companyId, agentId))) return null;
 
   // The agent's own assigned ready task comes first (design §3.5 "своя
   // назначенная задача — первой"; review item 3). The queue read reports such
@@ -847,6 +922,8 @@ export interface SwarmIdleRolePair {
     metadata?: Record<string, unknown> | null;
     /** 1.6.5 (OPE-6608 B): the agent's newest run (observability; the pick is T10's). */
     lastActiveAt: Date | null;
+    /** The vendor invokability of the agent (`evaluateAgentInvokability`); absent reads as invokable. */
+    invokable?: boolean;
   }[];
 }
 
@@ -878,6 +955,9 @@ export async function listIdleRolePairs(
     db
       .select({
         id: agents.id,
+        companyId: agents.companyId,
+        name: agents.name,
+        reportsTo: agents.reportsTo,
         role: agents.role,
         status: agents.status,
         metadata: agents.metadata,
@@ -952,6 +1032,9 @@ export async function listIdleRolePairs(
         hasLiveRun: liveRuns.has(agent.id),
         metadata: (agent.metadata as Record<string, unknown> | null) ?? null,
         lastActiveAt: lastActive.get(agent.id) ?? null,
+        // The vendor rule over the company's own rows (status and the whole
+        // reporting chain), the one the wake layer applies.
+        invokable: evaluateAgentInvokability(agent, agentRows).invokable,
       }));
     pairs.push({ role, companyId, queue, agents: roleAgents });
   });

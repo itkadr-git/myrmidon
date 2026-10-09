@@ -33,7 +33,7 @@ import {
   issues,
   projects,
 } from "@paperclipai/db";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import {
   DEFAULT_PHEROMONE_DYNAMICS,
   orderSwarmQueueCandidates,
@@ -94,14 +94,19 @@ describeEmbeddedPostgres("matcher × pheromone order, caste routing and cooling"
     return companyId;
   }
 
-  async function seedAgent(companyId: string, name = "agent-a", role = "engineer") {
-    const agentId = randomUUID();
+  async function seedAgent(
+    companyId: string,
+    name = "agent-a",
+    role = "engineer",
+    overrides: { id?: string; status?: string } = {},
+  ) {
+    const agentId = overrides.id ?? randomUUID();
     await db.insert(agents).values({
       id: agentId,
       companyId,
       name,
       role,
-      status: "idle",
+      status: overrides.status ?? "idle",
       metadata: {},
       adapterType: "process",
       adapterConfig: {},
@@ -157,10 +162,37 @@ describeEmbeddedPostgres("matcher × pheromone order, caste routing and cooling"
     });
   }
 
-  function matcherDeps(overrides: Partial<Pick<SwarmMatcherDeps, "settings">> = {}): SwarmMatcherDeps {
+  function matcherDeps(
+    overrides: Partial<Pick<SwarmMatcherDeps, "settings" | "heartbeat" | "isAgentAvailable">> = {},
+  ): SwarmMatcherDeps {
     return {
       db,
-      heartbeat: { wakeup: async () => ({ id: randomUUID() }) },
+      heartbeat: overrides.heartbeat ?? { wakeup: async () => ({ id: randomUUID() }) },
+      isAgentAvailable: overrides.isAgentAvailable,
+      // The matcher's activity (matches and rollbacks) lands in the real log.
+      logActivity: async (input: {
+        companyId: string;
+        actorType: string;
+        actorId: string;
+        agentId: string;
+        runId: string | null;
+        action: string;
+        entityType: string;
+        entityId: string;
+        details: Record<string, unknown>;
+      }) => {
+        await db.insert(activityLog).values({
+          companyId: input.companyId,
+          actorType: input.actorType,
+          actorId: input.actorId,
+          agentId: input.agentId,
+          runId: input.runId,
+          action: input.action,
+          entityType: input.entityType,
+          entityId: input.entityId,
+          details: input.details,
+        });
+      },
       settings: overrides.settings ?? { ...baseSettings, enabled: true },
       hostGateOpen: true,
       now: NOW,
@@ -308,6 +340,75 @@ describeEmbeddedPostgres("matcher × pheromone order, caste routing and cooling"
     expect(result.pairs.map((pair) => pair.issueId)).toEqual([manual]);
     expect(await assigneeOf(matched)).toBeNull();
     expect(await assigneeOf(manual)).toBe(agentId);
+  });
+
+  // Pool health (ADM review of 18a69ff91) ------------------------------------
+  async function rollbacks(issueId: string) {
+    return db
+      .select({ id: activityLog.id })
+      .from(activityLog)
+      .where(and(eq(activityLog.entityId, issueId), eq(activityLog.action, "issue.swarm_matched_rolled_back")));
+  }
+
+  it("an agent the wake layer refuses never enters the pool: the task goes to the healthy agent at once, a second pass writes no rollback", async () => {
+    const companyId = await seedCompany();
+    // The smallest id wins a tie: before the fix this agent took the top task
+    // on every pass, its wake was refused and the pairing rolled back.
+    const pending = await seedAgent(companyId, "agent-a", "engineer", {
+      id: "00000000-0000-4000-8000-000000000001",
+      status: "pending_approval",
+    });
+    const healthy = await seedAgent(companyId, "agent-b", "engineer", { id: "ffffffff-ffff-4fff-8fff-ffffffffffff" });
+    const issueId = await seedTask(companyId);
+    const woken: string[] = [];
+    const heartbeat = {
+      wakeup: async (agentId: string) => {
+        woken.push(agentId);
+        if (agentId === pending) throw Object.assign(new Error("Agent is not invokable"), { status: 409 });
+        return { id: randomUUID() };
+      },
+    } as unknown as SwarmMatcherDeps["heartbeat"];
+
+    const first = await matchCompany(matcherDeps({ heartbeat }), companyId);
+    expect(first.pairs.map((pair) => pair.agentId)).toEqual([healthy]);
+    expect(await assigneeOf(issueId)).toBe(healthy);
+    expect(woken).toEqual([healthy]);
+
+    const second = await matchCompany(matcherDeps({ heartbeat }), companyId);
+    expect(second.pairs).toEqual([]);
+    expect(woken).toEqual([healthy]);
+    expect(await rollbacks(issueId)).toEqual([]);
+  });
+
+  it("an agent a gate keeps out (maintenance, budget) is not paired; a refused wake hands the same task to the next agent", async () => {
+    const companyId = await seedCompany();
+    const blocked = await seedAgent(companyId, "agent-a", "engineer", { id: "00000000-0000-4000-8000-000000000002" });
+    const healthy = await seedAgent(companyId, "agent-b", "engineer", { id: "ffffffff-ffff-4fff-8fff-fffffffffff2" });
+    const gated = await seedTask(companyId, { identifier: "TASK-GATED" });
+
+    // The availability port says no: the agent is not in the pool at all.
+    const viaGate = await matchCompany(
+      matcherDeps({ isAgentAvailable: async ({ agentId }) => agentId !== blocked }),
+      companyId,
+    );
+    expect(viaGate.pairs.map((pair) => pair.agentId)).toEqual([healthy]);
+    expect(await rollbacks(gated)).toEqual([]);
+
+    // A wake refused anyway (the gate changed between the read and the wake):
+    // the same task goes to the next agent in the same pass.
+    const refused = await seedTask(companyId, { identifier: "TASK-REFUSED" });
+    await db.delete(issueClaims);
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, gated));
+    const heartbeat = {
+      wakeup: async (agentId: string) => {
+        if (agentId === blocked) throw Object.assign(new Error("budget blocked"), { status: 409 });
+        return { id: randomUUID() };
+      },
+    } as unknown as SwarmMatcherDeps["heartbeat"];
+    const retried = await matchCompany(matcherDeps({ heartbeat, isAgentAvailable: async () => true }), companyId);
+    expect(retried.pairs.map((pair) => [pair.issueId, pair.agentId])).toEqual([[refused, healthy]]);
+    expect(await assigneeOf(refused)).toBe(healthy);
+    expect(await rollbacks(refused)).toHaveLength(1);
   });
 
   // (d) ----------------------------------------------------------------------

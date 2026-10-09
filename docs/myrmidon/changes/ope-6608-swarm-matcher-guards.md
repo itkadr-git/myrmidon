@@ -26,6 +26,11 @@
 - Аренда без прогона не истекает, пока по задаче есть побудка в полёте (`queued` /
   `deferred_issue_execution` / `claimed`, не припаркована на hold). «Есть живой прогон» при
   истечении — это живой прогон по этой задаче, а не любой прогон агента.
+- В пул сопоставителя попадает только агент, которого примет слой побудок: вызываемость
+  (`evaluateAgentInvokability` — статус и цепочка подчинения), окно обслуживания и блок бюджета
+  (`swarm-claim/availability.ts`). Побудка, отклонённая всё равно, передаёт ту же задачу
+  следующему агенту пула в том же проходе — один невызываемый агент больше не морит задачу
+  голодом и не пишет откаты каждые 30 секунд.
 
 ## changelog-en
 
@@ -54,3 +59,8 @@
 - A lease with no run does not expire while a wake for its task is in flight (`queued` /
   `deferred_issue_execution` / `claimed`, not parked on a hold). "Has a live run" at expiry
   means a live run of THIS task, not any run of the agent.
+- Only an agent the wake layer will accept enters the matcher's pool: invokability
+  (`evaluateAgentInvokability` — status and the reporting chain), the maintenance window and the
+  budget block (`swarm-claim/availability.ts`). A wake refused anyway hands the same task to the
+  next agent of the pool in the same pass — one agent that cannot be woken no longer starves a
+  task or writes a rollback every 30 seconds.
