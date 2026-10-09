@@ -16,6 +16,7 @@ import { and, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog,
+  agentRuntimeState,
   agentWakeupRequests,
   agents,
   companies,
@@ -67,6 +68,7 @@ describeEmbeddedPostgres("guarded CAS handoff on PATCH /api/issues/{id}", () => 
     await db.delete(issues);
     await db.delete(principalPermissionGrants);
     await db.delete(companyMemberships);
+    await db.delete(agentRuntimeState);
     await db.delete(agents);
     await db.delete(companies);
   });
