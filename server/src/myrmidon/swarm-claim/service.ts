@@ -20,7 +20,6 @@
 import { and, eq } from "drizzle-orm";
 import { agents, issues, type Db } from "@paperclipai/db";
 import {
-  SWARM_CLAIM_CLAIMED_ACTION,
   SWARM_CLAIM_RELEASED_ACTION,
   SWARM_CLAIM_RELEASE_REASON_LEASE_EXPIRED,
   SWARM_CLAIM_RELEASE_REASON_RUN_FINISHED,
@@ -38,15 +37,14 @@ import { logActivity as logActivityService } from "../../services/activity-log.j
 import type { instanceSettingsService } from "../../services/instance-settings.js";
 import {
   nextQueueTaskForAgent,
-  planClaim,
   planLeaseHeartbeat,
   claimCovers,
 } from "./domain.js";
+import { buildSwarmMatcher } from "./matcher-factory.js";
 import { listRoleQueue } from "./queue.js";
 import {
   findLiveClaimForIssue,
   heartbeatClaim,
-  insertClaim,
   listAgentLiveClaims,
   liveClaimsForIssues,
   releaseClaim,
@@ -213,41 +211,29 @@ export async function claimNextTaskForAgent(
     return { claim: null, reason: "queue_empty" };
   }
 
-  const plan = planClaim({
-    issueId: next.issueId,
-    agentId: input.agentId,
-    role: agent.role,
-    runId: input.runId ?? null,
-    now,
-    settings,
+  // 1.6.5 (OPE-6608, review item 2 / design §3.6): the explicit pull is the
+  // matcher's `forAgent`, not a second implementation of the claim. The matcher
+  // writes the lease, makes the task the agent's own through the same
+  // conditional update every pairing uses, and records the activity; the pull
+  // only reads back the lease it created. `explicit`: the caller is a running
+  // agent, so its live run does not make it busy and nobody is woken for it.
+  const matcher = await buildSwarmMatcher({
+    db: ports.db,
+    settings: ports.settings,
+    castes: ports.castes,
+    // No wake: the agent asking is awake. The matcher's wake port stays empty.
+    enqueueWakeup: undefined,
+    env: ports.env,
+    now: () => now,
   });
-  const claim = await insertClaim(ports.db, {
-    companyId: input.companyId,
-    ...plan,
-  });
-  if (!claim) {
-    // Another agent won the same task between the read and the write. The
-    // correct answer is "nothing was taken": the caller retries on its next
-    // wake, exactly as a losing bidder does.
-    return { claim: null, reason: "queue_empty" };
-  }
-
-  await ports.logActivity?.({
-    companyId: input.companyId,
-    actorType: "system",
-    actorId: "swarm_claim",
-    agentId: input.agentId,
-    runId: input.runId ?? null,
-    action: SWARM_CLAIM_CLAIMED_ACTION,
-    entityType: "issue",
-    entityId: next.issueId,
-    details: {
-      identifier: next.identifier,
-      priority: next.priority,
-      role: agent.role,
-      leaseTtlSec: settings.leaseTtlSec,
-    },
-  });
+  if (!matcher) return { claim: null, reason: "disabled" };
+  const pair = await matcher.forAgent(input.agentId, { explicit: true });
+  // Nothing was paired: another agent won the same task between the read and
+  // the write, or the pool read found no seat for this agent. The caller
+  // retries on its next wake, exactly as a losing bidder does.
+  if (!pair) return { claim: null, reason: "queue_empty" };
+  const claim = await findLiveClaimForIssue(ports.db, pair.issueId);
+  if (!claim || claim.agentId !== input.agentId) return { claim: null, reason: "queue_empty" };
   return { claim, reason: "claimed" };
 }
 

@@ -701,7 +701,13 @@ import { createAutoResumeSweeper } from "../myrmidon/auto-resume.js";
 // myrmidon(1.6-SWARM): the expired-claim sweep of the per-role task queues
 // myrmidon(1.6.5 OPE-6608): and the board-side matcher of the event paths — the
 // release path below hands the freed agent to it (design §3.5).
-import { buildSwarmClaimSweeper, matchFreedAgent } from "../myrmidon/swarm-claim/index.js";
+import {
+  buildSwarmClaimSweeper,
+  buildSwarmMatcher,
+  matchFreedAgent,
+  notifySwarmAgentEvent,
+  setSwarmEventSink,
+} from "../myrmidon/swarm-claim/index.js";
 // myrmidon(1.6-SWARM): the checkout/release claim hooks of the run lifecycle
 import {
   recordSwarmClaimOnCheckoutImpl,
@@ -18457,6 +18463,26 @@ export function heartbeatService(
     enqueueWakeup: (agentId, opts) => enqueueWakeup(agentId, opts),
     env: process.env,
   });
+  // myrmidon(1.6.5 OPE-6608, review item 2 / design §3.5): the event sink of the
+  // board matcher. The issue service (a task appeared or became available) and
+  // the agent resume path call it; the matcher is built per event so the swarm
+  // switch is read at that moment — turning the swarm off stops matching at
+  // once, with no restart (`buildSwarmMatcher` returns null when it is off).
+  const swarmMatcherPorts = () => ({
+    db,
+    settings: {
+      getGeneral: () => instanceSettings.getGeneral(),
+      updateGeneral: () => {
+        throw new Error("not used by the matcher");
+      },
+    },
+    enqueueWakeup: (agentId: string, opts: Parameters<typeof enqueueWakeup>[1]) => enqueueWakeup(agentId, opts),
+    env: process.env,
+  });
+  setSwarmEventSink({
+    forIssue: async (issueId) => (await buildSwarmMatcher(swarmMatcherPorts()))?.forIssue(issueId) ?? null,
+    forAgent: async (agentId) => (await buildSwarmMatcher(swarmMatcherPorts()))?.forAgent(agentId) ?? null,
+  });
 
   async function sweepPendingCleanupLeases(opts?: {
     backoffMs?: number;
@@ -30716,8 +30742,14 @@ export function heartbeatService(
     // myrmidon(L3): wakes queued runs and stranded assigned todo/in_progress
     // issues a drained pause left idle; logic in myrmidon/pause-drain.ts.
     // Its sole caller is the agent resume route.
-    resumeAgentAfterPause: (agentId: string) =>
-      pauseResumeWakeAgent({ db, startNextQueuedRunForAgent, enqueueWakeup }, agentId),
+    resumeAgentAfterPause: async (agentId: string) => {
+      const resumed = await pauseResumeWakeAgent({ db, startNextQueuedRunForAgent, enqueueWakeup }, agentId);
+      // myrmidon(1.6.5 OPE-6608, review item 2): a lifted pause frees the agent
+      // — the board matcher gives it its own ready task, else a ready task of
+      // its caste (design §3.5). Fire-and-forget: it never fails the resume.
+      notifySwarmAgentEvent(agentId);
+      return resumed;
+    },
 
     scheduleBoundedRetry: async (
       runId: string,

@@ -39,6 +39,8 @@ interface FakePort extends SwarmSupervisorReadPort {
     now: Date,
   ) => Promise<boolean>;
   released: { claimId: string; reason: string }[];
+  unassignIssue: (companyId: string, issueId: string, agentId: string, now: Date) => Promise<boolean>;
+  unassigned: { issueId: string; agentId: string }[];
 }
 
 interface FakeClaim {
@@ -84,8 +86,12 @@ function fakePort(input: {
   agents?: FakeAgent[];
   liveRunAgents?: string[];
   releaseResult?: boolean;
+  unassignError?: boolean;
+  /** Called with every port write, in order, so a test can pin the sequence. */
+  trace?: string[];
 }): FakePort {
   const released: { claimId: string; reason: string }[] = [];
+  const unassigned: { issueId: string; agentId: string }[] = [];
   const port: FakePort = {
     async claimEnabled() {
       return input.enabled ?? true;
@@ -120,9 +126,17 @@ function fakePort(input: {
     },
     async releaseClaim(_companyId, claimId, reason) {
       released.push({ claimId, reason });
+      input.trace?.push("release");
       return input.releaseResult ?? true;
     },
+    async unassignIssue(_companyId, issueId, agentId) {
+      input.trace?.push("unassign");
+      if (input.unassignError) throw new Error("db down");
+      unassigned.push({ issueId, agentId });
+      return true;
+    },
     released,
+    unassigned,
   };
   return port;
 }
@@ -264,43 +278,74 @@ describe("swarmSupervisorView.overview", () => {
 });
 
 describe("releaseLeaseForRebalance", () => {
-  function deps(port: ReturnType<typeof fakePort>, opts: { wakeError?: boolean } = {}): SwarmRebalanceDeps {
-    return {
-      port,
-      enqueueWakeup: vi.fn(async () => {
-        if (opts.wakeError) throw new Error("wake refused");
-        return { queued: true };
-      }),
-      now: () => NOW,
-    };
+  const HOLDER = "44444444-4444-4444-8444-444444444444";
+  const OTHER = "44444444-4444-4444-8444-444444444445";
+  const CLAIM = "33333333-3333-4333-8333-333333333333";
+  const ISSUE = "11111111-1111-4111-8111-111111111111";
+
+  function deps(
+    port: ReturnType<typeof fakePort>,
+    opts: { match?: (issueId: string) => Promise<{ agentId: string } | null>; trace?: string[] } = {},
+  ): SwarmRebalanceDeps & { matchIssue: ReturnType<typeof vi.fn> } {
+    const matchIssue = vi.fn(async (issueId: string) => {
+      opts.trace?.push("match");
+      return opts.match ? opts.match(issueId) : { agentId: OTHER };
+    });
+    return { port, matchIssue, now: () => NOW };
   }
 
-  it("releases a live lease, wakes the next idle agent of the role and audits", async () => {
+  it("releases the lease, takes the owner off the task, then hands the task to the matcher and audits", async () => {
+    const trace: string[] = [];
+    const port = fakePort({ claims: [claim()], issues: [issue()], agents: [agent()], trace });
+    const logActivity = vi.fn<(input: { action: string }) => Promise<void>>(async () => {});
+    const d = deps(port, { trace });
+    const result = await releaseLeaseForRebalance({ ...d, logActivity }, COMPANY_ID, CLAIM);
+    expect(result.released).toBe(true);
+    // The agent the matcher paired is reported; the holder is not asked again.
+    expect(result.wokenAgentId).toBe(OTHER);
+    expect(port.released).toEqual([{ claimId: CLAIM, reason: "supervisor_rebalance" }]);
+    expect(port.unassigned).toEqual([{ issueId: ISSUE, agentId: HOLDER }]);
+    expect(d.matchIssue).toHaveBeenCalledWith(ISSUE);
+    // Order is the contract: the matcher only sees a task that has no owner.
+    expect(trace).toEqual(["release", "unassign", "match"]);
+    expect(logActivity.mock.calls[0]?.[0]?.action).toBe("issue.swarm_claim_supervisor_release");
+  });
+
+  it("does not pick the next agent by load: nobody is woken when the matcher pairs nobody", async () => {
+    // Two idle agents of the role exist; the old shape woke the less loaded one
+    // directly. The matcher is the only path now, so a null pair means no wake.
     const port = fakePort({
       claims: [claim()],
       issues: [issue()],
-      agents: [
-        agent(),
-        agent({
-          agent_id: "44444444-4444-4444-8444-444444444445",
-          agent_name: "agent-b",
-        }),
-      ],
-      liveRunAgents: ["44444444-4444-4444-8444-444444444444"],
+      agents: [agent(), agent({ agent_id: OTHER, agent_name: "agent-b" })],
     });
-    const logActivity = vi.fn<(input: { action: string }) => Promise<void>>(async () => {});
-    const result = await releaseLeaseForRebalance(
-      { ...deps(port), logActivity },
-      COMPANY_ID,
-      "33333333-3333-4333-8333-333333333333",
-    );
+    const d = deps(port, { match: async () => null });
+    const result = await releaseLeaseForRebalance(d, COMPANY_ID, CLAIM);
     expect(result.released).toBe(true);
-    expect(result.wokenAgentId).toBe("44444444-4444-4444-8444-444444444445");
-    expect(port.released).toEqual([
-      { claimId: "33333333-3333-4333-8333-333333333333", reason: "supervisor_rebalance" },
-    ]);
-    const logged = logActivity.mock.calls[0]?.[0];
-    expect(logged?.action).toBe("issue.swarm_claim_supervisor_release");
+    expect(result.wokenAgentId).toBeNull();
+    expect(d.matchIssue).toHaveBeenCalledTimes(1);
+  });
+
+  it("rotates: the task is offered to the matcher with no owner, so the holder is not kept", async () => {
+    const port = fakePort({ claims: [claim()], issues: [issue()], agents: [agent()] });
+    const seenOwners: Array<string | null> = [];
+    const d = deps(port, {
+      match: async () => {
+        // At match time the holder has already been taken off.
+        seenOwners.push(port.unassigned.length > 0 ? null : HOLDER);
+        return { agentId: OTHER };
+      },
+    });
+    await releaseLeaseForRebalance(d, COMPANY_ID, CLAIM);
+    expect(seenOwners).toEqual([null]);
+  });
+
+  it("a refused unassign still matches (the periodic pass never wakes anyone for a foreign task)", async () => {
+    const port = fakePort({ claims: [claim()], issues: [issue()], agents: [agent()], unassignError: true });
+    const d = deps(port);
+    const result = await releaseLeaseForRebalance(d, COMPANY_ID, CLAIM);
+    expect(result.released).toBe(true);
+    expect(d.matchIssue).toHaveBeenCalled();
   });
 
   it("404s on an unknown claim and 409s on a released or expired claim", async () => {
@@ -327,25 +372,32 @@ describe("releaseLeaseForRebalance", () => {
     ).rejects.toBeInstanceOf(ClaimNotLiveError);
   });
 
-  it("survives a refused wake: released stays true, wokenAgentId null", async () => {
+  it("survives a matcher failure: released stays true, wokenAgentId null", async () => {
     const port = fakePort({ claims: [claim()], issues: [issue()], agents: [agent()] });
-    const result = await releaseLeaseForRebalance(
-      deps(port, { wakeError: true }),
-      COMPANY_ID,
-      "33333333-3333-4333-8333-333333333333",
-    );
+    const d = deps(port, {
+      match: async () => {
+        throw new Error("wake refused");
+      },
+    });
+    const result = await releaseLeaseForRebalance(d, COMPANY_ID, CLAIM);
     expect(result.released).toBe(true);
     expect(result.wokenAgentId).toBeNull();
   });
 
-  it("reports released:false when the release path declines", async () => {
+  it("reports released:false and touches neither the owner nor the matcher when the release path declines", async () => {
     const port = fakePort({ claims: [claim()], releaseResult: false });
-    const result = await releaseLeaseForRebalance(
-      deps(port),
-      COMPANY_ID,
-      "33333333-3333-4333-8333-333333333333",
-    );
+    const d = deps(port);
+    const result = await releaseLeaseForRebalance(d, COMPANY_ID, CLAIM);
     expect(result.released).toBe(false);
+    expect(port.unassigned).toEqual([]);
+    expect(d.matchIssue).not.toHaveBeenCalled();
+  });
+
+  it("with the swarm off (no matcher wired) the release stands alone", async () => {
+    const port = fakePort({ claims: [claim()], issues: [issue()], agents: [agent()] });
+    const result = await releaseLeaseForRebalance({ port, now: () => NOW }, COMPANY_ID, CLAIM);
+    expect(result.released).toBe(true);
+    expect(result.wokenAgentId).toBeNull();
   });
 });
 

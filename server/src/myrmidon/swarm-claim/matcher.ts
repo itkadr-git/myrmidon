@@ -190,6 +190,7 @@ function freeAgentsOfPair(
   pair: SwarmIdleRolePair,
   settings: SwarmClaimSettings,
   caste: SwarmMatcherCaste | null,
+  opts: { ignoreLiveRun?: boolean } = {},
 ): SwarmMatcherAgent[] {
   // The ceiling of the caste wins over the global one (the same reading the
   // sweeper's idle pass used before this file took the pass over).
@@ -203,7 +204,7 @@ function freeAgentsOfPair(
       ) {
         return false;
       }
-      if (agent.hasLiveRun) return false;
+      if (agent.hasLiveRun && !opts.ignoreLiveRun) return false;
       // The agent's own switch, else the caste's `swarmEligible` (the directory
       // read below), else in scope. A caste the company switched off never
       // enters the pool: its ready tasks wait for a caste that may take them,
@@ -468,6 +469,7 @@ export async function matchIssue(
 export async function matchAgent(
   deps: SwarmMatcherDeps,
   agentId: string,
+  opts: { explicit?: boolean } = {},
 ): Promise<SwarmMatcherPair | null> {
   if (!deps.hostGateOpen) return null;
   if (!deps.settings.enabled) return null;
@@ -489,8 +491,12 @@ export async function matchAgent(
   // a task in the pair of the assignee's caste and only while nothing covers
   // it (no live lease, no wake in flight), so this wake is never a repeat and
   // the agent is never sent out to "look for work".
-  const own = await matchOwnAssignedTask(deps, agentRow.companyId, agentId);
-  if (own) return own;
+  // An explicit pull (the claim API) comes from a run that is already going:
+  // its own assigned task is the run's business, not a reason to wake it.
+  if (!opts.explicit) {
+    const own = await matchOwnAssignedTask(deps, agentRow.companyId, agentId);
+    if (own) return own;
+  }
 
   const castes = await casteDirectoryOf(deps, agentRow.companyId);
   const pairs = await listIdleRolePairs(deps.db, agentRow.companyId);
@@ -501,7 +507,13 @@ export async function matchAgent(
   // routed to a caste no agent holds: the agent is simply not free for this
   // queue, so the event matches nothing (design §3.2).
   if (caste && !caste.swarmEligible) return null;
-  if (!freeAgentsOfPair(pair, deps.settings, caste).some((agent) => agent.agentId === agentId)) return null;
+  if (
+    !freeAgentsOfPair(pair, deps.settings, caste, { ignoreLiveRun: opts.explicit === true }).some(
+      (agent) => agent.agentId === agentId,
+    )
+  ) {
+    return null;
+  }
 
   const queue = orderSwarmQueueCandidates(pair.queue, {
     p0Preemption: deps.settings.p0Preemption,

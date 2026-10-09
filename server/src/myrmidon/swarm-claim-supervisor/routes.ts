@@ -13,6 +13,9 @@
 import { Router, type Request, type Response, type NextFunction } from "express";
 import type { Db } from "@paperclipai/db";
 import { assertBoard, assertCompanyAccess } from "../../routes/authz.js";
+import { instanceSettingsService } from "../../services/instance-settings.js";
+import { buildSwarmMatcher } from "../swarm-claim/matcher-factory.js";
+import type { SwarmClaimEnqueueWakeup } from "../swarm-claim/service.js";
 import { swarmSupervisorView, createSwarmSupervisorDbPort, type SwarmSupervisorOverview } from "./view.js";
 import {
   createSwarmSupervisorReleasePort,
@@ -31,7 +34,7 @@ import {
 export interface SwarmSupervisorRoutesDeps {
   db: Db;
   /** Board wake admission path; every limit and gate is enforced inside it. */
-  enqueueWakeup: SwarmRebalanceDeps["enqueueWakeup"];
+  enqueueWakeup: SwarmClaimEnqueueWakeup;
   /** Activity log for the rebalance action; absent in unit tests. */
   logActivity?: SwarmRebalanceDeps["logActivity"];
   env?: NodeJS.ProcessEnv;
@@ -45,6 +48,17 @@ export function swarmSupervisorRoutes(db: Db, deps: SwarmSupervisorRoutesDeps) {
   const port = createSwarmSupervisorReleasePort(db, env);
   const view = swarmSupervisorView(port, env, now);
   const pilotDeps = createSwarmPilotDeps(db, env, now);
+  // The matcher is built per release: the switch is read each time, so a swarm
+  // turned off since the last call matches nothing (design §5.1).
+  const matchIssue: NonNullable<SwarmRebalanceDeps["matchIssue"]> = async (issueId) => {
+    const matcher = await buildSwarmMatcher({
+      db,
+      settings: instanceSettingsService(db),
+      enqueueWakeup: deps.enqueueWakeup,
+      env,
+    });
+    return matcher ? matcher.forIssue(issueId) : null;
+  };
 
   router.get(
     "/myrmidon/companies/:companyId/swarm-claim/supervisor/overview",
@@ -75,7 +89,7 @@ export function swarmSupervisorRoutes(db: Db, deps: SwarmSupervisorRoutesDeps) {
         const result = await releaseLeaseForRebalance(
           {
             port,
-            enqueueWakeup: deps.enqueueWakeup,
+            matchIssue,
             logActivity: deps.logActivity,
             env,
             now,
