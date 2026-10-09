@@ -63,9 +63,19 @@ export function readStoredBridgeLanguage(raw: unknown): BridgeLanguage | null {
   return parsed.data.language ?? null;
 }
 
+/**
+ * The host environment, read without naming `process`: this module reaches every
+ * consumer of the shared package, including browser-ish builds whose tsconfig
+ * carries no node type definitions.
+ */
+function ambientEnv(): Record<string, string | undefined> {
+  const host = globalThis as { process?: { env?: Record<string, string | undefined> } };
+  return host.process?.env ?? {};
+}
+
 /** The forced env language, or null when the variable is unset or unknown. */
 export function forcedBridgeLanguage(
-  env: Record<string, string | undefined> = process.env,
+  env: Record<string, string | undefined> = ambientEnv(),
 ): BridgeLanguage | null {
   const raw = env[BRIDGE_LANGUAGE_ENV]?.trim().toLowerCase();
   return isBridgeLanguage(raw) ? raw : null;
@@ -92,7 +102,7 @@ export function resolveBridgeLanguage(input: {
   stored?: unknown;
   env?: Record<string, string | undefined>;
 }): ResolvedBridgeLanguage {
-  const forced = forcedBridgeLanguage(input.env ?? process.env);
+  const forced = forcedBridgeLanguage(input.env ?? ambientEnv());
   const stored = readStoredBridgeLanguage(input.stored);
   if (forced) return { language: forced, source: "environment", forced, stored };
   if (stored) return { language: stored, source: "instance", forced: null, stored };

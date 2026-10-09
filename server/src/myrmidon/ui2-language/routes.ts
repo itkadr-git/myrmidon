@@ -21,7 +21,6 @@ import { getActorInfo } from "../../routes/authz.js";
 // bridge's language (null when unset).
 // myrmidon(1.6.5-TG-LOCALE-C): the same read now also reports the instance
 // setting and resolves the full order env → user → instance → default.
-import { resolveBridgeLocaleDecision } from "../agent-chat-bridge/locales/index.js";
 import {
   createUi2LanguageService,
   ui2LanguageAuditEntries,
