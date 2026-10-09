@@ -634,11 +634,12 @@ export function OnboardingRoutePage() {
               to send this click: creation lives on Cloud, and in-app creation
               is a 403 floor. A button that does nothing is worse than none, so
               say why instead of rendering an inert control. */}
+          {/* myrmidon(DB1): DEBRAND 1.6.6-a — visible copy renames the vendor cloud to "Myrmidon Cloud". */}
           {!matchedCompany && cloudInstance && !createStackUrl ? (
             <p className="text-sm text-muted-foreground">
               {t("app.cloudCreateUnavailable", {
                 defaultValue:
-                  "Organizations are created in Paperclip Cloud. This instance can't reach it right now — try again from your Cloud portfolio.",
+                  "Organizations are created in Myrmidon Cloud. This instance can't reach it right now — try again from your Cloud portfolio.",
               })}
             </p>
           ) : (
@@ -763,11 +764,12 @@ function NoCompaniesStartPage() {
         <div className="mt-4">
           {/* Same as the onboarding route: no Cloud origin means nowhere to
               send the click, and in-app creation is a 403 floor here. */}
+          {/* myrmidon(DB1): DEBRAND 1.6.6-a — visible copy renames the vendor cloud to "Myrmidon Cloud". */}
           {cloudInstance && !createStackUrl ? (
             <p className="text-sm text-muted-foreground">
               {t("app.cloudCreateUnavailable", {
                 defaultValue:
-                  "Organizations are created in Paperclip Cloud. This instance can't reach it right now — try again from your Cloud portfolio.",
+                  "Organizations are created in Myrmidon Cloud. This instance can't reach it right now — try again from your Cloud portfolio.",
               })}
             </p>
           ) : (
