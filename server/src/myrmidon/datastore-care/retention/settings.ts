@@ -81,11 +81,12 @@ export function resolveRetentionSettings(
       ? (care as Record<string, unknown>)[DATASTORE_CARE_RETENTION_KEY]
       : undefined;
   const stored = normalizeDatastoreCareRetention(block);
+  const daysEnv = envRetentionDays(env);
   const days =
     stored.heartbeatRunContextDays !== undefined
       ? { value: stored.heartbeatRunContextDays, source: "settings" as const }
-      : envRetentionDays(env) !== undefined
-        ? { value: envRetentionDays(env)!, source: "env" as const }
+      : daysEnv !== undefined
+        ? { value: daysEnv, source: "env" as const }
         : { value: DEFAULT_HEARTBEAT_RUN_CONTEXT_DAYS, source: "default" as const };
   const batchesStored = stored.contextCompactMaxBatches;
   const batchesEnv = envCompactMaxBatches(env);
@@ -128,7 +129,12 @@ export async function readRetentionLastRun(
   return stored ? normalizeDatastoreCareRetentionLastRun(stored.contextLastRun) : normalizeDatastoreCareRetentionLastRun(undefined);
 }
 
-/** Write a partial patch; the pass state (`contextLastRun`) under the block survives. */
+/**
+ * Write a partial patch; the pass state (`contextLastRun`) under the block
+ * survives. Per field: absent keeps the stored value untouched, `null`
+ * clears it (resolution then falls back to env, then default), a number
+ * stores it. Review (F14B): PATCHing one knob must never wipe the other.
+ */
 export async function writeRetentionSettings(
   settings: DatastoreCareSettingsService,
   patch: DatastoreCareRetentionPatch,
@@ -136,17 +142,16 @@ export async function writeRetentionSettings(
   const general = (await settings.getGeneral()) as unknown as Record<string, unknown>;
   const stored = storedCareRetention(general);
   const next: Record<string, unknown> = { ...(stored ?? {}) };
-  if (patch.heartbeatRunContextDays !== undefined) {
-    next.heartbeatRunContextDays = patch.heartbeatRunContextDays;
-  } else {
+  // Per field: undefined (absent) keeps, null clears, a number stores.
+  if (patch.heartbeatRunContextDays === null) {
     delete next.heartbeatRunContextDays;
+  } else if (patch.heartbeatRunContextDays !== undefined) {
+    next.heartbeatRunContextDays = patch.heartbeatRunContextDays;
   }
-  // myrmidon(1.6.5-F14B): the batches-per-pass knob follows the same
-  // set-or-drop rule, so PATCHing it away falls back to env, then default.
-  if (patch.contextCompactMaxBatches !== undefined) {
-    next.contextCompactMaxBatches = patch.contextCompactMaxBatches;
-  } else {
+  if (patch.contextCompactMaxBatches === null) {
     delete next.contextCompactMaxBatches;
+  } else if (patch.contextCompactMaxBatches !== undefined) {
+    next.contextCompactMaxBatches = patch.contextCompactMaxBatches;
   }
   const care = general[DATASTORE_CARE_SETTINGS_KEY];
   const careBlock = typeof care === "object" && care !== null ? { ...(care as Record<string, unknown>) } : {};

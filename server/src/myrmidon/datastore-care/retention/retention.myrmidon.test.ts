@@ -9,7 +9,11 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { DEFAULT_CONTEXT_COMPACT_MAX_BATCHES, DEFAULT_HEARTBEAT_RUN_CONTEXT_DAYS } from "@paperclipai/shared";
+import {
+  DEFAULT_CONTEXT_COMPACT_MAX_BATCHES,
+  DEFAULT_HEARTBEAT_RUN_CONTEXT_DAYS,
+  patchDatastoreCareRetentionSchema,
+} from "@paperclipai/shared";
 import {
   checkBackupGate,
   resolveBackupFilePrefix,
@@ -19,7 +23,7 @@ import {
   CONTEXT_COMPACTED_AT_KEY,
   CONTEXT_COMPACT_KEYS,
 } from "./compact.js";
-import { resolveRetentionSettings } from "./settings.js";
+import { resolveRetentionSettings, writeRetentionSettings } from "./settings.js";
 
 describe("myrmidon(1.6.5-DBC1) compactContextSnapshot", () => {
   it("strips exactly the O1a key list and stamps _compactedAt", () => {
@@ -213,8 +217,121 @@ describe("myrmidon(1.6.5-DBC1) backup gate", () => {
     }
   });
 
-  it("the prefix is the MYRMIDON_DB_BACKUP_FILE_PREFIX knob, default paperclip", () => {
+  it("the prefix is the MYRMIDON_DB_BACKUP_FILE_PREFIX knob: unset defaults, explicit empty means no naming contract", () => {
     expect(resolveBackupFilePrefix({})).toBe("paperclip");
     expect(resolveBackupFilePrefix({ MYRMIDON_DB_BACKUP_FILE_PREFIX: "myrmidon" })).toBe("myrmidon");
+    // Review (F14B): the docs promise "empty prefix -> any accepted file";
+    // the knob must therefore distinguish "not set" from "set empty".
+    expect(resolveBackupFilePrefix({ MYRMIDON_DB_BACKUP_FILE_PREFIX: "" })).toBe("");
+    expect(resolveBackupFilePrefix({ MYRMIDON_DB_BACKUP_FILE_PREFIX: "   " })).toBe("");
+  });
+
+  it("empty prefix: a fresh host dump of any name lifts the gate", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "f14b-backups-anon-"));
+    try {
+      const file = path.join(dir, "board.dump");
+      fs.writeFileSync(file, "pg_dump -Fc bytes");
+      const gate = checkBackupGate({ backupDir: dir, prefix: "" });
+      expect(gate.fresh).toBe(true);
+      expect(gate.prefix).toBe("");
+      expect(gate.newestBackupFile).toBe("board.dump");
+      expect(gate.candidates).toEqual([]);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("myrmidon(1.6.5-F14B) writeRetentionSettings", () => {
+  type FakeGeneral = Record<string, unknown>;
+
+  function fakeSettings(initial: FakeGeneral) {
+    const state = { general: structuredClone(initial) as FakeGeneral };
+    return {
+      state,
+      service: {
+        getGeneral: async () => state.general,
+        updateGeneral: async (patch: Record<string, unknown>) => {
+          // Same contract as the real service: per top-level general key merge.
+          state.general = { ...state.general, ...patch };
+          return state.general as never;
+        },
+        listCompanyIds: async () => [],
+      },
+    };
+  }
+
+  it("PATCHing one knob never wipes the other (partial field semantics)", async () => {
+    const { state, service } = fakeSettings({
+      datastoreCare: { retention: { heartbeatRunContextDays: 0 } },
+    });
+    await writeRetentionSettings(service, { contextCompactMaxBatches: 2 });
+    const retention = (state.general.datastoreCare as Record<string, unknown>)
+      .retention as Record<string, unknown>;
+    // The disabled compaction (0) must survive a batches-only patch; the
+    // review found the old writer silently re-enabling it.
+    expect(retention.heartbeatRunContextDays).toBe(0);
+    expect(retention.contextCompactMaxBatches).toBe(2);
+  });
+
+  it("round-trips both fields through the stored block", async () => {
+    const { state, service } = fakeSettings({});
+    await writeRetentionSettings(service, {
+      heartbeatRunContextDays: 5,
+      contextCompactMaxBatches: 12,
+    });
+    const retention = (state.general.datastoreCare as Record<string, unknown>)
+      .retention as Record<string, unknown>;
+    expect(retention).toEqual({ heartbeatRunContextDays: 5, contextCompactMaxBatches: 12 });
+    const resolved = resolveRetentionSettings(state.general, {});
+    expect(resolved.heartbeatRunContextDays).toBe(5);
+    expect(resolved.contextCompactMaxBatches).toBe(12);
+    expect(resolved.contextCompactMaxBatchesSource).toBe("settings");
+  });
+
+  it("explicit null clears only that field and falls back to env/default", async () => {
+    const { state, service } = fakeSettings({
+      datastoreCare: {
+        retention: { heartbeatRunContextDays: 4, contextCompactMaxBatches: 6 },
+      },
+    });
+    await writeRetentionSettings(service, { contextCompactMaxBatches: null });
+    const retention = (state.general.datastoreCare as Record<string, unknown>)
+      .retention as Record<string, unknown>;
+    expect("contextCompactMaxBatches" in retention).toBe(false);
+    expect(retention.heartbeatRunContextDays).toBe(4);
+    const resolved = resolveRetentionSettings(state.general, {
+      MYRMIDON_CONTEXT_COMPACT_MAX_BATCHES: "3",
+    });
+    expect(resolved.contextCompactMaxBatches).toBe(3);
+    expect(resolved.contextCompactMaxBatchesSource).toBe("env");
+  });
+
+  it("keeps the pass state (contextLastRun) under the block", async () => {
+    const { state, service } = fakeSettings({
+      datastoreCare: {
+        retention: {
+          heartbeatRunContextDays: 7,
+          contextLastRun: { lastRunAt: "2026-10-09T00:00:00.000Z", compactedTotal: 3 },
+        },
+      },
+    });
+    await writeRetentionSettings(service, { contextCompactMaxBatches: 1 });
+    const retention = (state.general.datastoreCare as Record<string, unknown>)
+      .retention as Record<string, unknown>;
+    expect(retention.contextLastRun).toEqual({ lastRunAt: "2026-10-09T00:00:00.000Z", compactedTotal: 3 });
+    expect(retention.contextCompactMaxBatches).toBe(1);
+  });
+
+  it("the patch schema distinguishes absent from null", () => {
+    expect(patchDatastoreCareRetentionSchema.parse({})).toEqual({});
+    expect(patchDatastoreCareRetentionSchema.parse({ contextCompactMaxBatches: null })).toEqual({
+      contextCompactMaxBatches: null,
+    });
+    expect(patchDatastoreCareRetentionSchema.parse({ heartbeatRunContextDays: 0 })).toEqual({
+      heartbeatRunContextDays: 0,
+    });
+    expect(() => patchDatastoreCareRetentionSchema.parse({ contextCompactMaxBatches: 0 })).toThrow();
+    expect(() => patchDatastoreCareRetentionSchema.parse({ contextCompactMaxBatches: 1001 })).toThrow();
   });
 });

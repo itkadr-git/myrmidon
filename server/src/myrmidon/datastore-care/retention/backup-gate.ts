@@ -57,11 +57,18 @@ export function resolveBackupDir(input: { homeDir?: string } = {}): string {
   return resolveDefaultBackupDir(input);
 }
 
-/** The filename prefix the backup run writes (`<prefix>-<timestamp>.sql.gz`). */
+/**
+ * The filename prefix the backup run writes (`<prefix>-<timestamp>.sql.gz`).
+ * myrmidon(1.6.5-F14B): unset keeps the built-in `"paperclip"` naming;
+ * explicitly empty means "no naming contract" — the gate then accepts any
+ * `*.sql.gz`/`*.dump` in the dir (see `checkBackupGate`).
+ */
 export function resolveBackupFilePrefix(
   env: Record<string, string | undefined> = process.env,
 ): string {
-  return env.MYRMIDON_DB_BACKUP_FILE_PREFIX?.trim() || "paperclip";
+  const raw = env.MYRMIDON_DB_BACKUP_FILE_PREFIX;
+  if (raw === undefined) return "paperclip";
+  return raw.trim();
 }
 
 /** Backup filename extensions the gate accepts. */
