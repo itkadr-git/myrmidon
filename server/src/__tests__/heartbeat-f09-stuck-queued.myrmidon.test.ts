@@ -1,5 +1,5 @@
 // myrmidon(1.6.5 F-09): the stuck-queued sweep tests. A queued run whose task
-// is in backlog or hidden is cancelled with `issue_backlog_not_startable`; a
+// is in backlog or hidden is cancelled with `queued_run_issue_not_startable`; a
 // queued run older than the explain threshold without waitReason gets one; a
 // queued run older than the stall threshold raises a queue_stall attention
 // card; a run whose task is in todo starts when the admission gate opens.
@@ -285,7 +285,7 @@ describeEmbeddedPostgres("heartbeat F-09 stuck-queued sweep", () => {
 
     const stored = await runRow(run.id);
     expect(stored?.status).toBe("cancelled");
-    expect(stored?.errorCode).toBe("issue_backlog_not_startable");
+    expect(stored?.errorCode).toBe("queued_run_issue_not_startable");
     expect(stored?.error).toContain("backlog");
   }, 30_000);
 
@@ -312,7 +312,7 @@ describeEmbeddedPostgres("heartbeat F-09 stuck-queued sweep", () => {
 
     const stored = await runRow(run.id);
     expect(stored?.status).toBe("cancelled");
-    expect(stored?.errorCode).toBe("issue_backlog_not_startable");
+    expect(stored?.errorCode).toBe("queued_run_issue_not_startable");
     expect(stored?.error).toContain("hidden");
   }, 30_000);
 

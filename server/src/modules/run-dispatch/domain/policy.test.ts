@@ -316,14 +316,14 @@ describe("decideQueuedRunStaleness", () => {
       errorCode: "issue_terminal_status",
     },
     {
-      name: "issue_backlog_not_startable (backlog)",
+      name: "queued_run_issue_not_startable (backlog)",
       overrides: { issueStatus: "backlog" } satisfies Partial<QueuedRunFacts>,
-      errorCode: "issue_backlog_not_startable",
+      errorCode: "queued_run_issue_not_startable",
     },
     {
-      name: "issue_backlog_not_startable (hidden)",
+      name: "queued_run_issue_not_startable (hidden)",
       overrides: { issueStatus: "todo", issueHiddenAt: new Date("2025-01-01T00:00:00Z") } satisfies Partial<QueuedRunFacts>,
-      errorCode: "issue_backlog_not_startable",
+      errorCode: "queued_run_issue_not_startable",
     },
     {
       name: "issue_execution_lock_changed",

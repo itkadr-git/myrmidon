@@ -123,7 +123,7 @@ export type QueuedRunStalenessErrorCode =
   // myrmidon(1.6.5 F-09): a queued run whose task was moved back to backlog
   // has no executor — it is cancelled with this code instead of waiting
   // silently in the queue until the global stale sweep picks it up.
-  | "issue_backlog_not_startable";
+  | "queued_run_issue_not_startable";
 
 export type StalenessDecision =
   | { stale: false }
@@ -655,7 +655,7 @@ export function decideQueuedRunStaleness(
   ) {
     return {
       stale: true,
-      errorCode: "issue_backlog_not_startable",
+      errorCode: "queued_run_issue_not_startable",
       reason: `Cancelled because issue is not startable (status: ${facts.issueStatus}${facts.issueHiddenAt != null ? ", hidden" : ""}) before the queued run could start`,
       details: { issueId: facts.issueId, currentStatus: facts.issueStatus, hidden: facts.issueHiddenAt != null },
     };
