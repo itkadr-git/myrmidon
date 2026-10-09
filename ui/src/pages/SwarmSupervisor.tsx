@@ -1,6 +1,6 @@
 // myrmidon(1.6-SWARM-CLAIM-B): the "Swarm supervisor" page — a per-role view of
 // the swarm-claim queues and live leases, with a manual "Release lease" action
-// (the pilot-vs-BASELINE report was removed with the pilot). Server side (part A): GET/POST under
+// (the report vs BASELINE was removed). Server side (part A): GET/POST under
 // /api/myrmidon/companies/:id/swarm-claim/supervisor; the JSON contract is
 // frozen in the design note, so until part A merges this page shows its empty,
 // disabled and error states against the mocked contract shape.

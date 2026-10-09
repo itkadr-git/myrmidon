@@ -442,7 +442,7 @@
   },
   "swarm": {
     "title": "Swarm supervisor",
-    "intro": "Role queues, live role leases and rebalance actions, plus the pilot report compared against the frozen BASELINE snapshot.",
+    "intro": "Role queues, live role leases and rebalance actions.",
     "selectOrganization": "Select an organization to view swarm role queues.",
     "queueTitle": "Queue",
     "queueDescription": "Assigned tasks waiting for a claim in this role, oldest first.",
@@ -473,16 +473,7 @@
       "agentId": "Agent ID",
       "activeLeases": "Active leases",
       "loadVsCap": "Load vs cap",
-      "limit": "Limit",
-      "metric": "Metric",
-      "pilot": "Pilot",
-      "baseline": "BASELINE",
-      "delta": "Delta",
-      "tasksDone": "Tasks done",
-      "cycleTimeMean": "Cycle time (mean)",
-      "reviewTimeMean": "Review time (mean)",
-      "returnRate": "Return rate",
-      "costPerTaskMean": "Cost per task (mean)"
+      "limit": "Limit"
     },
     "totals": {
       "queuedTasks": "Queued tasks",

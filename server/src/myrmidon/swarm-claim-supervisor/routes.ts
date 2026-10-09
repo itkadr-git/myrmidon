@@ -13,6 +13,7 @@ import { Router } from "express";
 import type { Db } from "@paperclipai/db";
 import { assertBoard, assertCompanyAccess } from "../../routes/authz.js";
 import { instanceSettingsService } from "../../services/instance-settings.js";
+import { createCasteDirectoryReader } from "../castes/directory.js";
 import { buildSwarmMatcher } from "../swarm-claim/matcher-factory.js";
 import type { SwarmClaimEnqueueWakeup } from "../swarm-claim/service.js";
 import { swarmSupervisorView, createSwarmSupervisorDbPort, type SwarmSupervisorOverview } from "./view.js";
@@ -47,6 +48,8 @@ export function swarmSupervisorRoutes(db: Db, deps: SwarmSupervisorRoutesDeps) {
       db,
       settings: instanceSettingsService(db),
       enqueueWakeup: deps.enqueueWakeup,
+      // myrmidon(1.6.5 OPE-6608): the rebalance pass honours swarmEligible=false and the per-caste ceiling, like the sweep and the claim API.
+      castes: createCasteDirectoryReader(db),
       env,
     });
     return matcher ? matcher.forIssue(issueId) : null;
