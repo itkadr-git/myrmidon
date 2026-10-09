@@ -23,6 +23,8 @@ import {
   readNativeBoardResponseWaitSource,
 } from "../native-runtime/native-board-response-wait.js";
 import { authorizeChatConversationForBoundRun } from "../native-runtime/chat-attachment-reuse.js";
+// myrmidon(1.6.1 OPE-3983): system blocked paths carry an event reasonRef the stale-block sweep can judge.
+import { recoveryLivenessDescriptor, recoveryLivenessEventKey } from "../../myrmidon/stale-block/event-keys.js";
 import {
   ONBOARDING_FIRST_TASK_ORIGIN_KIND,
   PROVIDER_QUOTA_MONITOR_SERVICE_NAME,
@@ -1732,7 +1734,11 @@ export function recoveryService(
         current.id,
         {
           status: "blocked",
-          unblockDescriptor: { owner: "board", action: proof.action },
+          unblockDescriptor: {
+            owner: "board",
+            action: proof.action,
+            reasonRef: { kind: "event", eventKey: recoveryLivenessEventKey(current.id) },
+          },
         },
         tx,
         publications,
@@ -2813,6 +2819,13 @@ export function recoveryService(
   }) {
     const updated = await issuesSvc.update(input.issue.id, {
       status: "blocked",
+      // myrmidon(1.6.1 OPE-3983): carry the reason so the stale-block sweep
+      // judges this block by the incident's live rows (this recovery issue is
+      // the `recoveryIssueId` the source incident references).
+      unblockDescriptor: recoveryLivenessDescriptor(
+        input.issue.id,
+        "Inspect the failed run evidence, restore a live execution path or record the manual resolution, then move this recovery issue out of blocked.",
+      ),
     });
     if (!updated) return null;
 
@@ -3643,6 +3656,13 @@ export function recoveryService(
 
     const updated = await issuesSvc.update(input.issue.id, {
       status: "blocked",
+      // myrmidon(1.6.1 OPE-3983): the disposition-repair incident row is the
+      // liveness oracle for this block; the sweep lifts it once the row is
+      // explicitly resolved or cancelled.
+      unblockDescriptor: recoveryLivenessDescriptor(
+        input.issue.id,
+        "Inspect the evidence and choose whether to repair, retry the original owner, explicitly reassign, or resolve the source issue.",
+      ),
     });
     if (!updated) return null;
     const sourceAssigneePreserved =

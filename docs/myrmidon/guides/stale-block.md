@@ -68,6 +68,16 @@ A task whose every reason is dead gets unblocked. A task with at least one
 live reason, and a task with no recognizable reason at all, is left
 untouched — the sweep never guesses.
 
+Internal service paths that enter `blocked` without going through the public
+PATCH route (native-failure reconciliation, the finalizer's ambiguous-state
+block, recovery escalation of stranded and disposition-repair issues, the
+native blocked-wait repair) carry a `reasonRef` of kind `event` with the key
+`recovery.liveness:<issueId>`. The server wires a reader for exactly this key:
+the reason is still set while the issue has an open (`active`/`escalated`)
+recovery-action row, and it dies only when that incident is explicitly
+resolved or cancelled. A missing incident row reads as still set — same
+conservative rule as an unwired gate key.
+
 ## What unblocking does
 
 The sweep re-reads and re-judges the task under a row lock immediately

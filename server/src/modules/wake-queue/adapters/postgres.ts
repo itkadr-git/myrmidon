@@ -1,4 +1,6 @@
 import { isAcknowledgedNativeStop } from "../../../services/acknowledged-native-stop.js";
+// myrmidon(1.6.1 OPE-3983): the native-failure block carries the recovery-liveness reasonRef.
+import { recoveryLivenessDescriptor } from "../../../myrmidon/stale-block/event-keys.js";
 import { instanceSettingsService } from "../../../services/instance-settings.js";
 import { currentConversationCommentCondition } from "../../../services/agent-conversations.js";
 import { getExecutionBlocker } from "../../../services/execution-blocker.js";
@@ -736,7 +738,19 @@ async function recordNativeTerminalRecoveryIfNeeded(tx: Db, run: HeartbeatRunRow
     .limit(1);
   let nativeFailureBlock: { runId: string; statusVersion: number } | undefined;
   if (issue.status !== "blocked") {
-    const projected = await issueService(tx).update(issue.id, { status: "blocked" }, tx);
+    const projected = await issueService(tx).update(
+      issue.id,
+      {
+        status: "blocked",
+        // myrmidon(1.6.1 OPE-3983): the reconciliation incident created alongside
+        // this block is the liveness oracle the stale-block sweep judges.
+        unblockDescriptor: recoveryLivenessDescriptor(
+          issue.id,
+          "Inspect the original failure and reconcile the previous execution before continuing.",
+        ),
+      },
+      tx,
+    );
     if (projected) {
       nativeFailureBlock = { runId: run.id, statusVersion: projected.statusVersion };
       await tx.insert(activityLog).values({

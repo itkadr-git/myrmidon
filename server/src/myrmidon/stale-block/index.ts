@@ -15,6 +15,13 @@ export {
 } from "./policy.js";
 export { readReasonRef, type StaleBlockReasonRef } from "./reason.js";
 export {
+  STALE_BLOCK_RECOVERY_LIVENESS_EVENT_PREFIX,
+  recoveryLivenessEventKey,
+  recoveryLivenessDescriptor,
+  recoveryLivenessIssueId,
+  createRecoveryLivenessEventReader,
+} from "./event-keys.js";
+export {
   readStaleBlockEnabled,
   readStaleBlockSettings,
   STALE_BLOCK_ENABLED_ENV,

@@ -14576,7 +14576,16 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       expect.objectContaining({
         status: "blocked",
         assigneeAgentId: agentId,
-        unblockDescriptor: { owner: "board", action: unblockAction },
+        // myrmidon(1.6.1 OPE-3983): the internal blocked path now carries the
+        // recovery-liveness event reasonRef the stale-block sweep judges.
+        unblockDescriptor: expect.objectContaining({
+          owner: "board",
+          action: unblockAction,
+          reasonRef: {
+            kind: "event",
+            eventKey: `recovery.liveness:${issueId}`,
+          },
+        }),
       }),
     ]);
     expect(

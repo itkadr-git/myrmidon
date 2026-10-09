@@ -155,7 +155,7 @@ import { createRunStallSweepFromHeartbeat } from "./myrmidon/run-stall/index.js"
 import { sweepGatewayRunReattach, GATEWAY_REATTACH_SWEEP_INTERVAL_MS } from "./myrmidon/gateway-run-reattach.js";
 import { readHotRestartIntent } from "./services/hot-restart.js"; // myrmidon(T1.6): predecessor boot id for the startup reattach pass
 import { createTaskPrSyncScheduler } from "./myrmidon/task-pr-sync/index.js"; // myrmidon(TASK-PR-SYNC)
-import { createStaleBlockScheduler } from "./myrmidon/stale-block/index.js"; // myrmidon(STALE-BLOCK)
+import { createStaleBlockScheduler, createRecoveryLivenessEventReader } from "./myrmidon/stale-block/index.js"; // myrmidon(STALE-BLOCK)
 import { createReviewRoutingScheduler } from "./myrmidon/review-routing/index.js"; // myrmidon(REVIEW-ROUTING)
 import { createReviewReworkScheduler } from "./myrmidon/review-rework/index.js"; // myrmidon(REVIEW-REWORK)
 import { buildWipLimitSweeper } from "./myrmidon/wip-limit/index.js"; // myrmidon(1.6.1-WIP-LIMIT-A)
@@ -1379,7 +1379,14 @@ async function startServerWithDatabaseTeardown(
   // reasons (a done/cancelled blocker, a passed due date, a cleared gate) off
   // blocked tasks through the ordinary issue update path. Opt-in via
   // MYRMIDON_STALE_BLOCK_ENABLED; the interval is enforced inside the sweep.
-  const scheduleStaleBlockSweep = createStaleBlockScheduler({ db: db as any, track: trackHeartbeatSchedulerWork });
+  const scheduleStaleBlockSweep = createStaleBlockScheduler({
+    db: db as any,
+    track: trackHeartbeatSchedulerWork,
+    // myrmidon(1.6.1 OPE-3983): resolve the recovery-liveness event keys the
+    // internal blocked paths cite from the live issue_recovery_actions rows;
+    // every other key keeps the safe still-set default.
+    isEventStillSet: createRecoveryLivenessEventReader(db as any),
+  });
   // myrmidon(REVIEW-ROUTING): a task in review with no reviewer gets one from
   // the reviewer roles (least loaded, never its author or assignee); a review
   // without a verdict past the configured hours is signalled and reassigned.
