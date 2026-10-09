@@ -1004,7 +1004,7 @@ export function pluginRoutes(
    *
    * Response: `ToolExecutionResult`
    * Errors:
-   * - 400 if request validation fails
+   * - 400 if request validation fails, or the registered tool has no worker handler (`code: "UNKNOWN_ACTION"`)
    * - 404 if tool is not found
    * - 501 if tool dispatcher is not configured
    * - 502 if the plugin worker is unavailable or the RPC call fails
@@ -1012,7 +1012,7 @@ export function pluginRoutes(
   router.post("/plugins/tools/execute", async (req, res) => {
     assertBoardOrAgent(req);
 
-    if (!toolDeps) {
+    if (!toolDeps && !(req.actor.type === "agent" && toolGatewayDeps)) {
       res.status(501).json({ error: "Plugin tool dispatch is not enabled" });
       return;
     }
@@ -1070,6 +1070,18 @@ export function pluginRoutes(
           return;
         }
         const message = err instanceof Error ? err.message : String(err);
+        // Unknown tool key inside the plugin worker is a caller error (400),
+        // not a worker failure — mirror the board path below so agents get
+        // the same UNKNOWN_ACTION contract.
+        const rpcCode = (err as { code?: unknown }).code;
+        if (rpcCode === PLUGIN_RPC_ERROR_CODES.UNKNOWN_ACTION) {
+          res.status(400).json({
+            error: message,
+            code: "UNKNOWN_ACTION",
+            details: (err as { data?: unknown }).data,
+          });
+          return;
+        }
         if (message.includes("not running") || message.includes("worker")) {
           res.status(502).json({ error: message });
         } else {
@@ -1080,14 +1092,14 @@ export function pluginRoutes(
     }
 
     // Verify the tool exists
-    const registeredTool = toolDeps.toolDispatcher.getTool(tool);
+    const registeredTool = toolDeps?.toolDispatcher.getTool(tool);
     if (!registeredTool) {
       res.status(404).json({ error: `Tool "${tool}" not found` });
       return;
     }
 
     try {
-      const result = await toolDeps.toolDispatcher.executeTool(
+      const result = await toolDeps!.toolDispatcher.executeTool(
         tool,
         parameters ?? {},
         runContext,
@@ -1095,6 +1107,20 @@ export function pluginRoutes(
       res.json(result);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
+
+      // Unknown tool inside the plugin worker is a caller error (400), not a
+      // worker failure — the dispatcher lists registered tools up front, so a
+      // tool that exists in the registry but has no worker handler is the
+      // caller asking the wrong plugin.
+      const rpcCode = (err as { code?: unknown }).code;
+      if (rpcCode === PLUGIN_RPC_ERROR_CODES.UNKNOWN_ACTION) {
+        res.status(400).json({
+          error: message,
+          code: "UNKNOWN_ACTION",
+          details: (err as { data?: unknown }).data,
+        });
+        return;
+      }
 
       // Distinguish between "worker not running" (502) and other errors (500)
       if (message.includes("not running") || message.includes("worker")) {
@@ -1314,6 +1340,12 @@ export function pluginRoutes(
             message: err.message,
             details: err.data,
           };
+        case PLUGIN_RPC_ERROR_CODES.UNKNOWN_ACTION:
+          return {
+            code: "UNKNOWN_ACTION",
+            message: err.message,
+            details: err.data,
+          };
         default:
           return {
             code: "UNKNOWN",
@@ -1390,6 +1422,8 @@ export function pluginRoutes(
    * - 400 if request validation fails
    * - 404 if plugin not found
    * - 501 if bridge deps are not configured
+   * - 400 if the requested key is unknown to the plugin (`code: "UNKNOWN_ACTION"`,
+   *   `details.known` lists the keys the plugin actually serves)
    * - 502 if the worker is unavailable or returns an error
    *
    * @see PLUGIN_SPEC.md §13.8 — `getData`
@@ -1456,7 +1490,7 @@ export function pluginRoutes(
         bridgeMethod: "getData",
         dataKey: body.key,
       });
-      res.status(502).json(bridgeError);
+      res.status(bridgeError.code === "UNKNOWN_ACTION" ? 400 : 502).json(bridgeError);
     }
   });
 
@@ -1483,6 +1517,8 @@ export function pluginRoutes(
    * - 400 if request validation fails
    * - 404 if plugin not found
    * - 501 if bridge deps are not configured
+   * - 400 if the requested key is unknown to the plugin (`code: "UNKNOWN_ACTION"`,
+   *   `details.known` lists the keys the plugin actually serves)
    * - 502 if the worker is unavailable or returns an error
    *
    * @see PLUGIN_SPEC.md §13.9 — `performAction`
@@ -1549,7 +1585,7 @@ export function pluginRoutes(
         bridgeMethod: "performAction",
         actionKey: body.key,
       });
-      res.status(502).json(bridgeError);
+      res.status(bridgeError.code === "UNKNOWN_ACTION" ? 400 : 502).json(bridgeError);
     }
   });
 
@@ -1577,6 +1613,8 @@ export function pluginRoutes(
    * Errors:
    * - 404 if plugin not found
    * - 501 if bridge deps are not configured
+   * - 400 if the requested key is unknown to the plugin (`code: "UNKNOWN_ACTION"`,
+   *   `details.known` lists the keys the plugin actually serves)
    * - 502 if the worker is unavailable or returns an error
    *
    * @see PLUGIN_SPEC.md §13.8 — `getData`
@@ -1643,7 +1681,7 @@ export function pluginRoutes(
         bridgeMethod: "getData",
         dataKey: key,
       });
-      res.status(502).json(bridgeError);
+      res.status(bridgeError.code === "UNKNOWN_ACTION" ? 400 : 502).json(bridgeError);
     }
   });
 
@@ -1667,6 +1705,8 @@ export function pluginRoutes(
    * Errors:
    * - 404 if plugin not found
    * - 501 if bridge deps are not configured
+   * - 400 if the requested key is unknown to the plugin (`code: "UNKNOWN_ACTION"`,
+   *   `details.known` lists the keys the plugin actually serves)
    * - 502 if the worker is unavailable or returns an error
    *
    * @see PLUGIN_SPEC.md §13.9 — `performAction`
@@ -1733,7 +1773,7 @@ export function pluginRoutes(
         bridgeMethod: "performAction",
         actionKey: key,
       });
-      res.status(502).json(bridgeError);
+      res.status(bridgeError.code === "UNKNOWN_ACTION" ? 400 : 502).json(bridgeError);
     }
   });
 

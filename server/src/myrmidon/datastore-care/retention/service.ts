@@ -97,12 +97,33 @@ export function createDatastoreCareRetentionRuntime(
     const prefix = resolveBackupFilePrefix(env);
     const checkedAt = now();
     const gate = checkBackupGate({ backupDir, prefix, now: checkedAt });
+    const gateState: DatastoreCareRetentionLastRun["backupGate"] = {
+      backupDir: gate.backupDir,
+      prefix: gate.prefix,
+      newestBackupAt: gate.newestBackupAt,
+      newestBackupFile: gate.newestBackupFile,
+      newestBackupSizeBytes: gate.newestBackupSizeBytes,
+      dirReadable: gate.dirReadable,
+      candidates: gate.candidates,
+    };
     const previous = normalizeDatastoreCareRetentionLastRun(
       await readRetentionLastRun(settings).catch(() => emptyDatastoreCareRetentionLastRun()),
     );
     if (!gate.fresh) {
       if (checkedAt.getTime() - lastWaitingLoggedAt >= DATASTORE_RETENTION_WAITING_LOG_INTERVAL_MS) {
         lastWaitingLoggedAt = checkedAt.getTime();
+        // The refusal reason must be visible: the dir the gate looked in, the
+        // prefix it matched, and what backup-looking files it saw instead.
+        logger.warn(
+          {
+            backupDir: gate.backupDir,
+            prefix: gate.prefix,
+            dirReadable: gate.dirReadable,
+            newestBackupAt: gate.newestBackupAt,
+            candidates: gate.candidates,
+          },
+          "datastore care: retention waits for a fresh backup",
+        );
         try {
           const companyIds = await settings.listCompanyIds();
           for (const companyId of companyIds.slice(0, 1)) {
@@ -116,6 +137,10 @@ export function createDatastoreCareRetentionRuntime(
               details: {
                 checkedAt: checkedAt.toISOString(),
                 backupDir: gate.backupDir,
+                prefix: gate.prefix,
+                dirReadable: gate.dirReadable,
+                newestBackupAt: gate.newestBackupAt,
+                candidates: gate.candidates,
                 heartbeatRunContextDays: resolved.heartbeatRunContextDays,
               },
             });
@@ -131,6 +156,7 @@ export function createDatastoreCareRetentionRuntime(
           lastRunAt: checkedAt.toISOString(),
           waitingForBackup: true,
           backupCheckedAt: gate.newestBackupAt,
+          backupGate: gateState,
         } satisfies DatastoreCareRetentionLastRun,
       ).catch((err) =>
         logger.warn({ err }, "datastore care: waiting state persist failed"),
@@ -138,13 +164,28 @@ export function createDatastoreCareRetentionRuntime(
       return { ran: false, reason: "waiting-for-backup", compacted: 0, freedBytes: 0 };
     }
 
+    // The accepted backup goes to the journal: path, file, size, date.
+    logger.info(
+      {
+        backupDir: gate.backupDir,
+        backupFile: gate.newestBackupFile,
+        backupSizeBytes: gate.newestBackupSizeBytes,
+        backupCheckedAt: gate.newestBackupAt,
+        prefix: gate.prefix,
+      },
+      "datastore care: backup gate passed",
+    );
+
     // The compaction itself: terminal runs older than the window, batched.
     const cutoff = new Date(
       checkedAt.getTime() - resolved.heartbeatRunContextDays * 24 * 60 * 60 * 1000,
     ).toISOString();
     const companyIds = await settings.listCompanyIds();
     const result = await compactContextPass(
-      { db },
+      // myrmidon(1.6.5-F14B): the per-pass ceiling comes from the resolved
+      // settings block (instance setting > env > default 10), read fresh
+      // every pass so a PATCH applies without a restart.
+      { db, maxBatches: resolved.contextCompactMaxBatches },
       { companyIds, cutoff, compactedAt: checkedAt.toISOString() },
     );
 
@@ -152,6 +193,7 @@ export function createDatastoreCareRetentionRuntime(
       lastRunAt: checkedAt.toISOString(),
       waitingForBackup: false,
       backupCheckedAt: gate.newestBackupAt,
+      backupGate: gateState,
       lastCompacted: result.compacted,
       lastFreedBytes: result.freedBytes,
       compactedTotal: previous.compactedTotal + result.compacted,
