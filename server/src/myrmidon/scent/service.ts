@@ -302,7 +302,7 @@ export function createScentService(deps: ScentServiceDeps) {
           gt(issues.createdAt, lookback),
           // §2.4: a task without a description never reaches the classifier,
           // so it would stay scent-less and clog the batch on every tick.
-          sql`${issues.description} is not null and length(trim(${issues.description})) > 0`,
+          sql`${issues.description} ~ '[^[:space:]]'`,
           // Same ledger as canSpendCall: skip records already attempted in the
           // last hour (a failed attempt leaves the scent NULL).
           sql`not exists (
