@@ -10,14 +10,18 @@ name: Myrmidon PR autoupdate
 # - PR in conflict: left alone; label `needs-rebase` and one marker comment
 #   tell the author to rebase.
 #
-# A push made with GITHUB_TOKEN does not start `pull_request` workflows (a
-# GitHub rule that prevents recursive runs; `workflow_dispatch` and
-# `repository_dispatch` are the documented exceptions). The repository has no
-# PAT or App token, so after each update this workflow dispatches the two
-# required checks on the new head by hand: `myrmidon-ci.yml` on the PR branch
-# and `myrmidon-hot-files-review.yml` for the PR. Both report the same
-# check names the ruleset requires. See docs/myrmidon/merge-queue.md,
-# section "Without a GitHub queue: PR auto-update".
+# The update is made with a GitHub App installation token, not GITHUB_TOKEN:
+# a push made with GITHUB_TOKEN creates `pull_request` runs whose actor is
+# github-actions[bot], and the repository approval policy
+# (first_time_contributors) parks them as `action_required`; the required
+# `CI result` then never attaches to the PR (a hand-dispatched CI run's
+# `CI result` was not shown in the PR rollup). A push by the App is a normal
+# push from an installed app: `pull_request` workflows start without approval
+# and report the required checks themselves, so no manual approval and no
+# dispatched duplicate checks are needed. The App id and key are the repository
+# secrets MYR_AUTOUPDATE_APP_ID / MYR_AUTOUPDATE_APP_KEY; if the token cannot be
+# created the run fails (no fallback to GITHUB_TOKEN). See
+# docs/myrmidon/merge-queue.md, section "Without a GitHub queue: PR auto-update".
 
 on:
   push:
@@ -27,9 +31,8 @@ on:
     - cron: "*/30 * * * *"
 
 permissions:
-  contents: write
+  contents: read
   pull-requests: write
-  actions: write
   issues: write
 
 concurrency:
@@ -60,9 +63,21 @@ jobs:
           fi
           echo "$bin" >> "$GITHUB_PATH"
 
+      - name: Create App installation token
+        id: app-token
+        # v3.2.0; fails the run if the secrets are missing or the App is not installed.
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.MYR_AUTOUPDATE_APP_ID }}
+          private-key: ${{ secrets.MYR_AUTOUPDATE_APP_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+          permission-workflows: write
+
       - name: Update PRs with auto-merge
         env:
           GH_TOKEN: ${{ github.token }}
+          APP_TOKEN: ${{ steps.app-token.outputs.token }}
           REPO: ${{ github.repository }}
           MAX_UPDATES: "1"
         run: |
@@ -131,14 +146,14 @@ jobs:
               continue
             fi
 
-            if ! gh api -X PUT "repos/$REPO/pulls/$n/update-branch" -f expected_head_sha="$sha" >/dev/null; then
+            if ! GH_TOKEN="$APP_TOKEN" gh api -X PUT "repos/$REPO/pulls/$n/update-branch" -f expected_head_sha="$sha" >/dev/null; then
               echo "::warning::update-branch failed for PR #$n"
               echo "- #$n: behind by $behind, update-branch FAILED" >> "$summary"
               continue
             fi
             updated=$((updated + 1))
 
-            # Wait for the new head, then start the required checks by hand.
+            # Wait for the new head; the App's push starts the pull_request checks.
             newsha="$sha"
             for _ in $(seq 1 20); do
               newsha="$(gh api "repos/$REPO/pulls/$n" --jq '.head.sha')"
@@ -150,7 +165,5 @@ jobs:
               echo "- #$n: update-branch accepted, head unchanged after 60 s" >> "$summary"
               continue
             fi
-            gh workflow run myrmidon-ci.yml -R "$REPO" --ref "$branch"
-            gh workflow run myrmidon-hot-files-review.yml -R "$REPO" --ref main -f pr="$n"
-            echo "- #$n: updated ${sha:0:12} -> ${newsha:0:12}; CI and hot-files-review dispatched" | tee -a "$summary"
+            echo "- #$n: updated ${sha:0:12} -> ${newsha:0:12} by the App; pull_request checks start on the new head" | tee -a "$summary"
           done

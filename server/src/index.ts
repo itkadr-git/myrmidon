@@ -13,6 +13,7 @@ import { deliverReconciledExecutions, settleUnrecoverableExecutions } from "./se
 import { reconcileSafeNativeReplacements } from "./services/native-runtime/native-safe-replacement.js";
 import { reconcileAbandonedExecutionControl } from "./services/execution-control-reconciliation.js";
 import { EXECUTION_RECONCILIATION_INTERVAL_MS } from "./services/execution-control-deadline.js";
+import { laneInterval, recordLaneDbQuery } from "./myrmidon/monitoring/board-load/lanes.js"; // myrmidon(1.6.6 PROCS-0.3A): load lanes
 import { connectionIntentDeliveryService } from "./services/connection-intent-delivery.js";
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import { createServer } from "node:http";
@@ -130,16 +131,19 @@ import { startRuntimeLimits } from "./myrmidon/runtime-limits/index.js"; // myrm
 import { startBehaviorSettings } from "./myrmidon/behavior-settings/index.js"; // myrmidon(SETTINGS-CORE)
 import { startBotContainers, stopBotContainers } from "./myrmidon/bot-containers/startup.js"; // myrmidon(W2a)
 import { startLitellmCostSweep, stopLitellmCostSweep } from "./myrmidon/litellm-costs/startup.js"; // myrmidon(M2-A)
+import { startBoardProcessRegistry, stopBoardProcessRegistry } from "./myrmidon/process-registry/index.js"; // myrmidon(1.6.6 PROCS-0.1)
 import { startLitellmBudgetSync } from "./myrmidon/litellm-budget-sync/index.js"; // myrmidon(1.7-BUDGET-CONFIG-C)
 import { startLitellmModelReconciliation } from "./myrmidon/litellm-sync/startup-reconciler.js"; // myrmidon(1.6.1 MODEL-PROVIDERS B)
 import { startModelFallbackSignalSweep } from "./myrmidon/litellm-fallback-signal/sweep.js"; // myrmidon(BOT-RUNTIME-TUNING D)
 import { startBaselineSnapshots, stopBaselineSnapshots } from "./myrmidon/baseline/startup.js"; // myrmidon(1.6-BASELINE)
 import { startForagingSweep, stopForagingSweep } from "./myrmidon/foraging/startup.js"; // myrmidon(1.6-FORAGE)
+import { startAlertsSweep } from "./myrmidon/monitoring/alerts/index.js"; // myrmidon(1.6.6-ALERTS)
 import { startTracingAttentionSweep, stopTracingAttentionSweep } from "./myrmidon/tracing-health/attention-sweep.js"; // myrmidon(TRACING-HEALTH)
 import { startBotCanary, stopBotCanary } from "./myrmidon/bot-containers/canary-index.js"; // myrmidon(R5-B)
 import { startStackCheckSweep } from "./myrmidon/stack-registry/index.js"; // myrmidon(SUB)
 // myrmidon(1.6.1-TG-NOTIFY-B): daily digest and escalation jobs over the owner Telegram notify settings (all off by default)
 import { startTelegramNotifyJobs } from "./myrmidon/telegram-notify/index.js";
+import { startTgNotifySweep, dbErrorChannelSettingsSource } from "./myrmidon/telegram-notify/index.js"; // myrmidon(1.6-TG-NOTIFY-C)
 import { interactionContinuationOutboxService } from "./myrmidon/interaction-continuation-outbox.js"; // myrmidon(O1)
 import { createWorkspaceHygieneScheduler } from "./myrmidon/workspace-hygiene/index.js"; // myrmidon(WORKSPACE-HYGIENE)
 import { createBotDiskQuotaScheduler } from "./myrmidon/bot-containers/bot-disk-quota-runtime.js"; // myrmidon(1.6.1-BOT-DISK-C)
@@ -157,6 +161,14 @@ import { createReviewReworkScheduler } from "./myrmidon/review-rework/index.js";
 import { buildWipLimitSweeper } from "./myrmidon/wip-limit/index.js"; // myrmidon(1.6.1-WIP-LIMIT-A)
 import { buildPromptBudgetSweeper } from "./myrmidon/prompt-budget/index.js"; // myrmidon(1.6.3 PROMPT-BUDGET B)
 import { buildMonitoringLinkWatchdog } from "./myrmidon/monitoring/links/index.js"; // myrmidon(1.6.6 MONITORING E)
+// myrmidon(1.6.6 CORPUS-2.0 ч.C): the corpus parse worker — one pass per gate,
+// a no-op while the module is off or its ports (parts A/B) are not wired.
+import {
+  CORPUS_PARSE_SWEEP_INTERVAL_MS,
+  corpusService,
+  createCorpusParseWorker,
+  resolveCorpusPorts,
+} from "./myrmidon/corpus/index.js";
 import {
   createPendingInteractionWakeSweep,
   readPendingInteractionWakeContextSnapshot,
@@ -463,7 +475,7 @@ async function startServerWithDatabaseTeardown(
     const migrationUrl = config.databaseMigrationUrl ?? config.databaseUrl;
     migrationSummary = await ensureMigrations(migrationUrl, "PostgreSQL");
   
-    db = createDb(config.databaseUrl);
+    db = createDb(config.databaseUrl, { onQuery: () => recordLaneDbQuery() });
     pluginMigrationDb = config.databaseMigrationUrl ? createDb(config.databaseMigrationUrl) : db;
     logger.info("Using external PostgreSQL via DATABASE_URL/config");
     activeDatabaseConnectionString = config.databaseUrl;
@@ -656,7 +668,10 @@ async function startServerWithDatabaseTeardown(
     const embeddedAdminConnectionString = `postgres://paperclip:paperclip@127.0.0.1:${port}/postgres`;
     const dbStatus = await ensurePostgresDatabase(embeddedAdminConnectionString, "paperclip");
     if (dbStatus === "created") {
-      logger.info("Created embedded PostgreSQL database: paperclip");
+      // myrmidon(DB2): log text is debranded; the database NAME "paperclip" stays
+      // unchanged (DB rename is a data migration, stage 4). The name is emitted
+      // as a structured field so operators still see which database was created.
+      logger.info({ database: "paperclip" }, "Created embedded PostgreSQL database");
     }
   
     const embeddedConnectionString = `postgres://paperclip:paperclip@127.0.0.1:${port}/paperclip`;
@@ -668,7 +683,7 @@ async function startServerWithDatabaseTeardown(
       autoApply: shouldAutoApplyFirstRunMigrations,
     });
   
-    db = createDb(embeddedConnectionString);
+    db = createDb(embeddedConnectionString, { onQuery: () => recordLaneDbQuery() });
     pluginMigrationDb = db;
     logger.info("Embedded PostgreSQL ready");
     activeDatabaseConnectionString = embeddedConnectionString;
@@ -1236,11 +1251,20 @@ async function startServerWithDatabaseTeardown(
         .finally(() => { executionControlSweepsInFlight.delete(queue); }));
     }
   };
-  const executionControlInterval = setInterval(sweepExecutionControl, EXECUTION_RECONCILIATION_INTERVAL_MS);
+  const executionControlInterval = laneInterval(
+    "execution_control",
+    EXECUTION_RECONCILIATION_INTERVAL_MS,
+    sweepExecutionControl,
+  );
   executionControlInterval.unref?.();
   sweepExecutionControl();
   const startHeartbeatSchedulerInterval = (callback: () => void) => {
-    heartbeatSchedulerInterval = setInterval(callback, config.heartbeatSchedulerIntervalMs);
+    heartbeatSchedulerInterval = laneInterval(
+      "heartbeat_tick",
+      config.heartbeatSchedulerIntervalMs,
+      callback,
+      (error) => logger.error({ err: error }, "heartbeat scheduler interval failed"),
+    );
     heartbeatSchedulerInterval?.unref?.();
   };
   const externalObjects = externalObjectService(db as any, {
@@ -1407,6 +1431,38 @@ async function startServerWithDatabaseTeardown(
         }
       }).catch((err) => {
         logger.error({ err }, "Prompt budget sweep failed");
+      }));
+    };
+  })();
+  // myrmidon(1.6.6 CORPUS-2.0 ч.C): the corpus parse worker — it turns an
+  // uploaded document (bytes in the BlobStore, a row in the queue) into indexed
+  // chunks, and it is the only part of the module that costs anything while
+  // idle. One pass per CORPUS_PARSE_SWEEP_INTERVAL_MS on the heartbeat tick; the
+  // module switch is re-read on every pass, so the settings page applies without
+  // a restart. While the module is off — or while its ports (parts A/B of
+  // OPE-6165) are not wired into this build — the pass returns immediately and
+  // no port, connection or table is touched.
+  const scheduleCorpusParseSweep = (() => {
+    const service = corpusService(db as any, { ports: resolveCorpusPorts });
+    const worker = createCorpusParseWorker({
+      ports: resolveCorpusPorts,
+      resolveSettings: async () => {
+        const view = await service.readSettings();
+        return { settings: view.settings, enabled: view.enabled };
+      },
+    });
+    let lastPassAt = 0;
+    return () => {
+      if (heartbeatSchedulerStopped) return;
+      const now = Date.now();
+      if (lastPassAt !== 0 && now - lastPassAt < CORPUS_PARSE_SWEEP_INTERVAL_MS) return;
+      lastPassAt = now;
+      trackHeartbeatSchedulerWork(worker.sweep().then((result) => {
+        if (result.parsed > 0 || result.failed > 0 || result.requeued > 0) {
+          logger.info(result, "Corpus parse sweep completed");
+        }
+      }).catch((err) => {
+        logger.error({ err }, "Corpus parse sweep failed");
       }));
     };
   })();
@@ -1689,10 +1745,27 @@ async function startServerWithDatabaseTeardown(
     startModelFallbackSignalSweep(db as any); // myrmidon(BOT-RUNTIME-TUNING D): model fallback attention signals; a no-op unless MYRMIDON_MODEL_FALLBACK_ENABLED=1
     startBaselineSnapshots(db as any); // myrmidon(1.6-BASELINE): freeze the 14-day metric window; a no-op unless MYRMIDON_BASELINE_INTERVAL_SEC is set
     startForagingSweep(db as any); // myrmidon(1.6-FORAGE): source comparison sweep; a no-op unless MYRMIDON_FORAGING_ENABLED=1
+    startAlertsSweep(db as any); // myrmidon(1.6.6-ALERTS): dedup registry cleanup of closed alerts; a no-op unless MYRMIDON_ALERTS_SWEEP_INTERVAL_SEC is set
     startTracingAttentionSweep(db as any); // myrmidon(TRACING-HEALTH): keep the "LLM tracing" operator signal fresh; a no-op unless the tracing settings are on
     startBotCanary(db as any); // myrmidon(R5-B): resume an open bot image rollout; a no-op unless MYRMIDON_BOT_CANARY is on
     startStackCheckSweep(db as any); // myrmidon(SUB): scheduled stack release check; a no-op unless MYRMIDON_STACK_CHECK_INTERVAL_SEC is set
     startTelegramNotifyJobs(db as any); // myrmidon(1.6.1-TG-NOTIFY-B): digest/escalation jobs; a no-op unless the owner settings enable them
+    startTgNotifySweep({ db: db as any, settings: dbErrorChannelSettingsSource(db as any) }); // myrmidon(1.6-TG-NOTIFY-C): board errors → Telegram chat/topic; a no-op unless the owner settings enable it
+    // myrmidon(1.6.6 PROCS-0.1): the process registry pulse — this process's
+    // row every 10 s, stale rows reaped by the process that owns timers. The
+    // behavior with mode=single is exactly today's: one process, one row.
+    {
+      const boundBoardAddress =
+        typeof server.address === "function" ? server.address() : null;
+      startBoardProcessRegistry(db as any, {
+        apiPort:
+          typeof boundBoardAddress === "object" && boundBoardAddress
+            ? boundBoardAddress.port
+            : listenPort,
+        onError: (error, phase) =>
+          logger.warn({ err: error, phase }, "board process registry tick failed"),
+      });
+    }
     const heartbeatSchedulingSuppression = await heartbeat.resolveSchedulingSuppression();
 
     // Reap orphaned runs before timer ticks start so wakeups cannot coalesce
@@ -1983,6 +2056,7 @@ async function startServerWithDatabaseTeardown(
         scheduleWipLimitSweep(); // myrmidon(1.6.1-WIP-LIMIT-A)
         schedulePromptBudgetSweep(); // myrmidon(1.6.3 PROMPT-BUDGET B)
         scheduleMonitoringLinkSweep(); // myrmidon(1.6.6 MONITORING E)
+        scheduleCorpusParseSweep(); // myrmidon(1.6.6 CORPUS-2.0 ч.C)
         scheduleAutoResumeSweep(); // myrmidon(AUTO-RESUME)
 
         if (heartbeatSchedulerStopped) return;
@@ -2188,6 +2262,7 @@ async function startServerWithDatabaseTeardown(
       scheduleReviewRoutingSweep(); // myrmidon(REVIEW-ROUTING)
       scheduleReviewReworkSweep(); // myrmidon(REVIEW-REWORK)
       scheduleMonitoringLinkSweep(); // myrmidon(1.6.6 MONITORING E)
+      scheduleCorpusParseSweep(); // myrmidon(1.6.6 CORPUS-2.0 ч.C)
       scheduleGitHubConnectionEventPoll();
       scheduleGitHubConnectionContinuitySweep();
     });
@@ -2252,7 +2327,7 @@ async function startServerWithDatabaseTeardown(
   setStartupRecoveryPhase("ready");
   logger.info(`Server startup recovery complete on ${config.host}:${listenPort}`);
   void systemdNotify(["--ready", `--status=Listening on ${config.host}:${listenPort}`]).then((notified) => {
-    if (notified) logger.info("Notified systemd that Paperclip is ready");
+    if (notified) logger.info("Notified systemd that Myrmidon is ready");
   });
   if (process.env.PAPERCLIP_OPEN_ON_LISTEN === "true") {
     const openHost = config.host === "0.0.0.0" || config.host === "::" ? "127.0.0.1" : config.host;
@@ -2309,6 +2384,7 @@ async function startServerWithDatabaseTeardown(
     clearInterval(executionControlInterval);
     stopBotContainers(); // myrmidon(W2a)
     stopLitellmCostSweep(); // myrmidon(M2-A)
+    stopBoardProcessRegistry(); // myrmidon(1.6.6 PROCS-0.1)
     stopBaselineSnapshots(); // myrmidon(1.6-BASELINE)
     stopForagingSweep(); // myrmidon(1.6-FORAGE)
     stopTracingAttentionSweep(); // myrmidon(TRACING-HEALTH)
@@ -2465,7 +2541,7 @@ function isMainModule(metaUrl: string): boolean {
 
 if (isMainModule(import.meta.url)) {
   void startServer().catch(async (err) => {
-    logger.error({ err }, "Paperclip server failed to start");
+    logger.error({ err }, "Myrmidon server failed to start");
     // Supervised-transient refusals in managed-cloud deployments are an
     // expected provisioning phase (see startup-refusals.ts) — they log
     // and exit nonzero but do not page Sentry.

@@ -16,6 +16,14 @@
 // (dockergate, contract C5) and, per bot, quota/used, copies E/G/X, archives,
 // the age of the botd report and the image generation, with the copies
 // themselves (contract C4 reports).
+//
+// 1.6.6-SETTINGS-UI-B: the lifecycle fields themselves became editable — the
+// draft-directory sweep (enabled + idle TTL), the five workspace-lifecycle
+// numbers (closing grace, scratch TTL, the three partition thresholds) and the
+// two layout knobs the panel did not expose yet (mirror refresh interval,
+// shared-cache roles). Together with the fields part A/B/C/H11 already edited
+// this is the full 14-field screen of the audit: 9 stored botDisk keys + the
+// 5 workspace-lifecycle keys of the same `general.botDisk` object.
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Package } from "lucide-react";
@@ -24,7 +32,18 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { useTranslation } from "@/i18n";
-import { botDiskApi, botDiskQueryKey } from "./botDiskApi";
+import type { BotDiskSettingsPatch } from "@paperclipai/shared";
+import {
+  BOT_DISK_DEFAULT_GIT_MIRROR_REFRESH_MS,
+  BOT_DISK_DEFAULT_IDLE_TTL_MS,
+  BOT_DISK_DEFAULT_SHARED_CACHE_ROLES,
+  BOT_DISK_MAX_GIT_MIRROR_REFRESH_MS,
+  BOT_DISK_MAX_IDLE_TTL_MS,
+  BOT_DISK_MIN_GIT_MIRROR_REFRESH_MS,
+  BOT_DISK_MIN_IDLE_TTL_MS,
+  WS_BOT_DISK_SETTING_DEFAULTS,
+} from "@paperclipai/shared";
+import { botDiskApi, botDiskQueryKey, type BotDiskView } from "./botDiskApi";
 import {
   BOT_DISK_REPORT_STALE_MS,
   botDiskLifecycleApi,
@@ -432,7 +451,244 @@ export function BotDiskSettingsPanel({ now, taskStatuses }: { now?: number; task
         </p>
         {storeError && <p className="text-xs text-red-600">{storeError}</p>}
       </div>
+      <BotDiskLifecycleEditSection view={view} queryClient={queryClient} />
       <BotDiskLifecycleSection now={now} taskStatuses={taskStatuses} />
     </section>
+  );
+}
+
+/** Minutes <-> ms for the number inputs of the lifecycle section. */
+const toMinutes = (ms: number) => Math.round(ms / 60000);
+const toHours = (ms: number) => Math.round(ms / 3600000);
+
+/**
+ * myrmidon(1.6.6-SETTINGS-UI-B): the editable half of the lifecycle screen —
+ * the nine `general.botDisk` keys the panels above did not expose: the sweep
+ * switch, its idle TTL, the mirror refresh interval, the shared-cache roles
+ * and the five workspace-lifecycle numbers. One Save button patches every
+ * changed key in a single PATCH; a blank number returns its key to the
+ * stored default (null), the same semantics the patch schema defines.
+ */
+function BotDiskLifecycleEditSection({
+  view,
+  queryClient,
+}: {
+  view: BotDiskView | undefined;
+  queryClient: ReturnType<typeof useQueryClient>;
+}) {
+  const [enabled, setEnabled] = useState<boolean | null>(null);
+  const [idleTtlMinutes, setIdleTtlMinutes] = useState<string | null>(null);
+  const [refreshMinutes, setRefreshMinutes] = useState<string | null>(null);
+  const [rolesDraft, setRolesDraft] = useState<string | null>(null);
+  const [grace, setGrace] = useState<string | null>(null);
+  const [scratch, setScratch] = useState<string | null>(null);
+  const [threshold, setThreshold] = useState<string | null>(null);
+  const [refuseOpen, setRefuseOpen] = useState<string | null>(null);
+  const [critical, setCritical] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!view || enabled !== null) return;
+    setEnabled(view.settings.enabled);
+    setIdleTtlMinutes(String(toMinutes(view.settings.idleTtlMs)));
+    setRefreshMinutes(String(toMinutes(view.settings.gitMirrorRefreshMs ?? BOT_DISK_DEFAULT_GIT_MIRROR_REFRESH_MS)));
+    setRolesDraft((view.settings.sharedCacheRoles ?? BOT_DISK_DEFAULT_SHARED_CACHE_ROLES).join(", "));
+    setGrace(view.settings.graceClosingMinutes === undefined ? "" : String(view.settings.graceClosingMinutes));
+    setScratch(view.settings.scratchTtlHours === undefined ? "" : String(view.settings.scratchTtlHours));
+    setThreshold(view.settings.partitionThresholdPercent === undefined ? "" : String(view.settings.partitionThresholdPercent));
+    setRefuseOpen(view.settings.partitionRefuseOpenPercent === undefined ? "" : String(view.settings.partitionRefuseOpenPercent));
+    setCritical(view.settings.partitionCriticalPercent === undefined ? "" : String(view.settings.partitionCriticalPercent));
+  }, [view, enabled]);
+
+  const save = useMutation({
+    mutationFn: botDiskApi.setFields,
+    onSuccess: () => {
+      setError(null);
+      queryClient.invalidateQueries({ queryKey: botDiskQueryKey });
+    },
+    onError: (err) => setError(err instanceof Error ? err.message : "Could not save the lifecycle settings. Try again."),
+  });
+
+  if (!view) return null;
+
+  const submit = () => {
+    setError(null);
+    const patch: BotDiskSettingsPatch = {};
+    if (enabled !== view.settings.enabled) patch.enabled = enabled ?? view.settings.enabled;
+    const idleMinutes = Number((idleTtlMinutes ?? "").trim() || toMinutes(BOT_DISK_DEFAULT_IDLE_TTL_MS));
+    if (!Number.isInteger(idleMinutes) || idleMinutes * 60_000 < BOT_DISK_MIN_IDLE_TTL_MS || idleMinutes * 60_000 > BOT_DISK_MAX_IDLE_TTL_MS) {
+      setError(`Idle TTL must be a whole number of minutes between ${toMinutes(BOT_DISK_MIN_IDLE_TTL_MS)} and ${toHours(BOT_DISK_MAX_IDLE_TTL_MS)} hours`);
+      return;
+    }
+    if (idleMinutes * 60_000 !== view.settings.idleTtlMs) patch.idleTtlMs = idleMinutes * 60_000;
+    const refresh = Number((refreshMinutes ?? "").trim() || toMinutes(BOT_DISK_DEFAULT_GIT_MIRROR_REFRESH_MS));
+    if (!Number.isInteger(refresh) || refresh * 60_000 < BOT_DISK_MIN_GIT_MIRROR_REFRESH_MS || refresh * 60_000 > BOT_DISK_MAX_GIT_MIRROR_REFRESH_MS) {
+      setError(`Mirror refresh must be a whole number of minutes between ${toMinutes(BOT_DISK_MIN_GIT_MIRROR_REFRESH_MS)} and ${toHours(BOT_DISK_MAX_GIT_MIRROR_REFRESH_MS)} hours`);
+      return;
+    }
+    if (refresh * 60_000 !== (view.settings.gitMirrorRefreshMs ?? BOT_DISK_DEFAULT_GIT_MIRROR_REFRESH_MS)) patch.gitMirrorRefreshMs = refresh * 60_000;
+    const roles = (rolesDraft ?? "")
+      .split(/[,\n]/)
+      .map((role) => role.trim().toLowerCase())
+      .filter(Boolean);
+    if (roles.some((role) => !/^[a-z0-9][a-z0-9_-]{0,63}$/.test(role))) {
+      setError("Roles are lower-case letters, digits, '_' and '-', one per line or comma-separated");
+      return;
+    }
+    const currentRoles = view.settings.sharedCacheRoles ?? BOT_DISK_DEFAULT_SHARED_CACHE_ROLES;
+    if (roles.join(",") !== currentRoles.join(",")) patch.sharedCacheRoles = roles;
+    const numbers = [
+      ["graceClosingMinutes", grace, WS_BOT_DISK_SETTING_DEFAULTS.graceClosingMinutes, 5, 24 * 60],
+      ["scratchTtlHours", scratch, WS_BOT_DISK_SETTING_DEFAULTS.scratchTtlHours, 1, 24 * 30],
+      ["partitionThresholdPercent", threshold, WS_BOT_DISK_SETTING_DEFAULTS.partitionThresholdPercent, 50, 100],
+      ["partitionRefuseOpenPercent", refuseOpen, WS_BOT_DISK_SETTING_DEFAULTS.partitionRefuseOpenPercent, 50, 100],
+      ["partitionCriticalPercent", critical, WS_BOT_DISK_SETTING_DEFAULTS.partitionCriticalPercent, 50, 100],
+    ] as const;
+    for (const [key, raw, fallback, min, max] of numbers) {
+      const trimmed = (raw ?? "").trim();
+      if (trimmed === "") {
+        if (view.settings[key] !== undefined) patch[key] = null;
+        continue;
+      }
+      const value = Number(trimmed);
+      if (!Number.isInteger(value) || value < min || value > max) {
+        setError(`${key}: enter a whole number between ${min} and ${max}, or leave it empty for the default (${fallback})`);
+        return;
+      }
+      if (view.settings[key] !== value) patch[key] = value;
+    }
+    if (Object.keys(patch).length === 0) return;
+    save.mutate(patch);
+  };
+
+  const changed =
+    enabled !== view.settings.enabled ||
+    (idleTtlMinutes ?? "") !== String(toMinutes(view.settings.idleTtlMs)) ||
+    (refreshMinutes ?? "") !== String(toMinutes(view.settings.gitMirrorRefreshMs ?? BOT_DISK_DEFAULT_GIT_MIRROR_REFRESH_MS)) ||
+    (rolesDraft ?? "") !== (view.settings.sharedCacheRoles ?? BOT_DISK_DEFAULT_SHARED_CACHE_ROLES).join(", ") ||
+    (grace ?? "") !== (view.settings.graceClosingMinutes === undefined ? "" : String(view.settings.graceClosingMinutes)) ||
+    (scratch ?? "") !== (view.settings.scratchTtlHours === undefined ? "" : String(view.settings.scratchTtlHours)) ||
+    (threshold ?? "") !== (view.settings.partitionThresholdPercent === undefined ? "" : String(view.settings.partitionThresholdPercent)) ||
+    (refuseOpen ?? "") !== (view.settings.partitionRefuseOpenPercent === undefined ? "" : String(view.settings.partitionRefuseOpenPercent)) ||
+    (critical ?? "") !== (view.settings.partitionCriticalPercent === undefined ? "" : String(view.settings.partitionCriticalPercent));
+
+  const numberField = (
+    id: string,
+    label: string,
+    value: string,
+    setValue: (v: string) => void,
+    placeholder: string,
+    hint: string,
+  ) => (
+    <div className="space-y-1">
+      <Label htmlFor={id}>{label}</Label>
+      <Input
+        id={id}
+        type="number"
+        value={value}
+        placeholder={placeholder}
+        onChange={(event) => setValue(event.target.value)}
+        data-testid={`bot-disk-lifecycle-${id}`}
+      />
+      <p className="text-xs text-muted-foreground">{hint}</p>
+    </div>
+  );
+
+  return (
+    <div className="space-y-3 rounded-lg border p-4" data-testid="bot-disk-lifecycle-edit">
+      <h3 className="text-sm font-medium">Bot disk lifecycle</h3>
+      <label className="flex items-center gap-2 text-sm">
+        <input
+          type="checkbox"
+          checked={enabled ?? view.settings.enabled}
+          onChange={(event) => setEnabled(event.target.checked)}
+          data-testid="bot-disk-lifecycle-enabled"
+        />
+        Draft-directory sweep enabled
+      </label>
+      <div className="grid gap-3 sm:grid-cols-2">
+        {numberField(
+          "bot-disk-idle-ttl",
+          "Draft TTL (minutes)",
+          idleTtlMinutes ?? "",
+          setIdleTtlMinutes,
+          String(toMinutes(BOT_DISK_DEFAULT_IDLE_TTL_MS)),
+          "An idle draft workspace older than this is deleted by the sweep (5 minutes to 720 hours).",
+        )}
+        {numberField(
+          "bot-disk-mirror-refresh",
+          "Mirror refresh (minutes)",
+          refreshMinutes ?? "",
+          setRefreshMinutes,
+          String(toMinutes(BOT_DISK_DEFAULT_GIT_MIRROR_REFRESH_MS)),
+          "How often the board fetches each git mirror (1 minute to 24 hours).",
+        )}
+        {numberField(
+          "graceClosingMinutes",
+          "Closing grace (minutes)",
+          grace ?? "",
+          setGrace,
+          `default ${WS_BOT_DISK_SETTING_DEFAULTS.graceClosingMinutes}`,
+          "How long a closing task may still write before its workspace is reclaimed (5–1440). Empty: the default.",
+        )}
+        {numberField(
+          "scratchTtlHours",
+          "Scratch TTL (hours)",
+          scratch ?? "",
+          setScratch,
+          `default ${WS_BOT_DISK_SETTING_DEFAULTS.scratchTtlHours}`,
+          "Idle scratch entries older than this are deleted (1–720). Empty: the default.",
+        )}
+        {numberField(
+          "partitionThresholdPercent",
+          "Partition attention (%)",
+          threshold ?? "",
+          setThreshold,
+          `default ${WS_BOT_DISK_SETTING_DEFAULTS.partitionThresholdPercent}`,
+          "Above this partition fill the board raises attention (50–100). Empty: the default.",
+        )}
+        {numberField(
+          "partitionRefuseOpenPercent",
+          "Refuse new work (%)",
+          refuseOpen ?? "",
+          setRefuseOpen,
+          `default ${WS_BOT_DISK_SETTING_DEFAULTS.partitionRefuseOpenPercent}`,
+          "Above this fill the board refuses to open new workspaces (50–100). Empty: the default.",
+        )}
+        {numberField(
+          "partitionCriticalPercent",
+          "Critical fill (%)",
+          critical ?? "",
+          setCritical,
+          `default ${WS_BOT_DISK_SETTING_DEFAULTS.partitionCriticalPercent}`,
+          "Above this fill the partition is critical and maintenance stops (50–100). Empty: the default.",
+        )}
+        <div className="space-y-1">
+          <Label htmlFor="bot-disk-shared-cache-roles">Shared-cache roles</Label>
+          <Input
+            id="bot-disk-shared-cache-roles"
+            value={rolesDraft ?? ""}
+            placeholder={BOT_DISK_DEFAULT_SHARED_CACHE_ROLES.join(", ")}
+            onChange={(event) => setRolesDraft(event.target.value)}
+            data-testid="bot-disk-lifecycle-roles"
+          />
+          <p className="text-xs text-muted-foreground">
+            Agent roles whose bots mount the shared cache and mirrors. Empty: nobody. Applies on the next reconcile pass.
+          </p>
+        </div>
+      </div>
+      <div className="flex items-center gap-2">
+        <Button size="sm" onClick={submit} disabled={save.isPending || !changed}>
+          {save.isPending ? "Saving…" : "Save lifecycle"}
+        </Button>
+        {save.isSuccess && !error && <span className="text-xs text-green-600">Saved</span>}
+      </div>
+      {error && <p className="text-xs text-red-600" data-testid="bot-disk-lifecycle-error">{error}</p>}
+      <p className="text-xs text-muted-foreground">
+        Sources: {view.sources.enabled === "settings" ? "stored" : view.sources.enabled}, TTL{" "}
+        {view.sources.idleTtlMs === "settings" ? "stored" : view.sources.idleTtlMs}. Values apply on the next
+        maintenance tick without restarting the server.
+      </p>
+    </div>
   );
 }
