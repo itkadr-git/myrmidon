@@ -18606,20 +18606,25 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     delivery: DeliveryRow,
     lifecycle: { actor: { externalId: string } | null; messageId: string; targetProviderEventId: string; text: string; threadId: string },
   ): Promise<boolean> {
+    const skip = (reason: string) => {
+      logger.warn({ deliveryId: delivery.id, reason }, "DBG-F06D edited command skipped");
+      return false;
+    };
+    logger.warn({ deliveryId: delivery.id, text: lifecycle.text.slice(0, 60) }, "DBG-F06D edited command enter");
     if (
       endpoint.provider !== "telegram" ||
       delivery.eventKind !== "message_updated" ||
       !lifecycle.actor
     )
-      return false;
+      return skip("g1");
     const commandText = editedBridgedCommandText(lifecycle.text);
-    if (!commandText) return false;
+    if (!commandText) return skip("g2");
     const fence = lifecycleRuntimeFence(delivery);
-    if (!fence) return false;
+    if (!fence) return skip("g3");
     const currentEndpoint = await db.transaction((tx) =>
       runtimeCallbackEndpoint(tx, endpoint.id, fence, ["active"]),
     );
-    if (!currentEndpoint || !currentEndpoint.allowDirectMessages) return false;
+    if (!currentEndpoint || !currentEndpoint.allowDirectMessages) return skip("g4");
 
     // An edit of a message that became a task comment is an ordinary edit.
     const inboundLink = await db
@@ -18635,7 +18640,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       )
       .limit(1)
       .then((rows) => rows[0] ?? null);
-    if (inboundLink) return false;
+    if (inboundLink) return skip("g5");
     // The original still being processed: let the standard path wait for it.
     const original = await db
       .select({ state: chatDeliveries.state })
@@ -18649,7 +18654,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       .limit(1)
       .then((rows) => rows[0] ?? null);
     if (original && ["received", "processing", "retry"].includes(original.state))
-      return false;
+      return skip("g6");
 
     const conversation = await db
       .select()
@@ -18670,7 +18675,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       !["active", "waiting"].includes(conversation.state) ||
       !conversation.resourceId
     )
-      return false;
+      return skip("g7");
 
     const principal = await db
       .select({
@@ -18692,11 +18697,11 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       )
       .limit(1)
       .then((rows) => rows[0] ?? null);
-    if (!principal || principal.kind !== "user" || principal.isBot) return false;
+    if (!principal || principal.kind !== "user" || principal.isBot) return skip("g8");
     const authorization = await db.transaction((tx) =>
       lockCurrentPrincipalAuthorization(tx, currentEndpoint, principal.id),
     );
-    if (!authorization.allowed || !authorization.userId) return false;
+    if (!authorization.allowed || !authorization.userId) return skip("g9");
 
     const issue = await db
       .select()
@@ -18709,7 +18714,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       )
       .limit(1)
       .then((rows) => rows[0] ?? null);
-    if (!issue) return false;
+    if (!issue) return skip("g10");
     const binding = await decideTelegramDmBinding(db, {
       endpoint: {
         provider: currentEndpoint.provider,
@@ -18727,7 +18732,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     });
     // Only a conversation that is already this person's standing one; a
     // migration or release is the business of a fresh message.
-    if (!binding.applies || binding.detachExisting) return false;
+    if (!binding.applies || binding.detachExisting) return skip("g11");
 
     const resource = await db
       .select({ id: chatEndpointResources.id, label: chatEndpointResources.label })
@@ -18741,7 +18746,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       )
       .limit(1)
       .then((rows) => rows[0] ?? null);
-    if (!resource) return false;
+    if (!resource) return skip("g12");
 
     const outcome = await handleTelegramDmCommand({
       db,
