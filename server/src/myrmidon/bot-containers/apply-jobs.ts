@@ -18,9 +18,9 @@
 
 import { and, desc, eq, inArray, lt } from "drizzle-orm";
 import { botApplyJobs, type BotApplyJobStatus, type Db } from "@paperclipai/db";
+import { isUniqueViolation } from "../../db-errors.js";
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const UNIQUE_VIOLATION = "23505";
 
 /**
  * A live (pending/running) job older than this is an orphan: the background
@@ -163,6 +163,3 @@ function andLive(botId: string) {
   return and(eq(botApplyJobs.botId, botId), inArray(botApplyJobs.status, ["pending", "running"]));
 }
 
-function isUniqueViolation(err: unknown): boolean {
-  return typeof err === "object" && err !== null && (err as { code?: unknown }).code === UNIQUE_VIOLATION;
-}

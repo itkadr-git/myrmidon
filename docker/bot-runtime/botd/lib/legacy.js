@@ -92,19 +92,26 @@ export function inRegistry(registryEntries, p) {
 }
 
 /**
- * Archive first, then remove a directory the registry does not own. Every part must
+ * Archives first, then removes a directory the registry does not own. Every part must
  * archive and verify (ok:true, nothing truncated) before anything is removed: a failed,
  * missing or truncated archive of ANY part leaves the whole directory in place.
  * Parts: each nested repository (key `<KEY>--<relpath>`: bundle + patch + untracked),
  * the directory's own repository, and the rest of the tree as one tar without `.git`
  * (a `.git` that is not a repository is neither: its files go into the tree tar; always for a non-git directory, and next to the repositories when it has nested ones).
+ * The writability probe runs BEFORE the first archive: a removal that would defer
+ * (a foreign owner) must not spend an hour re-creating the same archive every pass.
  * @param {{path:string, key?:string}} a
- * @param {{archiveMod:object|null, isGit:(p:string)=>boolean, remove:(p:string)=>void, archiveRoot?:string, nestedGit?:(p:string)=>string[], isRepo?:(p:string)=>boolean}} deps
+ * @param {{archiveMod:object|null, isGit:(p:string)=>boolean, remove:(p:string)=>void, probe?:(p:string)=>void, archiveRoot?:string, nestedGit?:(p:string)=>string[], isRepo?:(p:string)=>boolean}} deps
+ *   `probe` (optional): throws `{deferred, detail}` when the removal would defer; called before archiving
  * @returns {string} detail
  */
 export function archiveThenRemove(a, deps) {
   const { archiveMod, isGit, remove, archiveRoot } = deps;
   if (!archiveMod || typeof archiveMod.archive !== "function") throw new Error("archive-incomplete: archive module is not in this image: not removed");
+  if (typeof deps.probe === "function") {
+    const refused = deps.probe(a.path);
+    if (refused && refused.deferred) return { deferred: refused.deferred, detail: refused.detail };
+  }
   const key = a.key || path.basename(a.path);
   const opts = { looseKey: true, ...(archiveRoot ? { archiveRoot } : {}) };
   const nested = (deps.nestedGit ?? findNestedGit)(a.path);
@@ -124,6 +131,7 @@ export function archiveThenRemove(a, deps) {
     if (typeof archiveMod.archiveTree !== "function") throw new Error("archive-incomplete: archive module cannot archive a directory tree: not removed");
     check("directory tree", archiveMod.archiveTree(a.path, key, opts));
   }
-  remove(a.path);
+  const res = remove(a.path);
+  if (res && res.deferred) return { deferred: res.deferred, detail: res.detail };
   return nested.length > 0 ? `archived (${nested.length} nested repositories), removed` : "archived, removed";
 }

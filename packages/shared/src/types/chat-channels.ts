@@ -235,6 +235,12 @@ export interface ChatEndpoint {
   capabilities: ChatAdapterCapabilities;
   setup: ChatEndpointSetupState;
   healthMessage?: string | null;
+  /**
+   * myrmidon(1.6.5-F10-A): true when the endpoint has been sitting in the
+   * wizard's `test` stage for over a day while traffic still flows through it
+   * (an attention signal for the UI, never a status change or an error).
+   */
+  verifyingStale?: boolean;
   lastError?: string | null;
   lastActivityAt?: string | null;
   lastPublicationAt?: string | null;

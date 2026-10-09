@@ -12,6 +12,7 @@
 import {
   DATASTORE_CARE_RETENTION_KEY,
   DATASTORE_CARE_SETTINGS_KEY,
+  DEFAULT_CONTEXT_COMPACT_MAX_BATCHES,
   DEFAULT_HEARTBEAT_RUN_CONTEXT_DAYS,
   normalizeDatastoreCareRetention,
   normalizeDatastoreCareRetentionLastRun,
@@ -30,11 +31,25 @@ export type DatastoreCareSettingsService = Pick<
 export const HEARTBEAT_RUN_CONTEXT_RETENTION_DAYS_ENV =
   "PAPERCLIP_HEARTBEAT_RUN_CONTEXT_RETENTION_DAYS";
 
+// myrmidon(1.6.5-F14B): the environment override for batches per company per
+// compaction pass. The first live passes on an IO-starved board need a lower
+// ceiling without a rebuild; the instance setting wins over this knob.
+export const CONTEXT_COMPACT_MAX_BATCHES_ENV = "MYRMIDON_CONTEXT_COMPACT_MAX_BATCHES";
+
 export interface ResolvedRetentionSettings {
   /** Whole days after created_at before a terminal run's context compacts. */
   heartbeatRunContextDays: number;
   /** Where the value came from: the stored settings block or the default. */
   source: "settings" | "env" | "default";
+  /** myrmidon(1.6.5-F14B): batches per company per compaction pass. */
+  contextCompactMaxBatches: number;
+  /** Where the batches value came from. */
+  contextCompactMaxBatchesSource: "settings" | "env" | "default";
+  /**
+   * myrmidon(1.6.5-F14B): the machine is backed up outside; the backup gates
+   * (compaction and row deletion) do not wait for a local dump. Default false.
+   */
+  externalMachineBackup: boolean;
 }
 
 function envRetentionDays(env: Record<string, string | undefined>): number | undefined {
@@ -45,9 +60,21 @@ function envRetentionDays(env: Record<string, string | undefined>): number | und
   return parsed;
 }
 
+// myrmidon(1.6.5-F14B): the env override for batches per pass, same rules as
+// the shared validator (1..1000); an out-of-range value reads as absent.
+function envCompactMaxBatches(env: Record<string, string | undefined>): number | undefined {
+  const raw = env[CONTEXT_COMPACT_MAX_BATCHES_ENV]?.trim();
+  if (!raw) return undefined;
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed < 1 || parsed > 1000) return undefined;
+  return parsed;
+}
+
 /**
  * Resolve the compaction window: stored settings, then the environment
  * variable, then the default (7). 0 disables the compaction.
+ * myrmidon(1.6.5-F14B): the batches-per-pass ceiling resolves the same way
+ * (stored settings, then env, then the default of 10).
  */
 export function resolveRetentionSettings(
   general: Record<string, unknown>,
@@ -59,14 +86,28 @@ export function resolveRetentionSettings(
       ? (care as Record<string, unknown>)[DATASTORE_CARE_RETENTION_KEY]
       : undefined;
   const stored = normalizeDatastoreCareRetention(block);
-  if (stored.heartbeatRunContextDays !== undefined) {
-    return { heartbeatRunContextDays: stored.heartbeatRunContextDays, source: "settings" };
-  }
-  const fromEnv = envRetentionDays(env);
-  if (fromEnv !== undefined) {
-    return { heartbeatRunContextDays: fromEnv, source: "env" };
-  }
-  return { heartbeatRunContextDays: DEFAULT_HEARTBEAT_RUN_CONTEXT_DAYS, source: "default" };
+  const daysEnv = envRetentionDays(env);
+  const days =
+    stored.heartbeatRunContextDays !== undefined
+      ? { value: stored.heartbeatRunContextDays, source: "settings" as const }
+      : daysEnv !== undefined
+        ? { value: daysEnv, source: "env" as const }
+        : { value: DEFAULT_HEARTBEAT_RUN_CONTEXT_DAYS, source: "default" as const };
+  const batchesStored = stored.contextCompactMaxBatches;
+  const batchesEnv = envCompactMaxBatches(env);
+  const batches =
+    batchesStored !== undefined
+      ? { value: batchesStored, source: "settings" as const }
+      : batchesEnv !== undefined
+        ? { value: batchesEnv, source: "env" as const }
+        : { value: DEFAULT_CONTEXT_COMPACT_MAX_BATCHES, source: "default" as const };
+  return {
+    heartbeatRunContextDays: days.value,
+    source: days.source,
+    contextCompactMaxBatches: batches.value,
+    contextCompactMaxBatchesSource: batches.source,
+    externalMachineBackup: stored.externalMachineBackup === true,
+  };
 }
 
 /** Read the resolved settings for one pass. */
@@ -94,7 +135,12 @@ export async function readRetentionLastRun(
   return stored ? normalizeDatastoreCareRetentionLastRun(stored.contextLastRun) : normalizeDatastoreCareRetentionLastRun(undefined);
 }
 
-/** Write a partial patch; the pass state (`contextLastRun`) under the block survives. */
+/**
+ * Write a partial patch; the pass state (`contextLastRun`) under the block
+ * survives. Per field: absent keeps the stored value untouched, `null`
+ * clears it (resolution then falls back to env, then default), a number
+ * stores it. Review (F14B): PATCHing one knob must never wipe the other.
+ */
 export async function writeRetentionSettings(
   settings: DatastoreCareSettingsService,
   patch: DatastoreCareRetentionPatch,
@@ -102,10 +148,21 @@ export async function writeRetentionSettings(
   const general = (await settings.getGeneral()) as unknown as Record<string, unknown>;
   const stored = storedCareRetention(general);
   const next: Record<string, unknown> = { ...(stored ?? {}) };
-  if (patch.heartbeatRunContextDays !== undefined) {
-    next.heartbeatRunContextDays = patch.heartbeatRunContextDays;
-  } else {
+  // Per field: undefined (absent) keeps, null clears, a number stores.
+  if (patch.heartbeatRunContextDays === null) {
     delete next.heartbeatRunContextDays;
+  } else if (patch.heartbeatRunContextDays !== undefined) {
+    next.heartbeatRunContextDays = patch.heartbeatRunContextDays;
+  }
+  if (patch.contextCompactMaxBatches === null) {
+    delete next.contextCompactMaxBatches;
+  } else if (patch.contextCompactMaxBatches !== undefined) {
+    next.contextCompactMaxBatches = patch.contextCompactMaxBatches;
+  }
+  if (patch.externalMachineBackup === null) {
+    delete next.externalMachineBackup;
+  } else if (patch.externalMachineBackup !== undefined) {
+    next.externalMachineBackup = patch.externalMachineBackup;
   }
   const care = general[DATASTORE_CARE_SETTINGS_KEY];
   const careBlock = typeof care === "object" && care !== null ? { ...(care as Record<string, unknown>) } : {};

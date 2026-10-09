@@ -183,6 +183,7 @@
     "workspace": "Workspace",
     "parent": "Parent task",
     "labels": "Tags",
+    "pheromone": "Pheromone",
     "updated": "Last updated",
     "title": "Title",
     "columns": "Columns",
@@ -199,6 +200,8 @@
     "workspaceDesc": "Execution or project workspace used for the task.",
     "parentDesc": "Parent task identifier and title.",
     "labelsDesc": "Task labels and tags.",
+    "pheromoneDesc": "Swarm-queue pheromone strength; editable in place.",
+    "pheromoneAria": "Pheromone strength",
     "updatedDesc": "Latest visible activity time.",
     "idTaskDesc": "Task identifier like PAP-1009 on the trailing edge.",
     "statusTaskDesc": "Task state icon on the leading edge."
@@ -442,11 +445,11 @@
   },
   "swarm": {
     "title": "Swarm supervisor",
-    "intro": "Role queues, live role leases and rebalance actions, plus the pilot report compared against the frozen BASELINE snapshot.",
+    "intro": "Role queues, live role leases and rebalance actions of the self-organizing swarm.",
     "selectOrganization": "Select an organization to view swarm role queues.",
     "sections": {
       "roles": "Role queues",
-      "pilot": "Pilot vs BASELINE"
+      "activity": "Activity"
     },
     "queueTitle": "Queue",
     "queueDescription": "Assigned tasks waiting for a claim in this role, oldest first.",
@@ -479,21 +482,25 @@
       "loadVsCap": "Load vs cap",
       "limit": "Limit",
       "metric": "Metric",
-      "pilot": "Pilot",
       "baseline": "BASELINE",
       "delta": "Delta",
       "tasksDone": "Tasks done",
       "cycleTimeMean": "Cycle time (mean)",
       "reviewTimeMean": "Review time (mean)",
       "returnRate": "Return rate",
-      "costPerTaskMean": "Cost per task (mean)"
+      "costPerTaskMean": "Cost per task (mean)",
+      "eff": "Pheromone",
+      "nest": "Nest",
+      "matchedAt": "Matched",
+      "coolsDownAt": "Cools down"
     },
     "totals": {
       "queuedTasks": "Queued tasks",
       "activeLeases": "Active leases",
       "expiredLeases": "Expired leases",
       "agentsWithLeases": "Agents with leases",
-      "idleAgentsWithQueue": "Idle agents with queue"
+      "idleAgentsWithQueue": "Idle agents with queue",
+      "freeAgentsWithQueue": "Free agents with queue"
     },
     "releaseLease": "Release lease",
     "releaseFailed": "Release failed: {{message}}",
@@ -503,41 +510,23 @@
     "generated": "Generated {{time}}",
     "leaseTtl": "Lease TTL: {{seconds}}",
     "maxActive": "Max active tasks per agent:",
-    "presets": {
-      "7d": "Last 7 Days",
-      "14d": "Last 14 Days",
-      "30d": "Last 30 Days"
-    },
-    "notAvailable": "Swarm supervisor is not available",
-    "notAvailableMessage": "The server answered that the swarm-claim supervisor is not enabled on this instance.",
     "noOverview": "No supervisor overview yet",
     "noOverviewMessage": "The supervisor has not produced an overview for this organization.",
     "disabled": "Swarm supervisor is disabled",
     "disabledMessage": "This organization has the supervisor report disabled.",
     "noRoles": "No roles to supervise",
     "noRolesMessage": "No role currently has queued tasks, live leases or idle agents.",
-    "pilotDisabled": "Swarm pilot is disabled",
-    "pilotDisabledMessage": "The server answered that the swarm pilot is not enabled on this instance.",
-    "pilotDisabledDescription": "The pilot flag is off by default; ask the operator to enable the swarm pilot before comparing against BASELINE.",
-    "noPilotReport": "No pilot report yet",
-    "noPilotReportMessage": "The supervisor has not produced a pilot report for this window.",
-    "noWindow": "No window",
-    "pilotComparisonTitle": "Pilot vs BASELINE",
-    "pilotComparisonDescription": "Mean values over the window: the swarm pilot beside the frozen BASELINE snapshot.",
-    "pilotWindow": "Pilot window",
-    "pilotWindowDescription": "Delivery metrics for the pilot window, by project.",
-    "pilotWindowEmpty": "No pilot data in this window.",
-    "baselineSnapshot": "BASELINE snapshot",
-    "baselineSnapshotDescription": "The frozen BASELINE reference the pilot is measured against, by project.",
-    "baselineSnapshotEmpty": "No BASELINE snapshot yet.",
-    "costsSource": {
-      "litellm": "LLM gateway cost events",
-      "costEvents": "adapter cost events",
-      "none": "no cost source"
+    "disabledDescription": "The swarm switch is off; turn it on in the self-organization settings to inspect role queues.",
+    "matchedTitle": "Recent matches",
+    "matchedDescription": "The last tasks the board matched to a free agent.",
+    "matchedEmpty": "No matches yet — the board will list every task it hands to an agent here.",
+    "cooldownTitle": "Cooling down",
+    "cooldownDescription": "Tasks the board could not match, waiting before another attempt.",
+    "cooldownEmpty": "No tasks are cooling down.",
+    "warnings": {
+      "empty": "No warnings — every caste with tasks has a free agent, every task has a caste, and every run works on a task."
     },
-    "costSourceLine": "cost source: {{source}}",
-    "notAvailableDescription": "Ask the operator to enable the swarm pilot before inspecting role queues and leases.",
-    "disabledDescription": "The pilot flag is off; ask the operator to enable it before inspecting role queues."
+    "claimSwitch": "Claim switch"
   },
   "foraging": {
     "title": "Foraging",
@@ -1012,6 +1001,7 @@
       "host_cpu": "the host CPU ceiling is closed",
       "agent_fair_share": "another agent's turn comes first (fair share)",
       "agent_concurrency": "the agent's own concurrency limit is full",
+      "higher_priority_ready": "the agent's more important ready task goes first",
       "priority": "higher-priority runs are ahead"
     },
     "enabled": "Priority ordering on",

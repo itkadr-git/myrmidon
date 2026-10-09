@@ -34,12 +34,19 @@ import { botLspSettingsSchema } from "../myrmidon-bot-lsp.js";
 // myrmidon(EXTCASE-B): the browser-bridge allowlist stored in the same general settings row
 import { browserBridgeSettingsSchema } from "../myrmidon-browser-bridge.js";
 import { swarmClaimSettingsSchema } from "../myrmidon-swarm-claim.js";
+// myrmidon(1.6.5 F-26 T5): the SWARM wake guard (taskless gate + cooling) stored
+// in the same general settings row under `general.swarm`.
+import { swarmSettingsSchema } from "../myrmidon-swarm-wake.js";
 import { datastoreCareSettingsSchema } from "../myrmidon-datastore-care.js"; // myrmidon(1.6.5-DBC1)
 // myrmidon(1.6.1-WIP-LIMIT-A): the per-agent WIP limit settings stored in the
 // same general settings row.
 import { wipLimitSettingsSchema } from "../myrmidon-wip-limit.js";
 // myrmidon(1.6.5-OWNER-DM-FILTER)
 import { ownerDeliverySettingsSchema } from "../myrmidon-owner-delivery.js";
+// myrmidon(F16): the issue-list agent defaults stored in the same general
+// settings row (absent = the fix on; `{enabled: false}` = the pre-fix agent
+// behaviour).
+import { issueListAgentDefaultsSchema } from "../myrmidon-issue-list-agent-defaults.js";
 // myrmidon(REVIEW-ROUTING): the automatic reviewer routing settings stored in the same row.
 import { reviewRoutingSettingsSchema } from "../myrmidon-review-routing.js";
 // myrmidon(REVIEW-REWORK): the review-return loop settings stored in the same row.
@@ -58,6 +65,10 @@ import { pluginEntitlementKeysSchema } from "../myrmidon-plugin-entitlement.js";
 // myrmidon(DM-PROGRESS): live progress steps of the bridged Telegram DM status
 // message, stored in the same general settings row.
 import { telegramDmProgressSettingsSchema } from "../myrmidon-telegram-dm-progress.js";
+// myrmidon(1.6.5-TG-LOCALE-C): the instance-wide default language of the
+// bridged Telegram DM, changed from Settings → Language and
+// /api/myrmidon/bridge-language.
+import { bridgeLanguageSettingsSchema } from "../myrmidon-bridge-language.js";
 // myrmidon(1.6.1-FORAGING-LIMITS-UI)
 import { foragingSettingsSchema } from "../myrmidon-foraging.js";
 // myrmidon(TEAM-LIVENESS-SETTINGS): the knobs of the three automatic team-liveness
@@ -188,6 +199,10 @@ export const instanceGeneralSettingsSchema = z.object({
   // /api/myrmidon/swarm-claim; absent means "use the environment variable, then
   // the default (the pilot is off)".
   swarmClaim: swarmClaimSettingsSchema.optional(),
+  // myrmidon(1.6.5 F-26 T5): the wake guard — the run-without-task gate and the
+  // exponential cooling of stale wake candidates (design 1.6.5 §3.7, §4.3).
+  // Absent means the defaults (gate on, base 30 min, ceiling 24 h).
+  swarm: swarmSettingsSchema.optional(),
   // myrmidon(1.6.1 SWARM-SETTINGS-UI): the change journal of the swarm-claim
   // pilot settings (who changed what, and when), kept by the settings service
   // under `general.swarmClaimJournal` and read by GET /api/myrmidon/swarm-claim.
@@ -209,6 +224,11 @@ export const instanceGeneralSettingsSchema = z.object({
   // task; review blocked until the PR head moves), changed from
   // /api/myrmidon/review-rework; absent means the defaults (the fix is on).
   reviewRework: reviewReworkSettingsSchema.optional(),
+  // myrmidon(F16): the issue-list agent defaults (compact view, limit 200/500,
+  // description omitted in compact), read at the list route; absent means the
+  // fix is ON — `{enabled: false}` restores the pre-feature agent behaviour
+  // byte-for-byte (see packages/shared/src/myrmidon-issue-list-agent-defaults.ts).
+  issuesListAgentDefaults: issueListAgentDefaultsSchema.optional(),
   // myrmidon(PAUSE-GUARD): the forgotten-pause guard (enabled, threshold,
   // interval, allowlist, per-pass ceiling), changed from
   // /api/myrmidon/pause-guard; absent means "use the environment variable, then
@@ -247,6 +267,12 @@ export const instanceGeneralSettingsSchema = z.object({
   // message (on/off and the minimum spacing between edits), changed from
   // /api/myrmidon/telegram-dm-progress; absent means the defaults.
   telegramDmProgress: telegramDmProgressSettingsSchema.optional(),
+  // myrmidon(1.6.5-TG-LOCALE-C): the instance-wide default language of the
+  // bridged Telegram DM (the fallback for a board user with no stored
+  // `user_ui_language` row), changed from Settings → Language and
+  // /api/myrmidon/bridge-language; absent means "use the environment force,
+  // then English".
+  bridgeLanguage: bridgeLanguageSettingsSchema.optional(),
   // myrmidon(MEMORY-UI): agent card Memory tab — service address, optional key
   // secret name and the switch, changed from the instance settings page and
   // /api/myrmidon/agent-memory; absent means "use the environment".

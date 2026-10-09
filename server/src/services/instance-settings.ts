@@ -69,6 +69,8 @@ import { preserveBudgetEnforcementGeneralKey } from "../myrmidon/budget-enforcem
 import { preservePluginEntitlementKeysGeneralKey } from "../myrmidon/plugin-entitlement/store.js";
 // myrmidon(DM-PROGRESS): keep the Telegram DM progress settings across vendor writes of `general`
 import { preserveTelegramDmProgressGeneralKey } from "../myrmidon/telegram-dm-progress/settings.js";
+// myrmidon(1.6.5-TG-LOCALE-C): keep the instance-wide bridge language across vendor writes of `general`
+import { preserveBridgeLanguageGeneralKey } from "../myrmidon/bridge-language/settings.js";
 // myrmidon(GITHUB-SHARED-IDENTITY): keep the per-company shared GitHub access rules across vendor writes of `general`
 import { preserveGitHubSharedIdentityGeneralKey } from "../myrmidon/github-shared-identity/store.js";
 import { preserveBudgetProjectionGeneralKey } from "../myrmidon/litellm-budget-sync/settings.js"; // myrmidon(1.7-BUDGET-CONFIG-C)
@@ -306,6 +308,9 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
       // myrmidon(1.6.5-OWNER-DM-FILTER): the stored owner-DM delivery filter
       // mode survives every general write (it is edited via /api/myrmidon/owner-delivery).
       ...(parsed.data.ownerDelivery ? { ownerDelivery: parsed.data.ownerDelivery } : {}),
+      // myrmidon(F16): the stored issue-list agent-defaults toggle survives
+      // every general write (it is a rollback switch, not a settings page).
+      ...(parsed.data.issuesListAgentDefaults ? { issuesListAgentDefaults: parsed.data.issuesListAgentDefaults } : {}),
       // myrmidon(1.7-BUDGET-CONFIG-B): the stored budget enforcement mode
       // survives every general write (it is edited on its own settings page).
       ...(parsed.data.budgetEnforcement ? { budgetEnforcement: parsed.data.budgetEnforcement } : {}),
@@ -315,6 +320,11 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
       // myrmidon(PLUGIN-ENTITLEMENT C): the stored plugin entitlement keys
       // survive every general write (edited on their own settings block).
       ...(parsed.data.pluginEntitlementKeys ? { pluginEntitlementKeys: parsed.data.pluginEntitlementKeys } : {}),
+      // myrmidon(1.6.5-TG-LOCALE-C): the stored instance bridge language
+      // survives every general write (it is edited on the language screen).
+      // Without this line the whitelist drops the key, a PATCH answers 200 yet
+      // stores nothing, and a later write would leave the fallback unreachable.
+      ...(parsed.data.bridgeLanguage ? { bridgeLanguage: parsed.data.bridgeLanguage } : {}),
       // myrmidon(DM-PROGRESS): the stored Telegram DM progress settings survive
       // every general write (edited on their own settings block).
       ...(parsed.data.telegramDmProgress ? { telegramDmProgress: parsed.data.telegramDmProgress } : {}),
@@ -753,6 +763,10 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
               ...preserveBudgetEnforcementGeneralKey(current.general), // myrmidon(1.7-BUDGET-CONFIG-B)
               ...preservePluginEntitlementKeysGeneralKey(current.general), // myrmidon(PLUGIN-ENTITLEMENT C)
               ...preserveTelegramDmProgressGeneralKey(current.general), // myrmidon(DM-PROGRESS)
+              ...preserveBridgeLanguageGeneralKey(current.general), // myrmidon(1.6.5-TG-LOCALE-C)
+              // The preserve line above restores the stored value: a patch that
+              // carries the key wins, the same rule as DM-PROGRESS.
+              ...(patch.bridgeLanguage !== undefined ? { bridgeLanguage: nextGeneral.bridgeLanguage } : {}),
               ...preserveFallbackSignalGeneralKey(current.general), // myrmidon(BOT-RUNTIME-TUNING D2)
               // The preserve line above restores the old stored value: a patch
               // that carries the key must win, the same rule as DM-PROGRESS.

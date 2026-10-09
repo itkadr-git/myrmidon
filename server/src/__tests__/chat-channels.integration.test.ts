@@ -79,6 +79,8 @@ import type { Attachment, Author, Message, Thread } from "chat";
 import { errorHandler } from "../middleware/index.js";
 import { issueRoutes } from "../routes/issues.js";
 import { deliverReconciledExecutions } from "../services/execution-recovery-resolution.js";
+// myrmidon(1.6.5-F10-A): live traffic can finish the wizard's test step.
+import { activateChatEndpointFromLiveTraffic } from "../myrmidon/chat-live-traffic-activation.js";
 import {
   unadmittedChatWakeupCondition,
   authorizeFailedChatRunRetryWake,
@@ -13212,6 +13214,392 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       status: "active",
       setup: { step: "complete" },
     });
+  });
+
+  it("completes the Telegram setup wizard on the first successful delivery", async () => {
+    const fixture = await seedCompany();
+    const { callbacks, endpoint, runtime, service } =
+      await configuredTelegramEndpoint(fixture);
+    const thread = makeThread({
+      channelId: "77330011",
+      id: "telegram:77330011",
+      isDM: true,
+      name: "Telegram auto-complete user",
+    });
+    await deliverMessage({
+      callbacks,
+      endpointId: endpoint.id,
+      provider: "telegram",
+      thread: thread.thread,
+      message: makeMessage({
+        id: "93",
+        text: "Open the first Telegram task",
+        userId: "77330011",
+        raw: { message_id: 93, chat: { id: 77330011, type: "private" } },
+      }),
+      trigger: "direct_message",
+    });
+    const [conversation] = await db
+      .select()
+      .from(chatConversations)
+      .where(eq(chatConversations.endpointId, endpoint.id));
+    if (!conversation) throw new Error("Expected Telegram conversation");
+    await expect(service.get(endpoint.id)).resolves.toMatchObject({
+      status: "verifying",
+      setup: { step: "test" },
+    });
+
+    await db.insert(chatPublications).values({
+      companyId: fixture.companyId,
+      endpointId: endpoint.id,
+      conversationId: conversation.id,
+      issueId: conversation.issueId,
+      idempotencyKey: `f10-first-delivery:${endpoint.id}`,
+      payload: { text: "First Telegram notification" },
+      state: "pending",
+    });
+    await service.processPendingPublications();
+
+    const providerRuntime = runtime.endpoints.get(endpoint.id);
+    if (!providerRuntime) throw new Error("Expected Telegram runtime");
+    expect(providerRuntime.posts).toHaveLength(1);
+    const [publication] = await db
+      .select({ state: chatPublications.state })
+      .from(chatPublications)
+      .where(
+        eq(
+          chatPublications.idempotencyKey,
+          `f10-first-delivery:${endpoint.id}`,
+        ),
+      );
+    expect(publication!.state).toBe("published");
+
+    const [stored] = await db
+      .select({
+        status: chatEndpoints.status,
+        setup: chatEndpoints.setup,
+        activatedAt: chatEndpoints.activatedAt,
+        healthMessage: chatEndpoints.healthMessage,
+      })
+      .from(chatEndpoints)
+      .where(eq(chatEndpoints.id, endpoint.id));
+    expect(stored!.status).toBe("active");
+    expect(stored!.setup).toMatchObject({ step: "complete" });
+    expect(stored!.setup.testStartedAt ?? null).toBeNull();
+    expect(stored!.activatedAt).toBeInstanceOf(Date);
+    expect(stored!.healthMessage).toBe("Connected");
+    await expect(service.get(endpoint.id)).resolves.toMatchObject({
+      status: "active",
+      setup: { step: "complete" },
+    });
+    // F-10 review: the manual completion request is an idempotent no-op
+    // against an already-auto-activated Telegram endpoint — the endpoint is
+    // returned, not a 409 conflict.
+    await expect(service.test(endpoint.id)).resolves.toMatchObject({
+      status: "active",
+      setup: { step: "complete" },
+    });
+    await service.shutdown();
+  });
+
+  it("leaves the tool connection untouched when a concurrent reconnect empties the delivery-complete update", async () => {
+    const fixture = await seedCompany();
+    const { callbacks, endpoint, runtime, service } =
+      await configuredTelegramEndpoint(fixture);
+    const thread = makeThread({
+      channelId: "77330013",
+      id: "telegram:77330013",
+      isDM: true,
+      name: "Telegram reconnect-race user",
+    });
+    await deliverMessage({
+      callbacks,
+      endpointId: endpoint.id,
+      provider: "telegram",
+      thread: thread.thread,
+      message: makeMessage({
+        id: "94",
+        text: "Seed the reconnect-race conversation",
+        userId: "77330013",
+        raw: { message_id: 94, chat: { id: 77330013, type: "private" } },
+      }),
+      trigger: "direct_message",
+    });
+    const [conversation] = await db
+      .select()
+      .from(chatConversations)
+      .where(eq(chatConversations.endpointId, endpoint.id));
+    if (!conversation) throw new Error("Expected Telegram conversation");
+
+    await db.insert(chatPublications).values({
+      companyId: fixture.companyId,
+      endpointId: endpoint.id,
+      conversationId: conversation.id,
+      issueId: conversation.issueId,
+      idempotencyKey: `f10-race-delivery:${endpoint.id}`,
+      payload: { text: "Notification that races a reconnect" },
+      state: "pending",
+    });
+    // Pre-mark the connection with the state that a wrongly unconditional
+    // activation would erase: lastError plus the inactive defaults.
+    await db
+      .update(toolConnections)
+      .set({ lastError: "stale health probe" })
+      .where(eq(toolConnections.id, endpoint.connectionId));
+
+    const providerRuntime = runtime.endpoints.get(endpoint.id);
+    if (!providerRuntime) throw new Error("Expected Telegram runtime");
+    providerRuntime.postHook = async () => {
+      // A concurrent reconnect bumps the runtime generation while the
+      // provider send is in flight; the guarded completion update must
+      // then match zero rows and stay a total no-op.
+      providerRuntime.postHook = undefined;
+      const [live] = await db
+        .select({ setup: chatEndpoints.setup })
+        .from(chatEndpoints)
+        .where(eq(chatEndpoints.id, endpoint.id));
+      await db
+        .update(chatEndpoints)
+        .set({
+          setup: {
+            ...live!.setup,
+            runtimeGeneration: (live!.setup.runtimeGeneration ?? 0) + 1,
+          },
+          updatedAt: new Date(),
+        })
+        .where(eq(chatEndpoints.id, endpoint.id));
+    };
+    const connectionColumns = {
+      status: toolConnections.status,
+      enabled: toolConnections.enabled,
+      healthStatus: toolConnections.healthStatus,
+      healthMessage: toolConnections.healthMessage,
+      lastError: toolConnections.lastError,
+    };
+    const [connectionBefore] = await db
+      .select(connectionColumns)
+      .from(toolConnections)
+      .where(eq(toolConnections.id, endpoint.connectionId));
+    await service.processPendingPublications();
+
+    // Prove the publication reached its commit (the F-10 block ran): without
+    // this the test would also pass if the commit aborted earlier.
+    const [publication] = await db
+      .select({ state: chatPublications.state })
+      .from(chatPublications)
+      .where(eq(chatPublications.idempotencyKey, `f10-race-delivery:${endpoint.id}`));
+    expect(publication!.state).toBe("published");
+    expect(providerRuntime.posts).toHaveLength(1);
+
+    const [stored] = await db
+      .select({
+        status: chatEndpoints.status,
+        setup: chatEndpoints.setup,
+        activatedAt: chatEndpoints.activatedAt,
+      })
+      .from(chatEndpoints)
+      .where(eq(chatEndpoints.id, endpoint.id));
+    expect(stored!.status).toBe("verifying");
+    expect(stored!.setup).toMatchObject({ step: "test" });
+    expect(stored!.activatedAt).toBeNull();
+    const [connection] = await db
+      .select(connectionColumns)
+      .from(toolConnections)
+      .where(eq(toolConnections.id, endpoint.connectionId));
+    // The connection row is exactly as it was before the send: a wrongly
+    // unconditional activation would null `lastError` (and rewrite health).
+    expect(connectionBefore!.lastError).toBe("stale health probe");
+    expect(connection).toEqual(connectionBefore);
+    await service.shutdown();
+  });
+
+  it("leaves the tool connection untouched when the wizard step moves off test during the send", async () => {
+    const fixture = await seedCompany();
+    const { callbacks, endpoint, runtime, service } =
+      await configuredTelegramEndpoint(fixture);
+    const thread = makeThread({
+      channelId: "77330015",
+      id: "telegram:77330015",
+      isDM: true,
+      name: "Telegram step-race user",
+    });
+    await deliverMessage({
+      callbacks,
+      endpointId: endpoint.id,
+      provider: "telegram",
+      thread: thread.thread,
+      message: makeMessage({
+        id: "94",
+        text: "Seed the step-race conversation",
+        userId: "77330015",
+        raw: { message_id: 94, chat: { id: 77330015, type: "private" } },
+      }),
+      trigger: "direct_message",
+    });
+    const [conversation] = await db
+      .select()
+      .from(chatConversations)
+      .where(eq(chatConversations.endpointId, endpoint.id));
+    if (!conversation) throw new Error("Expected Telegram conversation");
+
+    await db.insert(chatPublications).values({
+      companyId: fixture.companyId,
+      endpointId: endpoint.id,
+      conversationId: conversation.id,
+      issueId: conversation.issueId,
+      idempotencyKey: `f10-step-delivery:${endpoint.id}`,
+      payload: { text: "Notification that races a wizard step change" },
+      state: "pending",
+    });
+    // Pre-mark the connection with the state that a wrongly unconditional
+    // activation would erase: lastError plus the inactive defaults.
+    await db
+      .update(toolConnections)
+      .set({ lastError: "stale health probe" })
+      .where(eq(toolConnections.id, endpoint.connectionId));
+
+    const providerRuntime = runtime.endpoints.get(endpoint.id);
+    if (!providerRuntime) throw new Error("Expected Telegram runtime");
+    providerRuntime.postHook = async () => {
+      // The wizard step moves off `test` while the provider send is in
+      // flight, without a generation bump; the guarded completion update
+      // must check the live step and stay a total no-op.
+      providerRuntime.postHook = undefined;
+      const [live] = await db
+        .select({ setup: chatEndpoints.setup })
+        .from(chatEndpoints)
+        .where(eq(chatEndpoints.id, endpoint.id));
+      await db
+        .update(chatEndpoints)
+        .set({
+          setup: { ...live!.setup, step: "provider_setup" },
+          updatedAt: new Date(),
+        })
+        .where(eq(chatEndpoints.id, endpoint.id));
+    };
+    const connectionColumns = {
+      status: toolConnections.status,
+      enabled: toolConnections.enabled,
+      healthStatus: toolConnections.healthStatus,
+      healthMessage: toolConnections.healthMessage,
+      lastError: toolConnections.lastError,
+    };
+    const [connectionBefore] = await db
+      .select(connectionColumns)
+      .from(toolConnections)
+      .where(eq(toolConnections.id, endpoint.connectionId));
+    await service.processPendingPublications();
+
+    // Prove the publication reached its commit (the F-10 block ran): without
+    // this the test would also pass if the commit aborted earlier.
+    const [publication] = await db
+      .select({ state: chatPublications.state })
+      .from(chatPublications)
+      .where(eq(chatPublications.idempotencyKey, `f10-step-delivery:${endpoint.id}`));
+    expect(publication!.state).toBe("published");
+    expect(providerRuntime.posts).toHaveLength(1);
+
+    const [stored] = await db
+      .select({
+        status: chatEndpoints.status,
+        setup: chatEndpoints.setup,
+        activatedAt: chatEndpoints.activatedAt,
+      })
+      .from(chatEndpoints)
+      .where(eq(chatEndpoints.id, endpoint.id));
+    expect(stored!.status).toBe("verifying");
+    expect(stored!.setup).toMatchObject({ step: "provider_setup" });
+    expect(stored!.activatedAt).toBeNull();
+    const [connection] = await db
+      .select(connectionColumns)
+      .from(toolConnections)
+      .where(eq(toolConnections.id, endpoint.connectionId));
+    // The connection row is exactly as it was before the send: a wrongly
+    // unconditional activation would null `lastError` (and rewrite health).
+    expect(connectionBefore!.lastError).toBe("stale health probe");
+    expect(connection).toEqual(connectionBefore);
+    await service.shutdown();
+  });
+
+  it("keeps the Telegram setup wizard open when the first delivery fails", async () => {
+    const fixture = await seedCompany();
+    const { callbacks, endpoint, runtime, service } =
+      await configuredTelegramEndpoint(fixture);
+    const thread = makeThread({
+      channelId: "77330012",
+      id: "telegram:77330012",
+      isDM: true,
+      name: "Telegram failed-delivery user",
+    });
+    await deliverMessage({
+      callbacks,
+      endpointId: endpoint.id,
+      provider: "telegram",
+      thread: thread.thread,
+      message: makeMessage({
+        id: "94",
+        text: "Open a task whose delivery fails",
+        userId: "77330012",
+        raw: { message_id: 94, chat: { id: 77330012, type: "private" } },
+      }),
+      trigger: "direct_message",
+    });
+    const [conversation] = await db
+      .select()
+      .from(chatConversations)
+      .where(eq(chatConversations.endpointId, endpoint.id));
+    if (!conversation) throw new Error("Expected Telegram conversation");
+    const providerRuntime = runtime.endpoints.get(endpoint.id);
+    if (!providerRuntime) throw new Error("Expected Telegram runtime");
+    providerRuntime.postError = new Error("Telegram transport refused the send");
+
+    await db.insert(chatPublications).values({
+      companyId: fixture.companyId,
+      endpointId: endpoint.id,
+      conversationId: conversation.id,
+      issueId: conversation.issueId,
+      idempotencyKey: `f10-failed-delivery:${endpoint.id}`,
+      payload: { text: "This send fails" },
+      state: "pending",
+    });
+    await service.processPendingPublications();
+
+    expect(providerRuntime.posts).toHaveLength(0);
+    const [publication] = await db
+      .select({
+        state: chatPublications.state,
+        providerMessageId: chatPublications.providerMessageId,
+      })
+      .from(chatPublications)
+      .where(
+        eq(
+          chatPublications.idempotencyKey,
+          `f10-failed-delivery:${endpoint.id}`,
+        ),
+      );
+    // An ambiguous transport throw is quarantined as delivery_unknown: the
+    // endpoint must not silently advance while the provider result is unclear.
+    expect(publication!.state).toBe("delivery_unknown");
+    expect(publication!.providerMessageId).toBeNull();
+
+    const [stored] = await db
+      .select({
+        status: chatEndpoints.status,
+        setup: chatEndpoints.setup,
+        activatedAt: chatEndpoints.activatedAt,
+        healthMessage: chatEndpoints.healthMessage,
+      })
+      .from(chatEndpoints)
+      .where(eq(chatEndpoints.id, endpoint.id));
+    expect(stored!.status).toBe("verifying");
+    expect(stored!.setup).toMatchObject({ step: "test" });
+    expect(stored!.activatedAt).toBeNull();
+    expect(stored!.healthMessage).toBe("Test conversation received");
+    await expect(service.get(endpoint.id)).resolves.toMatchObject({
+      status: "verifying",
+      setup: { step: "test" },
+    });
+    await service.shutdown();
   });
 
   it("requires the successful setup final to consume the qualifying follow-up", async () => {
@@ -70753,6 +71141,320 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         }
       },
       30_000,
+    );
+  });
+  // myrmidon(1.6.5-F10-A): an endpoint stuck in the wizard's `test` step is
+  // completed by the traffic already flowing through it, and one that stays
+  // stuck while traffic keeps flowing is reported as stale instead of quietly
+  // sitting in the wizard forever.
+  describe("chat endpoint live-traffic activation (F-10 A)", () => {
+    function autoActivationAudits(companyId: string, endpointId: string) {
+      return db
+        .select()
+        .from(activityLog)
+        .where(
+          and(
+            eq(activityLog.companyId, companyId),
+            eq(activityLog.action, "chat_endpoint.auto_activated"),
+          ),
+        )
+        .then((rows) =>
+          rows.filter(
+            (row) =>
+              (row.details as { endpointId?: string } | null)?.endpointId ===
+              endpointId,
+          ),
+        );
+    }
+
+    async function inboundLinkCount(endpointId: string) {
+      const links = await db
+        .select({ id: chatMessageLinks.id })
+        .from(chatMessageLinks)
+        .where(
+          and(
+            eq(chatMessageLinks.endpointId, endpointId),
+            eq(chatMessageLinks.direction, "inbound"),
+          ),
+        );
+      return links.length;
+    }
+
+    // Push the wizard's test stage into the past: the endpoints of this ticket
+    // have traffic and no owner coming back to press "Finish setup".
+    async function ageTestStage(endpointId: string, ageMs: number) {
+      const startedAt = new Date(Date.now() - ageMs).toISOString();
+      await db.execute(
+        sql`update chat_endpoints
+              set status = 'verifying',
+                  setup = jsonb_set(
+                    coalesce(setup, '{}'::jsonb),
+                    '{testStartedAt}',
+                    to_jsonb(${startedAt}::text)
+                  )
+            where id = ${endpointId}`,
+      );
+      return startedAt;
+    }
+
+    // F-10 B settles a Telegram wizard on the first delivered reply, so the
+    // round trip above already completes it. These tests exercise the F-10 A
+    // fallback, which covers a legacy endpoint stuck in `test` that no delivery
+    // ever settled (created before F-10 B). This helper models that stuck
+    // endpoint by putting the row back into the test stage the fallback starts
+    // from.
+    async function reopenTestStage(endpointId: string) {
+      await db.execute(
+        sql`update chat_endpoints
+              set status = 'verifying',
+                  activated_at = null,
+                  setup = jsonb_set(
+                    jsonb_set(coalesce(setup, '{}'::jsonb), '{step}', '"test"'::jsonb),
+                    '{testStartedAt}',
+                    to_jsonb(${new Date().toISOString()}::text)
+                  )
+            where id = ${endpointId}`,
+      );
+    }
+
+    function telegramThread(chatId: string, name: string) {
+      return makeThread({
+        channelId: chatId,
+        id: `telegram:${chatId}`,
+        isDM: true,
+        name,
+      });
+    }
+
+    function telegramMessage(id: string, chatId: string, text: string) {
+      return makeMessage({
+        id,
+        text,
+        userId: chatId,
+        raw: {
+          message_id: Number(id),
+          chat: { id: Number(chatId), type: "private" },
+        },
+      });
+    }
+
+    it(
+      "completes the wizard test step from live traffic and never twice",
+      async () => {
+        const fixture = await seedCompany();
+        const { callbacks, endpoint, service } =
+          await configuredTelegramEndpoint(fixture);
+        const thread = telegramThread("77117711", "Telegram stuck owner");
+        await deliverMessage({
+          callbacks,
+          endpointId: endpoint.id,
+          provider: "telegram",
+          thread: thread.thread,
+          message: telegramMessage("88", "77117711", "check this connection"),
+          trigger: "direct_message",
+        });
+        // The owner's message and the agent's reply: the wizard's own round trip,
+        // except nobody pressed "Finish setup".
+        await qualifySetupRoundTrip(service, endpoint.id);
+        await reopenTestStage(endpoint.id);
+        expect(await service.get(endpoint.id)).toMatchObject({
+          status: "verifying",
+          setup: { step: "test" },
+          verifyingStale: false,
+        });
+        expect(
+          await autoActivationAudits(fixture.companyId, endpoint.id),
+        ).toHaveLength(0);
+
+        // While the stage is fresh the wizard keeps the endpoint: the owner may
+        // still be looking at the test step.
+        await deliverMessage({
+          callbacks,
+          endpointId: endpoint.id,
+          provider: "telegram",
+          thread: thread.thread,
+          message: telegramMessage("89", "77117711", "still there?"),
+          trigger: "direct_message",
+        });
+        await vi.waitFor(async () => {
+          expect(await inboundLinkCount(endpoint.id)).toBeGreaterThanOrEqual(2);
+        });
+        expect((await service.get(endpoint.id))?.status).toBe("verifying");
+        expect(
+          await autoActivationAudits(fixture.companyId, endpoint.id),
+        ).toHaveLength(0);
+
+        // The owner walked away and traffic keeps coming through the endpoint.
+        await ageTestStage(endpoint.id, 2 * 60 * 60 * 1000);
+        await deliverMessage({
+          callbacks,
+          endpointId: endpoint.id,
+          provider: "telegram",
+          thread: thread.thread,
+          message: telegramMessage("90", "77117711", "one more"),
+          trigger: "direct_message",
+        });
+        await vi.waitFor(async () => {
+          expect((await service.get(endpoint.id))?.status).toBe("active");
+        });
+        const activated = (await service.get(endpoint.id))!;
+        expect(activated).toMatchObject({
+          status: "active",
+          healthMessage: "Verified by live traffic",
+          setup: { step: "complete" },
+          activatedAt: expect.any(String),
+          verifyingStale: false,
+        });
+        const [stored] = await db
+          .select({ status: chatEndpoints.status, setup: chatEndpoints.setup })
+          .from(chatEndpoints)
+          .where(eq(chatEndpoints.id, endpoint.id));
+        expect(stored).toMatchObject({
+          status: "active",
+          setup: { step: "complete", testStartedAt: null },
+        });
+        const [connection] = await db
+          .select()
+          .from(toolConnections)
+          .where(eq(toolConnections.id, activated.connectionId!));
+        expect(connection).toMatchObject({
+          status: "active",
+          enabled: true,
+          healthStatus: "healthy",
+          healthMessage: "Connected",
+        });
+        const audits = await autoActivationAudits(fixture.companyId, endpoint.id);
+        expect(audits).toHaveLength(1);
+        expect(audits[0]).toMatchObject({
+          actorType: "system",
+          entityType: "tool_connection",
+          entityId: activated.connectionId,
+          details: { endpointId: endpoint.id, trigger: "live_traffic" },
+        });
+
+        // The other half of the round trip can arrive later; it finds the endpoint
+        // already completed and must neither rewrite it nor audit a second time.
+        await expect(
+          activateChatEndpointFromLiveTraffic(db, {
+            endpointId: endpoint.id,
+            inboundObserved: true,
+          }),
+        ).resolves.toBe(false);
+        expect(
+          await autoActivationAudits(fixture.companyId, endpoint.id),
+        ).toHaveLength(1);
+        const listed = (await service.list(fixture.companyId)).find(
+          (row) => row.id === endpoint.id,
+        );
+        expect(listed).toMatchObject({
+          status: "active",
+          verifyingStale: false,
+        });
+      },
+      60_000,
+    );
+
+    it(
+      "leaves an inbound-only endpoint in the wizard and flags a stuck verifying endpoint",
+      async () => {
+        const fixture = await seedCompany();
+        const { callbacks, endpoint, service } =
+          await configuredTelegramEndpoint(fixture);
+        const thread = telegramThread("88118811", "Telegram inbound only");
+        await deliverMessage({
+          callbacks,
+          endpointId: endpoint.id,
+          provider: "telegram",
+          thread: thread.thread,
+          message: telegramMessage("11", "88118811", "hello bot"),
+          trigger: "direct_message",
+        });
+        await ageTestStage(endpoint.id, 2 * 60 * 60 * 1000);
+        await vi.waitFor(async () => {
+          expect(await inboundLinkCount(endpoint.id)).toBeGreaterThanOrEqual(1);
+        });
+
+        // Inbound alone is not the wizard's round trip: the reply was never
+        // delivered, so the endpoint stays where the wizard put it.
+        await expect(
+          activateChatEndpointFromLiveTraffic(db, { endpointId: endpoint.id }),
+        ).resolves.toBe(false);
+        expect(await service.get(endpoint.id)).toMatchObject({
+          status: "verifying",
+          setup: { step: "test" },
+          verifyingStale: false,
+        });
+        expect(
+          await autoActivationAudits(fixture.companyId, endpoint.id),
+        ).toHaveLength(0);
+        // The undelivered test message is not "live traffic" for the stale
+        // signal either: nothing was delivered in the last day.
+        const listed = (await service.list(fixture.companyId)).find(
+          (row) => row.id === endpoint.id,
+        );
+        expect(listed).toMatchObject({ verifyingStale: false });
+      },
+      60_000,
+    );
+
+    it(
+      "flags a verifying endpoint that traffic still flows through and activates it once under a race",
+      async () => {
+        const fixture = await seedCompany();
+        const { callbacks, endpoint, service } =
+          await configuredTelegramEndpoint(fixture);
+        const thread = telegramThread("99119911", "Telegram stale owner");
+        await deliverMessage({
+          callbacks,
+          endpointId: endpoint.id,
+          provider: "telegram",
+          thread: thread.thread,
+          message: telegramMessage("21", "99119911", "check this connection"),
+          trigger: "direct_message",
+        });
+        await qualifySetupRoundTrip(service, endpoint.id);
+        await reopenTestStage(endpoint.id);
+        await ageTestStage(endpoint.id, 25 * 60 * 60 * 1000);
+
+        // Part A's attention signal: over a day in the test stage with a delivery
+        // inside the last day. It points at the endpoint and changes nothing.
+        expect(await service.get(endpoint.id)).toMatchObject({
+          status: "verifying",
+          verifyingStale: true,
+        });
+        const listedStale = (await service.list(fixture.companyId)).find(
+          (row) => row.id === endpoint.id,
+        );
+        expect(listedStale).toMatchObject({ verifyingStale: true });
+
+        // The delivered reply also completes the setup on its own once the stage
+        // went stale, and two concurrent completions still count as one.
+        const results = await Promise.all([
+          activateChatEndpointFromLiveTraffic(db, { endpointId: endpoint.id }),
+          activateChatEndpointFromLiveTraffic(db, { endpointId: endpoint.id }),
+        ]);
+        expect(results.filter(Boolean)).toHaveLength(1);
+        const activated = (await service.get(endpoint.id))!;
+        expect(activated).toMatchObject({
+          status: "active",
+          healthMessage: "Verified by live traffic",
+          setup: { step: "complete" },
+          verifyingStale: false,
+        });
+        expect(activated.activatedAt).toBeTruthy();
+        const [stored] = await db
+          .select({ status: chatEndpoints.status, setup: chatEndpoints.setup })
+          .from(chatEndpoints)
+          .where(eq(chatEndpoints.id, endpoint.id));
+        expect(stored).toMatchObject({
+          status: "active",
+          setup: { step: "complete", testStartedAt: null },
+        });
+        expect(
+          await autoActivationAudits(fixture.companyId, endpoint.id),
+        ).toHaveLength(1);
+      },
+      60_000,
     );
   });
 });

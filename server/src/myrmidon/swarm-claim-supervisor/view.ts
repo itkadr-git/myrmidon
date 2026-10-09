@@ -19,10 +19,28 @@ import type { Db } from "@paperclipai/db";
 import { readSwarmSupervisorSettings } from "./settings.js";
 // myrmidon(1.6.1 SWARM-SETTINGS-UI): the same resolver the core uses, so the
 // supervisor's "where the value came from" and the settings page agree.
-import { resolveSwarmClaimSettings } from "@paperclipai/shared";
+import {
+  resolveSwarmClaimSettings,
+  effectivePheromone,
+  pheromoneDynamicsOf,
+  type PheromoneDynamicsSettings,
+} from "@paperclipai/shared";
+import {
+  failedRunsDerivedSql,
+  failedRunsJoinOnRawSql,
+  failedRunsSinceLastChangeSql,
+} from "../swarm-claim/effective-pheromone.js";
 
 /** Wake reason part A assigns to queue-driven wakes; informational in the view. */
 export const SWARM_CLAIM_QUEUE_WAKE_REASON = "swarm_claim_queue";
+
+/**
+ * myrmidon(1.6.5 SWARM-T4): the activity action T2/T3 write when the board
+ * itself matches a queued task to a free agent. Until T3 merges the log is
+ * empty and the overview simply reports no recent matches; the literal is the
+ * frozen contract from design §5.3.
+ */
+export const SWARM_MATCHED_ACTION = "issue.swarm_matched";
 
 export interface SwarmQueueCandidateRow {
   issueId: string;
@@ -32,6 +50,27 @@ export interface SwarmQueueCandidateRow {
   projectId: string | null;
   createdAt: string;
   blockedTransitionAt: string | null;
+  /**
+   * myrmidon(1.6.5 SWARM-T4, design §5.3 → F-27 rework 09.10): the EFFECTIVE
+   * pheromone strength of the task — its own `pheromone_strength` plus the
+   * aging bonus minus the failure penalty (`effectivePheromone`, design §2.3),
+   * the single number the queue orders by. Owner: "the more pheromone, the
+   * higher the priority of the task".
+   */
+  eff: number;
+  /** 1.6.5 (F-27): the task's own strength (the number on the card). */
+  pheromoneStrength: number;
+  /**
+   * 1.6.5 (F-27 rework 09.10): failed runs with no task change after them —
+   * the evaporation count of `eff` (SQL twin in swarm-claim/effective-pheromone.ts).
+   */
+  failedRunsSinceLastChange?: number;
+  /**
+   * myrmidon(1.6.5 SWARM-T4, design §5.3): the nest (queue position holder)
+   * the task currently sits in — the assignee agent id when the task is
+   * attributed to a caste queue, null when it is unattributed.
+   */
+  nestAgentId: string | null;
 }
 
 export interface SwarmClaimLeaseRow {
@@ -61,6 +100,40 @@ export interface SwarmRoleOverview {
   queue: SwarmQueueCandidateRow[];
   claims: SwarmClaimLeaseRow[];
   idleAgents: SwarmIdleAgentRow[];
+}
+
+/** myrmidon(1.6.5 SWARM-T4, design §5.3): one recent board→agent match. */
+export interface SwarmMatchedRow {
+  at: string;
+  issueId: string;
+  identifier: string | null;
+  title: string;
+  agentId: string;
+  agentName: string;
+}
+
+/** myrmidon(1.6.5 SWARM-T4, design §5.3): one task the board failed to match and left to cool down. */
+export interface SwarmCooldownRow {
+  issueId: string;
+  identifier: string | null;
+  title: string;
+  priority: string;
+  createdAt: string;
+  /** When the cooldown ends and the task re-enters the queue; from T5, absent until it lands. */
+  coolsDownAt: string | null;
+}
+
+/**
+ * myrmidon(1.6.5 SWARM-T4, design §5.3): one warning the owner should see on
+ * the overview. `kind` selects the sentence, the counts/ids carry the detail.
+ */
+export interface SwarmWarningRow {
+  kind: "caste_without_agents" | "tasks_without_caste" | "runs_without_task";
+  message: string;
+  /** The caste key when the kind is caste-scoped. */
+  caste?: string;
+  issueCount?: number;
+  runCount?: number;
 }
 
 export interface SwarmSupervisorOverview {
@@ -94,10 +167,31 @@ export interface SwarmSupervisorOverview {
     identifier: string | null;
     title: string;
     priority: string;
+    /** 1.6.5 (F-27): the task's own strength and the effective one the queue ranks by. */
+    pheromoneStrength: number;
+    eff: number;
     role: string;
     projectId: string | null;
     createdAt: string;
   }[];
+  /**
+   * myrmidon(1.6.5 SWARM-T4, design §5.3): the recent board→agent matches,
+   * newest first, read from the activity log (`issue.swarm_matched`). Until
+   * the matching core (T3) lands this is empty — the surface is live, the
+   * feed is not yet written.
+   */
+  matched: SwarmMatchedRow[];
+  /**
+   * myrmidon(1.6.5 SWARM-T4, design §5.3): tasks the board failed to match
+   * and left to cool down. From T5; until it lands this is empty.
+   */
+  cooldown: SwarmCooldownRow[];
+  /**
+   * myrmidon(1.6.5 SWARM-T4, design §5.3): warnings — a caste with queued
+   * tasks but no free agents, tasks without a caste, runs without a task in
+   * the last 24 hours.
+   */
+  warnings: SwarmWarningRow[];
 }
 
 /**
@@ -125,6 +219,10 @@ interface QueueRow {
   blocked_transition_at: Date | string | null;
   /** Read when present: the role filter of the queue is the assignee's role. */
   assignee_agent_id?: string | null;
+  /** 1.6.5 (F-27): the pheromone strength; a missing column reads as 0. */
+  pheromone_strength?: number | null;
+  /** 1.6.5 (F-27 rework 09.10): the SQL twin's failed-runs count; missing reads as 0. */
+  failed_runs_since_last_change?: number | null;
 }
 
 interface AgentRow {
@@ -143,16 +241,10 @@ export interface SwarmSupervisorReadPort {
   /** Part A's effective per-agent limit of active tasks, when known. */
   maxActiveTasksPerAgent(): Promise<number | null>;
   /**
-   * 1.6.1 (SWARM-SETTINGS-UI): where each effective pilot setting came from
+   * 1.6.1 (SWARM-SETTINGS-UI): where each effective claim setting came from
    * ("settings" | "env" | "default"), keyed by setting key.
    */
   settingSources(): Promise<Record<string, string>>;
-  /**
-   * myrmidon(1.6.1 SWARM-IDLE-WAKE): the resolved pilot role set (empty =
-   * every role). The idle pass wakes only pilot roles; the supervisor metric
-   * must use the same set, or `freeAgentsWithQueue` never converges to 0.
-   */
-  pilotRoles(): Promise<string[]>;
   /** Claim rows of the company (live + released history rows included). */
   listClaimRows(companyId: string): Promise<ClaimRow[]>;
   /** Queued candidates per issue id (todo, ready, not claimed right now). */
@@ -161,13 +253,41 @@ export interface SwarmSupervisorReadPort {
   listAgents(companyId: string): Promise<AgentRow[]>;
   /** Live run statuses per agent id, for the idle heuristic. */
   liveRunAgentIds(companyId: string): Promise<Set<string>>;
+  /**
+   * myrmidon(1.6.5 SWARM-T4, design §5.3): the recent `issue.swarm_matched`
+   * activity rows, newest first. The board→agent match feed; empty until the
+   * matching core (T3) writes the action.
+   */
+  listMatchedRows(companyId: string): Promise<MatchedActivityRow[]>;
+  /**
+   * 1.6.5 (F-27 rework 09.10): the resolved pheromone dynamics (aging +
+   * evaporation knobs of the `pheromone` settings key, design §2.3) the queue
+   * ranks by. The supervisor's "top of queue" must be the task the next claim
+   * takes. Read on every overview — a settings change applies without restart.
+   */
+  pheromoneDynamics?(): Promise<PheromoneDynamicsSettings>;
+  /** The P0-preemption switch the claim path orders by; absent reads as on. */
+  p0Preemption?(): Promise<boolean>;
+  /**
+   * myrmidon(1.6.5 SWARM-T4, design §5.3): finished run rows of the last 24
+   * hours with their task id (null = the run had no task), for the
+   * "runs without a task" warning.
+   */
+  listRecentRunTaskIds(companyId: string): Promise<RecentRunRow[]>;
 }
 
-const PRIORITY_RANK: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3 };
+/** One `issue.swarm_matched` activity row as the port reads it. */
+interface MatchedActivityRow {
+  at: Date | string;
+  issue_id: string;
+  agent_id: string;
+}
 
-function priorityRank(priority: string): number {
-  const rank = PRIORITY_RANK[priority?.toLowerCase?.() ?? ""];
-  return rank === undefined ? PRIORITY_RANK.medium : rank;
+/** One finished run row of the last 24 hours as the port reads it. */
+interface RecentRunRow {
+  agent_id: string;
+  native_issue_id: string | null;
+  created_at: Date | string;
 }
 
 function toDate(value: Date | string | null): Date | null {
@@ -181,21 +301,59 @@ function toIso(value: Date | string | null): string | null {
   return date ? date.toISOString() : null;
 }
 
+const PRIORITY_RANK: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3 };
+
+function priorityRank(priority: string): number {
+  const rank = PRIORITY_RANK[priority?.toLowerCase?.() ?? ""];
+  return rank === undefined ? PRIORITY_RANK.medium : rank;
+}
+
 /**
- * Order queue candidates the way part A's core orders them: P0 first, then
- * priority, then the oldest blockedTransitionAt, then creation order. The
- * supervisor's "top of queue" must be the same task the next claim would take.
+ * The effective strength of one queue row at `now` (design §2.3): the task's
+ * own strength + aging − the failure penalty. The aging clock is the task's
+ * entry into the queue (`createdAt`), the same instant the claim path uses.
+ */
+export function queueRowEff(
+  row: Pick<SwarmQueueCandidateRow, "pheromoneStrength" | "createdAt" | "failedRunsSinceLastChange">,
+  dynamics: PheromoneDynamicsSettings | undefined,
+  now: Date,
+): number {
+  return effectivePheromone(
+    {
+      pheromoneStrength: row.pheromoneStrength,
+      queuedAt: row.createdAt,
+      failedRunsSinceLastChange: row.failedRunsSinceLastChange,
+    },
+    dynamics,
+    now,
+  );
+}
+
+/**
+ * Order queue candidates the way the swarm core orders them
+ * (`orderSwarmQueueCandidates`): P0 first (unless preemption is off), then the
+ * EFFECTIVE pheromone strength descending (`eff`), then the oldest
+ * blockedTransitionAt, then creation order, then the issue id. The
+ * supervisor's "top of queue" must be the task the next claim would take.
  */
 export function orderQueueCandidates(
   rows: SwarmQueueCandidateRow[],
+  options?: { p0Preemption?: boolean },
 ): SwarmQueueCandidateRow[] {
+  const p0Preemption = options?.p0Preemption ?? true;
   return [...rows].sort((a, b) => {
-    const byPriority = priorityRank(a.priority) - priorityRank(b.priority);
-    if (byPriority !== 0) return byPriority;
+    if (p0Preemption) {
+      const byPriority = priorityRank(a.priority) - priorityRank(b.priority);
+      if (byPriority !== 0) return byPriority;
+    }
+    const byEff = (b.eff ?? 0) - (a.eff ?? 0);
+    if (byEff !== 0) return byEff;
     const aBlocked = a.blockedTransitionAt ? Date.parse(a.blockedTransitionAt) : Number.POSITIVE_INFINITY;
     const bBlocked = b.blockedTransitionAt ? Date.parse(b.blockedTransitionAt) : Number.POSITIVE_INFINITY;
     if (aBlocked !== bBlocked) return aBlocked - bBlocked;
-    return Date.parse(a.createdAt) - Date.parse(b.createdAt);
+    const byAge = Date.parse(a.createdAt) - Date.parse(b.createdAt);
+    if (byAge !== 0) return byAge;
+    return a.issueId < b.issueId ? -1 : a.issueId > b.issueId ? 1 : 0;
   });
 }
 
@@ -210,7 +368,7 @@ export function swarmSupervisorView(
     const generatedAt = new Date(now()).toISOString();
     const enabled = await port.claimEnabled();
     // 1.6.1 (SWARM-SETTINGS-UI): the source map is reported even when the
-    // pilot is off — that is exactly when the operator wants to know whether
+    // swarm is off — that is exactly when the operator wants to know whether
     // the UI or the environment is holding it off.
     const settingSources = await port.settingSources();
     if (!enabled) {
@@ -223,9 +381,16 @@ export function swarmSupervisorView(
         totals: { queued: 0, activeClaims: 0, expiredClaims: 0, agentsWithClaims: 0, idleAgentsWithQueue: 0, freeAgentsWithQueue: 0 },
         roles: [],
         topQueue: [],
+        matched: [],
+        cooldown: [],
+        warnings: [],
       };
     }
-    const [ttl, maxActive, claimRows, queueRows, agents, liveRunAgents, pilotRoles] =
+    // 1.6.5 (F-27 rework 09.10): read on every overview, never cached, so a
+    // change of the `pheromone` settings reorders the queue without a restart.
+    const dynamics = port.pheromoneDynamics ? await port.pheromoneDynamics() : undefined;
+    const p0Preemption = port.p0Preemption ? await port.p0Preemption() : true;
+    const [ttl, maxActive, claimRows, queueRows, agents, liveRunAgents, matchedRows, recentRuns] =
       await Promise.all([
         port.leaseTtlSec(),
         port.maxActiveTasksPerAgent(),
@@ -233,13 +398,9 @@ export function swarmSupervisorView(
         port.listQueueRows(companyId),
         port.listAgents(companyId),
         port.liveRunAgentIds(companyId),
-        port.pilotRoles(),
+        port.listMatchedRows(companyId),
+        port.listRecentRunTaskIds(companyId),
       ]);
-    // myrmidon(1.6.1 SWARM-IDLE-WAKE): the supervisor shows the same role set
-    // the idle pass wakes. A non-pilot role never claims (the claim gate
-    // answers `disabled`), so counting its free agents would keep the
-    // ticket's zero-metric (freeAgentsWithQueue) permanently above 0.
-    const pilotRoleSet = new Set(pilotRoles);
 
     const nowMs = now().getTime();
     const agentById = new Map(agents.map((agent) => [agent.agent_id, agent]));
@@ -278,11 +439,30 @@ export function swarmSupervisorView(
       projectId: row.project_id,
       createdAt: toIso(row.created_at) ?? new Date(0).toISOString(),
       blockedTransitionAt: toIso(row.blocked_transition_at),
+      pheromoneStrength: row.pheromone_strength ?? 0,
+      failedRunsSinceLastChange: row.failed_runs_since_last_change ?? 0,
+      // Folded in by `effOf` below once the dynamics are known.
+      eff: 0,
+      nestAgentId: row.assignee_agent_id ?? null,
     });
 
     const unclaimedRows = queueRows.filter((row) => !claimedIssueIds.has(row.issue_id));
-    for (const row of unclaimedRows) {
-      const issue = issueQueueRow(row);
+    // myrmidon(1.6.5 SWARM-T4 → F-27): the effective pheromone strength of every
+    // candidate, computed once here. It is both a column of the response (the
+    // owner reads it) and the ordering key of the queue.
+    const effOf = (issue: SwarmQueueCandidateRow): SwarmQueueCandidateRow => ({
+      ...issue,
+      eff: queueRowEff(issue, dynamics, now()),
+    });
+    // The whole unclaimed set is ordered BEFORE it is bucketed by role: the
+    // per-role cut (`taskMax`) must keep the strongest tasks, not the oldest.
+    const rowByIssue = new Map(unclaimedRows.map((row) => [row.issue_id, row] as const));
+    const rankedIssues = orderQueueCandidates(
+      unclaimedRows.map((row) => effOf(issueQueueRow(row))),
+      { p0Preemption },
+    );
+    for (const issue of rankedIssues) {
+      const row = rowByIssue.get(issue.issueId)!;
       const roles = issueRoles(row, agentById);
       for (const role of roles) {
         const list = queueByRole.get(role) ?? [];
@@ -346,8 +526,7 @@ export function swarmSupervisorView(
     const cap = typeof maxActive === "number" && maxActive > 0 ? maxActive : null;
     const roles: SwarmRoleOverview[] = [];
     for (const [role, queue] of queueByRole) {
-      if (pilotRoleSet.size > 0 && !pilotRoleSet.has(role)) continue;
-      const ordered = orderQueueCandidates(queue).slice(0, settings.taskMax);
+      const ordered = orderQueueCandidates(queue, { p0Preemption }).slice(0, settings.taskMax);
       const claims = leaseRowsByRole.get(role) ?? [];
       const idleAgents: SwarmIdleAgentRow[] = agents
         .filter((agent) => agent.role === role)
@@ -400,12 +579,80 @@ export function swarmSupervisorView(
           identifier: issue.identifier,
           title: issue.title,
           priority: issue.priority,
+          pheromoneStrength: issue.pheromoneStrength,
+          eff: issue.eff,
           role: entry.role,
           projectId: issue.projectId,
           createdAt: issue.createdAt,
         })),
       )
       .slice(0, settings.taskMax);
+
+    // myrmidon(1.6.5 SWARM-T4, design §5.3): the recent board→agent matches.
+    // The port filters by the frozen `issue.swarm_matched` action and orders
+    // newest first; titles come from the queue rows we already hold (a
+    // matched task is no longer queued, so fall back to the log's issue id).
+    const matched: SwarmMatchedRow[] = matchedRows
+      .slice(0, settings.taskMax)
+      .map((row) => {
+        const queueMeta = issueTitleById.get(row.issue_id);
+        const agent = agentById.get(row.agent_id);
+        return {
+          at: toIso(row.at) ?? new Date(0).toISOString(),
+          issueId: row.issue_id,
+          identifier: queueMeta?.identifier ?? null,
+          title: queueMeta?.title ?? row.issue_id,
+          agentId: row.agent_id,
+          agentName: agent?.agent_name ?? row.agent_id,
+        };
+      });
+
+    // myrmidon(1.6.5 SWARM-T4, design §5.3): tasks in cooldown. The matching
+    // core does not persist a cooldown ledger yet (T5 owns it), so the port
+    // has nothing to read — the surface ships empty and lights up with T5.
+    const cooldown: SwarmCooldownRow[] = [];
+
+    // myrmidon(1.6.5 SWARM-T4, design §5.3): the three warnings. They are
+    // computed from the same rows the totals come from, so the panel's
+    // numbers and its warnings can never disagree.
+    const warnings: SwarmWarningRow[] = [];
+    for (const entry of roles) {
+      if (entry.queue.length > 0 && entry.idleAgents.filter((agent) => !agent.atLimit).length === 0) {
+        warnings.push({
+          kind: "caste_without_agents",
+          message: `caste ${entry.role}: ${entry.queue.length} queued task(s), no free agent`,
+          caste: entry.role,
+          issueCount: entry.queue.length,
+        });
+      }
+    }
+    // Tasks without a caste: unassigned todo candidates no agent role claims.
+    // `issueRoles` returns [] when the assignee is unknown to the company; a
+    // task whose fan-out found no agent role lands here too.
+    const rolesWithQueues = new Set(roles.map((entry) => entry.role));
+    const tasksWithoutCaste = unclaimedRows.filter((row) => {
+      if (row.assignee_agent_id) {
+        return issueRoles(row, agentById).length === 0;
+      }
+      return rolesWithQueues.size === 0;
+    });
+    if (tasksWithoutCaste.length > 0) {
+      warnings.push({
+        kind: "tasks_without_caste",
+        message: `${tasksWithoutCaste.length} queued task(s) without a caste`,
+        issueCount: tasksWithoutCaste.length,
+      });
+    }
+    // Runs without a task in the last 24 hours — the anti-goal of the whole
+    // feature: a run that burned budget and produced no task progress.
+    const runsWithoutTask = recentRuns.filter((row) => !row.native_issue_id);
+    if (runsWithoutTask.length > 0) {
+      warnings.push({
+        kind: "runs_without_task",
+        message: `${runsWithoutTask.length} run(s) without a task in the last 24h`,
+        runCount: runsWithoutTask.length,
+      });
+    }
 
     return {
       enabled: true,
@@ -416,6 +663,9 @@ export function swarmSupervisorView(
       totals,
       roles,
       topQueue,
+      matched,
+      cooldown,
+      warnings,
     };
   }
 
@@ -442,6 +692,7 @@ function issueRoles(row: QueueRow, agentById: Map<string, AgentRow>): string[] {
  * schema module (it may not exist yet on this branch).
  */
 export function createSwarmSupervisorDbPort(db: Db, env: NodeJS.ProcessEnv = process.env): SwarmSupervisorReadPort {
+  const settings = readSwarmSupervisorSettings(env);
   return {
     async claimEnabled() {
       return readClaimEnabled(db, env);
@@ -455,10 +706,6 @@ export function createSwarmSupervisorDbPort(db: Db, env: NodeJS.ProcessEnv = pro
     async settingSources() {
       return readSwarmSettingSources(db, env);
     },
-    async pilotRoles() {
-      const resolved = await readResolvedSwarmSettings(db, env);
-      return resolved.settings.enabledRoles;
-    },
     async listClaimRows(companyId) {
       const rows = await db.execute(sql`
         SELECT id AS claim_id, issue_id, agent_id, claimed_at, expires_at, heartbeat_at, released_at
@@ -469,11 +716,13 @@ export function createSwarmSupervisorDbPort(db: Db, env: NodeJS.ProcessEnv = pro
     },
     async listQueueRows(companyId) {
       const rows = await db.execute(sql`
-        SELECT id AS issue_id, identifier, title, priority, project_id, created_at, blocked_transition_at, assignee_agent_id
-        FROM issues
-        WHERE company_id = ${companyId}
-          AND status = 'todo'
-        ORDER BY created_at ASC
+        SELECT i.id AS issue_id, i.identifier, i.title, i.priority, i.pheromone_strength, i.project_id, i.created_at, i.blocked_transition_at, i.assignee_agent_id,
+          ${failedRunsSinceLastChangeSql()} AS failed_runs_since_last_change
+        FROM issues i
+        LEFT JOIN ${failedRunsDerivedSql(companyId)} ON ${failedRunsJoinOnRawSql("i")}
+        WHERE i.company_id = ${companyId}
+          AND i.status = 'todo'
+        ORDER BY i.created_at ASC
       `);
       return (Array.isArray(rows) ? rows : []) as unknown as QueueRow[];
     },
@@ -494,6 +743,42 @@ export function createSwarmSupervisorDbPort(db: Db, env: NodeJS.ProcessEnv = pro
       `);
       const ids = (Array.isArray(rows) ? rows : []) as unknown as { agent_id: string }[];
       return new Set(ids.map((row) => row.agent_id));
+    },
+    // 1.6.5 (F-27 rework 09.10): the queue ranks by the effective strength;
+    // the knobs come from the same resolved swarm settings the claim path
+    // uses, so the supervisor's top is the task the next claim takes.
+    async pheromoneDynamics() {
+      const resolved = await readResolvedSwarmSettings(db, env);
+      return pheromoneDynamicsOf(resolved.settings.pheromone);
+    },
+    async p0Preemption() {
+      const resolved = await readResolvedSwarmSettings(db, env);
+      return resolved.settings.p0Preemption;
+    },
+    async listMatchedRows(companyId) {
+      // myrmidon(1.6.5 SWARM-T4, design §5.3): the match feed the T3 core
+      // writes. The literal action string is the frozen contract; until T3
+      // merges this query returns an empty list and the overview reports no
+      // recent matches.
+      const rows = await db.execute(sql`
+        SELECT created_at AS at, entity_id AS issue_id, actor_id AS agent_id
+        FROM activity_log
+        WHERE company_id = ${companyId}
+          AND entity_type = 'issue'
+          AND action = ${SWARM_MATCHED_ACTION}
+        ORDER BY created_at DESC
+        LIMIT ${settings.taskMax}
+      `);
+      return (Array.isArray(rows) ? rows : []) as unknown as MatchedActivityRow[];
+    },
+    async listRecentRunTaskIds(companyId) {
+      const rows = await db.execute(sql`
+        SELECT agent_id, native_issue_id, created_at
+        FROM heartbeat_runs
+        WHERE company_id = ${companyId}
+          AND created_at > now() - interval '24 hours'
+      `);
+      return (Array.isArray(rows) ? rows : []) as unknown as RecentRunRow[];
     },
   };
 }
@@ -533,7 +818,7 @@ async function readClaimEnabled(db: Db, env: NodeJS.ProcessEnv): Promise<boolean
 }
 
 /**
- * 1.6.1 (SWARM-SETTINGS-UI): the resolved pilot settings off the instance row,
+ * 1.6.1 (SWARM-SETTINGS-UI): the resolved claim settings off the instance row,
  * through the same shared resolver the core uses, with the per-key source map.
  * Kept as one read so claimEnabled/leaseTtlSec/maxActiveTasksPerAgent (and the
  * source rendering below) cannot disagree about what is in force.
@@ -541,9 +826,12 @@ async function readClaimEnabled(db: Db, env: NodeJS.ProcessEnv): Promise<boolean
 interface ResolvedSwarmRow {
   settings: {
     enabled: boolean;
-    enabledRoles: string[];
     leaseTtlSec: number;
     maxActiveTasks: number | null;
+    sweepIntervalSec: number;
+    p0Preemption: boolean;
+    /** myrmidon(1.6.5 SWARM-T4): the pheromone subset (design §5.1). */
+    pheromone: Record<string, number>;
   };
   sources: Record<string, string>;
 }

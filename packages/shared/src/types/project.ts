@@ -93,6 +93,11 @@ export interface Project {
   env: AgentEnvConfig | null;
   pauseReason: PauseReason | null;
   pausedAt: Date | null;
+  /**
+   * 1.6.5 (F-27 rework 09.10, design §2.1): the caste the project's tasks
+   * fall back to when a task names none; NULL inherits the company default.
+   */
+  defaultCasteKey?: string | null;
   executionWorkspacePolicy: ProjectExecutionWorkspacePolicy | null;
   codebase: ProjectCodebase;
   workspaces: ProjectWorkspace[];

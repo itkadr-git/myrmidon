@@ -23,15 +23,20 @@ import type { BotLspSettings } from "../myrmidon-bot-lsp.js";
 // myrmidon(EXTCASE-B): the browser-bridge allowlist stored in instance settings
 import type { BrowserBridgeSettings } from "../myrmidon-browser-bridge.js";
 import type { SwarmClaimSettings } from "../myrmidon-swarm-claim.js";
+import type { SwarmSettings } from "../myrmidon-swarm-wake.js"; // myrmidon(1.6.5 F-26 T5)
 // myrmidon(1.6.1-WIP-LIMIT-A): per-agent WIP limits of the same general settings row.
 import type { AgentMemorySettings } from "../myrmidon-agent-memory.js";
 import type { WipLimitSettings } from "../myrmidon-wip-limit.js";
+// myrmidon(1.6.5-TG-LOCALE-C): the instance default language of the Telegram bridge.
+import type { BridgeLanguageSettings } from "../myrmidon-bridge-language.js";
 // myrmidon(1.6.5-DB-RETENTION): the stored retention settings shape
 import type { DataRetentionSettings, DataRetentionLastRun } from "../myrmidon-data-retention.js";
 // myrmidon(REVIEW-ROUTING): automatic reviewer routing settings of the same row.
 import type { ReviewRoutingSettings } from "../myrmidon-review-routing.js";
 import type { OwnerDeliverySettings } from "../myrmidon-owner-delivery.js";
 import type { ReviewReworkSettings } from "../myrmidon-review-rework.js";
+// myrmidon(F16): the issue-list agent defaults shape stored in the general row.
+import type { IssueListAgentDefaultsSettings } from "../myrmidon-issue-list-agent-defaults.js";
 import type { BudgetEnforcementSettings } from "../myrmidon-budget-enforcement.js";
 // myrmidon(PLUGIN-ENTITLEMENT C): accepted plugin entitlement keys live in
 // the same general settings row.
@@ -97,6 +102,15 @@ export interface InstanceGeneralSettings {
    * Kubernetes sandbox provider and denies local/ssh execution.
    */
   executionMode?: InstanceExecutionMode;
+  /**
+   * myrmidon(1.6.5-TG-LOCALE-C): the instance default language of the texts the
+   * bots send in the bridged Telegram DM, changed from
+   * `GET`/`PATCH /api/myrmidon/bridge-language`. Absent (or an unknown language)
+   * means "use the environment variable, then English"; the per-person choice in
+   * Settings → Language still wins over this value. Kept in sync with the
+   * validator of the same field (packages/shared/src/validators/instance.ts).
+   */
+  bridgeLanguage?: BridgeLanguageSettings;
   /**
    * myrmidon(WORKSPACE-HYGIENE): disk quotas for execution workspaces, changed
    * from `GET`/`PATCH /api/myrmidon/workspace-hygiene`. Absent means "use the
@@ -187,6 +201,16 @@ export interface InstanceGeneralSettings {
    */
   runStall?: RunStallValues;
   /**
+   * myrmidon(F16): the issue-list agent defaults (`{enabled: boolean}`),
+   * changed by hand or an operator tooling write (no dedicated route); read at
+   * `GET /api/companies/:companyId/issues`. Absent means the fix is ON
+   * (compact view by default for agents, limit 200/500, `description` omitted
+   * in compact) — `{enabled: false}` restores the pre-feature agent behaviour
+   * byte-for-byte. Kept in sync with the validator of the same field
+   * (packages/shared/src/validators/instance.ts).
+   */
+  issuesListAgentDefaults?: IssueListAgentDefaultsSettings;
+  /**
    * myrmidon(PARALLEL-HELPERS): company ceiling/default for parallel helper
    * subagents, changed from the instance settings page and
    * `GET`/`PATCH /api/myrmidon/parallel-helpers`. Absent means "use the module
@@ -219,6 +243,13 @@ export interface InstanceGeneralSettings {
    * validator of the same field (packages/shared/src/validators/instance.ts).
    */
   swarmClaim?: SwarmClaimSettings;
+  /**
+   * myrmidon(1.6.5 F-26 T5): the SWARM wake guard — the run-without-task gate
+   * and the exponential cooling (design 1.6.5 §3.7, §4.3). Absent means the
+   * defaults (gate on, base 30 min, ceiling 24 h). Kept in sync with the
+   * validator of the same field (packages/shared/src/validators/instance.ts).
+   */
+  swarm?: SwarmSettings;
   /**
    * myrmidon(1.6.1-BOT-DISK-D): shared mount settings for bots, changed from
    * the instance settings API. Controls whether bots get a common directory at

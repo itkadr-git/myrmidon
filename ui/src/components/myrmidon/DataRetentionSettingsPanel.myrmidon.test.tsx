@@ -112,6 +112,39 @@ describe("DataRetentionSettingsPanel", () => {
     });
   });
 
+  it("external machine backup: the checkbox reflects the view and saves only the mode", async () => {
+    const update = vi.fn().mockResolvedValue({ ...view, externalMachineBackup: true });
+    vi.spyOn(dataRetentionApiModule.dataRetentionApi, "get").mockResolvedValue(view as never);
+    vi.spyOn(dataRetentionApiModule.dataRetentionApi, "update").mockImplementation(update as never);
+    const container = renderPanel();
+    await waitFor(() => Boolean(container.querySelector('[data-testid="data-retention-status"]')));
+
+    const box = container.querySelector<HTMLInputElement>(
+      '[data-testid="data-retention-external-backup"]',
+    );
+    // absent in the view (older server) reads as off
+    expect(box?.checked).toBe(false);
+    await act(async () => {
+      box!.click();
+    });
+    await waitFor(() => update.mock.calls.length > 0);
+    // only the mode goes out; the three windows are not re-sent
+    expect(update).toHaveBeenCalledWith({ externalMachineBackup: true });
+  });
+
+  it("external machine backup: checked when the server says so", async () => {
+    vi.spyOn(dataRetentionApiModule.dataRetentionApi, "get").mockResolvedValue({
+      ...view,
+      externalMachineBackup: true,
+    } as never);
+    const container = renderPanel();
+    await waitFor(() => Boolean(container.querySelector('[data-testid="data-retention-status"]')));
+    expect(
+      container.querySelector<HTMLInputElement>('[data-testid="data-retention-external-backup"]')
+        ?.checked,
+    ).toBe(true);
+  });
+
   it("accepts 0 as keep-forever", async () => {
     const update = vi.fn().mockResolvedValue(view);
     vi.spyOn(dataRetentionApiModule.dataRetentionApi, "get").mockResolvedValue(view as never);

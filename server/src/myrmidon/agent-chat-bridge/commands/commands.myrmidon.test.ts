@@ -263,6 +263,7 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(result).toEqual({
       kind: "reply",
       command: "model",
+      outcome: "applied",
       text: "Model for this chat: model-b. The next reply starts a new model session with this chat's recent history.",
     });
 
@@ -322,6 +323,7 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(result).toEqual({
       kind: "reply",
       command: "model",
+      outcome: "refused",
       text: "A reply is in progress right now. Try after it finishes or send /stop.",
     });
     expect(await readOverrides(issue.id)).toBeNull();
@@ -377,6 +379,62 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(await hasSessionRow(issue.id)).toBe(false);
   });
 
+  it("5c. a gateway model chosen for a native-provider card is written with a matching provider (F06-D)", async () => {
+    const { issue, boardUserId } = await createTelegramConversation();
+    const card = { provider: "anthropic", model: "claude-own" };
+    const base = {
+      db,
+      companyId,
+      conversationAgentId: agentId,
+      issueId: issue.id,
+      boardUserId,
+      key: "model" as const,
+      refuseIfTurnInProgress: false,
+      adapterType: "hermes_gateway",
+      adapterConfig: card,
+      botApply: { apply: async () => ({ kind: "applied_files" as const }) },
+    };
+    // A model from the gateway catalog: the pair must not be anthropic + zai-glm.
+    await applyChatAdapterOverride({ ...base, value: "zai-glm-5.3" });
+    expect(await readOverrides(issue.id)).toEqual({ adapterConfig: { model: "zai-glm-5.3", provider: "custom" } });
+    // The card's own model keeps the card's provider: no provider override.
+    await applyChatAdapterOverride({ ...base, value: "claude-own" });
+    expect(await readOverrides(issue.id)).toEqual({ adapterConfig: { model: "claude-own" } });
+    // Back to a gateway model, then to the agent default: both keys go.
+    await applyChatAdapterOverride({ ...base, value: "zai-glm-5.3" });
+    await applyChatAdapterOverride({ ...base, value: null });
+    expect(await readOverrides(issue.id)).toBeNull();
+    // A failed apply rolls the pair back together.
+    await applyChatAdapterOverride({ ...base, value: "claude-own" });
+    const failed = await applyChatAdapterOverride({
+      ...base,
+      value: "zai-glm-5.3",
+      botApply: { apply: async () => ({ kind: "error" as const, message: "boom" }) },
+    });
+    expect(failed).toMatchObject({ applied: true, botApply: { kind: "error", rolledBack: true } });
+    expect(await readOverrides(issue.id)).toEqual({ adapterConfig: { model: "claude-own" } });
+  });
+
+  it("5d. a card that already goes through the gateway gets no provider override (F06-D)", async () => {
+    const { issue, boardUserId } = await createTelegramConversation();
+    for (const card of [{}, { provider: "auto" }, { provider: "custom:litellm" }]) {
+      await applyChatAdapterOverride({
+        db,
+        companyId,
+        conversationAgentId: agentId,
+        issueId: issue.id,
+        boardUserId,
+        key: "model",
+        value: "zai-glm-5.3",
+        refuseIfTurnInProgress: false,
+        adapterType: "hermes_gateway",
+        adapterConfig: card,
+        botApply: { apply: async () => ({ kind: "applied_files" }) },
+      });
+      expect(await readOverrides(issue.id)).toEqual({ adapterConfig: { model: "zai-glm-5.3" } });
+    }
+  });
+
   it("6. /model default clears the override, dropping an empty adapterConfig entirely", async () => {
     const { issue, boardUserId } = await createTelegramConversation({
       assigneeAdapterOverrides: { adapterConfig: { model: "model-b" } },
@@ -387,6 +445,7 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(result).toEqual({
       kind: "reply",
       command: "model",
+      outcome: "applied",
       text: "Model for this chat: agent default (model-a).",
     });
     expect(await readOverrides(issue.id)).toBeNull();
@@ -419,18 +478,162 @@ const support = await getEmbeddedPostgresTestSupport();
       }),
     );
     const text = (result as { kind: "reply"; text: string }).text;
-    // Grouped by provider family, numbered continuously, ordered by family.
-    expect(text).toContain("dashscope-*");
-    expect(text).toContain("nous-*");
-    expect(text).toContain("zai-*");
+    // Numbered continuously. myrmidon(F06-D): the family order is the owner's
+    // channel policy — DashScope first, then z.ai, then the rest alphabetically.
+    // myrmidon(F06-D): no family header lines — one id per numbered line.
+    expect(text).not.toContain("dashscope-*");
+    expect(text).not.toContain("nous-*");
+    expect(text).not.toContain("zai-*");
     expect(text).toMatch(/1\)\s*dashscope-qwen3-max/);
-    expect(text).toMatch(/2\)\s*nous-hermes-4/);
-    expect(text).toMatch(/3\)\s*zai-glm-4\.6/);
+    expect(text).toMatch(/2\)\s*zai-glm-4\.6/);
+    expect(text).toMatch(/3\)\s*nous-hermes-4/);
     // An agent's own key list was read, so nothing says it is the whole catalog.
     expect(text).not.toContain("whole gateway catalog");
     // Listing writes nothing, so nothing was applied either.
     expect(applied).toEqual([]);
     expect(await readOverrides(issue.id)).toBeNull();
+  });
+
+  it("7e. /model drops embeddings, OCR and service models from the gateway catalog (F06-D)", async () => {
+    const { issue, boardUserId } = await createTelegramConversation({ agentId: gatewayAgentId });
+    const result = await runBridgedDirectMessageCommand(
+      baseInput({
+        conversationIssueId: issue.id,
+        boardUserId,
+        agentId: gatewayAgentId,
+        text: "/model",
+        readGatewayModelCatalog: async () => ({
+          models: [
+            "dashscope-qwen3-max",
+            "dashscope-embed-v3",
+            "dashscope-text-embedding-v4",
+            "dashscope-ocr-vl",
+            "zai-glm-4.6",
+            "hindsight-mem",
+            "hindsight-consolidation",
+            "deepseek-v4-flash-mem",
+          ],
+          scope: "catalog",
+        }),
+      }),
+    );
+    const text = (result as { kind: "reply"; text: string }).text;
+    expect(text).toContain("dashscope-qwen3-max");
+    expect(text).toContain("zai-glm-4.6");
+    expect(text).not.toContain("embed");
+    expect(text).not.toContain("ocr");
+    expect(text).not.toContain("hindsight");
+    expect(text).not.toContain("deepseek-v4-flash-mem");
+    // DashScope before z.ai (owner channel policy).
+    expect(text.indexOf("dashscope-qwen3-max")).toBeLessThan(text.indexOf("zai-glm-4.6"));
+  });
+
+  it("7f. a live-sized catalog lists every chat model: DashScope's, then z.ai's, then the rest (F06-D)", async () => {
+    const { issue, boardUserId } = await createTelegramConversation({ agentId: gatewayAgentId });
+    const dashscope = Array.from({ length: 18 }, (_, i) => `dashscope-chat-${String(i + 1).padStart(2, "0")}`);
+    const service = [
+      "dashscope-text-embedding-v4",
+      "dashscope-ocr",
+      "dashscope-tts-flash",
+      "dashscope-asr-flash",
+      "dashscope-rerank-v3",
+      "hindsight-mem",
+      "hindsight-embed",
+      "deepseek-v4-flash-mem",
+    ];
+    const zai = ["zai-glm-4.6", "zai-glm-4.7", "zai-glm-5.3", "zai-glm-5.3-flash"];
+    const others = Array.from({ length: 12 }, (_, i) => `other-model-${String(i + 1).padStart(2, "0")}`);
+    const result = await runBridgedDirectMessageCommand(
+      baseInput({
+        conversationIssueId: issue.id,
+        boardUserId,
+        agentId: gatewayAgentId,
+        text: "/model",
+        // Worst order for the old code: z.ai first, service ids in between.
+        readGatewayModelCatalog: async () => ({
+          models: [...others, ...zai.slice().reverse(), ...service, ...dashscope.slice().reverse()],
+          scope: "catalog",
+        }),
+      }),
+    );
+    const text = (result as { kind: "reply"; text: string }).text;
+    for (const id of [...dashscope, ...zai]) expect(text).toContain(id);
+    for (const id of service) expect(text).not.toContain(id);
+    // Every DashScope model before every z.ai one; z.ai in version order.
+    expect(text.indexOf("dashscope-chat-18")).toBeLessThan(text.indexOf("zai-glm-4.6"));
+    expect(text.indexOf("zai-glm-4.7")).toBeLessThan(text.indexOf("zai-glm-5.3\n"));
+    expect(text).toMatch(/19\) zai-glm-4\.6/);
+    expect(text).toMatch(/22\) zai-glm-5\.3-flash/);
+    // Owner 09.10: no ceiling — the other families follow, all of them, and
+    // nothing is reported as left out.
+    for (const id of others) expect(text).toContain(id);
+    expect(text).toMatch(/23\) other-model-01/);
+    expect(text).toMatch(/34\) other-model-12/);
+    expect(text).not.toMatch(/Buttons cover|…and \d+ more/);
+    // Any of them can be chosen by name.
+    const picked = await runBridgedDirectMessageCommand(
+      baseInput({
+        conversationIssueId: issue.id,
+        boardUserId,
+        agentId: gatewayAgentId,
+        text: "/model other-model-05",
+        readGatewayModelCatalog: async () => ({ models: [...others, ...zai, ...dashscope], scope: "catalog" }),
+        botContainerApply: { apply: async () => ({ kind: "applied_files" }) },
+      }),
+    );
+    expect((picked as { text: string }).text).toContain("Model for this chat: other-model-05.");
+  });
+
+  it("7g. the card's own model takes its place in the owner's channel order, not the head of the list (F06-D)", async () => {
+    const [cardAgent] = await db
+      .insert(agents)
+      .values({
+        id: randomUUID(),
+        companyId,
+        name: "Agent F (gateway, card model)",
+        role: "engineer",
+        status: "idle",
+        adapterType: "hermes_gateway",
+        adapterConfig: { model: "nous-hermes-4" },
+      })
+      .returning();
+    const { issue, boardUserId } = await createTelegramConversation({ agentId: cardAgent!.id });
+    const result = await runBridgedDirectMessageCommand(
+      baseInput({
+        conversationIssueId: issue.id,
+        boardUserId,
+        agentId: cardAgent!.id,
+        text: "/model",
+        readGatewayModelCatalog: async () => ({
+          models: ["nous-hermes-4", "zai-glm-4.6", "dashscope-qwen3-max"],
+          scope: "agentKey",
+        }),
+      }),
+    );
+    const text = (result as { kind: "reply"; text: string }).text;
+    expect(text).toMatch(/1\) dashscope-qwen3-max/);
+    expect(text).toMatch(/2\) zai-glm-4\.6/);
+    expect(text).toMatch(/3\) nous-hermes-4/);
+  });
+
+  it("7h. a whole-catalog list names why the agent's own list was not read (F06-D)", async () => {
+    const { issue, boardUserId } = await createTelegramConversation({ agentId: gatewayAgentId });
+    const result = await runBridgedDirectMessageCommand(
+      baseInput({
+        conversationIssueId: issue.id,
+        boardUserId,
+        agentId: gatewayAgentId,
+        text: "/model",
+        readGatewayModelCatalog: async () => ({
+          models: ["dashscope-qwen3-max"],
+          scope: "catalog",
+          keyFailure: "no_key",
+        }),
+      }),
+    );
+    const text = (result as { kind: "reply"; text: string }).text;
+    expect(text).toContain("whole gateway catalog");
+    expect(text).toContain("Reason: no gateway key is bound to this agent.");
   });
 
   it("7b. /model <catalog model> writes the override and applies the agent profile without a restart", async () => {
@@ -473,7 +676,7 @@ const support = await getEmbeddedPostgresTestSupport();
         agentId: gatewayAgentId,
         text: "/model",
         // No per-model providers and one id outside the known families: the
-        // grouping falls back to the ids' own prefixes.
+        // family falls back to the ids' own prefixes.
         readGatewayModelCatalog: async () => ({
           models: ["dashscope-qwen3-max", "model-x"],
           scope: "catalog",
@@ -482,8 +685,8 @@ const support = await getEmbeddedPostgresTestSupport();
     );
     const text = (result as { kind: "reply"; text: string }).text;
     expect(text).toContain("whole gateway catalog");
-    expect(text).toMatch(/dashscope-\*/);
-    expect(text).toMatch(/dashscope-qwen3-max/);
+    expect(text).toMatch(/1\) dashscope-qwen3-max/);
+    expect(text).toMatch(/2\) model-x/);
     expect(text).toMatch(/model-x/);
   });
 
@@ -565,7 +768,7 @@ const support = await getEmbeddedPostgresTestSupport();
         botContainerApply: applyDeps,
       }),
     );
-    expect((accepted as { kind: "reply"; text: string }).text).toContain("Reasoning for this chat: high.");
+    expect((accepted as { kind: "reply"; text: string }).text).toContain("Reasoning effort for this chat: high.");
     expect(await readOverrides(issue.id)).toEqual({ adapterConfig: { effort: "high" } });
     expect(applied).toEqual([glmAgentId]);
 
@@ -574,7 +777,7 @@ const support = await getEmbeddedPostgresTestSupport();
     const plainResult = await runBridgedDirectMessageCommand(
       baseInput({ conversationIssueId: plain.issue.id, boardUserId: plain.boardUserId, text: "/think medium" }),
     );
-    expect((plainResult as { kind: "reply"; text: string }).text).toContain("Reasoning for this chat: medium.");
+    expect((plainResult as { kind: "reply"; text: string }).text).toContain("Reasoning effort for this chat: medium.");
   });
 
   it("7f. without an injected apply the production default finds no runtime and reports it", async () => {
@@ -604,7 +807,7 @@ const support = await getEmbeddedPostgresTestSupport();
       }),
     );
     expect((en as { kind: "reply"; text: string }).text).toBe(
-      "Changing the model is unavailable for adapter openclaw_gateway: this adapter does not support changing it from the chat",
+      "Changing the model is unavailable for adapter openclaw_gateway: this adapter does not support changing it from the chat. The model is changed on the board — the agent card's models section — and applies from the next reply.",
     );
 
     const ruUser = randomUUID();
@@ -619,7 +822,7 @@ const support = await getEmbeddedPostgresTestSupport();
       }),
     );
     expect((ru as { kind: "reply"; text: string }).text).toBe(
-      "Смена глубины рассуждений недоступна для адаптера openclaw_gateway: этот адаптер не поддерживает смену из чата",
+      "Смена глубины рассуждений недоступна для адаптера openclaw_gateway: этот адаптер не поддерживает смену из чата. Глубина рассуждений меняется на доске — в разделе моделей карточки агента; применится со следующего ответа.",
     );
   });
 
@@ -631,7 +834,8 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(high).toEqual({
       kind: "reply",
       command: "think",
-      text: "Reasoning for this chat: high. The next reply starts a new model session with this chat's recent history.",
+      outcome: "applied",
+      text: "Reasoning effort for this chat: high. The next reply starts a new model session with this chat's recent history.",
     });
     expect(await readOverrides(issue.id)).toEqual({ adapterConfig: { effort: "high" } });
 
