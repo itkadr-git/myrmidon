@@ -23,6 +23,7 @@
 //        ops: remove, archive-remove, prune, delete-base, delete-archive
 //        { deferred } means the path was left exactly where it is (a foreign owner);
 //        it is reported as skipped with a `deferred: <class>` detail, not as an error
+//   retention (optional)      -> ({startedAt}) after the actions of a pass: archive age/quota retention
 //   cooldown (optional)       -> { recent(path, op): boolean, record(path, op, result) }
 //        the rhythm of the rules: an op already attempted on a path inside the
 //        window is skipped silently — no log line, no report row
@@ -232,6 +233,15 @@ export function createLoop(deps) {
       if (!dryRun) {
         const tally = { cleaned: 0, deferred: {}, errored: 0, silent: 0 };
         for (const action of actions) await execute(action, results, tally);
+        // archive retention (age + quota) after the actions: whatever this pass archived
+        // is protected by the hook (it gets `startedAt`), older entries are retired.
+        if (typeof deps.retention === "function") {
+          try {
+            await deps.retention({ startedAt });
+          } catch (err) {
+            log(`botd loop: archive retention failed: ${errMessage(err)}`);
+          }
+        }
         // the pass summary: what the cycle actually touched. Silent when the pass
         // did nothing observable (an all-cooldown pass must not re-spam the log).
         const deferredCount = Object.values(tally.deferred).reduce((s, n) => s + n, 0);
