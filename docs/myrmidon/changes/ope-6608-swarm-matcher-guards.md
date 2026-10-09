@@ -30,7 +30,9 @@
   (`evaluateAgentInvokability` — статус и цепочка подчинения), окно обслуживания и блок бюджета
   (`swarm-claim/availability.ts`). Побудка, отклонённая всё равно, передаёт ту же задачу
   следующему агенту пула в том же проходе — один невызываемый агент больше не морит задачу
-  голодом и не пишет откаты каждые 30 секунд.
+  голодом и не пишет откаты каждые 30 секунд. Задача, чей проект упёрся в бюджет (тот же блок,
+  что проверяет слой побудок по задаче и проекту), пропускается без аренды, побудки и отката;
+  агенты остаются свободными для остальной очереди касты.
 
 ## changelog-en
 
@@ -63,4 +65,6 @@
   (`evaluateAgentInvokability` — status and the reporting chain), the maintenance window and the
   budget block (`swarm-claim/availability.ts`). A wake refused anyway hands the same task to the
   next agent of the pool in the same pass — one agent that cannot be woken no longer starves a
-  task or writes a rollback every 30 seconds.
+  task or writes a rollback every 30 seconds. A task whose project hit its budget (the same block
+  the wake layer checks with the task's issue and project) is skipped with no lease, wake or
+  rollback; the agents stay free for the rest of the caste's queue.

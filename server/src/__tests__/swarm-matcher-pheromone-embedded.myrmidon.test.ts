@@ -411,6 +411,36 @@ describeEmbeddedPostgres("matcher × pheromone order, caste routing and cooling"
     expect(await rollbacks(refused)).toHaveLength(1);
   });
 
+  it("a task whose project budget blocks it is skipped; the next task of the caste goes out, with no rollback on the first", async () => {
+    const companyId = await seedCompany();
+    const agentId = await seedAgent(companyId);
+    const [paused] = await db
+      .insert(projects)
+      .values({ companyId, name: "spent nest", pausedAt: NOW, pauseReason: "budget" })
+      .returning();
+    // The top task of the caste sits in the project whose budget is spent.
+    const blocked = await seedTask(companyId, { identifier: "TASK-SPENT", pheromoneStrength: 90, projectId: paused!.id });
+    const next = await seedTask(companyId, { identifier: "TASK-NEXT", pheromoneStrength: 10 });
+    // The wake layer refuses a run on the blocked project, as heartbeat does.
+    const heartbeat = {
+      wakeup: async (_agentId: string, opts: { payload?: Record<string, unknown> | null }) => {
+        if (opts.payload?.issueId === blocked) {
+          throw Object.assign(new Error("Project is paused because its budget hard-stop was reached."), { status: 409 });
+        }
+        return { id: randomUUID() };
+      },
+    } as unknown as SwarmMatcherDeps["heartbeat"];
+
+    // Red side: the refused wake used to mark the only agent failed, the pool
+    // emptied, and the next task waited behind the blocked one on every pass.
+    const pass = await matchCompany(matcherDeps({ heartbeat }), companyId);
+    expect(pass.pairs.map((pair) => pair.issueId)).toEqual([next]);
+    expect(await assigneeOf(next)).toBe(agentId);
+    expect(await assigneeOf(blocked)).toBeNull();
+    expect(await rollbacks(blocked)).toEqual([]);
+    expect(await db.select({ id: issueClaims.id }).from(issueClaims).where(eq(issueClaims.issueId, blocked))).toEqual([]);
+  });
+
   // (d) ----------------------------------------------------------------------
   it("walks the queue in exactly the order orderSwarmQueueCandidates gives the same rows", async () => {
     const companyId = await seedCompany();

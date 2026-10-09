@@ -68,7 +68,12 @@ import { queueIssueAssignmentWakeup, type IssueAssignmentWakeupDeps } from "../.
 import { logActivity as logActivityInTx, publishActivity, type ActivityPublication } from "../../services/activity-log.js";
 import { issueHasNoExecutionHold } from "../settled-holds/ready-predicate.js";
 import { evaluateAgentInvokability, evaluateAgentInvokabilityFromDb } from "../../services/agent-invokability.js";
-import { swarmAgentAvailability, type SwarmAgentAvailability } from "./availability.js";
+import {
+  swarmAgentAvailability,
+  swarmTaskBudgetBlock,
+  type SwarmAgentAvailability,
+  type SwarmTaskBudgetBlock,
+} from "./availability.js";
 import { readSwarmCoolingSettings, swarmTaskCoolingDown, type SwarmCoolingSettings } from "./cooling.js";
 import { planClaim } from "./domain.js";
 import {
@@ -88,6 +93,8 @@ export interface SwarmMatcherTask {
   priority: string | null;
   role: string;
   queuedAt: Date | number | string | null;
+  /** The task's project: the scope of a project budget block. */
+  projectId?: string | null;
 }
 
 /** One free agent, as the pool offers it. */
@@ -200,6 +207,12 @@ export interface SwarmMatcherDeps {
    * block. Absent, `swarmAgentAvailability(db)` reads them; a test replaces it.
    */
   isAgentAvailable?: SwarmAgentAvailability;
+  /**
+   * Whether the budget of the task's own project blocks a run on it (the wake
+   * layer's reading with the task's issue and project). Absent,
+   * `swarmTaskBudgetBlock(db)` reads it; a test replaces it.
+   */
+  isTaskBudgetBlocked?: SwarmTaskBudgetBlock;
   /** T10: the scent pick. Absent, equal scores and the tie by `agents.id`. */
   pickAgentForTask?: (
     task: SwarmMatcherTask,
@@ -252,11 +265,6 @@ function coolingSettingsOf(deps: SwarmMatcherDeps): Promise<SwarmCoolingSettings
   return read;
 }
 
-/**
- * The order options of the queue reads of one pass: the P0 switch and the
- * effective-strength knobs of the `pheromone` settings, at the pass clock — the
- * same three the claim API and the supervisor view hand to `swarmQueueOrderBy`.
- */
 /** One availability reading per agent per pass (the deps object is the pass). */
 const availabilityByPass = new WeakMap<SwarmMatcherDeps, Map<string, Promise<boolean>>>();
 const defaultAvailabilityByDb = new WeakMap<object, SwarmAgentAvailability>();
@@ -281,6 +289,27 @@ function isAvailable(deps: SwarmMatcherDeps, companyId: string, agentId: string)
     seen.set(agentId, answer);
   }
   return answer;
+}
+
+const defaultTaskBudgetByDb = new WeakMap<object, SwarmTaskBudgetBlock>();
+
+/** True when the task's project budget blocks a run on it (`isTaskBudgetBlocked`). */
+function taskBudgetBlocked(
+  deps: SwarmMatcherDeps,
+  companyId: string,
+  task: SwarmMatcherTask,
+  agentId: string,
+): Promise<boolean> {
+  if (!task.projectId) return Promise.resolve(false);
+  let read = deps.isTaskBudgetBlocked;
+  if (!read) {
+    read = defaultTaskBudgetByDb.get(deps.db as object);
+    if (!read) {
+      read = swarmTaskBudgetBlock(deps.db);
+      defaultTaskBudgetByDb.set(deps.db as object, read);
+    }
+  }
+  return read({ companyId, agentId, issueId: task.issueId, projectId: task.projectId });
 }
 
 /** The free agents of a pool that the wake layer will also accept (design §3.2). */
@@ -312,6 +341,12 @@ async function pairTaskWithPool(
 ): Promise<SwarmMatcherAgent | "lost" | null> {
   const pick = deps.pickAgentForTask ?? pickBySmallestId;
   let candidates = pool.filter((agent) => !failed.has(agent.agentId));
+  // The task's own project budget blocks a run on it: the wake would be refused
+  // for every agent alike. The task waits — no lease, no wake, no rollback —
+  // and the agents stay free for the rest of the queue (ADM review).
+  if (candidates.length > 0 && (await taskBudgetBlocked(deps, companyId, task, candidates[0]!.agentId))) {
+    return null;
+  }
   while (candidates.length > 0) {
     const chosen = pick(task, candidates);
     if (!chosen) return null;
@@ -330,6 +365,11 @@ async function pairTaskWithPool(
   return null;
 }
 
+/**
+ * The order options of the queue reads of one pass: the P0 switch and the
+ * effective-strength knobs of the `pheromone` settings, at the pass clock — the
+ * same three the claim API and the supervisor view hand to `swarmQueueOrderBy`.
+ */
 function queueOrderOf(deps: SwarmMatcherDeps): SwarmQueueOrderOptions {
   return {
     p0Preemption: deps.settings.p0Preemption,
@@ -638,6 +678,7 @@ export async function matchCompany(
         priority: candidate.priority,
         role: pair.role,
         queuedAt: candidate.queuedAt,
+        projectId: candidate.projectId ?? null,
       };
       // The pick may refuse one task on its own terms (T10 reads the scent of
       // this very pair), so the pass goes on to the next candidate rather than
@@ -705,6 +746,7 @@ export async function matchIssue(
       priority: candidate.priority,
       role: pair.role,
       queuedAt: candidate.queuedAt,
+      projectId: candidate.projectId ?? null,
     };
     const pool = await availableAgents(deps, row.companyId, freeAgentsOfPair(pair, deps.settings, caste));
     const chosen = await pairTaskWithPool(deps, row.companyId, task, pool, new Set());
@@ -792,7 +834,10 @@ export async function matchAgent(
       priority: candidate.priority,
       role: pair.role,
       queuedAt: candidate.queuedAt,
+      projectId: candidate.projectId ?? null,
     };
+    // The task's project budget blocks it: the next task, not a refused wake.
+    if (await taskBudgetBlocked(deps, agentRow.companyId, task, agentId)) continue;
     const claimed = await claimTaskForAgent(deps, agentRow.companyId, {
       issueId: candidate.issueId,
       agentId,
@@ -843,6 +888,23 @@ async function matchOwnAssignedTask(
     for (const candidate of own) {
       if (options.excludeIssueId && candidate.issueId === options.excludeIssueId) continue;
       if (await isCooling(deps, companyId, candidate.issueId)) continue;
+      if (
+        await taskBudgetBlocked(
+          deps,
+          companyId,
+          {
+            issueId: candidate.issueId,
+            identifier: candidate.identifier ?? null,
+            priority: candidate.priority,
+            role: pair.role,
+            queuedAt: candidate.queuedAt,
+            projectId: candidate.projectId ?? null,
+          },
+          agentId,
+        )
+      ) {
+        continue;
+      }
       if (options.wakeBudget && !options.wakeBudget.tryConsume(companyId)) return "budget_spent";
       const woken = await queueIssueAssignmentWakeup({
         heartbeat: deps.heartbeat,
@@ -901,6 +963,8 @@ export interface SwarmMatcherQueueCandidate {
   /** When the task entered the queue (the age key of the order). */
   queuedAt: Date | number | string | null;
   assigneeAgentId?: string | null;
+  /** The task's project (the scope of a project budget block). */
+  projectId?: string | null;
 }
 
 const LIVE_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
@@ -1145,6 +1209,7 @@ async function listReadyQueueCandidates(
       failedRunsSinceLastChange: failedRunsSinceLastChangeSql(),
       queuedAt: issues.createdAt,
       assigneeAgentId: issues.assigneeAgentId,
+      projectId: issues.projectId,
     })
     .from(issues)
     .leftJoin(agents, eq(agents.id, issues.assigneeAgentId))
@@ -1161,6 +1226,7 @@ async function listReadyQueueCandidates(
     failedRunsSinceLastChange: row.failedRunsSinceLastChange,
     queuedAt: row.queuedAt,
     assigneeAgentId: row.assigneeAgentId,
+    projectId: row.projectId ?? null,
   }));
 }
 

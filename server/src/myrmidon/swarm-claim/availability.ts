@@ -47,3 +47,36 @@ export function swarmAgentAvailability(db: Db): SwarmAgentAvailability {
     }
   };
 }
+
+/**
+ * The port: true when the budget of the TASK's own scope (its project) blocks a
+ * run on it — the reading the wake layer makes with the task's issue and
+ * project. Such a task is skipped by the pass (no lease, no wake, no rollback)
+ * and the agents stay free for the rest of the queue: the block belongs to the
+ * task, not to the agent. A block of the agent or the company is the agent
+ * gate's business (`swarmAgentAvailability`), not this one's.
+ */
+export type SwarmTaskBudgetBlock = (input: {
+  companyId: string;
+  agentId: string;
+  issueId: string;
+  projectId: string | null;
+}) => Promise<boolean>;
+
+/** The default reading of the task-scope budget block. */
+export function swarmTaskBudgetBlock(db: Db): SwarmTaskBudgetBlock {
+  const settings = instanceSettingsService(db);
+  const budgets = budgetService(db, {
+    resolveEnforcementMode: async () =>
+      (await readBudgetEnforcement({ getGeneral: () => settings.getGeneral() })).mode,
+  });
+  return async ({ companyId, agentId, issueId, projectId }) => {
+    if (!projectId) return false;
+    try {
+      const block = await budgets.getInvocationBlock(companyId, agentId, { issueId, projectId });
+      return Boolean(block) && block!.scopeType !== "agent" && block!.scopeType !== "company";
+    } catch {
+      return false;
+    }
+  };
+}
