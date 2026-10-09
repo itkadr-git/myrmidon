@@ -12,6 +12,7 @@
 import {
   DATASTORE_CARE_RETENTION_KEY,
   DATASTORE_CARE_SETTINGS_KEY,
+  DEFAULT_CONTEXT_COMPACT_MAX_BATCHES,
   DEFAULT_HEARTBEAT_RUN_CONTEXT_DAYS,
   normalizeDatastoreCareRetention,
   normalizeDatastoreCareRetentionLastRun,
@@ -30,11 +31,20 @@ export type DatastoreCareSettingsService = Pick<
 export const HEARTBEAT_RUN_CONTEXT_RETENTION_DAYS_ENV =
   "PAPERCLIP_HEARTBEAT_RUN_CONTEXT_RETENTION_DAYS";
 
+// myrmidon(1.6.5-F14B): the environment override for batches per company per
+// compaction pass. The first live passes on an IO-starved board need a lower
+// ceiling without a rebuild; the instance setting wins over this knob.
+export const CONTEXT_COMPACT_MAX_BATCHES_ENV = "MYRMIDON_CONTEXT_COMPACT_MAX_BATCHES";
+
 export interface ResolvedRetentionSettings {
   /** Whole days after created_at before a terminal run's context compacts. */
   heartbeatRunContextDays: number;
   /** Where the value came from: the stored settings block or the default. */
   source: "settings" | "env" | "default";
+  /** myrmidon(1.6.5-F14B): batches per company per compaction pass. */
+  contextCompactMaxBatches: number;
+  /** Where the batches value came from. */
+  contextCompactMaxBatchesSource: "settings" | "env" | "default";
 }
 
 function envRetentionDays(env: Record<string, string | undefined>): number | undefined {
@@ -45,9 +55,21 @@ function envRetentionDays(env: Record<string, string | undefined>): number | und
   return parsed;
 }
 
+// myrmidon(1.6.5-F14B): the env override for batches per pass, same rules as
+// the shared validator (1..1000); an out-of-range value reads as absent.
+function envCompactMaxBatches(env: Record<string, string | undefined>): number | undefined {
+  const raw = env[CONTEXT_COMPACT_MAX_BATCHES_ENV]?.trim();
+  if (!raw) return undefined;
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed < 1 || parsed > 1000) return undefined;
+  return parsed;
+}
+
 /**
  * Resolve the compaction window: stored settings, then the environment
  * variable, then the default (7). 0 disables the compaction.
+ * myrmidon(1.6.5-F14B): the batches-per-pass ceiling resolves the same way
+ * (stored settings, then env, then the default of 10).
  */
 export function resolveRetentionSettings(
   general: Record<string, unknown>,
@@ -59,14 +81,26 @@ export function resolveRetentionSettings(
       ? (care as Record<string, unknown>)[DATASTORE_CARE_RETENTION_KEY]
       : undefined;
   const stored = normalizeDatastoreCareRetention(block);
-  if (stored.heartbeatRunContextDays !== undefined) {
-    return { heartbeatRunContextDays: stored.heartbeatRunContextDays, source: "settings" };
-  }
-  const fromEnv = envRetentionDays(env);
-  if (fromEnv !== undefined) {
-    return { heartbeatRunContextDays: fromEnv, source: "env" };
-  }
-  return { heartbeatRunContextDays: DEFAULT_HEARTBEAT_RUN_CONTEXT_DAYS, source: "default" };
+  const days =
+    stored.heartbeatRunContextDays !== undefined
+      ? { value: stored.heartbeatRunContextDays, source: "settings" as const }
+      : envRetentionDays(env) !== undefined
+        ? { value: envRetentionDays(env)!, source: "env" as const }
+        : { value: DEFAULT_HEARTBEAT_RUN_CONTEXT_DAYS, source: "default" as const };
+  const batchesStored = stored.contextCompactMaxBatches;
+  const batchesEnv = envCompactMaxBatches(env);
+  const batches =
+    batchesStored !== undefined
+      ? { value: batchesStored, source: "settings" as const }
+      : batchesEnv !== undefined
+        ? { value: batchesEnv, source: "env" as const }
+        : { value: DEFAULT_CONTEXT_COMPACT_MAX_BATCHES, source: "default" as const };
+  return {
+    heartbeatRunContextDays: days.value,
+    source: days.source,
+    contextCompactMaxBatches: batches.value,
+    contextCompactMaxBatchesSource: batches.source,
+  };
 }
 
 /** Read the resolved settings for one pass. */
@@ -106,6 +140,13 @@ export async function writeRetentionSettings(
     next.heartbeatRunContextDays = patch.heartbeatRunContextDays;
   } else {
     delete next.heartbeatRunContextDays;
+  }
+  // myrmidon(1.6.5-F14B): the batches-per-pass knob follows the same
+  // set-or-drop rule, so PATCHing it away falls back to env, then default.
+  if (patch.contextCompactMaxBatches !== undefined) {
+    next.contextCompactMaxBatches = patch.contextCompactMaxBatches;
+  } else {
+    delete next.contextCompactMaxBatches;
   }
   const care = general[DATASTORE_CARE_SETTINGS_KEY];
   const careBlock = typeof care === "object" && care !== null ? { ...(care as Record<string, unknown>) } : {};
