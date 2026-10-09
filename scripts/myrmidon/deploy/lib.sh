@@ -15,7 +15,7 @@ die() { printf '[myrmidon-deploy] ERROR: %s\n' "$*" >&2; exit 1; }
 # version stamp never aborts a deploy). deploy.sh and deploy-from-job.sh call
 # this right after sourcing lib.sh, before any other output.
 log_script_version() {
-  local describe
+  local describe clone
   # myrmidon(F-05-review): the stamp must be the journal's first line, and the
   # deploy journal is stderr (log/die/plan, deploy-from-job.sh's
   # `deploy.sh ... 2>job-<id>.log`) — so the stamp goes to stderr too.
