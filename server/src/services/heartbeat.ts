@@ -685,6 +685,10 @@ import {
   sharedRunAdmission,
   type RunAdmissionDenialReason,
 } from "../myrmidon/run-admission.js";
+import {
+  readWakeBatchWindowMs,
+  splitBatchedWakeRuns,
+} from "../myrmidon/wake-batch.js";
 // myrmidon(PERF-DIET-K): issue-scoped session generations for the container
 // Hermes gateway — one task's session key gains a `:g<N>` once it passes its
 // age/activity threshold, so the task's Hermes state stays bounded
@@ -19444,6 +19448,21 @@ export function heartbeatService(
     );
   }
 
+  // myrmidon(1.6.6 INBOX-BATCH): a held comment wake is retried when its window
+  // closes instead of waiting for the next scheduler tick. The resweep timer is
+  // one per process, so a pending admission resweep already covers the wait and
+  // this call is then a no-op (the run starts at that sweep, still with the
+  // comments its window collected).
+  function scheduleWakeBatchResweep(delayMs: number) {
+    scheduleQueuedResweep(
+      () =>
+        resumeQueuedRuns().catch((err) =>
+          logger.error({ err }, "queued run resweep after the wake batch window failed"),
+        ),
+      Math.max(delayMs, 250),
+    );
+  }
+
   async function recoverActiveSessionGoals() {
     if ((await getSchedulingSuppression()).suppressed) {
       return { scanned: 0, enqueued: 0 };
@@ -19961,6 +19980,33 @@ export function heartbeatService(
       });
 
       const claimedRuns: Array<typeof heartbeatRuns.$inferSelect> = [];
+      // myrmidon(1.6.6 INBOX-BATCH): a comment wake waits out its debounce
+      // window before it starts (see myrmidon/wake-batch). The comments that
+      // arrive inside the window find this run as the task's execution and the
+      // ordinary coalescing path merges their ids into its wakeCommentIds, so
+      // the burst costs one run carrying the whole list in arrival order. Held
+      // runs are left out of the pass below: they must not take an admission
+      // slot for a start that will not happen yet.
+      const wakeBatchWindowMs = readWakeBatchWindowMs();
+      const wakeBatch = splitBatchedWakeRuns(prioritizedRuns, {
+        now: new Date(),
+        windowMs: wakeBatchWindowMs,
+      });
+      if (wakeBatch.held.length > 0) {
+        logger.debug(
+          {
+            agentId,
+            heldRunIds: wakeBatch.held.map((hold) => hold.runId),
+            heldIssueIds: wakeBatch.held.map((hold) => hold.issueId),
+            commentIds: wakeBatch.held.flatMap((hold) => hold.commentIds),
+            windowMs: wakeBatchWindowMs,
+            resweepDelayMs: wakeBatch.resweepDelayMs,
+          },
+          "wake batch window holds comment wakes back",
+        );
+        scheduleWakeBatchResweep(wakeBatch.resweepDelayMs ?? 0);
+      }
+      const startableRuns = wakeBatch.runnable;
       // myrmidon: instance-wide cap, start rate and free memory on top of the
       // per-agent slots; slots are taken synchronously, so no lock is needed.
       // myrmidon(1.6.5 RUN-FAIRNESS): the reservation names its agent, so the
@@ -19969,8 +20015,8 @@ export function heartbeatService(
       const admitted = admission.reserve(availableSlots, { agentId });
       // myrmidon(1.6.5 RUN-FAIRNESS): the runs an admission gate leaves
       // queued say why they wait; a claimed run drops the note.
-      const runsLeftQueued = admitted < prioritizedRuns.length
-        ? prioritizedRuns.slice(Math.max(admitted, 0))
+      const runsLeftQueued = admitted < startableRuns.length
+        ? startableRuns.slice(Math.max(admitted, 0))
         : [];
       if (runsLeftQueued.length > 0) {
         await writeQueuedRunWaitReason(
@@ -19979,7 +20025,7 @@ export function heartbeatService(
         );
       }
       try {
-        for (const queuedRun of prioritizedRuns) {
+        for (const queuedRun of startableRuns) {
           if (claimedRuns.length >= admitted) break;
           const claimed = await claimQueuedRun(queuedRun, companyAgents);
           if (claimed) claimedRuns.push(claimed);
@@ -19987,7 +20033,7 @@ export function heartbeatService(
       } finally {
         admission.release(admitted - claimedRuns.length);
       }
-      if (admitted < availableSlots && admitted < prioritizedRuns.length) {
+      if (admitted < availableSlots && admitted < startableRuns.length) {
         scheduleAdmissionResweep();
       }
       if (claimedRuns.length === 0) return [];
