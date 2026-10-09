@@ -102,14 +102,14 @@ describe("processes settings service (PROCS-1.1)", () => {
     assert.equal(h.applied[0]?.settings.apiCount, 2);
   });
 
-  it("never reports a stored split as the mode in force", async () => {
+  it("reports a stored split as the mode in force on the supervisor build", async () => {
     const h = harness({ mode: "split", apiCount: 2 });
     const service = createProcessesSettingsService(h.deps);
     const view = await service.read();
     assert.equal(view.settings.mode, "split");
     assert.equal(view.sources.mode, "settings");
-    assert.equal(view.effectiveMode, "single");
-    assert.match(view.notInEffectReason ?? "", /supervisor/);
+    assert.equal(view.effectiveMode, "split");
+    assert.equal(view.notInEffectReason, null);
   });
 
   it("lets the environment escape win over the stored mode", async () => {

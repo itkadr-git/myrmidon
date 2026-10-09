@@ -136,6 +136,10 @@ export function processRoleProfileFor(role: ProcessRole): Omit<ProcessRoleProfil
         executesRuns: true,
         migrations: "apply",
         runsBackups: true,
+        // myrmidon(PROCS-1.1/1.2): the worker keeps the board's default public
+        // bind. The supervisor (PROCS-1.2) decides whether the worker actually
+        // serves :3100 (single, emergency) or leaves it to the api children —
+        // through the mode it reads from the settings, not through the profile.
         listen: { host: null, port: null, reusePort: false },
         loopbackListen: { host: PROCESS_ROLE_WORKER_HOST, port: PROCESS_ROLE_WORKER_PORT },
       };

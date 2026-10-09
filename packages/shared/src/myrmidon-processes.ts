@@ -182,12 +182,13 @@ export function mergeProcessesSettings(
 }
 
 /**
- * PROCS-1.1 owns the key; the supervisor that forks the api processes and
- * moves the background work into the worker is the next part of the same
- * feature. Until it lands a stored `split` changes nothing, and the board says
- * so out loud instead of showing a mode that is not running.
+ * PROCS-1.2 carries the process supervisor: the worker forks the api children,
+ * they share :3100 with reusePort, and `drain` over IPC moves the board
+ * between single and split without a container restart. The constant stays
+ * declarative so a rollback build once again reports a stored split as not in
+ * effect instead of silently serving it as single.
  */
-export const PROCESSES_SUPERVISOR_IMPLEMENTED = false;
+export const PROCESSES_SUPERVISOR_IMPLEMENTED = true;
 
 export const PROCESSES_SPLIT_UNSUPPORTED_REASON =
   "the saved settings ask for split, but this build has no process supervisor yet (PROCS-1.1): the process keeps serving the HTTP lane and doing the background work, and the board reports the stored mode as not in effect";
