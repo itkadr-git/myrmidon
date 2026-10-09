@@ -3,11 +3,13 @@
 //   * attention  — `$MYRMIDON_WS_HOME/botd-attention.json`, {path: {reason, uid, at}}:
 //     a deferred path is announced once per TTL (default 1 h); repeated passes stay
 //     silent while the entry is fresh;
-//   * cooldown   — `$MYRMIDON_WS_HOME/botd-cooldown.json`, {path: {op, result, at}}:
+//   * cooldown   — `$MYRMIDON_WS_HOME/botd-cooldown.json`, {path|op: {op, result, at}}:
 //     the same op on the same path is not attempted again within the TTL (< 1 h is a
-//     silent skip, no log line, no report row).
+//     silent skip, no log line, no report row). The key is path+op: a different op on
+//     the same path must not overwrite (or read) the entry of its neighbour op.
 // Both files are best-effort state: a broken or unwritable cache makes every entry
-// look fresh (the rule runs again, loudly once) and never breaks the pass.
+// look fresh (the rule runs again, loudly once) and never breaks the pass. Stale
+// entries are swept on write, so the files do not grow without bound.
 
 import fs from "node:fs";
 import path from "node:path";
@@ -38,6 +40,21 @@ const fresh = (entry, nowMs, ttlMs) =>
   !!entry && Number.isFinite(Date.parse(entry.at)) && nowMs - Date.parse(entry.at) < ttlMs;
 
 /**
+ * In-place sweep: entries older than `keepMs` are dropped, so a cache file of
+ * one-shot paths does not grow forever. `keepMs` is at least the TTL and at
+ * least a day — the cache must never shrink below what the callers still read.
+ */
+function sweep(cache, nowMs, keepMs) {
+  const horizon = Math.max(keepMs, DAY_MS);
+  for (const key of Object.keys(cache)) {
+    const entry = cache[key];
+    if (!entry || !Number.isFinite(Date.parse(entry.at)) || nowMs - Date.parse(entry.at) >= horizon) delete cache[key];
+  }
+}
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/**
  * One attention signal per path per TTL.
  * @param {string} file botd-attention.json
  * @param {{now?:() => Date, log?:(l: string) => void, ttlMs?:number}} [opts]
@@ -58,6 +75,7 @@ export function createAttention(file, opts = {}) {
       const cache = loadCache(file);
       const entry = cache[p];
       if (entry && entry.reason === reason && fresh(entry, now().getTime(), ttlMs)) return false;
+      sweep(cache, now().getTime(), ttlMs);
       cache[p] = { reason, uid: info.uid ?? null, at: now().toISOString() };
       storeCache(file, cache);
       const uid = info.uid === null || info.uid === undefined ? "" : `, uid ${info.uid}`;
@@ -75,16 +93,20 @@ export function createAttention(file, opts = {}) {
 export function createCooldown(file, opts = {}) {
   const now = opts.now ?? (() => new Date());
   const ttlMs = opts.ttlMs ?? DEFAULT_TTL_MS;
+  // The key is path+op: `remove` on a path and `prune` on the same path are
+  // different decisions, and neither must silence or overwrite the other.
+  const keyOf = (p, op) => `${p}${op}`;
   return {
     /** True when an attempt at (path, op) is younger than the TTL. */
     recent(p, op) {
-      const entry = loadCache(file)[p];
+      const entry = loadCache(file)[keyOf(p, op)];
       return !!(entry && entry.op === op && fresh(entry, now().getTime(), ttlMs));
     },
     /** Remembers the attempt so the next pass within the TTL stays silent. */
     record(p, op, result) {
       const cache = loadCache(file);
-      cache[p] = { op, result: String(result ?? ""), at: now().toISOString() };
+      sweep(cache, now().getTime(), ttlMs);
+      cache[keyOf(p, op)] = { op, result: String(result ?? ""), at: now().toISOString() };
       storeCache(file, cache);
     },
   };
