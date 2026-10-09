@@ -16,7 +16,9 @@ describe("metrics wiring guard", () => {
   it("the server entry point imports the module behind the 1.7-METRICS marker", () => {
     const source = readFileSync(APP_TS, "utf8");
     const importLines = source.split("\n").filter((line: string) =>
-      line.includes("myrmidon/monitoring/metrics"),
+      // myrmidon(1.6.5-PROCS-T02): the guard covers the router entry point, not
+      // every module of the feature folder — the lane helpers live there too.
+      line.includes("myrmidon/monitoring/metrics/index.js"),
     );
     expect(importLines.length).toBe(1);
     expect(importLines[0]).toContain("myrmidon(1.7-METRICS)");

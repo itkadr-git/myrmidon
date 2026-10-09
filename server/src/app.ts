@@ -138,6 +138,11 @@ import { myrmidonBotDiskQuotaRoutes } from "./myrmidon/bot-containers/bot-disk-q
 import { myrmidonBotImageRolloutRoutes } from "./myrmidon/bot-containers/bot-image-rollout-routes.js"; // myrmidon(BOT-ROLLOUT)
 import { myrmidonMetricsApp } from "./myrmidon/monitoring/metrics/index.js"; // myrmidon(1.7-METRICS)
 import { myrmidonMonitoringAlertsRoutes } from "./myrmidon/monitoring/alerts/index.js"; // myrmidon(1.6.6-ALERTS)
+import {
+  CHAT_RECONCILE_LANE,
+  myrmidonApiLaneMiddleware,
+  runInLane,
+} from "./myrmidon/monitoring/metrics/lane-metrics.js"; // myrmidon(1.6.5-PROCS-T02)
 import { swarmClaimApp } from "./myrmidon/swarm-claim/index.js"; // myrmidon(1.6-SWARM)
 // myrmidon(EMERGENCY-STOP): immediate stop of the runs a draining pause left running
 import { myrmidonEmergencyStopRoutes } from "./myrmidon/emergency-stop.js";
@@ -1135,6 +1140,9 @@ export async function createApp(
       authPublicBaseUrl: opts.authPublicBaseUrl,
     }),
   );
+  // myrmidon(1.6.5-PROCS-T02): the board's HTTP work is one lane; the label
+  // reaches the queries the handlers issue. See lane-metrics.ts.
+  app.use("/api", myrmidonApiLaneMiddleware);
   app.use("/api", api);
   app.use("/api", (_req, res) => {
     res.status(404).json({ error: "API route not found" });
@@ -1382,9 +1390,11 @@ export async function createApp(
   
   // Create reconcile interval with fallback timer for event-driven reconciliation
   const chatReconcileInterval = createReconcileInterval({
+    // myrmidon(1.6.5-PROCS-T02): every pass is one lane unit — its reads count
+    // into lane="chat-reconcile" and add to that lane's busy seconds.
     reconcile: async () => {
       // Run all reconciliation tasks when triggered
-      await chatReconciliation.reconcile();
+      await runInLane(CHAT_RECONCILE_LANE, () => chatReconciliation.reconcile());
     },
     onError: (err) => {
       logger.error({ err }, "Failed chat reconciliation");
@@ -1400,7 +1410,8 @@ export async function createApp(
   );
   // Remove the old 1-second polling interval; reconciliation now happens based on events
   // with a fallback timer that triggers only when idle
-  chatReconciliation.reconcile();
+  // myrmidon(1.6.5-PROCS-T02): the startup pass runs under the same lane.
+  runInLane(CHAT_RECONCILE_LANE, () => chatReconciliation.reconcile());
   // Abandoned chunked-import spool sweep: hourly (plus once at startup),
   // deleting spool dirs whose transfer saw no activity for 24h and cancelling
   // their still-open ledger runs. Same setInterval + unref + shutdown-clear

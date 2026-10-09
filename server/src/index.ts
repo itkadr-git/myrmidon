@@ -131,6 +131,12 @@ import { startBehaviorSettings } from "./myrmidon/behavior-settings/index.js"; /
 import { startBotContainers, stopBotContainers } from "./myrmidon/bot-containers/startup.js"; // myrmidon(W2a)
 import { startLitellmCostSweep, stopLitellmCostSweep } from "./myrmidon/litellm-costs/startup.js"; // myrmidon(M2-A)
 import { startLitellmBudgetSync } from "./myrmidon/litellm-budget-sync/index.js"; // myrmidon(1.7-BUDGET-CONFIG-C)
+import {
+  EXECUTION_CONTROL_LANE,
+  runInLane,
+  startLaneQueryAccounting,
+  TICK_LANE,
+} from "./myrmidon/monitoring/metrics/lane-metrics.js"; // myrmidon(1.6.5-PROCS-T02)
 import { startLitellmModelReconciliation } from "./myrmidon/litellm-sync/startup-reconciler.js"; // myrmidon(1.6.1 MODEL-PROVIDERS B)
 import { startModelFallbackSignalSweep } from "./myrmidon/litellm-fallback-signal/sweep.js"; // myrmidon(BOT-RUNTIME-TUNING D)
 import { startBaselineSnapshots, stopBaselineSnapshots } from "./myrmidon/baseline/startup.js"; // myrmidon(1.6-BASELINE)
@@ -1241,7 +1247,9 @@ async function startServerWithDatabaseTeardown(
     for (const [queue, work] of executionControlSweeps) {
       if (executionControlSweepsInFlight.has(queue)) continue;
       executionControlSweepsInFlight.add(queue);
-      trackHeartbeatSchedulerWork(Promise.resolve().then(async () => { await work(); })
+      // myrmidon(1.6.5-PROCS-T02): the queue's pass runs under its lane, so
+      // every query it issues counts into lane="execution-control".
+      trackHeartbeatSchedulerWork(Promise.resolve().then(() => runInLane(EXECUTION_CONTROL_LANE, async () => { await work(); }))
         .catch(err => logger.error({ err, queue }, "execution control reconciliation failed"))
         .finally(() => { executionControlSweepsInFlight.delete(queue); }));
     }
@@ -1721,6 +1729,9 @@ async function startServerWithDatabaseTeardown(
       "worktree run-execution cutoff state",
     );
     await startRuntimeLimits(db as any); // myrmidon(C0): stored run admission limits in force before the scheduler starts runs
+    // myrmidon(1.6.5-PROCS-T02): lane query accounting from process start — the
+    // counters must not wait for the first authenticated scrape.
+    startLaneQueryAccounting();
     await startBehaviorSettings(db as any); // myrmidon(SETTINGS-CORE): stored behavior settings in force without a restart
     await startMaintenanceMode(db as any); // myrmidon(R3): load open maintenance windows before startup recovery starts runs
     startDeployJobs(db as any); // myrmidon(R5-A): resume an interface deploy job; no-op unless MYRMIDON_DEPLOY_ENABLED
@@ -1975,7 +1986,9 @@ async function startServerWithDatabaseTeardown(
       // Track the outer async callback as well as the work it starts. Shutdown
       // can then wait through an already-running suppression check before it
       // captures the authoritative set of running heartbeat rows.
-      trackHeartbeatSchedulerWork((async () => {
+      // myrmidon(1.6.5-PROCS-T02): one tick is one lane pass — the whole tick,
+      // including the sweeps it schedules, counts into lane="tick".
+      trackHeartbeatSchedulerWork(runInLane(TICK_LANE, async () => {
         if (heartbeatSchedulerStopped) return;
         trackHeartbeatSchedulerWork(decisionExecutor.sweepExpired().catch((err: unknown) => {
           logger.error({ err }, "decision expiry sweep failed");
@@ -2214,7 +2227,7 @@ async function startServerWithDatabaseTeardown(
               logger.error({ err }, "periodic heartbeat recovery failed");
             }));
         }
-      })().catch((err) => {
+      }).catch((err) => {
         logger.error({ err }, "heartbeat scheduler tick failed");
       }));
     });
@@ -2225,17 +2238,21 @@ async function startServerWithDatabaseTeardown(
     // the enabled path does.
     await runEnvironmentLeaseCleanupSweep(0);
     startHeartbeatSchedulerInterval(() => {
-      scheduleExternalObjectRefreshSweep(new Date());
-      scheduleEnvironmentLeaseCleanupSweep();
-      schedulePendingInteractionWakeSweep(); // myrmidon(P12)
-      scheduleAutoResumeSweep(); // myrmidon(AUTO-RESUME)
-      scheduleStaleBlockSweep(); // myrmidon(STALE-BLOCK)
-      scheduleReviewRoutingSweep(); // myrmidon(REVIEW-ROUTING)
-      scheduleReviewReworkSweep(); // myrmidon(REVIEW-REWORK)
-      scheduleMonitoringLinkSweep(); // myrmidon(1.6.6 MONITORING E)
-      scheduleCorpusParseSweep(); // myrmidon(1.6.6 CORPUS-2.0 ч.C)
-      scheduleGitHubConnectionEventPoll();
-      scheduleGitHubConnectionContinuitySweep();
+      // myrmidon(1.6.5-PROCS-T02): the disabled-scheduler tick is a lane pass
+      // too — its schedules run under lane="tick".
+      runInLane(TICK_LANE, () => {
+        scheduleExternalObjectRefreshSweep(new Date());
+        scheduleEnvironmentLeaseCleanupSweep();
+        schedulePendingInteractionWakeSweep(); // myrmidon(P12)
+        scheduleAutoResumeSweep(); // myrmidon(AUTO-RESUME)
+        scheduleStaleBlockSweep(); // myrmidon(STALE-BLOCK)
+        scheduleReviewRoutingSweep(); // myrmidon(REVIEW-ROUTING)
+        scheduleReviewReworkSweep(); // myrmidon(REVIEW-REWORK)
+        scheduleMonitoringLinkSweep(); // myrmidon(1.6.6 MONITORING E)
+        scheduleCorpusParseSweep(); // myrmidon(1.6.6 CORPUS-2.0 ч.C)
+        scheduleGitHubConnectionEventPoll();
+        scheduleGitHubConnectionContinuitySweep();
+      });
     });
   }
   
