@@ -34,9 +34,6 @@ import { DEFAULT_CONTEXT_COMPACT_MAX_BATCHES, HEARTBEAT_RUN_STATUSES } from "@pa
 /** Rows compacted per statement (O1a). */
 export const CONTEXT_COMPACT_BATCH_SIZE = 500;
 
-/** Batches per company per pass; the rest of the backlog waits for the next tick. */
-export const CONTEXT_COMPACT_MAX_BATCHES = 10;
-
 /** Pause between batches, so the pass never saturates the connection pool. */
 export const CONTEXT_COMPACT_PAUSE_MS = 250;
 

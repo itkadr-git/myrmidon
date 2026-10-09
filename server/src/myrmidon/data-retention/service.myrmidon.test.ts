@@ -164,6 +164,60 @@ describeEmbeddedPostgres("myrmidon(1.6.5-DB-RETENTION) data retention routes", (
     });
   });
 
+  it("sibling DBC-1 keys in the stored object do not reset the retention windows on read", async () => {
+    const companyId = await seedCompany();
+    const settings = instanceSettingsService(db);
+    await settings.updateGeneral({
+      datastoreCare: {
+        retention: {
+          heartbeatRunsDays: 30,
+          activityLogDays: 365,
+          accessAuditDays: 60,
+          heartbeatRunContextDays: 14,
+          contextCompactMaxBatches: 4,
+          contextLastRun: { lastRunAt: "2026-10-08T00:00:00.000Z" },
+        },
+      },
+    } as never);
+    const res = await request(app(board(companyId, false))).get(URL);
+    expect(res.status).toBe(200);
+    expect(res.body.settings).toEqual({
+      heartbeatRunsDays: 30,
+      activityLogDays: 365,
+      accessAuditDays: 60,
+    });
+    expect(res.body.sources.heartbeatRunsDays).toBe("settings");
+  });
+
+  it("externalMachineBackup (F14B): off by default, PATCH stores it without touching the windows", async () => {
+    const companyId = await seedCompany();
+    const scoped = app(board(companyId, true));
+    const initial = await request(scoped).get(URL);
+    expect(initial.body.externalMachineBackup).toBe(false);
+
+    const res = await request(scoped).patch(URL).send({ externalMachineBackup: true });
+    expect(res.status).toBe(200);
+    expect(res.body.externalMachineBackup).toBe(true);
+    expect(res.body.settings).toEqual({
+      heartbeatRunsDays: 90,
+      activityLogDays: 0,
+      accessAuditDays: 180,
+    });
+    // another PATCH leaves the mode alone
+    const next = await request(scoped).patch(URL).send({ accessAuditDays: 30 });
+    expect(next.body.externalMachineBackup).toBe(true);
+    // the compaction gate reads the very same stored key
+    const care = ((await instanceSettingsService(db).getGeneral()) as Record<string, any>)
+      .datastoreCare;
+    expect(care?.retention?.externalMachineBackup).toBe(true);
+
+    const off = await request(scoped).patch(URL).send({ externalMachineBackup: false });
+    expect(off.body.externalMachineBackup).toBe(false);
+    const bad = await request(scoped).patch(URL).send({ externalMachineBackup: "yes" });
+    expect(bad.status).toBeGreaterThanOrEqual(400);
+    expect(bad.status).toBeLessThan(500);
+  });
+
   it("PATCH rejects non-integer, negative and unknown values", async () => {
     const companyId = await seedCompany();
     const scoped = app(board(companyId, true));

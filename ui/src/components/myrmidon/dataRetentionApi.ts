@@ -28,8 +28,16 @@ export interface DataRetentionTableStatus {
   lastFreedBytes: number;
 }
 
+/** What a PATCH may carry: any of the windows plus the backup-gate mode. */
+export type DataRetentionPatch = Partial<DataRetentionSettings> & {
+  /** myrmidon(1.6.5-F14B): the machine is backed up outside; the gate does not wait for a local dump. */
+  externalMachineBackup?: boolean;
+};
+
 export interface DataRetentionView {
   settings: DataRetentionSettings;
+  /** myrmidon(1.6.5-F14B): absent on an older server, read as false. */
+  externalMachineBackup?: boolean;
   sources: Record<keyof DataRetentionSettings, DataRetentionLimitSource>;
   status: {
     lastRunAt: string | null;
@@ -44,6 +52,6 @@ export const dataRetentionQueryKey = ["myrmidon", "data-retention"] as const;
 
 export const dataRetentionApi = {
   get: () => api.get<DataRetentionView>("/myrmidon/data-retention"),
-  update: (patch: Partial<DataRetentionSettings>) =>
+  update: (patch: DataRetentionPatch) =>
     api.patch<DataRetentionView>("/myrmidon/data-retention", patch),
 };

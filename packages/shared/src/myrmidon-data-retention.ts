@@ -76,6 +76,9 @@ export const patchDataRetentionSettingsSchema = z
     heartbeatRunsDays: retentionDaysSchema.optional(),
     activityLogDays: retentionDaysSchema.optional(),
     accessAuditDays: retentionDaysSchema.optional(),
+    // myrmidon(1.6.5-F14B): "the machine is backed up outside" mode of the
+    // backup gate (the same stored key the context compaction gate reads).
+    externalMachineBackup: z.boolean().optional(),
     lastRun: z.unknown().optional(),
   })
   .strict();
@@ -89,17 +92,24 @@ export const DATA_RETENTION_DEFAULT_SETTINGS: DataRetentionSettings = {
   accessAuditDays: DATA_RETENTION_ACCESS_AUDIT_DEFAULT_DAYS,
 };
 
+/**
+ * The stored object also carries the sweep state (`lastRun`) and the sibling
+ * keys of the same block (DBC-1 `heartbeatRunContextDays`, `contextLastRun`,
+ * `contextCompactMaxBatches`, F14B `externalMachineBackup`); the settings
+ * schema is strict, so only the three retention keys are handed to the parse
+ * (the rest is validated by its own normalizers).
+ */
+function pickDataRetentionKeys(raw: unknown): unknown {
+  if (typeof raw !== "object" || raw === null) return raw;
+  const source = raw as Record<string, unknown>;
+  return Object.fromEntries(
+    DATA_RETENTION_SETTING_KEYS.filter((key) => key in source).map((key) => [key, source[key]]),
+  );
+}
+
 /** The settings as stored, or the defaults when absent/invalid. */
 export function normalizeDataRetentionSettings(raw: unknown): DataRetentionSettings {
-  // The stored object also carries the sweep state under `lastRun`; the
-  // settings schema is strict, so the sub-object is peeled off before the
-  // parse (it is validated separately by `normalizeDataRetentionLastRun`).
-  const peeled =
-    typeof raw === "object" && raw !== null
-      ? Object.fromEntries(
-          Object.entries(raw as Record<string, unknown>).filter(([key]) => key !== "lastRun"),
-        )
-      : raw;
+  const peeled = pickDataRetentionKeys(raw);
   const parsed = dataRetentionSettingsSchema.safeParse(peeled);
   return {
     heartbeatRunsDays: parsed.success
@@ -116,12 +126,7 @@ export function normalizeDataRetentionSettings(raw: unknown): DataRetentionSetti
 export function dataRetentionSources(
   raw: unknown,
 ): Record<DataRetentionSettingKey, DataRetentionSource> {
-  const peeled =
-    typeof raw === "object" && raw !== null
-      ? Object.fromEntries(
-          Object.entries(raw as Record<string, unknown>).filter(([key]) => key !== "lastRun"),
-        )
-      : raw;
+  const peeled = pickDataRetentionKeys(raw);
   const parsed = dataRetentionSettingsSchema.safeParse(peeled);
   const stored = parsed.success;
   return {
@@ -200,6 +205,11 @@ export function normalizeDataRetentionLastRun(raw: unknown): DataRetentionLastRu
 /** Response of `GET /api/myrmidon/data-retention`. */
 export interface DataRetentionView {
   settings: DataRetentionSettings;
+  /**
+   * myrmidon(1.6.5-F14B): true when the backup gate is in "external machine
+   * backup" mode — no local dump is waited for.
+   */
+  externalMachineBackup: boolean;
   sources: Record<DataRetentionSettingKey, DataRetentionSource>;
   status: DataRetentionLastRun;
 }

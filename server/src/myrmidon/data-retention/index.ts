@@ -33,6 +33,7 @@ import { dataRetentionService, type DataRetentionService } from "./service.js";
 import {
   readDataRetentionLastRun,
   readDataRetentionSettings,
+  readExternalMachineBackup,
   writeDataRetentionLastRun,
 } from "./settings.js";
 import { createDataRetentionSweep, type DataRetentionSweep } from "./sweep.js";
@@ -83,7 +84,13 @@ function createRuntime(db: Db, options: DataRetentionRuntimeOptions = {}): DataR
       const backupDir = options.backupDir ?? resolveDataRetentionBackupDir();
       const prefix = resolveDataRetentionBackupPrefix(env);
       const checkedAt = new Date();
-      const result = checkDataRetentionBackupGate({ backupDir, prefix, now: checkedAt });
+      const externalMachineBackup = await readExternalMachineBackup(settings);
+      const result = checkDataRetentionBackupGate({
+        backupDir,
+        prefix,
+        externalMachineBackup,
+        now: checkedAt,
+      });
       return { fresh: result.fresh, checkedAt };
     },
     logWaitingForBackup: async (details) => {

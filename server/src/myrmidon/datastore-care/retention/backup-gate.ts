@@ -7,15 +7,22 @@
 // younger than 24 hours. The dir resolution mirrors
 // `packages/db/src/backup.ts` (config `database.backup.dir`, then
 // `resolveDefaultBackupDir()`); the filename prefix mirrors `runDatabaseBackup`
-// in `packages/db/src/backup-lib.ts` (default `paperclip`, overridable via the
-// `MYRMIDON_DB_BACKUP_FILE_PREFIX` deployment knob the deploy repo sets).
-// The gate fails closed: an unreadable or empty dir is "not fresh".
+// in `packages/db/src/backup-lib.ts` (which hardcodes `paperclip`); the
+// `MYRMIDON_DB_BACKUP_FILE_PREFIX` deployment knob narrows the match to one
+// prefix. The gate fails closed: an unreadable or empty dir is "not fresh".
 //
 // myrmidon(1.6.5-F14): the gate accepts both the built-in board backup
 // (`<prefix>-<timestamp>.sql.gz`, what `runDatabaseBackup` writes) and a
 // host-side `pg_dump -Fc` dump (`*.dump`); when the prefix env knob is not
-// set, any newest `*.sql.gz`/`*.dump` in the dir counts, because a deployment
-// that switched its backup naming must not silently park the compaction.
+// set (or empty), any newest `*.sql.gz`/`*.dump` in the dir counts, because a
+// deployment that switched its backup naming must not silently park the
+// compaction.
+//
+// myrmidon(1.6.5-F14B): "external machine backup" mode. When the machine is
+// backed up as a whole on another host (owner decision 09.10) and no local
+// dump is produced, the instance setting
+// `general.datastoreCare.retention.externalMachineBackup` makes the gate pass
+// without looking for a local file.
 
 import fs from "node:fs";
 import path from "node:path";
@@ -57,11 +64,16 @@ export function resolveBackupDir(input: { homeDir?: string } = {}): string {
   return resolveDefaultBackupDir(input);
 }
 
-/** The filename prefix the backup run writes (`<prefix>-<timestamp>.sql.gz`). */
+/**
+ * The filename prefix the backup run writes (`<prefix>-<timestamp>.sql.gz`).
+ * myrmidon(1.6.5-F14B): unset or empty (whitespace) means "no naming
+ * contract" — the gate then accepts any `*.sql.gz`/`*.dump` in the dir (see
+ * `checkBackupGate`); a non-empty value narrows the match to `<prefix>-*`.
+ */
 export function resolveBackupFilePrefix(
   env: Record<string, string | undefined> = process.env,
 ): string {
-  return env.MYRMIDON_DB_BACKUP_FILE_PREFIX?.trim() || "paperclip";
+  return env.MYRMIDON_DB_BACKUP_FILE_PREFIX?.trim() ?? "";
 }
 
 /** Backup filename extensions the gate accepts. */
@@ -74,8 +86,10 @@ export interface BackupGateResult {
   newestBackupAt: string | null;
   /** The directory the gate inspected. */
   backupDir: string;
-  /** The filename prefix the gate matched against. */
+  /** The filename prefix the gate matched against (empty = any accepted name). */
   prefix: string;
+  /** True when the gate passed by the "external machine backup" setting. */
+  externalMachineBackup: boolean;
   /** False when the dir could not be listed at all. */
   dirReadable: boolean;
   /** Base name of the newest matching backup file, when one exists. */
@@ -97,23 +111,38 @@ function isBackupName(name: string): boolean {
  * Check the gate against a backup dir: the newest matching backup must be
  * younger than `maxAgeMs`. A matching backup is `<prefix>-*` with an accepted
  * extension; when `prefix` is empty (the deployment sets no naming contract)
- * any `*.sql.gz`/`*.dump` in the dir counts, newest first.
+ * any `*.sql.gz`/`*.dump` in the dir counts, newest first. With
+ * `externalMachineBackup` the machine is backed up elsewhere: the gate is
+ * fresh without a local file and the dir is not read.
  */
 export function checkBackupGate(options: {
   backupDir: string;
-  /** Empty string means "no naming contract — any accepted extension". */
+  /** Empty string (the default) means "no naming contract — any accepted extension". */
   prefix?: string;
+  /** The instance setting "the machine is backed up outside". */
+  externalMachineBackup?: boolean;
   now?: Date;
   maxAgeMs?: number;
 }): BackupGateResult {
-  const prefix = options.prefix ?? "paperclip";
+  const prefix = options.prefix ?? "";
   const now = options.now ?? new Date();
   const maxAgeMs = options.maxAgeMs ?? DATASTORE_CARE_BACKUP_MAX_AGE_MS;
   const base = {
     backupDir: options.backupDir,
     prefix,
+    externalMachineBackup: options.externalMachineBackup === true,
     candidates: [] as string[],
   };
+  if (base.externalMachineBackup) {
+    return {
+      ...base,
+      fresh: true,
+      newestBackupAt: null,
+      dirReadable: true,
+      newestBackupFile: null,
+      newestBackupSizeBytes: null,
+    };
+  }
   let names: string[];
   try {
     names = fs.readdirSync(options.backupDir);

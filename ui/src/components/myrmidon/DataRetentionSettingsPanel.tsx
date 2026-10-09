@@ -93,6 +93,18 @@ export function DataRetentionSettingsPanel() {
     onError: () => setSaveError("Could not save the retention windows. Try again."),
   });
 
+  // myrmidon(1.6.5-F14B): the backup-gate mode saves on its own, at once; it
+  // touches no window, so the drafts of the day fields stay as typed.
+  const saveMode = useMutation({
+    mutationFn: (externalMachineBackup: boolean) =>
+      dataRetentionApi.update({ externalMachineBackup }),
+    onSuccess: () => {
+      setSaveError(null);
+      queryClient.invalidateQueries({ queryKey: dataRetentionQueryKey });
+    },
+    onError: () => setSaveError("Could not save the backup mode. Try again."),
+  });
+
   const submit = () => {
     if (!drafts) return;
     const parsed: Partial<DataRetentionSettings> = {};
@@ -170,6 +182,30 @@ export function DataRetentionSettingsPanel() {
           </div>
         ))}
 
+        {/* myrmidon(1.6.5-F14B): without a local dump the gate would wait
+            forever; this mode tells it the whole machine is backed up on
+            another host. It applies to both cleanups: the run-context
+            compaction and the deletion of old rows. */}
+        <div className="space-y-1">
+          <label className="flex items-center gap-2 text-sm" htmlFor="data-retention-external-backup">
+            <input
+              id="data-retention-external-backup"
+              type="checkbox"
+              checked={view.externalMachineBackup === true}
+              disabled={saveMode.isPending}
+              onChange={(event) => saveMode.mutate(event.target.checked)}
+              data-testid="data-retention-external-backup"
+            />
+            The machine is backed up externally
+          </label>
+          <p className="text-xs text-muted-foreground">
+            Do not wait for a local database dump: the whole machine is backed
+            up nightly on a separate host. Applies to both the run-context
+            compaction and the deletion of old rows. Leave off while the
+            cleanup relies on a dump in the backup directory.
+          </p>
+        </div>
+
         <div className="flex items-center gap-2">
           <Button
             size="sm"
@@ -205,7 +241,8 @@ export function DataRetentionSettingsPanel() {
               data-testid="data-retention-waiting-backup"
             >
               Cleanup is waiting for a fresh backup — it starts once a backup
-              younger than 24 hours exists.
+              younger than 24 hours exists, or when the machine is marked as
+              backed up externally.
             </p>
           )}
 

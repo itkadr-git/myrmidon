@@ -21,6 +21,23 @@ import {
 import { instanceSettingsService } from "../../../services/index.js";
 import { createDatastoreCareRetentionRuntime } from "./service.js";
 
+// Review (F14B): the runtime must hand the RESOLVED batches ceiling to the
+// compaction pass. Spy on the pass so the wiring is observable without
+// seeding a full backlog; the real pass is covered by compact.db tests.
+vi.mock("./compact.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./compact.js")>();
+  return {
+    ...actual,
+    compactContextPass: vi.fn(async () => ({
+      compacted: 0,
+      freedBytes: 0,
+      timedOut: false,
+      perCompany: [],
+    })),
+  };
+});
+import { compactContextPass } from "./compact.js";
+
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
@@ -90,7 +107,8 @@ describeEmbeddedPostgres("myrmidon(1.6.5-F14B) retention pass gate report in set
       const gate = lastRun.backupGate;
       expect(gate, "backupGate filled on every failed check").toBeTruthy();
       expect(gate.backupDir).toBe(backupDir);
-      expect(gate.prefix).toBe("paperclip");
+      // unset prefix knob: no naming contract (OPE-6373 item 3)
+      expect(gate.prefix).toBe("");
       expect(gate.newestBackupAt).toBe(staleTime.toISOString());
       expect(gate.newestBackupFile).toBe("paperclip-2026-10-01T00-00-00.sql.gz");
       expect(gate.newestBackupSizeBytes).toBe(fs.statSync(stale).size);
@@ -98,6 +116,82 @@ describeEmbeddedPostgres("myrmidon(1.6.5-F14B) retention pass gate report in set
       expect(gate.candidates).toEqual([]);
     } finally {
       fs.rmSync(backupDir, { recursive: true, force: true });
+    }
+  });
+
+  it("a fresh backup passes the gate and the resolved batches ceiling reaches the compaction pass", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "company-pass",
+      issuePrefix: "PASS",
+    });
+
+    const backupDir = fs.mkdtempSync(path.join(os.tmpdir(), "f14b-pass-"));
+    try {
+      // A backup written right now: the gate lifts and the pass proceeds.
+      const fresh = path.join(backupDir, "paperclip-2026-10-09T06-00-00.sql.gz");
+      fs.writeFileSync(fresh, "backup-bytes");
+
+      const runtime = createDatastoreCareRetentionRuntime(db, {
+        env: { MYRMIDON_CONTEXT_COMPACT_MAX_BATCHES: "2" },
+        backupDir,
+        now: () => new Date(),
+      });
+      const passSpy = vi.mocked(compactContextPass);
+      passSpy.mockClear();
+      const result = await runtime.runOnce();
+      expect(result.reason).toBe("nothing-to-compact");
+
+      // Review (F14B): service.ts must hand the RESOLVED ceiling (here: the
+      // env knob = 2) to compactContextPass, not a hardcoded constant.
+      expect(passSpy).toHaveBeenCalledTimes(1);
+      const [deps, input] = passSpy.mock.calls[0]!;
+      expect(deps.maxBatches).toBe(2);
+      expect(input.companyIds).toContain(companyId);
+    } finally {
+      fs.rmSync(backupDir, { recursive: true, force: true });
+    }
+  });
+  it("external machine backup: an empty backup dir does not park the pass, the report says why", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "company-external",
+      issuePrefix: "EXT",
+    });
+    await instanceSettingsService(db).updateGeneral({
+      datastoreCare: { retention: { externalMachineBackup: true } },
+    } as never);
+
+    // No local dump at all: without the setting this pass would wait forever.
+    const backupDir = fs.mkdtempSync(path.join(os.tmpdir(), "f14b-external-"));
+    try {
+      const runtime = createDatastoreCareRetentionRuntime(db, {
+        env: {},
+        backupDir,
+        now: () => new Date(),
+      });
+      const passSpy = vi.mocked(compactContextPass);
+      passSpy.mockClear();
+      const result = await runtime.runOnce();
+      expect(result.reason).toBe("nothing-to-compact");
+      expect(passSpy).toHaveBeenCalledTimes(1);
+
+      const general = (await instanceSettingsService(db).getGeneral()) as unknown as Record<
+        string,
+        any
+      >;
+      const lastRun = general.datastoreCare?.retention?.contextLastRun;
+      expect(lastRun.waitingForBackup).toBe(false);
+      expect(lastRun.backupGate.externalMachineBackup).toBe(true);
+      // the mode itself survives the pass-state write
+      expect(general.datastoreCare?.retention?.externalMachineBackup).toBe(true);
+    } finally {
+      fs.rmSync(backupDir, { recursive: true, force: true });
+      await instanceSettingsService(db).updateGeneral({
+        datastoreCare: { retention: {} },
+      } as never);
     }
   });
 });

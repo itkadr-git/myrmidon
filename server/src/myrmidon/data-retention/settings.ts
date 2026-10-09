@@ -15,6 +15,7 @@
 
 import {
   DATA_RETENTION_SETTINGS_KEY,
+  normalizeDatastoreCareRetention,
   DATA_RETENTION_SETTINGS_SUBKEY,
   emptyDataRetentionLastRun,
   normalizeDataRetentionLastRun,
@@ -79,6 +80,19 @@ export async function readDataRetentionSettings(
   );
 }
 
+/**
+ * myrmidon(1.6.5-F14B): the "external machine backup" setting of the backup
+ * gate, stored next to the retention windows (the context compaction gate
+ * reads the same key). False when absent.
+ */
+export async function readExternalMachineBackup(
+  settings: DataRetentionSettingsService,
+): Promise<boolean> {
+  const general = (await settings.getGeneral()) as unknown as Record<string, unknown>;
+  const stored = storedDataRetention(general);
+  return normalizeDatastoreCareRetention(stored).externalMachineBackup === true;
+}
+
 /** Read the persisted sweep state (or the empty state when absent). */
 export async function readDataRetentionLastRun(
   settings: DataRetentionSettingsService,
@@ -107,7 +121,12 @@ export async function writeDataRetentionSettings(
   };
   // merge over the stored object: `lastRun` and the sibling DBC-1 keys
   // (`heartbeatRunContextDays`, `contextLastRun`) are not ours to drop
-  await writeRetention(settings, { ...(stored ?? {}), ...next });
+  // myrmidon(1.6.5-F14B): the backup-gate mode rides the same object
+  const external =
+    patch.externalMachineBackup !== undefined
+      ? { externalMachineBackup: patch.externalMachineBackup }
+      : {};
+  await writeRetention(settings, { ...(stored ?? {}), ...next, ...external });
   return next;
 }
 
