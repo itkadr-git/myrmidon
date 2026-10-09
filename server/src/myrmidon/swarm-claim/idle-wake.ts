@@ -23,6 +23,8 @@ export interface SwarmIdleWakeTarget {
   issueId: string;
   identifier: string | null;
   priority: string | null;
+  /** 1.6.5 (F-27): the strength of the task the wake binds to (observability). */
+  pheromoneStrength?: number | null;
   role: string;
 }
 
@@ -125,6 +127,7 @@ export function idleWakeTargetsForRole(
       issueId: top.issueId,
       identifier: top.identifier ?? null,
       priority: top.priority ?? null,
+      pheromoneStrength: top.pheromoneStrength ?? null,
       role: input.role,
     });
   }

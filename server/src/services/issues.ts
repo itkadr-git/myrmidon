@@ -97,6 +97,7 @@ import {
   issueCommentPresentationSchema,
   isUuidLike,
   normalizeIssueIdentifier as normalizeIssueReferenceIdentifier,
+  resolveSwarmClaimSettings,
 } from "@paperclipai/shared";
 import { conflict, HttpError, notFound, unprocessable } from "../errors.js";
 import { isForeignKeyViolation } from "../db-errors.js";
@@ -6399,6 +6400,22 @@ export function issueService(db: Db) {
   const instanceSettings = instanceSettingsService(db);
   const treeControlSvc = issueTreeControlService(db);
 
+  // 1.6.5 (F-27 PHEROMONE): the strength a new task starts with when the
+  // caller did not set one — the swarm settings map `priority` to a number
+  // (swarmClaim.pheromoneDefaults, edited in the swarm settings UI). Unknown
+  // priorities read as `medium`, matching the schema default.
+  async function defaultPheromoneStrengthForPriority(priority: string): Promise<number> {
+    const raw = (await instanceSettings.getGeneral()) as unknown as Record<string, unknown> | null;
+    const stored = raw && typeof raw === "object" ? (raw as { swarmClaim?: unknown }).swarmClaim : undefined;
+    const resolved = resolveSwarmClaimSettings({
+      env: process.env,
+      stored: stored && typeof stored === "object" ? stored : null,
+    });
+    const mapping = resolved.settings.pheromoneDefaults as Record<string, number>;
+    const strength = mapping[priority];
+    return typeof strength === "number" ? strength : mapping.medium ?? 0;
+  }
+
   function normalizeCreateIssueTitle(title: string) {
     return title.trim().replace(/\s+/g, " ").toLowerCase();
   }
@@ -7874,7 +7891,10 @@ export function issueService(db: Db) {
             ? baseQuery
             : baseQuery.limit(limit);
       const rows = (await pageQuery).map((row) => ({
-        ...row,
+        // 1.6.5 (F-27 PHEROMONE): a Partial-bounded pageQuery map loses the
+        // drizzle row type; the shape stays the full issues row + a decoded
+        // description, so narrow it back for withIssueLabels.
+        ...(row as typeof row & IssueRow),
         description: decodeDatabaseTextPreview(
           row.description,
           ISSUE_LIST_DESCRIPTION_MAX_CHARS,
@@ -9926,6 +9946,18 @@ export function issueService(db: Db) {
           // path — board, agent, API — stores the masked description.
           ...(issueData.description
             ? { description: maskSecretsInText(issueData.description) }
+            : {}),
+          // 1.6.5 (F-27 PHEROMONE): an explicit strength wins; otherwise the
+          // task starts with the strength the swarm settings map its priority
+          // to (swarmClaim.pheromoneDefaults). Setting the number here — the
+          // single write point — keeps board, agent and import creates
+          // consistent without each path re-reading the settings.
+          ...(issueData.pheromoneStrength == null
+            ? {
+                pheromoneStrength: await defaultPheromoneStrengthForPriority(
+                  issueData.priority ?? "medium",
+                ),
+              }
             : {}),
           originRunId: issueData.originRunId ?? actorRunId ?? null,
           responsibleUserId,

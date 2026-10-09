@@ -229,6 +229,7 @@ export async function claimNextTaskForAgent(
     details: {
       identifier: next.identifier,
       priority: next.priority,
+      pheromoneStrength: next.pheromoneStrength ?? null,
       role: agent.role,
       leaseTtlSec: settings.leaseTtlSec,
     },

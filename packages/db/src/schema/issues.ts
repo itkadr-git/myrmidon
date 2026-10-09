@@ -45,6 +45,10 @@ export const issues = pgTable(
     workMode: text("work_mode").notNull().default("standard"),
     harnessKind: text("harness_kind"),
     priority: text("priority").notNull().default("medium"),
+    // 1.6.5 (F-27 PHEROMONE): the numeric pheromone strength; the swarm queue
+    // orders by it inside the P0 band. Zero means "no scent" — the task ranks
+    // behind every task with an explicit strength of the same band.
+    pheromoneStrength: integer("pheromone_strength").notNull().default(0),
     reviewPolicy: text("review_policy").$type<IssueReviewPolicy>(),
     assigneeAgentId: uuid("assignee_agent_id").references(() => agents.id),
     assigneeUserId: text("assignee_user_id"),

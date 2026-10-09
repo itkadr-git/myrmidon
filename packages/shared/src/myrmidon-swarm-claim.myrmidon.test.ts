@@ -76,6 +76,7 @@ describe("swarm claim settings", () => {
       maxActiveTasks: 5,
       sweepIntervalSec: 45,
       p0Preemption: false,
+      pheromoneDefaults: { critical: 100, high: 50, medium: 10, low: 1 },
     };
     const forcedOff = resolveSwarmClaimSettings({
       stored,
@@ -106,6 +107,16 @@ describe("swarm claim settings", () => {
     const base = readSwarmClaimSettingsFromEnv({});
     expect(mergeSwarmClaimSettings(base, { enabled: true })).toEqual({ ...base, enabled: true });
     expect(mergeSwarmClaimSettings(base, { maxActiveTasks: null }).maxActiveTasks).toBeNull();
+    // 1.6.5 (F-27): the priority → strength mapping is one merged key.
+    expect(
+      mergeSwarmClaimSettings(base, {
+        pheromoneDefaults: { critical: 500, high: 200, medium: 50, low: 5 },
+      }).pheromoneDefaults,
+    ).toEqual({ critical: 500, high: 200, medium: 50, low: 5 });
+    // A patch that does not name the mapping keeps the stored one.
+    expect(mergeSwarmClaimSettings(base, { enabled: false }).pheromoneDefaults).toEqual(
+      base.pheromoneDefaults,
+    );
   });
 
   it("moves the expiry forward by exactly one TTL", () => {
@@ -154,22 +165,49 @@ describe("swarm queue order", () => {
   });
 
   // 1.6.1 (SWARM-SETTINGS-UI): the P0 preemption is a setting, not a constant.
-  it("with p0Preemption off the queue is strictly oldest-first", () => {
+  // 1.6.5 (F-27 PHEROMONE): with P0 off the strength still ranks before age.
+  it("with p0Preemption off the queue orders by strength, then age", () => {
     const ordered = orderSwarmQueueCandidates(
       [
-        { issueId: "old-low", priority: "low", queuedAt: "2026-10-02T07:00:00Z" },
-        { issueId: "new-critical", priority: "critical", queuedAt: "2026-10-02T11:00:00Z" },
-        { issueId: "mid-high", priority: "high", queuedAt: "2026-10-02T09:00:00Z" },
+        { issueId: "old-low", priority: "low", queuedAt: "2026-10-02T07:00:00Z", pheromoneStrength: 10 },
+        { issueId: "new-critical", priority: "critical", queuedAt: "2026-10-02T11:00:00Z", pheromoneStrength: 90 },
+        { issueId: "mid-high", priority: "high", queuedAt: "2026-10-02T09:00:00Z", pheromoneStrength: 50 },
       ],
       { p0Preemption: false },
     );
-    expect(ordered.map((c) => c.issueId)).toEqual(["old-low", "mid-high", "new-critical"]);
+    expect(ordered.map((c) => c.issueId)).toEqual(["new-critical", "mid-high", "old-low"]);
     // Default keeps the 1.6 order: the critical task is the top.
     const defaulted = orderSwarmQueueCandidates([
       { issueId: "a", priority: "low", queuedAt: "2026-10-02T07:00:00Z" },
       { issueId: "b", priority: "critical", queuedAt: "2026-10-02T11:00:00Z" },
     ]);
     expect(defaulted.map((c) => c.issueId)).toEqual(["b", "a"]);
+  });
+
+  // 1.6.5 (F-27 PHEROMONE): the strength ranks inside the P0 band.
+  it("orders by pheromone strength inside the same priority band", () => {
+    const ordered = orderSwarmQueueCandidates([
+      { issueId: "weak", priority: "medium", queuedAt: "2026-10-02T07:00:00Z", pheromoneStrength: 10 },
+      { issueId: "strong", priority: "medium", queuedAt: "2026-10-02T11:00:00Z", pheromoneStrength: 90 },
+      { issueId: "unscented", priority: "medium", queuedAt: "2026-10-02T06:00:00Z" },
+    ]);
+    expect(ordered.map((c) => c.issueId)).toEqual(["strong", "weak", "unscented"]);
+  });
+
+  it("a critical task with no strength still preempts a strong medium task", () => {
+    const ordered = orderSwarmQueueCandidates([
+      { issueId: "strong-medium", priority: "medium", queuedAt: "2026-10-02T07:00:00Z", pheromoneStrength: 500 },
+      { issueId: "plain-p0", priority: "critical", queuedAt: "2026-10-02T11:00:00Z" },
+    ]);
+    expect(ordered.map((c) => c.issueId)).toEqual(["plain-p0", "strong-medium"]);
+  });
+
+  it("a strength tie falls to the older queue entry", () => {
+    const ordered = orderSwarmQueueCandidates([
+      { issueId: "newer", priority: "high", queuedAt: "2026-10-02T11:00:00Z", pheromoneStrength: 40 },
+      { issueId: "older", priority: "high", queuedAt: "2026-10-02T07:00:00Z", pheromoneStrength: 40 },
+    ]);
+    expect(ordered.map((c) => c.issueId)).toEqual(["older", "newer"]);
   });
 });
 
@@ -183,6 +221,7 @@ describe("swarm claim pilot set", () => {
     maxActiveTasks: 3 as number | null,
     sweepIntervalSec: 30,
     p0Preemption: true,
+    pheromoneDefaults: { critical: 100, high: 50, medium: 10, low: 1 },
   };
 
   it("an empty list means no restriction", () => {

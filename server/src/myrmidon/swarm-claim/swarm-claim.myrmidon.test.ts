@@ -45,6 +45,8 @@ const settings: SwarmClaimSettings = {
   maxActiveTasks: DEFAULT_SWARM_MAX_ACTIVE_TASKS,
   sweepIntervalSec: DEFAULT_SWARM_CLAIM_SWEEP_INTERVAL_SEC,
   p0Preemption: true,
+  // 1.6.5 (F-27 PHEROMONE): the default mapping; queue order is P0 → strength ↓ → age.
+  pheromoneDefaults: { critical: 1000, high: 100, medium: 10, low: 1 },
 };
 
 function candidate(overrides: Partial<SwarmQueueCandidate> = {}): SwarmQueueCandidate {
@@ -108,6 +110,54 @@ describe("myrmidon(1.6-SWARM) queue order", () => {
     const queue = selectQueueForAgent({ candidates, liveClaims: [], now: NOW });
     expect(queue[0]?.issueId).toBe("b2222222-2222-4222-8222-222222222222");
     expect(queue[0]?.priority).toBe("critical");
+  });
+
+  // 1.6.5 (F-27 PHEROMONE) acceptance: of two ready tasks of one caste a free
+  // agent gets the task with the HIGHER pheromone strength — even when it is
+  // younger; a strength change reorders the queue without a restart.
+  it("the stronger pheromone outranks age; a strength change reorders the queue", () => {
+    const weak = candidate({
+      issueId: "a1111111-1111-4111-8111-111111111111",
+      identifier: "ISSUE-3",
+      pheromoneStrength: 5,
+      queuedAt: new Date("2026-10-02T09:00:00Z"), // older
+    });
+    const strong = candidate({
+      issueId: "b2222222-2222-4222-8222-222222222222",
+      identifier: "ISSUE-2",
+      pheromoneStrength: 50,
+      queuedAt: new Date("2026-10-02T11:00:00Z"), // younger
+    });
+    const queue = selectQueueForAgent({ candidates: [weak, strong], liveClaims: [], now: NOW });
+    expect(queue[0]?.issueId).toBe("b2222222-2222-4222-8222-222222222222");
+
+    // The owner raises the weak task's strength (a UI edit) — the queue flips.
+    const reordered = selectQueueForAgent({
+      candidates: [{ ...weak, pheromoneStrength: 500 }, strong],
+      liveClaims: [],
+      now: NOW,
+    });
+    expect(reordered[0]?.issueId).toBe("a1111111-1111-4111-8111-111111111111");
+  });
+
+  // 1.6.5 (F-27 PHEROMONE): P0 preempts the queue regardless of strength.
+  it("a critical task preempts even a stronger pheromone", () => {
+    const p0 = candidate({
+      issueId: "a1111111-1111-4111-8111-111111111111",
+      identifier: "ISSUE-3",
+      priority: "critical",
+      pheromoneStrength: 0,
+      queuedAt: new Date("2026-10-02T11:00:00Z"),
+    });
+    const strong = candidate({
+      issueId: "b2222222-2222-4222-8222-222222222222",
+      identifier: "ISSUE-2",
+      priority: "medium",
+      pheromoneStrength: 900,
+      queuedAt: new Date("2026-10-02T09:00:00Z"),
+    });
+    const queue = selectQueueForAgent({ candidates: [p0, strong], liveClaims: [], now: NOW });
+    expect(queue[0]?.issueId).toBe("a1111111-1111-4111-8111-111111111111");
   });
 });
 

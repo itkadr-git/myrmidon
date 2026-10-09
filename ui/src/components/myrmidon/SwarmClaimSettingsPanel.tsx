@@ -34,6 +34,46 @@ const NUMBER_FIELDHints = {
   sweepIntervalSec: "How often the expired-lease sweep runs, in seconds (minimum 5).",
 } as const;
 
+// 1.6.5 (F-27 PHEROMONE): the priority → strength mapping a task starts with
+// when it is created without an explicit strength. Edited here; the server
+// re-reads it on every create.
+const PHEROMONE_PRIORITY_KEYS = ["critical", "high", "medium", "low"] as const;
+type PheromonePriorityKey = (typeof PHEROMONE_PRIORITY_KEYS)[number];
+type PheromoneDraft = Record<PheromonePriorityKey, string>;
+
+const PHEROMONE_FIELD_HINT =
+  "The pheromone strength a new task of this priority starts with (0–1000000).";
+
+function parsePheromoneDraft(draft: PheromoneDraft): {
+  patch: Record<PheromonePriorityKey, number> | null;
+  errors: Partial<Record<PheromonePriorityKey, string>>;
+} {
+  const errors: Partial<Record<PheromonePriorityKey, string>> = {};
+  const patch = {} as Record<PheromonePriorityKey, number>;
+  for (const key of PHEROMONE_PRIORITY_KEYS) {
+    const raw = draft[key].trim();
+    const value = raw ? Number(raw) : Number.NaN;
+    if (!raw || !Number.isInteger(value) || value < 0 || value > 1_000_000) {
+      errors[key] = "Enter a whole number from 0 to 1000000";
+    } else {
+      patch[key] = value;
+    }
+  }
+  if (Object.keys(errors).length > 0) return { patch: null, errors };
+  return { patch, errors };
+}
+
+function toPheromoneDraft(settings: {
+  pheromoneDefaults: Record<string, number>;
+}): PheromoneDraft {
+  return {
+    critical: String(settings.pheromoneDefaults.critical ?? 0),
+    high: String(settings.pheromoneDefaults.high ?? 0),
+    medium: String(settings.pheromoneDefaults.medium ?? 0),
+    low: String(settings.pheromoneDefaults.low ?? 0),
+  };
+}
+
 /**
  * Parse the numeric draft fields. An empty field means "no ceiling" for the
  * limit; everything else must be a whole number in the documented range.
@@ -108,16 +148,21 @@ export function SwarmClaimSettingsPanelView({
   const [draftP0, setDraftP0] = useState<boolean | null>(null);
   const [draftRoles, setDraftRoles] = useState<string | null>(null);
   const [draftCompanyIds, setDraftCompanyIds] = useState<string | null>(null);
+  const [draftPheromone, setDraftPheromone] = useState<PheromoneDraft | null>(null);
 
   const numbers = draftNumbers ?? (view ? toDraftNumbers(view.settings) : null);
   const enabled = draftEnabled ?? (view ? view.settings.enabled : false);
   const p0Preemption = draftP0 ?? (view ? view.settings.p0Preemption : true);
   const roles = draftRoles ?? (view ? view.settings.enabledRoles.join(", ") : "");
   const companyIds = draftCompanyIds ?? (view ? view.settings.enabledCompanyIds.join(", ") : "");
+  const pheromone = draftPheromone ?? (view ? toPheromoneDraft(view.settings) : null);
 
   const { patch: numberPatch, errors } = numbers
     ? parseSwarmClaimDraft(numbers)
     : { patch: null, errors: {} as Partial<Record<string, string>> };
+  const { patch: pheromonePatch, errors: pheromoneErrors } = pheromone
+    ? parsePheromoneDraft(pheromone)
+    : { patch: null, errors: {} as Partial<Record<PheromonePriorityKey, string>> };
 
   const rolesList = roles
     .split(",")
@@ -133,7 +178,12 @@ export function SwarmClaimSettingsPanelView({
     companyIdsList.length > 200 ? "At most 200 company ids" : null;
 
   const canSave =
-    Boolean(numberPatch) && !rolesError && !companyIdsError && view !== null && view !== undefined;
+    Boolean(numberPatch) &&
+    Boolean(pheromonePatch) &&
+    !rolesError &&
+    !companyIdsError &&
+    view !== null &&
+    view !== undefined;
   const patch: SwarmClaimSettingsPatch | null = numberPatch
     ? {
         ...numberPatch,
@@ -141,6 +191,7 @@ export function SwarmClaimSettingsPanelView({
         p0Preemption,
         enabledRoles: rolesList,
         enabledCompanyIds: companyIdsList,
+        ...(pheromonePatch ? { pheromoneDefaults: pheromonePatch } : {}),
       }
     : null;
 
@@ -293,6 +344,50 @@ export function SwarmClaimSettingsPanelView({
                 data-testid="swarm-claim-p0-toggle"
               />
             </div>
+          </div>
+
+          <div className="space-y-2 md:col-span-2" data-testid="swarm-claim-pheromone-defaults">
+            <h3 className="text-sm font-medium">Pheromone defaults by priority</h3>
+            <p className="text-xs text-muted-foreground">
+              <span data-testid="swarm-claim-source-pheromoneDefaults">
+                {source("pheromoneDefaults")}
+              </span>
+            </p>
+            <p className="text-xs text-muted-foreground">
+              The strength a new task starts with when it is created without an explicit one.
+              The swarm queue orders by it inside the P0 band: higher strength first, the
+              oldest task breaks ties. A task&apos;s own strength is edited on its card.
+            </p>
+            <div className="grid gap-3 md:grid-cols-4">
+              {PHEROMONE_PRIORITY_KEYS.map((key) => (
+                <div key={key} className="space-y-1">
+                  <Label htmlFor={`swarm-claim-pheromone-${key}`}>
+                    {key.charAt(0).toUpperCase() + key.slice(1)}
+                  </Label>
+                  <Input
+                    id={`swarm-claim-pheromone-${key}`}
+                    inputMode="numeric"
+                    value={pheromone ? pheromone[key] : ""}
+                    onChange={(event) =>
+                      setDraftPheromone({
+                        ...(pheromone ?? toPheromoneDraft(view.settings)),
+                        [key]: event.target.value,
+                      })
+                    }
+                    data-testid={`swarm-claim-pheromone-input-${key}`}
+                  />
+                  {pheromoneErrors[key] ? (
+                    <p
+                      data-testid={`swarm-claim-pheromone-error-${key}`}
+                      className="text-xs text-destructive"
+                    >
+                      {pheromoneErrors[key]}
+                    </p>
+                  ) : null}
+                </div>
+              ))}
+            </div>
+            <p className="text-xs text-muted-foreground">{PHEROMONE_FIELD_HINT}</p>
           </div>
 
           <div className="md:col-span-2">

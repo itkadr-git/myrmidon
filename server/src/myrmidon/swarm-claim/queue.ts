@@ -29,6 +29,8 @@ export interface RoleQueueRow {
   issueId: string;
   identifier: string | null;
   priority: string | null;
+  /** 1.6.5 (F-27): the pheromone strength the queue orders by. */
+  pheromoneStrength: number | null;
   status: string;
   assigneeAgentId: string | null;
   role: string | null;
@@ -73,6 +75,7 @@ export function roleQueueRows(db: Db, companyId: string, role: string, agentId?:
       issueId: issues.id,
       identifier: issues.identifier,
       priority: issues.priority,
+      pheromoneStrength: issues.pheromoneStrength,
       status: issues.status,
       assigneeAgentId: issues.assigneeAgentId,
       role: agents.role,
@@ -140,6 +143,7 @@ export async function listRoleQueue(
     issueId: row.issueId,
     identifier: row.identifier,
     priority: row.priority,
+    pheromoneStrength: row.pheromoneStrength,
     queuedAt: row.queuedAt,
   }));
 }
@@ -196,6 +200,7 @@ export async function listUnassignedQueue(
       issueId: issues.id,
       identifier: issues.identifier,
       priority: issues.priority,
+      pheromoneStrength: issues.pheromoneStrength,
       queuedAt: issues.createdAt,
     })
     .from(issues)
@@ -233,6 +238,7 @@ export async function listUnassignedQueue(
     issueId: row.issueId,
     identifier: row.identifier,
     priority: row.priority,
+    pheromoneStrength: row.pheromoneStrength,
     queuedAt: row.queuedAt,
   }));
 }

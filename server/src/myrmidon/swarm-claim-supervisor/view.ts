@@ -29,6 +29,8 @@ export interface SwarmQueueCandidateRow {
   identifier: string | null;
   title: string;
   priority: string;
+  /** 1.6.5 (F-27): the pheromone strength the queue orders by. */
+  pheromoneStrength: number;
   projectId: string | null;
   createdAt: string;
   blockedTransitionAt: string | null;
@@ -94,6 +96,7 @@ export interface SwarmSupervisorOverview {
     identifier: string | null;
     title: string;
     priority: string;
+    pheromoneStrength: number;
     role: string;
     projectId: string | null;
     createdAt: string;
@@ -120,6 +123,8 @@ interface QueueRow {
   identifier: string | null;
   title: string;
   priority: string;
+  /** 1.6.5 (F-27): the pheromone strength; missing column reads as 0. */
+  pheromone_strength?: number | null;
   project_id: string | null;
   created_at: Date | string;
   blocked_transition_at: Date | string | null;
@@ -182,8 +187,9 @@ function toIso(value: Date | string | null): string | null {
 }
 
 /**
- * Order queue candidates the way part A's core orders them: P0 first, then
- * priority, then the oldest blockedTransitionAt, then creation order. The
+ * Order queue candidates the way part A's core orders them
+ * (`orderSwarmQueueCandidates`): P0 first, then pheromone strength descending
+ * (1.6.5 F-27), then the oldest blockedTransitionAt, then creation order. The
  * supervisor's "top of queue" must be the same task the next claim would take.
  */
 export function orderQueueCandidates(
@@ -192,6 +198,8 @@ export function orderQueueCandidates(
   return [...rows].sort((a, b) => {
     const byPriority = priorityRank(a.priority) - priorityRank(b.priority);
     if (byPriority !== 0) return byPriority;
+    const byStrength = (b.pheromoneStrength ?? 0) - (a.pheromoneStrength ?? 0);
+    if (byStrength !== 0) return byStrength;
     const aBlocked = a.blockedTransitionAt ? Date.parse(a.blockedTransitionAt) : Number.POSITIVE_INFINITY;
     const bBlocked = b.blockedTransitionAt ? Date.parse(b.blockedTransitionAt) : Number.POSITIVE_INFINITY;
     if (aBlocked !== bBlocked) return aBlocked - bBlocked;
@@ -275,6 +283,7 @@ export function swarmSupervisorView(
       identifier: row.identifier,
       title: row.title,
       priority: row.priority,
+      pheromoneStrength: row.pheromone_strength ?? 0,
       projectId: row.project_id,
       createdAt: toIso(row.created_at) ?? new Date(0).toISOString(),
       blockedTransitionAt: toIso(row.blocked_transition_at),
@@ -400,6 +409,7 @@ export function swarmSupervisorView(
           identifier: issue.identifier,
           title: issue.title,
           priority: issue.priority,
+          pheromoneStrength: issue.pheromoneStrength,
           role: entry.role,
           projectId: issue.projectId,
           createdAt: issue.createdAt,
@@ -469,7 +479,7 @@ export function createSwarmSupervisorDbPort(db: Db, env: NodeJS.ProcessEnv = pro
     },
     async listQueueRows(companyId) {
       const rows = await db.execute(sql`
-        SELECT id AS issue_id, identifier, title, priority, project_id, created_at, blocked_transition_at, assignee_agent_id
+        SELECT id AS issue_id, identifier, title, priority, pheromone_strength, project_id, created_at, blocked_transition_at, assignee_agent_id
         FROM issues
         WHERE company_id = ${companyId}
           AND status = 'todo'

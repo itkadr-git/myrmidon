@@ -183,6 +183,7 @@
     "workspace": "Workspace",
     "parent": "Parent task",
     "labels": "Tags",
+    "pheromone": "Pheromone",
     "updated": "Last updated",
     "title": "Title",
     "columns": "Columns",
@@ -199,6 +200,7 @@
     "workspaceDesc": "Execution or project workspace used for the task.",
     "parentDesc": "Parent task identifier and title.",
     "labelsDesc": "Task labels and tags.",
+    "pheromoneDesc": "Swarm-queue pheromone strength; editable in place.",
     "updatedDesc": "Latest visible activity time.",
     "idTaskDesc": "Task identifier like PAP-1009 on the trailing edge.",
     "statusTaskDesc": "Task state icon on the leading edge."

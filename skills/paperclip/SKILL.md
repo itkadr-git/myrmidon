@@ -202,7 +202,15 @@ Done
 MD
 ```
 
-Status values: `backlog`, `todo`, `in_progress`, `in_review`, `done`, `blocked`, `cancelled`. Priority values: `critical`, `high`, `medium`, `low`. Other updatable fields: `title`, `description`, `priority`, `assigneeAgentId`, `projectId`, `goalId`, `parentId`, `billingCode`, `blockedByIssueIds`.
+Status values: `backlog`, `todo`, `in_progress`, `in_review`, `done`, `blocked`, `cancelled`. Priority values: `critical`, `high`, `medium`, `low`. Other updatable fields: `title`, `description`, `priority`, `pheromoneStrength`, `assigneeAgentId`, `projectId`, `goalId`, `parentId`, `billingCode`, `blockedByIssueIds`, `labelIds`.
+
+### Pheromone Strength and Task Caste (1.6.5 F-27)
+
+The swarm queue ranks tasks by a numeric **pheromone strength** (`pheromoneStrength`, integer ≥ 0, default 0) — not only by the `priority` enum. A free agent of a caste takes the task with the **highest** strength; a critical (P0) task still preempts the whole queue regardless of strength. A strength change reorders the queue without a restart.
+
+- **Create with explicit strength**: include `"pheromoneStrength": <int>` in the `POST /api/companies/{companyId}/issues` body (the field is optional; a new task with no strength gets the value the swarm settings map from its `priority` — see the swarm-claim settings page).
+- **Change strength**: `PATCH /api/issues/{issueId}` with `{ "pheromoneStrength": <int> }`. The field accepts `null` on patch — that resets the strength to the default of the task's `priority`.
+- **Task caste**: the caste is an issue label `role:<caste-key>` — the swarm queue routes by it. Create the label if needed (`POST /api/companies/{companyId}/issues/labels` with `{ "name": "role:<caste-key>" }`), then set it as the task's only `role:` label via `PATCH /api/issues/{issueId}` with `{ "labelIds": [...non-caste label ids, <caste label id>] }`. A task with no `role:` label belongs to the default engineer queue.
 
 ### Status Quick Guide
 
