@@ -29,6 +29,15 @@ function snapshot(overrides: Partial<MetricsSnapshot> = {}): MetricsSnapshot {
     swarmClaimsTotal: 12,
     agentErrorSignals: 1,
     llmCostCentsWindow: 1234,
+    process: {
+      eventLoop: { p50Seconds: 0.02, p99Seconds: 0.13, maxSeconds: 0.5 },
+      eventLoopUtilization: { utilization: 0.42 },
+      memory: { rssBytes: 500000000, heapUsedBytes: 120000000, heapTotalBytes: 200000000 },
+      liveEvents: [
+        { type: "agent_status", count: 7, bytes: 1024 },
+        { type: "run_finished", count: 3, bytes: 512 },
+      ],
+    },
     scrapeErrors: 0,
     collectedAt: "2026-10-03T12:00:00.000Z",
     ...overrides,
@@ -67,15 +76,43 @@ describe("prometheus exposition format", () => {
     expect(text).toContain("# TYPE myrmidon_agent_error_signals gauge");
     expect(text).toContain("# TYPE myrmidon_llm_cost_cents_total counter");
     expect(text).toContain("# TYPE myrmidon_scrape_errors gauge");
+    expect(text).toContain("# TYPE myrmidon_board_event_loop_utilization gauge");
   });
 
   it("renders one sample line per family and per role/status pair", () => {
     const text = renderMetricsText(snapshot());
     const sampleLines = text.split("\n").filter((line) => line.startsWith("myrmidon_"));
-    // 9 single-sample families + 2 quantile samples + 3 role pairs = 14.
-    expect(sampleLines).toHaveLength(14);
+    // 9 single-sample families + 2 quantile samples + 3 role pairs = 14,
+    // plus the process half (1.6.5-PROCS-Q3): 3 loop quantiles + 1 RSS +
+    // 2 heap kinds + 2 live-event counters + 2 live-event byte counters = 10,
+    // plus the utilization gauge (1.6.6 PROCS-0.1) = 25.
+    expect(sampleLines).toHaveLength(25);
     expect(text).toContain('myrmidon_role_queue_tasks{role="engineer",status="todo"} 3');
     expect(text).toContain('myrmidon_role_queue_tasks{role="reviewer",status="in_review"} 2');
+    expect(text).toContain('myrmidon_board_event_loop_lag_seconds{quantile="0.99"} 0.13');
+    expect(text).toContain("myrmidon_board_event_loop_utilization 0.42");
+    expect(text).toContain('myrmidon_board_heap_bytes{kind="used"} 120000000');
+    expect(text).toContain('myrmidon_board_live_events_total{kind="run_finished"} 3');
+  });
+
+  it("renders the process families without samples when there is no process read", () => {
+    const text = renderMetricsText(snapshot({ process: null }));
+    expect(text).toContain("# TYPE myrmidon_board_event_loop_lag_seconds summary");
+    expect(text).toContain("# HELP myrmidon_board_live_events_total ");
+    expect(text).not.toContain("myrmidon_board_event_loop_lag_seconds{");
+    expect(text).not.toContain("myrmidon_board_live_events_total{");
+    // The DB half is untouched by the missing process read.
+    expect(text).toContain("myrmidon_runs_active 2");
+  });
+
+  it("omits the loop quantile samples while the histogram is not enabled", () => {
+    const text = renderMetricsText(
+      snapshot({ process: { eventLoop: null, eventLoopUtilization: null, memory: { rssBytes: 1, heapUsedBytes: 1, heapTotalBytes: 2 }, liveEvents: [] } }),
+    );
+    expect(text).not.toContain("myrmidon_board_event_loop_lag_seconds{");
+    expect(text).toContain("myrmidon_board_process_rss_bytes 1");
+    expect(text).toContain("# TYPE myrmidon_board_live_events_total counter");
+    expect(text).not.toContain("myrmidon_board_live_events_total{");
   });
 
   it("renders run duration quantiles with the quantile label", () => {
