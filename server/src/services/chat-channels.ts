@@ -38266,6 +38266,42 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
                         sql`coalesce((${chatEndpoints.setup}->>'runtimeGeneration')::integer, 0) = ${currentPublicationRuntimeContext.generation}`,
                       ),
                     );
+                  // myrmidon(F-10): a Telegram endpoint that is still inside
+                  // the setup wizard has now survived a real provider send —
+                  // the same proof the manual "test" step demands. Settle the
+                  // wizard in this commit: setup.step → complete and status →
+                  // active, in the same transaction as the delivery receipt.
+                  // The WHERE clause re-checks the live row, so a concurrent
+                  // reconnect (generation bump) or an already-completed setup
+                  // makes this a no-op instead of a stale overwrite.
+                  if (
+                    authorizationClaim.endpoint.provider === "telegram" &&
+                    authorizationClaim.endpoint.status === "verifying" &&
+                    authorizationClaim.endpoint.setup.step !== "complete"
+                  ) {
+                    await tx
+                      .update(chatEndpoints)
+                      .set({
+                        status: "active",
+                        setup: {
+                          ...authorizationClaim.endpoint.setup,
+                          step: "complete",
+                          testStartedAt: null,
+                        },
+                        healthMessage: "Connected",
+                        activatedAt:
+                          authorizationClaim.endpoint.activatedAt ??
+                          committedAt,
+                        updatedAt: committedAt,
+                      })
+                      .where(
+                        and(
+                          eq(chatEndpoints.id, authorizationClaim.endpoint.id),
+                          eq(chatEndpoints.status, "verifying"),
+                          sql`coalesce((${chatEndpoints.setup}->>'runtimeGeneration')::integer, 0) = ${runtimeGeneration(authorizationClaim.endpoint.setup)}`,
+                        ),
+                      );
+                  }
                 }
                 if (authorizationActionId) {
                   const processedAuthorization = await tx

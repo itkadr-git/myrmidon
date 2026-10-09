@@ -13216,6 +13216,166 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     });
   });
 
+  it("completes the Telegram setup wizard on the first successful delivery", async () => {
+    const fixture = await seedCompany();
+    const { callbacks, endpoint, runtime, service } =
+      await configuredTelegramEndpoint(fixture);
+    const thread = makeThread({
+      channelId: "77330011",
+      id: "telegram:77330011",
+      isDM: true,
+      name: "Telegram auto-complete user",
+    });
+    await deliverMessage({
+      callbacks,
+      endpointId: endpoint.id,
+      provider: "telegram",
+      thread: thread.thread,
+      message: makeMessage({
+        id: "93",
+        text: "Open the first Telegram task",
+        userId: "77330011",
+        raw: { message_id: 93, chat: { id: 77330011, type: "private" } },
+      }),
+      trigger: "direct_message",
+    });
+    const [conversation] = await db
+      .select()
+      .from(chatConversations)
+      .where(eq(chatConversations.endpointId, endpoint.id));
+    if (!conversation) throw new Error("Expected Telegram conversation");
+    await expect(service.get(endpoint.id)).resolves.toMatchObject({
+      status: "verifying",
+      setup: { step: "test" },
+    });
+
+    await db.insert(chatPublications).values({
+      companyId: fixture.companyId,
+      endpointId: endpoint.id,
+      conversationId: conversation.id,
+      issueId: conversation.issueId,
+      idempotencyKey: `f10-first-delivery:${endpoint.id}`,
+      payload: { text: "First Telegram notification" },
+      state: "pending",
+    });
+    await service.processPendingPublications();
+
+    const providerRuntime = runtime.endpoints.get(endpoint.id);
+    if (!providerRuntime) throw new Error("Expected Telegram runtime");
+    expect(providerRuntime.posts).toHaveLength(1);
+    const [publication] = await db
+      .select({ state: chatPublications.state })
+      .from(chatPublications)
+      .where(
+        eq(
+          chatPublications.idempotencyKey,
+          `f10-first-delivery:${endpoint.id}`,
+        ),
+      );
+    expect(publication!.state).toBe("published");
+
+    const [stored] = await db
+      .select({
+        status: chatEndpoints.status,
+        setup: chatEndpoints.setup,
+        activatedAt: chatEndpoints.activatedAt,
+        healthMessage: chatEndpoints.healthMessage,
+      })
+      .from(chatEndpoints)
+      .where(eq(chatEndpoints.id, endpoint.id));
+    expect(stored!.status).toBe("active");
+    expect(stored!.setup).toMatchObject({ step: "complete" });
+    expect(stored!.setup.testStartedAt ?? null).toBeNull();
+    expect(stored!.activatedAt).toBeInstanceOf(Date);
+    expect(stored!.healthMessage).toBe("Connected");
+    await expect(service.get(endpoint.id)).resolves.toMatchObject({
+      status: "active",
+      setup: { step: "complete" },
+    });
+    await service.shutdown();
+  });
+
+  it("keeps the Telegram setup wizard open when the first delivery fails", async () => {
+    const fixture = await seedCompany();
+    const { callbacks, endpoint, runtime, service } =
+      await configuredTelegramEndpoint(fixture);
+    const thread = makeThread({
+      channelId: "77330012",
+      id: "telegram:77330012",
+      isDM: true,
+      name: "Telegram failed-delivery user",
+    });
+    await deliverMessage({
+      callbacks,
+      endpointId: endpoint.id,
+      provider: "telegram",
+      thread: thread.thread,
+      message: makeMessage({
+        id: "94",
+        text: "Open a task whose delivery fails",
+        userId: "77330012",
+        raw: { message_id: 94, chat: { id: 77330012, type: "private" } },
+      }),
+      trigger: "direct_message",
+    });
+    const [conversation] = await db
+      .select()
+      .from(chatConversations)
+      .where(eq(chatConversations.endpointId, endpoint.id));
+    if (!conversation) throw new Error("Expected Telegram conversation");
+    const providerRuntime = runtime.endpoints.get(endpoint.id);
+    if (!providerRuntime) throw new Error("Expected Telegram runtime");
+    providerRuntime.postError = new Error("Telegram transport refused the send");
+
+    await db.insert(chatPublications).values({
+      companyId: fixture.companyId,
+      endpointId: endpoint.id,
+      conversationId: conversation.id,
+      issueId: conversation.issueId,
+      idempotencyKey: `f10-failed-delivery:${endpoint.id}`,
+      payload: { text: "This send fails" },
+      state: "pending",
+    });
+    await service.processPendingPublications();
+
+    expect(providerRuntime.posts).toHaveLength(0);
+    const [publication] = await db
+      .select({
+        state: chatPublications.state,
+        providerMessageId: chatPublications.providerMessageId,
+      })
+      .from(chatPublications)
+      .where(
+        eq(
+          chatPublications.idempotencyKey,
+          `f10-failed-delivery:${endpoint.id}`,
+        ),
+      );
+    // An ambiguous transport throw is quarantined as delivery_unknown: the
+    // endpoint must not silently advance while the provider result is unclear.
+    expect(publication!.state).toBe("delivery_unknown");
+    expect(publication!.providerMessageId).toBeNull();
+
+    const [stored] = await db
+      .select({
+        status: chatEndpoints.status,
+        setup: chatEndpoints.setup,
+        activatedAt: chatEndpoints.activatedAt,
+        healthMessage: chatEndpoints.healthMessage,
+      })
+      .from(chatEndpoints)
+      .where(eq(chatEndpoints.id, endpoint.id));
+    expect(stored!.status).toBe("verifying");
+    expect(stored!.setup).toMatchObject({ step: "test" });
+    expect(stored!.activatedAt).toBeNull();
+    expect(stored!.healthMessage).toBe("Callback verified");
+    await expect(service.get(endpoint.id)).resolves.toMatchObject({
+      status: "verifying",
+      setup: { step: "test" },
+    });
+    await service.shutdown();
+  });
+
   it("requires the successful setup final to consume the qualifying follow-up", async () => {
     const fixture = await seedCompany();
     const { callbacks, endpoint, service } =
