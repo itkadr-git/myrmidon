@@ -1,6 +1,7 @@
 import express from "express";
 import request from "supertest";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { JsonRpcCallError } from "@paperclipai/plugin-sdk";
 
 const mockRegistry = vi.hoisted(() => ({
   getById: vi.fn(),
@@ -925,6 +926,58 @@ describe.sequential("plugin tool and bridge authz", () => {
       },
     });
   });
+
+  it("maps an unknown action key to a 400 UNKNOWN_ACTION bridge error with the known keys", async () => {
+    readyPlugin();
+    const known = ["bootstrap-root", "write-page"];
+    const call = vi.fn().mockRejectedValue(new JsonRpcCallError({
+      code: -32007,
+      message: 'No action handler registered for key "definitely-unknown"',
+      data: { error: "unknown_action", known },
+    }));
+    const { app } = await createApp(boardActor(), {}, {
+      bridgeDeps: {
+        workerManager: { call },
+      },
+    });
+
+    const res = await request(app)
+      .post(`/api/plugins/${pluginId}/actions/definitely-unknown`)
+      .send({ companyId: companyA });
+
+    expect(res.status).toBe(400);
+    expect(res.body).toMatchObject({
+      code: "UNKNOWN_ACTION",
+      message: 'No action handler registered for key "definitely-unknown"',
+      details: { error: "unknown_action", known },
+    });
+    expect(call).toHaveBeenCalledWith(pluginId, "performAction", expect.objectContaining({
+      key: "definitely-unknown",
+    }));
+  }, 60_000);
+
+  it("keeps worker failures as 502 for known-but-failing actions", async () => {
+    readyPlugin();
+    const call = vi.fn().mockRejectedValue(new JsonRpcCallError({
+      code: -32002,
+      message: "handler exploded",
+    }));
+    const { app } = await createApp(boardActor(), {}, {
+      bridgeDeps: {
+        workerManager: { call },
+      },
+    });
+
+    const res = await request(app)
+      .post(`/api/plugins/${pluginId}/actions/sync`)
+      .send({ companyId: companyA });
+
+    expect(res.status).toBe(502);
+    expect(res.body).toMatchObject({
+      code: "WORKER_ERROR",
+      message: "handler exploded",
+    });
+  }, 60_000);
 
   it("rejects manual job triggers for non-admin board users", async () => {
     const scheduler = { triggerJob: vi.fn() };
