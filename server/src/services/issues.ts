@@ -9631,7 +9631,6 @@ export function issueService(db: Db) {
         issueData.pheromoneStrength == null
           ? await defaultPheromoneStrengthForPriority(issueData.priority ?? "medium")
           : undefined;
-      await assertCasteKeyExists(companyId, issueData.casteKey);
       // 1.6.5 (F-26 T10 SCENT): the caste directory (this also seeds the built-ins
       // of a fresh company) and the scent settings are read on the pool BEFORE the
       // insert transaction opens, for the same reason: the hook is a pure derivation
@@ -9641,6 +9640,8 @@ export function issueService(db: Db) {
         ((await instanceSettings.getGeneral()) as unknown as { swarm?: unknown } | null)?.swarm,
         process.env,
       );
+      // The directory read above seeds a fresh company, so the key check comes after it.
+      await assertCasteKeyExists(companyId, issueData.casteKey);
       const persist = async (tx: DbTransaction) => {
         await assertExecutionTaskParent(tx as unknown as Db, companyId, issueData.parentId);
         if (issueData.conversationAgentId && issueData.conversationUserId) {
