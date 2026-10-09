@@ -10,21 +10,25 @@ settings-section: Track 2 — wake and run core
   now leaves a reason on the run (`waitReason`): `scheduling_suppressed` when
   the sweep is suppressed by scheduling, `maintenance` while the agent's
   maintenance window is open, `agent_not_invokable` for an agent that is not
-  invokable without being cancelled, and the last observed admission denial for
-  the runs the claim phase did not admit. A run with no observed cause keeps
-  `waitReason = null` on purpose: the attention card names it instead of a
-  guessed reason.
+  invokable without being cancelled. The runs the admission gate leaves queued
+  carry the gate's reason, written in the same pass before the claim phase
+  (the last observed denial, `global_cap` when none was recorded). A run that no
+  exit explained keeps `waitReason = null` on purpose: the `queue_stall` card
+  names it instead of a guessed reason.
 - `server/src/modules/run-dispatch/domain/policy.ts`: a queued run whose task
   is in `backlog` is cancelled with the new error code
-  `queued_run_issue_not_startable`; a run whose task is hidden stays queued.
+  `queued_run_issue_not_startable`, before the per-agent ceiling and fair-share
+  exits, so a busy agent loses its backlog runs too. A run whose task is hidden
+  stays queued (the Summarizer pattern).
 - `server/src/services/attention.ts` + `server/src/myrmidon/stuck-queued/attention.ts`:
   new attention kind `queue_stall` — a queued run older than the stall
   threshold *and* without a `waitReason` raises a card whose subject is the run
   (`kind: "run"`, sourceId = run id), so several stalled runs never collapse
-  into one card. The run-limit panels read the same thresholds.
+  into one card.
 - `server/src/services/decision-queues.ts`: the `queue_stall` card resolves
-  through the queue decisions — "keep" leaves the run queued, "archive" files
-  the card away, both keyed by the run id the card was raised for.
+  through the queue decisions; its verbs are `inspect` (open the run) and
+  `dismiss` (the notice goes away, the run stays queued), both keyed by the run
+  id the card was raised for.
 - `server/src/myrmidon/run-admission.ts`: admission denials are counted
   (`admissionDenials`: total, byReason, lastReason, lastAt) and exposed on the
   runtime-limits view.
@@ -37,22 +41,25 @@ settings-section: Track 2 — wake and run core
   теперь оставляет на прогоне причину (`waitReason`): `scheduling_suppressed`
   при подавлении обхода планировщиком, `maintenance` при открытом окне
   обслуживания агента, `agent_not_invokable` для неинвокабельного агента,
-  который не отменяется, и последний наблюдённый отказ допуска для прогонов,
-  до которых не дошла фаза claim. Прогон без наблюдённой причины намеренно
-  остаётся с `waitReason = null`: его называет карточка внимания, а не
-  выдуманная причина.
+  который не отменяется. Прогоны, которые гейт допуска оставил в очереди,
+  получают причину гейта в том же проходе до фазы claim (последний наблюдённый
+  отказ, `global_cap`, если отказ не записан). Прогон, который ни один выход не
+  объяснил, намеренно остаётся с `waitReason = null`: его называет карточка
+  `queue_stall`, а не выдуманная причина.
 - `server/src/modules/run-dispatch/domain/policy.ts`: прогон, чья задача ушла в
-  `backlog`, отменяется с новым кодом ошибки `queued_run_issue_not_startable`;
-  прогон со скрытой задачей остаётся в очереди.
+  `backlog`, отменяется с новым кодом ошибки `queued_run_issue_not_startable` до
+  выходов по потолку агента и честной доле, поэтому занятый агент тоже теряет
+  backlog-прогоны. Прогон со скрытой задачей остаётся в очереди (шаблон
+  Summarizer).
 - `server/src/services/attention.ts` + `server/src/myrmidon/stuck-queued/attention.ts`:
   новый вид внимания `queue_stall` — прогон, стоящий в очереди дольше порога и
   без `waitReason`, поднимает карточку с субъектом-прогоном (`kind: "run"`,
   sourceId = id прогона), поэтому несколько застрявших прогонов не сливаются в
-  одну карточку. Панели лимитов прогонов читают те же пороги.
+  одну карточку.
 - `server/src/services/decision-queues.ts`: карточка `queue_stall` проходит
-  через решения очереди — «оставить» оставляет прогон в очереди, «в архив»
-  убирает карточку; ключ обоих решений — id прогона, для которого карточка
-  поднята.
+  через решения очереди; её глаголы — `inspect` (открыть прогон) и `dismiss`
+  (уведомление убирается, прогон остаётся в очереди); ключ обоих — id прогона,
+  для которого карточка поднята.
 - `server/src/myrmidon/run-admission.ts`: отказы допуска считаются
   (`admissionDenials`: total, byReason, lastReason, lastAt) и отдаются в
   представлении runtime-limits.

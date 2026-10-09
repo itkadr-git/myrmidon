@@ -230,17 +230,6 @@ describe("myrmidon env coverage guard (code vs docs)", () => {
     "MYRMIDON_MAX_RUN_STARTS_PER_MINUTE",
     "MYRMIDON_MIN_FREE_MEMORY_MB",
     "MYRMIDON_RUN_MEMORY_ESTIMATE_MB",
-    // myrmidon(1.6.5 F-09): the three below are read by code merged to the
-    // release branch while their change fragments still carried the docs; the
-    // fragments were folded into SETTINGS.ru.md only, leaving the guard red on
-    // the first full-tier run. They are settings, not kill switches:
-    //   - MYRMIDON_BOT_SCOPE_SUBDIR (#729, docs/myrmidon/bot-disk-cache.md)
-    //   - MYRMIDON_CONTINUATION_MESSAGE_CHARS /
-    //     MYRMIDON_CONTINUATION_MESSAGE_BODY_CHARS (docs/myrmidon/changes/
-    //     1.6.5-dbc3-run-continuations.md)
-    "MYRMIDON_BOT_SCOPE_SUBDIR",
-    "MYRMIDON_CONTINUATION_MESSAGE_BODY_CHARS",
-    "MYRMIDON_CONTINUATION_MESSAGE_CHARS",
   ]);
 
   function listNonTestTsFiles(dir: string): string[] {

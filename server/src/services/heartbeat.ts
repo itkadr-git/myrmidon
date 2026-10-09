@@ -19557,34 +19557,6 @@ export function heartbeatService(
     await writeQueuedRunWaitReason(needsReason, reason);
   }
 
-  /**
-   * Re-read queued runs for an agent and fill waitReason with the last
-   * admission denial actually observed for it. Runs without an observed
-   * denial keep waitReason = null — the queue_stall card names them instead
-   * of a fabricated `global_cap`.
-   */
-  async function explainAgentQueuedRuns(agentId: string, now: Date): Promise<void> {
-    const { explainAfterMs } = await readQueuedRunThresholds();
-    const cutoff = new Date(now.getTime() - explainAfterMs);
-    const rows = await db
-      .select({ id: heartbeatRuns.id, contextSnapshot: heartbeatRuns.contextSnapshot })
-      .from(heartbeatRuns)
-      .where(
-        and(
-          eq(heartbeatRuns.agentId, agentId),
-          eq(heartbeatRuns.status, "queued"),
-          lte(heartbeatRuns.createdAt, cutoff),
-        ),
-      );
-    const needsReason = rows
-      .filter((row) => parseObject(row.contextSnapshot).waitReason == null)
-      .map((row) => row.id);
-    if (needsReason.length === 0) return;
-    const observed = sharedRunAdmission().lastDenialReason();
-    if (observed == null) return;
-    await writeQueuedRunWaitReason(needsReason, observed);
-  }
-
   async function writeQueuedRunWaitReason(
     runIds: ReadonlyArray<string>,
     waitReason: QueuedRunWaitReason,
@@ -19666,22 +19638,36 @@ export function heartbeatService(
   }
 
   // myrmidon(1.6.5 F-09): cancel queued runs whose issue is not startable
-  // (backlog). The cancellation carries the
-  // `queued_run_issue_not_startable` error code.
-  async function cancelQueuedRunsAsNotStartable(runIds: ReadonlyArray<string>): Promise<void> {
-    for (const runId of runIds) {
-      const run = await db.query.heartbeatRuns.findFirst({
-        where: eq(heartbeatRuns.id, runId),
-        columns: { id: true, companyId: true },
-      });
-      if (!run) continue;
-      await runDispatch.cancelStaleQueuedRun({
-        runId,
+  // (backlog). The cancellation carries the `queued_run_issue_not_startable`
+  // error code. Returns the ids that really were cancelled; the post-commit
+  // effects (the run status event) are applied like at every other caller of
+  // `cancelStaleQueuedRun`.
+  async function cancelQueuedRunsAsNotStartable(
+    runs: ReadonlyArray<{ id: string; companyId: string }>,
+  ): Promise<Set<string>> {
+    const cancelled = new Set<string>();
+    for (const run of runs) {
+      const staleness = await runDispatch.cancelStaleQueuedRun({
+        runId: run.id,
         companyId: run.companyId,
         expectedStatus: "queued",
         now: new Date(),
       });
+      if (staleness.outcome === "cancelled") {
+        applyRunDispatchPostCommitEffects(staleness.postCommitEffects);
+        cancelled.add(run.id);
+        logger.info(
+          { runId: run.id, errorCode: staleness.errorCode },
+          "queued run sweep: cancelled queued run whose task is not startable",
+        );
+      } else {
+        logger.info(
+          { runId: run.id, outcome: staleness.outcome },
+          "queued run sweep: queued run kept (not cancelled as not startable)",
+        );
+      }
     }
+    return cancelled;
   }
 
   // myrmidon(1.6.5 RUN-FAIRNESS): the per-agent share ceiling of the sliding
@@ -20496,7 +20482,7 @@ export function heartbeatService(
       );
       // myrmidon(1.6.5 RUN-FAIRNESS): the per-agent ceiling check moved below
       // the queue read, so the runs it holds get their waitReason.
-      const queuedRuns = await db
+      const queuedRunRows = await db
         .select()
         .from(heartbeatRuns)
         .where(
@@ -20507,6 +20493,46 @@ export function heartbeatService(
           ),
         )
         .orderBy(asc(heartbeatRuns.createdAt));
+      if (queuedRunRows.length === 0) return [];
+
+      // myrmidon(1.6.5 F-09): queued runs whose task is in backlog are
+      // cancelled BEFORE any early exit below (per-agent ceiling, fair share),
+      // so an agent at its concurrency ceiling still loses its backlog runs.
+      // Hidden todos stay: they are the supported Summarizer pattern (summary
+      // slots / status cards), the claim path decides their fate. Cancelled
+      // runs leave the sweep's queue.
+      const earlyIssueIds = [
+        ...new Set(
+          queuedRunRows
+            .map((run) => readNonEmptyString(parseObject(run.contextSnapshot).issueId))
+            .filter((issueId): issueId is string => Boolean(issueId)),
+        ),
+      ];
+      const backlogIssueIds = new Set(
+        earlyIssueIds.length > 0
+          ? (
+              await db
+                .select({ id: issues.id })
+                .from(issues)
+                .where(
+                  and(
+                    eq(issues.companyId, agent.companyId),
+                    inArray(issues.id, earlyIssueIds),
+                    eq(issues.status, "backlog"),
+                  ),
+                )
+            ).map((row) => row.id)
+          : [],
+      );
+      const notStartableRuns = queuedRunRows.filter((run) => {
+        const issueId = readNonEmptyString(parseObject(run.contextSnapshot).issueId);
+        return issueId ? backlogIssueIds.has(issueId) : false;
+      });
+      const cancelledRunIds =
+        notStartableRuns.length > 0
+          ? await cancelQueuedRunsAsNotStartable(notStartableRuns)
+          : new Set<string>();
+      const queuedRuns = queuedRunRows.filter((run) => !cancelledRunIds.has(run.id));
       if (queuedRuns.length === 0) return [];
 
       // myrmidon(1.6.5 RUN-FAIRNESS): the per-agent ceiling holds these runs;
@@ -20599,22 +20625,6 @@ export function heartbeatService(
             : sql`false`,
         );
       const issueById = new Map(issueRows.map((row) => [row.id, row]));
-      // myrmidon(1.6.5 F-09): cancel queued runs whose issue is not startable
-      // (backlog) right away, so they do not occupy the sweep. Hidden tasks
-      // stay: hidden todos are the supported Summarizer pattern
-      // (summary slots / status cards), the claim path decides their fate.
-      const notStartableRunIds = queuedRuns
-        .filter((run) => {
-          const issueId = readNonEmptyString(parseObject(run.contextSnapshot).issueId);
-          if (!issueId) return false;
-          const issue = issueById.get(issueId);
-          if (!issue) return false;
-          return issue.status === "backlog";
-        })
-        .map((run) => run.id);
-      if (notStartableRunIds.length > 0) {
-        await cancelQueuedRunsAsNotStartable(notStartableRunIds);
-      }
       // myrmidon(1.6.5 RUN-PRIORITY A): inside each readiness rank the runs
       // now sort by the effective weight (role + issue priority + release
       // bonus + aging) with a createdAt tie-break. The readiness rank stays
@@ -20790,13 +20800,6 @@ export function heartbeatService(
           activeRunExecutionPromises.delete(execution);
         });
       }
-      // myrmidon(1.6.5 F-09): any queued run that survived the claim without
-      // a waitReason gets one now — but only when the admission gate actually
-      // observed a denial. Without an observed denial the reason stays null:
-      // a fabricated `global_cap` would hide genuinely stuck runs from the
-      // queue_stall attention card (its generator matches waitReason IS NULL)
-      // and mask the OPE-4099 diagnostics.
-      await explainAgentQueuedRuns(agentId, new Date());
       return claimedRuns;
     });
   }

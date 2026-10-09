@@ -43,6 +43,7 @@ import {
   type RunPrioritySettings,
 } from "@paperclipai/shared";
 import { heartbeatService } from "../services/heartbeat.ts";
+import { subscribeCompanyLiveEvents } from "../services/live-events.ts";
 import { attentionService } from "../services/attention.js";
 import { decisionQueueService, type DecisionMutationActor } from "../services/decision-queues.js";
 import { runningProcesses } from "../adapters/index.ts";
@@ -399,15 +400,65 @@ describeEmbeddedPostgres("heartbeat F-09 stuck-queued sweep", () => {
     // Move the issue to backlog while the run is queued.
     await db.update(issues).set({ status: "backlog" }).where(eq(issues.id, issueId));
 
+    // The sweep's cancellation is announced like every other run write.
+    const cancelledEvents: Array<Record<string, unknown>> = [];
+    const unsubscribe = subscribeCompanyLiveEvents(companyId, (event) => {
+      const payload = (event.payload ?? {}) as Record<string, unknown>;
+      if (event.type === "heartbeat.run.status" && payload.runId === run.id && payload.status === "cancelled") {
+        cancelledEvents.push(payload);
+      }
+    });
+
     // Open the admission gate and run the sweep.
     pinAdmission({ maxConcurrentRuns: 1 });
     await heartbeat.resumeQueuedRuns();
     await heartbeat.drainActiveRunExecutions();
+    unsubscribe();
+    expect(cancelledEvents).toHaveLength(1);
+    expect(cancelledEvents[0]?.errorCode).toBe("queued_run_issue_not_startable");
 
     const stored = await runRow(run.id);
     expect(stored?.status).toBe("cancelled");
     expect(stored?.errorCode).toBe("queued_run_issue_not_startable");
     expect(stored?.error).toContain("backlog");
+  }, 30_000);
+
+  it("cancels a backlog queued run of an agent that has no free slot", async () => {
+    // The agent sits at its concurrency ceiling: the early exit of the
+    // per-agent pass must not keep a backlog run alive.
+    pinAdmission({ maxConcurrentRuns: 5 });
+    applyRunPrioritySettings(readRunPriorityFromEnv({}));
+
+    const { companyId, agentId } = await seedCompanyAndAgent({ name: "Eng", role: "engineer" });
+    const busyIssueId = await seedIssue(companyId, { title: "Busy work", priority: "medium", status: "todo" });
+    const backlogIssueId = await seedIssue(companyId, { title: "Backlog work", priority: "medium", status: "backlog" });
+    await db.insert(heartbeatRuns).values({
+      companyId,
+      agentId,
+      invocationSource: "on_demand",
+      triggerDetail: "manual",
+      status: "running",
+      startedAt: new Date(),
+      contextSnapshot: { issueId: busyIssueId },
+    });
+    const queued = await db
+      .insert(heartbeatRuns)
+      .values({
+        companyId,
+        agentId,
+        invocationSource: "on_demand",
+        triggerDetail: "manual",
+        status: "queued",
+        contextSnapshot: { issueId: backlogIssueId, wakeReason: "issue_assigned" },
+      })
+      .returning()
+      .then((rows) => rows[0]!);
+
+    await heartbeat.resumeQueuedRuns();
+
+    const stored = await runRow(queued.id);
+    expect(stored?.status).toBe("cancelled");
+    expect(stored?.errorCode).toBe("queued_run_issue_not_startable");
   }, 30_000);
 
   it("keeps a queued run on a hidden todo startable (Summarizer pattern)", async () => {
