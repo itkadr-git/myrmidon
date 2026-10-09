@@ -1092,14 +1092,14 @@ export function pluginRoutes(
     }
 
     // Verify the tool exists
-    const registeredTool = toolDeps.toolDispatcher.getTool(tool);
+    const registeredTool = toolDeps?.toolDispatcher.getTool(tool);
     if (!registeredTool) {
       res.status(404).json({ error: `Tool "${tool}" not found` });
       return;
     }
 
     try {
-      const result = await toolDeps.toolDispatcher.executeTool(
+      const result = await toolDeps!.toolDispatcher.executeTool(
         tool,
         parameters ?? {},
         runContext,
