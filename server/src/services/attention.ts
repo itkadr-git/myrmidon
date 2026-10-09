@@ -815,8 +815,8 @@ async function enrichAttentionItems(
   });
   // myrmidon(1.6.5-F-15-C): read-only. The retention state the feed renders
   // comes from what the background pass already stored — this GET inserts
-  // nothing. The snapshot that pass needs is parked below and written on the
-  // scheduler's own timer (debounced per company); the read never awaits it.
+  // nothing. The snapshot that pass needs is parked below and written by the
+  // retention sweep (debounced per company); the read never awaits it.
   const retentionBySource = await decisionRetentionService(db).getStates(companyId, enriched);
   const withRetention = enriched.map((item) => {
     const key = itemSourceKey(item);

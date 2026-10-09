@@ -11,43 +11,40 @@ import { decisionRetentionService } from "./decision-retention.js";
  * every GET, so rendering the feed inserted and updated `decision_retention`
  * rows inside the read path (and the feed's own latency included those writes).
  * The read path now projects the stored state read-only and hands the snapshot
- * here; this scheduler performs the writes afterwards, on its own timer.
+ * over here; the retention sweep in `server/src/index.ts` (`runRetentionSweep`
+ * — the existing periodic pass that also runs auto-archive) drains the parked
+ * snapshots, so the writes happen on the server's schedule rather than inside a
+ * request.
  *
  * The guarantee it has to keep:
  *   - a read never waits for the sync and never fails because of it:
- *     `schedule()` only parks the newest snapshot for the company and arms one
- *     unref'd timer;
+ *     `schedule()` only parks the newest snapshot for the company;
  *   - one pass per company at a time (mutex) and at most one pass per company
- *     per interval (debounce). A snapshot arriving while a pass runs is kept
- *     and runs after the next interval, so a board polling once a second still
- *     writes at most once per interval instead of turning the feed back into a
- *     writer;
+ *     per interval (debounce): a snapshot that arrives while a pass runs, or
+ *     before the interval expired, stays parked for a later tick — a board
+ *     polling once a second still writes at most once per interval instead of
+ *     turning the feed back into a writer;
+ *   - only the newest snapshot per company is kept, so the queue is bounded by
+ *     the number of companies read, not by the poll rate;
  *   - a failed pass is logged and dropped: the next read keeps showing the
  *     state the previous pass stored, and the next snapshot retries.
  */
 
 export const DECISION_RETENTION_SYNC_MIN_INTERVAL_MS = 30_000;
-/**
- * Timer cadence. A parked snapshot whose company is past its debounce window
- * is written on the next tick, so the first snapshot after a cold start costs
- * at most this much freshness while the per-company interval still caps the
- * write rate.
- */
-const TICK_MS = 5_000;
-/** Timer cadence floor, so a switched-off debounce (tests) still ticks. */
-const TIMER_FLOOR_MS = 1_000;
 
 export type DecisionRetentionSyncSink = {
   schedule: (companyId: string, items: readonly AttentionItem[]) => void;
 };
 
 export type DecisionRetentionSyncScheduler = DecisionRetentionSyncSink & {
-  /** Run every parked snapshot now, ignoring the debounce (tests, shutdown). */
-  drain: () => Promise<void>;
+  /** Write every parked snapshot whose debounce window has elapsed. */
+  drainDue: () => Promise<number>;
+  /** Write every parked snapshot now, ignoring the debounce (tests, shutdown). */
+  drain: () => Promise<number>;
+  /** Write the parked snapshot of one company, ignoring the debounce (tests). */
+  drainCompany: (companyId: string) => Promise<boolean>;
   /** Companies with a snapshot parked and not yet written. */
   pendingCompanies: () => number;
-  /** Disarm the timer; parked snapshots stay parked until the next schedule. */
-  stop: () => void;
 };
 
 export type DecisionRetentionSyncSchedulerOptions = {
@@ -62,86 +59,80 @@ export type DecisionRetentionSyncSchedulerOptions = {
   onError?: (error: unknown, companyId: string) => void;
 };
 
+type ParkedSnapshot = {
+  items: AttentionItem[];
+  /** Earliest time this snapshot may be written. */
+  dueAt: number;
+};
+
 export function createDecisionRetentionSyncScheduler(
   options: DecisionRetentionSyncSchedulerOptions,
 ): DecisionRetentionSyncScheduler {
   const minIntervalMs = Math.max(0, options.minIntervalMs ?? DECISION_RETENTION_SYNC_MIN_INTERVAL_MS);
   const now = options.now ?? (() => Date.now());
-  const writeSnapshot = options.syncItems
-    ?? ((companyId: string, items: readonly AttentionItem[]) =>
+  const writeSnapshot =
+    options.syncItems ??
+    ((companyId: string, items: readonly AttentionItem[]) =>
       decisionRetentionService(options.db).syncItems(companyId, items));
-  const onError = options.onError ?? ((error: unknown, companyId: string) => {
-    logger.error({ err: error, companyId }, "decision retention background sync failed");
-  });
+  const onError =
+    options.onError ??
+    ((error: unknown, companyId: string) => {
+      logger.error({ err: error, companyId }, "decision retention background sync failed");
+    });
 
-  const pending = new Map<string, { items: AttentionItem[]; dueAt: number }>();
+  const parked = new Map<string, ParkedSnapshot>();
   const running = new Set<string>();
-  const lastRunAt = new Map<string, number>();
-  let timer: ReturnType<typeof setInterval> | null = null;
-  let stopped = false;
+  /** Last attempted pass per company; drives the debounce window. */
+  const lastPassAt = new Map<string, number>();
 
-  function clearTimer() {
-    if (!timer) return;
-    clearInterval(timer);
-    timer = null;
-  }
-
-  function timerIntervalMs() {
-    const cadence = minIntervalMs > 0 ? Math.min(minIntervalMs, TICK_MS) : TICK_MS;
-    return Math.max(TIMER_FLOOR_MS, cadence);
-  }
-
-  function ensureTimer() {
-    if (stopped || timer || pending.size === 0) return;
-    timer = setInterval(() => {
-      void runDue(false);
-    }, timerIntervalMs());
-    timer.unref?.();
-  }
-
-  async function runCompany(companyId: string) {
-    const entry = pending.get(companyId);
-    if (!entry || running.has(companyId)) return;
-    // Take the snapshot off the queue before awaiting, so a read arriving
-    // during the pass parks a fresh one instead of racing this write.
-    pending.delete(companyId);
+  async function runCompany(companyId: string): Promise<boolean> {
+    const snapshot = parked.get(companyId);
+    if (snapshot === undefined || running.has(companyId)) return false;
+    // Take the snapshot before awaiting: a read that arrives while the pass
+    // runs parks a newer one, which a later tick (not this pass) decides about.
+    parked.delete(companyId);
     running.add(companyId);
-    lastRunAt.set(companyId, now());
+    lastPassAt.set(companyId, now());
     try {
-      await writeSnapshot(companyId, entry.items);
+      await writeSnapshot(companyId, snapshot.items);
+      return true;
     } catch (error) {
       onError(error, companyId);
+      return false;
     } finally {
       running.delete(companyId);
     }
   }
 
-  async function runDue(force: boolean) {
+  async function runDue(force: boolean): Promise<number> {
     const at = now();
     const due: string[] = [];
-    for (const [companyId, entry] of pending) {
-      if (force || entry.dueAt <= at) due.push(companyId);
+    for (const [companyId, snapshot] of parked) {
+      if (force || snapshot.dueAt <= at) due.push(companyId);
     }
-    for (const companyId of due) await runCompany(companyId);
-    if (pending.size === 0) clearTimer();
+
+    let written = 0;
+    for (const companyId of due) {
+      if (await runCompany(companyId)) written += 1;
+    }
+    return written;
   }
 
   return {
     schedule(companyId, items) {
-      if (stopped || items.length === 0) return;
-      const lastRun = lastRunAt.get(companyId);
+      if (items.length === 0) return;
+      const lastPass = lastPassAt.get(companyId);
       // Debounce per company: the first snapshot is due immediately, every
       // later one waits out the interval measured from the previous pass.
-      const dueAt = lastRun === undefined ? now() : lastRun + minIntervalMs;
-      pending.set(companyId, { items: [...items], dueAt });
-      ensureTimer();
+      parked.set(companyId, {
+        items: [...items],
+        dueAt: lastPass === undefined ? now() : lastPass + minIntervalMs,
+      });
     },
+    drainDue: () => runDue(false),
+    drainCompany: (companyId) => runCompany(companyId),
     drain: () => runDue(true),
-    pendingCompanies: () => pending.size,
-    stop() {
-      stopped = true;
-      clearTimer();
-    },
+    pendingCompanies: () => parked.size,
   };
 }
 

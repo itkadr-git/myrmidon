@@ -4,6 +4,7 @@
 // postgres, same recipe as attention-feed-swr-cache.test.ts.
 
 import { randomUUID } from "node:crypto";
+import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
@@ -165,7 +166,6 @@ describeEmbeddedPostgres("attention feed read path: no decision-retention writes
     expect(afterItem?.keep).toBe(false);
     expect(afterItem?.archivedAt).toBeNull();
     expect(countWritesTo(decisionRetention)).toBe(0);
-    scheduler.stop();
   });
 
   it("debounces the pass per company so a polling feed keeps writing at most once per interval", async () => {
@@ -192,42 +192,61 @@ describeEmbeddedPostgres("attention feed read path: no decision-retention writes
     expect(passes).toHaveLength(1);
 
     await list();
-    await scheduler.drain();
-    expect(passes).toHaveLength(1); // still inside the debounce window
+    // a snapshot inside the window stays parked: the next tick skips it
+    expect(await scheduler.drainDue()).toBe(0);
+    expect(passes).toHaveLength(1);
     expect(scheduler.pendingCompanies()).toBe(1);
 
     clock += DECISION_RETENTION_SYNC_MIN_INTERVAL_MS;
-    await scheduler.drain();
+    expect(await scheduler.drainDue()).toBe(1);
     expect(passes).toHaveLength(2);
     expect(scheduler.pendingCompanies()).toBe(0);
-    scheduler.stop();
   });
 
   it("renders stored keep/archivedAt/retentionDays without writing on the read path", async () => {
     const { companyId, approvalId } = await seedCompanyWithPendingApproval("RNR");
-    const archivedAt = new Date("2026-10-09T03:00:00.000Z");
     await db.insert(decisionRetention).values({
       companyId,
       sourceKind: "approval",
       sourceId: approvalId,
       keep: true,
-      archivedAt,
+      archivedAt: null,
       sourceActivityAt: new Date("2026-10-09T04:00:00.000Z"),
       version: 3,
       updatedAt: new Date("2026-10-09T04:00:00.000Z"),
     });
     const scheduler = createDecisionRetentionSyncScheduler({ db });
+    const list = (options: { archived?: boolean } = {}) => {
+      invalidateAttentionFeedCache(db, companyId);
+      return attentionService(db, { ...TEST_SERVICE_OPTS, decisionRetentionSync: scheduler }).list(
+        companyId,
+        { userId: "board-user", ...options },
+      );
+    };
 
     resetWriteLog();
-    invalidateAttentionFeedCache(db, companyId);
-    const feed = await attentionService(db, { ...TEST_SERVICE_OPTS, decisionRetentionSync: scheduler })
-      .list(companyId, { userId: "board-user" });
-    const item = feed.items.find((entry) => entry.dedupKey === `approval:${approvalId}`);
+    const item = (await list()).items.find((entry) => entry.dedupKey === `approval:${approvalId}`);
     expect(item?.keep).toBe(true);
-    expect(item?.archivedAt).toBe(archivedAt.toISOString());
+    expect(item?.archivedAt).toBeNull();
     expect(item?.retentionVersion).toBe(3);
     expect(item?.retentionDays).toBe(DEFAULT_DECISION_SHELF_DAYS);
     expect(countWritesTo(decisionRetention)).toBe(0);
-    scheduler.stop();
+
+    // an archived source leaves the default feed, but its stored state still renders
+    const archivedAt = new Date("2026-10-09T03:00:00.000Z");
+    await db
+      .update(decisionRetention)
+      .set({ archivedAt })
+      .where(eq(decisionRetention.sourceId, approvalId));
+    resetWriteLog();
+    const defaultFeed = await list();
+    expect(defaultFeed.items.find((entry) => entry.dedupKey === `approval:${approvalId}`)).toBeUndefined();
+    const archivedItem = (await list({ archived: true })).items.find(
+      (entry) => entry.dedupKey === `approval:${approvalId}`,
+    );
+    expect(archivedItem?.keep).toBe(true);
+    expect(archivedItem?.archivedAt).toBe(archivedAt.toISOString());
+    expect(archivedItem?.retentionVersion).toBe(3);
+    expect(countWritesTo(decisionRetention)).toBe(0);
   });
 });
