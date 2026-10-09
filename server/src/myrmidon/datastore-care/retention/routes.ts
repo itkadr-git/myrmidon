@@ -37,6 +37,9 @@ export function datastoreCareRetentionRoutes(db: Db) {
       retention: {
         heartbeatRunContextDays: resolved.heartbeatRunContextDays,
         source: resolved.source,
+        // myrmidon(1.6.5-F14B): the batches-per-company-per-pass ceiling.
+        contextCompactMaxBatches: resolved.contextCompactMaxBatches,
+        contextCompactMaxBatchesSource: resolved.contextCompactMaxBatchesSource,
       },
       lastRun,
     });

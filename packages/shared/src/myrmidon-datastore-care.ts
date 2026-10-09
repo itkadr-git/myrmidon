@@ -20,6 +20,12 @@ export const DATASTORE_CARE_RETENTION_KEY = "retention";
 /** DBC-1 default: run context is compacted 7 days after the run. */
 export const DEFAULT_HEARTBEAT_RUN_CONTEXT_DAYS = 7;
 
+// myrmidon(1.6.5-F14B): default batches per company per compaction pass.
+// First live passes run under an IO-starved board: the knob is an instance
+// setting (PATCH /api/myrmidon/datastore-care) so the first pass can be
+// lowered without a rebuild.
+export const DEFAULT_CONTEXT_COMPACT_MAX_BATCHES = 10;
+
 /** The activity action written when a compaction pass did work. */
 export const DATASTORE_RETENTION_APPLIED_ACTION = "datastore.retention_applied";
 /** The activity action written (throttled) when the backup gate blocks. */
@@ -33,6 +39,9 @@ export const datastoreCareRetentionSettingsSchema = z
     // the environment variable, then the default (7)" — see the module
     // server/src/myrmidon/datastore-care/retention/settings.ts.
     heartbeatRunContextDays: z.number().int().min(0).max(3650).optional(),
+    // myrmidon(1.6.5-F14B): batches per company per compaction pass; absent
+    // means "use the environment variable, then the default (10)".
+    contextCompactMaxBatches: z.number().int().min(1).max(1000).optional(),
   })
   .passthrough();
 
@@ -61,10 +70,16 @@ export function normalizeDatastoreCareRetention(
       ? (value as Record<string, unknown>)
       : undefined;
   const days = block?.heartbeatRunContextDays;
+  // myrmidon(1.6.5-F14B): the batches-per-pass knob, same lenient rule.
+  const batches = block?.contextCompactMaxBatches;
   return {
     heartbeatRunContextDays:
       typeof days === "number" && Number.isInteger(days) && days >= 0 && days <= 3650
         ? days
+        : undefined,
+    contextCompactMaxBatches:
+      typeof batches === "number" && Number.isInteger(batches) && batches >= 1 && batches <= 1000
+        ? batches
         : undefined,
   };
 }
@@ -72,6 +87,8 @@ export function normalizeDatastoreCareRetention(
 export const patchDatastoreCareRetentionSchema = z
   .object({
     heartbeatRunContextDays: z.number().int().min(0).max(3650).optional(),
+    // myrmidon(1.6.5-F14B): batches per company per compaction pass.
+    contextCompactMaxBatches: z.number().int().min(1).max(1000).optional(),
   })
   .strict();
 export type DatastoreCareRetentionPatch = z.infer<typeof patchDatastoreCareRetentionSchema>;

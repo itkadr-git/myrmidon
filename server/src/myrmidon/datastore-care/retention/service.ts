@@ -182,7 +182,10 @@ export function createDatastoreCareRetentionRuntime(
     ).toISOString();
     const companyIds = await settings.listCompanyIds();
     const result = await compactContextPass(
-      { db },
+      // myrmidon(1.6.5-F14B): the per-pass ceiling comes from the resolved
+      // settings block (instance setting > env > default 10), read fresh
+      // every pass so a PATCH applies without a restart.
+      { db, maxBatches: resolved.contextCompactMaxBatches },
       { companyIds, cutoff, compactedAt: checkedAt.toISOString() },
     );
 

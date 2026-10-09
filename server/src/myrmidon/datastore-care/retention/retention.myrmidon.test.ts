@@ -9,7 +9,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { DEFAULT_HEARTBEAT_RUN_CONTEXT_DAYS } from "@paperclipai/shared";
+import { DEFAULT_CONTEXT_COMPACT_MAX_BATCHES, DEFAULT_HEARTBEAT_RUN_CONTEXT_DAYS } from "@paperclipai/shared";
 import {
   checkBackupGate,
   resolveBackupFilePrefix,
@@ -65,6 +65,8 @@ describe("myrmidon(1.6.5-DBC1) resolveRetentionSettings", () => {
     expect(resolved).toEqual({
       heartbeatRunContextDays: DEFAULT_HEARTBEAT_RUN_CONTEXT_DAYS,
       source: "default",
+      contextCompactMaxBatches: DEFAULT_CONTEXT_COMPACT_MAX_BATCHES,
+      contextCompactMaxBatchesSource: "default",
     });
   });
 
@@ -98,6 +100,29 @@ describe("myrmidon(1.6.5-DBC1) resolveRetentionSettings", () => {
     });
     expect(badEnv.heartbeatRunContextDays).toBe(7);
     expect(badEnv.source).toBe("default");
+  });
+
+  // myrmidon(1.6.5-F14B): the batches-per-company-per-pass ceiling resolves
+  // the same three-step way so the first live pass can be lowered on the
+  // running board (PATCH /api/myrmidon/datastore-care), no rebuild.
+  it("contextCompactMaxBatches: stored settings win over env, env over the default of 10", () => {
+    const both = resolveRetentionSettings(
+      { datastoreCare: { retention: { contextCompactMaxBatches: 2 } } },
+      { MYRMIDON_CONTEXT_COMPACT_MAX_BATCHES: "5" },
+    );
+    expect(both.contextCompactMaxBatches).toBe(2);
+    expect(both.contextCompactMaxBatchesSource).toBe("settings");
+
+    const envOnly = resolveRetentionSettings({}, { MYRMIDON_CONTEXT_COMPACT_MAX_BATCHES: "5" });
+    expect(envOnly.contextCompactMaxBatches).toBe(5);
+    expect(envOnly.contextCompactMaxBatchesSource).toBe("env");
+
+    const bad = resolveRetentionSettings(
+      { datastoreCare: { retention: { contextCompactMaxBatches: 0 } } },
+      { MYRMIDON_CONTEXT_COMPACT_MAX_BATCHES: "1001" },
+    );
+    expect(bad.contextCompactMaxBatches).toBe(DEFAULT_CONTEXT_COMPACT_MAX_BATCHES);
+    expect(bad.contextCompactMaxBatchesSource).toBe("default");
   });
 });
 
