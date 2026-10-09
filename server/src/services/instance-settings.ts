@@ -307,6 +307,9 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
       // myrmidon(1.6.5-OWNER-DM-FILTER): the stored owner-DM delivery filter
       // mode survives every general write (it is edited via /api/myrmidon/owner-delivery).
       ...(parsed.data.ownerDelivery ? { ownerDelivery: parsed.data.ownerDelivery } : {}),
+      // myrmidon(F16): the stored issue-list agent-defaults toggle survives
+      // every general write (it is a rollback switch, not a settings page).
+      ...(parsed.data.issuesListAgentDefaults ? { issuesListAgentDefaults: parsed.data.issuesListAgentDefaults } : {}),
       // myrmidon(1.7-BUDGET-CONFIG-B): the stored budget enforcement mode
       // survives every general write (it is edited on its own settings page).
       ...(parsed.data.budgetEnforcement ? { budgetEnforcement: parsed.data.budgetEnforcement } : {}),
