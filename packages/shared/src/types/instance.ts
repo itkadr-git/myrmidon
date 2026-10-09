@@ -27,6 +27,8 @@ import type { SwarmSettings } from "../myrmidon-swarm-wake.js"; // myrmidon(1.6.
 // myrmidon(1.6.1-WIP-LIMIT-A): per-agent WIP limits of the same general settings row.
 import type { AgentMemorySettings } from "../myrmidon-agent-memory.js";
 import type { WipLimitSettings } from "../myrmidon-wip-limit.js";
+// myrmidon(1.6.5-TG-LOCALE-C): the instance default language of the Telegram bridge.
+import type { BridgeLanguageSettings } from "../myrmidon-bridge-language.js";
 // myrmidon(1.6.5-DB-RETENTION): the stored retention settings shape
 import type { DataRetentionSettings, DataRetentionLastRun } from "../myrmidon-data-retention.js";
 // myrmidon(REVIEW-ROUTING): automatic reviewer routing settings of the same row.
@@ -100,6 +102,15 @@ export interface InstanceGeneralSettings {
    * Kubernetes sandbox provider and denies local/ssh execution.
    */
   executionMode?: InstanceExecutionMode;
+  /**
+   * myrmidon(1.6.5-TG-LOCALE-C): the instance default language of the texts the
+   * bots send in the bridged Telegram DM, changed from
+   * `GET`/`PATCH /api/myrmidon/bridge-language`. Absent (or an unknown language)
+   * means "use the environment variable, then English"; the per-person choice in
+   * Settings → Language still wins over this value. Kept in sync with the
+   * validator of the same field (packages/shared/src/validators/instance.ts).
+   */
+  bridgeLanguage?: BridgeLanguageSettings;
   /**
    * myrmidon(WORKSPACE-HYGIENE): disk quotas for execution workspaces, changed
    * from `GET`/`PATCH /api/myrmidon/workspace-hygiene`. Absent means "use the

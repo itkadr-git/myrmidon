@@ -60,8 +60,13 @@ export const bridgeTextRu: Record<BridgeTextKey, string> = {
   // /model and /think
   "model.statusLabel": "Модель",
   "reasoning.statusLabel": "Рассуждения",
-  "model.unavailable": "Смена модели недоступна для адаптера {adapterType}: {reason}",
-  "reasoning.unavailable": "Смена глубины рассуждений недоступна для адаптера {adapterType}: {reason}",
+  // myrmidon(1.6.5-TG-LOCALE-C): недоступную смену объясняем до конца — названы
+  // адаптер и причина, сказано, где значение меняется (карточка агента на доске)
+  // и когда вступит в силу.
+  "model.unavailable":
+    "Смена модели недоступна для адаптера {adapterType}: {reason}. Модель меняется на доске — в разделе моделей карточки агента; применится со следующего ответа.",
+  "reasoning.unavailable":
+    "Смена глубины рассуждений недоступна для адаптера {adapterType}: {reason}. Глубина рассуждений меняется на доске — в разделе моделей карточки агента; применится со следующего ответа.",
   "model.unknownNoun": "Неизвестная модель",
   "reasoning.unknownNoun": "Неизвестная глубина рассуждений",
   "chooser.effective": "{label}: {value} ({source}).",
