@@ -29,6 +29,15 @@ const WORKABLE_STATUSES = ["todo", "in_progress"] as const;
 export const HUMAN_UNBLOCK_REPLAN_REASON = "execution_hold_cleared";
 export const HUMAN_UNBLOCK_NOTE =
   "Cleared by a board operator unblocking the issue (moved out of blocked or reassigned).";
+// myrmidon(REPLAY-BLOCK-TRIAGE): the hold belongs to the *previous* executor's
+// stopped run — a new executor never ran it and must not inherit it. An
+// assignee change by any actor (board person, an agent PATCH, a workflow
+// transition, a checkout) clears it; see docs/myrmidon/DIVERGENCE.md.
+export const REASSIGN_UNBLOCK_NOTE =
+  "Cleared on reassignment: the replay hold belongs to the previous executor's run.";
+
+/** Statuses a reassigned task can be handed in: the ones an executor works. */
+const ASSIGNED_WORKABLE_STATUSES = ["todo", "in_progress", "in_review"] as const;
 
 interface IssueSide {
   status: string;
