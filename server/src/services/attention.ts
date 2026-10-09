@@ -84,6 +84,9 @@ import {
 import { hostCpuHoldSignal, hostMemoryHoldSignal } from "../myrmidon/run-admission.js"; // myrmidon(1.6.2/1.6.5 RUN-ADMISSION)
 // myrmidon(BOT-RUNTIME-TUNING D): the model fallback share raises one card per agent
 import { readModelFallbackSignals } from "../myrmidon/litellm-fallback-signal/attention.js";
+// myrmidon(1.6.5-F-18): an empty gateway model catalog raises one card per
+// company — the accounting key is misconfigured, not a quiet window.
+import { readEmptyCatalogSignal } from "../myrmidon/litellm-costs/attention.js";
 // myrmidon(1.6.1-BOT-DISK-C): the disk quota sweep records one signal per bot
 // volume at/over its quota; the feed turns the registry into cards.
 import { buildBotDiskCards, readBotDiskReports } from "../myrmidon/bot-containers/bot-disk-cards.js"; // myrmidon(1.6.5 BOT-DISK-H4c)
@@ -170,6 +173,9 @@ const ATTENTION_SOURCE_KINDS: AttentionSourceKind[] = [
   // myrmidon(STALE-BLOCK): one card per block the watchdog lifted.
   "stale_block",
   "host_disk_alert",
+  // myrmidon(1.6.5-F-18): the gateway model catalog is empty — the accounting
+  // key is misconfigured; one card per company.
+  "empty_model_catalog",
   // myrmidon(1.6.1-WIP-LIMIT-A): the per-agent work-in-progress over-limit signal.
   "wip_limit",
   // myrmidon(REVIEW-ROUTING): no reviewer available, or a review overdue.
@@ -207,6 +213,9 @@ const SOURCE_RANK: Record<AttentionSourceKind, number> = {
   stale_block: 12,
   host_disk_alert: 0,
   model_fallback_alert: 13,
+  // myrmidon(1.6.5-F-18): an empty catalog blocks the gateway spend limits and
+  // the model picker — a stop, ranked with the other gateway-ops alerts.
+  empty_model_catalog: 0,
   // myrmidon(1.6.1-WIP-LIMIT-A): a workload-oversignal sits below every
   // blocking kind but above nothing else — it is advice, not a stop.
   wip_limit: 14,
@@ -3251,6 +3260,50 @@ async function buildAttentionFeedSnapshot(
           detail: {
             kind: "generic",
             summaryExcerpt: excerpt(fallback.summaryExcerpt),
+            images: [],
+          },
+        }));
+      }
+
+      // myrmidon(1.6.5-F-18): the spend sweep completed but the gateway's
+      // model catalog answered 0 models — the accounting key is almost
+      // certainly restricted (no default models), and every feature reading
+      // the catalog silently does nothing. ONE card per company from the
+      // process-level registry the sweep records on every pass; the card
+      // disappears on the first sweep that sees a non-empty catalog — no
+      // dismissal bookkeeping, the same registry pattern tracing-health uses.
+      const emptyCatalogSignal = readEmptyCatalogSignal(companyId);
+      if (emptyCatalogSignal) {
+        add(createItem({
+          companyId,
+          sourceKind: "empty_model_catalog",
+          subject: {
+            kind: "agent",
+            id: `litellm:${companyId}`,
+            companyId,
+            title: emptyCatalogSignal.title,
+            identifier: null,
+            status: null,
+            href: `/${prefix}/settings`,
+            metadata: { litellmEmptyCatalog: true },
+          },
+          whyNow: emptyCatalogSignal.whyNow,
+          decisionVerbs: decisionVerbs(
+            { id: "inspect", label: "Inspect", description: "Open the instance settings and the gateway key." },
+            { id: "dismiss", label: "Dismiss", description: "Dismiss this alert." },
+          ),
+          inlineResolvable: true,
+          entryRule: "the cost sweep completed a pass whose /v1/model/info refresh returned 0 models.",
+          exitRule: "the next sweep sees a non-empty catalog, collection is switched off, or the row is dismissed.",
+          dedupKey: emptyCatalogSignal.dedupKey,
+          severity: emptyCatalogSignal.severity,
+          activityAt: emptyCatalogSignal.activityAt,
+          createdAt: emptyCatalogSignal.activityAt,
+          updatedAt: emptyCatalogSignal.activityAt,
+          relatedIssue: null,
+          detail: {
+            kind: "generic",
+            summaryExcerpt: excerpt(emptyCatalogSignal.summary),
             images: [],
           },
         }));
