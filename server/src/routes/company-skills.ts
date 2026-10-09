@@ -1172,7 +1172,7 @@ export function companySkillRoutes(db: Db) {
     async (req, res) => {
       const companyId = req.params.companyId as string;
       const source = String(req.body.source ?? "");
-      const skillName = typeof req.body.skillName === "string" ? req.body.skillName : null;
+      const skillName: string | null = typeof req.body.skillName === "string" ? req.body.skillName : null;
       await assertCanMutateCompanySkills(req, companyId, "skills.import", () => skillImportPolicyResource(source));
       const result = await svc.importFromSource(companyId, source, { skillName });
 

@@ -143,6 +143,8 @@ import {
   companySkillCreateSchema,
   companySkillFileDeleteSchema,
   companySkillFileUpdateSchema,
+  companySkillDiscoverSchema,
+  companySkillDiscoverResultSchema,
   companySkillImportSchema,
   companySkillProjectBrowseRequestSchema,
   companySkillProjectBrowseResultSchema,
@@ -7646,6 +7648,23 @@ registry.registerPath({
     }),
   },
   responses: { 200: r.ok(), 401: r.unauthorized, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/skills/discover",
+  tags: ["skills"],
+  summary: "Discover agentskills.io skills from a site",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    body: jsonBody(companySkillDiscoverSchema),
+  },
+  responses: {
+    200: r.ok(companySkillDiscoverResultSchema),
+    400: r.badRequest,
+    401: r.unauthorized,
+    422: r.unprocessable,
+  },
 });
 
 registry.registerPath({
