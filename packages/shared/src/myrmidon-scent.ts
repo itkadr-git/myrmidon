@@ -52,9 +52,8 @@ export type AgentModelTier = (typeof AGENT_MODEL_TIERS)[number];
 // --- settings: `general.swarm.scent` ------------------------------------------
 
 export const SCENT_SETTINGS_KEY = "scent";
-// `readScentSettings` expects the value of the whole `swarm` section, so the
-// section key is a named constant for callers that slice it out of `general`.
-export const SWARM_SETTINGS_KEY = "swarm";
+// `readScentSettings` expects the value of the whole `swarm` section; the
+// section key itself (`SWARM_SETTINGS_KEY`) is exported by myrmidon-swarm-wake.ts.
 
 export const DEFAULT_SCENT_TAG_WEIGHT = 10;
 export const DEFAULT_SCENT_TIER_FIT = 20;
