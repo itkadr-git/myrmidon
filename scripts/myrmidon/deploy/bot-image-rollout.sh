@@ -10,6 +10,7 @@
 #
 #   bot-image-rollout.sh --config deploy.env --resolution tag|sha --ref <ref>
 #                        [--dry-run] [--canary <agentId>]
+#                        [--retry-deferred [--wait-sec N]]
 #
 # --resolution/--ref are what deploy.sh resolved the release by: "tag
 # myr-vX.Y.Z" or "sha <7 hex>". The bot images resolve from the same release
@@ -43,6 +44,22 @@
 #      retries it (MYRMIDON_BOT_IMAGE_ROLLOUT_BOT_TIMEOUT_SEC per bot) and a
 #      run is never interrupted by this rollout. A deferred bot keeps its old
 #      card image until a later retry or the periodic sweep.
+#   5b. F-04 verification (1.6.5): after the batches, compare FACT for every
+#      tracking bot — the card's image (adapterConfig.container.image from
+#      the board API) against the running container's image
+#      (bot-container/status, the same board call the async apply confirm
+#      already reads; the board answers it from docker inspect on the deploy
+#      host, so no new docker transport is introduced here). Print a
+#      per-bot table and the summary switched / deferred(running) / mismatch
+#      / failed. DEGRADED (exit 1) only when mismatch > 0 or failed > 0; a
+#      deferred bot is not a failure — it prints a WARNING with the
+#      --retry-deferred command to re-run when the bot goes quiet.
+#   5c. --retry-deferred [--wait-sec N] (default N=30): the standard re-run
+#      pass. It reads the previous run's summary (the deferredBots list in
+#      $STATE_DIR/bot-image-rollout-summary.json), re-switches ONLY those
+#      bots — waiting N seconds per bot before each attempt, never
+#      interrupting a running agent — then repeats the 5b verification and
+#      applies the same exit rules.
 #   6. After every bot runs a release image, remove the superseded bot image
 #      refs from `images` (only refs of our three bot repositories, never a
 #      pinned one) and SIGHUP again. Deferred bots keep the old refs listed.
@@ -89,13 +106,16 @@
 # only while its agent is paused or idle; every batch and every failure is
 # reported (log lines, the journal and $STATE_DIR/bot-image-rollout-summary.json).
 #
-# Exit codes: 0 = rolled out (or dry run); 1 = failure (see the log lines).
+# Exit codes: 0 = rolled out (or dry run; deferred bots alone exit 0 with the
+# WARNING and the --retry-deferred command above); 1 = DEGRADED failure —
+# failed > 0 or a card/container mismatch (see the verification table above).
 set -euo pipefail
 # shellcheck source=lib.sh source-path=SCRIPTDIR
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
 
 config="" resolution="" res_ref=""
 DRY_RUN=0 canary="" phase="all" no_reload=0 dockergate_image=""
+RETRY_DEFERRED=0 wait_sec=""
 declare -A GIVEN_DIGESTS=()
 while (($#)); do
   case "$1" in
@@ -110,12 +130,17 @@ while (($#)); do
     --ref) res_ref="$2"; shift 2 ;;
     --dry-run) DRY_RUN=1; shift ;;
     --canary) canary="$2"; shift 2 ;;
-    -h|--help) sed -n '2,84p' "$0"; exit 0 ;;
+    --retry-deferred) RETRY_DEFERRED=1; shift ;;
+    --wait-sec)
+      [[ "${2:-}" =~ ^[0-9]+$ ]] || die "--wait-sec takes a non-negative whole number of seconds (got '${2:-}')"
+      wait_sec="$2"; shift 2 ;;
+    -h|--help) sed -n '2,111p' "$0"; exit 0 ;;
     *) die "unknown argument: $1" ;;
   esac
 done
 [[ -n "$config" ]] || die "--config is required"
 [[ "$phase" == "all" || "$phase" == "config" || "$phase" == "cards" ]] || die "--phase must be all, config or cards"
+[[ "$RETRY_DEFERRED" != "1" || "$phase" != "config" ]] || die "--retry-deferred re-switches bot cards; it cannot run with --phase config"
 [[ "$resolution" == "tag" || "$resolution" == "sha" ]] \
   || die "--resolution must be tag or sha (what deploy.sh resolved the release by)"
 [[ -n "$res_ref" ]] || die "--ref is required (the release tag, or the commit short sha)"
@@ -131,6 +156,11 @@ MYR_BOT_APPLY_WAIT_SEC="${MYRMIDON_BOT_IMAGE_ROLLOUT_APPLY_WAIT_SEC:-300}"
 MYR_BOT_APPLY_POLL_SEC="${MYRMIDON_BOT_IMAGE_ROLLOUT_APPLY_POLL_SEC:-4}"
 [[ "$MYR_BOT_APPLY_WAIT_SEC" =~ ^[0-9]+$ ]] || die "MYRMIDON_BOT_IMAGE_ROLLOUT_APPLY_WAIT_SEC must be a non-negative integer (got '$MYR_BOT_APPLY_WAIT_SEC')"
 [[ "$MYR_BOT_APPLY_POLL_SEC" =~ ^[1-9][0-9]*$ ]] || die "MYRMIDON_BOT_IMAGE_ROLLOUT_APPLY_POLL_SEC must be a positive integer (got '$MYR_BOT_APPLY_POLL_SEC')"
+# F-04 (1.6.5): --retry-deferred waits this many seconds per deferred bot
+# before re-applying (the --wait-sec flag overrides; decision 06.10 item 3).
+MYR_BOT_RETRY_WAIT_SEC="${MYRMIDON_BOT_IMAGE_ROLLOUT_RETRY_WAIT_SEC:-30}"
+[[ "$MYR_BOT_RETRY_WAIT_SEC" =~ ^[0-9]+$ ]] || die "MYRMIDON_BOT_IMAGE_ROLLOUT_RETRY_WAIT_SEC must be a non-negative integer (got '$MYR_BOT_RETRY_WAIT_SEC')"
+[[ -z "$wait_sec" ]] || MYR_BOT_RETRY_WAIT_SEC="$wait_sec"
 MYR_BOT_DOCKERGATE_CONFIG="${MYRMIDON_BOT_IMAGE_ROLLOUT_DOCKERGATE_CONFIG:-}"
 MYR_BOT_DOCKERGATE_SIGNAL="${MYRMIDON_BOT_IMAGE_ROLLOUT_DOCKERGATE_SIGNAL_COMMAND:-}"
 MYR_BOT_FLEET_HOSTS="${MYRMIDON_BOT_IMAGE_ROLLOUT_FLEET_HOSTS:-}"
@@ -467,8 +497,46 @@ dockergate_preflight_edited_config() {
   return "$rc"
 }
 
+# The standard re-run command for the deferred bots (F-04 p.3).
+retry_command() {
+  printf 'bash %s --config %s --resolution %s --ref %s --phase cards --retry-deferred --wait-sec %s\n' \
+    "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/bot-image-rollout.sh" \
+    "$(printf '%q' "$config")" "$resolution" "$res_ref" "$MYR_BOT_RETRY_WAIT_SEC"
+}
+
+# --retry-deferred input: the deferred bots of the previous run as recorded
+# by this script in its summary (id, pre-rollout card image, target image).
+read_deferred_bots() {
+  [[ -f "$MYR_BOT_SUMMARY" ]] \
+    || die "--retry-deferred needs the summary of the previous rollout ($MYR_BOT_SUMMARY): run the rollout first"
+  # Fail closed on anything that is not a summary this script wrote: a broken
+  # file, an old format without deferredBots/verification, another release, or
+  # an empty list (nothing to retry is not a success of the retry).
+  local rel_in_summary deferred_tsv
+  jq -e '(.deferredBots | type == "array") and (.verification | type == "object")' "$MYR_BOT_SUMMARY" >/dev/null 2>&1 \
+    || die "--retry-deferred: $MYR_BOT_SUMMARY is not a readable summary with deferredBots and verification (broken or old format): run the rollout again"
+  rel_in_summary="$(jq -r '.release // ""' "$MYR_BOT_SUMMARY")"
+  [[ "$rel_in_summary" == "$resolution $res_ref" ]] \
+    || die "--retry-deferred: the summary belongs to release '$rel_in_summary', not '$resolution $res_ref'"
+  deferred_tsv="$(jq -r '.deferredBots[] | [.id, (.image // ""), (.target // "")] | @tsv' "$MYR_BOT_SUMMARY")" \
+    || die "--retry-deferred: cannot read deferredBots from $MYR_BOT_SUMMARY"
+  [[ -n "$deferred_tsv" ]] \
+    || die "--retry-deferred: the summary $MYR_BOT_SUMMARY lists no deferred bots: nothing to retry (never a silent empty retry)"
+  printf '%s\n' "$deferred_tsv"
+}
+
 # --- the plan (dry run) --------------------------------------------------------
 if [[ "$DRY_RUN" == "1" ]]; then
+  if ((RETRY_DEFERRED)); then
+    # The standard re-run pass: only the deferred bots of the previous rollout.
+    # A missing summary fails the pass here (die): never a silent empty retry.
+    deferred_list="$(read_deferred_bots)"
+    bot_log "dry run: --retry-deferred would re-switch exactly the deferred bots listed in $MYR_BOT_SUMMARY (${MYR_BOT_RETRY_WAIT_SEC}s wait per bot), then verify card vs container again:"
+    while IFS=$'\t' read -r id orig tgt; do
+      [[ -n "$id" ]] && bot_log "    $id (pre-rollout image ${orig:--}, target ${tgt:--})"
+    done <<<"$deferred_list"
+    exit 0
+  fi
   bot_log "dry run: nothing will be changed. Bot image rollout plan:"
   bot_log "  1. resolved (read-only): $bot_digests"
   bot_log "  2. pull each image on the local host${MYR_BOT_FLEET_HOSTS:+ and fleet hosts $MYR_BOT_FLEET_HOSTS}"
@@ -624,6 +692,10 @@ switch_one_bot() {
   current="$(card_image "$id" || true)"
   [[ -n "$current" ]] || current="(none)"
   target="$(release_image_for "$current")"
+  # F-04 (1.6.5): the verification phase reads these — the pre-rollout card
+  # image (first sight), the target image, and how this pass ended.
+  BOT_ORIG["$id"]="${BOT_ORIG[$id]:-$current}"
+  [[ -n "$target" ]] && BOT_TARGET["$id"]="$target"
   # Only while the agent is paused or idle: no run is ever interrupted by the
   # rollout (an unknown status is treated as busy: fail-closed).
   status="$(card_status "$id" || true)"
@@ -737,6 +809,137 @@ switch_one_bot() {
   esac
 }
 
+# Records how this pass ended for the bot, then passes the switch_one_bot
+# return code through (0 switched, 2 deferred, 1 failed) — the verification
+# table and the summary classify the bot by this state plus the container fact.
+switch_bot_recorded() {
+  local id="$1" rc=0
+  switch_one_bot "$id" || rc=$?
+  case "$rc" in
+    0) BOT_STATE["$id"]="switched" ;;
+    2) BOT_STATE["$id"]="deferred" ;;
+    *) BOT_STATE["$id"]="failed" ;;
+  esac
+  return "$rc"
+}
+
+# --- 5b. F-04 (1.6.5): verification against the fact -------------------------
+# The batch loop reports what the script asked for; GET bot-container/status
+# reports what actually runs (the board answers it from a docker inspect on
+# the deploy host — the same channel switch_one_bot already uses for the
+# async confirm; no second docker transport is introduced). Every bot of
+# this pass is classified by the FACT of card image vs container image:
+#   switched             the card names the release image and the running
+#                        container reports the same image (fact confirms);
+#   deferred(running)    a bot the batches left deferred: its container is
+#                        not up or still runs the pre-rollout image, nothing
+#                        disagrees — the periodic sweep finishes it; NOT a
+#                        failure;
+#   failed               the main cycle failed this bot (PATCH/apply error);
+#   mismatch             anything else: card and container disagree, an
+#                        image neither the old one nor the release's, or a
+#                        "switched" the container does not confirm — exactly
+#                        the lying rollout outcome F-04 was raised for.
+# Exit rule (F-04 p.2): DEGRADED and exit 1 only when mismatch > 0 or
+# failed > 0. deferred > 0 alone exits 0 with a WARNING naming the standard
+# --retry-deferred re-run pass (F-04 p.3, decision 06.10 item 3).
+declare -A BOT_STATE=() BOT_ORIG=() BOT_TARGET=()
+
+# The running container's fact as TSV "state<TAB>image"; non-zero when the
+# board has no status to report (no container, or the read failed).
+container_fact() {
+  local id="$1" body
+  body="$(board_get "/myrmidon/agents/$id/bot-container/status")" || return 1
+  jq -r '[(.container.state // ""), (.container.image // "")] | @tsv' <<<"$body" 2>/dev/null || return 1
+}
+
+VERIFY_ROWS=()
+DEFERRED_ROWS=()
+v_switched=0
+v_deferred=0
+v_mismatch=0
+v_failed=0
+verify_fleet() {
+  local id card fact="" cstate="" cimage="" target orig state verdict
+  VERIFY_ROWS=("id|card image|container image|state|verdict")
+  DEFERRED_ROWS=()
+  v_switched=0 v_deferred=0 v_mismatch=0 v_failed=0
+  for id in "$@"; do
+    [[ -n "$id" ]] || continue
+    card="$(card_image "$id" || true)"
+    if fact="$(container_fact "$id")"; then
+      cstate="${fact%%$'\t'*}"; cimage="${fact#*$'\t'}"
+    else
+      cstate=""; cimage=""
+    fi
+    target="${BOT_TARGET[$id]:-}" orig="${BOT_ORIG[$id]:-}" state="${BOT_STATE[$id]:-deferred}"
+    if [[ "$state" == "failed" ]]; then
+      # The main cycle failed on this bot (PATCH/apply error): the run stays
+      # DEGRADED even if the cards happen to agree — the operator must see it.
+      verdict="failed"
+    elif [[ -n "$target" && "$card" == "$target" && "$cimage" == "$target" && "$cstate" == "running" ]]; then
+      # The fact confirms the switch — even for a bot the main cycle only
+      # deferred (the sweep or a late apply finished it).
+      verdict="switched"
+    elif [[ "$state" == "deferred" ]]; then
+      # Nothing disagrees yet as long as the card carries one of the two
+      # images this rollout knows (pre-rollout or release): the container
+      # simply has not moved and the periodic sweep finishes it.
+      # The container must be on one of those two images too (or report none):
+      # an image that is neither is a real disagreement, not "not moved yet".
+      if [[ "$card" == "$target" || "$card" == "$orig" ]] \
+        && [[ -z "$cimage" || "$cimage" == "$target" || "$cimage" == "$orig" ]]; then
+        verdict="deferred"
+      else
+        verdict="mismatch"
+      fi
+    else
+      # The main cycle claimed switched but the container says otherwise, or
+      # the card moved to something that is not the release image: a real
+      # disagreement — exactly the lying rollout outcome F-04 was raised for.
+      verdict="mismatch"
+    fi
+    [[ -n "$card" ]] || card="(unreadable)"
+    [[ -n "$cimage" ]] || cimage="(none)"
+    [[ -n "$cstate" ]] || cstate="-"
+    VERIFY_ROWS+=("$id|$card|$cimage|$cstate|$verdict")
+    case "$verdict" in
+      switched) v_switched=$((v_switched + 1)) ;;
+      deferred)
+        v_deferred=$((v_deferred + 1))
+        DEFERRED_ROWS+=("$id|${orig//|/}|${target//|/}")
+        ;;
+      mismatch) v_mismatch=$((v_mismatch + 1)) ;;
+      *) v_failed=$((v_failed + 1)) ;;
+    esac
+    BOT_STATE["$id"]="$verdict"
+    journal "verify $id $verdict (card $card, container $cimage state $cstate)"
+  done
+  # The per-bot table on stderr, columns aligned to their content.
+  printf '%s\n' "${VERIFY_ROWS[@]}" | awk -F'|' -v p='[myrmidon-bot-rollout]   ' '
+    { n = NR; for (i = 1; i <= NF; i++) { cell[n "," i] = $i; if (length($i) > w[i]) w[i] = length($i) } }
+    END {
+      for (r = 1; r <= n; r++) {
+        line = p
+        for (i = 1; i <= 5; i++) line = line sprintf("%-*s  ", w[i], cell[r "," i])
+        sub(/ +$/, "", line)
+        print line
+      }
+    }' >&2
+  bot_log "verification summary: $v_switched switched, $v_deferred deferred(running), $v_mismatch mismatch, $v_failed failed"
+}
+
+# The verification block written to the summary, and the deferred-bot records
+# a later --retry-deferred reads back.
+DEFERRED_JSON='[]'
+VERIF_JSON='{}'
+collect_verdict() {
+  DEFERRED_JSON="$(printf '%s\n' "${DEFERRED_ROWS[@]}" | jq -Rn \
+    '[inputs | select(length > 0) | split("|") | {id: .[0], image: .[1], target: (.[2:] | join("|"))}]')"
+  VERIF_JSON="$(jq -cn --argjson s "$v_switched" --argjson d "$v_deferred" --argjson m "$v_mismatch" --argjson f "$v_failed" \
+    '{switched: $s, deferred: $d, mismatch: $m, failed: $f}')"
+}
+
 # Classify every container bot: tracking (to switch), pinned (left alone, listed
 # with its image) and not applicable (left alone, listed with the reason).
 TRACKING_BOTS=()
@@ -772,6 +975,23 @@ if [[ -n "$canary" ]]; then
   )
 fi
 
+if ((RETRY_DEFERRED)); then
+  # The standard re-run pass (F-04 p.3, decision 06.10 item 3): only the
+  # deferred bots of the previous rollout, as recorded in its summary.
+  # read_deferred_bots dies on a missing summary; the standalone assignment
+  # propagates that exit under set -e (a substitution inside the loop's
+  # redirection would not): no silent empty retry pass, ever.
+  TRACKING_BOTS=()
+  deferred_list="$(read_deferred_bots)"
+  while IFS=$'\t' read -r r_id r_orig r_tgt; do
+    [[ -n "$r_id" ]] || continue
+    [[ -n "$r_orig" ]] && BOT_ORIG["$r_id"]="$r_orig"
+    [[ -n "$r_tgt" ]] && BOT_TARGET["$r_id"]="$r_tgt"
+    TRACKING_BOTS+=("$r_id")
+  done <<<"$deferred_list"
+  bot_log "retry-deferred pass: ${#TRACKING_BOTS[@]} deferred bot(s) of the previous run, ${MYR_BOT_RETRY_WAIT_SEC}s wait per bot; no run is ever interrupted"
+fi
+
 total=${#TRACKING_BOTS[@]}
 batches=$(((total + MYR_BOT_BATCH - 1) / MYR_BOT_BATCH))
 bot_log "cards: $total tracking the release, $pinned pinned (left alone, listed above), $not_applicable not applicable (left alone, listed above); $batches batch(es) of at most $MYR_BOT_BATCH"
@@ -779,6 +999,20 @@ failed=0
 switched=0
 stayed_deferred=0
 batch_no=0
+if ((RETRY_DEFERRED)); then
+  # One deliberate pass over the deferred bots: wait per bot, re-apply, never
+  # interrupt a run; the verdict belongs to the verification below.
+  for id in "${TRACKING_BOTS[@]}"; do
+    ((MYR_BOT_RETRY_WAIT_SEC > 0)) && sleep "$MYR_BOT_RETRY_WAIT_SEC"
+    rc=0
+    switch_bot_recorded "$id" || rc=$?
+    case "$rc" in
+      0) switched=$((switched + 1)) ;;
+      2) stayed_deferred=$((stayed_deferred + 1)) ;;
+      *) failed=$((failed + 1)); bot_log "FAILED: the retry of bot $id did not switch" ;;
+    esac
+  done
+else
 for ((start = 0; start < total; start += MYR_BOT_BATCH)); do
   batch_no=$((batch_no + 1))
   batch=("${TRACKING_BOTS[@]:start:MYR_BOT_BATCH}")
@@ -790,7 +1024,7 @@ for ((start = 0; start < total; start += MYR_BOT_BATCH)); do
     retry=()
     for id in "${pending[@]}"; do
       rc=0
-      switch_one_bot "$id" || rc=$?
+      switch_bot_recorded "$id" || rc=$?
       case "$rc" in
         0) b_switched=$((b_switched + 1)) ;;
         2) retry+=("$id") ;;
@@ -814,65 +1048,95 @@ for ((start = 0; start < total; start += MYR_BOT_BATCH)); do
   bot_log "batch $batch_no/$batches done: $b_switched switched, $b_failed failed, ${#pending[@]} deferred (progress $switched/$total)"
   journal "batch $batch_no/$batches: $b_switched switched, $b_failed failed, ${#pending[@]} deferred"
 done
+fi
 
 mkdir -p "$(dirname "$MYR_BOT_SUMMARY")" 2>/dev/null || true
-pinned_json="$(printf '%s\n' "${PINNED_LIST[@]}" | jq -Rn '[inputs | select(length > 0) | split("|") | {id: .[0], image: (.[1:] | join("|"))}]')"
-na_json="$(printf '%s\n' "${NA_LIST[@]}" | jq -Rn '[inputs | select(length > 0) | split("|") | {id: .[0], reason: (.[1:] | join("|"))}]')"
-jq -cn --arg release "$resolution $res_ref" --argjson tracking "$total" --argjson switched "$switched" \
-  --argjson deferred "$stayed_deferred" --argjson failed "$failed" --argjson pinned "$pinned" --argjson batches "$batches" \
-  --argjson notApplicable "$not_applicable" --argjson pinnedBots "$pinned_json" --argjson notApplicableBots "$na_json" \
-  '{release: $release, tracking: $tracking, switched: $switched, deferred: $deferred, failed: $failed, pinned: $pinned,
-    notApplicable: $notApplicable, pinnedBots: $pinnedBots, notApplicableBots: $notApplicableBots, batches: $batches}' \
-  >"$MYR_BOT_SUMMARY" 2>/dev/null || true
 
-if ((failed > 0)); then
-  bot_log "DEGRADED: $failed bot(s) failed to switch to the release image; see the log above and $MYR_BOT_ROLLOUT_LOG"
-  exit 1
-fi
+# F-04 (1.6.5): the exit rule is decided by the FACT, not by the ask: verify
+# every bot of this pass (card vs running container), write the summary from
+# the verified counts, then DEGRADED only when mismatch > 0 or failed > 0.
+finalize_rollout() {
+  local -a pass=("$@")
+  local ref
+  verify_fleet "${pass[@]}"
+  collect_verdict
+  pinned_json="$(printf '%s\n' "${PINNED_LIST[@]}" | jq -Rn '[inputs | select(length > 0) | split("|") | {id: .[0], image: (.[1:] | join("|"))}]')"
+  na_json="$(printf '%s\n' "${NA_LIST[@]}" | jq -Rn '[inputs | select(length > 0) | split("|") | {id: .[0], reason: (.[1:] | join("|"))}]')"
+  jq -cn --arg release "$resolution $res_ref" --argjson tracking "${#pass[@]}" \
+    --argjson switched "$v_switched" --argjson deferred "$v_deferred" --argjson mismatch "$v_mismatch" \
+    --argjson failed "$v_failed" --argjson verification "$VERIF_JSON" --argjson deferredBots "$DEFERRED_JSON" \
+    --argjson pinned "$pinned" --argjson batches "$batches" \
+    --argjson notApplicable "$not_applicable" --argjson pinnedBots "$pinned_json" --argjson notApplicableBots "$na_json" \
+    '{release: $release, tracking: $tracking, switched: $switched, deferred: $deferred, mismatch: $mismatch,
+      failed: $failed, verification: $verification, deferredBots: $deferredBots, pinned: $pinned,
+      notApplicable: $notApplicable, pinnedBots: $pinnedBots, notApplicableBots: $notApplicableBots, batches: $batches}' \
+    >"$MYR_BOT_SUMMARY" 2>/dev/null || true
+
+  if ((v_mismatch > 0 || v_failed > 0)); then
+    bot_log "DEGRADED: $v_failed bot(s) failed to switch to the release image, $v_mismatch card/container mismatch(es); see the log above and $MYR_BOT_ROLLOUT_LOG"
+    exit 1
+  fi
+
+  # --- 6. remove the superseded bot image refs (only when everyone moved) -----
+  if ((RETRY_DEFERRED)); then
+    # The retry pass sees only the deferred bots of the previous run, not the
+    # fleet: it cannot know that nobody still runs the old images. images[] is
+    # left alone; the next full rollout removes the superseded refs.
+    bot_log "retry-deferred pass: images in $MYR_BOT_DOCKERGATE_CONFIG left untouched (the old bot images are removed by the next full rollout)"
+  elif ((v_deferred == 0)); then
+    mapfile -t GONE_REFS < <(
+      jq -r '.images[]?' "$MYR_BOT_DOCKERGATE_CONFIG" 2>/dev/null \
+        | while IFS= read -r ref; do
+            [[ -n "$ref" ]] || continue
+            case "$ref" in
+              *myrmidon-hermes@* | *myrmidon-hermes-dev@* | *myrmidon-hermes-node@*)
+                is_release_ref "$ref" || printf '%s\n' "$ref"
+                ;;
+            esac
+          done
+    )
+    if ((${#GONE_REFS[@]} && ${#GONE_REFS[@]} > 0)) && [[ -n "${GONE_REFS[0]}" ]]; then
+      dockergate_remove_images "$MYR_BOT_DOCKERGATE_CONFIG" "${GONE_REFS[@]}"
+      dockergate_check_config "$MYR_BOT_DOCKERGATE_CONFIG"
+      dockergate_reload
+      bot_log "removed ${#GONE_REFS[@]} superseded bot image ref(s) from images"
+      for ref in "${GONE_REFS[@]}"; do
+        [[ -n "$ref" ]] && journal "images removed $ref"
+      done
+    else
+      bot_log "no superseded bot image refs to remove from images"
+    fi
+  else
+    # deferred is not a failure (F-04 p.2): exit 0 with a WARNING and the
+    # standard re-run command (decision 06.10 item 3); the old bot images stay
+    # allowed until the deferred bots actually move.
+    bot_log "WARNING: $v_deferred bot(s) deferred (the running container is not on the release image yet; no run interrupted): the periodic sweep applies them. Standard re-run pass once they go quiet:"
+    bot_log "  $(retry_command)"
+
+    bot_log "$v_deferred bot(s) stayed deferred: the old bot images stay in images until they move (the next rollout removes them)"
+  fi
+
+  bot_log "bot image rollout complete: $v_switched bot(s) on the release images, journal $MYR_BOT_ROLLOUT_LOG"
+  journal "rollout complete: $v_switched bot(s) on the release images ($resolution $res_ref)"
+
+  # DEPLOY-HYGIENE (OPE-5107): the bots moved to the release images — free the
+  # disk of the superseded ones (older than MYRMIDON_DEPLOY_IMAGE_KEEP previous
+  # releases; an image used by any container is never removed). Standalone runs
+  # only: when deploy.sh drives the rollout, deploy.sh runs the same cleanup
+  # once after its post-deploy steps. A failure here never fails the rollout.
+  if [[ -z "${MYRMIDON_DEPLOY_DISK_PRECHECK_DONE:-}" ]]; then
+    if deploy_image_retention; then :; else
+      bot_log "WARNING: the old image cleanup failed; the rollout itself is complete (remove old images by hand: docker image ls)"
+    fi
+  fi
+
+  exit 0
+}
+
+# rel/1.6.5-rc.7 (#985) states the deferred bots from the pass counters; the fact-based
+# verdict below (F-04 part B) decides the exit code. Keep both: the statement is not a verdict.
 if ((stayed_deferred > 0)); then
   bot_log "WARNING: $stayed_deferred bot(s) stayed deferred (a busy agent or a 409 refusal); the cards already name the release image and the periodic sweep completes them"
 fi
 
-# --- 6. remove the superseded bot image refs (only when everyone moved) -------
-if ((stayed_deferred == 0)); then
-  mapfile -t GONE_REFS < <(
-    jq -r '.images[]?' "$MYR_BOT_DOCKERGATE_CONFIG" 2>/dev/null \
-      | while IFS= read -r ref; do
-          [[ -n "$ref" ]] || continue
-          case "$ref" in
-            *myrmidon-hermes@* | *myrmidon-hermes-dev@* | *myrmidon-hermes-node@*)
-              is_release_ref "$ref" || printf '%s\n' "$ref"
-              ;;
-          esac
-        done
-  )
-  if ((${#GONE_REFS[@]} && ${#GONE_REFS[@]} > 0)) && [[ -n "${GONE_REFS[0]}" ]]; then
-    dockergate_remove_images "$MYR_BOT_DOCKERGATE_CONFIG" "${GONE_REFS[@]}"
-    dockergate_check_config "$MYR_BOT_DOCKERGATE_CONFIG"
-    dockergate_reload
-    bot_log "removed ${#GONE_REFS[@]} superseded bot image ref(s) from images"
-    for ref in "${GONE_REFS[@]}"; do
-      [[ -n "$ref" ]] && journal "images removed $ref"
-    done
-  else
-    bot_log "no superseded bot image refs to remove from images"
-  fi
-else
-  bot_log "$stayed_deferred bot(s) stayed deferred: the old bot images stay in images until they move (the next rollout removes them)"
-fi
-
-bot_log "bot image rollout complete: $switched bot(s) on the release images, journal $MYR_BOT_ROLLOUT_LOG"
-journal "rollout complete: $switched bot(s) on the release images ($resolution $res_ref)"
-
-# DEPLOY-HYGIENE (OPE-5107): the bots moved to the release images — free the
-# disk of the superseded ones (older than MYRMIDON_DEPLOY_IMAGE_KEEP previous
-# releases; an image used by any container is never removed). Standalone runs
-# only: when deploy.sh drives the rollout, deploy.sh runs the same cleanup
-# once after its post-deploy steps. A failure here never fails the rollout.
-if [[ -z "${MYRMIDON_DEPLOY_DISK_PRECHECK_DONE:-}" ]]; then
-  if deploy_image_retention; then :; else
-    bot_log "WARNING: the old image cleanup failed; the rollout itself is complete (remove old images by hand: docker image ls)"
-  fi
-fi
-
-exit 0
+finalize_rollout "${TRACKING_BOTS[@]}"

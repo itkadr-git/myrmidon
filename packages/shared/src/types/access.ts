@@ -31,6 +31,9 @@ export interface PrincipalPermissionGrant {
   permissionKey: PermissionKey;
   scope: Record<string, unknown> | null;
   grantedByUserId: string | null;
+  // myrmidon(1.6.5-F-23): optional validity deadline; the grant stops
+  // authorizing once this instant passes.
+  expiresAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
 }

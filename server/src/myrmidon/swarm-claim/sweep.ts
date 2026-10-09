@@ -169,7 +169,7 @@ export function createSwarmClaimSweeper(deps: SwarmClaimSweeperDeps): SwarmClaim
       // 1.6.1 (SWARM-SETTINGS-UI): the interval is live. The constructed
       // `intervalMs` stays the floor (the scheduler ticks at least that often);
       // a longer stored interval spreads the passes further apart without a
-      // restart, exactly like the other pilot parameters.
+      // restart, exactly like the other swarm parameters.
       const liveIntervalMs = Math.max(
         deps.intervalMs,
         settings.sweepIntervalSec * 1000,
@@ -179,7 +179,7 @@ export function createSwarmClaimSweeper(deps: SwarmClaimSweeperDeps): SwarmClaim
 
       // 1.6.1 (SWARM-SETTINGS-UI): a disable leaves live leases behind — the
       // runs holding them will finish on their own, but the leases must not
-      // outlive the feature. When the pilot is off (or an env override turned
+      // outlive the feature. When the swarm is off (or an env override turned
       // it off after claims existed), release every live claim whose task is
       // still in the queue, with the reason recorded, then stop. This is the
       // "выключение действует сразу, текущие аренды освобождаются корректно"
@@ -348,7 +348,7 @@ async function swarmClaimTableReachable(db: Db): Promise<boolean> {
 }
 
 /** The release reason written when a disable frees a live lease. */
-export const SWARM_CLAIM_RELEASE_REASON_DISABLED = "pilot_disabled";
+export const SWARM_CLAIM_RELEASE_REASON_DISABLED = "swarm_disabled";
 
 /**
  * 1.6.1 (SWARM-SETTINGS-UI): release every live claim, one bounded page per
@@ -405,14 +405,7 @@ export async function listActiveCompanies(db: Db, limit = 50): Promise<string[]>
 async function sweepIdleWakes(
   deps: SwarmClaimServicePorts & { db: Db },
   input: {
-    settings: Pick<
-      SwarmClaimSettings,
-      | "enabled"
-      | "enabledCompanyIds"
-      | "enabledRoles"
-      | "maxActiveTasks"
-      | "p0Preemption"
-    >;
+    settings: Pick<SwarmClaimSettings, "enabled" | "maxActiveTasks" | "p0Preemption">;
     now: Date;
     result: SwarmClaimSweepResult;
   },
@@ -431,12 +424,11 @@ async function sweepIdleWakes(
 
   for (const companyId of companyIds) {
     const pairs = await listIdleRolePairs(deps.db, companyId);
-    // myrmidon(1.6.1 SWARM-IDLE-WAKE): the pilot gate. A role outside the
-    // pilot set (or a company outside the pilot company list) must not be
-    // woken: its claim answers `disabled`, the run ends with nothing, and the
-    // next tick would wake it again — an endless wake loop the ticket forbids
-    // ("лид и ревьюеры в очередь разработки не входят").
-    const pilotPairs = pairs.filter((pair) =>
+    // myrmidon(1.6.1 SWARM-IDLE-WAKE → 1.6.5 SWARM-T4): the swarm gate. With
+    // the switch off no role is woken: its claim answers `disabled`, the run
+    // ends with nothing, and the next tick would wake it again — an endless
+    // wake loop the ticket forbids.
+    const gatedPairs = pairs.filter((pair) =>
       isSwarmClaimEnabledFor(input.settings, { companyId, role: pair.role }),
     );
     // myrmidon(1.6.1 CUSTOM-CASTES B): the same caste directory the claim gate
@@ -445,7 +437,7 @@ async function sweepIdleWakes(
     const casteByRole = deps.castes
       ? new Map((await deps.castes(companyId)).map((entry) => [entry.key, entry]))
       : new Map<string, CompanyCaste>();
-    for (const pair of pilotPairs) {
+    for (const pair of gatedPairs) {
       if (pair.agents.length === 0) {
         // The attention signal: ready work routed to a role no agent holds.
         result.idleUnstaffedRoles += 1;

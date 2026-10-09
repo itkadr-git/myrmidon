@@ -40,6 +40,9 @@ export function datastoreCareRetentionRoutes(db: Db) {
         // myrmidon(1.6.5-F14B): the batches-per-company-per-pass ceiling.
         contextCompactMaxBatches: resolved.contextCompactMaxBatches,
         contextCompactMaxBatchesSource: resolved.contextCompactMaxBatchesSource,
+        // myrmidon(1.6.5-F14B): the machine is backed up outside — the backup
+        // gates do not wait for a local dump.
+        externalMachineBackup: resolved.externalMachineBackup,
       },
       lastRun,
     });

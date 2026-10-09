@@ -1,9 +1,7 @@
-// OPE-6671: the trust-quarantine backfill must release exactly the issues whose
-// creation run proves internal provenance (same company, run agent in company,
-// no external-input marker) and leave real quarantines untouched. Static checks
-// pin the migration file and journal entry; the embedded-Postgres half applies
-// the statement on seeded rows and asserts the release/no-release split plus
-// replay idempotency.
+// OPE-6671: the trust-quarantine backfill is a DRY RUN. It must never change an
+// issue; it only lists (activity_log) quarantined issues whose creation run is
+// provably internal by the allowlist, so an operator can review and release
+// them manually. External / unknown / unlisted provenance must not be listed.
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -13,7 +11,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./test-embedded-postgres.js";
 
-const MIGRATION_TAG = "0382_release_internal_low_trust_quarantine";
+const MIGRATION_TAG = "0385_low_trust_internal_release_candidates";
 const MIGRATION_FILE = `./migrations/${MIGRATION_TAG}.sql`;
 
 const cleanups: Array<() => Promise<void>> = [];
@@ -24,43 +22,30 @@ afterAll(async () => {
   while (cleanups.length > 0) await cleanups.pop()?.();
 });
 
-describe("internal low-trust quarantine release migration (static checks)", () => {
-  it("registers the migration in the journal immediately after 0381", async () => {
+describe("low-trust release candidates migration (static checks)", () => {
+  it("registers the migration last in the journal, after the latest rel migration", async () => {
     const journal = JSON.parse(
       await readFile(
         fileURLToPath(new URL("./migrations/meta/_journal.json", import.meta.url)),
         "utf8",
       ),
     ) as { entries: Array<{ idx: number; tag: string }> };
-    const index = journal.entries.findIndex((e) => e.idx === 382);
+    const index = journal.entries.findIndex((e) => e.idx === 385);
     expect(journal.entries[index]?.tag).toBe(MIGRATION_TAG);
-    expect(journal.entries[index - 1]?.idx).toBe(381);
     expect(index).toBe(journal.entries.length - 1);
+    expect(journal.entries[index - 1]?.idx).toBeLessThan(385);
   });
 
-  it("mirrors the app-side external-marker denylist and keeps the audit row", async () => {
+  it("is read-only for issues, allowlist-based, and has no denylist release", async () => {
     const sql = await readFile(fileURLToPath(new URL(MIGRATION_FILE, import.meta.url)), "utf8");
-    // Candidate set: quarantined low-trust issues only.
-    expect(sql).toContain("'preset' = 'low_trust_review'");
-    expect(sql).toContain("'disposition' = 'quarantined'");
-    // Same-company run + run agent in company (fail closed on unknown/foreign).
-    expect(sql).toContain("AND r.company_id = c.company_id");
-    expect(sql).toContain("AND a.company_id = c.company_id");
-    // External markers kept quarantined (mirror of isExternalInputRunProvenance).
-    for (const marker of [
-      "paperclipExternalChatExecutionBound",
-      "externalChatExecutionBound",
-      "chat:%",
-      "webhook",
-      "telegram",
-      "whatsapp",
-    ])
-      expect(sql).toContain(marker);
-    // Release is recorded in the promotion shape and journalled.
-    expect(sql).toContain("'disposition', 'promoted'");
-    expect(sql).toContain("'promotedByActorType', 'system'");
-    expect(sql).toContain("INSERT INTO \"activity_log\"");
-    expect(sql).toContain("'issue.low_trust_released'");
+    const code = sql.replace(/--.*$/gm, "");
+    expect(code).not.toMatch(/UPDATE\s+"?issues"?/i);
+    expect(code).not.toMatch(/DELETE\s+FROM/i);
+    expect(code).toContain("'issue.low_trust_release_candidate'");
+    expect(code).toContain("r.invocation_source IN ('assignment', 'automation', 'timer')");
+    expect(code).toContain("r.company_id = i.company_id");
+    expect(code).not.toContain("issue.interaction.respond");
+    expect(code).not.toContain("issue.comment");
   });
 });
 
@@ -125,10 +110,11 @@ describeEmbeddedPostgres("internal low-trust quarantine release migration (behav
     companyId: string,
     agentId: string,
     contextSnapshot: Record<string, unknown>,
+    invocationSource = "automation",
   ) {
     const [run] = await sql`
       INSERT INTO heartbeat_runs (company_id, agent_id, status, invocation_source, context_snapshot)
-      VALUES (${companyId}, ${agentId}, 'succeeded', 'automation', ${sql.json(contextSnapshot as never)})
+      VALUES (${companyId}, ${agentId}, 'succeeded', ${invocationSource}, ${sql.json(contextSnapshot as never)})
       RETURNING id
     `;
     return run;
@@ -142,77 +128,70 @@ describeEmbeddedPostgres("internal low-trust quarantine release migration (behav
     await sql.unsafe(migrationSql);
   }
 
-  async function disposition(issueId: string) {
-    const [row] = await sql`SELECT source_trust ->> 'disposition' AS disposition FROM issues WHERE id = ${issueId}`;
-    return row.disposition as string;
+  async function snapshotOf(issueId: string) {
+    const [row] = await sql`SELECT source_trust AS st FROM issues WHERE id = ${issueId}`;
+    return JSON.stringify(row.st);
   }
 
   it(
-    "releases internally-created quarantines, keeps external ones, logs each release, and replays clean",
+    "lists only provably internal quarantines, changes no issue, and replays clean",
     async () => {
       expect(sql).toBeTruthy();
       const { company, lead, worker } = await seedCompany("A");
 
-      // 1. False positive: created from another internal agent's same-company
-      // automation run with no external markers (the OPE-6671 production case).
       const internalRun = await seedRun(company.id, worker.id, {
         wakeReason: "execution_hold_cleared",
+        wakeSource: "automation",
       });
-      const falsePositive = await seedIssueWithQuarantine(
-        company.id,
-        "internal delegation",
-        internalRun.id,
-        lead.id,
-      );
+      const candidate = await seedIssueWithQuarantine(company.id, "internal", internalRun.id, lead.id);
 
-      // 2. Genuine external input: same company, but the creation run carries
-      // the external-chat execution-bound marker.
-      const externalRun = await seedRun(company.id, worker.id, {
-        paperclipExternalChatExecutionBound: true,
-      });
-      const externalQuarantine = await seedIssueWithQuarantine(
-        company.id,
-        "external input",
-        externalRun.id,
-        lead.id,
-      );
-
-      // 3. No releaseable provenance: sourceRunId points at a run that does not
-      // exist (fail closed — the quarantine decision cannot be re-derived).
-      const unknownRunIssue = await seedIssueWithQuarantine(
+      const bad: Array<[string, string]> = [];
+      const addBad = async (
+        label: string,
+        ctx: Record<string, unknown>,
+        invocation = "automation",
+      ) => {
+        const run = await seedRun(company.id, worker.id, ctx, invocation);
+        const issue = await seedIssueWithQuarantine(company.id, label, run.id, lead.id);
+        bad.push([label, issue.id]);
+      };
+      await addBad("bound flag", { paperclipExternalChatExecutionBound: true });
+      await addBad("interaction respond", { source: "issue.interaction.respond" });
+      await addBad("comment wake", { source: "issue.comment" });
+      await addBad("chat source", { source: "chat:telegram" });
+      await addBad("webhook key", { webhookSource: "github" });
+      await addBad("on_demand invocation", {}, "on_demand");
+      const unknown = await seedIssueWithQuarantine(
         company.id,
         "unknown run",
         "00000000-0000-4000-8000-000000000000",
         lead.id,
       );
+      bad.push(["unknown run", unknown.id]);
+
+      const before = new Map<string, string>();
+      for (const id of [candidate.id, ...bad.map(([, id]) => id)]) before.set(id, await snapshotOf(id));
 
       await applyMigration();
-
-      expect(await disposition(falsePositive.id)).toBe("promoted");
-      expect(await disposition(externalQuarantine.id)).toBe("quarantined");
-      expect(await disposition(unknownRunIssue.id)).toBe("quarantined");
-
-      const [promoted] = await sql`
-        SELECT source_trust ->> 'promotedByActorType' AS actor_type,
-          source_trust ->> 'promotedByActorId' AS actor_id
-        FROM issues WHERE id = ${falsePositive.id}
-      `;
-      expect(promoted.actor_type).toBe("system");
-      expect(promoted.actor_id).toBe(`migration:${MIGRATION_TAG}`);
 
       const logged = await sql`
         SELECT entity_id FROM activity_log
-        WHERE action = 'issue.low_trust_released' AND entity_type = 'issue'
+        WHERE action = 'issue.low_trust_release_candidate' AND entity_type = 'issue'
       `;
-      expect(logged.map((r) => r.entity_id)).toEqual([falsePositive.id]);
+      expect(logged.map((r) => r.entity_id)).toEqual([candidate.id]);
 
-      // Replay touches nothing: released rows left the candidate set.
-      await applyMigration();
-      const afterReplay = await sql`
+      // Dry run: no issue is modified, including the listed candidate.
+      for (const [id, snap] of before) expect(await snapshotOf(id)).toBe(snap);
+      const [{ n: released }] = await sql`
         SELECT count(*)::int AS n FROM activity_log WHERE action = 'issue.low_trust_released'
       `;
-      expect(afterReplay[0].n).toBe(1);
-      expect(await disposition(falsePositive.id)).toBe("promoted");
+      expect(released).toBe(0);
+
+      await applyMigration();
+      const [{ n }] = await sql`
+        SELECT count(*)::int AS n FROM activity_log WHERE action = 'issue.low_trust_release_candidate'
+      `;
+      expect(n).toBe(1);
     },
     90_000,
   );
