@@ -10080,10 +10080,6 @@ export function issueService(db: Db) {
           }),
         );
 
-        // 1.6.5 (F-27 rework 09.10): validate the caste against the company's
-        // directory before the row lands (design §2.1).
-        await assertCasteKeyExists(tx, companyId, values.casteKey as string | null | undefined);
-
         const [issue] = await tx.insert(issues).values(values).returning();
         if (idempotencyKey) {
           await tx.insert(issueCreateIdempotencyKeys).values({
