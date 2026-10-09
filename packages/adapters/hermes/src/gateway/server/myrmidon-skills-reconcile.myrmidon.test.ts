@@ -6,7 +6,7 @@ import {
   PAPERCLIP_SKILLS_FIELD,
 } from "./myrmidon-skills-reconcile.js";
 
-// myrmidon(1.6.6-HERMES-SKILLS-A): the gateway adapter delivers company
+// myrmidon(1.6.5-HERMES-SKILLS-A): the gateway adapter delivers company
 // skills through the run body (paperclip_skills) because the gateway API has
 // no profile-skills write endpoint. These tests pin the reconcile + fact-check
 // contract: agent-scoped isolation, parallel runs not clobbering each other,
@@ -149,7 +149,43 @@ describe("reconcileGatewayPaperclipSkills", () => {
       readFile: vi.fn(async () => "x"),
     });
     expect(result!.skills).toEqual([]);
-    expect(buildPaperclipSkillsField(result)).toBeUndefined();
+    // The key is present, so the field is sent as [] — the receiver clears the
+    // profile's managed segment. Dropping it would leave the unassigned skill
+    // on the bot.
+    expect(buildPaperclipSkillsField(result)).toEqual([]);
+    expect(JSON.stringify({ paperclip_skills: buildPaperclipSkillsField(result) })).toBe('{"paperclip_skills":[]}');
+  });
+
+  it("delivers a company skill under its real runtimeName slug--hash and fact-checks it", async () => {
+    const config = skillConfig(
+      [skillEntry("company/acme/alpha", "alpha--1a2b3c4d5e", "/skills/alpha")],
+      ["company/acme/alpha"],
+    );
+    const result = await reconcileGatewayPaperclipSkills(config, {
+      moduleDir: MODULE_DIR,
+      readFile: vi.fn(async () => "x"),
+    });
+    expect(result!.skills.map((s) => s.name)).toEqual(["alpha--1a2b3c4d5e"]);
+    expect(result!.desiredEntries).toEqual([{ key: "company/acme/alpha", name: "alpha--1a2b3c4d5e" }]);
+    expect(() =>
+      factCheckGatewayPaperclipSkills({
+        skills: buildPaperclipSkillsField(result)!,
+        desiredEntries: result!.desiredEntries,
+      }),
+    ).not.toThrow();
+  });
+
+  it("refuses two desired skills that resolve to the same delivered name", async () => {
+    const config = skillConfig(
+      [
+        skillEntry("company/a/alpha", "alpha", "/skills/a"),
+        skillEntry("company/b/alpha", "alpha", "/skills/b"),
+      ],
+      ["company/a/alpha", "company/b/alpha"],
+    );
+    await expect(
+      reconcileGatewayPaperclipSkills(config, { moduleDir: MODULE_DIR, readFile: vi.fn(async () => "x") }),
+    ).rejects.toThrow("another desired skill already uses the delivered name alpha");
   });
 
   it("no explicit preference delivers nothing — the same contract as hermes_local (skills.ts:216-222)", async () => {
@@ -160,6 +196,7 @@ describe("reconcileGatewayPaperclipSkills", () => {
     });
     expect(result!.skills).toEqual([]);
     expect(result!.desiredSkills).toEqual([]);
+    expect(result!.desiredEntries).toEqual([]);
   });
 });
 
@@ -168,7 +205,16 @@ describe("factCheckGatewayPaperclipSkills", () => {
     expect(() =>
       factCheckGatewayPaperclipSkills({
         skills: [{ path: "alpha", name: "alpha", content: "x" }],
-        desiredSkills: ["company/alpha"],
+        desiredEntries: [{ key: "company/alpha", name: "alpha" }],
+      }),
+    ).not.toThrow();
+  });
+
+  it("matches by delivered name (slug--hash), not by the key's last segment", () => {
+    expect(() =>
+      factCheckGatewayPaperclipSkills({
+        skills: [{ path: "alpha--ab12", name: "alpha--ab12", content: "x" }],
+        desiredEntries: [{ key: "company/acme/alpha", name: "alpha--ab12" }],
       }),
     ).not.toThrow();
   });
@@ -177,10 +223,13 @@ describe("factCheckGatewayPaperclipSkills", () => {
     expect(() =>
       factCheckGatewayPaperclipSkills({
         skills: [{ path: "alpha", name: "alpha", content: "x" }],
-        desiredSkills: ["company/alpha", "company/beta"],
+        desiredEntries: [
+          { key: "company/alpha", name: "alpha" },
+          { key: "company/beta", name: "beta--ff00" },
+        ],
       }),
     ).toThrow(
-      "Cannot start without the required Paperclip-managed skills: beta: missing from the assembled run-body field",
+      "Cannot start without the required Paperclip-managed skills: beta--ff00: missing from the assembled run-body field",
     );
   });
 
@@ -188,7 +237,7 @@ describe("factCheckGatewayPaperclipSkills", () => {
     expect(() =>
       factCheckGatewayPaperclipSkills({
         skills: [],
-        desiredSkills: ["company/alpha"],
+        desiredEntries: [{ key: "company/alpha", name: "alpha" }],
       }),
     ).toThrow("Cannot start without the required Paperclip-managed skills: alpha");
   });
@@ -199,8 +248,8 @@ describe("buildPaperclipSkillsField", () => {
     expect(buildPaperclipSkillsField(null)).toBeUndefined();
   });
 
-  it("returns undefined for an empty delivery, so JSON drops the field entirely", () => {
-    expect(buildPaperclipSkillsField({ skills: [], desiredSkills: [] })).toBeUndefined();
+  it("returns [] for an empty delivery when the key was present, so the receiver clears the managed segment", () => {
+    expect(buildPaperclipSkillsField({ skills: [], desiredSkills: [], desiredEntries: [] })).toEqual([]);
   });
 
   it("exposes the field name the run body must carry", () => {

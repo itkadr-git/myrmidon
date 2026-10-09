@@ -1,5 +1,5 @@
 import fs from "node:fs/promises";
-// myrmidon(1.6.6-HERMES-SKILLS-A): moduleDir for the skills-source resolver.
+// myrmidon(1.6.5-HERMES-SKILLS-A): moduleDir for the skills-source resolver.
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -66,7 +66,7 @@ import {
   readCentralHistorySettings,
   type CentralHistoryClient,
 } from "./central-history.js";
-// myrmidon(1.6.6-HERMES-SKILLS-A): gateway-side delivery of Paperclip-managed
+// myrmidon(1.6.5-HERMES-SKILLS-A): gateway-side delivery of Paperclip-managed
 // skills (see ./myrmidon-skills-reconcile.ts for the route decision).
 import {
   buildPaperclipSkillsField,
@@ -599,7 +599,7 @@ function buildRunBody(
   sessionKey: string | null,
   agentInstructionsBundle: string,
   idempotencyRunId: string,
-  // myrmidon(1.6.6-HERMES-SKILLS-A): the skills field is computed by the
+  // myrmidon(1.6.5-HERMES-SKILLS-A): the skills field is computed by the
   // reconcile step (execute) and handed in, so a card cannot forge it through
   // payloadTemplate — same rule as github_broker (set after the spread;
   // `undefined` deletes a forged value and is dropped by JSON serialization).
@@ -657,7 +657,7 @@ function buildRunBody(
     github_broker: githubBroker,
     workspace: workspaceField,
     github_launcher: githubLauncher,
-    // myrmidon(1.6.6-HERMES-SKILLS-A): Paperclip-managed skills for the run's
+    // myrmidon(1.6.5-HERMES-SKILLS-A): Paperclip-managed skills for the run's
     // profile (see the buildRunBody signature note); the gateway image's
     // run-scoped-skills patch materializes them before the agent starts.
     paperclip_skills: paperclipSkillsField,
@@ -1927,7 +1927,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     }
   }
 
-  // myrmidon(1.6.6-HERMES-SKILLS-A): deliver the Paperclip-managed skills
+  // myrmidon(1.6.5-HERMES-SKILLS-A): deliver the Paperclip-managed skills
   // before POST /v1/runs, at the same boundary hermes_local reconcile skills
   // (execute.ts:372-389). The preferred route — reading/writing the gateway
   // profile's skills.external_dirs over the API — does not exist on the
@@ -1949,14 +1949,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         onLog: (line) => ctx.onLog("stdout", line),
       });
       paperclipSkillsField = buildPaperclipSkillsField(skillsReconcile);
-      if (skillsReconcile && paperclipSkillsField) {
+      if (skillsReconcile && paperclipSkillsField !== undefined) {
         // The fact-check verifies the assembled field carries every desired
         // entry before the POST sends it; the image patch re-verifies by
         // reading the profile's skills root after materialization and fails
         // the run loudly when an entry did not land.
         factCheckGatewayPaperclipSkills({
           skills: paperclipSkillsField,
-          desiredSkills: skillsReconcile.desiredSkills,
+          desiredEntries: skillsReconcile.desiredEntries,
         });
         await ctx.onLog(
           "stdout",

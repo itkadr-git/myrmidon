@@ -1,4 +1,4 @@
-// myrmidon(1.6.6-HERMES-SKILLS-A): deliver Paperclip-managed skills to a
+// myrmidon(1.6.5-HERMES-SKILLS-A): deliver Paperclip-managed skills to a
 // gateway-profile agent and verify the delivery by reading the profile back.
 //
 // Route decision (the ticket's part 2б): the hermes API surface of the pinned
@@ -35,8 +35,15 @@ export interface GatewaySkillEntry {
 export interface GatewaySkillsReconcileResult {
   /** Run-body field value, in canonical path order. */
   skills: GatewaySkillEntry[];
-  /** Desired keys after canonicalization (what the fact-check requires). */
+  /** Desired keys after canonicalization. */
   desiredSkills: string[];
+  /**
+   * What the fact-check requires, as delivered names: each desired key paired
+   * with the field the entry `name` is built from (runtimeName, i.e.
+   * `<slug>--<hash>` for company skills). The check compares names, never the
+   * key's last segment, which is only the slug.
+   */
+  desiredEntries: Array<{ key: string; name: string }>;
 }
 
 function asString(value: unknown): string | null {
@@ -53,14 +60,17 @@ function asRecord(value: unknown): Record<string, unknown> | null {
  * The run-body field a card could forge through payloadTemplate. Reconcile
  * sets the field unconditionally after the payloadTemplate spread, so a card
  * value is replaced with the entries derived from paperclipRuntimeSkills —
- * or with `undefined` when there is nothing to deliver, which JSON
- * serialization drops (the body then carries no field at all). Same forgery
- * rule as buildGitHubBrokerField in execute.ts.
+ * or with `undefined` when the config carries no paperclipRuntimeSkills key at
+ * all (reconcile is null; JSON serialization drops the field). When the key is
+ * present but the desired set is empty, the field is `[]`: the receiver treats
+ * an empty list as "clear this profile's managed segment", which is how an
+ * unassigned skill is taken away from the bot. Same forgery rule as
+ * buildGitHubBrokerField in execute.ts.
  */
 export function buildPaperclipSkillsField(
   reconcile: GatewaySkillsReconcileResult | null,
 ): GatewaySkillEntry[] | undefined {
-  return reconcile && reconcile.skills.length > 0 ? reconcile.skills : undefined;
+  return reconcile ? reconcile.skills : undefined;
 }
 
 /**
@@ -94,6 +104,7 @@ export async function reconcileGatewayPaperclipSkills(
   const desiredSkills = resolveLegacyPaperclipDesiredSkillNames(config, availableEntries);
   const desiredSet = new Set(desiredSkills);
   const entries: GatewaySkillEntry[] = [];
+  const desiredEntries: Array<{ key: string; name: string }> = [];
   for (const entry of availableEntries) {
     if (!desiredSet.has(entry.key)) continue;
     if (isPaperclipSkillSourceMissing(entry)) {
@@ -117,7 +128,15 @@ export async function reconcileGatewayPaperclipSkills(
       );
     }
     const name = asString(entry.runtimeName) ?? entry.key.split("/").pop() ?? entry.key;
+    if (entries.some((e) => e.name === name)) {
+      // Two desired skills would land in the same segment directory and the
+      // second would silently overwrite the first.
+      throw new Error(
+        `Cannot start without the required Paperclip-managed skills: ${entry.key}: another desired skill already uses the delivered name ${name}`,
+      );
+    }
     entries.push({ path: name, name, content });
+    desiredEntries.push({ key: entry.key, name });
   }
   entries.sort((a, b) => a.path.localeCompare(b.path));
   if (entries.length > 0) {
@@ -125,7 +144,7 @@ export async function reconcileGatewayPaperclipSkills(
       `[hermes-gateway] Delivering ${entries.length} Paperclip-managed skill(s) in the run body: ${entries.map((e) => e.name).join(", ")}\n`,
     );
   }
-  return { skills: entries, desiredSkills };
+  return { skills: entries, desiredSkills, desiredEntries };
 }
 
 function joinPath(dir: string, leaf: string): string {
@@ -147,11 +166,10 @@ function joinPath(dir: string, leaf: string): string {
  */
 export function factCheckGatewayPaperclipSkills(input: {
   skills: GatewaySkillEntry[];
-  desiredSkills: string[];
+  desiredEntries: Array<{ key: string; name: string }>;
 }): void {
   const present = new Set(input.skills.map((s) => s.name));
-  for (const key of input.desiredSkills) {
-    const name = key.split("/").pop() ?? key;
+  for (const { key, name } of input.desiredEntries) {
     if (!present.has(name)) {
       throw new Error(
         `Cannot start without the required Paperclip-managed skills: ${name}: missing from the assembled run-body field`,

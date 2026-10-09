@@ -6,7 +6,7 @@ index c6aeb92..4e6b2cc 100644
      # ``{"key", "repo", "baseRef?"}`` — validated in _handle_runs; _run_agent_sync opens
      # the task copy via ``myr-ws open`` before the model starts.
      workspace: Optional[Dict[str, str]] = None
-+    # myrmidon(1.6.6-HERMES-SKILLS-A): run-scoped Paperclip-managed skills —
++    # myrmidon(1.6.5-HERMES-SKILLS-A): run-scoped Paperclip-managed skills —
 +    # ``[{"path", "name", "content"}]`` or None. Materialized into the run
 +    # profile's ``skills/paperclip-managed/`` segment in _run_agent_sync,
 +    # before the model starts (see tools/run_skills.py).
@@ -14,42 +14,43 @@ index c6aeb92..4e6b2cc 100644
  
      @property
      def approval_session_key(self) -> str:
-@@ -635,6 +640,18 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
+@@ -635,6 +640,19 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
          except ValueError as exc:
              return _json_error(_openai_error, f"Invalid 'workspace' field: {exc}",
                                 code="invalid_workspace", status=400)
-+    # myrmidon(1.6.6-HERMES-SKILLS-A): optional ``paperclip_skills`` body field.
-+    # Validated to a list-of-dicts shape here so the idempotency fingerprint
++    # myrmidon(1.6.5-HERMES-SKILLS-A): optional ``paperclip_skills`` body field.
++    # Validated (tools.run_skills.validate_paperclip_skills_field) here so the idempotency fingerprint
 +    # covers exactly what the run will deliver; the materialization itself
 +    # happens in _run_agent_sync inside the run's profile scope. A malformed
 +    # field is a 400, same discipline as ``workspace`` above.
 +    paperclip_skills_field = body.get("paperclip_skills") if isinstance(body, dict) else None
-+    if paperclip_skills_field is not None and not (
-+            isinstance(paperclip_skills_field, list)
-+            and all(isinstance(item, dict) for item in paperclip_skills_field)):
-+        return _json_error(_openai_error,
-+                           "Invalid 'paperclip_skills' field: expected a list of {path, name, content} objects",
-+                           code="invalid_paperclip_skills", status=400)
++    if paperclip_skills_field is not None:
++        from tools.run_skills import validate_paperclip_skills_field
++        try:
++            paperclip_skills_field = validate_paperclip_skills_field(paperclip_skills_field)
++        except ValueError as exc:
++            return _json_error(_openai_error, f"Invalid 'paperclip_skills' field: {exc}",
++                               code="invalid_paperclip_skills", status=400)
  
      idempotency_key = request.headers.get("Idempotency-Key", "").strip()
      if len(idempotency_key) > 255 or any(ord(ch) < 33 or ord(ch) > 126 for ch in idempotency_key):
-@@ -744,7 +761,10 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
+@@ -744,7 +762,10 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
          github_broker=github_broker,
          github_launcher=github_launcher,
          # myrmidon(BOT-DISK-H5b): task workspace to open via myr-ws before the model starts.
 -        workspace=workspace_field)
 +        workspace=workspace_field,
-+        # myrmidon(1.6.6-HERMES-SKILLS-A): Paperclip-managed skills to
++        # myrmidon(1.6.5-HERMES-SKILLS-A): Paperclip-managed skills to
 +        # materialize into the run profile before the model starts.
 +        paperclip_skills=paperclip_skills_field)
      self._activate_admitted_request()
      # A canonical Bot Chat that a Desktop holds live is that Desktop's to run: executing here would
      # be a second writer beside its lease (#114959). The owner's mailbox takes the turn and its
-@@ -842,6 +862,30 @@ def _run_agent_sync(self, run: _RunLaunch, agent, approval_notify, *, _api_serve
+@@ -842,6 +863,30 @@ def _run_agent_sync(self, run: _RunLaunch, agent, approval_notify, *, _api_serve
                          run.run_id, "run.workspace_fallback",
                          key=run.workspace.get("key", ""), path=opened["path"],
                          exit_code=opened["exit_code"], warning=opened["error"]))
-+            # myrmidon(1.6.6-HERMES-SKILLS-A): the run carries Paperclip-managed
++            # myrmidon(1.6.5-HERMES-SKILLS-A): the run carries Paperclip-managed
 +            # skills — materialize them into THIS profile's skills root (we are
 +            # inside _profile_scope) BEFORE the model starts, and fail the run
 +            # loudly when a desired entry did not land: the board adapter
@@ -84,7 +85,7 @@ index 1875be3..899c437 100644
      elif ws_env is not None:
          env.pop(task_workspace_env_name(), None)
  
-+    # myrmidon(1.6.6-HERMES-SKILLS-A): bridge the run's managed skills root
++    # myrmidon(1.6.5-HERMES-SKILLS-A): bridge the run's managed skills root
 +    # (bound by gateway/platforms/api_server_runs.py after materializing
 +    # ``paperclip_skills``) into this run's child processes as
 +    # MYRMIDON_RUN_SKILLS_DIR. A run WITHOUT the field gets the name stripped,
@@ -105,8 +106,8 @@ index 1875be3..899c437 100644
      items: Mapping[str, str], out: dict, *, unwrap_force: bool,
 --- /dev/null
 +++ b/tools/run_skills.py
-@@ -0,0 +1,144 @@
-+"""myrmidon(G1): run-scoped Paperclip-managed skill materialization (1.6.6-HERMES-SKILLS-A).
+@@ -0,0 +1,185 @@
++"""myrmidon(G1): run-scoped Paperclip-managed skill materialization (1.6.5-HERMES-SKILLS-A).
 +
 +The board's hermes_gateway adapter cannot reach the gateway's filesystem: it
 +talks to the API only, and the pinned API surface has no endpoint that writes
@@ -132,8 +133,11 @@ index 1875be3..899c437 100644
 +
 +``materialize_run_skills`` returns ``{name: relpath}`` for the entries
 +actually written; ``verify_run_skills`` compares that with the desired set
-+and names the first missing skill, so a half-written delivery fails loudly
-+before the model sees a turn.
++AND re-reads each SKILL.md from the managed root on disk, and names the first
++missing or mismatching skill, so a half-written delivery fails loudly before
++the model sees a turn. Two entries sharing a name or a path are refused (the
++second would overwrite the first). An empty list is valid: it clears the
++profile's managed segment (unassign).
 +"""
 +
 +from __future__ import annotations
@@ -187,16 +191,33 @@ index 1875be3..899c437 100644
 +
 +
 +def _safe_relpath(raw: Any) -> Optional[str]:
-+    """A delivery path, or None when it would escape the managed root."""
++    """A delivery path, or None when it would escape the managed root.
++
++    Strict on purpose: absolute paths, backslashes, empty segments, ``.`` and
++    ``..`` are refused rather than normalized.
++    """
 +    if not isinstance(raw, str):
 +        return None
-+    rel = raw.strip().strip("/").replace("\\", "/")
-+    if not rel:
++    rel = raw.strip()
++    if not rel or rel.startswith("/") or "\\" in rel:
 +        return None
-+    parts = [p for p in rel.split("/") if p]
-+    if any(p in (".", "..") or not set(p.lower()) <= _NAME_SAFE for p in parts):
++    parts = rel.split("/")
++    if any(not p or p in (".", "..") or not set(p.lower()) <= _NAME_SAFE for p in parts):
 +        return None
 +    return "/".join(parts)
++
++
++def validate_paperclip_skills_field(value: Any) -> List[Dict[str, Any]]:
++    """Door check for the ``paperclip_skills`` body field; ValueError -> HTTP 400.
++
++    Must be a list of at most ``_MAX_SKILLS`` objects (anything beyond the cap
++    would otherwise be dropped silently and then missed by the verify step).
++    """
++    if not isinstance(value, list) or not all(isinstance(item, dict) for item in value):
++        raise ValueError("expected a list of {path, name, content} objects")
++    if len(value) > _MAX_SKILLS:
++        raise ValueError(f"at most {_MAX_SKILLS} skills per run")
++    return value
 +
 +
 +def materialize_run_skills(entries: List[Dict[str, Any]]) -> Dict[str, str]:
@@ -241,12 +262,33 @@ index 1875be3..899c437 100644
 +
 +    Returns None on success, else the name of the first missing skill. An
 +    entry skipped by the path/content guards still counts as desired here —
-+    the run must fail on it, not silently start without the skill.
++    the run must fail on it, not silently start without the skill. The check
++    re-reads each SKILL.md from the managed root (not just the in-memory
++    ``written`` map), so a file that did not land or was overwritten by a
++    colliding entry is caught. Duplicate names or paths fail on the name.
 +    """
++    root = _managed_root()
++    seen_names: set = set()
++    seen_paths: set = set()
 +    for entry in entries[:_MAX_SKILLS]:
 +        if not isinstance(entry, dict):
 +            continue
 +        name = entry.get("name")
-+        if isinstance(name, str) and name.strip() and name.strip() not in written:
-+            return name.strip()
++        if not isinstance(name, str) or not name.strip():
++            return str(name)
++        name = name.strip()
++        rel = _safe_relpath(entry.get("path"))
++        if name in seen_names or (rel is not None and rel in seen_paths):
++            return name
++        seen_names.add(name)
++        if rel is not None:
++            seen_paths.add(rel)
++        if name not in written or rel is None or written[name] != rel:
++            return name
++        try:
++            on_disk = (root / rel / _SKILL_FILE).read_text(encoding="utf-8")
++        except OSError:
++            return name
++        if on_disk != entry.get("content"):
++            return name
 +    return None
