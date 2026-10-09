@@ -23,10 +23,13 @@ settings-section: Track 5 — operations
   gate (it does nothing while an instance window is open), in batches of 500
   rows per statement with a 250 ms pause between batches and a 30 s
   statement timeout per batch, and only when the backup precondition holds:
-  the newest `<prefix>-*.sql.gz` in the configured backup dir must be under
-  24 hours old. Without a fresh backup the pass rewrites nothing and logs one
-  throttled `datastore.retention_waiting_for_backup` line (at most once per
-  hour).
+  the newest matching backup (`<prefix>-*.sql.gz` or `<prefix>-*.dump`; with
+  an empty `MYRMIDON_DB_BACKUP_FILE_PREFIX` any `*.sql.gz`/`*.dump` in the
+  dir) in the configured backup dir must be under 24 hours old. Without a
+  fresh backup the pass rewrites nothing and logs one throttled
+  `datastore.retention_waiting_for_backup` line (at most once per hour),
+  carrying the checked dir, prefix and the names it saw; the pass state
+  keeps the full gate verdict under `contextLastRun.backupGate`.
 - Each pass writes one `datastore.retention_applied` activity line per
   company that had work, carrying `compactedRows` and `freedBytes` (the exact
   `pg_column_size` delta of the rewritten snapshots), and persists its state

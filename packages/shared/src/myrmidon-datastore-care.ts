@@ -77,6 +77,23 @@ export const patchDatastoreCareRetentionSchema = z
 export type DatastoreCareRetentionPatch = z.infer<typeof patchDatastoreCareRetentionSchema>;
 
 /** The persisted state of the last compaction pass (survives restarts). */
+export interface DatastoreCareRetentionBackupGateState {
+  /** The directory the gate inspected. */
+  backupDir: string;
+  /** The filename prefix the gate matched (empty = any accepted name). */
+  prefix: string;
+  /** Newest matching backup mtime (ISO), or null when none/readable. */
+  newestBackupAt: string | null;
+  /** Base name of the newest matching backup file, when one exists. */
+  newestBackupFile: string | null;
+  /** Its size in bytes. */
+  newestBackupSizeBytes: number | null;
+  /** False when the dir could not be listed at all. */
+  dirReadable: boolean;
+  /** Up to 5 backup-looking files that did not match the prefix. */
+  candidates: string[];
+}
+
 export interface DatastoreCareRetentionLastRun {
   /** ISO timestamp of the last pass, null before the first one. */
   lastRunAt: string | null;
@@ -84,6 +101,8 @@ export interface DatastoreCareRetentionLastRun {
   waitingForBackup: boolean;
   /** ISO mtime of the newest fresh-enough backup seen by the gate. */
   backupCheckedAt: string | null;
+  /** The gate verdict of the last pass (what was checked, what was found). */
+  backupGate?: DatastoreCareRetentionBackupGateState;
   /** Terminal runs whose context was compacted in the last pass. */
   lastCompacted: number;
   /** Bytes the last pass shrank context_snapshot values by (lower bound). */
@@ -115,10 +134,32 @@ export function normalizeDatastoreCareRetentionLastRun(
     typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : fallback;
   const iso = (v: unknown): string | null =>
     typeof v === "string" && v.length > 0 ? v : null;
+  const gateRaw =
+    typeof raw.backupGate === "object" && raw.backupGate !== null
+      ? (raw.backupGate as Record<string, unknown>)
+      : null;
+  const backupGate: DatastoreCareRetentionBackupGateState | undefined = gateRaw
+    ? {
+        backupDir: typeof gateRaw.backupDir === "string" ? gateRaw.backupDir : "",
+        prefix: typeof gateRaw.prefix === "string" ? gateRaw.prefix : "",
+        newestBackupAt: iso(gateRaw.newestBackupAt),
+        newestBackupFile: iso(gateRaw.newestBackupFile),
+        newestBackupSizeBytes:
+          typeof gateRaw.newestBackupSizeBytes === "number" &&
+          Number.isFinite(gateRaw.newestBackupSizeBytes)
+            ? gateRaw.newestBackupSizeBytes
+            : null,
+        dirReadable: gateRaw.dirReadable !== false,
+        candidates: Array.isArray(gateRaw.candidates)
+          ? gateRaw.candidates.filter((v): v is string => typeof v === "string").slice(0, 5)
+          : [],
+      }
+    : undefined;
   return {
     lastRunAt: iso(raw.lastRunAt),
     waitingForBackup: raw.waitingForBackup === true,
     backupCheckedAt: iso(raw.backupCheckedAt),
+    ...(backupGate ? { backupGate } : {}),
     lastCompacted: num(raw.lastCompacted, 0),
     lastFreedBytes: num(raw.lastFreedBytes, 0),
     compactedTotal: num(raw.compactedTotal, 0),

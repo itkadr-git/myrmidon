@@ -3,13 +3,19 @@
 // myrmidon(1.6.5-DBC1): the backup precondition of the context compaction.
 //
 // The compaction rewrites rows, so it only runs when a fresh database backup
-// exists: the newest `<prefix>-*.sql.gz` in the resolved backup dir must be
+// exists: the newest matching backup file in the resolved backup dir must be
 // younger than 24 hours. The dir resolution mirrors
 // `packages/db/src/backup.ts` (config `database.backup.dir`, then
 // `resolveDefaultBackupDir()`); the filename prefix mirrors `runDatabaseBackup`
 // in `packages/db/src/backup-lib.ts` (default `paperclip`, overridable via the
 // `MYRMIDON_DB_BACKUP_FILE_PREFIX` deployment knob the deploy repo sets).
 // The gate fails closed: an unreadable or empty dir is "not fresh".
+//
+// myrmidon(1.6.5-F14): the gate accepts both the built-in board backup
+// (`<prefix>-<timestamp>.sql.gz`, what `runDatabaseBackup` writes) and a
+// host-side `pg_dump -Fc` dump (`*.dump`); when the prefix env knob is not
+// set, any newest `*.sql.gz`/`*.dump` in the dir counts, because a deployment
+// that switched its backup naming must not silently park the compaction.
 
 import fs from "node:fs";
 import path from "node:path";
@@ -58,6 +64,9 @@ export function resolveBackupFilePrefix(
   return env.MYRMIDON_DB_BACKUP_FILE_PREFIX?.trim() || "paperclip";
 }
 
+/** Backup filename extensions the gate accepts. */
+export const BACKUP_GATE_ACCEPTED_EXTENSIONS = [".sql.gz", ".dump"] as const;
+
 export interface BackupGateResult {
   /** True when a fresh enough backup file exists. */
   fresh: boolean;
@@ -65,14 +74,34 @@ export interface BackupGateResult {
   newestBackupAt: string | null;
   /** The directory the gate inspected. */
   backupDir: string;
+  /** The filename prefix the gate matched against. */
+  prefix: string;
+  /** False when the dir could not be listed at all. */
+  dirReadable: boolean;
+  /** Base name of the newest matching backup file, when one exists. */
+  newestBackupFile: string | null;
+  /** Its size in bytes. */
+  newestBackupSizeBytes: number | null;
+  /**
+   * Up to 5 backup-looking files (`*.sql.gz`/`*.dump`) that did NOT match the
+   * prefix — the "wrong name in the right dir" diagnosis.
+   */
+  candidates: string[];
+}
+
+function isBackupName(name: string): boolean {
+  return BACKUP_GATE_ACCEPTED_EXTENSIONS.some((ext) => name.endsWith(ext));
 }
 
 /**
- * Check the gate against a backup dir: the newest `<prefix>-*.sql.gz` must be
- * younger than `maxAgeMs`.
+ * Check the gate against a backup dir: the newest matching backup must be
+ * younger than `maxAgeMs`. A matching backup is `<prefix>-*` with an accepted
+ * extension; when `prefix` is empty (the deployment sets no naming contract)
+ * any `*.sql.gz`/`*.dump` in the dir counts, newest first.
  */
 export function checkBackupGate(options: {
   backupDir: string;
+  /** Empty string means "no naming contract — any accepted extension". */
   prefix?: string;
   now?: Date;
   maxAgeMs?: number;
@@ -80,26 +109,57 @@ export function checkBackupGate(options: {
   const prefix = options.prefix ?? "paperclip";
   const now = options.now ?? new Date();
   const maxAgeMs = options.maxAgeMs ?? DATASTORE_CARE_BACKUP_MAX_AGE_MS;
-  let newest: number | null = null;
+  const base = {
+    backupDir: options.backupDir,
+    prefix,
+    candidates: [] as string[],
+  };
+  let names: string[];
   try {
-    for (const name of fs.readdirSync(options.backupDir)) {
-      if (!name.startsWith(`${prefix}-`) || !name.endsWith(".sql.gz")) continue;
-      try {
-        const mtime = fs.statSync(path.join(options.backupDir, name)).mtimeMs;
-        if (newest === null || mtime > newest) newest = mtime;
-      } catch {
-        // A file that vanished between readdir and stat does not count.
-      }
-    }
+    names = fs.readdirSync(options.backupDir);
   } catch {
-    return { fresh: false, newestBackupAt: null, backupDir: options.backupDir };
+    return {
+      ...base,
+      fresh: false,
+      newestBackupAt: null,
+      dirReadable: false,
+      newestBackupFile: null,
+      newestBackupSizeBytes: null,
+    };
+  }
+  let newest: { mtimeMs: number; name: string; sizeBytes: number } | null = null;
+  for (const name of names) {
+    if (!isBackupName(name)) continue;
+    const matches = prefix.length === 0 || name.startsWith(`${prefix}-`);
+    if (!matches) {
+      if (base.candidates.length < 5) base.candidates.push(name);
+      continue;
+    }
+    try {
+      const stat = fs.statSync(path.join(options.backupDir, name));
+      if (newest === null || stat.mtimeMs > newest.mtimeMs) {
+        newest = { mtimeMs: stat.mtimeMs, name, sizeBytes: stat.size };
+      }
+    } catch {
+      // A file that vanished between readdir and stat does not count.
+    }
   }
   if (newest === null) {
-    return { fresh: false, newestBackupAt: null, backupDir: options.backupDir };
+    return {
+      ...base,
+      fresh: false,
+      newestBackupAt: null,
+      dirReadable: true,
+      newestBackupFile: null,
+      newestBackupSizeBytes: null,
+    };
   }
   return {
-    fresh: now.getTime() - newest < maxAgeMs,
-    newestBackupAt: new Date(newest).toISOString(),
-    backupDir: options.backupDir,
+    ...base,
+    fresh: now.getTime() - newest.mtimeMs < maxAgeMs,
+    newestBackupAt: new Date(newest.mtimeMs).toISOString(),
+    dirReadable: true,
+    newestBackupFile: newest.name,
+    newestBackupSizeBytes: newest.sizeBytes,
   };
 }
