@@ -37,10 +37,16 @@ export interface ChatModelCandidate {
 /**
  * myrmidon(F06-D): the list must fit a phone screen (owner 09.10: «Список не
  * длиннее экрана»). Buttons make selection the main path, but the numbered
- * text list is what a plain `/model` still answers today, so the cap is the
- * screen, not the catalog.
+ * text list is what a plain `/model` still answers, so the cap is the screen,
+ * not the catalog. The ranked families (the owner's channels, see
+ * GATEWAY_PROVIDER_RANK) are never cut by the general cap — a list that hides
+ * the owner's own second channel is the failure this cap used to cause (a live
+ * catalog had 18 DashScope chat models, which left no room for z.ai) — they
+ * are bounded only by the hard ceiling. The rest fills what is left of the
+ * general cap, and the reply says how many were left out.
  */
 export const MAX_LISTED_CHAT_MODEL_CANDIDATES = 20;
+export const MAX_LISTED_RANKED_CHAT_MODEL_CANDIDATES = 30;
 
 /**
  * Adapter types whose `config.model` is read on a run (design doc fact F13).
@@ -115,19 +121,21 @@ function gatewayProviderRank(provider: string | null): number {
  */
 const NON_CHAT_MODEL_ID_PATTERNS: readonly RegExp[] = [
   /embed/,
-  /\bocr\b/,
-  /-ocr\b/,
-  /\bocr-/,
+  // Short tokens only count as whole id segments: `tts` must not match inside
+  // `...-matts-...`, nor `asr` inside `...-casrl`.
+  /(?:^|[-_./])ocr(?:[-_./]|$)/,
+  /(?:^|[-_./])tts(?:[-_./]|$)/,
+  /(?:^|[-_./])asr(?:[-_./]|$)/,
   /rerank/,
   /moderation/,
-  /tts/,
   /transcribe/,
-  /asr/,
-  /-mem\b/,
-  /-consolidation\b/,
-  /-summary\b/,
-  /-summarizer\b/,
   /classifier/,
+  // The board's own maintenance models, by suffix and by family.
+  /-mem(?:[-_./]|$)/,
+  /-consolidation(?:[-_./]|$)/,
+  /-summary(?:[-_./]|$)/,
+  /-summarizer(?:[-_./]|$)/,
+  /^hindsight(?:[-_./]|$)/,
 ];
 
 /** myrmidon(F06-D): whether a gateway catalog id is a chat model `/model` may offer. */
@@ -147,12 +155,28 @@ export function providerPrefixOfModelId(modelId: string): string | null {
 }
 
 /**
+ * myrmidon(F06-D): why this agent's own model list was not used. `no_gateway_url`
+ * — the board has no gateway address; `no_key` — no gateway key for the agent
+ * (its card binds none and there is no shared company secret); `secret_error` —
+ * the secret store could not be read; `gateway_error` — the gateway refused the
+ * key or did not answer a model list; `empty_list` — the key allows no models.
+ */
+export type GatewayCatalogKeyFailure =
+  | "no_gateway_url"
+  | "no_key"
+  | "secret_error"
+  | "gateway_error"
+  | "empty_list";
+
+/**
  * myrmidon(F06-A): the gateway catalog for one agent, as the `/model` list
  * needs it — read through the caller's bound reader (see
  * gateway-model-catalog.ts for the real read; tests pass a stub).
  */
 export interface ChatModelCatalog {
   models: string[];
+  /** Set with `scope: "catalog"`: why the agent's own list was not read. */
+  keyFailure?: GatewayCatalogKeyFailure;
   /** Provider family by model id, when the board's collected catalog knows it. */
   providers?: Record<string, string>;
   /**
@@ -171,6 +195,8 @@ export type ChatModelCatalogReader = () => Promise<ChatModelCatalog | null>;
 export interface ChatModelList {
   candidates: ChatModelCandidate[];
   wholeCatalog: boolean;
+  /** myrmidon(F06-D): with `wholeCatalog`, the reason the agent's own list was not used. */
+  keyFailure?: GatewayCatalogKeyFailure;
 }
 
 /**
@@ -285,11 +311,14 @@ export async function listModelCandidates(
     candidates.push(candidate);
   };
 
+  const cardIds: string[] = [];
   const cardModel = readSpecificModelField(cardAdapterConfig, "model");
-  if (cardModel) push(cardModel, cardModel);
-  for (const fallback of readModelFallbacks(cardAdapterConfig)) push(fallback, fallback);
+  if (cardModel) cardIds.push(cardModel);
+  for (const fallback of readModelFallbacks(cardAdapterConfig)) cardIds.push(fallback);
 
   let wholeCatalog = false;
+  let keyFailure: GatewayCatalogKeyFailure | undefined;
+  let gatewayOrdered: ChatModelCandidate[] | null = null;
   if (GATEWAY_ADAPTER_TYPES.includes(adapterType) && catalog) {
     let read: ChatModelCatalog | null = null;
     try {
@@ -301,23 +330,34 @@ export async function listModelCandidates(
     }
     if (read) {
       wholeCatalog = read.scope === "catalog";
+      keyFailure = wholeCatalog ? read.keyFailure : undefined;
       const providerOf = (id: string) => read?.providers?.[id] ?? providerPrefixOfModelId(id) ?? null;
       // myrmidon(F06-D): a gateway catalog is every model any key may run —
       // embeddings, OCR and service models included. `/model` may only offer
       // chat models (owner 09.10), so non-chat ids are dropped here, never
-      // shown. The order is the owner's channel policy: DashScope first, then
-      // z.ai, then the remaining families alphabetically; inside a family,
-      // alphabetically by id.
-      const ordered = [...read.models]
-        .filter((id) => isChatGatewayModelId(id))
-        .sort((left, right) => {
-          const leftRank = gatewayProviderRank(providerOf(left));
-          const rightRank = gatewayProviderRank(providerOf(right));
-          if (leftRank !== rightRank) return leftRank - rightRank;
-          return left.localeCompare(right);
-        });
-      for (const id of ordered) push(id, id, providerOf(id));
+      // shown — the card's own models too. The whole list, the card's models
+      // among it, is ordered by the owner's channel policy: DashScope first,
+      // then z.ai, then the remaining families alphabetically; inside a
+      // family, by id (numbers in ids compare as numbers).
+      const ids: string[] = [];
+      const listedIds = new Set<string>();
+      for (const raw of [...cardIds, ...read.models]) {
+        const id = raw.trim();
+        if (!id || listedIds.has(id) || !isChatGatewayModelId(id)) continue;
+        listedIds.add(id);
+        ids.push(id);
+      }
+      ids.sort((left, right) => compareGatewayModelIds(left, providerOf(left), right, providerOf(right)));
+      gatewayOrdered = ids.map((id) => {
+        const provider = providerOf(id);
+        return provider ? { id, label: id, provider } : { id, label: id };
+      });
     }
+  }
+  if (gatewayOrdered) {
+    for (const candidate of gatewayOrdered) push(candidate.id, candidate.label, candidate.provider ?? null);
+  } else {
+    for (const id of cardIds) push(id, id);
   }
 
   let discovered: { id: string; label: string }[] = [];
@@ -333,7 +373,32 @@ export async function listModelCandidates(
     push(id, entry.label ?? id);
   }
 
-  return { candidates, wholeCatalog };
+  return keyFailure ? { candidates, wholeCatalog, keyFailure } : { candidates, wholeCatalog };
+}
+
+/**
+ * myrmidon(F06-D): the gateway candidate order — owner-ranked families first
+ * (DashScope, then z.ai), then the other families alphabetically (ids with no
+ * known family last), then by id, numbers inside an id compared as numbers
+ * (`glm-4.6` before `glm-5.3`, `glm-5.3` before `glm-5.10`).
+ */
+function compareGatewayModelIds(
+  leftId: string,
+  leftProvider: string | null,
+  rightId: string,
+  rightProvider: string | null,
+): number {
+  const leftRank = gatewayProviderRank(leftProvider);
+  const rightRank = gatewayProviderRank(rightProvider);
+  if (leftRank !== rightRank) return leftRank - rightRank;
+  const leftFamily = (leftProvider ?? "").trim().toLowerCase();
+  const rightFamily = (rightProvider ?? "").trim().toLowerCase();
+  if (leftFamily !== rightFamily) {
+    if (!leftFamily) return 1;
+    if (!rightFamily) return -1;
+    return leftFamily.localeCompare(rightFamily);
+  }
+  return leftId.localeCompare(rightId, "en", { numeric: true });
 }
 
 /** Reasoning levels this chat can choose from — a fixed list, independent of the card. */
@@ -361,36 +426,59 @@ export function resolveChatChoiceArgument(
 }
 
 /**
- * The numbered list shown after a chooser command. myrmidon(F06-A): when the
- * candidates carry provider families (the gateway catalog), each family gets a
- * `dashscope-*`-style header line — the numbering stays continuous, so a header
- * never shifts the numbers the user types back.
+ * myrmidon(F06-D): how many leading candidates the numbered text list shows —
+ * the general screen cap, widened to take every candidate of the owner-ranked
+ * families (they lead a gateway list) up to the hard ceiling.
  */
-export function formatChatChoiceList(candidates: ChatModelCandidate[]): string {
-  const listed = candidates.slice(0, MAX_LISTED_CHAT_MODEL_CANDIDATES);
-  const blocks: string[] = [];
-  const lines: string[] = [];
-  let currentProvider: string | null = null;
-  let index = 0;
-  let started = false;
-  const flush = () => {
-    if (lines.length === 0) return;
-    blocks.push(lines.join("\n"));
-    lines.length = 0;
-  };
-  for (const candidate of listed) {
-    const provider = candidate.provider ?? null;
-    if (!started || provider !== currentProvider) {
-      flush();
-      if (provider) blocks.push(`${provider}-*`);
-      currentProvider = provider;
-      started = true;
-    }
-    lines.push(`${++index}) ${candidate.id}`);
+function listedChoiceCount(candidates: ChatModelCandidate[]): number {
+  let ranked = 0;
+  while (ranked < candidates.length) {
+    const candidate = candidates[ranked]!;
+    const rank = gatewayProviderRank(candidate.provider ?? providerPrefixOfModelId(candidate.id));
+    if (rank >= GATEWAY_PROVIDER_RANK.length) break;
+    ranked++;
   }
-  flush();
-  return blocks.join("\n");
+  const limit = Math.max(MAX_LISTED_CHAT_MODEL_CANDIDATES, Math.min(MAX_LISTED_RANKED_CHAT_MODEL_CANDIDATES, ranked));
+  return Math.min(limit, candidates.length);
 }
+
+/**
+ * The numbered list shown after a chooser command: one continuous numbering,
+ * one id per line — no family headers (owner 09.10: «без заголовков»; the
+ * order already groups the families). A list longer than the screen is cut
+ * (listedChoiceCount) and says how many were left out; any of them can still
+ * be chosen by name or number.
+ */
+export function formatChatChoiceList(candidates: ChatModelCandidate[], locale: BridgeLocale): string {
+  const shown = listedChoiceCount(candidates);
+  const lines = candidates.slice(0, shown).map((candidate, index) => `${index + 1}) ${candidate.id}`);
+  const hidden = candidates.length - shown;
+  if (hidden > 0) lines.push(t(locale, "chooser.moreHidden", { count: hidden }));
+  return lines.join("\n");
+}
+
+/** myrmidon(F06-D): the candidates the text list (and the buttons) show. */
+export function listedChatChoices(candidates: ChatModelCandidate[]): ChatModelCandidate[] {
+  return candidates.slice(0, listedChoiceCount(candidates));
+}
+
+/**
+ * myrmidon(F06-D): the sentence under a whole-catalog list — that it is the
+ * whole catalog, and why this agent's own list was not used.
+ */
+export function wholeCatalogText(locale: BridgeLocale, keyFailure: GatewayCatalogKeyFailure | undefined): string {
+  const base = t(locale, "chooser.catalogWhole");
+  if (!keyFailure) return base;
+  return `${base} ${t(locale, "chooser.keyFailure", { reason: t(locale, KEY_FAILURE_TEXT_KEYS[keyFailure]) })}`;
+}
+
+const KEY_FAILURE_TEXT_KEYS: Record<GatewayCatalogKeyFailure, BridgeTextKey> = {
+  no_gateway_url: "chooser.keyFailure.noGatewayUrl",
+  no_key: "chooser.keyFailure.noKey",
+  secret_error: "chooser.keyFailure.secretError",
+  gateway_error: "chooser.keyFailure.gatewayError",
+  empty_list: "chooser.keyFailure.emptyList",
+};
 
 /** One of /model or /think: what it is called, which adapterConfig key it edits, and how it lists candidates. */
 export interface ChatModelChooser {
@@ -442,6 +530,8 @@ export interface ChooserAvailability {
   /** myrmidon(F06-A): the candidates are the whole gateway catalog, not this
    *  agent's own key allowlist (the reply says so). */
   wholeCatalog?: boolean;
+  /** myrmidon(F06-D): with `wholeCatalog`, why the agent's own list was not used. */
+  keyFailure?: GatewayCatalogKeyFailure;
 }
 
 /**
@@ -475,9 +565,15 @@ export async function checkChooserAvailability(
       candidates: [],
       reasonKey: "chooser.reason.noCandidates",
       wholeCatalog: list.wholeCatalog,
+      ...(list.keyFailure ? { keyFailure: list.keyFailure } : {}),
     };
   }
-  return { available: true, candidates: list.candidates, wholeCatalog: list.wholeCatalog };
+  return {
+    available: true,
+    candidates: list.candidates,
+    wholeCatalog: list.wholeCatalog,
+    ...(list.keyFailure ? { keyFailure: list.keyFailure } : {}),
+  };
 }
 
 /**
@@ -567,7 +663,7 @@ export async function resolveChooserSelection(input: {
       text: t(input.locale, "chooser.unknownError", {
         noun: t(input.locale, input.chooser.unknownNounKey),
         value: trimmed,
-        list: formatChatChoiceList(availability.candidates),
+        list: formatChatChoiceList(availability.candidates, input.locale),
       }),
     };
   }

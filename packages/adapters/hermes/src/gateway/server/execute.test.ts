@@ -514,6 +514,26 @@ describe("execute", () => {
 
   const wsBaseConfig = { apiBaseUrl: "http://127.0.0.1:8642", apiKey: "secret-key", timeoutSec: 5 };
 
+  // myrmidon(F06-D): a chat's `/model` and `/think` choice is stored as an issue
+  // override; heartbeat merges it over the agent card into `ctx.config` before
+  // the adapter runs (heartbeat.ts: `mergedConfig`). The run the next turn
+  // makes must carry exactly that model and effort — this pins the adapter's
+  // half, so the owner-visible chain «button → override → next run» has a test
+  // on both sides.
+  it("sends the model and the reasoning effort of the merged config as the run's model and model_options", async () => {
+    const body = await runAndReadBody(
+      makeCtx({ ...wsBaseConfig, model: "zai-glm-5.3", effort: "high" }),
+    );
+    expect(body.model).toBe("zai-glm-5.3");
+    expect(body.model_options).toEqual({ reasoning: { effort: "high" } });
+  });
+
+  it("sends no model when the merged config names none (the agent's profile decides)", async () => {
+    const body = await runAndReadBody(makeCtx({ ...wsBaseConfig }));
+    expect("model" in body).toBe(false);
+    expect("model_options" in body).toBe(false);
+  });
+
   it("sends workspace {key, repo, baseRef} that passes the C6 schema for a task with a repository", async () => {
     const ctx = makeCtx(wsBaseConfig);
     ctx.context.paperclipWake = { issue: { identifier: "ABC-101", title: "T" } };

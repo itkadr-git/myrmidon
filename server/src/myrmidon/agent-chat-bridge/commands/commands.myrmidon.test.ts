@@ -263,6 +263,7 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(result).toEqual({
       kind: "reply",
       command: "model",
+      outcome: "applied",
       text: "Model for this chat: model-b. The next reply starts a new model session with this chat's recent history.",
     });
 
@@ -322,6 +323,7 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(result).toEqual({
       kind: "reply",
       command: "model",
+      outcome: "refused",
       text: "A reply is in progress right now. Try after it finishes or send /stop.",
     });
     expect(await readOverrides(issue.id)).toBeNull();
@@ -387,6 +389,7 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(result).toEqual({
       kind: "reply",
       command: "model",
+      outcome: "applied",
       text: "Model for this chat: agent default (model-a).",
     });
     expect(await readOverrides(issue.id)).toBeNull();
@@ -419,12 +422,12 @@ const support = await getEmbeddedPostgresTestSupport();
       }),
     );
     const text = (result as { kind: "reply"; text: string }).text;
-    // Grouped by provider family, numbered continuously. myrmidon(F06-D): the
-    // family order is the owner's channel policy — DashScope first, then z.ai,
-    // then the rest alphabetically.
-    expect(text).toContain("dashscope-*");
-    expect(text).toContain("nous-*");
-    expect(text).toContain("zai-*");
+    // Numbered continuously. myrmidon(F06-D): the family order is the owner's
+    // channel policy — DashScope first, then z.ai, then the rest alphabetically.
+    // myrmidon(F06-D): no family header lines — one id per numbered line.
+    expect(text).not.toContain("dashscope-*");
+    expect(text).not.toContain("nous-*");
+    expect(text).not.toContain("zai-*");
     expect(text).toMatch(/1\)\s*dashscope-qwen3-max/);
     expect(text).toMatch(/2\)\s*zai-glm-4\.6/);
     expect(text).toMatch(/3\)\s*nous-hermes-4/);
@@ -469,6 +472,111 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(text.indexOf("dashscope-qwen3-max")).toBeLessThan(text.indexOf("zai-glm-4.6"));
   });
 
+  it("7f. a live-sized catalog keeps every z.ai chat model on screen after DashScope's (F06-D)", async () => {
+    const { issue, boardUserId } = await createTelegramConversation({ agentId: gatewayAgentId });
+    const dashscope = Array.from({ length: 18 }, (_, i) => `dashscope-chat-${String(i + 1).padStart(2, "0")}`);
+    const service = [
+      "dashscope-text-embedding-v4",
+      "dashscope-ocr",
+      "dashscope-tts-flash",
+      "dashscope-asr-flash",
+      "dashscope-rerank-v3",
+      "hindsight-mem",
+      "hindsight-embed",
+      "deepseek-v4-flash-mem",
+    ];
+    const zai = ["zai-glm-4.6", "zai-glm-4.7", "zai-glm-5.3", "zai-glm-5.3-flash"];
+    const others = Array.from({ length: 12 }, (_, i) => `other-model-${String(i + 1).padStart(2, "0")}`);
+    const result = await runBridgedDirectMessageCommand(
+      baseInput({
+        conversationIssueId: issue.id,
+        boardUserId,
+        agentId: gatewayAgentId,
+        text: "/model",
+        // Worst order for the old code: z.ai first, service ids in between.
+        readGatewayModelCatalog: async () => ({
+          models: [...others, ...zai.slice().reverse(), ...service, ...dashscope.slice().reverse()],
+          scope: "catalog",
+        }),
+      }),
+    );
+    const text = (result as { kind: "reply"; text: string }).text;
+    for (const id of [...dashscope, ...zai]) expect(text).toContain(id);
+    for (const id of service) expect(text).not.toContain(id);
+    // Every DashScope model before every z.ai one; z.ai in version order.
+    expect(text.indexOf("dashscope-chat-18")).toBeLessThan(text.indexOf("zai-glm-4.6"));
+    expect(text.indexOf("zai-glm-4.7")).toBeLessThan(text.indexOf("zai-glm-5.3\n"));
+    expect(text).toMatch(/19\) zai-glm-4\.6/);
+    expect(text).toMatch(/22\) zai-glm-5\.3-flash/);
+    // The screen cap still applies to the rest, and says what it left out.
+    expect(text).not.toContain("other-model-01");
+    expect(text).toContain("…and 12 more");
+    // The hidden models are still reachable by name.
+    const picked = await runBridgedDirectMessageCommand(
+      baseInput({
+        conversationIssueId: issue.id,
+        boardUserId,
+        agentId: gatewayAgentId,
+        text: "/model other-model-05",
+        readGatewayModelCatalog: async () => ({ models: [...others, ...zai, ...dashscope], scope: "catalog" }),
+        botContainerApply: { apply: async () => ({ kind: "applied_files" }) },
+      }),
+    );
+    expect((picked as { text: string }).text).toContain("Model for this chat: other-model-05.");
+  });
+
+  it("7g. the card's own model takes its place in the owner's channel order, not the head of the list (F06-D)", async () => {
+    const [cardAgent] = await db
+      .insert(agents)
+      .values({
+        id: randomUUID(),
+        companyId,
+        name: "Agent F (gateway, card model)",
+        role: "engineer",
+        status: "idle",
+        adapterType: "hermes_gateway",
+        adapterConfig: { model: "nous-hermes-4" },
+      })
+      .returning();
+    const { issue, boardUserId } = await createTelegramConversation({ agentId: cardAgent!.id });
+    const result = await runBridgedDirectMessageCommand(
+      baseInput({
+        conversationIssueId: issue.id,
+        boardUserId,
+        agentId: cardAgent!.id,
+        text: "/model",
+        readGatewayModelCatalog: async () => ({
+          models: ["nous-hermes-4", "zai-glm-4.6", "dashscope-qwen3-max"],
+          scope: "agentKey",
+        }),
+      }),
+    );
+    const text = (result as { kind: "reply"; text: string }).text;
+    expect(text).toMatch(/1\) dashscope-qwen3-max/);
+    expect(text).toMatch(/2\) zai-glm-4\.6/);
+    expect(text).toMatch(/3\) nous-hermes-4/);
+  });
+
+  it("7h. a whole-catalog list names why the agent's own list was not read (F06-D)", async () => {
+    const { issue, boardUserId } = await createTelegramConversation({ agentId: gatewayAgentId });
+    const result = await runBridgedDirectMessageCommand(
+      baseInput({
+        conversationIssueId: issue.id,
+        boardUserId,
+        agentId: gatewayAgentId,
+        text: "/model",
+        readGatewayModelCatalog: async () => ({
+          models: ["dashscope-qwen3-max"],
+          scope: "catalog",
+          keyFailure: "no_key",
+        }),
+      }),
+    );
+    const text = (result as { kind: "reply"; text: string }).text;
+    expect(text).toContain("whole gateway catalog");
+    expect(text).toContain("Reason: no gateway key is bound to this agent.");
+  });
+
   it("7b. /model <catalog model> writes the override and applies the agent profile without a restart", async () => {
     const { issue, boardUserId } = await createTelegramConversation({ agentId: gatewayAgentId });
     const applied: Array<{ agentId: string; adapterType: string }> = [];
@@ -509,7 +617,7 @@ const support = await getEmbeddedPostgresTestSupport();
         agentId: gatewayAgentId,
         text: "/model",
         // No per-model providers and one id outside the known families: the
-        // grouping falls back to the ids' own prefixes.
+        // family falls back to the ids' own prefixes.
         readGatewayModelCatalog: async () => ({
           models: ["dashscope-qwen3-max", "model-x"],
           scope: "catalog",
@@ -518,8 +626,8 @@ const support = await getEmbeddedPostgresTestSupport();
     );
     const text = (result as { kind: "reply"; text: string }).text;
     expect(text).toContain("whole gateway catalog");
-    expect(text).toMatch(/dashscope-\*/);
-    expect(text).toMatch(/dashscope-qwen3-max/);
+    expect(text).toMatch(/1\) dashscope-qwen3-max/);
+    expect(text).toMatch(/2\) model-x/);
     expect(text).toMatch(/model-x/);
   });
 
@@ -601,7 +709,7 @@ const support = await getEmbeddedPostgresTestSupport();
         botContainerApply: applyDeps,
       }),
     );
-    expect((accepted as { kind: "reply"; text: string }).text).toContain("Reasoning for this chat: high.");
+    expect((accepted as { kind: "reply"; text: string }).text).toContain("Reasoning effort for this chat: high.");
     expect(await readOverrides(issue.id)).toEqual({ adapterConfig: { effort: "high" } });
     expect(applied).toEqual([glmAgentId]);
 
@@ -610,7 +718,7 @@ const support = await getEmbeddedPostgresTestSupport();
     const plainResult = await runBridgedDirectMessageCommand(
       baseInput({ conversationIssueId: plain.issue.id, boardUserId: plain.boardUserId, text: "/think medium" }),
     );
-    expect((plainResult as { kind: "reply"; text: string }).text).toContain("Reasoning for this chat: medium.");
+    expect((plainResult as { kind: "reply"; text: string }).text).toContain("Reasoning effort for this chat: medium.");
   });
 
   it("7f. without an injected apply the production default finds no runtime and reports it", async () => {
@@ -667,7 +775,8 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(high).toEqual({
       kind: "reply",
       command: "think",
-      text: "Reasoning for this chat: high. The next reply starts a new model session with this chat's recent history.",
+      outcome: "applied",
+      text: "Reasoning effort for this chat: high. The next reply starts a new model session with this chat's recent history.",
     });
     expect(await readOverrides(issue.id)).toEqual({ adapterConfig: { effort: "high" } });
 
