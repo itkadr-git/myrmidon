@@ -11,6 +11,7 @@ import {
   claimHolderLabel,
   formatCountdown,
 } from "./SwarmSupervisor";
+import { SwarmSupervisor as SwarmSupervisorProduction } from "./SwarmSupervisor.production";
 import type {
   SwarmSupervisorClaim,
   SwarmSupervisorOverview,
@@ -168,14 +169,14 @@ function render(node: React.ReactNode) {
   });
 }
 
-async function renderPage() {
+async function renderPage(Page: typeof SwarmSupervisor = SwarmSupervisor) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const pageRoot = createRoot(container);
   root = pageRoot;
   await act(async () => {
     pageRoot.render(
       <QueryClientProvider client={queryClient}>
-        <SwarmSupervisor />
+        <Page />
       </QueryClientProvider>,
     );
     await Promise.resolve();
@@ -244,6 +245,24 @@ describe("SwarmSupervisor page", () => {
     // The overview fetch used the selected company.
     expect(overviewMock).toHaveBeenCalledTimes(1);
     expect(overviewMock.mock.calls[0]?.[0]).toBe("company-1");
+  });
+
+  // The production entry is what App.tsx mounts: it must keep the setting
+  // origin labels (settings UI / env override / default) like the dev tree.
+  it.each([
+    ["dev", SwarmSupervisor],
+    ["production", SwarmSupervisorProduction],
+  ])("shows where each header setting came from (%s variant)", async (_name, Page) => {
+    overviewMock.mockResolvedValue(overview());
+    await renderPage(Page);
+
+    await vi.waitFor(() => {
+      expect(container.querySelector('[data-testid="swarm-overview-meta"]')).not.toBeNull();
+    });
+    const text = (id: string) => container.querySelector(`[data-testid="swarm-supervisor-source-${id}"]`)?.textContent;
+    expect(text("leaseTtlSec")).toContain("from settings UI");
+    expect(text("maxActiveTasks")).toContain("from environment override");
+    expect(text("enabled")).toContain("from settings UI");
   });
 
   it("renders an expired lease as expired rather than a countdown", async () => {

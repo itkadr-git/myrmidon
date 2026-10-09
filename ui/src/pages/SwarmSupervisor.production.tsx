@@ -43,6 +43,26 @@ import {
 const NO_COMPANY = "__none__";
 
 /**
+ * myrmidon(1.6.1 SWARM-SETTINGS-UI): the human label of a setting source —
+ * where the effective value came from (the settings UI, the environment
+ * override, or the built-in default). The supervisor meta strip shows it
+ * next to each value so the operator can tell at a glance which side is
+ * in charge.
+ */
+function swarmSourceLabel(source: string | undefined): string {
+  switch (source) {
+    case "settings":
+      return "from settings UI";
+    case "env":
+      return "from environment override";
+    case "default":
+      return "default";
+    default:
+      return "unknown";
+  }
+}
+
+/**
  * myrmidon(1.6.5 SWARM-T4, design §5.3): Roles tab vs the activity tab —
  * recent matches and tasks cooling down.
  */
@@ -69,6 +89,7 @@ export function claimHolderLabel(claim: SwarmSupervisorClaim): string {
 export function queueItemLabel(item: SwarmSupervisorQueueItem): string {
   return item.identifier ?? item.issueId;
 }
+
 
 
 /** Totals strip: one compact cell per overview total. */
@@ -184,7 +205,13 @@ function QueueTable({ role }: { role: SwarmSupervisorRole }) {
   );
 }
 
-function ClaimsTable({ role, onRelease, releasingClaimId }: { role: SwarmSupervisorRole; onRelease: (claimId: string) => void; releasingClaimId: string | null }) {
+interface ClaimsTableProps {
+  role: SwarmSupervisorRole;
+  onRelease: (claimId: string) => void;
+  releasingClaimId: string | null;
+}
+
+function ClaimsTable({ role, onRelease, releasingClaimId }: ClaimsTableProps) {
   const { t } = useTranslation();
   return (
     <TableShell
@@ -342,13 +369,10 @@ interface ActivitySectionProps {
  * single overview query, so this section adds no query of its own.
  */
 function ActivitySection({ overview }: ActivitySectionProps) {
-  const { t } = useTranslation();
   return (
     <div className="space-y-4">
       <WarningList warnings={overview.warnings} />
-
       <MatchesTable matched={overview.matched} />
-
       <CooldownTable cooldown={overview.cooldown} />
     </div>
   );
@@ -383,7 +407,7 @@ function WarningList({ warnings }: { warnings: SwarmSupervisorWarning[] }) {
   );
 }
 
-/** myrmidon(1.6.5 SWARM-T4): recent matches table. */
+/** myrmidon(1.6.5 SWARM-T4, design §5.3): recent matches table. */
 function MatchesTable({ matched }: { matched: SwarmSupervisorMatch[] }) {
   const { t } = useTranslation();
   return (
@@ -425,7 +449,7 @@ function MatchesTable({ matched }: { matched: SwarmSupervisorMatch[] }) {
   );
 }
 
-/** myrmidon(1.6.5 SWARM-T4): tasks cooling down after a failed match. */
+/** myrmidon(1.6.5 SWARM-T4, design §5.3): tasks cooling down after a failed match. */
 function CooldownTable({ cooldown }: { cooldown: SwarmSupervisorCooldown[] }) {
   const { t } = useTranslation();
   return (
@@ -473,7 +497,12 @@ function CooldownTable({ cooldown }: { cooldown: SwarmSupervisorCooldown[] }) {
   );
 }
 
-export function SwarmSupervisor() {
+export interface SwarmSupervisorProps {
+  /** Render inside another surface without a second page-level title or breadcrumb. */
+  embedded?: boolean;
+}
+
+export function SwarmSupervisor({ embedded = false }: SwarmSupervisorProps = {}) {
   const { t } = useTranslation();
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
@@ -483,8 +512,8 @@ export function SwarmSupervisor() {
   const [section, setSection] = useState<SwarmSection>("roles");
 
   useEffect(() => {
-    setBreadcrumbs([{ label: t("swarm.title") }]);
-  }, [setBreadcrumbs]);
+    if (!embedded) setBreadcrumbs([{ label: t("swarm.title") }]);
+  }, [embedded, setBreadcrumbs]);
 
   const { data, isLoading, error } = useQuery({
     queryKey: swarmSupervisorOverviewKey(companyId),
@@ -513,7 +542,11 @@ export function SwarmSupervisor() {
       <div className="space-y-5">
         <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
           <div>
-            <h1 className="text-3xl font-semibold tracking-tight">{t("swarm.title")}</h1>
+            {embedded ? (
+              <h2 className="text-lg font-semibold text-foreground">{t("swarm.title")}</h2>
+            ) : (
+              <h1 className="text-3xl font-semibold tracking-tight">{t("swarm.title")}</h1>
+            )}
             <p className="mt-2 max-w-2xl text-sm leading-6 text-muted-foreground">
               {t("swarm.intro")}
             </p>
@@ -551,11 +584,31 @@ export function SwarmSupervisor() {
             <span className="flex items-center gap-1.5">
               <RotateCw className="h-4 w-4" />
               {data.leaseTtlSec === null ? "—" : t("swarm.leaseTtl", { seconds: `${formatNumber(data.leaseTtlSec)} s` })}
+              {/* myrmidon(1.6.1 SWARM-SETTINGS-UI): where the value came from */}
+              <span
+                className="text-muted-foreground/80"
+                data-testid="swarm-supervisor-source-leaseTtlSec"
+              >
+                ({swarmSourceLabel(data.settingSources?.leaseTtlSec)})
+              </span>
             </span>
             <span className="flex items-center gap-1.5">
               <ShieldCheck className="h-4 w-4" />
               {t("swarm.maxActive")}{" "}
               {data.maxActiveTasksPerAgent === null ? "—" : formatNumber(data.maxActiveTasksPerAgent)}
+              <span
+                className="text-muted-foreground/80"
+                data-testid="swarm-supervisor-source-maxActiveTasks"
+              >
+                ({swarmSourceLabel(data.settingSources?.maxActiveTasks)})
+              </span>
+            </span>
+            <span className="flex items-center gap-1.5">
+              <ShieldCheck className="h-4 w-4" />
+              {t("swarm.claimSwitch")}{" "}
+              <span data-testid="swarm-supervisor-source-enabled">
+                {swarmSourceLabel(data.settingSources?.enabled)}
+              </span>
             </span>
           </div>
         ) : null}
