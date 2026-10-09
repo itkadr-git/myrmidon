@@ -128,13 +128,8 @@ import {
   WIP_LIMIT_SETTINGS_KEY,
   normalizeWipLimitSettings,
 } from "@paperclipai/shared";
-// myrmidon(1.6.3 PROMPT-BUDGET B): the prompt-budget threshold cards.
-import { buildPromptBudgetAttentionCards } from "../myrmidon/prompt-budget/attention.js";
-import { buildPromptBudgetStatus } from "../myrmidon/prompt-budget/status.js";
-import {
-  PROMPT_BUDGET_SETTINGS_KEY,
-  normalizePromptBudgetSettings,
-} from "@paperclipai/shared";
+// myrmidon(1.6.5 PROMPT-BUDGET-SIGNAL): the recorded prompt-budget signals.
+import { readPromptBudgetSignals } from "../myrmidon/prompt-budget/signal.js";
 // myrmidon(1.6.1-FORAGING-LIMITS-UI): the learning-spend operator signals.
 import {
   readForagingAutoOffSignal,
@@ -3202,57 +3197,57 @@ async function buildAttentionFeedSnapshot(
           },
         }));
       }
-      // myrmidon(1.6.3 PROMPT-BUDGET B): an agent whose last run's prompt
-      // crossed the warn/crit threshold (percent of the model window) raises
-      // one card. The feed recomputes on every list, so the card lives exactly
-      // as long as the last run is over the threshold — a newer run under the
-      // threshold removes it, a re-grade warn ↔ crit updates it in place (one
-      // dedup key per agent). The detail carries the top-3 prompt parts, the
-      // window and the crossed threshold. A disabled feature emits nothing.
-      const promptBudgetSettings = normalizePromptBudgetSettings(
-        wipSettingsRow?.general?.[PROMPT_BUDGET_SETTINGS_KEY],
-      );
-      if (promptBudgetSettings.enabled) {
-        const promptBudgetStatuses = await buildPromptBudgetStatus(
-          db,
+      // myrmidon(1.6.5 PROMPT-BUDGET-SIGNAL): an agent whose last run's prompt
+      // crossed the warn/crit threshold raises one card, and this card is the
+      // signal's only surface. The sweep records one signal per agent per UTC
+      // day — dedup key `prompt-budget:<agentId>:<utc day>`, stored and found
+      // in the registry this loop reads — so the owner and the operator get the
+      // overrun while the agent's own task stays clean: this signal writes no
+      // comment into a task any more, and nothing about it wakes the agent
+      // whose prompt is already over budget.
+      //
+      // The record carries the numbers of the latest pass plus the `recordedAt`
+      // of the day's first crossing; an agent back under the threshold loses
+      // its record on the next pass and the card leaves the feed (a re-grade
+      // warn ↔ crit updates the one record in place). The row opens the agent's
+      // settings — where the thresholds that produced this signal live — and
+      // its detail carries the top-3 prompt parts, the window and the crossed
+      // threshold. A disabled feature records nothing.
+      for (const signal of readPromptBudgetSignals(companyId)) {
+        const card = signal.card;
+        add(createItem({
           companyId,
-          promptBudgetSettings,
-        );
-        for (const card of buildPromptBudgetAttentionCards(promptBudgetStatuses, wipAgentNameById)) {
-          add(createItem({
+          sourceKind: "prompt_budget_alert",
+          subject: {
+            kind: "agent",
+            id: card.agentId,
             companyId,
-            sourceKind: "prompt_budget_alert",
-            subject: {
-              kind: "agent",
-              id: card.agentId,
-              companyId,
-              title: card.title,
-              identifier: null,
-              status: null,
-              href: `/${prefix}/agents/${card.agentId}`,
-              metadata: card.metadata,
-            },
-            whyNow: card.whyNow,
-            decisionVerbs: decisionVerbs(
-              { id: "inspect", label: "Inspect", description: "Open the agent card and check the prompt breakdown of the last run." },
-              { id: "dismiss", label: "Dismiss", description: "Dismiss this signal until a newer run crosses a threshold again." },
-            ),
-            inlineResolvable: false,
-            entryRule: "the agent's last run prompt share of the model window is over the warn or crit threshold.",
-            exitRule: "a newer run is back under the warn threshold, or the row is dismissed.",
-            dedupKey: card.dedupKey,
-            severity: card.severity,
-            activityAt: toIso(new Date(now)),
-            createdAt: toIso(new Date(now)),
-            updatedAt: toIso(new Date(now)),
-            relatedIssue: null,
-            detail: {
-              kind: "generic",
-              summaryExcerpt: card.summaryExcerpt,
-              images: [],
-            },
-          }));
-        }
+            title: card.title,
+            identifier: null,
+            status: null,
+            href: `/${prefix}/agents/${card.agentId}/runtime`,
+            metadata: card.metadata,
+          },
+          whyNow: card.whyNow,
+          decisionVerbs: decisionVerbs(
+            { id: "open_settings", label: "Open settings", description: "Open the agent's settings to trim the prompt or raise the thresholds." },
+            { id: "dismiss", label: "Dismiss", description: "Dismiss this signal until a newer run crosses a threshold again on a new day." },
+          ),
+          inlineResolvable: false,
+          entryRule: "the agent's last run prompt share of the model window is over the warn or crit threshold.",
+          exitRule: "a newer run is back under the warn threshold, or the signal's day is over, or the row is dismissed.",
+          dedupKey: card.dedupKey,
+          severity: card.severity,
+          activityAt: signal.recordedAt,
+          createdAt: signal.recordedAt,
+          updatedAt: signal.recordedAt,
+          relatedIssue: null,
+          detail: {
+            kind: "generic",
+            summaryExcerpt: card.summaryExcerpt,
+            images: [],
+          },
+        }));
       }
       // myrmidon(BOT-RUNTIME-TUNING D): the periodic fallback sweep records
       // one signal per agent whose gateway calls were served by a model

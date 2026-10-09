@@ -105,10 +105,14 @@ describe("myrmidon(1.6.5 F-15 D) batched last-prompt read is one query at any ag
     // The old call site is gone; the batched reader is the only runs read.
     expect(status).not.toMatch(/loadLastPromptRun\(/);
     expect(status).toMatch(/loadLastPromptRuns\(/);
-    // attention.ts still assembles the prompt-budget cards through the single
-    // status entry point — no per-agent runs query reappeared in the feed.
+    // myrmidon(1.6.5 PROMPT-BUDGET-SIGNAL): the feed no longer assembles
+    // statuses on every list — it reads the sweep-recorded signals, so the
+    // hot path is drift-guarded by the sweep's own batched assembly below.
     const attention = fs.readFileSync(path.join(here, "../../services/attention.ts"), "utf8");
-    expect(attention).toMatch(/buildPromptBudgetStatus\(/);
+    expect(attention).not.toMatch(/buildPromptBudgetStatus\(/);
+    expect(attention).toMatch(/readPromptBudgetSignals\(/);
+    const sweep = fs.readFileSync(path.join(here, "sweep.ts"), "utf8");
+    expect(sweep).toMatch(/buildPromptBudgetStatus/);
   });
 });
 
