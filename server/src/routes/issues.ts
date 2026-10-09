@@ -193,6 +193,13 @@ import {
   routineService,
   workProductService,
 } from "../services/index.js";
+// myrmidon(AGENT-ISSUE-LIST): response-size defaults for agent actors on GET /companies/:companyId/issues
+import {
+  chooseIssueListProjection,
+  parseIncludeDescriptionParam,
+  resolveIssueListLimit,
+  stripIssueListDescriptions,
+} from "../myrmidon/agent-issue-list-defaults.js";
 import {
   runnerGoalService,
   RunnerGoalActionError,
@@ -8010,10 +8017,15 @@ export function issueRoutes(
       rawLimit !== undefined && /^\d+$/.test(rawLimit)
         ? Number.parseInt(rawLimit, 10)
         : null;
-    const limit =
-      parsedLimit === null
-        ? ISSUE_LIST_DEFAULT_LIMIT
-        : clampIssueListLimit(parsedLimit);
+    // myrmidon(AGENT-ISSUE-LIST): agent actors default to a smaller page.
+    const isAgentActor = req.actor.type === "agent";
+    const limit = clampIssueListLimit(
+      resolveIssueListLimit({
+        isAgentActor,
+        parsedLimit,
+        boardDefaultLimit: ISSUE_LIST_DEFAULT_LIMIT,
+      }),
+    );
     const rawOffset = req.query.offset as string | undefined;
     const parsedOffset =
       rawOffset !== undefined && /^\d+$/.test(rawOffset)
@@ -8023,7 +8035,35 @@ export function issueRoutes(
     const sortField = req.query.sortField as string | undefined;
     const sortDir = req.query.sortDir as string | undefined;
     const view = req.query.view as string | undefined;
-    const compactView = view === "compact";
+    // myrmidon(AGENT-ISSUE-LIST): agent actors default to the compact
+    // projection and omit `description` unless it is explicitly requested.
+    if (
+      view !== undefined &&
+      view !== "compact" &&
+      !(isAgentActor && view === "full")
+    ) {
+      res.status(400).json({ error: "view must be 'compact' when provided" });
+      return;
+    }
+    const includeDescriptionRequested = parseIncludeDescriptionParam(
+      req.query.includeDescription,
+    );
+    if (
+      req.query.includeDescription !== undefined &&
+      includeDescriptionRequested === null
+    ) {
+      res
+        .status(400)
+        .json({ error: "includeDescription must be true or false" });
+      return;
+    }
+    const projection = chooseIssueListProjection({
+      isAgentActor,
+      rawView: view,
+      includeDescriptionRequested,
+    });
+    const compactView = projection.compact;
+    const includeDescription = projection.includeDescription;
     const hasPlanDocument = parseOptionalBooleanQuery(
       req.query.hasPlanDocument,
     );
@@ -8074,10 +8114,6 @@ export function issueRoutes(
       res
         .status(400)
         .json({ error: "attention must be 'blocked' when provided" });
-      return;
-    }
-    if (view !== undefined && view !== "compact") {
-      res.status(400).json({ error: "view must be 'compact' when provided" });
       return;
     }
     if (
@@ -8208,7 +8244,11 @@ export function issueRoutes(
       companyId,
       normalizedQuery: {
         ...listFilters,
-        view: compactView ? "compact" : undefined,
+        // myrmidon(AGENT-ISSUE-LIST): both projection axes key the cache —
+        // otherwise a compact-with-description and a compact-without answer
+        // would collide for the same actor.
+        view: compactView ? "compact" : view === "full" ? "full" : undefined,
+        includeDescription,
       },
     });
     const coordinated = await coordinateIssueListGet({
@@ -8244,12 +8284,15 @@ export function issueRoutes(
               else recoveryActionByIssue.delete(issue.id);
             }),
           );
-          const compactResult = result.map((issue) =>
-            toCompactIssue({
-              ...issue,
-              activeRecoveryAction: recoveryActionByIssue.get(issue.id) ?? null,
-              successfulRunHandoff: handoffStates.get(issue.id) ?? null,
-            }),
+          const compactResult = stripIssueListDescriptions(
+            result.map((issue) =>
+              toCompactIssue({
+                ...issue,
+                activeRecoveryAction: recoveryActionByIssue.get(issue.id) ?? null,
+                successfulRunHandoff: handoffStates.get(issue.id) ?? null,
+              }),
+            ),
+            includeDescription,
           );
           return {
             kind: "compact",
@@ -8280,11 +8323,14 @@ export function issueRoutes(
         );
         return {
           kind: "full",
-          body: result.map((issue) => ({
-            ...issue,
-            successfulRunHandoff: handoffStates.get(issue.id) ?? null,
-            activeRecoveryAction: recoveryActionByIssue.get(issue.id) ?? null,
-          })),
+          body: stripIssueListDescriptions(
+            result.map((issue) => ({
+              ...issue,
+              successfulRunHandoff: handoffStates.get(issue.id) ?? null,
+              activeRecoveryAction: recoveryActionByIssue.get(issue.id) ?? null,
+            })),
+            includeDescription,
+          ),
         };
       },
     });
