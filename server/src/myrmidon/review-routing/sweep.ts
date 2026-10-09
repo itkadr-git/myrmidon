@@ -14,20 +14,39 @@
 //     reviewer (never one that already had it); with no other reviewer the
 //     signal is what remains.
 //
+// The 1.6.5 PR lane runs after the task lane on the same pass but on its own
+// `pollIntervalSec` throttle, per company:
+//
+//  4. open pull requests (from the webhook-fed externalObjects rows, plus a
+//     repo poll of the configured/known repositories) whose CURRENT head is
+//     green with no review verdict get a `Review PR …` task with the
+//     least-loaded reviewer (both load gates, never the PR author's linked
+//     agent); an approved green head gets a `Merge PR …` steward task;
+//  5. a routed task whose recorded head no longer matches the PR's current
+//     head is superseded: cancelled with one system comment naming the new
+//     head;
+//  6. with no eligible reviewer/steward the PR raises a `no_reviewer` /
+//     `no_steward` attention card carrying its coordinates.
+//
 // The sweep is idempotent: the assignment re-checks its premise under a row
-// lock, so a second pass (or a racing human) never double-assigns.
+// lock, so a second pass (or a racing human) never double-assigns. The PR lane
+// re-checks the work-product coverage inside its guarded create path, and a
+// GitHub read failure creates and closes nothing.
 
 import type { Logger } from "pino";
 import {
   REVIEW_ROUTING_ASSIGNED_ACTION,
+  REVIEW_ROUTING_PR_TASK_CREATED_ACTION,
   REVIEW_ROUTING_REASSIGNED_ACTION,
+  REVIEW_ROUTING_STEWARD_TASK_CREATED_ACTION,
   type IssueCommentMetadata,
   type IssueCommentPresentation,
   type ReviewRoutingSettings,
 } from "@paperclipai/shared";
 import { logger } from "../../middleware/logger.js";
-import { replaceReviewRoutingSignals, type ReviewRoutingSignal } from "./attention.js";
+import { prSignalSubjectId, replaceReviewRoutingSignals, type ReviewRoutingSignal } from "./attention.js";
 import {
+  buildPrRoutingTaskPatch,
   buildReviewRoutingAssignPatch,
   buildReviewRoutingReassignPatch,
   buildReviewRoutingWakeContext,
@@ -35,15 +54,29 @@ import {
   hoursSince,
   isReviewOverdue,
   issueNeedsReviewer,
+  pickPrReviewer,
   pickReviewer,
   readPendingAgentReview,
   type ReviewerCandidate,
 } from "./policy.js";
+import {
+  prRoutingCoverageKey,
+  prReviewTaskTitle,
+  prRoutingTaskDescription,
+  prStewardTaskTitle,
+  prTaskIsSuperseded,
+  reviewTaskDueForHead,
+  stewardTaskDueForHead,
+} from "./pr-policy.js";
+import type { PullRequestHeadResolver } from "./github.js";
 import type { InReviewIssueRow, ReviewRoutingStore } from "./store.js";
+import type { PrRoutedTask } from "./pr-policy.js";
 
 export const DEFAULT_REVIEW_ROUTING_SWEEP_INTERVAL_SEC = 60;
 /** Tasks inspected per company per pass (oldest update first). */
 export const REVIEW_ROUTING_PAGE_SIZE = 200;
+/** PR candidates inspected per company per pass. */
+export const REVIEW_ROUTING_PR_PAGE_SIZE = 100;
 /** Assignments and reassignments per company per pass. */
 export const REVIEW_ROUTING_MAX_MOVES_PER_PASS = 20;
 /** How long the card of a completed reassignment stays on the desk. */
@@ -58,11 +91,22 @@ export interface ReviewRoutingSweepResult {
   /** Tasks signalled (no reviewer, or overdue) in this pass. */
   signaled: number;
   failed: number;
+  // --- PR lane (1.6.5, additive) ---------------------------------------------
+  /** Open PR candidates this pass looked at. */
+  prScanned: number;
+  /** Review tasks created for green verdict-less heads. */
+  prTasksCreated: number;
+  /** Merge-steward tasks created for approved green heads. */
+  stewardTasksCreated: number;
+  /** Routed tasks cancelled because the PR head moved on. */
+  prSuperseded: number;
 }
 
 export interface ReviewRoutingSweepDeps {
   store: ReviewRoutingStore;
   readSettings: () => Promise<ReviewRoutingSettings>;
+  /** GitHub head resolver; without it the PR lane stays inert (task lane only). */
+  prResolver?: PullRequestHeadResolver;
   addComment: (
     issueId: string,
     body: string,
@@ -109,15 +153,18 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
   const intervalMs = deps.intervalMs ?? DEFAULT_REVIEW_ROUTING_SWEEP_INTERVAL_SEC * 1000;
   const log = deps.log ?? logger;
   let lastSweepAtMs = 0;
+  let lastPrLaneAtMs = 0;
   /** Cards of completed reassignments, kept for a day so the desk shows them. */
   const recentReassignments = new Map<string, { signal: ReviewRoutingSignal; untilMs: number }>();
+  /** PR-lane signals from the lane's last actual run, kept through throttle gaps. */
+  const prLaneSignalsByCompany = new Map<string, ReviewRoutingSignal[]>();
 
   async function sweepCompany(
     companyId: string,
     settings: ReviewRoutingSettings,
     now: Date,
     result: ReviewRoutingSweepResult,
-  ): Promise<void> {
+  ): Promise<ReviewRoutingSignal[]> {
     const rows = await deps.store.listInReviewIssues(companyId, REVIEW_ROUTING_PAGE_SIZE);
     result.scanned += rows.length;
 
@@ -127,8 +174,7 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
       .map((row) => ({ row, review: readPendingAgentReview(row) }))
       .filter((entry): entry is { row: InReviewIssueRow; review: NonNullable<typeof entry.review> } => entry.review !== null);
     if (needing.length === 0 && pending.length === 0) {
-      replaceReviewRoutingSignals(companyId, liveReassignmentSignals(companyId, rowById, now));
-      return;
+      return liveReassignmentSignals(companyId, rowById, now);
     }
 
     const history = await deps.store.routingHistory(
@@ -248,12 +294,12 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
       }
     }
 
-    replaceReviewRoutingSignals(companyId, [
+    return [
       ...signals,
       ...liveReassignmentSignals(companyId, rowById, now).filter(
         (recent) => !signals.some((signal) => signal.issueId === recent.issueId),
       ),
-    ]);
+    ];
   }
 
   /** Cards of recent reassignments whose task is still in review and within the TTL. */
@@ -271,6 +317,258 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
       if (entry.signal.companyId === companyId) live.push(entry.signal);
     }
     return live;
+  }
+
+  /**
+   * The 1.6.5 PR lane: watch open pull requests, route a review task the
+   * moment a head turns green without a verdict, a merge-steward task when it
+   * is approved, and supersede tasks whose recorded head moved on. Runs on its
+   * own `pollIntervalSec` throttle (the task lane keeps the pass interval);
+   * without a resolver or with the lane disabled it stays inert. A GitHub read
+   * failure skips the PR and counts as NO failure metric — an outage must
+   * neither create nor close tasks, and must not look like a broken sweep.
+   */
+  async function sweepPrLane(
+    companyId: string,
+    settings: ReviewRoutingSettings,
+    now: Date,
+    result: ReviewRoutingSweepResult,
+    force: boolean,
+  ): Promise<ReviewRoutingSignal[] | null> {
+    const prWatch = settings.prWatch;
+    if (!prWatch.enabled) {
+      prLaneSignalsByCompany.delete(companyId);
+      return [];
+    }
+    if (!deps.prResolver) return null;
+    if (!force && now.getTime() - lastPrLaneAtMs < prWatch.pollIntervalSec * 1000) return null;
+    lastPrLaneAtMs = now.getTime();
+
+    const signals: ReviewRoutingSignal[] = [];
+    // Source (a): webhook-fed rows.
+    const candidates = new Map<string, { repository: string; number: number }>();
+    for (const row of await deps.store.listPrCandidates(companyId, REVIEW_ROUTING_PR_PAGE_SIZE)) {
+      candidates.set(`${row.repository}#${row.number}`, { repository: row.repository, number: row.number });
+    }
+    // Source (b): the repo poll, at most once per pollIntervalSec per repo
+    // (this lane's own throttle is the per-repo clock). Configured repos win;
+    // with none configured, every repo the instance has seen PRs of.
+    const repos =
+      prWatch.repositories.length > 0
+        ? prWatch.repositories
+        : [...new Set([...candidates.keys()].map((key) => key.slice(0, key.lastIndexOf("#")))), ...(await deps.store.listKnownPrRepositories(companyId))];
+    if (deps.prResolver.listOpenPullRequests) {
+      for (const repository of repos) {
+        let listed: Awaited<ReturnType<PullRequestHeadResolver["listOpenPullRequests"]>> = [];
+        try {
+          listed = await deps.prResolver.listOpenPullRequests({ companyId, repository });
+        } catch (err) {
+          log.warn({ err, companyId, repository }, "review routing PR lane repo poll failed");
+        }
+        for (const pr of listed) candidates.set(`${repository}#${pr.number}`, { repository, number: pr.number });
+      }
+    }
+
+    if (candidates.size === 0) return signals;
+
+    // One pool set per pass; loads bump as the lane creates tasks so a batch
+    // spreads (the same counting the task lane does).
+    const [reviewerRows, stewardRows, boardLoad, openReviewLoad, openMergeLoad] = await Promise.all([
+      deps.store.listReviewerAgents(companyId, settings.reviewerRoles),
+      deps.store.listReviewerAgents(companyId, prWatch.steward.roles),
+      deps.store.loadByAgent(companyId),
+      deps.store.openPrTaskLoadByAgent(companyId, "review"),
+      deps.store.openPrTaskLoadByAgent(companyId, "merge"),
+    ]);
+    const reviewers: ReviewerCandidate[] = reviewerRows.map((agent) => ({ id: agent.id, role: agent.role, load: 0 }));
+    const stewards: ReviewerCandidate[] = stewardRows.map((agent) => ({ id: agent.id, role: agent.role, load: 0 }));
+    const openReviewByAgent = new Map(openReviewLoad);
+    const openMergeByAgent = new Map(openMergeLoad);
+
+    // Coverage: open pr-routing tasks per (repo, number, kind), and the
+    // author-exclusion cache (GitHub login -> linked agent ids).
+    const coverage = new Map<string, PrRoutedTask[]>();
+    for (const task of await deps.store.listOpenPrRoutingTasks(companyId)) {
+      const key = prRoutingCoverageKey({ repository: task.repository, number: task.number, kind: task.kind });
+      const bucket = coverage.get(key) ?? [];
+      bucket.push(task);
+      coverage.set(key, bucket);
+    }
+    const authorAgents = new Map<string, string[]>();
+    const authorExcluded = async (login: string | null | undefined): Promise<Set<string>> => {
+      if (!login) return new Set();
+      let ids = authorAgents.get(login.toLowerCase());
+      if (!ids) {
+        ids = await deps.store.findAgentIdsByGitHubLogin(companyId, login);
+        authorAgents.set(login.toLowerCase(), ids);
+      }
+      return new Set(ids);
+    };
+
+    let newAssignments = 0;
+    for (const candidate of candidates.values()) {
+      let head;
+      try {
+        head = await deps.prResolver.resolve({ companyId, repository: candidate.repository, number: candidate.number });
+      } catch (err) {
+        // The resolver swallows GitHub trouble into fetchFailed; a throw is a
+        // code fault — log it, count nothing that the desk would misread, and
+        // skip this PR.
+        log.warn({ err, companyId, pr: `${candidate.repository}#${candidate.number}` }, "review routing PR resolver failed");
+        continue;
+      }
+      result.prScanned += 1;
+      if (head.fetchFailed || !head.open || !head.headSha) continue;
+      const pr = { repository: head.repository, number: head.number };
+
+      // Supersede first (rule 6): tasks recorded against a dead head are
+      // cancelled so the current head's task is not blocked by its coverage.
+      for (const kind of ["review", "merge"] as const) {
+        const bucketKey = prRoutingCoverageKey({ ...pr, kind });
+        const bucket = coverage.get(bucketKey) ?? [];
+        const stale = bucket.filter((task) => prTaskIsSuperseded(task, head.headSha!));
+        const live = bucket.filter((task) => !stale.includes(task));
+        for (const task of stale) {
+          try {
+            const cancelled = await deps.store.cancelPrRoutingTask({ issueId: task.issueId, companyId });
+            if (!cancelled) continue;
+            result.prSuperseded += 1;
+            await deps.addComment(
+              task.issueId,
+              `Automatic review routing: this task was created for pull request head ` +
+                `\`${task.headSha}\`, but ${pr.repository}#${pr.number} now carries head \`${head.headSha}\`. ` +
+                "The task is superseded and cancelled; the new head is routed on this same pass.",
+              {
+                presentation: { ...notice("PR routing superseded"), tone: "warning" },
+                metadata: metadataFor({
+                  "Pull request": `${pr.repository}#${pr.number}`,
+                  "Superseded head": String(task.headSha),
+                  "Current head": head.headSha,
+                }),
+              },
+            );
+          } catch (err) {
+            result.failed += 1;
+            log.warn({ err, issueId: task.issueId }, "review routing failed to supersede a task");
+          }
+        }
+        coverage.set(bucketKey, live);
+      }
+
+      const reviewDue = reviewTaskDueForHead(head);
+      const stewardDue = prWatch.steward.enabled && stewardTaskDueForHead(head);
+      if (!reviewDue && !stewardDue) continue;
+
+      for (const kind of (["review", "merge"] as const)) {
+        const due = kind === "review" ? reviewDue : stewardDue;
+        if (!due) continue;
+        const bucketKey = prRoutingCoverageKey({ ...pr, kind });
+        if ((coverage.get(bucketKey) ?? []).some((task) => task.headSha === head.headSha)) continue;
+        if (newAssignments >= prWatch.maxNewAssignmentsPerPass) continue;
+
+        const excluded = kind === "review" ? await authorExcluded(head.authorLogin) : new Set<string>();
+        const picked =
+          kind === "review"
+            ? pickPrReviewer({
+                reviewers,
+                boardLoadByAgent: boardLoad,
+                openPrLoadByAgent: openReviewByAgent,
+                excluded,
+                maxLoadPerReviewer: settings.maxLoadPerReviewer,
+                maxOpenReviewsPerReviewer: prWatch.maxOpenReviewsPerReviewer,
+              })
+            : pickPrReviewer({
+                reviewers: stewards,
+                boardLoadByAgent: boardLoad,
+                openPrLoadByAgent: openMergeByAgent,
+                excluded,
+                // The steward lane has its own ceiling only (spec rule 5): a
+                // busy steward may still merge; the merge count is the gate.
+                maxLoadPerReviewer: Number.POSITIVE_INFINITY,
+                maxOpenReviewsPerReviewer: prWatch.steward.maxMergesPerSteward,
+              });
+        if (!picked) {
+          const signal: ReviewRoutingSignal = {
+            kind: kind === "review" ? "no_reviewer" : "no_steward",
+            issueId: prSignalSubjectId(pr.repository, pr.number),
+            companyId,
+            identifier: null,
+            title: kind === "review" ? prReviewTaskTitle(head) : prStewardTaskTitle(head),
+            since: now.toISOString(),
+            hoursInReview: null,
+            pr: { repository: pr.repository, number: pr.number, headSha: head.headSha },
+          };
+          if (!signals.some((existing) => existing.kind === signal.kind && existing.issueId === signal.issueId)) {
+            signals.push(signal);
+            result.signaled += 1;
+          }
+          continue;
+        }
+
+        const patch = buildPrRoutingTaskPatch({ reviewerAgentId: picked.id });
+        const title = kind === "review" ? prReviewTaskTitle(head) : prStewardTaskTitle(head);
+        const description = prRoutingTaskDescription(head, kind);
+        try {
+          const created = await deps.store.createPrRoutingTask({
+            companyId,
+            repository: pr.repository,
+            number: pr.number,
+            kind,
+            headSha: head.headSha!,
+            title,
+            description,
+            status: patch.status,
+            assigneeAgentId: patch.assigneeAgentId,
+            executionPolicy: patch.executionPolicy,
+            executionState: patch.executionState,
+            prUrl: head.url ?? null,
+            prTitle: head.title ?? null,
+            authorLogin: head.authorLogin ?? null,
+            baseRef: head.baseRef ?? null,
+            draft: head.draft,
+          });
+          if (!created.issueId) continue; // guard lost or create refused: retry next pass
+          newAssignments += 1;
+          if (kind === "review") {
+            result.prTasksCreated += 1;
+            openReviewByAgent.set(picked.id, (openReviewByAgent.get(picked.id) ?? 0) + 1);
+          } else {
+            result.stewardTasksCreated += 1;
+            openMergeByAgent.set(picked.id, (openMergeByAgent.get(picked.id) ?? 0) + 1);
+          }
+          boardLoad.set(picked.id, (boardLoad.get(picked.id) ?? 0) + 1);
+          (coverage.get(bucketKey) ?? coverage.set(bucketKey, []).get(bucketKey)!).push({
+            issueId: created.issueId,
+            repository: pr.repository,
+            number: pr.number,
+            kind,
+            headSha: head.headSha,
+          });
+          await deps.logActivity({
+            companyId,
+            action: kind === "review" ? REVIEW_ROUTING_PR_TASK_CREATED_ACTION : REVIEW_ROUTING_STEWARD_TASK_CREATED_ACTION,
+            issueId: created.issueId,
+            details: {
+              repository: pr.repository,
+              pullRequest: pr.number,
+              headSha: head.headSha,
+              reviewerAgentId: picked.id,
+              reviewerRole: picked.role,
+            },
+          });
+          await wake(
+            { id: created.issueId, companyId },
+            picked.id,
+            patch.executionState,
+            kind === "review" ? "myrmidon_review_routing_pr_review" : "myrmidon_review_routing_pr_merge",
+          );
+        } catch (err) {
+          result.failed += 1;
+          log.warn({ err, companyId, pr: `${pr.repository}#${pr.number}`, kind }, "review routing failed to create a PR task");
+        }
+      }
+    }
+    return signals;
   }
 
   async function assign(row: InReviewIssueRow, reviewer: ReviewerCandidate) {
@@ -348,7 +646,7 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
    * reviewer still sees the task on its own heartbeat and in its inbox.
    */
   async function wake(
-    row: InReviewIssueRow,
+    row: { id: string; companyId: string },
     reviewerId: string,
     state: Record<string, unknown> | null,
     mutation: string,
@@ -368,7 +666,9 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
   return {
     resetForTest() {
       lastSweepAtMs = 0;
+      lastPrLaneAtMs = 0;
       recentReassignments.clear();
+      prLaneSignalsByCompany.clear();
     },
     async sweep(now = (deps.now ?? (() => new Date()))(), options) {
       const result: ReviewRoutingSweepResult = {
@@ -378,6 +678,10 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
         reassigned: 0,
         signaled: 0,
         failed: 0,
+        prScanned: 0,
+        prTasksCreated: 0,
+        stewardTasksCreated: 0,
+        prSuperseded: 0,
       };
       if (!options?.force && now.getTime() - lastSweepAtMs < intervalMs) {
         result.skippedPass = true;
@@ -392,11 +696,23 @@ export function createReviewRoutingSweep(deps: ReviewRoutingSweepDeps): ReviewRo
       const companyIds = await deps.store.listActiveCompanyIds();
       for (const companyId of companyIds) {
         if (!settings.enabled) {
+          prLaneSignalsByCompany.delete(companyId);
           replaceReviewRoutingSignals(companyId, []);
           continue;
         }
         try {
-          await sweepCompany(companyId, settings, now, result);
+          const taskSignals = await sweepCompany(companyId, settings, now, result);
+          const prSignals = await sweepPrLane(companyId, settings, now, result, options?.force === true);
+          // null = the lane did not run this pass (throttled or no resolver):
+          // the desk keeps the PR cards of its last actual run.
+          if (prSignals !== null) prLaneSignalsByCompany.set(companyId, prSignals);
+          const effectivePrSignals = prSignals ?? prLaneSignalsByCompany.get(companyId) ?? [];
+          replaceReviewRoutingSignals(companyId, [
+            ...taskSignals,
+            ...effectivePrSignals.filter(
+              (pr) => !taskSignals.some((task) => task.kind === pr.kind && task.issueId === pr.issueId),
+            ),
+          ]);
         } catch (err) {
           result.failed += 1;
           log.warn({ err, companyId }, "review routing sweep failed for one company");
