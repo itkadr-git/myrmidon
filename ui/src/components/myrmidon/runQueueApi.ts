@@ -8,10 +8,10 @@
 // The settings endpoints are the server core (RUN-PRIORITY A), which mirrors the runtime-limits pattern:
 // settings live in the instance settings, the server re-reads them on every
 // admission sweep (applyRunAdmissionLimits), so a saved change takes effect on
-// the next pass without restarting the server. The wait reason is the same
-// token the admission sweep already writes into the run's contextSnapshot
-// (`waitReason`, server/src/services/heartbeat.ts); the queue rank is what
-// part A adds alongside it.
+// the next pass without restarting the server. The waiting state is the same
+// pass's view of the run, read from its contextSnapshot: `waitReason` (the gate
+// holding it back, "priority" when a heavier run went first) and
+// `queuePosition`/`queueLength` (its place in the priority order).
 //
 // Everything here degrades to `null` when the server does not (yet) serve the
 // endpoint — a 404/405 means "no data", never a crash and never a number the
@@ -61,10 +61,11 @@ export interface RunQueuePositionView {
 /**
  * The queue-priority settings of the server core (`GET/PATCH
  * /api/myrmidon/run-priority`, packages/shared myrmidon-run-priority.ts):
- * `max(role weight, issue-priority weight)` plus the current-release bonus
- * and the aging bonus; a run that waited past the starvation limit gets the
- * top weight. `source` says whether the stored row or the environment/defaults
- * decide.
+ * the role sets the band and a current-release run is lifted one band above
+ * the heaviest role, while the issue-priority weight, the release bonus and
+ * the aging bonus only order runs *inside* their band; a run that waited past
+ * the starvation limit takes the top lane. `source` says whether the stored
+ * row or the environment/defaults decide.
  */
 export const RUN_PRIORITY_ROLES = ["review", "release", "lead", "engineer", "docs"] as const;
 export type RunPriorityRole = (typeof RUN_PRIORITY_ROLES)[number];
@@ -109,11 +110,12 @@ function isNotServed(err: unknown): boolean {
 
 export const runQueueApi = {
   /**
-   * Waiting state of one queued run: the wait reason the admission sweep
-   * writes into the run's `contextSnapshot` (`waitReason`) and since when it
-   * waits. The core publishes no queue rank, so `position`/`queueLength` stay
-   * null here (never a number the UI made up); a run that left the queue, or
-   * one the reader cannot see, answers null.
+   * Waiting state of one queued run: where it waits (`queuePosition` of
+   * `queueLength`, written by the priority sweep of the same pass) and why
+   * (`waitReason`) read from the run's `contextSnapshot`, plus since when it
+   * waits. A field the server does not publish stays null (never a number the
+   * UI made up); a run that left the queue, or one the reader cannot see,
+   * answers null.
    */
   async position(runId: string): Promise<RunQueuePosition | null> {
     try {
@@ -125,10 +127,12 @@ export const runQueueApi = {
       }>(`/heartbeat-runs/${encodeURIComponent(runId)}`);
       if (!run || run.status !== "queued") return null;
       const waitReason = run.contextSnapshot?.waitReason;
+      const queuePosition = run.contextSnapshot?.queuePosition;
+      const queueLength = run.contextSnapshot?.queueLength;
       return {
         runId,
-        position: null,
-        queueLength: null,
+        position: typeof queuePosition === "number" ? queuePosition : null,
+        queueLength: typeof queueLength === "number" ? queueLength : null,
         waitReason: typeof waitReason === "string" ? waitReason : null,
         queuedAt: typeof run.createdAt === "string" ? run.createdAt : null,
       };

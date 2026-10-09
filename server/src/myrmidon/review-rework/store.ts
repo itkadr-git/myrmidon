@@ -315,7 +315,15 @@ export function createPgReviewReworkStore(db: Db): ReviewReworkStore {
             or(
               sql`lower(${issueWorkProducts.metadata} ->> 'repo') = ${pr.repo}
                   and cast(${issueWorkProducts.metadata} ->> 'number' as text) = ${String(pr.number)}`,
-              sql`${issueWorkProducts.url} like ${"%/github.com/" + pr.repo + "/pull/" + pr.number}%`,
+              // myrmidon(1.6.5 REVIEW-REWORK-F02): the url branch matched the PR exactly
+              // (whole number, optional trailing path segments such as /files; query and
+              // fragment parts are stripped). The previous `like ${"..."}%` left the
+              // wildcard outside the parameter — `like $n%` — a syntax error at runtime,
+              // and a trailing-wildcard like also matched /pull/1234 when searching for
+              // PR 123. Work-product urls are written canonical (`https://github.com/
+              // <owner>/<repo>/pull/<n>`, review-rework/resolver.ts), so a regex anchored
+              // on `/github.com/<repo>/pull/<n>(/|$)` also covers scheme-less variants.
+              sql`regexp_replace(${issueWorkProducts.url}, '[#?].*$', '') ~ ('/github.com/' || ${pr.repo} || '/pull/' || ${String(pr.number)} || '(/|$)')`,
             ),
           ),
         )

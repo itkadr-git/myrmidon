@@ -125,6 +125,26 @@ case "$*" in
         exit 0 ;;
     esac
     cat "$SANDBOX/agents.json"; exit 0 ;;
+  *bot-container/status*)
+    # The running container's image: the card's image (the apply switched it),
+    # or a stale one in the apply-stale-image mode (a deferred pass recorded
+    # as succeeded).
+    id=""
+    for a in "$@"; do case "$a" in *agents/*) id="\${a##*agents/}"; id="\${id%%/*}" ;; esac; done
+    if [ -e "$SANDBOX/apply-stale-image" ]; then img="stale/img@sha256:0"; else
+      img="$(jq -r --arg id "$id" 'first(.[] | select(.id == $id) | .adapterConfig.container.image)' "$SANDBOX/agents.json")"; fi
+    jq -cn --arg img "$img" '{container: {state: "running", image: $img}}'; exit 0 ;;
+  *bot-container/apply/*)
+    # GET of one async apply job: the mode file says how it ends.
+    # Fixture mirrors GET bot-container/apply/:applyId
+    # (server/src/myrmidon/bot-containers/routes.ts): {status, error,
+    # startedAt, finishedAt}; a deferred pass is recorded as "succeeded".
+    case "$(cat "$SANDBOX/apply-async")" in
+      running) echo '{"status":"running","error":null,"startedAt":"2026-10-08T00:00:00Z","finishedAt":null}' ;;
+      failed) echo '{"status":"failed","error":"docker pull exploded","startedAt":"2026-10-08T00:00:00Z","finishedAt":"2026-10-08T00:00:01Z"}' ;;
+      *) echo '{"status":"succeeded","error":null,"startedAt":"2026-10-08T00:00:00Z","finishedAt":"2026-10-08T00:00:01Z"}' ;;
+    esac
+    exit 0 ;;
   *bot-container/apply*)
     id=""
     for a in "$@"; do case "$a" in *agents/*) id="\${a##*agents/}"; id="\${id%%/*}" ;; esac; done
@@ -132,6 +152,22 @@ case "$*" in
     if [ -e "$SANDBOX/apply-defer-first" ] && [ ! -e "$SANDBOX/applied-$id" ]; then
       touch "$SANDBOX/applied-$id"
       echo '{"outcome":{"kind":"deferred","reason":"the agent is under a maintenance window"}}'
+      echo '202'
+      exit 0
+    fi
+    # busy-apply mode: the POST of a marked bot is refused with 409, the other
+    # bots answer 202 + applyId and succeed (the agent went running between the
+    # status read and the apply; the rollout must defer it, not fail it).
+    if [ -e "$SANDBOX/apply-busy-$id" ]; then
+      echo '{"error":"bot is busy","code":"bot_container_not_applicable"}'
+      echo '409'
+      exit 0
+    fi
+    if [ -e "$SANDBOX/apply-async" ]; then
+      # Fixture mirrors POST bot-container/apply
+      # (server/src/myrmidon/bot-containers/routes.ts): 202 {"applyId","status"}.
+      echo '{"applyId":"job-1","status":"queued"}'
+      echo '202'
       exit 0
     fi
     if [ -e "$SANDBOX/apply-fails" ]; then
@@ -139,6 +175,7 @@ case "$*" in
       exit 1
     fi
     echo '{"outcome":{"kind":"applied_restart"}}'
+    echo '202'
     exit 0 ;;
 esac
 echo "{}"
@@ -206,6 +243,10 @@ function sandbox({
   dockergateConfig,
   applyFails = false,
   applyDeferFirst = false,
+  // 1.6.5 async apply: "succeeded" | "failed" | "running" (never finishes);
+  // asyncStaleImage: the container keeps a stale image after "succeeded".
+  applyAsync = null,
+  asyncStaleImage = false,
   botImagesMissing = false,
   sshFails = false,
 } = {}) {
@@ -224,6 +265,8 @@ function sandbox({
   if (sshFails) fs.writeFileSync(path.join(dir, "ssh-fails"), "");
   if (applyFails) fs.writeFileSync(path.join(dir, "apply-fails"), "");
   if (applyDeferFirst) fs.writeFileSync(path.join(dir, "apply-defer-first"), "");
+  if (applyAsync) fs.writeFileSync(path.join(dir, "apply-async"), applyAsync);
+  if (asyncStaleImage) fs.writeFileSync(path.join(dir, "apply-stale-image"), "");
 
   // Registry answers: board, components, and the three bot images.
   fs.writeFileSync(path.join(dir, "imagetools.json"), imageJson(`sha256:${"9".repeat(64)}`));
@@ -339,6 +382,8 @@ function sandbox({
       "MYRMIDON_BOT_IMAGE_ROLLOUT_DOCKERGATE_RELOAD_TIMEOUT_SEC=2",
       `DOCKERGATE_LOGS_COMMAND='cat "$SANDBOX/dg.log"'`,
       `MYRMIDON_BOT_IMAGE_ROLLOUT_BOT_TIMEOUT_SEC=3`,
+      "MYRMIDON_BOT_IMAGE_ROLLOUT_APPLY_WAIT_SEC=2",
+      "MYRMIDON_BOT_IMAGE_ROLLOUT_APPLY_POLL_SEC=1",
       "MYR_DOCKERGATE_HEALTH_URL=http://127.0.0.1:3100/dockergate/health",
       "MYR_FLEETD_HEALTH_URL=http://127.0.0.1:3100/fleetd/health",
       // The components are not part of this sandbox compose project; the
@@ -457,6 +502,56 @@ describe("bot-image-rollout.sh", () => {
       assert.match(a.adapterConfig.container.image, /@(sha256:[a-f0-9]{64})$/);
       assert.notEqual(a.adapterConfig.container.image, `${BOT_DEV}@${OLD_DEV}`);
     }
+  });
+
+  it("async apply (202 + applyId): succeeded and the container on the release image is switched", () => {
+    const sb = sandbox({ applyAsync: "succeeded" });
+    const { code, out } = run(sb, "bot-image-rollout.sh", ["--resolution", "tag", "--ref", VERSION]);
+    assert.equal(code, 0, out);
+    assert.doesNotMatch(out, /unexpected apply outcome/);
+    assert.match(calls(sb), /bot-container\/apply\/job-1/);
+    assert.match(calls(sb), /bot-container\/status/);
+    assert.match(journal(sb), /async apply job-1/);
+    assert.match(out, /0 failed, 0 deferred/);
+  });
+
+  it("async apply: succeeded but the container is not on the release image is deferred, not switched", () => {
+    const sb = sandbox({ applyAsync: "succeeded", asyncStaleImage: true });
+    const { out } = run(sb, "bot-image-rollout.sh", ["--resolution", "tag", "--ref", VERSION]);
+    assert.match(out, /container is not on the release image/);
+    assert.match(out, /0 switched, 0 failed, 2 deferred/);
+    assert.doesNotMatch(journal(sb), /async apply/);
+  });
+
+  it("async apply: a failed job fails the bot with the job's error in the journal", () => {
+    const sb = sandbox({ applyAsync: "failed" });
+    const { code, out } = run(sb, "bot-image-rollout.sh", ["--resolution", "tag", "--ref", VERSION]);
+    assert.notEqual(code, 0);
+    assert.match(out, /DEGRADED.*failed to switch/i);
+    assert.match(journal(sb), /apply job-1 failed: docker pull exploded/);
+  });
+
+  it("async apply: a job that never finishes times out as deferred (the sweep completes it)", () => {
+    const sb = sandbox({ applyAsync: "running" });
+    const { out } = run(sb, "bot-image-rollout.sh", ["--resolution", "tag", "--ref", VERSION]);
+    assert.match(out, /still not finished after 2s/);
+    assert.match(out, /0 switched, 0 failed, 2 deferred/);
+    assert.doesNotMatch(out, /unexpected apply outcome/);
+  });
+
+  it("async apply: bots are waited for one at a time (job read before the next apply)", () => {
+    const sb = sandbox({ applyAsync: "succeeded" });
+    run(sb, "bot-image-rollout.sh", ["--resolution", "tag", "--ref", VERSION]);
+    // a job read (GET apply/job-1, logged without -X) sits between the two POSTs.
+    // NOTE: the apply POST log line carries a real newline inside curl's -w arg
+    // (the `curl … -X POST … -w \n%{http_code} <url>` fragment lands on the line
+    // above the one containing bot-container/apply), so the POSTs are matched
+    // via the `-w ` continuation, not by `apply + -X POST` on one line.
+    const lines = calls(sb).split("\n").filter((l) => /bot-container\/(apply|status)|-w $/.test(l));
+    const posts = lines.map((l, i) => (/-w $/.test(l) ? i : -1)).filter((i) => i >= 0);
+    assert.equal(posts.length, 2);
+    const jobGets = lines.filter((l) => /apply\/job-1/.test(l) && !/-X/.test(l));
+    assert.equal(jobGets.length, 2, lines.join("\n"));
   });
 
   it("canary first: the --canary bot is switched before the others", () => {
@@ -666,8 +761,49 @@ describe("bot-image-rollout.sh: tracking vs pinned cards, batches, paused or idl
     // the busy agent got neither a PATCH nor an apply
     assert.doesNotMatch(calls(sb), new RegExp(`agents/${uuid(1)}`));
     assert.deepEqual([summary(sb).switched, summary(sb).deferred], [2, 1]);
+    // deferred-only is a WARNING, never a DEGRADED
+    assert.match(out, /WARNING: 1 bot\(s\) stayed deferred/);
+    assert.doesNotMatch(out, /DEGRADED/);
     // its old image stays allowed until it moves
     assert.ok(dockergateConfig(sb).images.includes(`${BOT}@${OLD_DEV}`));
+  });
+
+  it("an apply refused with 409 (the agent went running) is deferred, and the run still reaches every other bot", () => {
+    const busy = uuid(1);
+    const sb = sandbox({
+      agents: [
+        { id: busy, image: `${BOT}@${OLD_DEV}`, status: "idle" },
+        { id: uuid(2), image: `${BOT}@${OLD_DEV}`, status: "idle" },
+        { id: uuid(3), image: `${BOT}@${OLD_DEV}`, status: "idle" },
+      ],
+    });
+    // busy between the status read and the apply: the POST is refused 409.
+    fs.writeFileSync(path.join(sb.dir, `apply-busy-${busy}`), "");
+    const { code, out } = run(sb, "bot-image-rollout.sh", ARGS);
+    assert.equal(code, 0, out);
+    assert.match(out, new RegExp(`bot ${busy} deferred \\(apply refused: bot_container_not_applicable\\)`));
+    // the loop was not aborted: the other two bots were switched after it
+    assert.equal(cardImage(sb, uuid(2)), `${BOT}@${HERMES}`);
+    assert.equal(cardImage(sb, uuid(3)), `${BOT}@${HERMES}`);
+    assert.match(out, /2 switched, 0 failed, 1 deferred/);
+    assert.match(out, /WARNING: 1 bot\(s\) stayed deferred/);
+    assert.doesNotMatch(out, /DEGRADED/);
+  });
+
+  it("one failed bot does not stop the run: the rest switch and the run is DEGRADED", () => {
+    const sb = sandbox({
+      agents: [
+        { id: uuid(1), image: `${BOT}@${OLD_DEV}`, status: "idle" },
+        { id: uuid(2), image: `${BOT}@${OLD_DEV}`, status: "idle" },
+        { id: uuid(3), image: `${BOT}@${OLD_DEV}`, status: "idle" },
+      ],
+      applyFails: true,
+    });
+    const { code, out } = run(sb, "bot-image-rollout.sh", ARGS);
+    assert.notEqual(code, 0);
+    assert.match(out, /DEGRADED: 3 bot\(s\) failed to switch/);
+    // every bot was attempted (no abort after the first failure)
+    assert.equal((calls(sb).match(/-X PATCH/g) ?? []).length, 3);
   });
 
   it("the config phase edits dockergate's images[] and does not touch a card", () => {

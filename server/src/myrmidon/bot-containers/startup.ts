@@ -90,7 +90,12 @@ export interface BotContainersStartupPorts {
     opts: { activity: BotContainerActivitySink; env: NodeJS.ProcessEnv },
   ): Pick<
     BotContainerRuntimeDeps,
-    "compile" | "beginProfilePass" | "endProfilePass" | "syncCard" | "releaseStrayGateways"
+    | "compile"
+    | "beginProfilePass"
+    | "endProfilePass"
+    | "syncCard"
+    | "releaseStrayGateways"
+    | "exportMediaAcl"
   >;
   maintenancePort(db: Db): BotMaintenancePort;
   listAgents(db: Db): () => Promise<BotContainerAgent[]>;
@@ -192,7 +197,8 @@ function build(
   try {
     const driverConfig = ports.readDriverConfig(env);
     const activity = ports.activitySink();
-    const { compile, beginProfilePass, endProfilePass, syncCard, releaseStrayGateways } = ports.profileWiring(db, { activity, env });
+    const { compile, beginProfilePass, endProfilePass, syncCard, releaseStrayGateways, exportMediaAcl } =
+      ports.profileWiring(db, { activity, env });
     const runtime: BotContainerRuntimeDeps = {
       driver: ports.createDriver(driverConfig, db),
       compile,
@@ -202,6 +208,8 @@ function build(
       ...(endProfilePass ? { endProfilePass } : {}),
       syncCard,
       ...(releaseStrayGateways ? { releaseStrayGateways } : {}),
+      // myrmidon(MEDIA-PROVISION): per-tick media ACL registry export (index.ts sweep hook).
+      ...(exportMediaAcl ? { exportMediaAcl } : {}),
       maintenance: ports.maintenancePort(db),
       activity,
       readAgent: ports.readAgent(db),

@@ -125,6 +125,12 @@ require_cmd docker curl jq
 # --- settings (see deploy.env.example) ---------------------------------------
 MYR_BOT_COMPONENTS="${MYRMIDON_BOT_IMAGE_ROLLOUT_COMPONENTS:-hermes,hermes-dev,hermes-node}"
 MYR_BOT_TIMEOUT_SEC="${MYRMIDON_BOT_IMAGE_ROLLOUT_BOT_TIMEOUT_SEC:-900}"
+# 1.6.5 async "Apply now": how long to wait for ONE apply job (202 + applyId)
+# to reach succeeded|failed, and how often the job is read.
+MYR_BOT_APPLY_WAIT_SEC="${MYRMIDON_BOT_IMAGE_ROLLOUT_APPLY_WAIT_SEC:-300}"
+MYR_BOT_APPLY_POLL_SEC="${MYRMIDON_BOT_IMAGE_ROLLOUT_APPLY_POLL_SEC:-4}"
+[[ "$MYR_BOT_APPLY_WAIT_SEC" =~ ^[0-9]+$ ]] || die "MYRMIDON_BOT_IMAGE_ROLLOUT_APPLY_WAIT_SEC must be a non-negative integer (got '$MYR_BOT_APPLY_WAIT_SEC')"
+[[ "$MYR_BOT_APPLY_POLL_SEC" =~ ^[1-9][0-9]*$ ]] || die "MYRMIDON_BOT_IMAGE_ROLLOUT_APPLY_POLL_SEC must be a positive integer (got '$MYR_BOT_APPLY_POLL_SEC')"
 MYR_BOT_DOCKERGATE_CONFIG="${MYRMIDON_BOT_IMAGE_ROLLOUT_DOCKERGATE_CONFIG:-}"
 MYR_BOT_DOCKERGATE_SIGNAL="${MYRMIDON_BOT_IMAGE_ROLLOUT_DOCKERGATE_SIGNAL_COMMAND:-}"
 MYR_BOT_FLEET_HOSTS="${MYRMIDON_BOT_IMAGE_ROLLOUT_FLEET_HOSTS:-}"
@@ -173,12 +179,15 @@ board_patch_json() {
     "$BOARD_API_URL$path" 2>/dev/null || return 1
 }
 
-board_post_json() {
-  local path="$1" body="$2"
+# POSTs JSON with curl and prints "<http-status>\n<body>"; always returns 0 so
+# the caller can classify a refusal (409 = the bot cannot apply right now).
+board_post_json_status() {
+  local path="$1" body="$2" out
   local -a auth=()
   mapfile -t auth < <(auth_args)
-  curl -fsS --max-time 180 -X POST -H 'Content-Type: application/json' "${auth[@]}" --data "$body" \
-    "$BOARD_API_URL$path" 2>/dev/null || return 1
+  out="$(curl -sS --max-time 180 -X POST -H 'Content-Type: application/json' "${auth[@]}" --data "$body" \
+    -w $'\n%{http_code}' "$BOARD_API_URL$path" 2>/dev/null)" || return 1
+  printf '%s\n%s' "${out##*$'\n'}" "${out%$'\n'*}"
 }
 
 # The company's agent configurations: the card config (adapterConfig, the
@@ -567,9 +576,51 @@ card_status() {
   jq -r --arg id "$id" 'first(.[]? | select(.id == $id) | .status // "")' <<<"$body" 2>/dev/null
 }
 
+# Waits for one async apply job. Prints the final status line on stdout:
+# "succeeded", "failed|<error>", "deferred|<reason>" or "timeout"; always returns 0.
+#
+# Contract: server/src/myrmidon/bot-containers/routes.ts
+#   POST /api/myrmidon/agents/:id/bot-container/apply
+#     -> 202 {"applyId","status":"queued"}            (queued or a live job re-used)
+#     -> 409 {"code":"bot_container_not_applicable","error":...}
+#   GET  /api/myrmidon/agents/:id/bot-container/apply/:applyId
+#     -> {"status":"queued"|"running"|"succeeded"|"failed","error":string|null,
+#         "startedAt":string|null,"finishedAt":string|null}
+# The background pass (runApplyJob) writes the job row; a deferred pass
+# (kind="deferred" of ApplyBotContainerOutcome) is recorded as "succeeded"
+# (no dedicated "deferred" job status), so a succeeded job still has to be
+# confirmed by GET bot-container/status (container_on_image).
+wait_apply_job() {
+  local id="$1" apply_id="$2" end job st err
+  end=$((SECONDS + MYR_BOT_APPLY_WAIT_SEC))
+  while :; do
+    if job="$(board_get "/myrmidon/agents/$id/bot-container/apply/$apply_id")"; then
+      st="$(jq -r '.status // ""' <<<"$job" 2>/dev/null || true)"
+      case "$st" in
+        succeeded) printf 'succeeded\n'; return 0 ;;
+        failed)
+          err="$(jq -r '.error // "error unknown"' <<<"$job" 2>/dev/null || true)"
+          printf 'failed|%s\n' "$err"
+          return 0
+          ;;
+      esac
+    fi
+    if ((SECONDS >= end)); then printf 'timeout\n'; return 0; fi
+    sleep "$MYR_BOT_APPLY_POLL_SEC"
+  done
+}
+
+# "succeeded" of an apply job does not prove the switch (a busy bot's deferred
+# pass is recorded as succeeded): the running container must be on the target.
+container_on_image() {
+  local id="$1" want="$2" body
+  body="$(board_get "/myrmidon/agents/$id/bot-container/status")" || return 1
+  jq -e --arg want "$want" '.container.state == "running" and .container.image == $want' <<<"$body" >/dev/null 2>&1
+}
+
 # Returns 0 switched, 2 deferred (retry), 1 failed.
 switch_one_bot() {
-  local id="$1" current target body out kind status
+  local id="$1" current target body out kind status apply_id waited
   current="$(card_image "$id" || true)"
   [[ -n "$current" ]] || current="(none)"
   target="$(release_image_for "$current")"
@@ -586,7 +637,7 @@ switch_one_bot() {
   if is_release_ref "$current"; then
     # The card already names the release image (a previous rollout switched
     # it or the apply stayed deferred): only re-apply, never re-PATCH.
-    out="$(board_post_json "/myrmidon/agents/$id/bot-container/apply" '{}')" || {
+    out="$(board_post_json_status "/myrmidon/agents/$id/bot-container/apply" '{}')" || {
       bot_log "apply of bot $id failed (card already on the release image); the periodic sweep retries"
       journal "agent $id apply failed (card already on $target; the sweep retries)"
       return 1
@@ -605,11 +656,64 @@ switch_one_bot() {
     fi
     # Apply now: the board's own reconciler drains this agent alone and
     # recreates the container with the new image.
-    out="$(board_post_json "/myrmidon/agents/$id/bot-container/apply" '{}')" || {
+    out="$(board_post_json_status "/myrmidon/agents/$id/bot-container/apply" '{}')" || {
       bot_log "apply of bot $id failed after the card switch; the card points at the release image, the periodic sweep applies it"
       journal "agent $id card switched to $target (apply failed; the sweep retries)"
       return 1
     }
+  fi
+  # 1.6.5 async apply: the first line is the HTTP status, the rest the body.
+  # 202 queues the job; 409 says the bot cannot apply right now (not applicable,
+  # disabled, runtime unavailable) — that is a deferral, not a failure.
+  local http_status
+  http_status="${out%%$'\n'*}"
+  out="${out#*$'\n'}"
+  case "$http_status" in
+    202) ;;
+    409)
+      local conflict_code
+      conflict_code="$(jq -r '.code // "bot_container_not_applicable"' <<<"$out" 2>/dev/null || true)"
+      bot_log "bot $id deferred (apply refused: $conflict_code)"
+      journal "agent $id apply refused (409 $conflict_code; card unchanged)"
+      return 2
+      ;;
+    *)
+      bot_log "apply of bot $id answered HTTP $http_status; the periodic sweep retries"
+      journal "agent $id apply answered HTTP $http_status (card unchanged)"
+      return 1
+      ;;
+  esac
+  apply_id="$(jq -r '.applyId // ""' <<<"$out" 2>/dev/null || true)"
+  if [[ -n "$apply_id" ]]; then
+    # 1.6.5 async apply: 202 + applyId; the outcome is read from the job.
+    waited="$(wait_apply_job "$id" "$apply_id")"
+    case "$waited" in
+      succeeded)
+        if container_on_image "$id" "$target"; then
+          bot_log "bot $id: $current -> $target (apply $apply_id succeeded, container on the release image)"
+          journal "agent $id $current -> $target (async apply $apply_id)"
+          record_history "bot-image" "$id $target"
+          return 0
+        fi
+        # The job row says "succeeded" even when the reconciler deferred the
+        # pass (a busy agent, a drain that lost the window). The container
+        # staying off the release image is what proves it; the card already
+        # points at the release image and the periodic sweep retries.
+        bot_log "bot $id deferred (apply $apply_id succeeded but the container is not on the release image; the sweep retries)"
+        journal "agent $id apply $apply_id deferred (container not on $target)"
+        return 2
+        ;;
+      failed\|*)
+        bot_log "bot $id: apply $apply_id failed: ${waited#failed|}"
+        journal "agent $id apply $apply_id failed: ${waited#failed|}"
+        return 1
+        ;;
+      *)
+        bot_log "bot $id deferred (apply $apply_id still not finished after ${MYR_BOT_APPLY_WAIT_SEC}s)"
+        journal "agent $id apply $apply_id still not finished after ${MYR_BOT_APPLY_WAIT_SEC}s"
+        return 2
+        ;;
+    esac
   fi
   kind="$(jq -r '.outcome.kind // ""' <<<"$out" 2>/dev/null || true)"
   case "$kind" in
@@ -724,6 +828,9 @@ jq -cn --arg release "$resolution $res_ref" --argjson tracking "$total" --argjso
 if ((failed > 0)); then
   bot_log "DEGRADED: $failed bot(s) failed to switch to the release image; see the log above and $MYR_BOT_ROLLOUT_LOG"
   exit 1
+fi
+if ((stayed_deferred > 0)); then
+  bot_log "WARNING: $stayed_deferred bot(s) stayed deferred (a busy agent or a 409 refusal); the cards already name the release image and the periodic sweep completes them"
 fi
 
 # --- 6. remove the superseded bot image refs (only when everyone moved) -------

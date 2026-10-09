@@ -88,6 +88,8 @@ const SOURCE_META: Record<AttentionSourceKind, SourceMeta> = {
   execution_hold: { label: "Execution hold" },
   // myrmidon(1.6.5-F21-B): label for the owner pending-card source.
   owner_pending_card: { label: "Owner card" },
+  // myrmidon(1.6.5-F-18): label for the empty gateway model catalog signal.
+  empty_model_catalog: { label: "Model catalog" },
 };
 
 export function sourceMeta(kind: AttentionSourceKind): SourceMeta {

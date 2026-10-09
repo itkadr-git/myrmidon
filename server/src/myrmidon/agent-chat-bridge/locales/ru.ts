@@ -60,8 +60,8 @@ export const bridgeTextRu: Record<BridgeTextKey, string> = {
   // /model and /think
   "model.statusLabel": "Модель",
   "reasoning.statusLabel": "Рассуждения",
-  "model.unavailable": "Смена модели недоступна для этого агента.",
-  "reasoning.unavailable": "Смена глубины рассуждений недоступна для этого агента.",
+  "model.unavailable": "Смена модели недоступна для адаптера {adapterType}: {reason}",
+  "reasoning.unavailable": "Смена глубины рассуждений недоступна для адаптера {adapterType}: {reason}",
   "model.unknownNoun": "Неизвестная модель",
   "reasoning.unknownNoun": "Неизвестная глубина рассуждений",
   "chooser.effective": "{label}: {value} ({source}).",
@@ -71,6 +71,20 @@ export const bridgeTextRu: Record<BridgeTextKey, string> = {
   "chooser.defaultApplied": "{label} для этого чата: {agentDefault}.",
   "chooser.set": "{label} для этого чата: {value}. Следующий ответ начнёт новую сессию модели с недавней историей этого чата.",
   "chooser.unknownError": "{noun} «{value}».\n{list}",
+  // myrmidon(F06-A): см. en.ts — список моделей агента, применение профиля и
+  // причина недоступности команды.
+  "chooser.catalogWhole":
+    "Показан весь каталог шлюза — собственный список моделей агента прочитать не удалось.",
+  "chooser.effortNotAllowed": "Глубина рассуждений «{value}» не поддерживается моделью {model}; допустимо: {list}.",
+  "chooser.applyNextTurn":
+    "Профиль агента применён без перезапуска: изменение вступит в силу со следующего ответа.",
+  "chooser.applyFailed":
+    "Изменение записано для этого чата, но применить профиль агента не удалось: {reason}",
+  "chooser.applyNotApplied":
+    "Агент пока работает на прежнем профиле ({reason}); изменение вступит в силу при следующем применении профиля.",
+  "chooser.applyRolledBack": "Прежнее значение возвращено.",
+  "chooser.reason.unsupportedAdapter": "этот адаптер не поддерживает смену из чата",
+  "chooser.reason.noCandidates": "не удалось прочитать варианты для этого чата",
 
   // /stop
   "stop.unavailable": "Сейчас остановка недоступна.",
@@ -101,11 +115,30 @@ export const bridgeTextRu: Record<BridgeTextKey, string> = {
 
   // myrmidon(X9c): /agents, /to and /who — which agent of the company this
   // chat addresses. Agent names and aliases are data, not prose.
+  // myrmidon(1.6.5 OPE-6318 part A) adds the group titles of /agents, the
+  // live-status words and the grouped line template.
   "agents.header": "Агенты компании:",
   "agents.noAliases": "—",
   "agents.currentSuffix": "текущий адресат",
   "agents.none": "В этой компании нет агентов, доступных для адресации.",
   "agents.hint": "Выбрать адресата по умолчанию: /to <алиас>. /to без аргумента сбрасывает выбор.",
+  // Названия групп для карточек без своего `telegramGroup`: группа берётся из
+  // префикса имени (см. ../grouping.ts).
+  "agents.group.infra": "Инфраструктура / Myrmidon",
+  "agents.group.bbq": "bbq",
+  "agents.group.work": "work",
+  "agents.group.other": "Прочие",
+  // «{group}» — уже готовое название группы: из каталога или из карточки.
+  "agents.groupHeader": "{group}:",
+  "agents.groupHeaderPaused": "{group} (на паузе: {count}):",
+  // Живые статусы строки карточки (agents.status).
+  "agents.status.idle": "свободен",
+  "agents.status.running": "работает",
+  "agents.status.paused": "на паузе",
+  "agents.status.unknown": "статус неизвестен",
+  // Строка агента: имя, роль одной строкой (agents.title), статус, алиасы.
+  "agents.line": "• {name} — {role} · {status} ({aliases})",
+  "agents.lineNoRole": "• {name} · {status} ({aliases})",
   "to.unsetLine": "Адресат по умолчанию не задан: отвечает {agent}.",
   "to.cleared": "Выбор адресата сброшен. Дальше отвечает агент этого чата по умолчанию.",
   "to.alreadySet": "Адресат уже {agent} ({aliases}).",

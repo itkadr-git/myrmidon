@@ -7,7 +7,7 @@ import { pathToFileURL } from "node:url";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { definePlugin } from "../src/define-plugin.js";
+import { definePlugin, type PluginDefinition } from "../src/define-plugin.js";
 import {
   createRequest,
   createErrorResponse,
@@ -153,6 +153,163 @@ describe("worker performAction context", () => {
       hostReadline.close();
       hostToWorker.destroy();
       workerToHost.destroy();
+    }
+  });
+});
+
+describe("worker unknown-key errors", () => {
+  function createWorkerPair(setup: PluginDefinition["setup"]) {
+    const hostToWorker = new PassThrough();
+    const workerToHost = new PassThrough();
+    const hostReadline = createInterface({ input: workerToHost });
+    const pending = new Map<string, (response: JsonRpcResponse) => void>();
+    let nextRequestId = 1;
+
+    const plugin = definePlugin({ setup });
+    const worker = startWorkerRpcHost({
+      plugin,
+      stdin: hostToWorker,
+      stdout: workerToHost,
+    });
+
+    function callWorker(method: string, params: unknown): Promise<unknown> {
+      const id = `host-${nextRequestId++}`;
+      const result = new Promise<unknown>((resolve, reject) => {
+        pending.set(id, (response) => {
+          if ("error" in response && response.error) {
+            const error = new Error(response.error.message) as Error & {
+              code?: number;
+              data?: unknown;
+            };
+            error.code = response.error.code;
+            error.data = (response.error as { data?: unknown }).data;
+            reject(error);
+            return;
+          }
+          resolve((response as { result?: unknown }).result);
+        });
+      });
+      hostToWorker.write(serializeMessage(createRequest(method, params, id)));
+      return result;
+    }
+
+    hostReadline.on("line", (line) => {
+      const message = parseMessage(line);
+      if (!isJsonRpcResponse(message)) return;
+      pending.get(String(message.id))?.(message);
+      pending.delete(String(message.id));
+    });
+
+    const initialize = () =>
+      callWorker("initialize", {
+        manifest: {
+          id: "paperclip.test-worker-unknown-key",
+          apiVersion: 1,
+          version: "1.0.0",
+          displayName: "Unknown Key Test",
+          description: "Test plugin",
+          author: "Paperclip",
+          categories: ["automation"],
+          capabilities: [],
+          entrypoints: {},
+        },
+        config: {},
+        databaseNamespace: null,
+      });
+
+    const stop = () => {
+      worker.stop();
+      hostReadline.close();
+      hostToWorker.destroy();
+      workerToHost.destroy();
+    };
+
+    return { callWorker, initialize, stop };
+  }
+
+  it("performAction with an unknown key fails with UNKNOWN_ACTION and lists the registered actions", async () => {
+    const { callWorker, initialize, stop } = createWorkerPair(async (ctx) => {
+      ctx.actions.register("known-action", async () => ({ ok: true }));
+      ctx.actions.register("other-action", async () => ({ ok: true }));
+    });
+
+    try {
+      await initialize();
+
+      const error = await callWorker("performAction", {
+        key: "not-a-real-action",
+        params: {},
+      }).then(
+        () => { throw new Error("expected performAction to reject"); },
+        (err) => err as Error & { code?: number; data?: { error?: string; known?: string[] } },
+      );
+
+      expect(error.code).toBe(PLUGIN_RPC_ERROR_CODES.UNKNOWN_ACTION);
+      expect(error.message).toContain('No action handler registered for key "not-a-real-action"');
+      expect(error.data?.error).toBe("unknown_action");
+      expect(error.data?.known?.sort()).toEqual(["known-action", "other-action"]);
+    } finally {
+      stop();
+    }
+  });
+
+  it("getData with an unknown key fails with UNKNOWN_ACTION and lists the registered data keys", async () => {
+    const { callWorker, initialize, stop } = createWorkerPair(async (ctx) => {
+      ctx.data.register("known-data", async () => ({ ok: true }));
+    });
+
+    try {
+      await initialize();
+
+      const error = await callWorker("getData", {
+        key: "not-a-real-data-key",
+        params: {},
+      }).then(
+        () => { throw new Error("expected getData to reject"); },
+        (err) => err as Error & { code?: number; data?: { error?: string; known?: string[] } },
+      );
+
+      expect(error.code).toBe(PLUGIN_RPC_ERROR_CODES.UNKNOWN_ACTION);
+      expect(error.message).toContain('No data handler registered for key "not-a-real-data-key"');
+      expect(error.data?.error).toBe("unknown_data_key");
+      expect(error.data?.known).toEqual(["known-data"]);
+    } finally {
+      stop();
+    }
+  });
+
+  it("executeTool with an unknown tool fails with UNKNOWN_ACTION and lists the registered tools", async () => {
+    const { callWorker, initialize, stop } = createWorkerPair(async (ctx) => {
+      ctx.tools.register(
+        "known_tool",
+        { displayName: "Known Tool", description: "known", parametersSchema: { type: "object", properties: {} } },
+        async () => ({ content: [{ type: "text" as const, text: "ok" }] }),
+      );
+    });
+
+    try {
+      await initialize();
+
+      const error = await callWorker("executeTool", {
+        toolName: "not_a_real_tool",
+        parameters: {},
+        runContext: {
+          agentId: "agent-1",
+          runId: "run-1",
+          companyId: "company-1",
+          projectId: null,
+        },
+      }).then(
+        () => { throw new Error("expected executeTool to reject"); },
+        (err) => err as Error & { code?: number; data?: { error?: string; known?: string[] } },
+      );
+
+      expect(error.code).toBe(PLUGIN_RPC_ERROR_CODES.UNKNOWN_ACTION);
+      expect(error.message).toContain('No tool handler registered for "not_a_real_tool"');
+      expect(error.data?.error).toBe("unknown_tool");
+      expect(error.data?.known).toEqual(["known_tool"]);
+    } finally {
+      stop();
     }
   });
 });
