@@ -170,6 +170,23 @@ export function decisionRetentionService(
     return new Map(rows.map((row) => [sourceKey(row.sourceKind, row.sourceId), row]));
   }
 
+  /**
+   * myrmidon(1.6.5-F-15-C): read-only projection of the stored retention state
+   * for one feed snapshot. The attention read path must not write, so the GET
+   * takes what the background sync (decision-retention-sync.ts) has already
+   * stored instead of upserting the rows it is about to render. A source with
+   * no row yet simply has no state: the caller keeps its defaults (keep false,
+   * archivedAt null, version 0) until the next background pass inserts it.
+   */
+  async function getStates(companyId: string, items: readonly AttentionItem[]) {
+    if (items.length === 0) return new Map<string, DecisionRetentionState>();
+    const rows = await db.select().from(decisionRetention).where(and(
+      eq(decisionRetention.companyId, companyId),
+      inArray(decisionRetention.sourceId, [...new Set(items.map((item) => item.subject.id))]),
+    ));
+    return new Map(rows.map((row) => [sourceKey(row.sourceKind, row.sourceId), row]));
+  }
+
   function itemSourceKey(item: AttentionItem) {
     return sourceKey(item.sourceKind, item.subject.id);
   }
@@ -471,6 +488,7 @@ export function decisionRetentionService(
 
   return {
     syncItems,
+    getStates,
     getState,
     setKeep,
     archive: (input: Omit<Parameters<typeof changeArchived>[0], "archived">) => changeArchived({ ...input, archived: true }),
