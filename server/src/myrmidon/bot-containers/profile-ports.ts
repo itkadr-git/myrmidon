@@ -251,6 +251,10 @@ export function createDbBotProfilePorts(db: Db): BotProfilePorts {
       return { secretId, value };
     },
 
+    // (myrmidon(1.6.5-F11-A): no media-token port here — the single token source
+    // is the card env entry MEDIA_TOOLS_TOKEN, which resolveCardEnv above already
+    // resolves; the compiler reads it via mediaTokenFromEnv. See media-mcp.ts.)
+
     async ensureAgentApiKey(agent) {
       const secretName = agentApiKeySecretName(agent.id);
       return ensureBotAgentKey(
