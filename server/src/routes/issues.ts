@@ -14349,9 +14349,9 @@ export function issueRoutes(
               // Read the committed row back and only bump explicitly when
               // the trigger left the revision untouched (no status change).
               const committedRevision = await tx
-                .select({ statusVersion: issues.statusVersion })
-                .from(issues)
-                .where(eq(issues.id, id))
+                .select({ statusVersion: issueRows.statusVersion })
+                .from(issueRows)
+                .where(eq(issueRows.id, id))
                 .then(
                   (rows: Array<{ statusVersion: number }>) =>
                     rows[0]?.statusVersion ?? null,
