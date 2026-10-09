@@ -104,6 +104,7 @@ describe("issue scent classification (acceptance row 1)", () => {
       casteKeys: CASTES,
       title: "Поправить CSS кнопки",
       description: "Кнопка «Сохранить» наезжает на поле ввода на мобильном.",
+      timeoutSec: 20,
     });
     const scent = result.scent!;
     expect(topScentCasteKey(scent, 0.5)).toBe("engineer");
@@ -124,7 +125,8 @@ describe("issue scent classification (acceptance row 1)", () => {
     );
     expect(applied.casteKey).toBe("engineer");
     expect(applied.casteSource).toBe("auto");
-    expect(applied.casteProb).toBeGreaterThanOrEqual(0.5);
+    // the winning probability is readable off the scent itself
+    expect(scent.casteProbs.engineer!).toBeGreaterThanOrEqual(0.5);
   });
 });
 
@@ -132,18 +134,19 @@ describe("issue scent classification (acceptance row 1)", () => {
 
 describe("task without a description (acceptance row 2)", () => {
   it("gets an empty scent, keeps caste NULL (§2.1 chain), never calls the classifier", () => {
-    expect(isUnclassifiableIssue({ title: "Test", description: null })).toBe(true);
+    expect(isUnclassifiableIssue({ description: null })).toBe(true);
 
     const gateway = stubGateway(() => {
       throw new Error("must not be called");
     });
     // The create path guards with isUnclassifiableIssue before any call:
-    if (!isUnclassifiableIssue({ title: "Test", description: null })) {
+    if (!isUnclassifiableIssue({ description: null })) {
       void gateway.classifyIssueScent({
         model: "m",
         casteKeys: CASTES,
         title: "Test",
         description: null,
+        timeoutSec: 20,
       });
     }
     expect(gateway.calls).toHaveLength(0);
@@ -195,11 +198,11 @@ describe("task without a description (acceptance row 2)", () => {
 describe("pickAgentForTask (acceptance row 3)", () => {
   it("an agent with 2 matching tags beats an agent with 1", () => {
     const task = { scent: CSS_SCENT };
-    const twoTags = { id: "b", scentTags: ["css", "ui"], modelTier: null };
-    const oneTag = { id: "a", scentTags: ["css"], modelTier: null };
+    const twoTags = { id: "b", scentTags: ["css", "ui"], modelTier: "light" as const };
+    const oneTag = { id: "a", scentTags: ["css"], modelTier: "light" as const };
     expect(scentScore(task, twoTags)).toBe(2 * DEFAULT_SCENT_SETTINGS.tagWeight);
     expect(scentScore(task, oneTag)).toBe(1 * DEFAULT_SCENT_SETTINGS.tagWeight);
-    expect(pickAgentForTask(task, [twoTags, oneTag])).toBe("b");
+    expect(pickAgentForTask(task, [twoTags, oneTag])?.id).toBe("b");
   });
 });
 
@@ -263,6 +266,7 @@ describe("classifier failure (acceptance row 6)", () => {
         casteKeys: CASTES,
         title: "Поправить CSS кнопки",
         description: "Описание есть.",
+        timeoutSec: 20,
       });
     } catch {
       scent = null; // the caller's contract: failure → null scent
