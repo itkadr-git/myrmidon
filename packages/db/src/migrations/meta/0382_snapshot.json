@@ -1,5 +1,5 @@
 {
-  "id": "eadeb93e-5f4f-4cbf-b8e2-857d40a4c830",
+  "id": "adc78de9-49d9-46b9-976a-4cfdd9023fd4",
   "prevId": "6fea328d-416a-539e-a8e9-fcee39208327",
   "version": "7",
   "dialect": "postgresql",
@@ -32704,13 +32704,6 @@
           "notNull": true,
           "default": "'medium'"
         },
-        "pheromone_strength": {
-          "name": "pheromone_strength",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 0
-        },
         "review_policy": {
           "name": "review_policy",
           "type": "text",
@@ -40282,6 +40275,12 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
+        },
+        "expires_at": {
+          "name": "expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {
@@ -43287,6 +43286,12 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
+        },
+        "details": {
+          "name": "details",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {

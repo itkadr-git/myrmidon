@@ -1,5 +1,5 @@
 // 1.6.5 (F-27 PHEROMONE, review #1047 п.6): the migration test for
-// 0383_issues_caste_key_and_pheromone_backfill.sql — same style as
+// 0384_issues_caste_key_and_pheromone_backfill.sql — same style as
 // issue-claims-active-unique-migration.myrmidon.test.ts: boot the embedded
 // Postgres, rewind the migration, seed the pre-migration state, re-apply and
 // assert the contract:
@@ -20,7 +20,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./test-embedded-postgres.js";
 
-const MIGRATION_FILE = "0383_issues_caste_key_and_pheromone_backfill.sql";
+const MIGRATION_FILE = "0384_issues_caste_key_and_pheromone_backfill.sql";
 const CASTE_INDEX = "issues_company_caste_idx";
 const cleanups: Array<() => Promise<void>> = [];
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -45,7 +45,7 @@ describeEmbeddedPostgres("issues caste_key + pheromone backfill migration", () =
     const sql = postgres(database.connectionString, { max: 1 });
     cleanups.push(async () => sql.end());
 
-    // Rewind the migration so the pre-0383 state can be seeded.
+    // Rewind the migration so the pre-0384 state can be seeded.
     await sql`DELETE FROM "drizzle"."__drizzle_migrations" WHERE "hash" = ${await migrationHash()}`;
     await sql`DROP INDEX IF EXISTS ${sql(CASTE_INDEX)}`;
     await sql`ALTER TABLE "issues" DROP COLUMN "caste_key"`;

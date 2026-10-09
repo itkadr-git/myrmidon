@@ -12,7 +12,7 @@ settings-section: 1.6.1 — SWARM-SETTINGS-UI: очереди ролей как 
   (default critical 100 / high 30 / medium 10 / low 1).
 - The task's caste is a first-class field `issues.caste_key` (a key of the company
   caste directory), with `projects.default_caste_key` as the project-level default;
-  migration 0383 backfills strength from priority and moves `role:<key>` labels of
+  migration 0384 backfills strength from priority and moves `role:<key>` labels of
   known castes into `caste_key`. Queue routing resolves caste_key → project default
   → legacy `role:` label (compatibility).
 - Effective pheromone (design §2.3): the stored strength plus aging
@@ -41,7 +41,7 @@ settings-section: 1.6.1 — SWARM-SETTINGS-UI: очереди ролей как 
   Новая задача получает силу из маппинга приоритета в настройках роя
   (по умолчанию critical 100 / high 30 / medium 10 / low 1).
 - Каста задачи — поле `issues.caste_key` (ключ справочника каст компании) с
-  умолчанием на уровне проекта `projects.default_caste_key`; миграция 0383 бэкфиллит
+  умолчанием на уровне проекта `projects.default_caste_key`; миграция 0384 бэкфиллит
   силу из приоритета и переносит метки `role:<key>` известных каст в `caste_key`.
   Роутинг очереди: caste_key → каста проекта → метка `role:` (совместимость).
 - Эффективная сила (design §2.3): хранимая сила плюс накопление по возрасту
@@ -85,7 +85,7 @@ settings-section: 1.6.1 — SWARM-SETTINGS-UI: очереди ролей как 
 
 **Каста задачи (1.6.5 F-27 rework 09.10, design §2.1):** `issues.caste_key text NULL` —
 каста задачи (ключ из справочника компании `agent_castes`); NULL — каста проекта
-(`projects.default_caste_key`), затем умолчание компании. Миграция 0383 переносит
+(`projects.default_caste_key`), затем умолчание компании. Миграция 0384 переносит
 метки `role:<key>` в `caste_key` для каст, существующих в справочнике. API:
 `casteKey`/`pheromoneStrength` в create/update задачи; неизвестная каста — 422
 `issue_caste_unknown`. Карточка задачи: «Каста» (select из справочника), «Сила

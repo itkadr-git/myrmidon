@@ -1,6 +1,6 @@
 {
-  "id": "69340adf-9fb8-41f9-99e8-1064c9cc70de",
-  "prevId": "eadeb93e-5f4f-4cbf-b8e2-857d40a4c830",
+  "id": "eadeb93e-5f4f-4cbf-b8e2-857d40a4c830",
+  "prevId": "adc78de9-49d9-46b9-976a-4cfdd9023fd4",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -32704,19 +32704,6 @@
           "notNull": true,
           "default": "'medium'"
         },
-        "pheromone_strength": {
-          "name": "pheromone_strength",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 0
-        },
-        "caste_key": {
-          "name": "caste_key",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
         "review_policy": {
           "name": "review_policy",
           "type": "text",
@@ -32981,6 +32968,13 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
+        },
+        "pheromone_strength": {
+          "name": "pheromone_strength",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
         }
       },
       "indexes": {
@@ -33368,27 +33362,6 @@
             },
             {
               "expression": "priority",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "issues_company_caste_idx": {
-          "name": "issues_company_caste_idx",
-          "columns": [
-            {
-              "expression": "company_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "caste_key",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -40309,6 +40282,12 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
+        },
+        "expires_at": {
+          "name": "expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {
@@ -41027,12 +41006,6 @@
         "lead_agent_id": {
           "name": "lead_agent_id",
           "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "default_caste_key": {
-          "name": "default_caste_key",
-          "type": "text",
           "primaryKey": false,
           "notNull": false
         },
@@ -43320,6 +43293,12 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
+        },
+        "details": {
+          "name": "details",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {

@@ -107,7 +107,7 @@ describeEmbeddedPostgres("myrmidon(1.6.5-F14B) retention pass gate report in set
       const gate = lastRun.backupGate;
       expect(gate, "backupGate filled on every failed check").toBeTruthy();
       expect(gate.backupDir).toBe(backupDir);
-      // unset prefix knob: no naming contract (OPE-6373 item 3)
+      // unset prefix knob: no naming contract (the review contract)
       expect(gate.prefix).toBe("");
       expect(gate.newestBackupAt).toBe(staleTime.toISOString());
       expect(gate.newestBackupFile).toBe("paperclip-2026-10-01T00-00-00.sql.gz");
