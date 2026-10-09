@@ -114,7 +114,7 @@ describeEmbeddedPostgres("issue service -> swarm matcher events", () => {
     forIssue.mockClear();
 
     // Left the queue: nothing to pair.
-    await svc.update(parked.id, { status: "in_progress" });
+    await svc.update(parked.id, { status: "cancelled" });
     await flush();
     expect(forIssue).not.toHaveBeenCalled();
   });
