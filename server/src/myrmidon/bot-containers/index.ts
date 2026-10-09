@@ -135,8 +135,12 @@ export interface BotContainerRuntimeDeps {
    *  profile applied (created / applied_* / unchanged), inside the same per-bot lock:
    *  createBotCardSync (card-sync.ts) sets the card's apiBaseUrl/apiKey to the
    *  container. A failure is recorded in the activity log; it does not change the
-   *  reconcile outcome, since the container itself is fine. */
-  syncCard?: (agentId: string, botKey: string) => Promise<{ changedKeys: string[] }>;
+   *  reconcile outcome, since the container itself is fine.
+   *  myrmidon(BOT-KEY-401): `appliedApiServerKeyVersion` is the API-server-key secret
+   *  version of the profile this pass applied (the compiled profile's
+   *  `apiServerKeyVersion`) — the card pins exactly it, so a secret rotation whose
+   *  container switch failed (or has not happened yet) never reaches the card. */
+  syncCard?: (agentId: string, botKey: string, appliedApiServerKeyVersion: number) => Promise<{ changedKeys: string[] }>;
   /** Optional. Called by every sweep with the ids of the agents the sweep reconciles: releases the board
    *  tool gateways made for any other agent (deleted, terminated, switched to another adapter or with the
    *  container turned off), which no reconcile pass reaches any more (board-gateway-ports.ts). */
@@ -249,11 +253,20 @@ export async function applyBotContainerNow(
     const current = await readAgentForPass(agent, botKey, deps);
     if (!current.ok) return current.outcome;
     const spec = botContainerSpec(botKey, opts.specImage ? { ...current.config, image: opts.specImage } : current.config, deps.network);
+    // myrmidon(BOT-KEY-401): the profile this pass compiled, captured beside the
+    // reconcile. The card sync below pins the card's apiKey secret_ref to the
+    // secret version THIS profile's .env carries — a version the container provably
+    // runs once the outcome is created/applied/unchanged, and never on a pass whose
+    // container switch failed (errored passes skip the sync entirely).
+    let appliedProfile: CompiledProfile | null = null;
     const outcome = await reconcileBot({
       agentId: agent.agentId,
       botKey,
       spec,
-      compile: () => deps.compile(agent.agentId, botKey, opts.pass),
+      compile: async () => {
+        appliedProfile = await deps.compile(agent.agentId, botKey, opts.pass);
+        return appliedProfile;
+      },
       driver: deps.driver,
       maintenance: deps.maintenance,
       activity: deps.activity,
@@ -270,8 +283,8 @@ export async function applyBotContainerNow(
       targetImage: spec.image,
       outcome,
     });
-    if (deps.syncCard && leavesContainerApplied(outcome)) {
-      await syncCardAfterReconcile(agent.agentId, botKey, deps.syncCard, deps.activity);
+    if (deps.syncCard && leavesContainerApplied(outcome) && appliedProfile?.apiServerKeyVersion !== undefined) {
+      await syncCardAfterReconcile(agent.agentId, botKey, deps.syncCard, appliedProfile.apiServerKeyVersion, deps.activity);
     }
     return outcome;
   });
@@ -360,11 +373,12 @@ async function syncCardAfterReconcile(
   agentId: string,
   botKey: string,
   syncCard: NonNullable<BotContainerRuntimeDeps["syncCard"]>,
+  appliedApiServerKeyVersion: number,
   activity: BotContainerActivitySink | undefined,
 ): Promise<void> {
   // Never throws: neither a failing sync nor a failing activity sink may fail the pass.
   try {
-    const { changedKeys } = await syncCard(agentId, botKey);
+    const { changedKeys } = await syncCard(agentId, botKey, appliedApiServerKeyVersion);
     if (changedKeys.length > 0) {
       await activity?.record({
         level: "info",
