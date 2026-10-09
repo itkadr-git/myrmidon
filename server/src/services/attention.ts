@@ -157,6 +157,10 @@ import {
   decisionRetentionService,
   DEFAULT_DECISION_SHELF_DAYS,
 } from "./decision-retention.js";
+import {
+  decisionRetentionSyncScheduler,
+  type DecisionRetentionSyncSink,
+} from "./decision-retention-sync.js";
 
 const ATTENTION_SOURCE_KINDS: AttentionSourceKind[] = [
   "approval",
@@ -330,6 +334,13 @@ type AttentionServiceOptions = {
    * memoised per Db. 0 forces every list() to re-read instance_settings.
    */
   settingsCacheTtlMs?: number;
+  /**
+   * myrmidon(1.6.5-F-15-C): sink for the debounced decision-retention sync.
+   * The read path only parks the snapshot here; the sink owns the writes.
+   * Tests inject a scheduler they drain by hand, production takes the shared
+   * per-Db default (`decisionRetentionSyncScheduler`).
+   */
+  decisionRetentionSync?: DecisionRetentionSyncSink;
 };
 
 function emptyCounts(): Record<AttentionSourceKind, number> {
@@ -724,7 +735,13 @@ function parseActivityBoundary(value: string | undefined, field: "activitySince"
   return parsed;
 }
 
-async function enrichAttentionItems(db: Db, companyId: string, items: AttentionItem[], now: number) {
+async function enrichAttentionItems(
+  db: Db,
+  companyId: string,
+  items: AttentionItem[],
+  now: number,
+  retentionSync: DecisionRetentionSyncSink,
+) {
   if (items.length === 0) return items;
   const sourceIds = [...new Set(items.map((item) => item.subject.id))];
   const queueRows = await db
@@ -803,8 +820,12 @@ async function enrichAttentionItems(db: Db, companyId: string, items: AttentionI
       snoozedUntil: triage?.snoozedUntil ? toIso(triage.snoozedUntil) : null,
     };
   });
-  const retentionBySource = await decisionRetentionService(db).syncItems(companyId, enriched);
-  return enriched.map((item) => {
+  // myrmidon(1.6.5-F-15-C): read-only. The retention state the feed renders
+  // comes from what the background pass already stored — this GET inserts
+  // nothing. The snapshot that pass needs is parked below and written by the
+  // retention sweep (debounced per company); the read never awaits it.
+  const retentionBySource = await decisionRetentionService(db).getStates(companyId, enriched);
+  const withRetention = enriched.map((item) => {
     const key = itemSourceKey(item);
     const retention = retentionBySource.get(key);
     const overrides = retentionDaysBySource.get(key) ?? [];
@@ -818,6 +839,8 @@ async function enrichAttentionItems(db: Db, companyId: string, items: AttentionI
       retentionVersion: retention?.version ?? 0,
     };
   });
+  retentionSync.schedule(companyId, withRetention);
+  return withRetention;
 }
 
 function betterDuplicate(left: AttentionItem, right: AttentionItem) {
@@ -3483,7 +3506,13 @@ async function buildAttentionFeedSnapshot(
 
       const collectedItems = [...deduped.values()].sort(compareAttentionItems);
       await decisionQueueService(db).materializeSeededQueues(companyId, collectedItems);
-      const enrichedItems = await enrichAttentionItems(db, companyId, collectedItems, now);
+      const enrichedItems = await enrichAttentionItems(
+        db,
+        companyId,
+        collectedItems,
+        now,
+        serviceOptions.decisionRetentionSync ?? decisionRetentionSyncScheduler(db),
+      );
   return { items: enrichedItems, builtAtMs: snapshotBuiltAt };
 }
 
