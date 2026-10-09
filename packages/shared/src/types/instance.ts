@@ -369,6 +369,24 @@ export interface InstanceGeneralSettings {
    * attention-feed cache; 0 disables it, absent means the default (45).
    */
   attentionFeedCacheTtlSeconds?: number;
+  /**
+   * myrmidon(1.6.5 PROCS-0.1): the multi-process board mode, edited at Instance
+   * settings -> Processes. Absent means the defaults: `mode: "single"` (one
+   * process does everything — today's behavior). Kept in sync with the
+   * validator of the same field (packages/shared/src/validators/instance.ts).
+   */
+  processes?: BoardProcessesSettings;
+}
+
+export interface BoardProcessesSettings {
+  mode: "single" | "split";
+  /** Api children the worker forks in `split` (1..4). */
+  apiCount: number;
+  /** TTL of the leader lease in seconds (5..300); renewed every TTL/3. */
+  leaderLeaseTtlSec: number;
+  liveEventsBus: "local" | "pg";
+  admissionStore: "memory" | "db";
+  singletonProxy: boolean;
 }
 
 

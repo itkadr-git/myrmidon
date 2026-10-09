@@ -107,6 +107,18 @@ export const backupRetentionPolicySchema = z.object({
   keepLastOnly: z.boolean().optional(),
 });
 
+// myrmidon(1.6.5 PROCS-0.1): `general.processes`. Every field has a default and
+// the defaults are the single-process board: nothing changes until an operator
+// explicitly switches `mode` to `split`.
+export const boardProcessesSettingsSchema = z.object({
+  mode: z.enum(["single", "split"]).default("single"),
+  apiCount: z.number().int().min(1).max(4).default(1),
+  leaderLeaseTtlSec: z.number().int().min(5).max(300).default(30),
+  liveEventsBus: z.enum(["local", "pg"]).default("local"),
+  admissionStore: z.enum(["memory", "db"]).default("memory"),
+  singletonProxy: z.boolean().default(true),
+});
+
 export const instanceGeneralSettingsSchema = z.object({
   censorUsernameInLogs: z.boolean().default(false),
   keyboardShortcuts: z.boolean().default(false),
@@ -289,6 +301,10 @@ export const instanceGeneralSettingsSchema = z.object({
   // /api/myrmidon/foraging/idle-gate; absent means the environment variable,
   // then the default (on).
   foragingIdleGate: foragingIdleGateSettingsSchema.optional(),
+  // myrmidon(1.6.5 PROCS-0.1): the multi-process board mode (BOARD-PROCESSES),
+  // edited at Instance settings -> Processes; absent means the defaults, which
+  // are exactly today's single-process behavior (mode `single`).
+  processes: boardProcessesSettingsSchema.optional(),
 }).strict();
 
 export const patchInstanceGeneralSettingsSchema = z

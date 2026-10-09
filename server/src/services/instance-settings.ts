@@ -368,6 +368,9 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
       ...(parsed.data.attentionFeedCacheTtlSeconds !== undefined
         ? { attentionFeedCacheTtlSeconds: parsed.data.attentionFeedCacheTtlSeconds }
         : {}),
+      // myrmidon(1.6.5 PROCS-0.1): the stored multi-process mode survives every
+      // general write; absent means the defaults (single process).
+      ...(parsed.data.processes ? { processes: parsed.data.processes } : {}),
     };
   }
   return {
