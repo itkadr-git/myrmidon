@@ -14,6 +14,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Cpu } from "lucide-react";
+import { useTranslation } from "@/i18n";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -35,8 +36,12 @@ export function applyErrorMessage(err: unknown): string {
 }
 
 /** "current -> target" status line after the latest read. */
-export function applyStatusLine(state: LitellmWorkersState | undefined): string | null {
+export function applyStatusLine(
+  state: LitellmWorkersState | undefined,
+  unknownLine = "Running now is unknown: the gateway did not report its pool size.",
+): string | null {
   if (!state) return null;
+  if (state.current === null) return unknownLine;
   if (state.current === state.target) return `${state.current} worker${state.current === 1 ? "" : "s"} running — applied.`;
   return `Applying: ${state.current} running -> ${state.target} requested.`;
 }
@@ -64,6 +69,7 @@ function CpuBar({ percent }: { percent: number }) {
 }
 
 function WorkersControlCard({ companyId }: { companyId: string }) {
+  const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { data, error } = useQuery({
     queryKey: litellmWorkersKey(companyId),
@@ -76,7 +82,7 @@ function WorkersControlCard({ companyId }: { companyId: string }) {
   const shown = draft ?? String(data?.target ?? "");
   const maxByMemory = data?.maxByMemory ?? Number.POSITIVE_INFINITY;
   const problem = data ? validateWorkerTarget(shown, maxByMemory) : null;
-  const statusLine = applyStatusLine(data);
+  const statusLine = applyStatusLine(data, t("litellmWorkers.statusUnknown"));
 
   const mutation = useMutation({
     mutationFn: (target: number) =>
@@ -149,13 +155,13 @@ function WorkersControlCard({ companyId }: { companyId: string }) {
             }}
           />
           <p className="text-xs text-muted-foreground">
-            Max by CPU: {data.maxByCpu} · Max by memory: {data.maxByMemory} · Running now: {data.current}
+            Max by CPU: {data.maxByCpu} · Max by memory: {data.maxByMemory} · {t("litellmWorkers.runningNow", { value: data.current ?? t("litellmWorkers.unknown") })}
           </p>
           {problem && shown.trim() !== "" ? <p className="text-sm text-destructive">{problem}</p> : null}
         </div>
 
         <div className="flex flex-wrap gap-2">
-          {data.current !== target && canApply ? (
+          {(data.current ?? data.target) !== target && canApply ? (
             confirmApply ? (
               <>
                 <Button

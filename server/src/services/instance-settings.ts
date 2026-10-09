@@ -76,6 +76,7 @@ import { preserveGitHubSharedIdentityGeneralKey } from "../myrmidon/github-share
 import { preserveBudgetProjectionGeneralKey } from "../myrmidon/litellm-budget-sync/settings.js"; // myrmidon(1.7-BUDGET-CONFIG-C)
 // myrmidon(BOT-RUNTIME-TUNING D2): keep the fallback-signal settings across vendor writes of `general`
 import { preserveFallbackSignalGeneralKey } from "../myrmidon/litellm-fallback-signal/settings.js";
+import { preserveLitellmWorkersGeneralKey } from "../myrmidon/litellm-workers/settings.js"; // myrmidon(1.6.5 LITELLM-WORKERS A)
 import { preserveBudgetLimitsGeneralKey } from "../myrmidon/budget-limits/settings.js";
 // myrmidon(1.6.5-DBC1): keep the datastore-care block across vendor writes of `general`
 import { preserveDatastoreCareGeneralKey } from "../myrmidon/datastore-care/retention/settings.js";
@@ -281,14 +282,16 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
       // myrmidon(BOT-LSP-DEFAULTS): the stored language-server policy survives
       // every general write (it is edited on its own settings panel).
       ...(parsed.data.botLsp ? { botLsp: parsed.data.botLsp } : {}),
-      // myrmidon(1.6-SWARM): the stored swarm-claim pilot settings survive
-      // every general write (they are edited on their own settings page).
-      // 1.6.1: without this line the vendor write path silently dropped the
-      // key, so the stored value never roundtripped and the pilot could only
-      // ever come from the environment.
+      // myrmidon(1.6-SWARM): the stored swarm-claim settings survive every
+      // general write (they are edited on their own settings page). Without
+      // this line the vendor write path silently dropped the key, so the
+      // stored value never roundtripped.
       ...(parsed.data.swarmClaim ? { swarmClaim: parsed.data.swarmClaim } : {}),
-      // myrmidon(1.6.1 SWARM-SETTINGS-UI): the change journal of the swarm-claim
-      // pilot settings survives every general write (one atomic write carries the
+      // myrmidon(1.6.5 F-26 T5): the stored wake guard (taskless gate and
+      // cooling window, `general.swarm`) survives every general write too.
+      ...(parsed.data.swarm ? { swarm: parsed.data.swarm } : {}),
+      // myrmidon(1.6.1 SWARM-SETTINGS-UI): the change journal of the swarm
+      // settings survives every general write (one atomic write carries the
       // settings and the journal entry together).
       ...(parsed.data.swarmClaimJournal ? { swarmClaimJournal: parsed.data.swarmClaimJournal } : {}),
       // myrmidon(REVIEW-REWORK): the stored review-return loop settings survive
@@ -778,6 +781,7 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
               ...(patch.telegramDmProgress !== undefined ? { telegramDmProgress: nextGeneral.telegramDmProgress } : {}),
               ...preserveGitHubSharedIdentityGeneralKey(current.general), // myrmidon(GITHUB-SHARED-IDENTITY)
               ...preserveBudgetProjectionGeneralKey(current.general), // myrmidon(1.7-BUDGET-CONFIG-C)
+              ...preserveLitellmWorkersGeneralKey(current.general), // myrmidon(1.6.5 LITELLM-WORKERS A)
               ...preserveBotImageRolloutGeneralKey(current.general), // myrmidon(BOT-ROLLOUT)
               ...preserveToolPolicyCacheGeneralKey(current.general), // myrmidon(DB-PERF-C-P4)
               // myrmidon(DB-PERF-C-P4): a patch that carries the key wins over the restored value.

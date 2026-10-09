@@ -6,7 +6,7 @@ divergence-section: Трек 5 — эксплуатация
 
 ### Board process registry, leader leases and the `general.processes` setting (PROCS-0.1)
 
-The board now keeps a registry of its own OS processes. Migration `0385_board_processes`
+The board now keeps a registry of its own OS processes. Migration `0388_board_processes`
 adds two tables: `board_processes` (one row per running process: boot id, role, pid,
 host, container, version, start and last-pulse time, API port, event loop lag, RSS) and
 `board_leases` (named leader leases: holder boot id, epoch, acquisition and expiry
@@ -28,7 +28,7 @@ row and no leases. The setting is only stored for now — the supervisor that ac
 
 ### Реестр процессов доски, аренды лидера и настройка `general.processes` (PROCS-0.1)
 
-Доска ведёт реестр собственных процессов ОС. Миграция `0385_board_processes` добавляет
+Доска ведёт реестр собственных процессов ОС. Миграция `0388_board_processes` добавляет
 две таблицы: `board_processes` (строка на каждый работающий процесс: boot id, роль, pid,
 хост, контейнер, версия, время старта и последнего пульса, порт API, задержка цикла
 событий, RSS) и `board_leases` (именованные аренды лидера: boot id держателя, эпоха,

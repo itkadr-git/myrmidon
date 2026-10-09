@@ -1,5 +1,5 @@
 {
-  "id": "ff45d077-9907-4db4-ab3c-46f876e71858",
+  "id": "1031ce00-e006-492a-8364-24450392d1c2",
   "prevId": "69340adf-9fb8-41f9-99e8-1064c9cc70de",
   "version": "7",
   "dialect": "postgresql",
@@ -806,6 +806,13 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
+        },
+        "is_default": {
+          "name": "is_default",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
         }
       },
       "indexes": {
@@ -841,6 +848,22 @@
             }
           ],
           "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "agent_castes_company_default_uq": {
+          "name": "agent_castes_company_default_uq",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"agent_castes\".\"is_default\"",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -32969,18 +32992,18 @@
           "notNull": true,
           "default": "now()"
         },
+        "caste_key": {
+          "name": "caste_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "pheromone_strength": {
           "name": "pheromone_strength",
           "type": "integer",
           "primaryKey": false,
           "notNull": true,
           "default": 0
-        },
-        "caste_key": {
-          "name": "caste_key",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
         }
       },
       "indexes": {
@@ -52747,83 +52770,91 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
-    "public.board_processes": {
-      "name": "board_processes",
+    "public.agent_nests": {
+      "name": "agent_nests",
       "schema": "",
       "columns": {
-        "boot_id": {
-          "name": "boot_id",
-          "type": "text",
+        "id": {
+          "name": "id",
+          "type": "uuid",
           "primaryKey": true,
-          "notNull": true
+          "notNull": true,
+          "default": "gen_random_uuid()"
         },
-        "role": {
-          "name": "role",
-          "type": "text",
+        "company_id": {
+          "name": "company_id",
+          "type": "uuid",
           "primaryKey": false,
           "notNull": true
         },
-        "pid": {
-          "name": "pid",
-          "type": "integer",
+        "agent_id": {
+          "name": "agent_id",
+          "type": "uuid",
           "primaryKey": false,
           "notNull": true
         },
-        "hostname": {
-          "name": "hostname",
-          "type": "text",
+        "project_id": {
+          "name": "project_id",
+          "type": "uuid",
           "primaryKey": false,
           "notNull": true
         },
-        "container": {
-          "name": "container",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "version": {
-          "name": "version",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "started_at": {
-          "name": "started_at",
+        "created_at": {
+          "name": "created_at",
           "type": "timestamp with time zone",
           "primaryKey": false,
-          "notNull": true
-        },
-        "last_seen_at": {
-          "name": "last_seen_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "api_port": {
-          "name": "api_port",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "event_loop_lag_ms": {
-          "name": "event_loop_lag_ms",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "rss_bytes": {
-          "name": "rss_bytes",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": false
+          "notNull": true,
+          "default": "now()"
         }
       },
       "indexes": {
-        "board_processes_last_seen_idx": {
-          "name": "board_processes_last_seen_idx",
+        "agent_nests_agent_project_uq": {
+          "name": "agent_nests_agent_project_uq",
           "columns": [
             {
-              "expression": "last_seen_at",
+              "expression": "agent_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "project_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "agent_nests_company_agent_idx": {
+          "name": "agent_nests_company_agent_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "agent_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "agent_nests_project_idx": {
+          "name": "agent_nests_project_idx",
+          "columns": [
+            {
+              "expression": "project_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -52835,51 +52866,47 @@
           "with": {}
         }
       },
-      "foreignKeys": {},
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.board_leases": {
-      "name": "board_leases",
-      "schema": "",
-      "columns": {
-        "name": {
-          "name": "name",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true
+      "foreignKeys": {
+        "agent_nests_company_id_companies_id_fk": {
+          "name": "agent_nests_company_id_companies_id_fk",
+          "tableFrom": "agent_nests",
+          "tableTo": "companies",
+          "columnsFrom": [
+            "company_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         },
-        "holder_boot_id": {
-          "name": "holder_boot_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
+        "agent_nests_agent_id_agents_id_fk": {
+          "name": "agent_nests_agent_id_agents_id_fk",
+          "tableFrom": "agent_nests",
+          "tableTo": "agents",
+          "columnsFrom": [
+            "agent_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         },
-        "epoch": {
-          "name": "epoch",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 0
-        },
-        "acquired_at": {
-          "name": "acquired_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "expires_at": {
-          "name": "expires_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
+        "agent_nests_project_id_projects_id_fk": {
+          "name": "agent_nests_project_id_projects_id_fk",
+          "tableFrom": "agent_nests",
+          "tableTo": "projects",
+          "columnsFrom": [
+            "project_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         }
       },
-      "indexes": {},
-      "foreignKeys": {},
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "policies": {},

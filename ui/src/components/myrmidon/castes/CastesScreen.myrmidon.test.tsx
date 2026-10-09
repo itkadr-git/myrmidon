@@ -234,6 +234,44 @@ describe("myrmidon(1.6.1 CUSTOM-CASTES C) view tier", () => {
     }
   });
 
+  it("moves the company default through the radio and shows the per-caste counters", async () => {
+    const onSetDefault = vi.fn();
+    render(
+      [caste({ key: "engineer", isDefault: true }), caste({ key: "reviewer", nameEn: "Reviewer" })],
+      {
+        onSetDefault,
+        counts: {
+          engineer: { agents: 2, queued: 3, free: 1 },
+          reviewer: { agents: 0, queued: 1, free: 0 },
+        },
+      },
+    );
+
+    const holder = container.querySelector('[data-testid="myrmidon-castes-default-engineer"]') as HTMLInputElement;
+    const other = container.querySelector('[data-testid="myrmidon-castes-default-reviewer"]') as HTMLInputElement;
+    expect(holder.checked).toBe(true);
+    // the caste that holds the flag cannot unset itself: another one must take it
+    expect(holder.disabled).toBe(true);
+    expect(other.checked).toBe(false);
+
+    await click('[data-testid="myrmidon-castes-default-reviewer"]');
+    expect(onSetDefault).toHaveBeenCalledWith("reviewer");
+
+    expect(
+      container.querySelector('[data-testid="myrmidon-castes-counts-engineer"]')?.textContent,
+    ).toBe("2 / 3 / 1");
+    expect(
+      container.querySelector('[data-testid="myrmidon-castes-counts-reviewer"]')?.textContent,
+    ).toBe("0 / 1 / 0");
+  });
+
+  it("marks the built-in rows as a renameable template", () => {
+    render([caste({ builtIn: true })]);
+    expect(
+      container.querySelector('[data-testid="myrmidon-castes-template-note"]')?.textContent,
+    ).toBe("castes.list.templateNote");
+  });
+
   it("renders the mutation error text and the add error separately", async () => {
     render([caste()], { error: "Caste in use", addError: "Key exists" });
     await flushReact();

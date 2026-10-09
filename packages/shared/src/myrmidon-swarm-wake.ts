@@ -76,9 +76,14 @@ export function resolveSwarmSettings(
   stored?: unknown,
   patch?: Partial<SwarmSettings> | null,
 ): Required<SwarmSettings> {
-  const parsed = swarmSettingsSchema.safeParse(
-    typeof stored === "object" && stored !== null ? stored : {},
-  );
+  // `general.swarm` is shared with sibling blocks (T10 owns `scent`); the wake
+  // schema is strict, so drop them before parsing instead of degrading to defaults.
+  const own: Record<string, unknown> =
+    typeof stored === "object" && stored !== null && !Array.isArray(stored)
+      ? { ...(stored as Record<string, unknown>) }
+      : {};
+  delete own.scent;
+  const parsed = swarmSettingsSchema.safeParse(own);
   const base = parsed.success ? parsed.data : {};
   return swarmSettingsSchema.parse({
     ...SWARM_SETTINGS_DEFAULTS,

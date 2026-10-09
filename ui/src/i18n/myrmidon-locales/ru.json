@@ -326,7 +326,8 @@
     "browsers": "Браузеры",
     "clouds": "Облака",
     "autonomy": "Автономия",
-    "castes": "Касты и модели",
+    "castes": "Касты агентов",
+    "models": "Модели и провайдеры",
     "wipLimit": "Лимит WIP",
     "reviewRouting": "Маршрутизация ревью"
   },
@@ -481,14 +482,6 @@
       "activeLeases": "Активные лизы",
       "loadVsCap": "Загрузка / потолок",
       "limit": "Потолок",
-      "metric": "Метрика",
-      "baseline": "BASELINE",
-      "delta": "Дельта",
-      "tasksDone": "Задач завершено",
-      "cycleTimeMean": "Время цикла (ср)",
-      "reviewTimeMean": "Время ревью (ср)",
-      "returnRate": "Доля возвратов",
-      "costPerTaskMean": "Стоимость задачи (ср)",
       "eff": "Феромон",
       "nest": "Гнездо",
       "matchedAt": "Сопоставлено",
@@ -1074,5 +1067,10 @@
     "noAcquired": "—",
     "noExpires": "—",
     "updatedAt": "Обновлено {{time}}"
+  },
+  "litellmWorkers": {
+    "unknown": "неизвестно",
+    "runningNow": "Сейчас работает: {{value}}",
+    "statusUnknown": "Сколько процессов работает сейчас, неизвестно: шлюз не сообщил размер пула."
   }
 }

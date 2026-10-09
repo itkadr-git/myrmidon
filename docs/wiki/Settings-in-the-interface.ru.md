@@ -48,10 +48,18 @@
 **Настройки компании → WIP limit**, живое значение видно в строке каждого
 агента
 ([wip-limit](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/wip-limit.ru.md)).
-Параметры очередей роя (TTL аренды, потолок активных задач на агента,
-интервал обхода, вытеснение P0) правятся вживую в **Instance → General →
-Очереди по ролям (SWARM-CLAIM)**
-([swarm-claim-settings](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/swarm-claim-settings.ru.md)).
+Параметры самоорганизации роя (стартовая сила феромона по приоритетам,
+надбавка за ожидание, штраф за неудачный прогон без изменений задачи,
+срок аренды, потолок активных задач на агента, вытеснение P0)
+правятся вживую в **Instance → General → Self-organization (swarm)** — рой по
+умолчанию выключен, включается переключателем «Enable the swarm»; остывание
+задачи после пустого прогона (база 30 минут, потолок 24 часа) задаёт
+охранник побудок (`general.swarm.cooldownBaseMin` / `cooldownCeilingHours`);
+как включить рой и
+проверить его работу за три действия —
+[swarm-self-organization](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/swarm-self-organization.ru.md).
+Низкоуровневые детали очередей —
+[swarm-claim-settings](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/swarm-claim-settings.ru.md).
 
 ## Касты агентов (справочник ролей компании)
 

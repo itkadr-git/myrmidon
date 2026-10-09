@@ -7,8 +7,8 @@
 import { api } from "@/api/client";
 
 export interface LitellmWorkersState {
-  /** Worker processes running now. */
-  current: number;
+  /** Worker processes running now; null while no source knows the pool size. */
+  current: number | null;
   /** Desired worker count (what the last apply asked for). */
   target: number;
   /** Ceiling derived from host CPU. */

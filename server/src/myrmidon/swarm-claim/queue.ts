@@ -51,9 +51,10 @@ export interface RoleQueueRow {
 }
 
 /**
- * myrmidon(1.6.2 SWARM-UNASSIGNED-ROUTE): SQL twin of `rolesOfQueueRow`
- * (idle-queue.ts) over the outer `issues` row — true when an unassigned task
- * is queued for `role`.
+ * myrmidon(1.6.2 SWARM-UNASSIGNED-ROUTE): the routing of an unassigned task
+ * over the outer `issues` row — true when it is queued for `role`. The one
+ * routing rule: the role queues here and the board matcher's pool read
+ * (`listIdleRolePairs`, matcher.ts) both filter by it.
  *
  * 1.6.5 (F-27 rework 09.10, design §2.1) + review #1047 п.4: the task's caste
  * is the first non-blank of `issues.caste_key`, then the project's
