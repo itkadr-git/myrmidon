@@ -71,7 +71,7 @@ const { spawnSync } = require("node:child_process");
 const fs = require("node:fs");
 const path = require("node:path");
 
-const REAL_GIT = process.env.MYRMIDON_GIT_REAL || "/usr/bin/git";
+const REAL_GIT = process.env.MYRMIDON_GIT_REAL || "/opt/paperclip/libexec/git";
 const MIRROR_ROOT = process.env.MYRMIDON_GIT_MIRROR_ROOT || "/cache/git";
 const HERMES_HOME = process.env.HERMES_HOME || "/data/hermes";
 
