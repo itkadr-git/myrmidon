@@ -95,7 +95,7 @@ export type ScheduledRetryFacts = {
   issueAssigneeAgentId: string | null;
   issueExecutionRunId: string | null;
   issueCheckoutRunId?: string | null;
-  /** myrmidon(1.6.5 F-09): a hidden issue is not startable. */
+  /** myrmidon(1.6.5 F-09): carried for the facts; hiddenAt alone never cancels (Summarizer pattern). */
   issueHiddenAt?: Date | null;
 
   isNonAssigneeWorkspaceBusyRetry: boolean;
@@ -147,7 +147,7 @@ export type QueuedRunFacts = {
   issueAssigneeAgentId: string | null;
   issueExecutionRunId: string | null;
   issueCheckoutRunId?: string | null;
-  /** myrmidon(1.6.5 F-09): a hidden issue is not startable. */
+  /** myrmidon(1.6.5 F-09): carried for the facts; hiddenAt alone never cancels (Summarizer pattern). */
   issueHiddenAt?: Date | null;
 
   isResolvedInteractionContinuation: boolean;
