@@ -12,20 +12,17 @@
 import { randomUUID } from "node:crypto";
 import express from "express";
 import request from "supertest";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog,
-  agentRuntimeState,
   agentWakeupRequests,
   agents,
   companies,
   companyMemberships,
   createDb,
-  heartbeatRunEvents,
   heartbeatRuns,
   issues,
-  principalPermissionGrants,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -57,39 +54,26 @@ describeEmbeddedPostgres("guarded CAS handoff on PATCH /api/issues/{id}", () => 
     db = createDb(tempDb.connectionString);
   }, 20_000);
 
-  async function runCleanupOnce() {
-    // myrmidon(HANDOFF-CAS): FK order — heartbeat_runs reference
-    // agent_wakeup_requests (wakeupRequestId), so runs and their events must
-    // be cleared BEFORE the wakeup requests they point at.
-    await db.delete(activityLog);
-    await db.delete(heartbeatRunEvents);
-    await db.delete(heartbeatRuns);
-    await db.delete(agentWakeupRequests);
-    await db.delete(issues);
-    await db.delete(principalPermissionGrants);
-    await db.delete(companyMemberships);
-    await db.delete(agentRuntimeState);
-    await db.delete(agents);
-    await db.delete(companies);
-  }
-
   afterEach(async () => {
-    // myrmidon(HANDOFF-CAS): route handlers enqueue wakeups fire-and-forget,
-    // so their inserts into agent_wakeup_requests can still be in flight when
-    // teardown starts. A concurrent FK share-lock on the seeded agents row
-    // deadlocks against `delete from agents` (40P01), and a late insert can
-    // also re-add a wakeup row after the table was cleared (23503 on agents).
-    // Give the pending enqueues a beat to settle, then retry the FK-ordered
-    // cleanup until the database is quiet.
-    await new Promise((resolve) => setTimeout(resolve, 250));
+    // myrmidon(HANDOFF-CAS): the PATCH route fires background work off-list
+    // (wakeup enqueues, hire/skill/foraging inserts), so a hand-written FK
+    // delete ladder always lags one table behind whatever the background
+    // services touch next (23503 on companies via company_skills, then
+    // deadlock races against in-flight FK share-locks). Heartbeat-adjacent
+    // suites in this package solve the same problem with a cascade truncate
+    // (heartbeat-active-run-output-watchdog, issue-queued-comments); keep the
+    // whole companies cluster in one statement and retry while background
+    // transactions still hold locks (deadlock victims can simply rerun).
     let lastError: unknown = null;
-    for (let attempt = 0; attempt < 6; attempt += 1) {
+    let delay = 100;
+    for (let attempt = 0; attempt < 8; attempt += 1) {
       try {
-        await runCleanupOnce();
+        await db.execute(sql.raw(`TRUNCATE TABLE "companies" CASCADE`));
         return;
       } catch (err) {
         lastError = err;
-        await new Promise((resolve) => setTimeout(resolve, 250));
+        await new Promise((resolve) => setTimeout(resolve, delay));
+        delay = Math.min(delay * 2, 1_500);
       }
     }
     throw lastError;
