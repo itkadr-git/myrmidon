@@ -211,6 +211,7 @@ const FALLBACK_EN: Record<string, string> = {
   "runQueue.waitReason.agent_fair_share": "another agent's turn comes first (fair share)",
   "runQueue.waitReason.agent_concurrency": "the agent's own concurrency limit is full",
   "runQueue.waitReason.priority": "higher-priority runs are ahead",
+  "runQueue.waitReason.higher_priority_ready": "the agent's more important ready task goes first",
 };
 
 function interpolateFallback(key: string, options?: Record<string, unknown>): string {
