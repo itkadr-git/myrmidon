@@ -6,7 +6,7 @@ import { describe, it } from "node:test";
 import { execFileSync, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
-// ARCH-GUARD (OPE-6856): self-test of the invariants gate. Each invariant
+// ARCH-GUARD: self-test of the invariants gate. Each invariant
 // (INV-10..INV-13) has a RED side: a sandboxed repo snapshot in which the
 // invariant is violated and the gate MUST fail. The green side is the real
 // checkout (checked once per suite run through the sandbox copy of a clean

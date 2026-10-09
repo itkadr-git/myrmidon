@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// ARCH-GUARD (OPE-6856): fitness functions of the architecture invariants
-// INV-10..INV-13 from docs/architecture/README.md (source: OPE-56 §0).
+// ARCH-GUARD: fitness functions of the architecture invariants
+// INV-10..INV-13 from docs/architecture/README.md (invariant index, section 0 of the target architecture).
 //
 // Violations of any invariant = red CI, before any human review:
 //   INV-10  no automatic agent wake without a task: every enqueueWakeup call
