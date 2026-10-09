@@ -97,9 +97,18 @@ describe("myrmidon(1.6.6-LITELLM-WORKERS-UI) GatewayWorkersTab", () => {
     vi.restoreAllMocks();
   });
 
-  // Renders the tab and waits for the mocked GET state to arrive, so every
-  // test starts from the loaded (not "Waiting for the first metrics read…")
-  // view. async act() drains the promise chain and flushes React's work.
+  // Same settle loop as BotDiskSettingsPanel.myrmidon.test.tsx: repeated
+  // act() drains with a real timer tick, which is what it takes for the
+  // mocked GET promise to propagate through react-query into a committed
+  // render under React 19's concurrent mode.
+  async function settle() {
+    for (let i = 0; i < 5; i += 1) {
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      });
+    }
+  }
+
   async function renderTab() {
     const client = new QueryClient({
       defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
@@ -111,7 +120,7 @@ describe("myrmidon(1.6.6-LITELLM-WORKERS-UI) GatewayWorkersTab", () => {
         </QueryClientProvider>,
       );
     });
-    await act(async () => {});
+    await settle();
   }
 
   async function typeInto(selector: string, text: string) {
@@ -171,8 +180,8 @@ describe("myrmidon(1.6.6-LITELLM-WORKERS-UI) GatewayWorkersTab", () => {
     expect(confirm).toBeTruthy();
     await click(confirm!);
     expect(litellmWorkersApi.apply).toHaveBeenCalledWith("company-a", 4, null);
-    // let the resolved PUT settle inside act so onSuccess cache-set re-renders
-    await act(async () => {});
+    // let the resolved PUT settle so onSuccess cache-set re-renders
+    await settle();
   });
 
   it("surfaces the 400 text from the server on a rejected apply", async () => {
@@ -184,8 +193,8 @@ describe("myrmidon(1.6.6-LITELLM-WORKERS-UI) GatewayWorkersTab", () => {
     await typeInto("#myrmidon-workers-target", "9");
     await click(buttonWith("Apply")!);
     await click(buttonWith("Confirm")!);
-    // let the rejected PUT settle inside act so the error renders
-    await act(async () => {});
+    // let the rejected PUT settle so the error box renders
+    await settle();
     expect(container.querySelector("[data-testid=myrmidon-workers-error]")?.textContent).toContain(
       "target 9 exceeds the memory limit of 6 workers",
     );
