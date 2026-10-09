@@ -150,15 +150,17 @@ describe("volume bound of an ever-running task (1.6.6 LONG-TASK-CONTEXT)", () =>
     const messages = Array.from({ length: 40 }, (_, i) => long(`m${i}`, 1_000));
     const result = limitExecutionContinuationHistory(envelope({ messages }), 40, 10_000, 0);
 
-    // 10k budget / ~1k bodies: the ten newest entries, nothing older.
-    expect(result.messages.length).toBe(10);
+    // Every body carries its id plus a 1000-character payload (1004 characters
+    // for a three-character id), so nine newest fit the 10k budget exactly and
+    // the tenth would break it.
+    expect(result.messages.length).toBe(9);
     expect(ids(result.messages)).toEqual(
-      Array.from({ length: 10 }, (_, i) => `m${30 + i}`),
+      Array.from({ length: 9 }, (_, i) => `m${31 + i}`),
     );
     expect(volume(result.messages)).toBeLessThanOrEqual(10_000);
-    expect(result.historyTruncation?.messages).toEqual({ kept: 10, dropped: 30, total: 40 });
+    expect(result.historyTruncation?.messages).toEqual({ kept: 9, dropped: 31, total: 40 });
     expect(result.truncationNotice).toContain("10000 characters of message text");
-    expect(result.truncationNotice).toContain("messages 30 of 40");
+    expect(result.truncationNotice).toContain("messages 31 of 40");
     expect(result.truncationNotice).toContain("GET /api/issues/issue-a/comments");
   });
 
@@ -174,14 +176,16 @@ describe("volume bound of an ever-running task (1.6.6 LONG-TASK-CONTEXT)", () =>
   });
 
   it("caps a single oversized entry and names where its full text stays", () => {
+    const oversized = long("big", 50_000);
+    const omitted = oversized.body.length - 8_000;
     const result = limitExecutionContinuationHistory(
-      envelope({ messages: [message("m0"), long("big", 50_000)] }),
+      envelope({ messages: [message("m0"), oversized] }),
       30,
       0,
       8_000,
     );
     const capped = result.messages.find((entry: Message) => entry.id === "big");
-    expect(capped?.body).toContain("42000 characters of this entry were omitted");
+    expect(capped?.body).toContain(`${omitted} characters of this entry were omitted`);
     expect(capped?.body).toContain("GET /api/issues/issue-a/comments");
     expect(capped?.body.length).toBeLessThan(8_500);
     expect(result.messages.find((entry: Message) => entry.id === "m0")?.body).toBe("note m0");
