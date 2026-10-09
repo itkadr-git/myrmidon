@@ -7,7 +7,7 @@ import { pathToFileURL } from "node:url";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { definePlugin } from "../src/define-plugin.js";
+import { definePlugin, type PluginDefinition } from "../src/define-plugin.js";
 import {
   createRequest,
   createErrorResponse,
@@ -153,6 +153,287 @@ describe("worker performAction context", () => {
       hostReadline.close();
       hostToWorker.destroy();
       workerToHost.destroy();
+    }
+  });
+});
+
+describe("worker unknown-key errors", () => {
+  function createWorkerPair(setup: PluginDefinition["setup"]) {
+    const hostToWorker = new PassThrough();
+    const workerToHost = new PassThrough();
+    const hostReadline = createInterface({ input: workerToHost });
+    const pending = new Map<string, (response: JsonRpcResponse) => void>();
+    let nextRequestId = 1;
+
+    const plugin = definePlugin({ setup });
+    const worker = startWorkerRpcHost({
+      plugin,
+      stdin: hostToWorker,
+      stdout: workerToHost,
+    });
+
+    function callWorker(method: string, params: unknown): Promise<unknown> {
+      const id = `host-${nextRequestId++}`;
+      const result = new Promise<unknown>((resolve, reject) => {
+        pending.set(id, (response) => {
+          if ("error" in response && response.error) {
+            const error = new Error(response.error.message) as Error & {
+              code?: number;
+              data?: unknown;
+            };
+            error.code = response.error.code;
+            error.data = (response.error as { data?: unknown }).data;
+            reject(error);
+            return;
+          }
+          resolve((response as { result?: unknown }).result);
+        });
+      });
+      hostToWorker.write(serializeMessage(createRequest(method, params, id)));
+      return result;
+    }
+
+    hostReadline.on("line", (line) => {
+      const message = parseMessage(line);
+      if (!isJsonRpcResponse(message)) return;
+      pending.get(String(message.id))?.(message);
+      pending.delete(String(message.id));
+    });
+
+    const initialize = () =>
+      callWorker("initialize", {
+        manifest: {
+          id: "paperclip.test-worker-unknown-key",
+          apiVersion: 1,
+          version: "1.0.0",
+          displayName: "Unknown Key Test",
+          description: "Test plugin",
+          author: "Paperclip",
+          categories: ["automation"],
+          capabilities: [],
+          entrypoints: {},
+        },
+        config: {},
+        databaseNamespace: null,
+      });
+
+    const stop = () => {
+      worker.stop();
+      hostReadline.close();
+      hostToWorker.destroy();
+      workerToHost.destroy();
+    };
+
+    return { callWorker, initialize, stop };
+  }
+
+  it("performAction with an unknown key fails with UNKNOWN_ACTION and lists the registered actions", async () => {
+    const { callWorker, initialize, stop } = createWorkerPair(async (ctx) => {
+      ctx.actions.register("known-action", async () => ({ ok: true }));
+      ctx.actions.register("other-action", async () => ({ ok: true }));
+    });
+
+    try {
+      await initialize();
+
+      const error = await callWorker("performAction", {
+        key: "not-a-real-action",
+        params: {},
+      }).then(
+        () => { throw new Error("expected performAction to reject"); },
+        (err) => err as Error & { code?: number; data?: { error?: string; known?: string[] } },
+      );
+
+      expect(error.code).toBe(PLUGIN_RPC_ERROR_CODES.UNKNOWN_ACTION);
+      expect(error.message).toContain('No action handler registered for key "not-a-real-action"');
+      expect(error.data?.error).toBe("unknown_action");
+      expect(error.data?.known?.sort()).toEqual(["known-action", "other-action"]);
+    } finally {
+      stop();
+    }
+  });
+
+  it("getData with an unknown key fails with UNKNOWN_ACTION and lists the registered data keys", async () => {
+    const { callWorker, initialize, stop } = createWorkerPair(async (ctx) => {
+      ctx.data.register("known-data", async () => ({ ok: true }));
+    });
+
+    try {
+      await initialize();
+
+      const error = await callWorker("getData", {
+        key: "not-a-real-data-key",
+        params: {},
+      }).then(
+        () => { throw new Error("expected getData to reject"); },
+        (err) => err as Error & { code?: number; data?: { error?: string; known?: string[] } },
+      );
+
+      expect(error.code).toBe(PLUGIN_RPC_ERROR_CODES.UNKNOWN_ACTION);
+      expect(error.message).toContain('No data handler registered for key "not-a-real-data-key"');
+      expect(error.data?.error).toBe("unknown_data_key");
+      expect(error.data?.known).toEqual(["known-data"]);
+    } finally {
+      stop();
+    }
+  });
+
+  it("executeTool with an unknown tool fails with UNKNOWN_ACTION and lists the registered tools", async () => {
+    const { callWorker, initialize, stop } = createWorkerPair(async (ctx) => {
+      ctx.tools.register(
+        "known_tool",
+        { displayName: "Known Tool", description: "known", parametersSchema: { type: "object", properties: {} } },
+        async () => ({ content: [{ type: "text" as const, text: "ok" }] }),
+      );
+    });
+
+    try {
+      await initialize();
+
+      const error = await callWorker("executeTool", {
+        toolName: "not_a_real_tool",
+        parameters: {},
+        runContext: {
+          agentId: "agent-1",
+          runId: "run-1",
+          companyId: "company-1",
+          projectId: null,
+        },
+      }).then(
+        () => { throw new Error("expected executeTool to reject"); },
+        (err) => err as Error & { code?: number; data?: { error?: string; known?: string[] } },
+      );
+
+      expect(error.code).toBe(PLUGIN_RPC_ERROR_CODES.UNKNOWN_ACTION);
+      expect(error.message).toContain('No tool handler registered for "not_a_real_tool"');
+      expect(error.data?.error).toBe("unknown_tool");
+      expect(error.data?.known).toEqual(["known_tool"]);
+    } finally {
+      stop();
+    }
+  });
+
+  it("drops err.data on non-UNKNOWN_ACTION codes so a plugin cannot leak payloads through the bridge", async () => {
+    const { callWorker, initialize, stop } = createWorkerPair(async (ctx) => {
+      ctx.actions.register("leaky", async () => {
+        // e.g. an ofetch FetchError: `.data` holds the external service's
+        // response body — it must never reach the caller.
+        throw Object.assign(new Error("upstream exploded"), {
+          data: { upstreamBody: "secret-token-xyz" },
+        });
+      });
+    });
+
+    try {
+      await initialize();
+
+      const error = await callWorker("performAction", {
+        key: "leaky",
+        params: {},
+      }).then(
+        () => { throw new Error("expected performAction to reject"); },
+        (err) => err as Error & { code?: number; data?: unknown },
+      );
+
+      expect(error.code).toBe(PLUGIN_RPC_ERROR_CODES.WORKER_ERROR);
+      expect(error.message).toBe("upstream exploded");
+      expect(error.data).toBeUndefined();
+    } finally {
+      stop();
+    }
+  });
+
+  it("drops a cyclic UNKNOWN_ACTION data payload instead of hanging the host", async () => {
+    const { callWorker, initialize, stop } = createWorkerPair(async (ctx) => {
+      ctx.actions.register("cyclic", async () => {
+        const cyclic: { self?: unknown } = {};
+        cyclic.self = cyclic;
+        throw Object.assign(new Error("cyclic payload"), {
+          code: PLUGIN_RPC_ERROR_CODES.UNKNOWN_ACTION,
+          data: cyclic,
+        });
+      });
+    });
+
+    try {
+      await initialize();
+
+      // A bare `JSON.stringify` on the cyclic payload throws inside
+      // `sendMessage`; the outer `.catch` then used to retry with the same
+      // payload and swallow — the host waited for the RPC timeout. The call
+      // must now reject promptly with the code and no data.
+      const startedAt = Date.now();
+      const error = await callWorker("performAction", {
+        key: "cyclic",
+        params: {},
+      }).then(
+        () => { throw new Error("expected performAction to reject"); },
+        (err) => err as Error & { code?: number; data?: unknown },
+      );
+
+      expect(Date.now() - startedAt).toBeLessThan(5_000);
+      expect(error.code).toBe(PLUGIN_RPC_ERROR_CODES.UNKNOWN_ACTION);
+      expect(error.message).toBe("cyclic payload");
+      expect(error.data).toBeUndefined();
+    } finally {
+      stop();
+    }
+  });
+
+  it("drops a BigInt-bearing UNKNOWN_ACTION data payload instead of hanging the host", async () => {
+    const { callWorker, initialize, stop } = createWorkerPair(async (ctx) => {
+      ctx.actions.register("bigint", async () => {
+        throw Object.assign(new Error("bigint payload"), {
+          code: PLUGIN_RPC_ERROR_CODES.UNKNOWN_ACTION,
+          data: { total: 10n },
+        });
+      });
+    });
+
+    try {
+      await initialize();
+
+      const error = await callWorker("performAction", {
+        key: "bigint",
+        params: {},
+      }).then(
+        () => { throw new Error("expected performAction to reject"); },
+        (err) => err as Error & { code?: number; data?: unknown },
+      );
+
+      expect(error.code).toBe(PLUGIN_RPC_ERROR_CODES.UNKNOWN_ACTION);
+      expect(error.message).toBe("bigint payload");
+      expect(error.data).toBeUndefined();
+    } finally {
+      stop();
+    }
+  });
+
+  it("still delivers a JSON-safe UNKNOWN_ACTION data payload to the caller", async () => {
+    const { callWorker, initialize, stop } = createWorkerPair(async (ctx) => {
+      ctx.actions.register("typed-unknown", async () => {
+        throw Object.assign(new Error("typed unknown"), {
+          code: PLUGIN_RPC_ERROR_CODES.UNKNOWN_ACTION,
+          data: { error: "unknown_action", known: ["a", "b"] },
+        });
+      });
+    });
+
+    try {
+      await initialize();
+
+      const error = await callWorker("performAction", {
+        key: "typed-unknown",
+        params: {},
+      }).then(
+        () => { throw new Error("expected performAction to reject"); },
+        (err) => err as Error & { code?: number; data?: { error?: string; known?: string[] } },
+      );
+
+      expect(error.code).toBe(PLUGIN_RPC_ERROR_CODES.UNKNOWN_ACTION);
+      expect(error.data).toEqual({ error: "unknown_action", known: ["a", "b"] });
+    } finally {
+      stop();
     }
   });
 });

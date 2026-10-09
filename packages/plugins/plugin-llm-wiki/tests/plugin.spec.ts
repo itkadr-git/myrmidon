@@ -1,9 +1,10 @@
 import { readFileSync } from "node:fs";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createTestHarness } from "@paperclipai/plugin-sdk/testing";
-import type { Agent, Issue, PluginManagedRoutineResolution, Project } from "@paperclipai/plugin-sdk";
+import { PLUGIN_RPC_ERROR_CODES } from "@paperclipai/plugin-sdk/protocol";
+import type { Agent, Issue, PluginJobDeclaration, PluginManagedRoutineResolution, Project } from "@paperclipai/plugin-sdk";
 import manifest, {
   CURSOR_WINDOW_ROUTINE_KEY,
   INDEX_REFRESH_ROUTINE_KEY,
@@ -731,7 +732,10 @@ describe("LLM Wiki plugin scaffold", () => {
       routePath: "wiki",
     });
     expect(packageJson.dependencies).toBeUndefined();
-    expect(packageJson.devDependencies?.react).toBeUndefined();
+    // `react` is a devDependency so the package's own tests (which import it)
+    // can load it inside this workspace — at runtime the host supplies react
+    // per the `peerDependencies` contract below.
+    expect(packageJson.devDependencies?.react).toBeDefined();
     expect(packageJson.devDependencies?.["react-dom"]).toBeDefined();
     expect(packageJson.devDependencies?.["@types/react-dom"]).toBeDefined();
     expect(packageJson.peerDependencies?.react).toBe(">=18");
@@ -3835,6 +3839,73 @@ Duplicate headings receive stable suffixes.
         originKindPrefix: String(OPERATION_ORIGIN_KIND),
       });
       expect(operations).toHaveLength(0);
+    });
+  });
+
+  describe("jobs ↔ handlers guard", () => {
+    it("declares every registered job in the manifest, and registers a handler for every declared job", async () => {
+      const harness = createTestHarness({ manifest });
+      await plugin.definition.setup(harness.ctx);
+
+      const declaredJobKeys = (manifest.jobs ?? []).map((job: PluginJobDeclaration) => job.jobKey);
+      expect(new Set(declaredJobKeys).size).toBe(declaredJobKeys.length);
+
+      // Red side 1: a declared job with no worker handler must reject — no
+      // `.catch` swallowing, no spy on runJob itself.
+      for (const jobKey of declaredJobKeys) {
+        await expect(
+          harness.runJob(jobKey),
+          `manifest declares job "${jobKey}" but the worker never registered a handler for it`,
+        ).resolves.toBeUndefined();
+      }
+
+      // Red side 2: a job handler present in the worker but missing from the
+      // manifest must fail the contains-check below (no exception involved).
+      const workerSource = readFileSync(new URL("../src/worker.ts", import.meta.url), "utf8");
+      const registeredJobKeys = [
+        ...workerSource.matchAll(/ctx\.jobs\.register\(\s*["'`]([^"'`]+)["'`]/g),
+      ].map((match) => match[1]);
+      for (const jobKey of registeredJobKeys) {
+        expect(
+          declaredJobKeys,
+          `worker registers a handler for job "${jobKey}" but the manifest does not declare it`,
+        ).toContain(jobKey);
+      }
+      expect(new Set(registeredJobKeys).size).toBe(registeredJobKeys.length);
+    });
+
+    it("runJob rejects for a key with no registered handler (red side of the guard)", async () => {
+      const harness = createTestHarness({ manifest });
+      await plugin.definition.setup(harness.ctx);
+
+      await expect(harness.runJob("definitely-not-a-wiki-job")).rejects.toThrow(
+        "No job handler registered",
+      );
+    });
+  });
+
+  describe("unknown action surface", () => {
+    it("worker reports unknown actions with the full list of registered action keys", async () => {
+      const { PLUGIN_RPC_ERROR_CODES } = await import("@paperclipai/plugin-sdk/protocol");
+      const harness = createTestHarness({ manifest });
+      await plugin.definition.setup(harness.ctx);
+
+      await expect(harness.performAction("definitely-not-a-wiki-action", {}))
+        .rejects.toThrow("No action handler registered");
+
+      const workerSource = readFileSync(new URL("../src/worker.ts", import.meta.url), "utf8");
+      const registeredActionKeys = [
+        ...workerSource.matchAll(/ctx\.actions\.register\(\s*["'`]([^"'`]+)["'`]/g),
+      ].map((match) => match[1]).sort();
+
+      // The RPC-level shape (code + known list) is asserted in the SDK's
+      // worker-rpc-host tests; here we pin the plugin's full action surface so
+      // a removed or renamed registration cannot silently shrink the 400 list.
+      expect(registeredActionKeys.length).toBeGreaterThanOrEqual(36);
+      expect(registeredActionKeys).toContain("write-page");
+      expect(registeredActionKeys).toContain("bootstrap-root");
+      expect(new Set(registeredActionKeys).size).toBe(registeredActionKeys.length);
+      expect(PLUGIN_RPC_ERROR_CODES.UNKNOWN_ACTION).toBe(-32007);
     });
   });
 });
