@@ -2,8 +2,11 @@
 //
 // `resumeQueuedRuns` (global pass) and `startNextQueuedRunForAgent` (per-agent
 // pass) order their claimed runs by the effective weight from
-// `runPriorityWeight` (packages/shared) with a tie-break on `createdAt`, so at
-// a closed admission review, release and current-release runs start first.
+// `runPriorityWeight` (packages/shared) with a tie-break on `createdAt`. The
+// weight is banded by the role and lifts a current-release run one band above
+// the heaviest role, so at a closed admission review, release and
+// current-release runs start first whatever the issue priority; the same order
+// is what `rankQueuedRuns` reports as the run's place in the queue.
 // The admission limits themselves are untouched: this decides the order of
 // the choice *within* the admitted number of slots only.
 
@@ -32,10 +35,9 @@ export interface PriorityScoredRun {
 
 /**
  * Compare two queued runs by priority: higher effective weight first, then
- * the optional `tieBreak` (the caller's issue-priority order: the weight is
- * max(role, issue priority), so within one agent, whose role is the same for
- * every run, high/medium/low issues of a strong role all weigh the same and
- * only this step keeps a high issue ahead of a low one), then
+ * the optional `tieBreak` (the caller's issue-priority order — the weight
+ * already carries the issue priority inside the role band, so this only
+ * separates two runs that weigh exactly the same), then
  * the older createdAt (the pre-feature FIFO order), then id for determinism.
  * When the feature is switched off every weight is 0 and this degenerates to
  * the createdAt FIFO.
@@ -85,6 +87,21 @@ export function sortByRunPriority<T extends PriorityScoredRun>(
   nowMs: number = Date.now(),
 ): T[] {
   return [...runs].sort((left, right) => compareRunsByPriority(left, right, settings, nowMs));
+}
+
+/**
+ * The 1-based place of every run in the pass's priority order (`1` = next to
+ * start). `resumeQueuedRuns` writes it onto the queued runs, so the run card
+ * can show *where* the run waits next to *why* (`contextSnapshot.waitReason`).
+ * The rank and the wait reason are the same pass's view of the queue.
+ */
+export function rankQueuedRuns<T extends PriorityScoredRun>(
+  runs: readonly T[],
+  settings: RunPrioritySettings,
+  nowMs: number = Date.now(),
+): Map<string, number> {
+  const ranked = sortByRunPriority(runs, settings, nowMs);
+  return new Map(ranked.map((run, index) => [run.id, index + 1]));
 }
 
 /**

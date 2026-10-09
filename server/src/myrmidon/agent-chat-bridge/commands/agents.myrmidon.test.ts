@@ -18,9 +18,17 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "@paperclipai/db";
 import { telegramConversationUserId } from "../identity.js";
+import {
+  addDefaultAliases,
+  defaultAliasFromName,
+  resolveBridgeAddressee,
+} from "../addressing.js";
+import { t } from "../locales/index.js";
 import { TELEGRAM_DM_COMMANDS, runBridgedDirectMessageCommand, type BridgedCommandInput } from "./index.js";
 import {
   applyStickyAgentOverride,
+  buildAgentsReplyText,
+  listCompanyAddressableAgents,
   readStickyAgentId,
   readTelegramAliases,
   resolveCompanyAgentByAlias,
@@ -38,6 +46,21 @@ const support = await getEmbeddedPostgresTestSupport();
   let agentTerminatedId: string;
   let otherCompanyAgentId: string;
 
+  // myrmidon(1.6.5 OPE-6318 part A): a second company whose fleet exercises
+  // the grouped list — directions, a custom group, a computed-alias collision,
+  // a paused card, an archived copy and a plugin-owned service card.
+  let groupedCompanyId: string;
+  let groupedInfraId: string;
+  let groupedWorkId: string;
+  let groupedBbqHostId: string;
+  let groupedBbqPausedId: string;
+  let groupedRetiredId: string;
+  let groupedServiceId: string;
+  let groupedDispatchId: string;
+  let groupedQaId: string;
+  let groupedLifeId: string;
+  let groupedGoneId: string;
+
   beforeAll(async () => {
     database = await startEmbeddedPostgresTestDatabase("myrmidon-x9c-agents-");
     db = createDb(database.connectionString);
@@ -48,6 +71,20 @@ const support = await getEmbeddedPostgresTestSupport();
     agentNoAliasId = randomUUID();
     agentTerminatedId = randomUUID();
     otherCompanyAgentId = randomUUID();
+
+    // The grouped fleet lives in its own company, so the X9c fixtures above
+    // keep the flat list's expectations intact.
+    groupedCompanyId = randomUUID();
+    groupedInfraId = randomUUID();
+    groupedWorkId = randomUUID();
+    groupedBbqHostId = randomUUID();
+    groupedBbqPausedId = randomUUID();
+    groupedRetiredId = randomUUID();
+    groupedServiceId = randomUUID();
+    groupedDispatchId = randomUUID();
+    groupedQaId = randomUUID();
+    groupedLifeId = randomUUID();
+    groupedGoneId = randomUUID();
 
     await db
       .insert(authUsers)
@@ -62,6 +99,7 @@ const support = await getEmbeddedPostgresTestSupport();
     await db.insert(companies).values([
       { id: companyId, name: "X9c Test Co", issuePrefix: "X9C", requireBoardApprovalForNewAgents: false },
       { id: otherCompanyId, name: "X9c Other Co", issuePrefix: "X9D", requireBoardApprovalForNewAgents: false },
+      { id: groupedCompanyId, name: "X9c Grouped Co", issuePrefix: "X9E", requireBoardApprovalForNewAgents: false },
     ]);
     await db.insert(agents).values([
       {
@@ -111,6 +149,113 @@ const support = await getEmbeddedPostgresTestSupport();
         adapterConfig: { telegramAliases: ["alpha"] },
       },
     ]);
+    // myrmidon(1.6.5 OPE-6318 part A): the fleet that exercises the grouped
+    // /agents — two directions by name prefix, one group named on the card,
+    // two cards wanting the same short alias, and every kind of card that must
+    // stay out of the list.
+    await db.insert(agents).values([
+      {
+        id: groupedInfraId,
+        companyId: groupedCompanyId,
+        name: "adm-dev-eng-2",
+        role: "engineer",
+        title: "Engineer on duty",
+        status: "idle",
+        adapterType: "hermes_local",
+        adapterConfig: {},
+      },
+      {
+        id: groupedWorkId,
+        companyId: groupedCompanyId,
+        name: "work-runner-2",
+        role: "worker",
+        status: "idle",
+        adapterType: "hermes_local",
+        adapterConfig: {},
+      },
+      {
+        id: groupedBbqHostId,
+        companyId: groupedCompanyId,
+        name: "bbq-host",
+        role: "host",
+        status: "idle",
+        adapterType: "hermes_local",
+        adapterConfig: {},
+      },
+      {
+        id: groupedBbqPausedId,
+        companyId: groupedCompanyId,
+        name: "bbq-editor",
+        role: "editor",
+        title: "Editor",
+        status: "paused",
+        adapterType: "hermes_local",
+        adapterConfig: {},
+      },
+      {
+        id: groupedRetiredId,
+        companyId: groupedCompanyId,
+        name: "legacy-bot-retired",
+        role: "legacy",
+        status: "idle",
+        adapterType: "hermes_local",
+        adapterConfig: {},
+      },
+      {
+        id: groupedServiceId,
+        companyId: groupedCompanyId,
+        name: "Wiki Maintainer",
+        role: "service",
+        status: "idle",
+        adapterType: "hermes_local",
+        adapterConfig: {},
+        // A plugin-owned card: the fleet's service agents carry this shape.
+        metadata: {
+          pluginManagedAgent: { plugin: "wiki" },
+          paperclipManagedResource: { kind: "agent" },
+        },
+      },
+      {
+        id: groupedDispatchId,
+        companyId: groupedCompanyId,
+        name: "dispatch",
+        role: "dispatcher",
+        status: "idle",
+        adapterType: "hermes_local",
+        adapterConfig: {},
+        metadata: { telegramGroup: "Dispatch Squad" },
+      },
+      {
+        id: groupedQaId,
+        companyId: groupedCompanyId,
+        name: "qa17",
+        role: "qa",
+        status: "running",
+        adapterType: "hermes_local",
+        adapterConfig: {},
+        metadata: { telegramGroup: "Dispatch Squad" },
+      },
+      {
+        id: groupedLifeId,
+        companyId: groupedCompanyId,
+        name: "life",
+        role: "life",
+        status: "running",
+        adapterType: "hermes_local",
+        adapterConfig: {},
+        metadata: { telegramAliases: ["life-bot"] },
+      },
+      {
+        id: groupedGoneId,
+        companyId: groupedCompanyId,
+        name: "work-gone",
+        role: "worker",
+        status: "terminated",
+        adapterType: "hermes_local",
+        adapterConfig: {},
+        metadata: { telegramGroup: "Dispatch Squad" },
+      },
+    ]);
   }, 90_000);
 
   afterAll(async () => {
@@ -121,16 +266,18 @@ const support = await getEmbeddedPostgresTestSupport();
   async function createTelegramConversation(
     options: {
       agentId?: string;
+      companyId?: string;
       boardUserId?: string;
       assigneeAdapterOverrides?: Record<string, unknown> | null;
     } = {},
   ) {
     const conversationAgentId = options.agentId ?? agentAId;
+    const conversationCompanyId = options.companyId ?? companyId;
     const boardUserId = options.boardUserId ?? randomUUID();
     const [issue] = await db
       .insert(issues)
       .values({
-        companyId,
+        companyId: conversationCompanyId,
         title: "Telegram chat",
         conversationAgentId,
         conversationUserId: telegramConversationUserId(boardUserId),
@@ -195,9 +342,23 @@ const support = await getEmbeddedPostgresTestSupport();
   it("1. /agents lists the company's addressable agents with their aliases and marks the current addressee", async () => {
     const { issue, boardUserId } = await createTelegramConversation();
     const text = await replyOf(baseInput({ conversationIssueId: issue.id, boardUserId, text: "/agents" }));
-    expect(text).toContain("agent-a (alpha, a-1) — current addressee");
-    expect(text).toContain("agent-b (bravo)");
-    expect(text).toContain("agent-c (—)");
+    // Name, live status and aliases per line; no card carries a group name, so
+    // they all fall into the prefix fallback's last bucket.
+    expect(text).toContain(t("en", "agents.groupHeader", { group: t("en", "agents.group.other") }));
+    expect(text).toContain(
+      `${t("en", "agents.lineNoRole", {
+        name: "agent-a",
+        status: t("en", "agents.status.idle"),
+        aliases: "alpha, a-1",
+      })} — ${t("en", "agents.currentSuffix")}`,
+    );
+    expect(text).toContain(
+      t("en", "agents.lineNoRole", { name: "agent-b", status: t("en", "agents.status.idle"), aliases: "bravo" }),
+    );
+    // A card without telegramAliases still shows the alias computed from its name.
+    expect(text).toContain(
+      t("en", "agents.lineNoRole", { name: "agent-c", status: t("en", "agents.status.idle"), aliases: "c" }),
+    );
     // The terminated agent is not addressable and is never listed.
     expect(text).not.toContain("agent-gone");
     // Never an internal id.
@@ -234,7 +395,7 @@ const support = await getEmbeddedPostgresTestSupport();
       baseInput({ conversationIssueId: issue.id, boardUserId, text: "/to nope" }),
     );
     expect(text).toContain("“nope”");
-    expect(text).toContain("alpha, a-1, bravo");
+    expect(text).toContain("alpha, a-1, bravo, c");
     expect(readStickyAgentId(await readOverrides(issue.id))).toBeNull();
   });
 
@@ -340,8 +501,20 @@ const support = await getEmbeddedPostgresTestSupport();
       assigneeAdapterOverrides: { telegramStickyAgentId: agentBId },
     });
     const text = await replyOf(baseInput({ conversationIssueId: issue.id, boardUserId, text: "/agents" }));
-    expect(text).toContain("agent-b (bravo) — current addressee");
-    expect(text).not.toContain("agent-a (alpha, a-1) — current addressee");
+    expect(text).toContain(
+      `${t("en", "agents.lineNoRole", {
+        name: "agent-b",
+        status: t("en", "agents.status.idle"),
+        aliases: "bravo",
+      })} — ${t("en", "agents.currentSuffix")}`,
+    );
+    expect(text).not.toContain(
+      `${t("en", "agents.lineNoRole", {
+        name: "agent-a",
+        status: t("en", "agents.status.idle"),
+        aliases: "alpha, a-1",
+      })} — ${t("en", "agents.currentSuffix")}`,
+    );
   });
 
   it("12. TELEGRAM_DM_COMMANDS carries /agents, /to and /who with menu descriptions", () => {
@@ -389,5 +562,179 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(
       readTelegramAliases({ telegramAliases: ["Alpha", " ALPHA ", "bravo", 7] }),
     ).toEqual(["alpha", "bravo"]);
+  });
+
+  it("15. /agents groups the live cards by direction, naming each agent's role, status and alias", async () => {
+    const { issue, boardUserId } = await createTelegramConversation({
+      companyId: groupedCompanyId,
+      agentId: groupedInfraId,
+    });
+    const text = await replyOf(
+      baseInput({
+        companyId: groupedCompanyId,
+        agentId: groupedInfraId,
+        conversationIssueId: issue.id,
+        boardUserId,
+        text: "/agents",
+      }),
+    );
+
+    // A group per direction: the titles come from the catalogs, one group is
+    // named on the card itself.
+    for (const key of ["agents.group.infra", "agents.group.work", "agents.group.other"] as const) {
+      expect(text).toContain(t("en", "agents.groupHeader", { group: t("en", key) }));
+    }
+    expect(text).toContain(t("en", "agents.groupHeader", { group: "Dispatch Squad" }));
+    // The paused member stays out of the list, but its group says how many wait.
+    expect(text).toContain(
+      t("en", "agents.groupHeaderPaused", { group: t("en", "agents.group.bbq"), count: 1 }),
+    );
+
+    // One line per live card: name, role (one line), live status, aliases.
+    expect(text).toContain(
+      `${t("en", "agents.line", {
+        name: "adm-dev-eng-2",
+        role: "Engineer on duty",
+        status: t("en", "agents.status.idle"),
+        aliases: "2",
+      })} — ${t("en", "agents.currentSuffix")}`,
+    );
+    for (const [name, statusKey, aliases] of [
+      ["work-runner-2", "agents.status.idle", "2-2"],
+      ["bbq-host", "agents.status.idle", "host"],
+      ["dispatch", "agents.status.idle", "dispatch"],
+      ["qa17", "agents.status.running", "qa17"],
+      ["life", "agents.status.running", "life-bot"],
+    ] as const) {
+      expect(text).toContain(
+        t("en", "agents.lineNoRole", { name, status: t("en", statusKey), aliases }),
+      );
+    }
+
+    // Written-off, archived and plugin-owned service cards are not listed at all.
+    for (const hidden of ["bbq-editor", "legacy-bot-retired", "Wiki Maintainer", "work-gone"]) {
+      expect(text).not.toContain(hidden);
+    }
+    // Never an internal id.
+    for (const id of [groupedInfraId, groupedWorkId, groupedBbqHostId, groupedServiceId]) {
+      expect(text).not.toContain(id);
+    }
+  });
+
+  it("16. a card without telegramAliases answers to the alias computed from its name, collisions get -2", async () => {
+    // Read-time computation: /to, /agents and @mentions all see the same alias.
+    expect((await resolveCompanyAgentByAlias(db, groupedCompanyId, "2"))?.id).toBe(groupedInfraId);
+    expect((await resolveCompanyAgentByAlias(db, groupedCompanyId, "2-2"))?.id).toBe(groupedWorkId);
+    expect((await resolveCompanyAgentByAlias(db, groupedCompanyId, "host"))?.id).toBe(groupedBbqHostId);
+    // The card's own telegramAliases still wins, and its name stays mentionable.
+    expect((await resolveCompanyAgentByAlias(db, groupedCompanyId, "life-bot"))?.id).toBe(groupedLifeId);
+    const lifeMention = await resolveBridgeAddressee(db, {
+      companyId: groupedCompanyId,
+      text: "@life ping",
+      endpointAgentId: groupedInfraId,
+    });
+    expect(lifeMention?.agentId).toBe(groupedLifeId);
+    // A computed alias is mentionable as well …
+    const hostMention = await resolveBridgeAddressee(db, {
+      companyId: groupedCompanyId,
+      text: "@host ping",
+      endpointAgentId: groupedInfraId,
+    });
+    expect(hostMention?.agentId).toBe(groupedBbqHostId);
+
+    // Computed on read only: the card keeps the data the board put there.
+    const [card] = await db
+      .select({ metadata: agents.metadata, adapterConfig: agents.adapterConfig })
+      .from(agents)
+      .where(eq(agents.id, groupedWorkId));
+    expect(card?.metadata ?? null).toBeNull();
+    expect(card?.adapterConfig).toEqual({});
+
+    // In a chat turn /to picks the computed alias up …
+    const { issue, boardUserId } = await createTelegramConversation({
+      companyId: groupedCompanyId,
+      agentId: groupedInfraId,
+    });
+    const toText = await replyOf(
+      baseInput({
+        companyId: groupedCompanyId,
+        agentId: groupedInfraId,
+        conversationIssueId: issue.id,
+        boardUserId,
+        text: "/to 2-2",
+      }),
+    );
+    expect(toText).toContain("work-runner-2");
+    expect(readStickyAgentId(await readOverrides(issue.id))).toBe(groupedWorkId);
+  });
+
+  it("17. the paused card is out of the default list and comes back when asked for", async () => {
+    const names = (await listCompanyAddressableAgents(db, groupedCompanyId)).map((card) => card.name);
+    expect(names).toContain("bbq-host");
+    for (const hidden of ["bbq-editor", "legacy-bot-retired", "Wiki Maintainer", "work-gone"]) {
+      expect(names).not.toContain(hidden);
+    }
+
+    const withPaused = (await listCompanyAddressableAgents(db, groupedCompanyId, { includePaused: true })).map(
+      (card) => card.name,
+    );
+    expect(withPaused).toContain("bbq-editor");
+    expect(withPaused).not.toContain("work-gone");
+  });
+
+  it("18. the grouped list renders from the Russian catalog", async () => {
+    const text = await buildAgentsReplyText(db, {
+      companyId: groupedCompanyId,
+      conversationAgentId: groupedInfraId,
+      stickyAgentId: null,
+      locale: "ru",
+    });
+    expect(text).toContain(t("ru", "agents.groupHeader", { group: t("ru", "agents.group.infra") }));
+    expect(text).toContain(
+      t("ru", "agents.groupHeaderPaused", { group: t("ru", "agents.group.bbq"), count: 1 }),
+    );
+    expect(text).toContain(
+      t("ru", "agents.lineNoRole", { name: "bbq-host", status: t("ru", "agents.status.idle"), aliases: "host" }),
+    );
+    expect(text).toContain(
+      t("ru", "agents.lineNoRole", { name: "qa17", status: t("ru", "agents.status.running"), aliases: "qa17" }),
+    );
+  });
+});
+
+describe("computed default aliases (OPE-6318 part A)", () => {
+  it("1. the alias is the last name segment, latin letters and digits only", () => {
+    expect(defaultAliasFromName("adm-dev-eng-15")).toBe("15");
+    expect(defaultAliasFromName("Agent-7")).toBe("7");
+    expect(defaultAliasFromName("dispatch")).toBe("dispatch");
+    expect(defaultAliasFromName("Wiki Maintainer")).toBe("wikimaintainer");
+    // Nothing latin to build one from: no alias, never an empty handle.
+    expect(defaultAliasFromName("bbq-юнит")).toBe("");
+    expect(defaultAliasFromName("")).toBe("");
+  });
+
+  it("2. an explicit alias is reserved first, and a collision gets the -2, -3 suffix", () => {
+    const aliased = addDefaultAliases([
+      { name: "a-x", aliases: [] as string[] },
+      { name: "b-x", aliases: [] },
+      { name: "c-x", aliases: ["x"] },
+      { name: "d", aliases: [] },
+    ]);
+    // "x" belongs to the card that set it explicitly …
+    expect(aliased[2]!.aliases).toEqual(["x"]);
+    // … so the two cards that wanted it take the numbered suffixes, in name order.
+    expect(aliased[0]!.aliases).toEqual(["x-2"]);
+    expect(aliased[1]!.aliases).toEqual(["x-3"]);
+    expect(aliased[3]!.aliases).toEqual(["d"]);
+  });
+
+  it("3. a computed alias never shadows another agent's name", () => {
+    const cards = addDefaultAliases([
+      { name: "a-life", aliases: [] as string[] },
+      { name: "life", aliases: [] },
+    ]);
+    expect(cards[0]!.aliases).toEqual(["life-2"]);
+    // The agent actually named `life` keeps its own name as a handle.
+    expect(cards[1]!.aliases).toEqual(["life"]);
   });
 });

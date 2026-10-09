@@ -1,9 +1,8 @@
 // myrmidon(1.6.5-OWNER-DM-FILTER): client-tier tests for ownerDeliveryApi.
 //
-// The server side of the feature (part A) is not merged yet, so the transport
-// is mocked and the assertions are on the request itself: the frozen paths and
-// the PATCH body, plus the documented default for a body that is missing or
-// malformed.
+// The transport is mocked, so the assertions are on the request itself: the
+// frozen paths and the PATCH body, plus the documented default for a body that
+// is missing or malformed.
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   OWNER_DELIVERY_DEFAULT_MODE,

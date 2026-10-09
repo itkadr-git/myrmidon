@@ -26,6 +26,7 @@ import {
 } from "@paperclipai/shared";
 import { botScopeRoutes } from "./scope-routes.js";
 import { botScopeService, type BotScopeService, type ScopeStore } from "./scope-service.js";
+import { isUniqueViolation } from "../../db-errors.js";
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -39,9 +40,6 @@ function layoutOf(kind: string, dir: string | null): ScopeLayout {
   return kind === "shared" && dir && isScopeInstanceDirName(dir) ? { kind: "shared", dirName: dir } : ISOLATED_LAYOUT;
 }
 
-function isUniqueViolation(err: unknown): boolean {
-  return typeof err === "object" && err !== null && (err as { code?: string }).code === "23505";
-}
 
 export function botScopeStore(db: Db): ScopeStore {
   async function members(groupIds: string[]): Promise<Map<string, string[]>> {
@@ -162,6 +160,8 @@ export function botScopeStore(db: Db): ScopeStore {
           return { id: group!.id, name: group!.name, memberIds };
         });
       } catch (err) {
+        // Canonical db-errors check: drizzle wraps the driver failure, so the
+        // 23505 code hides under `cause` and a local top-level check missed it.
         if (isUniqueViolation(err)) return null;
         throw err;
       }
@@ -196,6 +196,8 @@ export function botScopeStore(db: Db): ScopeStore {
           return { id: row!.id, name: row!.name, memberIds: memberRows.map((m) => m.agentId) };
         });
       } catch (err) {
+        // Same race as apply-jobs: the local copy did not see 23505 under the
+        // drizzle wrapper; the shared helper unwraps cause.
         if (isUniqueViolation(err)) return "name-taken";
         throw err;
       }

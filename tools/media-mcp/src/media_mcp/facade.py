@@ -25,9 +25,9 @@ from starlette.responses import FileResponse, JSONResponse
 from starlette.routing import Route
 
 from . import specs
-from .auth import AuthMiddleware, Authenticator, current_bot
+from .auth import AuthMiddleware, current_bot
 from .backends import BackendError, Backends
-from .config import Settings, load_settings
+from .config import Settings, load_settings, make_hot_reload_authenticator
 from .store import Store, StoreError, safe_name
 
 OFFICE_EXT = {"doc", "docx", "odt", "rtf", "xls", "xlsx", "ods", "csv", "ppt", "pptx", "odp", "txt", "wpd", "pages", "key", "numbers"}
@@ -59,7 +59,11 @@ def build_app(cfg: Settings | None = None) -> Any:
     store = Store(cfg.data_dir, cfg.bot_quota_bytes, cfg.max_file_bytes, cfg.file_ttl_hours,
                   spool_max_bytes=cfg.spool_max_bytes, spool_min_free_bytes=cfg.spool_min_free_bytes)
     be = Backends(cfg)
-    auth = Authenticator(cfg)
+    # myrmidon(MEDIA-PROVISION): the board regenerates bots.json from the fleet's
+    # cards; this authenticator revalidates the file (mtime/size stamp) so a card
+    # change lands without restarting the facade. A broken rewrite keeps the last
+    # valid registry and only logs a warning.
+    auth = make_hot_reload_authenticator(cfg)
     locks: dict[str, asyncio.Lock] = {}  # per job, dropped when the job is registered
     bot_locks: dict[str, asyncio.Lock] = {}  # per bot (a bounded set): job admission is serial
 

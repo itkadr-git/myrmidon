@@ -719,6 +719,7 @@ import {
 import { currentRunPrioritySettings } from "../myrmidon/run-priority/state.js";
 import {
   compareRunsByPriority,
+  rankQueuedRuns,
   runMatchesCurrentRelease,
   type PriorityScoredRun,
 } from "../myrmidon/run-priority/scoring.js";
@@ -19466,7 +19467,13 @@ export function heartbeatService(
   // `agent_fair_share` and `agent_concurrency` are decided by the sweep around
   // the admission (the share gate and the per-agent ceiling); the admission
   // itself names only its own gates (`lastDenialReason`).
-  type QueuedRunWaitReason = RunAdmissionDenialReason | "agent_fair_share" | "agent_concurrency";
+  // myrmidon(1.6.5 RUN-PRIORITY A): `priority` is the sweep's own reason — with
+  // priority on, the runs a pass leaves behind lost their slots to heavier ones.
+  type QueuedRunWaitReason =
+    | RunAdmissionDenialReason
+    | "agent_fair_share"
+    | "agent_concurrency"
+    | "priority";
 
   async function writeQueuedRunWaitReason(
     runIds: ReadonlyArray<string>,
@@ -19498,12 +19505,53 @@ export function heartbeatService(
       .where(inArray(heartbeatRuns.id, [...runIds]));
     for (const row of rows) {
       const context = parseObject(row.contextSnapshot);
-      if (context.waitReason === undefined) continue;
-      const { waitReason: _cleared, ...rest } = context;
+      if (
+        context.waitReason === undefined &&
+        context.queuePosition === undefined &&
+        context.queueLength === undefined
+      ) {
+        continue;
+      }
+      const {
+        waitReason: _clearedReason,
+        queuePosition: _clearedPosition,
+        queueLength: _clearedLength,
+        ...rest
+      } = context;
       await db
         .update(heartbeatRuns)
         .set({ contextSnapshot: rest })
         .where(eq(heartbeatRuns.id, row.id));
+    }
+  }
+
+  // myrmidon(1.6.5 RUN-PRIORITY A): *where* a run waits, written onto the run
+  // itself (`contextSnapshot.queuePosition` of `contextSnapshot.queueLength`) in
+  // the same pass that decides the order, so the run card can show "Queue
+  // position 3 of 12" next to the wait reason. The rank is the whole waiting
+  // queue's priority order, not the per-agent slice: a run of a heavier role or
+  // a run carrying the current release is ahead whatever agent owns it. The
+  // claim that starts the run drops the note with the wait reason.
+  async function writeQueuedRunQueuePositions(
+    positionByRunId: ReadonlyMap<string, number>,
+  ): Promise<void> {
+    if (positionByRunId.size === 0) return;
+    const queueLength = positionByRunId.size;
+    const runIds = [...positionByRunId.keys()];
+    const rows = await db
+      .select({ id: heartbeatRuns.id, contextSnapshot: heartbeatRuns.contextSnapshot })
+      .from(heartbeatRuns)
+      .where(and(inArray(heartbeatRuns.id, runIds), eq(heartbeatRuns.status, "queued")));
+    const at = new Date();
+    for (const row of rows) {
+      const position = positionByRunId.get(row.id);
+      if (position === undefined) continue;
+      const context = parseObject(row.contextSnapshot);
+      if (context.queuePosition === position && context.queueLength === queueLength) continue;
+      await db
+        .update(heartbeatRuns)
+        .set({ contextSnapshot: { ...context, queuePosition: position, queueLength }, updatedAt: at })
+        .where(and(eq(heartbeatRuns.id, row.id), eq(heartbeatRuns.status, "queued")));
     }
   }
 
@@ -19649,6 +19697,12 @@ export function heartbeatService(
     const keyedQueuedRuns = prioritySettings.enabled
       ? await decorateQueuedRunKeys(queuedRuns, prioritySettings)
       : [];
+    if (prioritySettings.enabled) {
+      // myrmidon(1.6.5 RUN-PRIORITY A): the waiting runs learn their place in
+      // the pass's order — the run card shows "Queue position N of M" beside the
+      // wait reason. Runs this pass starts drop the note with their claim.
+      await writeQueuedRunQueuePositions(rankQueuedRuns(keyedQueuedRuns, prioritySettings));
+    }
 
     // myrmidon(1.6.5 RUN-FAIRNESS): the sweep visits the agents by the age of
     // each agent's OLDEST queued run, so a freed global slot goes to the
@@ -20253,10 +20307,23 @@ export function heartbeatService(
         ? prioritizedRuns.slice(Math.max(admitted, 0))
         : [];
       if (runsLeftQueued.length > 0) {
-        await writeQueuedRunWaitReason(
-          runsLeftQueued.map((run) => run.id),
-          admission.lastDenialReason() ?? "global_cap",
-        );
+        // myrmidon(1.6.5 RUN-PRIORITY A): a run that was ready and still lost its
+        // slot in a pass that DID start runs lost it to a heavier one — that is
+        // the reason the card shows. A run whose dependencies are not settled
+        // waits for them (the sweep ranks it behind the ready ones), so it keeps
+        // the admission gate's own reason.
+        const gateReason: QueuedRunWaitReason = admission.lastDenialReason() ?? "global_cap";
+        const passedOver: string[] = [];
+        const heldByGate: string[] = [];
+        for (const run of runsLeftQueued) {
+          const issueId = readNonEmptyString(parseObject(run.contextSnapshot).issueId);
+          const ready =
+            !issueId || (dependencyReadiness.get(issueId)?.isDependencyReady ?? true);
+          if (prioritySettings.enabled && admitted > 0 && ready) passedOver.push(run.id);
+          else heldByGate.push(run.id);
+        }
+        await writeQueuedRunWaitReason(heldByGate, gateReason);
+        await writeQueuedRunWaitReason(passedOver, "priority");
       }
       try {
         for (const queuedRun of prioritizedRuns) {

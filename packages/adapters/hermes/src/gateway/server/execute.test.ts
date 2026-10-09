@@ -1328,6 +1328,116 @@ describe("mapFinalResultForTest", () => {
     expect(result.resultJson?.result).toHaveLength(9_000);
     expect(result.resultJson?.output).toBe(longAnswer);
   });
+
+  // myrmidon(F06-MODEL-TELEMETRY): the run journal's model used to come from
+  // the gateway payload alone, so a terminal answer that named no model was
+  // recorded as "unknown". The payload still wins; the LiteLLM route name is
+  // the second source; the run's configured model is the last resort.
+  it("takes the model the terminal payload reports", () => {
+    const result = mapFinalResultForTest({
+      terminal: {
+        runId: "run-model",
+        status: "completed",
+        payload: { status: "completed", model: "route-a", model_group: "route-b" },
+      },
+      outputChunks: [],
+      sessionKey: null,
+      strategy: "issue",
+      configuredModel: "card-model",
+    });
+
+    expect(result.model).toBe("route-a");
+  });
+
+  it("takes the payload's model_group when it names no model", () => {
+    const result = mapFinalResultForTest({
+      terminal: {
+        runId: "run-model",
+        status: "completed",
+        payload: { status: "completed", model_group: "route-b" },
+      },
+      outputChunks: [],
+      sessionKey: null,
+      strategy: "issue",
+      configuredModel: "card-model",
+    });
+
+    expect(result.model).toBe("route-b");
+  });
+
+  it("reads model_group from inside usage too", () => {
+    const result = mapFinalResultForTest({
+      terminal: {
+        runId: "run-model",
+        status: "completed",
+        payload: { status: "completed", usage: { model_group: "route-b" } },
+      },
+      outputChunks: [],
+      sessionKey: null,
+      strategy: "issue",
+      configuredModel: "card-model",
+    });
+
+    expect(result.model).toBe("route-b");
+  });
+
+  it("falls back to the run's configured model when the payload names none", () => {
+    const result = mapFinalResultForTest({
+      terminal: { runId: "run-model", status: "completed", payload: { status: "completed" } },
+      outputChunks: [],
+      sessionKey: null,
+      strategy: "issue",
+      configuredModel: "card-model",
+    });
+
+    expect(result.model).toBe("card-model");
+  });
+
+  it("treats an empty or blank payload model as absent", () => {
+    const blank = mapFinalResultForTest({
+      terminal: {
+        runId: "run-model",
+        status: "completed",
+        payload: { status: "completed", model: "   ", usage: { model: "" } },
+      },
+      outputChunks: [],
+      sessionKey: null,
+      strategy: "issue",
+      configuredModel: "card-model",
+    });
+    const empty = mapFinalResultForTest({
+      terminal: { runId: "run-model", status: "completed", payload: { status: "completed", model: "" } },
+      outputChunks: [],
+      sessionKey: null,
+      strategy: "issue",
+    });
+
+    expect(blank.model).toBe("card-model");
+    expect(empty.model).toBeNull();
+  });
+
+  it("does not read the telemetry sentinel back as a model", () => {
+    const fallback = mapFinalResultForTest({
+      terminal: {
+        runId: "run-model",
+        status: "completed",
+        payload: { status: "completed", model: "unknown", model_group: "unknown" },
+      },
+      outputChunks: [],
+      sessionKey: null,
+      strategy: "issue",
+      configuredModel: "card-model",
+    });
+    const alone = mapFinalResultForTest({
+      terminal: { runId: "run-model", status: "completed", payload: { status: "completed", model: "unknown" } },
+      outputChunks: [],
+      sessionKey: null,
+      strategy: "issue",
+    });
+
+    expect(fallback.model).toBe("card-model");
+    expect(alone.model).toBeNull();
+  });
 });
 
 // myrmidon(G4): defaults, cancellation, approvals, per-run model, instructions
@@ -2196,6 +2306,49 @@ describe("execute — per-run model/provider/effort (G4)", () => {
     expect(body.model).toBeUndefined();
     expect(body.provider).toBeUndefined();
     expect(body.model_options).toBeUndefined();
+  });
+});
+
+// myrmidon(F06-MODEL-TELEMETRY): the run's model reaches the run journal
+// through the adapter result, so a completed turn whose gateway answer names no
+// model must still report the model the card configured.
+describe("execute — run model telemetry (F06)", () => {
+  const runCompleted = (data: Record<string, unknown>) => new Response(
+    sseStream(["event: run.completed", `data: ${JSON.stringify({ status: "completed", output: "done", ...data })}`, ""].join("\n")),
+    { status: 200, headers: { "content-type": "text/event-stream" } },
+  );
+  const fetchMockFor = (terminal: () => Response) => vi.fn(async (input: RequestInfo | URL) => (
+    String(input).endsWith("/v1/runs")
+      ? new Response(JSON.stringify({ run_id: "run-model-tel", status: "started" }), { status: 200 })
+      : terminal()
+  ));
+
+  it("reports the card's model when the terminal payload names none", async () => {
+    vi.stubGlobal("fetch", fetchMockFor(() => runCompleted({})));
+
+    const result = await execute(makeCtx({
+      apiBaseUrl: "http://127.0.0.1:8642",
+      apiKey: "test-key",
+      timeoutSec: 5,
+      model: "provider-a/model-a",
+    }));
+
+    expect(result.exitCode).toBe(0);
+    expect(result.model).toBe("provider-a/model-a");
+  });
+
+  it("still prefers the model the terminal payload reports", async () => {
+    vi.stubGlobal("fetch", fetchMockFor(() => runCompleted({ model_group: "route-from-gateway" })));
+
+    const result = await execute(makeCtx({
+      apiBaseUrl: "http://127.0.0.1:8642",
+      apiKey: "test-key",
+      timeoutSec: 5,
+      model: "provider-a/model-a",
+    }));
+
+    expect(result.exitCode).toBe(0);
+    expect(result.model).toBe("route-from-gateway");
   });
 });
 

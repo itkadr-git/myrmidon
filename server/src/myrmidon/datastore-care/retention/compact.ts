@@ -29,7 +29,7 @@
 
 import { sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { HEARTBEAT_RUN_STATUSES } from "@paperclipai/shared";
+import { DEFAULT_CONTEXT_COMPACT_MAX_BATCHES, HEARTBEAT_RUN_STATUSES } from "@paperclipai/shared";
 
 /** Rows compacted per statement (O1a). */
 export const CONTEXT_COMPACT_BATCH_SIZE = 500;
@@ -189,7 +189,7 @@ export async function compactContextPass(
   input: { companyIds: string[]; cutoff: string; compactedAt: string },
 ): Promise<CompactPassResult> {
   const sleep = deps.sleep ?? defaultSleep;
-  const maxBatches = deps.maxBatches ?? CONTEXT_COMPACT_MAX_BATCHES;
+  const maxBatches = deps.maxBatches ?? DEFAULT_CONTEXT_COMPACT_MAX_BATCHES;
   let compacted = 0;
   let freedBytes = 0;
   let timedOut = false;

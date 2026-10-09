@@ -204,6 +204,13 @@ import {
   unprocessable,
 } from "../errors.js";
 import { logger } from "../middleware/logger.js";
+// myrmidon(1.6.5-F10-A): real traffic can finish the wizard's `test` step for an
+// endpoint its owner never came back to; see
+// server/src/myrmidon/chat-live-traffic-activation.ts.
+import {
+  activateChatEndpointFromLiveTraffic,
+  listVerifyingStaleEndpoints,
+} from "../myrmidon/chat-live-traffic-activation.js";
 import { redactSensitiveText } from "../redaction.js";
 import type { StorageService } from "../storage/types.js";
 import {
@@ -260,6 +267,12 @@ import type { TelegramAddressee } from "../myrmidon/agent-chat-bridge/addressing
 // myrmidon(U2): company-wide interaction lookup for callbacks on cards
 // delivered to the owner's Telegram conversation from other tasks.
 import { listInteractionForCallback } from "../myrmidon/owner-delivery/callback-interaction-lookup.js";
+// myrmidon(1.6.5-F21-AUTOCLOSE): the owner's own message in a task's chat
+// closes that task's single open owner decision, without an agent run.
+import { autoCloseOwnerDecisionOnOwnerComment } from "../myrmidon/owner-delivery/owner-autoclose.js";
+// myrmidon(1.6.5-F21-A): the wording→decision mapping that writer uses. Same
+// parse as the task-comment hook, so «2) да» means option 2 in either place.
+import { classifyOwnerReplyText } from "../myrmidon/owner-reply/owner-reply-classifier.js";
 import {
   authorizeNativeChatReviewPresentation,
   NativeChatReviewPresentationContentionError,
@@ -6035,8 +6048,20 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     });
   }
 
+  // myrmidon(1.6.5-F10-A): ids of endpoints idling in the wizard's `test` stage
+  // while traffic flows through them (part A's attention signal, exposed as the
+  // `verifyingStale` flag of the endpoint responses below).
+  async function staleVerifyingEndpointIds(
+    companyId: string,
+    endpointIds: string[],
+  ): Promise<Set<string>> {
+    const stale = await listVerifyingStaleEndpoints(db, companyId, endpointIds);
+    return new Set(stale.map((endpoint) => endpoint.id));
+  }
+
   function serializeEndpoint(
     row: Awaited<ReturnType<typeof endpointRecord>>,
+    verifyingStale = false,
   ): ChatEndpoint {
     if (!row) throw notFound("Chat endpoint not found");
     const endpoint = row.endpoint;
@@ -6081,6 +6106,9 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       },
       healthMessage: endpoint.healthMessage,
       lastError: endpoint.lastError,
+      // myrmidon(1.6.5-F10-A): a `verifying` endpoint that live traffic has been
+      // flowing through for over a day — an attention signal, not an error.
+      verifyingStale,
       lastActivityAt: iso(endpoint.lastEventAt),
       lastPublicationAt: iso(endpoint.lastPublicationAt),
       activatedAt: iso(endpoint.activatedAt),
@@ -6120,11 +6148,23 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         ),
       )
       .orderBy(desc(chatEndpoints.updatedAt));
-    return rows.map((row) => serializeEndpoint(row));
+    // myrmidon(1.6.5-F10-A): one extra read for the whole page.
+    const stale = await staleVerifyingEndpointIds(
+      companyId,
+      rows.map((row) => row.endpoint.id),
+    );
+    return rows.map((row) =>
+      serializeEndpoint(row, stale.has(row.endpoint.id)),
+    );
   }
 
   async function get(endpointId: string) {
-    return serializeEndpoint(await endpointRecord(endpointId));
+    const row = await endpointRecord(endpointId);
+    if (!row) throw notFound("Chat endpoint not found");
+    const stale = await staleVerifyingEndpointIds(row.endpoint.companyId, [
+      row.endpoint.id,
+    ]);
+    return serializeEndpoint(row, stale.has(row.endpoint.id));
   }
 
   async function create(
@@ -10334,6 +10374,23 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         return get(endpointId);
       },
     );
+  }
+
+  // myrmidon(1.6.5-F10-A): finishing a setup from live traffic follows an ingest
+  // or a delivered reply, so it must never fail either: the automatic completion
+  // is called only here, and a failure is logged and swallowed.
+  async function tryLiveTrafficActivation(
+    endpointId: string,
+    options: { inboundObserved?: boolean } = {},
+  ) {
+    try {
+      await activateChatEndpointFromLiveTraffic(db, { endpointId, ...options });
+    } catch (error) {
+      logger.warn(
+        { err: error, endpointId },
+        "chat live-traffic activation failed",
+      );
+    }
   }
 
   async function ensurePrincipal(
@@ -17065,6 +17122,31 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         publishActivity(publication);
       }
       const { actorUserId, comment, conversation, issue } = taskMutation;
+      // myrmidon(1.6.5-F10-A): this ingest is the inbound half of a wizard test
+      // round trip; the automatic completion needs the outbound half too, so an
+      // endpoint with only inbound traffic stays in `verifying`.
+      await tryLiveTrafficActivation(endpoint.id, { inboundObserved: true });
+      // myrmidon(1.6.5-F21-AUTOCLOSE): the owner's own message in the task's
+      // chat closes the single open owner decision of that task (F-21, the
+      // pre-via_bot path). Placed before processInboundWakeup below so the
+      // agent's run already sees the card resolved, and it never throws — a
+      // refusal is reported, not raised into the ingest.
+      if (actorUserId) {
+        await autoCloseOwnerDecisionOnOwnerComment({
+          db,
+          companyId: endpoint.companyId,
+          issueId: issue.id,
+          ownerUserId: actorUserId,
+          commentId: comment.id,
+          replyText: comment.body ?? "",
+          commentCreatedAt: comment.createdAt,
+          commentSourceTrust: comment.sourceTrust ?? null,
+          // myrmidon(1.6.5-F21-A): read the words with the owner-reply parser
+          // (numbers, letters, the card's recommended option) instead of the
+          // writer's built-in free-text fallback.
+          deps: { heartbeat: options.heartbeat, classifyReply: classifyOwnerReplyText },
+        });
+      }
       // myrmidon(X8b): resume a paused bridged conversation on a literal
       // "/new" comment (the web /new route does the same), and deliver any
       // queued bridged-command notice or one-time migration notice. Runs
@@ -38253,6 +38335,10 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
                   processReceiptReaction(actionId),
                 );
               }
+              // myrmidon(1.6.5-F10-A): the outbound half of a wizard test round
+              // trip is committed now; the inbound half decides. Never let this
+              // follow-up turn a successful delivery into a failure.
+              await tryLiveTrafficActivation(authorizationClaim.endpoint.id);
             } catch (error) {
               // Authentication, membership, and destination failures mutate
               // endpoint/runtime state. Settle them before releasing the

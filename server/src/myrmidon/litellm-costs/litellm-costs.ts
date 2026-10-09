@@ -45,6 +45,9 @@ import { heartbeatRuns, litellmCostEvents, litellmModels, type Db } from "@paper
 import { logger } from "../../middleware/logger.js";
 // myrmidon(HERMES-USAGE-COST): the post-sweep pass that fills the vendor ledger.
 import { reconcileUnpricedCostEvents } from "./reconcile.js";
+// myrmidon(1.6.5-F-18): the empty-catalog attention signal the sweep records
+// after every model refresh; the attention feed turns the registry into a card.
+import { recordEmptyCatalogSweep } from "./attention.js";
 
 export const LITELLM_BASE_URL_ENV = "MYRMIDON_LITELLM_BASE_URL";
 export const LITELLM_KEY_SECRET_ENV = "MYRMIDON_LITELLM_KEY_SECRET";
@@ -138,6 +141,32 @@ export interface GatewayModelRow {
 export interface LitellmGatewayClient {
   listSpendLogs(window: { from: Date; to: Date }): Promise<SpendLogEntry[]>;
   listModels(): Promise<GatewayModelRow[]>;
+  /**
+   * myrmidon(F06-A): the model ids `/v1/models` answers — the OpenAI-shaped
+   * list, unlike the richer `/v1/model/info` read above. Called with an agent's
+   * own gateway key it is that key's allowlist (the models this agent may run);
+   * called with the instance key it is the whole catalog. The Telegram
+   * bridge's `/model` uses it to list what a gateway agent can choose.
+   */
+  listAvailableModels(): Promise<string[]>;
+}
+
+/**
+ * myrmidon(F06-A): the `/v1/models` payload — `{ data: [{ id, ... }] }`.
+ * Returns null for any other shape, so a wrong endpoint surfaces as an error
+ * and never as "no models"; entries without a usable id are skipped and the
+ * order the gateway returned is kept.
+ */
+export function parseOpenAiModelList(payload: unknown): string[] | null {
+  const body = asRecord(payload);
+  if (!body || !Array.isArray(body.data)) return null;
+  const models: string[] = [];
+  for (const item of body.data) {
+    const row = asRecord(item);
+    const id = row && typeof row.id === "string" ? row.id.trim() : "";
+    if (id) models.push(id);
+  }
+  return models;
 }
 
 /** The gateway's v2 date parameters are UTC "YYYY-MM-DD HH:MM:SS". */
@@ -234,6 +263,19 @@ export function createLitellmGatewayClient(baseUrl: string, keyValue: string): L
         });
       }
       return rows;
+    },
+
+    /**
+     * myrmidon(F06-A): `/v1/models` is the cheap per-key read — what a chat
+     * command may ask the gateway for one agent, where `/v1/model/info` above
+     * is the cost sweep's richer (admin-key) one. Kept separate on purpose:
+     * the sweep's shape may grow, this one stays the OpenAI contract.
+     */
+    async listAvailableModels() {
+      const payload = await getJson<unknown>("/v1/models");
+      const models = parseOpenAiModelList(payload);
+      if (!models) throw new Error("LLM gateway /v1/models answered in an unexpected shape");
+      return models;
     },
   };
 }
@@ -433,6 +475,10 @@ export async function sweepLitellmCosts(
   } catch (err) {
     log.warn({ err }, "litellm cost sweep: model catalog refresh failed");
   }
+  // myrmidon(1.6.5-F-18): a successful refresh with 0 models means the
+  // accounting key is misconfigured (restricted model list) — record the
+  // operator signal; a failed read (null) proves nothing and changes nothing.
+  recordEmptyCatalogSweep(companyId, modelsRefreshed, to.toISOString());
 
   // myrmidon(HERMES-USAGE-COST): move the gateway's prices into the vendor
   // ledger so the dashboard/Costs screens stop showing unpriced $0 runs.

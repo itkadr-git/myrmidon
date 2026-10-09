@@ -5,34 +5,30 @@
 // The frozen route contract (server side of the feature, part A):
 //   GET   /api/myrmidon/owner-delivery -> { mode: "via_bot" | "owner_decisions_only" | "all" }
 //   PATCH /api/myrmidon/owner-delivery    { mode }   (instance admin)
-// With nothing stored the server answers `via_bot`, and this
-// module mirrors that default for a body that is missing or malformed so a
-// half-written setting never renders an empty screen.
+// With nothing stored the server answers `via_bot`, and the normalizer mirrors
+// that default for a body that is missing or malformed so a half-written
+// setting never renders an empty screen.
 //
-// Part A owns the shared schema (`packages/shared/src/myrmidon-owner-delivery.ts`).
-// Until that part is merged the UI keeps its own copy of the same frozen
-// contract instead of importing from the shared package.
+// The mode values, the default and the normalizer are owned by the shared
+// contract `packages/shared/src/myrmidon-owner-delivery.ts`, which part A
+// ships through the `@paperclipai/shared` package index. This module re-exports
+// them for its own consumers and keeps no second copy of the mode values.
+import {
+  OWNER_DELIVERY_DEFAULT_MODE,
+  OWNER_DELIVERY_MODES,
+  normalizeOwnerDeliverySettings,
+  type OwnerDeliveryMode,
+  type OwnerDeliverySettings,
+} from "@paperclipai/shared";
 import { api } from "@/api/client";
 
-/** Which cards reach the owner's Telegram direct messages. */
-export type OwnerDeliveryMode = "via_bot" | "owner_decisions_only" | "all";
+export { OWNER_DELIVERY_DEFAULT_MODE, normalizeOwnerDeliverySettings };
+export type { OwnerDeliveryMode, OwnerDeliverySettings };
 
-export interface OwnerDeliverySettings {
-  mode: OwnerDeliveryMode;
-}
-
-/** The mode the server reports when no setting is stored. */
-export const OWNER_DELIVERY_DEFAULT_MODE: OwnerDeliveryMode = "via_bot";
-
+/** Narrows an unknown value — a radio value off the DOM, a body off the wire —
+ *  to one of the modes the shared contract defines. */
 export function isOwnerDeliveryMode(value: unknown): value is OwnerDeliveryMode {
-  return value === "via_bot" || value === "owner_decisions_only" || value === "all";
-}
-
-/** Reads a settings body off the wire; anything unexpected falls back to the
- *  default mode rather than surfacing a broken value to the screen. */
-export function normalizeOwnerDeliverySettings(body: unknown): OwnerDeliverySettings {
-  const mode = (body as { mode?: unknown } | null | undefined)?.mode;
-  return { mode: isOwnerDeliveryMode(mode) ? mode : OWNER_DELIVERY_DEFAULT_MODE };
+  return typeof value === "string" && (OWNER_DELIVERY_MODES as readonly string[]).includes(value);
 }
 
 export const ownerDeliverySettingsQueryKey = ["myrmidon", "owner-delivery", "settings"] as const;

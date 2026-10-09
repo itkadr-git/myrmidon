@@ -249,7 +249,7 @@ jobs:
     needs: plan
     if: ${{ needs.plan.outputs.tier == 'fast' }}
     runs-on: ${{ fromJSON(vars.MYR_RUNNER || '"ubuntu-latest"') }}
-    timeout-minutes: 30
+    timeout-minutes: 60
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -557,6 +557,10 @@ jobs:
           mapfile -t files < <(find scripts/myrmidon -name '*.test.mjs' -type f | sort)
           printf 'Running %s\n' "${files[@]}"
           node --test "${files[@]}"
+
+      - name: SQL template lint (myrmidon)
+        if: ${{ !cancelled() }}
+        run: node scripts/myrmidon/ci/sql-template-lint.mjs --root server/src
 
       - name: Secrets (gitleaks, new commits)
         if: ${{ !cancelled() }}

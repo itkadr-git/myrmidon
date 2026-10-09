@@ -177,6 +177,13 @@ export interface BotContainerRuntimeDeps {
   }) => Promise<void>;
   /** myrmidon(BOT-ROLLOUT): companyId lookup for that audit row. */
   rolloutCompanyIdOf?: (agentId: string) => Promise<string | null>;
+  /** myrmidon(MEDIA-PROVISION): one pass of the media ACL registry exporter
+   *  (media-acl-export.ts): rewrites bots.json for the facade when a card's
+   *  MEDIA_TOOLS_TOKEN changed. Runs per sweep tick, after the stray-gateway
+   *  release. Returns null while its own flag checks exclude it. A throw is
+   *  recorded in the activity log and does not fail the sweep: the facade keeps
+   *  serving the previous registry. */
+  exportMediaAcl?: () => Promise<{ bots: number; failedResolves: number; changed: boolean } | null>;
 }
 
 export type ApplyBotContainerOutcome = ReconcileOutcome | { kind: "not_applicable"; reason: string };
@@ -448,6 +455,39 @@ async function releaseStrayGatewaysOfSweep(
   }
 }
 
+/** Never throws: a failed export must not fail the sweep, and the facade keeps
+ *  serving the previous registry until the next tick retries. Reports to the
+ *  activity log only when the pass is not a clean no-op, so a steady fleet does
+ *  not write an entry every interval. */
+async function exportMediaAclOfSweep(deps: BotContainerRuntimeDeps): Promise<void> {
+  if (!deps.exportMediaAcl) return;
+  try {
+    const result = await deps.exportMediaAcl();
+    if (!result) return;
+    if (!result.changed && result.failedResolves === 0) return;
+    await deps.activity?.record({
+      level: result.failedResolves > 0 ? "error" : "info",
+      agentId: "*",
+      botKey: "*",
+      message: "media ACL registry export pass",
+      // Only counts: the registry carries token hashes, the log never sees a raw token.
+      details: { bots: result.bots, failedResolves: result.failedResolves, changed: result.changed },
+    });
+  } catch (err) {
+    try {
+      await deps.activity?.record({
+        level: "error",
+        agentId: "*",
+        botKey: "*",
+        message: "media ACL registry export failed; the facade keeps the previous registry",
+        details: { error: err instanceof Error ? err.message : String(err) },
+      });
+    } catch {
+      // nothing left to report to
+    }
+  }
+}
+
 export const DEFAULT_RECONCILE_INTERVAL_MS = 60_000;
 
 /**
@@ -532,6 +572,10 @@ export function startBotContainerReconciliation(
       }
       // Only after a successful listing: a failed one must not read as "no agents", which would release every gateway.
       await releaseStrayGatewaysOfSweep(agents, deps);
+      // myrmidon(MEDIA-PROVISION): the same tick that saw the cards exports the
+      // media ACL registry, so a token issued or revoked on a card reaches the
+      // facade within one interval without a restart.
+      await exportMediaAclOfSweep(deps);
       // myrmidon(PERF-DIET-G): one pass for the whole sweep. The company- and
       // instance-scoped reads behind the profiles (the skill catalogue, the
       // instance settings) were paid once per bot; inside one tick they are paid
