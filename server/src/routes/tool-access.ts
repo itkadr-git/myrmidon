@@ -1,6 +1,6 @@
 import { Router, type Request, type Response } from "express";
 import type { Db } from "@paperclipai/db";
-import { agents, companies, connectionGrants, issueThreadInteractions, toolConnectionInstalls } from "@paperclipai/db";
+import { agents, companies, connectionGrants, issueThreadInteractions, toolAccessAuditEvents, toolConnectionInstalls } from "@paperclipai/db";
 import { and, eq, or } from "drizzle-orm";
 import {
   APP_STORE_DEFINITIONS,
@@ -51,7 +51,7 @@ import {
   updateToolProfileWithEntriesSchema,
 } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
-import { getActorInfo, assertBoard, assertCompanyAccess, assertInstanceAdmin, getAccessibleResource, hasCompanyAccess } from "./authz.js";
+import { getActorInfo, assertBoard, assertCompanyAccess, assertInstanceAdmin, getAccessibleResource, hasCompanyAccess, assertBoardOrAgentGrant } from "./authz.js";
 import { badRequest, forbidden, HttpError, notFound, unprocessable } from "../errors.js";
 import { accessService, logActivity, toolAccessPolicyService, toolAccessService, vercelConnectIntegrationStatus } from "../services/index.js";
 import { ToolGatewayHttpError, type ToolGatewayService } from "../services/tool-gateway.js";
@@ -539,6 +539,123 @@ function connectorEnrollmentPrincipal(req: Request): string {
     };
   }
 
+  /**
+   * myrmidon(1.6.5-F22): audit row for agent-actor gallery/connection
+   * access. Board mutations already land in the activity log via
+   * `logActivity(toolActivityActor(req))`; this closes the second half of the
+   * brief — a dedicated `tool_access_audit_events` row per agent read/write on
+   * the F-22 surfaces, so an agent acting on tools is distinguishable from an
+   * operator in the audit trail.
+   */
+  async function logToolAccessAgentAudit(
+    req: Request,
+    input: {
+      companyId: string;
+      action: string;
+      connectionId?: string | null;
+      outcome?: "success" | "denied";
+      reasonCode?: string | null;
+    },
+  ) {
+    if (req.actor.type !== "agent") return;
+    const actor = getActorInfo(req);
+    await db.insert(toolAccessAuditEvents).values({
+      companyId: input.companyId,
+      connectionId: input.connectionId ?? null,
+      actorType: "agent",
+      actorId: actor.actorId,
+      action: `tool_access.${input.action}`,
+      outcome: input.outcome ?? "success",
+      reasonCode: input.reasonCode ?? null,
+      details: {
+        agentId: actor.agentId,
+        runId: actor.runId,
+        source: req.actor.source ?? null,
+      },
+    });
+  }
+
+  /**
+   * myrmidon(1.6.5-F22): read gate for the tools gallery / connections
+   * surfaces. Board actors keep the exact `assertBoard` + company-access
+   * semantics they had; an agent actor is admitted only with an explicit
+   * company grant of tools:admin or tools:manage_connections.
+   */
+  async function assertToolsGalleryReadAccess(req: Request, companyId: string) {
+    if (req.actor.type === "agent") {
+      assertCompanyAccess(req, companyId);
+      await assertBoardOrAgentGrant(
+        req,
+        access.hasPermission,
+        companyId,
+        "tools:admin",
+        "tools:manage_connections",
+      );
+      return;
+    }
+    assertBoard(req);
+    assertCompanyAccess(req, companyId);
+  }
+
+  /**
+   * myrmidon(1.6.5-F22): read gate for by-id connection lookups, where the
+   * route loads the entity first (no companyId in the path). The company match
+   * is enforced by `getAccessibleResource`/`hasCompanyAccess` before this runs.
+   */
+  async function assertToolConnectionReadAccess(
+    req: Request,
+    connection: { companyId: string },
+  ) {
+    if (req.actor.type === "agent") {
+      await assertBoardOrAgentGrant(
+        req,
+        access.hasPermission,
+        connection.companyId,
+        "tools:admin",
+        "tools:manage_connections",
+      );
+      return;
+    }
+    assertBoard(req);
+  }
+
+  /**
+   * myrmidon(1.6.5-F22): mutation gate for the connection surfaces. Board
+   * actors keep their existing semantics (active membership for creation,
+   * configure-access for by-id edits); an agent actor is admitted only with an
+   * explicit tools:manage_connections grant (matrix #910 "connect a tool" runs
+   * in the "self" class).
+   */
+  async function assertToolConnectionCreateAccess(req: Request, companyId: string) {
+    if (req.actor.type === "agent") {
+      assertCompanyAccess(req, companyId);
+      await assertBoardOrAgentGrant(
+        req,
+        access.hasPermission,
+        companyId,
+        "tools:manage_connections",
+      );
+      return;
+    }
+    activeToolMembership(req, companyId);
+  }
+
+  async function assertToolConnectionManageAccess(
+    req: Request,
+    connection: { companyId: string },
+  ) {
+    if (req.actor.type === "agent") {
+      await assertBoardOrAgentGrant(
+        req,
+        access.hasPermission,
+        connection.companyId,
+        "tools:manage_connections",
+      );
+      return;
+    }
+    await assertToolConnectionConfigureAccess(req, connection);
+  }
+
   async function assertBoardToolPermission(req: Request, companyId: string, permissionKey: PermissionKey) {
     assertCompanyAccess(req, companyId);
     if (req.actor.type === "agent") {
@@ -849,15 +966,17 @@ function connectorEnrollmentPrincipal(req: Request): string {
   }
 
   router.get("/companies/:companyId/tools/gallery", async (req, res) => {
-    assertBoard(req);
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    // myrmidon(1.6.5-F22): board or a granted agent (tools:admin /
+    // tools:manage_connections) instead of board-only.
+    await assertToolsGalleryReadAccess(req, companyId);
     const advertisedProfiles = options.paperclipCloudConnector === undefined
       ? await paperclipCloudConnectorCapabilitiesFromEnv()
       : options.paperclipCloudConnector
         ? await options.paperclipCloudConnector.getCapabilities()
         : [];
     const vercelConnect = vercelConnectIntegrationStatus();
+    await logToolAccessAgentAudit(req, { companyId, action: "gallery.read" });
     res.json({
       capabilities: await describeConnectionCreateCapabilities(req, companyId),
       credentialSources: {
@@ -1697,11 +1816,13 @@ function connectorEnrollmentPrincipal(req: Request): string {
   });
 
   router.get("/companies/:companyId/tools/connections", async (req, res) => {
-    assertBoard(req);
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    // myrmidon(1.6.5-F22): board or a granted agent (tools:admin /
+    // tools:manage_connections) instead of board-only.
+    await assertToolsGalleryReadAccess(req, companyId);
     const connections = await svc.listConnections(companyId, req.actor.userId);
     const canManageConnections = await isToolConnectionManagerQuiet(req, companyId);
+    await logToolAccessAgentAudit(req, { companyId, action: "connections.list.read" });
     res.json({
       connections: filterVisibleToolConnections(connections, {
         userId: req.actor.userId,
@@ -1712,7 +1833,8 @@ function connectorEnrollmentPrincipal(req: Request): string {
 
   router.post("/companies/:companyId/tools/connections", validate(createToolConnectionSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertToolAppMutationAccess(req, companyId);
+    // myrmidon(1.6.5-F22): board or an agent granted tools:manage_connections.
+    await assertToolConnectionCreateAccess(req, companyId);
     try {
       const connection = await svc.createConnection(companyId, req.body, getActorInfo(req));
       await logActivity(db, {
@@ -1731,6 +1853,11 @@ function connectorEnrollmentPrincipal(req: Request): string {
           credentialRefCount: (connection.credentialRefs ?? []).length + connection.credentialSecretRefs.length,
         },
       });
+      await logToolAccessAgentAudit(req, {
+        companyId,
+        action: "connections.create",
+        connectionId: connection.id,
+      });
       res.status(201).json(connection);
     } catch (error) {
       svc.ensureNoDuplicateNameError(error);
@@ -1738,7 +1865,11 @@ function connectorEnrollmentPrincipal(req: Request): string {
   });
 
   router.get("/tool-connections/:connectionId", async (req, res) => {
-    assertBoard(req);
+    // myrmidon(1.6.5-F22): board keeps the old gate (403 before the 404
+    // lookup, unchanged); an agent is admitted by grant once the entity
+    // supplies the companyId (no companyId in this path).
+    const agentActor = req.actor.type === "agent";
+    if (!agentActor) assertBoard(req);
     const connection = await getAccessibleResource(
       req,
       res,
@@ -1746,6 +1877,14 @@ function connectorEnrollmentPrincipal(req: Request): string {
       "Tool connection not found",
     );
     if (!connection) return;
+    if (agentActor) {
+      await assertToolConnectionReadAccess(req, connection);
+      await logToolAccessAgentAudit(req, {
+        companyId: connection.companyId,
+        action: "connection.read",
+        connectionId: connection.id,
+      });
+    }
     res.json(connection);
   });
 
@@ -2007,9 +2146,15 @@ function connectorEnrollmentPrincipal(req: Request): string {
     "/tool-connections/:connectionId/installs",
     validate(putToolConnectionInstallsSchema),
     async (req, res) => {
-      assertBoard(req);
+      // myrmidon(1.6.5-F22): board keeps the old pre-load gate; an agent
+      // passes the grant check after the entity supplies the companyId.
+      const agentActor = req.actor.type === "agent";
+      if (!agentActor) assertBoard(req);
       const connection = await getAccessibleResource(req, res, svc.getConnection(req.params.connectionId as string), "Tool connection not found");
       if (!connection) return;
+      if (agentActor) {
+        await assertToolConnectionManageAccess(req, connection);
+      }
       const existingInstalls = await db
         .select()
         .from(toolConnectionInstalls)
@@ -2024,11 +2169,13 @@ function connectorEnrollmentPrincipal(req: Request): string {
         ...requestedInstalls.filter((install) => !existingKeys.has(`${install.targetType}:${install.targetId}`)),
         ...existingInstalls.filter((install) => !requestedKeys.has(`${install.targetType}:${install.targetId}`)),
       ];
-      if (changedInstalls.some((install) => install.targetType === "company")) {
+      if (!agentActor && changedInstalls.some((install) => install.targetType === "company")) {
         await assertToolConnectionConfigureAccess(req, connection);
       }
-      if (changedInstalls.some((install) => install.targetType === "agent")) {
+      if (!agentActor && changedInstalls.some((install) => install.targetType === "agent")) {
         await assertToolConnectionAccess(req, connection);
+      }
+      if (changedInstalls.some((install) => install.targetType === "agent")) {
         const changedAgentIds = [...new Set(
           changedInstalls
             .filter((install) => install.targetType === "agent")
@@ -2052,6 +2199,11 @@ function connectorEnrollmentPrincipal(req: Request): string {
         }
       }
       const snapshot = await svc.putConnectionInstalls(connection.id, req.body, getActorInfo(req));
+      await logToolAccessAgentAudit(req, {
+        companyId: connection.companyId,
+        action: "connection.installs_sync",
+        connectionId: connection.id,
+      });
       await logActivity(db, {
         companyId: connection.companyId,
         actorType: toolActivityActor(req).actorType,
@@ -2174,8 +2326,15 @@ function connectorEnrollmentPrincipal(req: Request): string {
   router.patch("/tool-connections/:connectionId", validate(updateToolConnectionSchema), async (req, res) => {
     const existing = await getAccessibleResource(req, res, svc.getConnection(req.params.connectionId as string), "Tool connection not found");
     if (!existing) return;
-    await assertToolConnectionConfigureAccess(req, existing);
+    // myrmidon(1.6.5-F22): board keeps configure-access; an agent is
+    // admitted with an explicit tools:manage_connections grant.
+    await assertToolConnectionManageAccess(req, existing);
     const connection = await svc.updateConnection(existing.id, req.body);
+    await logToolAccessAgentAudit(req, {
+      companyId: existing.companyId,
+      action: "connection.update",
+      connectionId: existing.id,
+    });
     const lifecycleChanges = classifyConnectionUpdate(
       { enabled: existing.enabled, config: existing.config },
       { enabled: connection.enabled, config: connection.config },
@@ -2217,6 +2376,26 @@ function connectorEnrollmentPrincipal(req: Request): string {
   router.delete("/tool-connections/:connectionId", async (req, res) => {
     const existing = await getAccessibleResource(req, res, svc.getConnection(req.params.connectionId as string), "Tool connection not found");
     if (!existing) return;
+    // myrmidon(1.6.5-F22): removing a connection revokes every grant built
+    // on it, so an agent may not do it directly. The grant-aware DELETE needs
+    // a "with approval" path (issueThreadInteractions kind=request_confirmation
+    // + accept -> archiveConnection); that infrastructure is not reachable
+    // from this route without an issue context — the table requires a non-null
+    // issueId and the accept dispatcher only drives document/tool-action
+    // targets. Recorded as the brief's minimal variant: agent actors get 403 and
+    // must hand the removal to an operator.
+    if (req.actor.type === "agent") {
+      await logToolAccessAgentAudit(req, {
+        companyId: existing.companyId,
+        action: "connection.delete",
+        connectionId: existing.id,
+        outcome: "denied",
+        reasonCode: "deny_agent_requires_operator_confirmation",
+      });
+      throw forbidden(
+        "Removing a tool connection requires operator confirmation; an agent cannot delete a connection directly",
+      );
+    }
     await assertToolConnectionConfigureAccess(req, existing);
     const applicationBefore = await svc.getApplication(existing.applicationId);
     const { connection, removal } = await svc.archiveConnection(
