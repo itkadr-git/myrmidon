@@ -34,6 +34,9 @@ import { botLspSettingsSchema } from "../myrmidon-bot-lsp.js";
 // myrmidon(EXTCASE-B): the browser-bridge allowlist stored in the same general settings row
 import { browserBridgeSettingsSchema } from "../myrmidon-browser-bridge.js";
 import { swarmClaimSettingsSchema } from "../myrmidon-swarm-claim.js";
+// myrmidon(1.6.5 F-26 T5): the SWARM wake guard (taskless gate + cooling) stored
+// in the same general settings row under `general.swarm`.
+import { swarmSettingsSchema } from "../myrmidon-swarm-wake.js";
 import { datastoreCareSettingsSchema } from "../myrmidon-datastore-care.js"; // myrmidon(1.6.5-DBC1)
 // myrmidon(1.6.1-WIP-LIMIT-A): the per-agent WIP limit settings stored in the
 // same general settings row.
@@ -192,6 +195,10 @@ export const instanceGeneralSettingsSchema = z.object({
   // /api/myrmidon/swarm-claim; absent means "use the environment variable, then
   // the default (the pilot is off)".
   swarmClaim: swarmClaimSettingsSchema.optional(),
+  // myrmidon(1.6.5 F-26 T5): the wake guard — the run-without-task gate and the
+  // exponential cooling of stale wake candidates (design 1.6.5 §3.7, §4.3).
+  // Absent means the defaults (gate on, base 30 min, ceiling 24 h).
+  swarm: swarmSettingsSchema.optional(),
   // myrmidon(1.6.1 SWARM-SETTINGS-UI): the change journal of the swarm-claim
   // pilot settings (who changed what, and when), kept by the settings service
   // under `general.swarmClaimJournal` and read by GET /api/myrmidon/swarm-claim.
