@@ -158,6 +158,7 @@ import { reviewReworkRoutes } from "./myrmidon/review-rework/routes.js"; // myrm
 // myrmidon(PLUGIN-ENTITLEMENT C): instance-level plugin entitlement keys
 import { pluginEntitlementRoutes } from "./myrmidon/plugin-entitlement/index.js";
 import { myrmidonLitellmBudgetSyncRoutes } from "./myrmidon/litellm-budget-sync/index.js"; // myrmidon(1.7-BUDGET-CONFIG-C)
+import { myrmidonLitellmWorkersRoutes } from "./myrmidon/litellm-workers/routes.js"; // myrmidon(1.6.5 LITELLM-WORKERS A)
 import { agentInstructionsRevisionsRoutes } from "./myrmidon/agent-instructions-revisions/index.js"; // myrmidon(H2)
 import { myrmidonFleetConsoleRoutes } from "./myrmidon/fleet-console/index.js"; // myrmidon(SC1)
 import { myrmidonPromptBudgetAdviceRoutes } from "./myrmidon/prompt-budget-advice/index.js"; // myrmidon(1.6.3 PROMPT-BUDGET C)
@@ -1075,6 +1076,7 @@ export async function createApp(
   api.use(reviewReworkRoutes(db)); // myrmidon(REVIEW-REWORK): review-return loop settings
   api.use(pluginEntitlementRoutes(db)); // myrmidon(PLUGIN-ENTITLEMENT C): accept/remove plugin keys (instance admin)
   api.use(myrmidonLitellmBudgetSyncRoutes(db)); // myrmidon(1.7-BUDGET-CONFIG-C): LiteLLM budget projection settings, status, re-sync
+  api.use(myrmidonLitellmWorkersRoutes(db)); // myrmidon(1.6.5 LITELLM-WORKERS A): LiteLLM worker-process target, live pool size and TTIN/TTOU resize
   api.use(agentInstructionsRevisionsRoutes(db)); // myrmidon(H2)
   api.use(myrmidonFleetConsoleRoutes(db)); // myrmidon(SC1)
   api.use(myrmidonCloudConnectorRoutes(db)); // myrmidon(CLOUD-CONNECTOR)
