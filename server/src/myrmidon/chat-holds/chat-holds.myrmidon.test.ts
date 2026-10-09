@@ -441,7 +441,6 @@ describeEmbeddedPostgres("a chat is never held and an owner message wakes (CHAT-
         requestedByActorId: OWNER,
         idempotencyKey: `chat-inbound:${randomUUID()}`,
         payload: {},
-        contextSnapshot: {},
       },
       {
         id: systemReceiptId,
@@ -454,7 +453,6 @@ describeEmbeddedPostgres("a chat is never held and an owner message wakes (CHAT-
         requestedByActorId: null,
         idempotencyKey: `chat-inbound:${randomUUID()}`,
         payload: {},
-        contextSnapshot: {},
       },
       {
         id: agentReceiptId,
@@ -467,7 +465,6 @@ describeEmbeddedPostgres("a chat is never held and an owner message wakes (CHAT-
         requestedByActorId: fixture.agentId,
         idempotencyKey: `comment:${randomUUID()}`,
         payload: {},
-        contextSnapshot: {},
       },
     ]);
 
