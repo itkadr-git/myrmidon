@@ -9674,7 +9674,9 @@ export function heartbeatService(
             wakeupRequestId: effect.run.wakeupRequestId,
           },
         });
-        await startNextQueuedRunForAgent(effect.run.agentId);
+        // myrmidon(1.6.6 RUN-DISPATCH-NOTIFY, OPE-6444): through the dispatcher
+        // — an api process in `notify` publishes run_queued instead of starting.
+        await runStartDispatcher.dispatchRunStart(effect.run.agentId);
       } else {
         await logActivity(db, {
           companyId: effect.companyId,
@@ -19191,7 +19193,7 @@ export function heartbeatService(
       await finalizeAgentStatus(run.agentId, "failed", baseMessage, {
         wasFirstHeartbeat: timerClaimWasFirstHeartbeat(run),
       });
-      await startNextQueuedRunForAgent(run.agentId);
+      await runStartDispatcher.dispatchRunStart(run.agentId);
       runningProcesses.delete(run.id);
       reaped.push(run.id);
     }
@@ -19448,7 +19450,7 @@ export function heartbeatService(
       // myrmidon: one agent's failure (e.g. a duplicate routine issue on claim)
       // must not stop the sweep for every agent queued after it
       try {
-        await startNextQueuedRunForAgent(
+        await runStartDispatcher.dispatchRunStart(
           agentId,
           // myrmidon(1.6.5 RUN-FAIRNESS): the share gate holds an agent only
           // while OTHER agents wait — a lone queue is never throttled.
@@ -20068,9 +20070,11 @@ export function heartbeatService(
     loadSettings: () => loadRunDispatchSettings(db),
     readCutoff: () => getWorktreeExecutionCutoff(),
     // myrmidon(1.6.6 RUN-DISPATCH-NOTIFY, OPE-6444): the role gate of T1.1 and
-    // the bus publish of the `notify` mode. `executesRuns` absent means a
-    // single-process deployment — the vendor path, unchanged.
-    executesRuns: () => options.executesRuns ?? true,
+    // the bus publish of the `notify` mode. Inject `executesRuns` only where the
+    // role split is wired: absent means a single-process deployment, and the
+    // notify branch then keeps the part-A shape (publish, never start locally)
+    // only when it is actually injected.
+    executesRuns: options.executesRuns !== undefined ? () => options.executesRuns! : undefined,
     requestRemoteStart: options.processBus
       ? async (agentId) => {
           // The payload contract of T1.3: {agentId, companyId, schemaVersion: 1}.
@@ -30217,6 +30221,10 @@ export function heartbeatService(
     // queued run and no running run. The 30 s worker timer calls it; tests and the
     // `notify` mode's fallback (part B) can call it directly.
     sweepQueuedRunsWithoutRunning: () => runStartDispatcher.sweepQueuedWithoutRunning(),
+    // myrmidon(1.6.6 RUN-DISPATCH-NOTIFY, OPE-6444): the dispatcher itself —
+    // the api process of the notify mode publishes `run_queued` through it.
+    dispatchRunStart: (agentId: string, options?: { otherAgentsWaiting?: boolean }) =>
+      runStartDispatcher.dispatchRunStart(agentId, options),
     // Override-aware scheduling-suppression check (honors the worktree
     // run-execution experimental setting). Callers outside the service that
     // gate on suppression should prefer this over the env-only resolver.
