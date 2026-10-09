@@ -51,6 +51,10 @@ import { preserveCloudConnectorGeneralKey } from "../myrmidon/cloud-connector/st
 import { preserveAccessHubHostsGeneralKey } from "../myrmidon/access-hub/host-registry.js";
 // myrmidon(1.6-AUTONOMY): keep the autonomy matrix and regulations across vendor writes of `general`
 import { preserveAutonomyGeneralKey } from "../myrmidon/autonomy/store.js";
+// myrmidon(1.6.6 K-7): the pilot agent list of the skill lifecycle, stored per
+// company in instance_settings.general (imported from the module file, not the
+// index, to keep this hot service graph light).
+import { preserveSkillPilotAgentsGeneralKey } from "../myrmidon/skill-lifecycle/pilot-agents-store.js";
 // myrmidon(1.6-TG-PROACTIVITY-E, 1.6.1-TG-NOTIFY-B): keep the telegram-notify state across vendor writes of `general`
 import { preserveTelegramNotifyGeneralKey } from "../myrmidon/telegram-notify/proactivity-policy.js";
 import { preserveTelegramNotifySettingsGeneralKey } from "../myrmidon/telegram-notify/settings-store.js";
@@ -719,6 +723,7 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
             ...preserveGitHubSharedIdentityGeneralKey(current.general), // myrmidon(GITHUB-SHARED-IDENTITY)
             ...preserveBudgetProjectionGeneralKey(current.general), // myrmidon(1.7-BUDGET-CONFIG-C)
             ...preserveBotImageRolloutGeneralKey(current.general), // myrmidon(BOT-ROLLOUT)
+            ...preserveSkillPilotAgentsGeneralKey(current.general), // myrmidon(1.6.6 K-7)
           },
           updatedAt: now,
         })

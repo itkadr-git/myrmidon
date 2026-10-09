@@ -225,3 +225,17 @@ export function readSkillPilotAgents(env: NodeJS.ProcessEnv): Set<string> {
       .filter((value) => value.length > 0),
   );
 }
+
+/**
+ * myrmidon(1.6.6 KNOWLEDGE-2.0 K-7): the precedence between the board setting
+ * and the env fallback. The stored list wins when the board has written one —
+ * an explicitly stored empty list means "no pilot", overriding env. `null`
+ * means "not configured on the board": env applies.
+ */
+export function resolveSkillPilotAgents(input: {
+  stored: string[] | null;
+  envIds: ReadonlySet<string>;
+}): Set<string> {
+  if (input.stored !== null) return new Set(input.stored);
+  return new Set(input.envIds);
+}
