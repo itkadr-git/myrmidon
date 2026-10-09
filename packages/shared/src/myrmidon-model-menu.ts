@@ -76,6 +76,9 @@ export const MODEL_MENU_OTHER_GROUP_TITLE = "Прочие";
 /** Family key of a model that matches no known provider. */
 export const MODEL_MENU_OTHER_FAMILY_KEY = "other";
 
+/** Action of an instance settings write of the menu (the activity log line). */
+export const MODEL_MENU_UPDATED_ACTION = "instance.model_menu.updated";
+
 /**
  * One group of the configured tree: a title, the models it lists (by catalog
  * id) and, optionally, nested groups. Every field but the title may be absent;
@@ -121,6 +124,24 @@ export type ModelMenuSettings = z.infer<typeof modelMenuSettingsSchema>;
 export const patchModelMenuSettingsSchema = modelMenuSettingsSchema;
 
 export type ModelMenuSettingsPatch = ModelMenuSettings;
+
+/**
+ * The row as read back from `instance_settings.general`: lenient. A hand-edited
+ * value that no longer fits reads as absent instead of failing the whole
+ * general row, and the resolver then falls back to the automatic groups — a
+ * broken menu can never take the other settings keys down with it.
+ */
+export const storedModelMenuSettingsSchema = z
+  .object({
+    // Shallow on purpose: the tree is checked as a whole by
+    // `normalizeModelMenuSettings`, and the OpenAPI generator walks every
+    // schema of the general settings row (`server/src/routes/openapi.ts`), where
+    // a self-referencing group schema would recurse without end.
+    groups: z.array(z.unknown()).optional(),
+    hidden: z.array(z.unknown()).optional(),
+  })
+  .optional()
+  .catch(undefined);
 
 /** One model as the gateway catalog offers it. */
 export interface ModelMenuCatalogModel {
@@ -236,8 +257,31 @@ export function normalizeModelMenuSettings(raw: unknown): ModelMenuSettings | nu
   return parsed.data;
 }
 
-/** Depth, width and model count of the tree are within their limits. */
-function fitsModelMenuLimits(groups: readonly ModelMenuGroup[], depth: number): boolean {
+/**
+ * The stored value a patch produces: a key the patch leaves out keeps what the
+ * row holds, an explicit value replaces it. The result is still checked as a
+ * whole by `normalizeModelMenuSettings` on read, so a hand-edited row can never
+ * half-apply.
+ */
+export function mergeModelMenuSettings(
+  base: ModelMenuSettings | null,
+  patch: ModelMenuSettingsPatch,
+): ModelMenuSettings {
+  const merged: ModelMenuSettings = {};
+  const groups = patch.groups !== undefined ? patch.groups : base?.groups;
+  if (groups !== undefined) merged.groups = groups;
+  const hidden = patch.hidden !== undefined ? patch.hidden : base?.hidden;
+  if (hidden !== undefined) merged.hidden = hidden;
+  return merged;
+}
+
+/**
+ * Depth, width and model count of the tree are within their limits. Exported so
+ * the PATCH route rejects an over-deep body with 400 before anything is stored;
+ * the walker, not the schema, carries these limits (a wrapped self-reference is
+ * what makes a recursive zod type complain).
+ */
+export function fitsModelMenuLimits(groups: readonly ModelMenuGroup[], depth: number): boolean {
   if (groups.length === 0) return true;
   if (depth > MODEL_MENU_MAX_DEPTH) return false;
   return groups.every(

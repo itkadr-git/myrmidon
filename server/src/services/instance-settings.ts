@@ -266,6 +266,11 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
       ...(parsed.data.corpus ? { corpus: parsed.data.corpus } : {}),
       // myrmidon(BOT-DISK E): the stored host disk threshold survives every general write
       ...(parsed.data.hostDisk ? { hostDisk: parsed.data.hostDisk } : {}),
+      // myrmidon(1.6.6 MODEL-MENU B): the stored grouped /model menu survives
+      // every general write. Without this line the vendor write path silently
+      // drops the key, so the tree the owner edits in the web interface would
+      // never roundtrip and /model would keep showing the automatic groups.
+      ...(parsed.data.modelMenu ? { modelMenu: parsed.data.modelMenu } : {}),
       // myrmidon(BOT-DISK-A): the stored bot draft-directory lifecycle survives every general write
       ...(parsed.data.botDisk ? { botDisk: parsed.data.botDisk } : {}),
       // myrmidon(1.6.1-BOT-DISK-C): the stored per-bot disk quota survives every general write
