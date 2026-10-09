@@ -2845,6 +2845,7 @@ export * from "./myrmidon-litellm-sync.js";
 // myrmidon(1.6-SWARM): per-role task queues with leased claims — the shared
 // contract of the core queue, the supervisor view and the pilot settings.
 export * from "./myrmidon-swarm-claim.js";
+export * from "./myrmidon-swarm-wake.js"; // myrmidon(1.6.5 F-26 T5): wake guard settings + cooling
 // myrmidon(1.6.5-DBC1): the datastore-care retention settings contract
 // (general.datastoreCare.retention) and the activity action names.
 export * from "./myrmidon-datastore-care.js";
@@ -2895,6 +2896,10 @@ export * from "./myrmidon-telegram-dm-progress.js";
 
 // myrmidon(1.6.1 MODEL-PROVIDERS): provider secret names, defaults and API schemas.
 export * from "./myrmidon-model-providers.js";
+
+// myrmidon(1.6.5-TG-LOCALE-C): instance-wide default language of the bridged
+// Telegram DM — storage key, precedence and resolver.
+export * from "./myrmidon-bridge-language.js";
 // myrmidon(REVIEW-ROUTING): automatic reviewer routing for tasks that enter
 // in_review with no reviewer — settings contract and activity actions.
 export * from "./myrmidon-review-routing.js";

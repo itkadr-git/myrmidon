@@ -1,0 +1,26 @@
+# NGINX-PROXY-BUFFERS: server-block fragment for the reverse proxy that sits in
+# front of the Myrmidon board. The fork ships no nginx config (the production
+# proxy lives outside this repository); this file is an example the board
+# operator merges into the real server block.
+#
+# Why: agent wakes embed the issue list (GET /api/companies/:id/issues). Before
+# AGENT-ISSUE-LIST the default answer was the full projection, easily above the
+# nginx default proxy buffers (proxy_buffer_size 4k/8k), which forced nginx to
+# spill answer headers/bodies to disk and logged "upstream response is buffered
+# to ...". The agent default answer is now compact and <= 500 KB, but individual
+# endpoints (issue detail, compact pages with descriptions) still return 64 KB+
+# bodies, so the proxy buffers must be sized for them.
+#
+# Usage: copy the three directives into the `location /` block that proxies to
+# the board service (upstream `myrmidon` in the production naming), then
+# `nginx -t && nginx -s reload`. Values follow the ticket recommendation:
+# proxy_buffer_size holds one header block (64k covers the largest response
+# headers + a small body chunk), proxy_buffers holds the buffered body
+# (16 x 64k = 1 MiB), proxy_busy_buffers_size may exceed one buffer while the
+# rest flushes to the client.
+
+# --- begin fragment (merge into the existing server/location block) ---
+    proxy_buffer_size 64k;
+    proxy_buffers 16 64k;
+    proxy_busy_buffers_size 128k;
+# --- end fragment ---

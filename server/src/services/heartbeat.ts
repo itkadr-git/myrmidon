@@ -38,6 +38,8 @@ import {
   isChatOwnerMessageWake,
   listOwnerChatTurnRunIds,
 } from "../myrmidon/chat-holds/chat-backed.js";
+// myrmidon(1.6.5 F-26 T5): taskless-wake gate + cooling (design §3.7, §4.3).
+import { tasklessGateReason, readSwarmSettings } from "../myrmidon/wake-task-guard.js";
 import { clearChatHoldsOnOwnerMessage } from "../myrmidon/chat-holds/clear-on-message.js";
 // myrmidon(L2, round 3 fix): retire the woken agent's own waiting run that the
 // bypassed hold would cancel at its claim, so the wake is not lost with it.
@@ -740,6 +742,7 @@ import {
   type PriorityScoredRun,
 } from "../myrmidon/run-priority/scoring.js";
 import { runPriorityWeight, type RunPrioritySettings } from "@paperclipai/shared";
+import { effectivePheromone } from "@paperclipai/shared";
 // myrmidon(PERF-DIET-K): issue-scoped session generations for the container
 // Hermes gateway — one task's session key gains a `:g<N>` once it passes its
 // age/activity threshold, so the task's Hermes state stays bounded
@@ -19367,7 +19370,7 @@ export function heartbeatService(
           .filter((issueId): issueId is string => Boolean(issueId)),
       ),
     ];
-    type IssueKey = { priority: string; labels: string[]; branchName: string | null };
+    type IssueKey = { priority: string; labels: string[]; branchName: string | null; pheromoneStrength: number; issueCreatedAt: Date | null };
     const issueByKey = new Map<string, IssueKey>();
     if (issueIds.length > 0) {
       const issueRows = await db
@@ -19375,6 +19378,8 @@ export function heartbeatService(
           id: issues.id,
           priority: issues.priority,
           executionWorkspaceId: issues.executionWorkspaceId,
+          pheromoneStrength: issues.pheromoneStrength,
+          createdAt: issues.createdAt,
         })
         .from(issues)
         .where(inArray(issues.id, issueIds));
@@ -19410,6 +19415,8 @@ export function heartbeatService(
           branchName: row.executionWorkspaceId
             ? branchById.get(row.executionWorkspaceId) ?? null
             : null,
+          pheromoneStrength: row.pheromoneStrength ?? 0,
+          issueCreatedAt: row.createdAt ?? null,
         });
       }
     }
@@ -19429,6 +19436,17 @@ export function heartbeatService(
           readNonEmptyString(context.branchName) ?? null,
         ]),
         createdAtMs: run.createdAt.getTime(),
+        // 1.6.5 (F-27 rework 09.10, design §4): the effective strength of the
+        // run's issue, with the swarm defaults (the run scorer applies the
+        // runPriority.pheromoneWeight; the swarm dynamics are the shared
+        // defaults here — the run queue reorders runs, the swarm queue owns
+        // the per-instance dynamics knobs).
+        effectivePheromone: issue
+          ? effectivePheromone({
+              pheromoneStrength: issue.pheromoneStrength,
+              queuedAt: issue.issueCreatedAt,
+            })
+          : 0,
       };
     });
   }
@@ -27329,6 +27347,52 @@ export function heartbeatService(
 
     let agent = await getAgent(agentId);
     if (!agent) throw notFound("Agent not found");
+
+    // myrmidon(1.6.5 F-26 T5, design §3.7): the run-without-task gate. An
+    // automatic wake of a swarm reason that names no existing task must never
+    // reach the adapter — it is recorded `skipped` here with 0 tokens. Manual
+    // wakes and chat are untouched; a manual wake of a user always passes.
+    {
+      const swarmSettings = await readSwarmSettings(db);
+      if (swarmSettings.runWithoutTaskGate) {
+        const gateReason = await tasklessGateReason(db, agent.companyId, {
+          source,
+          reason:
+            readNonEmptyString(enrichedContextSnapshot.wakeReason) ?? reason,
+          issueId,
+          manualUserWake: opts.manualUserWake === true,
+        });
+        if (gateReason) {
+          logger.info(
+            {
+              agentId,
+              companyId: agent.companyId,
+              source,
+              reason,
+              issueId: issueId ?? null,
+              gateReason,
+            },
+            "myrmidon.wake_task_guard.skipped: taskless automatic wake closed before the adapter (0 tokens)",
+          );
+          await logActivity(db, {
+            companyId: agent.companyId,
+            actorType: "system",
+            actorId: "heartbeat",
+            agentId,
+            action: "heartbeat.wake_skipped_taskless",
+            entityType: "agent",
+            entityId: agentId,
+            details: {
+              reason: reason ?? null,
+              gateReason,
+              counter: "myrmidon.heartbeat.taskless_wakes_skipped",
+            },
+          });
+          return null;
+        }
+      }
+    }
+
     if (issueId) {
       const conversation = await getIssueExecutionContext(agent.companyId, issueId);
       if (isConversation(conversation)) {

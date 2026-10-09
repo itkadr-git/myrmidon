@@ -1,6 +1,6 @@
 {
   "id": "ff45d077-9907-4db4-ab3c-46f876e71858",
-  "prevId": "adc78de9-49d9-46b9-976a-4cfdd9023fd4",
+  "prevId": "69340adf-9fb8-41f9-99e8-1064c9cc70de",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -32968,6 +32968,19 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
+        },
+        "pheromone_strength": {
+          "name": "pheromone_strength",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "caste_key": {
+          "name": "caste_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {
@@ -33699,6 +33712,27 @@
           ],
           "isUnique": true,
           "where": "\"issues\".\"origin_kind\" = 'onboarding_first_task'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "issues_company_caste_idx": {
+          "name": "issues_company_caste_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "caste_key",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -41063,6 +41097,12 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
+        },
+        "default_caste_key": {
+          "name": "default_caste_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {

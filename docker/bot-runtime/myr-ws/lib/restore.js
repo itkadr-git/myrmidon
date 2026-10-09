@@ -21,10 +21,11 @@
 //   <home>/archive/<KEY>-<ts>.untracked.tar   — untracked files (no ignored)
 // The latest archive of <KEY> is the one with the greatest <ts> in the
 // filename. The repository the copy belongs to comes from the open-copy
-// registry <home>/ws-registry.json (contract C1/C4: the registry is the
-// source of `repo` per key); without a registry entry the restore refuses
-// with exit 6 — the base to rebuild the worktree from cannot be chosen
-// safely.
+// registry <home>/ws-registry.json (contract C1/C4), and, once `close` has
+// dropped the entry, from the archive manifest (<archive>/manifest.json entry
+// of the same bundle: `close` hands the repo to the archive); with neither the
+// restore refuses with exit 6 — the base to rebuild the worktree from cannot
+// be chosen safely.
 //
 // The new worktree is created through the `open` interface (lib/open.js, H2b)
 // injected as `deps.open`, so registry updates, disk-pressure rules and the
@@ -41,6 +42,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 const { MyrWsError } = require("./errors.js");
+const { archiveRootOf } = require("./layout.js");
 
 // --- contract constants (C1/C2); drift here is caught by the unit test ---
 const EXIT = { ok: 0, usage: 2, quotaExceeded: 3, baseLimit: 4, network: 5, notFound: 6, unpushed: 7 };
@@ -148,19 +150,39 @@ function readRegistry(ctx) {
   return parsed;
 }
 
-/** The repo an archived copy of <key> belonged to, from the registry (C1/C4). */
-function repoOf(ctx, key) {
+/**
+ * The repo an archived copy of <key> belonged to: the open-copy registry first (C1/C4),
+ * else the archive manifest entry that botd wrote for this very bundle (`close` drops the
+ * registry entry, and passes the repo to the archive for exactly this case).
+ */
+function repoOf(ctx, key, archive) {
   const entry = readRegistry(ctx).entries.find((e) => e && e.key === key && typeof e.repo === "string");
-  if (!entry) {
+  let repo = entry ? entry.repo : null;
+  if (repo === null) repo = manifestRepo(ctx, key, archive);
+  if (repo === null) {
     throw new MyrWsError(
       EXIT.notFound,
-      `no registry entry for ${key} in ${registryPath(ctx)}; the repository of the archive is unknown — re-open the copy with myr-ws open ${key} owner/repo first`,
+      `no registry entry for ${key} in ${registryPath(ctx)} and no repository in the archive manifest; the repository of the archive is unknown — re-open the copy with myr-ws open ${key} owner/repo first`,
     );
   }
-  if (!REPO_RE.test(entry.repo)) {
-    throw new MyrWsError(EXIT.notFound, `registry entry of ${key} has an invalid repo ${JSON.stringify(entry.repo)}`);
+  if (!REPO_RE.test(repo)) {
+    throw new MyrWsError(EXIT.notFound, `the repo ${JSON.stringify(repo)} of ${key} is invalid`);
   }
-  return entry.repo;
+  return repo;
+}
+
+function manifestRepo(ctx, key, archive) {
+  let parsed;
+  try {
+    parsed = JSON.parse(fs.readFileSync(path.join(ctx.archiveRoot, "manifest.json"), "utf8"));
+  } catch {
+    return null;
+  }
+  const rows = parsed && Array.isArray(parsed.archives) ? parsed.archives : [];
+  const mine = rows.filter((e) => e && e.key === key && typeof e.repo === "string");
+  const exact = archive ? mine.filter((e) => e.bundle === archive.bundle) : [];
+  const pick = (exact.length > 0 ? exact : mine).sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)))[0];
+  return pick ? pick.repo : null;
 }
 
 // --- git / tar ---------------------------------------------------------------
@@ -194,7 +216,7 @@ function makeCtx(deps = {}) {
   return {
     env,
     home,
-    archiveRoot: deps.archiveRoot || path.join(home, "archive"),
+    archiveRoot: deps.archiveRoot || archiveRootOf(home),
     workspaceRoot: deps.workspaceRoot || WORKSPACE_ROOT,
     open: deps.open || null,
     openDeps: deps.openDeps || null,
@@ -230,7 +252,7 @@ async function restore(request, deps = {}) {
 
   // 1. Pick the archive first: a broken/absent archive must not touch anything.
   const archive = findArchive(ctx, key);
-  const repo = repoOf(ctx, key);
+  const repo = repoOf(ctx, key, archive);
 
   // 2. Verify the bundle before any mutation: list-heads validates the file
   //    structure without needing a repository (a broken bundle -> exit 6,
