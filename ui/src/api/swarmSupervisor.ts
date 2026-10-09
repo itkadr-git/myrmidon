@@ -1,14 +1,11 @@
 // myrmidon(1.6-SWARM-CLAIM-B): API client for the "Swarm supervisor" page —
-// per-role task queues, active/expired role leases and rebalance actions, plus
-// the pilot report compared against the frozen BASELINE snapshot.
-// Server side (part A, the JSON contract is frozen in the design note):
+// per-caste task queues, active/expired role leases and rebalance actions.
+// Server side (the JSON contract is frozen in the design note):
 //   GET  .../swarm-claim/supervisor/overview
 //   POST .../swarm-claim/supervisor/release-lease
-//   GET  .../swarm-claim/supervisor/pilot-report?from=<ISO>&to=<ISO>
 // Until part A merges, the tests mock this client's return shape.
 
-import { api, ApiError } from "@/api/client";
-import type { BaselineMetricsReport } from "@/api/baseline";
+import { api } from "@/api/client";
 
 export interface SwarmSupervisorQueueItem {
   issueId: string;
@@ -18,6 +15,16 @@ export interface SwarmSupervisorQueueItem {
   projectId: string | null;
   createdAt: string;
   blockedTransitionAt: string | null;
+  /**
+   * myrmidon(1.6.5 SWARM-T4, design §5.3): the effective pheromone strength
+   * — priority and waiting time folded into the number the queue orders by.
+   */
+  eff: number;
+  /**
+   * myrmidon(1.6.5 SWARM-T4, design §5.3): the nest the task sits in — the
+   * assignee agent id, null when the task is unattributed.
+   */
+  nestAgentId: string | null;
 }
 
 export interface SwarmSupervisorTopQueueItem {
@@ -28,6 +35,10 @@ export interface SwarmSupervisorTopQueueItem {
   role: string;
   projectId: string | null;
   createdAt: string;
+  /** myrmidon(1.6.5 SWARM-T4, design §5.3): effective pheromone strength. */
+  eff: number;
+  /** The agent whose nest (queue position) the row reflects, if any. */
+  nestAgentId: string | null;
 }
 
 export interface SwarmSupervisorClaim {
@@ -59,12 +70,58 @@ export interface SwarmSupervisorRole {
   idleAgents: SwarmSupervisorIdleAgent[];
 }
 
+/**
+ * myrmidon(1.6.5 SWARM-T4, design §5.3): one recent board→agent match, read
+ * from the `issue.swarm_matched` activity feed. Empty until the matching
+ * core lands.
+ */
+export interface SwarmSupervisorMatch {
+  at: string;
+  issueId: string;
+  identifier: string | null;
+  title: string;
+  agentId: string;
+  agentName: string;
+}
+
+/**
+ * myrmidon(1.6.5 SWARM-T4, design §5.3): one task the board failed to match
+ * and left to cool down. From T5; empty until it lands.
+ */
+export interface SwarmSupervisorCooldown {
+  issueId: string;
+  identifier: string | null;
+  title: string;
+  priority: string;
+  createdAt: string;
+  coolsDownAt: string | null;
+}
+
+/**
+ * myrmidon(1.6.5 SWARM-T4, design §5.3): one warning of the overview —
+ * a caste with tasks and no free agent, tasks without a caste, runs without
+ * a task in the last 24 hours.
+ */
+export type SwarmWarningKind =
+  | "caste_without_agents"
+  | "tasks_without_caste"
+  | "runs_without_task";
+
+export interface SwarmSupervisorWarning {
+  kind: SwarmWarningKind;
+  message: string;
+  caste?: string;
+  issueCount?: number;
+  runCount?: number;
+}
+
 export interface SwarmSupervisorTotals {
   queued: number;
   activeClaims: number;
   expiredClaims: number;
   agentsWithClaims: number;
   idleAgentsWithQueue: number;
+  freeAgentsWithQueue: number;
 }
 
 export interface SwarmSupervisorOverview {
@@ -73,13 +130,16 @@ export interface SwarmSupervisorOverview {
   leaseTtlSec: number | null;
   maxActiveTasksPerAgent: number | null;
   /**
-   * myrmidon(1.6.1 SWARM-SETTINGS-UI): where each effective pilot setting
+   * myrmidon(1.6.1 SWARM-SETTINGS-UI): where each effective claim setting
    * came from — "settings" (the UI), "env" (the forced override) or "default".
    */
   settingSources: Record<string, string>;
   totals: SwarmSupervisorTotals;
   roles: SwarmSupervisorRole[];
   topQueue: SwarmSupervisorTopQueueItem[];
+  matched: SwarmSupervisorMatch[];
+  cooldown: SwarmSupervisorCooldown[];
+  warnings: SwarmSupervisorWarning[];
 }
 
 export interface SwarmReleaseLeaseInput {
@@ -95,30 +155,6 @@ export interface SwarmReleaseLeaseResult {
   reason: string;
 }
 
-/** One row of the pilot-vs-baseline comparison: a metric on each side. */
-export interface SwarmComparisonMetric {
-  pilot: number | null;
-  baseline: number | null;
-  deltaPercent: number | null;
-}
-
-export interface SwarmPilotComparison {
-  cycleTimeHoursMean: SwarmComparisonMetric;
-  returnRate: SwarmComparisonMetric;
-  timeInReviewHoursMean: SwarmComparisonMetric;
-  costPerTaskMeanCents: SwarmComparisonMetric;
-}
-
-export interface SwarmPilotReport {
-  window: { from: string; to: string } | null;
-  enabled: boolean;
-  generatedAt: string;
-  pilot: BaselineMetricsReport | null;
-  baseline: BaselineMetricsReport | null;
-  comparison: SwarmPilotComparison;
-  notes: string[];
-}
-
 const supervisorBase = (companyId: string) =>
   `/myrmidon/companies/${encodeURIComponent(companyId)}/swarm-claim/supervisor`;
 
@@ -131,28 +167,7 @@ export const swarmSupervisorApi = {
       claimId: input.claimId,
       ...(input.reason ? { reason: input.reason } : {}),
     }),
-
-  pilotReport: (companyId: string, window?: { from?: string; to?: string }) => {
-    const params = new URLSearchParams();
-    if (window?.from) params.set("from", window.from);
-    if (window?.to) params.set("to", window.to);
-    const qs = params.toString();
-    return api.get<SwarmPilotReport>(`${supervisorBase(companyId)}/pilot-report${qs ? `?${qs}` : ""}`);
-  },
 };
 
 export const swarmSupervisorOverviewKey = (companyId: string) =>
   ["myrmidon", "swarm-claim", "supervisor", "overview", companyId] as const;
-
-export const swarmSupervisorPilotReportKey = (companyId: string, from?: string, to?: string) =>
-  ["myrmidon", "swarm-claim", "supervisor", "pilot-report", companyId, from ?? null, to ?? null] as const;
-
-/** 503 body while the pilot flag is off: { error, enabled: false }. */
-export function isSwarmPilotNotEnabled(err: unknown): boolean {
-  if (err instanceof ApiError) {
-    const body = err.body as { enabled?: boolean } | null;
-    if (body && body.enabled === false) return true;
-    return err.status === 503 && /not enabled/i.test(err.message);
-  }
-  return err instanceof Error && /not enabled/i.test(err.message);
-}

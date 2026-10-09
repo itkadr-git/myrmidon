@@ -27,9 +27,9 @@ import { z } from "zod";
  * - otherwise the environment variable (the deployment default);
  * - otherwise the built-in default.
  *
- * The pilot flag is deliberately the only value whose default is "off": the
+ * The swarm flag is deliberately the only value whose default is "off": the
  * whole feature ships dark and an operator turns it on for one team, which is
- * what makes it possible to compare a pilot window against the BASELINE
+ * what makes it possible to compare a swarm window against the BASELINE
  * snapshot.
  */
 
@@ -54,12 +54,11 @@ export const SWARM_CLAIM_ENV_KEYS = {
 
 export const SWARM_CLAIM_SETTING_KEYS = [
   "enabled",
-  "enabledRoles",
-  "enabledCompanyIds",
   "leaseTtlSec",
   "maxActiveTasks",
   "sweepIntervalSec",
   "p0Preemption",
+  "pheromone",
 ] as const;
 
 export type SwarmClaimSettingKey = (typeof SWARM_CLAIM_SETTING_KEYS)[number];
@@ -70,25 +69,12 @@ export type SwarmClaimSettingSource = "settings" | "env" | "default";
 /**
  * Stored-settings key inside `instance_settings.general` that holds the whole
  * object — one key, like `runLimits` and `workspaceHygiene`, so a partial
- * hand-edit cannot silently enable the pilot.
+ * hand-edit cannot silently enable the swarm.
  */
 export const SWARM_CLAIM_SETTINGS_KEY = "swarmClaim";
 
-/** Master switch of the pilot. Off unless a value on the list below turns it on. */
+/** Master switch of the swarm. Off unless a value on the list below turns it on. */
 export const DEFAULT_SWARM_CLAIM_ENABLED = false;
-
-/**
- * 1.6.1 (SWARM-SETTINGS-UI): the pilot set. Empty means "no restriction": with
- * `enabled` on, every role of every company claims. A non-empty list narrows
- * the pilot to the listed roles (the pilot on the dev team) — a role not on
- * the list keeps vendor behavior even while the pilot is on elsewhere.
- * An empty string in the env override means "no restriction", the same reading
- * the other list-valued myrmidon settings use.
- */
-export const SWARM_CLAIM_ENABLED_ROLES_ENV = "MYRMIDON_SWARM_CLAIM_ENABLED_ROLES";
-export const SWARM_CLAIM_ENABLED_COMPANY_IDS_ENV = "MYRMIDON_SWARM_CLAIM_ENABLED_COMPANY_IDS";
-export const DEFAULT_SWARM_CLAIM_ENABLED_ROLES: string[] = [];
-export const DEFAULT_SWARM_CLAIM_ENABLED_COMPANY_IDS: string[] = [];
 
 /**
  * 1.6.1 (SWARM-SETTINGS-UI): whether a P0 (critical) task preempts the queue
@@ -279,23 +265,74 @@ const maxActiveTasksSchema = z
   .nullable();
 const sweepIntervalSchema = z.number().int().min(MIN_SWARM_CLAIM_SWEEP_INTERVAL_SEC);
 
-// 1.6.1 (SWARM-SETTINGS-UI): the pilot-set lists. Non-empty arrays of trimmed
-// non-empty strings; an empty array is the honest "no restriction" and is
-// stored as such (not omitted), so the settings screen can tell "the operator
-// chose everyone" from "nothing was ever saved".
-const enabledRolesSchema = z.array(z.string().trim().min(1).max(200)).max(200);
-const enabledCompanyIdsSchema = z.array(z.string().trim().min(1).max(64)).max(200);
+// myrmidon(1.6.5 SWARM-T4): pheromone tuning fields (design §5.1). Numbers
+// integer-tuned, whole numbers ≥ 0; an absent field is the design default
+// (§2.3), stored as an empty object — the panel shows the default in the
+// placeholder.
+/**
+ * myrmidon(1.6.5 SWARM-T4, design §5.1): the pheromone tuning subset of the
+ * swarm settings — priority → strength seeds plus aging/evaporation knobs.
+ * All fields optional; absent = the design default (§2.3).
+ */
+export const PHEROMONE_NUMBER_KEYS = [
+  "critical",
+  "high",
+  "medium",
+  "low",
+  "agingStepHours",
+  "agingStep",
+  "agingCap",
+  "failPenalty",
+  "cooldownBaseMin",
+  "cooldownCapMin",
+] as const;
+
+export type PheromoneNumberKey = (typeof PHEROMONE_NUMBER_KEYS)[number];
+
+export const PHEROMONE_FIELD_DEFAULTS: Record<PheromoneNumberKey, number> = {
+  critical: 100,
+  high: 30,
+  medium: 10,
+  low: 1,
+  agingStepHours: 24,
+  agingStep: 1,
+  agingCap: 5,
+  failPenalty: 10,
+  cooldownBaseMin: 30,
+  cooldownCapMin: 720,
+};
+
+const pheromoneNumberSchema = z
+  .number()
+  .int()
+  .min(0)
+  .max(100000);
+
+export const pheromoneSchema = z
+  .object({
+    critical: pheromoneNumberSchema,
+    high: pheromoneNumberSchema,
+    medium: pheromoneNumberSchema,
+    low: pheromoneNumberSchema,
+    agingStepHours: pheromoneNumberSchema,
+    agingStep: pheromoneNumberSchema,
+    agingCap: pheromoneNumberSchema,
+    failPenalty: pheromoneNumberSchema,
+    cooldownBaseMin: pheromoneNumberSchema,
+    cooldownCapMin: pheromoneNumberSchema,
+  })
+  .partial()
+  .strict();
 
 /** The canonical stored shape of `instance_settings.general.swarmClaim`. */
 export const swarmClaimSettingsSchema = z
   .object({
     enabled: z.boolean(),
-    enabledRoles: enabledRolesSchema.default(DEFAULT_SWARM_CLAIM_ENABLED_ROLES),
-    enabledCompanyIds: enabledCompanyIdsSchema.default(DEFAULT_SWARM_CLAIM_ENABLED_COMPANY_IDS),
     leaseTtlSec: leaseTtlSchema,
     maxActiveTasks: maxActiveTasksSchema,
     sweepIntervalSec: sweepIntervalSchema,
     p0Preemption: z.boolean().default(DEFAULT_SWARM_CLAIM_P0_PREEMPTION),
+    pheromone: pheromoneSchema.default({}),
   })
   .strict();
 
@@ -303,12 +340,11 @@ export const swarmClaimSettingsSchema = z
 export const patchSwarmClaimSettingsSchema = z
   .object({
     enabled: z.boolean().optional(),
-    enabledRoles: enabledRolesSchema.optional(),
-    enabledCompanyIds: enabledCompanyIdsSchema.optional(),
     leaseTtlSec: leaseTtlSchema.optional(),
     maxActiveTasks: maxActiveTasksSchema.optional(),
     sweepIntervalSec: sweepIntervalSchema.optional(),
     p0Preemption: z.boolean().optional(),
+    pheromone: pheromoneSchema.optional(),
   })
   .strict();
 
@@ -320,7 +356,7 @@ export interface ResolvedSwarmClaimSettings {
   sources: Record<SwarmClaimSettingKey, SwarmClaimSettingSource>;
 }
 
-/** The single truth for "is this string an explicit on?". A typo must not enable the pilot. */
+/** The single truth for "is this string an explicit on?". A typo must not enable the swarm. */
 export function parseSwarmClaimEnabled(raw: string | undefined | null): boolean | null {
   const value = raw?.trim().toLowerCase();
   if (!value) return null;
@@ -361,18 +397,8 @@ export function readSwarmClaimSettingsFromEnv(
         : DEFAULT_SWARM_CLAIM_SWEEP_INTERVAL_SEC,
     p0Preemption:
       parseSwarmClaimEnabled(env[SWARM_CLAIM_P0_PREEMPTION_ENV]) ?? DEFAULT_SWARM_CLAIM_P0_PREEMPTION,
-    enabledRoles: readSwarmClaimListEnv(env[SWARM_CLAIM_ENABLED_ROLES_ENV]),
-    enabledCompanyIds: readSwarmClaimListEnv(env[SWARM_CLAIM_ENABLED_COMPANY_IDS_ENV]),
+    pheromone: {},
   };
-}
-
-/** A comma-separated list variable: trimmed entries, empty entries dropped. */
-export function readSwarmClaimListEnv(raw: string | undefined): string[] {
-  if (!raw) return [];
-  return raw
-    .split(",")
-    .map((entry) => entry.trim())
-    .filter((entry) => entry.length > 0);
 }
 
 /** The stored settings value, or null when the row holds nothing usable. */
@@ -385,7 +411,7 @@ export function normalizeSwarmClaimSettings(raw: unknown): SwarmClaimSettings | 
  * Effective settings and where each value came from. `stored` is the raw
  * `general.swarmClaim` value; an unreadable one counts as absent, so the
  * environment (or the default) applies instead — a hand-edited row cannot
- * enable the pilot on its own.
+ * enable the swarm on its own.
  *
  * 1.6.1 (SWARM-SETTINGS-UI): precedence is per key — the environment variable
  * wins over the stored value only for the keys whose variable is actually set
@@ -416,14 +442,7 @@ export function resolveSwarmClaimSettings(options: {
         }),
         p0Preemption:
           parseSwarmClaimEnabled(env[SWARM_CLAIM_P0_PREEMPTION_ENV]) ?? stored.p0Preemption,
-        enabledRoles:
-          env[SWARM_CLAIM_ENABLED_ROLES_ENV] !== undefined
-            ? envSettings.enabledRoles
-            : stored.enabledRoles,
-        enabledCompanyIds:
-          env[SWARM_CLAIM_ENABLED_COMPANY_IDS_ENV] !== undefined
-            ? envSettings.enabledCompanyIds
-            : stored.enabledCompanyIds,
+        pheromone: stored.pheromone ?? {},
       }
     : envSettings;
 
@@ -433,16 +452,6 @@ export function resolveSwarmClaimSettings(options: {
   const sources = {} as Record<SwarmClaimSettingKey, SwarmClaimSettingSource>;
   const hasOverride = (name: string) => env[name] !== undefined && env[name]!.trim() !== "";
   sources.enabled = hasOverride(SWARM_CLAIM_ENV_KEYS.enabled)
-    ? "env"
-    : stored
-      ? "settings"
-      : "default";
-  sources.enabledRoles = hasOverride(SWARM_CLAIM_ENABLED_ROLES_ENV)
-    ? "env"
-    : stored
-      ? "settings"
-      : "default";
-  sources.enabledCompanyIds = hasOverride(SWARM_CLAIM_ENABLED_COMPANY_IDS_ENV)
     ? "env"
     : stored
       ? "settings"
@@ -467,6 +476,11 @@ export function resolveSwarmClaimSettings(options: {
     : stored
       ? "settings"
       : "default";
+  // myrmidon(1.6.5 SWARM-T4, design §5.1): the pheromone subset is
+  // settings-only (no env override) — the stored row or the design default.
+  sources.pheromone = stored?.pheromone && Object.keys(stored.pheromone).length > 0
+    ? "settings"
+    : "default";
   return { settings, sources };
 }
 
@@ -504,30 +518,16 @@ function envMaxActiveOr(raw: string | undefined, stored: number | null): number 
 }
 
 /**
- * 1.6.1 (SWARM-SETTINGS-UI): is the claim path enabled for one company + role?
- * The pilot gate the server actually enforces: the master switch, the company
- * list (empty = every company) and the role list (empty = every role) must all
- * pass. Exported so the settings screen, the claim service and the supervisor
- * view agree on who is in the pilot.
+ * 1.6.5 (SWARM-T4, design §5.1): the claim gate the server enforces. The
+ * role/company restriction lists are gone — one switch, the whole board or nothing.
+ * Kept as a named function so the settings screen, the claim service and the
+ * supervisor view keep calling one gate.
  */
 export function isSwarmClaimEnabledFor(
-  settings: Pick<
-    SwarmClaimSettings,
-    "enabled" | "enabledCompanyIds" | "enabledRoles"
-  >,
-  input: { companyId: string; role: string },
+  settings: Pick<SwarmClaimSettings, "enabled">,
+  _input: { companyId: string; role: string },
 ): boolean {
-  if (!settings.enabled) return false;
-  if (
-    settings.enabledCompanyIds.length > 0 &&
-    !settings.enabledCompanyIds.includes(input.companyId)
-  ) {
-    return false;
-  }
-  if (settings.enabledRoles.length > 0 && !settings.enabledRoles.includes(input.role)) {
-    return false;
-  }
-  return true;
+  return settings.enabled;
 }
 
 /** A patch over the effective values, the shape that gets stored. */
@@ -537,15 +537,16 @@ export function mergeSwarmClaimSettings(
 ): SwarmClaimSettings {
   return {
     enabled: patch.enabled === undefined ? base.enabled : patch.enabled,
-    enabledRoles: patch.enabledRoles === undefined ? base.enabledRoles : patch.enabledRoles,
-    enabledCompanyIds:
-      patch.enabledCompanyIds === undefined ? base.enabledCompanyIds : patch.enabledCompanyIds,
     leaseTtlSec: patch.leaseTtlSec === undefined ? base.leaseTtlSec : patch.leaseTtlSec,
     maxActiveTasks:
       patch.maxActiveTasks === undefined ? base.maxActiveTasks : patch.maxActiveTasks,
     sweepIntervalSec:
       patch.sweepIntervalSec === undefined ? base.sweepIntervalSec : patch.sweepIntervalSec,
     p0Preemption: patch.p0Preemption === undefined ? base.p0Preemption : patch.p0Preemption,
+    // myrmidon(1.6.5 SWARM-T4, design §5.1): a pheromone patch replaces the
+    // subset wholesale (absent keys fall back to the design default, not to
+    // the previous stored value — the panel always submits the full subset).
+    pheromone: patch.pheromone === undefined ? base.pheromone : patch.pheromone,
   };
 }
 
