@@ -39,6 +39,8 @@ const support = await getEmbeddedPostgresTestSupport();
   let companyId: string;
   let agentId: string;
   let gatewayAgentId: string;
+  let glmAgentId: string;
+  let otherGatewayAgentId: string;
   let sentinelAgentId: string;
 
   beforeAll(async () => {
@@ -51,6 +53,8 @@ const support = await getEmbeddedPostgresTestSupport();
     companyId = randomUUID();
     agentId = randomUUID();
     gatewayAgentId = randomUUID();
+    glmAgentId = randomUUID();
+    otherGatewayAgentId = randomUUID();
     sentinelAgentId = randomUUID();
 
     await db
@@ -85,6 +89,28 @@ const support = await getEmbeddedPostgresTestSupport();
       role: "engineer",
       status: "idle",
       adapterType: "hermes_gateway",
+      adapterConfig: {},
+    });
+    // myrmidon(F06-A): a gateway agent whose model is a GLM one — its effort
+    // list is the narrow one effort-policy.ts declares (low/high/max).
+    await db.insert(agents).values({
+      id: glmAgentId,
+      companyId,
+      name: "Agent D (gateway, glm)",
+      role: "engineer",
+      status: "idle",
+      adapterType: "hermes_gateway",
+      adapterConfig: { model: "glm-4.6" },
+    });
+    // An agent on an adapter that neither allowlist covers (the sibling
+    // gateway adapter) — the /model and /think refusal path.
+    await db.insert(agents).values({
+      id: otherGatewayAgentId,
+      companyId,
+      name: "Agent E (openclaw gateway)",
+      role: "engineer",
+      status: "idle",
+      adapterType: "openclaw_gateway",
       adapterConfig: {},
     });
     // A card whose own model/fallbacks are the adapter's "let it decide"
@@ -366,16 +392,235 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(await readOverrides(issue.id)).toBeNull();
   });
 
-  it("7. /model is not available for hermes_gateway (until G4 lands)", async () => {
+  it("7. /model lists the gateway catalog for hermes_gateway, grouped by provider family", async () => {
+    const { issue, boardUserId } = await createTelegramConversation({ agentId: gatewayAgentId });
+    const applied: string[] = [];
+    const result = await runBridgedDirectMessageCommand(
+      baseInput({
+        conversationIssueId: issue.id,
+        boardUserId,
+        agentId: gatewayAgentId,
+        text: "/model",
+        readGatewayModelCatalog: async () => ({
+          models: ["zai-glm-4.6", "dashscope-qwen3-max", "nous-hermes-4"],
+          providers: {
+            "zai-glm-4.6": "zai",
+            "dashscope-qwen3-max": "dashscope",
+            "nous-hermes-4": "nous",
+          },
+          scope: "agentKey",
+        }),
+        botContainerApply: {
+          apply: async (agent) => {
+            applied.push(agent.agentId);
+            return { kind: "applied_files" };
+          },
+        },
+      }),
+    );
+    const text = (result as { kind: "reply"; text: string }).text;
+    // Grouped by provider family, numbered continuously, ordered by family.
+    expect(text).toContain("dashscope-*");
+    expect(text).toContain("nous-*");
+    expect(text).toContain("zai-*");
+    expect(text).toMatch(/1\)\s*dashscope-qwen3-max/);
+    expect(text).toMatch(/2\)\s*nous-hermes-4/);
+    expect(text).toMatch(/3\)\s*zai-glm-4\.6/);
+    // An agent's own key list was read, so nothing says it is the whole catalog.
+    expect(text).not.toContain("whole gateway catalog");
+    // Listing writes nothing, so nothing was applied either.
+    expect(applied).toEqual([]);
+    expect(await readOverrides(issue.id)).toBeNull();
+  });
+
+  it("7b. /model <catalog model> writes the override and applies the agent profile without a restart", async () => {
+    const { issue, boardUserId } = await createTelegramConversation({ agentId: gatewayAgentId });
+    const applied: Array<{ agentId: string; adapterType: string }> = [];
+    const result = await runBridgedDirectMessageCommand(
+      baseInput({
+        conversationIssueId: issue.id,
+        boardUserId,
+        agentId: gatewayAgentId,
+        text: "/model nous-hermes-4",
+        readGatewayModelCatalog: async () => ({
+          models: ["nous-hermes-4"],
+          providers: { "nous-hermes-4": "nous" },
+          scope: "agentKey",
+        }),
+        botContainerApply: {
+          apply: async (agent) => {
+            applied.push({ agentId: agent.agentId, adapterType: agent.adapterType });
+            return { kind: "applied_files" };
+          },
+        },
+      }),
+    );
+    const text = (result as { kind: "reply"; text: string }).text;
+    expect(text).toContain("Model for this chat: nous-hermes-4.");
+    expect(text).toContain(
+      "The agent profile is applied without a restart; the change takes effect from the next reply.",
+    );
+    expect(await readOverrides(issue.id)).toEqual({ adapterConfig: { model: "nous-hermes-4" } });
+    expect(applied).toEqual([{ agentId: gatewayAgentId, adapterType: "hermes_gateway" }]);
+  });
+
+  it("7c. /model says so when only the whole gateway catalog could be read", async () => {
     const { issue, boardUserId } = await createTelegramConversation({ agentId: gatewayAgentId });
     const result = await runBridgedDirectMessageCommand(
-      baseInput({ conversationIssueId: issue.id, boardUserId, agentId: gatewayAgentId, text: "/model" }),
+      baseInput({
+        conversationIssueId: issue.id,
+        boardUserId,
+        agentId: gatewayAgentId,
+        text: "/model",
+        // No per-model providers and one id outside the known families: the
+        // grouping falls back to the ids' own prefixes.
+        readGatewayModelCatalog: async () => ({
+          models: ["dashscope-qwen3-max", "model-x"],
+          scope: "catalog",
+        }),
+      }),
     );
-    expect(result).toEqual({
-      kind: "reply",
-      command: "model",
-      text: "Changing the model is unavailable for this agent.",
+    const text = (result as { kind: "reply"; text: string }).text;
+    expect(text).toContain("whole gateway catalog");
+    expect(text).toMatch(/dashscope-\*/);
+    expect(text).toMatch(/dashscope-qwen3-max/);
+    expect(text).toMatch(/model-x/);
+  });
+
+  it("7d. a failed profile apply rolls the override back to its previous value", async () => {
+    const { issue, boardUserId } = await createTelegramConversation({
+      agentId: gatewayAgentId,
+      assigneeAdapterOverrides: { adapterConfig: { model: "model-a" } },
     });
+    const result = await runBridgedDirectMessageCommand(
+      baseInput({
+        conversationIssueId: issue.id,
+        boardUserId,
+        agentId: gatewayAgentId,
+        text: "/model nous-hermes-4",
+        readGatewayModelCatalog: async () => ({ models: ["nous-hermes-4"], scope: "agentKey" }),
+        botContainerApply: { apply: async () => ({ kind: "error", message: "profile write failed" }) },
+      }),
+    );
+    const text = (result as { kind: "reply"; text: string }).text;
+    expect(text).toContain("could not be applied: profile write failed");
+    expect(text).toContain("The previous value was restored.");
+    expect(await readOverrides(issue.id)).toEqual({ adapterConfig: { model: "model-a" } });
+  });
+
+  it("7e. an apply with no runtime reports it and keeps the written override", async () => {
+    const { issue, boardUserId } = await createTelegramConversation({ agentId: gatewayAgentId });
+    const result = await runBridgedDirectMessageCommand(
+      baseInput({
+        conversationIssueId: issue.id,
+        boardUserId,
+        agentId: gatewayAgentId,
+        text: "/model nous-hermes-4",
+        readGatewayModelCatalog: async () => ({ models: ["nous-hermes-4"], scope: "agentKey" }),
+        // apply → null models "there is no runtime to apply to" (the
+        // bot-containers wiring is off in this process, the production
+        // default path too): not an error, and the value must stay.
+        botContainerApply: { apply: async () => null },
+      }),
+    );
+    const text = (result as { kind: "reply"; text: string }).text;
+    expect(text).toContain("is not running the new profile yet");
+    expect(text).not.toContain("could not be applied");
+    expect(await readOverrides(issue.id)).toEqual({ adapterConfig: { model: "nous-hermes-4" } });
+  });
+
+  it("8b. /think refuses an effort the chat's glm model does not accept, and accepts the allowed ones", async () => {
+    const { issue, boardUserId } = await createTelegramConversation({ agentId: glmAgentId });
+    const applied: string[] = [];
+    const applyDeps = {
+      apply: async (agent: { agentId: string }) => {
+        applied.push(agent.agentId);
+        return { kind: "applied_files" as const };
+      },
+    };
+
+    // zai's glm models take low/high/max only (effort-policy.ts): "medium" is
+    // a known level, but not one this model accepts — refused, nothing written.
+    const refused = await runBridgedDirectMessageCommand(
+      baseInput({
+        conversationIssueId: issue.id,
+        boardUserId,
+        agentId: glmAgentId,
+        text: "/think medium",
+        botContainerApply: applyDeps,
+      }),
+    );
+    const refusedText = (refused as { kind: "reply"; text: string }).text;
+    expect(refusedText).toContain("“medium” is not accepted by model glm-4.6");
+    expect(refusedText).toContain("allowed: low, high, max");
+    expect(await readOverrides(issue.id)).toBeNull();
+    expect(applied).toEqual([]);
+
+    const accepted = await runBridgedDirectMessageCommand(
+      baseInput({
+        conversationIssueId: issue.id,
+        boardUserId,
+        agentId: glmAgentId,
+        text: "/think high",
+        botContainerApply: applyDeps,
+      }),
+    );
+    expect((accepted as { kind: "reply"; text: string }).text).toContain("Reasoning for this chat: high.");
+    expect(await readOverrides(issue.id)).toEqual({ adapterConfig: { effort: "high" } });
+    expect(applied).toEqual([glmAgentId]);
+
+    // A non-glm model keeps the full level list: "medium" is fine there.
+    const plain = await createTelegramConversation();
+    const plainResult = await runBridgedDirectMessageCommand(
+      baseInput({ conversationIssueId: plain.issue.id, boardUserId: plain.boardUserId, text: "/think medium" }),
+    );
+    expect((plainResult as { kind: "reply"; text: string }).text).toContain("Reasoning for this chat: medium.");
+  });
+
+  it("7f. without an injected apply the production default finds no runtime and reports it", async () => {
+    const { issue, boardUserId } = await createTelegramConversation({ agentId: gatewayAgentId });
+    const result = await runBridgedDirectMessageCommand(
+      baseInput({
+        conversationIssueId: issue.id,
+        boardUserId,
+        agentId: gatewayAgentId,
+        text: "/model nous-hermes-4",
+        readGatewayModelCatalog: async () => ({ models: ["nous-hermes-4"], scope: "agentKey" }),
+      }),
+    );
+    const text = (result as { kind: "reply"; text: string }).text;
+    expect(text).toContain("is not running the new profile yet");
+    expect(await readOverrides(issue.id)).toEqual({ adapterConfig: { model: "nous-hermes-4" } });
+  });
+
+  it("7g. an unsupported adapter's refusal names the adapter and the reason, in the chat's locale", async () => {
+    const enConv = await createTelegramConversation({ agentId: otherGatewayAgentId });
+    const en = await runBridgedDirectMessageCommand(
+      baseInput({
+        conversationIssueId: enConv.issue.id,
+        boardUserId: enConv.boardUserId,
+        agentId: otherGatewayAgentId,
+        text: "/model",
+      }),
+    );
+    expect((en as { kind: "reply"; text: string }).text).toBe(
+      "Changing the model is unavailable for adapter openclaw_gateway: this adapter does not support changing it from the chat",
+    );
+
+    const ruUser = randomUUID();
+    await db.insert(userUiLanguage).values({ userId: ruUser, language: "ru" });
+    const ruConv = await createTelegramConversation({ agentId: otherGatewayAgentId, boardUserId: ruUser });
+    const ru = await runBridgedDirectMessageCommand(
+      baseInput({
+        conversationIssueId: ruConv.issue.id,
+        boardUserId: ruUser,
+        agentId: otherGatewayAgentId,
+        text: "/think",
+      }),
+    );
+    expect((ru as { kind: "reply"; text: string }).text).toBe(
+      "Смена глубины рассуждений недоступна для адаптера openclaw_gateway: этот адаптер не поддерживает смену из чата",
+    );
   });
 
   it("8. /think sets a known effort level and rejects an unknown one", async () => {

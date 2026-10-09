@@ -207,6 +207,40 @@
         "path": "gateway/platforms/api_server_runs.py",
         "upstreamMarker": "stranded|supersed|replace_unanswered"
       }
+    },
+    {
+      "id": "13-redact-pcp-patterns",
+      "kind": "patch",
+      "patch": "docker/bot-runtime/patches/13-redact-pcp-patterns.patch",
+      "files": [
+        "agent/redact.py"
+      ],
+      "reason": "A live board key (pcp_ + family + opaque body) reached the delegation live transcript verbatim: every existing matcher in agent/redact.py needs a KEY=, header or JSON-field shape, and transcript prose (subagent result text, CLI echo, error message) carries none of them. Six bare-token prefix patterns — pcp_, pcp_board_, pcp_cli_auth_, pcp_invite_, pcp_bootstrap_, pcp_claim_ — join _PREFIX_PATTERNS so the generic pass masks the key wherever it appears. Bodies are controlled per family: invite tokens are base64url(32 bytes), so the invite pattern takes [A-Za-z0-9_-]{20,} (an alphanumeric-only body silently fails to match whenever a separator lands in the first 20 chars, because the compiled matcher's trailing lookahead forbids ending the run before a '-'/'_'); the other five keep [A-Za-z0-9]{20,} so the short form cannot swallow legitimate pcp_board_-style config slugs. One pattern per family: the engine validator rejects top-level alternation, and one merged grouped alternative would force a single body class on all families; a grouped pcp_(?:board|cli_auth|...)_ prefix would also drop the extracted literal prefix to 'pcp_' only — per-family patterns keep full literal prefixes for the pre-screen.",
+      "dropCondition": "Upstream ships a bare-token prefix family covering the pcp_ key prefixes in agent/redact.py.",
+      "offer": null,
+      "offerNote": "Not offered yet: see the note on delta 02 (publisher-scan wrapper pending). The pattern family is board-specific anyway; the general defect upstream owns is that no bare-token pass exists for vendor prefixes outside its list.",
+      "probe": {
+        "source": "hermes",
+        "path": "agent/redact.py",
+        "upstreamMarker": "pcp_board_|pcp_cli_auth_|pcp_invite_|pcp_bootstrap_|pcp_claim_"
+      }
+    },
+    {
+      "id": "14-delegation-live-log-mode-0600",
+      "kind": "patch",
+      "patch": "docker/bot-runtime/patches/14-delegation-live-log-mode-0600.patch",
+      "files": [
+        "tools/delegation_live_log.py"
+      ],
+      "reason": "LiveTranscriptWriter created task-N.log with path.write_text(), i.e. 0o644 & ~umask — world-readable under the image's umask 022. The transcripts live in a shared bot container under HERMES_HOME/delegation/live/ and survive 7 days, so any co-tenant process could read them; combined with the missing pcp_ redaction (delta 13) a live board key was readable container-wide. The header write now goes through tempfile.mkstemp(dir=...) + os.replace, which creates the file 0o600 without a mode argument, so there is no chmod race and no world-readable window; later event() appends touch an existing 0o600 file.",
+      "dropCondition": "Upstream creates delegation live transcripts owner-only (0o600).",
+      "offer": null,
+      "offerNote": "Not offered yet: see the note on delta 02 (publisher-scan wrapper pending). This one is a generic security fix worth offering on its own once the publish path exists.",
+      "probe": {
+        "source": "hermes",
+        "path": "tools/delegation_live_log.py",
+        "upstreamMarker": "mkstemp|0o600"
+      }
     }
   ]
 }

@@ -71,10 +71,21 @@ case "$1" in
       [ -e "$SANDBOX/restore-fails" ] && exit 1 ;;
     esac
     case "$*" in *SHOW*server_version*)
+      if [ -e "$SANDBOX/version-probe-fails" ]; then
+        echo 'psql: error: connection to server failed: FATAL: the database system is starting up' >&2
+        exit 2
+      fi
       if [ -f "$SANDBOX/copy-version.txt" ]; then cat "$SANDBOX/copy-version.txt"; fi
       exit 0 ;;
     esac
     case "$*" in *pg_available_extensions*)
+      # myrmidon(PREDEPLOY-PG-COMPAT): models the production failure mode —
+      # the copy answers the version probe but the extension probe aborts
+      # (auth/role/timing). The caller must retry and name this error.
+      if [ -e "$SANDBOX/available-fails" ]; then
+        echo 'psql: error: connection to server: FATAL: role "myrmidon" does not exist' >&2
+        exit 2
+      fi
       if [ -f "$SANDBOX/copy-available.txt" ]; then cat "$SANDBOX/copy-available.txt"; fi
       exit 0 ;;
     esac
@@ -642,5 +653,99 @@ describe("predeploy-board-check.sh (PREDEPLOY-PG-COMPAT: the copy matches the du
     const { code, out } = full(sb);
     assert.notEqual(code, 0);
     assert.match(out, /must be 'check' or 'off'/);
+  });
+
+  // myrmidon(PREDEPLOY-PG-COMPAT, OPE-6306): the rc.11/rc.12 deploys (08.10)
+  // showed the real headers carry the package tail — a Debian/PGDG server
+  // writes `; Dumped from database version: 18 (Debian 18.6-1.pgdg12+2)` into
+  // the dump and answers `18.6 (Debian 18.6-1.pgdg12+2)` to SHOW
+  // server_version. The old unanchored sed kept the WHOLE tail in dump_major
+  // and `((copy_major < dump_major))` died with
+  // `((: 18 (Debian 18.6-1.pgdg12+2): syntax error in expression`, so the
+  // comparison was silently skipped. These tests pin the robust parse.
+
+  it("parses a Debian-packaged dump header tail and refuses a younger copy (no syntax error)", () => {
+    const sb = sandbox();
+    // server line 18 (Debian tail), client line 16.14: the server line wins
+    // and only its leading digits may reach the comparison
+    withToc(sb, [
+      ";",
+      "; Archive created at Wed Oct 07 00:00:00 2026",
+      ";     dbname: myrmidon",
+      ";     Dumped from database version: 18 (Debian 18.6-1.pgdg12+2)",
+      ";     Dumped by pg_dump version: 16.14",
+      ";",
+      "; Selected TOC Entries:",
+      ";",
+      "170; 3079 20000 EXTENSION - vector -",
+      "",
+    ].join("\n"));
+    answer(sb, "copy-version.txt", "17.2 (Ubuntu 17.2-1.pgdg22.04+1)\n");
+    answer(sb, "copy-available.txt", "plpgsql\nvector\n");
+    const { code, out } = full(sb);
+    assert.notEqual(code, 0, out);
+    assert.match(out, /written by pg_dump 18, the copy runs 17/);
+    assert.match(out, /nothing was restored/);
+    assert.doesNotMatch(out, /syntax error in expression/);
+    assert.doesNotMatch(out, /could not be read/);
+    assert.doesNotMatch(calls(sb), /pg_restore -U/);
+  });
+
+  it("a Debian-tailed dump header and a Debian-tailed copy answer of the same major pass the comparison", () => {
+    const sb = sandbox();
+    withToc(sb, toc("18 (Debian 18.6-1.pgdg12+2)", "vector"));
+    answer(sb, "copy-version.txt", "18.6 (Debian 18.6-1.pgdg12+2)\n");
+    answer(sb, "copy-available.txt", "plpgsql\nvector\n");
+    answer(sb, "copy-installed.txt", "vector\n");
+    const { code, out } = full(sb, "--dockergate-digest", DG);
+    assert.equal(code, 0, out);
+    assert.match(out, /the copy is Postgres 18, the same major the production dump came from/);
+    assert.doesNotMatch(out, /syntax error in expression/);
+  });
+
+  it("reads the copy's extension list and dies when the dump's extension is missing from it", () => {
+    const sb = sandbox();
+    withToc(sb, toc("18 (Debian 18.6-1.pgdg12+2)", "vector", "fuzzystrmatch"));
+    answer(sb, "copy-version.txt", "18.6 (Debian 18.6-1.pgdg12+2)\n");
+    answer(sb, "copy-available.txt", "plpgsql\nfuzzystrmatch\n");
+    const { code, out } = full(sb);
+    assert.notEqual(code, 0, out);
+    // the list was really read: the refusal names exactly the missing one
+    assert.match(out, /does not provide them/);
+    assert.match(out, /\bvector\b/);
+    assert.doesNotMatch(out, /could not be read/);
+    assert.doesNotMatch(out, /syntax error in expression/);
+    assert.doesNotMatch(calls(sb), /pg_restore -U/);
+  });
+
+  it("retries a failing extension probe and names the captured psql error in the WARNING", () => {
+    const sb = sandbox();
+    withToc(sb, toc("18 (Debian 18.6-1.pgdg12+2)", "vector"));
+    answer(sb, "copy-version.txt", "18.6 (Debian 18.6-1.pgdg12+2)\n");
+    fs.writeFileSync(path.join(sb.dir, "available-fails"), "");
+    answer(sb, "copy-installed.txt", "vector\n");
+    const { code, out } = full(sb, "--dockergate-digest", DG);
+    assert.equal(code, 0, out);
+    // the probe is retried, not swallowed once; when it still fails the
+    // WARNING carries the psql error instead of /dev/null silence
+    const probeCalls = calls(sb).split("\n").filter((l) => l.includes("pg_available_extensions")).length;
+    assert.ok(probeCalls >= 3, `expected >=3 retries of the extension probe, got ${probeCalls}:\n${calls(sb)}`);
+    assert.match(out, /the copy's extension list could not be read \(psql probe failed: .*role "myrmidon" does not exist/);
+    assert.doesNotMatch(out, /syntax error in expression/);
+  });
+
+  it("names the version probe error in the WARNING when the copy's major cannot be read", () => {
+    const sb = sandbox();
+    withToc(sb, toc("18.0", "vector"));
+    fs.writeFileSync(path.join(sb.dir, "version-probe-fails"), "");
+    answer(sb, "copy-available.txt", "plpgsql\nvector\n");
+    answer(sb, "copy-installed.txt", "vector\n");
+    const { code, out } = full(sb, "--dockergate-digest", DG);
+    assert.equal(code, 0, out);
+    // the version comparison is skipped (nothing to compare) but the WARNING
+    // says WHY: the captured psql error, not silence
+    assert.match(out, /the dump's or the copy's server major could not be read.*copy probe error: .*the database system is starting up/);
+    assert.match(out, /the copy provides every extension the dump restores/);
+    assert.doesNotMatch(out, /syntax error in expression/);
   });
 });
