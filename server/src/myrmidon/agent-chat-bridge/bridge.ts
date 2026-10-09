@@ -49,7 +49,13 @@ import {
 import { telegramDmConversationsEnabled } from "./settings.js";
 // myrmidon(1.7-TG-LOCALE): bridge-owned prose (migration notice, unlinked
 // refusal) renders from the locale catalogs in the linked user's language.
-import { resolveBridgeLocale, forcedBridgeLocale, DEFAULT_BRIDGE_LOCALE, t } from "./locales/index.js";
+import {
+  resolveBridgeLocale,
+  forcedBridgeLocale,
+  instanceBridgeLocale,
+  DEFAULT_BRIDGE_LOCALE,
+  t,
+} from "./locales/index.js";
 // myrmidon(X9b): @<alias> addressing — alias resolution plus the reply prefix
 // and the first-contact context quote for an addressed agent's turn.
 import { resolveBridgeAddressee, type TelegramAddressee } from "./addressing.js";
@@ -631,9 +637,13 @@ export async function refuseUnlinkedTelegramDm(
 ): Promise<void> {
   const day = new Date().toISOString().slice(0, 10);
   // myrmidon(1.7-TG-LOCALE): an unlinked account has no board user, so the
-  // refusal follows the instance decision only: the env force, else the
-  // English default.
-  const locale = forcedBridgeLocale(input.env ?? process.env) ?? DEFAULT_BRIDGE_LOCALE;
+  // refusal has no personal step; myrmidon(1.6.5-TG-LOCALE-C) adds the instance
+  // language between the env force and the English default, so the refusal
+  // speaks the default language of the company that runs the bot.
+  const locale =
+    forcedBridgeLocale(input.env ?? process.env) ??
+    (await instanceBridgeLocale(db)) ??
+    DEFAULT_BRIDGE_LOCALE;
   try {
     const effect = await deps.stageProviderEffect(db, {
       endpoint: input.endpoint,

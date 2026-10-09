@@ -12,6 +12,10 @@ import type { Ui2Language } from "@paperclipai/shared";
 import { errorHandler } from "../../middleware/index.js";
 import { ui2LanguageRoutes } from "./routes.js";
 import { UI2_LANGUAGE_ACTION, type Ui2LanguageServiceDeps } from "./service.js";
+// myrmidon(1.6.5-TG-LOCALE-C): the fake bridge decision mirrors the real one
+// (env force → the person's preference → the instance setting → English) using
+// the real catalog helper for the environment variable.
+import { forcedBridgeLocale } from "../agent-chat-bridge/locales/index.js";
 
 const COMPANY_ID = "22222222-2222-4222-8222-222222222222";
 const COMPANY_ID_B = "33333333-3333-4333-8333-333333333333";
@@ -41,6 +45,8 @@ const agentActor = {
 interface HarnessOptions {
   stored?: Ui2Language | null;
   companyIds?: string[];
+  /** myrmidon(1.6.5-TG-LOCALE-C): the stored instance-wide bridge language. */
+  instanceLanguage?: Ui2Language | null;
 }
 
 function harness(options: HarnessOptions = {}) {
@@ -58,6 +64,21 @@ function harness(options: HarnessOptions = {}) {
     listCompanyIdsForUser: async () => options.companyIds ?? [COMPANY_ID, COMPANY_ID_B],
     logActivity: async (entry) => {
       audits.push(entry as unknown as Record<string, unknown>);
+    },
+    // env force → the person's preference → the instance setting → English.
+    resolveBridgeLanguage: async () => {
+      const instanceLanguage = options.instanceLanguage ?? null;
+      const forced = forcedBridgeLocale(process.env);
+      if (forced) {
+        return { language: forced, source: "environment", forcedLanguage: forced, instanceLanguage };
+      }
+      if (current.language) {
+        return { language: current.language, source: "user", forcedLanguage: null, instanceLanguage };
+      }
+      if (instanceLanguage) {
+        return { language: instanceLanguage, source: "instance", forcedLanguage: null, instanceLanguage };
+      }
+      return { language: "en", source: "default", forcedLanguage: null, instanceLanguage: null };
     },
   };
 
@@ -82,11 +103,13 @@ describe("myrmidon(UI2-I18N) ui2 language: reading the preference", () => {
     const { app } = harness();
     const res = await request(app).get(URL).expect(200);
     // myrmidon(1.7-TG-LOCALE): the read also carries the SOURCE the Settings
-    // screen shows; with no instance force in play the bridge follows the user.
+    // screen shows.
+    // myrmidon(1.6.5-TG-LOCALE-C): with no user preference and no instance
+    // setting the English fallback decides, and the report says so.
     expect(res.body).toEqual({
       language: "en",
       updatedAt: null,
-      telegramBridge: { source: "user" },
+      telegramBridge: { source: "default", language: "en" },
     });
   });
 
@@ -98,6 +121,7 @@ describe("myrmidon(UI2-I18N) ui2 language: reading the preference", () => {
       const res = await request(app).get(URL).expect(200);
       expect(res.body.telegramBridge).toEqual({
         source: "environment",
+        language: "ru",
         forcedLanguage: "ru",
       });
       // The person's own UI choice is still theirs: the force does not rewrite
@@ -113,6 +137,31 @@ describe("myrmidon(UI2-I18N) ui2 language: reading the preference", () => {
     const { app } = harness({ stored: "ru" });
     const res = await request(app).get(URL).expect(200);
     expect(res.body.language).toBe("ru");
+    expect(res.body.telegramBridge).toEqual({ source: "user", language: "ru" });
+  });
+
+  it("reports the instance setting for a user who never chose a language", async () => {
+    // myrmidon(1.6.5-TG-LOCALE-C): the fallback for a board user with no
+    // preference — the screen must name it as the source.
+    const { app } = harness({ instanceLanguage: "ru" });
+    const res = await request(app).get(URL).expect(200);
+    expect(res.body.telegramBridge).toEqual({
+      source: "instance",
+      language: "ru",
+      instanceLanguage: "ru",
+    });
+    // The person's own stored value is untouched by the instance fallback.
+    expect(res.body.language).toBe("en");
+  });
+
+  it("prefers the person's own preference over the instance setting", async () => {
+    const { app } = harness({ stored: "en", instanceLanguage: "ru" });
+    const res = await request(app).get(URL).expect(200);
+    expect(res.body.telegramBridge).toEqual({
+      source: "user",
+      language: "en",
+      instanceLanguage: "ru",
+    });
   });
 });
 
