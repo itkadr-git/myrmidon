@@ -157,10 +157,25 @@ describe("myrmidon(1.6.3-FORAGING-IDLE-GATE) the idle-gate toggle through update
   // the general settings PATCH go through the same `updateGeneral`, so this is
   // the one contract that keeps every other settings key safe.
   it("PATCH of one setting keeps every neighbouring key stored in the row", async () => {
+    // The neighbour values must be schema-valid: a stored row whose keys fail
+    // the storage schema (`runStall` is `.strict()` with required fields, for
+    // example) makes `normalizeGeneralSettings` fall back to defaults, which is
+    // the failure class this test guards against being hidden by a fake shape.
     const neighbour = {
       censorUsernameInLogs: true,
-      runStall: { warnAfterMinutes: 7 },
-      foraging: { enabled: false, dailySpendLimitUsd: 5 },
+      runStall: { enabled: false, thresholdSec: 900, checkIntervalSec: 60, pageSize: 50 },
+      foraging: {
+        enabled: false,
+        intervalSec: 300,
+        minHostIntervalSec: 60,
+        passBudgetCents: 100,
+        dailyBudgetCents: 1000,
+        monthlyBudgetCents: 5000,
+        roleBudgetCents: 500,
+        agentBudgetCents: 200,
+        enforcement: "hard" as const,
+        autoOffCostPerTaskCents: null,
+      },
       pauseGuard: { enabled: true },
       datastoreCare: { contextRetentionDays: 14 },
     };
@@ -179,10 +194,24 @@ describe("myrmidon(1.6.3-FORAGING-IDLE-GATE) the idle-gate toggle through update
   });
 
   it("an idle-gate toggle write keeps every neighbouring key stored in the row", async () => {
+    // Schema-valid neighbour shapes, as in the PATCH test above: the storage
+    // schema is strict per key, and an invalid stored shape would make
+    // `normalizeGeneralSettings` fall back to defaults before the row is read.
     const neighbour = {
       censorUsernameInLogs: true,
-      runStall: { warnAfterMinutes: 7 },
-      foraging: { enabled: false, dailySpendLimitUsd: 5 },
+      runStall: { enabled: false, thresholdSec: 900, checkIntervalSec: 60, pageSize: 50 },
+      foraging: {
+        enabled: false,
+        intervalSec: 300,
+        minHostIntervalSec: 60,
+        passBudgetCents: 100,
+        dailyBudgetCents: 1000,
+        monthlyBudgetCents: 5000,
+        roleBudgetCents: 500,
+        agentBudgetCents: 200,
+        enforcement: "hard" as const,
+        autoOffCostPerTaskCents: null,
+      },
       datastoreCare: { contextRetentionDays: 14 },
     };
     const { db, persistedSets } = await stubSeededDb(
