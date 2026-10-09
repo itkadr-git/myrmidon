@@ -65,7 +65,7 @@ async function tickCompany(db: Db, companyId: string, ports: ScentQueuePorts): P
   const settingsSvc = instanceSettingsService(db);
   const general = await settingsSvc.getGeneral();
   const settings = readScentSettings(
-    (general as Record<string, unknown> | null)?.swarm,
+    (general as unknown as Record<string, unknown> | null)?.swarm,
     process.env,
   );
   if (!settings.enabled) return;
@@ -107,7 +107,7 @@ async function tickCompany(db: Db, companyId: string, ports: ScentQueuePorts): P
         entityType: entry.entityType,
         entityId: entry.entityId,
         details: entry.details ?? {},
-      }),
+      }).then(() => undefined),
   });
 
   const slice = await service.listMarkupQueue(settings.classifierBatchSize);

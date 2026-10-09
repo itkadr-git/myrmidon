@@ -17,8 +17,7 @@
 // `scent_tags`.
 
 import { and, eq, isNull, sql } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
-import { agents, issues } from "@paperclipai/db/schema";
+import { agents, issues, type Db } from "@paperclipai/db";
 import {
   readScentSettings,
   type IssueScent,
@@ -120,6 +119,7 @@ export interface ClassifyIssueResult {
 }
 
 export function createScentService(deps: ScentServiceDeps) {
+  const db = deps.db;
   async function loadIssue(issueId: string): Promise<IssueRow | null> {
     const rows = await db
       .select({ id: issues.id, title: issues.title, description: issues.description })

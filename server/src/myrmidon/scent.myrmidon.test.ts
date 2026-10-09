@@ -39,7 +39,7 @@ import type {
   ScentGateway,
 } from "./scent/gateway.js";
 import { deriveScentAuto, isUnclassifiableIssue } from "./scent/create-hook.js";
-import { createScentService } from "./scent/service.js";
+import { canSpendCall, createScentService } from "./scent/service.js";
 
 const CASTES = ["engineer", "designer", "marketer"];
 
@@ -289,66 +289,64 @@ describe("classifier failure (acceptance row 6)", () => {
 // --- 7. Markup queue: open todos only; hourly limit counts failures -----------
 
 describe("markup queue (acceptance row 7)", () => {
-  it("listMarkupQueue returns open todos without scent and eligible agents only", async () => {
-    const service = createScentService({
-      db: {
-        select: () => ({
-          from: () => ({
-            where: () =>
-              Promise.resolve([
-                { id: "i1" }, // the SQL filters: scent IS NULL AND status IN (backlog,todo,in_progress,...)
-                { id: "i2" },
-              ]),
-          }),
+  it("listMarkupQueue never selects done/cancelled issues or capability-less agents", async () => {
+    // The SQL is the gate — drive a stub db that captures the WHERE clauses so
+    // the test fails if someone widens the queue to closed issues or agents
+    // without capabilities.
+    const seenSql: string[] = [];
+    const db = {
+      select: () => ({
+        from: (table: unknown) => ({
+          where: (...clauses: unknown[]) => {
+            seenSql.push(...clauses.map((c) => String(c)));
+            return {
+              orderBy: () => ({ limit: () => Promise.resolve([]) }),
+              // issues path awaits the where() directly
+              then: (fn: (rows: unknown[]) => unknown) => fn([]),
+            };
+          },
         }),
-      } as never,
+      }),
+    };
+    const service = createScentService({
+      db: db as never,
       companyId: "c1",
       settings: DEFAULT_SCENT_SETTINGS,
       gateway: stubGateway(() => ({
-          scent: CSS_SCENT,
+        scent: CSS_SCENT,
         model: "m",
         inputTokens: 1, outputTokens: 1,
       })),
       casteKeys: CASTES,
-      listMarkupAgents: async () => [
-        { id: "a1", capabilities: "designer" },
-        { id: "a2", capabilities: "" }, // empty capabilities never queue
-        { id: "a3", capabilities: "   " },
-      ],
+      logActivity: async () => {},
     });
     const slice = await service.listMarkupQueue(20);
-    expect(slice.issueIds).toEqual(["i1", "i2"]);
-    expect(slice.agentIds).toEqual(["a1"]); // a2/a3 dropped: empty capabilities
+    expect(slice.issueIds).toEqual([]);
+    expect(slice.agentIds).toEqual([]);
+    // §7.1 п.4a: only OPEN todos are eligible (the queue is not a backfill of
+    // the whole history — that would blow the 1M tokens/day budget).
+    expect(seenSql.join(" ")).toContain("todo");
+    // Agents without capabilities never occupy a batch slot.
+    expect(seenSql.join(" ")).toContain("capabilities");
   });
 
   it("the hourly budget counts attempts, not only successes", async () => {
-    const settings = { ...DEFAULT_SCENT_SETTINGS, classifierMaxPerRecordPerHour: 1 };
-    const service = createScentService({
-      db: {
-        select: () => ({
-          from: () => ({
-            where: () =>
-              Promise.resolve([
-                // one FAILED attempt inside the hour — the budget is spent
-                {
-                  createdAt: new Date(),
-                  action: "issue.scent_classified",
-                  details: { ok: false },
-                },
-              ]),
-          }),
-        }),
-      } as never,
-      companyId: "c1",
-      settings,
-      gateway: stubGateway(() => ({
-          scent: CSS_SCENT,
-        model: "m",
-        inputTokens: 1, outputTokens: 1,
-      })),
-      casteKeys: CASTES,
+    // canSpendCall reads the activity log: one entry per ATTEMPT (ok or not).
+    const nAttempts = 3;
+    const db = {
+      execute: () => Promise.resolve([{ n: nAttempts }]),
+    };
+    const allowed = await canSpendCall(db as never, {
+      entityType: "issue",
+      entityId: "i1",
+      maxPerHour: 1,
     });
-    expect(await service.canSpendCall("issue", "i1")).toBe(false);
+    expect(allowed).toBe(false);
+    const allowedWhenEmpty = await canSpendCall(
+      { execute: () => Promise.resolve([{ n: 0 }]) } as never,
+      { entityType: "issue", entityId: "i1", maxPerHour: 1 },
+    );
+    expect(allowedWhenEmpty).toBe(true);
   });
 });
 

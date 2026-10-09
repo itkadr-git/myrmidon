@@ -41,7 +41,7 @@ async function buildService(
   const settingsSvc = instanceSettingsService(db);
   const general = await settingsSvc.getGeneral();
   const settings = readScentSettings(
-    (general as Record<string, unknown> | null)?.swarm,
+    (general as unknown as Record<string, unknown> | null)?.swarm,
     process.env,
   );
   const env = process.env;
@@ -86,7 +86,7 @@ async function buildService(
         entityType: entry.entityType,
         entityId: entry.entityId,
         details: entry.details ?? {},
-      }),
+      }).then(() => undefined),
   });
   return { service, settings, casteKeys };
 }
