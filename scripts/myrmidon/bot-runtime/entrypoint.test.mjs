@@ -168,29 +168,27 @@ describe("docker/bot-runtime/entrypoint.sh bot root traversal (BOT-ROOT-TRAVERSE
   });
 });
 
-// myrmidon(BOT-DISK-D): the bot's tree is ONE mount; the entrypoint links /data/<x> into it
-// when the image has not, and proves at every start that a hard link from the pnpm store
-// works into each clone root. The success path execs hermes (absent here), so the tests
-// look at what was written before the exec, with a stub hermes on PATH.
-function stubHermes(probeDir) {
-  const dir = probeDir ?? fs.mkdtempSync(path.join(os.tmpdir(), "myrmidon-stub-bin-"));
-  // A caller-supplied probe directory may already carry its own hermes script
-  // (the umask probe) — never clobber it.
-  if (!fs.existsSync(path.join(dir, "hermes"))) {
-    fs.writeFileSync(path.join(dir, "hermes"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
-  }
+// myrmidon(BOT-DISK-D / BOT-DISK-H8b): the bot's tree is ONE mount; the entrypoint links
+// /data/<x> into it when the image has not, and proves at every start that a reflink
+// (cp --reflink=always) from the pnpm store works into each clone root. The success
+// path execs hermes (absent here), so the tests look at what was written before the
+// exec, with a stub hermes on PATH.
+function stubHermes() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "myrmidon-stub-bin-"));
+  fs.writeFileSync(path.join(dir, "hermes"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
   return dir;
 }
 
 function runWithStub(env, probeDir) {
-  const bin = stubHermes(probeDir);
+  // myrmidon(BOT-UMASK): a caller-supplied probe directory may already carry
+  // its own hermes script (the umask probe) — never clobber it.
+  const bin = probeDir ?? stubHermes();
+  if (probeDir && !fs.existsSync(path.join(bin, "hermes"))) {
+    fs.writeFileSync(path.join(bin, "hermes"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+  }
   try {
-    // PATH is the stub dir plus the base system dirs only: the dev-variant
-    // reporter branch (bot-clone-hygiene) must not fire under a test — on a
-    // host that ships the binary it is backgrounded with inherited stdio,
-    // which keeps spawnSync's pipes open until the timeout.
     return spawnSync("bash", [ENTRYPOINT], {
-      env: { PATH: `${bin}:/usr/bin:/bin`, HOME: process.env.HOME, ...env },
+      env: { PATH: `${env.MYRMIDON_TEST_STUB_BIN ? `${env.MYRMIDON_TEST_STUB_BIN}:` : ""}${bin}:${process.env.PATH}`, HOME: process.env.HOME, ...env },
       encoding: "utf8",
       timeout: 20_000,
       cwd: env.MYRMIDON_TEST_CWD,
@@ -198,6 +196,21 @@ function runWithStub(env, probeDir) {
   } finally {
     if (!probeDir) fs.rmSync(bin, { recursive: true, force: true });
   }
+}
+
+/**
+ * A `cp` stub that ACCEPTS --reflink=always (it copies): the success path of the
+ * self-check must be provable on runners whose temporary directory has no
+ * reflinks (tmpfs, ext4). The real FICLONE is proven by pnpm-reflink.test.mjs
+ * and the image build check, which skip with a reason where it cannot run.
+ */
+function acceptingCpStub() {
+  const stub = fs.mkdtempSync(path.join(os.tmpdir(), "myrmidon-cp-ok-"));
+  fs.writeFileSync(path.join(stub, "cp"), `#!/bin/sh
+for a in "$@"; do shift; [ "$a" = "--reflink=always" ] || set -- "$@" "$a"; done
+exec /bin/cp "$@"
+`, { mode: 0o755 });
+  return stub;
 }
 
 /** A /bot-like tree (one directory) with the three clone roots, plus a /data of links. */
@@ -211,7 +224,7 @@ function botLayout() {
   return { tree, bot, data };
 }
 
-describe("docker/bot-runtime/entrypoint.sh bot tree layout and hard-link self-check", () => {
+describe("docker/bot-runtime/entrypoint.sh bot tree layout and reflink self-check", () => {
   it("links /data/<x> into the single mount when they are missing, and leaves existing entries alone", () => {
     const { tree, bot, data } = botLayout();
     try {
@@ -220,7 +233,8 @@ describe("docker/bot-runtime/entrypoint.sh bot tree layout and hard-link self-ch
         HERMES_HOME: path.join(bot, "hermes"),
         MYRMIDON_BOT_ROOT: bot,
         MYRMIDON_DATA_DIR: data,
-        MYRMIDON_HARDLINK_CHECK: "0",
+        MYRMIDON_REFLINK_CHECK: "0",
+        MYRMIDON_UV_CHECK: "0",
         MYRMIDON_GIT_OBJECTS_CHECK: "0",
         MYRMIDON_TEST_CWD: path.join(bot, "workspace"),
       });
@@ -236,6 +250,54 @@ describe("docker/bot-runtime/entrypoint.sh bot tree layout and hard-link self-ch
 
   it("self-check passes when the store and every clone root share one mount, and reports it", () => {
     const { tree, bot, data } = botLayout();
+    const stub = acceptingCpStub();
+    try {
+      const store = path.join(bot, "workspace", ".pnpm-store");
+      const roots = ["hermes", "workspace", "scratch"].map((name) => path.join(bot, name));
+      const result = runWithStub({
+        MYRMIDON_TEST_STUB_BIN: stub,
+        HERMES_HOME: path.join(bot, "hermes"),
+        MYRMIDON_BOT_ROOT: bot,
+        MYRMIDON_DATA_DIR: data,
+        npm_config_store_dir: store,
+        MYRMIDON_REFLINK_ROOTS: roots.join(" "),
+        MYRMIDON_UV_CHECK: "0",
+        MYRMIDON_TEST_CWD: path.join(bot, "workspace"),
+        MYRMIDON_GIT_OBJECTS_CHECK: "0",
+      });
+      assert.equal(result.status, 0, result.stderr);
+      assert.match(result.stderr, /reflink self-check ok/);
+      assert.doesNotMatch(result.stderr, /ERROR: reflink/);
+      const report = JSON.parse(fs.readFileSync(path.join(bot, "hermes", ".myrmidon", "reflink-check.json"), "utf8"));
+      assert.equal(report.ok, true);
+      assert.equal(report.method, "reflink");
+      assert.equal(report.store, store);
+      assert.equal(report.importMethod, "reflink");
+      assert.deepEqual(report.roots.map((r) => r.root), roots);
+      assert.ok(report.roots.every((r) => r.ok && r.error === null));
+      // The probe files are gone.
+      for (const dir of [store, ...roots]) {
+        assert.deepEqual(fs.readdirSync(dir).filter((n) => n.startsWith(".myrmidon-reflink-probe")), []);
+      }
+    } finally {
+      fs.rmSync(tree, { recursive: true, force: true });
+    }
+  });
+
+  it("self-check with a fake `cp` that refuses the reflink logs ERROR and reports ok:false (EXDEV/EOPNOTSUPP)", () => {
+    const { tree, bot, data } = botLayout();
+    // A `cp` stub that fails exactly like `cp --reflink=always` across
+    // superblocks (EXDEV) or without reflink support (EOPNOTSUPP) — it refuses
+    // whenever --reflink=always is among its arguments.
+    const stub = fs.mkdtempSync(path.join(os.tmpdir(), "myrmidon-cp-stub-"));
+    fs.writeFileSync(path.join(stub, "cp"), `#!/bin/sh
+for a in "$@"; do
+  case "$a" in
+    --reflink=always) echo "cp: failed to clone '$2': Operation not supported" >&2; exit 1 ;;
+  esac
+done
+exec /bin/cp "$@"
+`, { mode: 0o755 });
     try {
       const store = path.join(bot, "workspace", ".pnpm-store");
       const roots = ["hermes", "workspace", "scratch"].map((name) => path.join(bot, name));
@@ -244,29 +306,27 @@ describe("docker/bot-runtime/entrypoint.sh bot tree layout and hard-link self-ch
         MYRMIDON_BOT_ROOT: bot,
         MYRMIDON_DATA_DIR: data,
         npm_config_store_dir: store,
-        MYRMIDON_HARDLINK_ROOTS: roots.join(" "),
+        MYRMIDON_REFLINK_ROOTS: roots.join(" "),
+        MYRMIDON_UV_CHECK: "0",
         MYRMIDON_TEST_CWD: path.join(bot, "workspace"),
         MYRMIDON_GIT_OBJECTS_CHECK: "0",
+        MYRMIDON_TEST_STUB_BIN: stub,
       });
-      assert.equal(result.status, 0, result.stderr);
-      assert.match(result.stderr, /hard-link self-check ok/);
-      assert.doesNotMatch(result.stderr, /ERROR: hard-link/);
-      const report = JSON.parse(fs.readFileSync(path.join(bot, "hermes", ".myrmidon", "hardlink-check.json"), "utf8"));
-      assert.equal(report.ok, true);
-      assert.equal(report.store, store);
-      assert.equal(report.importMethod, "hardlink");
-      assert.deepEqual(report.roots.map((r) => r.root), roots);
-      assert.ok(report.roots.every((r) => r.ok && r.error === null));
-      // The probe files are gone.
-      for (const dir of [store, ...roots]) {
-        assert.deepEqual(fs.readdirSync(dir).filter((n) => n.startsWith(".myrmidon-hardlink-probe")), []);
+      assert.equal(result.status, 0, "a failed check never stops the gateway");
+      for (const root of roots) {
+        assert.match(result.stderr, new RegExp(`ERROR: reflink self-check: cannot reflink from the pnpm store .* into ${root.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
       }
+      const report = JSON.parse(fs.readFileSync(path.join(bot, "hermes", ".myrmidon", "reflink-check.json"), "utf8"));
+      assert.equal(report.ok, false);
+      assert.equal(report.method, "reflink");
+      assert.ok(report.roots.every((r) => r.ok === false && /Operation not supported/.test(r.error)));
     } finally {
       fs.rmSync(tree, { recursive: true, force: true });
+      fs.rmSync(stub, { recursive: true, force: true });
     }
   });
 
-  it("self-check logs a clear error and reports the root when the store is on another mount", () => {
+  it("self-check logs a clear error and reports the root when the store is on another superblock", { skip: false }, (t) => {
     const shm = "/dev/shm";
     let crossDevice = false;
     try {
@@ -275,7 +335,10 @@ describe("docker/bot-runtime/entrypoint.sh bot tree layout and hard-link self-ch
     } catch {
       crossDevice = false;
     }
-    if (!crossDevice) return; // one filesystem here: no EXDEV to provoke
+    if (!crossDevice) {
+      t.skip("one filesystem on this runner: no second superblock to provoke EXDEV");
+      return;
+    }
     const { tree, bot, data } = botLayout();
     const store = fs.mkdtempSync(path.join(shm, "myrmidon-store-"));
     try {
@@ -285,17 +348,18 @@ describe("docker/bot-runtime/entrypoint.sh bot tree layout and hard-link self-ch
         MYRMIDON_BOT_ROOT: bot,
         MYRMIDON_DATA_DIR: data,
         npm_config_store_dir: store,
-        MYRMIDON_HARDLINK_ROOTS: roots.join(" "),
+        MYRMIDON_REFLINK_ROOTS: roots.join(" "),
+        MYRMIDON_UV_CHECK: "0",
         MYRMIDON_TEST_CWD: path.join(bot, "workspace"),
         MYRMIDON_GIT_OBJECTS_CHECK: "0",
       });
       assert.equal(result.status, 0, "a failed check never stops the gateway");
       for (const root of roots) {
-        assert.match(result.stderr, new RegExp(`ERROR: hard-link self-check: cannot hard-link from the pnpm store ${store.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} into ${root.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
+        assert.match(result.stderr, new RegExp(`ERROR: reflink self-check: cannot reflink from the pnpm store ${store.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} into ${root.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
       }
-      const report = JSON.parse(fs.readFileSync(path.join(bot, "hermes", ".myrmidon", "hardlink-check.json"), "utf8"));
+      const report = JSON.parse(fs.readFileSync(path.join(bot, "hermes", ".myrmidon", "reflink-check.json"), "utf8"));
       assert.equal(report.ok, false);
-      assert.ok(report.roots.every((r) => r.ok === false && /cross-device|Invalid cross-device/i.test(r.error)));
+      assert.ok(report.roots.every((r) => r.ok === false && /cross-device|Invalid cross-device|not supported/i.test(r.error)));
     } finally {
       fs.rmSync(tree, { recursive: true, force: true });
       fs.rmSync(store, { recursive: true, force: true });
@@ -313,13 +377,14 @@ describe("docker/bot-runtime/entrypoint.sh bot tree layout and hard-link self-ch
         MYRMIDON_BOT_ROOT: bot,
         MYRMIDON_DATA_DIR: data,
         npm_config_store_dir: path.join(blocker, "store"),
-        MYRMIDON_HARDLINK_ROOTS: roots.join(" "),
+        MYRMIDON_REFLINK_ROOTS: roots.join(" "),
+        MYRMIDON_UV_CHECK: "0",
         MYRMIDON_TEST_CWD: path.join(bot, "workspace"),
         MYRMIDON_GIT_OBJECTS_CHECK: "0",
       });
       assert.equal(result.status, 0, result.stderr);
-      assert.match(result.stderr, /ERROR: hard-link self-check: cannot create a file in the pnpm store/);
-      const report = JSON.parse(fs.readFileSync(path.join(bot, "hermes", ".myrmidon", "hardlink-check.json"), "utf8"));
+      assert.match(result.stderr, /ERROR: reflink self-check: cannot create a file in the pnpm store/);
+      const report = JSON.parse(fs.readFileSync(path.join(bot, "hermes", ".myrmidon", "reflink-check.json"), "utf8"));
       assert.equal(report.ok, false);
       assert.equal(report.roots.length, 2);
     } finally {
@@ -329,21 +394,285 @@ describe("docker/bot-runtime/entrypoint.sh bot tree layout and hard-link self-ch
 
   it("the store the check uses is the profile's .env value when it overrides the environment", () => {
     const { tree, bot, data } = botLayout();
+    const stub = acceptingCpStub();
     try {
       const store = path.join(bot, "scratch", ".store-from-env-file");
-      fs.appendFileSync(path.join(bot, "hermes", ".env"), `npm_config_store_dir="${store}"\nnpm_config_package_import_method=hardlink\n`);
+      fs.appendFileSync(path.join(bot, "hermes", ".env"), `npm_config_store_dir="${store}"\nnpm_config_package_import_method=clone\n`);
       const result = runWithStub({
+        MYRMIDON_TEST_STUB_BIN: stub,
         HERMES_HOME: path.join(bot, "hermes"),
         MYRMIDON_BOT_ROOT: bot,
         MYRMIDON_DATA_DIR: data,
         npm_config_store_dir: "/nonexistent/should-not-be-used",
-        MYRMIDON_HARDLINK_ROOTS: path.join(bot, "workspace"),
+        MYRMIDON_REFLINK_ROOTS: path.join(bot, "workspace"),
+        MYRMIDON_UV_CHECK: "0",
         MYRMIDON_TEST_CWD: path.join(bot, "workspace"),
         MYRMIDON_GIT_OBJECTS_CHECK: "0",
       });
       assert.equal(result.status, 0, result.stderr);
-      const report = JSON.parse(fs.readFileSync(path.join(bot, "hermes", ".myrmidon", "hardlink-check.json"), "utf8"));
+      const report = JSON.parse(fs.readFileSync(path.join(bot, "hermes", ".myrmidon", "reflink-check.json"), "utf8"));
       assert.equal(report.store, store);
+      assert.equal(report.ok, true);
+    } finally {
+      fs.rmSync(tree, { recursive: true, force: true });
+    }
+  });
+});
+
+// myrmidon(1.6.5 BOT-DISK-UV-B): the uv cache self-check. The cache is part A's
+// shared /cache/uv (bot-disk-profile UV_CACHE_DIR/UV_LINK_MODE); the probe is
+// the same three roots the reflink check uses. Success is proven with an
+// accepting `cp` stub — on runners whose tmp has no reflinks the real FICLONE
+// proof stays with the reflink/hardlink image checks.
+describe("docker/bot-runtime/entrypoint.sh uv cache self-check", () => {
+  it("passes when the cache and every clone root share one mount, and reports it", () => {
+    const { tree, bot, data } = botLayout();
+    const stub = acceptingCpStub();
+    try {
+      const cache = path.join(bot, "workspace", ".uv-cache");
+      const roots = ["hermes", "workspace", "scratch"].map((name) => path.join(bot, name));
+      const result = runWithStub({
+        MYRMIDON_TEST_STUB_BIN: stub,
+        HERMES_HOME: path.join(bot, "hermes"),
+        MYRMIDON_BOT_ROOT: bot,
+        MYRMIDON_DATA_DIR: data,
+        UV_CACHE_DIR: cache,
+        MYRMIDON_UV_CHECK_ROOTS: roots.join(" "),
+        MYRMIDON_REFLINK_CHECK: "0",
+        MYRMIDON_TEST_CWD: path.join(bot, "workspace"),
+        MYRMIDON_GIT_OBJECTS_CHECK: "0",
+      });
+      assert.equal(result.status, 0, result.stderr);
+      assert.match(result.stderr, /uv cache self-check ok/);
+      assert.doesNotMatch(result.stderr, /ERROR: uv cache/);
+      const report = JSON.parse(fs.readFileSync(path.join(bot, "hermes", ".myrmidon", "uv-cache-check.json"), "utf8"));
+      assert.equal(report.ok, true);
+      assert.equal(report.method, "clone");
+      assert.equal(report.cache, cache);
+      assert.deepEqual(report.roots.map((r) => r.root), roots);
+      assert.ok(report.roots.every((r) => r.ok && r.error === null));
+      for (const dir of [cache, ...roots]) {
+        assert.deepEqual(fs.readdirSync(dir).filter((n) => n.startsWith(".myrmidon-uv-probe")), []);
+      }
+    } finally {
+      fs.rmSync(tree, { recursive: true, force: true });
+      fs.rmSync(stub, { recursive: true, force: true });
+    }
+  });
+
+  it("logs an ERROR for every root and still starts the gateway when the clone refuses", () => {
+    // The same EXDEV/EOPNOTSUPP stub `cp` the reflink failure test uses.
+    const stub = fs.mkdtempSync(path.join(os.tmpdir(), "myrmidon-cp-stub-"));
+    fs.writeFileSync(path.join(stub, "cp"), `#!/bin/sh
+for a in "$@"; do
+  case "$a" in
+    --reflink=always) echo "cp: failed to clone '$2': Operation not supported" >&2; exit 1 ;;
+  esac
+done
+exec /bin/cp "$@"
+`, { mode: 0o755 });
+    const { tree, bot, data } = botLayout();
+    const roots = ["hermes", "workspace", "scratch"].map((name) => path.join(bot, name));
+    try {
+      const cache = path.join(bot, "workspace", ".uv-cache");
+      const result = runWithStub({
+        HERMES_HOME: path.join(bot, "hermes"),
+        MYRMIDON_BOT_ROOT: bot,
+        MYRMIDON_DATA_DIR: data,
+        UV_CACHE_DIR: cache,
+        MYRMIDON_UV_CHECK_ROOTS: roots.join(" "),
+        MYRMIDON_REFLINK_CHECK: "0",
+        MYRMIDON_TEST_CWD: path.join(bot, "workspace"),
+        MYRMIDON_GIT_OBJECTS_CHECK: "0",
+        MYRMIDON_TEST_STUB_BIN: stub,
+      });
+      assert.equal(result.status, 0, "a failed check never stops the gateway");
+      for (const root of roots) {
+        assert.match(result.stderr, new RegExp(`ERROR: uv cache self-check: cannot reflink from .* into ${root.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
+      }
+      const report = JSON.parse(fs.readFileSync(path.join(bot, "hermes", ".myrmidon", "uv-cache-check.json"), "utf8"));
+      assert.equal(report.ok, false);
+      assert.equal(report.method, "clone");
+      assert.ok(report.roots.every((r) => r.ok === false && /Operation not supported/.test(r.error)));
+    } finally {
+      fs.rmSync(tree, { recursive: true, force: true });
+      fs.rmSync(stub, { recursive: true, force: true });
+    }
+  });
+
+  it("reports an unusable cache directory for every root", () => {
+    const { tree, bot, data } = botLayout();
+    try {
+      const blocker = path.join(bot, "workspace", "not-a-dir");
+      fs.writeFileSync(blocker, "x");
+      const roots = ["hermes", "workspace"].map((name) => path.join(bot, name));
+      const result = runWithStub({
+        HERMES_HOME: path.join(bot, "hermes"),
+        MYRMIDON_BOT_ROOT: bot,
+        MYRMIDON_DATA_DIR: data,
+        UV_CACHE_DIR: path.join(blocker, "uv"),
+        MYRMIDON_UV_CHECK_ROOTS: roots.join(" "),
+        MYRMIDON_REFLINK_CHECK: "0",
+        MYRMIDON_TEST_CWD: path.join(bot, "workspace"),
+        MYRMIDON_GIT_OBJECTS_CHECK: "0",
+      });
+      assert.equal(result.status, 0, result.stderr);
+      assert.match(result.stderr, /ERROR: uv cache self-check: cannot create a file in the uv cache/);
+      const report = JSON.parse(fs.readFileSync(path.join(bot, "hermes", ".myrmidon", "uv-cache-check.json"), "utf8"));
+      assert.equal(report.ok, false);
+      assert.equal(report.roots.length, 2);
+    } finally {
+      fs.rmSync(tree, { recursive: true, force: true });
+    }
+  });
+
+  it("an unwritable cache directory names the owner/uid/mount facts, not just the raw errno", () => {
+    const { tree, bot, data } = botLayout();
+    try {
+      const cache = path.join(bot, "workspace", ".uv-cache-locked");
+      fs.mkdirSync(cache, { recursive: true });
+      fs.chmodSync(cache, 0o555); // present, writable by nobody — the field's root-owned 0755 shape
+      const roots = [path.join(bot, "workspace")];
+      const result = runWithStub({
+        HERMES_HOME: path.join(bot, "hermes"),
+        MYRMIDON_BOT_ROOT: bot,
+        MYRMIDON_DATA_DIR: data,
+        UV_CACHE_DIR: cache,
+        MYRMIDON_UV_CHECK_ROOTS: roots.join(" "),
+        MYRMIDON_REFLINK_CHECK: "0",
+        MYRMIDON_TEST_CWD: path.join(bot, "workspace"),
+        MYRMIDON_GIT_OBJECTS_CHECK: "0",
+      });
+      assert.equal(result.status, 0, "a failed check never stops the gateway");
+      assert.match(result.stderr, /ERROR: uv cache self-check: cannot create a file in the uv cache/);
+      const report = JSON.parse(fs.readFileSync(path.join(bot, "hermes", ".myrmidon", "uv-cache-check.json"), "utf8"));
+      assert.equal(report.ok, false);
+      const error = report.roots[0].error;
+      // The three-way distinction the on-call reads: exists / mountpoint / owner+ids.
+      assert.match(error, /directory exists \(mode\/owner 555 \d+:\d+\)/, error);
+      assert.match(error, new RegExp(`process uid:gid ${process.getuid()}:${process.getgid()}`), error);
+      assert.match(error, /is a mountpoint|is not a mountpoint/, error);
+    } finally {
+      fs.chmodSync(path.join(bot, "workspace", ".uv-cache-locked"), 0o755);
+      fs.rmSync(tree, { recursive: true, force: true });
+    }
+  });
+
+  it("a cache under a read-only parent names the missing-bind cause", () => {
+    const { tree, bot, data } = botLayout();
+    try {
+      const ro = path.join(bot, "workspace", "ro-root");
+      fs.mkdirSync(ro, { recursive: true });
+      fs.chmodSync(ro, 0o555); // closest a non-root runner gets to the ro rootfs shape
+      const roots = [path.join(bot, "workspace")];
+      const result = runWithStub({
+        HERMES_HOME: path.join(bot, "hermes"),
+        MYRMIDON_BOT_ROOT: bot,
+        MYRMIDON_DATA_DIR: data,
+        UV_CACHE_DIR: path.join(ro, "uv"),
+        MYRMIDON_UV_CHECK_ROOTS: roots.join(" "),
+        MYRMIDON_REFLINK_CHECK: "0",
+        MYRMIDON_TEST_CWD: path.join(bot, "workspace"),
+        MYRMIDON_GIT_OBJECTS_CHECK: "0",
+      });
+      assert.equal(result.status, 0, "a failed check never stops the gateway");
+      const report = JSON.parse(fs.readFileSync(path.join(bot, "hermes", ".myrmidon", "uv-cache-check.json"), "utf8"));
+      assert.equal(report.ok, false);
+      const error = report.roots[0].error;
+      assert.match(error, /directory does not exist and cannot be created \(the root filesystem is read-only and no writable bind covers/, error);
+    } finally {
+      fs.chmodSync(path.join(bot, "workspace", "ro-root"), 0o755);
+      fs.rmSync(tree, { recursive: true, force: true });
+    }
+  });
+
+  it("hardlink mode probes by inode: ln between roots on one filesystem passes", () => {
+    const { tree, bot, data } = botLayout();
+    try {
+      const cache = path.join(bot, "workspace", ".uv-cache");
+      const roots = ["hermes", "workspace", "scratch"].map((name) => path.join(bot, name));
+      const result = runWithStub({
+        HERMES_HOME: path.join(bot, "hermes"),
+        MYRMIDON_BOT_ROOT: bot,
+        MYRMIDON_DATA_DIR: data,
+        UV_CACHE_DIR: cache,
+        UV_LINK_MODE: "hardlink",
+        MYRMIDON_UV_CHECK_ROOTS: roots.join(" "),
+        MYRMIDON_REFLINK_CHECK: "0",
+        MYRMIDON_TEST_CWD: path.join(bot, "workspace"),
+        MYRMIDON_GIT_OBJECTS_CHECK: "0",
+      });
+      assert.equal(result.status, 0, result.stderr);
+      assert.match(result.stderr, /uv cache self-check ok/);
+      const report = JSON.parse(fs.readFileSync(path.join(bot, "hermes", ".myrmidon", "uv-cache-check.json"), "utf8"));
+      assert.equal(report.method, "hardlink");
+      assert.equal(report.ok, true, result.stderr);
+      assert.deepEqual(report.roots.map((r) => r.root), roots);
+    } finally {
+      fs.rmSync(tree, { recursive: true, force: true });
+    }
+  });
+
+  it("hardlink mode across superblocks fails every root with EXDEV", { skip: false }, (t) => {
+    const shm = "/dev/shm";
+    let crossDevice = false;
+    try {
+      fs.accessSync(shm, fs.constants.W_OK);
+      crossDevice = fs.statSync(shm).dev !== fs.statSync(os.tmpdir()).dev;
+    } catch {
+      crossDevice = false;
+    }
+    if (!crossDevice) {
+      t.skip("one filesystem on this runner: no second superblock to provoke EXDEV");
+      return;
+    }
+    const { tree, bot, data } = botLayout();
+    const cache = fs.mkdtempSync(path.join(shm, "myrmidon-uv-"));
+    try {
+      const roots = ["hermes", "workspace", "scratch"].map((name) => path.join(bot, name));
+      const result = runWithStub({
+        HERMES_HOME: path.join(bot, "hermes"),
+        MYRMIDON_BOT_ROOT: bot,
+        MYRMIDON_DATA_DIR: data,
+        UV_CACHE_DIR: cache,
+        UV_LINK_MODE: "hardlink",
+        MYRMIDON_UV_CHECK_ROOTS: roots.join(" "),
+        MYRMIDON_REFLINK_CHECK: "0",
+        MYRMIDON_TEST_CWD: path.join(bot, "workspace"),
+        MYRMIDON_GIT_OBJECTS_CHECK: "0",
+      });
+      assert.equal(result.status, 0, "a failed check never stops the gateway");
+      assert.match(result.stderr, /ERROR: uv cache self-check: cannot hardlink/);
+      const report = JSON.parse(fs.readFileSync(path.join(bot, "hermes", ".myrmidon", "uv-cache-check.json"), "utf8"));
+      assert.equal(report.ok, false);
+      assert.ok(report.roots.every((r) => r.ok === false && /cross-device|Invalid cross-device link/i.test(r.error)));
+    } finally {
+      fs.rmSync(tree, { recursive: true, force: true });
+      fs.rmSync(cache, { recursive: true, force: true });
+    }
+  });
+
+  it("the cache and mode the check uses are the profile's .env values when they override the environment", () => {
+    const { tree, bot, data } = botLayout();
+    const stub = acceptingCpStub();
+    try {
+      const cache = path.join(bot, "scratch", ".uv-from-env-file");
+      fs.appendFileSync(path.join(bot, "hermes", ".env"), `UV_CACHE_DIR="${cache}"\nUV_LINK_MODE=clone\n`);
+      const result = runWithStub({
+        MYRMIDON_TEST_STUB_BIN: stub,
+        HERMES_HOME: path.join(bot, "hermes"),
+        MYRMIDON_BOT_ROOT: bot,
+        MYRMIDON_DATA_DIR: data,
+        UV_CACHE_DIR: "/nonexistent/should-not-be-used",
+        MYRMIDON_UV_CHECK_ROOTS: path.join(bot, "workspace"),
+        MYRMIDON_REFLINK_CHECK: "0",
+        MYRMIDON_TEST_CWD: path.join(bot, "workspace"),
+        MYRMIDON_GIT_OBJECTS_CHECK: "0",
+      });
+      assert.equal(result.status, 0, result.stderr);
+      const report = JSON.parse(fs.readFileSync(path.join(bot, "hermes", ".myrmidon", "uv-cache-check.json"), "utf8"));
+      assert.equal(report.cache, cache);
+      assert.equal(report.method, "clone");
       assert.equal(report.ok, true);
     } finally {
       fs.rmSync(tree, { recursive: true, force: true });
@@ -416,7 +745,8 @@ describe("docker/bot-runtime/entrypoint.sh shared-git-objects self-check", () =>
         HERMES_HOME: path.join(bot, "hermes"),
         MYRMIDON_BOT_ROOT: bot,
         MYRMIDON_DATA_DIR: data,
-        MYRMIDON_HARDLINK_CHECK: "0",
+        MYRMIDON_REFLINK_CHECK: "0",
+        MYRMIDON_UV_CHECK: "0",
         MYRMIDON_GIT_WRAPPER: stub.wrapper,
         MYRMIDON_GIT_SHADOW: stub.shadow,
         MYRMIDON_GIT_REAL: realGit(),
@@ -446,7 +776,8 @@ describe("docker/bot-runtime/entrypoint.sh shared-git-objects self-check", () =>
         HERMES_HOME: path.join(bot, "hermes"),
         MYRMIDON_BOT_ROOT: bot,
         MYRMIDON_DATA_DIR: data,
-        MYRMIDON_HARDLINK_CHECK: "0",
+        MYRMIDON_REFLINK_CHECK: "0",
+        MYRMIDON_UV_CHECK: "0",
         MYRMIDON_GIT_WRAPPER: stub.wrapper,
         MYRMIDON_GIT_SHADOW: path.join(stub.dir, "no-shadow", "git"),
         MYRMIDON_GIT_REAL: realGit(),
@@ -472,7 +803,8 @@ describe("docker/bot-runtime/entrypoint.sh shared-git-objects self-check", () =>
         HERMES_HOME: path.join(bot, "hermes"),
         MYRMIDON_BOT_ROOT: bot,
         MYRMIDON_DATA_DIR: data,
-        MYRMIDON_HARDLINK_CHECK: "0",
+        MYRMIDON_REFLINK_CHECK: "0",
+        MYRMIDON_UV_CHECK: "0",
         MYRMIDON_GIT_WRAPPER: path.join(tree, "no-such-wrapper"),
         MYRMIDON_TEST_CWD: path.join(bot, "workspace"),
       });
@@ -492,7 +824,8 @@ describe("docker/bot-runtime/entrypoint.sh shared-git-objects self-check", () =>
         HERMES_HOME: path.join(bot, "hermes"),
         MYRMIDON_BOT_ROOT: bot,
         MYRMIDON_DATA_DIR: data,
-        MYRMIDON_HARDLINK_CHECK: "0",
+        MYRMIDON_REFLINK_CHECK: "0",
+        MYRMIDON_UV_CHECK: "0",
         MYRMIDON_GIT_WRAPPER: stub.wrapper,
         MYRMIDON_GIT_SHADOW: stub.shadow,
         MYRMIDON_GIT_REAL: realGit(),
@@ -521,7 +854,8 @@ describe("docker/bot-runtime/entrypoint.sh shared-git-objects self-check", () =>
         HERMES_HOME: path.join(bot, "hermes"),
         MYRMIDON_BOT_ROOT: bot,
         MYRMIDON_DATA_DIR: data,
-        MYRMIDON_HARDLINK_CHECK: "0",
+        MYRMIDON_REFLINK_CHECK: "0",
+        MYRMIDON_UV_CHECK: "0",
         MYRMIDON_GIT_WRAPPER: stub.wrapper,
         MYRMIDON_GIT_SHADOW: stub.shadow,
         MYRMIDON_GIT_REAL: realGit(),
@@ -557,7 +891,8 @@ describe("docker/bot-runtime/entrypoint.sh shared-git-objects self-check", () =>
         HERMES_HOME: path.join(bot, "hermes"),
         MYRMIDON_BOT_ROOT: bot,
         MYRMIDON_DATA_DIR: data,
-        MYRMIDON_HARDLINK_CHECK: "0",
+        MYRMIDON_REFLINK_CHECK: "0",
+        MYRMIDON_UV_CHECK: "0",
         MYRMIDON_GIT_WRAPPER: stub.wrapper,
         MYRMIDON_GIT_SHADOW: stub.shadow,
         MYRMIDON_GIT_REAL: realGit(),
@@ -571,6 +906,83 @@ describe("docker/bot-runtime/entrypoint.sh shared-git-objects self-check", () =>
       assert.equal(report.checks.find((c) => c.check === "store-in-use").ok, true);
       // A live clone that is not a GitHub one is not the store's business.
       assert.deepEqual(findMirrors(bot), ["owner/repo.git"]);
+    } finally {
+      fs.rmSync(tree, { recursive: true, force: true });
+      fs.rmSync(stub.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("a symlinked HERMES_HOME still passes the realpath comparisons of reference-clone and store-fills", () => {
+    // myrmidon(1.6.5 BOT-SELFCHECK-DIAG): the incident shape — HERMES_HOME is a
+    // symlink into the bot's one mount, git records the physical path in
+    // objects/info/alternates, and a textual `pwd -P`-vs-alternates comparison
+    // failed on a healthy chain. Both sides are normalised now.
+    const { tree, bot, data } = botLayout();
+    const stub = realWrapperStub();
+    const linkHome = path.join(tree, "linked-home");
+    fs.symlinkSync(path.join(bot, "hermes"), linkHome);
+    try {
+      const result = runWithStub({
+        HERMES_HOME: linkHome,
+        MYRMIDON_BOT_ROOT: bot,
+        MYRMIDON_DATA_DIR: data,
+        MYRMIDON_REFLINK_CHECK: "0",
+        MYRMIDON_UV_CHECK: "0",
+        MYRMIDON_GIT_WRAPPER: stub.wrapper,
+        MYRMIDON_GIT_SHADOW: stub.shadow,
+        MYRMIDON_GIT_REAL: realGit(),
+        MYRMIDON_TASK_ROOTS: path.join(bot, "workspace"),
+        MYRMIDON_TEST_CWD: path.join(bot, "workspace"),
+      });
+      assert.equal(result.status, 0, result.stderr);
+      assert.match(result.stderr, /shared-objects self-check ok/);
+      const report = JSON.parse(fs.readFileSync(path.join(linkHome, ".myrmidon", "git-objects-check.json"), "utf8"));
+      assert.equal(report.ok, true);
+      assert.equal(report.checks.find((c) => c.check === "reference-clone").ok, true);
+      assert.equal(report.checks.find((c) => c.check === "store-fills").ok, true);
+    } finally {
+      fs.rmSync(tree, { recursive: true, force: true });
+      fs.rmSync(stub.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("store-in-use follows a symlinked task root and names the counts on failure", () => {
+    // The clone sits one level deeper than the old /workspace/<T>/repo shape,
+    // under a root the operator gave as a symlink: find must follow it and the
+    // failure message must carry clones/mirrors/sample, not just "failed".
+    const { tree, bot, data } = botLayout();
+    const stub = realWrapperStub();
+    const realRoot = path.join(tree, "real-tasks");
+    fs.mkdirSync(realRoot, { recursive: true });
+    const linkRoot = path.join(tree, "tasks-link");
+    fs.symlinkSync(realRoot, linkRoot);
+    try {
+      const clone = path.join(realRoot, "TASK-9", "deep", "repo");
+      fs.mkdirSync(clone, { recursive: true });
+      for (const args of [["init", "-q", "-b", "main"], ["remote", "add", "origin", "https://github.com/owner/repo.git"]]) {
+        const init = spawnSync(realGit(), args, { cwd: clone, encoding: "utf8" });
+        assert.equal(init.status, 0, `git ${args.join(" ")}: ${init.stderr}`);
+      }
+      const result = runWithStub({
+        HERMES_HOME: path.join(bot, "hermes"),
+        MYRMIDON_BOT_ROOT: bot,
+        MYRMIDON_DATA_DIR: data,
+        MYRMIDON_REFLINK_CHECK: "0",
+        MYRMIDON_UV_CHECK: "0",
+        MYRMIDON_GIT_WRAPPER: stub.wrapper,
+        MYRMIDON_GIT_SHADOW: stub.shadow,
+        MYRMIDON_GIT_REAL: realGit(),
+        MYRMIDON_TASK_ROOTS: linkRoot,
+        MYRMIDON_TEST_CWD: path.join(bot, "workspace"),
+      });
+      assert.equal(result.status, 0, "a failed check never stops the gateway");
+      const report = JSON.parse(fs.readFileSync(path.join(bot, "hermes", ".myrmidon", "git-objects-check.json"), "utf8"));
+      const inUse = report.checks.find((c) => c.check === "store-in-use");
+      assert.equal(inUse.ok, false, "the clone under the symlinked root is found");
+      assert.match(inUse.error, /1 GitHub task clone\(s\)/, inUse.error);
+      assert.match(inUse.error, /mirrors=0/, inUse.error);
+      assert.match(inUse.error, /roots walked: .* -> /, inUse.error);
+      assert.match(inUse.error, /TASK-9/, inUse.error);
     } finally {
       fs.rmSync(tree, { recursive: true, force: true });
       fs.rmSync(stub.dir, { recursive: true, force: true });
@@ -594,7 +1006,8 @@ describe("docker/bot-runtime/entrypoint.sh shared-git-objects self-check", () =>
         HERMES_HOME: path.join(bot, "hermes"),
         MYRMIDON_BOT_ROOT: bot,
         MYRMIDON_DATA_DIR: data,
-        MYRMIDON_HARDLINK_CHECK: "0",
+        MYRMIDON_REFLINK_CHECK: "0",
+        MYRMIDON_UV_CHECK: "0",
         MYRMIDON_GIT_WRAPPER: stub.wrapper,
         MYRMIDON_GIT_SHADOW: stub.shadow,
         MYRMIDON_GIT_REAL: realGit(),
@@ -633,7 +1046,8 @@ describe("docker/bot-runtime/entrypoint.sh shared-git-objects self-check", () =>
         HERMES_HOME: path.join(bot, "hermes"),
         MYRMIDON_BOT_ROOT: bot,
         MYRMIDON_DATA_DIR: data,
-        MYRMIDON_HARDLINK_CHECK: "0",
+        MYRMIDON_REFLINK_CHECK: "0",
+        MYRMIDON_UV_CHECK: "0",
         MYRMIDON_GIT_WRAPPER: stub.wrapper,
         MYRMIDON_GIT_SHADOW: stub.shadow,
         MYRMIDON_GIT_REAL: realGit(),
@@ -675,7 +1089,8 @@ describe("docker/bot-runtime/entrypoint.sh shared scope member", () => {
         MYRMIDON_BOT_SCOPE_DIR: scope,
         MYRMIDON_BOT_SCOPE_SUBDIR: "bot-a",
         MYRMIDON_DATA_DIR: data,
-        MYRMIDON_HARDLINK_CHECK: "0",
+        MYRMIDON_REFLINK_CHECK: "0",
+        MYRMIDON_UV_CHECK: "0",
         MYRMIDON_GIT_OBJECTS_CHECK: "0",
         MYRMIDON_TEST_CWD: tree,
         MYRMIDON_WORKSPACE_DIR: path.join(data, "workspace"),
@@ -692,25 +1107,28 @@ describe("docker/bot-runtime/entrypoint.sh shared scope member", () => {
     }
   });
 
-  it("hard links work from the instance store into the member's clone roots AND into another member's", () => {
+  it("reflinks work from the instance store into the member's clone roots AND into another member's", () => {
     const { tree, scope, data } = scopeLayout();
+    const stub = acceptingCpStub();
     try {
       const store = path.join(scope, ".pnpm-store");
       const other = path.join(scope, "bot-b", "workspace");
       const result = runWithStub({
+        MYRMIDON_TEST_STUB_BIN: stub,
         HERMES_HOME: path.join(data, "hermes"),
         MYRMIDON_BOT_SCOPE_DIR: scope,
         MYRMIDON_BOT_SCOPE_SUBDIR: "bot-a",
         MYRMIDON_DATA_DIR: data,
         npm_config_store_dir: store,
-        MYRMIDON_HARDLINK_ROOTS: [path.join(data, "hermes"), path.join(data, "workspace"), path.join(data, "scratch"), other].join(" "),
+        MYRMIDON_REFLINK_ROOTS: [path.join(data, "hermes"), path.join(data, "workspace"), path.join(data, "scratch"), other].join(" "),
+        MYRMIDON_UV_CHECK: "0",
         MYRMIDON_GIT_OBJECTS_CHECK: "0",
         MYRMIDON_TEST_CWD: tree,
         MYRMIDON_WORKSPACE_DIR: path.join(data, "workspace"),
       });
       assert.equal(result.status, 0, result.stderr);
-      assert.match(result.stderr, /hard-link self-check ok/);
-      const report = JSON.parse(fs.readFileSync(path.join(scope, "bot-a", "hermes", ".myrmidon", "hardlink-check.json"), "utf8"));
+      assert.match(result.stderr, /reflink self-check ok/);
+      const report = JSON.parse(fs.readFileSync(path.join(scope, "bot-a", "hermes", ".myrmidon", "reflink-check.json"), "utf8"));
       assert.equal(report.ok, true);
       assert.equal(report.store, store);
       assert.equal(report.roots.length, 4);
@@ -722,7 +1140,8 @@ describe("docker/bot-runtime/entrypoint.sh shared scope member", () => {
   it("fails fast when the instance directory is not mounted or the subdirectory is missing", () => {
     const { tree, scope, data } = scopeLayout();
     try {
-      const base = { HERMES_HOME: path.join(data, "hermes"), MYRMIDON_DATA_DIR: data, MYRMIDON_HARDLINK_CHECK: "0",
+      const base = { HERMES_HOME: path.join(data, "hermes"), MYRMIDON_DATA_DIR: data, MYRMIDON_REFLINK_CHECK: "0",
+        MYRMIDON_UV_CHECK: "0",
         MYRMIDON_GIT_OBJECTS_CHECK: "0", API_SERVER_KEY: "k".repeat(32) };
       const missing = run({ ...base, MYRMIDON_BOT_SCOPE_DIR: path.join(tree, "nowhere"), MYRMIDON_BOT_SCOPE_SUBDIR: "bot-a" });
       assert.notEqual(missing.status, 0);
@@ -755,74 +1174,75 @@ describe("docker/bot-runtime/entrypoint.sh shared scope member", () => {
   });
 });
 
-// myrmidon(BOT-UMASK): run files must be owner-only — every bot on a host shares
-// uid 10001, so the mode bits are the only barrier between one run's scratch/cache
-// and another bot's processes. The entrypoint sets umask 077 before any file write
-// and every child (gateway -> session -> terminal/tool) inherits it.
-describe("docker/bot-runtime/entrypoint.sh umask 077", () => {
-  it("sets umask 077 before the first file write", () => {
-    const source = fs.readFileSync(ENTRYPOINT, "utf8");
-    const umaskAt = source.search(/^umask 077$/m);
-    assert.notEqual(umaskAt, -1, "entrypoint must set umask 077");
-    const firstWrite = source.search(/^\s*(mkdir|ln |ln\b|cat >|>|install )/m);
-    assert.notEqual(firstWrite, -1, "test expects a file write to anchor against");
-    assert.ok(
-      umaskAt < firstWrite,
-      "umask 077 must precede the first file write in the entrypoint",
-    );
-    assert.match(source, /umask 077 \(run files owner-only\)/);
-  });
+// myrmidon(1.6.5 BOT-DISK-H1c): the entrypoint starts botd; an image without it keeps the old reporter.
+describe("docker/bot-runtime/entrypoint.sh botd start", () => {
+  /** A bin dir with a stub hermes and the named stub agents, each writing its marker file on start. */
+  function agentsBin(names) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "myrmidon-botd-bin-"));
+    fs.writeFileSync(path.join(dir, "hermes"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    for (const name of names) {
+      fs.writeFileSync(path.join(dir, name), `#!/bin/sh\necho "$0 $*" > "${dir}/${name}.started"\n`, { mode: 0o755 });
+    }
+    return dir;
+  }
 
-  it("the process the entrypoint execs inherits umask 077 (files 0600, dirs 0700)", () => {
-    const tree = fs.mkdtempSync(path.join(os.tmpdir(), "myrmidon-bot-umask-"));
+  function start(names) {
+    const { tree, bot, data } = botLayout();
+    const bin = agentsBin(names);
+    const result = spawnSync("bash", [ENTRYPOINT], {
+      env: {
+        PATH: `${bin}:${process.env.PATH}`,
+        HOME: process.env.HOME,
+        HERMES_HOME: path.join(bot, "hermes"),
+        MYRMIDON_BOT_ROOT: bot,
+        MYRMIDON_DATA_DIR: data,
+        MYRMIDON_HARDLINK_CHECK: "0",
+        MYRMIDON_UV_CHECK: "0",
+        MYRMIDON_GIT_OBJECTS_CHECK: "0",
+      },
+      encoding: "utf8",
+      timeout: 20_000,
+    });
+    // The agents run in the background: give them a moment to write their marker.
+    const deadline = Date.now() + 3000;
+    const started = (n) => fs.existsSync(path.join(bin, `${n}.started`));
+    while (Date.now() < deadline && !names.some(started)) spawnSync("sleep", ["0.1"]);
+    spawnSync("sleep", ["0.3"]);
+    return { result, started, cleanup: () => { fs.rmSync(tree, { recursive: true, force: true }); fs.rmSync(bin, { recursive: true, force: true }); } };
+  }
+
+  it("starts botd, and not the old reporter, when the image has botd", () => {
+    const run1 = start(["botd", "bot-clone-hygiene"]);
     try {
-      const bot = path.join(tree, "bot");
-      const data = path.join(tree, "data");
-      for (const name of ["hermes", "workspace", "scratch"]) {
-        fs.mkdirSync(path.join(bot, name), { recursive: true });
-      }
-      fs.mkdirSync(data);
-      fs.writeFileSync(
-        path.join(bot, "hermes", ".env"),
-        `API_SERVER_KEY="${"k".repeat(32)}"\n`,
-        "utf8",
-      );
-      // The probe stands in for the real hermes binary: it records the umask it
-      // inherited from the entrypoint and creates one file and one directory,
-      // which is what every run artifact does.
-      const probe = path.join(tree, "probe");
-      fs.mkdirSync(probe);
-      fs.writeFileSync(
-        path.join(probe, "hermes"),
-        `#!/bin/sh\numask > "${probe}/umask-value"\n: > "${probe}/probe-file"\nmkdir "${probe}/probe-dir"\n`,
-        { mode: 0o755 },
-      );
-      const result = runWithStub(
-        {
-          HERMES_HOME: path.join(data, "hermes"),
-          MYRMIDON_BOT_ROOT: bot,
-          MYRMIDON_DATA_DIR: data,
-          MYRMIDON_HARDLINK_CHECK: "0",
-          MYRMIDON_GIT_OBJECTS_CHECK: "0",
-          MYRMIDON_DEVBUILD_CHECK: "0",
-          MYRMIDON_TEST_CWD: tree,
-        },
-        probe,
-      );
-      assert.equal(result.error, undefined);
-      assert.equal(result.status, 0, result.stderr);
-      assert.equal(
-        fs.readFileSync(path.join(probe, "umask-value"), "utf8").trim(),
-        "0077",
-        `expected the exec target to inherit umask 0077: ${result.stderr}`,
-      );
-      assert.equal(fs.statSync(path.join(probe, "probe-file")).mode & 0o777, 0o600);
-      assert.equal(fs.statSync(path.join(probe, "probe-dir")).mode & 0o777, 0o700);
+      assert.equal(run1.result.status, 0, run1.result.stderr);
+      assert.match(run1.result.stderr, /botd started/);
+      assert.ok(run1.started("botd"), "botd must be started");
+      assert.ok(!run1.started("bot-clone-hygiene"), "bot-clone-hygiene must not run next to botd");
     } finally {
-      fs.rmSync(tree, { recursive: true, force: true });
+      run1.cleanup();
     }
   });
 
+  it("falls back to bot-clone-hygiene when the image has no botd", () => {
+    const run1 = start(["bot-clone-hygiene"]);
+    try {
+      assert.equal(run1.result.status, 0, run1.result.stderr);
+      assert.match(run1.result.stderr, /clone hygiene reporter started/);
+      assert.ok(run1.started("bot-clone-hygiene"), "the fallback reporter must be started");
+    } finally {
+      run1.cleanup();
+    }
+  });
+
+  it("starts neither agent in an image that has neither (base image) and still execs hermes", () => {
+    const run1 = start([]);
+    try {
+      assert.equal(run1.result.status, 0, run1.result.stderr);
+      assert.doesNotMatch(run1.result.stderr, /botd started|clone hygiene reporter started/);
+    } finally {
+      run1.cleanup();
+    }
+  });
 });
 
 // myrmidon(BOT-UMASK): run files must be owner-only — every bot on a host shares
@@ -846,14 +1266,10 @@ describe("docker/bot-runtime/entrypoint.sh umask 077", () => {
   it("the process the entrypoint execs inherits umask 077 (files 0600, dirs 0700)", () => {
     const tree = fs.mkdtempSync(path.join(os.tmpdir(), "myrmidon-bot-umask-"));
     try {
-      const bot = path.join(tree, "bot");
-      const data = path.join(tree, "data");
-      for (const name of ["hermes", "workspace", "scratch"]) {
-        fs.mkdirSync(path.join(bot, name), { recursive: true });
-      }
-      fs.mkdirSync(data);
+      const hermesHomeDir = path.join(tree, "hermes-home");
+      fs.mkdirSync(hermesHomeDir);
       fs.writeFileSync(
-        path.join(bot, "hermes", ".env"),
+        path.join(hermesHomeDir, ".env"),
         `API_SERVER_KEY="${"k".repeat(32)}"\n`,
         "utf8",
       );
@@ -867,18 +1283,7 @@ describe("docker/bot-runtime/entrypoint.sh umask 077", () => {
         `#!/bin/sh\numask > "${probe}/umask-value"\n: > "${probe}/probe-file"\nmkdir "${probe}/probe-dir"\n`,
         { mode: 0o755 },
       );
-      const result = runWithStub(
-        {
-          HERMES_HOME: path.join(data, "hermes"),
-          MYRMIDON_BOT_ROOT: bot,
-          MYRMIDON_DATA_DIR: data,
-          MYRMIDON_HARDLINK_CHECK: "0",
-          MYRMIDON_GIT_OBJECTS_CHECK: "0",
-          MYRMIDON_DEVBUILD_CHECK: "0",
-          MYRMIDON_TEST_CWD: tree,
-        },
-        probe,
-      );
+      const result = runWithStub({ HERMES_HOME: hermesHomeDir }, probe);
       assert.equal(result.error, undefined);
       assert.equal(result.status, 0, result.stderr);
       assert.equal(

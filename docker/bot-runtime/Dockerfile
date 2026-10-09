@@ -256,8 +256,8 @@ RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/
 # segment, refuses path escapes and malformed fields, clears the segment on an empty
 # list, and verify re-reads the disk.
 RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/run_skills.py /opt/hermes-src
-# myrmidon(G1): behaviour regression for 13-redact-pcp-patterns.patch and
-# 14-delegation-live-log-mode-0600.patch (LIVE-TRANSCRIPT-PCP): the pcp_ board-key
+# myrmidon(G1): behaviour regression for 14-redact-pcp-patterns.patch and
+# 15-delegation-live-log-mode-0600.patch (LIVE-TRANSCRIPT-PCP): the pcp_ board-key
 # family must be masked by the prefix pass (no leak into a delegation live transcript),
 # the transcript file must be created 0o600 from the first byte, and control prose must
 # not mask accidentally (the pass, not the file, is what closes the leak).

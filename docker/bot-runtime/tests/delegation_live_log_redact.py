@@ -1,5 +1,5 @@
-# myrmidon(G1): build-time regression for 13-redact-pcp-patterns.patch and
-# 14-delegation-live-log-mode-0600.patch (LIVE-TRANSCRIPT-PCP-LEAK). A board
+# myrmidon(G1): build-time regression for 14-redact-pcp-patterns.patch and
+# 15-delegation-live-log-mode-0600.patch (LIVE-TRANSCRIPT-PCP-LEAK). A board
 # key written into a delegation live transcript had no bare-token pattern in
 # agent/redact.py, so the world-default 0o644 transcript leaked it to every
 # co-tenant process in the container. This pins both fixes against the patched
