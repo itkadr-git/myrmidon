@@ -17292,7 +17292,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       // backoff that also burns one of its five attempts.
       await retryChatControlAdmission(() =>
         acceptInboundWakeup(activeDelivery.id, attachmentResult),
-        );
+      );
       // myrmidon(P7): send the notice once the wakeup no longer needs the endpoint lock
       const wakeProcessed = await processInboundWakeup(activeDelivery.id);
       sendOmissionNotice?.();
