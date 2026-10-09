@@ -75,6 +75,12 @@ describe("myrmidon(1.6.6-LITELLM-WORKERS-UI) workers api helpers", () => {
     expect(applyStatusLine(state({ current: 3, target: 3 }))).toContain("3 workers running");
     expect(applyStatusLine(undefined)).toBeNull();
   });
+
+  it("says the pool size is unknown instead of printing null", () => {
+    const line = applyStatusLine(state({ current: null, target: 5 }));
+    expect(line).toContain("unknown");
+    expect(line).not.toContain("null");
+  });
 });
 
 describe("myrmidon(1.6.6-LITELLM-WORKERS-UI) GatewayWorkersTab", () => {
@@ -155,6 +161,18 @@ describe("myrmidon(1.6.6-LITELLM-WORKERS-UI) GatewayWorkersTab", () => {
     // backend without the `auto` field: the switch is disabled with an explanation
     expect(text).toContain("Not supported by this backend");
     expect(text).toContain("210 ms");
+  });
+
+  it("shows \"unknown\" for an unknown pool and offers Apply only for a changed target", async () => {
+    vi.mocked(litellmWorkersApi.state).mockResolvedValue(state({ current: null, target: 5 }));
+    await renderTab();
+    const text = container.textContent ?? "";
+    expect(text).toContain("Running now: unknown");
+    expect(text).not.toContain("null");
+    // the draft equals the stored target: nothing to apply, no permanent button
+    expect(buttonWith("Apply")).toBeUndefined();
+    await typeInto("#myrmidon-workers-target", "3");
+    expect(buttonWith("Apply")).toBeTruthy();
   });
 
   it("refuses to apply above maxByMemory on the client", async () => {

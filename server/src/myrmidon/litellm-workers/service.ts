@@ -68,7 +68,8 @@ export interface LitellmWorkersDeps {
 /** Everything the card and the API need to say about one company's gateway. */
 export interface LitellmWorkersView {
   companyId: string;
-  current: number;
+  /** The pool size some source reports; null when no source knows it. */
+  current: number | null;
   currentSource: LitellmWorkersCurrentSource;
   target: number;
   targetSource: "settings" | "default";
@@ -140,10 +141,9 @@ function buildView(input: {
   const resolved = resolveLitellmWorkersTarget(stored, ceilings);
   return {
     companyId,
-    // A pool size no source knows is still shown as a number: the declared
-    // baseline, else the default target. `currentSource: "unknown"` keeps the
-    // honesty — the resize itself never counts signals from this guess.
-    current: current.workers ?? runtime.baseline ?? ceilings.defaultTarget,
+    // Null when no source knows the pool: a made-up number would be shown as
+    // a reading. The declared baseline is already a source (`baseline`).
+    current: current.workers,
     currentSource: current.source,
     target: resolved.target,
     targetSource: resolved.source,

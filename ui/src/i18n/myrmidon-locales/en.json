@@ -1011,5 +1011,10 @@
     "agingStepWeightHint": "Weight gained per full aging step.",
     "starvationLimit": "Starvation limit (minutes)",
     "starvationLimitHint": "A run waiting this long starts with the top weight; 0 turns the limit off."
+  },
+  "litellmWorkers": {
+    "unknown": "unknown",
+    "runningNow": "Running now: {{value}}",
+    "statusUnknown": "Running now is unknown: the gateway did not report its pool size."
   }
 }

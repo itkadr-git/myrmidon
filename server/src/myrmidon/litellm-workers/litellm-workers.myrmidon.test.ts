@@ -253,9 +253,8 @@ describe("GET the worker count", () => {
 
   it("says why the live numbers are missing when no gateway is configured", async () => {
     const view = await readLitellmWorkersView(depsWith({}), COMPANY);
-    // Nothing knows the pool, so the card still gets a number (the default
-    // target) and the source says it is not a reading.
-    expect(view.current).toBe(5);
+    // Nothing knows the pool: no number is invented for the card.
+    expect(view.current).toBeNull();
     expect(view.currentSource).toBe("unknown");
     expect(view.target).toBe(5);
     expect(view.metricsSource).toBe("unavailable");
@@ -269,7 +268,7 @@ describe("GET the worker count", () => {
     const view = await readLitellmWorkersView(depsWith({ gateway }), COMPANY);
     expect(view.gateway.reachable).toBe(false);
     expect(view.gateway.error).toContain("ECONNREFUSED");
-    expect(view.current).toBe(5);
+    expect(view.current).toBeNull();
     expect(view.currentSource).toBe("unknown");
   });
 });
@@ -343,7 +342,7 @@ describe("PUT the worker count", () => {
     expect(result.applied).toBe(false);
     expect(result.applyError).toContain("TTIN/TTOU");
     expect(result.view.target).toBe(5);
-    expect(result.view.current).toBe(5);
+    expect(result.view.current).toBeNull();
     expect(result.view.currentSource).toBe("unknown");
     expect((await deps.store.read(COMPANY)).target).toBe(5);
   });
