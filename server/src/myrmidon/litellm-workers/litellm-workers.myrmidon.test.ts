@@ -193,7 +193,7 @@ describe("reading the gateway's numbers", () => {
 
   it("turns the CPU counter into a rate only from a second scrape", () => {
     const first = readPrometheusCpuSamples(parsePrometheusText(exposition.join("\n")));
-    const second = readPrometheusCpuSamples(parsePrometheusText(exposition.join("\n").replace('pid="11"} 10', 'pid="11"} 11')));
+    const second = readPrometheusCpuSamples(parsePrometheusText(exposition.join("\n").replace('process_cpu_seconds_total{pid="11"} 10', 'process_cpu_seconds_total{pid="11"} 11')));
     expect(derivePerWorkerCpu(null, first, 10)).toBeNull();
     expect(derivePerWorkerCpu(first, second, 10)).toBe(0.05);
   });
@@ -201,7 +201,7 @@ describe("reading the gateway's numbers", () => {
   it("remembers the previous scrape in the sampler", () => {
     const sampler = new LitellmWorkerCpuSampler();
     const first = readPrometheusCpuSamples(parsePrometheusText(exposition.join("\n")));
-    const second = readPrometheusCpuSamples(parsePrometheusText(exposition.join("\n").replace('pid="11"} 10', 'pid="11"} 11')));
+    const second = readPrometheusCpuSamples(parsePrometheusText(exposition.join("\n").replace('process_cpu_seconds_total{pid="11"} 10', 'process_cpu_seconds_total{pid="11"} 11')));
     expect(sampler.observe(first, 1_000)).toBeNull();
     expect(sampler.observe(second, 11_000)).toBe(0.05);
   });
@@ -351,7 +351,7 @@ describe("PUT the worker count", () => {
 
     expect(gateway.workers).toBe(3);
     expect(result.applied).toBe(false);
-    expect(result.applyError).toBe("signal delivery refused");
+    expect(result.applyError).toBe("TTOU was not delivered: signal delivery refused");
     expect(result.deliveries).toHaveLength(2);
     expect((await deps.store.read(COMPANY)).observed?.workers).toBe(3);
   });

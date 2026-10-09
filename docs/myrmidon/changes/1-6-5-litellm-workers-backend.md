@@ -1,3 +1,7 @@
+---
+settings-section: Track 5 — operations
+---
+
 ## changelog-en
 
 ### LITELLM-WORKERS-A: the LiteLLM worker-process count is stored, resized live and reported (1.6.5)
@@ -33,3 +37,19 @@
   памяти или CPU — 400 с `details.reason` `above_memory` / `above_cpu`. Если
   размер пула не известен ни из одного источника, цель сохраняется, а пул не
   трогается.
+
+## settings-en
+
+| `MYRMIDON_LITELLM_WORKERS_CORES` | LITELLM-WORKERS A | `6` | CPU cores of the gateway container; the CPU ceiling `maxByCpu` and the default target (cores minus one) derive from it | A positive integer |
+| `MYRMIDON_LITELLM_WORKERS_MEMORY_GB` | LITELLM-WORKERS A | `12` | Memory of the gateway container in GB; the memory ceiling `maxByMemory` is `floor(memoryGb / 1.5)` | A positive number |
+| `MYRMIDON_LITELLM_WORKERS_CONTAINER` | LITELLM-WORKERS A | `litellm-gateway` | Container that receives the TTIN/TTOU signals | A container name |
+| `MYRMIDON_LITELLM_WORKERS_SIGNAL_COMMAND` | LITELLM-WORKERS A | `docker kill -s {signal} {container}` | Command template the board runs once per resize step | A command with `{signal}` and `{container}` placeholders |
+| `MYRMIDON_LITELLM_WORKERS_BASELINE` | LITELLM-WORKERS A | unset | Declared pool size used when the gateway reports none, so that the number of signals can be counted | A positive integer; unset — the pool is left alone when no source knows its size |
+
+## settings-ru
+
+| `MYRMIDON_LITELLM_WORKERS_CORES` | LITELLM-WORKERS A | `6` | Число ядер контейнера шлюза; от него считаются потолок `maxByCpu` и цель по умолчанию (ядра минус один) | Положительное целое |
+| `MYRMIDON_LITELLM_WORKERS_MEMORY_GB` | LITELLM-WORKERS A | `12` | Память контейнера шлюза в ГБ; потолок по памяти `maxByMemory` — `floor(memoryGb / 1.5)` | Положительное число |
+| `MYRMIDON_LITELLM_WORKERS_CONTAINER` | LITELLM-WORKERS A | `litellm-gateway` | Контейнер, которому шлются сигналы TTIN/TTOU | Имя контейнера |
+| `MYRMIDON_LITELLM_WORKERS_SIGNAL_COMMAND` | LITELLM-WORKERS A | `docker kill -s {signal} {container}` | Шаблон команды, которую доска запускает на каждый шаг изменения | Команда с подстановками `{signal}` и `{container}` |
+| `MYRMIDON_LITELLM_WORKERS_BASELINE` | LITELLM-WORKERS A | не задано | Заявленный размер пула на случай, когда шлюз его не отдаёт, чтобы можно было посчитать число сигналов | Положительное целое; не задано — пул не трогается, если размер не известен ни из одного источника |
