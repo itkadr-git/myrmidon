@@ -3,6 +3,8 @@ import type { FeedbackDataSharingPreference } from "./feedback.js";
 import type { WorkspaceHygieneLimits } from "../myrmidon-workspace-hygiene.js";
 // myrmidon(C0): the run admission limits stored in instance settings
 import type { StoredRunLimits } from "../myrmidon-runtime-limits.js";
+// myrmidon(RUN-STALL-SETTINGS): the run stall detection settings stored in instance settings
+import type { RunStallValues } from "../myrmidon-run-stall.js";
 // myrmidon(1.6.6 CORPUS-2.0 ч.C): the knowledge-corpus module settings of the same row
 import type { StoredCorpusSettings } from "../myrmidon-corpus.js";
 import type { HostDiskSettings } from "../myrmidon-host-disk.js";
@@ -150,6 +152,15 @@ export interface InstanceGeneralSettings {
    * 1.6.5 RUN-ADMISSION).
    */
   runLimits?: StoredRunLimits;
+  /**
+   * myrmidon(RUN-STALL-SETTINGS): the run stall detection settings, changed
+   * from the instance settings page and `GET`/`PATCH /api/myrmidon/run-stall`.
+   * Absent means "use the environment variable, then the default"; the key did
+   * not exist before 1.6.5, so no older row can lack a key the schema demands.
+   * Kept in sync with the validator of the same field
+   * (packages/shared/src/validators/instance.ts).
+   */
+  runStall?: RunStallValues;
   /**
    * myrmidon(1.6.6 CORPUS-2.0 ч.C): the knowledge-corpus module settings (module
    * switch, parse-service base URL, embedder, limits), changed from
