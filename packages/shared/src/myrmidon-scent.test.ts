@@ -74,7 +74,7 @@ describe("scentScore", () => {
     const strongScore = scentScore({ scent: serious }, agent("a", [], "strong"));
     const lightScore = scentScore({ scent: serious }, agent("a", [], "light"));
     expect(strongScore).toBe(DEFAULT_SCENT_WEIGHTS.tierFit);
-    expect(lightScore).toBe(0);
+    expect(lightScore).toBe(-DEFAULT_SCENT_WEIGHTS.tierFit);
   });
 
   it("a task without a scent scores 0 for everyone", () => {
@@ -87,14 +87,14 @@ describe("pickAgentForTask", () => {
     const task = { scent: SCENT };
     const a = agent("b-id", ["css", "ui"]);
     const b = agent("a-id", ["css", "ui"]);
-    expect(pickAgentForTask(task, [a, b])).toBe("a-id");
-    expect(pickAgentForTask(task, [b, a])).toBe("a-id");
+    expect(pickAgentForTask(task, [a, b])?.id).toBe("a-id");
+    expect(pickAgentForTask(task, [b, a])?.id).toBe("a-id");
   });
 
   it("an agent with 2 matching tags beats an agent with 1", () => {
     const task = { scent: SCENT };
     expect(
-      pickAgentForTask(task, [agent("x", ["css"]), agent("y", ["css", "frontend"])]),
+      pickAgentForTask(task, [agent("x", ["css"]), agent("y", ["css", "frontend"])])?.id,
     ).toBe("y");
   });
 
