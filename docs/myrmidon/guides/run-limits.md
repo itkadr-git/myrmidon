@@ -165,3 +165,45 @@ The line is fed by `admissionDenials` in the reply of
 older than the change that adds it) draws no line at all — the screen shows
 nothing rather than a zero it invented, and the rest of the section is
 unaffected.
+
+## Why a queued run waits (1.6.5 F-09)
+
+A run that stays `queued` always carries the reason of its wait, written into
+its context snapshot as `waitReason`. Every exit of the queue sweep that leaves
+runs waiting leaves a reason too; the claim that starts a run clears the note
+again, so a running run shows no stale reason.
+
+| `waitReason` | Why the run waits |
+|---|---|
+| `global_cap` | The concurrency ceiling (`maxConcurrentRuns`) is full |
+| `start_ramp` | The start ramp (`maxStartsPerMinute`) is spent for the current minute |
+| `memory` | The container free-memory floor (`minFreeMemoryMb`) is closed |
+| `host_memory` | The host memory floor (`minFreeHostMemoryMb`) is closed |
+| `host_cpu` | The host CPU ceiling (`maxHostLoadPercentPerCore`) is closed |
+| `agent_fair_share` | The agent has used up its share of starts (`maxPerAgentStartSharePercent`) |
+| `agent_concurrency` | The agent's own concurrency ceiling is full |
+| `priority` | The queue pass started runs, but a heavier run took the slot |
+| `higher_priority_ready` | A ready higher-priority task of the same agent holds this run back |
+| `maintenance` | The agent's maintenance window is open |
+| `agent_not_invokable` | The agent cannot be woken (paused, retired, or similar) and is not being cancelled |
+| `scheduling_suppressed` | The whole scheduling pass is suppressed (e.g. by pause) |
+
+A run that waits longer than the explain threshold is guaranteed to carry a
+reason; the threshold is `MYRMIDON_QUEUED_RUN_EXPLAIN_AFTER_SEC` (default
+`60` seconds, clamped to 10…86400 s), overridden live by
+`instance_settings.general.queuedRunExplainAfterSec`.
+
+There is one deliberate exception: a run whose wait no exit explained keeps
+`waitReason = null`. That is the bug the F-09 fix guards against, and it is
+what the `queue_stall` attention card reports — see
+[queued-run-stall.md](queued-run-stall.md).
+
+## Queued runs cancelled before the ceilings (1.6.5 F-09)
+
+Before the per-agent ceiling and the fair-share exits are even evaluated, the
+sweep cancels every queued run whose task is not startable: a task in
+`backlog`. The cancel is recorded on the run with the error code
+`queued_run_issue_not_startable`, so the run history says why the work
+disappeared instead of looking like a silent loss. A run whose task is hidden
+stays queued — hidden todos are the supported Summarizer pattern, and the
+claim path decides their fate.
