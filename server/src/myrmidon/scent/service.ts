@@ -300,6 +300,18 @@ export function createScentService(deps: ScentServiceDeps) {
           // token budget (a task needs its caste BEFORE the swarm picks it).
           eq(issues.status, "todo"),
           gt(issues.createdAt, lookback),
+          // §2.4: a task without a description never reaches the classifier,
+          // so it would stay scent-less and clog the batch on every tick.
+          sql`${issues.description} is not null and length(trim(${issues.description})) > 0`,
+          // Same ledger as canSpendCall: skip records already attempted in the
+          // last hour (a failed attempt leaves the scent NULL).
+          sql`not exists (
+            select 1 from activity_log al
+            where al.action = 'issue.scent_classified'
+              and al.entity_type = 'issue'
+              and al.entity_id = ${issues.id}::text
+              and al.created_at > now() - interval '1 hour'
+          )`,
         ),
       )
       .orderBy(issues.createdAt)

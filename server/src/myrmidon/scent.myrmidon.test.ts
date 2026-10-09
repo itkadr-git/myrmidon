@@ -20,7 +20,7 @@
 //     on the next tick;
 //  8. the settings reader: defaults, stored override, env kill switch.
 
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { PgDialect } from "drizzle-orm/pg-core";
 import {
   DEFAULT_SCENT_SETTINGS,
@@ -41,6 +41,7 @@ import type {
 } from "./scent/gateway.js";
 import { deriveScentAuto, isUnclassifiableIssue } from "./scent/create-hook.js";
 import { canSpendCall, createScentService } from "./scent/service.js";
+import { SCENT_QUEUE_TICK_MS, startScentQueue } from "./scent/queue.js";
 import { issueScentResponseFormat, parseIssueScentContent } from "./scent/gateway.js";
 
 const CASTES = ["engineer", "designer", "marketer"];
@@ -441,5 +442,40 @@ describe("gateway response contract (acceptance row 9)", () => {
   it("a reply that is not the contract is a null scent", () => {
     expect(parseIssueScentContent("not json", CASTES)).toBeNull();
     expect(parseIssueScentContent(JSON.stringify({ tags: [] }), CASTES)).toBeNull();
+  });
+});
+
+// --- 8. Queue timer: ticks never overlap ------------------------------------
+
+describe("startScentQueue: no re-entrant ticks", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("does not start a second tick while the first is still running", async () => {
+    vi.useFakeTimers();
+    let started = 0;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const stop = startScentQueue({} as never, {
+      listCompanyIds: async () => {
+        started += 1;
+        await gate; // a slow tick: outlives several timer periods
+        return [];
+      },
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(started).toBe(1);
+    await vi.advanceTimersByTimeAsync(SCENT_QUEUE_TICK_MS * 5);
+    expect(started).toBe(1);
+    release();
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(SCENT_QUEUE_TICK_MS);
+    expect(started).toBe(2);
+    stop();
+    await vi.advanceTimersByTimeAsync(SCENT_QUEUE_TICK_MS * 3);
+    expect(started).toBe(2);
   });
 });

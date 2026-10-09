@@ -26,7 +26,7 @@ import { DEFAULT_SCENT_SETTINGS, readScentSettings } from "@paperclipai/shared";
 import { classifyAgentScent, classifyIssueScent, type ScentGatewayDeps } from "./gateway.js";
 import { baseStrengthFromGeneral, createScentService, scentSettingsFromGeneral } from "./service.js";
 
-type TimerHandle = ReturnType<typeof setInterval>;
+type TimerHandle = ReturnType<typeof setTimeout>;
 
 /** How often the queue runs. Deliberately coarse — the hour budget, not the
  * tick, is the rate limiter. */
@@ -148,14 +148,30 @@ export async function runScentQueueTick(
  * immediately in the background; failures are logged, never thrown.
  */
 export function startScentQueue(db: Db, ports: ScentQueuePorts = {}): () => void {
-  const tick = () =>
-    runScentQueueTick(db, ports).catch((err) =>
-      logger.error({ err }, "scent queue tick failed"),
-    );
-  const timer: TimerHandle = setInterval(() => void tick(), SCENT_QUEUE_TICK_MS);
-  (timer as { unref?: () => void }).unref?.();
-  void tick();
-  return () => clearInterval(timer);
+  let stopped = false;
+  let timer: TimerHandle | null = null;
+  // Self-scheduling: the next tick is armed only after the current one has
+  // finished, so ticks can never overlap (canSpendCall is checked before the
+  // gateway call and the ledger entry is written after it).
+  const schedule = () => {
+    if (stopped) return;
+    timer = setTimeout(() => void run(), SCENT_QUEUE_TICK_MS);
+    (timer as { unref?: () => void }).unref?.();
+  };
+  const run = async () => {
+    try {
+      await runScentQueueTick(db, ports);
+    } catch (err) {
+      logger.error({ err }, "scent queue tick failed");
+    } finally {
+      schedule();
+    }
+  };
+  void run();
+  return () => {
+    stopped = true;
+    if (timer) clearTimeout(timer);
+  };
 }
 
 export { DEFAULT_SCENT_SETTINGS };

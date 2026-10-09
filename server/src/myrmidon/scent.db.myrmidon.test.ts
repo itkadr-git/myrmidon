@@ -202,6 +202,30 @@ describeEmbeddedPostgres("myrmidon(1.6.5 F-26 T10 SCENT) on a real database", ()
     expect(slice.agentIds).toEqual([withCaps!.id]);
   });
 
+  it("listMarkupQueue: descriptionless todos and records attempted within the hour are not picked", async () => {
+    await makeCompany();
+    for (let i = 0; i < 25; i += 1) {
+      const id = await makeIssue({ description: i % 3 === 0 ? null : i % 3 === 1 ? "" : "  \n " });
+      await db.execute(
+        sql`update issues set created_at = now() - interval '10 days' where id = ${id}`,
+      );
+    }
+    const fresh = await makeIssue({ description: "Есть описание." });
+    const attempted = await makeIssue({ description: "Уже пробовали." });
+    await db.insert(activityLog).values({
+      companyId,
+      actorType: "system",
+      actorId: "system",
+      action: "issue.scent_classified",
+      entityType: "issue",
+      entityId: attempted,
+      details: { ok: false },
+    });
+
+    const slice = await serviceWith(gatewayReturning(CSS_SCENT)).listMarkupQueue(20);
+    expect(slice.issueIds).toEqual([fresh]);
+  });
+
   // --- the hourly ledger counts failures ---------------------------------------
 
   it("a refused gateway call spends the hour budget: the same record is not re-picked", async () => {
