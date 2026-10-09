@@ -30,7 +30,12 @@ divergence-section: 1.6.1 — BOT-DISK B: общий кэш пакетов дл�
   every spawned git/tar carries a 10-minute timeout so a hung tool cannot hold a pass.
   All `tar -tf` verification streams the listing to /dev/null or a chunked counter
   instead of buffering it in memory. If even the tar cannot be written or verified,
-  nothing is deleted.
+  nothing is deleted. The tar of a legacy directory without `.git` (`archiveTree`) has
+  the same bounds: over 2 GiB (`.git` not counted) or without room in the archive root
+  it refuses, and the directory stays. An unknown amount of free space (a failed
+  `statfs`) counts as none.
+- Archive retention (30 days / 2 GiB) runs once per executed botd pass, after the
+  actions; the entries archived in that pass are never evicted by the quota.
 - The rhythm of the rules: the same op on the same path is not attempted more than
   once per hour (`botd-cooldown.json`, keyed by path+op — a different op on the same
   path is a different decision); a repeat inside the window is a silent skip —

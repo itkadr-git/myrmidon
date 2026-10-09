@@ -344,7 +344,17 @@ async function main() {
     "delete-archive": async (a) => removePath(a.path, [ARCHIVE_DIR]),
   };
 
+  // Archive retention (30 days / 2 GiB) once per pass, after the actions. Entries created
+  // during this pass are never evicted: the only copy of someone's work outlives the quota.
+  const retention = async ({ startedAt }) => {
+    if (!archiveMod || typeof archiveMod.retainPass !== "function") return;
+    const r = archiveMod.retainPass(ARCHIVE_DIR, { startedAt });
+    if (!r.ok) throw new Error(r.reason);
+    if (r.removed.length > 0) log(`botd: archive retention retired ${r.removed.length} entries (${r.removed.map((x) => x.reason).join(",")}), ${r.remaining} left, ${r.remainingBytes} bytes`);
+  };
+
   const loop = loopMod.createLoop({
+    retention,
     desired,
     rules,
     gather,

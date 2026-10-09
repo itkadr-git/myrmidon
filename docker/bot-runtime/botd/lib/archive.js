@@ -139,13 +139,27 @@ function countTarEntries(tar) {
 
 /** Free bytes on the filesystem that holds `dir` (Infinity when the kernel has no statfs). */
 function freeBytesOf(dir) {
+  // A failed probe (no statfs, an unreadable mount) is "unknown", and unknown free space
+  // must not green-light a multi-GiB write: report 0, the caller then refuses the tar.
   try {
-    if (typeof fs.statfsSync !== "function") return Infinity;
+    if (typeof fs.statfsSync !== "function") return 0;
     const s = fs.statfsSync(dir);
     return Number(s.bavail) * Number(s.bsize);
   } catch {
-    return Infinity; // a failed probe must not block the archive; tar's own error will say
+    return 0;
   }
+}
+
+/**
+ * Shared guard of every whole-directory tar (the fallback full.tar.zst and archiveTree):
+ * a directory over `cap` bytes, or an archive filesystem without room for it, is refused.
+ * @returns {string|undefined} the reason to refuse, undefined when the tar may be written
+ */
+function tarRefusal(dirBytes, cap, archiveRoot, minFree) {
+  if (dirBytes > cap) return `the directory is ${dirBytes} bytes, over the fallback limit of ${cap}`;
+  const free = freeBytesOf(archiveRoot);
+  if (free < Math.max(dirBytes * 2, minFree)) return `only ${free} bytes free in ${archiveRoot} for a ${dirBytes}-byte directory`;
+  return undefined;
 }
 
 export function compactTs(date) {
@@ -232,9 +246,12 @@ function listUntracked(copyPath, opts) {
   return out.split("\0").filter(Boolean);
 }
 
-function totalSize(copyPath, files) {
+// `limit`: stop walking as soon as the sum exceeds it (the caller only compares with it);
+// `skipGit`: a `.git` entry at any depth is not counted (the tree tar excludes it).
+function totalSize(copyPath, files, { limit = Infinity, skipGit = false } = {}) {
   let sum = 0;
   const add = (abs) => {
+    if (sum > limit) return;
     let st;
     try {
       st = fs.lstatSync(abs);
@@ -249,7 +266,11 @@ function totalSize(copyPath, files) {
       } catch {
         return; // unreadable directory: tar will fail on it with the real error
       }
-      for (const n of names) add(path.join(abs, n));
+      for (const n of names) {
+        if (skipGit && n === ".git") continue;
+        add(path.join(abs, n));
+        if (sum > limit) return;
+      }
       return;
     }
     sum += st.size;
@@ -262,7 +283,7 @@ function totalSize(copyPath, files) {
  * Archives the unpushed work of a task copy.
  * @param {string} copyPath worktree/clone directory
  * @param {string} key issue key (ABC-101)
- * @param {{archiveRoot?:string, repo?:string, now?:Date, untrackedCapBytes?:number, gitBin?:string, looseKey?:boolean}} [opts]
+ * @param {{archiveRoot?:string, repo?:string, now?:Date, untrackedCapBytes?:number, gitBin?:string, looseKey?:boolean, fullTarCapBytes?:number}} [opts]
  *   `looseKey`: accept any safe file-name stem as the key (legacy directories that are not named after an issue)
  *   `fullTarCapBytes`: size limit of the fallback full.tar.zst (default FULL_TAR_CAP_BYTES); over the cap
  *   the fallback is refused with ok:false and the directory is left in place
@@ -325,14 +346,9 @@ export function archive(copyPath, key, opts = {}) {
         // original failure returns as ok:false.
         const bundleErr = `bundle create failed: ${created.stderr.trim().slice(0, 300)}`;
         fs.rmSync(bundle, { force: true });
-        const dirBytes = totalSize(copyPath, ["."]);
-        if (dirBytes > fullTarCap) {
-          return { ok: false, reason: `${bundleErr}; fallback skipped: the directory is ${dirBytes} bytes, over the fallback limit of ${fullTarCap} — left in place`.slice(0, 500) };
-        }
-        const free = freeBytesOf(archiveRoot);
-        if (free < Math.max(dirBytes * 2, FULL_TAR_MIN_FREE_BYTES)) {
-          return { ok: false, reason: `${bundleErr}; fallback skipped: only ${free} bytes free in ${archiveRoot} for a ${dirBytes}-byte directory — left in place`.slice(0, 500) };
-        }
+        const dirBytes = totalSize(copyPath, ["."], { limit: fullTarCap });
+        const refusal = tarRefusal(dirBytes, fullTarCap, archiveRoot, FULL_TAR_MIN_FREE_BYTES);
+        if (refusal) return { ok: false, reason: `${bundleErr}; fallback skipped: ${refusal} — left in place`.slice(0, 500) };
         const fullTar = `${base}.full.tar.zst`;
         try {
           run("tar", ["-cf", fullTar, "--zstd", "-C", copyPath, "."]);
@@ -413,10 +429,13 @@ export function archive(copyPath, key, opts = {}) {
  * without `.git`) as one tar. `.git` is never part of it. Layout:
  * `<archiveRoot>/<name>-<ts>.dir.tar`, manifest entry `{key, dirTar, createdAt,
  * sizeBytes, truncatedUntracked:false}`. Same contract as `archive()`: ok:true only
- * after the tar was listed back; otherwise nothing is left behind.
+ * after the tar was listed back; otherwise nothing is left behind. Bounded like the
+ * fallback full tar: over `fullTarCapBytes` (default FULL_TAR_CAP_BYTES) or without free
+ * space in the archive root (`minFreeBytes`) it returns ok:false and the tree stays.
  * @returns {{ok:true, entry:object}|{ok:false, reason:string}}
  */
 export function archiveTree(dirPath, key, opts = {}) {
+  const fullTarCap = opts.fullTarCapBytes ?? FULL_TAR_CAP_BYTES;
   const archiveRoot = opts.archiveRoot || DEFAULT_ARCHIVE_ROOT;
   const now = opts.now || new Date();
   if (typeof key !== "string" || !SAFE_KEY_RE.test(key)) return { ok: false, reason: `invalid archive key ${JSON.stringify(key)}` };
@@ -430,6 +449,12 @@ export function archiveTree(dirPath, key, opts = {}) {
       if (!fs.existsSync(tar)) break;
       ts = new Date(ts.getTime() + 1000);
     }
+    // Same bound as the fallback full tar: an uncompressed tar of node_modules and build
+    // artifacts must not fill the archive volume (a full volume stops the bots). Over the
+    // limit or without room: ok:false, the directory stays where it is.
+    const treeBytes = totalSize(dirPath, ["."], { limit: fullTarCap, skipGit: true });
+    const refusal = tarRefusal(treeBytes, fullTarCap, archiveRoot, opts.minFreeBytes ?? FULL_TAR_MIN_FREE_BYTES);
+    if (refusal) return { ok: false, reason: `directory tree not archived: ${refusal} — left in place`.slice(0, 500) };
     run("tar", ["-cf", tar, "--exclude=.git", "-C", dirPath, "."]);
     checkTarReadable(tar);
     const entry = { key, dirTar: tar, createdAt: now.toISOString(), sizeBytes: sizeOf(tar), truncatedUntracked: false };
@@ -523,4 +548,19 @@ export function retain(archiveRoot, opts = {}) {
   } catch (e) {
     return { ok: false, reason: e instanceof Error ? e.message : String(e) };
   }
+}
+
+/**
+ * One botd pass of retention: `retain` with everything archived since the pass began
+ * protected from the quota (the only copy of someone's work must outlive the cap).
+ * @param {string} archiveRoot
+ * @param {{startedAt: Date, now?:Date, maxAgeDays?:number, capBytes?:number}} opts
+ */
+export function retainPass(archiveRoot, opts) {
+  const since = opts.startedAt.getTime() - 1000;
+  const keepCreatedAt = readManifest(archiveRoot, opts.now)
+    .archives.filter((e) => e && e.createdAt && Date.parse(e.createdAt) >= since)
+    .map((e) => e.createdAt);
+  const { startedAt: _s, ...rest } = opts;
+  return retain(archiveRoot, { ...rest, keepCreatedAt });
 }

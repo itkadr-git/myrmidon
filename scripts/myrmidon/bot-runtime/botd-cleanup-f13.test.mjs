@@ -24,7 +24,7 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../.
 const lib = (name) => path.join(ROOT, "docker/bot-runtime/botd/lib", name);
 const { guardedRemove, inside } = await import(lib("remove.js"));
 const { createAttention, createCooldown, DEFAULT_TTL_MS } = await import(lib("cache.js"));
-const { archive, readManifest, retain, verifyEntry, FULL_TAR_CAP_BYTES } = await import(lib("archive.js"));
+const { archive, archiveTree, readManifest, retain, retainPass, verifyEntry, FULL_TAR_CAP_BYTES } = await import(lib("archive.js"));
 const { createLoop } = await import(lib("loop.js"));
 const { archiveThenRemove } = await import(lib("legacy.js"));
 
@@ -293,7 +293,7 @@ describe("archive(): failed bundle falls back to a verified full tar", () => {
 });
 
 // A minimal fake loop rig: static rules, counting executor, canned board answer.
-function loopRig({ actions, executor, cooldown }) {
+function loopRig({ actions, executor, cooldown, retention }) {
   const logs = [];
   const calls = [];
   const loop = createLoop({
@@ -302,6 +302,7 @@ function loopRig({ actions, executor, cooldown }) {
     gather: async () => ({ inventory: { worktrees: [], scratch: [], bases: [], archives: [] }, parts: {} }),
     executor,
     cooldown,
+    retention,
     report: { build: (parts) => ({ built: true, parts }), send: async () => ({ ok: true, nextReportSec: 300 }) },
     writeDiskState: () => {},
     log: (l) => logs.push(l),
@@ -452,5 +453,131 @@ describe("loop: the rhythm cache and the pass summary", () => {
     assert.equal(rows.find((x) => x.path.endsWith("ABC-1")).result, "ok");
     assert.ok(logs.some((l) => l.includes("botd loop: cleaned 1, deferred 1 (foreign-uid: 1)")), logs.join("\n"));
     assert.equal(logs.filter((l) => l.includes("failed")).length, 0, "a deferral must not look like an error");
+  });
+});
+
+describe("archiveTree: bounded like the fallback tar", () => {
+  const makeTree = (name, bytes) => {
+    const dir = path.join(tmp, name, "tree");
+    fs.mkdirSync(path.join(dir, "node_modules"), { recursive: true });
+    fs.writeFileSync(path.join(dir, "node_modules", "big.bin"), Buffer.alloc(bytes, 1));
+    fs.mkdirSync(path.join(dir, ".git"));
+    fs.writeFileSync(path.join(dir, ".git", "huge"), Buffer.alloc(50_000, 2)); // never part of the tar
+    return { dir, archiveRoot: path.join(tmp, name, "archive") };
+  };
+
+  it("a tree under the limit is archived and verified (control)", () => {
+    const { dir, archiveRoot } = makeTree("tree-ok", 10_000);
+    const r = archiveTree(dir, "legacy-ok", { archiveRoot, fullTarCapBytes: 20_000, minFreeBytes: 0 });
+    assert.equal(r.ok, true, r.reason);
+    assert.ok(fs.existsSync(r.entry.dirTar));
+  });
+
+  it("a tree over the limit is refused: ok:false, no tar, no manifest entry, directory in place", () => {
+    const { dir, archiveRoot } = makeTree("tree-cap", 10_000);
+    const r = archiveTree(dir, "legacy-cap", { archiveRoot, fullTarCapBytes: 5_000, minFreeBytes: 0 });
+    assert.equal(r.ok, false);
+    assert.match(r.reason, /not archived: the directory is \d+ bytes, over the fallback limit of 5000/);
+    assert.match(r.reason, /left in place/);
+    assert.ok(fs.existsSync(path.join(dir, "node_modules", "big.bin")));
+    assert.deepEqual(fs.readdirSync(archiveRoot), [], "no tar was started");
+  });
+
+  it(".git does not count toward the limit (the tar excludes it)", () => {
+    const { dir, archiveRoot } = makeTree("tree-git", 1_000);
+    const r = archiveTree(dir, "legacy-git", { archiveRoot, fullTarCapBytes: 5_000, minFreeBytes: 0 });
+    assert.equal(r.ok, true, r.reason);
+  });
+
+  it("without free space in the archive root the tree is refused", () => {
+    const { dir, archiveRoot } = makeTree("tree-free", 1_000);
+    const r = archiveTree(dir, "legacy-free", { archiveRoot, minFreeBytes: Number.MAX_SAFE_INTEGER });
+    assert.equal(r.ok, false);
+    assert.match(r.reason, /only \d+ bytes free in .* for a \d+-byte directory/);
+    assert.deepEqual(fs.readdirSync(archiveRoot), []);
+    assert.ok(fs.existsSync(dir));
+  });
+
+  it("legacy.archiveThenRemove keeps the directory when archiveTree refuses it", () => {
+    const { dir, archiveRoot } = makeTree("tree-legacy", 10_000);
+    let removed = false;
+    assert.throws(
+      () =>
+        archiveThenRemove(
+          { path: dir, key: "legacy-x" },
+          {
+            archiveMod: { archive, archiveTree: (p, k, o) => archiveTree(p, k, { ...o, fullTarCapBytes: 5_000, minFreeBytes: 0 }) },
+            isGit: () => false,
+            remove: () => { removed = true; },
+            archiveRoot,
+            nestedGit: () => [],
+          },
+        ),
+      /archive-incomplete: directory tree: .*over the fallback limit/,
+    );
+    assert.equal(removed, false);
+    assert.ok(fs.existsSync(dir));
+  });
+});
+
+describe("retention is part of the botd pass", () => {
+  const seed = (name, entries) => {
+    const archiveRoot = path.join(tmp, name);
+    fs.mkdirSync(archiveRoot, { recursive: true });
+    const archives = entries.map(({ key, createdAt, bytes }) => {
+      const f = path.join(archiveRoot, `${key}.patch`);
+      fs.writeFileSync(f, Buffer.alloc(bytes, 1));
+      return { key, patch: f, createdAt, sizeBytes: bytes, truncatedUntracked: false };
+    });
+    fs.writeFileSync(path.join(archiveRoot, "manifest.json"), JSON.stringify({ version: 1, archives }));
+    return archiveRoot;
+  };
+
+  it("retainPass retires an expired entry and keeps the one created in this pass even over the cap", () => {
+    const now = at("2026-10-09T12:00:00Z");
+    const archiveRoot = seed("ret-1", [
+      { key: "OLD-1", createdAt: "2026-08-01T00:00:00Z", bytes: 100 },
+      { key: "NEW-1", createdAt: "2026-10-09T11:59:59Z", bytes: 5_000 },
+    ]);
+    const r = retainPass(archiveRoot, { startedAt: at("2026-10-09T11:59:00Z"), now, capBytes: 10 });
+    assert.equal(r.ok, true, r.reason);
+    assert.deepEqual(r.removed.map((x) => [x.key, x.reason]), [["OLD-1", "age"]]);
+    assert.deepEqual(readManifest(archiveRoot).archives.map((e) => e.key), ["NEW-1"]);
+    assert.ok(fs.existsSync(path.join(archiveRoot, "NEW-1.patch")));
+    assert.ok(!fs.existsSync(path.join(archiveRoot, "OLD-1.patch")));
+  });
+
+  it("the quota evicts an older entry that is not from this pass", () => {
+    const archiveRoot = seed("ret-2", [
+      { key: "A-1", createdAt: "2026-10-01T00:00:00Z", bytes: 4_000 },
+      { key: "B-1", createdAt: "2026-10-09T11:59:59Z", bytes: 4_000 },
+    ]);
+    const r = retainPass(archiveRoot, { startedAt: at("2026-10-09T11:59:00Z"), now: at("2026-10-09T12:00:00Z"), capBytes: 5_000 });
+    assert.deepEqual(r.removed.map((x) => [x.key, x.reason]), [["A-1", "cap"]]);
+  });
+
+  it("the loop calls retention after the actions of an executed pass, and a throwing hook does not break the pass", async () => {
+    const order = [];
+    const actions = [{ op: "remove", path: "/scratch/r1", reason: "age" }];
+    const { loop, logs } = loopRig({
+      actions,
+      executor: { remove: async () => { order.push("action"); return "removed"; } },
+      retention: async ({ startedAt }) => {
+        order.push("retention");
+        assert.ok(startedAt instanceof Date);
+        throw new Error("manifest locked");
+      },
+    });
+    const r = await loop.runOnce();
+    assert.deepEqual(order, ["action", "retention"]);
+    assert.equal(r.executed.filter((x) => x.path === "/scratch/r1")[0].result, "ok");
+    assert.ok(logs.some((l) => l.includes("archive retention failed: manifest locked")), logs.join("\n"));
+  });
+
+  it("a dry run (--plan) never runs retention", async () => {
+    let called = false;
+    const { loop } = loopRig({ actions: [], executor: {}, retention: async () => { called = true; } });
+    await loop.runOnce({ dryRun: true });
+    assert.equal(called, false);
   });
 });
