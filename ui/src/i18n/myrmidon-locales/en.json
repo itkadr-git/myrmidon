@@ -1024,5 +1024,21 @@
     "agingStepWeightHint": "Weight gained per full aging step.",
     "starvationLimit": "Starvation limit (minutes)",
     "starvationLimitHint": "A run waiting this long starts with the top weight; 0 turns the limit off."
+  },
+  "swarmSettingsHelp": {
+    "panelTitle": "Self-organization (swarm)",
+    "panelIntro": "Since 1.6.5 the swarm is a shipped feature, not a pilot. The board itself matches every unassigned ready task with a free agent of the right caste and wakes it with that task in hand (wake reason swarm_matched). Changes apply live, without a restart; every change lands in the journal below.",
+    "enabled": "Swarm master switch. Off: no matching, live leases are released at once. The variable MYRMIDON_SWARM_CLAIM_ENABLED can force the value.",
+    "pheromoneDefaults": "Pheromone strength of a task by priority when the task card does not set it: critical 100, high 30, medium 10, low 1.",
+    "aging": "A task that waits grows stronger: +agingStep every agingStepHours hours, capped at +agingCap.",
+    "failPenalty": "A failed run without a task change lowers the strength by this amount; it never drops below zero.",
+    "cooldownBaseMin": "After a failed run without changes the task is not matched for cooldownBaseMin x 2^(n-1) minutes, capped at 24 hours. Any change to the task lifts the cooldown.",
+    "p0Preemption": "A critical task goes first regardless of pheromone strength.",
+    "leaseTtlSec": "How long one lease lives without a heartbeat, in seconds (60-86400).",
+    "maxActiveTasks": "Ceiling of live leases per agent; empty = no ceiling (overridable by MYRMIDON_SWARM_MAX_ACTIVE_TASKS).",
+    "sweepIntervalSec": "How often the safety pass runs, in seconds (minimum 5); it only picks up what events missed.",
+    "scent": "Agent-pick weights inside a caste: tagWeight (tag overlap), tierFit (fit of the agent tier to the task), seriousThreshold (when a task counts as serious), consequencesBonus (bonus for awareness of consequences).",
+    "runWithoutTask": "An automatic run without a task in context closes as skipped (run_without_task) before the adapter starts - zero tokens spent.",
+    "docsLink": "How to switch the swarm on and verify it in three steps: docs/myrmidon/guides/swarm-self-organization.md"
   }
 }
