@@ -13292,6 +13292,108 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       status: "active",
       setup: { step: "complete" },
     });
+    // F-10 review: the manual completion request is an idempotent no-op
+    // against an already-auto-activated Telegram endpoint — the endpoint is
+    // returned, not a 409 conflict.
+    await expect(service.test(endpoint.id)).resolves.toMatchObject({
+      status: "active",
+      setup: { step: "complete" },
+    });
+    await service.shutdown();
+  });
+
+  it("leaves the tool connection untouched when a concurrent reconnect empties the delivery-complete update", async () => {
+    const fixture = await seedCompany();
+    const { callbacks, endpoint, runtime, service } =
+      await configuredTelegramEndpoint(fixture);
+    const thread = makeThread({
+      channelId: "77330013",
+      id: "telegram:77330013",
+      isDM: true,
+      name: "Telegram reconnect-race user",
+    });
+    await deliverMessage({
+      callbacks,
+      endpointId: endpoint.id,
+      provider: "telegram",
+      thread: thread.thread,
+      message: makeMessage({
+        id: "94",
+        text: "Seed the reconnect-race conversation",
+        userId: "77330013",
+        raw: { message_id: 94, chat: { id: 77330013, type: "private" } },
+      }),
+      trigger: "direct_message",
+    });
+    const [conversation] = await db
+      .select()
+      .from(chatConversations)
+      .where(eq(chatConversations.endpointId, endpoint.id));
+    if (!conversation) throw new Error("Expected Telegram conversation");
+
+    await db.insert(chatPublications).values({
+      companyId: fixture.companyId,
+      endpointId: endpoint.id,
+      conversationId: conversation.id,
+      issueId: conversation.issueId,
+      idempotencyKey: `f10-race-delivery:${endpoint.id}`,
+      payload: { text: "Notification that races a reconnect" },
+      state: "pending",
+    });
+    // Pre-mark the connection with the state that a wrongly unconditional
+    // activation would erase: lastError plus the inactive defaults.
+    await db
+      .update(toolConnections)
+      .set({ lastError: "stale health probe" })
+      .where(eq(toolConnections.id, endpoint.connectionId));
+
+    const providerRuntime = runtime.endpoints.get(endpoint.id);
+    if (!providerRuntime) throw new Error("Expected Telegram runtime");
+    providerRuntime.postHook = async () => {
+      // A concurrent reconnect bumps the runtime generation while the
+      // provider send is in flight; the guarded completion update must
+      // then match zero rows and stay a total no-op.
+      providerRuntime.postHook = undefined;
+      const [live] = await db
+        .select({ setup: chatEndpoints.setup })
+        .from(chatEndpoints)
+        .where(eq(chatEndpoints.id, endpoint.id));
+      await db
+        .update(chatEndpoints)
+        .set({
+          setup: {
+            ...live!.setup,
+            runtimeGeneration: (live!.setup.runtimeGeneration ?? 0) + 1,
+          },
+          updatedAt: new Date(),
+        })
+        .where(eq(chatEndpoints.id, endpoint.id));
+    };
+    await service.processPendingPublications();
+
+    const [stored] = await db
+      .select({
+        status: chatEndpoints.status,
+        setup: chatEndpoints.setup,
+        activatedAt: chatEndpoints.activatedAt,
+      })
+      .from(chatEndpoints)
+      .where(eq(chatEndpoints.id, endpoint.id));
+    expect(stored!.status).toBe("verifying");
+    expect(stored!.setup).toMatchObject({ step: "test" });
+    expect(stored!.activatedAt).toBeNull();
+    const [connection] = await db
+      .select({
+        status: toolConnections.status,
+        enabled: toolConnections.enabled,
+        healthStatus: toolConnections.healthStatus,
+        lastError: toolConnections.lastError,
+      })
+      .from(toolConnections)
+      .where(eq(toolConnections.id, endpoint.connectionId));
+    expect(connection!.status).not.toBe("active");
+    expect(connection!.enabled).toBe(false);
+    expect(connection!.lastError).toBe("stale health probe");
     await service.shutdown();
   });
 

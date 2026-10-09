@@ -38282,15 +38282,16 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
                   // the same proof the manual "test" step demands. Settle the
                   // wizard in this commit: setup.step → complete and status →
                   // active, in the same transaction as the delivery receipt.
-                  // The WHERE clause re-checks the live row, so a concurrent
-                  // reconnect (generation bump) or an already-completed setup
-                  // makes this a no-op instead of a stale overwrite.
+                  // The WHERE clause re-checks the live row (verifying status +
+                  // runtime generation, matching the manual path's `step ===
+                  // "test"` precondition), so a concurrent reconnect or an
+                  // already-completed setup makes this a no-op.
                   if (
                     authorizationClaim.endpoint.provider === "telegram" &&
                     authorizationClaim.endpoint.status === "verifying" &&
-                    authorizationClaim.endpoint.setup.step !== "complete"
+                    authorizationClaim.endpoint.setup.step === "test"
                   ) {
-                    await tx
+                    const activated = await tx
                       .update(chatEndpoints)
                       .set({
                         status: "active",
@@ -38311,26 +38312,31 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
                           eq(chatEndpoints.status, "verifying"),
                           sql`coalesce((${chatEndpoints.setup}->>'runtimeGeneration')::integer, 0) = ${runtimeGeneration(authorizationClaim.endpoint.setup)}`,
                         ),
-                      );
-                    // The manual test step also settles the tool connection;
-                    // the delivery-completion path must leave the same shape.
-                    await tx
-                      .update(toolConnections)
-                      .set({
-                        status: "active",
-                        enabled: true,
-                        healthStatus: "healthy",
-                        healthMessage: "Connected",
-                        lastError: null,
-                        healthCheckedAt: committedAt,
-                        updatedAt: committedAt,
-                      })
-                      .where(
-                        eq(
-                          toolConnections.id,
-                          authorizationClaim.endpoint.connectionId,
-                        ),
-                      );
+                      )
+                      .returning({ id: chatEndpoints.id });
+                    // The manual test step settles the tool connection only
+                    // when the endpoint actually flipped to active; a guarded
+                    // update that matched zero rows must leave the connection
+                    // untouched so endpoint and connection never diverge.
+                    if (activated.length > 0) {
+                      await tx
+                        .update(toolConnections)
+                        .set({
+                          status: "active",
+                          enabled: true,
+                          healthStatus: "healthy",
+                          healthMessage: "Connected",
+                          lastError: null,
+                          healthCheckedAt: committedAt,
+                          updatedAt: committedAt,
+                        })
+                        .where(
+                          eq(
+                            toolConnections.id,
+                            authorizationClaim.endpoint.connectionId,
+                          ),
+                        );
+                    }
                   }
                 }
                 if (authorizationActionId) {
