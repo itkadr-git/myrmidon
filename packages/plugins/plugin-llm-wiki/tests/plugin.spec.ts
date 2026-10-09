@@ -3882,6 +3882,72 @@ Duplicate headings receive stable suffixes.
         "No job handler registered",
       );
     });
+
+    it("folder-health-check reports per-company wiki folder state to log and metric", async () => {
+      const harness = createTestHarness({ manifest });
+      harness.seed({
+        companies: [
+          { id: COMPANY_ID, name: "Paperclip", issuePrefix: "PAP" },
+          { id: "22222222-2222-4222-8222-222222222222", name: "Second Co", issuePrefix: "SEC" },
+        ] as never,
+      });
+      await plugin.definition.setup(harness.ctx);
+      // Only the first company has a configured (healthy) wiki root.
+      await harness.ctx.localFolders.configure({
+        companyId: COMPANY_ID,
+        folderKey: "wiki-root",
+        path: "/tmp/paperclip-plugin-llm-wiki-health-test",
+        requiredDirectories: [],
+        requiredFiles: [],
+      });
+
+      await expect(harness.runJob("folder-health-check")).resolves.toBeUndefined();
+
+      const completed = harness.logs.find((entry) =>
+        entry.message.includes("folder health check completed"),
+      );
+      expect(completed).toBeDefined();
+      expect(completed!.meta).toMatchObject({ companies: 2, healthy: 1, unhealthy: 1 });
+
+      const unhealthyNote = harness.logs.find((entry) =>
+        entry.message.includes("folder health check: unhealthy"),
+      );
+      expect(unhealthyNote).toBeDefined();
+      expect(unhealthyNote!.meta).toMatchObject({
+        configured: false,
+        problems: ["not_configured"],
+      });
+
+      expect(harness.metrics).toContainEqual(
+        expect.objectContaining({ name: "folderHealth", value: 0 }),
+      );
+    });
+
+    it("folder-health-check reports a healthy fleet with gauge 1 and no warn note", async () => {
+      const harness = createTestHarness({ manifest });
+      harness.seed({
+        companies: [{ id: COMPANY_ID, name: "Paperclip", issuePrefix: "PAP" }] as never,
+      });
+      await plugin.definition.setup(harness.ctx);
+      await harness.ctx.localFolders.configure({
+        companyId: COMPANY_ID,
+        folderKey: "wiki-root",
+        path: "/tmp/paperclip-plugin-llm-wiki-health-test",
+        requiredDirectories: [],
+        requiredFiles: [],
+      });
+
+      await harness.runJob("folder-health-check");
+
+      const completed = harness.logs.find((entry) =>
+        entry.message.includes("folder health check completed"),
+      );
+      expect(completed!.meta).toMatchObject({ companies: 1, healthy: 1, unhealthy: 0 });
+      expect(harness.logs.some((entry) => entry.message.includes("folder health check: unhealthy"))).toBe(false);
+      expect(harness.metrics).toContainEqual(
+        expect.objectContaining({ name: "folderHealth", value: 1 }),
+      );
+    });
   });
 
   describe("unknown action surface", () => {

@@ -3,6 +3,7 @@ import {
   runWorker,
   type PluginApiRequestInput,
   type PluginContext,
+  type PluginJobContext,
   type PluginManagedRoutineDeclaration,
   type PluginManagedRoutineResolution,
 } from "@paperclipai/plugin-sdk";
@@ -202,6 +203,62 @@ const plugin = definePlugin({
         }
       });
     }
+
+    ctx.jobs.register("folder-health-check", async (job: PluginJobContext) => {
+      // Hourly health probe over every company's configured wiki root.
+      // Declared in the manifest (`jobs:` → `folder-health-check`, cron
+      // `0 * * * *`). Reports per-company folder status to the plugin log
+      // and a `folderHealth` gauge point to plugin metrics, so operators
+      // can see broken/unconfigured wiki roots without board queries.
+      const companies = await ctx.companies.list();
+      let healthy = 0;
+      let unhealthy = 0;
+      for (const company of companies) {
+        try {
+          const status = await ctx.localFolders.status(company.id, WIKI_ROOT_FOLDER_KEY);
+          if (status.healthy) {
+            healthy += 1;
+            ctx.logger.debug("LLM Wiki folder health check: healthy", {
+              runId: job.runId,
+              trigger: job.trigger,
+              companyId: company.id,
+              path: status.path,
+              checkedAt: status.checkedAt,
+            });
+          } else {
+            unhealthy += 1;
+            ctx.logger.warn("LLM Wiki folder health check: unhealthy", {
+              runId: job.runId,
+              trigger: job.trigger,
+              companyId: company.id,
+              configured: status.configured,
+              problems: status.problems.map((problem) => problem.code),
+            });
+          }
+        } catch (err) {
+          unhealthy += 1;
+          ctx.logger.warn("LLM Wiki folder health check: status unavailable", {
+            runId: job.runId,
+            trigger: job.trigger,
+            companyId: company.id,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+      }
+      // Gauge: 1 while no company's wiki root is unhealthy, 0 otherwise.
+      await ctx.metrics.write("folderHealth", unhealthy === 0 ? 1 : 0, {
+        healthy: String(healthy),
+        unhealthy: String(unhealthy),
+      });
+      ctx.logger.info("LLM Wiki folder health check completed", {
+        runId: job.runId,
+        trigger: job.trigger,
+        scheduledAt: job.scheduledAt,
+        companies: companies.length,
+        healthy,
+        unhealthy,
+      });
+    });
 
     ctx.data.register("overview", async (params) => {
       const companyId = readCompanyIdFromParams(params);
