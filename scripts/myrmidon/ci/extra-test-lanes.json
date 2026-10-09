@@ -86,6 +86,14 @@
       ]
     },
     {
+      "package": "@paperclipai/plugin-mail-imap",
+      "kind": "vitest-in-package",
+      "args": [
+        "--config",
+        "./vitest.config.ts"
+      ]
+    },
+    {
       "package": "@paperclipai/plugin-workspace-diff",
       "kind": "vitest-in-package",
       "args": []

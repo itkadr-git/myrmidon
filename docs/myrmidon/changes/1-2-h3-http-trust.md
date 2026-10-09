@@ -1,7 +1,0 @@
----
-divergence-section: Трек 3 — шлюз инструментов и адаптер Hermes
----
-
-## divergence
-
-| H3 | Плоский http адаптера `hermes_gateway` доверяет только системным именам контейнеров бота (`myrmidon-bot-<botKey>`, набор символов ключа шаблона флота): `isBotContainerHostname` + `allowsInsecureRemoteHttp` в transport-security; флаг карты `dangerouslyAllowInsecureRemoteHttp` убран из схемы карты (ключ читается только из raw JSON адаптера для локальной разработки), card-sync его не пишет и вычищает остатки допредеплоя W2a; диагностика доступа делит loopback/контейнер (ok), escape-hatch (warn), прочий удалённый плоский http (denied); lookalike-имена отклоняются | `packages/adapters/hermes/src/gateway/server/transport-security.ts`, `config-schema.ts`, `execute.ts`, `test.ts`; `server/src/myrmidon/bot-containers/card-sync.ts`; `server/src/routes/access.ts` | Контейнеры бота говорят с API Hermes доски плоским http в собственной docker-сети доски; флаг на уровне карты расширял доверие на любой удалённый плоский host, набранный автором карты — шире необходимого | Guard-тесты: URL контейнера бота проходит транспортный гейт без флага; lookalike (`myrmidon-bot-agent-a.evil.example`, `myrmidon-botx-…`, `myrmidon-bot-.helper`) отклонены; card-sync не пишет флаг и вычищает остатки (execute 81/81, card-sync 15/15, PR #164) | Появится фронт HTTPS внутри сети доски — снять ветку доверия по именам контейнеров | #164 |

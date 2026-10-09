@@ -2,8 +2,8 @@
 //
 // myrmidon(GITHUB-SHARED-IDENTITY): the self-hosted GitHub App identities
 // panel of the company settings — entries per App (id, key secret,
-// installation, repositories, roles, agents), the dirty gate on Save, the
-// PUT body it sends and the vendor connector state line.
+// installation, repositories, roles, agents, token permissions), the dirty
+// gate on Save, the PUT body it sends and the vendor connector state line.
 
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
@@ -19,6 +19,7 @@ import {
   readManifestCallbackNotice,
   submitManifestForm,
 } from "./GitHubSharedIdentityPanel";
+import { DEFAULT_GITHUB_APP_PERMISSIONS } from "./githubSharedIdentityApi";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
@@ -66,6 +67,7 @@ const view: GitHubSharedIdentityView = {
         roles: ["engineer"],
         agentIds: [],
         allowedRepos: ["owner-a/*"],
+        permissions: { ...DEFAULT_GITHUB_APP_PERMISSIONS },
       },
     ],
     commitEmailDomain: null,
@@ -96,16 +98,28 @@ function button(text: string): HTMLButtonElement {
   return [...container.querySelectorAll("button")].find((el) => el.textContent?.includes(text))!;
 }
 
-/** Async-safe button lookup: poll until the control appears. The container
- * renders after several data queries resolve, and CI runners are slow enough
- * that a fixed number of ticks is not reliable. */
-async function waitForButton(text: string, attempts = 50): Promise<HTMLButtonElement> {
-  for (let i = 0; i < attempts; i++) {
-    const found = [...container.querySelectorAll("button")].find((el) => el.textContent?.includes(text));
-    if (found) return found as HTMLButtonElement;
-    await act(async () => Promise.resolve());
-  }
-  throw new Error(`button not found: ${text}`);
+/** Async-safe button lookup: wait on the condition, not on a fixed number of
+ * turns. A hand-rolled microtask loop is ample on an idle machine and not when
+ * the suite runs many workers in parallel: it gives up after N turns and
+ * reports a failure on behaviour that works. The release-branch full run did
+ * exactly that — `button not found: Install on repositories` on a test that
+ * passes on its own. `vi.waitFor` retries against a time budget, so a loaded
+ * worker gets more turns instead.
+ *
+ * Same replacement as the routing tests, which fixed the shorter-budget
+ * instances of this. */
+async function waitForButton(text: string): Promise<HTMLButtonElement> {
+  let found: HTMLButtonElement | undefined;
+  await vi.waitFor(
+    () => {
+      found = [...container.querySelectorAll("button")].find((el) =>
+        el.textContent?.includes(text),
+      ) as HTMLButtonElement | undefined;
+      if (!found) throw new Error(`button not found: ${text}`);
+    },
+    { timeout: 4_000 },
+  );
+  return found as HTMLButtonElement;
 }
 
 function byLabel<T extends HTMLElement>(label: string): T {
@@ -191,12 +205,43 @@ describe("GitHubSharedIdentityPanelView", () => {
           roles: [],
           agentIds: [AGENT_A],
           allowedRepos: ["owner-b/*", "owner-b/app-b"],
+          permissions: { ...DEFAULT_GITHUB_APP_PERMISSIONS },
         },
       ],
     });
   });
 
-  it("builds the body from a draft: trims, empties to null, splits lists", () => {
+  it("widens the permission list of an entry: workflows write, pulls the token defaults down", () => {
+    const onSave = render();
+    const workflowSelect = byLabel<HTMLSelectElement>("Permissions of App A: workflows");
+    expect(workflowSelect.value).toBe("none");
+    // GitHub's token API has no `workflows: read` — only none/write are offered.
+    expect([...workflowSelect.querySelectorAll("option")].map((option) => option.value)).toEqual(["none", "write"]);
+    flushSync(() => {
+      Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")!.set!.call(workflowSelect, "write");
+      workflowSelect.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    flushSync(() => {
+      const issuesSelect = byLabel<HTMLSelectElement>("Permissions of App A: issues");
+      Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")!.set!.call(issuesSelect, "read");
+      issuesSelect.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    flushSync(() => {
+      const prSelect = byLabel<HTMLSelectElement>("Permissions of App A: pull_requests");
+      Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")!.set!.call(prSelect, "none");
+      prSelect.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    flushSync(() => button("Save GitHub access").click());
+    expect(onSave).toHaveBeenCalledTimes(1);
+    expect(onSave.mock.calls[0]![0].apps[0]!.permissions).toEqual({
+      ...DEFAULT_GITHUB_APP_PERMISSIONS,
+      workflows: "write",
+      issues: "read",
+      pull_requests: "none",
+    });
+  });
+
+  it("builds the body from a draft: trims, empties to null, splits lists, copies permissions", () => {
     expect(
       bodyFromDraft({
         enabled: false,
@@ -211,6 +256,7 @@ describe("GitHubSharedIdentityPanelView", () => {
             roles: "engineer, reviewer",
             agentIds: [],
             allowedRepos: "owner-a/repo-a, owner-a/repo-b",
+            permissions: { ...DEFAULT_GITHUB_APP_PERMISSIONS, workflows: "write" },
           },
         ],
       }),
@@ -227,6 +273,7 @@ describe("GitHubSharedIdentityPanelView", () => {
           roles: ["engineer", "reviewer"],
           agentIds: [],
           allowedRepos: ["owner-a/repo-a", "owner-a/repo-b"],
+          permissions: { ...DEFAULT_GITHUB_APP_PERMISSIONS, workflows: "write" },
         },
       ],
     });
@@ -354,6 +401,7 @@ describe("GitHubSharedIdentityPanelView — manifest flow", () => {
           roles: [],
           agentIds: [],
           allowedRepos: [],
+          permissions: { ...DEFAULT_GITHUB_APP_PERMISSIONS },
         },
       ],
     });
@@ -420,10 +468,16 @@ describe("GitHubSharedIdentityPanel — server callback", () => {
       root.render(createElement(QueryClientProvider, { client }, createElement(GitHubSharedIdentityPanel))),
     );
     // Flush the three data queries (identity, agents, secrets) before the
-    // caller interacts: poll for the panel instead of guessing tick counts.
-    for (let i = 0; i < 50 && !container.querySelector("[data-testid='myrmidon-github-shared-identity'] input"); i++) {
-      await act(async () => Promise.resolve());
-    }
+    // caller interacts: wait on the panel instead of guessing tick counts, so a
+    // loaded worker gets the turns it needs (see waitForButton).
+    await vi.waitFor(
+      () => {
+        if (!container.querySelector("[data-testid='myrmidon-github-shared-identity'] input")) {
+          throw new Error("the GitHub shared identity panel did not render");
+        }
+      },
+      { timeout: 4_000 },
+    );
   }
 
   beforeEach(() => {
@@ -500,6 +554,7 @@ describe("GitHubSharedIdentityPanel — server callback", () => {
             roles: [],
             agentIds: [],
             allowedRepos: [],
+            permissions: { ...DEFAULT_GITHUB_APP_PERMISSIONS },
             slug: "my-app",
           },
         ],

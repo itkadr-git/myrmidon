@@ -63,6 +63,22 @@ describe("myrmidon(1.6.1-BOT-DISK-B) buildBinds with the shared package cache", 
     ]);
   });
 
+  it("gives the prepare helper the cache root read-write so it can own the subdirectories", () => {
+    // myrmidon(1.6.5-BOT-DISK-UV-B board side): without this bind the helper's
+    // `install -o 10001` of the cache subdirectories is a no-op and the bot's
+    // first write into /cache/* fails (the root-owned empty directory Docker
+    // created at the first bind).
+    expect(buildHelperBinds(volumeRoot, botKey, undefined, false, cache)).toEqual([
+      `${volumeRoot}/${botKey}/hermes:/data/hermes`,
+      `${volumeRoot}/${botKey}/workspace:/workspace`,
+      `${volumeRoot}/${botKey}/scratch:/scratch`,
+      `${cache}:/package-cache`,
+    ]);
+    // A helper without a configured cache keeps the narrow binds.
+    expect(buildHelperBinds(volumeRoot, botKey, undefined, false)).toHaveLength(3);
+    expect(buildHelperBinds(volumeRoot, botKey)).toHaveLength(3);
+  });
+
   it("refuses a card mount at or under the single mount, /data, or the link paths", () => {
     for (const containerPath of ["/bot", "/bot/x", "/data", "/data/x", "/workspace", "/scratch/y"]) {
       expect(() =>

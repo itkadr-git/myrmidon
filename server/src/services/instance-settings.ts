@@ -50,7 +50,10 @@ import { preserveCloudConnectorGeneralKey } from "../myrmidon/cloud-connector/st
 // myrmidon(SEC1): keep the access-hub host registry across vendor writes of `general`
 import { preserveAccessHubHostsGeneralKey } from "../myrmidon/access-hub/host-registry.js";
 // myrmidon(1.6-AUTONOMY): keep the autonomy matrix and regulations across vendor writes of `general`
-import { preserveAutonomyGeneralKey } from "../myrmidon/autonomy/store.js";
+import {
+  preserveAutonomyGeneralKey,
+  preserveAutonomyToolMappingGeneralKey,
+} from "../myrmidon/autonomy/store.js";
 // myrmidon(1.6-TG-PROACTIVITY-E, 1.6.1-TG-NOTIFY-B): keep the telegram-notify state across vendor writes of `general`
 import { preserveTelegramNotifyGeneralKey } from "../myrmidon/telegram-notify/proactivity-policy.js";
 import { preserveTelegramNotifySettingsGeneralKey } from "../myrmidon/telegram-notify/settings-store.js";
@@ -709,6 +712,18 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
           normalizeGeneralSettings({ ...storedGeneral, ...patch }),
           operatorDefaults,
         );
+        // OPE-6406: a PATCH rewrites the whole `general` document, so it must
+        // start from the STORED row, not from the normalized whitelist alone.
+        // `normalizeGeneralSettings` shrinks the row to the keys it knows and
+        // materializes schema defaults (`censorUsernameInLogs: false` among
+        // them); without the stored keys underneath, a PATCH of one setting
+        // silently resets `censorUsernameInLogs: true` back to false and drops
+        // any stored key the whitelist does not carry yet. The whitelist keeps
+        // its role as the canonical form of the listed keys on top.
+        const storedRawGeneral =
+          current.general && typeof current.general === "object" && !Array.isArray(current.general)
+            ? (current.general as Record<string, unknown>)
+            : {};
         const now = new Date();
         const rows = await tx
           .update(instanceSettings)
@@ -716,6 +731,7 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
             // myrmidon(R3): keep maintenance mode state; myrmidon(R5-A): keep deploy job state; myrmidon(R5-B): keep bot canary state; myrmidon(SUA): keep stack registry cache; myrmidon(SEC1): keep the access-hub host registry
             // myrmidon(BROWSER-CONSOLE): same for the browser console sessions/journal key
             general: {
+              ...storedRawGeneral,
               ...nextGeneral,
               ...preserveMaintenanceGeneralKey(current.general), // myrmidon(R3)
               ...preserveDeployJobsGeneralKey(current.general), // myrmidon(R5-A)
@@ -726,6 +742,7 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
               ...preserveAccessHubHostsGeneralKey(current.general), // myrmidon(SEC1)
               ...preserveCloudConnectorGeneralKey(current.general), // myrmidon(CLOUD-CONNECTOR)
               ...preserveAutonomyGeneralKey(current.general), // myrmidon(1.6-AUTONOMY)
+              ...preserveAutonomyToolMappingGeneralKey(current.general), // myrmidon(1.6-AUTONOMY-GW)
               ...preserveTelegramNotifyGeneralKey(current.general), // myrmidon(1.6-TG-PROACTIVITY-E)
               ...preserveTelegramNotifySettingsGeneralKey(current.general), // myrmidon(TG-NOTIFY-A)
               ...preserveWipLimitGeneralKey(current.general), // myrmidon(1.6.1-WIP-LIMIT-A)

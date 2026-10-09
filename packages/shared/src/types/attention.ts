@@ -58,6 +58,9 @@ export const ATTENTION_SOURCE_KINDS = [
   // execution-reconciliation hold ("execution_reconciliation_required") until
   // a person confirms the failed run left no external action.
   "execution_hold",
+  // myrmidon(1.6.5-F-18): the gateway spend sweep completed but the model
+  // catalog (/v1/model/info) is empty — the accounting key is misconfigured.
+  "empty_model_catalog",
 ] as const;
 
 export type AttentionSourceKind = (typeof ATTENTION_SOURCE_KINDS)[number];
@@ -318,6 +321,12 @@ export interface AttentionItem {
 
 export interface AttentionFeed {
   companyId: string;
+  /**
+   * ISO timestamp of the snapshot this feed was built from. A read served from
+   * a cached snapshot keeps that snapshot's build time, so the value can trail
+   * the response by up to the attention feed cache windows — it is not the
+   * request time.
+   */
   generatedAt: string;
   totalCount: number;
   /**

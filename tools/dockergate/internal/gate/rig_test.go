@@ -294,9 +294,12 @@ func newRig(t *testing.T, opts ...rigOpt) *rig {
 		VolumeRoot: m.VolumeRoot,
 		Network:    m.Network,
 		Images:     []string{m.Image},
-		Bots:       []config.Bot{{BotKey: m.BotKey, MaxMemoryMB: 2048, MaxCPUs: 4, MaxPids: 2048}},
-		Limits:     lim,
-		StatsFile:  filepath.Join(dir, "stats.json"),
+		// myrmidon(1.6.5-BOT-DISK-UV-B board side): the recorded helper bodies
+		// carry the package cache bind when the fixture set declares one.
+		PackageCacheRoot: m.PackageCacheRoot,
+		Bots:             []config.Bot{{BotKey: m.BotKey, MaxMemoryMB: 2048, MaxCPUs: 4, MaxPids: 2048}},
+		Limits:           lim,
+		StatsFile:        filepath.Join(dir, "stats.json"),
 	}
 	r := &rig{
 		t: t, dir: dir, d: d, m: m, cfg: cfg, log: &syncBuf{}, sock: cfg.Listen,

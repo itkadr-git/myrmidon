@@ -6,6 +6,7 @@ import type { Db } from "@paperclipai/db";
 import { badRequest, conflict, notFound } from "../../errors.js";
 import { validate } from "../../middleware/validate.js";
 import { assertBoardOrgAccess, assertInstanceAdmin, getActorInfo } from "../../routes/authz.js";
+import { assertDeployClassAllowed } from "../autonomy/deploy-class.js";
 import { MAINTENANCE_ON_TIMEOUT, MAINTENANCE_SCOPE_TYPES, type MaintenanceScope } from "./domain.js";
 import { MaintenanceError, type MaintenanceService } from "./service.js";
 import { MAX_DRAIN_TIMEOUT_SEC } from "./settings.js";
@@ -64,6 +65,8 @@ export function maintenanceRoutes(_db: Db, service: MaintenanceService) {
   });
 
   router.post("/myrmidon/maintenance", validate(maintenanceRequestSchema), async (req, res) => {
+    // myrmidon(1.6-AUTONOMY): the deploy class is answered before the admin check.
+    await assertDeployClassAllowed(_db, req);
     assertInstanceAdmin(req);
     const actor = getActorInfo(req);
     const body = req.body as z.infer<typeof maintenanceRequestSchema>;
