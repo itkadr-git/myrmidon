@@ -5,7 +5,7 @@
 // queue_stall attention card; a run whose task is in todo starts when the
 // admission gate opens.
 import { randomUUID } from "node:crypto";
-import { eq, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
@@ -14,6 +14,9 @@ import {
   agentWakeupRequests,
   companies,
   createDb,
+  decisionQueueItems,
+  decisionQueues,
+  decisionTriageEvents,
   heartbeatRunEvents,
   heartbeatRuns,
   issueComments,
@@ -41,6 +44,7 @@ import {
 } from "@paperclipai/shared";
 import { heartbeatService } from "../services/heartbeat.ts";
 import { attentionService } from "../services/attention.js";
+import { decisionQueueService, type DecisionMutationActor } from "../services/decision-queues.js";
 import { runningProcesses } from "../adapters/index.ts";
 import {
   applyRunAdmissionLimits,
@@ -120,6 +124,14 @@ function pinAdmission(overrides: Partial<RunAdmissionLimits>) {
 
 const MINUTE_MS = 60_000;
 
+type SeedIssueInput = {
+  title: string;
+  priority: string;
+  assigneeAgentId?: string;
+  status?: string;
+  hiddenAt?: Date | null;
+};
+
 describeEmbeddedPostgres("heartbeat F-09 stuck-queued sweep", () => {
   let db!: ReturnType<typeof createDb>;
   let heartbeat!: ReturnType<typeof heartbeatService>;
@@ -141,6 +153,9 @@ describeEmbeddedPostgres("heartbeat F-09 stuck-queued sweep", () => {
     await db.delete(environmentLeases);
     await db.delete(companySkills);
     await db.delete(heartbeatRunEvents);
+    await db.delete(decisionQueueItems);
+    await db.delete(decisionTriageEvents);
+    await db.delete(decisionQueues);
     await db.delete(activityLog);
     await db.delete(issueComments);
     await db.delete(issueLabels);
@@ -212,22 +227,103 @@ describeEmbeddedPostgres("heartbeat F-09 stuck-queued sweep", () => {
     return { companyId, agentId };
   }
 
+  /** Issue seed shared by every case in this file: the two-argument form takes
+   * an agent id (the F-09 card cases), the object form the full spec. */
   async function seedIssue(
     companyId: string,
-    input: { title: string; priority: string; assigneeAgentId?: string; status?: string; hiddenAt?: Date | null },
+    input: SeedIssueInput | string,
+    overrides?: { status?: string; title?: string; priority?: string },
   ) {
+    const spec: SeedIssueInput =
+      typeof input === "string"
+        ? {
+            title: overrides?.title ?? "F-09 queued work",
+            priority: overrides?.priority ?? "medium",
+            assigneeAgentId: input,
+            status: overrides?.status ?? "todo",
+          }
+        : input;
     const issueId = randomUUID();
     await db.insert(issues).values({
       id: issueId,
       companyId,
-      title: input.title,
-      status: input.status ?? "todo",
-      priority: input.priority,
-      assigneeAgentId: input.assigneeAgentId ?? null,
+      title: spec.title,
+      status: spec.status ?? "todo",
+      priority: spec.priority,
+      assigneeAgentId: spec.assigneeAgentId ?? null,
       responsibleUserId: "responsible-user",
-      hiddenAt: input.hiddenAt ?? null,
+      hiddenAt: spec.hiddenAt ?? null,
     });
     return issueId;
+  }
+
+  /** Company without an agent: the F-09 card cases seed their own agent. */
+  async function seedCompany() {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+      defaultResponsibleUserId: "responsible-user",
+    });
+    return companyId;
+  }
+
+  async function seedAgent(companyId: string, overrides: { adapterType?: string } = {}) {
+    const agentId = randomUUID();
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Eng",
+      role: "engineer",
+      status: "active",
+      adapterType: overrides.adapterType ?? "codex_local",
+      adapterConfig: {},
+      runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } },
+      permissions: {},
+    });
+    return agentId;
+  }
+
+  /** A run inserted straight into the queue, old enough for the stall sweep to
+   * look at it: the card cases assert what the sweep writes, not what wakes it. */
+  async function seedRun(companyId: string, agentId: string, issueId: string, status: string) {
+    const [run] = await db
+      .insert(heartbeatRuns)
+      .values({
+        companyId,
+        agentId,
+        issueId,
+        invocationSource: "assignment",
+        status,
+        createdAt: new Date(Date.now() - 120 * MINUTE_MS),
+      })
+      .returning();
+    return run!.id;
+  }
+
+  /** Board operator reading and mutating the decision shelves. */
+  function boardActor(companyId: string) {
+    return {
+      type: "board" as const,
+      source: "local_implicit" as const,
+      userId: "board-user",
+      companyIds: [companyId],
+      isInstanceAdmin: false,
+    };
+  }
+
+  function boardMutationActor(): DecisionMutationActor {
+    return {
+      actorType: "user",
+      actorId: "board-user",
+      agentId: null,
+      userId: "board-user",
+      runId: null,
+      agentApiKeyId: null,
+      responsibleUserId: "responsible-user",
+    };
   }
 
   /** Queue a run for the agent and hold it there: admission says 0 slots. */
@@ -655,7 +751,7 @@ describeEmbeddedPostgres("heartbeat F-09 stuck-queued sweep", () => {
     // The decision queue must find the run by sourceId (run id).
     const result = await canReadDecisionSource(
       db,
-      { userId: "board-user", role: "admin" },
+      boardActor(companyId),
       companyId,
       "queue_stall",
       run.id,
@@ -676,11 +772,94 @@ describeEmbeddedPostgres("heartbeat F-09 stuck-queued sweep", () => {
     // A task id should NOT resolve as a queue_stall source (source is the run).
     const result = await canReadDecisionSource(
       db,
-      { userId: "board-user", role: "admin" },
+      boardActor(companyId),
       companyId,
       "queue_stall",
       issueId,
     );
     expect(result.exists).toBe(false);
+  }, 30_000);
+
+  it("keeps a queue_stall card keyed by the run id when the board keeps it", async () => {
+    const companyId = await seedCompany();
+    const agentId = await seedAgent(companyId);
+    const issueId = await seedIssue(companyId, agentId, { status: "todo" });
+    const runId = await seedRun(companyId, agentId, issueId, "queued");
+    const board = boardActor(companyId);
+    const actor = boardMutationActor();
+    const queues = decisionQueueService(db);
+    await queues.create({ companyId, key: "stall-triage", title: "Stall triage", authActor: board, actor });
+
+    const added = await queues.addItem({
+      companyId,
+      key: "stall-triage",
+      sourceKind: "queue_stall",
+      sourceId: runId,
+      authActor: board,
+      actor,
+    });
+    // Red without the queue_stall branch of the source resolver: the card is
+    // filed by run id, so an unresolved run makes addItem throw notFound.
+    expect(added.created).toBe(true);
+
+    // «Оставить»: the card stays on the shelf keyed by the run, and the
+    // decision itself must not touch the queued run.
+    const kept = await queues.listItems(companyId, "stall-triage", board);
+    expect(kept.map((item) => item.sourceId)).toEqual([runId]);
+    expect(kept[0]?.sourceKind).toBe("queue_stall");
+
+    const stored = await runRow(runId);
+    expect(stored?.status).toBe("queued");
+    expect(stored?.waitReason).toBeNull();
+  }, 30_000);
+
+  it("archives a queue_stall card by run id and audits the removal against the run", async () => {
+    const companyId = await seedCompany();
+    const agentId = await seedAgent(companyId);
+    const issueId = await seedIssue(companyId, agentId, { status: "todo" });
+    const runId = await seedRun(companyId, agentId, issueId, "queued");
+    const board = boardActor(companyId);
+    const actor = boardMutationActor();
+    const queues = decisionQueueService(db);
+    await queues.create({ companyId, key: "stall-triage", title: "Stall triage", authActor: board, actor });
+    await queues.addItem({
+      companyId,
+      key: "stall-triage",
+      sourceKind: "queue_stall",
+      sourceId: runId,
+      authActor: board,
+      actor,
+    });
+
+    // «В архив»: the card leaves the shelf, and both audit trails record the
+    // run id — not the issue id — as the thing that was decided about.
+    const removed = await queues.removeItem({
+      companyId,
+      key: "stall-triage",
+      sourceKind: "queue_stall",
+      sourceId: runId,
+      reason: "archived from the stall card",
+      authActor: board,
+      actor,
+    });
+    expect(removed.sourceId).toBe(runId);
+    expect(await queues.listItems(companyId, "stall-triage", board)).toEqual([]);
+
+    const triageEvents = await db
+      .select()
+      .from(decisionTriageEvents)
+      .where(and(eq(decisionTriageEvents.sourceKind, "queue_stall"), eq(decisionTriageEvents.sourceId, runId)));
+    expect(triageEvents.map((event) => event.action).sort()).toEqual(["queue_item.added", "queue_item.removed"]);
+
+    const audited = await db
+      .select()
+      .from(activityLog)
+      .where(eq(activityLog.action, "decision_queue_item.removed"));
+    expect(audited[0]?.details).toMatchObject({ sourceKind: "queue_stall", sourceId: runId });
+
+    // Archiving the card is not a verdict on the run: the run stays queued.
+    const stored = await runRow(runId);
+    expect(stored?.status).toBe("queued");
+    expect(stored?.waitReason).toBeNull();
   }, 30_000);
 });
