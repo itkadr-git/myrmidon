@@ -699,7 +699,9 @@ import {
 // myrmidon(AUTO-RESUME): the board resumes an agent left in `error` with backoff
 import { createAutoResumeSweeper } from "../myrmidon/auto-resume.js";
 // myrmidon(1.6-SWARM): the expired-claim sweep of the per-role task queues
-import { buildSwarmClaimSweeper } from "../myrmidon/swarm-claim/index.js";
+// myrmidon(1.6.5 OPE-6608): and the board-side matcher of the event paths — the
+// release path below hands the freed agent to it (design §3.5).
+import { buildSwarmClaimSweeper, matchFreedAgent } from "../myrmidon/swarm-claim/index.js";
 // myrmidon(1.6-SWARM): the checkout/release claim hooks of the run lifecycle
 import {
   recordSwarmClaimOnCheckoutImpl,
@@ -26891,7 +26893,7 @@ export function heartbeatService(
   async function releaseSwarmClaimsForRun(
     run: Pick<typeof heartbeatRuns.$inferSelect, "id" | "companyId">,
   ) {
-    await releaseSwarmClaimsForRunImpl({ db, settings: instanceSettings }, run, enqueueWakeup);
+    await releaseSwarmClaimsForRunImpl({ db, settings: instanceSettings }, run);
   }
 
   async function releaseIssueExecutionAndPromote(
@@ -26957,33 +26959,53 @@ export function heartbeatService(
           const releasedIssueId = readNonEmptyString(
             parseObject(releasedRun.contextSnapshot).issueId,
           );
-          await idlePickupForAgent(
+          // myrmidon(1.6.5 OPE-6608, review item 1 / design §3.5): with the
+          // swarm on, the agent that just became free is paired by the board
+          // itself — its own assigned ready task first, otherwise the top ready
+          // task of its caste and nest. The idle-pickup wake below (the "go and
+          // look for work" path OPE-6640 retires) is then not used at all.
+          const swarmFreed = await matchFreedAgent(
             {
               db,
-              // myrmidon(IDLE-WAKE-BUDGET): the release path spends the same
-              // company-wide allowance as the periodic sweeper, so a fleet of
-              // finishing runs cannot burst past the per-minute ceiling.
-              budget: idleWakeBudget,
+              settings: instanceSettings,
               enqueueWakeup: (agentId, opts) => enqueueWakeup(agentId, opts),
-              logActivity: async (input) => {
-                await logActivity(db, {
-                  companyId: input.companyId,
-                  actorType: input.actorType,
-                  actorId: input.actorId,
-                  agentId: input.agentId,
-                  runId: input.runId,
-                  action: input.action,
-                  entityType: input.entityType,
-                  entityId: input.entityId,
-                  details: input.details,
-                });
-              },
             },
-            { id: releasedRun.agentId, companyId: releasedRun.companyId },
-            // The just-released issue is the past work: waking it again right
-            // after its run finished is the runaway loop the review caught.
-            { excludeIssueId: releasedIssueId, behaviorEnabled: pickupAllowed },
-          );
+            releasedRun.agentId,
+          ).catch((err) => {
+            logger.warn({ err, runId: run.id }, "swarm match of the freed agent failed");
+            // A failed match must never strand the agent: the idle-pickup path
+            // keeps its own admission gates and is the safer fallback.
+            return { enabled: false, pair: null };
+          });
+          if (!swarmFreed.enabled) {
+            await idlePickupForAgent(
+              {
+                db,
+                // myrmidon(IDLE-WAKE-BUDGET): the release path spends the same
+                // company-wide allowance as the periodic sweeper, so a fleet of
+                // finishing runs cannot burst past the per-minute ceiling.
+                budget: idleWakeBudget,
+                enqueueWakeup: (agentId, opts) => enqueueWakeup(agentId, opts),
+                logActivity: async (input) => {
+                  await logActivity(db, {
+                    companyId: input.companyId,
+                    actorType: input.actorType,
+                    actorId: input.actorId,
+                    agentId: input.agentId,
+                    runId: input.runId,
+                    action: input.action,
+                    entityType: input.entityType,
+                    entityId: input.entityId,
+                    details: input.details,
+                  });
+                },
+              },
+              { id: releasedRun.agentId, companyId: releasedRun.companyId },
+              // The just-released issue is the past work: waking it again right
+              // after its run finished is the runaway loop the review caught.
+              { excludeIssueId: releasedIssueId, behaviorEnabled: pickupAllowed },
+            );
+          }
         }
       } catch (idlePickupErr) {
         logger.warn(

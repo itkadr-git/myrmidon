@@ -259,6 +259,34 @@ export async function revertIdleClaimAssignment(
 }
 
 /**
+ * 1.6.5 (OPE-6608 §4.1, review item 2): take the owner off a task whose lease
+ * lapsed with no run behind it. The old pass left the assignee in place and
+ * woke a DIFFERENT agent on the task; that run was then cancelled as
+ * `reassigned` before its checkout — the failure this ticket exists for.
+ * Conditional on purpose: a task that moved on (status left the queue, or the
+ * owner changed meanwhile) is left exactly as it is, and the conditional update
+ * is the same shape the claim path uses.
+ */
+export async function clearExpiredAssignee(
+  db: Db,
+  input: { companyId: string; issueId: string; agentId: string; now: Date },
+): Promise<boolean> {
+  const cleared = await db
+    .update(issues)
+    .set({ assigneeAgentId: null, updatedAt: input.now })
+    .where(
+      and(
+        eq(issues.id, input.issueId),
+        eq(issues.companyId, input.companyId),
+        eq(issues.assigneeAgentId, input.agentId),
+        inArray(issues.status, [...SWARM_CLAIM_QUEUE_ISSUE_STATUSES]),
+      ),
+    )
+    .returning({ id: issues.id });
+  return cleared.length > 0;
+}
+
+/**
  * Release a live claim: stamp `released_at` and the reason. Returns true when
  * this call was the one that released it, false when the claim was already
  * released or does not exist (so a double release is a no-op, not an error).

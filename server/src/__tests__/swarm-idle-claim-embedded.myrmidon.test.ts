@@ -38,7 +38,7 @@ import {
   matchIssue,
   type SwarmMatcherDeps,
 } from "../myrmidon/swarm-claim/matcher.js";
-import { readSwarmQueueCounters } from "../myrmidon/swarm-claim/idle-queue.js";
+import { readSwarmQueueCounters } from "../myrmidon/swarm-claim/matcher.js";
 import type { HostCpuGate, HostMemoryGate } from "../myrmidon/run-admission.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -184,7 +184,10 @@ describeEmbeddedPostgres("swarm idle queue claims on the server, then wakes", ()
    * settings read is the port fake every unit test of this module uses (the
    * resolution itself is pinned in settings.myrmidon.test.ts).
    */
-  function sweeper(wakeCalls: WakeCall[], settings: { idleWakeBatch?: number } = {}) {
+  function sweeper(
+    wakeCalls: WakeCall[],
+    settings: { idleWakeBatch?: number; maxActiveTasks?: number } = {},
+  ) {
     const deps = {
       db,
       intervalMs: 0,
@@ -195,6 +198,11 @@ describeEmbeddedPostgres("swarm idle queue claims on the server, then wakes", ()
             ...baseSwarmClaimSettings,
             enabled: true,
             idleWakeBatch: settings.idleWakeBatch ?? 5,
+            // The default ceiling is three tasks per agent; a test that needs
+            // "this agent is already full" asks for a ceiling of one.
+            ...(settings.maxActiveTasks !== undefined
+              ? { maxActiveTasks: settings.maxActiveTasks }
+              : {}),
           },
         }),
       },
@@ -251,7 +259,7 @@ describeEmbeddedPostgres("swarm idle queue claims on the server, then wakes", ()
     expect(wakeCalls).toHaveLength(1);
     expect(wakeCalls[0]?.agentId).toBe(agentId);
     expect(wakeCalls[0]?.issueId).toBe(issueId);
-    expect(wakeCalls[0]?.reason).toBe(SWARM_CLAIM_WAKE_REASON);
+    expect(wakeCalls[0]?.reason).toBe(SWARM_MATCHED_WAKE_REASON);
     expect(wakeCalls[0]?.assigneeAtWake).toBe(agentId);
   });
 
@@ -274,16 +282,19 @@ describeEmbeddedPostgres("swarm idle queue claims on the server, then wakes", ()
     expect(await db.select({ id: issueClaims.id }).from(issueClaims)).toEqual([]);
   });
 
-  it("gives the task to the least loaded agent of the role", async () => {
+  it("keeps the task for a free peer when the agent is at its task ceiling", async () => {
     const companyId = await seedCompany();
     const agentAId = await seedAgent(companyId, { name: "agent-a" });
     const agentBId = await seedAgent(companyId, { name: "agent-b" });
     const issueId = await seedTask(companyId);
-    // agent-a is busy with a task that is not up for grabs (it is in progress).
+    // agent-a already holds a live lease and this instance allows one task per
+    // agent, so agent-a is not a candidate and the task goes to its free peer.
+    // Nothing rotates here (review item 4): the pool decides, and equal facts
+    // give the same agent on every pass.
     await seedLiveClaim(companyId, agentAId);
 
     const wakeCalls: WakeCall[] = [];
-    const result = await sweeper(wakeCalls).sweep(NOW);
+    const result = await sweeper(wakeCalls, { maxActiveTasks: 1 }).sweep(NOW);
 
     expect(result.idleClaimed).toBe(1);
     const [task] = await db
@@ -294,18 +305,57 @@ describeEmbeddedPostgres("swarm idle queue claims on the server, then wakes", ()
     expect(task?.assigneeAgentId).toBe(agentBId);
   });
 
-  it("caps the pass by the stored batch", async () => {
+  it("hands two ready tasks to the two free agents in one pass", async () => {
     const companyId = await seedCompany();
-    await seedAgent(companyId, { name: "agent-a" });
-    await seedAgent(companyId, { name: "agent-b" });
+    const first = await seedAgent(companyId, { name: "agent-a" });
+    const second = await seedAgent(companyId, { name: "agent-b" });
     await seedTask(companyId, { identifier: "TASK-1" });
     await seedTask(companyId, { identifier: "TASK-2" });
     const wakeCalls: WakeCall[] = [];
 
-    const result = await sweeper(wakeCalls, { idleWakeBatch: 1 }).sweep(NOW);
+    const result = await sweeper(wakeCalls).sweep(NOW);
 
-    expect(result.idleClaimed).toBe(1);
+    // design §9 п.5: min(tasks, free agents) per pass. The batch cap of the old
+    // idle pass is gone with the pass itself (review item 5) — the matcher hands
+    // out every pairing it finds, one task per agent.
+    expect(result.idleClaimed).toBe(2);
+    expect(wakeCalls).toHaveLength(2);
+    const assigned = await db
+      .select({ assigneeAgentId: issues.assigneeAgentId })
+      .from(issues)
+      .where(eq(issues.companyId, companyId));
+    expect(assigned).toHaveLength(2);
+    expect([first, second].every((id) => assigned.some((row) => row.assigneeAgentId === id))).toBe(true);
+  });
+
+  it("takes the task off an owner whose lease expired with no run, then re-matches it", async () => {
+    const companyId = await seedCompany();
+    const agentId = await seedAgent(companyId, { name: "agent-a" });
+    const issueId = await seedTask(companyId);
+    await db.update(issues).set({ assigneeAgentId: agentId }).where(eq(issues.id, issueId));
+    await db.insert(issueClaims).values({
+      companyId,
+      issueId,
+      agentId,
+      role: "engineer",
+      runId: null,
+      claimedAt: new Date(NOW.getTime() - 3_600_000),
+      heartbeatAt: new Date(NOW.getTime() - 3_600_000),
+      // Expired, and no run of the agent is live: the task is nobody's again.
+      expiresAt: new Date(NOW.getTime() - 60_000),
+    });
+
+    const wakeCalls: WakeCall[] = [];
+    const result = await sweeper(wakeCalls).sweep(NOW);
+
+    expect(result.expiredReleased).toBe(1);
+    // The old pass woke the NEXT agent of the caste on a task that still
+    // belonged to the previous one (the 3259 `reassigned` cancellations). Here
+    // the task is taken off that owner first and matched again, so whoever is
+    // woken really owns the task when its run starts (review item 2).
     expect(wakeCalls).toHaveLength(1);
+    expect(wakeCalls[0]?.agentId).toBe(agentId);
+    expect(wakeCalls[0]?.assigneeAtWake).toBe(agentId);
   });
 
   // Part D: the numbers the panel shows. They are read straight off the live
@@ -491,6 +541,26 @@ describe("the board-side matcher (OPE-6608 A: a task meets a free agent)", () =>
       expect(pair).toEqual({ issueId, agentId, role: "engineer", identifier: "TASK-1" });
       const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
       expect(issue.assigneeAgentId).toBe(agentId);
+    });
+
+    it("wakes the agent on its own assigned ready task before any queue task", async () => {
+      const companyId = await seedCompany();
+      const agentId = await seedAgent(companyId, { name: "agent-a" });
+      const own = await seedTask(companyId, { identifier: "TASK-OWN" });
+      const other = await seedTask(companyId, { identifier: "TASK-OTHER" });
+      await db.update(issues).set({ assigneeAgentId: agentId }).where(eq(issues.id, own));
+
+      const wakes: MatcherWake[] = [];
+      const pair = await matchAgent(matcher(wakes), agentId);
+
+      // Review item 3: an assigned, unrun task of the agent comes first — the
+      // regression was that it was never offered to its own agent again.
+      expect(pair?.issueId).toBe(own);
+      expect(wakes).toHaveLength(1);
+      expect(wakes[0]?.payloadIssueId).toBe(own);
+      expect(other).toBeTruthy();
+      const [row] = await db.select().from(issues).where(eq(issues.id, other));
+      expect(row.assigneeAgentId).toBeNull();
     });
 
     it("hands the free agent the top of its queue on its own event", async () => {

@@ -16,7 +16,7 @@
 
 import { Router } from "express";
 import type { Db } from "@paperclipai/db";
-import { readSwarmQueueCounters } from "./idle-queue.js";
+import { readSwarmQueueCounters } from "./matcher.js";
 import { patchSwarmClaimSettingsSchema, type SwarmClaimSettingsPatch } from "@paperclipai/shared";
 import { validate } from "../../middleware/validate.js";
 import { assertBoardOrgAccess, assertCompanyAccess, assertInstanceAdmin, getActorInfo } from "../../routes/authz.js";

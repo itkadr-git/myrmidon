@@ -1,6 +1,6 @@
-// Swarm claim pilot settings (myrmidon 1.6.1, SWARM-SETTINGS-UI): the
+// Swarm settings (myrmidon 1.6.1, SWARM-SETTINGS-UI; 1.6.5 OPE-6608): the
 // "Role queues (SWARM-CLAIM)" section of Instance → General. The master
-// switch, the role/company scope, the idle-wake batch, the lease TTL, the
+// switch, the scope, the lease TTL, the
 // per-agent ceiling, the sweep interval and the P0 preemption, each with its
 // origin (saved here, environment override, default). Saving writes the
 // instance settings row; the server re-reads it on every claim, checkout and
@@ -41,7 +41,7 @@ const NUMBER_FIELDHints = {
   sweepIntervalSec: "How often the expired-lease sweep runs, in seconds (minimum 5).",
   // 1.6.5 (OPE-6608 D): the idle pass used to cap its wakes at the compiled
   // default of 5 with an environment variable as the only way out.
-  idleWakeBatch: "How many queue tasks one idle pass may hand out, 1–25.",
+  idleWakeBatch: "Stored for compatibility: the idle-wake batch pass was retired in 1.6.5 (the board pairs every ready task itself).",
 } as const;
 
 /**
@@ -232,7 +232,7 @@ export function SwarmClaimSettingsPanelView({
               ) : null}
             </div>
             <p className="text-xs text-muted-foreground">
-              Comma-separated role names (e.g. engineer). The pilot only these roles claim from;
+              Comma-separated role names (e.g. engineer). Only these roles claim from the queue;
               empty means every role. The company field below narrows it further.
             </p>
           </div>
@@ -404,7 +404,7 @@ export function SwarmClaimSettingsPanel() {
       setError(null);
       setReleasedNote(
         typeof data.releasedClaims === "number" && data.releasedClaims > 0
-          ? `Pilot switched off: ${data.releasedClaims} live lease(s) released.`
+          ? `Swarm switched off: ${data.releasedClaims} live lease(s) released.`
           : null,
       );
       await queryClient.invalidateQueries({ queryKey: swarmClaimSettingsQueryKey });

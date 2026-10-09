@@ -26,9 +26,6 @@ import {
   SWARM_CLAIM_RELEASE_REASON_RUN_FINISHED,
   SWARM_CLAIM_REASON_CASTE_EXCLUDED,
   SWARM_CLAIM_REASON_AGENT_EXCLUDED,
-  SWARM_CLAIM_WAKE_IDEMPOTENCY_PREFIX,
-  SWARM_CLAIM_WAKE_REASON,
-  isSwarmClaimEnabledFor,
   resolveSwarmClaimSettings,
   resolveSwarmQueueEligibility,
   type CompanyCastesReader,
@@ -45,7 +42,7 @@ import {
   planLeaseHeartbeat,
   claimCovers,
 } from "./domain.js";
-import { listAgentsOfRole, listRoleQueue } from "./queue.js";
+import { listRoleQueue } from "./queue.js";
 import {
   findLiveClaimForIssue,
   heartbeatClaim,
@@ -149,18 +146,10 @@ export async function claimNextTaskForAgent(
     .limit(1);
   const agent = agentRow[0];
   if (!agent) return { claim: null, reason: "queue_empty" };
-  // 1.6.1 (SWARM-SETTINGS-UI): the pilot set. The master switch may be on
-  // while this company or role is deliberately outside the pilot — then the
-  // claim path answers the same "disabled" the off switch does, so an agent
-  // outside the pilot keeps vendor behavior exactly.
-  if (
-    !isSwarmClaimEnabledFor(settings, {
-      companyId: input.companyId,
-      role: agent.role,
-    })
-  ) {
-    return { claim: null, reason: "disabled" };
-  }
+  // 1.6.5 (OPE-6608, review item 5): the pilot set is gone — the swarm is one
+  // switch for the whole instance. A company or a caste still keeps an agent
+  // out of the queue, but through the finding itself: the caste directory
+  // (`swarmEligible: false`) just below, and the agent's own card switch.
 
   // myrmidon(1.6.1 CUSTOM-CASTES B): the caste gate. An agent whose caste is
   // marked `swarmEligible=false` in the company directory never participates
@@ -301,9 +290,13 @@ export async function refreshLeaseForRun(
 }
 
 /**
- * Release the task a run was holding and wake the next agent of the role. The
- * release path of the run lifecycle calls this; the sweep calls the same
- * release through its own path. Returns the released claim ids.
+ * Release the task a run was holding. The release path of the run lifecycle
+ * calls this; the sweep releases through its own path. Returns the released
+ * claim ids. The wake of the next agent is not sent from here (review item 2):
+ * the event paths (the release of a run, the income of a ready task, the expiry
+ * of a lease) hand the freed agent to the matcher, which gives it a task that
+ * is genuinely its own — "wake the next agent of the caste" is the shape that
+ * produced runs cancelled as `reassigned` before their checkout.
  */
 export async function releaseTaskAndWakeNext(
   ports: SwarmClaimServicePorts,
@@ -332,90 +325,20 @@ export async function releaseTaskAndWakeNext(
     details: { reason, releasedClaimIds: released },
   });
 
-  await wakeNextAgentForIssueRole(ports, {
-    companyId: input.companyId,
-    issueId: input.issueId,
-    excludeAgentId: null,
-    idempotencySuffix: reason,
-    now,
-  }).catch((err) =>
-    logger.warn({ err, issueId: input.issueId }, "swarm claim wake of the next agent failed"),
-  );
+  // No wake is sent from here (review item 2): releasing the lease is this
+  // function's whole job. The event paths hand the freed agent to the matcher.
   return released;
 }
 
 /**
- * Wake one agent of the role the released task belongs to, so the task does not
- * wait for the periodic sweep to be picked up. The wake is best-effort: the
- * admission path may defer it, and the sweep remains the safety net.
+ * 1.6.5 (OPE-6608, review item 2): `wakeNextAgentForIssueRole` lived here. It
+ * picked "the next agent of the task's role, excluding the one that just let it
+ * go" and woke it with the task — a task that, in the expiry case, still
+ * belonged to somebody else. The dispatcher reads such a wake as `reassigned`
+ * and cancels the run before its checkout (3259 of them in the 09.10 audit), so
+ * the function is gone: a wake now comes from the matcher, which first makes the
+ * task the woken agent's own (`matcher.ts`), and never from a role's headcount.
  */
-export async function wakeNextAgentForIssueRole(
-  ports: SwarmClaimServicePorts,
-  input: {
-    companyId: string;
-    issueId: string;
-    excludeAgentId: string | null;
-    idempotencySuffix?: string;
-    now?: Date;
-  },
-): Promise<boolean> {
-  if (!ports.enqueueWakeup) return false;
-  const issueRow = await ports.db
-    .select({ id: issues.id, assigneeAgentId: issues.assigneeAgentId })
-    .from(issues)
-    .where(and(eq(issues.id, input.issueId), eq(issues.companyId, input.companyId)))
-    .limit(1);
-  const issue = issueRow[0];
-  if (!issue) return false;
-
-  let role: string | null = null;
-  if (issue.assigneeAgentId) {
-    const agentRow = await ports.db
-      .select({ role: agents.role })
-      .from(agents)
-      .where(eq(agents.id, issue.assigneeAgentId))
-      .limit(1);
-    role = agentRow[0]?.role ?? null;
-  }
-  if (!role) {
-    // An unassigned task has no role of its own; every role may take it. Wake
-    // the first invokable agent of the company (the admission path checks the
-    // rest) — the sweep re-offers the task to every role on its next pass.
-    const anyAgent = await ports.db
-      .select({ id: agents.id })
-      .from(agents)
-      .where(eq(agents.companyId, input.companyId))
-      .limit(2);
-    const target = anyAgent.find((row) => row.id !== input.excludeAgentId);
-    if (!target) return false;
-    return enqueueSwarmWake(ports, target.id, input);
-  }
-
-  const roleAgents = await listAgentsOfRole(ports.db, input.companyId, role);
-  const target = roleAgents.find((row) => row.id !== input.excludeAgentId);
-  if (!target) return false;
-  return enqueueSwarmWake(ports, target.id, input);
-}
-
-async function enqueueSwarmWake(
-  ports: SwarmClaimServicePorts,
-  agentId: string,
-  input: { issueId: string; idempotencySuffix?: string },
-): Promise<boolean> {
-  const key = `${SWARM_CLAIM_WAKE_IDEMPOTENCY_PREFIX}:${input.issueId}${
-    input.idempotencySuffix ? `:${input.idempotencySuffix}` : ""
-  }`;
-  const wake = await ports.enqueueWakeup!(agentId, {
-    source: "automation",
-    triggerDetail: "system",
-    reason: SWARM_CLAIM_WAKE_REASON,
-    idempotencyKey: key,
-    requestedByActorType: "system",
-    requestedByActorId: "swarm_claim",
-    contextSnapshot: { issueId: input.issueId, source: "swarm_claim" },
-  });
-  return Boolean(wake);
-}
 
 /** Convenience for the routes: the pilot settings service instance. */
 export function swarmClaimService(db: Db, ports: SwarmClaimServicePorts) {
