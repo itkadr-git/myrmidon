@@ -8,6 +8,12 @@ import { sentryReady, shutdownSentry, captureException } from "./sentry.js";
 import { waitForPendingRunFailureReports } from "./services/run-failure-report.js";
 import { verifyStoppedNativeSessionForReplacement } from "./services/native-runtime/native-session-executor.js";
 import { embeddedPostgresOwnerPort } from "./embedded-postgres-owner.js";
+// myrmidon(PROCS-1.3) + myrmidon(1.6.6 RUN-DISPATCH-NOTIFY, OPE-6444): the
+// inter-process bus (Postgres LISTEN/NOTIFY) the run-start dispatcher's
+// `notify` mode publishes `run_queued` to, and the executor process subscribes
+// to. Constructed only in a multi-process deployment (PAPERCLIP_PROCESS_ROLE
+// set); a single-process deployment never starts it — byte-for-byte unchanged.
+import { ProcessBus } from "./services/process-bus.js";
 import { deliverExecutionStatuses } from "./services/execution-status-delivery.js";
 import { deliverReconciledExecutions, settleUnrecoverableExecutions } from "./services/execution-recovery-resolution.js";
 import { reconcileSafeNativeReplacements } from "./services/native-runtime/native-safe-replacement.js";
@@ -25,6 +31,7 @@ import { warnIfUnsupportedNodeVersion } from "@paperclipai/shared/node-version";
 import { and, eq } from "drizzle-orm";
 import {
   createDb,
+  createPostgresJsClient,
   ensurePostgresDatabase,
   formatEmbeddedPostgresError,
   getPostgresDataDirectory,
@@ -920,8 +927,43 @@ async function startServerWithDatabaseTeardown(
     }
   };
   const pluginWorkerManager = createPluginWorkerManager();
+  // myrmidon(PROCS-1.3) + myrmidon(1.6.6 RUN-DISPATCH-NOTIFY, OPE-6444): the
+  // process bus. A single-process deployment (no PAPERCLIP_PROCESS_ROLE) never
+  // constructs it — behaviour stays byte-for-byte the vendor default; the
+  // dispatcher below then has no bus to publish to and every start stays local.
+  // In a multi-process deployment the bus is the accelerator of the `notify`
+  // mode (design OPE-5394 section 0 item 2): api processes publish `run_queued`,
+  // the executor subscribes, and the part-A resweep remains the carrier of
+  // correctness. A dedicated postgres.js client with max: 1 — `sql.listen`
+  // pins its connection for the lifetime of the listener, and the client owns
+  // no other work.
+  const processRoleValue = process.env.PAPERCLIP_PROCESS_ROLE?.trim().toLowerCase() ?? "";
+  const multiProcessDeployment = processRoleValue !== "" && processRoleValue !== "all";
+  const processBus = multiProcessDeployment
+    ? new ProcessBus(
+        // A dedicated postgres.js client with max: 1 — `sql.listen` pins its
+        // connection for the lifetime of the listener, and the client owns no
+        // other work. The driver comes through @paperclipai/db: the server
+        // package has no direct `postgres` dependency.
+        createPostgresJsClient(activeDatabaseConnectionString, { maxConnections: 1 }),
+      )
+    : null;
+  if (processBus) {
+    try {
+      await processBus.start();
+      logger.info({ role: processRoleValue }, "process bus started (PROCS-1.3)");
+    } catch (err) {
+      // The bus is the accelerator, never the carrier of correctness: a bus
+      // that cannot listen degrades the notify mode to the resweep, so the
+      // failure is logged and the process starts without it.
+      logger.error({ err }, "process bus failed to start; notify mode degrades to the resweep");
+    }
+  }
   const heartbeat = config.heartbeatSchedulerEnabled
-    ? heartbeatService(db as any, { pluginWorkerManager })
+    ? heartbeatService(db as any, {
+        pluginWorkerManager,
+        processBus,
+      })
     : null;
   const decisionServiceOptions = {
     wakeOriginAgent: createDecisionWakeOriginAgent(heartbeat?.wakeup ?? null),
@@ -2367,6 +2409,16 @@ async function startServerWithDatabaseTeardown(
       prepareHotRestartShutdown,
       waitForHeartbeatSchedulerIdle,
     });
+    // myrmidon(PROCS-1.3): the bus stops with the rest of the background work —
+    // its postgres.js client and the LISTEN connections go before the shared
+    // pool closes.
+    if (processBus) {
+      try {
+        await processBus.stop();
+      } catch (err) {
+        logger.error({ err, signal }, "process bus stop failed during shutdown");
+      }
+    }
     const skipHeartbeatDrain = heartbeatShutdown.hotRestart?.skipDrain === true;
     const selectiveDrainRunIds = heartbeatShutdown.hotRestart?.drainRunIds ?? null;
     if (skipHeartbeatDrain) {
