@@ -5,6 +5,7 @@ import {
   PROBE_CHUNK_COLUMNS,
   PROBE_DOCUMENT_COLUMNS,
   PROBE_FTS_LANGUAGE,
+  PROBE_INDEXES,
   PROBE_SEARCH_INDEX_SCHEMA,
   probeContentTsVector,
   probeSchemaSql,
@@ -125,5 +126,26 @@ describe("probe schema of the hybrid search integration suite", () => {
     expect(fullText?.text).toContain("::regconfig");
     expect(fullText?.values).toContain(PROBE_FTS_LANGUAGE);
     expect(probeContentTsVector("$1")).toContain(`'${PROBE_FTS_LANGUAGE}'`);
+  });
+
+  it("creates the join and filter indexes of the migration it stands in for", () => {
+    const ddl = probeSchemaSql();
+    for (const index of PROBE_INDEXES) {
+      expect(ddl).toContain(`create index ${index.name} on ${index.table} using btree (${index.columns.join(", ")})`);
+    }
+  });
+
+  it("indexes the columns the search SQL joins and filters on", async () => {
+    const indexed = (table: string): readonly string[] =>
+      PROBE_INDEXES.filter((index) => index.table === table).flatMap((index) => [...index.columns]);
+    const { chunks } = columnReferences(await emittedStatements());
+
+    // Both legs join the documents table by `document_id`, which is why the migration indexes it and
+    // why the stand has to as well: without it the join becomes a scan of every chunk per document.
+    expect(chunks.has("document_id")).toBe(true);
+    expect(indexed(PROBE_SEARCH_INDEX_SCHEMA.chunksTable)).toContain("document_id");
+    // The scope filter reads documents by dataset and status.
+    expect(indexed(PROBE_SEARCH_INDEX_SCHEMA.documentsTable)).toContain("dataset_id");
+    expect(indexed(PROBE_SEARCH_INDEX_SCHEMA.documentsTable)).toContain("status");
   });
 });

@@ -50,6 +50,14 @@
   `ar t` instead of assuming `data.tar.xz`, and reports a failed command together with its `stderr`,
   which is where `xz` and `tar` say what went wrong. Database-free tests pin those decisions
   (`test-pgvector.myrmidon.test.ts`), so the extension installs wherever a system `xz` exists.
+- The integration stand now mirrors the migration's indexes, not only its columns. The search SQL joins
+  chunks to documents by `document_id` and narrows documents by `(dataset_id, status)`, and a probe
+  build without those btree indexes made the planner answer with a nested loop that scanned every
+  chunk per document: CI measured a 789 ms plan on a 2000-chunk stand with `Rows Removed by Join
+  Filter: 4000000`, a shape production never picks and a latency that described the stand rather than
+  the product. The probe schema now creates the four btree indexes of the migration's tables, a
+  database-free guard fails if any of them goes missing or stops covering the joined and filtered
+  columns, and the plan test fails if that join explosion comes back.
 - This is the code half of the corpus step; wiring the module to routes, settings and the UI
   follows in the later parts of CORPUS-2.0.
 
@@ -106,5 +114,13 @@
   о сбое команды вместе с её `stderr` — там `xz` и `tar` и говорят, что именно пошло не так.
   Эти решения закреплены тестами без базы (`test-pgvector.myrmidon.test.ts`), поэтому расширение
   ставится везде, где есть системный `xz`.
+- Интеграционный стенд теперь повторяет и индексы миграции, а не только колонки. SQL поиска
+  соединяет чанки с документами по `document_id` и отбирает документы по `(dataset_id, status)`,
+  и стенд без этих btree-индексов заставил планировщик ответить вложенным циклом, который
+  сканировал все чанки для каждого документа: в CI это был план на 789 мс на стенде из 2000
+  чанков с `Rows Removed by Join Filter: 4000000` — форма, которую боевая база никогда не выберет,
+  и задержка, описывавшая стенд, а не продукт. Теперь схема зонда создаёт четыре btree-индекса
+  таблиц миграции, страж без базы падает, если хоть один пропал или перестал покрывать
+  соединяемые и отбираемые колонки, а тест плана падает, если этот взрыв соединения вернётся.
 - Это кодовая половина шага корпуса; подключение модуля к маршрутам, настройкам и интерфейсу —
   в следующих частях CORPUS-2.0.

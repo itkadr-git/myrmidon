@@ -40,6 +40,10 @@ const standChunks = Number.isInteger(perfChunks) && perfChunks > 0 ? perfChunks 
 const INSERT_BATCH = 200;
 const COMPANY_ID = "aaaaaaaa-0000-0000-0000-0000000000c1";
 const DATASET_ID = "bbbbbbbb-0000-0000-0000-0000000000d1";
+// A query whose words appear in no chunk, so the full-text leg returns nothing and the fused list is
+// the vector ranking alone. The recall figures are read off that ranking: asking with wording every
+// chunk shares would measure the dilution of the fusion instead of the reach of the vector leg.
+const NO_MATCH_TEXT = "zzzqqq nonexistent wording";
 const OTHER_DATASET_ID = "bbbbbbbb-0000-0000-0000-0000000000d2";
 const FOREIGN_CHUNK_ID = "eeeeeeee-0000-0000-0000-000000000001";
 
@@ -162,6 +166,18 @@ function percentile(values: readonly number[], quantile: number): number {
   const sorted = [...values].sort((left, right) => left - right);
   const position = Math.min(sorted.length - 1, Math.max(0, Math.ceil(quantile * sorted.length) - 1));
   return sorted[position];
+}
+
+/**
+ * Rows the planner discarded in a join. A stand whose indexes mirror the migration joins by index
+ * and reports nothing here. The shape to catch is the one CI produced before that mirror was fixed:
+ * a nested loop that scanned every chunk per document and removed four million pairs
+ * (`Rows Removed by Join Filter: 4000000`, 789 ms over a 2000-chunk stand) — a plan production,
+ * which has the indexes, would never pick, and a timing that described the stand, not the product.
+ */
+function joinFilterEliminations(plan: string): number {
+  const match = /Rows Removed by Join Filter: (\d+)/.exec(plan);
+  return match === null ? 0 : Number(match[1]);
 }
 
 /** `SqlExecutor` over postgres.js — the same narrow interface the product wires its own client to. */
@@ -329,38 +345,80 @@ suite("hybrid search over postgres with the vector extension", () => {
   it("finds the synthetic neighbours with recall@5 above the baseline", async () => {
     const queries = Array.from({ length: 20 }, (_, position) => Math.floor((position + 1) * 97) % chunks.length);
     const random = createRandom(7);
-    let exactHits = 0;
+    let vectorFirst = 0;
+    let vectorHits = 0;
     let noisyHits = 0;
+    let hybridHits = 0;
+    let plateauHits = 0;
 
     for (const position of queries) {
       const source = chunks[position];
-      const exact = await index.search({
+      // A text nothing matches, so the fused list is the vector ranking by itself: this measures the
+      // vector leg, not the fusion. The identical vector has distance 0, so it has to come back
+      // first — and a stand that cannot do that is not a stand whose recall means anything.
+      const vectorOnly = await index.search({
+        companyId: COMPANY_ID,
+        datasetId: DATASET_ID,
+        text: NO_MATCH_TEXT,
+        embedding: source.vector,
+        limit: 5,
+      });
+      if (vectorOnly[0]?.chunk.id === source.id) vectorFirst += 1;
+      if (vectorOnly.some((hit) => hit.chunk.id === source.id)) vectorHits += 1;
+
+      const noisy = l2Normalize(source.vector.map((value) => value + (random() - 0.5) * 0.1));
+      const noisyResult = await index.search({
+        companyId: COMPANY_ID,
+        datasetId: DATASET_ID,
+        text: NO_MATCH_TEXT,
+        embedding: noisy,
+        limit: 5,
+      });
+      if (noisyResult.some((hit) => hit.chunk.id === source.id)) noisyHits += 1;
+
+      // Both legs carry a signal here: the chunk's own wording matches only that chunk (its number is
+      // a lexeme no other chunk has), and the vector is the chunk's own.
+      const hybrid = await index.search({
+        companyId: COMPANY_ID,
+        datasetId: DATASET_ID,
+        text: chunkContent(position),
+        embedding: source.vector,
+        limit: 5,
+      });
+      if (hybrid.some((hit) => hit.chunk.id === source.id)) hybridHits += 1;
+
+      // The plateau case: wording every chunk shares, so the full-text ranks are a lottery and RRF
+      // pulls the fused order away from the vector order. That is the fusion behaving as designed,
+      // and it is the reason the recall figure is read off the vector ranking above rather than off
+      // a text every chunk matches.
+      const plateau = await index.search({
         companyId: COMPANY_ID,
         datasetId: DATASET_ID,
         text: "corpus text",
         embedding: source.vector,
         limit: 5,
       });
-      if (exact.some((hit) => hit.chunk.id === source.id)) exactHits += 1;
-
-      const noisy = l2Normalize(source.vector.map((value) => value + (random() - 0.5) * 0.1));
-      const noisyResult = await index.search({
-        companyId: COMPANY_ID,
-        datasetId: DATASET_ID,
-        text: "corpus text",
-        embedding: noisy,
-        limit: 5,
-      });
-      if (noisyResult.some((hit) => hit.chunk.id === source.id)) noisyHits += 1;
+      if (plateau.some((hit) => hit.chunk.id === source.id)) plateauHits += 1;
     }
 
-    const exactRecall = exactHits / queries.length;
+    const vectorRecall = vectorHits / queries.length;
     const noisyRecall = noisyHits / queries.length;
+    const hybridRecall = hybridHits / queries.length;
+    const plateauRecall = plateauHits / queries.length;
     console.log(
-      `[corpus] recall@5 over ${chunks.length} chunks: exact=${exactRecall.toFixed(4)} noisy=${noisyRecall.toFixed(4)}`,
+      `[corpus] recall@5 over ${chunks.length} chunks: vector=${vectorRecall.toFixed(4)} (first=${
+        vectorFirst / queries.length
+      }) noisy=${noisyRecall.toFixed(4)} hybrid=${hybridRecall.toFixed(4)} plateau=${plateauRecall.toFixed(4)}`,
     );
-    expect(exactRecall).toBeGreaterThanOrEqual(0.95);
-    expect(noisyRecall).toBeGreaterThanOrEqual(0.8);
+    // The vector ranking of an identical vector is exact, and the noisy query of the same 1024
+    // dimensions only has to keep its own chunk in the top five.
+    expect(vectorFirst).toBe(queries.length);
+    expect(vectorRecall).toBeGreaterThanOrEqual(0.95);
+    expect(noisyRecall).toBeGreaterThanOrEqual(0.9);
+    // With a real text signal on both legs the fused list has to hold the source chunk.
+    expect(hybridRecall).toBeGreaterThanOrEqual(0.95);
+    // The plateau bound is deliberately soft — it catches a collapse of the fusion, not a bad draw.
+    expect(plateauRecall).toBeGreaterThanOrEqual(0.5);
   });
 
   it("keeps p95 latency inside the acceptance budget", async () => {
@@ -413,6 +471,7 @@ suite("hybrid search over postgres with the vector extension", () => {
       const ranking = plan.length > 0 ? lines.join("\n") : "";
       console.log(`[corpus] query plan (${chunks.length} chunks):\n${ranking}`);
       expect(ranking.length).toBeGreaterThan(0);
+      expect(joinFilterEliminations(ranking)).toBeLessThan(chunks.length);
     }
   });
 });
