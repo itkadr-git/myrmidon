@@ -14337,18 +14337,32 @@ export function issueRoutes(
               !(await assertLockedReviewPolicyAllowsMutation(tx))
             )
               return null;
-            if (handoffGuarded && handoffLockedRow) {
-              // statusVersion+1 rides the handoff commit so the new owner and
-              // any guard observe a fresh revision; the bump happens before
-              // the ownership write so the response row and the receipt carry
-              // the same revision (svc.update leaves the column untouched on
-              // non-blocked paths).
-              handoffStateRevision =
-                await handoffCas.bumpHandoffStatusVersion(tx, id);
-              handoffRevisionInTx = handoffStateRevision;
-            }
             const updated = await updateIssue(tx);
             if (!updated) return null;
+            if (handoffGuarded && handoffLockedRow) {
+              // Fresh-revision invariant: a committed handoff always moves
+              // statusVersion by one. The DB trigger
+              // (paperclip_issue_status_version_trigger) already bumps the
+              // column inside this very UPDATE whenever the commit changed
+              // the status (the vendor demote in_progress -> todo), so a
+              // blind pre-bump would double-count (4 -> 6 instead of 5).
+              // Read the committed row back and only bump explicitly when
+              // the trigger left the revision untouched (no status change).
+              const committedRevision = await tx
+                .select({ statusVersion: issues.statusVersion })
+                .from(issues)
+                .where(eq(issues.id, id))
+                .then(
+                  (rows: Array<{ statusVersion: number }>) =>
+                    rows[0]?.statusVersion ?? null,
+                );
+              handoffRevisionInTx =
+                committedRevision !== null &&
+                committedRevision > handoffLockedRow.statusVersion
+                  ? committedRevision
+                  : await handoffCas.bumpHandoffStatusVersion(tx, id);
+              handoffStateRevision = handoffRevisionInTx;
+            }
             if (handoffGuarded && handoffLockedRow && handoffRevisionInTx !== null) {
               // The receipt commits in the same transaction as the ownership
               // write, so a committed handoff always has its receipt.

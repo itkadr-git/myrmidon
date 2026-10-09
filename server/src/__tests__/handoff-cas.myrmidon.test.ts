@@ -21,6 +21,7 @@ import {
   companies,
   companyMemberships,
   createDb,
+  heartbeatRunEvents,
   heartbeatRuns,
   issues,
   principalPermissionGrants,
@@ -58,6 +59,9 @@ describeEmbeddedPostgres("guarded CAS handoff on PATCH /api/issues/{id}", () => 
   afterEach(async () => {
     await db.delete(activityLog);
     await db.delete(agentWakeupRequests);
+    // myrmidon(HANDOFF-CAS): the rollback path's wake leaves heartbeat run
+    // events behind; they reference heartbeat_runs, so clear them first.
+    await db.delete(heartbeatRunEvents);
     await db.delete(heartbeatRuns);
     await db.delete(issues);
     await db.delete(principalPermissionGrants);

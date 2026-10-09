@@ -292,7 +292,7 @@ export async function assertHandoffCommitAllowed(
     nextAssigneeUserId: input.nextAssigneeUserId,
   });
   if (mismatch) throw handoffCasConflict(mismatch, locked.id);
-  return { locked, mismatch, liveRun: null };
+  return { locked, liveRun: null };
 }
 
 // Bump statusVersion with the handoff commit so the new owner and any guard
