@@ -12,6 +12,7 @@ import {
   agents,
   companies,
   createDb,
+  heartbeatRunEvents,
   heartbeatRuns,
   issueComments,
   issueRelations,
@@ -65,6 +66,7 @@ describeEmbeddedPostgres("blocked loop limiter (route level)", () => {
     await db.delete(issueRelations);
     await db.delete(activityLog);
     await db.delete(issues);
+    await db.delete(heartbeatRunEvents);
     await db.delete(heartbeatRuns);
     await db.delete(agents);
     await db.delete(companies);
@@ -133,10 +135,9 @@ describeEmbeddedPostgres("blocked loop limiter (route level)", () => {
       {
         id: otherBlockerId,
         companyId,
-        title: "Another done blocker",
-        status: "done",
+        title: "Another open blocker",
+        status: "todo",
         priority: "medium",
-        completedAt: new Date(),
       },
       {
         id: issueId,

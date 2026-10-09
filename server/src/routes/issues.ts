@@ -13694,25 +13694,37 @@ export function issueRoutes(
         // other human actors are not limited.
         if (req.actor.type === "agent") {
           const maxReturns = readBlockedLoopMaxReturns();
-          const blockerIds = Array.isArray(req.body.blockedByIssueIds)
-            ? (req.body.blockedByIssueIds as string[])
-            : (await svc.getRelationSummaries(existing.id)).blockedBy.map(
-                (relation) => relation.id,
-              );
-          const signature: BlockedLoopSignature = {
-            blockerSetKey: blockerSetKeyOf(blockerIds),
-            descriptorKey: descriptorKeyOf(descriptor),
-          };
-          const decision = judgeBlockedLoop(
-            await loadBlockedLoopEvents(db, {
-              companyId: existing.companyId,
-              issueId: existing.id,
+          let blockedLoopDecision: ReturnType<typeof judgeBlockedLoop> | null =
+            null;
+          try {
+            const blockerIds = Array.isArray(req.body.blockedByIssueIds)
+              ? (req.body.blockedByIssueIds as string[])
+              : (await svc.getRelationSummaries(existing.id)).blockedBy.map(
+                  (relation) => relation.id,
+                );
+            const signature: BlockedLoopSignature = {
+              blockerSetKey: blockerSetKeyOf(blockerIds),
+              descriptorKey: descriptorKeyOf(descriptor),
+            };
+            blockedLoopDecision = judgeBlockedLoop(
+              await loadBlockedLoopEvents(db, {
+                companyId: existing.companyId,
+                issueId: existing.id,
+                maxReturns,
+              }),
+              signature,
               maxReturns,
-            }),
-            signature,
-            maxReturns,
-          );
-          if (decision.blockedLoop) {
+            );
+            blockedLoopSignature = signature;
+          } catch (err) {
+            // The limiter is a safety net: a failure to read the history must
+            // never stop a legal block, so it fails open.
+            logger.warn(
+              { err, issueId: existing.id },
+              "blocked-loop limiter could not evaluate the return; allowing it",
+            );
+          }
+          if (blockedLoopDecision?.blockedLoop) {
             await logActivity(db, {
               companyId: existing.companyId,
               actorType: actor.actorType,
@@ -13723,7 +13735,7 @@ export function issueRoutes(
               entityType: "issue",
               entityId: existing.id,
               details: {
-                streak: decision.streak,
+                streak: blockedLoopDecision.streak,
                 maxReturns,
                 identifier: existing.identifier,
               },
@@ -13734,7 +13746,6 @@ export function issueRoutes(
             });
             return;
           }
-          blockedLoopSignature = signature;
         }
       }
       if (
