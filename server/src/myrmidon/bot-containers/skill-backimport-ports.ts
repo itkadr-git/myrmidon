@@ -41,14 +41,14 @@ import type { Db } from "@paperclipai/db";
 import { agents, companySkills } from "@paperclipai/db";
 import { companySkillService } from "../../services/index.js";
 import { readPaperclipSkillSyncPreference, writePaperclipSkillSyncPreference } from "@paperclipai/adapter-utils/server-utils";
-import { skillLifecycleService } from "../skill-lifecycle/index.js";
+import { BOT_BACKIMPORT_ORIGIN_METADATA_KEY, skillLifecycleService } from "../skill-lifecycle/index.js";
 import type {
   BackimportSkillFile,
   BotSkillBackimportPorts,
 } from "./skill-backimport.js";
 
 /** Metadata key holding the originating agent's id on a back-imported skill. */
-export const BOT_BACKIMPORT_ORIGIN_METADATA_KEY = "bot_backimport_agent";
+export { BOT_BACKIMPORT_ORIGIN_METADATA_KEY };
 
 /**
  * The directory the catalog service manages a company-local skill in is
