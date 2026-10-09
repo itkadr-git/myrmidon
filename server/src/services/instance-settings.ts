@@ -772,7 +772,6 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
               ...preserveBudgetEnforcementGeneralKey(current.general), // myrmidon(1.7-BUDGET-CONFIG-B)
               ...preservePluginEntitlementKeysGeneralKey(current.general), // myrmidon(PLUGIN-ENTITLEMENT C)
               ...preservePluginEntitlementPublicKeyGeneralKey(current.general), // myrmidon(1.6.3 PLUGIN-ENTITLEMENT A)
-              ...preserveDebateGeneralKey(current.general), // myrmidon(1.7-DEBATE-ASYM-A)
               ...preserveTelegramDmProgressGeneralKey(current.general), // myrmidon(DM-PROGRESS)
               ...preserveBridgeLanguageGeneralKey(current.general), // myrmidon(1.6.5-TG-LOCALE-C)
               // The preserve line above restores the stored value: a patch that
