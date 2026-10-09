@@ -39,8 +39,6 @@ import { claimNextTaskForAgent } from "./service.js";
 
 const settings: SwarmClaimSettings = {
   enabled: true,
-  enabledRoles: [],
-  enabledCompanyIds: [],
   leaseTtlSec: DEFAULT_SWARM_LEASE_TTL_SEC,
   maxActiveTasks: DEFAULT_SWARM_MAX_ACTIVE_TASKS,
   sweepIntervalSec: DEFAULT_SWARM_CLAIM_SWEEP_INTERVAL_SEC,
@@ -199,9 +197,9 @@ describe("myrmidon(1.6-SWARM) claim service", () => {
     } as never;
   }
 
-  it("with the pilot flag off nothing is claimed", async () => {
+  it("with the swarm flag off nothing is claimed", async () => {
     const ports = fakePorts({
-      swarmClaim: { enabled: false, enabledRoles: [], enabledCompanyIds: [], leaseTtlSec: 900, maxActiveTasks: 3, sweepIntervalSec: 30, p0Preemption: true },
+      swarmClaim: { enabled: false, leaseTtlSec: 900, maxActiveTasks: 3, sweepIntervalSec: 30, p0Preemption: true },
     });
     const outcome = await claimNextTaskForAgent(ports, {
       companyId: "comp-1",
@@ -213,7 +211,7 @@ describe("myrmidon(1.6-SWARM) claim service", () => {
 
   it("with an empty agent table the answer is queue_empty, not a crash", async () => {
     const ports = fakePorts({
-      swarmClaim: { enabled: true, enabledRoles: [], enabledCompanyIds: [], leaseTtlSec: 900, maxActiveTasks: 3, sweepIntervalSec: 30, p0Preemption: true },
+      swarmClaim: { enabled: true, leaseTtlSec: 900, maxActiveTasks: 3, sweepIntervalSec: 30, p0Preemption: true },
     });
     const outcome = await claimNextTaskForAgent(ports, {
       companyId: "comp-1",
@@ -233,7 +231,7 @@ describe("myrmidon(1.6-SWARM) sweep acceptance window", () => {
     expect(DEFAULT_SWARM_CLAIM_SWEEP_INTERVAL_SEC).toBeLessThanOrEqual(
       DEFAULT_SWARM_LEASE_TTL_SEC,
     );
-    // The sweep is a no-op pass when the pilot flag is off.
+    // The sweep is a no-op pass when the swarm flag is off.
     const sweeper = createSwarmClaimSweeper({
       db: {
         select: () => ({ from: () => ({ where: () => ({ limit: () => Promise.resolve([]) }) }) }),
