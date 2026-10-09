@@ -4,15 +4,13 @@
 // out of index.ts so the event paths (issue hooks, resume, the claim API, the
 // supervisor rebalance) can build it without importing the wiring point.
 
-import {
-  readStoredSwarmSettings,
-  resolveSwarmClaimSettings,
-  type CompanyCastesReader,
-} from "@paperclipai/shared";
+import { readStoredSwarmSettings, resolveSwarmClaimSettings } from "@paperclipai/shared";
+import { currentHostCpuGate, currentHostMemoryGate } from "../run-admission.js";
 import {
   matchAgent,
   matchCompany,
   matchIssue,
+  type SwarmFreedAgentOptions,
   type SwarmMatcherDeps,
   type SwarmMatcherPair,
   type SwarmMatcherResult,
@@ -29,10 +27,17 @@ export interface SwarmMatcherPorts extends Omit<SwarmClaimPorts, "settings"> {
   settings: Pick<SwarmClaimPorts["settings"], "getGeneral">;
   /** The clock of the pass; default is the moment of the event. */
   now?: () => Date;
-  /** The company caste directory (T3 port); absent, no caste is filtered. */
-  castes?: CompanyCastesReader;
-  /** The run admission of the host at the moment of the event; default open. */
+  /** The run admission of the host at the moment of the event; default the real gates of the run admission. */
   hostGateOpen?: () => boolean;
+}
+
+/**
+ * True while the host's run admission lets a run start: neither the memory floor
+ * nor the CPU ceiling is closed. An unreadable host ("unknown") does not block,
+ * exactly as it does not for the run starts themselves (design §3.4 п.5).
+ */
+export function hostRunAdmissionOpen(): boolean {
+  return currentHostMemoryGate().state !== "closed" && currentHostCpuGate().state !== "closed";
 }
 
 /** The board-side matcher, as an event path calls it. */
@@ -44,7 +49,10 @@ export interface SwarmMatcher {
    * the agent is running by definition, so its live run does not make it busy,
    * and nobody is woken — it asked, it is already awake.
    */
-  forAgent(agentId: string, opts?: { explicit?: boolean }): Promise<SwarmMatcherPair | null>;
+  forAgent(
+    agentId: string,
+    opts?: SwarmFreedAgentOptions & { explicit?: boolean },
+  ): Promise<SwarmMatcherPair | null>;
 }
 
 /**
@@ -75,7 +83,9 @@ export async function buildSwarmMatcher(ports: SwarmMatcherPorts): Promise<Swarm
       },
     },
     settings,
-    hostGateOpen: ports.hostGateOpen ? ports.hostGateOpen() : true,
+    // The real run admission unless a caller supplies its own reading: a matcher
+    // that assumed "open" paired tasks the host could not start (review item 6).
+    hostGateOpen: (ports.hostGateOpen ?? hostRunAdmissionOpen)(),
     now: ports.now ? ports.now() : new Date(),
     casteDirectory: ports.castes,
     logActivity: servicePorts.logActivity,
@@ -93,12 +103,16 @@ export async function buildSwarmMatcher(ports: SwarmMatcherPorts): Promise<Swarm
  * own assigned ready task first and otherwise the top ready task of its caste
  * and nest. `enabled: false` means the swarm is off and the caller's own
  * fallback is still in charge — the switch must not change that path.
+ * `options` carries what the release path knows (the task that just ended, the
+ * idle-pickup switch, the company wake allowance) so the loop guards of idle
+ * pickup hold on this path too (review item 1).
  */
 export async function matchFreedAgent(
   ports: SwarmMatcherPorts,
   agentId: string,
+  options: SwarmFreedAgentOptions = {},
 ): Promise<{ enabled: boolean; pair: SwarmMatcherPair | null }> {
   const matcher = await buildSwarmMatcher(ports);
   if (!matcher) return { enabled: false, pair: null };
-  return { enabled: true, pair: await matcher.forAgent(agentId) };
+  return { enabled: true, pair: await matcher.forAgent(agentId, options) };
 }

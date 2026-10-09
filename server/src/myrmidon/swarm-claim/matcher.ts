@@ -50,7 +50,6 @@ import {
   SWARM_CLAIM_QUEUE_ISSUE_STATUSES,
   SWARM_CLAIM_WAKE_REASON,
   SWARM_MATCHED_ACTION,
-  SWARM_MATCHED_ASSIGNMENT_LOST_REASON,
   SWARM_MATCHED_CONTEXT_SOURCE,
   SWARM_MATCHED_MUTATION,
   SWARM_MATCHED_WAKE_REASON,
@@ -61,14 +60,13 @@ import {
   swarmRoleForUnassignedTask,
   type SwarmClaimSettings,
 } from "@paperclipai/shared";
+import type { IssuePostCommitAction } from "../../services/issues.js";
 import { queueIssueAssignmentWakeup, type IssueAssignmentWakeupDeps } from "../../services/issue-assignment-wakeup.js";
+import { logActivity as logActivityInTx, publishActivity, type ActivityPublication } from "../../services/activity-log.js";
 import { issueHasNoExecutionHold } from "../settled-holds/ready-predicate.js";
+import { isIssueCoolingDown } from "./cooling.js";
 import { planClaim } from "./domain.js";
-import {
-  assignIssueToAgentForIdleClaim,
-  insertClaim,
-  releaseClaimsForIssue,
-} from "./store.js";
+import { insertClaim, releaseClaimsForIssue, revertIdleClaimAssignment } from "./store.js";
 
 /** One ready task, as the queue read offers it to the matcher. */
 export interface SwarmMatcherTask {
@@ -130,6 +128,23 @@ export interface SwarmMatcherCaste {
   maxActiveTasks: number | null;
 }
 
+/**
+ * What the release path knows about the agent that just became free (review
+ * item 1). All optional: an event that has none of it (a pause lifted, the
+ * periodic pass) passes nothing and the agent's own tasks are all offered.
+ */
+export interface SwarmFreedAgentOptions {
+  /** The task whose run just ended: past work, never offered back at once. */
+  excludeIssueId?: string | null;
+  /**
+   * The resolved idle-pickup switch (instance AND the agent's own card). False
+   * keeps the agent's own assigned tasks from being woken by this path.
+   */
+  pickupAllowed?: boolean;
+  /** The company-wide wake allowance idle pickup spends (`tryConsume`). */
+  wakeBudget?: { tryConsume(companyId: string): boolean };
+}
+
 export interface SwarmMatcherDeps {
   db: Db;
   /** The wake layer — the very one a manual assignment uses. */
@@ -182,6 +197,18 @@ function pickBySmallestId(
 }
 
 /**
+ * The cooling of a task (design §4.3): the injected port (T5) when there is one,
+ * else the board's own reading of the finished runs of the task. Never a stub:
+ * a pass that cannot tell a cooling task from a ready one is the loop of the
+ * review (a task that just failed is woken again the moment its run ends).
+ */
+function isCooling(deps: SwarmMatcherDeps, issueId: string): Promise<boolean> {
+  return deps.isIssueCoolingDown
+    ? deps.isIssueCoolingDown(issueId)
+    : isIssueCoolingDown(deps.db, issueId, deps.now);
+}
+
+/**
  * The free agents of one role read (design §3.2): not paused, not in error, no
  * live run of its own, its own switch on, and under its ceiling. The ceiling is
  * the caste override where the read reports one and the global setting otherwise.
@@ -226,19 +253,43 @@ function freeAgentsOfPair(
     }));
 }
 
+/** The wake that could not be queued took the assignment back with it. */
+const SWARM_MATCHED_WAKE_FAILED_REASON = "swarm_matched_wake_failed";
+/** The activity that records such a rollback, so the trace is not silent. */
+const SWARM_MATCHED_ROLLED_BACK_ACTION = "issue.swarm_matched_rolled_back";
+
+/** The task was taken (or left the queue) between the read and the write. */
+class MatcherClaimLost extends Error {}
+
+/** What one claim attempt came to. */
+type ClaimOutcome = "claimed" | "lost" | "wake_failed";
+
+/** A 4xx of the issues service (a task bound to a chat, an unassignable agent…) is a no, not a crash. */
+function isClientRefusal(err: unknown): boolean {
+  const status = (err as { status?: unknown } | null)?.status;
+  return typeof status === "number" && status >= 400 && status < 500;
+}
+
 /**
- * The board's transaction (design §3.1): the lease first — the partial unique
- * index `issue_claims_issue_active_uq` is what closes the race between two passes
- * or two boards — then the task's assignee, then the wake of its new owner. The
- * wake goes through `queueIssueAssignmentWakeup`, the same path a manual
- * assignment takes, so the vendor mechanics that follow (auto-checkout, ownership,
- * the lease pickup on checkout) all see a task that already has an owner.
+ * The board's transaction (design §3.1), review item 5. One database
+ * transaction holds the three writes — the task row is locked, the lease is
+ * written (the partial unique index `issue_claims_issue_active_uq` closes the
+ * race between two passes or two boards), and the task is assigned THROUGH the
+ * issues service, so the assignment carries the same checks, the same
+ * `issue.updated` activity and the same live event as a manual one. Only after
+ * the commit is the new owner woken, through `queueIssueAssignmentWakeup`, the
+ * same path a manual assignment takes, with `rethrowOnError`: a wake that
+ * cannot be queued is not swallowed. Then the assignment is taken back and the
+ * lease released — "assigned, leased, and no run" is the state this whole
+ * rework exists to make impossible. (The wake is queued after the commit and not
+ * inside it because the wake layer reads the committed task on its own
+ * connection; inside the transaction it would see a task nobody owns.)
  */
 async function claimTaskForAgent(
   deps: SwarmMatcherDeps,
   companyId: string,
   target: { issueId: string; agentId: string; role: string; identifier: string | null; waitedMs: number | null },
-): Promise<boolean> {
+): Promise<ClaimOutcome> {
   const plan = planClaim({
     issueId: target.issueId,
     agentId: target.agentId,
@@ -247,35 +298,118 @@ async function claimTaskForAgent(
     now: deps.now,
     settings: { leaseTtlSec: deps.settings.leaseTtlSec },
   });
-  const claim = await insertClaim(deps.db, { companyId, ...plan });
-  if (!claim) return false;
+  const publications: ActivityPublication[] = [];
+  const postCommitActions: IssuePostCommitAction[] = [];
+  let status = "todo";
+  try {
+    await deps.db.transaction(async (tx) => {
+      const txDb = tx as unknown as Db;
+      const [row] = await txDb
+        .select({ status: issues.status, assigneeAgentId: issues.assigneeAgentId })
+        .from(issues)
+        .where(and(eq(issues.id, target.issueId), eq(issues.companyId, companyId)))
+        .for("update");
+      if (
+        !row ||
+        row.assigneeAgentId ||
+        !(SWARM_CLAIM_QUEUE_ISSUE_STATUSES as readonly string[]).includes(row.status)
+      ) {
+        throw new MatcherClaimLost();
+      }
+      const claim = await insertClaim(txDb, { companyId, ...plan });
+      if (!claim) throw new MatcherClaimLost();
 
-  const assigned = await assignIssueToAgentForIdleClaim(deps.db, {
-    companyId,
-    issueId: target.issueId,
-    agentId: target.agentId,
-    now: deps.now,
-  });
-  if (!assigned) {
-    // Somebody else took the task between the lease and the assignee: drop the
-    // lease at once, so the next pass is not blocked by a trace of this one.
-    await releaseClaimsForIssue(deps.db, {
-      issueId: target.issueId,
-      reason: SWARM_MATCHED_ASSIGNMENT_LOST_REASON,
-      now: deps.now,
+      const { issueService } = await import("../../services/issues.js");
+      const updated = await issueService(deps.db).update(
+        target.issueId,
+        { assigneeAgentId: target.agentId, companyGuard: companyId },
+        txDb,
+        publications,
+        postCommitActions,
+      );
+      if (!updated) throw new MatcherClaimLost();
+
+      await logActivityInTx(
+        txDb,
+        {
+          companyId,
+          actorType: "system",
+          actorId: "swarm_matcher",
+          agentId: target.agentId,
+          action: "issue.updated",
+          entityType: "issue",
+          entityId: target.issueId,
+          details: {
+            assigneeAgentId: target.agentId,
+            identifier: target.identifier,
+            source: "swarm_matcher",
+            changes: updated.changes,
+            _previous: { assigneeAgentId: null },
+          },
+        },
+        publications,
+      );
+      status = row.status;
     });
-    return false;
+  } catch (err) {
+    if (err instanceof MatcherClaimLost || isClientRefusal(err)) return "lost";
+    throw err;
+  }
+  for (const publication of publications) publishActivity(publication);
+  if (postCommitActions.length > 0) {
+    const { executeIssuePostCommitActions } = await import("../../services/issues.js");
+    await executeIssuePostCommitActions(deps.db, postCommitActions);
   }
 
-  await queueIssueAssignmentWakeup({
-    heartbeat: deps.heartbeat,
-    issue: { id: target.issueId, assigneeAgentId: target.agentId, status: "todo" },
-    reason: SWARM_MATCHED_WAKE_REASON,
-    mutation: SWARM_MATCHED_MUTATION,
-    contextSource: SWARM_MATCHED_CONTEXT_SOURCE,
-    requestedByActorType: "system",
-    idempotencyKey: swarmMatchedIdempotencyKey(target.issueId),
-  });
+  let woken: unknown = null;
+  let wakeError: unknown = null;
+  try {
+    woken = await queueIssueAssignmentWakeup({
+      heartbeat: deps.heartbeat,
+      issue: { id: target.issueId, assigneeAgentId: target.agentId, status },
+      reason: SWARM_MATCHED_WAKE_REASON,
+      mutation: SWARM_MATCHED_MUTATION,
+      contextSource: SWARM_MATCHED_CONTEXT_SOURCE,
+      requestedByActorType: "system",
+      idempotencyKey: swarmMatchedIdempotencyKey(target.issueId),
+      rethrowOnError: true,
+    });
+  } catch (err) {
+    wakeError = err;
+  }
+  if (!woken) {
+    // No wake was queued (it threw, or the admission refused it): take the
+    // assignment back and release the lease, so the task is back in the queue
+    // untouched. Raw writes on purpose — a service update here would announce a
+    // task event and send the matcher straight back to the same agent.
+    await releaseClaimsForIssue(deps.db, {
+      issueId: target.issueId,
+      reason: SWARM_MATCHED_WAKE_FAILED_REASON,
+      now: deps.now,
+    });
+    await revertIdleClaimAssignment(deps.db, {
+      companyId,
+      issueId: target.issueId,
+      agentId: target.agentId,
+      now: deps.now,
+    });
+    await deps.logActivity?.({
+      companyId,
+      actorType: "system",
+      actorId: "swarm_matcher",
+      agentId: target.agentId,
+      runId: null,
+      action: SWARM_MATCHED_ROLLED_BACK_ACTION,
+      entityType: "issue",
+      entityId: target.issueId,
+      details: {
+        role: target.role,
+        identifier: target.identifier,
+        reason: wakeError ? "wake_failed" : "wake_not_queued",
+      },
+    });
+    return "wake_failed";
+  }
 
   await deps.logActivity?.({
     companyId,
@@ -295,7 +429,7 @@ async function claimTaskForAgent(
     },
   });
 
-  return true;
+  return "claimed";
 }
 
 /** How long the task sat in the queue before the board handed it over. */
@@ -354,7 +488,7 @@ export async function matchCompany(
 
     for (const candidate of queue) {
       if (candidate.assigneeAgentId) continue;
-      if (await deps.isIssueCoolingDown?.(candidate.issueId)) {
+      if (await isCooling(deps, candidate.issueId)) {
         result.unmatched += 1;
         continue;
       }
@@ -382,8 +516,12 @@ export async function matchCompany(
         identifier: candidate.identifier ?? null,
         waitedMs: waitedMsOf(task, deps.now),
       });
-      if (!claimed) {
+      if (claimed !== "claimed") {
         result.unmatched += 1;
+        // An agent that cannot be woken is not free for the rest of this pass.
+        if (claimed === "wake_failed") {
+          free = free.filter((agent) => agent.agentId !== chosen.agentId);
+        }
         continue;
       }
 
@@ -425,7 +563,7 @@ export async function matchIssue(
   if (!row?.companyId) return null;
   if (row.assigneeAgentId) return null;
   if (!(SWARM_CLAIM_QUEUE_ISSUE_STATUSES as readonly string[]).includes(row.status)) return null;
-  if (await deps.isIssueCoolingDown?.(issueId)) return null;
+  if (await isCooling(deps, issueId)) return null;
 
   const castes = await casteDirectoryOf(deps, row.companyId);
   const pairs = await listIdleRolePairs(deps.db, row.companyId);
@@ -453,7 +591,7 @@ export async function matchIssue(
       identifier: candidate.identifier ?? null,
       waitedMs: waitedMsOf(task, deps.now),
     });
-    if (!claimed) return null;
+    if (claimed !== "claimed") return null;
     return { issueId, agentId: chosen.agentId, role: pair.role, identifier: candidate.identifier ?? null };
   }
   return null;
@@ -468,7 +606,7 @@ export async function matchIssue(
 export async function matchAgent(
   deps: SwarmMatcherDeps,
   agentId: string,
-  opts: { explicit?: boolean } = {},
+  opts: SwarmFreedAgentOptions & { explicit?: boolean } = {},
 ): Promise<SwarmMatcherPair | null> {
   if (!deps.hostGateOpen) return null;
   if (!deps.settings.enabled) return null;
@@ -493,7 +631,11 @@ export async function matchAgent(
   // An explicit pull (the claim API) comes from a run that is already going:
   // its own assigned task is the run's business, not a reason to wake it.
   if (!opts.explicit) {
-    const own = await matchOwnAssignedTask(deps, agentRow.companyId, agentId);
+    const own = await matchOwnAssignedTask(deps, agentRow.companyId, agentId, opts);
+    // The company's wake allowance for this minute is spent: the agent stays
+    // idle until the next event or the periodic pass instead of being sent
+    // somewhere else on the allowance it does not have.
+    if (own === "budget_spent") return null;
     if (own) return own;
   }
 
@@ -519,7 +661,7 @@ export async function matchAgent(
   });
   for (const candidate of queue) {
     if (candidate.assigneeAgentId) continue;
-    if (await deps.isIssueCoolingDown?.(candidate.issueId)) continue;
+    if (await isCooling(deps, candidate.issueId)) continue;
     const task: SwarmMatcherTask = {
       issueId: candidate.issueId,
       identifier: candidate.identifier ?? null,
@@ -534,7 +676,9 @@ export async function matchAgent(
       identifier: candidate.identifier ?? null,
       waitedMs: waitedMsOf(task, deps.now),
     });
-    if (!claimed) continue;
+    // The agent could not be woken: another task would fail the same way.
+    if (claimed === "wake_failed") return null;
+    if (claimed !== "claimed") continue;
     return { issueId: candidate.issueId, agentId, role: pair.role, identifier: candidate.identifier ?? null };
   }
   return null;
@@ -542,51 +686,70 @@ export async function matchAgent(
 
 /**
  * The agent's own assigned ready task, woken before any queue task (design
- * §3.5: "своя назначенная задача — первой"; review item 3). Assigning only
- * `assignee IS NULL` tasks was the regression the review caught: an agent
- * holding an assigned, unrun task was never woken for it again — it fell out
- * of the pass as `lost`. No lease is written here: this task is already the
- * agent's own, the run that follows takes the lease on its checkout the
- * ordinary way, and the dispatcher reads an issue whose assignee IS the agent
- * it is waking — exactly the pair the 3259 cancelled runs lacked.
+ * §3.5: "своя назначенная задача — первой"). Assigning only `assignee IS NULL`
+ * tasks was a regression the first review caught: an agent holding an assigned,
+ * unrun task was never woken for it again. No lease is written here: this task
+ * is already the agent's own, the run that follows takes the lease on its
+ * checkout the ordinary way.
+ *
+ * It is also the path of the loop the second review caught (design §4.3: 100
+ * runs, 246 M tokens): the run ends, the task is still `todo` and still the
+ * agent's, and the agent is woken for it again at once. Three guards close it,
+ * the very ones idle-pickup had on this path:
+ *   * the task whose run has just ended is never offered back (`excludeIssueId`);
+ *   * the instance switch and the agent's own card switch of idle pickup
+ *     (`pickupAllowed`) hold the wake back when the operator turned it off;
+ *   * a task that is cooling down (its last runs moved nothing) waits, and the
+ *     company's wake allowance (`wakeBudget`, the very object idle pickup
+ *     spends) is taken before the wake.
+ * Returns `"budget_spent"` when only the allowance stopped the wake, so the
+ * caller does not turn to the queue on an allowance it has not got.
  */
 async function matchOwnAssignedTask(
   deps: SwarmMatcherDeps,
   companyId: string,
   agentId: string,
-): Promise<SwarmMatcherPair | null> {
+  options: SwarmFreedAgentOptions,
+): Promise<SwarmMatcherPair | "budget_spent" | null> {
+  if (options.pickupAllowed === false) return null;
   const pairs = await listIdleRolePairs(deps.db, companyId);
   for (const pair of pairs) {
-    const candidate = orderSwarmQueueCandidates(pair.queue, {
+    const own = orderSwarmQueueCandidates(pair.queue, {
       p0Preemption: deps.settings.p0Preemption,
-    }).find((entry) => entry.assigneeAgentId === agentId);
-    if (!candidate) continue;
-    await queueIssueAssignmentWakeup({
-      heartbeat: deps.heartbeat,
-      issue: { id: candidate.issueId, assigneeAgentId: agentId, status: "todo" },
-      reason: SWARM_MATCHED_WAKE_REASON,
-      mutation: SWARM_MATCHED_MUTATION,
-      contextSource: SWARM_MATCHED_CONTEXT_SOURCE,
-      requestedByActorType: "system",
-      idempotencyKey: swarmMatchedIdempotencyKey(candidate.issueId),
-    });
-    await deps.logActivity?.({
-      companyId,
-      actorType: "system",
-      actorId: "swarm_matcher",
-      agentId,
-      runId: null,
-      action: SWARM_MATCHED_ACTION,
-      entityType: "issue",
-      entityId: candidate.issueId,
-      details: { role: pair.role, identifier: candidate.identifier ?? null, ownTask: true },
-    });
-    return {
-      issueId: candidate.issueId,
-      agentId,
-      role: pair.role,
-      identifier: candidate.identifier ?? null,
-    };
+    }).filter((entry) => entry.assigneeAgentId === agentId);
+    for (const candidate of own) {
+      if (options.excludeIssueId && candidate.issueId === options.excludeIssueId) continue;
+      if (await isCooling(deps, candidate.issueId)) continue;
+      if (options.wakeBudget && !options.wakeBudget.tryConsume(companyId)) return "budget_spent";
+      const woken = await queueIssueAssignmentWakeup({
+        heartbeat: deps.heartbeat,
+        issue: { id: candidate.issueId, assigneeAgentId: agentId, status: "todo" },
+        reason: SWARM_MATCHED_WAKE_REASON,
+        mutation: SWARM_MATCHED_MUTATION,
+        contextSource: SWARM_MATCHED_CONTEXT_SOURCE,
+        requestedByActorType: "system",
+        idempotencyKey: swarmMatchedIdempotencyKey(candidate.issueId),
+      });
+      // A wake the admission refused started nothing: no pair, no activity.
+      if (!woken) continue;
+      await deps.logActivity?.({
+        companyId,
+        actorType: "system",
+        actorId: "swarm_matcher",
+        agentId,
+        runId: null,
+        action: SWARM_MATCHED_ACTION,
+        entityType: "issue",
+        entityId: candidate.issueId,
+        details: { role: pair.role, identifier: candidate.identifier ?? null, ownTask: true },
+      });
+      return {
+        issueId: candidate.issueId,
+        agentId,
+        role: pair.role,
+        identifier: candidate.identifier ?? null,
+      };
+    }
   }
   return null;
 }

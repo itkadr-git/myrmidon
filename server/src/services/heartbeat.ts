@@ -708,6 +708,7 @@ import {
   notifySwarmAgentEvent,
   setSwarmEventSink,
 } from "../myrmidon/swarm-claim/index.js";
+import { createCasteDirectoryReader } from "../myrmidon/castes/directory.js";
 // myrmidon(1.6-SWARM): the checkout/release claim hooks of the run lifecycle
 import {
   recordSwarmClaimOnCheckoutImpl,
@@ -18461,6 +18462,9 @@ export function heartbeatService(
       },
     },
     enqueueWakeup: (agentId, opts) => enqueueWakeup(agentId, opts),
+    // The caste directory (review item 6): without this port `swarmEligible:
+    // false` and the per-caste ceiling were never read on the live pass.
+    castes: createCasteDirectoryReader(db),
     env: process.env,
   });
   // myrmidon(1.6.5 OPE-6608, review item 2 / design §3.5): the event sink of the
@@ -18477,6 +18481,7 @@ export function heartbeatService(
       },
     },
     enqueueWakeup: (agentId: string, opts: Parameters<typeof enqueueWakeup>[1]) => enqueueWakeup(agentId, opts),
+    castes: createCasteDirectoryReader(db),
     env: process.env,
   });
   setSwarmEventSink({
@@ -26995,8 +27000,18 @@ export function heartbeatService(
               db,
               settings: instanceSettings,
               enqueueWakeup: (agentId, opts) => enqueueWakeup(agentId, opts),
+              castes: createCasteDirectoryReader(db),
             },
             releasedRun.agentId,
+            {
+              // The loop guards idle pickup had on this very path (review item
+              // 1): the task whose run just ended is not offered back, the
+              // idle-pickup switches (instance and agent card) hold, and the
+              // wake spends the same company allowance.
+              excludeIssueId: releasedIssueId,
+              pickupAllowed,
+              wakeBudget: idleWakeBudget,
+            },
           ).catch((err) => {
             logger.warn({ err, runId: run.id }, "swarm match of the freed agent failed");
             // A failed match must never strand the agent: the idle-pickup path

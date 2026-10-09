@@ -36,7 +36,7 @@
 // per row with the reason recorded, a best-effort wake, a failure leaves the
 // row for the next pass.
 
-import { and, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import { companies, agentWakeupRequests, heartbeatRuns, issues, issueClaims, type Db } from "@paperclipai/db";
 import { wakeNotParkedOnExecutionHold } from "../settled-holds/ready-predicate.js";
 import {
@@ -205,7 +205,63 @@ export function createSwarmClaimSweeper(deps: SwarmClaimSweeperDeps): SwarmClaim
         return result;
       }
 
-      const expiredRows = await listExpiredClaims(deps.db, null, now, SWARM_CLAIM_SWEEP_PAGE_SIZE);
+      // myrmidon(1.6.5 OPE-6608 A, review item 6): the host's run admission is
+      // read ONCE, before anything is matched, and everything that can start a
+      // run follows it: the re-match of an expired lease and the matcher pass.
+      // Both used to run on a gate reported open, and the expired lease was
+      // taken off its owner before the memory/CPU gates were even looked at.
+      // myrmidon(1.6.2 RUN-ADMISSION): no pairing while the host floor is
+      // closed. An unreadable host ("unknown") does not block: the floor is
+      // inactive then, exactly as it is for the run starts themselves.
+      let hostGateOpen = true;
+      const gate = hostMemoryGate();
+      if (gate.state === "closed") {
+        result.idleSkippedReason = gate.reason ?? "host free memory is below the run admission floor";
+        if (now.getTime() - lastIdleSkipLogAtMs >= IDLE_SKIP_LOG_INTERVAL_MS) {
+          lastIdleSkipLogAtMs = now.getTime();
+          logger.warn(
+            {
+              availableMb: gate.availableMb,
+              thresholdMb: gate.thresholdMb,
+              settlingRuns: gate.settlingRuns,
+              reason: result.idleSkippedReason,
+            },
+            "swarm idle wake pass skipped: the run admission host memory floor is closed",
+          );
+        }
+        hostGateOpen = false;
+      }
+      // myrmidon(1.6.5 RUN-ADMISSION): the host CPU ceiling. The 05.10
+      // incident was exactly this pass waking agents onto a host whose memory
+      // looked fine while its load average ran at 594 % of a core per core.
+      const cpuGate = hostGateOpen ? hostCpuGate() : null;
+      if (cpuGate && cpuGate.state === "closed") {
+        result.idleSkippedReason = cpuGate.reason ?? "host CPU load is at or above the run admission ceiling";
+        if (now.getTime() - lastIdleSkipLogAtMs >= IDLE_SKIP_LOG_INTERVAL_MS) {
+          lastIdleSkipLogAtMs = now.getTime();
+          logger.warn(
+            {
+              load1: cpuGate.load1,
+              cores: cpuGate.cores,
+              loadPercentPerCore: cpuGate.loadPercentPerCore,
+              // myrmidon(1.6.5 rc.2): the ceiling is measured above the host's
+              // own background load, so both numbers go to the log.
+              backgroundPercentPerCore: cpuGate.backgroundPercentPerCore,
+              loadAboveBackgroundPercent: cpuGate.loadAboveBackgroundPercent,
+              thresholdPercent: cpuGate.thresholdPercent,
+              reason: result.idleSkippedReason,
+            },
+            "swarm idle wake pass skipped: the run admission host CPU ceiling is closed",
+          );
+        }
+        hostGateOpen = false;
+      }
+      // A closed gate leaves the expired leases where they are: releasing one
+      // and taking its owner off would strand the task until the gate opens,
+      // and the release is what the next open pass reads them by.
+      const expiredRows = hostGateOpen
+        ? await listExpiredClaims(deps.db, null, now, SWARM_CLAIM_SWEEP_PAGE_SIZE)
+        : [];
       const closedRows = await listClaimsOnNonQueueIssues(
         deps.db,
         null,
@@ -255,6 +311,7 @@ export function createSwarmClaimSweeper(deps: SwarmClaimSweeperDeps): SwarmClaim
             settings,
             { companyId: row.companyId, issueId: row.issueId, agentId: row.agentId },
             now,
+            hostGateOpen,
           ).catch(() => false);
           if (rematched) result.woken += 1;
         } catch {
@@ -280,58 +337,9 @@ export function createSwarmClaimSweeper(deps: SwarmClaimSweeperDeps): SwarmClaim
         }
       }
 
-      // myrmidon(1.6.5 OPE-6608 A, review item 1): the third pass is the
-      // board-side matcher now (design §3.5), not the per-role idle wake it
-      // replaced — no batch, no "who has waited longest". The pass runs after
-      // the release passes, so a lease released in this very tick is already
-      // back in the queue the pools read.
-      // myrmidon(1.6.2 RUN-ADMISSION): no pairing while the host floor is
-      // closed. An unreadable host ("unknown") does not block: the floor is
-      // inactive then, exactly as it is for the run starts themselves.
-      const gate = hostMemoryGate();
-      if (gate.state === "closed") {
-        result.idleSkippedReason = gate.reason ?? "host free memory is below the run admission floor";
-        if (now.getTime() - lastIdleSkipLogAtMs >= IDLE_SKIP_LOG_INTERVAL_MS) {
-          lastIdleSkipLogAtMs = now.getTime();
-          logger.warn(
-            {
-              availableMb: gate.availableMb,
-              thresholdMb: gate.thresholdMb,
-              settlingRuns: gate.settlingRuns,
-              reason: result.idleSkippedReason,
-            },
-            "swarm idle wake pass skipped: the run admission host memory floor is closed",
-          );
-        }
-        return result;
-      }
-      // myrmidon(1.6.5 RUN-ADMISSION): the host CPU ceiling. The 05.10
-      // incident was exactly this pass waking agents onto a host whose memory
-      // looked fine while its load average ran at 594 % of a core per core.
-      const cpuGate = hostCpuGate();
-      if (cpuGate.state === "closed") {
-        result.idleSkippedReason = cpuGate.reason ?? "host CPU load is at or above the run admission ceiling";
-        if (now.getTime() - lastIdleSkipLogAtMs >= IDLE_SKIP_LOG_INTERVAL_MS) {
-          lastIdleSkipLogAtMs = now.getTime();
-          logger.warn(
-            {
-              load1: cpuGate.load1,
-              cores: cpuGate.cores,
-              loadPercentPerCore: cpuGate.loadPercentPerCore,
-              // myrmidon(1.6.5 rc.2): the ceiling is measured above the host's
-              // own background load, so both numbers go to the log.
-              backgroundPercentPerCore: cpuGate.backgroundPercentPerCore,
-              loadAboveBackgroundPercent: cpuGate.loadAboveBackgroundPercent,
-              thresholdPercent: cpuGate.thresholdPercent,
-              reason: result.idleSkippedReason,
-            },
-            "swarm idle wake pass skipped: the run admission host CPU ceiling is closed",
-          );
-        }
-        return result;
-      }
+      if (!hostGateOpen) return result;
       try {
-        const matched = await runMatcherPass(deps, settings, now);
+        const matched = await runMatcherPass(deps, settings, now, hostGateOpen);
         result.idleClaimed += matched.claimed;
         result.idleWoken += matched.claimed;
         result.idleRoles += matched.companies;
@@ -479,8 +487,14 @@ async function reclaimExpiredTask(
   settings: SwarmClaimSettings,
   target: { companyId: string; issueId: string; agentId: string },
   now: Date,
+  hostGateOpen: boolean,
 ): Promise<boolean> {
-  if (await hasLiveRunForAgent(deps.db, target.companyId, target.agentId)) return false;
+  // The gate first (review item 6): with the host's run admission closed the
+  // owner is not taken off the task, because nothing could be started for it
+  // afterwards. The sweep does not even release an expired lease then (it reads
+  // none while the gate is closed); this guard keeps the function safe on its own.
+  if (!hostGateOpen) return false;
+  if (await hasLiveRunForTask(deps.db, target.companyId, target.agentId, target.issueId)) return false;
 
   const cleared = await clearExpiredAssignee(deps.db, {
     companyId: target.companyId,
@@ -502,12 +516,23 @@ async function reclaimExpiredTask(
     });
   }
   if (!deps.enqueueWakeup) return false;
-  const matched = await matchIssue(matcherDeps(deps, settings, now), target.issueId);
+  const matched = await matchIssue(matcherDeps(deps, settings, now, hostGateOpen), target.issueId);
   return Boolean(matched);
 }
 
-/** True while a queued/running/scheduled_retry run of the agent covers its task. */
-async function hasLiveRunForAgent(db: Db, companyId: string, agentId: string): Promise<boolean> {
+/**
+ * True while a queued/running/scheduled_retry run of the agent covers THIS task
+ * (review item 8). The old read asked "has the agent any live run", so an agent
+ * busy with another task kept an expired lease on a task nobody was working.
+ * The run belongs to the task by the thin projection `context_issue_id`, the
+ * snapshot for rows written before it, or the native issue id.
+ */
+async function hasLiveRunForTask(
+  db: Db,
+  companyId: string,
+  agentId: string,
+  issueId: string,
+): Promise<boolean> {
   const rows = await db
     .select({ id: heartbeatRuns.id })
     .from(heartbeatRuns)
@@ -516,6 +541,14 @@ async function hasLiveRunForAgent(db: Db, companyId: string, agentId: string): P
         eq(heartbeatRuns.companyId, companyId),
         eq(heartbeatRuns.agentId, agentId),
         inArray(heartbeatRuns.status, ["queued", "running", "scheduled_retry"]),
+        or(
+          eq(heartbeatRuns.contextIssueId, issueId),
+          and(
+            isNull(heartbeatRuns.contextIssueId),
+            sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
+          ),
+          eq(heartbeatRuns.nativeIssueId, issueId),
+        ),
       ),
     )
     .limit(1);
@@ -532,10 +565,11 @@ async function runMatcherPass(
   deps: SwarmClaimSweeperDeps,
   settings: SwarmClaimSettings,
   now: Date,
+  hostGateOpen: boolean,
 ): Promise<{ claimed: number; unmatched: number; companies: number }> {
   const companyIds = await listActiveCompanies(deps.db);
   if (!deps.enqueueWakeup) return { claimed: 0, unmatched: 0, companies: companyIds.length };
-  const matcher = matcherDeps(deps, settings, now);
+  const matcher = matcherDeps(deps, settings, now, hostGateOpen);
   let claimed = 0;
   let unmatched = 0;
   for (const companyId of companyIds) {
@@ -547,15 +581,16 @@ async function runMatcherPass(
 }
 
 /**
- * The matcher ports of the sweeper. The host gate is reported open on purpose:
- * this pass only runs after both gates were read above, and every event path
- * checks its own admission — the floor's job is to hold back a whole sweep, not
- * a single pair. The caste directory is passed straight through (T3's port).
+ * The matcher ports of the sweeper. The host gate is the one the sweep read
+ * itself at the top of the pass (memory floor and CPU ceiling of the run
+ * admission), not a constant: a closed gate matches nothing. The caste
+ * directory is passed straight through (T3's port).
  */
 function matcherDeps(
   deps: SwarmClaimSweeperDeps,
   settings: SwarmClaimSettings,
   now: Date,
+  hostGateOpen: boolean,
 ): SwarmMatcherDeps {
   return {
     db: deps.db,
@@ -572,7 +607,7 @@ function matcherDeps(
       },
     },
     settings,
-    hostGateOpen: true,
+    hostGateOpen,
     now,
     casteDirectory: deps.castes,
     logActivity: deps.logActivity,

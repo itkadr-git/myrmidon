@@ -17,7 +17,16 @@
 
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { agentWakeupRequests, agents, companies, createDb, issueClaims, issues } from "@paperclipai/db";
+import {
+  activityLog,
+  agentWakeupRequests,
+  agents,
+  companies,
+  createDb,
+  heartbeatRuns,
+  issueClaims,
+  issues,
+} from "@paperclipai/db";
 import { eq } from "drizzle-orm";
 import {
   SWARM_CLAIM_WAKE_REASON,
@@ -104,6 +113,10 @@ describeEmbeddedPostgres("swarm idle queue claims on the server, then wakes", ()
   }, 60_000);
 
   afterEach(async () => {
+    // The matcher assigns through the issues service, which writes the audit
+    // trail; the rows reference the company and its agents.
+    await db.delete(activityLog);
+    await db.delete(heartbeatRuns);
     await db.delete(agentWakeupRequests);
     await db.delete(issueClaims);
     await db.delete(issues);

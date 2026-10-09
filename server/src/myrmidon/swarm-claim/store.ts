@@ -113,6 +113,13 @@ export async function liveClaimsForIssues(
  * Live claims of one company that have run out at `now`: never released and
  * `expires_at` at or before the cutoff. This is the sweep's one read, and it is
  * indexed by `issue_claims_expires_idx`.
+ *
+ * design §4.1, correction 1 (review item 7): a lease the board wrote and no run
+ * has checked out yet (`run_id IS NULL`) does not expire while a wake for its
+ * task is in flight (`queued` / `deferred_issue_execution` / `claimed`, not
+ * parked on an execution hold). The start limit holds a wake in the queue; the
+ * lease must outlast that wait, or the sweep takes the owner off a task whose
+ * run is about to start and the run is cancelled as `reassigned`.
  */
 export async function listExpiredClaims(
   db: Db,
@@ -120,7 +127,20 @@ export async function listExpiredClaims(
   now: Date,
   limit = 200,
 ): Promise<Array<typeof issueClaims.$inferSelect>> {
-  const conditions = [isNull(issueClaims.releasedAt), lt(issueClaims.expiresAt, now)];
+  const conditions = [
+    isNull(issueClaims.releasedAt),
+    lt(issueClaims.expiresAt, now),
+    sql`(${issueClaims.runId} is not null or not exists (
+      select 1 from agent_wakeup_requests w
+      where w.company_id = ${issueClaims.companyId}
+        and w.status in ('queued', 'deferred_issue_execution', 'claimed')
+        and w.payload ->> 'issueId' = ${issueClaims.issueId}::text
+        and not (
+          w.status = 'deferred_issue_execution'
+          and coalesce(jsonb_typeof(w.payload -> 'executionWait'), 'null') = 'object'
+        )
+    ))`,
+  ];
   if (companyId) conditions.push(eq(issueClaims.companyId, companyId));
   return db
     .select()

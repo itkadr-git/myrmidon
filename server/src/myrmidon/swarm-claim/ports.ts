@@ -5,6 +5,7 @@
 // service can use it without importing the wiring point (no import cycle).
 
 import type { Db } from "@paperclipai/db";
+import type { CompanyCastesReader } from "@paperclipai/shared";
 import { logActivity as logActivityService } from "../../services/activity-log.js";
 import type { instanceSettingsService } from "../../services/instance-settings.js";
 import type { SwarmClaimEnqueueWakeup, SwarmClaimServicePorts } from "./service.js";
@@ -13,6 +14,8 @@ export interface SwarmClaimPorts {
   db: Db;
   settings: Pick<ReturnType<typeof instanceSettingsService>, "getGeneral" | "updateGeneral">;
   enqueueWakeup?: SwarmClaimEnqueueWakeup;
+  /** The company caste directory (T3 port): the claim gate, the sweeper and the matcher read it. */
+  castes?: CompanyCastesReader;
   env?: Record<string, string | undefined>;
 }
 
@@ -24,6 +27,7 @@ export function swarmClaimPorts(
     db: ports.db,
     settings: ports.settings,
     enqueueWakeup: ports.enqueueWakeup,
+    castes: ports.castes,
     logActivity: async (input) => {
       await logActivityService(ports.db, {
         companyId: input.companyId,
