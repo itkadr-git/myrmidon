@@ -41,6 +41,8 @@ export function queueIssueAssignmentWakeup(input: {
   /** Latest issue comment that caused this wakeup. Included in both payload
    * and context so the heartbeat can build the exact turn that was requested. */
   wakeCommentId?: string | null;
+  /** One wake per key: a retried matcher pass cannot start a second run. */
+  idempotencyKey?: string | null;
   /** Closed, server-derived omission counts for provider attachments on the
    * exact wake comment. These are prompt diagnostics, never authorization. */
   attachmentOmissionReasons?: Record<string, number> | null;
@@ -68,6 +70,7 @@ export function queueIssueAssignmentWakeup(input: {
         ...(taskKey ? { taskKey } : {}),
         ...(input.wakeCommentId ? { wakeCommentId: input.wakeCommentId } : {}),
       },
+      ...(input.idempotencyKey ? { idempotencyKey: input.idempotencyKey } : {}),
       requestedByActorType: input.requestedByActorType,
       requestedByActorId: input.requestedByActorId ?? null,
       ...(input.durableChatRequest

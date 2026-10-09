@@ -19,7 +19,11 @@ import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { agentWakeupRequests, agents, companies, createDb, issueClaims, issues } from "@paperclipai/db";
 import { eq } from "drizzle-orm";
-import { SWARM_CLAIM_WAKE_REASON, resolveSwarmClaimSettings } from "@paperclipai/shared";
+import {
+  SWARM_CLAIM_WAKE_REASON,
+  SWARM_MATCHED_WAKE_REASON,
+  resolveSwarmClaimSettings,
+} from "@paperclipai/shared";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -28,6 +32,12 @@ import {
   createSwarmClaimSweeper,
   type SwarmClaimSweeperDeps,
 } from "../myrmidon/swarm-claim/sweep.js";
+import {
+  matchAgent,
+  matchCompany,
+  matchIssue,
+  type SwarmMatcherDeps,
+} from "../myrmidon/swarm-claim/matcher.js";
 import { readSwarmQueueCounters } from "../myrmidon/swarm-claim/idle-queue.js";
 import type { HostCpuGate, HostMemoryGate } from "../myrmidon/run-admission.js";
 
@@ -333,4 +343,168 @@ describeEmbeddedPostgres("swarm idle queue claims on the server, then wakes", ()
       cancelledLastHour: 1,
     });
   });
-});
+describe("the board-side matcher (OPE-6608 A: a task meets a free agent)", () => {
+    /** One wake the matcher posted, with the task it carried. */
+    interface MatcherWake {
+      agentId: string;
+      reason: string | undefined;
+      payloadIssueId: unknown;
+      contextIssueId: unknown;
+      idempotencyKey: unknown;
+    }
+
+    function matcher(
+      wakes: MatcherWake[],
+      overrides: { hostGateOpen?: boolean } = {},
+    ): SwarmMatcherDeps {
+      return {
+        db,
+        heartbeat: {
+          wakeup: async (
+            agentId: string,
+            opts: {
+              reason?: string | null;
+              payload?: Record<string, unknown> | null;
+              contextSnapshot?: Record<string, unknown>;
+              idempotencyKey?: string | null;
+            },
+          ) => {
+            wakes.push({
+              agentId,
+              reason: opts.reason ?? undefined,
+              payloadIssueId: opts.payload?.issueId,
+              contextIssueId: opts.contextSnapshot?.issueId,
+              idempotencyKey: opts.idempotencyKey,
+            });
+            return { id: randomUUID() };
+          },
+        },
+        settings: { ...baseSwarmClaimSettings, enabled: true },
+        hostGateOpen: overrides.hostGateOpen ?? true,
+        now: NOW,
+      } as unknown as SwarmMatcherDeps;
+    }
+
+    it("hands a ready task to a free agent of its caste and wakes it with that task", async () => {
+      const companyId = await seedCompany();
+      const agentId = await seedAgent(companyId, { name: "agent-a" });
+      const issueId = await seedTask(companyId, { identifier: "TASK-1" });
+      const wakes: MatcherWake[] = [];
+
+      const result = await matchCompany(matcher(wakes), companyId);
+
+      expect(result.pairs).toEqual([
+        { issueId, agentId, role: "engineer", identifier: "TASK-1" },
+      ]);
+      const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
+      expect(issue.assigneeAgentId).toBe(agentId);
+      const claims = await db.select().from(issueClaims).where(eq(issueClaims.issueId, issueId));
+      expect(claims).toHaveLength(1);
+      expect(claims[0].agentId).toBe(agentId);
+      expect(claims[0].releasedAt).toBeNull();
+      // The wake carries the assignment: that is the run the old pass lost.
+      expect(wakes).toEqual([
+        {
+          agentId,
+          reason: SWARM_MATCHED_WAKE_REASON,
+          payloadIssueId: issueId,
+          contextIssueId: issueId,
+          idempotencyKey: `swarm_matched:${issueId}`,
+        },
+      ]);
+    });
+
+    it("wakes nobody while the caste has no free agent", async () => {
+      const companyId = await seedCompany();
+      const paused = await seedAgent(companyId, { name: "agent-a", status: "paused" });
+      const issueId = await seedTask(companyId, { identifier: "TASK-1" });
+      const wakes: MatcherWake[] = [];
+
+      const result = await matchCompany(matcher(wakes), companyId);
+
+      expect(result.pairs).toHaveLength(0);
+      expect(result.unmatched).toBe(1);
+      expect(wakes).toHaveLength(0);
+      const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
+      expect(issue.assigneeAgentId).toBeNull();
+      expect(paused).toBeTruthy();
+    });
+
+    it("hands two ready tasks to two free agents in one pass", async () => {
+      const companyId = await seedCompany();
+      const first = await seedAgent(companyId, { name: "agent-a" });
+      const second = await seedAgent(companyId, { name: "agent-b" });
+      const taskOne = await seedTask(companyId, { identifier: "TASK-1" });
+      const taskTwo = await seedTask(companyId, { identifier: "TASK-2" });
+
+      const result = await matchCompany(matcher([]), companyId);
+
+      expect(result.pairs).toHaveLength(2);
+      expect(new Set(result.pairs.map((pair) => pair.agentId)).size).toBe(2);
+      const rows = await db.select().from(issues).where(eq(issues.companyId, companyId));
+      const byId = new Map(rows.map((row) => [row.id, row.assigneeAgentId]));
+      expect([byId.get(taskOne), byId.get(taskTwo)].sort()).toEqual([first, second].sort());
+    });
+
+    it("picks the same agent when the scent scores are equal — no rotation", async () => {
+      const companyId = await seedCompany();
+      const ids = [
+        await seedAgent(companyId, { name: "agent-a" }),
+        await seedAgent(companyId, { name: "agent-b" }),
+        await seedAgent(companyId, { name: "agent-c" }),
+      ];
+      const issueId = await seedTask(companyId, { identifier: "TASK-1" });
+
+      const first = await matchCompany(matcher([]), companyId);
+      expect(first.pairs).toHaveLength(1);
+      expect(first.pairs[0].agentId).toBe([...ids].sort()[0]);
+
+      // The same facts must give the same agent again, not the next in line.
+      await db.update(issues).set({ assigneeAgentId: null }).where(eq(issues.id, issueId));
+      await db.delete(issueClaims);
+      const second = await matchCompany(matcher([]), companyId);
+      expect(second.pairs[0]?.agentId).toBe(first.pairs[0]?.agentId);
+    });
+
+    it("matches nothing while the run admission of the host is closed", async () => {
+      const companyId = await seedCompany();
+      await seedAgent(companyId, { name: "agent-a" });
+      const issueId = await seedTask(companyId, { identifier: "TASK-1" });
+      const wakes: MatcherWake[] = [];
+
+      const result = await matchCompany(matcher(wakes, { hostGateOpen: false }), companyId);
+
+      expect(result.hostGateClosed).toBe(true);
+      expect(result.pairs).toHaveLength(0);
+      expect(wakes).toHaveLength(0);
+      const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
+      expect(issue.assigneeAgentId).toBeNull();
+    });
+
+    it("matches one task on its own event and hands it to the free agent", async () => {
+      const companyId = await seedCompany();
+      const agentId = await seedAgent(companyId, { name: "agent-a" });
+      const issueId = await seedTask(companyId, { identifier: "TASK-1" });
+
+      const pair = await matchIssue(matcher([]), issueId);
+
+      expect(pair).toEqual({ issueId, agentId, role: "engineer", identifier: "TASK-1" });
+      const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
+      expect(issue.assigneeAgentId).toBe(agentId);
+    });
+
+    it("hands the free agent the top of its queue on its own event", async () => {
+      const companyId = await seedCompany();
+      const agentId = await seedAgent(companyId, { name: "agent-a" });
+      const low = await seedTask(companyId, { identifier: "TASK-LOW" });
+      const high = await seedTask(companyId, { identifier: "TASK-HIGH" });
+      await db.update(issues).set({ priority: "critical" }).where(eq(issues.id, high));
+
+      const pair = await matchAgent(matcher([]), agentId);
+
+      expect(pair?.issueId).toBe(high);
+      const [row] = await db.select().from(issues).where(eq(issues.id, high));
+      expect(row.assigneeAgentId).toBe(agentId);
+      expect(low).toBeTruthy();
+    });
+  });});
