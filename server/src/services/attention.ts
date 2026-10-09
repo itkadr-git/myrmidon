@@ -3295,6 +3295,48 @@ async function buildAttentionFeedSnapshot(
         }));
       }
 
+      // myrmidon(1.6.5-F11-A): one card per bot whose profile carries no media
+      // MCP block because no media token is issued. The compile pass records the
+      // signals (bot-containers/media-mcp.ts); the card clears when the pass
+      // after a token issue compiles the block in.
+      for (const media of readMediaMcpSignals(companyId)) {
+        add(createItem({
+          companyId,
+          sourceKind: "bot_media_mcp",
+          subject: {
+            kind: "agent",
+            id: media.agentId,
+            companyId,
+            title: media.title,
+            identifier: null,
+            status: null,
+            href: `/${prefix}/agents/${media.agentId}`,
+            metadata: {
+              botKey: media.botKey,
+            },
+          },
+          whyNow: media.whyNow,
+          decisionVerbs: decisionVerbs(
+            { id: "inspect", label: "Inspect", description: "Open the agent card and the media connection." },
+            { id: "dismiss", label: "Dismiss", description: "Dismiss this media notice." },
+          ),
+          inlineResolvable: true,
+          entryRule: "the bot's profile compile found no issued media token.",
+          exitRule: "a token is issued and the next compile pass includes the media block, or the row is dismissed.",
+          dedupKey: media.dedupKey,
+          severity: media.severity,
+          activityAt: media.activityAt,
+          createdAt: media.activityAt,
+          updatedAt: media.activityAt,
+          relatedIssue: null,
+          detail: {
+            kind: "generic",
+            summaryExcerpt: excerpt(media.summaryExcerpt),
+            images: [],
+          },
+        }));
+      }
+
       // myrmidon(1.6.5-F-18): the spend sweep completed but the gateway's
       // model catalog answered 0 models — the accounting key is almost
       // certainly restricted (no default models), and every feature reading
