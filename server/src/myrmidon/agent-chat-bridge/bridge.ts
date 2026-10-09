@@ -31,8 +31,16 @@ import type { issueService } from "../../services/issues.js";
 import { stageAgentsScreenPublication } from "./commands/agents-buttons.js";
 import {
   parseBridgedCommand,
+  runBridgedChooserReply,
   runBridgedDirectMessageCommand,
 } from "./commands/index.js";
+// myrmidon(F06-D): the buttons under a `/model` or `/think` list, and the
+// reply-pick from it.
+import {
+  buildChooserMenuPayload,
+  findChooserListForReply,
+  recordChooserMenu,
+} from "./chooser-actions.js";
 import {
   conversationChannel,
   conversationOwnerUserId,
@@ -382,6 +390,40 @@ export async function ensureTelegramDmBinding(
 }
 
 /**
+ * myrmidon(F06-D): the commands an EDITED message may still run. A person who
+ * fixes a typo in `/modle` (or turns `/model` into `/model 3`) expects the
+ * command to run, not a silent nothing. Only commands that answer with a reply
+ * and leave the standing conversation's task untouched qualify: `/new` (which
+ * becomes a task comment), `/plan` and `/accept`/`/reject` (which create or
+ * close work) are never re-run from an edit.
+ */
+const EDITABLE_BRIDGED_COMMANDS: ReadonlySet<string> = new Set([
+  "model",
+  "think",
+  "status",
+  "help",
+  "start",
+  "commands",
+  "stop",
+  "agents",
+  "who",
+]);
+
+const EDITED_MESSAGE_PREFIX = "An external message was edited:\n\n";
+
+/**
+ * The command text of a Telegram message-edit lifecycle event (its text is
+ * wrapped as «An external message was edited: …»), or null when the edited
+ * message is not a command that may be re-run.
+ */
+export function editedBridgedCommandText(lifecycleText: string): string | null {
+  if (!lifecycleText.startsWith(EDITED_MESSAGE_PREFIX)) return null;
+  const body = lifecycleText.slice(EDITED_MESSAGE_PREFIX.length).trim();
+  const parsed = parseBridgedCommand(body);
+  return parsed && EDITABLE_BRIDGED_COMMANDS.has(parsed.name) ? body : null;
+}
+
+/**
  * Handles a bridged-DM message that may be an OpenClaw-style command.
  * Returns `done: true` when the whole inbound turn is finished (a `reply`
  * command already published its own answer); otherwise the caller continues
@@ -409,9 +451,25 @@ export async function handleTelegramDmCommand(input: {
   // whose first message happens to be a recognized command.
   releaseConversationId?: string;
   migratedFromIssueId?: string;
+  /**
+   * myrmidon(F06-D): the provider message this message replies to, in the form
+   * `chat_message_links` stores (Telegram: `<chat id>:<message id>`). A plain
+   * reply to a `/model` or `/think` list picks from it.
+   */
+  replyToProviderMessageId?: string | null;
 }): Promise<{ done: true } | { done: false; body?: string; notice?: string }> {
   const parsed = parseBridgedCommand(input.text);
-  if (!parsed) return { done: false };
+  // myrmidon(F06-D): not a command — but a reply to one of our choice lists may
+  // still be a pick ("2", "glm-5.3"). One cheap lookup, only for replies.
+  const chooserList =
+    !parsed && input.replyToProviderMessageId
+      ? await findChooserListForReply(input.db, {
+          companyId: input.endpoint.companyId,
+          endpointId: input.endpoint.id,
+          replyToProviderMessageId: input.replyToProviderMessageId,
+        })
+      : null;
+  if (!parsed && !chooserList) return { done: false };
   const commandPublications: ActivityPublication[] = [];
   const bound = await input.db.transaction(async (tx) => {
     if (input.releaseConversationId) {
@@ -441,22 +499,35 @@ export async function handleTelegramDmCommand(input: {
     );
   });
   for (const publication of commandPublications) publishActivity(publication);
-  const result = await runBridgedDirectMessageCommand({
-    db: input.db,
-    companyId: input.endpoint.companyId,
-    agentId: input.endpoint.assignedAgentId,
-    endpointId: input.endpoint.id,
-    deliveryId: input.deliveryId,
-    boardUserId: input.boardUserId,
-    conversationIssueId: bound.issue.id,
-    text: input.text,
-    publicBaseUrl: input.deps.publicBaseUrl,
-    cancelRun:
-      input.deps.cancelRun ??
-      (async () => {
-        throw new Error("chat_cancel_unavailable");
-      }),
-  });
+  const result = chooserList
+    ? // The list belongs to one conversation; a reply from another is plain text.
+      chooserList.conversationId === bound.conversation.id
+      ? await runBridgedChooserReply({
+          db: input.db,
+          companyId: input.endpoint.companyId,
+          agentId: input.endpoint.assignedAgentId,
+          conversationIssueId: bound.issue.id,
+          boardUserId: input.boardUserId,
+          commandName: chooserList.commandName,
+          text: input.text,
+        })
+      : null
+    : await runBridgedDirectMessageCommand({
+        db: input.db,
+        companyId: input.endpoint.companyId,
+        agentId: input.endpoint.assignedAgentId,
+        endpointId: input.endpoint.id,
+        deliveryId: input.deliveryId,
+        boardUserId: input.boardUserId,
+        conversationIssueId: bound.issue.id,
+        text: input.text,
+        publicBaseUrl: input.deps.publicBaseUrl,
+        cancelRun:
+          input.deps.cancelRun ??
+          (async () => {
+            throw new Error("chat_cancel_unavailable");
+          }),
+      });
   if (result === null) return { done: false };
   if (result.kind === "message") {
     return { done: false, body: result.body, notice: result.notice };
@@ -491,19 +562,43 @@ export async function handleTelegramDmCommand(input: {
         screen: result.screen,
       });
     } else {
-      await input.deps.stageTaskControlPublication(tx as unknown as Db, {
+      // myrmidon(F06-D): a `/model` or `/think` list goes out as a menu — buttons
+      // where the endpoint takes actions, and always a record a reply can pick
+      // from.
+      const menu = result.choices ?? null;
+      const menuPayload = menu
+        ? buildChooserMenuPayload({
+            text: result.text,
+            menu,
+            withButtons: input.endpoint.capabilities?.actions === true,
+          })
+        : null;
+      const staged = await input.deps.stageTaskControlPublication(tx as unknown as Db, {
         companyId: input.endpoint.companyId,
         endpointId: input.endpoint.id,
         conversationId: bound.conversation.id,
         issueId: bound.issue.id,
         idempotencyKey: `control:x8-${result.command}:${input.deliveryId}`,
-        payload: projectSafeChatPublication({
-          classification: "external",
-          source: "task_control",
-          text: result.text,
-        }),
+        payload:
+          menuPayload?.payload ??
+          projectSafeChatPublication({
+            classification: "external",
+            source: "task_control",
+            text: result.text,
+          }),
         principalId: input.principalId,
       });
+      if (menu && menuPayload) {
+        await recordChooserMenu(tx, {
+          companyId: input.endpoint.companyId,
+          endpointId: input.endpoint.id,
+          conversationId: bound.conversation.id,
+          principalId: input.principalId,
+          publicationId: staged.id,
+          menu,
+          tokens: menuPayload.tokens,
+        });
+      }
     }
     if (input.migratedFromIssueId) {
       const text = await buildMigrationNoticeText(tx as unknown as Db, {

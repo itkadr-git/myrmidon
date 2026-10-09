@@ -252,11 +252,19 @@ import { issueService } from "./issues.js";
 import {
   afterTelegramDmMessage,
   decideTelegramDmBinding,
+  editedBridgedCommandText,
   ensureTelegramDmBinding,
   handleTelegramDmCommand,
   refuseUnlinkedTelegramDm,
   type TelegramDmBridgeDeps,
 } from "../myrmidon/agent-chat-bridge/bridge.js";
+// myrmidon(F06-D): the buttons under a `/model` or `/think` list.
+import {
+  CHOOSER_BUTTONS_PER_ROW,
+  handleChooserPick,
+  isChooserActionId,
+  isChooserCardActions,
+} from "../myrmidon/agent-chat-bridge/chooser-actions.js";
 // myrmidon(X9b): @<alias> addressing — addressee resolution for the bridge
 // call site and the leading-token strip for an addressed turn's body (reply
 // prefixing and the mention quote live in issues.ts / cross-channel.ts; the
@@ -2119,7 +2127,18 @@ function safeCardForPublication(
         })
       : LinkButton({ label: action.label, url: action.url }),
   );
-  if (actions.length) children.push(Actions(actions));
+  if (actions.length) {
+    // myrmidon(F06-D): a `/model` or `/think` list carries a dozen or more
+    // buttons with long ids — they go to the keyboard a few to a row, not as
+    // one row Telegram would refuse.
+    if (isChooserCardActions(payload.card.actions)) {
+      for (let index = 0; index < actions.length; index += CHOOSER_BUTTONS_PER_ROW) {
+        children.push(Actions(actions.slice(index, index + CHOOSER_BUTTONS_PER_ROW)));
+      }
+    } else {
+      children.push(Actions(actions));
+    }
+  }
   return Card({ title: payload.card.title, children });
 }
 
@@ -2470,6 +2489,29 @@ function telegramMessageSequence(raw: unknown): number | null {
   return typeof value === "number" && Number.isSafeInteger(value) && value > 0
     ? value
     : null;
+}
+
+/**
+ * myrmidon(F06-D): the message a Telegram message replies to, as the
+ * `<chat id>:<message id>` provider message id the outbound links use.
+ */
+function telegramReplyTargetMessageId(raw: unknown): string | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const value = raw as {
+    chat?: { id?: unknown };
+    reply_to_message?: { message_id?: unknown };
+  };
+  const chatId = value.chat?.id;
+  const targetId = value.reply_to_message?.message_id;
+  if (
+    (typeof chatId !== "string" && typeof chatId !== "number") ||
+    typeof targetId !== "number" ||
+    !Number.isSafeInteger(targetId) ||
+    targetId <= 0
+  ) {
+    return null;
+  }
+  return `${chatId}:${targetId}`;
 }
 
 function telegramMessageId(raw: unknown): string | null {
@@ -16282,6 +16324,11 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           // migration).
           releaseConversationId: x8Dm.releaseConversationId,
           migratedFromIssueId: x8Dm.migratedFromIssueId,
+          // myrmidon(F06-D): a reply to a `/model` or `/think` list picks from it.
+          replyToProviderMessageId:
+            endpoint.provider === "telegram"
+              ? telegramReplyTargetMessageId(message.raw)
+              : null,
         });
         if (dmCommand.done) return;
         x8MessageBody = dmCommand.body;
@@ -18564,6 +18611,183 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       : null;
   }
 
+  /**
+   * myrmidon(F06-D): an EDITED bridged-DM command (`/modle` fixed to `/model`,
+   * `/model` made `/model 3`) runs as a new command instead of ending as a
+   * silently filtered "original message was not admitted" lifecycle row.
+   *
+   * The edit is trusted exactly as far as a new message would be: the runtime
+   * fence of the delivery must be current, the editor must be a linked, active,
+   * non-bot member, the DM must still be the standing bridged conversation, and
+   * the command must be one that may be re-run (editedBridgedCommandText). The
+   * command runs through the same handler as a fresh message, with this
+   * lifecycle delivery as its delivery (so the reply is published once, keyed
+   * to the edit). Returns true when the delivery is finished.
+   */
+  async function runEditedBridgedCommand(
+    endpoint: EndpointRow,
+    delivery: DeliveryRow,
+    lifecycle: { actor: { externalId: string } | null; messageId: string; targetProviderEventId: string; text: string; threadId: string },
+  ): Promise<boolean> {
+    if (
+      endpoint.provider !== "telegram" ||
+      delivery.eventKind !== "message_updated" ||
+      !lifecycle.actor
+    )
+      return false;
+    const commandText = editedBridgedCommandText(lifecycle.text);
+    if (!commandText) return false;
+    const fence = lifecycleRuntimeFence(delivery);
+    if (!fence) return false;
+    const currentEndpoint = await db.transaction((tx) =>
+      // Same statuses the lifecycle delivery itself is admitted under: a
+      // connection still verifying runs its test conversation's commands too.
+      runtimeCallbackEndpoint(tx, endpoint.id, fence, ["verifying", "active"]),
+    );
+    if (!currentEndpoint || !currentEndpoint.allowDirectMessages) return false;
+
+    // An edit of a message that became a task comment is an ordinary edit.
+    const inboundLink = await db
+      .select({ id: chatMessageLinks.id })
+      .from(chatMessageLinks)
+      .where(
+        and(
+          eq(chatMessageLinks.companyId, currentEndpoint.companyId),
+          eq(chatMessageLinks.endpointId, currentEndpoint.id),
+          eq(chatMessageLinks.providerMessageId, lifecycle.messageId),
+          eq(chatMessageLinks.direction, "inbound"),
+        ),
+      )
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    if (inboundLink) return false;
+    // The original still being processed: let the standard path wait for it.
+    const original = await db
+      .select({ state: chatDeliveries.state })
+      .from(chatDeliveries)
+      .where(
+        and(
+          eq(chatDeliveries.endpointId, currentEndpoint.id),
+          eq(chatDeliveries.providerEventId, lifecycle.targetProviderEventId),
+        ),
+      )
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    if (original && ["received", "processing", "retry"].includes(original.state))
+      return false;
+
+    const conversation = await db
+      .select()
+      .from(chatConversations)
+      .where(
+        and(
+          eq(chatConversations.companyId, currentEndpoint.companyId),
+          eq(chatConversations.endpointId, currentEndpoint.id),
+          eq(chatConversations.externalThreadId, lifecycle.threadId),
+        ),
+      )
+      .orderBy(desc(chatConversations.sessionGeneration))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    if (
+      !conversation ||
+      !conversation.isDirectMessage ||
+      !["active", "waiting"].includes(conversation.state) ||
+      !conversation.resourceId
+    )
+      return false;
+
+    const principal = await db
+      .select({
+        id: chatExternalPrincipals.id,
+        isBot: chatExternalPrincipals.isBot,
+        kind: chatExternalPrincipals.kind,
+      })
+      .from(chatExternalPrincipals)
+      .where(
+        and(
+          eq(chatExternalPrincipals.companyId, currentEndpoint.companyId),
+          eq(chatExternalPrincipals.provider, currentEndpoint.provider),
+          eq(
+            chatExternalPrincipals.providerAccountId,
+            currentEndpoint.providerAccountId ?? "unknown",
+          ),
+          eq(chatExternalPrincipals.externalId, lifecycle.actor.externalId),
+        ),
+      )
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    if (!principal || principal.kind !== "user" || principal.isBot) return false;
+    const authorization = await db.transaction((tx) =>
+      lockCurrentPrincipalAuthorization(tx, currentEndpoint, principal.id),
+    );
+    if (!authorization.allowed || !authorization.userId) return false;
+
+    const issue = await db
+      .select()
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, currentEndpoint.companyId),
+          eq(issues.id, conversation.issueId),
+        ),
+      )
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    if (!issue) return false;
+    const binding = await decideTelegramDmBinding(db, {
+      endpoint: {
+        provider: currentEndpoint.provider,
+        id: currentEndpoint.id,
+        assignedAgentId: currentEndpoint.assignedAgentId,
+      },
+      isDirectMessage: true,
+      boardUserId: authorization.userId,
+      existingConversation: { id: conversation.id, state: conversation.state },
+      existingIssue: {
+        id: issue.id,
+        conversationAgentId: issue.conversationAgentId,
+        conversationUserId: issue.conversationUserId,
+      },
+    });
+    // Only a conversation that is already this person's standing one; a
+    // migration or release is the business of a fresh message.
+    if (!binding.applies || binding.detachExisting) return false;
+
+    const resource = await db
+      .select({ id: chatEndpointResources.id, label: chatEndpointResources.label })
+      .from(chatEndpointResources)
+      .where(
+        and(
+          eq(chatEndpointResources.companyId, currentEndpoint.companyId),
+          eq(chatEndpointResources.endpointId, currentEndpoint.id),
+          eq(chatEndpointResources.id, conversation.resourceId),
+        ),
+      )
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    if (!resource) return false;
+
+    const outcome = await handleTelegramDmCommand({
+      db,
+      deps: x8TelegramDmBridgeDeps,
+      endpoint: currentEndpoint,
+      resource: { id: resource.id, label: resource.label },
+      thread: {
+        id: conversation.externalThreadId,
+        channelId: conversation.externalConversationId,
+      },
+      providerUrl: conversation.providerUrl,
+      boardUserId: authorization.userId,
+      deliveryId: delivery.id,
+      principalId: principal.id,
+      text: commandText,
+      current: conversation,
+      latestConversation: conversation,
+    });
+    return outcome.done;
+  }
+
   async function processLifecycleDelivery(
     endpoint: EndpointRow,
     candidate: DeliveryRow,
@@ -18601,6 +18825,34 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       .where(and(...claimConditions))
       .returning();
     if (!activeDelivery) return;
+
+    // myrmidon(F06-D): an edited `/model …` runs as a command, not silently
+    // filtered. A failure here retries the delivery like the standard path does.
+    try {
+      if (await runEditedBridgedCommand(endpoint, activeDelivery, lifecycle)) return;
+    } catch (error) {
+      const terminal = activeDelivery.attempts >= 5;
+      await db
+        .update(chatDeliveries)
+        .set({
+          state: terminal ? "failed" : "retry",
+          nextAttemptAt: terminal
+            ? null
+            : new Date(
+                Date.now() +
+                  Math.min(60_000, 1000 * 2 ** activeDelivery.attempts),
+              ),
+          redactedError: redactError(error),
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(chatDeliveries.id, activeDelivery.id),
+            eq(chatDeliveries.state, "processing"),
+          ),
+        );
+      throw error;
+    }
 
     try {
       await db.transaction(async (tx) => {
@@ -21022,6 +21274,9 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       if (isExternalActionAuthorizationChange(error)) return deny(known);
       throw error;
     }
+    scheduleMessageProcessing(async () => {
+      await processPendingPublications();
+    });
   }
 
   async function handleAction(
@@ -21100,6 +21355,61 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         },
         deny,
       );
+    }
+    // myrmidon(F06-D): a press under a `/model` or `/think` list is not an
+    // issue-interaction answer; it has its own token kind and handler.
+    if (isChooserActionId(event.event.actionId)) {
+      if (event.provider !== "telegram") return deny({ principalId: principal.principal.id });
+      const chooserCallbackData =
+        event.event.raw && typeof event.event.raw === "object" && "data" in event.event.raw
+          ? (event.event.raw as { data?: unknown }).data
+          : null;
+      if (
+        typeof chooserCallbackData !== "string" ||
+        Buffer.byteLength(chooserCallbackData, "utf8") > TELEGRAM_CALLBACK_DATA_LIMIT_BYTES ||
+        chooserCallbackData !== telegramChatSdkCallbackData(event.event.actionId) ||
+        event.event.value !== undefined
+      ) {
+        return deny({ principalId: principal.principal.id });
+      }
+      let chooserOutcome: Awaited<ReturnType<typeof handleChooserPick>>;
+      try {
+        chooserOutcome = await handleChooserPick({
+          db,
+          companyId: record.endpoint.companyId,
+          endpointId: record.endpoint.id,
+          actionId: event.event.actionId,
+          messageId: event.event.messageId,
+          userId: principal.userId!,
+          principalId: principal.principal.id,
+          threadMatches: (conversationThreadId) =>
+            actionThreadMatchesConversation(event.provider, event.event.threadId, conversationThreadId),
+          assertStillAuthorized: (tx, conversationId) =>
+            requireCurrentExternalActionAuthorization(tx as unknown as DbTransaction, {
+              conversationId,
+              endpointId: record.endpoint.id,
+              expectedUserId: principal.userId!,
+              principalId: principal.principal.id,
+              runtimeContext,
+            }),
+          stageTaskControlPublication: stageAuthorizedTaskControlPublication,
+        });
+      } catch (error) {
+        if (isExternalActionAuthorizationChange(error)) {
+          return deny({ principalId: principal.principal.id });
+        }
+        throw error;
+      }
+      if (chooserOutcome.kind === "denied") {
+        return deny({
+          conversationId: chooserOutcome.principalConversationId,
+          principalId: principal.principal.id,
+        });
+      }
+      scheduleMessageProcessing(async () => {
+        await processPendingPublications();
+      });
+      return;
     }
     const isCorrection = isDiscordQuestionFormCorrectionId(
       event.event.actionId,

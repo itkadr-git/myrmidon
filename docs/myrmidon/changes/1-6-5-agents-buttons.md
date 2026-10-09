@@ -1,5 +1,5 @@
 ---
-divergence-section: 1.6.3 — CTO-CHAT B, часть 2: команда `/plan` в мосте Telegram
+divergence-section: Трек 4 — чаты и навыки
 ---
 
 ## changelog-en

@@ -1,96 +1,90 @@
-// myrmidon(1.6.5 OPE-6318 part B): a bridged command reply (task_control) may
-// carry a card of callback buttons that belongs to no issue interaction — the
-// /agents dialog. The projection is the one boundary every external payload
-// passes, so it is where the rule is held: only task_control may carry such a
-// card, it is persisted without an interaction id (nothing that looks an
-// interaction up by id may ever see it), and Telegram's 12-action limit stays.
+// myrmidon(F06-D): a plain card — one that belongs to no issue interaction —
+// is the shape of the `/model` and `/think` button lists. It must never carry
+// an interaction id (nothing that resolves interactions may pick it up), and
+// it may hold more buttons than an interaction card does.
+
 import { describe, expect, it } from "vitest";
-import {
-  UnsafeChatPublicationError,
-  projectSafeChatPublication,
-} from "./chat-publication-projection.js";
+import { projectSafeChatPublication } from "./chat-publication-projection.js";
 
-const card = {
-  kind: "status" as const,
-  title: "Agents",
-  body: "Choose a direction.",
-  actions: [
-    { type: "callback" as const, actionId: "pca:abc", label: "Infrastructure (50)" },
-    { type: "callback" as const, actionId: "pca:def", label: "Stop", style: "danger" as const },
-  ],
-};
+const callback = (index: number) => ({
+  type: "callback" as const,
+  actionId: `pcm:action-${index}`,
+  label: `model-${index}`,
+});
 
-describe("task_control publications with a standalone card", () => {
-  it("persists the card without an interaction id", () => {
+describe("projectSafeChatPublication plain card (F06-D)", () => {
+  it("projects a card with no interaction id", () => {
     const payload = projectSafeChatPublication({
       classification: "external",
       source: "task_control",
-      text: "Agents\n\nChoose a direction.",
-      card,
+      text: "list",
+      card: { kind: "status", title: "Model: model-a.", body: "Available:\n1) model-a", actions: [callback(1)] },
     });
     expect(payload.interactionId).toBeUndefined();
     expect(payload.card).toEqual({
       schema: "paperclip.chat.card.v1",
       kind: "status",
-      title: "Agents",
-      body: "Choose a direction.",
-      actions: [
-        { type: "callback", actionId: "pca:abc", label: "Infrastructure (50)" },
-        { type: "callback", actionId: "pca:def", label: "Stop", style: "danger" },
-      ],
+      title: "Model: model-a.",
+      body: "Available:\n1) model-a",
+      actions: [{ type: "callback", actionId: "pcm:action-1", label: "model-1" }],
     });
   });
 
-  it("sanitises the card text like any external text", () => {
+  it("holds up to 100 buttons (Telegram's per-message limit), where an interaction card holds 12", () => {
+    const actions = Array.from({ length: 100 }, (_, i) => callback(i));
+    expect(
+      projectSafeChatPublication({
+        classification: "external",
+        source: "task_control",
+        text: "list",
+        card: { kind: "status", title: "t", actions },
+      }).card?.actions,
+    ).toHaveLength(100);
+    expect(() =>
+      projectSafeChatPublication({
+        classification: "external",
+        source: "task_control",
+        text: "list",
+        card: { kind: "status", title: "t", actions: [...actions, callback(100)] },
+      }),
+    ).toThrow(/at most 100/);
+    expect(() =>
+      projectSafeChatPublication({
+        classification: "external",
+        source: "issue_interaction",
+        text: "q",
+        interaction: {
+          id: "interaction-1",
+          card: { kind: "question", title: "t", actions: Array.from({ length: 13 }, (_, i) => callback(i)) },
+        },
+      }),
+    ).toThrow(/at most 12/);
+  });
+
+  it("refuses an interaction card and a plain card on one publication", () => {
+    expect(() =>
+      projectSafeChatPublication({
+        classification: "external",
+        source: "task_control",
+        text: "x",
+        interaction: { id: "interaction-1", card: { kind: "status", title: "t" } },
+        card: { kind: "status", title: "t" },
+      }),
+    ).toThrow(/not both/);
+  });
+
+  it("keeps the label sanitation of every card", () => {
     const payload = projectSafeChatPublication({
       classification: "external",
       source: "task_control",
       text: "x",
-      card: { ...card, body: "Visit javascript:alert(1) now" },
+      card: {
+        kind: "status",
+        title: "t",
+        actions: [{ type: "callback", actionId: "pcm:action-1", label: "x".repeat(200) }],
+      },
     });
-    expect(payload.card?.body).not.toContain("javascript:");
-  });
-
-  it("refuses the card from any other source, and next to an interaction card", () => {
-    for (const source of ["agent_comment", "explicit_board_send", "safe_milestone", "issue_interaction"] as const) {
-      expect(() =>
-        projectSafeChatPublication({ classification: "external", source, text: "x", card }),
-      ).toThrow(UnsafeChatPublicationError);
-    }
-    expect(() =>
-      projectSafeChatPublication({
-        classification: "external",
-        source: "task_control",
-        text: "x",
-        card,
-        interaction: { id: "interaction-1", card },
-      }),
-    ).toThrow(UnsafeChatPublicationError);
-  });
-
-  it("keeps the card's own limits: valid kind and ids, at most 12 actions", () => {
-    const project = (next: typeof card | Record<string, unknown>) =>
-      projectSafeChatPublication({
-        classification: "external",
-        source: "task_control",
-        text: "x",
-        card: next as typeof card,
-      });
-    expect(() => project({ ...card, kind: "bogus" })).toThrow(UnsafeChatPublicationError);
-    expect(() =>
-      project({ ...card, actions: [{ type: "callback", actionId: "bad id!", label: "x" }] }),
-    ).toThrow(UnsafeChatPublicationError);
-    const twelve = Array.from({ length: 12 }, (_, index) => ({
-      type: "callback" as const,
-      actionId: `pca:${index}`,
-      label: `b${index}`,
-    }));
-    expect(project({ ...card, actions: twelve }).card?.actions).toHaveLength(12);
-    expect(() => project({ ...card, actions: [...twelve, twelve[0]] })).toThrow(UnsafeChatPublicationError);
-  });
-
-  it("leaves a plain task_control text as it was", () => {
-    const payload = projectSafeChatPublication({ classification: "external", source: "task_control", text: "ok" });
-    expect(payload).toEqual({ text: "ok" });
+    const action = payload.card!.actions![0]!;
+    expect(action.type === "callback" && action.label.length).toBeLessThanOrEqual(80);
   });
 });

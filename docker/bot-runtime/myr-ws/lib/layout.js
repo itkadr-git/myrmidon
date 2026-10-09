@@ -33,6 +33,19 @@ function homeDir(env = process.env) {
   return env[ENV.home] || MYRMIDON_HOME_DIR;
 }
 
+/**
+ * The one archive root: `<home>/archive`, home from MYRMIDON_WS_HOME. `close` hands it to
+ * the archive module (whose own default is the production path) and `restore` reads from
+ * it, so an overridden MYRMIDON_WS_HOME moves both together.
+ */
+function archiveRootOf(home) {
+  return path.join(home, "archive");
+}
+
+function archiveRoot(env = process.env) {
+  return archiveRootOf(homeDir(env));
+}
+
 function gitBaseRoot(env = process.env) {
   return path.join(homeDir(env), "git-base");
 }
@@ -63,6 +76,8 @@ module.exports = {
   DEFAULT_GIT_REAL,
   DEFAULT_REMOTE_BASE,
   homeDir,
+  archiveRoot,
+  archiveRootOf,
   gitBaseRoot,
   parseRepo,
   basePath,

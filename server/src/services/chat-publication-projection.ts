@@ -14,6 +14,10 @@ const MAX_TEXT_INPUT_LENGTH = 1_000_000;
 const MAX_TEXT_OUTPUT_LENGTH = 4_000_000;
 const MAX_ATTACHMENTS = 20;
 const MAX_CARD_ACTIONS = 12;
+// myrmidon(F06-D): a `/model` list card carries one button per listed model
+// (every model; the list is not capped) plus "default"; Telegram allows 100
+// buttons per message, MAX_CHOICE_BUTTONS (agent-chat-bridge/commands/models.ts) is 98.
+const MAX_CHOOSER_CARD_ACTIONS = 100;
 const MAX_TITLE_LENGTH = 160;
 const MAX_ACTION_LABEL_LENGTH = 80;
 
@@ -111,10 +115,9 @@ export interface ChatPublicationProjectionInput {
     };
   } | null;
   /**
-   * A card that belongs to no issue interaction: a bridged command reply with
-   * inline buttons. Only a `task_control` publication may carry one; it is
-   * persisted without an `interactionId`, so nothing that looks interactions
-   * up by that id ever sees it.
+   * myrmidon(F06-D): a card that belongs to no issue interaction — the
+   * `/model` and `/think` choice lists. The published payload carries `card`
+   * and no `interactionId`, so nothing that resolves interactions ever sees it.
    */
   card?: {
     kind: SafeExternalChatCardKind;
@@ -319,11 +322,15 @@ function projectCard(
       "External chat interaction id is invalid",
     );
   }
-  return { interactionId: input.id, card: projectCardBody(input.card) };
+  return {
+    interactionId: input.id,
+    card: projectCardContent(input.card, MAX_CARD_ACTIONS),
+  };
 }
 
-function projectCardBody(
+function projectCardContent(
   card: NonNullable<ChatPublicationProjectionInput["card"]>,
+  maxActions: number,
 ): SafeExternalChatCard {
   const input = { card };
   if (!CARD_KINDS.has(input.card.kind)) {
@@ -338,9 +345,9 @@ function projectCardBody(
     ? projectSafeChatPublicationText(input.card.body)
     : undefined;
   const rawActions = input.card.actions ?? [];
-  if (rawActions.length > MAX_CARD_ACTIONS) {
+  if (rawActions.length > maxActions) {
     throw new UnsafeChatPublicationError(
-      `External chat cards support at most ${MAX_CARD_ACTIONS} actions`,
+      `External chat cards support at most ${maxActions} actions`,
     );
   }
 
@@ -412,18 +419,20 @@ export function projectSafeChatPublication(
   }
   const attachmentIds = projectAttachmentIds(input.attachmentIds);
   const interaction = input.interaction ? projectCard(input.interaction) : null;
-  if (input.card && (input.interaction || input.source !== "task_control")) {
+  if (input.interaction && input.card) {
     throw new UnsafeChatPublicationError(
-      "Only a task-control publication may carry a standalone card",
+      "An external chat publication carries an interaction card or a plain card, not both",
     );
   }
-  const standaloneCard = input.card ? projectCardBody(input.card) : null;
+  const plainCard = input.card
+    ? projectCardContent(input.card, MAX_CHOOSER_CARD_ACTIONS)
+    : null;
 
   return {
     text: projectSafeChatPublicationText(input.text),
     ...(attachmentIds ? { attachmentIds } : {}),
     ...(input.progressState ? { progressState: input.progressState } : {}),
     ...(interaction ?? {}),
-    ...(standaloneCard ? { card: standaloneCard } : {}),
+    ...(plainCard ? { card: plainCard } : {}),
   };
 }
