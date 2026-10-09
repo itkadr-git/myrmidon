@@ -327,6 +327,15 @@ function bashPath() {
 
 const read = (file) => (fs.existsSync(file) ? fs.readFileSync(file, "utf8") : "");
 const calls = (sb) => read(path.join(sb.dir, "calls.log"));
+// myrmidon(F-05): the deploy journal opens with `git describe` of the scripts'
+// clone — read-only, local, never a network call. The "refuses before any
+// docker or git call" checks below ignore exactly these two stamp calls and
+// still require that no OTHER docker or git call happened.
+const callsWithoutVersionStamp = (sb) =>
+  calls(sb)
+    .split("\n")
+    .filter((line) => line && !/^git -C \S+ (rev-parse --show-toplevel|describe --tags --always)$/.test(line))
+    .join("\n");
 const maintenance = (sb) => read(path.join(sb.dir, "maintenance.log"));
 
 describe("deploy.sh", () => {
@@ -618,7 +627,7 @@ describe("deploy.sh: only CI images from the registry", () => {
       it(`refuses ${name} before any docker or git call`, () => {
         const sb = sandbox();
         assertRefused(sb, ["--digest", arg], pattern);
-        assert.equal(calls(sb), "");
+        assert.equal(callsWithoutVersionStamp(sb), "");
       });
     }
 
@@ -627,7 +636,7 @@ describe("deploy.sh: only CI images from the registry", () => {
       const { code, out } = run(sb, "deploy.sh", []);
       assert.notEqual(code, 0);
       assert.match(out, /give --digest or --release|no image given/);
-      assert.equal(calls(sb), "");
+      assert.equal(callsWithoutVersionStamp(sb), "");
     });
 
     it("accepts the full reference of the CI image", () => {
@@ -642,7 +651,7 @@ describe("deploy.sh: only CI images from the registry", () => {
       const sb = sandbox();
       fs.appendFileSync(sb.config, "MYRMIDON_IMAGE=ghcr.io/example/other\n");
       assertRefused(sb, ["--digest", NEW], /MYRMIDON_IMAGE is 'ghcr\.io\/example\/other'/);
-      assert.equal(calls(sb), "");
+      assert.equal(callsWithoutVersionStamp(sb), "");
     });
   });
 
@@ -793,7 +802,7 @@ describe("deploy.sh: only CI images from the registry", () => {
         assert.notEqual(code, 0);
         assert.match(out, /unknown argument/);
       }
-      assert.equal(calls(sb), "");
+      assert.equal(callsWithoutVersionStamp(sb), "");
     });
 
     it("--expect-version and --expect-commit do not skip it", () => {

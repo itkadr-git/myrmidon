@@ -210,7 +210,7 @@ The swarm queue ranks tasks by a numeric **pheromone strength** (`pheromoneStren
 
 - **Create with explicit strength**: include `"pheromoneStrength": <int>` in the `POST /api/companies/{companyId}/issues` body (the field is optional; a new task with no strength gets the value the swarm settings map from its `priority` — see the swarm-claim settings page).
 - **Change strength**: `PATCH /api/issues/{issueId}` with `{ "pheromoneStrength": <int> }`. The field accepts `null` on patch — that resets the strength to the default of the task's `priority`.
-- **Task caste (1.6.5 rework)**: the caste is the `casteKey` field — a key of the company's caste directory (`GET /api/companies/{companyId}/myrmidon/castes`). Set it via `PATCH /api/issues/{issueId}` with `{ "casteKey": "<key>" }` or `null` to clear (the task then takes its project's `defaultCasteKey`, then the company default). An unknown key fails with 422 `issue_caste_unknown`. The legacy carrier — the `role:<key>` label — is migrated to `casteKey` by migration 0383 for castes that exist in the directory.
+- **Task caste (1.6.5 rework)**: the caste is the `casteKey` field — a key of the company's caste directory (`GET /api/companies/{companyId}/myrmidon/castes`). Set it via `PATCH /api/issues/{issueId}` with `{ "casteKey": "<key>" }` or `null` to clear (the task then takes its project's `defaultCasteKey`, then the company default). An unknown key fails with 422 `issue_caste_unknown`. The legacy carrier — the `role:<key>` label — is migrated to `casteKey` by migration 0384 for castes that exist in the directory.
 
 ### Status Quick Guide
 

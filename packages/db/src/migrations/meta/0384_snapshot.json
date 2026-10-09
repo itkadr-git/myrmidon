@@ -1,6 +1,6 @@
 {
-  "id": "1031ce00-e006-492a-8364-24450392d1c2",
-  "prevId": "69340adf-9fb8-41f9-99e8-1064c9cc70de",
+  "id": "69340adf-9fb8-41f9-99e8-1064c9cc70de",
+  "prevId": "eadeb93e-5f4f-4cbf-b8e2-857d40a4c830",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -806,13 +806,6 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
-        },
-        "is_default": {
-          "name": "is_default",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": true,
-          "default": false
         }
       },
       "indexes": {
@@ -848,22 +841,6 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "agent_castes_company_default_uq": {
-          "name": "agent_castes_company_default_uq",
-          "columns": [
-            {
-              "expression": "company_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "where": "\"agent_castes\".\"is_default\"",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -32727,6 +32704,19 @@
           "notNull": true,
           "default": "'medium'"
         },
+        "pheromone_strength": {
+          "name": "pheromone_strength",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "caste_key": {
+          "name": "caste_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "review_policy": {
           "name": "review_policy",
           "type": "text",
@@ -32991,19 +32981,6 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
-        },
-        "caste_key": {
-          "name": "caste_key",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "pheromone_strength": {
-          "name": "pheromone_strength",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 0
         }
       },
       "indexes": {
@@ -33401,6 +33378,27 @@
           "method": "btree",
           "with": {}
         },
+        "issues_company_caste_idx": {
+          "name": "issues_company_caste_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "caste_key",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
         "issues_company_execution_run_idx": {
           "name": "issues_company_execution_run_idx",
           "columns": [
@@ -33735,27 +33733,6 @@
           ],
           "isUnique": true,
           "where": "\"issues\".\"origin_kind\" = 'onboarding_first_task'",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "issues_company_caste_idx": {
-          "name": "issues_company_caste_idx",
-          "columns": [
-            {
-              "expression": "company_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "caste_key",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -40332,6 +40309,12 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
+        },
+        "expires_at": {
+          "name": "expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {
@@ -41053,6 +41036,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "default_caste_key": {
+          "name": "default_caste_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "target_date": {
           "name": "target_date",
           "type": "date",
@@ -41114,12 +41103,6 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
-        },
-        "default_caste_key": {
-          "name": "default_caste_key",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
         }
       },
       "indexes": {
@@ -43343,6 +43326,12 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
+        },
+        "details": {
+          "name": "details",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {
@@ -52749,149 +52738,6 @@
             "id"
           ],
           "onDelete": "set null",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.agent_nests": {
-      "name": "agent_nests",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "company_id": {
-          "name": "company_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "agent_id": {
-          "name": "agent_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "project_id": {
-          "name": "project_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "agent_nests_agent_project_uq": {
-          "name": "agent_nests_agent_project_uq",
-          "columns": [
-            {
-              "expression": "agent_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "project_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "agent_nests_company_agent_idx": {
-          "name": "agent_nests_company_agent_idx",
-          "columns": [
-            {
-              "expression": "company_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "agent_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "agent_nests_project_idx": {
-          "name": "agent_nests_project_idx",
-          "columns": [
-            {
-              "expression": "project_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "agent_nests_company_id_companies_id_fk": {
-          "name": "agent_nests_company_id_companies_id_fk",
-          "tableFrom": "agent_nests",
-          "tableTo": "companies",
-          "columnsFrom": [
-            "company_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "agent_nests_agent_id_agents_id_fk": {
-          "name": "agent_nests_agent_id_agents_id_fk",
-          "tableFrom": "agent_nests",
-          "tableTo": "agents",
-          "columnsFrom": [
-            "agent_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "agent_nests_project_id_projects_id_fk": {
-          "name": "agent_nests_project_id_projects_id_fk",
-          "tableFrom": "agent_nests",
-          "tableTo": "projects",
-          "columnsFrom": [
-            "project_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
           "onUpdate": "no action"
         }
       },

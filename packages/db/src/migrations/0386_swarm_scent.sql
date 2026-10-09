@@ -23,9 +23,9 @@
 --                       when set, else the caste's (design §2.4).
 --
 -- Column ownership: `issues.caste_key`/`pheromone_strength` and
--- `projects.default_caste_key` belong to T2 (migrations 0382/0383);
+-- `projects.default_caste_key` belong to T2 (migrations 0383/0384);
 -- `agent_castes.is_default` + the default-caste unique index belong to T3
--- (migration 0384). This migration only adds the §7.1 п.4a columns.
+-- (migration 0385). This migration only adds the §7.1 п.4a columns.
 
 ALTER TABLE issues ADD COLUMN IF NOT EXISTS scent jsonb;
 ALTER TABLE issues ADD COLUMN IF NOT EXISTS caste_source text;

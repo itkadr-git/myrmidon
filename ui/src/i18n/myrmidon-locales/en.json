@@ -1016,6 +1016,7 @@
       "host_cpu": "the host CPU ceiling is closed",
       "agent_fair_share": "another agent's turn comes first (fair share)",
       "agent_concurrency": "the agent's own concurrency limit is full",
+      "higher_priority_ready": "the agent's more important ready task goes first",
       "priority": "higher-priority runs are ahead"
     },
     "enabled": "Priority ordering on",

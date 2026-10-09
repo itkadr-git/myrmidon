@@ -1,6 +1,6 @@
 {
-  "id": "d95ef15e-fcc3-4bdd-a9e9-eafc0c8bee27",
-  "prevId": "1031ce00-e006-492a-8364-24450392d1c2",
+  "id": "1031ce00-e006-492a-8364-24450392d1c2",
+  "prevId": "69340adf-9fb8-41f9-99e8-1064c9cc70de",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -813,13 +813,6 @@
           "primaryKey": false,
           "notNull": true,
           "default": false
-        },
-        "model_tier": {
-          "name": "model_tier",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'light'"
         }
       },
       "indexes": {
@@ -2575,26 +2568,6 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
-        },
-        "scent_tags": {
-          "name": "scent_tags",
-          "type": "text[]",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "ARRAY[]::text[]"
-        },
-        "scent_classified_at": {
-          "name": "scent_classified_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "model_tier": {
-          "name": "model_tier",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'light'"
         }
       },
       "indexes": {
@@ -33031,18 +33004,6 @@
           "primaryKey": false,
           "notNull": true,
           "default": 0
-        },
-        "scent": {
-          "name": "scent",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "caste_source": {
-          "name": "caste_source",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
         }
       },
       "indexes": {
@@ -40371,6 +40332,12 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
+        },
+        "expires_at": {
+          "name": "expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {
@@ -43382,6 +43349,12 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
+        },
+        "details": {
+          "name": "details",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {
