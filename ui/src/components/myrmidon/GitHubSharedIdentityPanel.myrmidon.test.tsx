@@ -98,16 +98,28 @@ function button(text: string): HTMLButtonElement {
   return [...container.querySelectorAll("button")].find((el) => el.textContent?.includes(text))!;
 }
 
-/** Async-safe button lookup: poll until the control appears. The container
- * renders after several data queries resolve, and CI runners are slow enough
- * that a fixed number of ticks is not reliable. */
-async function waitForButton(text: string, attempts = 50): Promise<HTMLButtonElement> {
-  for (let i = 0; i < attempts; i++) {
-    const found = [...container.querySelectorAll("button")].find((el) => el.textContent?.includes(text));
-    if (found) return found as HTMLButtonElement;
-    await act(async () => Promise.resolve());
-  }
-  throw new Error(`button not found: ${text}`);
+/** Async-safe button lookup: wait on the condition, not on a fixed number of
+ * turns. A hand-rolled microtask loop is ample on an idle machine and not when
+ * the suite runs many workers in parallel: it gives up after N turns and
+ * reports a failure on behaviour that works. The release-branch full run did
+ * exactly that — `button not found: Install on repositories` on a test that
+ * passes on its own. `vi.waitFor` retries against a time budget, so a loaded
+ * worker gets more turns instead.
+ *
+ * Same replacement as the routing tests, which fixed the shorter-budget
+ * instances of this. */
+async function waitForButton(text: string): Promise<HTMLButtonElement> {
+  let found: HTMLButtonElement | undefined;
+  await vi.waitFor(
+    () => {
+      found = [...container.querySelectorAll("button")].find((el) =>
+        el.textContent?.includes(text),
+      ) as HTMLButtonElement | undefined;
+      if (!found) throw new Error(`button not found: ${text}`);
+    },
+    { timeout: 4_000 },
+  );
+  return found as HTMLButtonElement;
 }
 
 function byLabel<T extends HTMLElement>(label: string): T {
@@ -456,10 +468,16 @@ describe("GitHubSharedIdentityPanel — server callback", () => {
       root.render(createElement(QueryClientProvider, { client }, createElement(GitHubSharedIdentityPanel))),
     );
     // Flush the three data queries (identity, agents, secrets) before the
-    // caller interacts: poll for the panel instead of guessing tick counts.
-    for (let i = 0; i < 50 && !container.querySelector("[data-testid='myrmidon-github-shared-identity'] input"); i++) {
-      await act(async () => Promise.resolve());
-    }
+    // caller interacts: wait on the panel instead of guessing tick counts, so a
+    // loaded worker gets the turns it needs (see waitForButton).
+    await vi.waitFor(
+      () => {
+        if (!container.querySelector("[data-testid='myrmidon-github-shared-identity'] input")) {
+          throw new Error("the GitHub shared identity panel did not render");
+        }
+      },
+      { timeout: 4_000 },
+    );
   }
 
   beforeEach(() => {
