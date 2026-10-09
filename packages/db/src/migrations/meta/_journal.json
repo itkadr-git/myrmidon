@@ -2164,6 +2164,13 @@
 			"when": 1791700000002,
 			"tag": "0311_board_processes",
 			"breakpoints": true
+		},
+		{
+			"idx": 312,
+			"version": "7",
+			"when": 1791700000003,
+			"tag": "0312_project_token_quotas",
+			"breakpoints": true
 		}
 	]
 }

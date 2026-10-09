@@ -21,6 +21,7 @@ export { invites } from "./invites.js";
 export { joinRequests } from "./join_requests.js";
 export { budgetPolicies } from "./budget_policies.js";
 export { budgetIncidents } from "./budget_incidents.js";
+export { projectTokenQuotas } from "./project_token_quotas.js"; // myrmidon(1.6.6 QUOTA-V2)
 export { agentConfigRevisions } from "./agent_config_revisions.js";
 export { agentInstructionsRevisions, type AgentInstructionsRevisionFile } from "./agent_instructions_revisions.js";
 export { agentApiKeys } from "./agent_api_keys.js";
