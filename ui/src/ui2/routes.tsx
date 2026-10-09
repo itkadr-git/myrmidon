@@ -20,6 +20,10 @@ import { Ui2LanguageSettings } from "./screens/settings/language/Ui2LanguageSett
 // myrmidon(1.6-CTO-CHAT-A): the Commander chat screen — a real ui2 screen, not
 // a placeholder (see screens/CommanderChatScreen.tsx).
 import { CommanderChatScreen } from "./screens/CommanderChatScreen";
+// myrmidon(1.6.6 KNOWLEDGE-2.0 K-4): the knowledge module's own screens — the
+// reader of the knowledge store and the regulations of Autonomy.
+import { Ui2Knowledge } from "./screens/knowledge/Ui2Knowledge";
+import { Ui2Regulations } from "./screens/knowledge/Ui2Regulations";
 
 export type Ui2ScreenKey =
   | "decisions"
@@ -28,7 +32,10 @@ export type Ui2ScreenKey =
   | "settings-runs-queue"
   | "settings-system"
   | "settings-language"
-  | "commander-chat";
+  | "commander-chat"
+  | "knowledge"
+  | "knowledge-page"
+  | "settings-autonomy-regulations";
 
 export interface Ui2RouteEntry {
   key: Ui2ScreenKey;
@@ -104,6 +111,33 @@ export const UI2_ROUTE_TABLE: Ui2RouteEntry[] = [
     titleKey: "ui2.screens.commanderChat",
     element: <CommanderChatScreen />,
     legacyPath: "/board-chat",
+  },
+  // myrmidon(1.6.6 KNOWLEDGE-2.0 K-4): the knowledge screen and its deep link
+  // into one page (§3.9: the tree, the page, the sources, the revisions). The
+  // wiki paths live under /wiki/* in the knowledge store; the legacy surface
+  // stays the plugin-free reader until parity.
+  {
+    key: "knowledge",
+    path: "knowledge",
+    titleKey: "ui2.screens.knowledge",
+    element: ui2Screen(<Ui2Knowledge />),
+    legacyPath: "/wiki",
+  },
+  {
+    key: "knowledge-page",
+    path: "knowledge/:spaceKey/:slug",
+    titleKey: "ui2.screens.knowledge",
+    element: ui2Screen(<Ui2Knowledge />),
+    legacyPath: "/wiki/:spaceKey/:slug",
+  },
+  // The regulations of Autonomy: the same screen the matrix tab carries, so a
+  // person approves a regulation without the plugin.
+  {
+    key: "settings-autonomy-regulations",
+    path: "company/settings/autonomy/regulations",
+    titleKey: "ui2.screens.regulations",
+    element: ui2Screen(<Ui2Regulations />),
+    legacyPath: "/company/settings",
   },
 ];
 
