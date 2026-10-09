@@ -250,7 +250,9 @@ describe("myrmidon(1.6.5-F14B) writeRetentionSettings", () => {
     return {
       state,
       service: {
-        getGeneral: async () => state.general,
+        // The service interface types general as InstanceGeneralSettings; the
+        // fake carries only what the writer touches.
+        getGeneral: async () => state.general as never,
         updateGeneral: async (patch: Record<string, unknown>) => {
           // Same contract as the real service: per top-level general key merge.
           state.general = { ...state.general, ...patch };
