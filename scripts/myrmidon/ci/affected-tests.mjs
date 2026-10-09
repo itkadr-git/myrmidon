@@ -9,7 +9,7 @@
 // Vitest runs use the same isolated environment as scripts/run-vitest-stable.mjs.
 // Failures listed in known-failures.json only warn. Node built-ins only.
 
-import { execFileSync, spawn, spawnSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -169,109 +169,6 @@ function vitest(label, args, { cwd = ROOT, exec = ["exec", "vitest"], pnpmArgs =
   if (failedTests === 0) unexpected.push(`${label}: vitest exited with ${result.status}`);
 }
 
-// myrmidon(1.6.5 F-09): the fast-tier `tests (affected)` job is a single
-// 30-minute job with no matrix, while a change that fans out to hundreds of
-// server suites (e.g. a packages/shared type import) can no longer finish
-// serially inside it — the full `tests` job survives the same suites only
-// because it shards them across five parallel jobs. Split the selected server
-// general suites into duration-weighted chunks and run one vitest process per
-// chunk CONCURRENTLY inside the job. Each process keeps the project's serial
-// pins (pool=forks, maxWorkers=1) and gets its own isolated env, so per-suite
-// behavior is unchanged; only the wall-clock total shrinks to the slowest
-// chunk. Chunk count is capped by MYRMIDON_AFFECTED_SERVER_SHARDS.
-const SERVER_GENERAL_SHARDS = Math.max(1, Number.parseInt(process.env.MYRMIDON_AFFECTED_SERVER_SHARDS ?? "4", 10) || 4);
-
-function loadServerShardDurations() {
-  try {
-    const parsed = readJson(path.join(ROOT, "scripts/general-server-shard-durations.json"));
-    return parsed.durations ?? {};
-  } catch {
-    return {};
-  }
-}
-
-// Greedy longest-processing-time partition of `files` into up to `count`
-// balanced chunks, weighted by recorded durations (unknown files take the
-// median) so no chunk holds a runaway share of the wall time.
-function partitionByDuration(files, count, durations) {
-  const values = Object.values(durations).filter((n) => Number.isFinite(n) && n > 0).sort((a, b) => a - b);
-  const median = values.length > 0 ? values[Math.floor(values.length / 2)] : 1000;
-  const weighted = files
-    .map((file) => ({ file, ms: Number.isFinite(durations[file]) ? durations[file] : median }))
-    .sort((a, b) => b.ms - a.ms);
-  const chunks = Array.from({ length: count }, () => ({ files: [], ms: 0 }));
-  for (const entry of weighted) {
-    const lightest = chunks.reduce((min, c) => (c.ms < min.ms ? c : min), chunks[0]);
-    lightest.files.push(entry.file);
-    lightest.ms += entry.ms;
-  }
-  return chunks.map((c) => c.files).filter((list) => list.length > 0);
-}
-
-// Async variant of vitest(): runs one chunk and resolves when it exits. Each
-// chunk gets its own isolated env and JSON report, so concurrent chunks do
-// not interfere. Failures are recorded exactly as in vitest().
-function vitestChunk(label, args) {
-  return new Promise((resolve) => {
-    invocation += 1;
-    const { env, testRoot } = isolatedEnv(invocation);
-    const report = path.join(testRoot, "report.json");
-    log(label);
-    const child = spawn(
-      "pnpm",
-      ["exec", "vitest", "run", "--exclude", "**/dist/**", ...args, "--reporter=default", "--reporter=json", `--outputFile=${report}`],
-      { cwd: ROOT, env, stdio: "inherit" },
-    );
-    const settle = (status) => {
-      if (status === 0) return resolve();
-      let parsed = null;
-      try {
-        parsed = readJson(report);
-      } catch {
-        // No report: collection or startup failure.
-      }
-      if (!parsed) {
-        unexpected.push(`${label}: vitest exited with ${status} and no report`);
-        return resolve();
-      }
-      let failedTests = 0;
-      for (const suite of parsed.testResults ?? []) {
-        const file = path.relative(ROOT, suite.name).split(path.sep).join("/");
-        const failed = (suite.assertionResults ?? []).filter((t) => t.status === "failed");
-        if (suite.status === "failed" && failed.length === 0) {
-          failedTests += 1;
-          const known = knownFailures.find((k) => k.file === file && k.name === "(suite failed to load)");
-          if (known) {
-            seenKnown.add(`${file}::${known.name}`);
-            console.log(`::warning title=known vendor failure::${file} — suite failed to load`);
-          } else {
-            unexpected.push(`${file}: suite failed (${String(suite.message ?? "").split("\n")[0]})`);
-          }
-          continue;
-        }
-        for (const test of failed) {
-          failedTests += 1;
-          const name = test.fullName ?? [...(test.ancestorTitles ?? []), test.title].join(" ");
-          const known = knownFailures.find((k) => k.file === file && k.name === name);
-          if (known) {
-            seenKnown.add(`${file}::${name}`);
-            console.log(`::warning title=known vendor failure::${file} — ${name}`);
-          } else {
-            unexpected.push(`${file} — ${name}`);
-          }
-        }
-      }
-      if (failedTests === 0) unexpected.push(`${label}: vitest exited with ${status}`);
-      resolve();
-    };
-    child.on("close", settle);
-    child.on("error", (error) => {
-      unexpected.push(`${label}: ${error.message}`);
-      resolve();
-    });
-  });
-}
-
 function script(label, pkg, name) {
   log(label);
   const result = spawnSync("pnpm", ["--filter", pkg, "run", name], { cwd: ROOT, stdio: "inherit" });
@@ -360,7 +257,7 @@ function planCommand(args) {
   return 0;
 }
 
-async function runCommand(args) {
+function runCommand(args) {
   const planFile = args[args.indexOf("--plan") + 1];
   if (!planFile || args.indexOf("--plan") < 0) throw new Error("--plan <file> is required");
   const plan = readJson(planFile);
@@ -386,20 +283,7 @@ async function runCommand(args) {
       const serialized = entry.files.filter(isSerialized);
       const general = entry.files.filter((f) => !isSerialized(f));
       if (general.length > 0) {
-        // One 30-minute job, no matrix: a large server selection cannot finish
-        // serially. Run the general suites as balanced concurrent chunks; each
-        // chunk keeps the project's serial pins. Serialized suites still run
-        // one file at a time below.
-        const chunks = partitionByDuration(general, SERVER_GENERAL_SHARDS, loadServerShardDurations());
-        if (chunks.length <= 1) {
-          vitest(`server: ${general.length} suites`, ["--project", SERVER, "--no-file-parallelism", "--maxWorkers=1", ...general]);
-        } else {
-          await Promise.all(
-            chunks.map((files, i) =>
-              vitestChunk(`server: general shard ${i + 1}/${chunks.length} (${files.length} files)`, ["--project", SERVER, ...files]),
-            ),
-          );
-        }
+        vitest(`server: ${general.length} suites`, ["--project", SERVER, "--no-file-parallelism", "--maxWorkers=1", ...general]);
       }
       for (const file of serialized) vitest(`server (serialized): ${file}`, ["--project", SERVER, file, "--pool=forks", "--isolate"]);
     } else if (lanes.has(entry.package)) {
@@ -424,27 +308,15 @@ function extraCommand() {
   return finish();
 }
 
-export async function main(argv = process.argv.slice(2)) {
+export function main(argv = process.argv.slice(2)) {
   const [command, ...rest] = argv;
   if (command === "plan") return planCommand(rest);
-  if (command === "run") return await runCommand(rest);
+  if (command === "run") return runCommand(rest);
   if (command === "extra") return extraCommand();
   console.error("usage: affected-tests.mjs plan|run|extra ...");
   return 2;
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const result = main();
-  if (result && typeof result.then === "function") {
-    result
-      .then((code) => {
-        process.exitCode = code;
-      })
-      .catch((error) => {
-        console.error(error);
-        process.exitCode = 2;
-      });
-  } else {
-    process.exitCode = result;
-  }
+  process.exitCode = main();
 }
