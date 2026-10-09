@@ -7,52 +7,75 @@ divergence-section: 1.6.1 — BOT-DISK B: общий кэш пакетов дл�
 ### botd cleanup is idempotent, silent about foreign owners and never leaves work unarchived (1.6.5 BOT-DISK-H, F-13 part A)
 
 - A removal of a path that is already gone is success: `guardedRemove` returns
-  `already gone` instead of raising ENOENT, `verifyEntry` passes an archive whose
-  files all vanished, and `retain` drops such manifest entries silently. The
-  ~160 ENOENT error lines per 1.5 h the journal carried are gone by design.
+  `already gone` instead of raising ENOENT, and `retain` drops manifest entries
+  whose files all vanished silently. The ~160 ENOENT error lines per 1.5 h the
+  journal carried are gone by design.
 - A permission failure on a removal (`EACCES`/`EPERM` — the path belongs to another
   uid) is a deferred pass, not an error: the path stays exactly where it is, ownership
   is never changed, and `botd-attention.json` guarantees one attention line per path
-  per hour carrying the blocking code and the owner uid from `lstat`.
+  per hour carrying the blocking code and the owner uid from `lstat`. The write-access
+  probe runs before any recursive removal or re-archival, so a foreign tree is never
+  half-removed and a deferred legacy directory is not re-archived every pass.
+- `verifyEntry` is a strict readability re-check of an archive that still exists: an
+  entry whose files are all gone fails it ("already gone" remains only `retain`'s
+  shortcut), so a vanished archive can never green-light the removal of source data.
 - When `git bundle create` fails for a reason other than "empty bundle" (a damaged
   repository, a hung git), the whole directory — `.git` and untracked files included —
   goes into one fallback `<base>.full.tar.zst`; a tar that lists back is a complete
   copy of the directory, so it clears the removal (no more "archive-incomplete ... not
   removed" keeping the disk full), and the manifest entry is marked
-  `incompleteBundle: true`. The fallback tar counts in the retention quota. If even
-  the tar cannot be written or verified, nothing is deleted.
+  `incompleteBundle: true`. The fallback tar counts in the retention quota. The
+  fallback is bounded: a directory over 2 GiB, or an archive filesystem without room
+  for it, refuses the tar (nothing deleted) instead of filling the archive disk, and
+  every spawned git/tar carries a 10-minute timeout so a hung tool cannot hold a pass.
+  All `tar -tf` verification streams the listing to /dev/null or a chunked counter
+  instead of buffering it in memory. If even the tar cannot be written or verified,
+  nothing is deleted.
 - The rhythm of the rules: the same op on the same path is not attempted more than
-  once per hour (`botd-cooldown.json`); a repeat inside the window is a silent skip —
+  once per hour (`botd-cooldown.json`, keyed by path+op — a different op on the same
+  path is a different decision); a repeat inside the window is a silent skip —
   no log line, no report row. Every executed pass ends with one summary line
   `botd loop: cleaned N, deferred M (reasons…)` instead of per-path noise.
 - No new environment settings; the two caches live next to `disk-state.json` under
-  `$MYRMIDON_WS_HOME` and are best-effort: an unwritable cache only loses the silence.
+  `$MYRMIDON_WS_HOME`, are best-effort (an unwritable cache only loses the silence)
+  and sweep entries older than a day on every write, so they never grow without a
+  bound.
 
 ## changelog-ru
 
 ### Уборка botd идемпотентна, молчит о чужих владельцах и не оставляет работу без архива (1.6.5 BOT-DISK-H, F-13 часть A)
 
 - Удаление уже отсутствующего пути — успех: `guardedRemove` возвращает `already gone`
-  вместо ошибки ENOENT, `verifyEntry` считает готовым архив, чьи файлы все исчезли, а
-  `retain` молча снимает такие строки из манифеста. ~160 строк ошибок ENOENT за 1,5 ч
-  из журнала убираются по построению.
+  вместо ошибки ENOENT, а `retain` молча снимает из манифеста строки, чьи файлы все
+  исчезли. ~160 строк ошибок ENOENT за 1,5 ч из журнала убираются по построению.
 - Отказ права на удаление (`EACCES`/`EPERM` — путь принадлежит другому uid) —
-  отложенный проход, а не ошибка: путь остаётся на месте, владество не меняется, а
+  отложенный проход, а не ошибка: путь остаётся на месте, владельцы не меняются, а
   `botd-attention.json` даёт одну строку внимания на путь в час с кодом отказа и uid
-  владельца из `lstat`.
+  владельца из `lstat`. Проверка прав на запись идёт до любого рекурсивного удаления
+  и до повторной архивации: чужое дерево не удаляется наполовину, а отложенный
+  legacy-каталог не архивируется заново каждый проход.
+- `verifyEntry` — строгая перепроверка читаемости существующего архива: строка, чьи
+  файлы все пропали, её не проходит («already gone» остаётся только коротким путём
+  `retain`), поэтому пропавший архив не может разрешить удаление исходных данных.
 - Если `git bundle create` упал по причине, отличной от «empty bundle» (повреждённый
   репозиторий, зависший git), весь каталог — вместе с `.git` и untracked — уходит в
   запасной `<base>.full.tar.zst`; tar, который перечитывается назад, — полная копия
   каталога, поэтому он разрешает удаление (больше нет «archive-incomplete … not
   removed», держащих диск), а строка манифеста помечается `incompleteBundle: true`.
-  Запасной tar учитывается в квоте хранения. Если не удалось написать или проверить
-  даже tar — ничего не удаляется.
+  Запасной tar учитывается в квоте хранения. Запасной путь ограничен: каталог больше
+  2 ГиБ или архивный диск без места отказывают в tar (ничего не удаляется) вместо
+  заполнения диска архивов, а у каждого spawn git/tar — таймаут 10 минут, чтобы
+  зависший инструмент не держал проход. Любая проверка `tar -tf` льёт список в
+  /dev/null или считает построчно чанками, не буферизуя его в память. Если не
+  удалось написать или проверить даже tar — ничего не удаляется.
 - Ритм правил: одно и то же действие на одном пути не выполняется чаще раза в час
-  (`botd-cooldown.json`); повтор внутри окна — тихий пропуск без строки журнала и
-  строки отчёта. Каждый выполненный проход заканчивается одной итоговой строкой
+  (`botd-cooldown.json`, ключ — путь+действие: другое действие на том же пути —
+  другое решение); повтор внутри окна — тихий пропуск без строки журнала и строки
+  отчёта. Каждый выполненный проход заканчивается одной итоговой строкой
   `botd loop: cleaned N, deferred M (причины…)` вместо шума по каждому пути.
 - Новых настроек окружения нет; оба кэша лежат рядом с `disk-state.json` в
-  `$MYRMIDON_WS_HOME` и являются best-effort: незаписываемый кэш теряет только тишину.
+  `$MYRMIDON_WS_HOME`, являются best-effort (незаписываемый кэш теряет только тишину)
+  и при каждой записи сметают записи старше суток — не растут без меры.
 
 ## divergence
 

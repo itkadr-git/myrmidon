@@ -94,17 +94,13 @@ function inside(root, p) {
   const rel = path.relative(root, p);
   return rel !== "" && !rel.startsWith("..") && !path.isAbsolute(rel);
 }
-// guardedRemove lives in lib/remove.js (imported as ESM in main): ENOENT returns
+// guardedRemove comes from lib/remove.js (imported as ESM in main): ENOENT returns
 // "already gone", EACCES/EPERM throws with `deferred: "foreign-uid"` and removes
-// nothing. The old inline removal is only the never-reachable stand-in while the
-// import is pending; every removal runs after main() has bound the real one.
-let guardedRemove = fallbackGuardedRemove;
-function fallbackGuardedRemove(p, roots) {
-  const abs = path.resolve(p);
-  if (!roots.some((r) => inside(path.resolve(r), abs))) throw new Error("path is outside the allowed roots");
-  if (fs.lstatSync(abs).isSymbolicLink()) throw new Error("refusing to remove a symlink");
-  fs.rmSync(abs, { recursive: true, force: true });
-}
+// nothing. main() binds it before the first pass; a removal before that is a bug,
+// so the placeholder throws instead of guessing a policy.
+let guardedRemove = () => {
+  throw new Error("guardedRemove used before main() bound lib/remove.js");
+};
 
 function readJson(file, fallback) {
   try {
@@ -277,6 +273,20 @@ async function main() {
       throw err;
     }
   };
+  // The permission probe of removePath without the removal: archiveThenRemove runs it
+  // before archiving, so a foreign-owned directory defers in milliseconds instead of
+  // re-creating the same archive every pass.
+  const probeRemoval = (probeRoots) => (p) => {
+    try {
+      fs.accessSync(path.resolve(p), fs.constants.W_OK | fs.constants.X_OK);
+    } catch (err) {
+      if (err && (err.code === "EACCES" || err.code === "EPERM")) {
+        attention.signal(p, { reason: `${err.code} foreign-uid`, uid: null });
+        return { deferred: "foreign-uid", detail: `${err.code}: ${String(err.message).slice(0, 300)}` };
+      }
+    }
+    return undefined;
+  };
   const owned = (p) => legacyMod.inRegistry((readJson(REGISTRY_PATH, { entries: [] }).entries) || [], p);
   // A path under /workspace that the registry does not list (an old clone, a task directory
   // from before myr-ws): `myr-ws close` would fail with "no open copy", so archive it here.
@@ -285,6 +295,7 @@ async function main() {
       archiveMod,
       isGit: (p) => fs.existsSync(path.join(p, ".git")),
       remove: (p) => removePath(p, roots),
+      probe: probeRemoval(roots),
       archiveRoot: ARCHIVE_DIR,
       nestedGit: legacyMod.findNestedGit,
     });
@@ -303,6 +314,7 @@ async function main() {
           archiveMod,
           isGit: (p) => fs.existsSync(path.join(p, ".git")),
           remove: (p) => removePath(p, SCRATCH_ROOTS),
+          probe: probeRemoval(SCRATCH_ROOTS),
           archiveRoot: ARCHIVE_DIR,
           nestedGit: legacyMod.findNestedGit,
         });
@@ -319,6 +331,7 @@ async function main() {
         archiveMod,
         isGit: (p) => fs.existsSync(path.join(p, ".git")),
         remove: (p) => removePath(p, SCRATCH_ROOTS),
+        probe: probeRemoval(SCRATCH_ROOTS),
         archiveRoot: ARCHIVE_DIR,
         nestedGit: legacyMod.findNestedGit,
       });
