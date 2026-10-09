@@ -323,7 +323,8 @@
     "browsers": "Browsers",
     "clouds": "Clouds",
     "autonomy": "Autonomy",
-    "castes": "Castes & models",
+    "castes": "Agent castes",
+    "models": "Models & providers",
     "wipLimit": "WIP limit",
     "reviewRouting": "Review routing"
   },

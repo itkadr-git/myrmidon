@@ -191,6 +191,7 @@ const SETTINGS_TAB_LABEL_KEYS: Partial<Record<string, string>> = {
   clouds: "settingsNav.clouds",
   autonomy: "settingsNav.autonomy",
   castes: "settingsNav.castes",
+  models: "settingsNav.models",
   "wip-limit": "settingsNav.wipLimit",
   "review-routing": "settingsNav.reviewRouting",
 };
