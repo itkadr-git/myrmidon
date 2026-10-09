@@ -223,7 +223,7 @@ what exists as of 1.6.4 (latest release; 1.6.5-rc.13 is the current release cand
   ([alibaba-image-connector](docs/myrmidon/guides/alibaba-image-connector.md)).
 - **Cloud storage.** Owner-connected cloud accounts with per-agent folder
   grants; tokens stay in the company secret store
-  ([cloud-files-connector](docs/myrmidon/guides/cloud-files-connector.md)).
+  ([cloud-connector](docs/myrmidon/guides/cloud-connector.md)).
 - **Client connectors (the browser bridge).** A browser extension on a client
   PC dials out to the board; a bot drives that browser, and actions marked for
   human confirmation wait for a person on that PC. Details:
