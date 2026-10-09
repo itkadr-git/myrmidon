@@ -121,7 +121,9 @@ ins_items AS (
     END,
     'published', 'skills',
     COALESCE(
-      (SELECT jsonb_agg(DISTINCT lower(btrim(c))) FROM unnest(cb."categories") c WHERE btrim(c) <> ''),
+      (SELECT jsonb_agg(x ORDER BY x) FROM (
+         SELECT DISTINCT lower(btrim(c)) AS x FROM unnest(cb."categories") c WHERE btrim(c) <> ''
+       ) t),
       '[]'::jsonb
     ),
     false, 1,
@@ -150,72 +152,24 @@ SET "delivered_revision_id" = r."id"
 FROM ins_revisions r
 WHERE r."item_id" = k."id";
 --> statement-breakpoint
--- Search mirror: a `knowledge_search` row for every card created above, so the
--- delivery read model contains the backfilled cards exactly as the store's own
--- publish path would. The row only exists for delivered content, matching the
--- invariant of the module (search == delivery).
-WITH sized AS (
-  SELECT
-    s."company_id",
-    s."id" AS skill_id,
-    s."key" AS skill_key,
-    s."name" AS skill_name,
-    s."description" AS skill_description,
-    s."source_type" AS source_type,
-    s."source_locator" AS source_locator,
-    s."categories" AS categories,
-    CASE
-      WHEN COUNT(*) OVER (PARTITION BY s."company_id", n."base") > 1
-       AND ROW_NUMBER() OVER (
-             PARTITION BY s."company_id", n."base"
-             ORDER BY s."key", s."id"
-           ) > 1
-      THEN 'skills/' || n."base" || '-' ||
-           ROW_NUMBER() OVER (
-             PARTITION BY s."company_id", n."base"
-             ORDER BY s."key", s."id"
-           )::text
-      ELSE 'skills/' || n."base"
-    END AS card_slug
-  FROM "company_skills" s
-  CROSS JOIN LATERAL (
-    SELECT btrim(regexp_replace(lower(s."key"), '[^a-z0-9]+', '-', 'g'), '-') AS "base"
-  ) n
-)
+-- Search mirror: a `knowledge_search` row for every card created above, with
+-- the body copied from the item's delivered revision — the same content, so
+-- the read-model invariant holds (search == delivery) by construction.
 INSERT INTO "knowledge_search" ("item_id", "nest_id", "slug", "title", "summary", "body")
-SELECT
-  k."id", k."nest_id", k."slug", k."title", k."summary",
-  ('# ' || regexp_replace(sized."skill_name", '\s+', ' ', 'g') || E'\n\n' ||
-   COALESCE(NULLIF(btrim(sized."skill_description"), ''), '(no description)') || E'\n\n' ||
-   '## Skill card' || E'\n\n' ||
-   E'- key: `' || sized."skill_key" || '`' || E'\n' ||
-   E'- lifecycle: verified (legacy-2026-10 backfill, OPE-5960)' || E'\n' ||
-   E'- source: `' || sized."source_type" || '`' ||
-     CASE
-       WHEN sized."source_locator" IS NULL OR btrim(sized."source_locator") = ''
-       THEN E'\n'
-       ELSE E' — `' || sized."source_locator" || '`' || E'\n'
-     END ||
-   CASE
-     WHEN cardinality(sized."categories") > 0
-     THEN E'- categories: ' || array_to_string(sized."categories", ', ') || E'\n'
-     ELSE ''
-   END
-  )
+SELECT k."id", k."nest_id", k."slug", k."title", k."summary", r."content"
 FROM "knowledge_items" k
-JOIN sized ON sized."card_slug" = k."slug" AND sized."company_id" = k."company_id"
+JOIN "knowledge_revisions" r ON r."id" = k."delivered_revision_id"
 WHERE k."kind" = 'skill_card'
   AND k."created_by_user_id" = 'system:skill-lifecycle-backfill'
-  AND k."delivered_revision_id" IS NOT NULL
 ON CONFLICT ("item_id") DO NOTHING;
 --> statement-breakpoint
 -- Provenance: the skill's own source (catalog | local_path | url) becomes the
 -- card revision's source row, so every claim on the card points back at the
--- skill entry it describes.
+-- skill entry it describes. The slug (skills/<normalised key>) maps the card
+-- back to its skill; the deterministic collision suffix matches statement 2.
 WITH sized AS (
   SELECT
     s."company_id",
-    s."id" AS skill_id,
     s."key" AS skill_key,
     s."source_type" AS source_type,
     s."source_locator" AS source_locator,
@@ -238,7 +192,8 @@ WITH sized AS (
   ) n
 ),
 cards AS (
-  SELECT k."id" AS item_id, k."nest_id", k."company_id", sized."source_type",
+  SELECT k."id" AS item_id, k."nest_id", k."company_id",
+         CASE WHEN sized."source_type" = 'url' THEN 'url' ELSE 'document' END AS source_kind,
          COALESCE(NULLIF(btrim(sized."source_locator"), ''), sized."skill_key") AS source_ref,
          k."delivered_revision_id"
   FROM "knowledge_items" k
@@ -250,10 +205,9 @@ cards AS (
 INSERT INTO "knowledge_sources" ("company_id", "nest_id", "revision_id", "kind", "ref", "note", "created_at")
 SELECT
   c."company_id", c."nest_id", c."delivered_revision_id",
-  -- map the skill source onto the knowledge source taxonomy (§3.2 kinds)
-  CASE WHEN c."source_type" = 'url' THEN 'url' ELSE 'document' END,
+  c."source_kind",
   c."source_ref",
-  'skill source recorded by the legacy-2026-10 backfill (OPE-5960): ' || c."source_type",
+  'skill source recorded by the legacy-2026-10 backfill (OPE-5960)',
   now()
 FROM cards c
 ON CONFLICT ("revision_id", "kind", "ref") DO NOTHING;

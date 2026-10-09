@@ -50,8 +50,9 @@ import {
 } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
 
-/** The knowledge kinds of the 2.0 model (§3.2). */
-export const KNOWLEDGE_KINDS = ["note", "wiki", "answer", "task_outcome", "rule"] as const;
+/** The knowledge kinds of the 2.0 model (§3.2). `skill_card` is the skill's
+ *  knowledge card written by the K-7 backfill and kept by the lifecycle. */
+export const KNOWLEDGE_KINDS = ["note", "wiki", "answer", "task_outcome", "rule", "skill_card"] as const;
 export type KnowledgeKind = (typeof KNOWLEDGE_KINDS)[number];
 
 /** Item workflow statuses (§2.4): draft → in_review → published → archived/superseded. */
