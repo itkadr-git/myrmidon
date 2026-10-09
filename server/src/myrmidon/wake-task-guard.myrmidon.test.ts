@@ -158,6 +158,14 @@ describeEmbeddedPostgres("myrmidon(1.6.5 F-26 T5) wake guard against Postgres", 
       startedAt: new Date(finishedAt.getTime() - 60_000),
       finishedAt,
     });
+    // The seed inserted the task "now", which is after a backdated run. Pin
+    // the task so the stale run is the movement boundary (§4.3 reads
+    // "no task change AFTER the run"; without this the fresh updatedAt
+    // would legitimately cancel the window).
+    await db
+      .update(issues)
+      .set({ updatedAt: finishedAt })
+      .where(eq(issues.id, issueId));
   }
 
   it("gate: no issueId → no_task; missing issue → task_missing; manual wake always passes", async () => {
