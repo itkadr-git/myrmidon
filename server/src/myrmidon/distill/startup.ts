@@ -44,7 +44,7 @@ export function startDistillSweep(db: Db, options: DistillSweepOptions = {}): ()
   const resolveModel: (companyId: string) => Promise<DistillModelCall | null> =
     options.model ??
     (async (companyId) => {
-      const resolved = resolveDistillSettings((await settings.getGeneral()) as Record<string, unknown>, env);
+      const resolved = resolveDistillSettings((await settings.getGeneral()) as unknown as Record<string, unknown>, env);
       if (!resolved.gatewayUrl || !resolved.keySecret) return null;
       const secrets = secretService(db);
       const row = await secrets.getByName(companyId, resolved.keySecret);
@@ -58,7 +58,7 @@ export function startDistillSweep(db: Db, options: DistillSweepOptions = {}): ()
     if (running || stopped) return;
     running = true;
     try {
-      const resolved = resolveDistillSettings((await settings.getGeneral()) as Record<string, unknown>, env);
+      const resolved = resolveDistillSettings((await settings.getGeneral()) as unknown as Record<string, unknown>, env);
       if (!resolved.settings.enabled) return;
       // A changed interval re-arms the timer on the next tick.
       if (timer && (timer as unknown as { _idleTimeout?: number })._idleTimeout !== resolved.intervalMs) {
@@ -99,7 +99,7 @@ export function startDistillSweep(db: Db, options: DistillSweepOptions = {}): ()
   // tick so a later switch-on from the interface is picked up without restart.
   void (async () => {
     try {
-      const resolved = resolveDistillSettings((await settings.getGeneral()) as Record<string, unknown>, env);
+      const resolved = resolveDistillSettings((await settings.getGeneral()) as unknown as Record<string, unknown>, env);
       if (stopped) return;
       arm(resolved.settings.enabled ? resolved.intervalMs : 60_000);
     } catch {
