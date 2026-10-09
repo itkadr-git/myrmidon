@@ -2787,6 +2787,9 @@ export * from "./myrmidon-workspace-hygiene.js";
 // myrmidon(BOT-DISK E): host disk usage threshold, samples and growth shared by the server, the
 // UI and the settings validator.
 export * from "./myrmidon-host-disk.js";
+// myrmidon(1.6.6 SETTINGS-UI C-4): the attention-feed windows (failed-run horizon, feed cache
+// TTL) shared by the feed, the settings route and the settings screen.
+export * from "./myrmidon-attention-feed.js";
 // myrmidon(1.6.6 MONITORING D): the alert-recovery contract — the owner task of an alert
 // (runbook steps and document link) and the sustained-resolution auto-close, shared by the
 // server, the settings validator and the board UI.
@@ -2808,6 +2811,10 @@ export * from "./myrmidon-bot-workspace.js";
 export * from "./myrmidon-session-generations.js";
 // myrmidon(C0): live run-admission limits shared by the server, the UI and the settings validator.
 export * from "./myrmidon-runtime-limits.js";
+// myrmidon(1.6.6 CORPUS-2.0 ч.C): the knowledge-corpus module contract — settings
+// (switch, parse service, embedder, limits), wire shapes and route paths — shared by
+// the server (ч.C), the MCP tools (ч.D) and the board UI screen (ч.E).
+export * from "./myrmidon-corpus.js";
 // myrmidon(PARALLEL-HELPERS): the card -> Hermes `delegation` contract shared by the profile
 // compiler, the agent card and the settings page.
 export * from "./myrmidon-parallel-helpers.js";

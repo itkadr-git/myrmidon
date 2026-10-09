@@ -2241,6 +2241,52 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                   className={inputClass}
                 />
               </Field>
+              {/* myrmidon(1.6.6-SETTINGS-UI-B): the daily caps and idle-skip the
+                  server already reads (parseHeartbeatPolicy in heartbeat.ts) but
+                  the form never exposed. 0 = no limit: the server stores null
+                  when the cap is absent, and normalizeOptionalNonNegativeInteger
+                  reads 0 the same way, so 0 is the honest "off" sentinel here. */}
+              <Field label="Max runs per day" hint={help.maxDailyRuns}>
+                <DraftNumberInput
+                  data-testid="agent-max-daily-runs"
+                  value={eff(
+                    "heartbeat",
+                    "maxDailyRuns",
+                    Number(heartbeat.maxDailyRuns ?? heartbeat.dailyRunLimit ?? 0),
+                  )}
+                  onCommit={(v) => mark("heartbeat", "maxDailyRuns", v > 0 ? Math.floor(v) : null)}
+                  immediate
+                  min={0}
+                  className={inputClass}
+                />
+              </Field>
+              <Field label="Max daily cost (cents)" hint={help.maxDailyCostCents}>
+                <DraftNumberInput
+                  data-testid="agent-max-daily-cost-cents"
+                  value={eff(
+                    "heartbeat",
+                    "maxDailyCostCents",
+                    Number(heartbeat.maxDailyCostCents ?? heartbeat.dailyCostCentsLimit ?? 0),
+                  )}
+                  onCommit={(v) => mark("heartbeat", "maxDailyCostCents", v > 0 ? Math.floor(v) : null)}
+                  immediate
+                  min={0}
+                  className={inputClass}
+                />
+              </Field>
+              <ToggleField
+                toggleTestId="agent-skip-timer-no-actionable-work"
+                label="Skip timer wake when no actionable work"
+                hint={help.skipTimerWhenNoActionableWork}
+                checked={eff(
+                  "heartbeat",
+                  "skipTimerWhenNoActionableWork",
+                  heartbeat.skipTimerWhenNoActionableWork === true ||
+                    heartbeat.requireActionableTimerWork === true ||
+                    heartbeat.issueOnlyTimer === true,
+                )}
+                onChange={(v) => mark("heartbeat", "skipTimerWhenNoActionableWork", v)}
+              />
               <div className="rounded-md border border-border/70 px-3 py-2">
                 <ToggleField
                   label="Continue after max-turn stop"

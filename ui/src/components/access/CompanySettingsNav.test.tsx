@@ -92,6 +92,9 @@ describe("CompanySettingsNav", () => {
     expect(getCompanySettingsTab("/company/settings/caste-directory")).toBe("caste-directory");
     expect(getCompanySettingsTab("/PAP/company/settings/caste-directory")).toBe("caste-directory");
     expect(getCompanySettingsTab("/company/settings/castes")).toBe("castes");
+    // myrmidon(1.6.6 CORPUS E): the knowledge corpus tab.
+    expect(getCompanySettingsTab("/company/settings/corpus")).toBe("corpus");
+    expect(getCompanySettingsTab("/PAP/company/settings/corpus")).toBe("corpus");
   });
 
   function renderNav(
@@ -147,6 +150,7 @@ describe("CompanySettingsNav", () => {
           { value: "castes", label: "Castes & models" }, // myrmidon(1.6.1 MODEL-PROVIDERS C)
           { value: "caste-directory", label: "Agent castes" }, // myrmidon(1.6.1 CUSTOM-CASTES C)
           { value: "owner-delivery", label: "Owner Telegram delivery" }, // myrmidon(1.6.5-OWNER-DM-FILTER)
+          { value: "corpus", label: "Knowledge corpus" }, // myrmidon(1.6.6 CORPUS E)
         ],
       }),
     );
@@ -198,6 +202,7 @@ describe("CompanySettingsNav", () => {
       "castes", // myrmidon(1.6.1 MODEL-PROVIDERS C)
       "caste-directory", // myrmidon(1.6.1 CUSTOM-CASTES C)
       "owner-delivery", // myrmidon(1.6.5-OWNER-DM-FILTER)
+      "corpus", // myrmidon(1.6.6 CORPUS E)
     ]);
 
     await act(async () => {

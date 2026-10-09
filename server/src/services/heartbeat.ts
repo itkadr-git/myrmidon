@@ -15,6 +15,7 @@ import { admitExplicitNativeContinuation, undeliveredLegacyUserCommentIds } from
 // myrmidon(L2): an explicitly authorized wake ignores a settled "do not
 // replay" hold; see docs/myrmidon/DIVERGENCE.md "L2".
 import { bypassesSettledHold } from "../myrmidon/settled-holds/explicit-wake-gate.js";
+import { userCommentMentionsWokenAgent } from "../myrmidon/settled-holds/mention-wake.js";
 // myrmidon(L2, round 1 fix): supersede the bypassed hold atomically with the
 // successor run, so the run's own claim and every later automatic
 // continuation see no hold. See docs/myrmidon/DIVERGENCE.md "L2".
@@ -3782,6 +3783,7 @@ interface WakeupOptions {
   issueStateGuard?: {
     statuses: string[];
     assigneeAgentId: string;
+    statusVersion?: number;
   };
   /** Keep causally distinct external chat continuations out of an existing run. */
   allowRunCoalescing?: boolean;
@@ -10355,6 +10357,15 @@ export function heartbeatService(
     }
     const deliveryPayload = response ? { ...payload } : withQueuedCommentIdsInWakePayload(payload, commentIds);
     delete deliveryPayload.queuedCommentInterrupt;
+    // myrmidon(1.6.6-UPSTREAM-HANDOFF-B): the vendor sets the guard version only
+    // at its own enqueue sites; the board's delivery records the version it saw.
+    // This delivery may wait behind a running turn and be admitted much later,
+    // so a wake that arrives after a later handoff (or a fresh blocked
+    // decision) is dropped by the guard instead of starting a turn for the
+    // state it no longer describes.
+    const [guardedDeliveryIssue] = await db.select({ statusVersion: issues.statusVersion }).from(issues).where(and(
+      eq(issues.companyId, companyId), eq(issues.id, issueId),
+    )).limit(1);
     await enqueueWakeup(wake.agentId, {
       source: "on_demand", triggerDetail: "manual", reason: "issue_commented",
       // myrmidon(UPSTREAM-13539): interaction deliveries carry the original wake context, not comment ids.
@@ -10366,7 +10377,11 @@ export function heartbeatService(
           }, commentIds),
       requestedByActorType: "user", requestedByActorId: actorId,
       ...(interrupted ? { queuedCommentInterruptId: queueId } : { queuedCommentRequestId: queueId }),
-      issueStateGuard: { assigneeAgentId: wake.agentId, statuses: ["todo", "in_progress", "in_review", "blocked"] },
+      issueStateGuard: {
+        assigneeAgentId: wake.agentId,
+        statuses: ["todo", "in_progress", "in_review", "blocked"],
+        ...(guardedDeliveryIssue ? { statusVersion: guardedDeliveryIssue.statusVersion } : {}),
+      },
       idempotencyKey: `queued-comment-${interrupted ? "interrupt" : "delivery"}:${queueId}`,
     }, queueId);
   }
@@ -27238,6 +27253,7 @@ export function heartbeatService(
               conversationUserId: issues.conversationUserId,
               conversationState: issues.conversationState,
               status: issues.status,
+              statusVersion: issues.statusVersion,
               projectId: issues.projectId,
               projectWorkspaceId: issues.projectWorkspaceId,
               executionWorkspaceId: issues.executionWorkspaceId,
@@ -27459,9 +27475,29 @@ export function heartbeatService(
             requestedByActorType: opts.requestedByActorType ?? null,
             requestedByActorId: opts.requestedByActorId ?? null,
           }) && await isChatBackedIssue(tx as unknown as Db, issue.companyId, issue.id);
+          // myrmidon(OPE-6011): a person's comment that @-mentions the
+          // woken agent is an explicit wake (wake-classification.ts's
+          // `userCommentMentionsWokenAgent`). The classifier trusts the
+          // flag; here the flag is computed from the comment row itself,
+          // so the wake only passes when the live comment really is a
+          // person's mention of this agent.
+          const userCommentMentionsWokenAgentFlag =
+            wakeCommentId &&
+            opts.requestedByActorType === "user" &&
+            opts.requestedByActorId
+              ? await userCommentMentionsWokenAgent(tx as unknown as Db, {
+                  companyId: issue.companyId,
+                  issueId: issue.id,
+                  agentId,
+                  commentId: wakeCommentId,
+                  requestedByActorType: opts.requestedByActorType,
+                  requestedByActorId: opts.requestedByActorId,
+                })
+              : false;
           const wakeBypassesSettledHold = (bypassesSettledHold({
             source, triggerDetail, reason, commentId: wakeCommentId ?? null,
             requestedByActorType: opts.requestedByActorType ?? null,
+            userCommentMentionsWokenAgent: userCommentMentionsWokenAgentFlag,
           }) || chatOwnerMessage) && Boolean(opts.requestedByActorId);
           const executionBlocker = await getExecutionBlocker(
             tx as unknown as Db, issue.companyId, issue.id,
@@ -27486,7 +27522,8 @@ export function heartbeatService(
           if (
             issueStateGuard &&
             (!issueStateGuard.statuses.includes(issue.status) ||
-              issue.assigneeAgentId !== issueStateGuard.assigneeAgentId)
+              issue.assigneeAgentId !== issueStateGuard.assigneeAgentId ||
+              (issueStateGuard.statusVersion !== undefined && issue.statusVersion !== issueStateGuard.statusVersion))
           ) {
             await tx.insert(agentWakeupRequests).values({
               ...durableReceiptFields,
@@ -27505,6 +27542,10 @@ export function heartbeatService(
                   actualStatus: issue.status,
                   expectedAssigneeAgentId: issueStateGuard.assigneeAgentId,
                   actualAssigneeAgentId: issue.assigneeAgentId,
+                  // myrmidon(1.6.6-UPSTREAM-HANDOFF-B): the vendor journal names only
+                  // the status and the assignee; a version-only mismatch needs the version.
+                  expectedStatusVersion: issueStateGuard.statusVersion ?? null,
+                  actualStatusVersion: issue.statusVersion,
                 },
               },
               status: "skipped",

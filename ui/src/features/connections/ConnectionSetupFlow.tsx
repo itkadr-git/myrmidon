@@ -1026,7 +1026,7 @@ export function ConnectionSetupFlow({
     onSuccess: (status) => {
       if (!status.verificationUrl) {
         closeEnrollmentPopup();
-        setConnectorEnrollmentError("Paperclip Cloud did not return an enrollment link. Try again.");
+        setConnectorEnrollmentError("Myrmidon Cloud did not return an enrollment link. Try again.");
         return;
       }
       openConnectorEnrollment(status.verificationUrl);
@@ -1034,7 +1034,7 @@ export function ConnectionSetupFlow({
     onError: (error) => {
       closeEnrollmentPopup();
       setConnectorEnrollmentError(
-        error instanceof Error ? error.message : "Myrmidon couldn’t reach Paperclip Cloud. Try again.",
+        error instanceof Error ? error.message : "Couldn’t reach Myrmidon Cloud. Try again.",
       );
     },
   });
@@ -2147,11 +2147,13 @@ export function ConnectionSetupFlow({
         />
       )}
 
+      {/* myrmidon(DB1): DEBRAND 1.6.6-a — this panel's visible copy names the vendor cloud;
+          it now says "Myrmidon Cloud". Wire/storage identifiers untouched (part c / stage 4). */}
       {managedConnectorUnavailable && entry ? (
         <div className="mx-auto max-w-xl rounded-xl border border-border bg-card p-6">
           <h2 className="text-lg font-semibold text-foreground">{entry.name} sign-in is unavailable</h2>
           <p className="mt-2 text-sm text-muted-foreground">
-            This instance is connected to Paperclip Cloud, but {entry.name} sign-in is not currently available. Try again shortly or contact your instance administrator.
+            This instance is connected to Myrmidon Cloud, but {entry.name} sign-in is not currently available. Try again shortly or contact your instance administrator.
           </p>
           <div className="mt-6 flex items-center justify-between gap-3">
             <Button type="button" variant="ghost" onClick={() => setAppStep("access")}>Back</Button>
@@ -2170,10 +2172,10 @@ export function ConnectionSetupFlow({
               </div>
               <div className="min-w-0">
                 <h2 className="text-lg font-semibold text-foreground">
-                  Connect with Paperclip Cloud
+                  Connect with Myrmidon Cloud
                 </h2>
                 <p className="mt-2 text-sm text-muted-foreground">
-                  You must connect this instance to Paperclip Cloud to connect to {entry.name} (you only need to do this once).
+                  You must connect this instance to Myrmidon Cloud to connect to {entry.name} (you only need to do this once).
                 </p>
               </div>
             </div>
@@ -2211,7 +2213,7 @@ export function ConnectionSetupFlow({
                 {startConnectorEnrollment.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
                 {connectorEnrollmentQuery.data?.status === "pending"
                   ? "Continue"
-                  : "Connect with Paperclip Cloud"}
+                  : "Connect with Myrmidon Cloud"}
               </Button>
             </div>
           </div>
