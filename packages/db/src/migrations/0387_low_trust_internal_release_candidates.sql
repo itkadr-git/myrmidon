@@ -23,7 +23,7 @@ INSERT INTO "activity_log" (
 SELECT
   i.company_id,
   'system',
-  'migration:0385_low_trust_internal_release_candidates',
+  'migration:0387_low_trust_internal_release_candidates',
   'issue.low_trust_release_candidate',
   'issue',
   i.id::text,

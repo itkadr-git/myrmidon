@@ -5,10 +5,12 @@
 // database, no part A import. Neutral ids only.
 
 import { describe, expect, it, vi } from "vitest";
+import { DEFAULT_PHEROMONE_DYNAMICS, type PheromoneDynamicsSettings } from "@paperclipai/shared";
 import {
   orderQueueCandidates,
-  swarmQueueEff,
+  queueRowEff,
   swarmSupervisorView,
+  type SwarmQueueCandidateRow,
   type SwarmSupervisorReadPort,
 } from "./view.js";
 import {
@@ -29,6 +31,8 @@ interface FakePort extends SwarmSupervisorReadPort {
     now: Date,
   ) => Promise<boolean>;
   released: { claimId: string; reason: string }[];
+  unassignIssue: (companyId: string, issueId: string, agentId: string, now: Date) => Promise<boolean>;
+  unassigned: { issueId: string; agentId: string }[];
 }
 
 interface FakeClaim {
@@ -54,6 +58,9 @@ interface FakeIssue {
 /** Queued rows carry the assignee so the role queue can be attributed. */
 interface FakeQueueRow extends FakeIssue {
   assignee_agent_id?: string | null;
+  /** 1.6.5 (F-27): the strength on the task card; absent reads as 0. */
+  pheromone_strength?: number | null;
+  failed_runs_since_last_change?: number | null;
 }
 
 interface FakeAgent {
@@ -91,8 +98,15 @@ function fakePort(input: {
   matched?: MatchedRow[];
   recentRuns?: RecentRunRow[];
   releaseResult?: boolean;
+  unassignError?: boolean;
+  /** Called with every port write, in order, so a test can pin the sequence. */
+  trace?: string[];
+  /** 1.6.5 (F-27): the resolved `pheromone` dynamics; absent = the design defaults. */
+  dynamics?: PheromoneDynamicsSettings;
+  p0Preemption?: boolean;
 }): FakePort {
   const released: { claimId: string; reason: string }[] = [];
+  const unassigned: { issueId: string; agentId: string }[] = [];
   const port: FakePort = {
     async claimEnabled() {
       return input.enabled ?? true;
@@ -120,6 +134,12 @@ function fakePort(input: {
     async liveRunAgentIds() {
       return new Set(input.liveRunAgents ?? []);
     },
+    async pheromoneDynamics() {
+      return input.dynamics ?? DEFAULT_PHEROMONE_DYNAMICS;
+    },
+    async p0Preemption() {
+      return input.p0Preemption ?? true;
+    },
     async listMatchedRows() {
       return (input as { matched?: MatchedRow[] }).matched ?? [];
     },
@@ -128,9 +148,17 @@ function fakePort(input: {
     },
     async releaseClaim(_companyId, claimId, reason) {
       released.push({ claimId, reason });
+      input.trace?.push("release");
       return input.releaseResult ?? true;
     },
+    async unassignIssue(_companyId, issueId, agentId) {
+      input.trace?.push("unassign");
+      if (input.unassignError) throw new Error("db down");
+      unassigned.push({ issueId, agentId });
+      return true;
+    },
     released,
+    unassigned,
   };
   return port;
 }
@@ -172,44 +200,61 @@ function agent(overrides: Partial<FakeAgent> = {}): FakeAgent {
   };
 }
 
+function candidate(overrides: Partial<SwarmQueueCandidateRow> & { issueId: string }): SwarmQueueCandidateRow {
+  return {
+    identifier: null,
+    title: overrides.issueId,
+    priority: "medium",
+    projectId: null,
+    createdAt: "2026-10-01T10:00:00.000Z",
+    blockedTransitionAt: null,
+    eff: 0,
+    pheromoneStrength: 0,
+    nestAgentId: null,
+    ...overrides,
+  };
+}
+
 describe("orderQueueCandidates", () => {
-  it("orders by the effective pheromone strength: higher eff first", () => {
-    const nowMs = NOW.getTime();
+  it("P0 first, then the effective strength descending", () => {
     const rows = [
-      { issueId: "i-1", identifier: null, title: "a", priority: "low", projectId: null, createdAt: "2026-10-01T10:00:00.000Z", blockedTransitionAt: null, eff: 100, nestAgentId: null },
-      { issueId: "i-2", identifier: null, title: "b", priority: "medium", projectId: null, createdAt: "2026-10-01T12:00:00.000Z", blockedTransitionAt: null, eff: 400, nestAgentId: null },
-      { issueId: "i-3", identifier: null, title: "c", priority: "critical", projectId: null, createdAt: "2026-10-01T11:00:00.000Z", blockedTransitionAt: null, eff: 800, nestAgentId: null },
+      candidate({ issueId: "i-1", priority: "low", eff: 100 }),
+      candidate({ issueId: "i-2", priority: "medium", eff: 400 }),
+      candidate({ issueId: "i-3", priority: "critical", eff: 5 }),
+      candidate({ issueId: "i-4", priority: "high", eff: 900 }),
     ];
-    const ordered = orderQueueCandidates(rows, nowMs).map((row) => row.issueId);
-    expect(ordered).toEqual(["i-3", "i-2", "i-1"]);
+    expect(orderQueueCandidates(rows).map((row) => row.issueId)).toEqual(["i-3", "i-4", "i-2", "i-1"]);
+    // With P0 preemption off the strength alone decides.
+    expect(orderQueueCandidates(rows, { p0Preemption: false }).map((row) => row.issueId)).toEqual([
+      "i-4",
+      "i-2",
+      "i-1",
+      "i-3",
+    ]);
   });
 
-  it("breaks eff ties by the oldest blockedTransitionAt, then age", () => {
+  it("breaks eff ties by the oldest blockedTransitionAt, then age, then id", () => {
     const rows = [
-      { issueId: "i-1", identifier: null, title: "a", priority: "medium", projectId: null, createdAt: "2026-10-01T10:00:00.000Z", blockedTransitionAt: "2026-10-02T15:00:00.000Z", eff: 100, nestAgentId: null },
-      { issueId: "i-2", identifier: null, title: "b", priority: "medium", projectId: null, createdAt: "2026-10-01T12:00:00.000Z", blockedTransitionAt: "2026-10-02T14:00:00.000Z", eff: 100, nestAgentId: null },
-      { issueId: "i-3", identifier: null, title: "c", priority: "medium", projectId: null, createdAt: "2026-10-01T09:00:00.000Z", blockedTransitionAt: null, eff: 100, nestAgentId: null },
+      candidate({ issueId: "i-1", eff: 100, createdAt: "2026-10-01T10:00:00.000Z", blockedTransitionAt: "2026-10-02T15:00:00.000Z" }),
+      candidate({ issueId: "i-2", eff: 100, createdAt: "2026-10-01T12:00:00.000Z", blockedTransitionAt: "2026-10-02T14:00:00.000Z" }),
+      candidate({ issueId: "i-3", eff: 100, createdAt: "2026-10-01T09:00:00.000Z" }),
+      candidate({ issueId: "i-5", eff: 100, createdAt: "2026-10-01T09:00:00.000Z" }),
+      candidate({ issueId: "i-4", eff: 100, createdAt: "2026-10-01T09:00:00.000Z" }),
     ];
-    const ordered = orderQueueCandidates(rows, NOW.getTime()).map((row) => row.issueId);
-    expect(ordered).toEqual(["i-2", "i-1", "i-3"]);
+    expect(orderQueueCandidates(rows).map((row) => row.issueId)).toEqual(["i-2", "i-1", "i-3", "i-4", "i-5"]);
   });
 });
 
-describe("swarmQueueEff", () => {
-  it("folds priority and waiting time into one number", () => {
-    const nowMs = NOW.getTime();
-    // A low task waiting 80s and a medium task waiting 40s both reach 80.
-    const low = swarmQueueEff({ priority: "low", createdAt: new Date(nowMs - 80_000).toISOString() }, nowMs);
-    const medium = swarmQueueEff({ priority: "medium", createdAt: new Date(nowMs - 40_000).toISOString() }, nowMs);
-    expect(low).toBe(80);
-    expect(medium).toBe(80);
-    const critical = swarmQueueEff({ priority: "critical", createdAt: new Date(nowMs - 10_000).toISOString() }, nowMs);
-    expect(critical).toBe(80);
-  });
-
-  it("never reports negative waiting for future timestamps", () => {
-    const nowMs = NOW.getTime();
-    expect(swarmQueueEff({ priority: "critical", createdAt: new Date(nowMs + 60_000).toISOString() }, nowMs)).toBe(0);
+describe("queueRowEff", () => {
+  const H = 3_600_000;
+  it("is the strength plus the aging minus the failure penalty, from the dynamics", () => {
+    const row = { pheromoneStrength: 30, createdAt: new Date(NOW.getTime() - 72 * H).toISOString(), failedRunsSinceLastChange: 1 };
+    // 30 + 3 days of aging (+3) - 10 = 23 with the defaults.
+    expect(queueRowEff(row, DEFAULT_PHEROMONE_DYNAMICS, NOW)).toBe(23);
+    // The knobs are settings: failPenalty 0, agingStep 2 per 12h, cap 100 -> 30 + 12.
+    expect(
+      queueRowEff(row, { agingStepHours: 12, agingStep: 2, agingCap: 100, failPenalty: 0 }, NOW),
+    ).toBe(42);
   });
 });
 
@@ -301,43 +346,74 @@ describe("swarmSupervisorView.overview", () => {
 });
 
 describe("releaseLeaseForRebalance", () => {
-  function deps(port: ReturnType<typeof fakePort>, opts: { wakeError?: boolean } = {}): SwarmRebalanceDeps {
-    return {
-      port,
-      enqueueWakeup: vi.fn(async () => {
-        if (opts.wakeError) throw new Error("wake refused");
-        return { queued: true };
-      }),
-      now: () => NOW,
-    };
+  const HOLDER = "44444444-4444-4444-8444-444444444444";
+  const OTHER = "44444444-4444-4444-8444-444444444445";
+  const CLAIM = "33333333-3333-4333-8333-333333333333";
+  const ISSUE = "11111111-1111-4111-8111-111111111111";
+
+  function deps(
+    port: ReturnType<typeof fakePort>,
+    opts: { match?: (issueId: string) => Promise<{ agentId: string } | null>; trace?: string[] } = {},
+  ): SwarmRebalanceDeps & { matchIssue: ReturnType<typeof vi.fn> } {
+    const matchIssue = vi.fn(async (issueId: string) => {
+      opts.trace?.push("match");
+      return opts.match ? opts.match(issueId) : { agentId: OTHER };
+    });
+    return { port, matchIssue, now: () => NOW };
   }
 
-  it("releases a live lease, wakes the next idle agent of the role and audits", async () => {
+  it("releases the lease, takes the owner off the task, then hands the task to the matcher and audits", async () => {
+    const trace: string[] = [];
+    const port = fakePort({ claims: [claim()], issues: [issue()], agents: [agent()], trace });
+    const logActivity = vi.fn<(input: { action: string }) => Promise<void>>(async () => {});
+    const d = deps(port, { trace });
+    const result = await releaseLeaseForRebalance({ ...d, logActivity }, COMPANY_ID, CLAIM);
+    expect(result.released).toBe(true);
+    // The agent the matcher paired is reported; the holder is not asked again.
+    expect(result.wokenAgentId).toBe(OTHER);
+    expect(port.released).toEqual([{ claimId: CLAIM, reason: "supervisor_rebalance" }]);
+    expect(port.unassigned).toEqual([{ issueId: ISSUE, agentId: HOLDER }]);
+    expect(d.matchIssue).toHaveBeenCalledWith(ISSUE);
+    // Order is the contract: the matcher only sees a task that has no owner.
+    expect(trace).toEqual(["release", "unassign", "match"]);
+    expect(logActivity.mock.calls[0]?.[0]?.action).toBe("issue.swarm_claim_supervisor_release");
+  });
+
+  it("does not pick the next agent by load: nobody is woken when the matcher pairs nobody", async () => {
+    // Two idle agents of the role exist; the old shape woke the less loaded one
+    // directly. The matcher is the only path now, so a null pair means no wake.
     const port = fakePort({
       claims: [claim()],
       issues: [issue()],
-      agents: [
-        agent(),
-        agent({
-          agent_id: "44444444-4444-4444-8444-444444444445",
-          agent_name: "agent-b",
-        }),
-      ],
-      liveRunAgents: ["44444444-4444-4444-8444-444444444444"],
+      agents: [agent(), agent({ agent_id: OTHER, agent_name: "agent-b" })],
     });
-    const logActivity = vi.fn<(input: { action: string }) => Promise<void>>(async () => {});
-    const result = await releaseLeaseForRebalance(
-      { ...deps(port), logActivity },
-      COMPANY_ID,
-      "33333333-3333-4333-8333-333333333333",
-    );
+    const d = deps(port, { match: async () => null });
+    const result = await releaseLeaseForRebalance(d, COMPANY_ID, CLAIM);
     expect(result.released).toBe(true);
-    expect(result.wokenAgentId).toBe("44444444-4444-4444-8444-444444444445");
-    expect(port.released).toEqual([
-      { claimId: "33333333-3333-4333-8333-333333333333", reason: "supervisor_rebalance" },
-    ]);
-    const logged = logActivity.mock.calls[0]?.[0];
-    expect(logged?.action).toBe("issue.swarm_claim_supervisor_release");
+    expect(result.wokenAgentId).toBeNull();
+    expect(d.matchIssue).toHaveBeenCalledTimes(1);
+  });
+
+  it("rotates: the task is offered to the matcher with no owner, so the holder is not kept", async () => {
+    const port = fakePort({ claims: [claim()], issues: [issue()], agents: [agent()] });
+    const seenOwners: Array<string | null> = [];
+    const d = deps(port, {
+      match: async () => {
+        // At match time the holder has already been taken off.
+        seenOwners.push(port.unassigned.length > 0 ? null : HOLDER);
+        return { agentId: OTHER };
+      },
+    });
+    await releaseLeaseForRebalance(d, COMPANY_ID, CLAIM);
+    expect(seenOwners).toEqual([null]);
+  });
+
+  it("a refused unassign still matches (the periodic pass never wakes anyone for a foreign task)", async () => {
+    const port = fakePort({ claims: [claim()], issues: [issue()], agents: [agent()], unassignError: true });
+    const d = deps(port);
+    const result = await releaseLeaseForRebalance(d, COMPANY_ID, CLAIM);
+    expect(result.released).toBe(true);
+    expect(d.matchIssue).toHaveBeenCalled();
   });
 
   it("404s on an unknown claim and 409s on a released or expired claim", async () => {
@@ -364,48 +440,65 @@ describe("releaseLeaseForRebalance", () => {
     ).rejects.toBeInstanceOf(ClaimNotLiveError);
   });
 
-  it("survives a refused wake: released stays true, wokenAgentId null", async () => {
+  it("survives a matcher failure: released stays true, wokenAgentId null", async () => {
     const port = fakePort({ claims: [claim()], issues: [issue()], agents: [agent()] });
-    const result = await releaseLeaseForRebalance(
-      deps(port, { wakeError: true }),
-      COMPANY_ID,
-      "33333333-3333-4333-8333-333333333333",
-    );
+    const d = deps(port, {
+      match: async () => {
+        throw new Error("wake refused");
+      },
+    });
+    const result = await releaseLeaseForRebalance(d, COMPANY_ID, CLAIM);
     expect(result.released).toBe(true);
     expect(result.wokenAgentId).toBeNull();
   });
 
-  it("reports released:false when the release path declines", async () => {
+  it("reports released:false and touches neither the owner nor the matcher when the release path declines", async () => {
     const port = fakePort({ claims: [claim()], releaseResult: false });
-    const result = await releaseLeaseForRebalance(
-      deps(port),
-      COMPANY_ID,
-      "33333333-3333-4333-8333-333333333333",
-    );
+    const d = deps(port);
+    const result = await releaseLeaseForRebalance(d, COMPANY_ID, CLAIM);
     expect(result.released).toBe(false);
+    expect(port.unassigned).toEqual([]);
+    expect(d.matchIssue).not.toHaveBeenCalled();
+  });
+
+  it("with the swarm off (no matcher wired) the release stands alone", async () => {
+    const port = fakePort({ claims: [claim()], issues: [issue()], agents: [agent()] });
+    const result = await releaseLeaseForRebalance({ port, now: () => NOW }, COMPANY_ID, CLAIM);
+    expect(result.released).toBe(true);
+    expect(result.wokenAgentId).toBeNull();
   });
 });
 
 // myrmidon(1.6.5 SWARM-T4, design §5.3): the overview surface — matches,
 // warnings and the eff-ordered queue.
 describe("swarmSupervisorView.overview (T4 surfaces)", () => {
-  it("reports the queue ordered by eff with the nest and waiting time", async () => {
+  it("reports the queue ordered by the effective pheromone strength with the nest", async () => {
+    const strongFresh = "11111111-1111-4111-8111-111111111121";
+    const weakOldA = "11111111-1111-4111-8111-111111111122";
+    const weakOldB = "11111111-1111-4111-8111-111111111123";
     const port = fakePort({
       issues: [
         issue({
-          issue_id: "11111111-1111-4111-8111-111111111121",
-          identifier: "TST-10",
-          title: "Fresh critical",
-          priority: "critical",
-          created_at: "2026-10-02T15:00:00.000Z",
+          issue_id: weakOldA,
+          identifier: "TST-11",
+          title: "Old weak A",
+          created_at: "2026-09-20T00:00:00.000Z",
+          pheromone_strength: 10,
+          assignee_agent_id: "44444444-4444-4444-8444-444444444444",
         }),
         issue({
-          issue_id: "11111111-1111-4111-8111-111111111122",
-          identifier: "TST-11",
-          title: "Old medium",
-          priority: "medium",
-          created_at: "2026-10-01T00:00:00.000Z",
-          assignee_agent_id: "44444444-4444-4444-8444-444444444444",
+          issue_id: weakOldB,
+          identifier: "TST-12",
+          title: "Old weak B",
+          created_at: "2026-09-21T00:00:00.000Z",
+          pheromone_strength: 10,
+        }),
+        issue({
+          issue_id: strongFresh,
+          identifier: "TST-10",
+          title: "Fresh strong",
+          created_at: "2026-10-02T15:00:00.000Z",
+          pheromone_strength: 100,
         }),
       ],
       agents: [agent()],
@@ -414,16 +507,48 @@ describe("swarmSupervisorView.overview (T4 surfaces)", () => {
     const overview = await view.overview(COMPANY_ID);
     const engineer = overview.roles.find((role) => role.role === "engineer");
     expect(engineer).toBeDefined();
-    // Fresh critical (30 min × 8 = 14400) beats old medium (~39.5h × 2 ≈ 284000)?
-    // No: the old medium task waited far longer, so its eff is higher.
-    const ordered = engineer?.queue.map((row) => row.identifier);
-    expect(ordered).toEqual(["TST-11", "TST-10"]);
-    // eff is a response column: critical fresh = 8 * 1800.
+    // A strong fresh task is ahead of the old weak ones (aging is capped at +5).
+    expect(engineer?.queue.map((row) => row.identifier)).toEqual(["TST-10", "TST-11", "TST-12"]);
     const fresh = engineer?.queue.find((row) => row.identifier === "TST-10");
-    expect(fresh?.eff).toBe(8 * 1800);
-    // The nest of the assigned medium task is its assignee.
-    const assigned = engineer?.queue.find((row) => row.identifier === "TST-11");
-    expect(assigned?.nestAgentId).toBe("44444444-4444-4444-8444-444444444444");
+    expect(fresh?.pheromoneStrength).toBe(100);
+    expect(fresh?.eff).toBe(100);
+    // eff = strength + capped aging: 10 + 5.
+    expect(engineer?.queue.find((row) => row.identifier === "TST-11")?.eff).toBe(15);
+    // The nest of the assigned task is its assignee.
+    expect(engineer?.queue.find((row) => row.identifier === "TST-11")?.nestAgentId).toBe(
+      "44444444-4444-4444-8444-444444444444",
+    );
+    expect(overview.topQueue[0]?.identifier).toBe("TST-10");
+  });
+
+  it("a change of the strength on the card changes the order; the settings apply on the next read", async () => {
+    const a = "11111111-1111-4111-8111-111111111131";
+    const b = "11111111-1111-4111-8111-111111111132";
+    const rows = [
+      issue({ issue_id: a, identifier: "TST-20", created_at: "2026-10-02T10:00:00.000Z", pheromone_strength: 10, assignee_agent_id: null }),
+      issue({ issue_id: b, identifier: "TST-21", created_at: "2026-10-02T11:00:00.000Z", pheromone_strength: 10, assignee_agent_id: null }),
+    ];
+    const first = await swarmSupervisorView(fakePort({ issues: rows, agents: [agent()] }), {}, () => NOW).overview(COMPANY_ID);
+    expect(first.roles[0]?.queue.map((row) => row.identifier)).toEqual(["TST-20", "TST-21"]);
+    // The owner raises the second task on its card: it moves to the top.
+    rows[1] = { ...rows[1]!, pheromone_strength: 50 };
+    const second = await swarmSupervisorView(fakePort({ issues: rows, agents: [agent()] }), {}, () => NOW).overview(COMPANY_ID);
+    expect(second.roles[0]?.queue.map((row) => row.identifier)).toEqual(["TST-21", "TST-20"]);
+    // A failure penalty from the settings read on the next overview drops the top task again.
+    rows[1] = { ...rows[1]!, failed_runs_since_last_change: 5 };
+    const third = await swarmSupervisorView(fakePort({ issues: rows, agents: [agent()] }), {}, () => NOW).overview(COMPANY_ID);
+    expect(third.roles[0]?.queue.map((row) => row.identifier)).toEqual(["TST-20", "TST-21"]);
+    // And the dynamics are read from the port on every call (settings without restart).
+    const noPenalty = await swarmSupervisorView(
+      fakePort({
+        issues: rows,
+        agents: [agent()],
+        dynamics: { ...DEFAULT_PHEROMONE_DYNAMICS, failPenalty: 0 },
+      }),
+      {},
+      () => NOW,
+    ).overview(COMPANY_ID);
+    expect(noPenalty.roles[0]?.queue.map((row) => row.identifier)).toEqual(["TST-21", "TST-20"]);
   });
 
   it("reports the recent matches from the activity feed, newest first", async () => {

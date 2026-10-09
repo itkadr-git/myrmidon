@@ -1,0 +1,164 @@
+## changelog-ru
+
+### 1.6.5 F-26 SWARM: доска сама сопоставляет задачу со свободным агентом
+
+- На доске появился сопоставитель (`server/src/myrmidon/swarm-claim/matcher.ts`, проект §3):
+  по готовой задаче он находит свободного агента её касты в её гнезде, в одной
+  транзакции пишет аренду (`issue_claims`) и назначает исполнителя, и только после этого
+  будит его — побудка всегда несёт id уже принадлежащей ему задачи (ключ
+  `swarm_matched:<issueId>`). Нет свободного агента — никто не будится. Отказ выбора на
+  одной задаче не закрывает очередь.
+- Сопоставитель подключён к боевому коду: страховочный проход сторожа
+  (`swarmClaimSweeper.sweep()`) вызывает `matchCompany` вместо старого idle-прохода;
+  release-путь прогона (`heartbeat.ts`) при включённом рое вызывает `forAgent`
+  освободившегося агента вместо idle-pickup; истечение аренды у `todo` без прогона снимает
+  исполнителя (активность `issue.swarm_claim.unassigned_on_expiry`) и перематчивает задачу;
+  явный pull `POST …/swarm-claim/claim` идёт через тот же `forAgent`.
+- Своя назначенная задача идёт первой: агент получает собственную готовую задачу, у которой
+  нет ни живой аренды, ни побудки в полёте. Назначение только `assignee IS NULL` задач было
+  регрессией — такая задача больше не доставалась своему агенту ни разу.
+- Ротации нет и не пишется: выбор — запах (T10), при равных счётах детерминированная ничья
+  по `agents.id`; «кто дольше простаивает» из ядра убрано.
+- Удалено вместе с проходом: `sweepIdleWakes`, `idle-wake.ts`, `idle-queue.ts`,
+  `MYRMIDON_SWARM_IDLE_WAKE_BATCH` и его чтение в `sweep.ts`, `wakeNextAgentForIssueRole`
+  (снятие аренды и перематч — вместо «разбуди следующего агента касты»).
+- Пилот удалён полностью (см. отдельную запись про настройки роя): поля «Roles/Companies in
+  scope», переменные `MYRMIDON_SWARM_CLAIM_ENABLED_ROLES` / `_COMPANY_IDS` и `idleWakeBatch`
+  убраны из схемы, интерфейса и env. Рой включается одним переключателем; участие агента
+  определяет справочник каст (`swarmEligible`) и переключатель в карточке агента.
+- Своих правил порядка, маршрута и остывания у сопоставителя нет — он спрашивает те, что
+  есть в продукте. Пул касты читается SQL-чтением очереди F-27: каста неназначенной задачи —
+  `unassignedTaskRoutedToRole` (каста задачи → каста проекта по умолчанию → метка `role:` →
+  роль по умолчанию), порядок — `swarmQueueOrderBy` (P0 → эффективная сила феромона: сила +
+  старение − штраф за неудачные прогоны из `failedRunsDerivedSql` → возраст → id).
+  Сопоставитель идёт по строкам в этом порядке и не пересортировывает их. Остывание —
+  `isIssueCoolingDown` из `wake-task-guard.ts` (F-26 T5) через адаптер
+  `swarm-claim/cooling.ts`; задача в окне остывания не назначается и не будится.
+
+## changelog-en
+
+### 1.6.5 F-26 SWARM: the board pairs a task with a free agent itself
+
+- The board now has a matcher (`server/src/myrmidon/swarm-claim/matcher.ts`, design §3): for a
+  ready task it finds a free agent of the task's caste in its nest, writes the lease
+  (`issue_claims`) and sets the assignee in one transaction, and only then wakes that agent —
+  a wake always carries the id of a task that already belongs to it (key
+  `swarm_matched:<issueId>`). No free agent — nobody is woken. A pick refusing one task does
+  not close the queue.
+- The matcher is wired into the production path: the sweeper's safety net
+  (`swarmClaimSweeper.sweep()`) calls `matchCompany` instead of the old idle pass; the release
+  path of a run (`heartbeat.ts`) calls `forAgent` for the freed agent instead of idle-pickup
+  while the swarm is on; a lease expired on a `todo` with no run behind it takes the owner off
+  the task (activity `issue.swarm_claim.unassigned_on_expiry`) and re-matches it; the explicit
+  pull `POST …/swarm-claim/claim` goes through the same `forAgent`.
+- The agent's own assigned task comes first: it is woken on a ready task of its own that has
+  neither a live lease nor a wake in flight. Assigning only `assignee IS NULL` tasks was a
+  regression — such a task never reached its own agent again.
+- There is no rotation, and none is written: the pick is the scent (T10), a full tie goes to
+  the smallest `agents.id`; the "longest idle first" order is gone from the core.
+- Removed with the pass: `sweepIdleWakes`, `idle-wake.ts`, `idle-queue.ts`,
+  `MYRMIDON_SWARM_IDLE_WAKE_BATCH` and its read in `sweep.ts`, `wakeNextAgentForIssueRole`
+  (releasing the lease and re-matching replaces "wake the next agent of the caste").
+- The pilot is removed entirely (see the separate swarm-settings entry): the "Roles/Companies
+  in scope" fields, the variables `MYRMIDON_SWARM_CLAIM_ENABLED_ROLES` / `_COMPANY_IDS` and
+  `idleWakeBatch` are gone from the schema, the UI and the env. The swarm is turned on by one
+  switch; whether an agent takes part is decided by the caste directory (`swarmEligible`) and
+  the switch in the agent's card.
+- The matcher has no order, routing or cooling rule of its own — it asks the ones the product
+  has. A caste's pool is read with the F-27 queue SQL: the caste of an unassigned task is
+  `unassignedTaskRoutedToRole` (the task's caste → the project's default caste → the `role:`
+  label → the default role), the order is `swarmQueueOrderBy` (P0 → effective pheromone
+  strength: strength + aging − the penalty for failed runs from `failedRunsDerivedSql` → age →
+  id). The matcher walks the rows in that order and never re-sorts them. The cooling is
+  `isIssueCoolingDown` of `wake-task-guard.ts` (F-26 T5) through the adapter
+  `swarm-claim/cooling.ts`; a task inside its cooling window is neither assigned nor woken.
+
+## settings-ru-replace
+
+| `MYRMIDON_SWARM_CLAIM_ENABLED_ROLES` | 1.6.1-SWARM-SETTINGS-UI | удалена | **Удалена в 1.6.5**: пилотного набора ролей больше нет, код переменную не читает. Участие агента в рое определяет справочник каст (`swarmEligible`) и переключатель в карточке агента | Значение игнорируется |
+| `MYRMIDON_SWARM_CLAIM_ENABLED_COMPANY_IDS` | 1.6.1-SWARM-SETTINGS-UI | удалена | **Удалена в 1.6.5** по той же причине: пилотного набора компаний больше нет, рой включается одним переключателем | Значение игнорируется |
+| `MYRMIDON_SWARM_IDLE_WAKE_BATCH` | 1.6.1 SWARM-IDLE-WAKE | удалена | **Удалена в 1.6.5**: idle-прохода с пачкой побудок больше нет, его место занял сопоставитель на доске — свободный агент получает задачу сразу, без очередей и ротации. Поле панели `idleWakeBatch` удалено | Значение игнорируется |
+
+## settings-en-replace
+
+| `MYRMIDON_SWARM_CLAIM_ENABLED_ROLES` | 1.6.1-SWARM-SETTINGS-UI | removed | **Removed in 1.6.5**: there is no pilot role set any more and the code does not read the variable. Whether an agent takes part in the swarm is decided by the caste directory (`swarmEligible`) and the switch in the agent's card | The value is ignored |
+| `MYRMIDON_SWARM_CLAIM_ENABLED_COMPANY_IDS` | 1.6.1-SWARM-SETTINGS-UI | removed | **Removed in 1.6.5** for the same reason: there is no pilot company set, the swarm is turned on by one switch | The value is ignored |
+| `MYRMIDON_SWARM_IDLE_WAKE_BATCH` | 1.6.1 SWARM-IDLE-WAKE | removed | **Removed in 1.6.5**: the idle pass with its wake batch is gone — the board-side matcher gives a free agent its task at once, with no queues and no rotation. The panel field `idleWakeBatch` is removed | The value is ignored |
+
+## settings-ru-new
+
+### 1.6.5 — SWARM: сопоставление на доске, без побудок «поищи работу»
+
+Разбор `ops/audit/swarmdiag-20261009.md`: за 7 дней 3259 прогонов `swarm_claim_queue`
+отменены и **ни одна** неназначенная задача не взята в работу. Причина — порядок действий
+старого idle-прохода: он будил агента с `payload.issueId` задачи без исполнителя и ожидал
+захвата на checkout; диспетчер запуска (`decideIssueOwnership`) видит `assignee = NULL` и
+другого агента в прогоне и отменяет побудку как `reassigned` (`skipped`). До checkout прогон
+не доходил.
+
+С 1.6.5 сопоставление делает сама доска: готовая задача встречает свободного агента своей
+касты и своего гнезда (сначала — своя назначенная задача агента), задача становится его
+собственной (аренда + исполнитель), и только потом он получает прогон с этой задачей.
+Побудок «иди поищи работу» нет; нет свободного агента — задача ждёт первого освободившегося
+подходящей касты. Отбор — по запаху (T10; при равных счётах — детерминированная ничья по
+`agents.id`), без ротации и без «кто дольше простаивает».
+
+Как включить и проверить:
+
+1. Instance → General → **«Self-organisation (swarm)»**: включить выключатель
+   `Swarm enabled`. Изменения применяются без перезапуска (переключатель читается на каждом
+   событии).
+2. Проверка: в панели под переключателем строка состояния — «в очереди», «захвачено за
+   час», «отменено за час». Через минуту после включения на непустой очереди
+   «захвачено за час» должно стать ≥ 1, а «отменено за час» — не расти. Второй способ: у
+   задачи появляется исполнитель без человека (`assigneeAgentId` проставлен, живая аренда в
+   `issue_claims`), затем у агента стартует прогон с причиной `swarm_matched`, а не
+   `skipped`.
+3. Ставка счётчиков: `readSwarmQueueCounters` учитывает и прежние отмены с причиной
+   `swarm_claim_queue`, и новые `swarm_matched` — рост «отменено за час» после выката виден
+   сразу.
+
+Классификация переменных окружения (полный прогон тестов сервера сверяет каждое имя
+`MYRMIDON_*`, читаемое кодом Myrmidon, с FLAGS.md / SETTINGS.md / фрагментами): восстановлены
+записи для переменных, которые читает код и которые до сих пор нигде не были классифицированы —
+`MYRMIDON_BOT_SCOPE_SUBDIR` (подкаталог рабочей области бота, F-12), а также
+`MYRMIDON_CONTINUATION_MESSAGE_CHARS` и `MYRMIDON_CONTINUATION_MESSAGE_BODY_CHARS`
+(лимиты символов истории продолжения, DBC-3). Они не входят в роевую настройку и
+приведены здесь только ради зелёного гейта.
+
+## settings-en-new
+
+### 1.6.5 — SWARM: the board pairs tasks with free agents, no "look for work" wakes
+
+The analysis in `ops/audit/swarmdiag-20261009.md`: over 7 days 3259 `swarm_claim_queue` runs
+were cancelled and **not one** unassigned task was taken into work. The cause was the order of
+the old idle pass: it woke an agent with the `payload.issueId` of a task that belonged to
+nobody, expecting the claim on checkout; the run admission (`decideIssueOwnership`) sees
+`assignee = NULL` and another agent in the run and cancels the wake as `reassigned`
+(`skipped`). The run never reached checkout.
+
+Since 1.6.5 the board itself pairs: a ready task meets a free agent of its caste and nest (the
+agent's own assigned task first), the task becomes that agent's own (lease + assignee), and
+only then does it get a run carrying the task. There is no "go and look for work" wake; with no
+free agent the task waits for the first eligible one to free up. The pick is the scent (T10; a
+full tie goes to the smallest `agents.id`) — no rotation, no "longest idle first".
+
+How to turn it on and check it:
+
+1. Instance → General → **"Self-organisation (swarm)"**: turn the `Swarm enabled` switch on.
+   Changes apply without a restart (the switch is read on every event).
+2. To check: under the switch the panel shows a status line — queued, claimed in the last
+   hour, cancelled in the last hour. A minute after switching on with a non-empty queue
+   "claimed in the last hour" must be ≥ 1 and "cancelled in the last hour" must not grow.
+   Second way: a task gains an assignee without a human (`assigneeAgentId` set, a live lease in
+   `issue_claims`) and the agent then starts a run with reason `swarm_matched` instead of
+   `skipped`.
+3. Counter note: `readSwarmQueueCounters` counts both the old cancellations under reason
+   `swarm_claim_queue` and the new `swarm_matched` ones, so the growth of "cancelled in the
+   last hour" is visible right after the roll-out.
+
+Env classification (the full server test run checks every `MYRMIDON_*` name read by Myrmidon
+code against FLAGS.md / SETTINGS.md / the change fragments): entries restored for variables the
+code reads and that were never classified — `MYRMIDON_BOT_SCOPE_SUBDIR` (the bot workspace
+subdirectory, F-12), plus `MYRMIDON_CONTINUATION_MESSAGE_CHARS` and
+`MYRMIDON_CONTINUATION_MESSAGE_BODY_CHARS` (continuation-history character budgets, DBC-3). They are not part of the swarm settings and are listed here only for the gate.

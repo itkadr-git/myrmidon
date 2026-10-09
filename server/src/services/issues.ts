@@ -1,6 +1,8 @@
 import { documentService } from "./documents.js";
 // myrmidon(P5): lock owner lifecycle in checkout 409s
 import { checkoutRunStatusForIssue } from "../myrmidon/issue-checkout-guard.js";
+// myrmidon(1.6.5 OPE-6608): the board matcher's issue events
+import { notifySwarmIssueEvent } from "../myrmidon/swarm-claim/events.js";
 import { parseTaskSearch, taskSearchCtes, taskSearchScore } from "./task-search.js";
 import { createdFromIssueCondition } from "./issue-creation-origin.js";
 import { executionProjectionsForRuns } from "./execution-projection.js";
@@ -97,7 +99,12 @@ import {
   issueCommentPresentationSchema,
   isUuidLike,
   normalizeIssueIdentifier as normalizeIssueReferenceIdentifier,
+  resolveSwarmClaimSettings,
+  readScentSettings,
+  pheromoneStrengthForPriority,
 } from "@paperclipai/shared";
+import type { IssueScent } from "@paperclipai/shared";
+import { deriveScentAuto } from "../myrmidon/scent/create-hook.js";
 import { conflict, HttpError, notFound, unprocessable } from "../errors.js";
 import { isForeignKeyViolation } from "../db-errors.js";
 import { logger } from "../middleware/logger.js";
@@ -140,6 +147,7 @@ import { redactCurrentUserText } from "../log-redaction.js";
 import { redactSensitiveText } from "../redaction.js";
 // myrmidon(S5): mask secret values in agent comments
 import { maskSecretsInText } from "../myrmidon/secret-masking.js";
+import { createCasteStore } from "../myrmidon/castes/store.js";
 import {
   resolveIssueGoalId,
   resolveNextIssueGoalId,
@@ -6398,6 +6406,45 @@ async function countBlockedInboxIssues(
 export function issueService(db: Db) {
   const instanceSettings = instanceSettingsService(db);
   const treeControlSvc = issueTreeControlService(db);
+  const casteStore = createCasteStore({ db });
+
+  // 1.6.5 (F-27 rework 09.10): a caste key the caller names must exist in the
+  // company's caste directory (design §2.1). NULL clears to the project/company
+  // default — only a non-null key is validated.
+  async function assertCasteKeyExists(
+    companyId: string,
+    casteKey: string | null | undefined,
+    runner?: Db,
+  ) {
+    if (casteKey == null) return;
+    // `runner` is the caller's transaction when it has one: a lookup on the
+    // pool from inside a transaction needs a second connection and can
+    // deadlock a drained pool.
+    const row = await (runner ? createCasteStore({ db: runner }) : casteStore).findCaste(companyId, casteKey);
+    if (!row) {
+      throw unprocessable(`caste "${casteKey}" does not exist in this company`, {
+        code: "issue_caste_unknown",
+      });
+    }
+  }
+
+  // 1.6.5 (F-27 PHEROMONE): the strength a new task starts with when the
+  // caller did not set one — the swarm settings map `priority` to a number
+  // (the critical/high/medium/low fields of the `pheromone` key of swarmClaim,
+  // edited in the swarm settings UI). Unknown
+  // priorities read as `medium`, matching the schema default.
+  async function defaultPheromoneStrengthForPriority(
+    priority: string,
+    runner?: Db,
+  ): Promise<number> {
+    const raw = (await (runner ? instanceSettingsService(runner) : instanceSettings).getGeneral()) as unknown as Record<string, unknown> | null;
+    const stored = raw && typeof raw === "object" ? (raw as { swarmClaim?: unknown }).swarmClaim : undefined;
+    const resolved = resolveSwarmClaimSettings({
+      env: process.env,
+      stored: stored && typeof stored === "object" ? stored : null,
+    });
+    return pheromoneStrengthForPriority(resolved.settings.pheromone, priority);
+  }
 
   function normalizeCreateIssueTitle(title: string) {
     return title.trim().replace(/\s+/g, " ").toLowerCase();
@@ -7874,7 +7921,10 @@ export function issueService(db: Db) {
             ? baseQuery
             : baseQuery.limit(limit);
       const rows = (await pageQuery).map((row) => ({
-        ...row,
+        // 1.6.5 (F-27 PHEROMONE): a Partial-bounded pageQuery map loses the
+        // drizzle row type; the shape stays the full issues row + a decoded
+        // description, so narrow it back for withIssueLabels.
+        ...(row as typeof row & IssueRow),
         description: decodeDatabaseTextPreview(
           row.description,
           ISSUE_LIST_DESCRIPTION_MAX_CHARS,
@@ -9575,6 +9625,25 @@ export function issueService(db: Db) {
       ) {
         throw unprocessable("in_progress issues require an assignee");
       }
+      // 1.6.5 (F-27): the settings read and the caste lookup run on the pool
+      // BEFORE the transaction opens. Inside it they would need a second
+      // connection while the transaction holds one — concurrent creates then
+      // exhaust the pool and deadlock (issue-watchdogs-routes timed out on it).
+      const defaultPheromoneStrength =
+        issueData.pheromoneStrength == null
+          ? await defaultPheromoneStrengthForPriority(issueData.priority ?? "medium")
+          : undefined;
+      // 1.6.5 (F-26 T10 SCENT): the caste directory (this also seeds the built-ins
+      // of a fresh company) and the scent settings are read on the pool BEFORE the
+      // insert transaction opens, for the same reason: the hook is a pure derivation
+      // over them and nothing inside the transaction waits on a second connection.
+      const scentCasteKeys = (await casteStore.listCastes(companyId)).map((row) => row.key);
+      const scentSettings = readScentSettings(
+        ((await instanceSettings.getGeneral()) as unknown as { swarm?: unknown } | null)?.swarm,
+        process.env,
+      );
+      // The directory read above seeds a fresh company, so the key check comes after it.
+      await assertCasteKeyExists(companyId, issueData.casteKey);
       const persist = async (tx: DbTransaction) => {
         await assertExecutionTaskParent(tx as unknown as Db, companyId, issueData.parentId);
         if (issueData.conversationAgentId && issueData.conversationUserId) {
@@ -9927,6 +9996,52 @@ export function issueService(db: Db) {
           ...(issueData.description
             ? { description: maskSecretsInText(issueData.description) }
             : {}),
+          // 1.6.5 (F-27 PHEROMONE): an explicit strength wins; otherwise the
+          // task starts with the strength the swarm settings map its priority
+          // to (swarmClaim.pheromone). Setting the number here — the
+          // single write point — keeps board, agent and import creates
+          // consistent without each path re-reading the settings.
+          ...(defaultPheromoneStrength !== undefined
+            ? { pheromoneStrength: defaultPheromoneStrength }
+            : {}),
+          // 1.6.5 (F-27 rework 09.10): the caste key — validated against the
+          // company's directory just below; a null clears to the defaults.
+          ...(issueData.casteKey !== undefined ? { casteKey: issueData.casteKey } : {}),
+          // 1.6.5 (F-26 T10 SCENT): the caste. The pure derivation lives in
+          // myrmidon/scent/create-hook.ts — an explicit key is kept and
+          // stamped 'manual', a high-confidence scent (top ≥ 0.5) lands as
+          // 'auto', anything else stays NULL and the §2.1 chain
+          // (project default ?? company default) resolves at read time. The
+          // hook NEVER materializes the company default with source 'auto'.
+          ...(await (async () => {
+            return deriveScentAuto(
+              {
+                title: issueData.title ?? "",
+                description: issueData.description ?? null,
+                priority: issueData.priority ?? "medium",
+                casteKey: issueData.casteKey ?? null,
+                casteSource: issueData.casteSource ?? null,
+                pheromoneStrength: issueData.pheromoneStrength ?? null,
+                scent: (issueData as { scent?: IssueScent | null }).scent ?? null,
+              },
+              scentCasteKeys,
+              scentSettings,
+              defaultPheromoneStrength !== undefined ? () => defaultPheromoneStrength : undefined,
+            );
+          })().then((auto) => ({
+            casteKey: auto.casteKey,
+            casteSource: auto.casteSource,
+            // The strength is touched only when the caller sent a scent with
+            // the task: without one the value the F-27 branch above wrote
+            // (the instance's swarmClaim.pheromoneDefaults mapping) must stand,
+            // not be replaced by the shared hard-coded defaults. The usual
+            // path — scent arriving later from the markup queue — applies the
+            // consequences bonus in scent/service.ts.
+            ...(issueData.pheromoneStrength == null &&
+            (issueData as { scent?: IssueScent | null }).scent
+              ? { pheromoneStrength: auto.pheromoneStrength }
+              : {}),
+          }))),
           originRunId: issueData.originRunId ?? actorRunId ?? null,
           responsibleUserId,
           requestDepth: clampIssueRequestDepth(issueData.requestDepth),
@@ -10017,8 +10132,22 @@ export function issueService(db: Db) {
         );
         return withRelations;
       };
-      if (dbOrTx === db) return db.transaction(persist);
-      return persist(dbOrTx as DbTransaction);
+      const created = dbOrTx === db
+        ? await db.transaction(persist)
+        : await persist(dbOrTx as DbTransaction);
+      // myrmidon(1.6.5 OPE-6608, review item 2): a task born ready and ownerless
+      // is the board matcher's event. Inside the caller's own transaction the
+      // commit is not ours to see, so the pairing waits a moment there.
+      notifySwarmIssueEvent(
+        {
+          issueId: created.id,
+          status: created.status,
+          assigneeAgentId: created.assigneeAgentId,
+          created: true,
+        },
+        { deferMs: dbOrTx === db ? 0 : 1_000 },
+      );
+      return created;
     },
 
     /**
@@ -10402,6 +10531,11 @@ export function issueService(db: Db) {
       if (data.parentId !== undefined && data.parentId !== existing.parentId) {
         await assertExecutionTaskParent(dbOrTx, existing.companyId, data.parentId);
       }
+      // 1.6.5 (F-27 rework 09.10): validate a changed caste against the
+      // company's directory (design §2.1); null clears to the defaults.
+      if (data.casteKey !== undefined && data.casteKey !== existing.casteKey) {
+        await assertCasteKeyExists(existing.companyId, data.casteKey, dbOrTx as Db);
+      }
       if (existing.conversationAgentId) {
         if ((data.assigneeAgentId !== undefined && data.assigneeAgentId !== existing.conversationAgentId)
           || data.assigneeUserId || data.conversationAgentId !== undefined || data.conversationUserId !== undefined
@@ -10504,6 +10638,15 @@ export function issueService(db: Db) {
       }
       if (issueData.requestDepth !== undefined) {
         patch.requestDepth = clampIssueRequestDepth(issueData.requestDepth);
+      }
+      // 1.6.5 (F-27 PHEROMONE): an explicit null resets the strength to the
+      // priority default (the same mapping the create path uses), so a client
+      // can "clear" the manual strength without knowing the mapping.
+      if (issueData.pheromoneStrength === null) {
+        patch.pheromoneStrength = await defaultPheromoneStrengthForPriority(
+          (issueData.priority as string | undefined) ?? existing.priority,
+          dbOrTx as Db,
+        );
       }
 
       const nextAssigneeAgentId =
@@ -11044,6 +11187,22 @@ export function issueService(db: Db) {
       }
       if (dbOrTx === db && !postCommitActions) {
         await executeIssuePostCommitActions(db, ownedPostCommitActions);
+      }
+      // myrmidon(1.6.5 OPE-6608, review item 2): a change that makes a task
+      // available (status into the queue, the owner taken off, caste label or
+      // blockers changed) is the board matcher's event. `result` is null when
+      // the write found nothing; inside the caller's transaction the pairing
+      // waits for the commit.
+      if (result) {
+        notifySwarmIssueEvent(
+          {
+            issueId: id,
+            status: (result as { status?: string | null }).status,
+            assigneeAgentId: (result as { assigneeAgentId?: string | null }).assigneeAgentId,
+            touched: Object.keys(data).filter((key) => (data as Record<string, unknown>)[key] !== undefined),
+          },
+          { deferMs: dbOrTx === db ? 0 : 1_000 },
+        );
       }
       return result;
     },

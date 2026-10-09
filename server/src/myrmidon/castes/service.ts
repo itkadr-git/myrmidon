@@ -69,6 +69,7 @@ export function createCasteService(deps: CasteServiceDeps) {
       swarmEligible: row.swarmEligible,
       maxActiveTasks: row.maxActiveTasks,
       builtIn: row.builtIn,
+      isDefault: row.isDefault,
       createdAt: row.createdAt.toISOString(),
       updatedAt: row.updatedAt.toISOString(),
     };
@@ -122,6 +123,12 @@ export function createCasteService(deps: CasteServiceDeps) {
    * that carries either is a 400 (the route schema already strips unknown
    * fields, so an explicit `key`/`builtIn` means the caller tried to change
    * it and must be told).
+   *
+   * `isDefault` (1.6.5 F-26 T3) is the settings radio: true moves the flag from
+   * the previous default to this caste in one transaction (the partial unique
+   * index allows exactly one per company). false on a non-default row is a
+   * no-op; false on the default itself is a 409 — a company always keeps a
+   * default, so the caller must name the next one, not clear the field.
    */
   async function updateCaste(input: {
     companyId: string;
@@ -136,7 +143,7 @@ export function createCasteService(deps: CasteServiceDeps) {
     if ("builtIn" in body) {
       throw badRequest("builtIn cannot be changed", { code: "caste_builtin_immutable" });
     }
-    await loadCaste(input.companyId, input.key);
+    const current = await loadCaste(input.companyId, input.key);
 
     const patch: Record<string, unknown> = {};
     if (input.body.nameEn !== undefined) patch.nameEn = input.body.nameEn;
@@ -149,26 +156,48 @@ export function createCasteService(deps: CasteServiceDeps) {
     if (input.body.maxActiveTasks !== undefined) {
       patch.maxActiveTasks = input.body.maxActiveTasks;
     }
-    if (Object.keys(patch).length === 0) {
+    const wantsDefault = input.body.isDefault;
+    if (Object.keys(patch).length === 0 && wantsDefault === undefined) {
       throw badRequest("no mutable fields in the patch", { code: "caste_patch_empty" });
     }
+    if (wantsDefault === false && current.isDefault) {
+      throw conflict(
+        "a company always keeps a default caste; set another caste as default first",
+        { code: "caste_default_required" },
+      );
+    }
 
-    const row = await store.updateCaste(input.companyId, input.key, patch);
+    // The flag first, in its own transaction (clear the old default, then set
+    // the new one): the partial unique index forbids two defaults even for the
+    // instant between two updates of the same statement batch.
+    if (wantsDefault === true) {
+      await store.setDefaultCaste(input.companyId, input.key);
+    }
+    const row =
+      Object.keys(patch).length > 0
+        ? await store.updateCaste(input.companyId, input.key, patch)
+        : await loadCaste(input.companyId, input.key);
+    const fields = Object.keys(patch);
+    if (wantsDefault === true) fields.push("isDefault");
     await input.activity?.({
       companyId: input.companyId,
       action: "caste_updated",
       casteKey: row.key,
-      details: { fields: Object.keys(patch) },
+      details: wantsDefault === true ? { fields, becameDefault: true } : { fields },
     });
     return view(row);
   }
 
   /**
-   * DELETE (annex 03.10):
-   *  - caste with no agents — removed (204), reassignTo ignored;
+   * DELETE (annex 03.10 + 1.6.5 F-26 T3):
+   *  - caste with no agents and no default flag — removed (204), reassignTo
+   *    ignored;
    *  - caste with agents and no reassignTo — 409 "agents are on the caste";
    *  - caste with agents and reassignTo — same transaction moves the agents
-   *    with `role = key` to the target caste and deletes the row (204).
+   *    with `role = key` to the target caste and deletes the row (204);
+   *  - the DEFAULT caste needs `reassignTo` even when no agent sits on it: the
+   *    flag moves to the target in the same transaction, so a company never
+   *    loses its default (409 caste_default_requires_reassign otherwise).
    * `reassignTo` must exist in the company's directory and differ from the
    * deleted key, else 400.
    */
@@ -178,10 +207,18 @@ export function createCasteService(deps: CasteServiceDeps) {
     reassignTo?: string;
     activity?: (entry: CasteActivityEntry) => Promise<void> | void;
   }): Promise<void> {
-    await loadCaste(input.companyId, input.key);
+    const current = await loadCaste(input.companyId, input.key);
+    const wasDefault = current.isDefault;
     const affected = await countAgentsOnCaste(input.companyId, input.key);
 
-    if (affected === 0) {
+    if (wasDefault && !input.reassignTo) {
+      throw conflict(
+        "the default caste cannot be removed without reassignTo; the default flag moves to the target",
+        { code: "caste_default_requires_reassign", affected },
+      );
+    }
+
+    if (affected === 0 && !wasDefault) {
       const removed = await store.deleteCaste(input.companyId, input.key);
       if (!removed) throw notFound(`Caste "${input.key}" not found in this company`);
       await input.activity?.({
@@ -217,10 +254,29 @@ export function createCasteService(deps: CasteServiceDeps) {
     // The row delete happens here too — same atomic unit — so no separate
     // delete below.
     await deps.db.transaction(async (tx) => {
+      if (wasDefault) {
+        // Clear the old default before flagging the target: the partial unique
+        // index would otherwise refuse the second default row.
+        await tx
+          .update(agentCastes)
+          .set({ isDefault: false, updatedAt: now() })
+          .where(and(eq(agentCastes.companyId, input.companyId), eq(agentCastes.isDefault, true)));
+      }
       await tx
         .update(agents)
         .set({ role: input.reassignTo!, updatedAt: now() })
         .where(and(eq(agents.companyId, input.companyId), eq(agents.role, input.key)));
+      if (wasDefault) {
+        await tx
+          .update(agentCastes)
+          .set({ isDefault: true, updatedAt: now() })
+          .where(
+            and(
+              eq(agentCastes.companyId, input.companyId),
+              eq(agentCastes.key, input.reassignTo!),
+            ),
+          );
+      }
       await tx
         .delete(agentCastes)
         .where(and(eq(agentCastes.companyId, input.companyId), eq(agentCastes.key, input.key)));
@@ -230,7 +286,11 @@ export function createCasteService(deps: CasteServiceDeps) {
       companyId: input.companyId,
       action: "caste_removed_reassigned",
       casteKey: input.key,
-      details: { reassignTo: input.reassignTo, reassignedAgents: affected },
+      details: {
+        reassignTo: input.reassignTo,
+        reassignedAgents: affected,
+        ...(wasDefault ? { defaultMovedTo: input.reassignTo } : {}),
+      },
     });
   }
 

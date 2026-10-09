@@ -11,7 +11,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./test-embedded-postgres.js";
 
-const MIGRATION_TAG = "0385_low_trust_internal_release_candidates";
+const MIGRATION_TAG = "0387_low_trust_internal_release_candidates";
 const MIGRATION_FILE = `./migrations/${MIGRATION_TAG}.sql`;
 
 const cleanups: Array<() => Promise<void>> = [];
@@ -30,10 +30,11 @@ describe("low-trust release candidates migration (static checks)", () => {
         "utf8",
       ),
     ) as { entries: Array<{ idx: number; tag: string }> };
-    const index = journal.entries.findIndex((e) => e.idx === 385);
+    const index = journal.entries.findIndex((e) => e.idx === 387);
     expect(journal.entries[index]?.tag).toBe(MIGRATION_TAG);
     expect(index).toBe(journal.entries.length - 1);
-    expect(journal.entries[index - 1]?.idx).toBeLessThan(385);
+    expect(journal.entries[index - 1]?.idx).toBe(386);
+    expect(journal.entries[index - 1]?.tag).toBe("0386_swarm_scent");
   });
 
   it("is read-only for issues, allowlist-based, and has no denylist release", async () => {

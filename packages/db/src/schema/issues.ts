@@ -45,6 +45,23 @@ export const issues = pgTable(
     workMode: text("work_mode").notNull().default("standard"),
     harnessKind: text("harness_kind"),
     priority: text("priority").notNull().default("medium"),
+    // 1.6.5 (F-27 PHEROMONE): the numeric pheromone strength; the swarm queue
+    // orders by it inside the P0 band. Zero means "no scent" — the task ranks
+    // behind every task with an explicit strength of the same band.
+    pheromoneStrength: integer("pheromone_strength").notNull().default(0),
+    // 1.6.5 (F-27 rework 09.10, design §2.1): the task's caste — a key of the
+    // company's caste directory (`agent_castes.key`). Replaces the `role:<key>`
+    // label as the swarm routing source; NULL falls back to the project's
+    // `default_caste_key`, then the company's default caste.
+    casteKey: text("caste_key"),
+    // myrmidon(1.6.5 F-26 T10 SCENT): the stored scent of the task
+    // ({tags[≤8], casteProbs, complexity{coordination,uncertainty,consequences}},
+    // design §2.4/§7.1 п.4a); NULL = not classified — the markup queue picks
+    // it up within its hour budget.
+    scent: jsonb("scent"),
+    // Who set the caste: 'manual' | 'project' | 'auto' | 'default'
+    // (design §2.1). NULL on rows that never went through the create hook.
+    casteSource: text("caste_source"),
     reviewPolicy: text("review_policy").$type<IssueReviewPolicy>(),
     assigneeAgentId: uuid("assignee_agent_id").references(() => agents.id),
     assigneeUserId: text("assignee_user_id"),
@@ -139,6 +156,10 @@ export const issues = pgTable(
       )
       .where(sql`${table.hiddenAt} is null and ${table.status} not in ('done', 'cancelled')`),
     companyPriorityIdx: index("issues_company_priority_idx").on(table.companyId, table.priority),
+    // 1.6.5 (F-27 rework 09.10): swarm-claim routing filters ready tasks by
+    // caste per company; the index keeps that lookup off a seq scan. Created in
+    // migration 0384.
+    companyCasteIdx: index("issues_company_caste_idx").on(table.companyId, table.casteKey),
     // myrmidon(DB-AUDIT-INDEXES): the issue claim lockup selects
     // company + (id or execution_run_id or checkout_run_id) FOR UPDATE. Only
     // partial unique indexes covered the run columns, so the statement ran a

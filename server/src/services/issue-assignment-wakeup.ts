@@ -41,6 +41,13 @@ export function queueIssueAssignmentWakeup(input: {
   /** Latest issue comment that caused this wakeup. Included in both payload
    * and context so the heartbeat can build the exact turn that was requested. */
   wakeCommentId?: string | null;
+  /**
+   * Stored on the wake request so a wake can be traced to the pass that made it.
+   * It does NOT drop a duplicate: the wake layer dedupes on a key only for its
+   * own recovery wakes. "One task, one run" is held by the swarm lease and the
+   * matcher's assignee check (see `swarmMatchedIdempotencyKey`).
+   */
+  idempotencyKey?: string | null;
   /** Closed, server-derived omission counts for provider attachments on the
    * exact wake comment. These are prompt diagnostics, never authorization. */
   attachmentOmissionReasons?: Record<string, number> | null;
@@ -68,6 +75,7 @@ export function queueIssueAssignmentWakeup(input: {
         ...(taskKey ? { taskKey } : {}),
         ...(input.wakeCommentId ? { wakeCommentId: input.wakeCommentId } : {}),
       },
+      ...(input.idempotencyKey ? { idempotencyKey: input.idempotencyKey } : {}),
       requestedByActorType: input.requestedByActorType,
       requestedByActorId: input.requestedByActorId ?? null,
       ...(input.durableChatRequest

@@ -343,6 +343,16 @@ import { externalObjectService } from "../services/external-objects.js";
 import { getExternalChannelBindingSummary } from "../services/chat-channel-binding.js";
 import { deliverAgentUnblockNotification, isStaleBlockGuardedTransition } from "../services/routable-blocked.js";
 import {
+  BLOCKED_LOOP_SIGNATURE_KEY,
+  blockedLoopMessage,
+  blockerSetKeyOf,
+  descriptorKeyOf,
+  judgeBlockedLoop,
+  loadBlockedLoopEvents,
+  readBlockedLoopMaxReturns,
+  type BlockedLoopSignature,
+} from "../myrmidon/blocked-loop/index.js";
+import {
   assertIssueReviewVerdictActorAllowed,
   isIssueReviewVerdictInteraction,
   resolveIssueReviewRequester,
@@ -3043,6 +3053,11 @@ function toCompactIssue(issue: any): CompactIssue {
     status: issue.status,
     workMode: issue.workMode,
     priority: issue.priority,
+    // 1.6.5 (F-27 PHEROMONE): the list API carries the strength so the list UI
+    // can show and edit it without loading each card.
+    pheromoneStrength: issue.pheromoneStrength,
+    // 1.6.5 (F-27 rework 09.10): the caste key (design §2.1).
+    casteKey: issue.casteKey ?? null,
     reviewPolicy: issue.reviewPolicy,
     assigneeAgentId: issue.assigneeAgentId,
     assigneeUserId: issue.assigneeUserId,
@@ -13592,6 +13607,9 @@ export function issueRoutes(
       }
       const enteringBlocked =
         existing.status !== "blocked" && updateFields.status === "blocked";
+      // myrmidon(BLOCKED-LOOP): signature of an agent return to blocked, kept
+      // in the issue.updated details so the next attempt can compare with it.
+      let blockedLoopSignature: BlockedLoopSignature | null = null;
       if (enteringBlocked) {
         const requestedBlockerIds = Array.isArray(req.body.blockedByIssueIds)
           ? [...new Set(req.body.blockedByIssueIds as string[])]
@@ -13674,6 +13692,65 @@ export function issueRoutes(
               "Entering blocked requires a reason reference: non-empty blockedByIssueIds or unblockDescriptor.reasonRef",
           });
           return;
+        }
+        // myrmidon(BLOCKED-LOOP): an agent may not keep returning the task to
+        // blocked with the same blockers and the same descriptor; the wait must
+        // be expressed as a monitor or a date/event reason instead. Board and
+        // other human actors are not limited.
+        if (req.actor.type === "agent") {
+          const maxReturns = readBlockedLoopMaxReturns();
+          let blockedLoopDecision: ReturnType<typeof judgeBlockedLoop> | null =
+            null;
+          try {
+            const blockerIds = Array.isArray(req.body.blockedByIssueIds)
+              ? (req.body.blockedByIssueIds as string[])
+              : (await svc.getRelationSummaries(existing.id)).blockedBy.map(
+                  (relation) => relation.id,
+                );
+            const signature: BlockedLoopSignature = {
+              blockerSetKey: blockerSetKeyOf(blockerIds),
+              descriptorKey: descriptorKeyOf(descriptor),
+            };
+            blockedLoopDecision = judgeBlockedLoop(
+              await loadBlockedLoopEvents(db, {
+                companyId: existing.companyId,
+                issueId: existing.id,
+                maxReturns,
+              }),
+              signature,
+              maxReturns,
+            );
+            blockedLoopSignature = signature;
+          } catch (err) {
+            // The limiter is a safety net: a failure to read the history must
+            // never stop a legal block, so it fails open.
+            logger.warn(
+              { err, issueId: existing.id },
+              "blocked-loop limiter could not evaluate the return; allowing it",
+            );
+          }
+          if (blockedLoopDecision?.blockedLoop) {
+            await logActivity(db, {
+              companyId: existing.companyId,
+              actorType: actor.actorType,
+              actorId: actor.actorId,
+              agentId: actor.agentId,
+              runId: actor.runId,
+              action: "myrmidon.blocked_loop.rejected",
+              entityType: "issue",
+              entityId: existing.id,
+              details: {
+                streak: blockedLoopDecision.streak,
+                maxReturns,
+                identifier: existing.identifier,
+              },
+            });
+            res.status(422).json({
+              error: blockedLoopMessage(maxReturns),
+              code: "blocked_loop_limit",
+            });
+            return;
+          }
         }
       }
       if (
@@ -14385,6 +14462,9 @@ export function issueRoutes(
             identifier: issue.identifier,
             authorizationReason: issueMutationAuthorizationReason,
             changes: issueChanges,
+            ...(blockedLoopSignature
+              ? { [BLOCKED_LOOP_SIGNATURE_KEY]: blockedLoopSignature }
+              : {}),
             ...(reviewInteractionId ? { reviewInteractionId } : {}),
             ...(commentBody ? { source: "comment" } : {}),
             ...(resumeRequested === true

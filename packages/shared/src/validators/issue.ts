@@ -36,11 +36,25 @@ import {
   REQUEST_ITEM_VERDICTS_ITEM_LIMIT,
 } from "../constants.js";
 import { multilineTextSchema } from "./text.js";
+import { ISSUE_CASTE_SOURCES, issueScentSchema } from "../myrmidon-scent.js";
 import {
   lowTrustReviewPresetPolicySchema,
   trustAuthorizationPolicySchema,
 } from "./trust-policy.js";
 import { objectWithoutDefaults } from "./partial.js";
+import {
+  MAX_PHEROMONE_STRENGTH,
+  MIN_PHEROMONE_STRENGTH,
+} from "../myrmidon-swarm-claim.js";
+
+// 1.6.5 (F-27 PHEROMONE): the issue pheromone strength — a non-negative
+// integer the swarm queue orders by inside the P0 band. Shared between the
+// create/update schemas and the import path.
+export const issuePheromoneStrengthSchema = z
+  .number()
+  .int()
+  .min(MIN_PHEROMONE_STRENGTH)
+  .max(MAX_PHEROMONE_STRENGTH);
 
 export const issueBlockedInboxStateSchema = z.enum([
   "needs_attention",
@@ -738,6 +752,22 @@ const createIssueBaseSchema = z.object({
   workMode: z.enum(ISSUE_WORK_MODES).optional().default("standard"),
   harnessKind: z.enum(ISSUE_HARNESS_KINDS).optional().nullable(),
   priority: z.enum(ISSUE_PRIORITIES).optional().default("medium"),
+  // 1.6.5 (F-27 PHEROMONE): explicit pheromone strength. When omitted the
+  // create path derives it from `priority` via the swarm settings mapping
+  // (swarmClaim.pheromone); the patch keeps the stored value.
+  pheromoneStrength: issuePheromoneStrengthSchema.optional().nullable(),
+  // 1.6.5 (F-27 rework 09.10): the caste key; the server checks it against
+  // the company's caste directory (design §2.1). NULL = project/company
+  // default.
+  casteKey: z.string().trim().min(1).max(120).optional().nullable(),
+  // myrmidon(1.6.5 F-26 T10 SCENT): who set the caste ('manual' when the
+  // caller pins casteKey; the create hook writes 'auto' when the classifier
+  // decides). Server-side only in practice — a client-sent value is accepted
+  // for imports/seeds but the create hook treats a pinned casteKey as manual.
+  casteSource: z.enum(ISSUE_CASTE_SOURCES).optional().nullable(),
+  // The stored scent — normally written by the classifier; accepted on input
+  // so imports/tests can seed it directly.
+  scent: issueScentSchema.optional().nullable(),
   reviewPolicy: z.enum(ISSUE_REVIEW_POLICIES).optional().nullable(),
   assigneeAgentId: z.string().guid().optional().nullable(),
   assigneeUserId: z.string().optional().nullable(),
@@ -1231,6 +1261,14 @@ export const suggestedTaskDraftSchema = z
       .nullable()
       .optional(),
     priority: z.enum(ISSUE_PRIORITIES).nullable().optional(),
+    pheromoneStrength: issuePheromoneStrengthSchema.nullable().optional(),
+    // 1.6.5 (F-27 rework 09.10): the caste key (directory membership is
+    // checked server-side, where the company's directory lives).
+    casteKey: z.string().trim().min(1).max(120).nullable().optional(),
+    casteSource: z.enum(ISSUE_CASTE_SOURCES).nullable().optional(),
+    // Refreshing the stored scent via the API goes through the scent routes;
+    // the patch validator still accepts it for imports/tests.
+    scent: issueScentSchema.nullable().optional(),
     workMode: z.enum(ISSUE_WORK_MODES).nullable().optional(),
     assigneeAgentId: z.string().guid().nullable().optional(),
     assigneeUserId: z.string().trim().min(1).nullable().optional(),

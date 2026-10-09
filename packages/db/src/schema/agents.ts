@@ -1,3 +1,4 @@
+import { sql } from "drizzle-orm";
 import {
   type AnyPgColumn,
   pgTable,
@@ -24,6 +25,13 @@ export const agents = pgTable(
     status: text("status").notNull().default("idle"),
     reportsTo: uuid("reports_to").references((): AnyPgColumn => agents.id),
     capabilities: text("capabilities"),
+    // myrmidon(1.6.5 F-26 T10 SCENT): the agent's scent — tags distilled from
+    // `capabilities` (design §7.1 п.4a); an empty array = not classified yet.
+    scentTags: text("scent_tags").array().notNull().default(sql`ARRAY[]::text[]`),
+    scentClassifiedAt: timestamp("scent_classified_at", { withTimezone: true }),
+    // Personal model tier override ('light'|'strong'); NULLs fall back to the
+    // caste's `agent_castes.model_tier` (design §2.4).
+    modelTier: text("model_tier").notNull().default("light"),
     adapterType: text("adapter_type").notNull().default("process"),
     adapterConfig: jsonb("adapter_config").$type<Record<string, unknown>>().notNull().default({}),
     runtimeConfig: jsonb("runtime_config").$type<Record<string, unknown>>().notNull().default({}),

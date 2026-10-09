@@ -183,6 +183,7 @@
     "workspace": "Workspace",
     "parent": "Parent task",
     "labels": "Tags",
+    "pheromone": "Pheromone",
     "updated": "Last updated",
     "title": "Title",
     "columns": "Columns",
@@ -199,6 +200,8 @@
     "workspaceDesc": "Execution or project workspace used for the task.",
     "parentDesc": "Parent task identifier and title.",
     "labelsDesc": "Task labels and tags.",
+    "pheromoneDesc": "Swarm-queue pheromone strength; editable in place.",
+    "pheromoneAria": "Pheromone strength",
     "updatedDesc": "Latest visible activity time.",
     "idTaskDesc": "Task identifier like PAP-1009 on the trailing edge.",
     "statusTaskDesc": "Task state icon on the leading edge."
@@ -323,7 +326,8 @@
     "browsers": "Browsers",
     "clouds": "Clouds",
     "autonomy": "Autonomy",
-    "castes": "Castes & models",
+    "castes": "Agent castes",
+    "models": "Models & providers",
     "wipLimit": "WIP limit",
     "reviewRouting": "Review routing"
   },
@@ -478,14 +482,6 @@
       "activeLeases": "Active leases",
       "loadVsCap": "Load vs cap",
       "limit": "Limit",
-      "metric": "Metric",
-      "baseline": "BASELINE",
-      "delta": "Delta",
-      "tasksDone": "Tasks done",
-      "cycleTimeMean": "Cycle time (mean)",
-      "reviewTimeMean": "Review time (mean)",
-      "returnRate": "Return rate",
-      "costPerTaskMean": "Cost per task (mean)",
       "eff": "Pheromone",
       "nest": "Nest",
       "matchedAt": "Matched",
@@ -1011,5 +1007,10 @@
     "agingStepWeightHint": "Weight gained per full aging step.",
     "starvationLimit": "Starvation limit (minutes)",
     "starvationLimitHint": "A run waiting this long starts with the top weight; 0 turns the limit off."
+  },
+  "litellmWorkers": {
+    "unknown": "unknown",
+    "runningNow": "Running now: {{value}}",
+    "statusUnknown": "Running now is unknown: the gateway did not report its pool size."
   }
 }

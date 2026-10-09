@@ -226,8 +226,12 @@ function boardRoutes(streamlinedUiEnabled: boolean) {
       <Route path="company/settings/owner-delivery" element={<OwnerDeliveryScreen />} /> {/* myrmidon(1.6.5-OWNER-DM-FILTER) */}
       <Route path="company/settings/review-routing" element={<ReviewRoutingScreen />} /> {/* myrmidon(REVIEW-ROUTING) */}
 
-      <Route path="company/settings/castes" element={<ModelProvidersScreen />} /> {/* myrmidon(1.6.1 MODEL-PROVIDERS C): the ui2 "Castes and models" section route */}
-      <Route path="company/settings/caste-directory" element={<CastesScreen />} /> {/* myrmidon(1.6.1 CUSTOM-CASTES C): the caste directory settings screen route */}
+      {/* myrmidon(1.6.5 F-26 T3 CASTES-AND-NESTS): IA v2 — Castes is the caste
+          directory, Models & providers moved off /castes, and the pre-IA-v2
+          /caste-directory address redirects to the new one. */}
+      <Route path="company/settings/castes" element={<CastesScreen />} />
+      <Route path="company/settings/models" element={<ModelProvidersScreen />} />
+      <Route path="company/settings/caste-directory" element={<Navigate to="/company/settings/castes" replace />} />
       <Route path="company/settings/voice-stt" element={<VoiceSttScreen />} /> {/* myrmidon(1.6.1 VOICE-STT C) */}
       <Route path="company/settings/clouds" element={<CloudsSettingsPage />} /> {/* myrmidon(CLOUD-CONNECTOR) */}
       <Route path="company/settings/tools" element={<LegacyToolsSettingsRedirect />} />

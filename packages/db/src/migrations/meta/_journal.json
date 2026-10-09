@@ -2243,10 +2243,39 @@
       "breakpoints": true
     },
     {
+      "idx": 383,
+      "version": "7",
+      "when": 1791528256000,
+      "tag": "0383_issues_pheromone_strength",
+      "breakpoints": true
+    },
+    {
+      "idx": 384,
+      "version": "7",
+      "when": 1791528256161,
+      "tag": "0384_issues_caste_key_and_pheromone_backfill",
+      "breakpoints": true
+    },
+    {
       "idx": 385,
       "version": "7",
-      "when": 1791500385000,
-      "tag": "0385_low_trust_internal_release_candidates",
+      "when": 1791528259161,
+      "tag": "0385_agent_castes_default_and_nests",
+      "breakpoints": true
+    },
+    {
+      "idx": 386,
+      "version": "7",
+      "when": 1791528260161,
+      "tag": "0386_swarm_scent",
+      "breakpoints": true
+    },
+    {
+      "idx": 387,
+      "version": "7",
+      "when": 1791528261161,
+      "name": "0387_low_trust_internal_release_candidates",
+      "tag": "0387_low_trust_internal_release_candidates",
       "breakpoints": true
     }
   ]

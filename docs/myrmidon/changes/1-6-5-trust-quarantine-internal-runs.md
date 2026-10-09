@@ -14,7 +14,7 @@
   unlisted source stay quarantined.
 - Quarantined tasks are refused GitHub credentials with a structured reason and
   the release path (`POST /api/issues/:id/low-trust/promotions`).
-- Migration `0385_low_trust_internal_release_candidates` is a dry run: it writes
+- Migration `0387_low_trust_internal_release_candidates` is a dry run: it writes
   `issue.low_trust_release_candidate` audit rows (issue ids) for quarantined
   tasks with provably internal origin and changes no issue. An operator reviews
   the list and releases confirmed tasks through the promotion endpoint.
@@ -35,7 +35,7 @@
   любой источник вне списка остаются в карантине.
 - Задача в карантине получает отказ в учётных данных GitHub со структурированной
   причиной и путём выпуска (`POST /api/issues/:id/low-trust/promotions`).
-- Миграция `0385_low_trust_internal_release_candidates` — пробный прогон: пишет
+- Миграция `0387_low_trust_internal_release_candidates` — пробный прогон: пишет
   аудит-строки `issue.low_trust_release_candidate` (id задач) для задач в
   карантине с доказанно внутренним происхождением и ничего в задачах не меняет.
   Оператор сверяет список и выпускает подтверждённые через endpoint promotion.

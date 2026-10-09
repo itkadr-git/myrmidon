@@ -7,7 +7,9 @@ import { copyTextToClipboard } from "@/lib/clipboard";
 import { Link } from "@/lib/router";
 import {
   deriveOriginatingActor,
+  effectivePheromone,
   isArtifactReviewDocumentKey,
+  swarmRoleFromLabels,
   type ExecutionWorkspace,
   type Issue,
   type IssueLabel,
@@ -54,6 +56,8 @@ import { useRetryNowMutation } from "../../hooks/useRetryNowMutation";
 import { RetryErrorBand } from "../IssueScheduledRetryCard";
 import { StatusIcon } from "../StatusIcon";
 import { PriorityIcon } from "../PriorityIcon";
+import { Input } from "@/components/ui/input";
+import { useCasteOptions } from "@/components/myrmidon/castes/useCasteOptions";
 import { SHOW_TASK_PRIORITY_UI } from "../../lib/ui-flags";
 import { Identity } from "../Identity";
 import { ProjectTile } from "../ProjectTile";
@@ -216,11 +220,150 @@ const STREAMLINED_PANE_TAB_CLASS =
 
 type IssuePaneTab = "properties" | "subtasks" | "references" | "plans" | "artifacts";
 
+/**
+ * 1.6.5 (F-27 PHEROMONE): the task's pheromone strength on its card. A whole
+ * number ≥ 0; the swarm queue orders by it inside the P0 band, so a change
+ * reorders the queue without a restart. Committed on blur / Enter; an empty
+ * or invalid draft snaps back to the stored value.
+ */
+function PheromoneStrengthRow({
+  value,
+  effective,
+  queuedAt,
+  onChange,
+}: {
+  value: number;
+  /**
+   * 1.6.5 (F-27 rework 09.10): the effective strength at the render moment —
+   * the number plus the aging the wait has earned (design §2.3), for the hint.
+   */
+  effective?: number | null;
+  /** When the wait began (the card's createdAt) — feeds the aging hint. */
+  queuedAt?: Date | string | null;
+  onChange: (strength: number) => void;
+}) {
+  const [draft, setDraft] = useState<string | null>(null);
+  const shown = draft ?? String(value);
+  const commit = () => {
+    if (draft === null) return;
+    const trimmed = draft.trim();
+    const parsed = trimmed ? Number(trimmed) : Number.NaN;
+    setDraft(null);
+    if (Number.isInteger(parsed) && parsed >= 0 && parsed <= 1_000_000 && parsed !== value) {
+      onChange(parsed);
+    }
+  };
+  const eff =
+    effective ??
+    (queuedAt
+      ? effectivePheromone({ pheromoneStrength: value, queuedAt }, undefined)
+      : value);
+  return (
+    <PropertyRow label="Pheromone strength">
+      <div className="flex items-center gap-2">
+        <Input
+          inputMode="numeric"
+          className="h-7 w-24"
+          value={shown}
+          onChange={(event) => setDraft(event.target.value)}
+          onBlur={commit}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") {
+              event.preventDefault();
+              commit();
+            } else if (event.key === "Escape") {
+              setDraft(null);
+            }
+          }}
+          data-testid="issue-pheromone-strength-input"
+        />
+        <span className="text-xs text-muted-foreground">
+          Higher tasks of the same caste are claimed first.
+          {eff !== value ? ` Effective now: ${eff} (strength + aging).` : ""}
+        </span>
+      </div>
+    </PropertyRow>
+  );
+}
+
+/**
+ * 1.6.5 (F-27 rework 09.10, design §2.3): the P0 flag — a checkbox that reads
+ * and writes `priority === "critical"` directly, independent of the
+ * PAP-411 priority picker (SHOW_TASK_PRIORITY_UI stays off).
+ */
+function P0Row({
+  priority,
+  onChange,
+}: {
+  priority: string;
+  onChange: (priority: string) => void;
+}) {
+  const isP0 = priority === "critical";
+  return (
+    <PropertyRow label="P0">
+      <label className="flex items-center gap-2 text-sm">
+        <input
+          type="checkbox"
+          className="h-4 w-4 accent-primary"
+          checked={isP0}
+          onChange={(event) => onChange(event.target.checked ? "critical" : "medium")}
+          data-testid="issue-p0-checkbox"
+        />
+        <span className="text-xs text-muted-foreground">
+          P0 preempts the queue regardless of the pheromone strength.
+        </span>
+      </label>
+    </PropertyRow>
+  );
+}
+
 interface IssuePaneTabDescriptor {
   value: IssuePaneTab;
   label: string;
   count?: number;
   closable: boolean;
+}
+
+const SWARM_CASTE_LABEL_PREFIX = "role:";
+
+/**
+ * 1.6.5 (F-27 PHEROMONE, rework 09.10): the task's caste picker on its card.
+ * The caste is the `casteKey` column (the swarm queue routes by it); the
+ * `role:` label is the legacy carrier the migration moves off. Picking a
+ * caste writes the key; "No caste" clears it to the project/company default.
+ */
+function TaskCastePicker({
+  value,
+  options,
+  onChange,
+}: {
+  /** The current caste key, or null when the task has none. */
+  value: string | null;
+  options: { key: string; label: string }[];
+  onChange: (casteKey: string | null) => void;
+}) {
+  return (
+    <PropertyRow label="Caste">
+      <div className="flex items-center gap-2">
+        <select
+          className="h-7 rounded-md border border-border bg-transparent px-2 text-sm"
+          value={value ?? ""}
+          onChange={(event) => onChange(event.target.value === "" ? null : event.target.value)}
+          data-testid="issue-caste-select"
+        >
+          <option value="">No caste (project default)</option>
+          {options.map((option) => (
+            <option key={option.key} value={option.key}>
+              {option.label}
+            </option>
+          ))}
+        </select>
+        <span className="text-xs text-muted-foreground">
+          Routed to this caste's queue.
+        </span>
+      </div>
+    </PropertyRow>
+  );
 }
 
 export function IssueProperties({
@@ -441,6 +584,17 @@ export function IssueProperties({
     enabled: !!companyId,
   });
 
+  // 1.6.5 (F-27): the castes the task's picker offers — the directory's own
+  // castes with the built-in roles as fallback.
+  const { options: casteOptions } = useCasteOptions();
+
+  /** The caste the task currently carries — the column first, then the legacy
+      `role:` label so a card opened before the migration still shows the caste. */
+  const currentCaste = useMemo(() => {
+    if (issue.casteKey) return issue.casteKey;
+    return swarmRoleFromLabels((issue.labels ?? []).map((label) => label.name));
+  }, [issue.casteKey, issue.labels]);
+
   const { data: allIssues, isFetching: isFetchingIssuePickerIssues } = useQuery({
     queryKey: queryKeys.issues.list(companyId!),
     queryFn: () => issuesApi.list(companyId!),
@@ -471,7 +625,7 @@ export function IssueProperties({
 
   const createLabel = useMutation({
     mutationFn: (data: { name: string; color: string }) => issuesApi.createLabel(companyId!, data),
-    onSuccess: async (created) => {
+    onSuccess: async (created, data) => {
       queryClient.setQueryData<IssueLabel[] | undefined>(
         queryKeys.issues.labels(companyId!),
         (current) => {
@@ -480,11 +634,28 @@ export function IssueProperties({
           return [...current, created];
         },
       );
-      onUpdate({ labelIds: [...(issue.labelIds ?? []), created.id] });
+      // 1.6.5 (F-27): the caste picker writes the label list itself — adding
+      // the id here too would duplicate it. Its labels carry the role: prefix.
+      if (!data.name.trim().toLowerCase().startsWith(SWARM_CASTE_LABEL_PREFIX)) {
+        onUpdate({ labelIds: [...(issue.labelIds ?? []), created.id] });
+      }
       void queryClient.invalidateQueries({ queryKey: queryKeys.issues.labels(companyId!) });
       setNewLabelName("");
     },
   });
+
+  /**
+   * 1.6.5 (F-27 rework 09.10, design §2.1): set the task's caste — write the
+   * `casteKey` column (the swarm queue reads it; the `role:` label is the
+   * legacy carrier the migration moves off). Picking "No caste" clears the
+   * key so the project/company default takes the task.
+   */
+  const handleCasteChange = useCallback(
+    (casteKey: string | null) => {
+      onUpdate({ casteKey });
+    },
+    [onUpdate],
+  );
 
   const unarchiveFromInbox = useMutation({
     mutationFn: () => issuesApi.unarchiveFromInbox(issue.id),
@@ -2353,10 +2524,28 @@ export function IssueProperties({
             <PriorityIcon
               priority={issue.priority}
               onChange={(priority) => onUpdate({ priority })}
-              showLabel
+              showLabel={true}
             />
           </PropertyRow>
         )}
+        {/* 1.6.5 (F-27 PHEROMONE): the task's strength in the swarm queue, its
+            caste and the P0 flag, editable on the card; a change reorders the
+            queue without a restart. Not gated on SHOW_TASK_PRIORITY_UI — F-27
+            ships these controls in 1.6.5 regardless of the PAP-411 flag. */}
+        <P0Row
+          priority={issue.priority}
+          onChange={(priority) => onUpdate({ priority: priority as Issue["priority"] })}
+        />
+        <PheromoneStrengthRow
+          value={issue.pheromoneStrength ?? 0}
+          queuedAt={issue.createdAt}
+          onChange={(pheromoneStrength) => onUpdate({ pheromoneStrength })}
+        />
+        <TaskCastePicker
+          value={currentCaste}
+          options={casteOptions}
+          onChange={handleCasteChange}
+        />
 
         <PropertyPicker
           inline={inline}

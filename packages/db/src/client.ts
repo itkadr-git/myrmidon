@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import postgres from "postgres";
 import * as schema from "./schema/index.js";
 import { withTransientWriteRetry } from "./transient-write-retry.js";
+import { withQueryObservation } from "./query-observer.js";
 
 const MIGRATIONS_FOLDER = fileURLToPath(new URL("./migrations", import.meta.url));
 const DRIZZLE_MIGRATIONS_TABLE = "__drizzle_migrations";
@@ -156,6 +157,17 @@ export interface DatabaseClientOptions {
    * `postgres.js`).
    */
   applicationName?: string;
+  /**
+   * Called once per statement this client issues, before the statement reaches
+   * the driver, in the caller's async context.
+   *
+   * myrmidon(1.6.6 PROCS-0.3A) uses it to attribute DB work to a load lane:
+   * the callback reads the lane in force from an AsyncLocalStorage of the
+   * caller, so no query-building code has to know a lane exists. Statements
+   * inside `db.transaction(...)` are not observed, and a throwing callback is
+   * swallowed — observation never fails a query.
+   */
+  onQuery?: (query: string) => void;
 }
 
 /**
@@ -262,8 +274,14 @@ export function createDb(url: string, options?: DatabaseClientOptions) {
   if (key) registerClient(key, sql);
   // The registry keeps the real client (teardown must end the actual pool);
   // drizzle gets the retrying face so a pooler-recycled socket replays the
-  // query instead of failing the request that happened to draw it.
-  return drizzlePg(withTransientWriteRetry(sql), { schema });
+  // query instead of failing the request that happened to draw it, wrapped in
+  // the query observer when someone measures (myrmidon 1.6.6 PROCS-0.3A:
+  // observation sits outside the retry, so a replayed statement counts once).
+  const client = withTransientWriteRetry(sql);
+  return drizzlePg(
+    resolved.onQuery ? withQueryObservation(client, resolved.onQuery) : client,
+    { schema },
+  );
 }
 
 export async function getPostgresDataDirectory(url: string): Promise<string | null> {
