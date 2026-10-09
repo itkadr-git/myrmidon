@@ -742,6 +742,7 @@ import {
   type PriorityScoredRun,
 } from "../myrmidon/run-priority/scoring.js";
 import { runPriorityWeight, type RunPrioritySettings } from "@paperclipai/shared";
+import { effectivePheromone } from "@paperclipai/shared";
 // myrmidon(PERF-DIET-K): issue-scoped session generations for the container
 // Hermes gateway — one task's session key gains a `:g<N>` once it passes its
 // age/activity threshold, so the task's Hermes state stays bounded
@@ -19369,7 +19370,7 @@ export function heartbeatService(
           .filter((issueId): issueId is string => Boolean(issueId)),
       ),
     ];
-    type IssueKey = { priority: string; labels: string[]; branchName: string | null };
+    type IssueKey = { priority: string; labels: string[]; branchName: string | null; pheromoneStrength: number; issueCreatedAt: Date | null };
     const issueByKey = new Map<string, IssueKey>();
     if (issueIds.length > 0) {
       const issueRows = await db
@@ -19377,6 +19378,8 @@ export function heartbeatService(
           id: issues.id,
           priority: issues.priority,
           executionWorkspaceId: issues.executionWorkspaceId,
+          pheromoneStrength: issues.pheromoneStrength,
+          createdAt: issues.createdAt,
         })
         .from(issues)
         .where(inArray(issues.id, issueIds));
@@ -19412,6 +19415,8 @@ export function heartbeatService(
           branchName: row.executionWorkspaceId
             ? branchById.get(row.executionWorkspaceId) ?? null
             : null,
+          pheromoneStrength: row.pheromoneStrength ?? 0,
+          issueCreatedAt: row.createdAt ?? null,
         });
       }
     }
@@ -19431,6 +19436,17 @@ export function heartbeatService(
           readNonEmptyString(context.branchName) ?? null,
         ]),
         createdAtMs: run.createdAt.getTime(),
+        // 1.6.5 (F-27 rework 09.10, design §4): the effective strength of the
+        // run's issue, with the swarm defaults (the run scorer applies the
+        // runPriority.pheromoneWeight; the swarm dynamics are the shared
+        // defaults here — the run queue reorders runs, the swarm queue owns
+        // the per-instance dynamics knobs).
+        effectivePheromone: issue
+          ? effectivePheromone({
+              pheromoneStrength: issue.pheromoneStrength,
+              queuedAt: issue.issueCreatedAt,
+            })
+          : 0,
       };
     });
   }

@@ -12,6 +12,7 @@
 import {
   orderSwarmQueueCandidates,
   swarmActiveTaskLimitReached,
+  type PheromoneDynamicsSettings,
   type SwarmClaimLease,
   type SwarmQueueCandidate,
 } from "@paperclipai/shared";
@@ -23,6 +24,8 @@ export interface SwarmIdleWakeTarget {
   issueId: string;
   identifier: string | null;
   priority: string | null;
+  /** 1.6.5 (F-27): the strength of the task the wake binds to (observability). */
+  pheromoneStrength?: number | null;
   role: string;
 }
 
@@ -65,6 +68,12 @@ export interface SwarmIdleWakeOptions {
    * it; with preemption off the queue is strictly oldest-first.
    */
   p0Preemption: boolean;
+  /**
+   * 1.6.5 (F-27 rework 09.10): the effective-strength dynamics (design
+   * §2.3) — aging per waiting hour minus the failed-runs penalty. The pass
+   * orders by the same effective strength the claim path orders by.
+   */
+  pheromoneDynamics?: PheromoneDynamicsSettings;
 }
 
 /** The number of wakes the pair "queue + free agents" needs right now. */
@@ -101,6 +110,8 @@ export function idleWakeTargetsForRole(
   );
   const ordered = orderSwarmQueueCandidates(input.queue, {
     p0Preemption: options.p0Preemption,
+    dynamics: options.pheromoneDynamics,
+    now: options.now,
   }).filter((candidate) => !claimed.has(candidate.issueId));
   const free = freeAgentsOfRole(input);
   const targets: SwarmIdleWakeTarget[] = [];
@@ -125,6 +136,7 @@ export function idleWakeTargetsForRole(
       issueId: top.issueId,
       identifier: top.identifier ?? null,
       priority: top.priority ?? null,
+      pheromoneStrength: top.pheromoneStrength ?? null,
       role: input.role,
     });
   }
