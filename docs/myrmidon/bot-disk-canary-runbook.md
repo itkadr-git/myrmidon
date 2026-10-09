@@ -16,7 +16,7 @@ Russian version: [bot-disk-canary-runbook.ru.md](bot-disk-canary-runbook.ru.md).
 |---|---|---|
 | Task done: the copy goes within grace + one pass | yes: no removal inside the grace, removal after it, the active neighbour untouched, the C4 report validates | the real 15 minutes on a live board |
 | Unpushed work is archived first | yes: bundle and untracked tar exist before the copy is gone; a failing archive keeps the copy and the registry entry | none |
-| `myr-ws restore` returns branch and commit | yes (branch tip and file content) | the diff on a real task |
+| `myr-ws restore` returns branch and commit | yes, with no registry entry (branch tip and file content) | the diff on a real task |
 | Board down: nothing is deleted | yes (`desired` not ok: zero actions, a `skip` row in the report) | a real 503/timeout from the board |
 | Drift: copy deleted by hand | yes: stale worktree record pruned, base stays | the attention card on the board |
 | Orphan copy waits the orphan grace | yes | none |
@@ -25,11 +25,13 @@ Russian version: [bot-disk-canary-runbook.ru.md](bot-disk-canary-runbook.ru.md).
 | Quota (`prjquota`): ENOSPC only for the bot at the limit | no | needs the quota-enabled partition |
 | pnpm: reflink self-check, physical weight of a copy <= 350 MB | no | needs the shared store on the partition |
 
-Finding while writing the test: `myr-ws close` drops the registry entry, and
-`myr-ws restore <KEY>` reads the repository from that entry. After botd has
-closed a copy, the restore therefore needs the entry first (re-open the copy
-with `myr-ws open <KEY> owner/repo`, which writes it). The test follows this
-order. The behaviour is documented here, not changed.
+Defect found by the test and fixed in the same change: `myr-ws close` drops the
+registry entry, and `myr-ws restore <KEY>` used to read the repository only from
+that entry, so a copy closed by botd could not be restored without a manual
+re-open. Now `close` hands the repository to the archive (it lands in the
+archive manifest entry) and `restore` falls back to that entry when the registry
+has none. A restore needs no manual step; an archive written before this change
+without a repository in the manifest still needs `myr-ws open <KEY> owner/repo`.
 
 ## 2. Canary on three development bots
 

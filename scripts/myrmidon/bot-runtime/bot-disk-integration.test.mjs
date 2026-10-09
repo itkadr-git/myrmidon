@@ -143,8 +143,10 @@ function pass(w, { desired, at, calls = [] }) {
     home: w.home,
     workspaceRoot: w.workspaceRoot,
     scratchRoot: w.scratchRoot,
-    archive: async (copyPath, key) => {
-      const r = archiveMod.archive(copyPath, key, { archiveRoot: w.archiveRoot, repo: REPO, now: at });
+    archive: async (copyPath, key, opts = {}) => {
+      // like botd: the repository comes from what `close` hands over (the base here has a
+      // local origin URL that the archive cannot turn into owner/repo by itself)
+      const r = archiveMod.archive(copyPath, key, { archiveRoot: w.archiveRoot, now: at, ...opts });
       calls.push({ op: "archive", key, ok: r.ok });
       return r.ok ? { ok: true, archivePath: r.entry.bundle } : { ok: false, error: r.reason };
     },
@@ -272,10 +274,8 @@ describe("bot disk: board closes the task, botd removes the copy (scenario 4)", 
     await pass(w, { desired: ok(desiredState()), at: T_AFTER_GRACE });
     assert.equal(fs.existsSync(wip), false);
 
-    // `restore` learns the repository from the registry, which `close` emptied of the
-    // key: the operator step is the entry that `myr-ws open <KEY> owner/repo` writes first.
-    w.entries.push({ key: KEY_WIP, repo: REPO, path: wip, class: "E", branch: `bot/${KEY_WIP}`, openedAt: OPENED });
-    writeRegistry(w);
+    // `close` dropped the registry entry; restore has to work without a manual re-open
+    assert.deepEqual(registryKeys(w), []);
     const r = await restoreMod.runRestore([KEY_WIP, "--json"], {
       home: w.home,
       archiveRoot: w.archiveRoot,

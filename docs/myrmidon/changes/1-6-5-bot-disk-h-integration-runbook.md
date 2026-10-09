@@ -12,7 +12,7 @@
   development bots with its measurements, the stop switch, and the shutdown of
   the host-side cleanup scripts with preconditions, rollback and the 14-day
   deletion check.
-- No runtime behaviour changes.
+- Fix: `myr-ws restore <KEY>` works after `myr-ws close` without a manual re-open. `close` passes the repository to the archive (it is stored in the manifest entry) and `restore` reads it from there when the registry has no entry.
 
 ## changelog-ru
 
@@ -27,4 +27,4 @@
   версия): что закрывает тест и что только стенд, канарейка на трёх dev-ботах с
   замерами, выключатель, выключение хост-скриптов с условиями, откатом и
   проверкой удаления через 14 суток.
-- Поведение в рантайме не меняется.
+- Исправление: `myr-ws restore <KEY>` работает после `myr-ws close` без ручного повторного open. `close` передаёт репозиторий архиву (он сохраняется в записи манифеста), а `restore` берёт его оттуда, когда в реестре записи нет.
