@@ -180,10 +180,22 @@ scripts/myrmidon/deploy/deploy.sh --config deploy.env --release myr-v1.6.2
  `MYRMIDON_BOT_IMAGE_ROLLOUT_APPLY_POLL_SEC` (default 4 s) until the job reports
  `succeeded` or `failed`, for at most `MYRMIDON_BOT_IMAGE_ROLLOUT_APPLY_WAIT_SEC` (default
  300 s). A success is then confirmed with `GET /api/myrmidon/bot-container/status`; a
- timeout counts the bot as deferred (exit 2) instead of applied, and the plain synchronous
- apply response is still accepted. The superseded bot images leave `images[]`
- only after every bot moved. Bot-card failures end the deploy as DEGRADED. There is no board
-  setting for a default bot image to update.
+ timeout counts the bot as deferred instead of applied, and the plain synchronous apply
+ response is still accepted. The success confirm reads `GET /api/myrmidon/bot-container/status`. When the switch loop ends, the rollout verifies the FACT for
+ every tracking bot: the card's image (`adapterConfig.container.image`) against the running
+ container's image
+ (`GET /api/myrmidon/agents/:id/bot-container/status`, the same board API the script
+ already uses), and prints a per-bot table of
+ `switched | deferred | mismatch | failed` (a deferred row carries its reason). The
+ verdict follows the fact, not the apply answers: a `mismatch` or a `failed` bot ends the
+ deploy as DEGRADED (exit 1); bots that are only deferred exit 0 with a WARNING and the
+ printed command of the standard
+ re-run pass — `--retry-deferred [--wait-sec N]` (default `N=30`, from
+ `MYRMIDON_BOT_IMAGE_ROLLOUT_RETRY_WAIT_SEC`). The re-run reads the deferred list from the
+ previous rollout's summary (a missing summary fails closed with exit 1, never a silent
+ empty retry), waits `N` seconds per bot, re-switches only those bots and verifies again;
+ no pass ever interrupts a running bot. The superseded bot images leave `images[]`
+ only after every bot moved. There is no board setting for a default bot image to update.
 
 ### Release candidates and the `latest` marker (RC-VERSIONS)
 
