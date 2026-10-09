@@ -1,6 +1,8 @@
 import { documentService } from "./documents.js";
 // myrmidon(P5): lock owner lifecycle in checkout 409s
 import { checkoutRunStatusForIssue } from "../myrmidon/issue-checkout-guard.js";
+// myrmidon(1.6.5 OPE-6608): the board matcher's issue events
+import { notifySwarmIssueEvent } from "../myrmidon/swarm-claim/events.js";
 import { parseTaskSearch, taskSearchCtes, taskSearchScore } from "./task-search.js";
 import { createdFromIssueCondition } from "./issue-creation-origin.js";
 import { executionProjectionsForRuns } from "./execution-projection.js";
@@ -10082,8 +10084,22 @@ export function issueService(db: Db) {
         );
         return withRelations;
       };
-      if (dbOrTx === db) return db.transaction(persist);
-      return persist(dbOrTx as DbTransaction);
+      const created = dbOrTx === db
+        ? await db.transaction(persist)
+        : await persist(dbOrTx as DbTransaction);
+      // myrmidon(1.6.5 OPE-6608, review item 2): a task born ready and ownerless
+      // is the board matcher's event. Inside the caller's own transaction the
+      // commit is not ours to see, so the pairing waits a moment there.
+      notifySwarmIssueEvent(
+        {
+          issueId: created.id,
+          status: created.status,
+          assigneeAgentId: created.assigneeAgentId,
+          created: true,
+        },
+        { deferMs: dbOrTx === db ? 0 : 1_000 },
+      );
+      return created;
     },
 
     /**
@@ -11123,6 +11139,22 @@ export function issueService(db: Db) {
       }
       if (dbOrTx === db && !postCommitActions) {
         await executeIssuePostCommitActions(db, ownedPostCommitActions);
+      }
+      // myrmidon(1.6.5 OPE-6608, review item 2): a change that makes a task
+      // available (status into the queue, the owner taken off, caste label or
+      // blockers changed) is the board matcher's event. `result` is null when
+      // the write found nothing; inside the caller's transaction the pairing
+      // waits for the commit.
+      if (result) {
+        notifySwarmIssueEvent(
+          {
+            issueId: id,
+            status: (result as { status?: string | null }).status,
+            assigneeAgentId: (result as { assigneeAgentId?: string | null }).assigneeAgentId,
+            touched: Object.keys(data).filter((key) => (data as Record<string, unknown>)[key] !== undefined),
+          },
+          { deferMs: dbOrTx === db ? 0 : 1_000 },
+        );
       }
       return result;
     },

@@ -25,6 +25,17 @@ export interface SwarmClaimJournalEntry {
   patch: SwarmClaimSettingsPatch;
 }
 
+/**
+ * 1.6.5 (OPE-6608 D): the live counters of the queues the panel configures,
+ * read by GET /api/myrmidon/swarm-claim. They are what an operator watches in
+ * the hour after a roll-out.
+ */
+export interface SwarmClaimQueueCounters {
+  queuedUnassigned: number;
+  claimedLastHour: number;
+  cancelledLastHour: number;
+}
+
 export interface SwarmClaimSettingsView {
   settings: SwarmClaimSettings;
   sources: Record<SwarmClaimSettingKey, SwarmClaimSettingSource>;
@@ -32,6 +43,14 @@ export interface SwarmClaimSettingsView {
   journal: SwarmClaimJournalEntry[];
   /** How many live leases a disable freed (PATCH response only). */
   releasedClaims?: number;
+  /** The live queue counters (GET only; absent on a PATCH response). */
+  counters?: SwarmClaimQueueCounters | null;
+}
+
+/** The one-line live status of the panel, from the GET counters; null without them. */
+export function swarmClaimStatusLine(counters: SwarmClaimQueueCounters | null | undefined): string | null {
+  if (!counters) return null;
+  return `${counters.queuedUnassigned} unassigned task(s) waiting · ${counters.claimedLastHour} claimed in the last hour · ${counters.cancelledLastHour} cancelled in the last hour`;
 }
 
 export const swarmClaimSettingsQueryKey = ["myrmidon", "swarm-claim", "settings"] as const;
