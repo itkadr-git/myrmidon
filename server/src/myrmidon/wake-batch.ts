@@ -44,8 +44,15 @@ import { extractWakeCommentIds } from "../modules/run-dispatch/index.js";
 
 /** The window in milliseconds; `0`/`off` disables batching entirely. */
 export const WAKE_BATCH_WINDOW_ENV = "MYRMIDON_WAKE_BATCH_WINDOW_MS";
-/** Ten seconds: long enough to collect a burst of comments, short enough that a single one still feels immediate. */
-export const DEFAULT_WAKE_BATCH_WINDOW_MS = 10_000;
+/**
+ * The shipped default is `0` — the window is off and a comment wake keeps the
+ * per-event delivery it had before. A window changes *when* every comment wake
+ * of an agent starts, so turning it on is a deliberate rollout decision: a
+ * deployment sets the variable, and ten seconds — long enough to collect a
+ * burst of comments, short enough that a single one still feels immediate — is
+ * the recommended value.
+ */
+export const DEFAULT_WAKE_BATCH_WINDOW_MS = 0;
 /**
  * The longest window an operator may ask for (5 min). Past this the window is
  * no longer a debounce of a burst but a delay of the first comment, and the
