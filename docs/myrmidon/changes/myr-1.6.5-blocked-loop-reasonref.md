@@ -1,4 +1,4 @@
-<!-- myr/1.6.6-blocked-loop-reasonref — BLOCKER-WAKE-LOOP B: event deadline + waiting docs -->
+<!-- myr/1.6.5-blocked-loop-reasonref — BLOCKER-WAKE-LOOP B: event deadline + waiting docs -->
 
 ## changelog-en
 
