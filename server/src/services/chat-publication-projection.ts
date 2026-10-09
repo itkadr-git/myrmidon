@@ -110,6 +110,18 @@ export interface ChatPublicationProjectionInput {
       actions?: readonly SafeExternalChatCardAction[] | null;
     };
   } | null;
+  /**
+   * A card that belongs to no issue interaction: a bridged command reply with
+   * inline buttons. Only a `task_control` publication may carry one; it is
+   * persisted without an `interactionId`, so nothing that looks interactions
+   * up by that id ever sees it.
+   */
+  card?: {
+    kind: SafeExternalChatCardKind;
+    title: string;
+    body?: string | null;
+    actions?: readonly SafeExternalChatCardAction[] | null;
+  } | null;
 }
 
 /**
@@ -307,6 +319,13 @@ function projectCard(
       "External chat interaction id is invalid",
     );
   }
+  return { interactionId: input.id, card: projectCardBody(input.card) };
+}
+
+function projectCardBody(
+  card: NonNullable<ChatPublicationProjectionInput["card"]>,
+): SafeExternalChatCard {
+  const input = { card };
   if (!CARD_KINDS.has(input.card.kind)) {
     throw new UnsafeChatPublicationError("External chat card kind is invalid");
   }
@@ -363,14 +382,11 @@ function projectCard(
   }
 
   return {
-    interactionId: input.id,
-    card: {
-      schema: "paperclip.chat.card.v1",
-      kind: input.card.kind,
-      title,
-      ...(body ? { body } : {}),
-      ...(actions.length ? { actions } : {}),
-    },
+    schema: "paperclip.chat.card.v1",
+    kind: input.card.kind,
+    title,
+    ...(body ? { body } : {}),
+    ...(actions.length ? { actions } : {}),
   };
 }
 
@@ -396,11 +412,18 @@ export function projectSafeChatPublication(
   }
   const attachmentIds = projectAttachmentIds(input.attachmentIds);
   const interaction = input.interaction ? projectCard(input.interaction) : null;
+  if (input.card && (input.interaction || input.source !== "task_control")) {
+    throw new UnsafeChatPublicationError(
+      "Only a task-control publication may carry a standalone card",
+    );
+  }
+  const standaloneCard = input.card ? projectCardBody(input.card) : null;
 
   return {
     text: projectSafeChatPublicationText(input.text),
     ...(attachmentIds ? { attachmentIds } : {}),
     ...(input.progressState ? { progressState: input.progressState } : {}),
     ...(interaction ?? {}),
+    ...(standaloneCard ? { card: standaloneCard } : {}),
   };
 }

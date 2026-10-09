@@ -270,8 +270,64 @@ function byStatusThenName(left: CompanyAgentCard, right: CompanyAgentCard): numb
   return rank(left) - rank(right) || left.name.localeCompare(right.name);
 }
 
+/** The live cards of one company, grouped for display: the shared base of the text list and the buttons. */
+export interface CollectedAgentGroups {
+  /** Visible group titles, the current addressee's group first, the rest alphabetical. */
+  titles: string[];
+  /** Members of each group (live cards only), running first, then by name. */
+  members: Map<string, CompanyAgentCard[]>;
+  /** How many members of each group wait on pause. */
+  pausedByGroup: Map<string, number>;
+}
+
 /**
- * Builds the /agents reply: the company's addressable agents grouped by
+ * Groups the listable cards by the visible group title — a card may bring its
+ * own group name through `metadata.telegramGroup`, and two such cards share
+ * one group — and orders them: the current addressee's own group first (that
+ * is what the owner looks for), then alphabetical; inside a group running
+ * cards first, then by name. `cards` is every card of the company, hidden ones
+ * included, so the paused ones can be counted per group.
+ */
+export function collectAgentGroups(
+  cards: CompanyAgentCard[],
+  currentId: string,
+  locale: BridgeLocale,
+): CollectedAgentGroups {
+  const members = new Map<string, CompanyAgentCard[]>();
+  for (const card of cards.filter((entry) => !isHiddenAgentCard(entry))) {
+    const title = agentGroupTitle(locale, card.group);
+    const bucket = members.get(title);
+    if (bucket) bucket.push(card);
+    else members.set(title, [card]);
+  }
+  for (const bucket of members.values()) bucket.sort(byStatusThenName);
+
+  // How many members of each group wait on pause, for the group header.
+  const pausedByGroup = new Map<string, number>();
+  for (const card of cards) {
+    if (card.service || card.retired || card.status !== PAUSED_AGENT_STATUS) continue;
+    const title = agentGroupTitle(locale, card.group);
+    pausedByGroup.set(title, (pausedByGroup.get(title) ?? 0) + 1);
+  }
+
+  const titles = [...members.keys()].sort((left, right) => left.localeCompare(right));
+  const currentTitle = titles.find((title) =>
+    (members.get(title) ?? []).some((card) => card.id === currentId),
+  );
+  if (currentTitle) {
+    titles.splice(titles.indexOf(currentTitle), 1);
+    titles.unshift(currentTitle);
+  }
+  return { titles, members, pausedByGroup };
+}
+
+/** One line of /agents for a card, the current addressee marked. Used by the text list and the buttons. */
+export function agentListLine(card: CompanyAgentCard, mark: boolean, locale: BridgeLocale): string {
+  return formatAgentLine(card, mark, locale);
+}
+
+/**
+ * Builds the /agents text reply: the company's addressable agents grouped by
  * direction, every line naming the agent, its one-line role and its live
  * status, the chat's current default addressee marked. Never prints agent ids
  * or any internal identifier.
@@ -279,7 +335,8 @@ function byStatusThenName(left: CompanyAgentCard, right: CompanyAgentCard): numb
  * A paused card is not listed, but the group it belongs to keeps saying how
  * many of its members wait on pause, so nothing disappears silently. The
  * whole list is one message; the Telegram transport splits it when it is long,
- * which is why the list carries no cutoff any more.
+ * which is why the list carries no cutoff any more. (`/agents` itself answers
+ * with buttons since part B; this text is `/agents text`.)
  */
 export async function buildAgentsReplyText(
   db: Db,
@@ -291,40 +348,11 @@ export async function buildAgentsReplyText(
   },
 ): Promise<string> {
   const cards = await loadCompanyAgentCards(db, input.companyId);
-  const listable = cards.filter((card) => !isHiddenAgentCard(card));
-  if (listable.length === 0) {
+  if (!cards.some((card) => !isHiddenAgentCard(card))) {
     return t(input.locale, "agents.none");
   }
   const currentId = input.stickyAgentId ?? input.conversationAgentId;
-
-  // Grouped by the visible title — a card may bring its own group name through
-  // `metadata.telegramGroup`, and two such cards share one group.
-  const groups = new Map<string, CompanyAgentCard[]>();
-  for (const card of listable) {
-    const title = agentGroupTitle(input.locale, card.group);
-    const bucket = groups.get(title);
-    if (bucket) bucket.push(card);
-    else groups.set(title, [card]);
-  }
-
-  // How many members of each group wait on pause, for the group header.
-  const pausedByGroup = new Map<string, number>();
-  for (const card of cards) {
-    if (card.service || card.retired || card.status !== PAUSED_AGENT_STATUS) continue;
-    const title = agentGroupTitle(input.locale, card.group);
-    pausedByGroup.set(title, (pausedByGroup.get(title) ?? 0) + 1);
-  }
-
-  const titles = [...groups.keys()].sort((left, right) => left.localeCompare(right));
-  // The current addressee's own group comes first: that is what the owner
-  // looks for in the list.
-  const currentTitle = titles.find((title) =>
-    (groups.get(title) ?? []).some((card) => card.id === currentId),
-  );
-  if (currentTitle) {
-    titles.splice(titles.indexOf(currentTitle), 1);
-    titles.unshift(currentTitle);
-  }
+  const { titles, members, pausedByGroup } = collectAgentGroups(cards, currentId, input.locale);
 
   const lines: string[] = [t(input.locale, "agents.header")];
   for (const title of titles) {
@@ -335,8 +363,7 @@ export async function buildAgentsReplyText(
         ? t(input.locale, "agents.groupHeaderPaused", { group: title, count: paused })
         : t(input.locale, "agents.groupHeader", { group: title }),
     );
-    const members = (groups.get(title) ?? []).slice().sort(byStatusThenName);
-    for (const card of members) {
+    for (const card of members.get(title) ?? []) {
       lines.push(formatAgentLine(card, card.id === currentId, input.locale));
     }
   }

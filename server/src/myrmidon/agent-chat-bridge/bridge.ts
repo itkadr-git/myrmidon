@@ -28,6 +28,7 @@ import { projectSafeChatPublication } from "../../services/chat-publication-proj
 import { safeChatTaskUrl } from "../../services/chat-task-url.js";
 import { instanceSettingsService } from "../../services/instance-settings.js";
 import type { issueService } from "../../services/issues.js";
+import { stageAgentsScreenPublication } from "./commands/agents-buttons.js";
 import {
   parseBridgedCommand,
   runBridgedDirectMessageCommand,
@@ -475,19 +476,35 @@ export async function handleTelegramDmCommand(input: {
         updatedAt: new Date(),
       })
       .where(eq(chatDeliveries.id, input.deliveryId));
-    await input.deps.stageTaskControlPublication(tx as unknown as Db, {
-      companyId: input.endpoint.companyId,
-      endpointId: input.endpoint.id,
-      conversationId: bound.conversation.id,
-      issueId: bound.issue.id,
-      idempotencyKey: `control:x8-${result.command}:${input.deliveryId}`,
-      payload: projectSafeChatPublication({
-        classification: "external",
-        source: "task_control",
-        text: result.text,
-      }),
-      principalId: input.principalId,
-    });
+    if (result.screen) {
+      // myrmidon(1.6.5 OPE-6318 part B): /agents as a card with buttons; the
+      // button tokens are issued in this same transaction.
+      await stageAgentsScreenPublication({
+        tx: tx as unknown as Db,
+        stage: input.deps.stageTaskControlPublication,
+        companyId: input.endpoint.companyId,
+        endpointId: input.endpoint.id,
+        conversationId: bound.conversation.id,
+        issueId: bound.issue.id,
+        principalId: input.principalId,
+        idempotencyKey: `control:x8-${result.command}:${input.deliveryId}`,
+        screen: result.screen,
+      });
+    } else {
+      await input.deps.stageTaskControlPublication(tx as unknown as Db, {
+        companyId: input.endpoint.companyId,
+        endpointId: input.endpoint.id,
+        conversationId: bound.conversation.id,
+        issueId: bound.issue.id,
+        idempotencyKey: `control:x8-${result.command}:${input.deliveryId}`,
+        payload: projectSafeChatPublication({
+          classification: "external",
+          source: "task_control",
+          text: result.text,
+        }),
+        principalId: input.principalId,
+      });
+    }
     if (input.migratedFromIssueId) {
       const text = await buildMigrationNoticeText(tx as unknown as Db, {
         companyId: input.endpoint.companyId,
