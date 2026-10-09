@@ -19,3 +19,16 @@ export function readStackCheckIntervalSec(env: NodeJS.ProcessEnv = process.env):
   if (value === 0) return 0;
   return Math.max(value, STACK_CHECK_MIN_INTERVAL_SEC);
 }
+
+export const STACK_GITHUB_TOKEN_ENV = "MYRMIDON_STACK_GITHUB_TOKEN";
+
+/**
+ * Optional read-only GitHub token for the release check (secret class: the
+ * value is never logged and never returned by any route). Unset or blank means
+ * anonymous requests — the 60 req/h per egress IP budget. A token lifts the
+ * budget to 5000 req/h. Trimmed; whitespace-only reads as not set.
+ */
+export function readStackGithubToken(env: NodeJS.ProcessEnv = process.env): string | null {
+  const raw = env[STACK_GITHUB_TOKEN_ENV]?.trim();
+  return raw ? raw : null;
+}

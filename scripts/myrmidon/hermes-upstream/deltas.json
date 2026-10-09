@@ -226,6 +226,40 @@
         "path": "gateway/platforms/api_server_runs.py",
         "upstreamMarker": "paperclip_skills|run_skills|MYRMIDON_RUN_SKILLS_DIR"
       }
+    },
+    {
+      "id": "14-redact-pcp-patterns",
+      "kind": "patch",
+      "patch": "docker/bot-runtime/patches/14-redact-pcp-patterns.patch",
+      "files": [
+        "agent/redact.py"
+      ],
+      "reason": "A live board key (pcp_ + family + opaque body) reached the delegation live transcript verbatim: every matcher in the redaction module needs a KEY=, header or JSON-field shape, and transcript prose (subagent result text, CLI echo, error message) carries none of them. Six bare-token prefix patterns (pcp_, pcp_board_, pcp_cli_auth_, pcp_invite_, pcp_bootstrap_, pcp_claim_) join _PREFIX_PATTERNS so the generic pass masks the key anywhere it appears. Bodies are per family: invite tokens are base64url(32 bytes), so pcp_invite_ takes [A-Za-z0-9_-]{20,}; the other five keep [A-Za-z0-9]{20,}. One pattern per family: the engine validator rejects top-level alternation.",
+      "dropCondition": "Upstream ships a bare-token prefix family covering the pcp_ key prefixes (agent/redact.py).",
+      "offer": null,
+      "offerNote": "Not offered yet: see the note on delta 02 (publisher-scan wrapper pending).",
+      "probe": {
+        "source": "hermes",
+        "path": "agent/redact.py",
+        "upstreamMarker": "pcp_|pcp_board|pcp_invite"
+      }
+    },
+    {
+      "id": "15-delegation-live-log-mode-0600",
+      "kind": "patch",
+      "patch": "docker/bot-runtime/patches/15-delegation-live-log-mode-0600.patch",
+      "files": [
+        "tools/delegation_live_log.py"
+      ],
+      "reason": "LiveTranscriptWriter created task-N.log with path.write_text(), i.e. 0o644 & ~umask — world-readable under the image's umask 022. Transcripts live in the shared bot container (HERMES_HOME/delegation/live/, kept 7 days), so a co-tenant process could read them; with the missing pcp_ redaction (delta 14) a live board key was readable container-wide. The header write now goes through tempfile.mkstemp(dir=...) + os.replace: mkstemp creates the file 0o600 without a mode argument (no chmod race, no world-readable window), os.replace keeps the temp's mode, a mid-write crash unlinks the temp.",
+      "dropCondition": "Upstream creates live transcripts owner-only (0o600).",
+      "offer": null,
+      "offerNote": "Not offered yet: see the note on delta 02 (publisher-scan wrapper pending).",
+      "probe": {
+        "source": "hermes",
+        "path": "tools/delegation_live_log.py",
+        "upstreamMarker": "mkstemp|0o600|os.replace"
+      }
     }
   ]
 }

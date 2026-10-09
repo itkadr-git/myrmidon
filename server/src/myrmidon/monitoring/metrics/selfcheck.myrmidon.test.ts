@@ -34,8 +34,9 @@ describe("metrics self-check probe", () => {
     // never a DB read, so on a fully broken database it is the one family
     // the probe can still affirm. The two PROCS-0.3A lane families
     // (myrmidon_board_db_queries_total, myrmidon_board_lane_busy_seconds_total)
-    // are likewise not DB reads — they survive a broken database too.
-    expect(result.families_ok).toBe(1 + 2);
+    // and the five PROCS-Q3 process families are likewise not DB reads —
+    // they survive a broken database too.
+    expect(result.families_ok).toBe(1 + 2 + 5);
     const expectedFailed = METRIC_FAMILIES.filter(
       (family) =>
         family !== "myrmidon_scrape_errors" && !family.startsWith("myrmidon_board_"),

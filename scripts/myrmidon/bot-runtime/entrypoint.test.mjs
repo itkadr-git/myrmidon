@@ -179,8 +179,13 @@ function stubHermes() {
   return dir;
 }
 
-function runWithStub(env) {
-  const bin = stubHermes();
+function runWithStub(env, probeDir) {
+  // myrmidon(BOT-UMASK): a caller-supplied probe directory may already carry
+  // its own hermes script (the umask probe) — never clobber it.
+  const bin = probeDir ?? stubHermes();
+  if (probeDir && !fs.existsSync(path.join(bin, "hermes"))) {
+    fs.writeFileSync(path.join(bin, "hermes"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+  }
   try {
     return spawnSync("bash", [ENTRYPOINT], {
       env: { PATH: `${env.MYRMIDON_TEST_STUB_BIN ? `${env.MYRMIDON_TEST_STUB_BIN}:` : ""}${bin}:${process.env.PATH}`, HOME: process.env.HOME, ...env },
@@ -189,7 +194,7 @@ function runWithStub(env) {
       cwd: env.MYRMIDON_TEST_CWD,
     });
   } finally {
-    fs.rmSync(bin, { recursive: true, force: true });
+    if (!probeDir) fs.rmSync(bin, { recursive: true, force: true });
   }
 }
 
@@ -1238,4 +1243,59 @@ describe("docker/bot-runtime/entrypoint.sh botd start", () => {
       run1.cleanup();
     }
   });
+});
+
+// myrmidon(BOT-UMASK): run files must be owner-only — every bot on a host shares
+// uid 10001, so the mode bits are the only barrier between one run's scratch/cache
+// and another bot's processes. The entrypoint sets umask 077 before any file write
+// and every child (gateway -> session -> terminal/tool) inherits it.
+describe("docker/bot-runtime/entrypoint.sh umask 077", () => {
+  it("sets umask 077 before the first file write", () => {
+    const source = fs.readFileSync(ENTRYPOINT, "utf8");
+    const umaskAt = source.search(/^umask 077$/m);
+    assert.notEqual(umaskAt, -1, "entrypoint must set umask 077");
+    const firstWrite = source.search(/^\s*(mkdir|ln |ln\b|cat >|>|install )/m);
+    assert.notEqual(firstWrite, -1, "test expects a file write to anchor against");
+    assert.ok(
+      umaskAt < firstWrite,
+      "umask 077 must precede the first file write in the entrypoint",
+    );
+    assert.match(source, /umask 077 \(run files owner-only\)/);
+  });
+
+  it("the process the entrypoint execs inherits umask 077 (files 0600, dirs 0700)", () => {
+    const tree = fs.mkdtempSync(path.join(os.tmpdir(), "myrmidon-bot-umask-"));
+    try {
+      const hermesHomeDir = path.join(tree, "hermes-home");
+      fs.mkdirSync(hermesHomeDir);
+      fs.writeFileSync(
+        path.join(hermesHomeDir, ".env"),
+        `API_SERVER_KEY="${"k".repeat(32)}"\n`,
+        "utf8",
+      );
+      // The probe stands in for the real hermes binary: it records the umask it
+      // inherited from the entrypoint and creates one file and one directory,
+      // which is what every run artifact does.
+      const probe = path.join(tree, "probe");
+      fs.mkdirSync(probe);
+      fs.writeFileSync(
+        path.join(probe, "hermes"),
+        `#!/bin/sh\numask > "${probe}/umask-value"\n: > "${probe}/probe-file"\nmkdir "${probe}/probe-dir"\n`,
+        { mode: 0o755 },
+      );
+      const result = runWithStub({ HERMES_HOME: hermesHomeDir }, probe);
+      assert.equal(result.error, undefined);
+      assert.equal(result.status, 0, result.stderr);
+      assert.equal(
+        fs.readFileSync(path.join(probe, "umask-value"), "utf8").trim(),
+        "0077",
+        `expected the exec target to inherit umask 0077: ${result.stderr}`,
+      );
+      assert.equal(fs.statSync(path.join(probe, "probe-file")).mode & 0o777, 0o600);
+      assert.equal(fs.statSync(path.join(probe, "probe-dir")).mode & 0o777, 0o700);
+    } finally {
+      fs.rmSync(tree, { recursive: true, force: true });
+    }
+  });
+
 });
