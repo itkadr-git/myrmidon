@@ -41,6 +41,10 @@ import {
   EVALS_PILOT_ROLE,
 } from "./index.js";
 import {
+  ENGINEER_REFERENCE_TASKS,
+  seedReferenceTasks,
+} from "./seed.js";
+import {
   KNOWLEDGE_GATE_ACTOR_ID,
   createKnowledgeGate,
   createKnowledgeGateSink,
@@ -48,6 +52,7 @@ import {
   hallucinationFromScores,
   isKnowledgeGateTrigger,
   subjectKindForTrigger,
+  type KnowledgeGateActor,
   type KnowledgeGateOwnerNotice,
   type KnowledgeGateVerdict,
 } from "./knowledge-gate.js";
@@ -112,7 +117,7 @@ describeEmbeddedPostgres("myrmidon(1.6.6 K-9) the evals gate over the database",
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
   let AGENT!: KnowledgeActor;
   const OWNER: KnowledgeActor = { actorType: "user", actorId: "owner-1", kind: "owner" };
-  const GATE_ACTOR = { actorType: "system", actorId: KNOWLEDGE_GATE_ACTOR_ID };
+  const GATE_ACTOR: KnowledgeGateActor = { actorType: "system", actorId: KNOWLEDGE_GATE_ACTOR_ID };
 
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("myrmidon-knowledge-gate-");
