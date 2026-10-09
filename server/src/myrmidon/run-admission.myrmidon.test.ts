@@ -1357,7 +1357,7 @@ describe("owner chat turns (OWNER-CHAT-ADMISSION)", () => {
     const admission = createRunAdmission({
       limits: { ...BUSY_HOST, minFreeHostMemoryMb: null, maxHostLoadPercentPerCore: 90 },
       freeMemoryBytes: () => 4 * GB,
-      hostCpuLoad: cpu(300, 16), // 1875 % of a core, far above the ceiling
+      hostCpuLoad: cpu(300, 16, 10), // 1875 % of a core, the background is 63 %
     });
     expect(admission.hostCpuGate().state).toBe("closed");
     expect(admission.reserve(1)).toBe(0);
