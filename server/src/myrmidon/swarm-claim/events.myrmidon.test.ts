@@ -109,7 +109,7 @@ describe("the switch is read per event (no restart)", () => {
     let enabled = true;
     const ports = {
       db: untouchedDb,
-      settings: { getGeneral: async () => ({ swarmClaim: { enabled } }) as never },
+      settings: { getGeneral: async () => ({ swarm: { enabled } }) as never },
       env: {},
     };
     expect(await buildSwarmMatcher(ports)).not.toBeNull();
@@ -123,7 +123,7 @@ describe("the switch is read per event (no restart)", () => {
     let enabled = true;
     const ports = {
       db: untouchedDb,
-      settings: { getGeneral: async () => ({ swarmClaim: { enabled } }) as never },
+      settings: { getGeneral: async () => ({ swarm: { enabled } }) as never },
       env: {},
     };
     const sink = {
