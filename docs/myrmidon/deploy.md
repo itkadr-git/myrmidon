@@ -179,10 +179,16 @@ scripts/myrmidon/deploy/deploy.sh --config deploy.env --release myr-v1.6.2
  `GET /api/myrmidon/bot-container/apply/:applyId` every
  `MYRMIDON_BOT_IMAGE_ROLLOUT_APPLY_POLL_SEC` (default 4 s) until the job reports
  `succeeded` or `failed`, for at most `MYRMIDON_BOT_IMAGE_ROLLOUT_APPLY_WAIT_SEC` (default
- 300 s). A success is then confirmed with `GET /api/myrmidon/bot-container/status`; a
- timeout counts the bot as deferred (exit 2) instead of applied, and the plain synchronous
- apply response is still accepted. The superseded bot images leave `images[]`
- only after every bot moved. Bot-card failures end the deploy as DEGRADED. There is no board
+ 300 s). A success is then confirmed with `GET /api/myrmidon/bot-container/status` — the
+ job reports `succeeded` even when the reconciler deferred the pass (a busy bot), so a
+ succeeded job whose container is not on the release image counts as deferred, not applied.
+ An apply refused with 409 (`bot_container_not_applicable` — the agent went running between
+ the status read and the apply) is deferred, not failed, and a timeout counts the bot as
+ deferred (exit 2) as well; the plain synchronous apply response is still accepted. A failed
+ or deferred bot never interrupts the run: the loop reaches every remaining bot, and the run
+ ends `WARNING` when bots stayed deferred and `DEGRADED` only when at least one actually
+ failed. The superseded bot images leave `images[]`
+ only after every bot moved. There is no board
   setting for a default bot image to update.
 
 ### Release candidates and the `latest` marker (RC-VERSIONS)
