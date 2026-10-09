@@ -58,6 +58,10 @@ import { pluginEntitlementKeysSchema } from "../myrmidon-plugin-entitlement.js";
 // myrmidon(DM-PROGRESS): live progress steps of the bridged Telegram DM status
 // message, stored in the same general settings row.
 import { telegramDmProgressSettingsSchema } from "../myrmidon-telegram-dm-progress.js";
+// myrmidon(1.6.5-TG-LOCALE-C): the instance-wide default language of the
+// bridged Telegram DM, changed from Settings → Language and
+// /api/myrmidon/bridge-language.
+import { bridgeLanguageSettingsSchema } from "../myrmidon-bridge-language.js";
 // myrmidon(1.6.1-FORAGING-LIMITS-UI)
 import { foragingSettingsSchema } from "../myrmidon-foraging.js";
 // myrmidon(TEAM-LIVENESS-SETTINGS): the knobs of the three automatic team-liveness
@@ -247,6 +251,12 @@ export const instanceGeneralSettingsSchema = z.object({
   // message (on/off and the minimum spacing between edits), changed from
   // /api/myrmidon/telegram-dm-progress; absent means the defaults.
   telegramDmProgress: telegramDmProgressSettingsSchema.optional(),
+  // myrmidon(1.6.5-TG-LOCALE-C): the instance-wide default language of the
+  // bridged Telegram DM (the fallback for a board user with no stored
+  // `user_ui_language` row), changed from Settings → Language and
+  // /api/myrmidon/bridge-language; absent means "use the environment force,
+  // then English".
+  bridgeLanguage: bridgeLanguageSettingsSchema.optional(),
   // myrmidon(MEMORY-UI): agent card Memory tab — service address, optional key
   // secret name and the switch, changed from the instance settings page and
   // /api/myrmidon/agent-memory; absent means "use the environment".

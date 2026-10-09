@@ -4477,7 +4477,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
                 credentials.botToken,
                 "setMyCommands",
                 {
-                  commands: telegramDmCommandsForLocale(telegramDmMenuLocale()),
+                  commands: telegramDmCommandsForLocale(await telegramDmMenuLocale(db)),
                   scope: { type: "all_private_chats" },
                 },
               );

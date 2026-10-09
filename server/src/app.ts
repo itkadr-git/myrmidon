@@ -109,6 +109,8 @@ import { myrmidonRunPriorityRoutes } from "./myrmidon/run-priority/index.js"; //
 import { myrmidonRunStallRoutes } from "./myrmidon/run-stall/index.js"; // myrmidon(RUN-STALL-SETTINGS)
 import { myrmidonBudgetEnforcementRoutes } from "./myrmidon/budget-enforcement/index.js"; // myrmidon(1.7-BUDGET-CONFIG-B)
 import { myrmidonTelegramDmProgressRoutes } from "./myrmidon/telegram-dm-progress/index.js"; // myrmidon(DM-PROGRESS)
+// myrmidon(1.6.5-TG-LOCALE-C): GET/PATCH the instance-wide bridge language
+import { myrmidonBridgeLanguageRoutes } from "./myrmidon/bridge-language/index.js";
 import { myrmidonChannelSettingsRoutes } from "./myrmidon/channel-settings/index.js"; // myrmidon(1.7-SETTINGS-TO-UI)
 import { myrmidonParallelHelpersRoutes } from "./myrmidon/parallel-helpers/index.js"; // myrmidon(PARALLEL-HELPERS)
 import { myrmidonTeamLivenessRoutes } from "./myrmidon/team-liveness/index.js"; // myrmidon(TEAM-LIVENESS-SETTINGS)
@@ -1081,6 +1083,9 @@ export async function createApp(
   api.use(myrmidonSwarmSupervisorRoutes(db)); // myrmidon(1.6-SWARM-CLAIM-B): supervisor view, rebalance, pilot report
   api.use(myrmidonTelegramNotifyRoutes(db)); // myrmidon(TG-NOTIFY-A): telegramNotify settings core (GET/PATCH + changelog)
   api.use(ui2LanguageRoutes(db)); // myrmidon(UI2-I18N): per-user UI language preference
+  // myrmidon(1.6.5-TG-LOCALE-C): instance-wide default language of the bridged
+  // Telegram DM — read by board members, changed by instance admins.
+  api.use(myrmidonBridgeLanguageRoutes(db));
   api.use(myrmidonForagingRoutes(db)); // myrmidon(1.6-FORAGE): source registry, findings and the manual sweep
   api.use(myrmidonForagingIdleGateRoutes(db)); // myrmidon(1.6.3-FORAGING-IDLE-GATE): the idle-gate toggle
   api.use(myrmidonForagingPassRoutes(db)); // myrmidon(1.6.3-FORAGING-IDLE-GATE, UI half): the pass history

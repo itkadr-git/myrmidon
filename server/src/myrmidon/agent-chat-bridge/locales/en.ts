@@ -61,8 +61,14 @@ export const bridgeTextEn = {
   // /model and /think
   "model.statusLabel": "Model",
   "reasoning.statusLabel": "Reasoning",
-  "model.unavailable": "Changing the model is unavailable for adapter {adapterType}: {reason}",
-  "reasoning.unavailable": "Changing the reasoning effort is unavailable for adapter {adapterType}: {reason}",
+  // myrmidon(1.6.5-TG-LOCALE-C): when a chooser cannot be changed from the chat,
+  // the refusal names the adapter and the blockage AND says where the value IS
+  // changed (the agent card on the board) and what happens next — the bare
+  // "unavailable for adapter X" left the operator without a next step.
+  "model.unavailable":
+    "Changing the model is unavailable for adapter {adapterType}: {reason}. The model is changed on the board — the agent card's models section — and applies from the next reply.",
+  "reasoning.unavailable":
+    "Changing the reasoning effort is unavailable for adapter {adapterType}: {reason}. The reasoning effort is changed on the board — the agent card's models section — and applies from the next reply.",
   "model.unknownNoun": "model",
   "reasoning.unknownNoun": "reasoning effort",
   "chooser.effective": "{label}: {value} ({source}).",
