@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 //
-// myrmidon(1.6.5 OPE-6318 part D): the "Telegram" section of the agent card —
+// myrmidon(1.6.5-TG-LOCALE-D): the "Telegram" section of the agent card —
 // the alias list, the name-default note an empty list shows, the invalid/duplicate
 // add guards and the datalist of the company's existing groups.
 
