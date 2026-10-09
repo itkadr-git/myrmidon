@@ -247,7 +247,9 @@ async function closeCopy(request, deps = {}) {
     if (!force) {
       throw new MyrWsError(EXIT.unpushed, `${key} holds ${describeLoss(state)}; nothing was removed. Push it, or close with --force to archive it first`);
     }
-    const res = await archiveFn(ctx)(dir, key);
+    // the repository goes into the archive entry: after this close the registry no longer
+    // names it, and `myr-ws restore` reads it from the archive manifest
+    const res = await archiveFn(ctx)(dir, key, entry.repo ? { repo: entry.repo } : {});
     if (!res || res.ok !== true) {
       const why = res && res.error ? `: ${res.error}` : "";
       throw new MyrWsError(1, `archive of ${key} failed${why}; the copy was not removed`);

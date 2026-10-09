@@ -220,6 +220,19 @@ describe("myr-ws close", { skip: !hasGit && "git missing" }, () => {
     assert.deepEqual(registryKeys(w), []);
   });
 
+  it("--force: the archive is handed the repository of the registry entry (restore reads it from the manifest later)", async () => {
+    const w = world();
+    const copy = openTask(w, "ABC-106");
+    fs.writeFileSync(path.join(copy, "wip.txt"), "unsaved\n");
+    let seen;
+    const archive = async (copyPath, key, opts) => {
+      seen = opts;
+      return { ok: true };
+    };
+    await closeMod.closeCopy({ key: "ABC-106", force: true }, deps(w, archive));
+    assert.deepEqual(seen, { repo: "acme/widgets" });
+  });
+
   it("--force with a failed archive: the copy stays, nothing is deleted", async () => {
     const w = world();
     const copy = openTask(w, "ABC-106");
