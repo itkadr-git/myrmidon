@@ -325,13 +325,15 @@ export const en = {
       phone: {
         status: "Owner · Web",
       },
+      // myrmidon(UI-2.0 Wave A part 2, ia-v2 §3): the honest chip copy.
+      // Fleet is removed until MONITORING; runs replaces it. The no-budget
+      // spend renders the raw money value (data, not copy).
       chip: {
         colony: "{{active}} of {{total}}",
-        fleet: "Fleet",
-        fleetAttention: "Fleet: 1 attention",
-        forecast: "{{spend}} of {{budget}}",
-        // myrmidon(HERMES-USAGE-COST): spend-only variant when no budget is set.
-        forecastSpendOnly: "{{spend}} spent",
+        runs: "{{running}} running",
+        runsFailed: "{{running}} running · {{failed}} failed today",
+        spend: "{{spend}} of {{budget}}",
+        empty: "—",
       },
       commander: {
         aria: "Tell the Commander (Ctrl K)",
@@ -686,11 +688,10 @@ export type Ui2Catalog = {
     },
     chip: {
       colony: string;
-      fleet: string;
-      fleetAttention: string;
-      forecast: string;
-      // myrmidon(HERMES-USAGE-COST): spend-only variant when no budget is set.
-      forecastSpendOnly: string;
+      runs: string;
+      runsFailed: string;
+      spend: string;
+      empty: string;
     },
     commander: {
       aria: string;

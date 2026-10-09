@@ -91,10 +91,10 @@
     },
     "chip": {
       "colony": "{{active}} of {{total}}",
-      "fleet": "Fleet",
-      "fleetAttention": "Fleet: 1 attention",
-      "forecast": "{{spend}} of {{budget}}",
-      "forecastSpendOnly": "{{spend}} spent"
+      "runs": "{{running}} running",
+      "runsFailed": "{{running}} running · {{failed}} failed today",
+      "spend": "{{spend}} of {{budget}}",
+      "empty": "—"
     },
     "decisions": {
       "badge": "{{count}} decisions waiting"
