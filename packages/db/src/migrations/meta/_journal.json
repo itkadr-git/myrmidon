@@ -2255,6 +2255,13 @@
       "when": 1791500384000,
       "tag": "0384_agent_castes_default_and_nests",
       "breakpoints": true
+    },
+    {
+      "idx": 322,
+      "version": "7",
+      "when": 1791602400000,
+      "tag": "0385_swarm_scent",
+      "breakpoints": true
     }
   ]
 }
