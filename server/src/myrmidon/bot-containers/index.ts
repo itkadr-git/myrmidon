@@ -284,7 +284,10 @@ export async function applyBotContainerNow(
       targetImage: spec.image,
       outcome,
     });
-    const appliedVersion = appliedProfile?.apiServerKeyVersion;
+    // Read through a fresh reference: `appliedProfile` is only assigned inside the
+    // closure above, so tsc keeps its declared-null narrowing at the use site.
+    const applied: CompiledProfile | null = appliedProfile;
+    const appliedVersion = applied?.apiServerKeyVersion;
     if (deps.syncCard && leavesContainerApplied(outcome) && appliedVersion !== undefined) {
       await syncCardAfterReconcile(agent.agentId, botKey, deps.syncCard, appliedVersion, deps.activity);
     }
