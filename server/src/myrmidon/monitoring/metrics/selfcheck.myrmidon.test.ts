@@ -32,10 +32,11 @@ describe("metrics self-check probe", () => {
     expect(result.ok).toBe(false);
     // myrmidon_scrape_errors is the meta-counter of this very scrape — it is
     // never a DB read, so on a fully broken database it is the one family
-    // the probe can still affirm. The five process families
-    // (1.6.5-PROCS-Q3) are likewise not DB reads — they survive a broken
+    // the probe can still affirm. The six process families
+    // (five from 1.6.5-PROCS-Q3, the event-loop utilization of PROCS-0.1 as
+    // the sixth) are likewise not DB reads — they survive a broken
     // database too.
-    expect(result.families_ok).toBe(1 + 5);
+    expect(result.families_ok).toBe(1 + 6);
     const expectedFailed = METRIC_FAMILIES.filter(
       (family) =>
         family !== "myrmidon_scrape_errors" && !family.startsWith("myrmidon_board_"),

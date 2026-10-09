@@ -271,3 +271,5 @@ export {
   corpusParseJobs,
   corpusSettings,
 } from "./corpus.js";
+// myrmidon(1.6.6 PROCS-0.1): the process registry of the board (design §5.1).
+export { boardProcesses } from "./board_processes.js";
