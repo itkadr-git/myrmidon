@@ -1,7 +1,7 @@
 // server/src/myrmidon/swarm-claim/settings.ts
 //
-// myrmidon(1.6-SWARM): read and write `instance_settings.general.swarm` (a value saved under the
-// pre-1.6.5 key `swarmClaim` is still read; the next save writes `swarm`).
+// myrmidon(1.6-SWARM): read and write `instance_settings.general.swarmClaim`
+// (`general.swarm` is the F-26 wake guard's block and is never touched here).
 //
 // The precedence (stored settings, then environment, then the built-in default)
 // is decided in `@paperclipai/shared`; this module is only the database half:

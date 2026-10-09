@@ -168,6 +168,7 @@ describe("startBotContainers with the flag on", () => {
         readAgent: expect.any(Function),
         rolloutAudit: expect.any(Function),
         rolloutCompanyIdOf: expect.any(Function),
+        backimportCompanyIdOf: expect.any(Function),
         readSharedMountSettings: expect.any(Function),
         network: DRIVER_CONFIG.network,
       });

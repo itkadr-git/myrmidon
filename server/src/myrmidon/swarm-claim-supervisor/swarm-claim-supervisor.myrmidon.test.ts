@@ -7,6 +7,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   orderQueueCandidates,
+  swarmQueueEff,
   swarmSupervisorView,
   type SwarmSupervisorReadPort,
 } from "./view.js";
@@ -64,6 +65,20 @@ interface FakeAgent {
   status: string;
 }
 
+/** myrmidon(1.6.5 SWARM-T4): fake `issue.swarm_matched` activity rows. */
+interface MatchedRow {
+  at: string;
+  issue_id: string;
+  agent_id: string;
+}
+
+/** myrmidon(1.6.5 SWARM-T4): fake recent run rows (task id may be null). */
+interface RecentRunRow {
+  agent_id: string;
+  native_issue_id: string | null;
+  created_at: string;
+}
+
 const NOW = new Date("2026-10-02T15:30:00.000Z");
 
 function fakePort(input: {
@@ -74,6 +89,9 @@ function fakePort(input: {
   issues?: FakeQueueRow[];
   agents?: FakeAgent[];
   liveRunAgents?: string[];
+  /** myrmidon(1.6.5 SWARM-T4): the fake match feed and recent runs. */
+  matched?: MatchedRow[];
+  recentRuns?: RecentRunRow[];
   releaseResult?: boolean;
   unassignError?: boolean;
   /** Called with every port write, in order, so a test can pin the sequence. */
@@ -107,6 +125,12 @@ function fakePort(input: {
     },
     async liveRunAgentIds() {
       return new Set(input.liveRunAgents ?? []);
+    },
+    async listMatchedRows() {
+      return (input as { matched?: MatchedRow[] }).matched ?? [];
+    },
+    async listRecentRunTaskIds() {
+      return (input as { recentRuns?: RecentRunRow[] }).recentRuns ?? [];
     },
     async releaseClaim(_companyId, claimId, reason) {
       released.push({ claimId, reason });
@@ -163,14 +187,43 @@ function agent(overrides: Partial<FakeAgent> = {}): FakeAgent {
 }
 
 describe("orderQueueCandidates", () => {
-  it("ranks critical above medium and older blocked first", () => {
+  it("orders by the effective pheromone strength: higher eff first", () => {
+    const nowMs = NOW.getTime();
     const rows = [
-      { issueId: "i-1", identifier: null, title: "a", priority: "medium", projectId: null, createdAt: "2026-10-01T10:00:00.000Z", blockedTransitionAt: null },
-      { issueId: "i-2", identifier: null, title: "b", priority: "critical", projectId: null, createdAt: "2026-10-01T12:00:00.000Z", blockedTransitionAt: null },
-      { issueId: "i-3", identifier: null, title: "c", priority: "critical", projectId: null, createdAt: "2026-10-01T11:00:00.000Z", blockedTransitionAt: null },
+      { issueId: "i-1", identifier: null, title: "a", priority: "low", projectId: null, createdAt: "2026-10-01T10:00:00.000Z", blockedTransitionAt: null, eff: 100, nestAgentId: null },
+      { issueId: "i-2", identifier: null, title: "b", priority: "medium", projectId: null, createdAt: "2026-10-01T12:00:00.000Z", blockedTransitionAt: null, eff: 400, nestAgentId: null },
+      { issueId: "i-3", identifier: null, title: "c", priority: "critical", projectId: null, createdAt: "2026-10-01T11:00:00.000Z", blockedTransitionAt: null, eff: 800, nestAgentId: null },
     ];
-    const ordered = orderQueueCandidates(rows).map((row) => row.issueId);
+    const ordered = orderQueueCandidates(rows, nowMs).map((row) => row.issueId);
     expect(ordered).toEqual(["i-3", "i-2", "i-1"]);
+  });
+
+  it("breaks eff ties by the oldest blockedTransitionAt, then age", () => {
+    const rows = [
+      { issueId: "i-1", identifier: null, title: "a", priority: "medium", projectId: null, createdAt: "2026-10-01T10:00:00.000Z", blockedTransitionAt: "2026-10-02T15:00:00.000Z", eff: 100, nestAgentId: null },
+      { issueId: "i-2", identifier: null, title: "b", priority: "medium", projectId: null, createdAt: "2026-10-01T12:00:00.000Z", blockedTransitionAt: "2026-10-02T14:00:00.000Z", eff: 100, nestAgentId: null },
+      { issueId: "i-3", identifier: null, title: "c", priority: "medium", projectId: null, createdAt: "2026-10-01T09:00:00.000Z", blockedTransitionAt: null, eff: 100, nestAgentId: null },
+    ];
+    const ordered = orderQueueCandidates(rows, NOW.getTime()).map((row) => row.issueId);
+    expect(ordered).toEqual(["i-2", "i-1", "i-3"]);
+  });
+});
+
+describe("swarmQueueEff", () => {
+  it("folds priority and waiting time into one number", () => {
+    const nowMs = NOW.getTime();
+    // A low task waiting 80s and a medium task waiting 40s both reach 80.
+    const low = swarmQueueEff({ priority: "low", createdAt: new Date(nowMs - 80_000).toISOString() }, nowMs);
+    const medium = swarmQueueEff({ priority: "medium", createdAt: new Date(nowMs - 40_000).toISOString() }, nowMs);
+    expect(low).toBe(80);
+    expect(medium).toBe(80);
+    const critical = swarmQueueEff({ priority: "critical", createdAt: new Date(nowMs - 10_000).toISOString() }, nowMs);
+    expect(critical).toBe(80);
+  });
+
+  it("never reports negative waiting for future timestamps", () => {
+    const nowMs = NOW.getTime();
+    expect(swarmQueueEff({ priority: "critical", createdAt: new Date(nowMs + 60_000).toISOString() }, nowMs)).toBe(0);
   });
 });
 
@@ -382,5 +435,147 @@ describe("releaseLeaseForRebalance", () => {
     const result = await releaseLeaseForRebalance({ port, now: () => NOW }, COMPANY_ID, CLAIM);
     expect(result.released).toBe(true);
     expect(result.wokenAgentId).toBeNull();
+  });
+});
+
+// myrmidon(1.6.5 SWARM-T4, design §5.3): the overview surface — matches,
+// warnings and the eff-ordered queue.
+describe("swarmSupervisorView.overview (T4 surfaces)", () => {
+  it("reports the queue ordered by eff with the nest and waiting time", async () => {
+    const port = fakePort({
+      issues: [
+        issue({
+          issue_id: "11111111-1111-4111-8111-111111111121",
+          identifier: "TST-10",
+          title: "Fresh critical",
+          priority: "critical",
+          created_at: "2026-10-02T15:00:00.000Z",
+        }),
+        issue({
+          issue_id: "11111111-1111-4111-8111-111111111122",
+          identifier: "TST-11",
+          title: "Old medium",
+          priority: "medium",
+          created_at: "2026-10-01T00:00:00.000Z",
+          assignee_agent_id: "44444444-4444-4444-8444-444444444444",
+        }),
+      ],
+      agents: [agent()],
+    });
+    const view = swarmSupervisorView(port, {}, () => NOW);
+    const overview = await view.overview(COMPANY_ID);
+    const engineer = overview.roles.find((role) => role.role === "engineer");
+    expect(engineer).toBeDefined();
+    // Fresh critical (30 min × 8 = 14400) beats old medium (~39.5h × 2 ≈ 284000)?
+    // No: the old medium task waited far longer, so its eff is higher.
+    const ordered = engineer?.queue.map((row) => row.identifier);
+    expect(ordered).toEqual(["TST-11", "TST-10"]);
+    // eff is a response column: critical fresh = 8 * 1800.
+    const fresh = engineer?.queue.find((row) => row.identifier === "TST-10");
+    expect(fresh?.eff).toBe(8 * 1800);
+    // The nest of the assigned medium task is its assignee.
+    const assigned = engineer?.queue.find((row) => row.identifier === "TST-11");
+    expect(assigned?.nestAgentId).toBe("44444444-4444-4444-8444-444444444444");
+  });
+
+  it("reports the recent matches from the activity feed, newest first", async () => {
+    const port = fakePort({
+      matched: [
+        { at: "2026-10-02T15:00:00.000Z", issue_id: "11111111-1111-4111-8111-111111111131", agent_id: "44444444-4444-4444-8444-444444444444" },
+        { at: "2026-10-02T14:00:00.000Z", issue_id: "11111111-1111-4111-8111-111111111132", agent_id: "44444444-4444-4444-8444-444444444444" },
+      ],
+      agents: [agent()],
+    });
+    const view = swarmSupervisorView(port, {}, () => NOW);
+    const overview = await view.overview(COMPANY_ID);
+    expect(overview.matched.map((row) => row.issueId)).toEqual([
+      "11111111-1111-4111-8111-111111111131",
+      "11111111-1111-4111-8111-111111111132",
+    ]);
+    expect(overview.matched[0]?.agentName).toBe("agent-a");
+  });
+
+  it("answers an empty match feed and cooldown until the cores land", async () => {
+    const port = fakePort({ agents: [agent()] });
+    const view = swarmSupervisorView(port, {}, () => NOW);
+    const overview = await view.overview(COMPANY_ID);
+    expect(overview.matched).toEqual([]);
+    expect(overview.cooldown).toEqual([]);
+  });
+
+  it("warns: caste with queued tasks and no free agent", async () => {
+    const port = fakePort({
+      issues: [
+        issue({
+          issue_id: "11111111-1111-4111-8111-111111111141",
+          identifier: "TST-20",
+          title: "Queued task",
+          assignee_agent_id: "44444444-4444-4444-8444-444444444444",
+        }),
+      ],
+      // One agent, but capped: not free work the swarm can wake.
+      agents: [agent()],
+      liveRunAgents: ["44444444-4444-4444-8444-444444444444"],
+    });
+    const view = swarmSupervisorView(port, {}, () => NOW);
+    const overview = await view.overview(COMPANY_ID);
+    const warning = overview.warnings.find((w) => w.kind === "caste_without_agents");
+    expect(warning).toBeDefined();
+    expect(warning?.caste).toBe("engineer");
+    expect(warning?.issueCount).toBe(1);
+  });
+
+  it("warns: tasks without a caste (unknown assignee)", async () => {
+    const port = fakePort({
+      issues: [
+        issue({
+          issue_id: "11111111-1111-4111-8111-111111111151",
+          identifier: "TST-21",
+          title: "Orphan task",
+          assignee_agent_id: "99999999-9999-4999-8999-999999999999",
+        }),
+      ],
+      agents: [agent()],
+    });
+    const view = swarmSupervisorView(port, {}, () => NOW);
+    const overview = await view.overview(COMPANY_ID);
+    const warning = overview.warnings.find((w) => w.kind === "tasks_without_caste");
+    expect(warning).toBeDefined();
+    expect(warning?.issueCount).toBe(1);
+  });
+
+  it("warns: runs without a task in the last 24h", async () => {
+    const port = fakePort({
+      agents: [agent()],
+      recentRuns: [
+        { agent_id: "44444444-4444-4444-8444-444444444444", native_issue_id: null, created_at: "2026-10-02T10:00:00.000Z" },
+        { agent_id: "44444444-4444-4444-8444-444444444444", native_issue_id: "11111111-1111-4111-8111-111111111111", created_at: "2026-10-02T11:00:00.000Z" },
+      ],
+    });
+    const view = swarmSupervisorView(port, {}, () => NOW);
+    const overview = await view.overview(COMPANY_ID);
+    const warning = overview.warnings.find((w) => w.kind === "runs_without_task");
+    expect(warning).toBeDefined();
+    expect(warning?.runCount).toBe(1);
+  });
+
+  it("stays silent when everything is healthy", async () => {
+    const port = fakePort({
+      issues: [
+        issue({
+          issue_id: "11111111-1111-4111-8111-111111111161",
+          identifier: "TST-22",
+          title: "Healthy task",
+          assignee_agent_id: "44444444-4444-4444-8444-444444444444",
+        }),
+      ],
+      agents: [agent()],
+      recentRuns: [
+        { agent_id: "44444444-4444-4444-8444-444444444444", native_issue_id: "11111111-1111-4111-8111-111111111161", created_at: "2026-10-02T11:00:00.000Z" },
+      ],
+    });
+    const view = swarmSupervisorView(port, {}, () => NOW);
+    const overview = await view.overview(COMPANY_ID);
+    expect(overview.warnings).toEqual([]);
   });
 });

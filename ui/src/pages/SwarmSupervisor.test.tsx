@@ -11,6 +11,7 @@ import {
   claimHolderLabel,
   formatCountdown,
 } from "./SwarmSupervisor";
+import { SwarmSupervisor as SwarmSupervisorProduction } from "./SwarmSupervisor.production";
 import type {
   SwarmSupervisorClaim,
   SwarmSupervisorOverview,
@@ -92,6 +93,8 @@ function role(overrides: Partial<SwarmSupervisorRole> = {}): SwarmSupervisorRole
         projectId: "project-a",
         createdAt: "2026-09-29T09:00:00.000Z",
         blockedTransitionAt: null,
+        eff: 42,
+        nestAgentId: "agent-b",
       },
     ],
     claims: [claim()],
@@ -121,8 +124,12 @@ function overview(overrides: Partial<SwarmSupervisorOverview> = {}): SwarmSuperv
       expiredClaims: 0,
       agentsWithClaims: 1,
       idleAgentsWithQueue: 2,
+      freeAgentsWithQueue: 1,
     },
     roles: [role()],
+    warnings: [],
+    matched: [],
+    cooldown: [],
     topQueue: [
       {
         issueId: "issue-2",
@@ -132,6 +139,8 @@ function overview(overrides: Partial<SwarmSupervisorOverview> = {}): SwarmSuperv
         role: "engineer",
         projectId: "project-a",
         createdAt: "2026-09-29T09:00:00.000Z",
+        eff: 42,
+        nestAgentId: "agent-b",
       },
     ],
     ...overrides,
@@ -160,19 +169,28 @@ function render(node: React.ReactNode) {
   });
 }
 
-async function renderPage() {
+async function renderPage(Page: typeof SwarmSupervisor = SwarmSupervisor) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const pageRoot = createRoot(container);
   root = pageRoot;
   await act(async () => {
     pageRoot.render(
       <QueryClientProvider client={queryClient}>
-        <SwarmSupervisor />
+        <Page />
       </QueryClientProvider>,
     );
     await Promise.resolve();
   });
   return queryClient;
+}
+
+async function clickButton(label: string) {
+  await act(async () => {
+    const buttons = Array.from(container.querySelectorAll("button")).filter(
+      (button) => button.textContent === label,
+    );
+    (buttons[0] as HTMLButtonElement).click();
+  });
 }
 
 describe("formatters", () => {
@@ -229,6 +247,24 @@ describe("SwarmSupervisor page", () => {
     expect(overviewMock.mock.calls[0]?.[0]).toBe("company-1");
   });
 
+  // The production entry is what App.tsx mounts: it must keep the setting
+  // origin labels (settings UI / env override / default) like the dev tree.
+  it.each([
+    ["dev", SwarmSupervisor],
+    ["production", SwarmSupervisorProduction],
+  ])("shows where each header setting came from (%s variant)", async (_name, Page) => {
+    overviewMock.mockResolvedValue(overview());
+    await renderPage(Page);
+
+    await vi.waitFor(() => {
+      expect(container.querySelector('[data-testid="swarm-overview-meta"]')).not.toBeNull();
+    });
+    const text = (id: string) => container.querySelector(`[data-testid="swarm-supervisor-source-${id}"]`)?.textContent;
+    expect(text("leaseTtlSec")).toContain("from settings UI");
+    expect(text("maxActiveTasks")).toContain("from environment override");
+    expect(text("enabled")).toContain("from settings UI");
+  });
+
   it("renders an expired lease as expired rather than a countdown", async () => {
     overviewMock.mockResolvedValue(
       overview({ roles: [role({ claims: [claim({ expired: true, secondsToExpiry: -5 })] })] }),
@@ -264,15 +300,109 @@ describe("SwarmSupervisor page", () => {
     expect(releaseLeaseMock.mock.calls[0]).toEqual(["company-1", { claimId: "claim-1" }]);
   });
 
-  it("shows the not-available state when the overview answers that the swarm is not enabled", async () => {
-    overviewMock.mockRejectedValue(new Error("swarm claim is not enabled"));
+  it("renders the status line with the live totals from the overview", async () => {
+    overviewMock.mockResolvedValue(
+      overview({
+        totals: {
+          queued: 7,
+          activeClaims: 3,
+          expiredClaims: 1,
+          agentsWithClaims: 3,
+          idleAgentsWithQueue: 4,
+          freeAgentsWithQueue: 2,
+        },
+      }),
+    );
     await renderPage();
     await vi.waitFor(() => {
-      expect(container.textContent).toContain("not enabled on this instance");
+      expect(container.querySelector('[data-testid="swarm-status-line"]')).not.toBeNull();
     });
-    // The retired pilot report has no tab and no request any more.
-    expect(container.querySelector('[data-testid="swarm-section-switch"]')).toBeNull();
-    expect(container.textContent).not.toContain("Pilot vs BASELINE");
+    const status = container.querySelector('[data-testid="swarm-status-line"]')?.textContent ?? "";
+    expect(status).toContain("7");
+    expect(status).toContain("3");
+    expect(status).toContain("2");
+  });
+
+  it("renders the effective pheromone strength and the nest agent of each queue row", async () => {
+    overviewMock.mockResolvedValue(overview());
+    await renderPage();
+    await vi.waitFor(() => {
+      expect(container.querySelector('[data-testid="swarm-queue-table-engineer"]')).not.toBeNull();
+    });
+    const queueTable = container.querySelector('[data-testid="swarm-queue-table-engineer"]');
+    expect(queueTable?.textContent).toContain("42");
+    expect(container.querySelector('[data-testid="swarm-queue-eff-issue-2"]')?.textContent).toContain("42");
+    expect(container.querySelector('[data-testid="swarm-queue-nest-issue-2"]')?.textContent).toContain("agent-b");
+  });
+
+async function openActivityTab() {
+  await act(async () => {
+    const buttons = Array.from(container.querySelectorAll("button")).filter(
+      (button) => button.textContent === "Activity",
+    );
+    (buttons[0] as HTMLButtonElement).click();
+  });
+}
+
+  it("renders the warnings section when the overview carries warnings", async () => {
+    overviewMock.mockResolvedValue(
+      overview({
+        warnings: [
+          {
+            kind: "caste_without_agents",
+            message: "No free agents in the engineer caste",
+            caste: "engineer",
+          },
+          { kind: "tasks_without_caste", message: "3 unassigned tasks have no caste", issueCount: 3 },
+          { kind: "runs_without_task", message: "2 runs without a task in the last 24h", runCount: 2 },
+        ],
+      }),
+    );
+    await renderPage();
+    await openActivityTab();
+    await vi.waitFor(() => {
+      expect(container.querySelector('[data-testid="swarm-warnings"]')).not.toBeNull();
+    });
+    const warnings = container.querySelector('[data-testid="swarm-warnings"]')?.textContent ?? "";
+    expect(warnings).toContain("No free agents in the engineer caste");
+    expect(warnings).toContain("3 unassigned tasks have no caste");
+    expect(warnings).toContain("2 runs without a task in the last 24h");
+  });
+
+  it("renders the recent matches feed from the issue.swarm_matched activity", async () => {
+    overviewMock.mockResolvedValue(
+      overview({
+        matched: [
+          {
+            at: "2026-10-02T12:04:00.000Z",
+            issueId: "issue-2",
+            identifier: "task-2",
+            title: "task-two",
+            agentId: "agent-b",
+            agentName: "Agent B",
+          },
+        ],
+      }),
+    );
+    await renderPage();
+    await openActivityTab();
+    await vi.waitFor(() => {
+      expect(container.querySelector('[data-testid="swarm-matched"]')).not.toBeNull();
+    });
+    const matched = container.querySelector('[data-testid="swarm-matched"]')?.textContent ?? "";
+    expect(matched).toContain("task-2");
+    expect(matched).toContain("Agent B");
+  });
+
+  it("renders an empty cooldown section until T5 ships the cooling tasks", async () => {
+    overviewMock.mockResolvedValue(overview({ cooldown: [] }));
+    await renderPage();
+    await openActivityTab();
+    await vi.waitFor(() => {
+      expect(container.querySelector('[data-testid="swarm-cooldown"]')).not.toBeNull();
+    });
+    const cooldown = container.querySelector('[data-testid="swarm-cooldown"]')?.textContent ?? "";
+    expect(cooldown).toContain("No tasks are cooling down");
   });
 
   it("shows the empty state when the overview has no roles, leases or queue", async () => {
@@ -280,7 +410,14 @@ describe("SwarmSupervisor page", () => {
       overview({
         roles: [],
         topQueue: [],
-        totals: { queued: 0, activeClaims: 0, expiredClaims: 0, agentsWithClaims: 0, idleAgentsWithQueue: 0 },
+        totals: {
+          queued: 0,
+          activeClaims: 0,
+          expiredClaims: 0,
+          agentsWithClaims: 0,
+          idleAgentsWithQueue: 0,
+          freeAgentsWithQueue: 0,
+        },
       }),
     );
     await renderPage();

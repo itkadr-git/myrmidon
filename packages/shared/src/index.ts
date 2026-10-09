@@ -2846,6 +2846,7 @@ export * from "./myrmidon-litellm-sync.js";
 // contract of the core queue, the supervisor view and the pilot settings.
 export * from "./myrmidon-swarm-claim.js";
 export * from "./myrmidon-swarm.js";
+export * from "./myrmidon-swarm-wake.js"; // myrmidon(1.6.5 F-26 T5): wake guard settings + cooling
 // myrmidon(1.6.5-DBC1): the datastore-care retention settings contract
 // (general.datastoreCare.retention) and the activity action names.
 export * from "./myrmidon-datastore-care.js";
@@ -2872,6 +2873,9 @@ export * from "./myrmidon-prompt-budget.js"; // myrmidon(1.6.3 PROMPT-BUDGET B)
 // myrmidon(1.6.5-OWNER-DM-FILTER): the owner-DM delivery filter — the settings
 // shape (mode), the storage key and the card-audience decision.
 export * from "./myrmidon-owner-delivery.js";
+// myrmidon(F16): the agent defaults of the issue list endpoint — the settings
+// shape (enabled), the storage key, the agent limit constants and the resolver.
+export * from "./myrmidon-issue-list-agent-defaults.js";
 // myrmidon(1.6.5-DB-RETENTION): the shared contract of the database retention
 // sweep — the settings shape, the sweep-state view and the normalizers.
 export * from "./myrmidon-data-retention.js";

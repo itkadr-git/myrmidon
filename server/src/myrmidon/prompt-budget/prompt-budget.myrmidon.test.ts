@@ -21,8 +21,10 @@
 //      carries the window), a second pass in the same window writes nothing.
 
 import { describe, expect, it } from "vitest";
+import { agents, companies } from "@paperclipai/db";
 import {
   ATTENTION_SOURCE_KINDS,
+  PROMPT_BUDGET_SETTINGS_KEY,
   buildPromptBudgetRunStatus,
   defaultPromptBudgetSettings,
   normalizePromptBudgetSettings,
@@ -35,7 +37,15 @@ import {
   type PromptBudgetSettings,
 } from "@paperclipai/shared";
 import { buildPromptBudgetAttentionCards } from "./attention.js";
-import { deliverPromptBudgetSignal, type PromptBudgetSignalPorts } from "./signal.js";
+import {
+  hasPromptBudgetSignal,
+  promptBudgetSignalWindowStart,
+  readPromptBudgetSignals,
+  refreshPromptBudgetSignals,
+  resetPromptBudgetSignals,
+} from "./signal.js";
+import { PROMPT_BUDGET_SIGNAL_NOTICE_TITLE, isPromptBudgetSignalNotice } from "./notice.js";
+import { createPromptBudgetSweeper } from "./sweep.js";
 import { parsePromptBreakdown } from "../prompt-budget-advice/source.js";
 
 const AGENT_A = "11111111-1111-4111-8111-111111111111";
@@ -266,54 +276,229 @@ describe("myrmidon(1.6.3 PROMPT-BUDGET B) top parts", () => {
   });
 });
 
-describe("myrmidon(1.6.3 PROMPT-BUDGET B) signal dedup", () => {
-  it("one comment per agent per window; a second pass in the same window writes nothing", async () => {
+/** The sweeper's db, reduced to the two selects a pass makes. */
+function fakeSweepDb() {
+  return {
+    select(_shape?: unknown) {
+      return {
+        from(table: unknown) {
+          return {
+            where: async () =>
+              table === companies
+                ? [{ id: "company-1" }]
+                : [{ id: AGENT_A, name: "agent-a" }],
+          };
+        },
+      };
+    },
+  };
+}
+
+/** The instance-settings seam the sweep reads the thresholds from. */
+function fakeSweepSettings(overrides: Partial<PromptBudgetSettings> = {}) {
+  const stored = settings(overrides);
+  return {
+    getGeneral: async () => ({ [PROMPT_BUDGET_SETTINGS_KEY]: stored }),
+    updateGeneral: async () => {},
+  };
+}
+
+describe("myrmidon(1.6.5 PROMPT-BUDGET-SIGNAL) recorded signal dedup", () => {
+  it("one signal per agent per UTC day: a second pass over the threshold holds the record instead of repeating it", () => {
+    resetPromptBudgetSignals();
     const key = promptBudgetSignalKey(AGENT_A, new Date(Date.UTC(2026, 9, 4)));
     expect(key).toBe(`prompt-budget:${AGENT_A}:2026-10-04`);
     expect(promptBudgetSignalKey(AGENT_B, new Date(Date.UTC(2026, 9, 4)))).not.toBe(key);
 
-    // The delivery seam with fake ports: a db whose "already signalled" check
-    // flips after the first write behaves as one comment per window.
-    let stored = false;
-    let writes = 0;
-    const fakeDb = {
-      select() {
-        return {
-          from() {
-            return {
-              where() {
-                return {
-                  orderBy() {
-                    return { limit: async () => [{ id: "issue-1", identifier: "T-1" }] };
-                  },
-                  limit: async () => (stored ? [{ id: "c1" }] : []),
-                };
-              },
-            };
-          },
-        };
-      },
-    };
-    const ports: PromptBudgetSignalPorts = {
-      addComment: async () => {
-        writes += 1;
-        stored = true;
-      },
-      now: () => new Date(Date.UTC(2026, 9, 4, 12)),
-    };
-    const status = agentStatus();
-    const first = await deliverPromptBudgetSignal(fakeDb as never, ports, {
-      companyId: "company-1",
-      status,
-      agentName: "agent-a",
+    const cards = buildPromptBudgetAttentionCards(
+      [agentStatus()],
+      new Map([[AGENT_A, "agent-a"]]),
+    );
+    expect(cards).toHaveLength(1);
+
+    // The sweep's first pass of the day records the signal under its day key.
+    const firstPass = new Date(Date.UTC(2026, 9, 4, 9, 0));
+    expect(refreshPromptBudgetSignals("company-1", cards, firstPass)).toEqual({
+      cards: 1,
+      recorded: 1,
+      held: 0,
     });
-    const second = await deliverPromptBudgetSignal(fakeDb as never, ports, {
-      companyId: "company-1",
-      status,
-      agentName: "agent-a",
+    expect(
+      hasPromptBudgetSignal("company-1", AGENT_A, promptBudgetSignalWindowStart(firstPass)),
+    ).toBe(true);
+    // The key is per agent and per company: neither neighbour is "already sent".
+    expect(
+      hasPromptBudgetSignal("company-1", AGENT_B, promptBudgetSignalWindowStart(firstPass)),
+    ).toBe(false);
+    expect(
+      hasPromptBudgetSignal("company-2", AGENT_A, promptBudgetSignalWindowStart(firstPass)),
+    ).toBe(false);
+
+    // The next pass of the same loop, two hours later, same UTC day: the
+    // record is found and held — nothing repeats.
+    const secondPass = new Date(Date.UTC(2026, 9, 4, 11, 0));
+    expect(refreshPromptBudgetSignals("company-1", cards, secondPass)).toEqual({
+      cards: 1,
+      recorded: 0,
+      held: 1,
     });
-    expect(first.written).toBe(true);
-    expect(second.written).toBe(false);
-    expect(writes).toBe(1);
+    const recorded = readPromptBudgetSignals("company-1");
+    expect(recorded).toHaveLength(1);
+    expect(recorded[0]!.key).toBe(key);
+    expect(recorded[0]!.recordedAt).toBe(firstPass.toISOString());
+    expect(recorded[0]!.card.dedupKey).toBe(cards[0]!.dedupKey);
+  });
+
+  it("a re-grade in the same day updates the record in place; the next UTC day records one new signal", () => {
+    resetPromptBudgetSignals();
+    const firstPass = new Date(Date.UTC(2026, 9, 4, 9, 0));
+    const warn = buildPromptBudgetAttentionCards(
+      [agentStatus()],
+      new Map([[AGENT_A, "agent-a"]]),
+    );
+    refreshPromptBudgetSignals("company-1", warn, firstPass);
+
+    // warn -> crit on a newer run, same UTC day: one record, fresh numbers.
+    const crit = buildPromptBudgetAttentionCards(
+      [
+        agentStatus({
+          lastRun: buildPromptBudgetRunStatus({
+            runId: "run-2",
+            total: 990,
+            parts: {},
+            windowTokens: 1000,
+            settings: settings(),
+          }),
+        }),
+      ],
+      new Map([[AGENT_A, "agent-a"]]),
+    );
+    expect(
+      refreshPromptBudgetSignals("company-1", crit, new Date(Date.UTC(2026, 9, 4, 12, 0))),
+    ).toEqual({ cards: 1, recorded: 0, held: 1 });
+    const held = readPromptBudgetSignals("company-1");
+    expect(held).toHaveLength(1);
+    expect(held[0]!.recordedAt).toBe(firstPass.toISOString());
+    expect(held[0]!.card.severity).toBe(crit[0]!.severity);
+
+    // A new UTC day is one new signal of the day — still one per agent.
+    const nextDay = new Date(Date.UTC(2026, 9, 5, 0, 5));
+    expect(refreshPromptBudgetSignals("company-1", crit, nextDay)).toEqual({
+      cards: 1,
+      recorded: 1,
+      held: 0,
+    });
+    const nextSignal = readPromptBudgetSignals("company-1");
+    expect(nextSignal).toHaveLength(1);
+    expect(nextSignal[0]!.key).toBe(`prompt-budget:${AGENT_A}:2026-10-05`);
+    expect(nextSignal[0]!.recordedAt).toBe(nextDay.toISOString());
+
+    // Back under the threshold: the record goes, and with it the card.
+    expect(
+      refreshPromptBudgetSignals("company-1", [], new Date(Date.UTC(2026, 9, 5, 12, 0))),
+    ).toEqual({ cards: 0, recorded: 0, held: 0 });
+    expect(readPromptBudgetSignals("company-1")).toEqual([]);
+    expect(
+      hasPromptBudgetSignal("company-1", AGENT_A, promptBudgetSignalWindowStart(nextDay)),
+    ).toBe(false);
+  });
+});
+
+describe("myrmidon(1.6.5 PROMPT-BUDGET-SIGNAL) sweep over the threshold", () => {
+  it("two passes in a row over the threshold: one recorded card, zero comments in the agent's task", async () => {
+    resetPromptBudgetSignals();
+    const firstPass = new Date(Date.UTC(2026, 9, 4, 9, 0));
+    const secondPass = new Date(Date.UTC(2026, 9, 4, 11, 0));
+    // The sweeper's whole wiring: no comment port exists to write into a task,
+    // which is the regression guard for "the agent is never woken by this".
+    const deps = {
+      db: fakeSweepDb() as never,
+      settings: fakeSweepSettings() as never,
+      readStatus: async () => [agentStatus()],
+      now: () => firstPass,
+    };
+    expect(Object.keys(deps)).toEqual(["db", "settings", "readStatus", "now"]);
+
+    const sweeper = createPromptBudgetSweeper(deps);
+    const first = await sweeper.sweep(firstPass, { force: true });
+    expect(first).toMatchObject({
+      skipped: false,
+      inspected: 1,
+      signaled: 1,
+      held: 0,
+      failed: 0,
+    });
+    const second = await sweeper.sweep(secondPass, { force: true });
+    expect(second).toMatchObject({
+      skipped: false,
+      inspected: 1,
+      signaled: 0,
+      held: 1,
+      failed: 0,
+    });
+
+    // One card, and the card is the signal's only surface.
+    const signals = readPromptBudgetSignals("company-1");
+    expect(signals).toHaveLength(1);
+    expect(signals[0]!.card.agentId).toBe(AGENT_A);
+    expect(signals[0]!.recordedAt).toBe(firstPass.toISOString());
+  });
+
+  it("a disabled feature records no signal and clears the card of the day", async () => {
+    resetPromptBudgetSignals();
+    const now = new Date(Date.UTC(2026, 9, 4, 9, 0));
+    const enabled = createPromptBudgetSweeper({
+      db: fakeSweepDb() as never,
+      settings: fakeSweepSettings() as never,
+      readStatus: async () => [agentStatus()],
+      now: () => now,
+    });
+    expect((await enabled.sweep(now, { force: true })).signaled).toBe(1);
+    expect(readPromptBudgetSignals("company-1")).toHaveLength(1);
+
+    const disabled = createPromptBudgetSweeper({
+      db: fakeSweepDb() as never,
+      settings: fakeSweepSettings({ enabled: false }) as never,
+      readStatus: async () => [agentStatus()],
+      now: () => now,
+    });
+    const off = await disabled.sweep(now, { force: true });
+    expect(off.signaled).toBe(0);
+    expect(off.inspected).toBe(0);
+    expect(readPromptBudgetSignals("company-1")).toEqual([]);
+  });
+});
+
+describe("myrmidon(1.6.5 PROMPT-BUDGET-SIGNAL) notice recognition", () => {
+  it("recognises the signal comment by its system_notice title, or by its body when the row lost the presentation", () => {
+    const body =
+      "work-gip's last run used 124.8% of its prompt window (249600 of 200000 tokens).";
+    expect(
+      isPromptBudgetSignalNotice({
+        authorType: "system",
+        presentation: { kind: "system_notice", title: PROMPT_BUDGET_SIGNAL_NOTICE_TITLE },
+        body,
+      }),
+    ).toBe(true);
+    // The production rows: the insert dropped the metadata, so the sentence is
+    // the only marker left on them.
+    expect(
+      isPromptBudgetSignalNotice({ authorType: "system", presentation: null, body }),
+    ).toBe(true);
+    // A person quoting the sentence is not the signal, and neither is another
+    // system notice.
+    expect(
+      isPromptBudgetSignalNotice({ authorType: "user", presentation: null, body }),
+    ).toBe(false);
+    expect(
+      isPromptBudgetSignalNotice({ authorType: "system", presentation: null, body: "Done." }),
+    ).toBe(false);
+    expect(
+      isPromptBudgetSignalNotice({
+        authorType: "system",
+        presentation: { kind: "system_notice", title: "Another notice" },
+        body: "Done.",
+      }),
+    ).toBe(false);
   });
 });

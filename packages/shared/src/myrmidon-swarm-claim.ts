@@ -57,6 +57,7 @@ export const SWARM_CLAIM_SETTING_KEYS = [
   "maxActiveTasks",
   "sweepIntervalSec",
   "p0Preemption",
+  "pheromone",
 ] as const;
 
 export type SwarmClaimSettingKey = (typeof SWARM_CLAIM_SETTING_KEYS)[number];
@@ -69,21 +70,20 @@ export type SwarmClaimSettingSource = "settings" | "env" | "default";
  * object — one key, like `runLimits` and `workspaceHygiene`, so a partial
  * hand-edit cannot silently enable the swarm.
  */
-export const SWARM_CLAIM_SETTINGS_KEY = "swarm";
+export const SWARM_CLAIM_SETTINGS_KEY = "swarmClaim";
 
 /**
- * The key the same object lived under before 1.6.5. Readers fall back to it
- * (see `readStoredSwarmSettings`), so a value saved by an older build is not
- * lost; the next save writes `swarm`.
+ * The stored swarm-claim settings of an instance `general` block. One reader
+ * for every consumer (the claim service, the sweep, the matcher, the hooks),
+ * so the key is spelled in one place. `general.swarm` is a different block —
+ * the wake guard of F-26 (`myrmidon-swarm-wake.ts`: the taskless gate and the
+ * cooling window) — and is never read here.
  */
-export const SWARM_CLAIM_LEGACY_SETTINGS_KEY = "swarmClaim";
-
-/** The stored swarm settings of an instance `general` block: the current key, else the legacy one. */
 export function readStoredSwarmSettings(
   general: Record<string, unknown> | null | undefined,
 ): unknown {
   if (!general) return undefined;
-  return general[SWARM_CLAIM_SETTINGS_KEY] ?? general[SWARM_CLAIM_LEGACY_SETTINGS_KEY];
+  return general[SWARM_CLAIM_SETTINGS_KEY];
 }
 
 /** Master switch of the swarm. Off unless the stored value or the override turns it on. */
@@ -298,6 +298,65 @@ export const SWARM_CLAIM_RETIRED_SETTING_KEYS = [
   "idleWakeBatch",
 ] as const;
 
+// myrmidon(1.6.5 SWARM-T4): pheromone tuning fields (design §5.1). Numbers
+// integer-tuned, whole numbers ≥ 0; an absent field is the design default
+// (§2.3), stored as an empty object — the panel shows the default in the
+// placeholder.
+/**
+ * myrmidon(1.6.5 SWARM-T4, design §5.1): the pheromone tuning subset of the
+ * swarm settings — priority → strength seeds plus aging/evaporation knobs.
+ * All fields optional; absent = the design default (§2.3).
+ */
+export const PHEROMONE_NUMBER_KEYS = [
+  "critical",
+  "high",
+  "medium",
+  "low",
+  "agingStepHours",
+  "agingStep",
+  "agingCap",
+  "failPenalty",
+  "cooldownBaseMin",
+  "cooldownCapMin",
+] as const;
+
+export type PheromoneNumberKey = (typeof PHEROMONE_NUMBER_KEYS)[number];
+
+export const PHEROMONE_FIELD_DEFAULTS: Record<PheromoneNumberKey, number> = {
+  critical: 100,
+  high: 30,
+  medium: 10,
+  low: 1,
+  agingStepHours: 24,
+  agingStep: 1,
+  agingCap: 5,
+  failPenalty: 10,
+  cooldownBaseMin: 30,
+  cooldownCapMin: 720,
+};
+
+const pheromoneNumberSchema = z
+  .number()
+  .int()
+  .min(0)
+  .max(100000);
+
+export const pheromoneSchema = z
+  .object({
+    critical: pheromoneNumberSchema,
+    high: pheromoneNumberSchema,
+    medium: pheromoneNumberSchema,
+    low: pheromoneNumberSchema,
+    agingStepHours: pheromoneNumberSchema,
+    agingStep: pheromoneNumberSchema,
+    agingCap: pheromoneNumberSchema,
+    failPenalty: pheromoneNumberSchema,
+    cooldownBaseMin: pheromoneNumberSchema,
+    cooldownCapMin: pheromoneNumberSchema,
+  })
+  .partial()
+  .strict();
+
 function dropRetiredSwarmKeys(raw: unknown): unknown {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return raw;
   const copy = { ...(raw as Record<string, unknown>) };
@@ -305,7 +364,7 @@ function dropRetiredSwarmKeys(raw: unknown): unknown {
   return copy;
 }
 
-/** The canonical stored shape of `instance_settings.general.swarm`. */
+/** The canonical stored shape of `instance_settings.general.swarmClaim`. */
 export const swarmClaimSettingsSchema = z.preprocess(
   dropRetiredSwarmKeys,
   z
@@ -315,6 +374,7 @@ export const swarmClaimSettingsSchema = z.preprocess(
       maxActiveTasks: maxActiveTasksSchema,
       sweepIntervalSec: sweepIntervalSchema,
       p0Preemption: z.boolean().default(DEFAULT_SWARM_CLAIM_P0_PREEMPTION),
+      pheromone: pheromoneSchema.default({}),
     })
     .strict(),
 );
@@ -327,6 +387,7 @@ export const patchSwarmClaimSettingsSchema = z
     maxActiveTasks: maxActiveTasksSchema.optional(),
     sweepIntervalSec: sweepIntervalSchema.optional(),
     p0Preemption: z.boolean().optional(),
+    pheromone: pheromoneSchema.optional(),
   })
   .strict();
 
@@ -379,6 +440,7 @@ export function readSwarmClaimSettingsFromEnv(
         : DEFAULT_SWARM_CLAIM_SWEEP_INTERVAL_SEC,
     p0Preemption:
       parseSwarmClaimEnabled(env[SWARM_CLAIM_P0_PREEMPTION_ENV]) ?? DEFAULT_SWARM_CLAIM_P0_PREEMPTION,
+    pheromone: {},
   };
 }
 
@@ -390,7 +452,7 @@ export function normalizeSwarmClaimSettings(raw: unknown): SwarmClaimSettings | 
 
 /**
  * Effective settings and where each value came from. `stored` is the raw
- * `general.swarm` value (see `readStoredSwarmSettings`); an unreadable one
+ * `general.swarmClaim` value (see `readStoredSwarmSettings`); an unreadable one
  * counts as absent, so the environment (or the default) applies instead — a
  * hand-edited row cannot enable the swarm on its own.
  *
@@ -423,6 +485,7 @@ export function resolveSwarmClaimSettings(options: {
         }),
         p0Preemption:
           parseSwarmClaimEnabled(env[SWARM_CLAIM_P0_PREEMPTION_ENV]) ?? stored.p0Preemption,
+        pheromone: stored.pheromone ?? {},
       }
     : envSettings;
 
@@ -456,6 +519,11 @@ export function resolveSwarmClaimSettings(options: {
     : stored
       ? "settings"
       : "default";
+  // myrmidon(1.6.5 SWARM-T4, design §5.1): the pheromone subset is
+  // settings-only (no env override) — the stored row or the design default.
+  sources.pheromone = stored?.pheromone && Object.keys(stored.pheromone).length > 0
+    ? "settings"
+    : "default";
   return { settings, sources };
 }
 
@@ -492,6 +560,19 @@ function envMaxActiveOr(raw: string | undefined, stored: number | null): number 
   return stored;
 }
 
+/**
+ * 1.6.5 (SWARM-T4, design §5.1): the claim gate the server enforces. The
+ * role/company restriction lists are gone — one switch, the whole board or nothing.
+ * Kept as a named function so the settings screen, the claim service and the
+ * supervisor view keep calling one gate.
+ */
+export function isSwarmClaimEnabledFor(
+  settings: Pick<SwarmClaimSettings, "enabled">,
+  _input: { companyId: string; role: string },
+): boolean {
+  return settings.enabled;
+}
+
 /** A patch over the effective values, the shape that gets stored. */
 export function mergeSwarmClaimSettings(
   base: SwarmClaimSettings,
@@ -505,6 +586,10 @@ export function mergeSwarmClaimSettings(
     sweepIntervalSec:
       patch.sweepIntervalSec === undefined ? base.sweepIntervalSec : patch.sweepIntervalSec,
     p0Preemption: patch.p0Preemption === undefined ? base.p0Preemption : patch.p0Preemption,
+    // myrmidon(1.6.5 SWARM-T4, design §5.1): a pheromone patch replaces the
+    // subset wholesale (absent keys fall back to the design default, not to
+    // the previous stored value — the panel always submits the full subset).
+    pheromone: patch.pheromone === undefined ? base.pheromone : patch.pheromone,
   };
 }
 

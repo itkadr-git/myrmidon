@@ -20,6 +20,7 @@ let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | unde
 const companyId = randomUUID();
 const botRace = randomUUID();
 const botStale = randomUUID();
+const botWrapped = randomUUID();
 
 const support = await getEmbeddedPostgresTestSupport();
 const describeDatabase = support.supported || externalTestDatabaseUrl ? describe : describe.skip;
@@ -40,6 +41,7 @@ describeDatabase("bot apply jobs store", () => {
     for (const [id, name] of [
       [botRace, "apply-bot-race"],
       [botStale, "apply-bot-stale"],
+      [botWrapped, "apply-bot-wrapped"],
     ] as const) {
       await db.insert(agents).values({
         id,
@@ -97,5 +99,63 @@ describeDatabase("bot apply jobs store", () => {
     const again = await store.acquireLiveJob({ companyId, botId: botStale, requestedBy: null });
     expect(again.id).toBe(fresh.id);
     expect(again.created).toBe(false);
+  });
+
+  it("hands the winner's row back when the losing insert throws a drizzle-wrapped 23505", async () => {
+    // Deterministic twin of the racing test above. When drizzle rejects an
+    // insert on the live-job unique index it wraps the driver error in its
+    // own "Failed query: ..." error: the SQLSTATE code lives on `cause`, not
+    // on the thrown object. The old local isUniqueViolation read only the
+    // top-level error, missed the 23505 and let it escape acquireLiveJob —
+    // the flake this fix removes. A proxy over the real db throws exactly
+    // that wrapped error once (after landing the winner's row for real), so
+    // the loser path runs every time, not just when the race lands.
+    const winnerId = randomUUID();
+    let raced = false;
+    const racingDb = new Proxy(db, {
+      get(target, prop) {
+        if (prop === "insert") {
+          return (table: unknown) => {
+            if (table === botApplyJobs && !raced) {
+              raced = true;
+              return {
+                values: () => ({
+                  returning: async () => {
+                    // The winner commits first — the loser's insert sees the
+                    // index violation, as in the real race.
+                    await target
+                      .insert(botApplyJobs)
+                      .values({ id: winnerId, companyId, botId: botWrapped, status: "pending", requestedBy: null });
+                    throw new Error('Failed query: insert into "bot_apply_jobs" ("id", "company_id", "bot_id", "status") …', {
+                      cause: Object.assign(
+                        new Error('duplicate key value violates unique constraint "bot_apply_jobs_live_bot_uniq"'),
+                        { code: "23505" },
+                      ),
+                    });
+                  },
+                }),
+              };
+            }
+            return target.insert(table as never);
+          };
+        }
+        const value = Reflect.get(target, prop);
+        return typeof value === "function" ? (value as (...args: unknown[]) => unknown).bind(target) : value;
+      },
+    });
+
+    const store = drizzleBotApplyJobStore(racingDb);
+    const job = await store.acquireLiveJob({ companyId, botId: botWrapped, requestedBy: null });
+
+    // The loser returns the winner's row — created=false, the winner's id —
+    // instead of throwing the wrapped error at the caller.
+    expect(job.id).toBe(winnerId);
+    expect(job.created).toBe(false);
+
+    // Exactly one live job for the bot: the rejected insert left no second row.
+    const rows = await db.select().from(botApplyJobs).where(eq(botApplyJobs.botId, botWrapped));
+    const live = rows.filter((row) => row.status === "pending" || row.status === "running");
+    expect(live).toHaveLength(1);
+    expect(live[0]?.id).toBe(winnerId);
   });
 });

@@ -173,7 +173,7 @@ describeEmbeddedPostgres("swarm wake: real dispatch and the supervisor caste gat
 
   function settingsPort() {
     return {
-      getGeneral: async () => ({ swarm: { ...baseSettings, enabled: true } }),
+      getGeneral: async () => ({ swarmClaim: { ...baseSettings, enabled: true } }),
       updateGeneral: async () => {
         throw new Error("not used");
       },

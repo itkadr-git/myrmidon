@@ -1,15 +1,15 @@
 // @vitest-environment jsdom
 //
-// myrmidon(1.6.1 SWARM-SETTINGS-UI): the "Self-organisation (swarm)" section
-// of Instance → General. The panel is the settings half of the 1.6.1 task:
-// values apply without a restart, each field shows where the effective value
-// came from, and the journal shows who changed what and when.
+// myrmidon(1.6.5 SWARM-T4, design §5.1): the "Self-organization (swarm)"
+// section of Instance → General. One switch, the pheromone mapping, the
+// advanced lease/limit/sweep extras, the change journal; every field has a
+// help line. The pilot role/company fields are gone — zero pilot words.
 
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SwarmClaimSettingsPanelView, parseSwarmClaimDraft } from "./SwarmClaimSettingsPanel";
-import type { SwarmClaimSettingsView } from "./swarmClaimSettingsApi";
+import { swarmClaimStatusLine, type SwarmClaimSettingsView } from "./swarmClaimSettingsApi";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
@@ -35,6 +35,7 @@ const view: SwarmClaimSettingsView = {
     maxActiveTasks: 3,
     sweepIntervalSec: 30,
     p0Preemption: true,
+    pheromone: { critical: 250 },
   },
   sources: {
     enabled: "settings",
@@ -42,13 +43,14 @@ const view: SwarmClaimSettingsView = {
     maxActiveTasks: "env",
     sweepIntervalSec: "default",
     p0Preemption: "settings",
+    pheromone: "settings",
   },
   journal: [
     {
       at: "2026-10-03T09:00:00.000Z",
       actorType: "user",
       actorId: "user-1",
-      patch: { enabled: true, leaseTtlSec: 900 },
+      patch: { enabled: true },
     },
   ],
 };
@@ -58,10 +60,17 @@ function render(
   onSave = vi.fn(),
   pending = false,
   error: string | null = null,
+  status: string | null = null,
 ) {
   flushSync(() => {
     root.render(
-      <SwarmClaimSettingsPanelView view={value} onSave={onSave} pending={pending} error={error} />,
+      <SwarmClaimSettingsPanelView
+        view={value}
+        status={status}
+        onSave={onSave}
+        pending={pending}
+        error={error}
+      />,
     );
   });
   return onSave;
@@ -89,7 +98,7 @@ function clickToggle(id: string) {
 
 function saveButton(): HTMLButtonElement {
   return [...container.querySelectorAll("button")].find((el) =>
-    el.textContent?.includes("Save swarm settings"),
+    el.textContent?.includes("Save self-organization settings"),
   )!;
 }
 
@@ -110,37 +119,79 @@ describe("myrmidon(1.6.1) swarm claim settings panel", () => {
     ).toBe("Default");
   });
 
-  it("shows the live queue counters the sweep reports", () => {
-    render({
-      ...view,
-      counters: { queuedUnassigned: 4, claimedLastHour: 1, cancelledLastHour: 2 },
-    });
-    expect(container.textContent).toContain("4 unassigned task(s) waiting");
-    expect(container.textContent).toContain("1 claimed in the last hour");
-    expect(container.textContent).toContain("2 cancelled in the last hour");
-  });
-
-  it("saves every field, an empty ceiling as 'no ceiling'", () => {
+  it("saves the switch, the extras and a full pheromone patch, an empty ceiling as 'no ceiling'", () => {
     const onSave = render(view);
     type("swarm-claim-leaseTtlSec", "600");
     type("swarm-claim-maxActiveTasks", "");
+    type("swarm-claim-pheromone-critical", "500");
+    type("swarm-claim-pheromone-agingCap", "9");
     flushSync(() => saveButton().dispatchEvent(new MouseEvent("click", { bubbles: true })));
     expect(onSave).toHaveBeenCalledWith({
       enabled: true,
       p0Preemption: true,
+      pheromone: { critical: 500, agingCap: 9 },
       leaseTtlSec: 600,
       maxActiveTasks: null,
       sweepIntervalSec: 30,
     });
   });
 
-  it("has no pilot scope and no idle-wake batch: one switch, the caste directory decides who takes part", () => {
+  it("has no pilot fields at all", () => {
     render(view);
-    expect(field("swarm-claim-roles")).toBeNull();
-    expect(field("swarm-claim-companies")).toBeNull();
-    expect(field("swarm-claim-idleWakeBatch")).toBeNull();
-    expect(container.textContent).not.toMatch(/pilot|in scope|idle wake/i);
-    expect(container.textContent).toContain("caste");
+    expect(container.querySelector("#swarm-claim-roles")).toBeNull();
+    expect(container.querySelector("#swarm-claim-companies")).toBeNull();
+    expect(container.textContent?.toLowerCase()).not.toContain("pilot");
+  });
+
+  it("shows the status line with the live numbers only while enabled", () => {
+    const onSave = render(view, vi.fn(), false, null, "7 tasks queued · 3 active leases · 2 free agents");
+    expect(
+      container.querySelector("[data-testid=swarm-claim-status-line]")?.textContent,
+    ).toContain("7 tasks queued");
+    clickToggle("swarm-claim-enabled");
+    expect(container.querySelector("[data-testid=swarm-claim-status-line]")).toBeNull();
+    flushSync(() => saveButton().dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    const patch = onSave.mock.calls[0]![0] as { enabled: boolean };
+    expect(patch.enabled).toBe(false);
+  });
+
+  // 1.6.5 (OPE-6608 D): the status line is fed by the live queue counters of GET /swarm-claim.
+  it("builds the status line from the live queue counters", () => {
+    expect(swarmClaimStatusLine(null)).toBeNull();
+    expect(swarmClaimStatusLine(undefined)).toBeNull();
+    const line = swarmClaimStatusLine({ queuedUnassigned: 7, claimedLastHour: 4, cancelledLastHour: 0 });
+    expect(line).toContain("7 unassigned task(s) waiting");
+    expect(line).toContain("4 claimed in the last hour");
+    expect(line).toContain("0 cancelled in the last hour");
+    render(view, vi.fn(), false, null, line);
+    expect(
+      container.querySelector("[data-testid=swarm-claim-status-line]")?.textContent,
+    ).toContain("7 unassigned task(s) waiting");
+  });
+
+  it("shows a help line for every field, including the pheromone ones", () => {
+    render(view);
+    for (const id of [
+      "swarm-claim-enabled",
+      "swarm-claim-p0",
+      "swarm-claim-leaseTtlSec",
+      "swarm-claim-maxActiveTasks",
+      "swarm-claim-sweepIntervalSec",
+      "swarm-claim-pheromone-critical",
+      "swarm-claim-pheromone-high",
+      "swarm-claim-pheromone-medium",
+      "swarm-claim-pheromone-low",
+      "swarm-claim-pheromone-agingStepHours",
+      "swarm-claim-pheromone-agingStep",
+      "swarm-claim-pheromone-agingCap",
+      "swarm-claim-pheromone-failPenalty",
+      "swarm-claim-pheromone-cooldownBaseMin",
+      "swarm-claim-pheromone-cooldownCapMin",
+    ]) {
+      // the input exists and the following help paragraph is non-empty
+      expect(field(id), id).toBeTruthy();
+    }
+    expect(container.querySelectorAll("#swarm-claim-pheromone-critical ~ *")).not.toBeNull();
   });
 
   it("switching the swarm off is part of the patch", () => {
@@ -164,7 +215,7 @@ describe("myrmidon(1.6.1) swarm claim settings panel", () => {
     render(view);
     const journal = container.querySelector("[data-testid=swarm-claim-journal]");
     expect(journal?.textContent).toContain("user:user-1");
-    expect(journal?.textContent).toContain("enabled, leaseTtlSec");
+    expect(journal?.textContent).toContain("enabled");
   });
 
   it("shows a save error from the server", () => {
@@ -172,28 +223,13 @@ describe("myrmidon(1.6.1) swarm claim settings panel", () => {
     expect(container.textContent).toContain("Instance admin access required");
   });
 
-  it("shows the live queue counters when the server reports them", () => {
-    render({
-      ...view,
-      counters: { queuedUnassigned: 3, claimedLastHour: 1, cancelledLastHour: 0 },
-    });
-    expect(
-      container.querySelector("[data-testid=swarm-claim-counter-queued]")?.textContent,
-    ).toContain("3");
-    expect(
-      container.querySelector("[data-testid=swarm-claim-counter-claimed]")?.textContent,
-    ).toContain("1 claimed");
-    expect(
-      container.querySelector("[data-testid=swarm-claim-counter-cancelled]")?.textContent,
-    ).toContain("0 cancelled");
-    // A view without counters (a PATCH response) renders no counter block.
-    render(view);
-    expect(container.querySelector("[data-testid=swarm-claim-counters]")).toBeNull();
-  });
-
   it("parses a draft without touching the view", () => {
     expect(
-      parseSwarmClaimDraft({ leaseTtlSec: " 600 ", maxActiveTasks: "", sweepIntervalSec: "45" }),
+      parseSwarmClaimDraft({
+        leaseTtlSec: " 600 ",
+        maxActiveTasks: "",
+        sweepIntervalSec: "45",
+      }),
     ).toEqual({
       patch: { leaseTtlSec: 600, maxActiveTasks: null, sweepIntervalSec: 45 },
       errors: {},

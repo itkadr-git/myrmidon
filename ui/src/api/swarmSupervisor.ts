@@ -1,11 +1,11 @@
 // myrmidon(1.6-SWARM-CLAIM-B): API client for the "Swarm supervisor" page —
-// per-role task queues, active/expired role leases and rebalance actions.
-// Server side (part A, the JSON contract is frozen in the design note):
+// per-caste task queues, active/expired role leases and rebalance actions.
+// Server side (the JSON contract is frozen in the design note):
 //   GET  .../swarm-claim/supervisor/overview
 //   POST .../swarm-claim/supervisor/release-lease
 // Until part A merges, the tests mock this client's return shape.
 
-import { api, ApiError } from "@/api/client";
+import { api } from "@/api/client";
 
 export interface SwarmSupervisorQueueItem {
   issueId: string;
@@ -15,6 +15,16 @@ export interface SwarmSupervisorQueueItem {
   projectId: string | null;
   createdAt: string;
   blockedTransitionAt: string | null;
+  /**
+   * myrmidon(1.6.5 SWARM-T4, design §5.3): the effective pheromone strength
+   * — priority and waiting time folded into the number the queue orders by.
+   */
+  eff: number;
+  /**
+   * myrmidon(1.6.5 SWARM-T4, design §5.3): the nest the task sits in — the
+   * assignee agent id, null when the task is unattributed.
+   */
+  nestAgentId: string | null;
 }
 
 export interface SwarmSupervisorTopQueueItem {
@@ -25,6 +35,10 @@ export interface SwarmSupervisorTopQueueItem {
   role: string;
   projectId: string | null;
   createdAt: string;
+  /** myrmidon(1.6.5 SWARM-T4, design §5.3): effective pheromone strength. */
+  eff: number;
+  /** The agent whose nest (queue position) the row reflects, if any. */
+  nestAgentId: string | null;
 }
 
 export interface SwarmSupervisorClaim {
@@ -56,12 +70,58 @@ export interface SwarmSupervisorRole {
   idleAgents: SwarmSupervisorIdleAgent[];
 }
 
+/**
+ * myrmidon(1.6.5 SWARM-T4, design §5.3): one recent board→agent match, read
+ * from the `issue.swarm_matched` activity feed. Empty until the matching
+ * core lands.
+ */
+export interface SwarmSupervisorMatch {
+  at: string;
+  issueId: string;
+  identifier: string | null;
+  title: string;
+  agentId: string;
+  agentName: string;
+}
+
+/**
+ * myrmidon(1.6.5 SWARM-T4, design §5.3): one task the board failed to match
+ * and left to cool down. From T5; empty until it lands.
+ */
+export interface SwarmSupervisorCooldown {
+  issueId: string;
+  identifier: string | null;
+  title: string;
+  priority: string;
+  createdAt: string;
+  coolsDownAt: string | null;
+}
+
+/**
+ * myrmidon(1.6.5 SWARM-T4, design §5.3): one warning of the overview —
+ * a caste with tasks and no free agent, tasks without a caste, runs without
+ * a task in the last 24 hours.
+ */
+export type SwarmWarningKind =
+  | "caste_without_agents"
+  | "tasks_without_caste"
+  | "runs_without_task";
+
+export interface SwarmSupervisorWarning {
+  kind: SwarmWarningKind;
+  message: string;
+  caste?: string;
+  issueCount?: number;
+  runCount?: number;
+}
+
 export interface SwarmSupervisorTotals {
   queued: number;
   activeClaims: number;
   expiredClaims: number;
   agentsWithClaims: number;
   idleAgentsWithQueue: number;
+  freeAgentsWithQueue: number;
 }
 
 export interface SwarmSupervisorOverview {
@@ -70,13 +130,16 @@ export interface SwarmSupervisorOverview {
   leaseTtlSec: number | null;
   maxActiveTasksPerAgent: number | null;
   /**
-   * myrmidon(1.6.1 SWARM-SETTINGS-UI): where each effective swarm setting
+   * myrmidon(1.6.1 SWARM-SETTINGS-UI): where each effective claim setting
    * came from — "settings" (the UI), "env" (the forced override) or "default".
    */
   settingSources: Record<string, string>;
   totals: SwarmSupervisorTotals;
   roles: SwarmSupervisorRole[];
   topQueue: SwarmSupervisorTopQueueItem[];
+  matched: SwarmSupervisorMatch[];
+  cooldown: SwarmSupervisorCooldown[];
+  warnings: SwarmSupervisorWarning[];
 }
 
 export interface SwarmReleaseLeaseInput {
@@ -108,13 +171,3 @@ export const swarmSupervisorApi = {
 
 export const swarmSupervisorOverviewKey = (companyId: string) =>
   ["myrmidon", "swarm-claim", "supervisor", "overview", companyId] as const;
-
-/** 503 body while the swarm is off: { error, enabled: false }. */
-export function isSwarmNotEnabled(err: unknown): boolean {
-  if (err instanceof ApiError) {
-    const body = err.body as { enabled?: boolean } | null;
-    if (body && body.enabled === false) return true;
-    return err.status === 503 && /not enabled/i.test(err.message);
-  }
-  return err instanceof Error && /not enabled/i.test(err.message);
-}

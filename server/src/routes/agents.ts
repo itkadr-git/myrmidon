@@ -100,6 +100,7 @@ import {
 } from "../services/index.js";
 import type { AgentCasteDirectoryPort } from "../services/agents.js";
 import { badRequest, conflict, forbidden, HttpError, notFound, unprocessable } from "../errors.js";
+import { CHAT_INBOUND_WAKE_KEY_PREFIX } from "../myrmidon/chat-holds/chat-backed.js"; // myrmidon(1.6.5 OWNER-CHAT-ADMISSION)
 import { PAPERCLIP_CORE_SKILL_KEYS } from "../services/company-skills.js";
 import { createRunSecretRedactionRegistry } from "../services/run-secret-redaction.js";
 import { assertAuthenticated, assertBoard, assertCompanyAccess, assertInstanceAdmin, buildActorSecretContext, getAccessibleResource, getActorInfo, hasCompanyAccess } from "./authz.js";
@@ -5014,6 +5015,11 @@ export function agentRoutes(
     // check below. The gate applies only when the request carries `boardAdmin`,
     // so ordinary permission updates keep their existing behavior.
     const requestedBoardAdmin = req.body.boardAdmin as boolean | undefined;
+    // myrmidon(1.6.5-F-23): the off-run self-secret toggle is board-only.
+    if (req.body.offRunSecretRead !== undefined && req.actor.type !== "board") {
+      res.status(403).json({ error: "Only board actors can manage off-run secret read grants" });
+      return;
+    }
     if (requestedBoardAdmin !== undefined) {
       if (req.actor.type === "agent") {
         if (!req.actor.agentId) {
@@ -5172,6 +5178,21 @@ export function agentRoutes(
       effectiveCanAssignTasks,
       req.actor.type === "board" ? (req.actor.userId ?? null) : null,
     );
+
+    // myrmidon(1.6.5-F-23): grant or revoke the off-run self-secret read
+    // grant. Revocation removes the row; issuance gets the default +30 days
+    // expiry from setPrincipalPermission.
+    if (req.body.offRunSecretRead !== undefined) {
+      await access.ensureMembership(agent.companyId, "agent", agent.id, "member", "active");
+      await access.setPrincipalPermission(
+        agent.companyId,
+        "agent",
+        agent.id,
+        "secrets:read_off_run",
+        req.body.offRunSecretRead,
+        req.actor.type === "board" ? (req.actor.userId ?? null) : null,
+      );
+    }
 
     const actor = getActorInfo(req);
     await logActivity(db, {
@@ -6258,6 +6279,12 @@ export function agentRoutes(
       }
       wakePayload = { ...(wakePayload ?? {}), issueId: topReadyTask.id }; // myrmidon(WAKE-BIND)
     }
+    // myrmidon(1.6.5 OWNER-CHAT-ADMISSION): `chat-inbound:` marks the durable
+    // receipt of a person's chat message, and the queue admits such a run by the
+    // container floor alone. A public wake must not claim it.
+    if (typeof req.body.idempotencyKey === "string" && req.body.idempotencyKey.startsWith(CHAT_INBOUND_WAKE_KEY_PREFIX)) {
+      throw unprocessable(`idempotencyKey must not start with "${CHAT_INBOUND_WAKE_KEY_PREFIX}"`);
+    }
     const run = await heartbeat.wakeup(id, {
       failedRunId: req.body.failedRunId ?? null,
       ...(req.actor.type === "board" && !req.body.failedRunId ? { manualUserWake: true } : {}),
@@ -6406,6 +6433,9 @@ export function agentRoutes(
       wakeOpts.payload = req.actor.type === "agent"
         ? { ...body.payload, commentId: undefined, wakeCommentId: undefined, wakeCommentIds: undefined }
         : body.payload as Record<string, unknown>;
+    }
+    if (typeof body.idempotencyKey === "string" && body.idempotencyKey.startsWith(CHAT_INBOUND_WAKE_KEY_PREFIX)) {
+      throw unprocessable(`idempotencyKey must not start with "${CHAT_INBOUND_WAKE_KEY_PREFIX}"`); // myrmidon(1.6.5 OWNER-CHAT-ADMISSION)
     }
     if (typeof body.idempotencyKey === "string" && body.idempotencyKey.length > 0) {
       wakeOpts.idempotencyKey = body.idempotencyKey;

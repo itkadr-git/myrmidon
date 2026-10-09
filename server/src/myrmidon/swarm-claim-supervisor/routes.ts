@@ -5,9 +5,9 @@
 //
 // Reads need company access (the same check the vendor costs routes use);
 // the rebalance action additionally needs a board actor — it moves live work.
-// While part A's claim machinery is absent or off, the overview
-// answers 503 with { enabled: false } so the UI can say why instead of
-// showing a bare error.
+// While part A's claim machinery is absent or off, the overview answers 503
+// with { enabled: false } so the UI can say why instead of showing a bare
+// error.
 
 import { Router } from "express";
 import type { Db } from "@paperclipai/db";

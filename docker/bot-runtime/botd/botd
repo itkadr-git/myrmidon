@@ -8,6 +8,8 @@
 //   lib/rules.js    (H3b)  plan(inventory, desired, now, settings)
 //   lib/classify.js (H3d)  classifyAll(), toReportParts()
 //   lib/archive.js  (H3c)  optional: archive(path, key) before a scratch removal
+//   lib/remove.js   (F13)  guardedRemove: ENOENT = done, EACCES/EPERM = deferred
+//   lib/cache.js    (F13)  attention (one signal per path) + cooldown (the rule rhythm)
 // Without desired.js nothing is ever removed (fail-safe), only reported.
 //
 // Usage: botd                  loop; the delay is the board's nextReportSec (300 s), +SIGUSR1
@@ -48,6 +50,8 @@ const DISK_STATE_PATH = path.join(HOME, "disk-state.json");
 const REGISTRY_PATH = path.join(HOME, "ws-registry.json");
 const BASE_DIR = path.join(HOME, "git-base");
 const ARCHIVE_DIR = path.join(HOME, "archive");
+const ATTENTION_PATH = path.join(HOME, "botd-attention.json");
+const COOLDOWN_PATH = path.join(HOME, "botd-cooldown.json");
 const SCRATCH_ROOTS = ["/scratch", "/data/hermes/cache/scratch"];
 const WS_BIN = process.env.MYRMIDON_WS_BIN || "myr-ws";
 const GIT_BIN = process.env.MYRMIDON_BOTD_GIT || "git";
@@ -90,14 +94,13 @@ function inside(root, p) {
   const rel = path.relative(root, p);
   return rel !== "" && !rel.startsWith("..") && !path.isAbsolute(rel);
 }
-
-/** Removes `p` only when it is a real (non-link) entry strictly inside one of the roots. */
-function guardedRemove(p, roots) {
-  const abs = path.resolve(p);
-  if (!roots.some((r) => inside(path.resolve(r), abs))) throw new Error("path is outside the allowed roots");
-  if (fs.lstatSync(abs).isSymbolicLink()) throw new Error("refusing to remove a symlink");
-  fs.rmSync(abs, { recursive: true, force: true });
-}
+// guardedRemove comes from lib/remove.js (imported as ESM in main): ENOENT returns
+// "already gone", EACCES/EPERM throws with `deferred: "foreign-uid"` and removes
+// nothing. main() binds it before the first pass; a removal before that is a bug,
+// so the placeholder throws instead of guessing a policy.
+let guardedRemove = () => {
+  throw new Error("guardedRemove used before main() bound lib/remove.js");
+};
 
 function readJson(file, fallback) {
   try {
@@ -173,7 +176,7 @@ function listArchives() {
 }
 
 async function main() {
-  const [desiredMod, rulesMod, classifyMod, archiveMod, loopMod, reportMod, legacyMod, runsMod] = await Promise.all([
+  const [desiredMod, rulesMod, classifyMod, archiveMod, loopMod, reportMod, legacyMod, runsMod, removeMod, cacheMod] = await Promise.all([
     tryImport("desired.js"),
     tryImport("rules.js"),
     tryImport("classify.js"),
@@ -182,7 +185,16 @@ async function main() {
     import(path.join(__dirname, "lib", "report.js")),
     import(path.join(__dirname, "lib", "legacy.js")),
     import(path.join(__dirname, "lib", "runs.js")),
+    import(path.join(__dirname, "lib", "remove.js")),
+    import(path.join(__dirname, "lib", "cache.js")),
   ]);
+  guardedRemove = (p, roots) => removeMod.guardedRemove(p, roots);
+  // One attention signal per path per TTL (botd-attention.json); the uid of the
+  // owner that blocks us goes into the text. chown is never attempted here.
+  const attention = cacheMod.createAttention(ATTENTION_PATH, { log });
+  // The rhythm of the rules: one op on one path no more than once per TTL
+  // (botd-cooldown.json); a repeat within the window is skipped without a log line.
+  const cooldown = cacheMod.createCooldown(COOLDOWN_PATH);
   const runProbe = runsMod.createRunProbe({ proc: process });
 
   const desiredClient = desiredMod ? desiredMod.createDesiredClient({ log }) : null;
@@ -246,6 +258,35 @@ async function main() {
 
   const isWorkspace = (p) => inside("/workspace", path.resolve(p));
   const roots = ["/workspace", ...SCRATCH_ROOTS];
+  // One wrapper for every removal: guardedRemove itself, plus the policy around it —
+  // a deferred path (EACCES/EPERM, a foreign owner) stays exactly where it is, gets ONE
+  // attention line per path per TTL (uid of the owner in the text; chown is never tried)
+  // and is handed to the loop as `{ deferred }` — a skip, not an error, not a log spam.
+  const removePath = (p, roots) => {
+    try {
+      return guardedRemove(p, roots);
+    } catch (err) {
+      if (err && err.deferred === "foreign-uid") {
+        attention.signal(p, { reason: `${err.code} foreign-uid`, uid: err.uid });
+        return { deferred: err.deferred, detail: err.message };
+      }
+      throw err;
+    }
+  };
+  // The permission probe of removePath without the removal: archiveThenRemove runs it
+  // before archiving, so a foreign-owned directory defers in milliseconds instead of
+  // re-creating the same archive every pass.
+  const probeRemoval = (probeRoots) => (p) => {
+    try {
+      fs.accessSync(path.resolve(p), fs.constants.W_OK | fs.constants.X_OK);
+    } catch (err) {
+      if (err && (err.code === "EACCES" || err.code === "EPERM")) {
+        attention.signal(p, { reason: `${err.code} foreign-uid`, uid: null });
+        return { deferred: "foreign-uid", detail: `${err.code}: ${String(err.message).slice(0, 300)}` };
+      }
+    }
+    return undefined;
+  };
   const owned = (p) => legacyMod.inRegistry((readJson(REGISTRY_PATH, { entries: [] }).entries) || [], p);
   // A path under /workspace that the registry does not list (an old clone, a task directory
   // from before myr-ws): `myr-ws close` would fail with "no open copy", so archive it here.
@@ -253,7 +294,8 @@ async function main() {
     legacyMod.archiveThenRemove(a, {
       archiveMod,
       isGit: (p) => fs.existsSync(path.join(p, ".git")),
-      remove: (p) => guardedRemove(p, roots),
+      remove: (p) => removePath(p, roots),
+      probe: probeRemoval(roots),
       archiveRoot: ARCHIVE_DIR,
       nestedGit: legacyMod.findNestedGit,
     });
@@ -271,13 +313,13 @@ async function main() {
         return legacyMod.archiveThenRemove(a, {
           archiveMod,
           isGit: (p) => fs.existsSync(path.join(p, ".git")),
-          remove: (p) => guardedRemove(p, SCRATCH_ROOTS),
+          remove: (p) => removePath(p, SCRATCH_ROOTS),
+          probe: probeRemoval(SCRATCH_ROOTS),
           archiveRoot: ARCHIVE_DIR,
           nestedGit: legacyMod.findNestedGit,
         });
       }
-      guardedRemove(a.path, SCRATCH_ROOTS);
-      return "removed";
+      return removePath(a.path, SCRATCH_ROOTS);
     },
     "archive-remove": async (a) => {
       if (isWorkspace(a.path)) {
@@ -288,7 +330,8 @@ async function main() {
       return legacyMod.archiveThenRemove(a, {
         archiveMod,
         isGit: (p) => fs.existsSync(path.join(p, ".git")),
-        remove: (p) => guardedRemove(p, SCRATCH_ROOTS),
+        remove: (p) => removePath(p, SCRATCH_ROOTS),
+        probe: probeRemoval(SCRATCH_ROOTS),
         archiveRoot: ARCHIVE_DIR,
         nestedGit: legacyMod.findNestedGit,
       });
@@ -297,21 +340,26 @@ async function main() {
       for (const b of listBases()) await run(GIT_BIN, ["--git-dir", b.path, "worktree", "prune"]);
       return "worktree prune";
     },
-    "delete-base": async (a) => {
-      guardedRemove(a.path, [BASE_DIR]);
-      return "removed";
-    },
-    "delete-archive": async (a) => {
-      guardedRemove(a.path, [ARCHIVE_DIR]);
-      return "removed";
-    },
+    "delete-base": async (a) => removePath(a.path, [BASE_DIR]),
+    "delete-archive": async (a) => removePath(a.path, [ARCHIVE_DIR]),
+  };
+
+  // Archive retention (30 days / 2 GiB) once per pass, after the actions. Entries created
+  // during this pass are never evicted: the only copy of someone's work outlives the quota.
+  const retention = async ({ startedAt }) => {
+    if (!archiveMod || typeof archiveMod.retainPass !== "function") return;
+    const r = archiveMod.retainPass(ARCHIVE_DIR, { startedAt });
+    if (!r.ok) throw new Error(r.reason);
+    if (r.removed.length > 0) log(`botd: archive retention retired ${r.removed.length} entries (${r.removed.map((x) => x.reason).join(",")}), ${r.remaining} left, ${r.remainingBytes} bytes`);
   };
 
   const loop = loopMod.createLoop({
+    retention,
     desired,
     rules,
     gather,
     executor,
+    cooldown,
     report: { build: reportMod.buildReport, send: reporter.send },
     writeDiskState,
     log,

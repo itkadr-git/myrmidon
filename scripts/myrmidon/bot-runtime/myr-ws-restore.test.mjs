@@ -256,6 +256,20 @@ describe("myr-ws restore — archive selection", () => {
     assert.equal(ctx.calls.length, 0);
   });
 
+  it("no registry entry but a manifest entry with the repo -> restores (close dropped the entry)", async () => {
+    const src = buildSourceCopy(ctx.root);
+    const a = archiveCopy(ctx.root, src, "20261006T150000Z");
+    fs.rmSync(path.join(ctx.home, "ws-registry.json"));
+    fs.writeFileSync(
+      path.join(ctx.archiveRoot, "manifest.json"),
+      JSON.stringify({ version: 1, archives: [{ key: KEY, repo: REPO, bundle: a.bundle, patch: a.patch, createdAt: "2026-10-06T15:00:00Z", sizeBytes: 1, truncatedUntracked: false }] }),
+    );
+    const r = await run([KEY, "--json"]);
+    assert.equal(r.exitCode, 0, r.stderr);
+    assert.equal(copyOf(r).branch, BRANCH);
+    assert.equal(ctx.calls[0].repo, REPO);
+  });
+
   it("no registry entry for the key -> exit 6, nothing created", async () => {
     const src = buildSourceCopy(ctx.root);
     archiveCopy(ctx.root, src, "20261006T150000Z");

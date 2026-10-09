@@ -279,12 +279,14 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
       // myrmidon(BOT-LSP-DEFAULTS): the stored language-server policy survives
       // every general write (it is edited on its own settings panel).
       ...(parsed.data.botLsp ? { botLsp: parsed.data.botLsp } : {}),
-      // myrmidon(1.6-SWARM): the stored swarm settings survive every general
-      // write (they are edited on their own settings page). Without these
-      // lines the vendor write path silently dropped the key, so the stored
-      // value never roundtripped. `swarmClaim` is the pre-1.6.5 key.
-      ...(parsed.data.swarm ? { swarm: parsed.data.swarm } : {}),
+      // myrmidon(1.6-SWARM): the stored swarm-claim settings survive every
+      // general write (they are edited on their own settings page). Without
+      // this line the vendor write path silently dropped the key, so the
+      // stored value never roundtripped.
       ...(parsed.data.swarmClaim ? { swarmClaim: parsed.data.swarmClaim } : {}),
+      // myrmidon(1.6.5 F-26 T5): the stored wake guard (taskless gate and
+      // cooling window, `general.swarm`) survives every general write too.
+      ...(parsed.data.swarm ? { swarm: parsed.data.swarm } : {}),
       // myrmidon(1.6.1 SWARM-SETTINGS-UI): the change journal of the swarm
       // settings survives every general write (one atomic write carries the
       // settings and the journal entry together).
@@ -306,6 +308,9 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
       // myrmidon(1.6.5-OWNER-DM-FILTER): the stored owner-DM delivery filter
       // mode survives every general write (it is edited via /api/myrmidon/owner-delivery).
       ...(parsed.data.ownerDelivery ? { ownerDelivery: parsed.data.ownerDelivery } : {}),
+      // myrmidon(F16): the stored issue-list agent-defaults toggle survives
+      // every general write (it is a rollback switch, not a settings page).
+      ...(parsed.data.issuesListAgentDefaults ? { issuesListAgentDefaults: parsed.data.issuesListAgentDefaults } : {}),
       // myrmidon(1.7-BUDGET-CONFIG-B): the stored budget enforcement mode
       // survives every general write (it is edited on its own settings page).
       ...(parsed.data.budgetEnforcement ? { budgetEnforcement: parsed.data.budgetEnforcement } : {}),

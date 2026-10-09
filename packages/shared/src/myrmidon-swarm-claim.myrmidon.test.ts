@@ -12,6 +12,7 @@ import {
   SWARM_CLAIM_RELEASE_REASON_SUPERVISOR_REBALANCE,
   SWARM_CLAIM_SUPERVISOR_RELEASED_ACTION,
   SWARM_CLAIM_WAKE_REASON,
+  isSwarmClaimEnabledFor,
   isSwarmLeaseExpired,
   isSwarmLeaseLive,
   mergeSwarmClaimSettings,
@@ -21,7 +22,6 @@ import {
   readSwarmClaimSettingsFromEnv,
   resolveSwarmClaimSettings,
   resolveSwarmQueueEligibility,
-  SWARM_CLAIM_LEGACY_SETTINGS_KEY,
   SWARM_CLAIM_SETTINGS_KEY,
   SWARM_CLAIM_SETTING_KEYS,
   readStoredSwarmSettings,
@@ -33,7 +33,7 @@ import {
 } from "./myrmidon-swarm-claim.js";
 
 describe("swarm claim settings", () => {
-  it("ships dark and and reads an explicit on", () => {
+  it("ships the swarm dark and reads an explicit on", () => {
     expect(DEFAULT_SWARM_CLAIM_ENABLED).toBe(false);
     expect(readSwarmClaimSettingsFromEnv({}).enabled).toBe(false);
     expect(readSwarmClaimSettingsFromEnv({ [SWARM_CLAIM_ENV_KEYS.enabled]: "1" }).enabled).toBe(true);
@@ -79,6 +79,7 @@ describe("swarm claim settings", () => {
       maxActiveTasks: 5,
       sweepIntervalSec: 45,
       p0Preemption: false,
+      pheromone: {},
     };
     const forcedOff = resolveSwarmClaimSettings({
       stored,
@@ -176,7 +177,8 @@ describe("swarm queue order", () => {
   });
 });
 
-// 1.6.5 (OPE-6608 review item 4): no pilot set, no idle-wake batch.
+// 1.6.5 (OPE-6608 review item 4, SWARM-T4 design §5.1): one switch — no pilot
+// set, no idle-wake batch.
 describe("swarm settings without the pilot fields", () => {
   const full = {
     enabled: true,
@@ -184,6 +186,7 @@ describe("swarm settings without the pilot fields", () => {
     maxActiveTasks: 3 as number | null,
     sweepIntervalSec: 30,
     p0Preemption: true,
+    pheromone: {},
   };
 
   it("validates settings that carry no pilot fields", () => {
@@ -195,6 +198,7 @@ describe("swarm settings without the pilot fields", () => {
       "maxActiveTasks",
       "sweepIntervalSec",
       "p0Preemption",
+      "pheromone",
     ]);
   });
 
@@ -229,52 +233,48 @@ describe("swarm settings without the pilot fields", () => {
       MYRMIDON_SWARM_IDLE_WAKE_BATCH: "9",
     });
     expect(Object.keys(settings).sort()).toEqual(
-      ["enabled", "leaseTtlSec", "maxActiveTasks", "p0Preemption", "sweepIntervalSec"].sort(),
+      ["enabled", "leaseTtlSec", "maxActiveTasks", "p0Preemption", "pheromone", "sweepIntervalSec"].sort(),
     );
   });
 
-  it("keeps the settings under general.swarm and still reads the pre-1.6.5 key", () => {
-    expect(SWARM_CLAIM_SETTINGS_KEY).toBe("swarm");
-    expect(SWARM_CLAIM_LEGACY_SETTINGS_KEY).toBe("swarmClaim");
-    expect(readStoredSwarmSettings({ swarm: full })).toEqual(full);
-    expect(readStoredSwarmSettings({ swarmClaim: { ...full, enabled: false } })).toEqual({
-      ...full,
-      enabled: false,
-    });
-    // The current key wins over the legacy one.
-    expect(
-      readStoredSwarmSettings({ swarm: full, swarmClaim: { ...full, enabled: false } }),
-    ).toEqual(full);
+  it("keeps the settings under general.swarmClaim; general.swarm is the wake guard's block", () => {
+    expect(SWARM_CLAIM_SETTINGS_KEY).toBe("swarmClaim");
+    expect(readStoredSwarmSettings({ swarmClaim: full })).toEqual(full);
+    // `general.swarm` belongs to the F-26 wake guard and is never read as claim settings.
+    expect(readStoredSwarmSettings({ swarm: { cooldownBaseMin: 30 } })).toBeUndefined();
     expect(readStoredSwarmSettings(undefined)).toBeUndefined();
+  });
+
+  it("with the switch on every company and role is inside", () => {
+    expect(isSwarmClaimEnabledFor(full, { companyId: "any", role: "any" })).toBe(true);
+  });
+
+  it("the master switch off overrides everything", () => {
+    expect(isSwarmClaimEnabledFor({ ...full, enabled: false }, { companyId: "comp-1", role: "engineer" })).toBe(false);
   });
 });
 
-describe("swarm lease state", () => {
-  const now = new Date("2026-10-02T12:00:00.000Z");
-  const base = { id: "l1", issueId: "i1", agentId: "a1", heartbeatAt: now };
-
-  it("is live before the expiry and expired at or after it", () => {
-    const live = { ...base, expiresAt: "2026-10-02T12:05:00.000Z", releasedAt: null };
-    expect(isSwarmLeaseLive(live, now)).toBe(true);
-    expect(isSwarmLeaseExpired(live, now)).toBe(false);
-
-    const expired = { ...base, expiresAt: "2026-10-02T11:59:59.000Z", releasedAt: null };
-    expect(isSwarmLeaseLive(expired, now)).toBe(false);
-    expect(isSwarmLeaseExpired(expired, now)).toBe(true);
+// myrmidon(1.6.5 SWARM-T4, design §5.1): the pheromone subset.
+describe("swarm pheromone settings", () => {
+  it("accepts a partial pheromone object and defaults the rest to {}", () => {
+    const base = { enabled: true, leaseTtlSec: 900, maxActiveTasks: 3, sweepIntervalSec: 30 };
+    expect(normalizeSwarmClaimSettings({ ...base, pheromone: { critical: 250 } })?.pheromone).toEqual({
+      critical: 250,
+    });
+    expect(normalizeSwarmClaimSettings(base)?.pheromone).toEqual({});
   });
 
-  it("treats a released lease as neither live nor expired", () => {
-    const released = {
-      ...base,
-      expiresAt: "2026-10-02T12:05:00.000Z",
-      releasedAt: "2026-10-02T11:50:00.000Z",
-    };
-    expect(isSwarmLeaseLive(released, now)).toBe(false);
-    expect(isSwarmLeaseExpired(released, now)).toBe(false);
+  it("rejects unknown pheromone keys and negative values", () => {
+    const base = { enabled: true, leaseTtlSec: 900, maxActiveTasks: 3, sweepIntervalSec: 30 };
+    expect(normalizeSwarmClaimSettings({ ...base, pheromone: { surprise: 1 } })).toBeNull();
+    expect(normalizeSwarmClaimSettings({ ...base, pheromone: { critical: -1 } })).toBeNull();
   });
 
-  it("does not call a lease without an expiry live", () => {
-    expect(isSwarmLeaseLive({ ...base, expiresAt: null, releasedAt: null }, now)).toBe(false);
+  it("merges a pheromone patch like any other key", () => {
+    const base = readSwarmClaimSettingsFromEnv({});
+    const merged = mergeSwarmClaimSettings(base, { pheromone: { critical: 250 } });
+    expect(merged.pheromone).toEqual({ critical: 250 });
+    expect(mergeSwarmClaimSettings(base, { enabled: true }).enabled).toBe(true);
   });
 });
 

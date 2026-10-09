@@ -96,7 +96,14 @@ export function createDatastoreCareRetentionRuntime(
     const backupDir = options.backupDir ?? resolveBackupDir();
     const prefix = resolveBackupFilePrefix(env);
     const checkedAt = now();
-    const gate = checkBackupGate({ backupDir, prefix, now: checkedAt });
+    // myrmidon(1.6.5-F14B): with the "external machine backup" setting the
+    // gate does not wait for a local dump.
+    const gate = checkBackupGate({
+      backupDir,
+      prefix,
+      externalMachineBackup: resolved.externalMachineBackup,
+      now: checkedAt,
+    });
     const gateState: DatastoreCareRetentionLastRun["backupGate"] = {
       backupDir: gate.backupDir,
       prefix: gate.prefix,
@@ -105,6 +112,7 @@ export function createDatastoreCareRetentionRuntime(
       newestBackupSizeBytes: gate.newestBackupSizeBytes,
       dirReadable: gate.dirReadable,
       candidates: gate.candidates,
+      ...(gate.externalMachineBackup ? { externalMachineBackup: true } : {}),
     };
     const previous = normalizeDatastoreCareRetentionLastRun(
       await readRetentionLastRun(settings).catch(() => emptyDatastoreCareRetentionLastRun()),
@@ -167,6 +175,7 @@ export function createDatastoreCareRetentionRuntime(
     // The accepted backup goes to the journal: path, file, size, date.
     logger.info(
       {
+        externalMachineBackup: gate.externalMachineBackup,
         backupDir: gate.backupDir,
         backupFile: gate.newestBackupFile,
         backupSizeBytes: gate.newestBackupSizeBytes,
@@ -182,7 +191,10 @@ export function createDatastoreCareRetentionRuntime(
     ).toISOString();
     const companyIds = await settings.listCompanyIds();
     const result = await compactContextPass(
-      { db },
+      // myrmidon(1.6.5-F14B): the per-pass ceiling comes from the resolved
+      // settings block (instance setting > env > default 10), read fresh
+      // every pass so a PATCH applies without a restart.
+      { db, maxBatches: resolved.contextCompactMaxBatches },
       { companyIds, cutoff, compactedAt: checkedAt.toISOString() },
     );
 

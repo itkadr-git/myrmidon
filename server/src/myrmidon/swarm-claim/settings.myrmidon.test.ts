@@ -57,7 +57,7 @@ describe("myrmidon(1.6.1 SWARM-SETTINGS-UI) settings service", () => {
     expect(resolved.sources.enabled).toBe("settings");
   });
 
-  it("reads a row saved by an older build: pilot fields dropped, the switch kept, the legacy key honoured", async () => {
+  it("reads a row saved by an older build: pilot fields dropped, the switch kept", async () => {
     const withPilotFields = fakePorts({
       [SWARM_CLAIM_SETTINGS_KEY]: {
         enabled: true,
@@ -77,27 +77,20 @@ describe("myrmidon(1.6.1 SWARM-SETTINGS-UI) settings service", () => {
       maxActiveTasks: 3,
       sweepIntervalSec: 30,
       p0Preemption: true,
+      pheromone: {},
     });
     expect(read.sources.enabled).toBe("settings");
+  });
 
-    // The pre-1.6.5 key `swarmClaim` is still read; the next save writes `swarm`.
-    const legacy = fakePorts({
-      swarmClaim: {
-        enabled: true,
-        enabledRoles: [],
-        enabledCompanyIds: [],
-        leaseTtlSec: 450,
-        maxActiveTasks: null,
-        sweepIntervalSec: 30,
-      },
-    });
-    expect((await legacy.service.read()).settings.leaseTtlSec).toBe(450);
-    await legacy.service.update({ enabled: false }, { actorType: "user", actorId: "u" });
-    expect(legacy.store.updates[0]![SWARM_CLAIM_SETTINGS_KEY]).toMatchObject({
-      enabled: false,
-      leaseTtlSec: 450,
-    });
-    expect(legacy.store.updates[0]!.swarmClaim).toBeUndefined();
+  it("never reads or writes general.swarm — that block is the F-26 wake guard's", async () => {
+    const guard = { cooldownBaseMin: 45, cooldownCeilingHours: 12 };
+    const ports = fakePorts({ swarm: guard });
+    // Nothing under `swarmClaim`: the claim settings are the defaults.
+    expect((await ports.service.read()).sources.enabled).toBe("default");
+    await ports.service.update({ enabled: true }, { actorType: "user", actorId: "u" });
+    expect(ports.store.updates[0]![SWARM_CLAIM_SETTINGS_KEY]).toMatchObject({ enabled: true });
+    expect(ports.store.updates[0]!.swarm).toBeUndefined();
+    expect(ports.store.general.swarm).toEqual(guard);
   });
 
   it("an update merges the patch, writes the row and appends the journal entry", async () => {

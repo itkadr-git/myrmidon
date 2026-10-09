@@ -9,7 +9,11 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { DEFAULT_HEARTBEAT_RUN_CONTEXT_DAYS } from "@paperclipai/shared";
+import {
+  DEFAULT_CONTEXT_COMPACT_MAX_BATCHES,
+  DEFAULT_HEARTBEAT_RUN_CONTEXT_DAYS,
+  patchDatastoreCareRetentionSchema,
+} from "@paperclipai/shared";
 import {
   checkBackupGate,
   resolveBackupFilePrefix,
@@ -19,7 +23,7 @@ import {
   CONTEXT_COMPACTED_AT_KEY,
   CONTEXT_COMPACT_KEYS,
 } from "./compact.js";
-import { resolveRetentionSettings } from "./settings.js";
+import { resolveRetentionSettings, writeRetentionSettings } from "./settings.js";
 
 describe("myrmidon(1.6.5-DBC1) compactContextSnapshot", () => {
   it("strips exactly the O1a key list and stamps _compactedAt", () => {
@@ -65,7 +69,23 @@ describe("myrmidon(1.6.5-DBC1) resolveRetentionSettings", () => {
     expect(resolved).toEqual({
       heartbeatRunContextDays: DEFAULT_HEARTBEAT_RUN_CONTEXT_DAYS,
       source: "default",
+      contextCompactMaxBatches: DEFAULT_CONTEXT_COMPACT_MAX_BATCHES,
+      contextCompactMaxBatchesSource: "default",
+      externalMachineBackup: false,
     });
+  });
+
+  it("externalMachineBackup is read from the stored block, true only for a boolean true", () => {
+    const on = resolveRetentionSettings(
+      { datastoreCare: { retention: { externalMachineBackup: true } } },
+      {},
+    );
+    expect(on.externalMachineBackup).toBe(true);
+    const junk = resolveRetentionSettings(
+      { datastoreCare: { retention: { externalMachineBackup: "yes" } } },
+      {},
+    );
+    expect(junk.externalMachineBackup).toBe(false);
   });
 
   it("environment overrides the default", () => {
@@ -99,6 +119,29 @@ describe("myrmidon(1.6.5-DBC1) resolveRetentionSettings", () => {
     expect(badEnv.heartbeatRunContextDays).toBe(7);
     expect(badEnv.source).toBe("default");
   });
+
+  // myrmidon(1.6.5-F14B): the batches-per-company-per-pass ceiling resolves
+  // the same three-step way so the first live pass can be lowered on the
+  // running board (PATCH /api/myrmidon/datastore-care), no rebuild.
+  it("contextCompactMaxBatches: stored settings win over env, env over the default of 10", () => {
+    const both = resolveRetentionSettings(
+      { datastoreCare: { retention: { contextCompactMaxBatches: 2 } } },
+      { MYRMIDON_CONTEXT_COMPACT_MAX_BATCHES: "5" },
+    );
+    expect(both.contextCompactMaxBatches).toBe(2);
+    expect(both.contextCompactMaxBatchesSource).toBe("settings");
+
+    const envOnly = resolveRetentionSettings({}, { MYRMIDON_CONTEXT_COMPACT_MAX_BATCHES: "5" });
+    expect(envOnly.contextCompactMaxBatches).toBe(5);
+    expect(envOnly.contextCompactMaxBatchesSource).toBe("env");
+
+    const bad = resolveRetentionSettings(
+      { datastoreCare: { retention: { contextCompactMaxBatches: 0 } } },
+      { MYRMIDON_CONTEXT_COMPACT_MAX_BATCHES: "1001" },
+    );
+    expect(bad.contextCompactMaxBatches).toBe(DEFAULT_CONTEXT_COMPACT_MAX_BATCHES);
+    expect(bad.contextCompactMaxBatchesSource).toBe("default");
+  });
 });
 
 describe("myrmidon(1.6.5-DBC1) backup gate", () => {
@@ -108,7 +151,8 @@ describe("myrmidon(1.6.5-DBC1) backup gate", () => {
       const empty = checkBackupGate({ backupDir: dir });
       expect(empty.fresh).toBe(false);
       expect(empty.dirReadable).toBe(true);
-      expect(empty.prefix).toBe("paperclip");
+      expect(empty.prefix).toBe("");
+      expect(empty.externalMachineBackup).toBe(false);
       expect(empty.newestBackupAt).toBeNull();
       expect(empty.newestBackupFile).toBeNull();
       expect(empty.newestBackupSizeBytes).toBeNull();
@@ -188,8 +232,179 @@ describe("myrmidon(1.6.5-DBC1) backup gate", () => {
     }
   });
 
-  it("the prefix is the MYRMIDON_DB_BACKUP_FILE_PREFIX knob, default paperclip", () => {
-    expect(resolveBackupFilePrefix({})).toBe("paperclip");
+  it("the prefix is the MYRMIDON_DB_BACKUP_FILE_PREFIX knob: unset or empty means no naming contract", () => {
+    // Review (F14B): unset -> any *.sql.gz/*.dump by
+    // extension, so a host `board.dump` lifts the gate.
+    expect(resolveBackupFilePrefix({})).toBe("");
+    expect(resolveBackupFilePrefix({ MYRMIDON_DB_BACKUP_FILE_PREFIX: "" })).toBe("");
+    expect(resolveBackupFilePrefix({ MYRMIDON_DB_BACKUP_FILE_PREFIX: "   " })).toBe("");
     expect(resolveBackupFilePrefix({ MYRMIDON_DB_BACKUP_FILE_PREFIX: "myrmidon" })).toBe("myrmidon");
+  });
+
+  it("unset prefix (the default): a fresh board.dump lifts the gate", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "f14b-backups-unset-"));
+    try {
+      fs.writeFileSync(path.join(dir, "board.dump"), "pg_dump -Fc bytes");
+      const gate = checkBackupGate({ backupDir: dir, prefix: resolveBackupFilePrefix({}) });
+      expect(gate.fresh).toBe(true);
+      expect(gate.newestBackupFile).toBe("board.dump");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("external machine backup: the gate passes without any local file and without reading the dir", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "f14b-backups-external-"));
+    try {
+      // empty dir: fails closed without the setting, passes with it
+      expect(checkBackupGate({ backupDir: dir }).fresh).toBe(false);
+      const external = checkBackupGate({ backupDir: dir, externalMachineBackup: true });
+      expect(external.fresh).toBe(true);
+      expect(external.externalMachineBackup).toBe(true);
+      expect(external.newestBackupFile).toBeNull();
+      // a missing dir does not matter either
+      const missing = checkBackupGate({
+        backupDir: path.join(dir, "nope"),
+        externalMachineBackup: true,
+      });
+      expect(missing.fresh).toBe(true);
+      // explicit false is the normal local gate
+      expect(checkBackupGate({ backupDir: dir, externalMachineBackup: false }).fresh).toBe(false);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("empty prefix: a fresh host dump of any name lifts the gate", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "f14b-backups-anon-"));
+    try {
+      const file = path.join(dir, "board.dump");
+      fs.writeFileSync(file, "pg_dump -Fc bytes");
+      const gate = checkBackupGate({ backupDir: dir, prefix: "" });
+      expect(gate.fresh).toBe(true);
+      expect(gate.prefix).toBe("");
+      expect(gate.newestBackupFile).toBe("board.dump");
+      expect(gate.candidates).toEqual([]);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("myrmidon(1.6.5-F14B) writeRetentionSettings", () => {
+  type FakeGeneral = Record<string, unknown>;
+
+  function fakeSettings(initial: FakeGeneral) {
+    const state = { general: structuredClone(initial) as FakeGeneral };
+    return {
+      state,
+      service: {
+        // The service interface types general as InstanceGeneralSettings; the
+        // fake carries only what the writer touches.
+        getGeneral: async () => state.general as never,
+        updateGeneral: async (patch: Record<string, unknown>) => {
+          // Same contract as the real service: per top-level general key merge.
+          state.general = { ...state.general, ...patch };
+          return state.general as never;
+        },
+        listCompanyIds: async () => [],
+      },
+    };
+  }
+
+  it("PATCHing one knob never wipes the other (partial field semantics)", async () => {
+    const { state, service } = fakeSettings({
+      datastoreCare: { retention: { heartbeatRunContextDays: 0 } },
+    });
+    await writeRetentionSettings(service, { contextCompactMaxBatches: 2 });
+    const retention = (state.general.datastoreCare as Record<string, unknown>)
+      .retention as Record<string, unknown>;
+    // The disabled compaction (0) must survive a batches-only patch; the
+    // review found the old writer silently re-enabling it.
+    expect(retention.heartbeatRunContextDays).toBe(0);
+    expect(retention.contextCompactMaxBatches).toBe(2);
+  });
+
+  it("round-trips both fields through the stored block", async () => {
+    const { state, service } = fakeSettings({});
+    await writeRetentionSettings(service, {
+      heartbeatRunContextDays: 5,
+      contextCompactMaxBatches: 12,
+    });
+    const retention = (state.general.datastoreCare as Record<string, unknown>)
+      .retention as Record<string, unknown>;
+    expect(retention).toEqual({ heartbeatRunContextDays: 5, contextCompactMaxBatches: 12 });
+    const resolved = resolveRetentionSettings(state.general, {});
+    expect(resolved.heartbeatRunContextDays).toBe(5);
+    expect(resolved.contextCompactMaxBatches).toBe(12);
+    expect(resolved.contextCompactMaxBatchesSource).toBe("settings");
+  });
+
+  it("explicit null clears only that field and falls back to env/default", async () => {
+    const { state, service } = fakeSettings({
+      datastoreCare: {
+        retention: { heartbeatRunContextDays: 4, contextCompactMaxBatches: 6 },
+      },
+    });
+    await writeRetentionSettings(service, { contextCompactMaxBatches: null });
+    const retention = (state.general.datastoreCare as Record<string, unknown>)
+      .retention as Record<string, unknown>;
+    expect("contextCompactMaxBatches" in retention).toBe(false);
+    expect(retention.heartbeatRunContextDays).toBe(4);
+    const resolved = resolveRetentionSettings(state.general, {
+      MYRMIDON_CONTEXT_COMPACT_MAX_BATCHES: "3",
+    });
+    expect(resolved.contextCompactMaxBatches).toBe(3);
+    expect(resolved.contextCompactMaxBatchesSource).toBe("env");
+  });
+
+  it("keeps the pass state (contextLastRun) under the block", async () => {
+    const { state, service } = fakeSettings({
+      datastoreCare: {
+        retention: {
+          heartbeatRunContextDays: 7,
+          contextLastRun: { lastRunAt: "2026-10-09T00:00:00.000Z", compactedTotal: 3 },
+        },
+      },
+    });
+    await writeRetentionSettings(service, { contextCompactMaxBatches: 1 });
+    const retention = (state.general.datastoreCare as Record<string, unknown>)
+      .retention as Record<string, unknown>;
+    expect(retention.contextLastRun).toEqual({ lastRunAt: "2026-10-09T00:00:00.000Z", compactedTotal: 3 });
+    expect(retention.contextCompactMaxBatches).toBe(1);
+  });
+
+  it("externalMachineBackup: true stores, absent keeps, null clears", async () => {
+    const { state, service } = fakeSettings({
+      datastoreCare: { retention: { heartbeatRunContextDays: 0 } },
+    });
+    const retention = () =>
+      (state.general.datastoreCare as Record<string, unknown>).retention as Record<string, unknown>;
+    await writeRetentionSettings(service, { externalMachineBackup: true });
+    expect(retention().externalMachineBackup).toBe(true);
+    expect(retention().heartbeatRunContextDays).toBe(0);
+    expect(resolveRetentionSettings(state.general, {}).externalMachineBackup).toBe(true);
+    // a patch of another knob must not drop the mode
+    await writeRetentionSettings(service, { contextCompactMaxBatches: 3 });
+    expect(retention().externalMachineBackup).toBe(true);
+    await writeRetentionSettings(service, { externalMachineBackup: null });
+    expect("externalMachineBackup" in retention()).toBe(false);
+    expect(resolveRetentionSettings(state.general, {}).externalMachineBackup).toBe(false);
+  });
+
+  it("the patch schema distinguishes absent from null", () => {
+    expect(patchDatastoreCareRetentionSchema.parse({ externalMachineBackup: true })).toEqual({
+      externalMachineBackup: true,
+    });
+    expect(() => patchDatastoreCareRetentionSchema.parse({ externalMachineBackup: "yes" })).toThrow();
+    expect(patchDatastoreCareRetentionSchema.parse({})).toEqual({});
+    expect(patchDatastoreCareRetentionSchema.parse({ contextCompactMaxBatches: null })).toEqual({
+      contextCompactMaxBatches: null,
+    });
+    expect(patchDatastoreCareRetentionSchema.parse({ heartbeatRunContextDays: 0 })).toEqual({
+      heartbeatRunContextDays: 0,
+    });
+    expect(() => patchDatastoreCareRetentionSchema.parse({ contextCompactMaxBatches: 0 })).toThrow();
+    expect(() => patchDatastoreCareRetentionSchema.parse({ contextCompactMaxBatches: 1001 })).toThrow();
   });
 });

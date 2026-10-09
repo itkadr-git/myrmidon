@@ -19,8 +19,14 @@
 //   gather(desired|null)      -> { inventory: { worktrees, scratch, bases, archives },
 //                                  parts: { copies, foreign, bases, archives, selfChecks } }
 //   rules.plan(inv, state, now, settings) -> { actions: [{ op, path, reason, key? }] }
-//   executor[op](action)      -> detail string | { detail } ; throws on failure
+//   executor[op](action)      -> detail string | { detail } | { deferred, detail } ; throws on failure
 //        ops: remove, archive-remove, prune, delete-base, delete-archive
+//        { deferred } means the path was left exactly where it is (a foreign owner);
+//        it is reported as skipped with a `deferred: <class>` detail, not as an error
+//   retention (optional)      -> ({startedAt}) after the actions of a pass: archive age/quota retention
+//   cooldown (optional)       -> { recent(path, op): boolean, record(path, op, result) }
+//        the rhythm of the rules: an op already attempted on a path inside the
+//        window is skipped silently — no log line, no report row
 //   report.build(parts) / report.send(report) -> { ok, nextReportSec }
 //   writeDiskState(state)     -> writes /data/hermes/.myrmidon/disk-state.json
 //
@@ -61,6 +67,8 @@ export function createLoop(deps) {
   const log = deps.log ?? (() => {});
   const intervalMs = deps.intervalMs ?? DEFAULT_INTERVAL_MS;
   const executor = deps.executor ?? {};
+  // optional path-keyed rhythm cache (lib/cache.js createCooldown); absent = every action runs
+  const cooldown = deps.cooldown ?? null;
   const setTimer = deps.setTimer ?? setTimeout;
   const clearTimer = deps.clearTimer ?? clearTimeout;
   // `jitter` returns a number in [-1, 1]; the tests inject 0 for determinism.
@@ -113,7 +121,7 @@ export function createLoop(deps) {
     }
   }
 
-  async function execute(action, results) {
+  async function execute(action, results, tally) {
     const at = () => now().toISOString();
     const reportAction = REPORT_ACTION[action.op];
     const detail = (text) => `${action.op}: ${action.reason ?? ""}${text ? ` — ${text}` : ""}`.slice(0, 500);
@@ -126,13 +134,36 @@ export function createLoop(deps) {
       results.push({ at: at(), action: "skip", path: action.path, result: "skipped", detail: detail("no executor for this op") });
       return;
     }
+    // rhythm: this op on this path already ran within the window — skip silently
+    if (cooldown && cooldown.recent(action.path, action.op)) {
+      tally.silent += 1;
+      return;
+    }
     try {
       const out = await fn(action);
+      if (out && typeof out === "object" && typeof out.deferred === "string") {
+        // nothing was removed (a foreign owner): skipped, not an error — the executor
+        // already raised a one-per-path attention signal through its own cache
+        tally.deferred[out.deferred] = (tally.deferred[out.deferred] || 0) + 1;
+        results.push({
+          at: at(),
+          action: "skip",
+          path: action.path,
+          result: "skipped",
+          detail: `${action.op}: ${action.reason ?? ""} — deferred: ${out.deferred}${out.detail ? ` (${out.detail})` : ""}`.slice(0, 500),
+        });
+        if (cooldown) cooldown.record(action.path, action.op, "deferred");
+        return;
+      }
       const text = typeof out === "string" ? out : out && typeof out.detail === "string" ? out.detail : "";
+      tally.cleaned += 1;
       results.push({ at: at(), action: reportAction, path: action.path, result: "ok", detail: detail(text) });
+      if (cooldown) cooldown.record(action.path, action.op, "ok");
     } catch (err) {
+      tally.errored += 1;
       log(`botd loop: ${action.op} failed: ${errMessage(err)}`);
       results.push({ at: at(), action: reportAction, path: action.path, result: "error", detail: detail(errMessage(err)) });
+      if (cooldown) cooldown.record(action.path, action.op, "error");
     }
   }
 
@@ -199,7 +230,27 @@ export function createLoop(deps) {
           detail: `${h.kind}${h.key ? ` ${h.key}` : ""}: kept, reported only`.slice(0, 500),
         });
       }
-      if (!dryRun) for (const action of actions) await execute(action, results);
+      if (!dryRun) {
+        const tally = { cleaned: 0, deferred: {}, errored: 0, silent: 0 };
+        for (const action of actions) await execute(action, results, tally);
+        // archive retention (age + quota) after the actions: whatever this pass archived
+        // is protected by the hook (it gets `startedAt`), older entries are retired.
+        if (typeof deps.retention === "function") {
+          try {
+            await deps.retention({ startedAt });
+          } catch (err) {
+            log(`botd loop: archive retention failed: ${errMessage(err)}`);
+          }
+        }
+        // the pass summary: what the cycle actually touched. Silent when the pass
+        // did nothing observable (an all-cooldown pass must not re-spam the log).
+        const deferredCount = Object.values(tally.deferred).reduce((s, n) => s + n, 0);
+        if (tally.cleaned || deferredCount || tally.errored) {
+          const reasons = Object.entries(tally.deferred).map(([k, n]) => `${k}: ${n}`).join(", ");
+          const extra = tally.errored ? `${reasons ? ", " : ""}errors: ${tally.errored}` : "";
+          log(`botd loop: cleaned ${tally.cleaned}, deferred ${deferredCount}${reasons || extra ? ` (${reasons}${extra})` : ""}`);
+        }
+      }
       if (!dryRun && results.some((r) => r.result === "ok")) g = await gatherSafe(desired.state); // the report shows the disk after the pass
     }
 

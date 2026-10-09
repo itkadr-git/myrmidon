@@ -221,7 +221,7 @@ describeEmbeddedPostgres("swarm idle queue claims on the server, then wakes", ()
       env: {},
       settings: {
         getGeneral: async () => ({
-          swarm: {
+          swarmClaim: {
             ...baseSwarmClaimSettings,
             enabled: true,
             // The default ceiling is three tasks per agent; a test that needs

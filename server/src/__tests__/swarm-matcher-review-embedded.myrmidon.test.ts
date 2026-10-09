@@ -450,7 +450,7 @@ describeEmbeddedPostgres("matcher guards of the second review", () => {
         db,
         env: {},
         settings: {
-          getGeneral: async () => ({ swarm: { ...baseSettings, enabled: true } }),
+          getGeneral: async () => ({ swarmClaim: { ...baseSettings, enabled: true } }),
           updateGeneral: async () => {
             throw new Error("not used");
           },
@@ -502,7 +502,7 @@ describeEmbeddedPostgres("matcher guards of the second review", () => {
         intervalMs: 0,
         env: {},
         settings: {
-          getGeneral: async () => ({ swarm: { ...baseSettings, enabled: true } }),
+          getGeneral: async () => ({ swarmClaim: { ...baseSettings, enabled: true } }),
         },
         castes: createCasteDirectoryReader(db),
         hostMemoryGate: () => options.memoryGate,
@@ -574,7 +574,7 @@ describeEmbeddedPostgres("matcher guards of the second review", () => {
         intervalMs: 0,
         env: {},
         settings: {
-          getGeneral: async () => ({ swarm: { ...baseSettings, enabled: true } }),
+          getGeneral: async () => ({ swarmClaim: { ...baseSettings, enabled: true } }),
         },
         hostMemoryGate: () => openMemoryGate,
         hostCpuGate: () => openCpuGate,
