@@ -60,9 +60,13 @@ vi.mock("../services/access.js", () => ({
   accessService: () => mockAccessService,
 }));
 
-vi.mock("../services/authorization.js", () => ({
-  authorizationService: () => mockAuthorizationService,
-}));
+vi.mock("../services/authorization.js", async (importOriginal) => {
+  const original = await importOriginal<typeof import("../services/authorization.js")>();
+  return {
+    ...original,
+    authorizationService: () => mockAuthorizationService,
+  };
+});
 
 function createApp(actor: Record<string, unknown> = {
   type: "board",

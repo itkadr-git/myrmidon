@@ -4652,7 +4652,7 @@ describeEmbeddedPostgres("secretService", () => {
     expect(listed[0]).toMatchObject({
       secretId: secret.id,
       configPath: "env.MY_OFF_RUN_KEY",
-      key: expect.stringMatching(/^off_run_secret_/),
+      key: expect.stringMatching(/^off-run-secret-/),
     });
 
     const events = await db
