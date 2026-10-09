@@ -2255,6 +2255,20 @@
       "when": 1791528256161,
       "tag": "0384_issues_caste_key_and_pheromone_backfill",
       "breakpoints": true
+    },
+    {
+      "idx": 385,
+      "version": "7",
+      "when": 1791528259161,
+      "tag": "0385_agent_castes_default_and_nests",
+      "breakpoints": true
+    },
+    {
+      "idx": 386,
+      "version": "7",
+      "when": 1791528260161,
+      "tag": "0386_swarm_scent",
+      "breakpoints": true
     }
   ]
 }

@@ -256,6 +256,7 @@ export {
 } from "./model_providers.js";
 // myrmidon(CUSTOM-CASTES): the company caste (agent role) directory.
 export { agentCastes } from "./agent_castes.js";
+export { agentNests } from "./agent_nests.js";
 // myrmidon(DBC-4): datastore care — hourly snapshots and audit reports of the
 // board's own PostgreSQL (server/src/myrmidon/datastore-care/).
 export { datastoreSnapshots, datastoreAuditReports } from "./datastore_care.js";

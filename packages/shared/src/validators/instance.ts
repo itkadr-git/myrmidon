@@ -34,6 +34,8 @@ import { botLspSettingsSchema } from "../myrmidon-bot-lsp.js";
 // myrmidon(EXTCASE-B): the browser-bridge allowlist stored in the same general settings row
 import { browserBridgeSettingsSchema } from "../myrmidon-browser-bridge.js";
 import { swarmClaimSettingsSchema } from "../myrmidon-swarm-claim.js";
+// myrmidon(1.6.5 F-26 T10 SCENT): the general.swarm.scent settings block
+import { scentSettingsSchema } from "../myrmidon-scent.js";
 // myrmidon(1.6.5 F-26 T5): the SWARM wake guard (taskless gate + cooling) stored
 // in the same general settings row under `general.swarm`.
 import { swarmSettingsSchema } from "../myrmidon-swarm-wake.js";
@@ -199,10 +201,16 @@ export const instanceGeneralSettingsSchema = z.object({
   // /api/myrmidon/swarm-claim; absent means "use the environment variable, then
   // the built-in default".
   swarmClaim: swarmClaimSettingsSchema.optional(),
-  // myrmidon(1.6.5 F-26 T5): the wake guard — the run-without-task gate and the
-  // exponential cooling of stale wake candidates (design 1.6.5 §3.7, §4.3).
-  // Absent means the defaults (gate on, base 30 min, ceiling 24 h).
-  swarm: swarmSettingsSchema.optional(),
+  // myrmidon(1.6.5 F-26 T5 + T10): the swarm block — one namespace for the
+  // swarm family. T5 owns the wake guard (run-without-task gate and the
+  // exponential cooling of stale wake candidates, design 1.6.5 §3.7, §4.3);
+  // T10 owns `general.swarm.scent` (classifier model, weights, switch).
+  // Absent means the module defaults.
+  swarm: swarmSettingsSchema
+    .extend({
+      scent: scentSettingsSchema.optional(),
+    })
+    .optional(),
   // myrmidon(1.6.1 SWARM-SETTINGS-UI): the change journal of the swarm
   // settings (who changed what, and when), kept by the settings service
   // under `general.swarmClaimJournal` and read by GET /api/myrmidon/swarm-claim.

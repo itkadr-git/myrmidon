@@ -97,6 +97,7 @@ import {
 import { AgentCardLspFields } from "./myrmidon/AgentCardLspFields"; // myrmidon(BOT-LSP-DEFAULTS)
 import { botLspApi, botLspQueryKey } from "./myrmidon/botLspApi"; // myrmidon(BOT-LSP-DEFAULTS)
 import { AgentCardEgressFields } from "./myrmidon/AgentCardEgressFields"; // myrmidon(EGRESS-B)
+import { AgentCardNestsFields } from "./myrmidon/AgentCardNestsFields"; // myrmidon(1.6.5 F-26 T3)
 import { OpenCodeLogoIcon } from "./OpenCodeLogoIcon";
 import { ReportsToPicker } from "./ReportsToPicker";
 import {
@@ -1815,6 +1816,8 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
           {!isCreate && adapterType === "hermes_gateway" && (
             <AgentCardEgressFields agentId={props.agent.id} />
           )}
+          {/* myrmidon(1.6.5 F-26 T3 CASTES-AND-NESTS): the projects this agent works in */}
+          {!isCreate && <AgentCardNestsFields agentId={props.agent.id} />}
           {/* myrmidon(PARALLEL-HELPERS): parallel helper subagents on the agent card.
               The ceiling/default come from the instance settings; read-only here,
               changed on the settings page. */}

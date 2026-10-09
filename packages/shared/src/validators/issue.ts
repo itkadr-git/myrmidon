@@ -36,6 +36,7 @@ import {
   REQUEST_ITEM_VERDICTS_ITEM_LIMIT,
 } from "../constants.js";
 import { multilineTextSchema } from "./text.js";
+import { ISSUE_CASTE_SOURCES, issueScentSchema } from "../myrmidon-scent.js";
 import {
   lowTrustReviewPresetPolicySchema,
   trustAuthorizationPolicySchema,
@@ -759,6 +760,14 @@ const createIssueBaseSchema = z.object({
   // the company's caste directory (design §2.1). NULL = project/company
   // default.
   casteKey: z.string().trim().min(1).max(120).optional().nullable(),
+  // myrmidon(1.6.5 F-26 T10 SCENT): who set the caste ('manual' when the
+  // caller pins casteKey; the create hook writes 'auto' when the classifier
+  // decides). Server-side only in practice — a client-sent value is accepted
+  // for imports/seeds but the create hook treats a pinned casteKey as manual.
+  casteSource: z.enum(ISSUE_CASTE_SOURCES).optional().nullable(),
+  // The stored scent — normally written by the classifier; accepted on input
+  // so imports/tests can seed it directly.
+  scent: issueScentSchema.optional().nullable(),
   reviewPolicy: z.enum(ISSUE_REVIEW_POLICIES).optional().nullable(),
   assigneeAgentId: z.string().guid().optional().nullable(),
   assigneeUserId: z.string().optional().nullable(),
@@ -1256,6 +1265,10 @@ export const suggestedTaskDraftSchema = z
     // 1.6.5 (F-27 rework 09.10): the caste key (directory membership is
     // checked server-side, where the company's directory lives).
     casteKey: z.string().trim().min(1).max(120).nullable().optional(),
+    casteSource: z.enum(ISSUE_CASTE_SOURCES).nullable().optional(),
+    // Refreshing the stored scent via the API goes through the scent routes;
+    // the patch validator still accepts it for imports/tests.
+    scent: issueScentSchema.nullable().optional(),
     workMode: z.enum(ISSUE_WORK_MODES).nullable().optional(),
     assigneeAgentId: z.string().guid().nullable().optional(),
     assigneeUserId: z.string().trim().min(1).nullable().optional(),

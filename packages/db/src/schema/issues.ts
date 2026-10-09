@@ -54,6 +54,14 @@ export const issues = pgTable(
     // label as the swarm routing source; NULL falls back to the project's
     // `default_caste_key`, then the company's default caste.
     casteKey: text("caste_key"),
+    // myrmidon(1.6.5 F-26 T10 SCENT): the stored scent of the task
+    // ({tags[≤8], casteProbs, complexity{coordination,uncertainty,consequences}},
+    // design §2.4/§7.1 п.4a); NULL = not classified — the markup queue picks
+    // it up within its hour budget.
+    scent: jsonb("scent"),
+    // Who set the caste: 'manual' | 'project' | 'auto' | 'default'
+    // (design §2.1). NULL on rows that never went through the create hook.
+    casteSource: text("caste_source"),
     reviewPolicy: text("review_policy").$type<IssueReviewPolicy>(),
     assigneeAgentId: uuid("assignee_agent_id").references(() => agents.id),
     assigneeUserId: text("assignee_user_id"),
