@@ -21613,7 +21613,7 @@ export function heartbeatService(
         taskSession != null
           ? await evaluateLongTaskContextReset({
               db,
-              settings: { getGeneral: () => instanceSettingsService(db).getGeneral() },
+              settings: instanceSettingsService(db),
               companyId: agent.companyId,
               agentId: agent.id,
               issueId: issueRef?.id ?? null,

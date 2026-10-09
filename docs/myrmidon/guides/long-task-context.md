@@ -96,8 +96,10 @@ never half-applies. Each field can be overridden by the environment
 (`MYRMIDON_LONG_TASK_CONTEXT_*`, see
 [SETTINGS.md](../SETTINGS.md), Track 2) and every effective value is
 attributable: the resolution reports whether it came from the environment, from
-the stored row, or from the defaults. The panel and the API route for this
-settings area are not part of this part.
+the stored row, or from the defaults. A dedicated panel for this settings
+area is not part of this part; the key is accepted by the shared
+instance-settings validator (`packages/shared/src/validators/instance.ts`), so
+the row is written through the existing settings route.
 
 ## How to tell it worked
 
