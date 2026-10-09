@@ -1216,6 +1216,30 @@ describe("secret routes", () => {
       );
     });
 
+    it("does not take the audited remoteAddress from a client-supplied X-Forwarded-For", async () => {
+      mockAuthorizationService.decidePrincipalGrant.mockResolvedValue({
+        allowed: true,
+        reason: "allow_explicit_grant",
+        explanation: "Allowed by explicit grant secrets:read_off_run.",
+      });
+      mockSecretService.listAgentSecretAccessOffRun.mockResolvedValue([]);
+
+      const res = await request(createApp(offRunAgent))
+        .get("/api/agents/me/secrets")
+        .set("X-Forwarded-For", "203.0.113.77, 198.51.100.5");
+
+      expect(res.status).toBe(200);
+      const context = mockSecretService.listAgentSecretAccessOffRun.mock.calls[0]?.[1] as
+        | { remoteAddress?: string | null }
+        | undefined;
+      // No `trust proxy` in the test app: the address is the socket peer
+      // (loopback under supertest), never the forged header value.
+      expect(context?.remoteAddress).toBeTruthy();
+      expect(context?.remoteAddress).not.toContain("203.0.113.77");
+      expect(context?.remoteAddress).not.toContain("198.51.100.5");
+      expect(context?.remoteAddress).toMatch(/(127\.0\.0\.1|::1)$/);
+    });
+
     it("rejects an off-run agent without the grant with the historical 403 text", async () => {
       const res = await request(createApp(offRunAgent)).get("/api/agents/me/secrets");
 

@@ -164,10 +164,10 @@ export function secretRoutes(db: Db, deps: SecretRoutesDeps = {}) {
     if (!decision.allowed) {
       throw forbidden("Run-bound agent authentication required");
     }
-    const forwarded = req.headers["x-forwarded-for"];
-    const remoteAddress = (typeof forwarded === "string" ? forwarded.split(",")[0]?.trim() : undefined)
-      ?? req.socket?.remoteAddress
-      ?? null;
+    // `req.ip` honors Express `trust proxy` (default: trust nothing, i.e. the
+    // socket peer); a client-supplied X-Forwarded-For must never reach the
+    // audit row, or the key holder could forge where the read came from.
+    const remoteAddress = req.ip || req.socket?.remoteAddress || null;
     return {
       companyId: req.actor.companyId,
       agentId: req.actor.agentId,
