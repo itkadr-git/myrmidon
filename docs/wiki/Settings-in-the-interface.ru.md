@@ -48,11 +48,12 @@
 **Настройки компании → WIP limit**, живое значение видно в строке каждого
 агента
 ([wip-limit](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/wip-limit.ru.md)).
-Параметры самоорганизации роя (феромоны задач, выбор агента по запаху,
-остывание после неудачного прогона, TTL аренды, потолок активных задач,
-вытеснение P0) правятся вживую в **Instance → General →
-Самоорганизация (рой)**, а как включить рой и проверить его работу за три
-действия —
+Параметры самоорганизации роя (стартовая сила феромона по приоритетам,
+надбавка за ожидание, штраф за неудачный прогон без изменений задачи,
+остывание, срок аренды, потолок активных задач на агента, вытеснение P0)
+правятся вживую в **Instance → General → Самоорганизация (рой)** — рой по
+умолчанию выключен, включается переключателем «Включено»; как включить рой и
+проверить его работу за три действия —
 [swarm-self-organization](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/swarm-self-organization.ru.md).
 Низкоуровневые детали очередей —
 [swarm-claim-settings](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/swarm-claim-settings.ru.md).

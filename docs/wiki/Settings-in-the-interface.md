@@ -46,10 +46,12 @@ divergence
 Related: the **WIP limit** caps how many tasks one agent holds in flight —
 **Company Settings → WIP limit**, with the live load on every agent row
 ([wip-limit](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/wip-limit.md)).
-Swarm self-organization parameters (task pheromones, agent pick by scent,
-cooldown after a failed run, lease TTL, per-agent active-task ceiling, P0
-preemption) are edited live in **Instance → General → Self-organization
-(swarm)**; how to switch the swarm on and verify it in three steps —
+Swarm self-organization parameters (starting pheromone strength per
+priority, waiting bonus, penalty for a failed run without a task change,
+cooldown, lease TTL, per-agent active-task ceiling, P0 preemption) are
+edited live in **Instance → General → Self-organisation (swarm)** — the
+swarm is off by default and is turned on with the "Enabled" switch; how to
+switch the swarm on and verify it in three steps —
 [swarm-self-organization](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/swarm-self-organization.md).
 Lower-level queue details —
 [swarm-claim-settings](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/swarm-claim-settings.md).
