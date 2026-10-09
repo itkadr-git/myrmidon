@@ -341,7 +341,7 @@ const support = await getEmbeddedPostgresTestSupport();
 
   it("1. /agents lists the company's addressable agents with their aliases and marks the current addressee", async () => {
     const { issue, boardUserId } = await createTelegramConversation();
-    const text = await replyOf(baseInput({ conversationIssueId: issue.id, boardUserId, text: "/agents" }));
+    const text = await replyOf(baseInput({ conversationIssueId: issue.id, boardUserId, text: "/agents text" }));
     // Name, live status and aliases per line; no card carries a group name, so
     // they all fall into the prefix fallback's last bucket.
     expect(text).toContain(t("en", "agents.groupHeader", { group: t("en", "agents.group.other") }));
@@ -500,7 +500,7 @@ const support = await getEmbeddedPostgresTestSupport();
     const { issue, boardUserId } = await createTelegramConversation({
       assigneeAdapterOverrides: { telegramStickyAgentId: agentBId },
     });
-    const text = await replyOf(baseInput({ conversationIssueId: issue.id, boardUserId, text: "/agents" }));
+    const text = await replyOf(baseInput({ conversationIssueId: issue.id, boardUserId, text: "/agents text" }));
     expect(text).toContain(
       `${t("en", "agents.lineNoRole", {
         name: "agent-b",
@@ -575,7 +575,7 @@ const support = await getEmbeddedPostgresTestSupport();
         agentId: groupedInfraId,
         conversationIssueId: issue.id,
         boardUserId,
-        text: "/agents",
+        text: "/agents text",
       }),
     );
 

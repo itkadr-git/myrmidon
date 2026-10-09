@@ -405,6 +405,13 @@ import {
   telegramAttachmentOmissionNotice,
 } from "../myrmidon/chat-attachment-omission.js";
 import { TELEGRAM_DM_COMMANDS, telegramDmCommandsForLocale } from "../myrmidon/agent-chat-bridge/commands/index.js";
+import {
+  buildAgentsExpiredScreen,
+  resolveAgentsButtonClick,
+  runAgentsButtonAction,
+  stageAgentsScreenPublication,
+  type AgentsScreen,
+} from "../myrmidon/agent-chat-bridge/commands/agents-buttons.js";
 import { telegramDmMenuLocale } from "../myrmidon/agent-chat-bridge/locales/index.js";
 // myrmidon(CHAT-HOLD): no silent queue in a bridged Telegram chat.
 import {
@@ -21160,6 +21167,118 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     return processed;
   }
 
+  // myrmidon(1.6.5 OPE-6318 part B): runs one /agents button and answers with
+  // the next screen as a new message of the same conversation. Who may click:
+  // the linked board user who owns this very bridged Telegram conversation
+  // (checked again by the bridge's own command context), under the same
+  // current-authorization lock as every other executable chat action.
+  async function handleAgentsButtonClick(
+    record: { endpoint: EndpointRow },
+    event: ChatSdkCallbackEvent<ActionEvent>,
+    runtimeContext: LifecycleRuntimeFence,
+    sender: { userId: string; principalId: string },
+    deny: (safelyKnown?: {
+      conversationId?: string | null;
+      principalId?: string | null;
+    }) => Promise<void>,
+  ): Promise<void> {
+    const endpoint = record.endpoint;
+    const resolution = await resolveAgentsButtonClick(db, {
+      endpointId: endpoint.id,
+      companyId: endpoint.companyId,
+      actionId: event.event.actionId,
+      threadId: event.event.threadId,
+      messageId: event.event.messageId,
+      rawData:
+        event.event.raw && typeof event.event.raw === "object" && "data" in event.event.raw
+          ? (event.event.raw as { data?: unknown }).data
+          : null,
+      value: event.event.value,
+      threadMatches: (actionThreadId, conversationThreadId) =>
+        actionThreadMatchesConversation(
+          event.provider,
+          actionThreadId,
+          conversationThreadId,
+        ),
+    });
+    if (resolution.kind === "deny") {
+      return deny({
+        conversationId: resolution.conversationId,
+        principalId: sender.principalId,
+      });
+    }
+    const { conversation, token } = resolution;
+    const known = {
+      conversationId: conversation.id,
+      principalId: sender.principalId,
+    };
+    const authorize = async (tx: DbTransaction) =>
+      requireCurrentExternalActionAuthorization(tx, {
+        conversationId: conversation.id,
+        endpointId: endpoint.id,
+        expectedUserId: sender.userId,
+        principalId: sender.principalId,
+        runtimeContext,
+      });
+    try {
+      await db.transaction(authorize);
+    } catch (error) {
+      if (isExternalActionAuthorizationChange(error)) return deny(known);
+      throw error;
+    }
+
+    let screen: AgentsScreen;
+    if (resolution.expired) {
+      await db
+        .update(chatActions)
+        .set({
+          status: "expired",
+          result: { code: "agents_button_token_expired" },
+          updatedAt: new Date(),
+        })
+        .where(
+          and(eq(chatActions.id, token.id), eq(chatActions.status, "issued")),
+        );
+      screen = await buildAgentsExpiredScreen(db, sender.userId);
+    } else {
+      screen = await runAgentsButtonAction({
+        db,
+        companyId: endpoint.companyId,
+        conversationAgentId: endpoint.assignedAgentId,
+        conversationIssueId: conversation.issueId,
+        boardUserId: sender.userId,
+        action: resolution.action,
+        cancelRun:
+          x8TelegramDmBridgeDeps.cancelRun ??
+          (async () => {
+            throw new Error("chat_cancel_unavailable");
+          }),
+      });
+    }
+    try {
+      await db.transaction(async (tx) => {
+        await authorize(tx);
+        await stageAgentsScreenPublication({
+          tx: tx as unknown as Db,
+          stage: stageAuthorizedTaskControlPublication,
+          companyId: endpoint.companyId,
+          endpointId: endpoint.id,
+          conversationId: conversation.id,
+          issueId: conversation.issueId,
+          principalId: sender.principalId,
+          idempotencyKey: `control:agents-button:${token.id}:${randomUUID()}`,
+          screen,
+        });
+      });
+    } catch (error) {
+      if (isExternalActionAuthorizationChange(error)) return deny(known);
+      throw error;
+    }
+    scheduleMessageProcessing(async () => {
+      await processPendingPublications();
+    });
+  }
+
   async function handleAction(
     event: ChatSdkCallbackEvent<ActionEvent>,
     runtimeContext: RuntimeContext,
@@ -21218,6 +21337,24 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       principal.principal.isBot
     ) {
       return deny({ principalId: principal.principal.id });
+    }
+    // myrmidon(1.6.5 OPE-6318 part B): a click on an /agents button of the
+    // bridged Telegram DM. The token is its own `agents_button` row; every
+    // other action id falls through to the question/confirmation path below.
+    if (
+      event.provider === "telegram" &&
+      event.event.actionId.startsWith("pca:")
+    ) {
+      return await handleAgentsButtonClick(
+        record,
+        event,
+        runtimeContext,
+        {
+          userId: principal.userId!,
+          principalId: principal.principal.id,
+        },
+        deny,
+      );
     }
     // myrmidon(F06-D): a press under a `/model` or `/think` list is not an
     // issue-interaction answer; it has its own token kind and handler.
