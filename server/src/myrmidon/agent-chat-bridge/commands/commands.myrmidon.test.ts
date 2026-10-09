@@ -604,7 +604,7 @@ const support = await getEmbeddedPostgresTestSupport();
       }),
     );
     expect((en as { kind: "reply"; text: string }).text).toBe(
-      "Changing the model is unavailable for adapter openclaw_gateway: this adapter does not support changing it from the chat",
+      "Changing the model is unavailable for adapter openclaw_gateway: this adapter does not support changing it from the chat. The model is changed on the board — the agent card's models section — and applies from the next reply.",
     );
 
     const ruUser = randomUUID();
@@ -619,7 +619,7 @@ const support = await getEmbeddedPostgresTestSupport();
       }),
     );
     expect((ru as { kind: "reply"; text: string }).text).toBe(
-      "Смена глубины рассуждений недоступна для адаптера openclaw_gateway: этот адаптер не поддерживает смену из чата",
+      "Смена глубины рассуждений недоступна для адаптера openclaw_gateway: этот адаптер не поддерживает смену из чата. Глубина рассуждений меняется на доске — в разделе моделей карточки агента; применится со следующего ответа.",
     );
   });
 
