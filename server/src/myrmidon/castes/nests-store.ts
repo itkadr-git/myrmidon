@@ -1,7 +1,7 @@
 // server/src/myrmidon/castes/nests-store.ts
 //
 // myrmidon(1.6.5 F-26 T3 CASTES-AND-NESTS): the database side of the agent
-// nests (table agent_nests, migration 0382).
+// nests (table agent_nests, migration 0384).
 //
 // Liveness (owner's criterion, same as the caste store): the pairs are read from
 // the database on every call — no read cache, no env. Saving the multi-select in
