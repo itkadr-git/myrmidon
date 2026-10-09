@@ -100,7 +100,7 @@ import { resourceMembershipRoutes } from "./routes/resource-memberships.js";
 import { inboxDismissalRoutes } from "./routes/inbox-dismissals.js";
 import { instanceSettingsRoutes } from "./routes/instance-settings.js";
 import { myrmidonMaintenanceRoutes } from "./myrmidon/maintenance/index.js"; // myrmidon(R3)
-import { myrmidonDeployJobsRoutes } from "./myrmidon/deploy-jobs/index.js"; // myrmidon(R5-A)
+import { myrmidonDeployJobsRoutes, myrmidonAutoUpdateRoutes } from "./myrmidon/deploy-jobs/index.js"; // myrmidon(R5-A, 1.7-AUTO-UPDATE-B)
 import { myrmidonRuntimeLimitsRoutes } from "./myrmidon/runtime-limits/index.js"; // myrmidon(C0)
 import { myrmidonCorpusRoutes, resolveCorpusPorts } from "./myrmidon/corpus/index.js"; // myrmidon(1.6.6 CORPUS-2.0 ч.C)
 import { myrmidonBudgetEnforcementRoutes } from "./myrmidon/budget-enforcement/index.js"; // myrmidon(1.7-BUDGET-CONFIG-B)
@@ -919,6 +919,7 @@ export async function createApp(
   api.use(myrmidonMaintenanceRoutes(db)); // myrmidon(R3)
   api.use(boardLoadApp(db)); // myrmidon(1.6.6 PROCS-0.3A): lanes, api-load p95, pg_stat_statements, cpu-profile
   api.use(myrmidonDeployJobsRoutes(db)); // myrmidon(R5-A)
+  api.use(myrmidonAutoUpdateRoutes(db)); // myrmidon(1.7-AUTO-UPDATE-B)
   api.use(myrmidonRuntimeLimitsRoutes(db)); // myrmidon(C0)
   api.use(myrmidonCorpusRoutes(db, { ports: resolveCorpusPorts })); // myrmidon(1.6.6 CORPUS-2.0 ч.C): corpus datasets/documents/search + module settings
   api.use(myrmidonBudgetEnforcementRoutes(db)); // myrmidon(1.7-BUDGET-CONFIG-B)
