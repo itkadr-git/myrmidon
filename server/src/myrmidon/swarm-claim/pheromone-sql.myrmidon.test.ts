@@ -226,6 +226,47 @@ describeEmbeddedPostgres("F-27 pheromone: the SQL twins agree with the shared he
     expect(await failedRunsOf(companyId, issueId)).toBe(1);
   });
 
+  // Review #1047: the evaporation count is one bounded pass over the recent
+  // evaporating runs, joined — not a correlated subquery per candidate in the
+  // SELECT and again in the ORDER BY.
+  it("the queue query reads heartbeat_runs once and orders by the joined column", async () => {
+    const { companyId } = await seedCompany();
+    const built = roleQueueRows(db, companyId, "engineer").toSQL().sql;
+    expect(built.match(/heartbeat_runs/g)).toHaveLength(1);
+    expect(built).toMatch(/left join \(\s*select hr\.issue_uuid, count\(\*\)/i);
+    const orderBy = built.slice(built.toLowerCase().lastIndexOf("order by"));
+    expect(orderBy).not.toMatch(/select|heartbeat_runs/i);
+    expect(orderBy).toContain("fr.failed_runs");
+  });
+
+  it("a failure older than the failure window no longer evaporates", async () => {
+    const { companyId, agentId } = await seedCompany();
+    const issueId = await seedIssue(companyId);
+    await seedFailedRun(companyId, agentId, issueId, new Date(Date.now() - 3 * HOUR));
+    await seedFailedRun(companyId, agentId, issueId, new Date(Date.now() - 20 * 24 * HOUR));
+    expect(await failedRunsOf(companyId, issueId)).toBe(1);
+  });
+
+  it("a legacy run bound only by the context snapshot counts too; a non-uuid reference is ignored", async () => {
+    const { companyId, agentId } = await seedCompany();
+    const issueId = await seedIssue(companyId);
+    await db.insert(heartbeatRuns).values({
+      companyId,
+      agentId,
+      status: "failed",
+      finishedAt: new Date(Date.now() - 2 * HOUR),
+      contextSnapshot: { issueId },
+    });
+    await db.insert(heartbeatRuns).values({
+      companyId,
+      agentId,
+      status: "failed",
+      finishedAt: new Date(Date.now() - 2 * HOUR),
+      contextSnapshot: { issueId: "not-a-uuid" },
+    });
+    expect(await failedRunsOf(companyId, issueId)).toBe(1);
+  });
+
   it("the candidate cut is ordered by effective strength: a fresh strong task behind 200 older weak ones is first", async () => {
     const { companyId } = await seedCompany();
     const now = new Date();

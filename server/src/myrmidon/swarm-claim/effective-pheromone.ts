@@ -35,15 +35,36 @@ const NON_CHANGE_ISSUE_ACTIONS = [
   "issue.inbox_unarchived",
 ] as const;
 
-/** How the evaporation count reaches the outer issue row (a drizzle table or a raw alias). */
-export interface PheromoneIssueRefs {
-  companyId: SQL;
-  id: SQL;
-}
+/**
+ * How far back a failed run still evaporates pheromone. A failure older than
+ * this is forgotten: the signal exists to push a task that keeps failing
+ * *now* behind the others, and the window is what lets the count be one
+ * bounded pass over recent runs (review #1047) instead of a scan of the
+ * company's whole run history per candidate task.
+ */
+export const PHEROMONE_FAILURE_WINDOW_DAYS = 14;
+
+/** Alias of the derived table the queue reads join, and its columns. */
+export const FAILED_RUNS_ALIAS = "fr";
 
 /**
  * SQL twin of the evaporation count: runs of the task that ended in an
- * evaporating status with no task change after them.
+ * evaporating status with no task change after them — computed ONCE per queue
+ * read as a derived table (`issue_uuid`, `failed_runs`) the query LEFT JOINs
+ * (review #1047: it used to be a correlated subquery per candidate task, in
+ * the SELECT and again in the ORDER BY, over every ready task before the
+ * LIMIT). ORDER BY and SELECT now read the same joined column.
+ *
+ * The derived table starts from the runs, not from the tasks:
+ *   - only runs in an evaporating status, finished inside the failure window,
+ *     of this company — served by `heartbeat_runs_company_status_updated_idx`
+ *     (company, status, updated_at); `updated_at >= finished_at`, so the
+ *     `updated_at` bound is a safe index prefilter, the `finished_at` bound is
+ *     the exact one;
+ *   - the task a run belongs to is `native_issue_id`, else the context
+ *     snapshot's `issueId` (the pairing the legacy-terminal index uses); a
+ *     reference that is not a UUID drops out (the CASE keeps the cast safe);
+ *   - the "no task change after the run" probes run only for those few runs.
  *
  * "No change after" is NOT read from `issues.updated_at` / `last_activity_at`
  * (review #1047 п.1): the run's own cleanup (`releaseIssueExecutionAndPromote`
@@ -59,28 +80,40 @@ export interface PheromoneIssueRefs {
  * which is the acceptance test "обновление задачи снимает штраф".
  * Not covered: a blocker closed by the system (no person/agent row) — the
  * penalty then stays until the next edit or comment.
- *
- * Runs attach to their task by `native_issue_id`, else by the context
- * snapshot's `issueId` (the same pairing the legacy-terminal index uses).
  */
-export function failedRunsSinceLastChangeFor(refs: PheromoneIssueRefs): SQL<number> {
+export function failedRunsDerivedSql(companyId: string, now: Date = new Date()): SQL {
   const bookkeeping = sql.join(
     NON_CHANGE_ISSUE_ACTIONS.map((action) => sql`${action}`),
     sql`, `,
   );
-  return sql<number>`coalesce((
-    select count(*)::int
-    from heartbeat_runs hr
-    where hr.company_id = ${refs.companyId}
-      and (
-        hr.native_issue_id = ${refs.id}
-        or (hr.native_issue_id is null and hr.context_snapshot ->> 'issueId' = ${refs.id}::text)
-      )
-      and hr.status in ('failed', 'blocked', 'needs_followup', 'timed_out')
-      and hr.finished_at is not null
+  const statuses = sql.join(
+    PHEROMONE_EVAPORATING_RUN_STATUSES.map((status) => sql`${status}`),
+    sql`, `,
+  );
+  const windowStart = new Date(now.getTime() - PHEROMONE_FAILURE_WINDOW_DAYS * 86_400_000).toISOString();
+  return sql`(
+    select hr.issue_uuid, count(*)::int as failed_runs
+    from (
+      select
+        r.id,
+        r.company_id,
+        r.finished_at,
+        case
+          when coalesce(r.native_issue_id::text, r.context_snapshot ->> 'issueId')
+               ~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
+          then coalesce(r.native_issue_id::text, r.context_snapshot ->> 'issueId')::uuid
+        end as issue_uuid
+      from heartbeat_runs r
+      where r.company_id = ${companyId}
+        and r.status in (${statuses})
+        and r.updated_at > ${windowStart}::timestamptz
+        and r.finished_at is not null
+        and r.finished_at > ${windowStart}::timestamptz
+    ) hr
+    where hr.issue_uuid is not null
       and not exists (
         select 1 from issue_comments ic
-        where ic.issue_id = ${refs.id}
+        where ic.issue_id = hr.issue_uuid
           and ic.deleted_at is null
           and ic.created_at > hr.finished_at
           and ic.created_by_run_id is distinct from hr.id
@@ -89,18 +122,33 @@ export function failedRunsSinceLastChangeFor(refs: PheromoneIssueRefs): SQL<numb
         select 1 from activity_log al
         where al.company_id = hr.company_id
           and al.entity_type = 'issue'
-          and al.entity_id = ${refs.id}::text
+          and al.entity_id = hr.issue_uuid::text
           and al.created_at > hr.finished_at
           and al.actor_type <> 'system'
           and al.run_id is distinct from hr.id
           and al.action not in (${bookkeeping})
       )
-  ), 0)`;
+    group by hr.issue_uuid
+  ) ${sql.raw(FAILED_RUNS_ALIAS)}`;
 }
 
-/** The evaporation count over the drizzle `issues` table (queue reads). */
+/** The ON clause of the join, over the drizzle `issues` table. */
+export function failedRunsJoinOnSql(): SQL {
+  return sql`${sql.raw(FAILED_RUNS_ALIAS)}.issue_uuid = ${issues.id}`;
+}
+
+/** The ON clause for a raw query that aliases the issues table as `issueAlias`. */
+export function failedRunsJoinOnRawSql(issueAlias: string): SQL {
+  return sql`${sql.raw(FAILED_RUNS_ALIAS)}.issue_uuid = ${sql.raw(issueAlias)}.id`;
+}
+
+/**
+ * The evaporation count of a task over the joined derived table
+ * (`failedRunsDerivedSql`); 0 when the task has no evaporating run. Selected
+ * and ordered by through THIS expression — a plain column read, no subquery.
+ */
 export function failedRunsSinceLastChangeSql(): SQL<number> {
-  return failedRunsSinceLastChangeFor({ companyId: sql`${issues.companyId}`, id: sql`${issues.id}` });
+  return sql<number>`coalesce(${sql.raw(FAILED_RUNS_ALIAS)}.failed_runs, 0)`;
 }
 
 /** A validated integer literal: the dynamics are settings, never user text. */
