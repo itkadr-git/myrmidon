@@ -6,7 +6,7 @@
 // status line, and the disabled auto-select switch when the backend has no
 // field for it.
 
-import { flushSync } from "react-dom";
+import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -31,6 +31,11 @@ vi.mock("./litellmWorkersApi", async (importOriginal) => {
 });
 
 import { litellmWorkersApi } from "./litellmWorkersApi";
+
+// React 19 only flushes concurrent work (including react-query's resolved
+// promises) inside act() when this flag is set, same as the other component
+// tests in this package (e.g. src/App.onboarding-launcher.test.tsx).
+(globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
 
 const state = (over: Partial<LitellmWorkersState> = {}): LitellmWorkersState => ({
   current: 2,
@@ -84,40 +89,45 @@ describe("myrmidon(1.6.6-LITELLM-WORKERS-UI) GatewayWorkersTab", () => {
     vi.mocked(litellmWorkersApi.apply).mockReset();
   });
 
-  afterEach(() => {
-    root.unmount();
+  afterEach(async () => {
+    await act(async () => {
+      root.unmount();
+    });
     container.remove();
     vi.restoreAllMocks();
   });
 
-  function render(): QueryClient {
+  // Renders the tab and waits for the mocked GET state to arrive, so every
+  // test starts from the loaded (not "Waiting for the first metrics read…")
+  // view. async act() drains the promise chain and flushes React's work.
+  async function renderTab() {
     const client = new QueryClient({
       defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
     });
-    flushSync(() => {
+    await act(async () => {
       root.render(
         <QueryClientProvider client={client}>
           <GatewayWorkersTab companyId="company-a" />
         </QueryClientProvider>,
       );
     });
-    return client;
+    await act(async () => {});
   }
 
-  async function settled() {
-    await new Promise((resolve) => setTimeout(resolve, 0));
-  }
-
-  function typeInto(el: HTMLInputElement, text: string) {
+  async function typeInto(selector: string, text: string) {
+    const el = container.querySelector(selector);
+    if (!(el instanceof HTMLInputElement)) {
+      throw new Error(`typeInto: "${selector}" did not resolve to an HTMLInputElement`);
+    }
     const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
-    flushSync(() => {
+    await act(async () => {
       setter.call(el, text);
       el.dispatchEvent(new Event("input", { bubbles: true }));
     });
   }
 
-  function click(el: Element) {
-    flushSync(() => {
+  async function click(el: Element) {
+    await act(async () => {
       el.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
   }
@@ -128,8 +138,7 @@ describe("myrmidon(1.6.6-LITELLM-WORKERS-UI) GatewayWorkersTab", () => {
 
   it("renders the form from the GET state and metrics", async () => {
     vi.mocked(litellmWorkersApi.state).mockResolvedValue(state());
-    render();
-    await settled();
+    await renderTab();
     const text = container.textContent ?? "";
     expect(text).toContain("Worker processes");
     expect(text).toContain("Gateway metrics");
@@ -141,10 +150,8 @@ describe("myrmidon(1.6.6-LITELLM-WORKERS-UI) GatewayWorkersTab", () => {
 
   it("refuses to apply above maxByMemory on the client", async () => {
     vi.mocked(litellmWorkersApi.state).mockResolvedValue(state({ maxByMemory: 4 }));
-    render();
-    await settled();
-    const input = container.querySelector("#myrmidon-workers-target") as HTMLInputElement;
-    typeInto(input, "9");
+    await renderTab();
+    await typeInto("#myrmidon-workers-target", "9");
     expect(container.textContent).toContain("memory ceiling");
     // no Apply button while the draft is invalid
     expect(buttonWith("Apply")).toBeUndefined();
@@ -153,19 +160,19 @@ describe("myrmidon(1.6.6-LITELLM-WORKERS-UI) GatewayWorkersTab", () => {
   it("applies through a confirm step and sends the PUT body without auto when unsupported", async () => {
     vi.mocked(litellmWorkersApi.state).mockResolvedValue(state({ current: 2, target: 2 }));
     vi.mocked(litellmWorkersApi.apply).mockResolvedValue(state({ current: 4, target: 4 }));
-    render();
-    await settled();
-    const input = container.querySelector("#myrmidon-workers-target") as HTMLInputElement;
-    typeInto(input, "4");
+    await renderTab();
+    await typeInto("#myrmidon-workers-target", "4");
     const apply = buttonWith("Apply");
     expect(apply).toBeTruthy();
-    click(apply!);
+    await click(apply!);
     // confirmation step first — no PUT yet
     expect(litellmWorkersApi.apply).not.toHaveBeenCalled();
     const confirm = buttonWith("Confirm");
     expect(confirm).toBeTruthy();
-    click(confirm!);
+    await click(confirm!);
     expect(litellmWorkersApi.apply).toHaveBeenCalledWith("company-a", 4, null);
+    // let the resolved PUT settle inside act so onSuccess cache-set re-renders
+    await act(async () => {});
   });
 
   it("surfaces the 400 text from the server on a rejected apply", async () => {
@@ -173,13 +180,12 @@ describe("myrmidon(1.6.6-LITELLM-WORKERS-UI) GatewayWorkersTab", () => {
     vi.mocked(litellmWorkersApi.apply).mockRejectedValue(
       new ApiError("target 9 exceeds the memory limit of 6 workers", 400, { error: "no" }),
     );
-    render();
-    await settled();
-    const input = container.querySelector("#myrmidon-workers-target") as HTMLInputElement;
-    typeInto(input, "9");
-    click(buttonWith("Apply")!);
-    click(buttonWith("Confirm")!);
-    await settled();
+    await renderTab();
+    await typeInto("#myrmidon-workers-target", "9");
+    await click(buttonWith("Apply")!);
+    await click(buttonWith("Confirm")!);
+    // let the rejected PUT settle inside act so the error renders
+    await act(async () => {});
     expect(container.querySelector("[data-testid=myrmidon-workers-error]")?.textContent).toContain(
       "target 9 exceeds the memory limit of 6 workers",
     );
