@@ -38,6 +38,7 @@
 
 import { executionFailureRetryCount } from "../services/execution-recovery-attempt.js";
 import { CONVERSATION_ADAPTER_TYPES, claimedAdapterType } from "../services/conversation-continuation.js";
+import { liveRunPipelineSettings } from "./runs-queue-settings/live.js";
 
 export const INFRA_INTERRUPT_CODES_ENV = "MYRMIDON_INFRA_INTERRUPT_CODES";
 
@@ -123,9 +124,13 @@ export function parseInfraInterruptCodes(raw: string | undefined): ReadonlySet<s
   );
 }
 
-/** Reads MYRMIDON_INFRA_INTERRUPT_CODES from `env` (defaults to `process.env`). */
+/** Reads the infra-interrupt codes. OPE-4096: resolves live (UI list → env
+ * forced override → default). An explicit env value always wins; `off`/empty
+ * env keeps the vendor "disabled" behavior. */
 export function readInfraInterruptCodes(env: NodeJS.ProcessEnv = process.env): ReadonlySet<string> {
-  return parseInfraInterruptCodes(env[INFRA_INTERRUPT_CODES_ENV]);
+  const envRaw = env[INFRA_INTERRUPT_CODES_ENV];
+  if (envRaw !== undefined) return parseInfraInterruptCodes(envRaw);
+  return new Set(liveRunPipelineSettings(env).infraInterruptCodes);
 }
 
 /** True when `errorCode` is configured as an infrastructure interruption. */

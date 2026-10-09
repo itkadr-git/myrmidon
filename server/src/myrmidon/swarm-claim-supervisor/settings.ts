@@ -9,6 +9,8 @@
 // to its default on anything that is not a positive integer, and the pilot
 // snapshot document key falls back to its default on an empty value.
 
+import { liveSwarmSupervisorSettings } from "../runs-queue-settings/live.js";
+
 /** How many queue candidates one role may report; a ceiling, not a page size. */
 export const SWARM_SUPERVISOR_TASK_MAX_ENV = "MYRMIDON_SWARM_SUPERVISOR_TASK_MAX";
 export const DEFAULT_SWARM_SUPERVISOR_TASK_MAX = 500;
@@ -34,21 +36,11 @@ export interface SwarmSupervisorSettings {
 export function readSwarmSupervisorSettings(
   env: NodeJS.ProcessEnv = process.env,
 ): SwarmSupervisorSettings {
+  // OPE-4096: both knobs resolve live (UI value → env forced override →
+  // default); an explicit env value always wins.
+  const live = liveSwarmSupervisorSettings(env);
   return {
-    taskMax: readTaskMax(env),
-    baselineDocumentKey: readBaselineDocumentKey(env),
+    taskMax: live.taskMax,
+    baselineDocumentKey: live.baselineDocumentKey,
   };
-}
-
-function readTaskMax(env: NodeJS.ProcessEnv): number {
-  const raw = env[SWARM_SUPERVISOR_TASK_MAX_ENV]?.trim();
-  if (!raw || !/^\d+$/.test(raw)) return DEFAULT_SWARM_SUPERVISOR_TASK_MAX;
-  const value = Number(raw);
-  if (!Number.isSafeInteger(value) || value <= 0) return DEFAULT_SWARM_SUPERVISOR_TASK_MAX;
-  return Math.min(value, MAX_SWARM_SUPERVISOR_TASK_MAX);
-}
-
-function readBaselineDocumentKey(env: NodeJS.ProcessEnv): string {
-  const raw = env[SWARM_PILOT_BASELINE_DOC_ENV]?.trim();
-  return raw ? raw : DEFAULT_SWARM_PILOT_BASELINE_DOC;
 }

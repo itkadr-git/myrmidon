@@ -42,6 +42,7 @@ import { AboutSettingsPanel } from "@/components/myrmidon/AboutSettingsPanel"; /
 import { DeployJobsPanel } from "@/components/myrmidon/DeployJobsPanel"; // myrmidon(R5-A)
 import { BoardProcessesSettingsPanel } from "@/components/myrmidon/BoardProcessesSettingsPanel"; // myrmidon(1.6.6 PROCS-0.1)
 import { PluginEntitlementSettings } from "@/components/myrmidon/PluginEntitlementSettingsPanel"; // myrmidon(PLUGIN-ENTITLEMENT C)
+import { RunsQueueSettingsPanel } from "@/components/myrmidon/RunsQueueSettingsPanel"; // myrmidon(1.7, OPE-4096, SETTINGS-TO-UI B)
 import { PRODUCT_NAME, UPSTREAM_ATTRIBUTION } from "@/lib/myrmidon-product"; // myrmidon(B1a)
 import { useTranslation } from "@/i18n"; // myrmidon(UI-RU)
 
