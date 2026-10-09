@@ -84,7 +84,7 @@ describe("myrmidon(1.6.1-BOT-DISK-B) buildBinds with the shared package cache", 
     expect(botDiskCachePathProblem(cache)).toBeNull();
   });
 
-  it("points every tool at its mount, the pnpm store inside the single mount with hardlink import, and leaves pip out", () => {
+  it("points every tool at its mount, the pnpm store inside the single mount with reflink import, and leaves pip out", () => {
     // myrmidon(BOT-DISK-D): /cache/pnpm is a different mount from the clones and hard links
     // cannot cross it: it is only a download (metadata) cache, the store is inside /bot.
     expect(packageCacheEnv()).toEqual({
@@ -93,7 +93,7 @@ describe("myrmidon(1.6.1-BOT-DISK-B) buildBinds with the shared package cache", 
       GOCACHE: "/cache/go-build",
       GRADLE_USER_HOME: "/cache/gradle",
       npm_config_store_dir: "/workspace/.pnpm-store",
-      npm_config_package_import_method: "hardlink",
+      npm_config_package_import_method: "reflink",
     });
     expect(PACKAGE_CACHE_MOUNTS.map((mount) => mount.hostSubdir)).not.toContain("pip");
   });
@@ -209,7 +209,7 @@ describe("myrmidon(1.6.2-BOT-DISK-C) git mirror and pnpm store settings", () => 
       gitMirrorRepos: [],
       gitMirrorRefreshMs: 15 * 60 * 1000,
       pnpmStoreDir: "/workspace/.pnpm-store",
-      pnpmImportMethod: "hardlink",
+      pnpmImportMethod: "reflink",
       sharedCacheRoles: ["engineer", "reviewer", "devops", "release", "qa"],
     });
     const layout = resolveBotDiskLayout({
@@ -226,7 +226,7 @@ describe("myrmidon(1.6.2-BOT-DISK-C) git mirror and pnpm store settings", () => 
     // No cache path: the mirrors have nowhere to live.
     expect(resolveBotDiskLayout({ gitMirrorRepos: ["owner/repo"] }).gitMirrorRepos).toEqual([]);
     expect(resolveBotDiskLayout(undefined).pnpmStoreDir).toBe("/workspace/.pnpm-store");
-    expect(resolveBotDiskLayout(undefined).pnpmImportMethod).toBe("hardlink");
+    expect(resolveBotDiskLayout(undefined).pnpmImportMethod).toBe("reflink");
     // The former pnpmStore key is gone: a stored value is ignored.
     expect(resolveBotDiskLayout({ pnpmStore: "shared" }).pnpmStoreDir).toBe("/workspace/.pnpm-store");
   });
@@ -237,7 +237,7 @@ describe("myrmidon(1.6.2-BOT-DISK-C) git mirror and pnpm store settings", () => 
       gitMirrorRepos: ["bad name"],
       gitMirrorRefreshMs: 5,
       pnpmStoreDir: "/cache/pnpm/store",
-      pnpmImportMethod: "reflink",
+      pnpmImportMethod: "no-such-method",
     });
     expect(values).toEqual({ enabled: false });
   });
@@ -260,7 +260,8 @@ describe("myrmidon(1.6.2-BOT-DISK-C) git mirror and pnpm store settings", () => 
       expect(botDiskPnpmStoreDirProblem(bad), bad).not.toBeNull();
     }
     expect(botDiskPnpmStoreDirProblem("/bot/.pnpm-store")).toBeNull();
-    expect(patchBotDiskSettingsSchema.safeParse({ pnpmImportMethod: "reflink" }).success).toBe(false);
+    expect(patchBotDiskSettingsSchema.safeParse({ pnpmImportMethod: "reflink" }).success).toBe(true);
+    expect(patchBotDiskSettingsSchema.safeParse({ pnpmImportMethod: "no-such-method" }).success).toBe(false);
     // The former key is no longer accepted (the schema is strict).
     expect(patchBotDiskSettingsSchema.safeParse({ pnpmStore: "workspace" }).success).toBe(false);
     expect(patchBotDiskSettingsSchema.safeParse({ gitMirrorRepos: ["a/b.git"] }).success).toBe(false);
