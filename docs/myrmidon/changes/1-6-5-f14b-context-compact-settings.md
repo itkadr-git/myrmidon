@@ -17,9 +17,22 @@ settings-section: Track 5 — operations
 - The agreed backup source of the retention gate is documented as a contract:
   the board's built-in DB Backup is the primary fresh-backup producer, a
   host-side `pg_dump -Fc` dump (`*.dump`) is accepted by extension as a
-  fallback intended for shipping to external storage, and with an empty
-  prefix any `*.sql.gz`/`*.dump` in the dir counts (non-matching names are
-  still reported as `candidates`).
+  fallback intended for shipping to external storage, and with the prefix
+  knob unset or empty any `*.sql.gz`/`*.dump` in the dir counts (names not
+  matching a set prefix are still reported as `candidates`). The row-deletion
+  sweep (data retention) follows the same rule, so both gates agree.
+- New setting "The machine is backed up externally"
+  (`general.datastoreCare.retention.externalMachineBackup`, a checkbox in the
+  Data retention panel, also `PATCH /api/myrmidon/datastore-care` and
+  `PATCH /api/myrmidon/data-retention`). When the whole machine is backed up
+  on another host and no local dump is produced, the backup gate of BOTH
+  cleanups (run-context compaction and deletion of old rows) passes without
+  looking for a local file; the persisted gate report then says
+  `externalMachineBackup: true`. Off by default: with it off, the gates behave
+  as before and wait for a fresh local dump.
+- Fix: the data-retention windows no longer fall back to the defaults when the
+  same stored block also holds the compaction keys (`heartbeatRunContextDays`,
+  `contextLastRun`, ...): only the three window keys are validated there.
 - The gate's contract is pinned by tests: a failed freshness check against an
   embedded Postgres still writes the full `contextLastRun.backupGate` report
   with honest field names and `waitingForBackup: true`, while the legacy trap
@@ -41,9 +54,22 @@ settings-section: Track 5 — operations
 - Согласованный источник «свежего бэкапа» для гейта записан договором:
   основной — встроенный бэкап доски; хостовый дамп `pg_dump -Fc` (`*.dump`)
   принимается по расширению как резервный, предназначенный для выгрузки во
-  внешнее хранилище; при пустом префиксе считается любой `*.sql.gz`/`*.dump`
-  в каталоге (неподходящие по префиксу имена по-прежнему видны в
-  `candidates`).
+  внешнее хранилище; при незаданном или пустом префиксе считается любой
+  `*.sql.gz`/`*.dump` в каталоге (имена не по заданному префиксу по-прежнему
+  видны в `candidates`). Свип удаления строк (data retention) подчиняется тому
+  же правилу, оба гейта совпадают.
+- Новая настройка «Машина бэкапится внешне»
+  (`general.datastoreCare.retention.externalMachineBackup`, галочка в панели
+  Data retention, также `PATCH /api/myrmidon/datastore-care` и
+  `PATCH /api/myrmidon/data-retention`). Когда вся машина бэкапится на другом
+  хосте и локальный дамп не создаётся, гейт бэкапа ОБОИХ процессов (уплотнение
+  контекста запусков и удаление старых строк) проходит, не ища локальный файл;
+  сохранённый отчёт гейта тогда содержит `externalMachineBackup: true`. По
+  умолчанию выключено: при выключенной настройке гейты работают как раньше и
+  ждут свежего локального дампа.
+- Исправление: окна data-retention больше не откатываются к умолчаниям, когда
+  в том же сохранённом блоке лежат ключи уплотнения (`heartbeatRunContextDays`,
+  `contextLastRun`, ...): там проверяются только три ключа окон.
 - Договор гейта закреплён тестами: отказ проверки свежести на embedded
   Postgres всё равно пишет полный отчёт `contextLastRun.backupGate` с
   честными именами полей и `waitingForBackup: true`, а поле-обманка
@@ -66,10 +92,25 @@ instance default `<instance data dir>/backups`):
 - fallback — a host-side `pg_dump -Fc` dump dropped into the same directory
   with the `*.dump` extension: accepted by extension, newest by mtime. It is
   intended for shipping to external storage; the gate only reads its age;
-- with an empty prefix any `*.sql.gz`/`*.dump` in the directory counts,
-  newest first; files of those extensions that do not match the prefix are
-  reported as `candidates` in the persisted gate state, so a stall caused by
-  a wrong prefix stays diagnosable.
+- with `MYRMIDON_DB_BACKUP_FILE_PREFIX` unset or empty (the default) any
+  `*.sql.gz`/`*.dump` in the directory counts, newest first; a non-empty
+  value narrows the match to `<prefix>-*`, and files of those extensions that
+  do not match it are reported as `candidates` in the persisted gate state, so
+  a stall caused by a wrong prefix stays diagnosable. Note that the board's
+  built-in `runDatabaseBackup` always writes `paperclip-*` (the name is
+  hardcoded there; the knob only affects what the gate accepts). The deletion
+  sweep (data retention) uses the identical rule;
+- "the machine is backed up externally" mode — when the whole machine is
+  backed up on another host and `db-backup` / the board backup are off, no
+  local dump ever appears and both cleanups (run-context compaction and
+  deletion of old rows) would wait forever. The instance setting
+  `general.datastoreCare.retention.externalMachineBackup` (checkbox "The
+  machine is backed up externally" in the Data retention panel; `PATCH
+  /api/myrmidon/datastore-care` or `/api/myrmidon/data-retention` with
+  `externalMachineBackup: true`) makes the gate of both cleanups pass without
+  reading the backup directory. Default off; the operator takes
+  responsibility that the external machine backup exists and is current — the
+  gate no longer checks it. `GET` of both routes reports the flag.
 
 The per-pass batches ceiling resolves instance setting > environment >
 default and is re-read on every pass (a PATCH applies without restart):
@@ -95,10 +136,26 @@ default and is re-read on every pass (a PATCH applies without restart):
   расширением `*.dump`: принимается по расширению, свежайший по mtime. Он
   предназначен для выгрузки во внешнее хранилище; гейт читает только его
   возраст;
-- при пустом префиксе считается любой `*.sql.gz`/`*.dump` в каталоге,
-  свежайший первым; файлы этих расширений не по префиксу попадают в
-  `candidates` persisted-состояния гейта, чтобы застревание из-за неверного
-  префикса оставалось диагностируемым.
+- при незаданном или пустом `MYRMIDON_DB_BACKUP_FILE_PREFIX` (по умолчанию)
+  считается любой `*.sql.gz`/`*.dump` в каталоге, свежайший первым;
+  непустое значение сужает совпадение до `<prefix>-*`, а файлы этих
+  расширений не по префиксу попадают в `candidates` persisted-состояния
+  гейта, чтобы застревание из-за неверного префикса оставалось
+  диагностируемым. Встроенный `runDatabaseBackup` доски всегда пишет
+  `paperclip-*` (имя зашито в коде; переменная влияет только на то, что
+  принимает гейт). Свип удаления строк (data retention) использует то же
+  правило;
+- режим «машина бэкапится внешне» — когда вся машина бэкапится на другом хосте,
+  а `db-backup` / бэкап доски выключены, локальный дамп не появляется никогда,
+  и оба процесса (уплотнение контекста запусков и удаление старых строк)
+  ждали бы вечно. Настройка инстанса
+  `general.datastoreCare.retention.externalMachineBackup` (галочка «Машина
+  бэкапится внешне» в панели Data retention; `PATCH
+  /api/myrmidon/datastore-care` или `/api/myrmidon/data-retention` с
+  `externalMachineBackup: true`) заставляет гейт обоих процессов проходить, не
+  читая каталог бэкапов. По умолчанию выключено; ответственность за наличие и
+  свежесть внешнего бэкапа машины на операторе — гейт его больше не
+  проверяет. `GET` обоих маршрутов показывает флаг.
 
 Потолок пачек за проход разрешается по цепочке настройка инстанса > окружение
 > умолчание и перечитывается каждый проход (PATCH применяется без

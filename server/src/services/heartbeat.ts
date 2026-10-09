@@ -694,6 +694,7 @@ import {
 import {
   createIdlePickupSweeper,
   createIdleWakeBudget,
+  findTopReadyIssueForAgent,
   idlePickupForAgent,
 } from "../myrmidon/idle-pickup.js";
 // myrmidon(AUTO-RESUME): the board resumes an agent left in `error` with backoff
@@ -717,6 +718,15 @@ import {
 // myrmidon(1.6.5 RUN-PRIORITY A): queued runs start by role/issue/release
 // weight with aging; the settings live-refresh per pass (runtime-limits pattern).
 import { currentRunPrioritySettings } from "../myrmidon/run-priority/state.js";
+// myrmidon(1.6.5 RUN-PRIORITY-PICK): the per-agent pass starts the agent's most
+// important ready task before a less important standing run; a starvation lift
+// no longer crosses the next issue-priority step.
+import {
+  RUN_PRIORITY_PICK_WAIT_REASON,
+  runPriorityPickForAgent,
+  type OperatorCancellationMark,
+  type RunPriorityPickCandidate,
+} from "../myrmidon/run-priority/pick.js";
 import {
   compareRunsByPriority,
   rankQueuedRuns,
@@ -19485,11 +19495,15 @@ export function heartbeatService(
   // itself names only its own gates (`lastDenialReason`).
   // myrmidon(1.6.5 RUN-PRIORITY A): `priority` is the sweep's own reason — with
   // priority on, the runs a pass leaves behind lost their slots to heavier ones.
+  // myrmidon(1.6.5 RUN-PRIORITY-PICK): `higher_priority_ready` is the per-agent
+  // pass holding a standing run behind a more important ready task of the same
+  // agent that was just woken — the panel shows the run as waiting on that task.
   type QueuedRunWaitReason =
     | RunAdmissionDenialReason
     | "agent_fair_share"
     | "agent_concurrency"
-    | "priority";
+    | "priority"
+    | typeof RUN_PRIORITY_PICK_WAIT_REASON;
 
   async function writeQueuedRunWaitReason(
     runIds: ReadonlyArray<string>,
@@ -19682,6 +19696,9 @@ export function heartbeatService(
       .select({
         id: heartbeatRuns.id,
         agentId: heartbeatRuns.agentId,
+        // myrmidon(1.6.5 RUN-PRIORITY-PICK): the pass reads the agent's ready
+        // task by company, so the run row carries it.
+        companyId: heartbeatRuns.companyId,
         createdAt: heartbeatRuns.createdAt,
         contextSnapshot: heartbeatRuns.contextSnapshot,
       })
@@ -19744,6 +19761,13 @@ export function heartbeatService(
       // myrmidon: one agent's failure (e.g. a duplicate routine issue on claim)
       // must not stop the sweep for every agent queued after it
       try {
+        // myrmidon(1.6.5 RUN-PRIORITY-PICK): the agent's most important ready
+        // task starts before a less important standing run — the pass wakes it
+        // and leaves the run queued with `higher_priority_ready`. A false here
+        // means nothing changed, so the pass starts its best run as before.
+        if (await pickHigherPriorityReadyTaskForAgent(agentId, keyedQueuedRuns, prioritySettings)) {
+          continue;
+        }
         await startNextQueuedRunForAgent(
           agentId,
           // myrmidon(1.6.5 RUN-FAIRNESS): the share gate holds an agent only
@@ -19754,6 +19778,201 @@ export function heartbeatService(
         logger.error({ err, agentId }, "queued run sweep: start failed for agent");
       }
     }
+  }
+
+  // myrmidon(1.6.5 RUN-PRIORITY-PICK): the per-agent pass starts the agent's
+  // most important ready task before a less important standing run.
+  //
+  // The queue only ever compared runs that were already standing (RUN-PRIORITY
+  // A), so an event run on a low task held the agent while its critical task —
+  // assigned, ready, without a run — waited for a slot it never entered; the
+  // only place that picks by *task* importance is the idle pickup, and it runs
+  // for an agent without a live run, which a busy agent never is. This hook
+  // closes the gap at the pass itself: the agent's top ready task is read with
+  // the idle pickup's own rules (`findTopReadyIssueForAgent`), compared by task
+  // importance (priority step + the pheromone strength term the weight carries,
+  // never the composed run weight, so starvation and aging cannot outrank it),
+  // and when it is strictly more important than the best standing run the agent
+  // is woken for it and the standing runs stay queued with the
+  // `higher_priority_ready` wait reason the run card shows.
+  //
+  // The hook can only reorder a start, never remove one: it holds the standing
+  // runs only after a wake was really emitted (a suppressed wake — a paused
+  // agent, the wake budget, a coalesced duplicate, the behaviour switched off —
+  // leaves the queue untouched), and it never throws: a failure falls back to
+  // the pass's own order, which is exactly the pre-feature behaviour.
+  async function pickHigherPriorityReadyTaskForAgent(
+    agentId: string,
+    keyedRuns: ReadonlyArray<
+      PriorityScoredRun & {
+        id: string;
+        agentId: string;
+        companyId: string;
+        contextSnapshot: unknown;
+      }
+    >,
+    prioritySettings: RunPrioritySettings,
+  ): Promise<boolean> {
+    try {
+      const agentRuns = keyedRuns.filter((run) => run.agentId === agentId);
+      const companyId = agentRuns[0]?.companyId;
+      if (!companyId) return false;
+      const candidates: RunPriorityPickCandidate[] = agentRuns.map((run) => ({
+        runId: run.id,
+        issueId: readNonEmptyString(parseObject(run.contextSnapshot).issueId) ?? null,
+        issuePriority: run.issuePriority ?? null,
+      }));
+      // The instance switch and this agent's own card switch gate this path
+      // exactly as they gate the sweep and the release path (TEAM-LIVENESS).
+      const liveness = await teamLivenessRead();
+      const agent = await getAgent(agentId).catch(() => null);
+      const pickupAllowed =
+        liveness.settings.idlePickupEnabled &&
+        resolveAgentTeamLiveness(
+          readAgentCard(agent?.adapterConfig),
+          liveness.settings,
+        ).idlePickupEnabled;
+      idleWakeBudget.configure({
+        perMinute: liveness.settings.idlePickupWakeBudgetPerMin,
+        batch: Math.min(
+          liveness.settings.idlePickupWakeBatch,
+          liveness.settings.idlePickupWakeBudgetPerMin,
+        ),
+      });
+      const outcome = await runPriorityPickForAgent({
+        settings: prioritySettings,
+        candidates,
+        findReadyTask: async () => {
+          const candidate = await findTopReadyIssueForAgent(db, { id: agentId, companyId });
+          return candidate
+            ? { issueId: candidate.id, issuePriority: candidate.priority, extraWeight: 0 }
+            : null;
+        },
+        // Requirement 3: an operator's Stop is durable intent — the sweep does
+        // not push the just-cancelled task back into the queue; it returns on a
+        // new event on the task (`readOperatorCancellationMark`).
+        operatorCancellation: (issueId) => readOperatorCancellationMark(issueId, agentId, companyId),
+        wake: async () => {
+          const result = await idlePickupForAgent(
+            {
+              db,
+              // The same company-wide allowance as the periodic sweeper and the
+              // release path, so no path bursts past the per-minute ceiling.
+              budget: idleWakeBudget,
+              enqueueWakeup: (id, opts) => enqueueWakeup(id, opts),
+              logActivity: async (input) => {
+                await logActivity(db, {
+                  companyId: input.companyId,
+                  actorType: input.actorType,
+                  actorId: input.actorId,
+                  agentId: input.agentId,
+                  runId: input.runId,
+                  action: input.action,
+                  entityType: input.entityType,
+                  entityId: input.entityId,
+                  details: input.details,
+                });
+              },
+            },
+            { id: agentId, companyId },
+            { behaviorEnabled: pickupAllowed },
+          );
+          return result.woken > 0;
+        },
+        holdRuns: async (runIds, waitReason) => {
+          // The waiting runs learn why they stay queued; the claim that starts
+          // them clears the note like every other sweep reason.
+          await writeQueuedRunWaitReason(runIds, waitReason);
+        },
+        log: (event) => {
+          // The note is about a task; a run without one has nothing to name.
+          if (!event.issueId) return;
+          // A log line, not an activity_log row: this pass can fire on any
+          // sweep, and the durable trace of a held run is its queued-run wait
+          // reason (`higher_priority_ready`) in the run panel. Writing an
+          // activity row per decision would also leave company-scoped rows
+          // behind in every test that sweeps with a pick.
+          logger.info(
+            {
+              agentId,
+              issueId: event.issueId,
+              reason: event.reason,
+              heldRunIds: event.heldRunIds,
+              readyImportance: event.readyImportance,
+              bestImportance: event.bestImportance,
+            },
+            "queued run sweep: run-priority pick",
+          );
+        },
+      });
+      return outcome.picked;
+    } catch (err) {
+      // Never the sweep's reason to skip an agent: the pass starts its best
+      // standing run exactly as it would with the pick switched off.
+      logger.warn({ err, agentId }, "queued run sweep: run-priority pick failed");
+      return false;
+    }
+  }
+
+  /**
+   * myrmidon(1.6.5 RUN-PRIORITY-PICK): what an operator's cancellation of this
+   * issue's run left behind, for the pick's requirement 3.
+   *
+   * A Stop records `cancelledByActorType`/`cancelledByUserId` on the run's
+   * result (`stop.ts`, the issue routes, the agents routes) — the mark recovery
+   * and the chat bridge already read. A *new* wake request for the issue
+   * created with the cancellation (or later) is new information: a comment, a
+   * continuation, a manual wake. Until then the task stays out of the pick,
+   * which is what makes Stop stick instead of the sweep re-waking the run the
+   * operator just killed.
+   */
+  async function readOperatorCancellationMark(
+    issueId: string,
+    agentId: string,
+    companyId: string,
+  ): Promise<OperatorCancellationMark | null> {
+    const [latest] = await db
+      .select({
+        status: heartbeatRuns.status,
+        resultJson: heartbeatRuns.resultJson,
+        finishedAt: heartbeatRuns.finishedAt,
+        updatedAt: heartbeatRuns.updatedAt,
+        createdAt: heartbeatRuns.createdAt,
+      })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, companyId),
+          eq(heartbeatRuns.agentId, agentId),
+          sql`coalesce(${heartbeatRuns.contextIssueId}, ${heartbeatRuns.contextSnapshot}->>'issueId') = ${issueId}`,
+        ),
+      )
+      .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id))
+      .limit(1);
+    if (!latest || latest.status !== "cancelled") return null;
+    const result = parseObject(latest.resultJson);
+    const actor = readNonEmptyString(result.cancelledByActorType);
+    if (actor !== "user" && actor !== "board") return null;
+    const cancelledAt = latest.finishedAt ?? latest.updatedAt ?? latest.createdAt;
+    const [newestWake] = await db
+      .select({ requestedAt: agentWakeupRequests.requestedAt })
+      .from(agentWakeupRequests)
+      .where(
+        and(
+          eq(agentWakeupRequests.companyId, companyId),
+          eq(agentWakeupRequests.agentId, agentId),
+          // Only an event ON THIS TASK is new information; a wake for another
+          // task says nothing about the task the operator stopped.
+          sql`coalesce(${agentWakeupRequests.payload}->>'issueId', ${agentWakeupRequests.payload}->>'taskKey') = ${issueId}`,
+        ),
+      )
+      .orderBy(desc(agentWakeupRequests.requestedAt))
+      .limit(1);
+    return {
+      issueId,
+      cancelledAtMs: cancelledAt.getTime(),
+      newEventAtMs: newestWake ? newestWake.requestedAt.getTime() : null,
+    };
   }
 
   // myrmidon: when admission held runs back, sweep again once the start window
