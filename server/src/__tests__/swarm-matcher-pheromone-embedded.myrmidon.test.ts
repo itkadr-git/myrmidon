@@ -11,6 +11,9 @@
 //      handed to an agent of this caste;
 //   c  a task in its cooling window (`isIssueCoolingDown`, wake-task-guard.ts) is
 //      not handed out, and is again once somebody changes it;
+//   c' a task the matcher itself keeps handing out (its runs come from the
+//      assignment path, `swarm_matched`) cools down too; a person's manual run
+//      never starts a cooling;
 //   d  the order the matcher walks is exactly `orderSwarmQueueCandidates` (the JS
 //      twin of the order) over the same rows, with and without P0 preemption.
 //
@@ -40,6 +43,7 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
+import { isIssueCoolingDown, readSwarmSettings } from "../myrmidon/wake-task-guard.js";
 import {
   listIdleRolePairs,
   matchAgent,
@@ -138,7 +142,7 @@ describeEmbeddedPostgres("matcher × pheromone order, caste routing and cooling"
     companyId: string,
     agentId: string,
     issueId: string,
-    input: { status: string; finishedAt: Date; invocationSource?: string },
+    input: { status: string; finishedAt: Date; invocationSource?: string; wakeReason?: string },
   ) {
     await db.insert(heartbeatRuns).values({
       companyId,
@@ -147,7 +151,7 @@ describeEmbeddedPostgres("matcher × pheromone order, caste routing and cooling"
       invocationSource: input.invocationSource ?? "on_demand",
       nativeIssueId: issueId,
       contextIssueId: issueId,
-      contextSnapshot: { issueId },
+      contextSnapshot: input.wakeReason ? { issueId, wakeReason: input.wakeReason } : { issueId },
       startedAt: new Date(input.finishedAt.getTime() - MIN),
       finishedAt: input.finishedAt,
     });
@@ -263,6 +267,47 @@ describeEmbeddedPostgres("matcher × pheromone order, caste routing and cooling"
     const lifted = await matchCompany(matcherDeps(), companyId);
     expect(lifted.pairs.map((pair) => pair.issueId)).toEqual([issueId]);
     expect(await assigneeOf(issueId)).toBe(agentId);
+  });
+
+  // (c') ---------------------------------------------------------------------
+  it("a task the matcher keeps handing out cools down after two failed matched runs; manual runs never cool a task", async () => {
+    const companyId = await seedCompany();
+    const agentId = await seedAgent(companyId);
+    const settings = await readSwarmSettings(db);
+    // The matcher woke the agent twice through the assignment path and both
+    // runs failed (40 and 50 minutes ago): two stale runs = a 60-minute window.
+    // Red side: a filter on `invocation_source = 'automation'` alone never saw
+    // these runs, and the matcher handed the task out a third time.
+    const matched = await seedTask(companyId, { identifier: "TASK-MATCHED", pheromoneStrength: 90 });
+    for (const minutesAgo of [50, 40]) {
+      await seedFinishedRun(companyId, agentId, matched, {
+        status: "failed",
+        finishedAt: new Date(NOW.getTime() - minutesAgo * MIN),
+        invocationSource: "assignment",
+        wakeReason: "swarm_matched",
+      });
+    }
+    // Control: the same two failures, but from a person's manual wakes.
+    const manual = await seedTask(companyId, { identifier: "TASK-MANUAL", pheromoneStrength: 10 });
+    for (const minutesAgo of [50, 40]) {
+      await seedFinishedRun(companyId, agentId, manual, {
+        status: "failed",
+        finishedAt: new Date(NOW.getTime() - minutesAgo * MIN),
+        invocationSource: "on_demand",
+        wakeReason: "manual",
+      });
+    }
+
+    const matchedStatus = await isIssueCoolingDown(db, companyId, matched, settings, NOW);
+    expect(matchedStatus.cooling).toBe(true);
+    expect(matchedStatus.staleCount).toBe(2);
+    expect((await isIssueCoolingDown(db, companyId, manual, settings, NOW)).cooling).toBe(false);
+
+    // The stronger task is cooling: the pass hands out the manual one instead.
+    const result = await matchCompany(matcherDeps(), companyId);
+    expect(result.pairs.map((pair) => pair.issueId)).toEqual([manual]);
+    expect(await assigneeOf(matched)).toBeNull();
+    expect(await assigneeOf(manual)).toBe(agentId);
   });
 
   // (d) ----------------------------------------------------------------------

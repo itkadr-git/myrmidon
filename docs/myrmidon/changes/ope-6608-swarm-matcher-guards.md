@@ -9,6 +9,11 @@
   назначается и не будится: сопоставитель спрашивает единственное правило остывания продукта —
   `isIssueCoolingDown` из `wake-task-guard.ts` (F-26 T5, проект §4.3; база и потолок окна —
   `general.swarm`), через адаптер `swarm-claim/cooling.ts`. Своего правила у сопоставителя нет.
+  Правило теперь читает не только прогоны с `invocation_source = 'automation'`, но и прогоны,
+  разбуженные с причиной `swarm_matched` / `swarm_claim_queue` / `idle_pickup` при любом
+  источнике: сопоставитель будит исполнителя через путь назначения (`assignment`), и задача,
+  которую он раз за разом отдаёт и которая падает, тоже остывает. Ручные прогоны человека
+  остывания не начинают.
 - Назначение сопоставителем — одна транзакция: блокировка строки задачи, аренда, назначение
   через сервис задач (проверки, событие и запись `issue.updated`). Побудка ставится после
   коммита с `rethrowOnError`; не поставилась (ошибка или отказ допуска) — назначение и аренда
@@ -32,7 +37,11 @@
   budget. A task inside its cooling window is neither assigned nor woken: the matcher asks the
   product's one cooling rule — `isIssueCoolingDown` of `wake-task-guard.ts` (F-26 T5, design
   §4.3; the base and ceiling of the window are `general.swarm`) — through the adapter
-  `swarm-claim/cooling.ts`. The matcher keeps no rule of its own.
+  `swarm-claim/cooling.ts`. The matcher keeps no rule of its own. The rule now reads not only
+  runs with `invocation_source = 'automation'` but also runs woken for `swarm_matched` /
+  `swarm_claim_queue` / `idle_pickup` whatever their source: the matcher wakes the assignee
+  through the assignment path (`assignment`), and a task it keeps handing out that keeps
+  failing cools down too. A person's manual runs never start a cooling.
 - The matcher's assignment is one transaction: a lock on the task row, the lease, the
   assignment through the issues service (its checks, its event and the `issue.updated`
   activity). The wake is queued after the commit with `rethrowOnError`; when it cannot be
