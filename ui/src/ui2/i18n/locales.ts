@@ -129,9 +129,9 @@ const en = {
   // myrmidon(1.6.5 OWNER-CHAT-ADMISSION): the hard floor of the server
   // container says who waits at it.
   "ui2.settings.runs.minFreeMemoryMb.hint":
-    "The hard floor of the server container: below it everything waits, and an answer to a message the owner wrote in a chat is no exception. Above it that answer starts at once, whatever the host floors below say. Default 1500.",
+    "The hard floor of the server container: below it everything waits, and an answer to a message the owner wrote in a chat is no exception. That answer is held by this floor alone — measured on the container and on the host's available memory — and not by the host floor below. Default 1500.",
   "ui2.settings.runs.minFreeHostMemoryMb.hint":
-    "Automatic runs wait for this floor — schedules, monitors, background follow-ups. A turn started by a message the owner wrote in a chat does not: it is admitted by the container floor above and takes the front of the queue. Default 15360 (15 GB).",
+    "Automatic runs wait for this floor — schedules, monitors, background follow-ups. A turn started by a message the owner wrote in a chat does not: it is admitted by the floor above (applied to the container and to the host's available memory) and takes the front of the queue. Default 15360 (15 GB).",
   "ui2.settings.runs.runMemoryEstimateMb": "Memory estimate per run (MB)",
   "ui2.settings.runs.minFreeHostMemoryMb": "Min free host memory (MB)",
   "ui2.settings.runs.maxHostLoadPercentPerCore": "Max host load per core above the host's background (% of a core)",
@@ -387,9 +387,9 @@ const ru: Record<Ui2MessageKey, string> = {
   "ui2.settings.runs.maxStartsPerMinute": "Максимум запусков в минуту",
   "ui2.settings.runs.minFreeMemoryMb": "Минимум свободной памяти (МБ)",
   "ui2.settings.runs.minFreeMemoryMb.hint":
-    "Жёсткий пол контейнера сервера: ниже него ждёт всё, и ответ на сообщение владельца в чате — не исключение. Выше него такой ответ стартует сразу, что бы ни говорили пороги хоста ниже. По умолчанию 1500.",
+    "Жёсткий пол контейнера сервера: ниже него ждёт всё, и ответ на сообщение владельца в чате — не исключение. Такой ответ держит только этот пол — по контейнеру и по доступной памяти хоста, — а не порог хоста ниже. По умолчанию 1500.",
   "ui2.settings.runs.minFreeHostMemoryMb.hint":
-    "Этого порога ждут автоматические прогоны — расписания, мониторы, фоновые доработки. Ход по сообщению владельца в чате — нет: он допускается по полу контейнера выше и встаёт в начало очереди. По умолчанию 15360 (15 ГБ).",
+    "Этого порога ждут автоматические прогоны — расписания, мониторы, фоновые доработки. Ход по сообщению владельца в чате — нет: он допускается по полу выше (к контейнеру и к доступной памяти хоста) и встаёт в начало очереди. По умолчанию 15360 (15 ГБ).",
   "ui2.settings.runs.runMemoryEstimateMb": "Оценка памяти на прогон (МБ)",
   "ui2.settings.runs.minFreeHostMemoryMb": "Минимум свободной памяти хоста (МБ)",
   "ui2.settings.runs.maxHostLoadPercentPerCore": "Максимум нагрузки хоста на ядро сверх фоновой (% ядра)",

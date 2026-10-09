@@ -51,6 +51,8 @@ import { queueIssueAssignmentWakeup } from "../../services/issue-assignment-wake
 import { instanceSettingsService } from "../../services/instance-settings.js";
 import { LEGACY_RECOVERY_CAUSE } from "../../services/legacy-execution-recovery.js";
 import {
+  compareOwnerChatTurnFirst,
+  countLeadingOwnerChatTurns,
   isChatOwnerMessageWake,
   isFailedChatRunRetry,
   isOwnerChatTurnWake,
@@ -93,6 +95,51 @@ describe("isChatOwnerMessageWake", () => {
   });
 });
 
+// myrmidon(1.6.5 OWNER-CHAT-ADMISSION): the queue order the sweep applies.
+describe("owner chat turn queue order", () => {
+  type QueueRun = { id: string; rank: 0 | 1 | 2 | 3; owner: boolean };
+  /** The sweep's comparator shape: owner turn first, then the readiness rank. */
+  const sortQueue = (runs: QueueRun[]) =>
+    [...runs].sort((left, right) => {
+      const leftOwner = left.owner && left.rank !== 3;
+      const rightOwner = right.owner && right.rank !== 3;
+      const ownerOrder = compareOwnerChatTurnFirst(leftOwner, rightOwner);
+      if (ownerOrder !== 0) return ownerOrder;
+      if (!leftOwner && left.rank !== right.rank) return left.rank - right.rank;
+      return 0;
+    });
+
+  it("a todo owner turn goes ahead of an in_progress automatic run of the same agent", () => {
+    const sorted = sortQueue([
+      { id: "auto-in-progress", rank: 0, owner: false },
+      { id: "owner-todo", rank: 1, owner: true },
+    ]);
+    expect(sorted.map((run) => run.id)).toEqual(["owner-todo", "auto-in-progress"]);
+  });
+
+  it("an owner turn whose task waits for dependencies stays behind the ready runs", () => {
+    const sorted = sortQueue([
+      { id: "owner-blocked", rank: 3, owner: true },
+      { id: "auto-todo", rank: 1, owner: false },
+    ]);
+    expect(sorted.map((run) => run.id)).toEqual(["auto-todo", "owner-blocked"]);
+  });
+
+  it("compareOwnerChatTurnFirst is neutral when both or neither are owner turns", () => {
+    expect(compareOwnerChatTurnFirst(true, true)).toBe(0);
+    expect(compareOwnerChatTurnFirst(false, false)).toBe(0);
+    expect(compareOwnerChatTurnFirst(true, false)).toBe(-1);
+    expect(compareOwnerChatTurnFirst(false, true)).toBe(1);
+  });
+
+  it("counts only the owner turns at the front of the sorted queue", () => {
+    const owners = new Set(["a", "b", "d"]);
+    expect(countLeadingOwnerChatTurns([{ id: "a" }, { id: "b" }, { id: "c" }, { id: "d" }], owners)).toBe(2);
+    expect(countLeadingOwnerChatTurns([{ id: "c" }, { id: "a" }], owners)).toBe(0);
+    expect(countLeadingOwnerChatTurns([], owners)).toBe(0);
+  });
+});
+
 describe("wait notices", () => {
   it("names the recovery wait, a paused agent and a closed memory gate in plain Russian", () => {
     const recovery = classifyChatWait({
@@ -104,7 +151,10 @@ describe("wait notices", () => {
     expect(chatWaitNoticeText("recovery", "ru")).toContain("прервался");
     expect(chatWaitNoticeText("agent_paused", "ru")).toContain("на паузе");
     expect(chatWaitNoticeText("host_memory", "ru")).toContain("памяти");
-    expect(chatWaitNoticeText("host_memory", "ru")).toContain("15 секунд");
+    expect(chatWaitNoticeText("host_memory", "ru")).toContain("каждые 15 секунд");
+    // The wait has no promised start time.
+    expect(chatWaitNoticeText("host_memory", "ru")).not.toContain("~15");
+    expect(chatWaitNoticeText("host_memory", "en")).not.toContain("~15");
   });
 
   it("the same reason in English, and a not-started message asks to send it again", () => {

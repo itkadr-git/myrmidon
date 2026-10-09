@@ -658,10 +658,12 @@ export interface HostMemoryGate {
 /**
  * myrmidon(1.6.5 OWNER-CHAT-ADMISSION): the gate an owner's own turn in a chat
  * is admitted by — the server container's own free memory against
- * `minFreeMemoryMb`, the floor below which the server itself would starve. The
- * host ceilings (`minFreeHostMemoryMb`, the CPU ceiling) pace the automatic
- * runs only, so they are not part of this reading: an owner waiting for an
- * answer does not queue behind background work while the host is merely busy.
+ * `minFreeMemoryMb`, the floor below which the server itself would starve, and
+ * the host's own MemAvailable against the same `minFreeMemoryMb` (the bots live
+ * outside the container's cgroup). The softer host floor `minFreeHostMemoryMb`
+ * and the CPU ceiling pace the automatic runs only, so they are not part of
+ * this reading: an owner waiting for an answer does not queue behind background
+ * work while the host is merely busy, but is not started on an exhausted host.
  */
 export interface OwnerChatTurnGate {
   /** `off`: no floor set; `unknown`: container memory unreadable (floor inactive); `open`/`closed`. */
@@ -970,29 +972,63 @@ export function createRunAdmission(options: {
       return { state: "off", thresholdMb, freeMb: null, settlingRuns: 0, reason: null };
     }
     const headroom = containerMemoryHeadroom(at);
+    const settlingRuns = headroom?.settlingRuns ?? settlingAt(at);
+    const freeMb = headroom === null ? null : Math.floor(headroom.freeBytes / MB);
+    if (headroom !== null && Math.floor(headroom.spareBytes / (limits.runMemoryEstimateMb * MB)) < 1) {
+      return {
+        state: "closed",
+        thresholdMb,
+        freeMb,
+        settlingRuns,
+        reason:
+          settlingRuns > 0
+            ? `the server container has ${freeMb} MB free, less than the ${thresholdMb} MB floor plus ${settlingRuns} run(s) still starting (${limits.runMemoryEstimateMb} MB each)`
+            : `the server container has ${freeMb} MB free, below the ${thresholdMb} MB floor`,
+      };
+    }
+    // The host's own MemAvailable against the same floor: the bots live outside
+    // the container's cgroup, so only the host reading sees them.
+    const hostHeadroom = ownerHostMemoryHeadroom(at);
+    if (hostHeadroom !== null && hostHeadroom.slots < 1) {
+      return {
+        state: "closed",
+        thresholdMb,
+        freeMb,
+        settlingRuns,
+        reason:
+          settlingRuns > 0
+            ? `host MemAvailable ${hostHeadroom.availableMb} MB minus ${settlingRuns} run(s) still starting (${limits.runMemoryEstimateMb} MB each) is below the ${thresholdMb} MB floor`
+            : `host MemAvailable ${hostHeadroom.availableMb} MB is below the ${thresholdMb} MB floor`,
+      };
+    }
     if (headroom === null) {
       return {
         state: "unknown",
         thresholdMb,
         freeMb: null,
         settlingRuns: 0,
-        reason: "the server container's free memory is unreadable, so the floor is inactive",
+        reason: "the server container's free memory is unreadable, so the container floor is inactive",
       };
     }
-    const freeMb = Math.floor(headroom.freeBytes / MB);
-    const slots = Math.floor(headroom.spareBytes / (limits.runMemoryEstimateMb * MB));
-    if (slots >= 1) {
-      return { state: "open", thresholdMb, freeMb, settlingRuns: headroom.settlingRuns, reason: null };
-    }
+    return { state: "open", thresholdMb, freeMb, settlingRuns, reason: null };
+  }
+
+  /**
+   * myrmidon(1.6.5 OWNER-CHAT-ADMISSION): the host's MemAvailable as an owner
+   * turn is budgeted against it — the owner floor `minFreeMemoryMb` in place of
+   * the host floor `minFreeHostMemoryMb`, less the runs still starting. Null
+   * when the host check is not in force (no host floor, no owner floor) or the
+   * host reading is unreadable (the same "inactive" as the host floor itself).
+   */
+  function ownerHostMemoryHeadroom(at: number): { availableMb: number; slots: number } | null {
+    if (limits.minFreeHostMemoryMb === null || limits.minFreeMemoryMb === null) return null;
+    const reading = hostMemory();
+    if (!reading.known) return null;
+    const availableMb = Math.floor(reading.availableBytes / MB);
+    const budgetedMb = availableMb - settlingAt(at) * limits.runMemoryEstimateMb;
     return {
-      state: "closed",
-      thresholdMb,
-      freeMb,
-      settlingRuns: headroom.settlingRuns,
-      reason:
-        headroom.settlingRuns > 0
-          ? `the server container has ${freeMb} MB free, less than the ${thresholdMb} MB floor plus ${headroom.settlingRuns} run(s) still starting (${limits.runMemoryEstimateMb} MB each)`
-          : `the server container has ${freeMb} MB free, below the ${thresholdMb} MB floor`,
+      availableMb,
+      slots: Math.floor((budgetedMb - limits.minFreeMemoryMb) / limits.runMemoryEstimateMb),
     };
   }
 
@@ -1257,8 +1293,14 @@ export function createRunAdmission(options: {
           // myrmidon(1.6.5 OWNER-CHAT-ADMISSION): the floor holds the
           // automatic runs, not the owner's own turn — only the slots beyond
           // the owner turns are clipped.
-          if (allowed > ownerChatTurns) denial ??= "host_memory";
-          allowed = Math.min(allowed, ownerChatTurns);
+          // The owner turns are not waved through: the host's MemAvailable
+          // (less the runs still starting) must clear the owner floor
+          // `minFreeMemoryMb`, the bots' memory lives outside the container.
+          const ownerHostSlots =
+            ownerChatTurns > 0 ? (ownerHostMemoryHeadroom(at)?.slots ?? ownerChatTurns) : 0;
+          const ownerAllowed = Math.max(0, Math.min(ownerChatTurns, ownerHostSlots));
+          if (allowed > ownerAllowed) denial ??= "host_memory";
+          allowed = Math.min(allowed, ownerAllowed);
           if (hostMemoryHold.start(at)) {
             options.onHostMemoryHold?.({ state: "closed", gate: { ...gate, heldSince: new Date(at) }, heldMs: 0 });
           }

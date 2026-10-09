@@ -119,11 +119,12 @@ export function classifyAgentNotInvokable(error: unknown): ChatWaitReason | null
  * time estimate is given only where the wait has a known bound.
  */
 // myrmidon(1.6.5 OWNER-CHAT-ADMISSION): `host_memory` is the one gate that can
-// hold an owner's own turn in a chat back — the server container's own floor
-// (`minFreeMemoryMb`), not the host ceilings that pace the automatic runs. The
-// sentence therefore says the answer is first in the queue and names the bound
-// the queue check gives it (~15 s, the resweep interval); the chat notice is
-// staged only while the turn really waits (see isOwnerChatTurnWake).
+// hold an owner's own turn in a chat back — `minFreeMemoryMb`, applied to the
+// server container and to the host's MemAvailable, not the host floor and the
+// CPU ceiling that pace the automatic runs. The sentence therefore says the
+// answer is first in the queue and that the queue is re-checked every 15 s
+// (no promised start time); the chat notice is staged only while the turn
+// really waits (see isOwnerChatTurnWake).
 const QUEUED_TEXTS: Record<ChatNoticeLanguage, Record<ChatWaitReason, string>> = {
   ru: {
     previous_turn:
@@ -143,7 +144,7 @@ const QUEUED_TEXTS: Record<ChatNoticeLanguage, Record<ChatWaitReason, string>> =
     budget:
       "У бота закончился бюджет на работу. Сообщение сохранено и уйдёт в работу, когда бюджет пополнят или поднимут лимит.",
     host_memory:
-      "Серверу сейчас не хватает свободной памяти на собственные процессы, поэтому новые ответы ждут очереди. Ваше сообщение стоит первым в очереди и стартует само: очередь проверяется каждые 15 секунд, так что старт — через ~15 секунд.",
+      "Серверу сейчас не хватает свободной памяти на собственные процессы, поэтому новые ответы ждут очереди. Ваше сообщение стоит первым в очереди и стартует само, как только память освободится (очередь проверяется каждые 15 секунд).",
   },
   en: {
     previous_turn:
@@ -163,7 +164,7 @@ const QUEUED_TEXTS: Record<ChatNoticeLanguage, Record<ChatWaitReason, string>> =
     budget:
       "The bot has run out of budget. Your message is saved and will start once the budget is topped up or the limit raised.",
     host_memory:
-      "The server is short of free memory for its own processes, so new answers are waiting. Your message is first in the queue and starts by itself: the queue is checked every 15 seconds, so it starts in ~15 seconds.",
+      "The server is short of free memory for its own processes, so new answers are waiting. Your message is first in the queue and starts by itself once memory frees up (the queue is checked every 15 seconds).",
   },
 };
 

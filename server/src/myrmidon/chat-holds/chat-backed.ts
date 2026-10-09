@@ -190,3 +190,24 @@ export async function listOwnerChatTurnRunIds(
   }
   return ownerRunIds;
 }
+
+/**
+ * Queue order step for the owner's own turns: a startable owner turn goes
+ * before every other run, whatever readiness rank (in_progress / todo / no
+ * task) either run has. Returns 0 when both or neither are owner turns — the
+ * caller then falls through to the readiness rank and the priority weight.
+ */
+export function compareOwnerChatTurnFirst(leftIsOwnerTurn: boolean, rightIsOwnerTurn: boolean): number {
+  if (leftIsOwnerTurn === rightIsOwnerTurn) return 0;
+  return leftIsOwnerTurn ? -1 : 1;
+}
+
+/** How many runs at the front of the sorted queue are owner turns (the prefix `reserve` serves). */
+export function countLeadingOwnerChatTurns(
+  sortedRuns: readonly { id: string }[],
+  ownerRunIds: ReadonlySet<string>,
+): number {
+  let count = 0;
+  while (count < sortedRuns.length && ownerRunIds.has(sortedRuns[count]!.id)) count += 1;
+  return count;
+}

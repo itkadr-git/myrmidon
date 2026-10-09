@@ -1343,6 +1343,54 @@ describe("owner chat turns (OWNER-CHAT-ADMISSION)", () => {
     expect(admission.lastDenialReason()).toBe("host_memory");
   });
 
+  it("holds the owner's turn when the HOST is below the owner floor, container healthy", () => {
+    const hostExhausted = () => ({ known: true as const, availableBytes: 1000 * MB, totalBytes: 64 * GB });
+    const admission = createRunAdmission({
+      limits: { ...BUSY_HOST },
+      freeMemoryBytes: () => 4 * GB, // the container's cgroup is fine, the bots ate the host
+      hostMemory: hostExhausted,
+    });
+    expect(admission.reserve(1, { ownerChatTurns: 1 })).toBe(0);
+    expect(admission.lastDenialReason()).toBe("host_memory");
+    const gate = admission.ownerChatTurnGate();
+    expect(gate.state).toBe("closed");
+    expect(gate.reason).toContain("host MemAvailable");
+  });
+
+  it("holds the owner's turn on an exhausted host when the container floor is unreadable", () => {
+    const admission = createRunAdmission({
+      limits: { ...BUSY_HOST },
+      freeMemoryBytes: () => null,
+      hostMemory: () => ({ known: true as const, availableBytes: 1000 * MB, totalBytes: 64 * GB }),
+    });
+    expect(admission.reserve(1, { ownerChatTurns: 1 })).toBe(0);
+    expect(admission.ownerChatTurnGate().state).toBe("closed");
+  });
+
+  it("budgets the runs still starting against the host for the owner's turn", () => {
+    let clock = 0;
+    const admission = createRunAdmission({
+      limits: { ...BUSY_HOST },
+      freeMemoryBytes: () => 8 * GB,
+      // 1500 floor + 300 for exactly one more run
+      hostMemory: () => ({ known: true as const, availableBytes: 1800 * MB, totalBytes: 64 * GB }),
+      now: () => clock,
+    });
+    expect(admission.reserve(2, { ownerChatTurns: 2 })).toBe(1);
+    clock += 1000;
+    expect(admission.reserve(1, { ownerChatTurns: 1 })).toBe(0);
+  });
+
+  it("serves the owner turns first and no more of them than the host holds, automatic runs none", () => {
+    const admission = createRunAdmission({
+      limits: { ...BUSY_HOST },
+      freeMemoryBytes: () => 8 * GB,
+      hostMemory: () => ({ known: true as const, availableBytes: 2100 * MB, totalBytes: 64 * GB }), // 2 runs above 1500
+    });
+    // 3 queued: 3 owner turns at the front; only 2 fit the host owner floor.
+    expect(admission.reserve(3, { ownerChatTurns: 3 })).toBe(2);
+  });
+
   it("holds the owner's turn when the container is below its own floor", () => {
     const admission = createRunAdmission({
       limits: { ...BUSY_HOST, minFreeHostMemoryMb: null },
@@ -1396,6 +1444,7 @@ describe("owner chat turns (OWNER-CHAT-ADMISSION)", () => {
     const unknown = createRunAdmission({
       limits: { ...BUSY_HOST },
       freeMemoryBytes: () => null,
+      hostMemory: () => ({ known: true as const, availableBytes: 60 * GB, totalBytes: 64 * GB }),
     });
     expect(unknown.ownerChatTurnGate()).toMatchObject({ state: "unknown", freeMb: null });
   });

@@ -13,9 +13,9 @@ server and without interrupting runs that are already in flight.
 |---|---|---|
 | `maxConcurrentRuns` | How many runs this server process may have in flight at once. Runs over the cap stay `queued`; the queue goes oldest first | off |
 | `maxStartsPerMinute` | The start ramp: how many runs may start within a sliding minute, whatever woke them | `5` (since 1.6.2; was off) |
-| `minFreeMemoryMb` | A run starts only if this much free memory remains in the server's cgroup (v2) after budgeting the run. Since 1.6.5 OWNER-CHAT-ADMISSION this is the floor an answer to a message the owner wrote in a chat is admitted by: the host floors below do not hold it back | off |
+| `minFreeMemoryMb` | A run starts only if this much free memory remains in the server's cgroup (v2) after budgeting the run. Since 1.6.5 OWNER-CHAT-ADMISSION this is the floor an answer to a message the owner wrote in a chat is admitted by, applied to the container and to the host's `MemAvailable`: the softer host floor below does not hold it back | off |
 | `runMemoryEstimateMb` | How many megabytes one run is budgeted at when free memory is counted | `300` |
-| `minFreeHostMemoryMb` | A run starts only while the HOST keeps at least this much `MemAvailable` (minus the budget of runs started in the last 30 s). Bots run in their own containers, outside the server cgroup, so `minFreeMemoryMb` cannot see them; this one can. Since 1.6.5 OWNER-CHAT-ADMISSION it paces the automatic runs only: the owner's own turn in a chat is admitted by `minFreeMemoryMb` and starts while this floor is closed | `15360` (15 GB, since 1.6.2) |
+| `minFreeHostMemoryMb` | A run starts only while the HOST keeps at least this much `MemAvailable` (minus the budget of runs started in the last 30 s). Bots run in their own containers, outside the server cgroup, so `minFreeMemoryMb` cannot see them; this one can. Since 1.6.5 OWNER-CHAT-ADMISSION it paces the automatic runs only: the owner's own turn in a chat is admitted by `minFreeMemoryMb` (against the host's `MemAvailable` too) and starts while this floor is closed | `15360` (15 GB, since 1.6.2) |
 
 A value of "off" (empty field, `null` in the stored settings) disables that
 limit. `runMemoryEstimateMb` cannot be disabled: it is the budget the free-
@@ -46,22 +46,31 @@ The floors measure different things, so from 1.6.5 they hold different runs:
   — schedules, monitors, idle pickup, background follow-ups. A run held by them
   stays `queued` and the queue pass retries it every 15 s, as described above.
 - `minFreeMemoryMb` is the hard floor of the server container and, from 1.6.5,
-  the ONLY memory gate an answer to a message the owner wrote in a chat is
-  admitted by. With the host under its floors but the container above this one,
-  the answer starts at once while the automatic runs keep waiting.
+  the ONLY memory floor an answer to a message the owner wrote in a chat is
+  admitted by. It is applied twice: to the container's free memory and to the
+  host's `MemAvailable` (minus the budget of runs still starting) — the bots
+  live outside the container, so the host reading is the one that sees them.
+  With the host between `minFreeMemoryMb` and `minFreeHostMemoryMb` the answer
+  starts at once while the automatic runs keep waiting; on a host below
+  `minFreeMemoryMb` it waits as well.
 
 A turn is recognised by its durable inbound chat receipt (the wake request whose
 `idempotencyKey` starts with `chat-inbound:` and whose requester is a board
 user) that the queued run points at; the chat's own "retry the failed run"
 button and a chat wake opened by a system actor are not the owner's turn. The
 sweep sorts such turns ahead of the automatic runs, so a turn that still waits —
-only the container floor itself can hold it back — is the first one started.
+only `minFreeMemoryMb` can hold it back — is the first one started, ahead of
+every automatic run, whatever task state either has. A turn whose task still
+waits for its dependencies keeps its place behind the ready runs.
 
 The whole pipeline keeps naming who waits: the waits of the queued runs still
 read `host_memory` / `host_cpu` / `memory`, the operator's attention card and
 the "Runs & queue" screen list them, and the chat says a turn is waiting only
-while it really waits (i.e. while the container floor is closed), naming the
-bound the queue check gives it — "starts in ~15 seconds".
+while it really waits (i.e. while `minFreeMemoryMb` holds it, on the container
+or on the host), and says that the queue is re-checked every 15 seconds.
+
+The idempotency key `chat-inbound:` is reserved for the durable chat receipt:
+the public wakeup routes of an agent reject a key that starts with it (`422`).
 
 ## Where the effective value comes from
 
