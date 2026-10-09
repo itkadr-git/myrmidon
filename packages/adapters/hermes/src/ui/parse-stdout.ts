@@ -198,7 +198,13 @@ export function parseHermesStdoutLine(
   if (!trimmed) return [];
 
   // ── System/adapter messages ────────────────────────────────────────────
-  if (trimmed.startsWith("[hermes]") || trimmed.startsWith("[paperclip]")) {
+  if (
+      // myrmidon(DB2): OPE-5805-b renamed the server tag to [myrmidon];
+      // keep [paperclip] so legacy logs still classify as system noise.
+      trimmed.startsWith("[hermes]") ||
+      trimmed.startsWith("[myrmidon]") ||
+      trimmed.startsWith("[paperclip]")
+    ) {
     return [{ kind: "system", ts, text: trimmed }];
   }
 
