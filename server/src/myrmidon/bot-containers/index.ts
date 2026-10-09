@@ -258,14 +258,17 @@ export async function applyBotContainerNow(
     // secret version THIS profile's .env carries — a version the container provably
     // runs once the outcome is created/applied/unchanged, and never on a pass whose
     // container switch failed (errored passes skip the sync entirely).
-    let appliedProfile: CompiledProfile | null = null;
+    // Kept in a one-cell record: tsc narrows a bare `let` assigned only inside an
+    // async closure to its initial `null`, making any later optional-chain read
+    // `never`; a property read keeps the declared union.
+    const applied: { profile: CompiledProfile | null } = { profile: null };
     const outcome = await reconcileBot({
       agentId: agent.agentId,
       botKey,
       spec,
       compile: async (): Promise<CompiledProfile> => {
         const compiled: CompiledProfile = await deps.compile(agent.agentId, botKey, opts.pass);
-        appliedProfile = compiled;
+        applied.profile = compiled;
         return compiled;
       },
       driver: deps.driver,
@@ -284,10 +287,7 @@ export async function applyBotContainerNow(
       targetImage: spec.image,
       outcome,
     });
-    // Read through a fresh reference: `appliedProfile` is only assigned inside the
-    // closure above, so tsc keeps its declared-null narrowing at the use site.
-    const applied: CompiledProfile | null = appliedProfile;
-    const appliedVersion = applied?.apiServerKeyVersion;
+    const appliedVersion = applied.profile?.apiServerKeyVersion;
     if (deps.syncCard && leavesContainerApplied(outcome) && appliedVersion !== undefined) {
       await syncCardAfterReconcile(agent.agentId, botKey, deps.syncCard, appliedVersion, deps.activity);
     }
