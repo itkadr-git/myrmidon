@@ -18,8 +18,11 @@
 #   DEVBUILD_BASE  - base directory on the VPS (e.g. /srv/devbuild)
 #
 # The ssh key is expected at /opt/devbuild-ssh/id_ed25519 (mounted by the
-# runtime template, see part C of BUILD-OFFLOAD). If the env vars are unset,
-# print a pointer to the devbuild skill and exit 1.
+# runtime template, see part C of BUILD-OFFLOAD). Alternatively the board may
+# hand the key over as the secret env DEVBUILD_SSH_KEY_DATA (the key text
+# itself): when the file is absent the script materializes the env key into a
+# private 0600 file under the run scratch (DEVBUILD-IN-BOTS). If the env vars
+# are unset, print a pointer to the devbuild skill and exit 1.
 #
 # Resource limits for the remote command are NOT imposed here — they are the
 # fleet operator's business (part D). This script is only transport plus the
@@ -93,6 +96,12 @@ Required environment:
 
 Optional environment:
   DEVBUILD_SSH_KEY    overrides the key path (default: /opt/devbuild-ssh/id_ed25519)
+  DEVBUILD_SSH_KEY_DATA  the key itself (OpenSSH private key text). When the
+                      key file is absent/unreadable and this is set, the key is
+                      written to a private 0700 directory (0600 file) under the
+                      run scratch, never into /workspace. This is how the board
+                      hands the key to a bot whose container has no
+                      /opt/devbuild-ssh mount.
   DEVBUILD_WORKSPACE  local workspace to sync (default: /workspace)
 
 See the devbuild skill (skills/devbuild/SKILL.md) for examples, caches and
@@ -126,6 +135,26 @@ if [ ! -d "$WORKSPACE_SRC" ]; then
   echo "devbuild: workspace directory $WORKSPACE_SRC does not exist" >&2
   exit 1
 fi
+
+# myrmidon(1.6.5 DEVBUILD-IN-BOTS): the board can hand the key to a bot as the
+# secret env DEVBUILD_SSH_KEY_DATA instead of the /opt/devbuild-ssh file mount
+# (the mount needs the operator's MYRMIDON_BOT_MOUNT_SOURCES entry; the env
+# needs none). When the key file is absent or unreadable and the env key is
+# present, materialize it into a private directory under the run scratch —
+# never into /workspace (the synced tree) or a shared /tmp. The directory is
+# per-process ($$ in the name), removed on exit, and the file is 0600, which
+# is what ssh requires of a private key.
+if [ ! -r "$SSH_KEY" ] && [ -n "${DEVBUILD_SSH_KEY_DATA:-}" ]; then
+  key_dir="${TMPDIR:-${HERMES_HOME:-/data/hermes}/cache/scratch}/devbuild-key.$$"
+  mkdir -p "$key_dir" && chmod 0700 "$key_dir" || {
+    echo "devbuild: cannot create the private key directory under ${TMPDIR:-${HERMES_HOME:-/data/hermes}/cache/scratch}" >&2
+    exit 1
+  }
+  SSH_KEY="$key_dir/id_ed25519"
+  ( umask 077; printf '%s\n' "$DEVBUILD_SSH_KEY_DATA" > "$SSH_KEY" )
+  trap 'rm -rf "$key_dir"' EXIT
+fi
+
 if [ ! -r "$SSH_KEY" ]; then
   echo "devbuild: ssh key $SSH_KEY is missing or not readable - see the devbuild skill" >&2
   exit 1
