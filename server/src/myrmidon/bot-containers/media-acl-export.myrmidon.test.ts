@@ -21,6 +21,7 @@ import {
   buildBotsRegistryJson,
   collectMediaAclEntries,
   mediaTokenFromEnv,
+  resolveMediaBotsFilePath,
   runMediaAclExport,
   sha256Hex,
   type MediaAclAgent,
@@ -75,7 +76,7 @@ describe("sha256Hex / mediaTokenFromEnv", () => {
   });
 
   it("counts only a non-empty trimmed value", () => {
-    expect(mediaTokenFromEnv({ [MEDIA_TOOLS_TOKEN_ENV]: { value: " raw ", secret: true } }).trim()).toBe("raw");
+    expect(mediaTokenFromEnv({ [MEDIA_TOOLS_TOKEN_ENV]: { value: " raw ", secret: true } })).toBe("raw");
     expect(mediaTokenFromEnv({ [MEDIA_TOOLS_TOKEN_ENV]: { value: "   ", secret: true } })).toBeNull();
     expect(mediaTokenFromEnv({ [MEDIA_TOOLS_TOKEN_ENV]: { value: "", secret: true } })).toBeNull();
     expect(mediaTokenFromEnv({})).toBeNull();
@@ -242,23 +243,13 @@ describe("runMediaAclExport", () => {
     expect(JSON.parse(await fs.readFile(file, "utf8"))).toEqual({ bots: {} });
   });
 
-  it("the default is the facade's own default file", async () => {
-    const result = await runMediaAclExport({
-      listAgents: async () => [],
-      // Unreachable default path with an empty fleet: the write of an empty
-      // registry to "/" would throw, so assert the resolution without it —
-      // changed:false only when the file is absent-and-empty is not possible;
-      // instead assert the resolved path itself.
-      resolveCardEnv: resolverFor({}),
-      env: envOn,
-    }).catch((err: unknown) => err);
-    // On a CI container /config is not writable; either the resolved path is the
-    // contract default or the attempt failed exactly on that path.
-    if (result instanceof Error) {
-      expect(String(result)).toContain(DEFAULT_MEDIA_BOTS_FILE);
-    } else {
-      expect((result as { path: string }).path).toBe(DEFAULT_MEDIA_BOTS_FILE);
-    }
+  it("the default is the facade's own default file", () => {
+    // Pure resolution assertion — a write attempt at the contract default
+    // would touch / on the runner and fail on permissions, not on the contract.
+    expect(resolveMediaBotsFilePath(envOn)).toBe(DEFAULT_MEDIA_BOTS_FILE);
+    expect(resolveMediaBotsFilePath({ ...envOn, [MYRMIDON_MEDIA_BOTS_FILE_ENV]: "/srv/bots.json" })).toBe("/srv/bots.json");
+    expect(resolveMediaBotsFilePath({ ...envOn, [MYRMIDON_MEDIA_BOTS_FILE_ENV]: "  " })).toBe(DEFAULT_MEDIA_BOTS_FILE);
+    expect(resolveMediaBotsFilePath(envOn, "/explicit/path.json")).toBe("/explicit/path.json");
   });
 
   it("returns null while the bot-container flag is off and writes nothing", async () => {

@@ -245,6 +245,15 @@ export interface MediaAclExportDeps {
   containersEnabled?: (env: NodeJS.ProcessEnv) => boolean;
 }
 
+/** Registry path resolution: explicit first, then MYRMIDON_MEDIA_BOTS_FILE_ENV,
+ *  then DEFAULT_MEDIA_BOTS_FILE (the facade's own default). Pure — the contract
+ *  is asserted without ever touching the write path. */
+export function resolveMediaBotsFilePath(env: NodeJS.ProcessEnv, explicit?: string): string {
+  if (explicit !== undefined) return explicit;
+  const fromEnv = env[MYRMIDON_MEDIA_BOTS_FILE_ENV]?.trim();
+  return fromEnv && fromEnv.length > 0 ? fromEnv : DEFAULT_MEDIA_BOTS_FILE;
+}
+
 /**
  * One export pass: read the fleet, hash the card tokens, write the registry
  * when its text or mode changed. Returns null while the bot-container flag is
@@ -255,8 +264,7 @@ export interface MediaAclExportDeps {
 export async function runMediaAclExport(deps: MediaAclExportDeps): Promise<MediaAclExportResult | null> {
   const env = deps.env ?? process.env;
   if (!(deps.containersEnabled ?? isBotContainersEnabled)(env)) return null;
-  const fromEnv = env[MYRMIDON_MEDIA_BOTS_FILE_ENV]?.trim();
-  const resolved = deps.path ?? (fromEnv && fromEnv.length > 0 ? fromEnv : DEFAULT_MEDIA_BOTS_FILE);
+  const resolved = resolveMediaBotsFilePath(env, deps.path);
   const fleet = await deps.listAgents();
   const { entries, failedResolves } = await collectMediaAclEntries(
     fleet,
