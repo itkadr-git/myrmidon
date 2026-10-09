@@ -20,8 +20,10 @@
 
 | `MYRMIDON_SWARM_CLAIM_ENABLED_ROLES` | 1.6.1-SWARM-SETTINGS-UI | removed in 1.6.5 | No longer read: the pilot role set was dropped with the pilot (SWARM-T4), the master switch is the only gate | Remove the variable from the environment; it has no effect |
 | `MYRMIDON_SWARM_CLAIM_ENABLED_COMPANY_IDS` | 1.6.1-SWARM-SETTINGS-UI | removed in 1.6.5 | No longer read: the pilot company set was dropped with the pilot (SWARM-T4), the master switch is the only gate | Remove the variable from the environment; it has no effect |
+| `MYRMIDON_SWARM_PILOT_BASELINE_DOC` | 1.6-SWARM-CLAIM-B | removed in 1.6.5 | No longer read: the pilot report (and its baseline document) was removed with the pilot (SWARM-T4) | Remove the variable from the environment; it has no effect |
 
 ## settings-ru-replace
 
 | `MYRMIDON_SWARM_CLAIM_ENABLED_ROLES` | 1.6.1-SWARM-SETTINGS-UI | снята в 1.6.5 | Больше не читается: набор пилотных ролей убран вместе с пилотом (SWARM-T4), единственный затвор — главный переключатель | Уберите переменную из окружения; она ни на что не влияет |
 | `MYRMIDON_SWARM_CLAIM_ENABLED_COMPANY_IDS` | 1.6.1-SWARM-SETTINGS-UI | снята в 1.6.5 | Больше не читается: набор пилотных компаний убран вместе с пилотом (SWARM-T4), единственный затвор — главный переключатель | Уберите переменную из окружения; она ни на что не влияет |
+| `MYRMIDON_SWARM_PILOT_BASELINE_DOC` | 1.6-SWARM-CLAIM-B | снята в 1.6.5 | Больше не читается: пилотный отчёт (и его базовый документ) убраны вместе с пилотом (SWARM-T4) | Уберите переменную из окружения; она ни на что не влияет |
