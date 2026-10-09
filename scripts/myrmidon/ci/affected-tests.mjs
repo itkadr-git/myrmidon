@@ -14,7 +14,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { MAX_FAST_FILES_PER_PACKAGE, classifyChanges, selectTests } from "./select.mjs";
+import { MAX_FAST_FILES_PER_PACKAGE, applyReleaseFast, classifyChanges, selectTests } from "./select.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, "../../..");
@@ -226,25 +226,20 @@ function planCommand(args) {
   } else {
     const changed = git(["diff", "--name-only", "--no-renames", `${opts.base}...${opts.head}`]).split("\n").filter(Boolean);
     plan = { ...classifyChanges(changed, { forceFull: opts.forceFull }), changed };
-    // Release branches (rel/*): PRs touching shared foundations run only the
-    // tests their change touches; the release branch itself gets one full run
-    // before the release tag (manual run or the `full-ci` label).
-    const releaseFast = opts.releaseFast && !opts.forceFull && plan.tier === "full";
-    if (releaseFast) plan = { tier: "fast", reasons: [`release branch PR: affected tests only (was full: ${plan.reasons.slice(0, 3).join("; ")})`], changed };
-    if (plan.tier === "fast") {
+    // Release branches (rel/*): a full-classified plan is lowered to fast so a
+    // release PR runs only the tests its change touches. The fast mode applies
+    // only while every package's selection stays within
+    // MAX_FAST_FILES_PER_PACKAGE — above the limit the plan escalates back to
+    // full, so a large release PR gets the complete run instead of an
+    // affected job that cannot finish in its time budget. The release branch
+    // itself still gets one full run before the release tag (manual run or
+    // the `full-ci` label).
+    let selection = null;
+    if (plan.tier === "fast" || (opts.releaseFast && !opts.forceFull && plan.tier === "full")) {
       const packages = workspacePackages();
-      const selection = selectTests(changed, packages, repoTestFiles(packages));
-      const tooMany = selection.files.filter((entry) => entry.files.length > MAX_FAST_FILES_PER_PACKAGE);
-      if (tooMany.length > 0 && !releaseFast) {
-        plan = {
-          tier: "full",
-          reasons: tooMany.map((e) => `${e.files.length} ${e.package} test files import the change (limit ${MAX_FAST_FILES_PER_PACKAGE})`),
-          changed,
-        };
-      } else {
-        plan.selection = selection;
-      }
+      selection = selectTests(changed, packages, repoTestFiles(packages));
     }
+    plan = applyReleaseFast(plan, selection, { releaseFast: opts.releaseFast, forceFull: opts.forceFull });
   }
   const shown = plan.reasons.slice(0, 5).join("; ") + (plan.reasons.length > 5 ? `; +${plan.reasons.length - 5} more` : "");
   log(`tier: ${plan.tier} (${shown})`);
