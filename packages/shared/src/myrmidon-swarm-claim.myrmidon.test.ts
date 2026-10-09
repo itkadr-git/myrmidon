@@ -8,12 +8,10 @@ import {
   DEFAULT_SWARM_CLAIM_SWEEP_INTERVAL_SEC,
   DEFAULT_SWARM_LEASE_TTL_SEC,
   DEFAULT_SWARM_MAX_ACTIVE_TASKS,
-  DEFAULT_PHEROMONE_DYNAMICS,
   SWARM_CLAIM_ENV_KEYS,
   SWARM_CLAIM_RELEASE_REASON_SUPERVISOR_REBALANCE,
   SWARM_CLAIM_SUPERVISOR_RELEASED_ACTION,
   SWARM_CLAIM_WAKE_REASON,
-  effectivePheromone,
   isSwarmClaimEnabledFor,
   isSwarmLeaseExpired,
   isSwarmLeaseLive,
@@ -21,22 +19,25 @@ import {
   normalizeSwarmClaimSettings,
   orderSwarmQueueCandidates,
   parseSwarmClaimEnabled,
-  readSwarmClaimListEnv,
   readSwarmClaimSettingsFromEnv,
   resolveSwarmClaimSettings,
   swarmActiveTaskLimitReached,
   swarmLeaseExpiresAt,
   swarmPriorityRank,
+  DEFAULT_PHEROMONE_DYNAMICS,
+  effectivePheromone,
+  pheromoneDynamicsOf,
+  pheromoneStrengthForPriority,
 } from "./myrmidon-swarm-claim.js";
 
 describe("swarm claim settings", () => {
-  it("ships the pilot dark and reads an explicit on", () => {
+  it("ships the swarm dark and reads an explicit on", () => {
     expect(DEFAULT_SWARM_CLAIM_ENABLED).toBe(false);
     expect(readSwarmClaimSettingsFromEnv({}).enabled).toBe(false);
     expect(readSwarmClaimSettingsFromEnv({ [SWARM_CLAIM_ENV_KEYS.enabled]: "1" }).enabled).toBe(true);
     expect(readSwarmClaimSettingsFromEnv({ [SWARM_CLAIM_ENV_KEYS.enabled]: "on" }).enabled).toBe(true);
     expect(readSwarmClaimSettingsFromEnv({ [SWARM_CLAIM_ENV_KEYS.enabled]: "false" }).enabled).toBe(false);
-    // A typo must not silently extinguish (or enable) the pilot.
+    // A typo must not silently extinguish (or enable) the swarm.
     expect(parseSwarmClaimEnabled("ture")).toBeNull();
     expect(parseSwarmClaimEnabled(" 1 ")).toBe(true);
   });
@@ -72,14 +73,11 @@ describe("swarm claim settings", () => {
     // variable is unset.
     const stored = {
       enabled: true,
-      enabledRoles: ["engineer"],
-      enabledCompanyIds: [],
       leaseTtlSec: 300,
       maxActiveTasks: 5,
       sweepIntervalSec: 45,
       p0Preemption: false,
-      pheromoneDefaults: { critical: 100, high: 50, medium: 10, low: 1 },
-      pheromoneDynamics: { ...DEFAULT_PHEROMONE_DYNAMICS },
+      pheromone: {},
     };
     const forcedOff = resolveSwarmClaimSettings({
       stored,
@@ -110,16 +108,6 @@ describe("swarm claim settings", () => {
     const base = readSwarmClaimSettingsFromEnv({});
     expect(mergeSwarmClaimSettings(base, { enabled: true })).toEqual({ ...base, enabled: true });
     expect(mergeSwarmClaimSettings(base, { maxActiveTasks: null }).maxActiveTasks).toBeNull();
-    // 1.6.5 (F-27): the priority → strength mapping is one merged key.
-    expect(
-      mergeSwarmClaimSettings(base, {
-        pheromoneDefaults: { critical: 500, high: 200, medium: 50, low: 5 },
-      }).pheromoneDefaults,
-    ).toEqual({ critical: 500, high: 200, medium: 50, low: 5 });
-    // A patch that does not name the mapping keeps the stored one.
-    expect(mergeSwarmClaimSettings(base, { enabled: false }).pheromoneDefaults).toEqual(
-      base.pheromoneDefaults,
-    );
   });
 
   it("moves the expiry forward by exactly one TTL", () => {
@@ -168,7 +156,6 @@ describe("swarm queue order", () => {
   });
 
   // 1.6.1 (SWARM-SETTINGS-UI): the P0 preemption is a setting, not a constant.
-  // 1.6.5 (F-27 PHEROMONE): with P0 off the strength still ranks before age.
   it("with p0Preemption off the queue orders by strength, then age", () => {
     const ordered = orderSwarmQueueCandidates(
       [
@@ -327,84 +314,90 @@ describe("effectivePheromone", () => {
     );
     expect(ordered.map((c) => c.issueId)).toEqual(["clean", "failed"]);
   });
+
+  // The knobs come from the one `pheromone` settings key; absent = the design default.
+  it("reads the dynamics and the priority seeds from the pheromone settings key", () => {
+    expect(pheromoneDynamicsOf({})).toEqual(DEFAULT_PHEROMONE_DYNAMICS);
+    expect(pheromoneDynamicsOf(undefined)).toEqual(DEFAULT_PHEROMONE_DYNAMICS);
+    expect(pheromoneDynamicsOf({ agingCap: 9, failPenalty: 3 })).toEqual({
+      ...DEFAULT_PHEROMONE_DYNAMICS,
+      agingCap: 9,
+      failPenalty: 3,
+    });
+    expect(pheromoneStrengthForPriority({}, "high")).toBe(30);
+    expect(pheromoneStrengthForPriority({ high: 77 }, "HIGH")).toBe(77);
+    // An unknown priority reads as medium.
+    expect(pheromoneStrengthForPriority({ medium: 12 }, "none")).toBe(12);
+    expect(pheromoneStrengthForPriority(null, null)).toBe(10);
+  });
+
+  // Acceptance: a strong fresh task stands ahead of old weak ones.
+  it("acceptance: a strong fresh task is ahead of old weak ones", () => {
+    const ordered = orderSwarmQueueCandidates(
+      [
+        { issueId: "old-weak-1", priority: "medium", queuedAt: new Date(NOW.getTime() - 96 * HOURS), pheromoneStrength: 10 },
+        { issueId: "old-weak-2", priority: "medium", queuedAt: new Date(NOW.getTime() - 200 * HOURS), pheromoneStrength: 10 },
+        { issueId: "fresh-strong", priority: "medium", queuedAt: NOW, pheromoneStrength: 100 },
+      ],
+      { dynamics: DEFAULT_PHEROMONE_DYNAMICS, now: NOW },
+    );
+    expect(ordered.map((c) => c.issueId)).toEqual(["fresh-strong", "old-weak-2", "old-weak-1"]);
+  });
+
+  // Equal effective strength and age: the id makes the order total.
+  it("ties on strength and age fall to the issue id", () => {
+    const ordered = orderSwarmQueueCandidates(
+      [
+        { issueId: "b", priority: "medium", queuedAt: NOW, pheromoneStrength: 10 },
+        { issueId: "a", priority: "medium", queuedAt: NOW, pheromoneStrength: 10 },
+      ],
+      { now: NOW },
+    );
+    expect(ordered.map((c) => c.issueId)).toEqual(["a", "b"]);
+  });
 });
 
-// 1.6.1 (SWARM-SETTINGS-UI): the pilot set — who is inside the pilot.
-describe("swarm claim pilot set", () => {
+
+// myrmidon(1.6.5 SWARM-T4, design §5.1): one switch, no role/company lists.
+describe("swarm claim gate", () => {
   const on = {
     enabled: true,
-    enabledRoles: ["engineer"],
-    enabledCompanyIds: ["comp-1"],
     leaseTtlSec: 900,
     maxActiveTasks: 3 as number | null,
     sweepIntervalSec: 30,
     p0Preemption: true,
-    pheromoneDefaults: { critical: 100, high: 50, medium: 10, low: 1 },
-    pheromoneDynamics: { ...DEFAULT_PHEROMONE_DYNAMICS },
+    pheromone: {},
   };
 
-  it("an empty list means no restriction", () => {
-    expect(
-      isSwarmClaimEnabledFor(
-        { ...on, enabledRoles: [], enabledCompanyIds: [] },
-        { companyId: "any", role: "any" },
-      ),
-    ).toBe(true);
-  });
-
-  it("a role not on the list is outside the pilot", () => {
-    expect(isSwarmClaimEnabledFor(on, { companyId: "comp-1", role: "engineer" })).toBe(true);
-    expect(isSwarmClaimEnabledFor(on, { companyId: "comp-1", role: "reviewer" })).toBe(false);
-  });
-
-  it("a company not on the list is outside the pilot", () => {
-    expect(isSwarmClaimEnabledFor(on, { companyId: "comp-2", role: "engineer" })).toBe(false);
+  it("with the switch on every company and role is inside", () => {
+    expect(isSwarmClaimEnabledFor(on, { companyId: "any", role: "any" })).toBe(true);
   });
 
   it("the master switch off overrides everything", () => {
     expect(isSwarmClaimEnabledFor({ ...on, enabled: false }, { companyId: "comp-1", role: "engineer" })).toBe(false);
   });
-
-  it("the env list override is comma-separated and trimmed", () => {
-    expect(readSwarmClaimListEnv(" engineer , reviewer ,, ")).toEqual(["engineer", "reviewer"]);
-    expect(readSwarmClaimListEnv("")).toEqual([]);
-    expect(readSwarmClaimListEnv(undefined)).toEqual([]);
-  });
 });
 
-describe("swarm lease state", () => {
-  const now = new Date("2026-10-02T12:00:00.000Z");
-  const base = { id: "l1", issueId: "i1", agentId: "a1", heartbeatAt: now };
-
-  it("is live before the expiry and expired at or after it", () => {
-    const live = { ...base, expiresAt: "2026-10-02T12:05:00.000Z", releasedAt: null };
-    expect(isSwarmLeaseLive(live, now)).toBe(true);
-    expect(isSwarmLeaseExpired(live, now)).toBe(false);
-
-    const expired = { ...base, expiresAt: "2026-10-02T11:59:59.000Z", releasedAt: null };
-    expect(isSwarmLeaseLive(expired, now)).toBe(false);
-    expect(isSwarmLeaseExpired(expired, now)).toBe(true);
+// myrmidon(1.6.5 SWARM-T4, design §5.1): the pheromone subset.
+describe("swarm pheromone settings", () => {
+  it("accepts a partial pheromone object and defaults the rest to {}", () => {
+    const base = { enabled: true, leaseTtlSec: 900, maxActiveTasks: 3, sweepIntervalSec: 30 };
+    expect(normalizeSwarmClaimSettings({ ...base, pheromone: { critical: 250 } })?.pheromone).toEqual({
+      critical: 250,
+    });
+    expect(normalizeSwarmClaimSettings(base)?.pheromone).toEqual({});
   });
 
-  it("treats a released lease as neither live nor expired", () => {
-    const released = {
-      ...base,
-      expiresAt: "2026-10-02T12:05:00.000Z",
-      releasedAt: "2026-10-02T11:50:00.000Z",
-    };
-    expect(isSwarmLeaseLive(released, now)).toBe(false);
-    expect(isSwarmLeaseExpired(released, now)).toBe(false);
+  it("rejects unknown pheromone keys and negative values", () => {
+    const base = { enabled: true, leaseTtlSec: 900, maxActiveTasks: 3, sweepIntervalSec: 30 };
+    expect(normalizeSwarmClaimSettings({ ...base, pheromone: { surprise: 1 } })).toBeNull();
+    expect(normalizeSwarmClaimSettings({ ...base, pheromone: { critical: -1 } })).toBeNull();
   });
 
-  it("does not call a lease without an expiry live", () => {
-    expect(isSwarmLeaseLive({ ...base, expiresAt: null, releasedAt: null }, now)).toBe(false);
-  });
-});
-
-describe("swarm names shared with the supervisor part", () => {
-  it("pins the wake reason and the supervisor action the two parts agree on", () => {
-    expect(SWARM_CLAIM_WAKE_REASON).toBe("swarm_claim_queue");
-    expect(SWARM_CLAIM_RELEASE_REASON_SUPERVISOR_REBALANCE).toBe("supervisor_rebalance");
-    expect(SWARM_CLAIM_SUPERVISOR_RELEASED_ACTION).toBe("issue.swarm_claim.supervisor_released");
+  it("merges a pheromone patch like any other key", () => {
+    const base = readSwarmClaimSettingsFromEnv({});
+    const merged = mergeSwarmClaimSettings(base, { pheromone: { critical: 250 } });
+    expect(merged.pheromone).toEqual({ critical: 250 });
+    expect(mergeSwarmClaimSettings(base, { enabled: true }).enabled).toBe(true);
   });
 });

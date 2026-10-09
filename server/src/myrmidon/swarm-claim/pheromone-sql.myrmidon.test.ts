@@ -54,6 +54,7 @@ import { roleQueueRows } from "./queue.js";
 import { rolesOfQueueRow } from "./idle-queue.js";
 import { projectService } from "../../services/projects.js";
 import { issueService } from "../../services/issues.js";
+import { instanceSettingsService } from "../../services/instance-settings.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -393,5 +394,39 @@ describeEmbeddedPostgres("F-27 pheromone: the SQL twins agree with the shared he
     expect(created).toHaveLength(6);
     expect(new Set(created.map((issue) => issue.pheromoneStrength)).size).toBe(1);
     expect(created[0]!.casteKey).toBe("reviewer");
+  }, 30_000);
+  // The single `pheromone` settings key seeds a new task's strength by its
+  // priority and is read on every create — no restart between two settings.
+  it("a new task starts with the strength the `pheromone` settings map its priority to, read live", async () => {
+    const { companyId } = await seedCompany();
+    const service = issueService(db);
+    const settings = instanceSettingsService(db);
+    const stored = {
+      enabled: false,
+      leaseTtlSec: 900,
+      maxActiveTasks: null,
+      sweepIntervalSec: 30,
+      p0Preemption: true,
+    };
+
+    const byDefault = await service.create(companyId, { title: "default", priority: "high" } as never);
+    expect(byDefault.pheromoneStrength).toBe(30);
+
+    await settings.updateGeneral({ swarmClaim: { ...stored, pheromone: { high: 77, low: 3 } } } as never);
+    const tuned = await service.create(companyId, { title: "tuned", priority: "high" } as never);
+    expect(tuned.pheromoneStrength).toBe(77);
+    const tunedLow = await service.create(companyId, { title: "tuned low", priority: "low" } as never);
+    expect(tunedLow.pheromoneStrength).toBe(3);
+    // A field the key does not name keeps the design default.
+    const medium = await service.create(companyId, { title: "medium", priority: "medium" } as never);
+    expect(medium.pheromoneStrength).toBe(10);
+
+    await settings.updateGeneral({ swarmClaim: { ...stored, pheromone: { high: 5 } } } as never);
+    const retuned = await service.create(companyId, { title: "retuned", priority: "high" } as never);
+    expect(retuned.pheromoneStrength).toBe(5);
+
+    // An explicit strength always wins.
+    const explicit = await service.create(companyId, { title: "explicit", priority: "high", pheromoneStrength: 999 } as never);
+    expect(explicit.pheromoneStrength).toBe(999);
   }, 30_000);
 });

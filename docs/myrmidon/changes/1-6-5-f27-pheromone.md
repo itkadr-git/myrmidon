@@ -22,7 +22,7 @@ settings-section: 1.6.1 — SWARM-SETTINGS-UI: очереди ролей как 
   own release stamp do not count). The SQL twin in
   `server/src/myrmidon/swarm-claim/effective-pheromone.ts` orders every queue read
   (before the candidate LIMIT), so a strong fresh task is never cut off.
-  Parameters live in `instance_settings.general.swarmClaim.pheromoneDynamics`.
+  Parameters live in `instance_settings.general.swarmClaim.pheromone`.
 - API: `casteKey`/`pheromoneStrength` on issue create/update; an unknown caste key
   is rejected with 422 `issue_caste_unknown`; null strength resets to the priority
   default. Projects accept `defaultCasteKey` with the same directory validation.
@@ -51,7 +51,7 @@ settings-section: 1.6.1 — SWARM-SETTINGS-UI: очереди ролей как 
   релиза прогона не считаются). SQL-двойник —
   `server/src/myrmidon/swarm-claim/effective-pheromone.ts` — упорядочивает все чтения
   очереди до LIMIT, сильная свежая задача не отсекается. Параметры — в
-  `instance_settings.general.swarmClaim.pheromoneDynamics`.
+  `instance_settings.general.swarmClaim.pheromone`.
 - API: `casteKey`/`pheromoneStrength` в create/update задачи; неизвестная каста —
   422 `issue_caste_unknown`; null силы сбрасывает к дефолту приоритета. У проекта —
   `defaultCasteKey` с той же валидацией по справочнику.
@@ -68,8 +68,8 @@ settings-section: 1.6.1 — SWARM-SETTINGS-UI: очереди ролей как 
 
 | Variable / setting | Function | Default | What it does | How to disable / special |
 |---|---|---|---|---|
-| `general.swarmClaim.pheromoneDefaults` | 1.6.5-F27 | `{critical:100, high:30, medium:10, low:1}` | The pheromone strength a new task gets when the creator did not set one: the `priority → number` mapping. No environment variable — the value lives only in swarm settings and changes live on the Swarm claim page. The mapping is saved whole: all four priorities must be present | Unset — built-in default above. A partial mapping is rejected by the schema |
-| `general.swarmClaim.pheromoneDynamics` | 1.6.5-F27-REWORK | `{agingStepHours:24, agingStep:1, agingCap:5, failPenalty:10}` | Effective pheromone (design §2.3): `eff = strength + min(agingCap, floor(hoursWaiting/agingStepHours) × agingStep) − failPenalty × failedRunsSinceLastChange`, floored at 0. The swarm queue, idle sweep and supervisor rank by `eff`; updating the task clears the penalty. No environment variable — the value lives only in instance settings | Unset — built-in default above |
+| `general.swarmClaim.pheromone` (fields `critical`/`high`/`medium`/`low`) | 1.6.5-F27 | `{critical:100, high:30, medium:10, low:1}` | The pheromone strength a new task gets when the creator did not set one, by its priority. The single pheromone settings key (the Advanced block of the swarm page); no environment variable; read on every task create, no restart needed | A field not set — the built-in default. Integer 0–100000 |
+| `general.swarmClaim.pheromone` (fields `agingStepHours`/`agingStep`/`agingCap`/`failPenalty`) | 1.6.5-F27-REWORK | `24` / `1` / `5` / `10` | Effective pheromone (design §2.3): `eff = strength + min(agingCap, floor(hoursWaiting/agingStepHours) × agingStep) − failPenalty × failedRunsSinceLastChange`, floored at 0. The swarm queue, idle sweep and supervisor rank by `eff`: P0 first, then `eff`, then age, then id. Updating the task clears the penalty. Read on every queue read, no restart needed | A field not set — the default. `agingStep=0` turns aging off; `failPenalty=0` turns the penalty off |
 | `general.runPriority.pheromoneWeight` | 1.6.5-F27-REWORK | `1` | Weight of one effective-pheromone point in run-queue scoring (design §4): `pheromoneWeight × eff`. The swarm queue picks the task; this term moves its run inside the run queue's role band | 0–1000. `0` — the term is off. Unset — 1 |
 
 ## settings-ru-new
@@ -79,8 +79,8 @@ settings-section: 1.6.1 — SWARM-SETTINGS-UI: очереди ролей как 
 
 | Переменная / настройка | Функция | По умолчанию | Что делает | Как выключить / особое |
 |---|---|---|---|---|
-| `general.swarmClaim.pheromoneDefaults` | 1.6.5-F27 | `{critical:100, high:30, medium:10, low:1}` | Какую силу феромона (`issues.pheromone_strength`) получает новая задача без явно заданной силы: маппинг `priority → число`. Переменной окружения нет — значение живёт в настройках роя и меняется на лету на странице Swarm claim. Маппинг сохраняется целиком: все четыре приоритета обязаны быть | Не задана — встроенное умолчание выше. Частичный маппинг схема отвергает |
-| `general.swarmClaim.pheromoneDynamics` | 1.6.5-F27-REWORK | `{agingStepHours:24, agingStep:1, agingCap:5, failPenalty:10}` | Эффективная сила феромона (design §2.3): `eff = strength + min(agingCap, floor(часыОжидания/agingStepHours) × agingStep) − failPenalty × неудачныеПрогоныПослеПоследнегоИзменения`, пол 0. Очередь роя, холостой обход и супервизор ранжируют по `eff`; обновление задачи обнуляет штраф. Переменной окружения нет — значение живёт в настройках инстанса | Не задана — встроенное умолчание выше |
+| `general.swarmClaim.pheromone` (поля `critical`/`high`/`medium`/`low`) | 1.6.5-F27 | `{critical:100, high:30, medium:10, low:1}` | Какую силу феромона (`issues.pheromone_strength`) получает новая задача без явно заданной силы, по её приоритету. Единственный ключ настроек феромона (блок «Advanced» страницы роя); переменной окружения нет, значение читается при каждом создании задачи — рестарт не нужен | Поле не задано — умолчание проекта. Целое 0–100000 |
+| `general.swarmClaim.pheromone` (поля `agingStepHours`/`agingStep`/`agingCap`/`failPenalty`) | 1.6.5-F27-REWORK | `24` / `1` / `5` / `10` | Эффективная сила феромона (design §2.3): `eff = strength + min(agingCap, floor(часыОжидания/agingStepHours) × agingStep) − failPenalty × неудачныеПрогоныПослеПоследнегоИзменения`, пол 0. По `eff` ранжируют очередь роя, холостой проход и обзор супервизора: порядок — P0, затем `eff`, затем возраст, затем id. Изменение задачи сбрасывает штраф. Читается при каждом чтении очереди — рестарт не нужен | Поле не задано — умолчание. `agingStep=0` выключает старение; `failPenalty=0` — штраф |
 | `general.runPriority.pheromoneWeight` | 1.6.5-F27-REWORK | `1` | Вес одного очка эффективной силы феромона задачи в скоринге очереди прогонов (design §4): `pheromoneWeight × eff`. Очередь роя выбирает задачу; этот член двигает её прогон внутри ролевой полосы очереди прогонов | 0–1000. `0` — член выключен. Не задана — 1 |
 
 **Каста задачи (1.6.5 F-27 rework 09.10, design §2.1):** `issues.caste_key text NULL` —

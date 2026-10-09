@@ -95,7 +95,7 @@ export function selectQueueForAgent(input: {
 
 /**
  * The one task an agent should take now, or null when it may not take any:
- * nothing in the queue, the agent is already at its ceiling, or the pilot is
+ * nothing in the queue, the agent is already at its ceiling, or the swarm is
  * off. The ceiling is checked before the queue is walked, so a capped agent
  * never even looks like it is about to take work.
  */

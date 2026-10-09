@@ -98,6 +98,7 @@ import {
   isUuidLike,
   normalizeIssueIdentifier as normalizeIssueReferenceIdentifier,
   resolveSwarmClaimSettings,
+  pheromoneStrengthForPriority,
 } from "@paperclipai/shared";
 import { conflict, HttpError, notFound, unprocessable } from "../errors.js";
 import { isForeignKeyViolation } from "../db-errors.js";
@@ -6424,7 +6425,8 @@ export function issueService(db: Db) {
 
   // 1.6.5 (F-27 PHEROMONE): the strength a new task starts with when the
   // caller did not set one — the swarm settings map `priority` to a number
-  // (swarmClaim.pheromoneDefaults, edited in the swarm settings UI). Unknown
+  // (the critical/high/medium/low fields of the `pheromone` key of swarmClaim,
+  // edited in the swarm settings UI). Unknown
   // priorities read as `medium`, matching the schema default.
   async function defaultPheromoneStrengthForPriority(
     priority: string,
@@ -6436,9 +6438,7 @@ export function issueService(db: Db) {
       env: process.env,
       stored: stored && typeof stored === "object" ? stored : null,
     });
-    const mapping = resolved.settings.pheromoneDefaults as Record<string, number>;
-    const strength = mapping[priority];
-    return typeof strength === "number" ? strength : mapping.medium ?? 0;
+    return pheromoneStrengthForPriority(resolved.settings.pheromone, priority);
   }
 
   function normalizeCreateIssueTitle(title: string) {
@@ -9983,7 +9983,7 @@ export function issueService(db: Db) {
             : {}),
           // 1.6.5 (F-27 PHEROMONE): an explicit strength wins; otherwise the
           // task starts with the strength the swarm settings map its priority
-          // to (swarmClaim.pheromoneDefaults). Setting the number here — the
+          // to (swarmClaim.pheromone). Setting the number here — the
           // single write point — keeps board, agent and import creates
           // consistent without each path re-reading the settings.
           ...(defaultPheromoneStrength !== undefined
