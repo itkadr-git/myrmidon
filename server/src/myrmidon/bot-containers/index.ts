@@ -284,8 +284,9 @@ export async function applyBotContainerNow(
       targetImage: spec.image,
       outcome,
     });
-    if (deps.syncCard && leavesContainerApplied(outcome) && appliedProfile?.apiServerKeyVersion !== undefined) {
-      await syncCardAfterReconcile(agent.agentId, botKey, deps.syncCard, appliedProfile.apiServerKeyVersion, deps.activity);
+    const appliedVersion = appliedProfile?.apiServerKeyVersion;
+    if (deps.syncCard && leavesContainerApplied(outcome) && appliedVersion !== undefined) {
+      await syncCardAfterReconcile(agent.agentId, botKey, deps.syncCard, appliedVersion, deps.activity);
     }
     return outcome;
   });
