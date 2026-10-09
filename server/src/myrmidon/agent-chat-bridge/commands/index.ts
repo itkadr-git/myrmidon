@@ -41,7 +41,11 @@ import {
   describeCardValue,
   describeEffectiveChatValue,
   formatChatChoiceList,
+  listedChatChoices,
+  MAX_CHOICE_BUTTONS,
+  wholeCatalogText,
   readOverrideAdapterConfig,
+  resolveChatChoiceArgument,
   resolveChooserSelection,
   sourceLabelFor,
   turnInProgressText,
@@ -90,10 +94,48 @@ export interface BridgedCommandInput {
   readGatewayModelCatalog?: ChatModelCatalogReader | null;
 }
 
+/**
+ * myrmidon(F06-D): the choices of a `/model` or `/think` list as a menu — what
+ * the bridge turns into inline buttons under the list and into the record that
+ * lets a reply with a number or a name pick from it. `title` and `body` are the
+ * card text (title = the current value line, body = the list); `options[].value`
+ * is a candidate id or `default`, validated again on the click.
+ */
+export interface BridgedChoiceMenu {
+  commandName: "model" | "think";
+  title: string;
+  body: string;
+  options: Array<{ label: string; value: string }>;
+}
+
 export type BridgedCommandResult =
-  | { kind: "reply"; command: string; text: string }
+  | {
+      kind: "reply";
+      command: string;
+      text: string;
+      /** myrmidon(F06-D): set on a plain `/model` or `/think` list. */
+      choices?: BridgedChoiceMenu;
+      /** myrmidon(F06-D): `/model <x>` or `/think <x>` — whether the choice was
+       *  written (`applied`) or refused (`refused`: unknown value, turn in
+       *  progress, effort policy). Only chooser replies set it. */
+      outcome?: "applied" | "refused";
+    }
   | { kind: "message"; body: string; notice?: string }
   | null;
+
+/**
+ * myrmidon(F06-D): what a chooser command (and a button press / list reply that
+ * stands for one) needs from its caller — a subset of the command input.
+ */
+export type BridgedChooserInput = Pick<
+  BridgedCommandInput,
+  "db" | "companyId" | "agentId" | "conversationIssueId" | "boardUserId" | "botContainerApply" | "readGatewayModelCatalog"
+>;
+
+/** myrmidon(F06-D): the test seams of the chooser commands (production leaves them unset). */
+export type BridgedChooserSeams = Partial<
+  Pick<BridgedCommandInput, "botContainerApply" | "readGatewayModelCatalog">
+>;
 
 export interface BridgedCommandSpec {
   command: string;
@@ -288,7 +330,7 @@ export async function runBridgedDirectMessageCommand(
  * a chooser actually asks for it.
  */
 function gatewayCatalogReader(
-  input: BridgedCommandInput,
+  input: BridgedChooserInput,
   agent: BridgedCommandContext["agent"],
 ): ChatModelCatalogReader {
   if (input.readGatewayModelCatalog) return input.readGatewayModelCatalog;
@@ -297,6 +339,9 @@ function gatewayCatalogReader(
     companyId: input.companyId,
     agentId: agent.id,
     agentSlug: agent.name,
+    // myrmidon(F06-D): the key a bot really sends comes from its card.
+    adapterType: agent.adapterType,
+    adapterConfig: agent.adapterConfig,
   });
 }
 
@@ -332,7 +377,7 @@ function effectiveChatModel(context: BridgedCommandContext): string | null {
 /** myrmidon(F06-A): the apply half of a chooser write, in one place, so no
  *  call site can quietly skip applying the profile of a gateway agent. */
 function chatOverrideApplyInput(
-  input: BridgedCommandInput,
+  input: BridgedChooserInput,
   context: BridgedCommandContext,
 ): Pick<ApplyChatAdapterOverrideInput, "adapterType" | "adapterConfig" | "botApply"> {
   return {
@@ -403,7 +448,7 @@ async function handleNewCommand(
 }
 
 async function handleChooserCommand(
-  input: BridgedCommandInput,
+  input: BridgedChooserInput,
   context: BridgedCommandContext,
   chooser: ChatModelChooser,
   args: string,
@@ -438,24 +483,42 @@ async function handleChooserCommand(
       chooser.adapterConfigKey,
     );
     const sourceText = sourceLabelFor(effective.source, locale);
+    const effectiveLine = t(locale, "chooser.effective", {
+      label: statusLabel,
+      value: effective.value ?? sourceText,
+      source: sourceText,
+    });
+    const listBody =
+      t(locale, "chooser.availableHeader") +
+      "\n" +
+      formatChatChoiceList(availability.candidates, locale) +
+      "\n" +
+      // The list is complete; only the keyboard is capped (MAX_CHOICE_BUTTONS).
+      (availability.candidates.length > MAX_CHOICE_BUTTONS
+        ? `${t(locale, "chooser.moreHidden", { count: MAX_CHOICE_BUTTONS })}\n`
+        : "") +
+      // myrmidon(F06-A): the per-key read failed and this is the whole
+      // gateway catalog — the person has to know the list is a superset.
+      // myrmidon(F06-D): and why the agent's own list was not used.
+      (availability.wholeCatalog ? `${wholeCatalogText(locale, availability.keyFailure)}\n` : "") +
+      t(locale, "chooser.usage", { command: chooser.commandName });
     return {
       kind: "reply",
       command: chooser.commandName,
-      text:
-        t(locale, "chooser.effective", {
-          label: statusLabel,
-          value: effective.value ?? sourceText,
-          source: sourceText,
-        }) +
-        "\n" +
-        t(locale, "chooser.availableHeader") +
-        "\n" +
-        formatChatChoiceList(availability.candidates) +
-        "\n" +
-        // myrmidon(F06-A): the per-key read failed and this is the whole
-        // gateway catalog — the person has to know the list is a superset.
-        (availability.wholeCatalog ? `${t(locale, "chooser.catalogWhole")}\n` : "") +
-        t(locale, "chooser.usage", { command: chooser.commandName }),
+      text: `${effectiveLine}\n${listBody}`,
+      choices: {
+        commandName: chooser.commandName,
+        title: effectiveLine,
+        body: listBody,
+        options: [
+          ...listedChatChoices(availability.candidates).map((candidate) => ({
+            // The current value is marked on its button; the value stays the bare id.
+            label: candidate.id === effective.value ? `✓ ${candidate.label}` : candidate.label,
+            value: candidate.id,
+          })),
+          { label: t(locale, "chooser.button.default"), value: "default" },
+        ],
+      },
     };
   }
 
@@ -472,7 +535,7 @@ async function handleChooserCommand(
     effectiveModel: effectiveChatModel(context),
   });
   if (resolution.kind === "error") {
-    return { kind: "reply", command: chooser.commandName, text: resolution.text };
+    return { kind: "reply", command: chooser.commandName, text: resolution.text, outcome: "refused" };
   }
 
   if (resolution.kind === "default") {
@@ -491,12 +554,13 @@ async function handleChooserCommand(
       ...chatOverrideApplyInput(input, context),
     });
     if (!overrideResult.applied) {
-      return { kind: "reply", command: chooser.commandName, text: turnInProgressText(locale) };
+      return { kind: "reply", command: chooser.commandName, text: turnInProgressText(locale), outcome: "refused" };
     }
     const applyNotice = botApplyNotice(overrideResult.botApply, locale);
     return {
       kind: "reply",
       command: chooser.commandName,
+      outcome: "applied",
       text:
         t(locale, "chooser.defaultApplied", {
           label: statusLabel,
@@ -521,16 +585,75 @@ async function handleChooserCommand(
     ...chatOverrideApplyInput(input, context),
   });
   if (!overrideResult.applied) {
-    return { kind: "reply", command: chooser.commandName, text: turnInProgressText(locale) };
+    return { kind: "reply", command: chooser.commandName, text: turnInProgressText(locale), outcome: "refused" };
   }
   const applyNotice = botApplyNotice(overrideResult.botApply, locale);
   return {
     kind: "reply",
     command: chooser.commandName,
+    outcome: "applied",
     text:
       t(locale, "chooser.set", { label: statusLabel, value: resolution.candidate.id }) +
       (applyNotice ? `\n${applyNotice}` : ""),
   };
+}
+
+/**
+ * myrmidon(F06-D): a button press under a `/model` or `/think` list. Runs the
+ * same path as `/model <value>`: the value is resolved against the live
+ * candidates again, the turn-in-progress and effort-policy refusals apply, and
+ * a gateway agent's profile is applied. The caller (the chat action handler)
+ * has already proven the press comes from this conversation's own linked
+ * person on the list message; this checks the conversation again.
+ */
+export async function runBridgedChooserPick(
+  input: BridgedChooserInput & { commandName: "model" | "think"; value: string },
+): Promise<{ text: string; outcome: "applied" | "refused" }> {
+  const locale = await resolveBridgeLocale(input.db, input.boardUserId);
+  const context = await loadBridgedCommandContext(input.db, {
+    companyId: input.companyId,
+    agentId: input.agentId,
+    boardUserId: input.boardUserId,
+    conversationIssueId: input.conversationIssueId,
+  });
+  if (!context) return { text: t(locale, "chat.notAvailable"), outcome: "refused" };
+  const chooser = input.commandName === "model" ? MODEL_CHOOSER : THINK_CHOOSER;
+  const result = await handleChooserCommand(input, context, chooser, input.value, locale);
+  if (result?.kind !== "reply") return { text: t(locale, "chat.notAvailable"), outcome: "refused" };
+  return { text: result.text, outcome: result.outcome ?? "refused" };
+}
+
+/**
+ * myrmidon(F06-D): a plain reply to a `/model` or `/think` list. A whole number
+ * or a name that resolves among that list's choices (or `default`) picks it,
+ * exactly like `/model <text>`. Anything else — an ordinary sentence that
+ * happens to be a reply to the list message — is not a choice: null, and the
+ * message goes to the agent as usual.
+ */
+export async function runBridgedChooserReply(
+  input: BridgedChooserInput & { commandName: "model" | "think"; text: string },
+): Promise<BridgedCommandResult> {
+  const arg = input.text.trim();
+  if (!arg || arg.length > 200 || arg.includes("\n")) return null;
+  const locale = await resolveBridgeLocale(input.db, input.boardUserId);
+  const context = await loadBridgedCommandContext(input.db, {
+    companyId: input.companyId,
+    agentId: input.agentId,
+    boardUserId: input.boardUserId,
+    conversationIssueId: input.conversationIssueId,
+  });
+  if (!context) return null;
+  const chooser = input.commandName === "model" ? MODEL_CHOOSER : THINK_CHOOSER;
+  const availability = await checkChooserAvailability(
+    chooser,
+    context.agent,
+    gatewayCatalogReader(input, context.agent),
+  );
+  if (!availability.available) return null;
+  const isNumber = /^\d+$/.test(arg);
+  const isDefault = arg.toLowerCase() === "default";
+  if (!isNumber && !isDefault && !resolveChatChoiceArgument(availability.candidates, arg)) return null;
+  return handleChooserCommand(input, context, chooser, arg, locale);
 }
 
 async function handleStopCommand(

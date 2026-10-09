@@ -22,10 +22,36 @@ import { applyBotContainerNow, type ApplyBotContainerOutcome, type BotContainerA
 import { getBotContainerRuntime } from "../../bot-containers/routes-wiring.js";
 import { isBridgedCommandTurnInProgress } from "./context.js";
 import { GATEWAY_ADAPTER_TYPES, isRecord } from "./models.js";
+import { cardUsesLlmGateway } from "../../bot-containers/profile-input.js";
 
 /** myrmidon(F06-A): reported when no bot-containers runtime is wired in this
  *  process (the feature is off) — an unapplied write, not a failure. */
 const NO_RUNTIME_REASON = "the bot-containers runtime is not available in this process";
+
+/** myrmidon(F06-D): the provider a chat override writes next to a gateway model. */
+export const CHAT_OVERRIDE_GATEWAY_PROVIDER = "custom";
+
+/**
+ * myrmidon(F06-D): the run sends the card's `provider` together with the model
+ * (hermes gateway adapter, buildRunBody). Every `/model` candidate is a gateway
+ * catalog id, so a card that names a native provider (`anthropic`, ...) and a
+ * chosen model from the gateway would reach the run as a mismatched pair. The
+ * chosen model decides the route: a model the card itself carries keeps the
+ * card's provider; any other gateway model is run through the gateway
+ * (`custom`). A card that already goes through the gateway needs no override.
+ * Returns the provider to write into the chat override, or null for none.
+ */
+export function providerOverrideForModel(card: Record<string, unknown>, model: string | null): string | null {
+  if (!model) return null;
+  if (cardUsesLlmGateway(card)) return null;
+  const models = isRecord(card.models) ? card.models : {};
+  const own = new Set<string>();
+  if (typeof card.model === "string") own.add(card.model.trim());
+  if (Array.isArray(models.fallbacks)) {
+    for (const entry of models.fallbacks) if (typeof entry === "string") own.add(entry.trim());
+  }
+  return own.has(model.trim()) ? null : CHAT_OVERRIDE_GATEWAY_PROVIDER;
+}
 
 export interface ApplyChatAdapterOverrideInput {
   db: Db;
@@ -101,6 +127,11 @@ function defaultBotContainerApply(): ChatAdapterOverrideApplyDeps["apply"] {
 }
 
 /** myrmidon(F06-A): the value this chat had for `key` before the write (null = unset). */
+function readOverrideProvider(adapterConfig: Record<string, unknown>): string | null {
+  const value = adapterConfig.provider;
+  return typeof value === "string" && value.trim().length > 0 ? value : null;
+}
+
 function readOverrideValue(adapterConfig: Record<string, unknown>, key: "model" | "effort"): string | null {
   const value = adapterConfig[key];
   return typeof value === "string" && value.trim().length > 0 ? value : null;
@@ -131,6 +162,7 @@ export async function applyChatAdapterOverride(
   let publication: ActivityPublication | null = null;
   let applied = false;
   let previousValue: string | null = null;
+  let previousProvider: string | null | undefined;
   await input.db.transaction(async (tx) => {
     const [issue] = await tx
       .select({
@@ -163,6 +195,15 @@ export async function applyChatAdapterOverride(
       delete adapterConfig[input.key];
     } else {
       adapterConfig[input.key] = input.value;
+    }
+    // myrmidon(F06-D): the provider of the pair follows the chosen model (see
+    // providerOverrideForModel). Only when the card is known: without it the
+    // override is left exactly as before.
+    if (input.key === "model" && input.adapterConfig && GATEWAY_ADAPTER_TYPES.includes(input.adapterType ?? "")) {
+      previousProvider = readOverrideProvider(adapterConfig);
+      const provider = providerOverrideForModel(input.adapterConfig, input.value);
+      if (provider) adapterConfig.provider = provider;
+      else delete adapterConfig.provider;
     }
 
     const nextOverrides: Record<string, unknown> = { ...overrides };
@@ -242,6 +283,7 @@ export async function applyChatAdapterOverride(
     issueId: input.issueId,
     key: input.key,
     value: previousValue,
+    provider: previousProvider,
   });
   return { applied: true, botApply: { kind: "error", reason, rolledBack } };
 }
@@ -260,6 +302,8 @@ async function restoreChatAdapterOverrideKey(input: {
   issueId: string;
   key: "model" | "effort";
   value: string | null;
+  /** The chat override's provider before the write; undefined = it was not touched. */
+  provider?: string | null;
 }): Promise<boolean> {
   return input.db.transaction(async (tx) => {
     const [issue] = await tx
@@ -279,6 +323,10 @@ async function restoreChatAdapterOverrideKey(input: {
       delete adapterConfig[input.key];
     } else {
       adapterConfig[input.key] = input.value;
+    }
+    if (input.provider !== undefined) {
+      if (input.provider === null) delete adapterConfig.provider;
+      else adapterConfig.provider = input.provider;
     }
     const nextOverrides: Record<string, unknown> = { ...overrides };
     if (Object.keys(adapterConfig).length > 0) {

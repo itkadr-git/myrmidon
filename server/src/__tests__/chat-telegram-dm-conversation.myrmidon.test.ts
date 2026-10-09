@@ -51,6 +51,7 @@ import {
   githubAttachmentLocator,
   rehydrateGitHubPublicAttachment,
 } from "../services/chat-github-attachments.js";
+import { telegramChatSdkCallbackData } from "../services/chat-interaction-publications.js";
 import { heartbeatService } from "../services/heartbeat.js";
 import { CHAT_RUN_PRESENTATION_AUTHORIZATION_REASON } from "../services/heartbeat-run-summary.js";
 import { issueService } from "../services/issues.js";
@@ -2263,6 +2264,444 @@ describeEmbeddedPostgres("Telegram direct messages become a standing Agent Chat 
         .from(heartbeatRuns)
         .where(eq(heartbeatRuns.agentId, fixture.assignedAgentId));
       expect(runsAfter).toEqual([{ id: runId }]);
+    });
+  });
+  // myrmidon(F06-D): `/model` and `/think` as buttons, a reply-pick and an
+  // edited command — the paths the owner's complaint (09.10, «/model в Telegram
+  // не работает») ends in. Red before F06-D: a plain `/model` published only
+  // text, a reply with a number went to the agent as a message, an edited
+  // `/model` ended as a silently filtered lifecycle row, and no callback token
+  // existed.
+  describe("model chooser buttons, reply-pick and edited commands (F06-D)", () => {
+    const previousAdapterModels = process.env.PAPERCLIP_ADAPTER_MODELS;
+    beforeAll(() => {
+      process.env.PAPERCLIP_ADAPTER_MODELS = JSON.stringify({ hermes_local: [{ id: "model-c" }] });
+    });
+    afterAll(() => {
+      if (previousAdapterModels === undefined) delete process.env.PAPERCLIP_ADAPTER_MODELS;
+      else process.env.PAPERCLIP_ADAPTER_MODELS = previousAdapterModels;
+    });
+
+    async function chooserFixture(userId: string) {
+      const fixture = await seedCompany();
+      await db
+        .update(agents)
+        .set({
+          adapterType: "hermes_local",
+          adapterConfig: { model: "model-a", models: { fallbacks: ["model-b"] } },
+        })
+        .where(eq(agents.id, fixture.assignedAgentId));
+      const context = await configuredTelegramEndpoint(fixture);
+      await linkTelegramPrincipal({
+        companyId: fixture.companyId,
+        endpointId: context.endpoint.id,
+        userId,
+        boardUserId: "owner-user",
+      });
+      return { fixture, ...context };
+    }
+
+    async function conversationIssue(companyId: string) {
+      const [issue] = await db
+        .select()
+        .from(issues)
+        .where(
+          and(
+            eq(issues.companyId, companyId),
+            eq(issues.conversationUserId, telegramConversationUserId("owner-user")),
+          ),
+        );
+      return issue!;
+    }
+
+    /** The control publication a command answered with, and a stand-in for its delivery. */
+    async function listPublication(endpointId: string, channelId: string, commandKeyPrefix: string) {
+      const conversation = await conversationRow(endpointId, channelId);
+      const rows = await db
+        .select()
+        .from(chatPublications)
+        .where(eq(chatPublications.conversationId, conversation!.id));
+      const publication = rows.find((row) => row.idempotencyKey.startsWith(commandKeyPrefix));
+      return { conversation: conversation!, publication };
+    }
+
+    async function markDelivered(input: {
+      companyId: string;
+      endpointId: string;
+      conversationId: string;
+      publicationId: string;
+      providerMessageId: string;
+    }) {
+      await db.insert(chatMessageLinks).values({
+        companyId: input.companyId,
+        endpointId: input.endpointId,
+        conversationId: input.conversationId,
+        publicationId: input.publicationId,
+        providerMessageId: input.providerMessageId,
+        direction: "outbound",
+      });
+    }
+
+    function pressEvent(input: {
+      endpointId: string;
+      actionId: string;
+      messageId: string;
+      channelId: string;
+      userId: string;
+    }) {
+      return {
+        endpointId: input.endpointId,
+        provider: "telegram" as const,
+        event: {
+          actionId: input.actionId,
+          messageId: input.messageId,
+          threadId: `telegram:${input.channelId}`,
+          user: {
+            userId: input.userId,
+            userName: "telegram-user",
+            fullName: "Telegram User",
+            isBot: false,
+            isMe: false,
+            isSystem: false,
+          },
+          raw: {
+            id: `callback-${randomUUID()}`,
+            data: telegramChatSdkCallbackData(input.actionId),
+            from: { id: Number(input.userId), is_bot: false },
+          },
+        },
+      } as never;
+    }
+
+    it("answers a plain /model with a button card and records what a reply or a press may pick", async () => {
+      const { fixture, callbacks, endpoint } = await chooserFixture("710001");
+      await sendTelegramDm({
+        callbacks,
+        endpointId: endpoint.id,
+        channelId: "710001",
+        text: "/model",
+        userId: "710001",
+        messageId: 1,
+      });
+      const { publication } = await listPublication(endpoint.id, "710001", "control:x8-model:");
+      expect(publication).toBeDefined();
+      // Not an issue interaction: nothing that resolves interactions may see it.
+      expect(publication!.payload.interactionId).toBeUndefined();
+      const card = publication!.payload.card!;
+      expect(card.title).toBe("Model: model-a (agent default).");
+      expect(card.body).toContain("1) model-a");
+      expect(card.body).toContain("3) model-c");
+      const actions = card.actions!;
+      expect(actions.map((action) => action.label)).toEqual([
+        "✓ model-a",
+        "model-b",
+        "model-c",
+        "↩ Agent default",
+      ]);
+      expect(actions.every((action) => action.type === "callback" && /^pcm:/.test(action.actionId))).toBe(true);
+
+      const rows = await db
+        .select()
+        .from(chatActions)
+        .where(eq(chatActions.endpointId, endpoint.id));
+      expect(rows.filter((row) => row.kind === "chooser_list")).toHaveLength(1);
+      expect(
+        rows
+          .filter((row) => row.kind === "chooser_pick")
+          .map((row) => row.payload.value)
+          .sort(),
+      ).toEqual(["default", "model-a", "model-b", "model-c"]);
+      // Reading the list writes nothing.
+      expect((await conversationIssue(fixture.companyId)).assigneeAdapterOverrides).toBeNull();
+    });
+
+    it("applies the pressed model to this chat, answers once, and retires the other buttons", async () => {
+      const { fixture, callbacks, endpoint } = await chooserFixture("710002");
+      await sendTelegramDm({
+        callbacks,
+        endpointId: endpoint.id,
+        channelId: "710002",
+        text: "/model",
+        userId: "710002",
+        messageId: 1,
+      });
+      const { conversation, publication } = await listPublication(endpoint.id, "710002", "control:x8-model:");
+      await markDelivered({
+        companyId: fixture.companyId,
+        endpointId: endpoint.id,
+        conversationId: conversation.id,
+        publicationId: publication!.id,
+        providerMessageId: "710002:900",
+      });
+      await db.update(chatEndpoints).set({ status: "active" }).where(eq(chatEndpoints.id, endpoint.id));
+      const tokens = await db
+        .select()
+        .from(chatActions)
+        .where(and(eq(chatActions.endpointId, endpoint.id), eq(chatActions.kind, "chooser_pick")));
+      const modelB = tokens.find((row) => row.payload.value === "model-b")!;
+      const modelC = tokens.find((row) => row.payload.value === "model-c")!;
+
+      await callbacks.onAction!(
+        pressEvent({
+          endpointId: endpoint.id,
+          actionId: modelB.providerActionId,
+          messageId: "710002:900",
+          channelId: "710002",
+          userId: "710002",
+        }),
+      );
+
+      const issue = await conversationIssue(fixture.companyId);
+      expect(issue.assigneeAdapterOverrides).toEqual({ adapterConfig: { model: "model-b" } });
+      const confirmations = (
+        await db.select().from(chatPublications).where(eq(chatPublications.conversationId, conversation.id))
+      ).filter((row) => row.idempotencyKey.startsWith("control:x8-model-pick:"));
+      expect(confirmations).toHaveLength(1);
+      expect(confirmations[0]!.payload.text).toContain("Model for this chat: model-b.");
+      const after = await db
+        .select()
+        .from(chatActions)
+        .where(and(eq(chatActions.endpointId, endpoint.id), eq(chatActions.kind, "chooser_pick")));
+      expect(after.find((row) => row.id === modelB.id)?.status).toBe("processed");
+      expect(after.filter((row) => row.id !== modelB.id).every((row) => row.status === "expired")).toBe(true);
+
+      // A late press on a retired button changes nothing.
+      await callbacks.onAction!(
+        pressEvent({
+          endpointId: endpoint.id,
+          actionId: modelC.providerActionId,
+          messageId: "710002:900",
+          channelId: "710002",
+          userId: "710002",
+        }),
+      );
+      expect((await conversationIssue(fixture.companyId)).assigneeAdapterOverrides).toEqual({
+        adapterConfig: { model: "model-b" },
+      });
+    });
+
+    it("does not apply a press from someone who is not the conversation's linked person", async () => {
+      const { fixture, callbacks, endpoint } = await chooserFixture("710003");
+      await sendTelegramDm({
+        callbacks,
+        endpointId: endpoint.id,
+        channelId: "710003",
+        text: "/model",
+        userId: "710003",
+        messageId: 1,
+      });
+      const { conversation, publication } = await listPublication(endpoint.id, "710003", "control:x8-model:");
+      await markDelivered({
+        companyId: fixture.companyId,
+        endpointId: endpoint.id,
+        conversationId: conversation.id,
+        publicationId: publication!.id,
+        providerMessageId: "710003:900",
+      });
+      await db.update(chatEndpoints).set({ status: "active" }).where(eq(chatEndpoints.id, endpoint.id));
+      const [modelB] = (
+        await db
+          .select()
+          .from(chatActions)
+          .where(and(eq(chatActions.endpointId, endpoint.id), eq(chatActions.kind, "chooser_pick")))
+      ).filter((row) => row.payload.value === "model-b");
+
+      // A stranger who somehow holds the token: an unlinked Telegram account.
+      await callbacks
+        .onAction!(
+          pressEvent({
+            endpointId: endpoint.id,
+            actionId: modelB!.providerActionId,
+            messageId: "710003:900",
+            channelId: "710003",
+            userId: "710099",
+          }),
+        )
+        .catch(() => undefined);
+      expect((await conversationIssue(fixture.companyId)).assigneeAdapterOverrides).toBeNull();
+      const [token] = await db.select().from(chatActions).where(eq(chatActions.id, modelB!.id));
+      expect(token!.status).toBe("issued");
+
+      // The right person, but the token pressed under another message.
+      await callbacks
+        .onAction!(
+          pressEvent({
+            endpointId: endpoint.id,
+            actionId: modelB!.providerActionId,
+            messageId: "710003:901",
+            channelId: "710003",
+            userId: "710003",
+          }),
+        )
+        .catch(() => undefined);
+      expect((await conversationIssue(fixture.companyId)).assigneeAdapterOverrides).toBeNull();
+    });
+
+    it("picks from a list by replying with its number, and leaves other replies to the agent", async () => {
+      const { fixture, callbacks, endpoint, wakeup } = await chooserFixture("710004");
+      await sendTelegramDm({
+        callbacks,
+        endpointId: endpoint.id,
+        channelId: "710004",
+        text: "/model",
+        userId: "710004",
+        messageId: 1,
+      });
+      const { conversation, publication } = await listPublication(endpoint.id, "710004", "control:x8-model:");
+      await markDelivered({
+        companyId: fixture.companyId,
+        endpointId: endpoint.id,
+        conversationId: conversation.id,
+        publicationId: publication!.id,
+        providerMessageId: "710004:900",
+      });
+
+      const replyTo = async (text: string, messageId: number) => {
+        const { thread } = telegramDm({ channelId: "710004" });
+        await deliverMessage({
+          callbacks,
+          endpointId: endpoint.id,
+          provider: "telegram",
+          thread,
+          message: makeMessage({
+            id: String(messageId),
+            text,
+            userId: "710004",
+            raw: {
+              message_id: messageId,
+              date: 1_800_000_000 + messageId,
+              chat: { id: 710004, type: "private" },
+              from: { id: 710004, is_bot: false },
+              text,
+              reply_to_message: { message_id: 900, chat: { id: 710004, type: "private" } },
+            },
+          }),
+          trigger: "direct_message",
+        });
+      };
+
+      // An ordinary sentence that happens to answer the list is the agent's.
+      await replyTo("thanks, that is useful", 2);
+      expect((await conversationIssue(fixture.companyId)).assigneeAdapterOverrides).toBeNull();
+      const issue = await conversationIssue(fixture.companyId);
+      const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issue.id));
+      expect(comments.map((comment) => comment.body)).toEqual(["thanks, that is useful"]);
+
+      wakeup.mockClear();
+      await replyTo("2", 3);
+      expect((await conversationIssue(fixture.companyId)).assigneeAdapterOverrides).toEqual({
+        adapterConfig: { model: "model-b" },
+      });
+      const answered = (
+        await db.select().from(chatPublications).where(eq(chatPublications.conversationId, conversation.id))
+      ).filter((row) => row.idempotencyKey.startsWith("control:x8-model:"));
+      expect(answered.map((row) => row.payload.text).join("\n")).toContain("Model for this chat: model-b.");
+      // The pick is a command, not a message: no comment, no wakeup.
+      const commentsAfter = await db.select().from(issueComments).where(eq(issueComments.issueId, issue.id));
+      expect(commentsAfter).toHaveLength(1);
+      expect(wakeup).not.toHaveBeenCalled();
+
+      // A name works too, and so does a reply to a list that is not a choice list.
+      await replyTo("model-c", 4);
+      expect((await conversationIssue(fixture.companyId)).assigneeAdapterOverrides).toEqual({
+        adapterConfig: { model: "model-c" },
+      });
+    });
+
+    it("runs an edited /model as a command instead of filtering the edit silently", async () => {
+      const { fixture, callbacks, endpoint } = await chooserFixture("710005");
+      await sendTelegramDm({
+        callbacks,
+        endpointId: endpoint.id,
+        channelId: "710005",
+        text: "/modle",
+        userId: "710005",
+        messageId: 1,
+      });
+      const { thread } = telegramDm({ channelId: "710005" });
+      const edited = {
+        ...makeMessage({
+          id: "1",
+          text: "/model model-b",
+          userId: "710005",
+          raw: {
+            message_id: 1,
+            date: 1_800_000_001,
+            edit_date: 1_800_000_060,
+            chat: { id: 710005, type: "private" },
+            from: { id: 710005, is_bot: false },
+            text: "/model model-b",
+          },
+        }),
+        metadata: {
+          dateSent: new Date("2026-10-09T10:00:00.000Z"),
+          edited: true,
+          editedAt: new Date("2026-10-09T10:01:00.000Z"),
+        },
+      } as Message;
+      await callbacks.onMessageUpdated!({
+        endpointId: endpoint.id,
+        provider: "telegram",
+        thread,
+        message: edited,
+        previousMessage: makeMessage({ id: "1", text: "/modle", userId: "710005" }),
+      } as never);
+
+      expect((await conversationIssue(fixture.companyId)).assigneeAdapterOverrides).toEqual({
+        adapterConfig: { model: "model-b" },
+      });
+      const deliveries = await db
+        .select()
+        .from(chatDeliveries)
+        .where(and(eq(chatDeliveries.endpointId, endpoint.id), eq(chatDeliveries.eventKind, "message_updated")));
+      expect(deliveries).toHaveLength(1);
+      expect(deliveries[0]!.state).toBe("processed");
+      const { publication } = await listPublication(endpoint.id, "710005", `control:x8-model:${deliveries[0]!.id}`);
+      expect(publication?.payload.text).toContain("Model for this chat: model-b.");
+      // The edit is not a task comment.
+      const issue = await conversationIssue(fixture.companyId);
+      const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issue.id));
+      expect(comments).toHaveLength(0);
+    });
+
+    it("never re-runs an edited task-creating command", async () => {
+      const { fixture, callbacks, endpoint } = await chooserFixture("710006");
+      await sendTelegramDm({
+        callbacks,
+        endpointId: endpoint.id,
+        channelId: "710006",
+        text: "/status",
+        userId: "710006",
+        messageId: 1,
+      });
+      const { thread } = telegramDm({ channelId: "710006" });
+      await callbacks.onMessageUpdated!({
+        endpointId: endpoint.id,
+        provider: "telegram",
+        thread,
+        message: {
+          ...makeMessage({
+            id: "1",
+            text: "/new model-b",
+            userId: "710006",
+            raw: {
+              message_id: 1,
+              edit_date: 1_800_000_060,
+              chat: { id: 710006, type: "private" },
+              from: { id: 710006, is_bot: false },
+              text: "/new model-b",
+            },
+          }),
+          metadata: { dateSent: new Date(), edited: true, editedAt: new Date() },
+        } as Message,
+        previousMessage: makeMessage({ id: "1", text: "/status", userId: "710006" }),
+      } as never);
+      expect((await conversationIssue(fixture.companyId)).assigneeAdapterOverrides).toBeNull();
+      const publications = await db
+        .select()
+        .from(chatPublications)
+        .where(eq(chatPublications.companyId, fixture.companyId));
+      expect(publications.some((row) => row.idempotencyKey.startsWith("control:x8-new:"))).toBe(false);
     });
   });
 });

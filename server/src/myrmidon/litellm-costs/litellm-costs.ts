@@ -136,6 +136,12 @@ export interface GatewayModelRow {
   maxInputTokens: number | null;
   maxOutputTokens: number | null;
   rates: Record<string, number | null>;
+  /**
+   * myrmidon(F06-D): the gateway's own declaration of what the model does
+   * (`model_info.mode`: `chat`, `embedding`, `ocr`, `image_generation`, ...).
+   * `/model` lists chat models by this declaration, not by guessing from the id.
+   */
+  mode?: string | null;
 }
 
 export interface LitellmGatewayClient {
@@ -260,6 +266,7 @@ export function createLitellmGatewayClient(baseUrl: string, keyValue: string): L
           maxInputTokens: asNullableNumber(info?.max_input_tokens),
           maxOutputTokens: asNullableNumber(info?.max_tokens),
           rates: readRates(info),
+          mode: typeof info?.mode === "string" && info.mode.trim() ? info.mode.trim().toLowerCase() : null,
         });
       }
       return rows;
@@ -591,7 +598,9 @@ async function refreshModels(db: Db, models: GatewayModelRow[], seenAt: Date): P
         provider: model.provider,
         maxInputTokens: model.maxInputTokens,
         maxOutputTokens: model.maxOutputTokens,
-        rates: model.rates,
+        // myrmidon(F06-D): the declared mode rides in the rates JSON (no
+        // migration); every other key there stays a number.
+        rates: (model.mode ? { ...model.rates, mode: model.mode } : model.rates) as typeof model.rates,
         seenAt,
       })
       .onConflictDoNothing();
@@ -651,6 +660,8 @@ export interface LitellmModelView {
   outputCostPerToken: number | null;
   cacheReadInputTokenCost: number | null;
   cacheCreationInputTokenCost: number | null;
+  /** myrmidon(F06-D): the gateway's declared model mode, when the sweep saw one. */
+  mode?: string | null;
   seenAt: string;
 }
 
@@ -672,6 +683,11 @@ export async function listLitellmModels(db: Db): Promise<LitellmModelView[]> {
   return rows.map((row) => toModelView(row.model));
 }
 
+function readStoredMode(rates: unknown): string | null {
+  const mode = asRecord(rates)?.mode;
+  return typeof mode === "string" && mode.trim() ? mode.trim().toLowerCase() : null;
+}
+
 function toModelView(row: typeof litellmModels.$inferSelect): LitellmModelView {
   const rates = row.rates ?? {};
   return {
@@ -683,6 +699,7 @@ function toModelView(row: typeof litellmModels.$inferSelect): LitellmModelView {
     outputCostPerToken: rates.output_cost_per_token ?? null,
     cacheReadInputTokenCost: rates.cache_read_input_token_cost ?? null,
     cacheCreationInputTokenCost: rates.cache_creation_input_token_cost ?? null,
+    mode: readStoredMode(row.rates),
     seenAt: row.seenAt instanceof Date ? row.seenAt.toISOString() : String(row.seenAt),
   };
 }

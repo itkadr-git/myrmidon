@@ -514,6 +514,42 @@ describe("execute", () => {
 
   const wsBaseConfig = { apiBaseUrl: "http://127.0.0.1:8642", apiKey: "secret-key", timeoutSec: 5 };
 
+  // myrmidon(F06-D): a chat's `/model` and `/think` choice is stored as an issue
+  // override; heartbeat merges it over the agent card into `ctx.config` before
+  // the adapter runs (heartbeat.ts: `mergedConfig`). The run the next turn
+  // makes must carry exactly that model and effort — this pins the adapter's
+  // half, so the owner-visible chain «button → override → next run» has a test
+  // on both sides.
+  it("sends the model and the reasoning effort of the merged config as the run's model and model_options", async () => {
+    const body = await runAndReadBody(
+      makeCtx({ ...wsBaseConfig, model: "zai-glm-5.3", effort: "high" }),
+    );
+    expect(body.model).toBe("zai-glm-5.3");
+    expect(body.model_options).toEqual({ reasoning: { effort: "high" } });
+  });
+
+  // myrmidon(F06-D): heartbeat merges `{ ...card, ...issueAssigneeOverrides.adapterConfig }`
+  // into ctx.config. A gateway model chosen in a native-provider card's chat is
+  // stored together with the provider that routes it (overrides.ts,
+  // providerOverrideForModel), so the pair on the wire is never the card's old
+  // provider + the new gateway model.
+  it("sends the provider and model of a chat override merged over a native-provider card as one pair", async () => {
+    const card = { ...wsBaseConfig, provider: "anthropic", model: "claude-own" };
+    const override = { model: "zai-glm-5.3", provider: "custom" };
+    const body = await runAndReadBody(makeCtx({ ...card, ...override }));
+    expect(body.model).toBe("zai-glm-5.3");
+    expect(body.provider).toBe("custom");
+    // The same override without the reconciled provider is the broken pair.
+    const broken = await runAndReadBody(makeCtx({ ...card, model: "zai-glm-5.3" }));
+    expect(broken.provider).toBe("anthropic");
+  });
+
+  it("sends no model when the merged config names none (the agent's profile decides)", async () => {
+    const body = await runAndReadBody(makeCtx({ ...wsBaseConfig }));
+    expect("model" in body).toBe(false);
+    expect("model_options" in body).toBe(false);
+  });
+
   it("sends workspace {key, repo, baseRef} that passes the C6 schema for a task with a repository", async () => {
     const ctx = makeCtx(wsBaseConfig);
     ctx.context.paperclipWake = { issue: { identifier: "ABC-101", title: "T" } };
