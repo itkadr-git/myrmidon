@@ -45,8 +45,12 @@ export function subjectKindForTrigger(trigger: KnowledgeGateTrigger): EvalSubjec
   }
 }
 
-/** A criterion named like this scored 0 means the item hallucinated. */
-export const HALLUCINATION_CRITERION_PATTERN = /hallucinat/i;
+/**
+ * A criterion named like this scored 0 means the item hallucinated: the rubric
+ * names its anti-invention guard either after the failure ("hallucination") or
+ * after the promise ("no-invented-prices"), and both must trip the gate.
+ */
+export const HALLUCINATION_CRITERION_PATTERN = /hallucinat|invent|fabricat|made[-_ ]?up/i;
 
 /**
  * The gate verdict, reduced to the two things knowledge cares about: keep the
@@ -380,7 +384,7 @@ export interface KnowledgeGateModulePort {
       evalRunId: string;
       delta: number | null;
       verdict: KnowledgeGateVerdict;
-      trigger?: string | null;
+      lifecycleEvent?: string | null;
       reason?: string | null;
       ownerNotice?: boolean;
     },
@@ -419,7 +423,7 @@ export function createKnowledgeGateSink(
         evalRunId: input.evalRunId,
         delta: input.delta,
         verdict: input.verdict,
-        trigger: input.trigger,
+        lifecycleEvent: input.trigger,
         reason: input.reason,
         ownerNotice: input.ownerNotice,
       });
