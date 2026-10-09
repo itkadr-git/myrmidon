@@ -215,3 +215,204 @@ describe("a real directory where a managed skill belongs", () => {
     );
   });
 });
+
+// myrmidon(H1): reconciling a profile is not proof that the agent got its
+// skills. These tests check the links themselves, keep two profiles out of each
+// other's way while a third agent shares the same HOME, and migrate the links
+// the early rollout left behind.
+
+function executeConfig(
+  hermesHome: string | null,
+  desiredSkills: string[],
+  overrides: Record<string, unknown> = {},
+) {
+  return {
+    command: path.join(root, "bin", "hermes"),
+    timeoutSec: 60,
+    graceSec: 5,
+    ...agentConfig(hermesHome, desiredSkills),
+    ...overrides,
+  };
+}
+
+async function executeRun(config: Record<string, unknown>, onLog = vi.fn(async () => undefined)) {
+  return execute({
+    runId: "run-1",
+    agent: {
+      id: "agent-a",
+      companyId: "company-a",
+      name: "agent-a",
+      adapterType: "hermes_local",
+      adapterConfig: {},
+    },
+    runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+    config,
+    context: { issueId: "issue-1", wakeReason: "manual", paperclipWake: null },
+    onLog,
+    onMeta: vi.fn(async () => undefined),
+    onSpawn: vi.fn(async () => undefined),
+  } as never);
+}
+
+// The run-log sink used by reconcile takes one line; the execute adapter sink
+// takes (level, line). Collect every string argument so both shapes are read.
+function loggedLines(onLog: ReturnType<typeof vi.fn>): string[] {
+  return onLog.mock.calls.flatMap((call: unknown) =>
+    (call as unknown[]).map((argument) => String(argument)),
+  );
+}
+
+function stderrLines(onLog: ReturnType<typeof vi.fn>): string {
+  return onLog.mock.calls
+    .filter((call: unknown) => (call as unknown[])[0] === "stderr")
+    .map((call: unknown) => String((call as unknown[])[1]))
+    .join("");
+}
+
+describe("a skill is only delivered when the link proves it", () => {
+  it("stops the run when a desired skill has no managed source to link", async () => {
+    const onLog = vi.fn(async () => undefined);
+
+    await expect(
+      executeRun(
+        executeConfig(profileA, ["company-a/skill-a"], { paperclipRuntimeSkills: [] }),
+        onLog,
+      ),
+    ).rejects.toThrow(/no Paperclip-managed source to link/);
+
+    const stderr = stderrLines(onLog);
+    expect(stderr).toContain("company-a/skill-a");
+    expect(stderr).toContain("no Paperclip-managed source to link");
+    expect(serverUtils.runChildProcess).not.toHaveBeenCalled();
+  });
+
+  it("stops the run when a desired skill's source is gone", async () => {
+    const onLog = vi.fn(async () => undefined);
+    const skills = runtimeSkills.map((entry, index) =>
+      index === 1 ? { ...entry, sourceStatus: "missing" as const } : entry,
+    );
+
+    await expect(
+      executeRun(
+        executeConfig(profileA, ["company-a/skill-a"], { paperclipRuntimeSkills: skills }),
+        onLog,
+      ),
+    ).rejects.toThrow(/files are unavailable/);
+
+    expect(stderrLines(onLog)).toContain("company-a/skill-a");
+    expect(await linkNames(path.join(profileA, "skills"))).toEqual(["paperclip"]);
+    expect(serverUtils.runChildProcess).not.toHaveBeenCalled();
+  });
+
+  it("stops the run when the profile link was pointed somewhere else", async () => {
+    await reconcileHermesPaperclipSkills(agentConfig(profileA, ["company-a/skill-a"]));
+    const target = path.join(profileA, "skills", "skill-a");
+    const foreign = path.join(root, "external-skills", "skill-a");
+    await writeSkill(foreign, "skill-a", "another installation");
+    await fs.unlink(target);
+    await fs.symlink(foreign, target);
+    const onLog = vi.fn(async () => undefined);
+
+    await expect(executeRun(executeConfig(profileA, ["company-a/skill-a"]), onLog)).rejects.toThrow(
+      /company-a\/skill-a/,
+    );
+
+    const stderr = stderrLines(onLog);
+    expect(stderr).toContain("company-a/skill-a");
+    expect(stderr).toContain("occupied by another installation");
+    expect(await fs.realpath(target)).toBe(await fs.realpath(foreign));
+    expect(serverUtils.runChildProcess).not.toHaveBeenCalled();
+  });
+});
+
+describe("parallel runs that share one HOME", () => {
+  it("keeps two profiles apart while a third agent uses the shared vendor scope", async () => {
+    const vendorConfig = agentConfig(null, ["company-a/skill-b"]);
+    const [profileAResult, profileBResult] = await Promise.all([
+      reconcileHermesPaperclipSkills(agentConfig(profileA, ["company-a/skill-a"])),
+      reconcileHermesPaperclipSkills(agentConfig(profileB, ["company-a/skill-b"])),
+      reconcileHermesPaperclipSkills(vendorConfig),
+    ]);
+
+    expect(profileAResult).toEqual(["paperclipai/paperclip/paperclip", "company-a/skill-a"]);
+    expect(profileBResult).toEqual(["paperclipai/paperclip/paperclip", "company-a/skill-b"]);
+    expect(await linkNames(path.join(profileA, "skills"))).toEqual(["paperclip", "skill-a"]);
+    expect(await linkNames(path.join(profileB, "skills"))).toEqual(["paperclip", "skill-b"]);
+    expect(await linkNames(path.join(sharedHome, ".hermes", "skills"))).toEqual([
+      "paperclip",
+      "skill-b",
+    ]);
+    expect(await fs.realpath(path.join(profileA, "skills", "skill-a"))).toBe(
+      await fs.realpath(runtimeSkills[1]!.source),
+    );
+    expect(await fs.realpath(path.join(profileB, "skills", "skill-b"))).toBe(
+      await fs.realpath(runtimeSkills[2]!.source),
+    );
+
+    // A later vendor-scope run still leaves both profiles alone.
+    await reconcileHermesPaperclipSkills(vendorConfig);
+    expect(await linkNames(path.join(profileA, "skills"))).toEqual(["paperclip", "skill-a"]);
+    expect(await linkNames(path.join(profileB, "skills"))).toEqual(["paperclip", "skill-b"]);
+  });
+});
+
+describe("links an earlier rollout left in a profile", () => {
+  it("relinks a link into the shared Hermes skills home to the managed source", async () => {
+    const shared = path.join(sharedHome, ".hermes", "skills", "skill-a");
+    await writeSkill(shared, "skill-a", "shared copy");
+    await fs.mkdir(path.join(profileA, "skills"), { recursive: true });
+    await fs.symlink(shared, path.join(profileA, "skills", "skill-a"));
+    const onLog = vi.fn(async () => undefined);
+
+    await reconcileHermesPaperclipSkills(agentConfig(profileA, ["company-a/skill-a"]), undefined, {
+      onLog,
+    });
+
+    const target = path.join(profileA, "skills", "skill-a");
+    expect(await fs.lstat(target).then((stats: { isSymbolicLink(): boolean }) => stats.isSymbolicLink())).toBe(true);
+    expect(await fs.realpath(target)).toBe(await fs.realpath(runtimeSkills[1]!.source));
+    // The shared copy is the agent's own file now: it stays where it is.
+    expect(await fs.readFile(path.join(shared, "SKILL.md"), "utf8")).toContain("shared copy");
+
+    const relinked = loggedLines(onLog).filter((line: string) => line.includes("Relinked"));
+    expect(relinked).toHaveLength(1);
+    expect(relinked[0]).toContain("skill-a");
+    expect(relinked[0]).not.toContain(root);
+  });
+
+  it("keeps a link to a vanished source as backup and links the managed skill", async () => {
+    const vanished = path.join(root, "retired-package", "skill-a");
+    await fs.mkdir(path.join(profileA, "skills"), { recursive: true });
+    await fs.symlink(vanished, path.join(profileA, "skills", "skill-a"));
+    const onLog = vi.fn(async () => undefined);
+
+    await reconcileHermesPaperclipSkills(agentConfig(profileA, ["company-a/skill-a"]), undefined, {
+      onLog,
+    });
+
+    const target = path.join(profileA, "skills", "skill-a");
+    expect(await fs.realpath(target)).toBe(await fs.realpath(runtimeSkills[1]!.source));
+    expect(await fs.readdir(path.join(profileA, "skills"))).toEqual(["paperclip", "skill-a"]);
+
+    const backups = await fs.readdir(path.join(profileA, "skills.pre-myrmidon"));
+    expect(backups).toHaveLength(1);
+    expect(backups[0]).toMatch(/^skill-a\.pre-myrmidon-\d{8}$/);
+    const backup = path.join(profileA, "skills.pre-myrmidon", backups[0]!);
+    expect((await fs.lstat(backup)).isSymbolicLink()).toBe(true);
+    expect(await fs.readlink(backup)).toBe(vanished);
+    expect(loggedLines(onLog).filter((line: string) => line.includes("broken"))).toHaveLength(1);
+  });
+
+  it("leaves the vendor scope alone when the agent has no HERMES_HOME", async () => {
+    const vendorSkills = path.join(sharedHome, ".hermes", "skills");
+    await fs.mkdir(vendorSkills, { recursive: true });
+    await fs.symlink(path.join(root, "retired-package", "skill-a"), path.join(vendorSkills, "skill-a"));
+
+    await reconcileHermesPaperclipSkills(agentConfig(null, ["company-a/skill-a"]));
+
+    expect(await fs.realpath(path.join(vendorSkills, "skill-a"))).toBe(
+      await fs.realpath(runtimeSkills[1]!.source),
+    );
+    expect(await fs.lstat(path.join(sharedHome, ".hermes", "skills.pre-myrmidon")).catch(() => null)).toBeNull();
+  });
+});
