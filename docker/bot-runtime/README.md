@@ -396,6 +396,17 @@ image (`true`, `0.0.0.0`, `8642`, `/data/hermes`, `1`,
 `/data/hermes/lazy-packages`, `/data:/workspace:/scratch`) — override only
 if the container topology needs something else.
 
+The entrypoint sets `umask 077` before its first file write, so every file a
+run creates — scratch dumps, cache, tmp helpers — is born `0600` (directories
+`0700`). Every bot on a host shares uid `10001`, and the mode bits are the
+only barrier between one run's scratch/cache and another bot's processes;
+the umask is inherited by every child of the entrypoint (gateway → session →
+terminal/tool), so no cooperation from the workload is needed. Files that
+are legitimately shared between processes of the same container (the
+`${HERMES_HOME}/.myrmidon/*.json` start report read by the container's own
+reporter, ipc sockets, logs collected by the host's root-side janitor) keep
+working: their readers are the same uid or root.
+
 ## Bot-runtime contract
 
 The image declares `myrmidon.bot-runtime.contract="1"` (an OCI label,
