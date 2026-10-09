@@ -22,7 +22,7 @@
 //   - enabled = false reports the pressure but never resets a session.
 //
 // The stored row is the single truth: an absent or malformed row normalizes to
-// the defaults (enabled, reset at 80%, 200k fallback window, 24k history
+// the defaults (enabled, reset at 70%, 200k fallback window, 24k history
 // budget), so a hand-edited row can never half-apply.
 
 import { z } from "zod";
@@ -31,7 +31,7 @@ import { z } from "zod";
 export const LONG_TASK_CONTEXT_SETTINGS_KEY = "longTaskContext";
 
 /** The default reset threshold, percent of the model's input window. */
-export const LONG_TASK_CONTEXT_DEFAULT_RESET_PCT = 80;
+export const LONG_TASK_CONTEXT_DEFAULT_RESET_PCT = 70;
 
 /**
  * The window the percentage counts against when the agent's model has no known
