@@ -17,6 +17,7 @@
 import { sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { readSwarmSupervisorSettings } from "./settings.js";
+import { failedRunsSinceLastChangeFor } from "../swarm-claim/effective-pheromone.js";
 // myrmidon(1.6.1 SWARM-SETTINGS-UI): the same resolver the core uses, so the
 // supervisor's "where the value came from" and the settings page agree.
 import { resolveSwarmClaimSettings, effectivePheromone, type PheromoneDynamicsSettings } from "@paperclipai/shared";
@@ -519,18 +520,7 @@ export function createSwarmSupervisorDbPort(db: Db, env: NodeJS.ProcessEnv = pro
     async listQueueRows(companyId) {
       const rows = await db.execute(sql`
         SELECT i.id AS issue_id, i.identifier, i.title, i.priority, i.pheromone_strength, i.project_id, i.created_at, i.blocked_transition_at, i.assignee_agent_id,
-          coalesce((
-            SELECT count(*)::int
-            FROM heartbeat_runs hr
-            WHERE hr.company_id = i.company_id
-              AND (
-                hr.native_issue_id = i.id
-                OR (hr.native_issue_id IS NULL AND hr.context_snapshot ->> 'issueId' = i.id::text)
-              )
-              AND hr.status IN ('failed', 'blocked', 'needs_followup', 'timed_out')
-              AND hr.finished_at IS NOT NULL
-              AND hr.finished_at > greatest(i.updated_at, i.last_activity_at)
-          ), 0) AS failed_runs_since_last_change
+          ${failedRunsSinceLastChangeFor({ companyId: sql.raw("i.company_id"), id: sql.raw("i.id") })} AS failed_runs_since_last_change
         FROM issues i
         WHERE i.company_id = ${companyId}
           AND i.status = 'todo'

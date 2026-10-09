@@ -165,8 +165,8 @@ export const DEFAULT_PHEROMONE_DYNAMICS: PheromoneDynamicsSettings = {
  * never below 0. `queuedAt` is when the wait started (the queue feeds the
  * task's entry into the queue there); `failedRunsSinceLastChange` is the
  * count of runs that ended failed/blocked/needs_followup/timed_out with no
- * task change after them (the SQL twin computes it from heartbeat_runs ⋈
- * issues.updated_at/last_activity_at). Pure and deterministic — the queue,
+ * task change after them (the SQL twin computes it from heartbeat_runs and the
+ * task's change trail: comments and non-system audit rows after the run). Pure and deterministic — the queue,
  * the run-priority scorer and the card hint must agree on it.
  */
 export interface EffectivePheromoneInput {

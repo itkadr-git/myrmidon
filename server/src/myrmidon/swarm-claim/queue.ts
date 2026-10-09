@@ -15,7 +15,7 @@
 // open children, tasks mid-decomposition — copied from `idle-pickup.ts` rather
 // than re-derived, so "ready" means one thing on both paths.
 
-import { and, asc, eq, inArray, isNull, or, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import { agents, issues, type Db } from "@paperclipai/db";
 import {
   SWARM_CLAIM_QUEUE_ISSUE_STATUSES,
@@ -23,7 +23,11 @@ import {
   type SwarmQueueCandidate,
 } from "@paperclipai/shared";
 import { issueHasNoExecutionHold } from "../settled-holds/ready-predicate.js";
-import { failedRunsSinceLastChangeSql } from "./effective-pheromone.js";
+import {
+  failedRunsSinceLastChangeSql,
+  swarmQueueOrderBy,
+  type SwarmQueueOrderOptions,
+} from "./effective-pheromone.js";
 
 /** One row of a role queue as the SQL reads it, before the claim join. */
 export interface RoleQueueRow {
@@ -45,15 +49,17 @@ export interface RoleQueueRow {
 }
 
 /**
- * myrmidon(1.6.2 SWARM-UNASSIGNED-ROUTE): SQL twin of `swarmRoleForUnassignedTask`
- * over the outer `issues` row — true when an unassigned task is queued for
- * `role`.
+ * myrmidon(1.6.2 SWARM-UNASSIGNED-ROUTE): SQL twin of `rolesOfQueueRow`
+ * (idle-queue.ts) over the outer `issues` row — true when an unassigned task
+ * is queued for `role`.
  *
- * 1.6.5 (F-27 rework 09.10, design §2.1): the caste resolution order is
- * `issues.caste_key` (the task's own caste), then the project's
- * `projects.default_caste_key` (the nest's), then the company default role —
- * with the legacy `role:<key>` label as the carrier rows written before the
- * migration still read through (the label match stays in the OR).
+ * 1.6.5 (F-27 rework 09.10, design §2.1) + review #1047 п.4: the task's caste
+ * is the first non-blank of `issues.caste_key`, then the project's
+ * `projects.default_caste_key`. When the task has a caste, THAT caste alone
+ * decides — the legacy `role:<key>` label is consulted only for a task that
+ * names no caste anywhere (rows written before the migration), exactly as the
+ * JS twin does. Without a caste and without a role label the task belongs to
+ * the company default role.
  */
 export function unassignedTaskRoutedToRole(role: string) {
   const wantedKey = role.trim().toLowerCase();
@@ -65,17 +71,6 @@ export function unassignedTaskRoutedToRole(role: string) {
     where il.issue_id = ${issues.id}
       and regexp_replace(lower(btrim(l.name)), '^role:[[:space:]]*', 'role:') = ${wanted}
   )`;
-  const hasCasteKey = sql`lower(${issues.casteKey}) = ${wantedKey}`;
-  if (wantedKey !== SWARM_DEFAULT_UNASSIGNED_ROLE) {
-    // A non-default caste: the task's own key, its project's default, or the
-    // legacy label.
-    return sql`(${hasCasteKey} or exists (
-      select 1 from projects p
-      where p.id = ${issues.projectId}
-        and lower(p.default_caste_key) = ${wantedKey}
-        and ${issues.casteKey} is null
-    ) or ${hasLabel})`;
-  }
   const hasAnyRoleLabel = sql`exists (
     select 1
     from issue_labels il
@@ -83,16 +78,15 @@ export function unassignedTaskRoutedToRole(role: string) {
     where il.issue_id = ${issues.id}
       and lower(btrim(l.name)) ~ '^role:[[:space:]]*[^[:space:]]'
   )`;
-  // The default role: the task names no caste anywhere — no caste_key, no
-  // project default, no role: label.
-  return sql`(${hasCasteKey} or (
-    ${issues.casteKey} is null
-    and not exists (
-      select 1 from projects p
-      where p.id = ${issues.projectId} and p.default_caste_key is not null
-    )
-    and not ${hasAnyRoleLabel}
-  ) or ${hasLabel})`;
+  const effectiveCaste = sql`coalesce(
+    nullif(lower(btrim(${issues.casteKey})), ''),
+    (select nullif(lower(btrim(p.default_caste_key)), '') from projects p where p.id = ${issues.projectId})
+  )`;
+  const labelRoute =
+    wantedKey === SWARM_DEFAULT_UNASSIGNED_ROLE
+      ? sql`(${hasLabel} or not ${hasAnyRoleLabel})`
+      : hasLabel;
+  return sql`(case when ${effectiveCaste} is not null then ${effectiveCaste} = ${wantedKey} else ${labelRoute} end)`;
 }
 
 /**
@@ -101,7 +95,13 @@ export function unassignedTaskRoutedToRole(role: string) {
  * this agent's); the unassigned part is the tasks routed to the role. The status filter is the queue
  * statuses (`todo`); the readiness filters mirror `idlePickupCandidateRows`.
  */
-export function roleQueueRows(db: Db, companyId: string, role: string, agentId?: string) {
+export function roleQueueRows(
+  db: Db,
+  companyId: string,
+  role: string,
+  agentId?: string,
+  order?: SwarmQueueOrderOptions,
+) {
   return db
     .select({
       issueId: issues.id,
@@ -160,7 +160,7 @@ export function roleQueueRows(db: Db, companyId: string, role: string, agentId?:
         issueHasNoExecutionHold(db),
       ),
     )
-    .orderBy(asc(issues.createdAt))
+    .orderBy(...swarmQueueOrderBy(order))
     .limit(200);
 }
 
@@ -170,8 +170,9 @@ export async function listRoleQueue(
   companyId: string,
   role: string,
   agentId?: string,
+  order?: SwarmQueueOrderOptions,
 ): Promise<SwarmQueueCandidate[]> {
-  const rows = await roleQueueRows(db, companyId, role, agentId);
+  const rows = await roleQueueRows(db, companyId, role, agentId, order);
   return rows.map((row) => ({
     issueId: row.issueId,
     identifier: row.identifier,
@@ -228,6 +229,7 @@ export async function listQueuedRoles(db: Db, companyId: string): Promise<string
 export async function listUnassignedQueue(
   db: Db,
   companyId: string,
+  order?: SwarmQueueOrderOptions,
 ): Promise<SwarmQueueCandidate[]> {
   const rows = await db
     .select({
@@ -267,7 +269,7 @@ export async function listUnassignedQueue(
         issueHasNoExecutionHold(db),
       ),
     )
-    .orderBy(asc(issues.createdAt))
+    .orderBy(...swarmQueueOrderBy(order))
     .limit(200);
   return rows.map((row) => ({
     issueId: row.issueId,

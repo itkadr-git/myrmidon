@@ -431,7 +431,13 @@ async function sweepIdleWakes(
   }
 
   for (const companyId of companyIds) {
-    const pairs = await listIdleRolePairs(deps.db, companyId);
+    // 1.6.5 (F-27, review #1047 п.2): the candidate cut is ordered by the same
+    // keys the pass ranks by — a strong task behind the oldest 500 must reach it.
+    const pairs = await listIdleRolePairs(deps.db, companyId, {
+      dynamics: input.settings.pheromoneDynamics,
+      p0Preemption: input.settings.p0Preemption,
+      now: input.now,
+    });
     // myrmidon(1.6.1 SWARM-IDLE-WAKE): the pilot gate. A role outside the
     // pilot set (or a company outside the pilot company list) must not be
     // woken: its claim answers `disabled`, the run ends with nothing, and the

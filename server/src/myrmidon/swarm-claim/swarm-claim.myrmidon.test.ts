@@ -209,30 +209,10 @@ describe("myrmidon(1.6-SWARM) queue order", () => {
     expect(queue[0]?.issueId).toBe("b2222222-2222-4222-8222-222222222222");
   });
 
-  it("updating the task clears the failure penalty: the failed run counter resets", () => {
-    const failed = candidate({
-      issueId: "a1111111-1111-4111-8111-111111111111",
-      identifier: "ISSUE-3",
-      pheromoneStrength: 10,
-      failedRunsSinceLastChange: 2,
-      queuedAt: NOW,
-    });
-    const clean = candidate({
-      issueId: "b2222222-2222-4222-8222-222222222222",
-      identifier: "ISSUE-2",
-      pheromoneStrength: 10,
-      queuedAt: NOW,
-    });
-    expect(
-      selectQueueForAgent({ candidates: [failed, clean], liveClaims: [], now: NOW })[0]?.issueId,
-    ).toBe("b2222222-2222-4222-8222-222222222222");
-    // The owner edits the task — the SQL twin reads failed runs after the
-    // change, so the penalty no longer counts and the two tie by age.
-    const updated = { ...failed, failedRunsSinceLastChange: 0 };
-    expect(
-      selectQueueForAgent({ candidates: [updated, clean], liveClaims: [], now: NOW })[0]?.issueId,
-    ).toBe("a1111111-1111-4111-8111-111111111111"); // tie → older queuedAt wins
-  });
+  // "Updating the task clears the failure penalty" is a property of the SQL
+  // twin (the counter comes from heartbeat_runs and the task's change trail),
+  // so it is asserted on a real Postgres in pheromone-sql.myrmidon.test.ts —
+  // a candidate fixture with the counter preset to 0 would only test itself.
 });
 
 describe("myrmidon(1.6-SWARM) leases", () => {

@@ -10,6 +10,8 @@ import { describe, expect, it } from "vitest";
 import {
   DEFAULT_RUN_PRIORITY_ISSUE_WEIGHTS,
   DEFAULT_RUN_PRIORITY_ROLE_WEIGHTS,
+  MAX_PHEROMONE_STRENGTH,
+  RUN_PRIORITY_PHEROMONE_MAX_POINTS,
   normalizeRunPrioritySettings,
   readRunPriorityFromEnv,
   releaseTagMatches,
@@ -80,6 +82,8 @@ function bandOf(settings: RunPrioritySettings): number {
     Math.max(0, ...Object.values(settings.issuePriorityWeights)) +
     settings.releaseBonus +
     Math.max(settings.agingMaxBonus, settings.starvationTopWeight) +
+    // 1.6.5 (F-27 review fix): the pheromone term is a bounded part of the band.
+    settings.pheromoneWeight * RUN_PRIORITY_PHEROMONE_MAX_POINTS +
     1
   );
 }
@@ -449,5 +453,55 @@ describe("live settings without a restart (state)", () => {
       runPriorityWeight({ ...base, effectivePheromone: 40 }, off, NOW) -
         runPriorityWeight({ ...base, effectivePheromone: 0 }, off, NOW),
     ).toBe(0);
+  });
+
+  // Review fix (#1047): the strength is a task field anyone with API access
+  // sets up to MAX_PHEROMONE_STRENGTH, so the term must stay inside the band —
+  // a huge strength on an engineer task may not outrank a reviewer run, a
+  // current-release run, or exceed the budget the band width reserves.
+  it("a huge pheromone strength cannot lift a run out of its role band", () => {
+    const prio = settings({ currentRelease: "1.6.5" });
+    const band = bandOf(prio);
+    const hugeEngineer = runPriorityWeight(
+      {
+        role: "engineer",
+        hasIssue: true,
+        issuePriority: "critical",
+        releaseMatched: false,
+        createdAtMs: NOW,
+        effectivePheromone: MAX_PHEROMONE_STRENGTH,
+      },
+      prio,
+      NOW,
+    );
+    const plainReviewer = runPriorityWeight(
+      { role: "review", hasIssue: true, issuePriority: "low", releaseMatched: false, createdAtMs: NOW },
+      prio,
+      NOW,
+    );
+    const plainRelease = runPriorityWeight(
+      { role: "engineer", hasIssue: true, issuePriority: "low", releaseMatched: true, createdAtMs: NOW },
+      prio,
+      NOW,
+    );
+    expect(hugeEngineer).toBeLessThan(plainReviewer);
+    expect(hugeEngineer).toBeLessThan(plainRelease);
+    // the term is capped at the budget: the maximum equals 100 points x weight
+    const atBudget = runPriorityWeight(
+      {
+        role: "engineer",
+        hasIssue: true,
+        issuePriority: "critical",
+        releaseMatched: false,
+        createdAtMs: NOW,
+        effectivePheromone: RUN_PRIORITY_PHEROMONE_MAX_POINTS,
+      },
+      prio,
+      NOW,
+    );
+    expect(hugeEngineer).toBe(atBudget);
+    expect(hugeEngineer).toBeLessThan(
+      (DEFAULT_RUN_PRIORITY_ROLE_WEIGHTS.engineer + 1) * band,
+    );
   });
 });
