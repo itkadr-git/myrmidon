@@ -1610,11 +1610,16 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     ).resolves.toEqual({ status: "idle", errorReason: null });
   });
 
-  it("cancels a queued run whose issue was hidden before it could start", async () => {
-    // myrmidon(1.6.5 F-09): a hidden task is not startable, so the sweep
-    // cancels its queued run with queued_run_issue_not_startable instead of
-    // executing it (previously the run started, failed, and only then the
-    // recovery path noticed the issue was hidden).
+  it("does not queue immediate recovery when the failed run's issue is hidden", async () => {
+    mockAdapterExecute.mockResolvedValueOnce({
+      exitCode: 1,
+      signal: null,
+      timedOut: false,
+      errorMessage: null,
+      provider: "test",
+      model: "test-model",
+    });
+
     const { runId, issueId } = await seedQueuedIssueRunFixture();
     await db
       .update(issues)
@@ -1623,6 +1628,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const heartbeat = heartbeatService(db);
 
     await heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(heartbeat, runId);
+    await heartbeat.waitForRunExecutionDrain(runId);
 
     const run = await heartbeat.getRun(runId);
     const recoveryRuns = await db
@@ -1630,7 +1637,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .from(heartbeatRuns)
       .where(eq(heartbeatRuns.retryOfRunId, runId));
 
-    expect(run).toMatchObject({ status: "cancelled", errorCode: "queued_run_issue_not_startable" });
+    expect(run).toMatchObject({ status: "failed" });
     expect(recoveryRuns).toHaveLength(0);
   });
 

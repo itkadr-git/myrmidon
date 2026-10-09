@@ -641,14 +641,17 @@ export function decideQueuedRunStaleness(
       details: { issueId: facts.issueId, currentStatus: facts.issueStatus },
     };
   }
-  // myrmidon(1.6.5 F-09): a task in backlog or a hidden task is not
-  // startable — the queued run is cancelled with its own code instead of
-  // sitting in the queue without a reason. Wakes that carry a comment bypass
-  // (wakeCommentIdPresent) or a resume intent still reach the agent, since a
-  // person asked for it explicitly; the bypass list matches the
-  // terminal-status bypass above.
+  // myrmidon(1.6.5 F-09): a task in backlog is not startable — the queued
+  // run is cancelled with its own code instead of sitting in the queue
+  // without a reason. Hidden tasks are NOT covered: hidden todos are a
+  // supported pattern (summary-slot and status-card generation tasks wake
+  // the Summarizer through the regular queue, see services/summary-slots.ts
+  // and services/status-cards.ts), so hiddenAt alone must never cancel.
+  // Wakes that carry a comment bypass (wakeCommentIdPresent) or a resume
+  // intent still reach the agent, since a person asked for it explicitly;
+  // the bypass list matches the terminal-status bypass above.
   if (
-    (facts.issueStatus === "backlog" || facts.issueHiddenAt != null) &&
+    facts.issueStatus === "backlog" &&
     !facts.resumeIntent &&
     !facts.wakeCommentIdPresent &&
     facts.isPendingInteractionAddresseeWake !== true
@@ -656,8 +659,8 @@ export function decideQueuedRunStaleness(
     return {
       stale: true,
       errorCode: "queued_run_issue_not_startable",
-      reason: `Cancelled because issue is not startable (status: ${facts.issueStatus}${facts.issueHiddenAt != null ? ", hidden" : ""}) before the queued run could start`,
-      details: { issueId: facts.issueId, currentStatus: facts.issueStatus, hidden: facts.issueHiddenAt != null },
+      reason: `Cancelled because issue is not startable (status: ${facts.issueStatus}) before the queued run could start`,
+      details: { issueId: facts.issueId, currentStatus: facts.issueStatus },
     };
   }
   if (statusOutcome === "not_in_progress") {

@@ -39,8 +39,6 @@ export type CancelStaleQueuedRunInput = {
   companyId: string;
   now: Date;
   expectedStatus: "queued" | "running";
-  /** myrmidon(1.6.5 F-09): when true, the cancellation does not re-enqueue a wake. */
-  suppressImmediateRecovery?: boolean;
 };
 
 export type DispatchResolvedInteractionInput<T> = CancelStaleQueuedRunInput & {

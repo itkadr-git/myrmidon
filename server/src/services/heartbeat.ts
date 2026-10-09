@@ -196,7 +196,6 @@ import {
   toolProfileEntries,
   toolProfiles,
   workspaceOperations,
-  instanceSettings,
   runContextPersistenceFields,
   heartbeatRunListContextColumnProjections,
 } from "@paperclipai/db";
@@ -19515,8 +19514,16 @@ export function heartbeatService(
     return { explainAfterMs: explainAfterSec * 1000, staleAfterMs: staleAfterSec * 1000 };
   }
 
-  /** Best-effort waitReason fill for queued runs older than the explain threshold. */
-  async function explainStaleQueuedRuns(now: Date): Promise<void> {
+  /**
+   * Fill waitReason for queued runs older than the explain threshold.
+   * A null `reason` means "no observed cause" — nothing is written, so the
+   * run keeps waitReason = null and stays visible to the queue_stall
+   * attention card (its generator matches waitReason IS NULL). Never write
+   * a guessed reason here: a fabricated value would mask OPE-4099-style
+   * stuck-queue diagnostics.
+   */
+  async function explainStaleQueuedRuns(now: Date, reason: QueuedRunWaitReason | null): Promise<void> {
+    if (reason == null) return;
     const { explainAfterMs } = await readQueuedRunThresholds();
     const cutoff = new Date(now.getTime() - explainAfterMs);
     const rows = await db
@@ -19527,11 +19534,15 @@ export function heartbeatService(
       .filter((row) => parseObject(row.contextSnapshot).waitReason == null)
       .map((row) => row.id);
     if (needsReason.length === 0) return;
-    const defaultReason: QueuedRunWaitReason = sharedRunAdmission().lastDenialReason() ?? "global_cap";
-    await writeQueuedRunWaitReason(needsReason, defaultReason);
+    await writeQueuedRunWaitReason(needsReason, reason);
   }
 
-  /** Re-read queued runs for an agent and fill waitReason for those that still lack one. */
+  /**
+   * Re-read queued runs for an agent and fill waitReason with the last
+   * admission denial actually observed for it. Runs without an observed
+   * denial keep waitReason = null — the queue_stall card names them instead
+   * of a fabricated `global_cap`.
+   */
   async function explainAgentQueuedRuns(agentId: string, now: Date): Promise<void> {
     const { explainAfterMs } = await readQueuedRunThresholds();
     const cutoff = new Date(now.getTime() - explainAfterMs);
@@ -19549,8 +19560,9 @@ export function heartbeatService(
       .filter((row) => parseObject(row.contextSnapshot).waitReason == null)
       .map((row) => row.id);
     if (needsReason.length === 0) return;
-    const defaultReason: QueuedRunWaitReason = sharedRunAdmission().lastDenialReason() ?? "global_cap";
-    await writeQueuedRunWaitReason(needsReason, defaultReason);
+    const observed = sharedRunAdmission().lastDenialReason();
+    if (observed == null) return;
+    await writeQueuedRunWaitReason(needsReason, observed);
   }
 
   async function writeQueuedRunWaitReason(
@@ -19634,9 +19646,8 @@ export function heartbeatService(
   }
 
   // myrmidon(1.6.5 F-09): cancel queued runs whose issue is not startable
-  // (backlog or hidden). The cancellation carries the
-  // `queued_run_issue_not_startable` error code and suppresses immediate
-  // recovery — the run must not wake again.
+  // (backlog). The cancellation carries the
+  // `queued_run_issue_not_startable` error code.
   async function cancelQueuedRunsAsNotStartable(runIds: ReadonlyArray<string>): Promise<void> {
     for (const runId of runIds) {
       const run = await db.query.heartbeatRuns.findFirst({
@@ -19645,11 +19656,10 @@ export function heartbeatService(
       });
       if (!run) continue;
       await runDispatch.cancelStaleQueuedRun({
-        companyId: run.companyId,
         runId,
+        companyId: run.companyId,
         expectedStatus: "queued",
         now: new Date(),
-        suppressImmediateRecovery: true,
       });
     }
   }
@@ -19670,7 +19680,7 @@ export function heartbeatService(
   async function resumeQueuedRuns() {
     const schedulingSuppression = await getSchedulingSuppression();
     if (schedulingSuppression.suppressed) {
-      await explainStaleQueuedRuns(new Date());
+      await explainStaleQueuedRuns(new Date(), "scheduling_suppressed");
       return;
     }
     await resumeExecutionWaitComments();
@@ -20194,7 +20204,7 @@ export function heartbeatService(
     options: { otherAgentsWaiting?: boolean } = {},
   ) {
     if ((await getSchedulingSuppression()).suppressed) {
-      await explainStaleQueuedRuns(new Date());
+      await explainStaleQueuedRuns(new Date(), "scheduling_suppressed");
       return [];
     }
     // myrmidon(R3): queued runs wait for maintenance exit — except the
@@ -20347,14 +20357,16 @@ export function heartbeatService(
         );
       const issueById = new Map(issueRows.map((row) => [row.id, row]));
       // myrmidon(1.6.5 F-09): cancel queued runs whose issue is not startable
-      // (backlog or hidden) right away, so they do not occupy the sweep.
+      // (backlog) right away, so they do not occupy the sweep. Hidden tasks
+      // stay: hidden todos are the supported Summarizer pattern
+      // (summary slots / status cards), the claim path decides their fate.
       const notStartableRunIds = queuedRuns
         .filter((run) => {
           const issueId = readNonEmptyString(parseObject(run.contextSnapshot).issueId);
           if (!issueId) return false;
           const issue = issueById.get(issueId);
           if (!issue) return false;
-          return issue.status === "backlog" || issue.hiddenAt != null;
+          return issue.status === "backlog";
         })
         .map((run) => run.id);
       if (notStartableRunIds.length > 0) {
@@ -20500,8 +20512,11 @@ export function heartbeatService(
         });
       }
       // myrmidon(1.6.5 F-09): any queued run that survived the claim without
-      // a waitReason gets one now — the admission gate's last denial or
-      // `global_cap` when nothing else named it.
+      // a waitReason gets one now — but only when the admission gate actually
+      // observed a denial. Without an observed denial the reason stays null:
+      // a fabricated `global_cap` would hide genuinely stuck runs from the
+      // queue_stall attention card (its generator matches waitReason IS NULL)
+      // and mask the OPE-4099 diagnostics.
       await explainAgentQueuedRuns(agentId, new Date());
       return claimedRuns;
     });

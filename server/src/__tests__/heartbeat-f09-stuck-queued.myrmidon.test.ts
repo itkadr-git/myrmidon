@@ -289,7 +289,10 @@ describeEmbeddedPostgres("heartbeat F-09 stuck-queued sweep", () => {
     expect(stored?.error).toContain("backlog");
   }, 30_000);
 
-  it("cancels a queued run whose task was hidden", async () => {
+  it("keeps a queued run on a hidden todo startable (Summarizer pattern)", async () => {
+    // Hidden todos are the supported summary-slot / status-card pattern: the
+    // Summarizer is woken through the regular queue on a hidden todo, so the
+    // sweep must not cancel it.
     pinAdmission({ maxConcurrentRuns: 0 });
     applyRunPrioritySettings(readRunPriorityFromEnv({}));
 
@@ -305,15 +308,14 @@ describeEmbeddedPostgres("heartbeat F-09 stuck-queued sweep", () => {
     // Hide the issue while the run is queued.
     await db.update(issues).set({ hiddenAt: new Date() }).where(eq(issues.id, issueId));
 
-    // Open the admission gate and run the sweep.
+    // Open the admission gate and run the sweep — the run must survive.
     pinAdmission({ maxConcurrentRuns: 1 });
     await heartbeat.resumeQueuedRuns();
     await heartbeat.drainActiveRunExecutions();
 
     const stored = await runRow(run.id);
-    expect(stored?.status).toBe("cancelled");
-    expect(stored?.errorCode).toBe("queued_run_issue_not_startable");
-    expect(stored?.error).toContain("hidden");
+    expect(stored?.status).not.toBe("cancelled");
+    expect(stored?.errorCode ?? null).toBeNull();
   }, 30_000);
 
   it("fills waitReason on a queued run older than the explain threshold", async () => {
