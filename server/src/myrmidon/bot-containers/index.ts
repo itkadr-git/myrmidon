@@ -23,6 +23,7 @@
 //  - the container image builder and docker-compose network (G1).
 
 import type { Db } from "@paperclipai/db";
+import { laneInterval } from "../monitoring/board-load/lanes.js"; // myrmidon(1.6.6 PROCS-0.3A)
 import { maintenanceHeartbeatPort, maintenanceService } from "../maintenance/index.js";
 import { heartbeatService } from "../../services/index.js";
 import {
@@ -573,7 +574,7 @@ export function startBotContainerReconciliation(
     return tickInFlight;
   }
 
-  const timer = setInterval(() => void tick(), intervalMs);
+  const timer = laneInterval("bot_reconcile", intervalMs, () => tick());
   timer.unref?.();
   void tick();
 
