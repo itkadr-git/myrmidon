@@ -5014,6 +5014,11 @@ export function agentRoutes(
     // check below. The gate applies only when the request carries `boardAdmin`,
     // so ordinary permission updates keep their existing behavior.
     const requestedBoardAdmin = req.body.boardAdmin as boolean | undefined;
+    // myrmidon(1.6.5-F-23): the off-run self-secret toggle is board-only.
+    if (req.body.offRunSecretRead !== undefined && req.actor.type !== "board") {
+      res.status(403).json({ error: "Only board actors can manage off-run secret read grants" });
+      return;
+    }
     if (requestedBoardAdmin !== undefined) {
       if (req.actor.type === "agent") {
         if (!req.actor.agentId) {
@@ -5172,6 +5177,21 @@ export function agentRoutes(
       effectiveCanAssignTasks,
       req.actor.type === "board" ? (req.actor.userId ?? null) : null,
     );
+
+    // myrmidon(1.6.5-F-23): grant or revoke the off-run self-secret read
+    // grant. Revocation removes the row; issuance gets the default +30 days
+    // expiry from setPrincipalPermission.
+    if (req.body.offRunSecretRead !== undefined) {
+      await access.ensureMembership(agent.companyId, "agent", agent.id, "member", "active");
+      await access.setPrincipalPermission(
+        agent.companyId,
+        "agent",
+        agent.id,
+        "secrets:read_off_run",
+        req.body.offRunSecretRead,
+        req.actor.type === "board" ? (req.actor.userId ?? null) : null,
+      );
+    }
 
     const actor = getActorInfo(req);
     await logActivity(db, {
