@@ -274,7 +274,8 @@ export function Ui2RunsSettings() {
       reason === "host_memory" ||
       reason === "host_cpu" ||
       reason === "agent_fair_share" ||
-      reason === "agent_concurrency"
+      reason === "agent_concurrency" ||
+      reason === "higher_priority_ready"
     );
   }
 

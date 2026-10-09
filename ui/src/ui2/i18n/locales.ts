@@ -166,6 +166,8 @@ const en = {
   "ui2.settings.runs.waitReason.host_cpu": "the host CPU ceiling is closed",
   "ui2.settings.runs.waitReason.agent_fair_share": "another agent's turn comes first (fair share)",
   "ui2.settings.runs.waitReason.agent_concurrency": "the agent's own concurrency limit is full",
+  "ui2.settings.runs.waitReason.higher_priority_ready":
+    "the agent's more important ready task goes first",
 
   "ui2.settings.system.title": "System",
   "ui2.settings.system.subtitle": "Channels, access and the change log",
@@ -417,6 +419,8 @@ const ru: Record<Ui2MessageKey, string> = {
   "ui2.settings.runs.waitReason.host_cpu": "потолок нагрузки CPU хоста закрыт",
   "ui2.settings.runs.waitReason.agent_fair_share": "очередь другого агента раньше (справедливая доля)",
   "ui2.settings.runs.waitReason.agent_concurrency": "личный лимит одновременных прогонов агента занят",
+  "ui2.settings.runs.waitReason.higher_priority_ready":
+    "сначала более важная готовая задача агента",
 
   "ui2.settings.system.title": "Система",
   "ui2.settings.system.subtitle": "Каналы, доступ и журнал изменений",
