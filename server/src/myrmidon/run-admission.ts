@@ -656,6 +656,28 @@ export interface HostMemoryGate {
 }
 
 /**
+ * myrmidon(1.6.5 OWNER-CHAT-ADMISSION): the gate an owner's own turn in a chat
+ * is admitted by — the server container's own free memory against
+ * `minFreeMemoryMb`, the floor below which the server itself would starve, and
+ * the host's own MemAvailable against the same `minFreeMemoryMb` (the bots live
+ * outside the container's cgroup). The softer host floor `minFreeHostMemoryMb`
+ * and the CPU ceiling pace the automatic runs only, so they are not part of
+ * this reading: an owner waiting for an answer does not queue behind background
+ * work while the host is merely busy, but is not started on an exhausted host.
+ */
+export interface OwnerChatTurnGate {
+  /** `off`: no floor set; `unknown`: container memory unreadable (floor inactive); `open`/`closed`. */
+  state: "off" | "unknown" | "open" | "closed";
+  thresholdMb: number | null;
+  /** Free memory in the server container's cgroup, MB, when known. */
+  freeMb: number | null;
+  /** Runs started in the last 30 s, budgeted on top of what the container shows. */
+  settlingRuns: number;
+  /** Why the gate is closed or unknown, for logs; null when open or off. */
+  reason: string | null;
+}
+
+/**
  * myrmidon(1.6.5 C0-ui): the memory the run-load screen is about — the host's
  * memory and the server container's own cgroup usage. Read with the same
  * primitives `reserve` gates on, so the screen and the admission never
@@ -745,8 +767,15 @@ export interface RunAdmission {
    * queued-run sweep can hold an agent over its share while other agents
    * wait. Without `agentId` the reservation is share-blind (a non-sweep start
    * path).
+   *
+   * myrmidon(1.6.5 OWNER-CHAT-ADMISSION): pass `ownerChatTurns` when the front
+   * of the reservation serves turns the owner themselves asked for in a chat.
+   * Those slots are admitted by the container's own floor and the concurrency
+   * limits alone — the host ceilings below pace the automatic runs — and the
+   * front of the reservation is the front of the queue, because the queued-run
+   * sweep hands the runs over in the order it sorted them.
    */
-  reserve(wanted: number, opts?: { agentId?: string }): number;
+  reserve(wanted: number, opts?: { agentId?: string; ownerChatTurns?: number }): number;
   release(unused: number): void;
   finish(): void;
   /**
@@ -792,6 +821,14 @@ export interface RunAdmission {
    * does not pile wakes onto a saturated host.
    */
   hostCpuGate(): HostCpuGate;
+  /**
+   * myrmidon(1.6.5 OWNER-CHAT-ADMISSION): the gate an owner's own turn in a
+   * chat is admitted by, evaluated now with the same arithmetic `reserve`
+   * applies. The chat hold notice asks this before it tells the owner their
+   * answer is queued, so the notice is staged only when the turn really waits.
+   * Takes no slot.
+   */
+  ownerChatTurnGate(): OwnerChatTurnGate;
   /**
    * myrmidon(1.6.5 C0-ui): the host memory and the server container's own
    * cgroup usage as the admission reads them, for the run-load screen. Reads
@@ -903,6 +940,95 @@ export function createRunAdmission(options: {
           ? `host MemAvailable ${availableMb} MB minus ${settlingRuns} run(s) still starting (${limits.runMemoryEstimateMb} MB each) is below the ${thresholdMb} MB floor`
           : `host MemAvailable ${availableMb} MB is below the ${thresholdMb} MB floor`,
       heldSince,
+    };
+  }
+
+  // myrmidon(1.6.5 OWNER-CHAT-ADMISSION): the container's own memory as
+  // `reserve` budgets it, kept in one place so the admission and the gate the
+  // chat notice reads cannot drift apart.
+  function containerMemoryHeadroom(
+    at: number,
+  ): { freeBytes: number; settlingRuns: number; spareBytes: number } | null {
+    const free = freeMemoryBytes();
+    if (free === null) return null;
+    const settlingRuns = settlingAt(at);
+    const estimate = limits.runMemoryEstimateMb * MB;
+    return {
+      freeBytes: free,
+      settlingRuns,
+      spareBytes: free - (limits.minFreeMemoryMb ?? 0) * MB - settlingRuns * estimate,
+    };
+  }
+
+  /**
+   * myrmidon(1.6.5 OWNER-CHAT-ADMISSION): the gate an owner's own turn in a
+   * chat is admitted by. Answers "would the sweep start it right now?" for the
+   * one ceiling that can hold an owner's turn back — the container floor — so
+   * the chat hold notice speaks only when the turn really waits.
+   */
+  function evaluateOwnerChatTurnGate(at: number): OwnerChatTurnGate {
+    const thresholdMb = limits.minFreeMemoryMb;
+    if (thresholdMb === null) {
+      return { state: "off", thresholdMb, freeMb: null, settlingRuns: 0, reason: null };
+    }
+    const headroom = containerMemoryHeadroom(at);
+    const settlingRuns = headroom?.settlingRuns ?? settlingAt(at);
+    const freeMb = headroom === null ? null : Math.floor(headroom.freeBytes / MB);
+    if (headroom !== null && Math.floor(headroom.spareBytes / (limits.runMemoryEstimateMb * MB)) < 1) {
+      return {
+        state: "closed",
+        thresholdMb,
+        freeMb,
+        settlingRuns,
+        reason:
+          settlingRuns > 0
+            ? `the server container has ${freeMb} MB free, less than the ${thresholdMb} MB floor plus ${settlingRuns} run(s) still starting (${limits.runMemoryEstimateMb} MB each)`
+            : `the server container has ${freeMb} MB free, below the ${thresholdMb} MB floor`,
+      };
+    }
+    // The host's own MemAvailable against the same floor: the bots live outside
+    // the container's cgroup, so only the host reading sees them.
+    const hostHeadroom = ownerHostMemoryHeadroom(at);
+    if (hostHeadroom !== null && hostHeadroom.slots < 1) {
+      return {
+        state: "closed",
+        thresholdMb,
+        freeMb,
+        settlingRuns,
+        reason:
+          settlingRuns > 0
+            ? `host MemAvailable ${hostHeadroom.availableMb} MB minus ${settlingRuns} run(s) still starting (${limits.runMemoryEstimateMb} MB each) is below the ${thresholdMb} MB floor`
+            : `host MemAvailable ${hostHeadroom.availableMb} MB is below the ${thresholdMb} MB floor`,
+      };
+    }
+    if (headroom === null) {
+      return {
+        state: "unknown",
+        thresholdMb,
+        freeMb: null,
+        settlingRuns: 0,
+        reason: "the server container's free memory is unreadable, so the container floor is inactive",
+      };
+    }
+    return { state: "open", thresholdMb, freeMb, settlingRuns, reason: null };
+  }
+
+  /**
+   * myrmidon(1.6.5 OWNER-CHAT-ADMISSION): the host's MemAvailable as an owner
+   * turn is budgeted against it — the owner floor `minFreeMemoryMb` in place of
+   * the host floor `minFreeHostMemoryMb`, less the runs still starting. Null
+   * when the host check is not in force (no host floor, no owner floor) or the
+   * host reading is unreadable (the same "inactive" as the host floor itself).
+   */
+  function ownerHostMemoryHeadroom(at: number): { availableMb: number; slots: number } | null {
+    if (limits.minFreeHostMemoryMb === null || limits.minFreeMemoryMb === null) return null;
+    const reading = hostMemory();
+    if (!reading.known) return null;
+    const availableMb = Math.floor(reading.availableBytes / MB);
+    const budgetedMb = availableMb - settlingAt(at) * limits.runMemoryEstimateMb;
+    return {
+      availableMb,
+      slots: Math.floor((budgetedMb - limits.minFreeMemoryMb) / limits.runMemoryEstimateMb),
     };
   }
 
@@ -1129,6 +1255,13 @@ export function createRunAdmission(options: {
       // myrmidon(1.6.5 RUN-FAIRNESS): the first gate that clips the
       // reservation names the denial; a served-in-full reservation clears it.
       let denial: RunAdmissionDenialReason | null = null;
+      // myrmidon(1.6.5 OWNER-CHAT-ADMISSION): how many of the wanted slots
+      // (counted from the front of the reservation) go to turns the owner
+      // themselves asked for in a chat. The host ceilings below hold back the
+      // AUTOMATIC runs; these slots are admitted by the container's own floor
+      // and the concurrency limits, so the owner's answer does not queue
+      // behind background work while the host is merely busy.
+      const ownerChatTurns = Math.max(0, Math.min(opts?.ownerChatTurns ?? 0, wanted));
       if (limits.maxConcurrentRuns !== null) {
         const capLeft = limits.maxConcurrentRuns - active;
         if (capLeft < allowed) denial ??= "global_cap";
@@ -1140,13 +1273,11 @@ export function createRunAdmission(options: {
         allowed = Math.min(allowed, rampLeft);
       }
       if (limits.minFreeMemoryMb !== null && allowed > 0) {
-        const free = freeMemoryBytes();
+        const headroom = containerMemoryHeadroom(at);
         // Unknown free memory (no cgroup limit) leaves the other limits in charge.
-        if (free !== null) {
-          const settling = settlingAt(at);
+        if (headroom !== null) {
           const estimate = limits.runMemoryEstimateMb * MB;
-          const spare = free - limits.minFreeMemoryMb * MB - settling * estimate;
-          const memoryLeft = Math.floor(spare / estimate);
+          const memoryLeft = Math.floor(headroom.spareBytes / estimate);
           if (memoryLeft < allowed) denial ??= "memory";
           allowed = Math.min(allowed, memoryLeft);
         } else {
@@ -1159,8 +1290,17 @@ export function createRunAdmission(options: {
       if (limits.minFreeHostMemoryMb !== null && allowed > 0) {
         const gate = evaluateHostGate(at);
         if (gate.state === "closed") {
-          allowed = 0;
-          denial ??= "host_memory";
+          // myrmidon(1.6.5 OWNER-CHAT-ADMISSION): the floor holds the
+          // automatic runs, not the owner's own turn — only the slots beyond
+          // the owner turns are clipped.
+          // The owner turns are not waved through: the host's MemAvailable
+          // (less the runs still starting) must clear the owner floor
+          // `minFreeMemoryMb`, the bots' memory lives outside the container.
+          const ownerHostSlots =
+            ownerChatTurns > 0 ? (ownerHostMemoryHeadroom(at)?.slots ?? ownerChatTurns) : 0;
+          const ownerAllowed = Math.max(0, Math.min(ownerChatTurns, ownerHostSlots));
+          if (allowed > ownerAllowed) denial ??= "host_memory";
+          allowed = Math.min(allowed, ownerAllowed);
           if (hostMemoryHold.start(at)) {
             options.onHostMemoryHold?.({ state: "closed", gate: { ...gate, heldSince: new Date(at) }, heldMs: 0 });
           }
@@ -1185,8 +1325,11 @@ export function createRunAdmission(options: {
         if (allowed > 0) {
           const gate = evaluateHostCpuGate(at);
           if (gate.state === "closed") {
-            allowed = 0;
-            denial ??= "host_cpu";
+            // myrmidon(1.6.5 OWNER-CHAT-ADMISSION): as with the memory floor —
+            // the ceiling paces the automatic runs, and the owner's own turn
+            // starts on the container's floor.
+            if (allowed > ownerChatTurns) denial ??= "host_cpu";
+            allowed = Math.min(allowed, ownerChatTurns);
             if (cpuHold.start(at)) {
               options.onHostCpuHold?.({ state: "closed", gate: { ...gate, heldSince: new Date(at) }, heldMs: 0 });
             }
@@ -1276,6 +1419,11 @@ export function createRunAdmission(options: {
       const at = now();
       prune(at);
       return evaluateHostCpuGate(at);
+    },
+    ownerChatTurnGate() {
+      const at = now();
+      prune(at);
+      return evaluateOwnerChatTurnGate(at);
     },
     // myrmidon(1.6.5 C0-ui): the memory the run-load screen is about — the
     // host's memory and the server container's own cgroup usage, read with
@@ -1489,6 +1637,18 @@ export function currentHostMemoryGate(): HostMemoryGate {
  */
 export function currentHostCpuGate(): HostCpuGate {
   return sharedRunAdmission().hostCpuGate();
+}
+
+/**
+ * myrmidon(1.6.5 OWNER-CHAT-ADMISSION): the gate the owner's own turn in a
+ * chat is admitted by — the server container's floor — of the process-wide
+ * admission, evaluated now. The chat wait notice asks this before it tells the
+ * owner their answer is queued: with the host floor closed but the container
+ * above its floor, the sweep starts the owner's turn and there is nothing to
+ * announce.
+ */
+export function currentOwnerChatTurnGate(): OwnerChatTurnGate {
+  return sharedRunAdmission().ownerChatTurnGate();
 }
 
 /** The attention signal: runs held back by the host floor for over 10 minutes. */
