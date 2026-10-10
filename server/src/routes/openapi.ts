@@ -11309,6 +11309,12 @@ registerCurrentRoute({
 });
 registerCurrentRoute({
   method: "get",
+  path: "/api/myrmidon/companies/{companyId}/knowledge/items/{idOrSlug}/revisions/{revisionId}",
+  tags: ["knowledge"], summary: "Read one revision of a knowledge item",
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+registerCurrentRoute({
+  method: "get",
   path: "/api/myrmidon/companies/{companyId}/knowledge/items/{idOrSlug}/backlinks",
   tags: ["knowledge"], summary: "List the knowledge items linking to this one",
   responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
@@ -11335,6 +11341,12 @@ registerCurrentRoute({
   method: "post",
   path: "/api/myrmidon/companies/{companyId}/knowledge/items/{idOrSlug}/revisions",
   tags: ["knowledge"], summary: "Add a draft revision to a knowledge item",
+  responses: { 201: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 422: r.unprocessable },
+});
+registerCurrentRoute({
+  method: "post",
+  path: "/api/myrmidon/companies/{companyId}/knowledge/items/{idOrSlug}/draft",
+  tags: ["knowledge"], summary: "Write a draft revision (injection-scanned) without submitting it",
   responses: { 201: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 422: r.unprocessable },
 });
 registerCurrentRoute({
@@ -11381,8 +11393,14 @@ registerCurrentRoute({
 });
 registerCurrentRoute({
   method: "post",
-  path: "/api/myrmidon/companies/{companyId}/knowledge/suggestions/{suggestionId}",
-  tags: ["knowledge"], summary: "Accept or decline a knowledge suggestion",
+  path: "/api/myrmidon/companies/{companyId}/knowledge/suggestions/{suggestionId}/accept",
+  tags: ["knowledge"], summary: "Accept a knowledge suggestion (applies it to the target item)",
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+registerCurrentRoute({
+  method: "post",
+  path: "/api/myrmidon/companies/{companyId}/knowledge/suggestions/{suggestionId}/decline",
+  tags: ["knowledge"], summary: "Decline a knowledge suggestion",
   responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
 });
 registerCurrentRoute({
