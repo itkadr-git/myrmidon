@@ -1,5 +1,13 @@
 // myrmidon(1.6-TG-PROACTIVITY-E): head-bot proactivity policy — the gate.
 //
+// myrmidon(1.6.6 CH-CONNECTOR-D) batch 3 (OPE-6976, call map OPE-6629 point 68):
+// the direct path is deprecated. `services/instance-settings.ts` reaches
+// `preserveTelegramNotifyGeneralKey` through the bridge seam
+// `channel-connectors/bridge/notify-policy.js` only; with the bridge flag on a
+// registered channel connector serves the theme and this module stays behind
+// the seam as the legacy fallback. Do not add a new direct importer; removal is
+// the follow-up step, not this PR.
+//
 // Part E of the TG-NOTIFY-SETTINGS epic (1.6.1), point 5: a per-agent
 // proactivity policy with three modes:
 //

@@ -1,3 +1,10 @@
+// myrmidon(1.6.6 CH-CONNECTOR-D) batch 3 (OPE-6976, call map OPE-6629 point 73):
+// the direct path is deprecated. The core reaches `telegramAttachmentForUpload`
+// through the bridge seam `channel-connectors/bridge/telegram-photo.js` only;
+// with the bridge flag on a registered channel connector serves the theme and
+// this module stays behind the seam as the legacy fallback. Do not add a new
+// direct importer. The code is kept until the connector ships — removal is the
+// follow-up step of the migration, not this PR.
 import { crc32 } from "node:zlib";
 import type { Attachment, FileUpload } from "chat";
 import { normalizeContentType } from "../attachment-types.js";

@@ -162,7 +162,8 @@ import { myrmidonCloudConnectorRoutes } from "./myrmidon/cloud-connector/index.j
 import { myrmidonBoardProcessRegistryRoutes } from "./myrmidon/process-registry/index.js"; // myrmidon(1.6.6 PROCS-0.1)
 import { myrmidonAutonomyRoutes } from "./myrmidon/autonomy/index.js"; // myrmidon(1.6-AUTONOMY)
 // myrmidon(1.6-TG-PROACTIVITY-E): head-bot proactivity gate/bundling sweep
-import { sweepTelegramNotifyProactivity } from "./myrmidon/telegram-notify/sweep.js";
+// myrmidon(1.6.6 CH-CONNECTOR-D): the proactivity sweep is reached through the bridge seam.
+import { sweepTelegramNotifyProactivity } from "./myrmidon/channel-connectors/bridge/notify-sweep.js";
 import { accessHubRoutes } from "./myrmidon/access-hub/routes.js"; // myrmidon(SEC1)
 import { ui2LanguageRoutes } from "./myrmidon/ui2-language/routes.js"; // myrmidon(UI2-I18N)
 import { myrmidonForagingRoutes } from "./myrmidon/foraging/index.js"; // myrmidon(1.6-FORAGE)
@@ -178,7 +179,7 @@ import { myrmidonOcrRoutes } from "./myrmidon/ocr/index.js";
 import { myrmidonSttRoutes } from "./myrmidon/stt/index.js"; // myrmidon(1.6.1 VOICE-STT A1)
 import { myrmidonGitHubSharedIdentityRoutes } from "./myrmidon/github-shared-identity/index.js"; // myrmidon(GITHUB-SHARED-IDENTITY)
 
-import { createTelegramVoiceSttWiring } from "./myrmidon/telegram-voice-stt-intake/wiring.js"; // myrmidon(1.6.5 VOICE-STT A)
+import { createTelegramVoiceSttWiring } from "./myrmidon/channel-connectors/bridge/voice-stt.js"; // myrmidon(1.6.5 VOICE-STT A) myrmidon(1.6.6 CH-CONNECTOR-D)
 import { myrmidonVoiceMeetingProtocolRoutes } from "./myrmidon/voice-meeting-protocol/index.js"; // myrmidon(1.6.5 VOICE-STT B)
 import { myrmidonEvalsRoutes } from "./myrmidon/evals/index.js"; // myrmidon(1.6-EVALS)
 import { myrmidonDebateRoutes } from "./myrmidon/debates/index.js"; // myrmidon(1.7-DEBATE-ASYM-A)
@@ -196,7 +197,8 @@ import {
   type ProcessSupervisorReadinessSource,
 } from "./myrmidon/process-readiness/index.js";
 // myrmidon(TG-NOTIFY-A): the telegramNotify settings core (contract, GET/PATCH, changelog)
-import { myrmidonTelegramNotifyRoutes } from "./myrmidon/telegram-notify/index.js";
+// myrmidon(1.6.6 CH-CONNECTOR-D): the notify track is reached through the bridge seam.
+import { myrmidonTelegramNotifyRoutes } from "./myrmidon/channel-connectors/bridge/notify.js";
 import { instanceSettingsService } from "./services/instance-settings.js";
 import { openApiRoutes } from "./routes/openapi.js";
 import {
