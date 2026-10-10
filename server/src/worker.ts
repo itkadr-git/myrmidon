@@ -8,7 +8,7 @@
 // probe of the ч.F contract. The default single-process launch
 // (`node dist/index.js` without the role env) is untouched by this file.
 
-import { logger } from "./logger.js";
+import { logger } from "./middleware/logger.js";
 import { startWorkerProcess } from "./myrmidon/worker-process/index.js";
 
 const worker = await startWorkerProcess({});
