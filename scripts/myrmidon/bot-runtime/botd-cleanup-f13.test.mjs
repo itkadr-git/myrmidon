@@ -471,6 +471,14 @@ describe("archiveTree: bounded like the fallback tar", () => {
     const r = archiveTree(dir, "legacy-ok", { archiveRoot, fullTarCapBytes: 20_000, minFreeBytes: 0 });
     assert.equal(r.ok, true, r.reason);
     assert.ok(fs.existsSync(r.entry.dirTar));
+    // ARCHIVE-MODE: the dir.tar is born group-readable, never world-readable,
+    // even when the process umask is permissive.
+    const previous = process.umask(0o022);
+    try {
+      assert.equal(fs.statSync(r.entry.dirTar).mode & 0o777, 0o640);
+    } finally {
+      process.umask(previous);
+    }
   });
 
   it("a tree over the limit is refused: ok:false, no tar, no manifest entry, directory in place", () => {

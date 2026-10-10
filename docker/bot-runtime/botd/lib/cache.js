@@ -29,7 +29,9 @@ function storeCache(file, cache) {
   try {
     fs.mkdirSync(path.dirname(file), { recursive: true });
     const tmp = `${file}.${process.pid}.tmp`;
-    fs.writeFileSync(tmp, `${JSON.stringify(cache, null, 2)}\n`, { mode: 0o644 });
+    // myrmidon(BOT-UMASK): born group-readable, never world-readable,
+    // regardless of the process umask.
+    fs.writeFileSync(tmp, `${JSON.stringify(cache, null, 2)}\n`, { mode: 0o640 });
     fs.renameSync(tmp, file);
   } catch {
     /* the cache is an optimisation, not data: a failed write only loses the silence */
