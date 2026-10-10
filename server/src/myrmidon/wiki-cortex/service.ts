@@ -258,6 +258,9 @@ export function createWikiRegulationService(store: RegulationStore, options: Reg
           content: revision.content,
           version: revision.revisionNumber,
           roles: revision.roles,
+          // The legacy carrier never recorded provenance; K-3's data migration
+          // writes one source per moved page (the knowledge side has them).
+          sources: [],
         });
       }
       out.sort((left, right) => (left.slug < right.slug ? -1 : left.slug > right.slug ? 1 : 0));

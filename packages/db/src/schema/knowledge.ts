@@ -86,6 +86,14 @@ export const knowledgeItems = pgTable(
     /** Folder path of the tree without the slug segments ("" = nest root). */
     folderPath: text("folder_path").notNull().default(""),
     tags: jsonb("tags").$type<string[]>().notNull().default([]),
+    /**
+     * myrmidon(1.6.6 KNOWLEDGE-2.0 K-3): the castes a `kind=rule` item governs,
+     * as caste keys; `["*"]` means every caste of the company (the port of the
+     * wiki model's `roles`). Empty on every other kind. The rules resolver
+     * (`knowledge.rules.resolved(nest, caste)`) reads exactly this column, and
+     * `approver_kind` is derived from it (sensitive caste → owner).
+     */
+    roles: jsonb("roles").$type<string[]>().notNull().default([]),
     /** True for rules (kind "rule" is seeded with this true): publish needs approve. */
     approvalRequired: boolean("approval_required").notNull().default(false),
     /**
@@ -114,6 +122,7 @@ export const knowledgeItems = pgTable(
     nestSlugUq: uniqueIndex("knowledge_items_nest_slug_uq").on(table.nestId, table.slug),
     nestStatusIdx: index("knowledge_items_nest_status_idx").on(table.nestId, table.status),
     nestKindStatusIdx: index("knowledge_items_nest_kind_status_idx").on(table.nestId, table.kind, table.status),
+    rolesIdx: index("knowledge_items_roles_idx").using("gin", table.roles),
     nestFolderIdx: index("knowledge_items_nest_folder_idx").on(table.nestId, table.folderPath),
     companyIdx: index("knowledge_items_company_idx").on(table.companyId),
   }),

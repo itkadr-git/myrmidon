@@ -58,6 +58,8 @@ export const createCasteSchema = z.object({
   defaultModel: z.string().trim().min(1).max(512).optional().nullable(),
   swarmEligible: z.boolean().optional(),
   maxActiveTasks: z.number().int().min(1).max(1000).optional().nullable(),
+  /** myrmidon(1.6.6 K-3): the caste's rules need the owner's approval. */
+  sensitive: z.boolean().optional(),
 });
 export type CreateCasteInput = z.infer<typeof createCasteSchema>;
 
@@ -71,6 +73,8 @@ export const patchCasteSchema = z.object({
   defaultModel: z.string().trim().min(1).max(512).optional().nullable(),
   swarmEligible: z.boolean().optional(),
   maxActiveTasks: z.number().int().min(1).max(1000).optional().nullable(),
+  /** myrmidon(1.6.6 K-3): turning the flag on hands the caste's rules to the owner. */
+  sensitive: z.boolean().optional(),
 });
 export type PatchCasteInput = z.infer<typeof patchCasteSchema>;
 
@@ -95,6 +99,8 @@ export interface CasteView {
   swarmEligible: boolean;
   maxActiveTasks: number | null;
   builtIn: boolean;
+  /** myrmidon(1.6.6 K-3): the caste's rules need the owner's approval. */
+  sensitive: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -105,14 +111,18 @@ export interface CasteView {
  * (null = the global swarm limit). Idempotent: seeding inserts only the keys
  * the company is still missing.
  */
+export const BUILTIN_SENSITIVE_CASTES: ReadonlyArray<AgentRole> = ["cmo"];
+
 export const BUILTIN_CASTE_SEED: ReadonlyArray<{
   key: AgentRole;
   nameEn: string;
   nameRu: string;
   color: CasteColor;
+  /** See BUILTIN_SENSITIVE_CASTES: the caste's rules are the owner's. */
+  sensitive: boolean;
 }> = AGENT_ROLES.map((key) => {
   const label = AGENT_ROLE_LABELS[key];
-  return { key, nameEn: label, nameRu: label, color: casteSeedColor(key) };
+  return { key, nameEn: label, nameRu: label, color: casteSeedColor(key), sensitive: BUILTIN_SENSITIVE_CASTES.includes(key) };
 });
 
 /** Evenly spread seed colors over the token palette (deterministic). */

@@ -142,6 +142,7 @@ export function createCasteStore(deps: CasteStoreDeps) {
             defaultModel: null,
             swarmEligible: true,
             maxActiveTasks: null,
+            sensitive: seed.sensitive,
             builtIn: true,
           })),
         )
