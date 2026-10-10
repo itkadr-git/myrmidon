@@ -64,7 +64,8 @@ function makeItem(overrides: ItemOverrides = {}) {
 }
 
 /** The stub module records the calls the routes make, nothing more. */
-function makeModule(item = makeItem()) {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function makeModule(item = makeItem()): any {
   return {
     companyId: COMPANY_ID,
     nestId: COMPANY_ID,
@@ -100,15 +101,19 @@ function makeDeps(overrides: {
   parkCard?: { actionRequestId: string | null };
 } = {}) {
   const mod = overrides.module ?? makeModule();
-  const deps: KnowledgeRoutesDeps & { module: ReturnType<typeof makeModule>; parkPublish: ReturnType<typeof vi.fn> } = {
+  const deps = {
     moduleFor: () => mod,
     module: mod,
     agentHasToolAccess: vi.fn(async () => overrides.grants ?? false),
     matrixFor: vi.fn(async () => (overrides.matrix === undefined ? null : overrides.matrix)),
     roleForAgent: vi.fn(async () => (overrides.role === undefined ? "engineer" : overrides.role)),
-    parkPublishForApproval: vi.fn(async () => overrides.parkCard ?? { actionRequestId: "card-1" }) as never,
+    parkPublishForApproval: vi.fn(async () => overrides.parkCard ?? { actionRequestId: "card-1" }),
     parkPublish: vi.fn(),
     env: { MYRMIDON_GUARDRAILS_INJECTION_ENABLED: "on", MYRMIDON_GUARDRAILS_INJECTION_SCORE: "0.5" },
+  } as unknown as KnowledgeRoutesDeps & {
+    module: ReturnType<typeof makeModule>;
+    parkPublishForApproval: ReturnType<typeof vi.fn>;
+    parkPublish: ReturnType<typeof vi.fn>;
   };
   return deps;
 }
