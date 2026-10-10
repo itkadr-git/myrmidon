@@ -1045,7 +1045,13 @@
     "ageSeconds": "{{seconds}} s ago",
     "ageMinutes": "{{minutes}} min ago",
     "ageHours": "{{hours}} h ago",
-    "cadence": "Pulse every {{pulse}} s; a row older than {{stale}} s is stale."
+    "cadence": "Pulse every {{pulse}} s; a row older than {{stale}} s is stale.",
+    "colReady": "Ready",
+    "colRestarts": "Restarts",
+    "readyYes": "ready",
+    "readyNo": "not ready",
+    "restartCount": "{{count}}",
+    "groupSummary": "{{role}} — {{ready}} of {{count}} ready"
   },
   "attentionFeed": {
     "title": "Attention feed",

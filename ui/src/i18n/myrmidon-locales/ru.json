@@ -1045,7 +1045,13 @@
     "ageSeconds": "{{seconds}} с назад",
     "ageMinutes": "{{minutes}} мин назад",
     "ageHours": "{{hours}} ч назад",
-    "cadence": "Пульс раз в {{pulse}} с; строка старше {{stale}} с считается устаревшей."
+    "cadence": "Пульс раз в {{pulse}} с; строка старше {{stale}} с считается устаревшей.",
+    "colReady": "Готов",
+    "colRestarts": "Перезапуски",
+    "readyYes": "готов",
+    "readyNo": "не готов",
+    "restartCount": "{{count}}",
+    "groupSummary": "{{role}} — готовы {{ready}} из {{count}}"
   },
   "attentionFeed": {
     "title": "Лента внимания",
