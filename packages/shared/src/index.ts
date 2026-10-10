@@ -2780,6 +2780,9 @@ export * from "./ai-connections.js";
 export * from "./types/email.js";
 export * from "./validators/email.js";
 export * from "./announcements.js";
+// myrmidon(1.6.6 NOTIF-PREFS): per-agent notification preferences for
+// event-shaped wakes (assignment / mention / review), read at wake generation.
+export * from "./notification-prefs.js";
 
 // myrmidon(WORKSPACE-HYGIENE): workspace quota values and the measurement record shared by the
 // server, the sweep and the settings validator.
