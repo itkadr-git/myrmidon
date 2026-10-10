@@ -7,9 +7,9 @@
   the manifest.
 - Each run logs one line per company and one summary line, and writes a
   `folderHealth` metric point (gauge 1 while no configured wiki root is
-  unhealthy, 0 otherwise; labels carry the healthy/unhealthy counts).
-  Companies with no wiki root configured report a not-configured status and
-  are not counted as unhealthy.
+  unhealthy, 0 otherwise; labels carry the healthy/unhealthy/notConfigured
+  counts). Companies with no wiki root configured report a not-configured
+  status (logged at debug level) and are not counted as unhealthy.
 
 ## changelog-ru
 
@@ -20,6 +20,6 @@
   объявляет манифест.
 - Каждый запуск пишет по строке журнала на компанию и итоговую строку, а также
   точку метрики `folderHealth` (датчик 1, пока ни одна настроенная папка вики
-  не нездорова, иначе 0; метки несут счётчики healthy/unhealthy). Компании без
-  настроенной папки вики отчитываются статусом «не настроено» и в нездоровые
-  не попадают.
+  не нездорова, иначе 0; метки несут счётчики healthy/unhealthy/notConfigured).
+  Компании без настроенной папки вики отчитываются статусом «не настроено»
+  (строка журнала уровня debug) и в нездоровые не попадают.

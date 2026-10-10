@@ -7,6 +7,7 @@ import { PLUGIN_RPC_ERROR_CODES } from "@paperclipai/plugin-sdk/protocol";
 import type { Agent, Issue, PluginJobDeclaration, PluginManagedRoutineResolution, Project } from "@paperclipai/plugin-sdk";
 import manifest, {
   CURSOR_WINDOW_ROUTINE_KEY,
+  FOLDER_HEALTH_CHECK_JOB_KEY,
   INDEX_REFRESH_ROUTINE_KEY,
   NIGHTLY_LINT_ROUTINE_KEY,
   PAPERCLIP_DISTILL_SKILL_KEY,
@@ -3861,10 +3862,30 @@ Duplicate headings receive stable suffixes.
 
       // Red side 2: a job handler present in the worker but missing from the
       // manifest must fail the contains-check below (no exception involved).
+      // Registrations may be string literals or manifest/worker constants
+      // (e.g. FOLDER_HEALTH_CHECK_JOB_KEY), so resolve identifiers against
+      // the `export const KEY = "value"` declarations in both sources.
       const workerSource = readFileSync(new URL("../src/worker.ts", import.meta.url), "utf8");
+      const manifestSource = readFileSync(new URL("../src/manifest.ts", import.meta.url), "utf8");
+      const constValues = new Map<string, string>();
+      for (const source of [manifestSource, workerSource]) {
+        for (const match of source.matchAll(/(?:export\s+)?const\s+([A-Z][A-Z0-9_]*)\s*=\s*["'`]([^"'`]+)["'`]/g)) {
+          constValues.set(match[1], match[2]);
+        }
+      }
       const registeredJobKeys = [
-        ...workerSource.matchAll(/ctx\.jobs\.register\(\s*["'`]([^"'`]+)["'`]/g),
-      ].map((match) => match[1]);
+        ...workerSource.matchAll(/ctx\.jobs\.register\(\s*(?:"([^"]+)"|'([^']+)'|`([^`]+)`|([A-Za-z_][A-Za-z0-9_]*))/g),
+      ].map((match) => {
+        const literal = match[1] ?? match[2] ?? match[3];
+        if (literal !== undefined) return literal;
+        const resolved = constValues.get(match[4]!);
+        expect(
+          resolved,
+          `worker registers job handler via identifier "${match[4]}" but no string-literal const for it is declared in worker.ts/manifest.ts`,
+        ).toBeDefined();
+        return resolved!;
+      });
+      expect(registeredJobKeys).toContain(FOLDER_HEALTH_CHECK_JOB_KEY);
       for (const jobKey of registeredJobKeys) {
         expect(
           declaredJobKeys,
@@ -3883,7 +3904,7 @@ Duplicate headings receive stable suffixes.
       );
     });
 
-    it("folder-health-check reports per-company wiki folder state to log and metric", async () => {
+    it("folder-health-check counts an unconfigured wiki root as not-configured, not unhealthy", async () => {
       const harness = createTestHarness({ manifest });
       harness.seed({
         companies: [
@@ -3907,19 +3928,81 @@ Duplicate headings receive stable suffixes.
         entry.message.includes("folder health check completed"),
       );
       expect(completed).toBeDefined();
-      expect(completed!.meta).toMatchObject({ companies: 2, healthy: 1, unhealthy: 1 });
+      expect(completed!.meta).toMatchObject({ companies: 2, healthy: 1, unhealthy: 0, notConfigured: 1 });
+
+      const notConfiguredNote = harness.logs.find((entry) =>
+        entry.message.includes("folder health check: not configured"),
+      );
+      expect(notConfiguredNote).toBeDefined();
+      expect(notConfiguredNote!.level).toBe("debug");
+      expect(notConfiguredNote!.meta).toMatchObject({
+        companyId: "22222222-2222-4222-8222-222222222222",
+      });
+
+      // An unconfigured root must never be reported as unhealthy or warned about.
+      expect(harness.logs.some((entry) => entry.message.includes("folder health check: unhealthy"))).toBe(false);
+
+      // The gauge stays 1: not-configured companies are not counted unhealthy.
+      expect(harness.metrics).toContainEqual(
+        expect.objectContaining({
+          name: "folderHealth",
+          value: 1,
+          tags: expect.objectContaining({ unhealthy: "0", notConfigured: "1" }),
+        }),
+      );
+    });
+
+    it("folder-health-check counts a configured but broken wiki root as unhealthy with gauge 0", async () => {
+      const harness = createTestHarness({ manifest });
+      harness.seed({
+        companies: [{ id: COMPANY_ID, name: "Paperclip", issuePrefix: "PAP" }] as never,
+      });
+      await plugin.definition.setup(harness.ctx);
+      await harness.ctx.localFolders.configure({
+        companyId: COMPANY_ID,
+        folderKey: "wiki-root",
+        path: "/tmp/paperclip-plugin-llm-wiki-health-test",
+        requiredDirectories: ["wiki/projects"],
+        requiredFiles: [],
+      });
+      // Simulate the required directory disappearing after configuration:
+      // the harness stores the status object, so flip it to broken.
+      const stored = harness.ctx.localFolders;
+      const originalStatus = stored.status.bind(stored);
+      stored.status = async (companyId: string, folderKey: string) => {
+        const status = await originalStatus(companyId, folderKey);
+        return {
+          ...status,
+          readable: false,
+          writable: false,
+          missingDirectories: ["wiki/projects"],
+          healthy: false,
+          problems: [{ code: "missing_directory" as const, message: "Missing directory", path: "wiki/projects" }],
+        };
+      };
+
+      await expect(harness.runJob("folder-health-check")).resolves.toBeUndefined();
+
+      const completed = harness.logs.find((entry) =>
+        entry.message.includes("folder health check completed"),
+      );
+      expect(completed!.meta).toMatchObject({ companies: 1, healthy: 0, unhealthy: 1, notConfigured: 0 });
 
       const unhealthyNote = harness.logs.find((entry) =>
         entry.message.includes("folder health check: unhealthy"),
       );
       expect(unhealthyNote).toBeDefined();
       expect(unhealthyNote!.meta).toMatchObject({
-        configured: false,
-        problems: ["not_configured"],
+        configured: true,
+        problems: ["missing_directory"],
       });
 
       expect(harness.metrics).toContainEqual(
-        expect.objectContaining({ name: "folderHealth", value: 0 }),
+        expect.objectContaining({
+          name: "folderHealth",
+          value: 0,
+          tags: expect.objectContaining({ unhealthy: "1", notConfigured: "0" }),
+        }),
       );
     });
 
