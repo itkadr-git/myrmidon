@@ -20,7 +20,7 @@
 
 import { Router, type Request, type Response } from "express";
 import type { Db } from "@paperclipai/db";
-import { knowledgeProposeSchema } from "@paperclipai/shared";
+import { knowledgeProposeSchema, isKnowledgeAutoSection, defaultAutonomyMatrix, resolveAutonomy } from "@paperclipai/shared";
 import {
   KNOWLEDGE_APPROVAL_REQUIRED_CODE,
   KNOWLEDGE_INJECTION_FLAGGED_CODE,
@@ -334,8 +334,8 @@ export function knowledgeMcpRoutes(deps: KnowledgeMcpDeps) {
         return {
           suggestion: await mod.suggest(actorRef, {
             body: input.body,
-            rationale: input.title ?? null,
-            targetSlug: input.targetSlug ?? null,
+            rationale: input.title ?? undefined,
+            targetSlug: input.targetSlug ?? undefined,
             sourceKind: input.sources[0]!.kind,
             sourceRef: input.sources[0]!.ref,
           }),
@@ -347,8 +347,8 @@ export function knowledgeMcpRoutes(deps: KnowledgeMcpDeps) {
         return {
           suggestion: await mod.suggest(actorRef, {
             body: input.body,
-            rationale: input.title ?? null,
-            targetSlug: input.targetSlug ?? null,
+            rationale: input.title ?? undefined,
+            targetSlug: input.targetSlug ?? undefined,
             sourceKind: input.sources[0]!.kind,
             sourceRef: input.sources[0]!.ref,
           }),

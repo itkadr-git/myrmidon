@@ -323,7 +323,10 @@ export function knowledgeRoutes(deps: KnowledgeRoutesDeps) {
     const companyId = companyOf(req);
     await assertKnowledgeToolAccess(req, "knowledge_list");
     const mod = deps.moduleFor(companyId);
-    const status = typeof req.query.status === "string" ? req.query.status : undefined;
+    const status =
+      typeof req.query.status === "string" && ["pending", "accepted", "declined", "all"].includes(req.query.status)
+        ? (req.query.status as "pending" | "accepted" | "declined" | "all")
+        : undefined;
     try {
       res.json({ suggestions: await mod.listSuggestions(status) });
     } catch (err) {
@@ -662,11 +665,11 @@ export function myrmidonKnowledgeRoutes(db: Db, env: NodeJS.ProcessEnv = process
       const accessDecision = {
         decision: "require_approval" as const,
         allowed: false,
-        reasonCode: "requires_approval_policy",
+        reasonCode: "requires_approval_policy" as const,
         explanation: `knowledge_publish outside the auto sections requires board approval (${actorLabel}).`,
         effectiveProfileIds: [],
         matchedPolicyIds: [],
-      };
+      } satisfies import("@paperclipai/shared").ToolAccessDecision;
       const recorded = await policy.recordInvocation(
         {
           companyId,
