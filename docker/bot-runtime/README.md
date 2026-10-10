@@ -457,6 +457,12 @@ The container has ONE writable bind, the bot's whole tree, at `/bot` (with `herm
 are links the image makes into it (`/data/hermes` → `/bot/hermes`, `/workspace` →
 `/data/workspace` → `/bot/workspace`, `/scratch` → `/data/scratch` → `/bot/scratch`), not
 mounts. The ownership requirement applies to the three directories inside `/bot`.
+The `/bot` root itself must also let uid `10001` enter it: the driver's prepare
+helper normalizes the host directory's mode to `0711` (owner `root` kept,
+non-recursive, the content untouched) at every apply, and when a bot still starts
+on a root it cannot enter, `entrypoint.sh` fails with a line naming the traversal
+problem and the fix (recreate the bot) instead of the misleading
+`API_SERVER_KEY is required`.
 
 A member of a **shared isolation scope** (BOT-DISK-F, label `myrmidon.bot-runtime.scope=1`) has no
 `/bot`: its one mount is the scope instance's directory at `/bot-scope`, a tmpfs over `/data`
