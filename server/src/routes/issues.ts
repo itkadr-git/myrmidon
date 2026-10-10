@@ -13894,6 +13894,12 @@ export function issueRoutes(
           assigneeChangeRequested:
             normalizedAssigneeAgentId !== undefined ||
             req.body.assigneeUserId !== undefined,
+          // myrmidon(OPE-6954): a person moving the issue into a workable
+          // status is the same "carry on" as moving it out of `blocked`.
+          // Since REQUEUE-HOLD the settle leaves a re-queued task in its own
+          // status, so this is the action an operator has left.
+          statusChangeRequested:
+            updateFields.status !== undefined && updateFields.status !== existing.status,
         }) &&
         (await issueHasSettledReplayHold(db, existing.companyId, existing.id));
       let humanUnblock: HumanUnblockResult | null = null;
