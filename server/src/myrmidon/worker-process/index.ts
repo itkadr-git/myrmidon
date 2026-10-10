@@ -33,11 +33,11 @@ import { createServer, type Server } from "node:http";
 import express, { type Express } from "express";
 import type { Db } from "@paperclipai/db";
 import { loadConfig } from "../../config.js";
-import { logger } from "../../logger.js";
+import { logger } from "../../middleware/logger.js";
 import {
   BOARD_PROCESS_ROLES,
   resolveBoardProcessRole,
-} from "../process-registry/index.js";
+} from "../process-registry/domain.js";
 import { myrmidonProcessReadinessRoutes } from "../process-readiness/index.js";
 
 /** Default port of the worker loopback listener: the board's 3100 + 1, the
