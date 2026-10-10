@@ -102,7 +102,7 @@ describeEmbeddedPostgres("owner card TTL sweep (embedded PG)", () => {
       effectiveResolverPolicy: "anyone",
       addresseeUserId: OWNER_USER,
       createdByAgentId: AUTHOR_AGENT,
-      payload: { version: 1, prompt: "Approve?", target: { type: "none" } },
+      payload: { version: 1, prompt: "Approve?" },
       createdAt: OLD,
       updatedAt: OLD,
       ...overrides,
@@ -204,7 +204,6 @@ describeEmbeddedPostgres("owner card TTL sweep (embedded PG)", () => {
       payload: {
         version: 1,
         prompt: "Approve?",
-        target: { type: "none" },
         silenceMeansRecommended: true,
         recommendedOption: "accept",
       },
@@ -236,7 +235,6 @@ describeEmbeddedPostgres("owner card TTL sweep (embedded PG)", () => {
       payload: {
         version: 1,
         prompt: "Approve?",
-        target: { type: "none" },
         silenceMeansRecommended: true,
         decisionClass: "money",
         recommendedOption: "accept",
@@ -284,7 +282,6 @@ describeEmbeddedPostgres("owner card TTL sweep (embedded PG)", () => {
       payload: {
         version: 1,
         prompt: "Approve?",
-        target: { type: "none" },
         silenceMeansRecommended: true,
         recommendedOption: "accept",
       },
