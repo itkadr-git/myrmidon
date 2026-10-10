@@ -1041,6 +1041,15 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         await db.update(chatConversations).set({ state: "completed" })
           .where(and(inArray(chatConversations.companyId, [...fixtureCompanies]), inArray(chatConversations.state, ["active", "waiting"])));
       }
+      if (fixtureCompanies.size > 0) {
+        // A fixture service that died while holding a credential-mutation or
+        // conversation lease would make the next case's receipt-reaction sweep
+        // wait the full 10s acquire window and fail with a 409. Lease rows are
+        // company-scoped, so retire them with the rest of the fixture cleanup.
+        await db
+          .delete(chatEndpointLeases)
+          .where(inArray(chatEndpointLeases.companyId, [...fixtureCompanies]));
+      }
       fixtureServices.clear();
       fixtureCompanies.clear();
     }
