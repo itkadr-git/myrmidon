@@ -23,6 +23,8 @@ const HARNESS_DIR = path.dirname(fileURLToPath(import.meta.url));
 export const REPO_ROOT = path.resolve(HARNESS_DIR, "..", "..", "..", "..", "..");
 /** The production entry both processes run. */
 export const SERVER_ENTRY = path.join(REPO_ROOT, "server", "src", "index.ts");
+/** The worker entry of the split layout (PROCS-1.5 ч.H). */
+export const WORKER_ENTRY = path.join(REPO_ROOT, "server", "src", "worker.ts");
 
 /** Readiness budget: a cold tsx boot of the whole server graph is slow on CI. */
 export const READY_TIMEOUT_MS = 180_000;
@@ -119,6 +121,10 @@ export type ApiProcessHandle = {
   alive: () => boolean;
 };
 
+/** A worker process handle: same shape as an api handle, but the port is the
+ * loopback readiness probe, not the public API. */
+export type WorkerProcessHandle = ApiProcessHandle;
+
 /** Env keys the harness owns: the child must see its own instance, its own port
  * and the shared database — never the values of the process that runs the tests
  * (a developer shell may carry a real PAPERCLIP_API_KEY/PAPERCLIP_API_URL, and
@@ -167,6 +173,12 @@ function childEnv(handle: {
     PAPERCLIP_UI_DEV_MIDDLEWARE: "false",
     PAPERCLIP_OPEN_ON_LISTEN: "false",
   };
+  if (handle.role === "worker") {
+    // The worker's loopback probe (ч.H): the board config above still binds
+    // its own listener on PORT, so the probe must not fight it for the port.
+    env.MYRMIDON_WORKER_PORT = String(handle.port);
+  }
+  return env;
 }
 
 export type StartApiProcessOptions = {
@@ -177,6 +189,10 @@ export type StartApiProcessOptions = {
   port?: number;
   /** Readiness budget override. */
   readyTimeoutMs?: number;
+  /** Entry point override (worker.ts for the worker role). */
+  entry?: string;
+  /** Probe path the harness waits on (the worker answers /internal/ready). */
+  readyPath?: string;
 };
 
 /** Spawns one `api` process and waits until it answers `/api/health` with 200.
@@ -194,7 +210,7 @@ export async function startApiProcess(
     connectionString: options.connectionString,
   });
 
-  const child = spawn(process.execPath, [resolveTsxCli(), SERVER_ENTRY], {
+  const child = spawn(process.execPath, [resolveTsxCli(), options.entry ?? SERVER_ENTRY], {
     cwd: REPO_ROOT,
     env: childEnv({ home, port, connectionString: options.connectionString, role }),
     stdio: ["ignore", "pipe", "pipe"],
@@ -219,7 +235,7 @@ export async function startApiProcess(
   };
 
   try {
-    await waitForReady(handle, options.readyTimeoutMs ?? READY_TIMEOUT_MS);
+    await waitForReady(handle, options.readyTimeoutMs ?? READY_TIMEOUT_MS, options.readyPath ?? "/api/health");
   } catch (error) {
     await killApiProcess(handle);
     throw error;
@@ -233,6 +249,7 @@ export async function startApiProcess(
 export async function waitForReady(
   handle: Pick<ApiProcessHandle, "baseUrl" | "alive" | "output">,
   timeoutMs: number,
+  readyPath = "/api/health",
 ): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   let lastError = "no attempt made";
@@ -243,7 +260,7 @@ export async function waitForReady(
       );
     }
     try {
-      const response = await fetch(`${handle.baseUrl}/api/health`);
+      const response = await fetch(`${handle.baseUrl}${readyPath}`);
       if (response.status === 200) return;
       lastError = `HTTP ${response.status}`;
     } catch (error) {
@@ -252,7 +269,7 @@ export async function waitForReady(
     await delay(250);
   }
   throw new Error(
-    `process did not answer /api/health within ${timeoutMs}ms (last: ${lastError})\n${handle.output()}`,
+    `process did not answer ${readyPath} within ${timeoutMs}ms (last: ${lastError})\n${handle.output()}`,
   );
 }
 
