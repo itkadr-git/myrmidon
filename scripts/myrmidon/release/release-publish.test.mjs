@@ -309,6 +309,53 @@ describe("publish-github-release.sh: the CI gate", () => {
     assert.equal(mutations(sb), "");
   });
 
+  // RELEASE-GATE-POLL-BUDGET: the gate's wait budget must cover a
+  // tag CI run delayed far beyond the old 120-poll default by the
+  // hosted-runner queue. rc.13: 9 workflows started at the tag push, the tag
+  // CI completed after ~50 min (> 120 x 20 s = 40 min) and the publish died
+  // at the timeout with an empty verdict 11 min before the green run landed.
+  // The scenario «the run completes only after more than the old 120 polls»
+  // must now publish (POLL_SECONDS is overridden to 0 in the tests, so the
+  // poll count is the budget, not the wall clock).
+  it("publishes when the tag CI run completes only after more than the old 120 polls (the rc.13 queue delay)", () => {
+    const before = [
+      run(COMMIT, ".github/workflows/myrmidon-ci-tag.yml", null, "in_progress"),
+      run(COMMIT, ".github/workflows/myrmidon-image.yml", "success"),
+    ];
+    const after = [
+      run(COMMIT, ".github/workflows/myrmidon-ci-tag.yml", "success"),
+      before[1],
+    ];
+    const sb = sandbox({ runs: before });
+    fs.writeFileSync(path.join(sb.dir, "runs-after.json"),
+      JSON.stringify({ total_count: after.length, workflow_runs: after }));
+    // 240 reads before the switch: the verdict stays "missing" for 120
+    // polls of the gate — the OLD default budget (120) died right there —
+    // and the run completes inside the raised budget (240).
+    const { code, out } = runScript(sb, "myr-v1.6.0", { extraEnv: {
+      MYRMIDON_RELEASE_POLL_MAX: "240",
+      GH_RUNS_SWITCH_AFTER: "240",
+    } });
+    assert.equal(code, 0, out);
+    assert.match(out, /gate: Myrmidon CI \(tag\) success/);
+    assert.match(mutations(sb), /create tag=myr-v1\.6\.0/);
+  });
+
+  it("still refuses on a tag CI run that never completes, just after more polls (240, not 120)", () => {
+    // The raised budget must not turn the gate into an infinite wait: with
+    // the run never completing the publish refuses — after POLL_MAX polls.
+    const sb = sandbox({ runs: [
+      run(COMMIT, ".github/workflows/myrmidon-ci-tag.yml", null, "in_progress"),
+      run(COMMIT, ".github/workflows/myrmidon-image.yml", "success"),
+    ] });
+    const { code, out } = runScript(sb, "myr-v1.6.0", { extraEnv: {
+      MYRMIDON_RELEASE_POLL_MAX: "6",
+    } });
+    assert.notEqual(code, 0, out);
+    assert.match(out, /timed out waiting for Myrmidon CI \(tag\) runs on .* after 6 polls/);
+    assert.equal(mutations(sb), "");
+  });
+
   // ---- RELEASE-PUBLISH-WAIT: the gate must wait for the TAG's runs, not the commit's ----
 
   it("waits for the board image run of the tag while it is still building, then publishes (the 1.6.1 incident)", () => {
@@ -773,6 +820,37 @@ describe("myrmidon-release.yml: the tag input wins over ref_name", () => {
 
   it("declares the tag input as required", () => {
     assert.match(workflow, /tag:\s*\n\s+description:[^\n]+\n\s+required: true/);
+  });
+
+  // RELEASE-GATE-POLL-BUDGET: the publish job raises the gate's
+  // poll budget so a tag CI run delayed by the tag-push runner queue
+  // (rc.13: ~50 min against the 40-min default) is waited out instead of
+  // timing out with an empty verdict.
+  //
+  // Delivery-form note: the workflow-file edit rides as
+  // .github/patches/release-tag-ci-poll-budget.patch (the push token has no
+  // workflow scope) and is applied with `git am -3` at merge time. The pin
+  // therefore accepts the env line either in the workflow itself (after the
+  // patch is applied) or in the patch payload (before), and pins the job
+  // timeout only when the workflow already carries the budget.
+  it("raises the gate wait budget for the tag CI queue delay (MYRMIDON_RELEASE_POLL_MAX)", () => {
+    const HERE = path.dirname(fileURLToPath(import.meta.url));
+    const PATCH = path.join(HERE, "..", "..", "..", ".github", "patches", "release-tag-ci-poll-budget.patch");
+    const patch = fs.existsSync(PATCH) ? fs.readFileSync(PATCH, "utf8") : "";
+    const inWorkflow = /MYRMIDON_RELEASE_POLL_MAX: "240"/.test(workflow);
+    const inPatch = /^\+\s*MYRMIDON_RELEASE_POLL_MAX: "240"$/m.test(patch);
+    assert.ok(
+      inWorkflow || inPatch,
+      "MYRMIDON_RELEASE_POLL_MAX: \"240\" must be in myrmidon-release.yml or in .github/patches/release-tag-ci-poll-budget.patch pending application",
+    );
+    if (inWorkflow) {
+      // The budget must stay inside the job's own timeout (80 min < 90 min).
+      assert.match(workflow, /timeout-minutes: 90/);
+    } else {
+      // Patch form: the patch must add the budget inside the publish step
+      // env of myrmidon-release.yml, in the hunk at the TAG context line.
+      assert.match(patch, /^\s+TAG: \$\{\{ inputs\.tag \|\| github\.ref_name \}\}$/m);
+    }
   });
 });
 
