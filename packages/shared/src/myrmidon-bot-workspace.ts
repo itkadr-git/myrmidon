@@ -457,13 +457,20 @@ export const WS_BOT_DISK_SETTING_DEFAULTS = {
   partitionCriticalPercent: 95,
 } as const;
 
+// myrmidon(1.6.6-SETTINGS-UI-B): the five workspace-lifecycle fields exported
+// individually, so `myrmidon-bot-disk.ts` validates the same stored object with
+// the same ranges instead of duplicating them (one source of truth).
+export const wsGraceClosingMinutesSchema = z.number().int().min(5).max(24 * 60);
+export const wsScratchTtlHoursSchema = z.number().int().min(1).max(24 * 30);
+export const wsPartitionPercentSchema = z.number().int().min(50).max(100);
+
 export const wsBotDiskSettingsSchema = z
   .object({
-    graceClosingMinutes: z.number().int().min(5).max(24 * 60).optional(),
-    scratchTtlHours: z.number().int().min(1).max(24 * 30).optional(),
-    partitionThresholdPercent: z.number().int().min(50).max(100).optional(),
-    partitionRefuseOpenPercent: z.number().int().min(50).max(100).optional(),
-    partitionCriticalPercent: z.number().int().min(50).max(100).optional(),
+    graceClosingMinutes: wsGraceClosingMinutesSchema.optional(),
+    scratchTtlHours: wsScratchTtlHoursSchema.optional(),
+    partitionThresholdPercent: wsPartitionPercentSchema.optional(),
+    partitionRefuseOpenPercent: wsPartitionPercentSchema.optional(),
+    partitionCriticalPercent: wsPartitionPercentSchema.optional(),
     /** Where pnpm keeps its store; must sit on the bot partition (C1/H8). */
     pnpmStoreDir: z.string().min(1).optional(),
     /** How pnpm imports a package into a clone; `clone` = reflink-only. */

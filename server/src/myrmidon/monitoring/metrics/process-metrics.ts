@@ -18,7 +18,7 @@
 // The whole thing is a seam: the collector takes a `ProcessMetricsSource`,
 // tests inject fakes, production wires `defaultProcessMetricsSource`.
 
-import { monitorEventLoopDelay } from "node:perf_hooks";
+import { monitorEventLoopDelay, performance } from "node:perf_hooks";
 import {
   subscribeAllCompanyLiveEvents,
   subscribeGlobalLiveEvents,
@@ -29,6 +29,12 @@ export type ProcessEventLoopSample = {
   p50Seconds: number;
   p99Seconds: number;
   maxSeconds: number;
+};
+
+/** Event-loop utilization of a window: the share of the window the loop was
+ * busy, 0..1, from `performance.eventLoopUtilization`. */
+export type ProcessEventLoopUtilizationSample = {
+  utilization: number;
 };
 
 export type ProcessMemorySample = {
@@ -46,6 +52,8 @@ export type ProcessLiveEventSample = {
 export type ProcessMetricsSample = {
   /** null while the histogram is not enabled. */
   eventLoop: ProcessEventLoopSample | null;
+  /** null when the runtime has no eventLoopUtilization (Node < 16.14). */
+  eventLoopUtilization: ProcessEventLoopUtilizationSample | null;
   memory: ProcessMemorySample;
   /** Per-type counters since boot, sorted by type for a stable exposition. */
   liveEvents: ProcessLiveEventSample[];
@@ -61,6 +69,13 @@ const NANOSECONDS_PER_SECOND = 1_000_000_000;
 const DEFAULT_HISTOGRAM_RESOLUTION_MS = 20;
 
 let loopHistogram: ReturnType<typeof monitorEventLoopDelay> | null = null;
+// Second histogram, owned by the process registry's pulse: reusing
+// loopHistogram would make a 10 s pulse reset the scrape window and quietly
+// change what myrmidon_board_event_loop_lag_seconds describes.
+let pulseHistogram: ReturnType<typeof monitorEventLoopDelay> | null = null;
+// Previous eventLoopUtilization reading: the gauge reports the delta against
+// it, so the family describes a window like every other family does.
+let utilizationBaseline: ReturnType<typeof performance.eventLoopUtilization> | null = null;
 let observationStarted = false;
 const liveEventCounters = new Map<string, { count: number; bytes: number }>();
 
@@ -114,6 +129,52 @@ export function disableEventLoopMonitor(): void {
   loopHistogram = null;
 }
 
+/** Enables the pulse histogram once (idempotent). It is deliberately separate
+ * from the scrape histogram: the process registry's pulse reads and resets it
+ * every 10 s. */
+export function enablePulseEventLoopMonitor(
+  resolutionMs: number = DEFAULT_HISTOGRAM_RESOLUTION_MS,
+): void {
+  if (pulseHistogram) return;
+  const histogram = monitorEventLoopDelay({ resolution: resolutionMs });
+  histogram.enable();
+  pulseHistogram = histogram;
+}
+
+/** Releases the pulse histogram (test seam). */
+export function disablePulseEventLoopMonitor(): void {
+  pulseHistogram?.disable();
+  pulseHistogram = null;
+}
+
+/** p50 of the pulse window in milliseconds, read-and-reset, so what the
+ * process registry stores describes the interval since the previous pulse.
+ * null while the pulse monitor is off. */
+export function readPulseEventLoopLagMs(): number | null {
+  if (!pulseHistogram) return null;
+  const lagMs = pulseHistogram.percentile(50) / 1_000_000;
+  pulseHistogram.reset();
+  return lagMs;
+}
+
+/** `perf_hooks.performance.eventLoopUtilization` exists on Node >= 16.14. */
+export function eventLoopUtilizationSupported(): boolean {
+  return typeof performance.eventLoopUtilization === "function";
+}
+
+/** Utilization of the interval since the previous read — read-and-reset, like
+ * the delay histogram, so the gauge describes a window rather than the whole
+ * process life. The first read of a process describes the interval since it
+ * started. null when the runtime has no such API. */
+export function readEventLoopUtilizationSample(): ProcessEventLoopUtilizationSample | null {
+  if (!eventLoopUtilizationSupported()) return null;
+  const current = performance.eventLoopUtilization();
+  const previous = utilizationBaseline;
+  utilizationBaseline = current;
+  const window = previous ? performance.eventLoopUtilization(current, previous) : current;
+  return { utilization: window.utilization };
+}
+
 /** Reads p50/p99/max in seconds and resets the window — the quantiles
  * describe the interval since the previous read (scrape). null while the
  * monitor is not enabled. */
@@ -161,6 +222,7 @@ export function startProcessMetricsObservation(): () => void {
 export function readProcessMetrics(): ProcessMetricsSample {
   return {
     eventLoop: readEventLoopSample(),
+    eventLoopUtilization: readEventLoopUtilizationSample(),
     memory: readMemorySample(),
     liveEvents: liveEventCountersSnapshot(),
   };
@@ -178,4 +240,6 @@ export function resolveProcessMetricsSource(
 /** Test seam: drops every counter (production never calls it). */
 export function resetProcessMetricsState(): void {
   liveEventCounters.clear();
+  utilizationBaseline = null;
+  disablePulseEventLoopMonitor();
 }

@@ -31,6 +31,7 @@ function snapshot(overrides: Partial<MetricsSnapshot> = {}): MetricsSnapshot {
     llmCostCentsWindow: 1234,
     process: {
       eventLoop: { p50Seconds: 0.02, p99Seconds: 0.13, maxSeconds: 0.5 },
+      eventLoopUtilization: { utilization: 0.42 },
       memory: { rssBytes: 500000000, heapUsedBytes: 120000000, heapTotalBytes: 200000000 },
       liveEvents: [
         { type: "agent_status", count: 7, bytes: 1024 },
@@ -75,6 +76,7 @@ describe("prometheus exposition format", () => {
     expect(text).toContain("# TYPE myrmidon_agent_error_signals gauge");
     expect(text).toContain("# TYPE myrmidon_llm_cost_cents_total counter");
     expect(text).toContain("# TYPE myrmidon_scrape_errors gauge");
+    expect(text).toContain("# TYPE myrmidon_board_event_loop_utilization gauge");
   });
 
   it("renders one sample line per family and per role/status pair", () => {
@@ -82,13 +84,43 @@ describe("prometheus exposition format", () => {
     const sampleLines = text.split("\n").filter((line) => line.startsWith("myrmidon_"));
     // 9 single-sample families + 2 quantile samples + 3 role pairs = 14,
     // plus the process half (1.6.5-PROCS-Q3): 3 loop quantiles + 1 RSS +
-    // 2 heap kinds + 2 live-event counters + 2 live-event byte counters = 10.
-    expect(sampleLines).toHaveLength(24);
+    // 2 heap kinds + 2 live-event counters + 2 live-event byte counters = 10,
+    // plus the utilization gauge (1.6.6 PROCS-0.1) = 25.
+    expect(sampleLines).toHaveLength(25);
     expect(text).toContain('myrmidon_role_queue_tasks{role="engineer",status="todo"} 3');
     expect(text).toContain('myrmidon_role_queue_tasks{role="reviewer",status="in_review"} 2');
     expect(text).toContain('myrmidon_board_event_loop_lag_seconds{quantile="0.99"} 0.13');
+    expect(text).toContain("myrmidon_board_event_loop_utilization 0.42");
     expect(text).toContain('myrmidon_board_heap_bytes{kind="used"} 120000000');
     expect(text).toContain('myrmidon_board_live_events_total{kind="run_finished"} 3');
+  });
+
+  // myrmidon(1.6.6 PROCS-0.3A): the load lanes ride the same scrape, so the
+  // exposition must show a sample per lane when the lanes were read, and the
+  // two families (with HELP/TYPE, no samples) when the collector has none.
+  it("renders one sample per lane for both lane families", () => {
+    const text = renderMetricsText(
+      snapshot({
+        lanes: [
+          { lane: "http_route", dbQueries: 12, busyMs: 34.5, executions: 7 },
+          { lane: "heartbeat_tick", dbQueries: 0, busyMs: 0, executions: 0 },
+        ],
+      }),
+    );
+
+    expect(text).toContain('myrmidon_board_db_queries_total{lane="http_route"} 12');
+    expect(text).toContain('myrmidon_board_db_queries_total{lane="heartbeat_tick"} 0');
+    expect(text).toContain('myrmidon_board_lane_busy_seconds_total{lane="http_route"} 0.0345');
+    expect(text).toContain('myrmidon_board_lane_busy_seconds_total{lane="heartbeat_tick"} 0');
+  });
+
+  it("renders the lane families without samples when no lanes were read", () => {
+    const text = renderMetricsText(snapshot());
+
+    expect(text).toContain("myrmidon_board_db_queries_total");
+    expect(text).toContain("myrmidon_board_lane_busy_seconds_total");
+    expect(text).not.toContain("myrmidon_board_db_queries_total{");
+    expect(text).not.toContain("myrmidon_board_lane_busy_seconds_total{");
   });
 
   it("renders the process families without samples when there is no process read", () => {
@@ -103,7 +135,7 @@ describe("prometheus exposition format", () => {
 
   it("omits the loop quantile samples while the histogram is not enabled", () => {
     const text = renderMetricsText(
-      snapshot({ process: { eventLoop: null, memory: { rssBytes: 1, heapUsedBytes: 1, heapTotalBytes: 2 }, liveEvents: [] } }),
+      snapshot({ process: { eventLoop: null, eventLoopUtilization: null, memory: { rssBytes: 1, heapUsedBytes: 1, heapTotalBytes: 2 }, liveEvents: [] } }),
     );
     expect(text).not.toContain("myrmidon_board_event_loop_lag_seconds{");
     expect(text).toContain("myrmidon_board_process_rss_bytes 1");

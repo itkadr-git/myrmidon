@@ -105,8 +105,8 @@ A JSON file. An unknown key at any level, or a missing required key, prevents st
 | `upstream` | absolute path of the daemon socket |
 | `apiVersion` | `1.45` only |
 | `caller` | required. `container` (the board container name), `containerLabels`, `uid`, `gid`, `argv`, `maxStartDelayTicks`, `mode` (`container-main-process` by default, `uid` for CI only) |
-| `volumeRoot` | the host directory of bot volumes; a bot's volumes are `<root>/<botKey>/{hermes,workspace,scratch}`; the bot container gets ONE bind, `<root>/<botKey>:/bot` (hard links cannot cross mounts, BOT-DISK-D), while the helper containers keep three narrow binds of the same directories; `/bot` and `/data` are reserved container paths |
-| `mountSources` | host directories a bot may mount in addition, read-only only (an empty or missing list allows none). Every extra bind in a create body must start with one of these paths in full, carry the `ro` suffix and use a mount point outside `/workspace`, `/scratch` and `/tmp` — the three owner-data subtrees of `/data/hermes` are the only exception and are accepted at their real path inside the bot's own mount (1.6.5-BOT-DISK-H11, see [bot-extra-mounts.md](bot-extra-mounts.md#a-mount-point-inside-the-bots-own-volume-165-bot-disk-h-class-j)); otherwise `mount_source_not_allowed` or `binds_mismatch`. The list is also applied on `SIGHUP` |
+| `volumeRoot` | the host directory of bot volumes; a bot's volumes are `<root>/<botKey>/{hermes,workspace,scratch}`; the bot container's layout is the one its image's runtime contract declares: the single bind `<root>/<botKey>:/bot` (hard links cannot cross mounts, BOT-DISK-D), or the legacy form — the same three directories bound directly at `/data/hermes`, `/workspace` and `/scratch` in the driver's fixed order (contract `1` images without the scope label, BOT-LAYOUT-V); the helper containers keep three narrow binds of the same directories; `/bot` and `/data` are reserved container paths |
+| `mountSources` | host directories a bot may mount in addition, read-only only (an empty or missing list allows none). Every extra bind in a create body must start with one of these paths in full, carry the `ro` suffix and use a mount point outside `/workspace`, `/scratch`, `/bot` and `/tmp` — the three owner-data subtrees of `/data/hermes` are the only exception and are accepted at their real path inside the bot's own mount (1.6.5-BOT-DISK-H11, see [bot-extra-mounts.md](bot-extra-mounts.md#a-mount-point-inside-the-bots-own-volume-165-bot-disk-h-class-j)); otherwise `mount_source_not_allowed` or `binds_mismatch`. The list is also applied on `SIGHUP` |
 | `packageCacheRoot` | the host directory of the shared package cache, the same path as the board's instance setting (see [bot-disk-cache.md](bot-disk-cache.md)). Under it, and only there, a bot may mount the fixed subdirectories `pnpm`, `go-mod`, `go-build`, `gradle` read-write at `/cache/pnpm`, `/cache/go-mod`, `/cache/go-build`, `/cache/gradle`; any other writable bind is `mount_source_not_allowed`. The subdirectory `git` is accepted only as a **read-only** bind at `/cache/git` (the board's bare git mirrors, 1.6.2-BOT-DISK-C); `git` with `rw`, or at another mount point, is refused the same way. An absolute directory without `..`, `//` or a trailing `/`, outside `volumeRoot`. Empty or missing (the default) allows no cache bind. Applied on `SIGHUP` |
 | `botRuntimeRoot` | the host directory of the shared bot runtime (1.6.5-BOT-DISK-H11; the board's instance setting `general.botDisk.sharedBotRuntimePath`, see [bot-extra-mounts.md](bot-extra-mounts.md#the-shared-bot-runtime-165-bot-disk-h-class-c)). Under it, and only there, a bot may mount the fixed subdirectories `bin`, `lazy-packages` and `lsp` as **read-only** binds at the path the driver really uses inside the bot's own mount (`/bot/hermes/…`, `/bot-scope/<botKey>/hermes/…`, `/data/hermes/…`); another root, another subdirectory, another mount point or `rw` is `mount_source_not_allowed`. An absolute directory without `..`, `//` or a trailing `/`, outside `volumeRoot`, not overlapping `scopeRoot` or `packageCacheRoot`, not a parent of either. Empty or missing (the default) allows no runtime bind. Applied on `SIGHUP` |
 | `scopeRoot` | the host directory of shared isolation-scope instances (BOT-DISK-F, see [bot-disk-cache.md](bot-disk-cache.md#isolation-scope-who-shares-a-disk)): one subdirectory `<kind>-<id>` per instance. A bot may bind only an instance listed in its own `bots[].scopeInstances`. An absolute directory without `..`, `//` or a trailing `/`, not `volumeRoot` and not a parent of it, not overlapping `packageCacheRoot`. Empty or missing (the default): `<volumeRoot>/.scopes` (a bot key can never begin with `.`, so it cannot collide with a bot directory). Applied on `SIGHUP` |
@@ -208,6 +208,28 @@ board; the bot's recreate is refused (`mount_source_not_allowed`) until then. Th
 shows each agent's directory name in Instance settings, Disk isolation. Contract fixtures
 (`contract/testdata/scope/`, `scripts/prepare-shared.sh`) come from the same driver code as
 the isolated ones.
+
+## Legacy-layout bots (BOT-LAYOUT-V, 1.6.5)
+
+The bot container's bind form is the one its image's runtime contract declares
+(`myrmidon.bot-runtime.contract`, read by the driver from the image labels at
+A1), and the gate accepts exactly the two forms the driver can emit:
+
+- **Single mount** (contract `2`, and contract `1` images that also carry the
+  scope label): the one bind `<volumeRoot>/<botKey>:/bot` described above.
+- **Legacy** (contract `1` without the scope label — images built for the three
+  separate volumes, such as 1.6.4): the same three host directories bound
+  directly at `/data/hermes`, `/workspace` and `/scratch`, accepted only in the
+  driver's fixed order and only as the first three entries of the body; the
+  extra mounts and cache binds that may follow are unchanged. Any other order
+  or a partial set is `binds_mismatch`.
+
+A legacy-layout bot never binds a scope instance (the scope layout needs the
+image's start-time links, which only single-layout images make). Its marker and
+clone-hygiene report live under `/data/hermes`, so A3 and A13 also accept the
+literal archive queries `path=%2Fdata%2Fhermes%2F.myrmidon%2Fapplied.json` and
+`path=%2Fdata%2Fhermes%2F.myrmidon%2Fclone-hygiene.json` for the bot's own
+container — and nothing else under that path.
 
 ## Deploy and rollback
 
