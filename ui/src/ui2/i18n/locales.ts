@@ -165,6 +165,12 @@ const en = {
   "ui2.settings.runs.queue.waitReason": "The oldest waits: {{reason}}.",
   "ui2.settings.runs.memory.host": "Host memory: {{available}} MB available of {{total}} MB.",
   "ui2.settings.runs.memory.container": "Server container: {{used}} MB used of {{limit}} MB ({{free}} MB free).",
+  // myrmidon(1.6.5 F-09): the admission denial counter — the sweep's refusals
+  // to start a queued run since the server started, by gate, and the latest.
+  "ui2.settings.runs.denials.total": "Admission refusals since the server started: {{total}}.",
+  "ui2.settings.runs.denials.byReason": "{{reason}}: {{count}}",
+  "ui2.settings.runs.denials.last": "Last refusal: {{reason}}.",
+  "ui2.settings.runs.denials.lastAt": "Last refusal: {{reason}} at {{at}}.",
   "ui2.settings.runs.waitReason.global_cap": "the concurrency ceiling is full",
   "ui2.settings.runs.waitReason.start_ramp": "the start ramp paces new starts",
   "ui2.settings.runs.waitReason.memory": "the server keeps its free-memory floor",
@@ -422,6 +428,10 @@ const ru: Record<Ui2MessageKey, string> = {
   "ui2.settings.runs.queue.waitReason": "Самый старый ждёт: {{reason}}.",
   "ui2.settings.runs.memory.host": "Память хоста: {{available}} МБ свободно из {{total}} МБ.",
   "ui2.settings.runs.memory.container": "Контейнер сервера: занято {{used}} МБ из {{limit}} МБ (свободно {{free}} МБ).",
+  "ui2.settings.runs.denials.total": "Отказов допуска с момента старта сервера: {{total}}.",
+  "ui2.settings.runs.denials.byReason": "{{reason}}: {{count}}",
+  "ui2.settings.runs.denials.last": "Последний отказ: {{reason}}.",
+  "ui2.settings.runs.denials.lastAt": "Последний отказ: {{reason}} в {{at}}.",
   "ui2.settings.runs.waitReason.global_cap": "потолок одновременных прогонов занят",
   "ui2.settings.runs.waitReason.start_ramp": "плавный старт разводит новые прогоны",
   "ui2.settings.runs.waitReason.memory": "сервер держит порог свободной памяти",
