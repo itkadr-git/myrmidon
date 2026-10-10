@@ -185,6 +185,91 @@
 | `MYRMIDON_HOST_DISK_DATA_ROOT` | BOT-DISK E | `/data` | Каталог, чья файловая система меряется: `statfs` этого пути показывает диск, на котором живут база доски, рабочие копии и тома контейнеров | Должен существовать и быть читаем процессом сервера; иначе подметальщик пишет одну ошибку на тик, сигнала нет |
 | `MYRMIDON_HOST_DISK_CONSUMER_PATHS` | BOT-DISK E | каталог данных | Каталоги через запятую, которые ранжируются как «крупнейшие потребители» в сигнале: каждый обходится с ограничением глубины/записей/времени, первым идёт самый большой | Не задано — единственный потребитель в списке это сам каталог данных |
 
+### Рабочие копии задач, CLI `myr-ws` и отчёт бота о диске (1.6.5 BOT-DISK-H, контракт H0)
+
+Раскладка внутри контейнера бота зафиксирована контрактом
+(`docs/myrmidon/bot-disk-contract/README.md`): `<HERMES_HOME>/.myrmidon/`
+держит `git-base/<owner>/<repo>.git` (голые базы),
+`archive/<KEY>-<ts>.{bundle,patch,untracked.tar}` и `manifest.json` (архивы
+удалённых копий с незапушенной работой), `ws-registry.json` (открытые копии:
+`{version:1, entries:[{key, repo?, path, class:'E'|'G', branch?, openedAt}]}`)
+и `disk-state.json` (давление диска `{quotaPercent, partitionPercent,
+pressure:'none'|'soft'|'hard'}` — пишет botd на каждом проходе, читает
+`myr-ws open`; файл старше двух тиков botd читается как `pressure:"none"`).
+Копии задач — worktree `/workspace/<ISSUE-KEY>` на ветке `bot/<KEY>`;
+scratch-копии живут в `/scratch/<name>`.
+
+Команды `myr-ws`: `open <KEY> [owner/repo] [--base <ref>] [--scratch]`,
+`list`, `close <KEY> [--force]`, `restore <KEY>`, `migrate`; общий флаг
+`--json` (`{ok:true, …}` по команде, любая ошибка — `{ok:false, error,
+exitCode}`, человекочитаемое сообщение — на stderr). Коды выхода: `0` — ок,
+`2` — неверные аргументы, `3` — отказ по квоте/диску (сообщение начинается с
+`BOT_DISK_QUOTA_EXCEEDED:`), `4` — репозиторий сверх лимита баз (8), `5` —
+сеть/fetch, `6` — нет такой копии/архива, `7` — незапушенная работа без
+`--force`. Переменные: `MYRMIDON_TASK_WORKSPACE` (абсолютный путь открытой
+копии, экспортируется в прогон), `MYRMIDON_WS_BIN` и `MYRMIDON_WS_HOME`
+(подмены только для тестов).
+
+Со стороны доски — два маршрута, вызываемые с ключом бота
+`PAPERCLIP_API_KEY`: `GET /api/myrmidon/bots/me/workspaces` отдаёт желаемое
+состояние (`{generatedAt, grace:{closingMinutes, scratchTtlHours,
+orphanHours}, pressure, workspaces:[{key, repo, state:'active'|'closing',
+since, prState, branch}]}`; при 401/403/503 botd в режиме fail-safe ничего не
+удаляет), а `POST /api/myrmidon/bots/me/disk-report` принимает снимок диска
+бота (базы, копии с флагами `clean`/`pushed` и размерами, архивы, не больше
+200 последних действий, чужие копии с признаком, результаты самопроверок;
+тело ≤ 1 МиБ) и отвечает `{ok:true, nextReportSec}` — темпом следующего
+прохода.
+
+dockergate получает два маршрута: `GET /myrmidon/disk` (statfs раздела плюс
+разбор `xfs_quota report -p` по проектам; без смонтированного prjquota —
+`projects:[]`, `quotaEnabled:false`) и
+`PUT /myrmidon/disk/<botKey>/quota` с телом `{bytes}` (64 МиБ…1 ТиБ) →
+`{ok:true, projectId, hardBytes}`; коды отказа `route_not_allowed`,
+`quota_unavailable`, `bad_quota`. Через них доска исполняет существующую
+настройку квоты на бота `general.botDiskQuota`.
+
+Абзац для инструкций ботов (вставляется в системный промпт или сообщение
+задачи, проект 1.6.5 BOT-DISK-H, п. 2.2(4)):
+
+> Рабочая копия задачи открывается за тебя: `git clone <owner>/<repo>`
+> превращается в worktree общей базы (без своих объектов, без токена в
+> `.git/config`). Никогда не передавай `--filter`, `--depth`, `--mirror` и
+> `--bare` — они игнорируются. Если видишь `BOT_DISK_QUOTA_EXCEEDED:`, раздел
+> ботов переполнен: прекрати клонировать, закоммить и запушь готовое, сообщи
+> доске и не повторяй попытку в цикле. Работай внутри открытой копии; доска
+> сама заархивирует и удалит её по завершении задачи — не удаляй
+> `/workspace/<KEY>` сам.
+
+Запрос `/v1/runs` может нести поле `workspace: {key, repo, baseRef?}`: до
+старта модели гейтвей выполняет `myr-ws open <key> <repo> [--base <baseRef>]
+--json`, и прогон стартует с `MYRMIDON_TASK_WORKSPACE=/workspace/<key>` в
+качестве рабочего каталога. Коды 3/4/5 не роняют прогон молча: он стартует в
+`/scratch` с предупреждением в событиях.
+
+Карточки внимания (payload всегда содержит `botKey` и `at`):
+`bot_disk_lifecycle/agent-silent` (отчёт botd старше 30 минут при работающем
+контейнере), `bot_disk_lifecycle/drift` (желаемое ≠ фактическому дольше
+grace + 15 минут), `bot_disk_lifecycle/foreign` (копия вне базы: promisor /
+токен в URL / без remote / `.trash-*` / полный клон),
+`bot_disk_lifecycle/ws-cli` и `bot_disk_lifecycle/reflink` (проваленные
+самопроверки), `bot_image_stale` (бот на образе не текущего поколения дольше
+суток), `bot_disk_archive` (для задачи создан архив; исчезает при
+восстановлении или истечении срока).
+
+Настройки экземпляра `general.botDisk.*` (меняются на странице Инстанс →
+Общие, `PATCH /api/myrmidon/bot-disk`; применяются без перезапуска):
+
+| Ключ | По умолчанию | Что делает | Диапазон / особое |
+|---|---|---|---|
+| `general.botDisk.graceClosingMinutes` | `30` | Отсрочка (минуты) между переводом задачи в `closing` в желаемом состоянии (терминальный статус / переназначение / слитый PR) и удалением её worktree агентом botd | От 5 до 1440; вне диапазона — умолчание. При жёстком давлении раздела (квота ≥ 100 %) действующая отсрочка равна 0 |
+| `general.botDisk.scratchTtlHours` | `24` | TTL простоя (часы, по mtime/ctime) scratch-копии (класс G): после него botd архивирует её, если есть незапушенные коммиты, и удаляет — единственное место, где уместен таймер | От 1 до 720; вне диапазона — умолчание. При жёстком давлении раздела действующий TTL — 1 час |
+| `general.botDisk.partitionThresholdPercent` | `85` | Заполнение раздела ботов (физически, из dockergate `GET /myrmidon/disk`), при котором поднимается карточка экземпляра `host_disk_alert` с цифрами раздела | От 50 до 100; вне диапазона — умолчание |
+| `general.botDisk.partitionRefuseOpenPercent` | `90` | Заполнение раздела ботов, при котором `myr-ws open` отказывает **всем** ботам с `BOT_DISK_QUOTA_EXCEEDED:` (код 3), а все botd работают с отсрочкой 0 | От 50 до 100; не ниже `partitionThresholdPercent`; вне диапазона — умолчание |
+| `general.botDisk.partitionCriticalPercent` | `95` | Заполнение раздела ботов, при котором поднимается критическая карточка экземпляра и владельцу уходит сигнал в Telegram | От 50 до 100; не ниже `partitionRefuseOpenPercent`; вне диапазона — умолчание |
+| `general.botDisk.pnpmStoreDir` | не задано (хранилище на бота в монтировании workspace) | Каталог общего хранилища pnpm; по контракту обязан лежать **на разделе ботов** (одно хранилище на раздел), иначе reflink-импорт из него в тома ботов не работает (reflink не пересекает границу файловых систем) | Не задано — прежнее поведение. Задаётся в паре с `pnpmImportMethod: clone` и рабочей reflink-самопроверкой (при сбое — карточка `bot_disk_lifecycle/reflink`) |
+| `general.botDisk.pnpmImportMethod` | не задано (умолчание образа `hardlink`) | `package-import-method` pnpm: `hardlink`, `clone`, `clone-or-copy` или `copy`. `clone` — только reflink: сбой звучит громко, а не превращается в тихую копию; правка файла внутри `node_modules` не портит хранилище (в отличие от жёсткой ссылки) | Не задано — прежнее поведение. Неизвестное значение отклоняется схемой настроек |
+
 
 ## 1.6.1 — BOT-DISK B: общий кэш пакетов для контейнеров ботов
 
