@@ -32,16 +32,16 @@
 
 ## settings-en-append
 
-<!-- after-line: ready. -->
+<!-- section: 1.6.1 — VOICE-STT (server-side speech-to-text core, part A) -->
 Since the A1-fix, the PATCH also accepts `baseUrl` (a URL), `keySecret` and
 `deepgramKeySecret` — each a non-empty string or `null`, with the same
 null-semantics as `model` (explicit `null` clears the stored value back to
 the environment default, an omitted field keeps the current one). The
 `settingsView` returns `baseUrl` but omits `keySecret` and
 `deepgramKeySecret`: the secret names are write-only over the API, and the
-secret values are never returned. (The paragraph above still reads "accepts
-only …" — written before the A1-fix; the field list here is the current
-one.)
+secret values are never returned. (The PATCH paragraph above in this section
+still reads "accepts only …" — written before the A1-fix; the field list here
+is the current one.)
 
 ## settings-ru-append
 

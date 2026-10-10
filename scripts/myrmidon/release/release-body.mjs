@@ -306,15 +306,30 @@ function rcNotesFromFragments(root = ".") {
 // HTTP 422 after every gate already passed. Refuse BEFORE the publish with
 // the byte count, so the release engineer trims the fragment notes instead
 // of debugging a bare 422 at the end of a 20-minute CI run.
-function enforceBodyLimit(body, version) {
+//
+// The notes of a body built here are already shortened to
+// RELEASE_BODY_MAX_CHARS (the rc.11 fit), so this guard is the last line of
+// defence for a caller that bypasses the fit — and it is the only place the
+// refusal lives. `fail` is injectable so a test can assert the refusal
+// without exiting its own runner (importing this module must never exit).
+export function enforceBodyLimit(
+  body,
+  version,
+  { limit = GITHUB_RELEASE_BODY_LIMIT, fail = defaultBodyLimitFail } = {},
+) {
   const chars = body.length;
-  if (chars > GITHUB_RELEASE_BODY_LIMIT) {
-    console.error(
+  if (chars > limit) {
+    fail(
       `release body for ${version} is ${chars} characters — GitHub rejects bodies over ` +
-        `${GITHUB_RELEASE_BODY_LIMIT} (HTTP 422 "body is too long"). Trim the pending change ` +
+        `${limit} (HTTP 422 "body is too long"). Trim the pending change ` +
         `fragment notes (docs/myrmidon/changes/*) or fold them into the CHANGELOG section first.`,
     );
-    process.exit(1);
+    return null;
   }
   return body;
+}
+
+function defaultBodyLimitFail(message) {
+  console.error(message);
+  process.exit(1);
 }

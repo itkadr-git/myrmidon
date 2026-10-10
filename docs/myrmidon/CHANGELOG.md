@@ -3609,22 +3609,6 @@ instead of 3 x 3 queries.
 - `component_host_service_exists` no longer reports a service as missing when `grep -q`
   closes the pipe early (SIGPIPE under `pipefail`).
 
-### Prompt-budget advice and deep analysis (PROMPT-BUDGET part C)
-
-- The agent card's Overview tab carries a "Prompt budget advice" panel: the last run's
-  prompt breakdown by parts, a concrete recommendation for every part whose share crosses
-  30% (Critical from 50%; below 2000 prompt tokens no advice is produced — the thresholds
-  are code constants, not settings), and a "Deep analysis" button that files a task for a
-  cheap-model optimizer agent. The optimizer drafts instruction edits as a comment on that
-  task; nothing is scheduled and nothing is changed automatically.
-- The optimizer agent is the instance general setting `promptBudget.optimizerAgentId`
-  (no environment variable); the deep POST answers 422 with a clear message when it is
-  absent, not a uuid, the analysed agent itself, or not an agent of the company. Dedup:
-  one deep task per target agent per run.
-- API: `GET /api/myrmidon/companies/:companyId/prompt-budget/agents/:agentId/advice`
-  (company member), `POST .../advice/deep` (board). Operator guide:
-  [guides/prompt-budget-advice.md](guides/prompt-budget-advice.md).
-
 ### Agent memory works without a key and is set in the UI (MEMORY-UI)
 
 - The Memory tab on the agent card no longer says "Agent memory is not enabled on this
