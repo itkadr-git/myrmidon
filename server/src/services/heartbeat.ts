@@ -1,5 +1,13 @@
 // myrmidon(UPSTREAM-13539): resume/delivery path for queued interaction-card responses.
 import { readQueuedInteractionResponse } from "../myrmidon/upstream-steer/queued-interaction-response.js";
+// myrmidon(1.6.6 RUN-RETRY-POLICY): classification/backoff/attempt limit of a
+// failed run's retry; the schedule this file queues records itself with
+// describeRunRetrySchedule and the issue payload reads it back with
+// readRunRetryPolicySnapshot (see docs/myrmidon/SETTINGS.md).
+import {
+  describeRunRetrySchedule,
+  readRunRetryPolicySnapshot,
+} from "../myrmidon/run-retry-policy/index.js";
 import { AGENT_CHAT_DIRECTIVE, conversationReplay, isConversation, isConversationExecutionWake, isWaitingConversation, prepareConversationTurn, settleConversationTurn } from "./agent-conversations.js";
 // myrmidon(B1): product name in the notice/prompt text below; see product.ts.
 import { PRODUCT_NAME, productPossessive, productSaid } from "../myrmidon/product.js";
@@ -15435,6 +15443,20 @@ export function heartbeatService(
           : {}),
         scheduledRetryAttempt: schedule.attempt,
         scheduledRetryAt: schedule.dueAt.toISOString(),
+        // myrmidon(1.6.6 RUN-RETRY-POLICY): what the schedule decided about the
+        // failure, persisted so the board can show "attempt N of M" with the
+        // class of the failure instead of a bare attempt number (read back by
+        // summarizeIssueScheduledRetryRun; see docs/myrmidon/SETTINGS.md).
+        retryPolicy: describeRunRetrySchedule({
+          failure: {
+            errorCode: run.errorCode,
+            errorFamily: readHeartbeatRunErrorFamily(run),
+          },
+          attempt: schedule.attempt,
+          maxAttempts: schedule.maxAttempts,
+          delayMs: schedule.delayMs,
+          now,
+        }),
         ...(transientRetryNotBefore
           ? { transientRetryNotBefore: transientRetryNotBefore.toISOString() }
           : {}),
@@ -16371,6 +16393,7 @@ export function heartbeatService(
     run: typeof heartbeatRuns.$inferSelect;
     agentName: string | null;
   }) {
+    const retryPolicy = readRunRetryPolicySnapshot(row.run.contextSnapshot);
     return {
       runId: row.run.id,
       status: row.run.status as
@@ -16381,6 +16404,12 @@ export function heartbeatService(
       scheduledRetryAt: row.run.scheduledRetryAt,
       scheduledRetryAttempt: row.run.scheduledRetryAttempt,
       scheduledRetryReason: row.run.scheduledRetryReason,
+      // myrmidon(1.6.6 RUN-RETRY-POLICY): the attempt ceiling and the failure
+      // classification the scheduler recorded when it queued this run. Runs
+      // queued before the policy existed carry no snapshot and report null, and
+      // the board then falls back to the bare attempt number.
+      scheduledRetryMaxAttempts: retryPolicy?.maxAttempts ?? null,
+      scheduledRetryClassification: retryPolicy?.classification ?? null,
       error: row.run.error,
       errorCode: row.run.errorCode,
     };

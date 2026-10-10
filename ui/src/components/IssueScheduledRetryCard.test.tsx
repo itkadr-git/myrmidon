@@ -157,6 +157,53 @@ describe("IssueScheduledRetryCard", () => {
     expect(text).toContain("run-prev");
   });
 
+  // myrmidon(1.6.6 RUN-RETRY-POLICY): the card shows how many attempts the
+  // policy allows, and the class of the failure, when the scheduler recorded
+  // them; retries queued before the policy existed keep the bare number.
+  it("shows the attempt ceiling recorded by the retry policy", () => {
+    renderWithProviders(
+      <IssueScheduledRetryCard
+        issueId="issue-1"
+        scheduledRetry={{
+          ...baseRetry,
+          scheduledRetryAttempt: 2,
+          scheduledRetryMaxAttempts: 3,
+          scheduledRetryClassification: "transient",
+        }}
+      />,
+    );
+    const text = getCard()?.textContent ?? "";
+    expect(text).toContain("Attempt 2 of 3");
+    expect(text).toContain("Transient failure");
+  });
+
+  it("shows an unclassified failure when the policy could not classify it", () => {
+    renderWithProviders(
+      <IssueScheduledRetryCard
+        issueId="issue-1"
+        scheduledRetry={{
+          ...baseRetry,
+          scheduledRetryAttempt: 1,
+          scheduledRetryMaxAttempts: 1,
+          scheduledRetryClassification: "unknown",
+        }}
+      />,
+    );
+    const text = getCard()?.textContent ?? "";
+    expect(text).toContain("Attempt 1 of 1");
+    expect(text).toContain("Unclassified failure");
+  });
+
+  it("keeps the bare attempt number without a policy snapshot", () => {
+    renderWithProviders(
+      <IssueScheduledRetryCard issueId="issue-1" scheduledRetry={baseRetry} />,
+    );
+    const text = getCard()?.textContent ?? "";
+    expect(text).toContain("Attempt 4");
+    expect(text).not.toContain("Attempt 4 of");
+    expect(text).not.toContain("Unclassified failure");
+  });
+
   it("uses continuation copy for max-turn continuations", () => {
     renderWithProviders(
       <IssueScheduledRetryCard
