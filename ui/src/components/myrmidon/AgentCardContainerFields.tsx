@@ -210,6 +210,8 @@ export function AgentCardContainerFieldsView({
   // The server judges the SAVED image; an edited one is judged after saving.
   const savedImageNotAllowed = status?.imageAllowed === false && !unsaved;
   const concurrency = concurrencyView(status);
+  // myrmidon(1.7 KNOWLEDGE-2.0 L-3): the «Знания в пакете» block, from the compile ledger.
+  const knowledgeDelivery = status?.knowledgeDelivery ?? null;
 
   return (
     <CollapsibleSection title="Container" open={expanded} onToggle={() => setExpanded((open) => !open)}>
@@ -389,6 +391,38 @@ export function AgentCardContainerFieldsView({
                 {concurrency.warning}
               </p>
             )}
+          </div>
+        )}
+
+        {knowledgeDelivery && (
+          <div className="space-y-1 rounded-md border border-border px-2.5 py-2" data-testid="myrmidon-bot-container-knowledge">
+            <div className="text-xs text-muted-foreground">Знания в пакете</div>
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-sm" data-testid="myrmidon-bot-container-knowledge-file">
+                {knowledgeDelivery.file ?? "No knowledge files"}
+              </span>
+              {knowledgeDelivery.rulesCount > 0 && (
+                <span className="text-sm" data-testid="myrmidon-bot-container-knowledge-rules">
+                  {knowledgeDelivery.rulesCount} rule(s) in REGULATIONS.md
+                </span>
+              )}
+              {knowledgeDelivery.caste && (
+                <span
+                  className="rounded-full border border-border px-2 py-0.5 text-xs"
+                  data-testid="myrmidon-bot-container-knowledge-caste"
+                >
+                  caste: {knowledgeDelivery.caste}
+                </span>
+              )}
+            </div>
+            {knowledgeDelivery.indexSlugs.length > 0 && (
+              <p className="text-xs text-muted-foreground" data-testid="myrmidon-bot-container-knowledge-slugs">
+                KNOWLEDGE_INDEX.md points at: {knowledgeDelivery.indexSlugs.join(", ")}
+              </p>
+            )}
+            <p className="text-xs text-muted-foreground">
+              Compiled {new Date(knowledgeDelivery.compiledAt).toLocaleString()}
+            </p>
           </div>
         )}
       </div>

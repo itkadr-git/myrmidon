@@ -70,8 +70,9 @@ import type { BotContainerActivitySink } from "./reconciler.js";
 import type { BotProfilePass } from "./profile-pass.js";
 import type { CompiledProfile } from "./types.js";
 // myrmidon(1.6-WIKI): approved wiki regulations reach a bot through its compiled profile.
-import { loadRegulationWorkspaceFiles } from "../wiki-cortex/delivery.js";
+import { loadRegulationWorkspaceFiles, loadKnowledgeIndexDelivery } from "../wiki-cortex/delivery.js";
 import { createWikiRegulationService } from "../wiki-cortex/service.js";
+import { createKnowledgeService } from "../knowledge/store.js"; // myrmidon(1.7 KNOWLEDGE-2.0 L-3)
 import { createDbRegulationStore } from "../wiki-cortex/store.js";
 import { readAppliedScopeLayout } from "./scope-wiring.js"; // myrmidon(BOT-DISK-F)
 import { readBotDiskLayout, readCloneIdleTtlSecForRole, readSharedPackageCachePathForRole } from "./bot-disk-service.js"; // myrmidon(1.6.1-BOT-DISK-B, 1.6.2-BOT-DISK-C)
@@ -185,6 +186,8 @@ export function createDbBotProfilePorts(db: Db): BotProfilePorts {
   const instanceSettings = instanceSettingsService(db);
   // myrmidon(1.6-WIKI): the wiki regulations of the company, delivered through the profile.
   const wikiRegulations = createWikiRegulationService(createDbRegulationStore(db));
+  // myrmidon(1.7 KNOWLEDGE-2.0 L-3): the knowledge module behind the package index.
+  const knowledge = createKnowledgeService(db);
   const resolveCardEnv = createCardEnvResolver(
     {
       resolveEnvBindings: (companyId, bindings, context) => secrets.resolveEnvBindings(companyId, bindings, context),
@@ -489,6 +492,48 @@ export function createDbBotProfilePorts(db: Db): BotProfilePorts {
     // for the container profile. An empty wiki produces no file at all.
     async loadRegulations(agent, context) {
       return loadRegulationWorkspaceFiles(wikiRegulations, { companyId: agent.companyId, role: agent.role }, context);
+    },
+
+    // myrmidon(1.7 KNOWLEDGE-2.0 L-3, §3.7): the `KNOWLEDGE_INDEX.md` file for the
+    // agent's package. The nest is the company (one nest per company); the caste
+    // is the agent's role key. Read per compile — the deterministic renderer keeps
+    // unchanged trees hash-stable. A compile with neither delivered pages nor
+    // rules yields no file, so untouched agents keep byte-identical profiles.
+    async loadKnowledgeIndex(agent) {
+      const caste = (agent.role ?? "").trim() || null;
+      const [pages, rules] = await Promise.all([
+        knowledge.listItems(agent.companyId, { status: "published" }),
+        knowledge.listPublishedRules(agent.companyId),
+      ]);
+      return loadKnowledgeIndexDelivery({
+        companyId: agent.companyId,
+        caste,
+        rulesCount: rules.length,
+        pages: pages.map((page) => ({
+          slug: page.slug,
+          title: page.title,
+          summary: page.summary,
+          kind: page.kind,
+          status: page.status,
+          deliverToCastes: page.deliverToCastes,
+        })),
+      });
+    },
+
+    // myrmidon(1.7 KNOWLEDGE-2.0 L-3, §3.7): the current-state ledger of what a
+    // bot's compiled package carried — keyed by agent, updated per compile. The
+    // store itself skips the write when the bundle hash is unchanged, so an
+    // idle fleet stops writing.
+    async recordKnowledgeDelivery(input) {
+      const rules = await knowledge.listPublishedRules(input.companyId);
+      await knowledge.recordKnowledgeDelivery({
+        companyId: input.companyId,
+        nestId: input.companyId,
+        agentId: input.agentId,
+        bundleHash: `${input.file ?? "none"}|${input.caste ?? "-"}|${input.indexSlugs.join(",")}|${input.rulesCount}`,
+        rulesRevisionIds: rules.map((rule) => rule.revisionId ?? rule.itemId),
+        indexItemIds: input.indexSlugs,
+      });
     },
   };
 }
