@@ -135,10 +135,36 @@ branch_match_expr() {
 
 # Runs of one workflow for THIS tag (and, optionally, of the same commit from
 # other branches such as main — the caller decides which branches count).
+# TAG-CI-RETRY (the 1.6.5 rc.13 incident): a transient `gh api` failure (5xx,
+# secondary rate limit on actions/runs while polling every 20 s) used to be
+# swallowed by `|| true`; the jq pipeline then read EMPTY input, printed an
+# EMPTY verdict, and "" != "missing" broke the wait loop as if a run had
+# COMPLETED with an empty conclusion — the publish died after 36 min with
+# "(conclusion: )" while the tag CI finished success 11 min later. The API
+# call is now retried with backoff; a persistent failure answers "[]"
+# (no runs), which every caller normalizes to "missing" — the gate keeps
+# WAITING (fail-safe: a retryable answer, never a bogus refusal).
+GH_API_RETRIES="${MYRMIDON_RELEASE_GH_RETRIES:-3}"
+GH_API_RETRY_SLEEP="${MYRMIDON_RELEASE_GH_RETRY_SLEEP:-5}"
 runs_of() {
-  local workflow_file="$1" branches="$2"
-  gh api --paginate "repos/$repo/actions/runs?head_sha=$sha&per_page=100" \
-    --jq "[.workflow_runs[]? | select(.path == \"$workflow_file\" and $branches)]" 2>/dev/null || true
+  local workflow_file="$1" branches="$2" attempt out rc
+  for ((attempt = 1; attempt <= GH_API_RETRIES; attempt++)); do
+    out="$(gh api --paginate "repos/$repo/actions/runs?head_sha=$sha&per_page=100" \
+      --jq "[.workflow_runs[]? | select(.path == \"$workflow_file\" and $branches)]" 2>/dev/null)" && rc=0 || rc=$?
+    # Success is a non-empty answer ("[]" when no run matched - the --jq
+    # filter always prints the array). Anything else (non-zero exit, empty
+    # stdout) is a failed read and is retried.
+    if ((rc == 0)) && [[ -n "$out" ]]; then
+      printf '%s\n' "$out"
+      return 0
+    fi
+    log "gate: gh api runs read failed (attempt $attempt/$GH_API_RETRIES) - retrying in ${GH_API_RETRY_SLEEP}s"
+    sleep "$GH_API_RETRY_SLEEP"
+  done
+  # Persistent failure: answer an empty runs list. run_verdict/run_status turn
+  # "[]" into "missing", so the gate waits instead of refusing
+  # with an empty conclusion (the rc.13 "(conclusion: )" death).
+  printf '[]\n'
 }
 
 run_verdict() {
@@ -156,24 +182,36 @@ run_verdict() {
              else (map(.conclusion) | unique)
                   | if length == 1 then .[0] else \"mixed\" end end" 2>/dev/null)" \
     || verdict="missing"
+  # TAG-CI-RETRY: an empty/blank verdict is never a conclusion — normalize it
+  # to "missing" so the gate keeps waiting (the rc.13 "(conclusion: )" death).
+  [[ -n "${verdict//\"/}" ]] || verdict="missing"
   # jq output is a JSON string: strip the quotes to get the bare value.
   printf '%s\n' "${verdict//\"/}"
 }
 
 # Status of the newest run (any state) of one workflow for THIS tag.
+# Status of the newest run (any state) of one workflow for THIS tag.
+# TAG-CI-RETRY: an empty status read (a failed API read) is not a missing
+# run - it normalizes to "missing" so the gate keeps waiting.
 run_status() {
   local workflow_file="$1" branches status
   branches="$(branch_match_expr "$tag")"
   status="$(runs_of "$workflow_file" "$branches" \
     | jq ".[0].status // \"missing\"" 2>/dev/null)" \
     || status="missing"
+  [[ -n "${status//\"/}" ]] || status="missing"
   printf '%s\n' "${status//\"/}"
 }
 
 # Poll cadence of the gate wait. Overridable for the tests (the default is
 # sized for CI: image workflows on a tag push run up to ~40 minutes).
+# TAG-CI-RETRY (the 1.6.5 rc.13 incident): the tag's own CI pipeline
+# (myrmidon-ci-tag.yml) measured ~50 min (18:15 → 19:05) while the budget was
+# 120 × 20 s = 40 min — the publish would have died on a clean timeout even
+# without the API glitch. 180 × 20 s = 60 min covers the observed CI plus
+# retry slack; the publish job's timeout-minutes: 90 still bounds the run.
 POLL_SECONDS="${MYRMIDON_RELEASE_POLL_SECONDS:-20}"
-POLL_MAX="${MYRMIDON_RELEASE_POLL_MAX:-120}"
+POLL_MAX="${MYRMIDON_RELEASE_POLL_MAX:-180}"
 
 # wait_for <workflow_file> <must|soft> <label>
 #   must — a completed run must exist and be success; a missing/failed run
