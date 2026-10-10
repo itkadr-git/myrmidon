@@ -2,6 +2,7 @@ import { and, asc, eq, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { heartbeatRunEvents, heartbeatRuns } from "@paperclipai/db";
 import { nativeSha256 } from "./native-runtime/canonical.js";
+import { enterLaneIfUntagged } from "../myrmidon/monitoring/board-load/lanes.js"; // myrmidon(1.6.6 PROCS-0.3A)
 
 export interface AppendHeartbeatRunEventInput {
   companyId: string;
@@ -65,6 +66,16 @@ export async function allocateHeartbeatRunEventSeq(
 }
 
 export async function appendHeartbeatRunEvent(
+  db: Db,
+  input: AppendHeartbeatRunEventInput,
+): Promise<AppendHeartbeatRunEventResult> {
+  // myrmidon(1.6.6 PROCS-0.3A): the run-event write is run-supervision work.
+  // An operator's request already carries the http_route lane and keeps it;
+  // the supervision loops have no lane of their own and get this one.
+  return enterLaneIfUntagged("run_supervision", () => appendHeartbeatRunEventBody(db, input));
+}
+
+async function appendHeartbeatRunEventBody(
   db: Db,
   input: AppendHeartbeatRunEventInput,
 ): Promise<AppendHeartbeatRunEventResult> {

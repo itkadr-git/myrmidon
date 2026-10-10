@@ -11,6 +11,7 @@ import { shapeWithoutDefaults } from "./partial.js";
 // myrmidon(WORKSPACE-HYGIENE): workspace disk quotas that can be changed while the server runs
 import { workspaceHygieneLimitsSchema } from "../myrmidon-workspace-hygiene.js";
 import { hostDiskSettingsSchema } from "../myrmidon-host-disk.js";
+import { alertRecoverySettingsSchema } from "../myrmidon-alert-recovery.js";
 // myrmidon(BOT-DISK-A): bot draft-directory lifecycle settings, lenient stored shape
 import { storedBotDiskSettingsSchema } from "../myrmidon-bot-disk.js";
 // myrmidon(1.6.1-BOT-DISK-C): the per-bot disk quota stored in the same general settings row.
@@ -21,6 +22,15 @@ import { storedBotImageRolloutSettingsSchema } from "../myrmidon-bot-image-rollo
 import { storedSessionGenerationsSettingsSchema } from "../myrmidon-session-generations.js";
 // myrmidon(C0): run admission limits that can be changed while the server runs
 import { storedRunLimitsSchema } from "../myrmidon-runtime-limits.js";
+// myrmidon(RUN-STALL-SETTINGS): the run stall detection settings stored in instance settings
+import { runStallSettingsSchema } from "../myrmidon-run-stall.js";
+// myrmidon(1.6.6 PROCS-J): the board's process counts (`api`, `worker`) stored in the same
+// general row; the row is read and validated at startup (see
+// packages/shared/src/myrmidon-board-processes.ts).
+import { storedBoardProcessesSettingsSchema } from "../myrmidon-board-processes.js";
+// myrmidon(1.6.6 CORPUS-2.0 ч.C): the corpus module settings (module switch, parse
+// service base URL, embedder, limits), lenient stored shape.
+import { storedCorpusSettingsSchema } from "../myrmidon-corpus.js";
 // myrmidon(PARALLEL-HELPERS): company ceiling/default for parallel helper
 // subagents, changed from the instance settings page and /api/myrmidon/parallel-helpers.
 import { parallelHelpersSettingsSchema, patchParallelHelpersSettingsSchema } from "../myrmidon-parallel-helpers.js";
@@ -62,6 +72,11 @@ import {
 // percent of the model window, fallback window, optimizer agent) stored in the
 // same general settings row.
 import { promptBudgetSettingsSchema } from "../myrmidon-prompt-budget.js";
+
+// myrmidon(1.6.6 LONG-TASK-CONTEXT): the long-task context guard settings
+// (switch, reset threshold percent, fallback window, history budget) stored in
+// the same general settings row.
+import { longTaskContextSettingsSchema } from "../myrmidon-long-task-context.js";
 
 // myrmidon(1.6.5 BOT-RUNTIME-TUNING D2): the fallback-signal settings (switch,
 // threshold percent, minimum calls, window and sweep interval) stored in the
@@ -115,6 +130,18 @@ export const instanceGeneralSettingsSchema = z.object({
   // myrmidon(1.6.5 RUN-ADMISSION): the shape also tolerates a row saved
   // before `maxHostLoadPercentPerCore` existed.
   runLimits: storedRunLimitsSchema.optional(),
+  // myrmidon(RUN-STALL-SETTINGS): the run stall detection settings, changed
+  // from the instance settings page and /api/myrmidon/run-stall; absent means
+  // "use the environment variable, then the default" (see
+  // packages/shared/src/myrmidon-run-stall.ts). Canonical: every key present,
+  // numbers whole and in range, so a strict miss here cannot hide behind an
+  // older row — the key did not exist before 1.6.5.
+  runStall: runStallSettingsSchema.optional(),
+  // myrmidon(1.6.6 CORPUS-2.0 ч.C): the knowledge-corpus module settings,
+  // changed from /api/myrmidon/corpus/settings; absent means "use the
+  // environment variable, then the default (off)". Lenient: a row with unknown
+  // keys or with an invalid value still parses (see myrmidon-corpus.ts).
+  corpus: storedCorpusSettingsSchema.optional(),
   // myrmidon(BOT-DISK E): the host disk usage threshold, changed from
   // /api/myrmidon/host-disk; absent means "use the environment variable, then
   // the default (85)".
@@ -177,6 +204,18 @@ export const instanceGeneralSettingsSchema = z.object({
   // the settings service under `general.reviewReworkJournal` and read by
   // GET /api/myrmidon/review-rework. Stored passthrough, like swarmClaimJournal.
   reviewReworkJournal: z.array(z.unknown()).optional(),
+  // myrmidon(1.6.6 MONITORING D): the alert-recovery knobs — how long an alert
+  // must stay resolved before its task closes by itself, and how long a repeat
+  // of the same alert still belongs to the same task; changed from
+  // /api/myrmidon/monitoring/alert-recovery; absent means "use the environment
+  // variable, then the default (10 and 60 minutes)".
+  alertRecovery: alertRecoverySettingsSchema.optional(),
+  // myrmidon(1.6.6 MONITORING D): the runtime journal of alert -> task records
+  // (the task of each alert identity, its runbook and how long the alert has
+  // been resolved), kept by the alert-recovery service under
+  // `general.alertRecoveryJournal`. Stored passthrough, like swarmClaimJournal:
+  // the service re-reads it defensively and drops a broken row.
+  alertRecoveryJournal: z.array(z.unknown()).optional(),
   // myrmidon(1.7-SETTINGS-TO-UI): the channel settings document (the Telegram
   // bridge switches, the chat limits, the cross-channel numbers), changed from
   // /api/myrmidon/channel-settings; absent means "use the environment variable,
@@ -216,6 +255,10 @@ export const instanceGeneralSettingsSchema = z.object({
   // /api/myrmidon/companies/:id/prompt-budget/settings; absent means the
   // defaults (warn 70, crit 90, enabled, 200k fallback window).
   promptBudget: promptBudgetSettingsSchema.optional(),
+  // myrmidon(1.6.6 LONG-TASK-CONTEXT): the guard's thresholds, changed from the
+  // instance settings row; absent means the defaults (enabled, reset at 70% of
+  // the model window, 200k fallback window, 24k history characters).
+  longTaskContext: longTaskContextSettingsSchema.optional(),
   // myrmidon(1.6.5 BOT-RUNTIME-TUNING D2): the fallback-signal settings, changed
   // from /api/myrmidon/model-fallback/settings; absent means "use the
   // environment variable, then the default" (see
@@ -225,6 +268,22 @@ export const instanceGeneralSettingsSchema = z.object({
   // changed from /api/myrmidon/foraging-settings; absent means "use the
   // environment variable, then the default (the sweep is off)".
   foraging: foragingSettingsSchema.optional(),
+  // myrmidon(1.6.3 PLUGIN-ENTITLEMENT A): the ed25519 verification public key
+  // (PEM) for entitlement tokens; absent means no token can verify.
+  pluginEntitlementPublicKey: z.string().min(1).max(2000).optional(),
+  // myrmidon(1.6.6 SETTINGS-UI C-4): the attention-feed windows, changed from
+  // GET/PATCH /api/myrmidon/attention-feed; both are read by
+  // server/src/services/attention.ts on the next feed build, so a PATCH needs
+  // no restart. Absent means the default (7 days, 45 s) — see
+  // packages/shared/src/myrmidon-attention-feed.ts.
+  attentionFailedRunHorizonDays: z.number().int().min(1).max(365).optional(),
+  attentionFeedCacheTtlSeconds: z.number().int().min(0).max(300).optional(),
+  // myrmidon(1.6.6 PROCS-J): the counts of the board's process composition —
+  // how many HTTP processes (`api`) and scheduler processes (`worker`) the
+  // deployment asks for. The stored row is accepted as it is, including the
+  // fields another part of the same feature stores there; absent (or an absent
+  // count) means the default { api: 1, worker: 0 } = today's single process.
+  processes: storedBoardProcessesSettingsSchema.optional(),
 }).strict();
 
 export const patchInstanceGeneralSettingsSchema = z

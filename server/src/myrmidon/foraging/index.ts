@@ -3,10 +3,10 @@
 // myrmidon(1.6-FORAGE): entry point of FORAGING.
 //
 // Wires the store, the reader and the candidate port to the database and hands
-// app.ts a router. The candidate port is the seam with SKILL-LIFECYCLE: while
-// that module is not merged the port is absent and findings stay `unverified`;
-// once it lands, `foragingCandidatePort` below is the single place to connect it,
-// so no other file of this feature changes.
+// app.ts a router. The candidate port is the seam with SKILL-LIFECYCLE: it is
+// connected here (the single place of the wiring), so findings with a diff
+// become skill candidates through the lifecycle service; a deployment without
+// the connection still records them `unverified` through the null port.
 //
 // 1.6.1 (FORAGING-LIMITS-UI): the settings the sweep runs with are the instance
 // settings row (`general.foraging`), resolved on EVERY pass — the env stays the
@@ -26,6 +26,8 @@ import { createForagingReader } from "./reader.js";
 import { readForagingSettings, resolveForagingEffectiveSettings, foragingSettingsService } from "./settings.js";
 import { createForagingService, type ForagingService } from "./service.js";
 import { createDbForagingStore, type ForagingStore } from "./store.js";
+import { createDbForagingSkillStore, createForagingCandidatePort } from "./candidate-port.js";
+import { skillLifecycleService } from "../skill-lifecycle/index.js";
 import { foragingRoutes } from "./routes.js";
 
 export {
@@ -46,17 +48,30 @@ export { createDbForagingStore } from "./store.js";
 export { createForagingReader } from "./reader.js";
 // myrmidon(1.6.1-FORAGING-LIMITS-UI)
 export * from "./limits.js";
+export { createForagingCandidatePort, createDbForagingSkillStore, buildCandidateMarkdown } from "./candidate-port.js";
+export type { ForagingSkillStore, ForagedSkillRef } from "./candidate-port.js";
 
 /**
  * The candidate port of the running instance.
  *
- * SKILL-LIFECYCLE is a separate feature (its own tables and service). Until its
- * service is available in this deployment the port stays absent: a finding is
- * recorded `unverified` and nothing else happens. The wiring is one call site,
- * so connecting the lifecycle later does not touch the sweep.
+ * The port is the seam with SKILL-LIFECYCLE: a finding with a diff resolves or
+ * creates the company skill, records a revision that shows the diff and moves
+ * the skill to `candidate` through the lifecycle service. The wiring is one
+ * call site (`foragingWiring` below), so the sweep itself never changes. When
+ * the connection cannot be constructed the null port keeps findings
+ * `unverified` instead of failing the pass.
  */
-export function foragingCandidatePort(): ForagingCandidatePort {
-  return nullForagingCandidatePort;
+export function foragingCandidatePort(db: Db): ForagingCandidatePort {
+  try {
+    return createForagingCandidatePort({
+      skillStore: createDbForagingSkillStore(db),
+      lifecycle: skillLifecycleService(db),
+      log: logger,
+    });
+  } catch (error) {
+    logger.warn({ error }, "foraging: candidate port could not be constructed, findings stay unverified");
+    return nullForagingCandidatePort;
+  }
 }
 
 export interface ForagingWiring {
@@ -82,7 +97,7 @@ export function foragingWiring(db: Db, env: NodeJS.ProcessEnv = process.env): Fo
         return secrets.resolveSecretValue(companyId, row.id, "latest");
       },
     }),
-    candidatePort: foragingCandidatePort(),
+    candidatePort: foragingCandidatePort(db),
     // 1.6.1: live settings — the row is read on every pass, no restart.
     resolveSettings: async () => {
       const effective = await resolveForagingEffectiveSettings(settings, env);
