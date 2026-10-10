@@ -2868,6 +2868,9 @@ export * from "./myrmidon-wip-limit.js";
 // the stable refusal code, window kinds, quota/body schemas and the message.
 export * from "./myrmidon-project-token-quota.js";
 export * from "./myrmidon-prompt-budget.js"; // myrmidon(1.6.3 PROMPT-BUDGET B)
+// myrmidon(1.6.5-OWNER-DM-FILTER): the owner-DM delivery filter — the settings
+// shape (mode), the storage key and the card-audience decision.
+export * from "./myrmidon-owner-delivery.js";
 // myrmidon(1.7-BUDGET-CONFIG-B): the shared contract of budget enforcement —
 // the global mode (signal_only / soft / hard), its storage key and resolver.
 export * from "./myrmidon-budget-enforcement.js";

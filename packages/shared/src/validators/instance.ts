@@ -39,6 +39,8 @@ import { swarmClaimSettingsSchema } from "../myrmidon-swarm-claim.js";
 // myrmidon(1.6.1-WIP-LIMIT-A): the per-agent WIP limit settings stored in the
 // same general settings row.
 import { wipLimitSettingsSchema } from "../myrmidon-wip-limit.js";
+// myrmidon(1.6.5-OWNER-DM-FILTER)
+import { ownerDeliverySettingsSchema } from "../myrmidon-owner-delivery.js";
 // myrmidon(REVIEW-ROUTING): the automatic reviewer routing settings stored in the same row.
 import { reviewRoutingSettingsSchema } from "../myrmidon-review-routing.js";
 // myrmidon(REVIEW-REWORK): the review-return loop settings stored in the same row.
@@ -184,6 +186,10 @@ export const instanceGeneralSettingsSchema = z.object({
   // per-agent overrides, changed from /api/myrmidon/companies/:id/wip-limit/settings;
   // absent means the feature counts but never signals (all limits null).
   wipLimit: wipLimitSettingsSchema.optional(),
+  // myrmidon(1.6.5-OWNER-DM-FILTER): the owner-DM delivery filter mode,
+  // changed from /api/myrmidon/owner-delivery; absent means the default
+  // "owner_decisions_only" (human-addressed cards only).
+  ownerDelivery: ownerDeliverySettingsSchema.optional(),
   // myrmidon(REVIEW-ROUTING): automatic reviewer routing, changed from
   // /api/myrmidon/companies/:id/review-routing/settings; absent means the defaults.
   reviewRouting: reviewRoutingSettingsSchema.optional(),

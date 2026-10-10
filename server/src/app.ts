@@ -148,6 +148,7 @@ import { myrmidonWipLimitRoutes } from "./myrmidon/wip-limit/index.js"; // myrmi
 import { projectTokenQuotaRoutes } from "./myrmidon/project-token-quota/index.js"; // myrmidon(1.6.6 QUOTA-V2)
 import { myrmidonPromptBudgetRoutes } from "./myrmidon/prompt-budget/index.js"; // myrmidon(1.6.3 PROMPT-BUDGET B)
 import { modelFallbackSignalRoutes } from "./myrmidon/litellm-fallback-signal/routes.js"; // myrmidon(BOT-RUNTIME-TUNING D2)
+import { myrmidonOwnerDeliveryRoutes } from "./myrmidon/owner-delivery/index.js"; // myrmidon(1.6.5-OWNER-DM-FILTER)
 import { reviewRoutingRoutes } from "./myrmidon/review-routing/routes.js"; // myrmidon(REVIEW-ROUTING)
 import { reviewReworkRoutes } from "./myrmidon/review-rework/routes.js"; // myrmidon(REVIEW-REWORK)
 // myrmidon(PLUGIN-ENTITLEMENT C): instance-level plugin entitlement keys
@@ -988,6 +989,7 @@ export async function createApp(
   api.use(myrmidonWipLimitRoutes(db)); // myrmidon(1.6.1-WIP-LIMIT-A): per-agent WIP limit settings and status
   api.use(projectTokenQuotaRoutes(db)); // myrmidon(1.6.6 QUOTA-V2): project token quota read/write
   api.use(modelFallbackSignalRoutes(db)); // myrmidon(BOT-RUNTIME-TUNING D2): fallback-signal settings and the live per-agent fallback share
+  api.use(myrmidonOwnerDeliveryRoutes(db)); // myrmidon(1.6.5-OWNER-DM-FILTER): GET/PATCH /api/myrmidon/owner-delivery
   api.use(reviewRoutingRoutes(db)); // myrmidon(REVIEW-ROUTING): automatic reviewer routing settings
   api.use(reviewReworkRoutes(db)); // myrmidon(REVIEW-REWORK): review-return loop settings
   api.use(pluginEntitlementRoutes(db)); // myrmidon(PLUGIN-ENTITLEMENT C): accept/remove plugin keys (instance admin)
