@@ -8,7 +8,7 @@
 ещё раз:
 
 ```sh
-curl -fsSL https://github.com/itkadr-git/myrmidon/releases/download/myr-v1.6.5-rc.5/install.sh | sudo bash
+curl -fsSL https://github.com/itkadr-git/myrmidon/releases/download/myr-v1.6.5-rc.15/install.sh | sudo bash
 ```
 
 Пока выпуск 1.6.5 не стал финальным, команда ставит текущего кандидата:
