@@ -362,6 +362,7 @@ func TestBotPackageCacheMounts(t *testing.T) {
 	}
 	all := []string{
 		cache + "/pnpm:/cache/pnpm:rw",
+		cache + "/pnpm-store:/cache/pnpm-store:rw", // 1.6.5-BOT-DISK-H8a
 		cache + "/go-mod:/cache/go-mod:rw",
 		cache + "/go-build:/cache/go-build:rw",
 		cache + "/gradle:/cache/gradle:rw",

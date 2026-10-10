@@ -49,13 +49,15 @@ import {
  *   at `/cache/git` and clone with `--reference-if-able`, so the objects live
  *   once on the host. Empty or absent: no mirrors and no `/cache/git` mount;
  * - `gitMirrorRefreshMs` — how often the board fetches each mirror;
- * - `pnpmStoreDir` — where pnpm keeps its content-addressed store, a path inside
- *   the bot's single mount (default `/workspace/.pnpm-store`). Never under
- *   `/cache`: that is another mount, and hard links cannot cross mounts;
- * - `pnpmImportMethod` — how pnpm puts a package into a clone: `hardlink` (the
- *   default; only hard links are tried), `clone-or-copy` or `copy` (an explicit
- *   opt-out of hard links). pnpm 9 copies silently where the kernel refuses a
- *   link; the container's start-time self-check reports that.
+ * - `pnpmStoreDir` — where pnpm keeps its content-addressed store (default, since
+ *   1.6.5-BOT-DISK-H8a: `/cache/pnpm-store`, one per partition, bound read-write
+ *   to every bot of `sharedCacheRoles`; a path inside the bot's own tree is a
+ *   store per bot and draws a warning). Never `/cache/pnpm`: that is the
+ *   download cache;
+ * - `pnpmImportMethod` — how pnpm puts a package into a clone: `clone` (the
+ *   default, a reflink; strictly, a refused reflink fails loudly) or `copy` (an
+ *   explicit opt-out). `clone-or-copy` and `hardlink` are refused; stored by an
+ *   earlier release they read as `clone`.
  *
  * myrmidon(BOT-DISK-D): the three binds of a bot container became ONE mount (the
  * bot's whole tree), which is what makes hard links possible at all; the former
@@ -135,27 +137,113 @@ const botRuntimePathSchema = z
     if (problem) ctx.addIssue({ code: "custom", message: `sharedBotRuntimePath ${problem}` });
   });
 
-/** myrmidon(BOT-DISK-D): where the pnpm store lives and how pnpm imports (see the module comment). */
-export const BOT_DISK_DEFAULT_PNPM_STORE_DIR = "/workspace/.pnpm-store";
-export const BOT_DISK_PNPM_IMPORT_METHODS = ["hardlink", "clone-or-copy", "copy"] as const;
+/**
+ * myrmidon(BOT-DISK-D): where the pnpm store lives and how pnpm imports (see the module comment).
+ *
+ * myrmidon(1.6.5-BOT-DISK-H8a): the default store is ONE per partition,
+ * `/cache/pnpm-store` (host `<sharedPackageCachePath>/pnpm-store`, bound
+ * read-write to every bot of `sharedCacheRoles`), and the import method is
+ * `clone` (a reflink: a copy-on-write copy that shares the store's blocks, so a
+ * write to a file in node_modules never reaches the store). It is `clone`
+ * strictly: pnpm's `clone-or-copy` copies silently where the reflink is
+ * refused, which is exactly the failure this setting exists to make loud. A
+ * reflink only works inside ONE filesystem, so the store has to be on the same
+ * partition as the bot volumes.
+ */
+export const BOT_DISK_DEFAULT_PNPM_STORE_DIR = "/cache/pnpm-store";
+/** The per-bot store of 1.6.4 and earlier: a stored value equal to it is migrated to the default. */
+export const BOT_DISK_LEGACY_PNPM_STORE_DIR = "/workspace/.pnpm-store";
+/** `copy` is the explicit opt-out (a full copy per clone); `clone` is the default. */
+export const BOT_DISK_PNPM_IMPORT_METHODS = ["clone", "copy"] as const;
 export type BotDiskPnpmImportMethod = (typeof BOT_DISK_PNPM_IMPORT_METHODS)[number];
-export const BOT_DISK_DEFAULT_PNPM_IMPORT_METHOD: BotDiskPnpmImportMethod = "hardlink";
-/** Container roots a store may live under: all inside the bot's single mount. */
+export const BOT_DISK_DEFAULT_PNPM_IMPORT_METHOD: BotDiskPnpmImportMethod = "clone";
+/** Methods an earlier release accepted and stored; they read back as `clone` (see {@link migrateBotDiskPnpm}). */
+export const BOT_DISK_LEGACY_PNPM_IMPORT_METHODS = ["hardlink", "clone-or-copy"] as const;
+/** The shared per-partition store mount inside a bot container. */
+export const BOT_DISK_SHARED_PNPM_STORE_DIR = BOT_DISK_DEFAULT_PNPM_STORE_DIR;
+/** Container roots of the bot's own tree: a store there is per bot, not shared. */
 export const BOT_DISK_PNPM_STORE_ROOTS = ["/workspace", "/data", "/scratch", "/bot"] as const;
 
 /**
  * Why `value` cannot be the pnpm store directory, or null when it can: a plain
  * absolute path (the cache-path rules) strictly under one of
- * {@link BOT_DISK_PNPM_STORE_ROOTS}. A store anywhere else is outside the bot's
- * single mount and pnpm would copy instead of hard-linking.
+ * {@link BOT_DISK_PNPM_STORE_ROOTS}, or the shared store mount
+ * {@link BOT_DISK_SHARED_PNPM_STORE_DIR} itself or something under it. A store
+ * anywhere else is on another filesystem than the clones, so a reflink (and a
+ * hard link) fails.
  */
 export function botDiskPnpmStoreDirProblem(value: string): string | null {
   const plain = botDiskCachePathProblem(value);
   if (plain) return plain;
+  if (value === BOT_DISK_SHARED_PNPM_STORE_DIR || value.startsWith(`${BOT_DISK_SHARED_PNPM_STORE_DIR}/`)) return null;
   if (!BOT_DISK_PNPM_STORE_ROOTS.some((root) => value.startsWith(`${root}/`))) {
-    return `is not inside the bot's single mount (under ${BOT_DISK_PNPM_STORE_ROOTS.join(", ")})`;
+    return `must be ${BOT_DISK_SHARED_PNPM_STORE_DIR} (the store shared by the partition) or inside the bot's own tree (under ${BOT_DISK_PNPM_STORE_ROOTS.join(", ")}): any other path is on another filesystem than the clones`;
   }
   return null;
+}
+
+/**
+ * A warning (not an error) for a store that is allowed but defeats the point:
+ * one inside the bot's own tree is a store PER BOT — no sharing between bots,
+ * counted against that bot's quota. Null for the shared store.
+ */
+export function botDiskPnpmStoreDirWarning(value: string): string | null {
+  if (botDiskPnpmStoreDirProblem(value) !== null) return null;
+  if (BOT_DISK_PNPM_STORE_ROOTS.some((root) => value.startsWith(`${root}/`))) {
+    return `pnpmStoreDir ${value} is inside the bot's own tree: a store per bot, not shared and counted in the bot's quota; the shared store is ${BOT_DISK_SHARED_PNPM_STORE_DIR}`;
+  }
+  return null;
+}
+
+/**
+ * Why `value` cannot be the pnpm import method, or null when it can: `clone` or
+ * `copy`. `clone-or-copy` is refused on purpose (it copies silently when the
+ * reflink is refused), `hardlink` cannot cross the bind mounts of the shared store.
+ */
+export function botDiskPnpmImportMethodProblem(value: string): string | null {
+  if ((BOT_DISK_PNPM_IMPORT_METHODS as readonly string[]).includes(value)) return null;
+  if (value === "clone-or-copy") {
+    return "clone-or-copy is not allowed: pnpm would copy silently where a reflink is refused; use clone (a refused reflink then fails loudly) or copy (an explicit full copy)";
+  }
+  if (value === "hardlink") {
+    return "hardlink is not allowed: a hard link cannot cross the bind mounts of the shared store; use clone";
+  }
+  return `must be one of ${BOT_DISK_PNPM_IMPORT_METHODS.join(", ")}`;
+}
+
+/**
+ * Reads the pnpm values stored by an earlier release (BOT-DISK-D: store
+ * `/workspace/.pnpm-store`, method `hardlink` or `clone-or-copy`) as the values
+ * in force today, with a note for each one changed: `/workspace/.pnpm-store`
+ * becomes the shared store, `hardlink` and `clone-or-copy` become `clone`. Any
+ * other stored value is kept (an unknown method is dropped to the default by
+ * the caller). Nothing is changed silently: every migration is in `notes`.
+ */
+export function migrateBotDiskPnpm(stored: { pnpmStoreDir?: string; pnpmImportMethod?: string }): {
+  pnpmStoreDir?: string;
+  pnpmImportMethod?: BotDiskPnpmImportMethod;
+  notes: string[];
+} {
+  const notes: string[] = [];
+  const out: { pnpmStoreDir?: string; pnpmImportMethod?: BotDiskPnpmImportMethod; notes: string[] } = { notes };
+  if (typeof stored.pnpmStoreDir === "string") {
+    if (stored.pnpmStoreDir === BOT_DISK_LEGACY_PNPM_STORE_DIR) {
+      out.pnpmStoreDir = BOT_DISK_DEFAULT_PNPM_STORE_DIR;
+      notes.push(`pnpmStoreDir ${stored.pnpmStoreDir} (per-bot store) is read as ${BOT_DISK_DEFAULT_PNPM_STORE_DIR} (the store shared by the partition)`);
+    } else {
+      out.pnpmStoreDir = stored.pnpmStoreDir;
+    }
+  }
+  const method = stored.pnpmImportMethod;
+  if (typeof method === "string") {
+    if ((BOT_DISK_PNPM_IMPORT_METHODS as readonly string[]).includes(method)) {
+      out.pnpmImportMethod = method as BotDiskPnpmImportMethod;
+    } else if ((BOT_DISK_LEGACY_PNPM_IMPORT_METHODS as readonly string[]).includes(method)) {
+      out.pnpmImportMethod = "clone";
+      notes.push(`pnpmImportMethod ${method} is read as clone (strict reflink import)`);
+    }
+  }
+  return out;
 }
 
 const pnpmStoreDirSchema = z
@@ -220,7 +308,16 @@ const gitMirrorRefreshMsSchema = z
   .min(BOT_DISK_MIN_GIT_MIRROR_REFRESH_MS)
   .max(BOT_DISK_MAX_GIT_MIRROR_REFRESH_MS);
 
-const pnpmImportMethodSchema = z.enum(BOT_DISK_PNPM_IMPORT_METHODS);
+const pnpmImportMethodSchema = z
+  .string()
+  .superRefine((value, ctx) => {
+    const problem = botDiskPnpmImportMethodProblem(value);
+    if (problem) ctx.addIssue({ code: "custom", message: `pnpmImportMethod ${problem}` });
+  })
+  .transform((value) => value as BotDiskPnpmImportMethod);
+
+/** What an earlier release may have stored: any string; {@link migrateBotDiskPnpm} reads it. */
+const storedPnpmImportMethodSchema = z.string().max(64);
 
 const idleTtlMsSchema = z
   .number()
@@ -269,7 +366,7 @@ const storedBotDiskObjectSchema = z
     gitMirrorRepos: gitMirrorReposSchema.optional().catch(undefined),
     gitMirrorRefreshMs: gitMirrorRefreshMsSchema.optional().catch(undefined),
     pnpmStoreDir: pnpmStoreDirSchema.optional().catch(undefined),
-    pnpmImportMethod: pnpmImportMethodSchema.optional().catch(undefined),
+    pnpmImportMethod: storedPnpmImportMethodSchema.optional().catch(undefined),
     sharedCacheRoles: sharedCacheRolesSchema.optional().catch(undefined),
   })
   .passthrough();
@@ -355,8 +452,10 @@ export function normalizeStoredBotDiskSettings(raw: unknown): Partial<BotDiskSet
     out.gitMirrorRepos = parsed.data.gitMirrorRepos;
   }
   if (typeof parsed.data.gitMirrorRefreshMs === "number") out.gitMirrorRefreshMs = parsed.data.gitMirrorRefreshMs;
-  if (typeof parsed.data.pnpmStoreDir === "string") out.pnpmStoreDir = parsed.data.pnpmStoreDir;
-  if (typeof parsed.data.pnpmImportMethod === "string") out.pnpmImportMethod = parsed.data.pnpmImportMethod;
+  // myrmidon(1.6.5-BOT-DISK-H8a): the pnpm keys of an earlier release read as today's values.
+  const pnpm = migrateBotDiskPnpm(parsed.data);
+  if (pnpm.pnpmStoreDir !== undefined) out.pnpmStoreDir = pnpm.pnpmStoreDir;
+  if (pnpm.pnpmImportMethod !== undefined) out.pnpmImportMethod = pnpm.pnpmImportMethod;
   if (Array.isArray(parsed.data.sharedCacheRoles)) out.sharedCacheRoles = parsed.data.sharedCacheRoles;
   return out;
 }
@@ -513,6 +612,20 @@ export function resolveBotDiskLayout(stored: unknown): BotDiskLayout {
     pnpmImportMethod: values.pnpmImportMethod ?? BOT_DISK_DEFAULT_PNPM_IMPORT_METHOD,
     sharedCacheRoles: [...new Set((values.sharedCacheRoles ?? BOT_DISK_DEFAULT_SHARED_CACHE_ROLES).map((r) => r.toLowerCase()))],
   };
+}
+
+/**
+ * myrmidon(1.6.5-BOT-DISK-H8a): what to tell the operator about the pnpm
+ * settings in the stored `general.botDisk`: each migration of an earlier
+ * release's value, and a store inside the bot's own tree. Empty when the
+ * settings are the defaults. A warning, never a silent fall back.
+ */
+export function botDiskPnpmWarnings(stored: unknown): string[] {
+  const parsed = storedBotDiskSettingsSchema.safeParse(stored);
+  if (!parsed.success || !parsed.data) return [];
+  const migrated = migrateBotDiskPnpm(parsed.data);
+  const warning = migrated.pnpmStoreDir ? botDiskPnpmStoreDirWarning(migrated.pnpmStoreDir) : null;
+  return warning ? [...migrated.notes, warning] : migrated.notes;
 }
 
 /** The shared package cache path in force, from the stored `general.botDisk` (undefined: none). */
