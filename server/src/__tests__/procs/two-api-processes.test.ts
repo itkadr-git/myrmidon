@@ -119,6 +119,8 @@ describeProcs("two api processes on one test database (PROCS-T1.5 skeleton)", ()
   }, 120_000);
 
   it("scenario 1: both processes come up on the one database and register in it", async () => {
+    // DEBUG
+    for (const h of processes) console.log(`=== CHILD ${h.port} OUTPUT ===\n` + h.output());
     for (const handle of processes) {
       const health = await requestApi(handle.baseUrl, "/api/health");
       expect(health.status, `health of ${handle.baseUrl}: ${health.text.slice(0, 400)}`).toBe(200);
