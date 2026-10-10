@@ -51,6 +51,11 @@ export const ATTENTION_SOURCE_KINDS = [
   // execution-reconciliation hold ("execution_reconciliation_required") until
   // a person confirms the failed run left no external action.
   "execution_hold",
+  // myrmidon(REPLAY-BLOCK-TRIAGE): a task is locked by a settled "do not
+  // replay" hold with no run to clear it; the card names the responsible
+  // (the assignee's manager, else the board operator) and re-surfaces daily
+  // until the hold is triaged.
+  "replay_locked",
 ] as const;
 
 export type AttentionSourceKind = (typeof ATTENTION_SOURCE_KINDS)[number];
