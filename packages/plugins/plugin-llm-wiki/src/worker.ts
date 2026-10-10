@@ -3,10 +3,12 @@ import {
   runWorker,
   type PluginApiRequestInput,
   type PluginContext,
+  type PluginJobContext,
   type PluginManagedRoutineDeclaration,
   type PluginManagedRoutineResolution,
 } from "@paperclipai/plugin-sdk";
 import {
+  FOLDER_HEALTH_CHECK_JOB_KEY,
   PAPERCLIP_DISTILL_SKILL_KEY,
   WIKI_MAINTENANCE_ROUTINE_KEYS,
   WIKI_ROOT_FOLDER_KEY,
@@ -202,6 +204,77 @@ const plugin = definePlugin({
         }
       });
     }
+
+    ctx.jobs.register(FOLDER_HEALTH_CHECK_JOB_KEY, async (job: PluginJobContext) => {
+      // Hourly health probe over every company's configured wiki root.
+      // Declared in the manifest (`jobs:` → `folder-health-check`, cron
+      // `0 * * * *`). Reports per-company folder status to the plugin log
+      // and a `folderHealth` gauge point to plugin metrics, so operators can
+      // see broken wiki roots without board queries. A company with no wiki
+      // root configured yet is reported as not-configured (debug line, own
+      // counter) — it is NOT unhealthy: counting it would pin the gauge at 0
+      // forever on installs where wiki is simply not in use.
+      const companies = await ctx.companies.list();
+      let healthy = 0;
+      let unhealthy = 0;
+      let notConfigured = 0;
+      for (const company of companies) {
+        try {
+          const status = await ctx.localFolders.status(company.id, WIKI_ROOT_FOLDER_KEY);
+          if (!status.configured) {
+            notConfigured += 1;
+            ctx.logger.debug("LLM Wiki folder health check: not configured", {
+              runId: job.runId,
+              trigger: job.trigger,
+              companyId: company.id,
+              checkedAt: status.checkedAt,
+            });
+          } else if (status.healthy) {
+            healthy += 1;
+            ctx.logger.debug("LLM Wiki folder health check: healthy", {
+              runId: job.runId,
+              trigger: job.trigger,
+              companyId: company.id,
+              path: status.path,
+              checkedAt: status.checkedAt,
+            });
+          } else {
+            unhealthy += 1;
+            ctx.logger.warn("LLM Wiki folder health check: unhealthy", {
+              runId: job.runId,
+              trigger: job.trigger,
+              companyId: company.id,
+              configured: status.configured,
+              problems: status.problems.map((problem) => problem.code),
+            });
+          }
+        } catch (err) {
+          unhealthy += 1;
+          ctx.logger.warn("LLM Wiki folder health check: status unavailable", {
+            runId: job.runId,
+            trigger: job.trigger,
+            companyId: company.id,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+      }
+      // Gauge: 1 while no company's configured wiki root is unhealthy, 0
+      // otherwise. Not-configured roots do not drag the gauge down.
+      await ctx.metrics.write("folderHealth", unhealthy === 0 ? 1 : 0, {
+        healthy: String(healthy),
+        unhealthy: String(unhealthy),
+        notConfigured: String(notConfigured),
+      });
+      ctx.logger.info("LLM Wiki folder health check completed", {
+        runId: job.runId,
+        trigger: job.trigger,
+        scheduledAt: job.scheduledAt,
+        companies: companies.length,
+        healthy,
+        unhealthy,
+        notConfigured,
+      });
+    });
 
     ctx.data.register("overview", async (params) => {
       const companyId = readCompanyIdFromParams(params);
