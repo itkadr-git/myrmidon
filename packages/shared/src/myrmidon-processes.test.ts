@@ -1,7 +1,8 @@
-// Processes of the board (myrmidon PROCS-1.1, design OPE-5394 §7.2): the contract
-// of `instance_settings.general.processes` — the defaults are today's behaviour,
-// the enum values stay in step between the schema and the exported lists, and a
-// stored `split` is never reported as if it were running.
+// Processes of the board (myrmidon PROCS-1.1/1.2, design OPE-5394 §7.2): the
+// contract of `instance_settings.general.processes` — the defaults are today's
+// behaviour, the enum values stay in step between the schema and the exported
+// lists, and a stored `split` is reported as in effect exactly when this build
+// carries the supervisor (PROCS-1.2), never silently downgraded.
 import { describe, it } from "vitest";
 import assert from "node:assert/strict";
 import {
@@ -11,7 +12,6 @@ import {
   PROCESSES_MODES,
   PROCESSES_MODE_ENV,
   PROCESSES_SETTING_KEYS,
-  PROCESSES_SPLIT_UNSUPPORTED_REASON,
   describeProcessesEffect,
   mergeProcessesSettings,
   parseProcessesModeEnv,
@@ -99,13 +99,15 @@ describe("processes settings contract (PROCS-1.1)", () => {
     assert.equal(processesSettingsPatchSchema.safeParse({ workerCount: 2 }).success, false);
   });
 
-  it("reports a stored split as stored but not in effect", () => {
+  it("reports a stored split as in effect on this supervisor build", () => {
     const single = describeProcessesEffect(DEFAULT_PROCESSES_SETTINGS);
     assert.equal(single.effectiveMode, "single");
     assert.equal(single.notInEffectReason, null);
 
+    // This build carries the supervisor (PROCS-1.2): a stored `split` is in
+    // effect, never silently downgraded to `single`.
     const split = describeProcessesEffect({ ...DEFAULT_PROCESSES_SETTINGS, mode: "split" });
-    assert.equal(split.effectiveMode, "single");
-    assert.equal(split.notInEffectReason, PROCESSES_SPLIT_UNSUPPORTED_REASON);
+    assert.equal(split.effectiveMode, "split");
+    assert.equal(split.notInEffectReason, null);
   });
 });

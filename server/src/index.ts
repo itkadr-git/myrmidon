@@ -1211,7 +1211,15 @@ async function startServerWithDatabaseTeardown(
       return { userId: actor.userId, companyIds: actor.companyIds };
     },
   });
-  liveEventsClients = liveEventsWss.clients; // myrmidon(PROCS-1.2): the drain paths close these with 1012
+  // myrmidon(PROCS-1.2): the drain paths close these with 1012. The helper
+  // returns { wss, clients } on the real path; mocked tests may stub the call
+  // entirely, so tolerate a bare/missing result by falling back to the empty
+  // registry the drain already handles.
+  const liveEventsClientsRegistry =
+    liveEventsWss && typeof liveEventsWss === "object" && "clients" in liveEventsWss
+      ? (liveEventsWss as { clients?: ReadonlySet<{ close(code?: number, reason?: string): void }> }).clients
+      : undefined;
+  if (liveEventsClientsRegistry) liveEventsClients = liveEventsClientsRegistry;
 
   // myrmidon(EXTCASE-B): the browser extension dials in at /bridge/v1; the board
   // never dials the client PC. Attached next to the other websocket lanes.
