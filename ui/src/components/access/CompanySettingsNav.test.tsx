@@ -143,6 +143,7 @@ describe("CompanySettingsNav", () => {
           { value: "instance-adapters", label: "Adapters" },
           { value: "browsers", label: "Browsers" }, // myrmidon(BROWSER-CONSOLE)
           { value: "clouds", label: "Clouds" }, // myrmidon(CLOUD-CONNECTOR)
+          { value: "google-ai", label: "Google AI Pro" }, // myrmidon(GOOGLE-AI-CONNECT-UI)
           { value: "autonomy", label: "Autonomy" }, // myrmidon(1.6 AUTONOMY-MATRIX B)
           { value: "wip-limit", label: "WIP limit" }, // myrmidon(1.6.1 WIP-LIMIT B)
           { value: "review-routing", label: "Review routing" }, // myrmidon(REVIEW-ROUTING)
@@ -195,6 +196,7 @@ describe("CompanySettingsNav", () => {
       "instance-adapters",
       "browsers", // myrmidon(BROWSER-CONSOLE)
       "clouds", // myrmidon(CLOUD-CONNECTOR)
+      "google-ai", // myrmidon(GOOGLE-AI-CONNECT-UI)
       "autonomy", // myrmidon(1.6 AUTONOMY-MATRIX B)
       "wip-limit", // myrmidon(1.6.1 WIP-LIMIT B)
       "review-routing", // myrmidon(REVIEW-ROUTING)

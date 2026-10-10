@@ -47,6 +47,7 @@ import { preserveBotImageRolloutGeneralKey } from "../myrmidon/bot-containers/bo
 import { preserveBotRolloutDeferredGeneralKey } from "../myrmidon/bot-containers/deferred-store.js";
 // myrmidon(CLOUD-CONNECTOR): keep the cloud connector state across vendor writes of `general`
 import { preserveCloudConnectorGeneralKey } from "../myrmidon/cloud-connector/store.js";
+import { preserveGoogleAiConnectorGeneralKey } from "../myrmidon/google-ai-connector/store.js"; // myrmidon(GOOGLE-AI-CONNECT-UI)
 // myrmidon(SEC1): keep the access-hub host registry across vendor writes of `general`
 import { preserveAccessHubHostsGeneralKey } from "../myrmidon/access-hub/host-registry.js";
 // myrmidon(1.6-AUTONOMY): keep the autonomy matrix and regulations across vendor writes of `general`
@@ -704,6 +705,7 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
             ...preserveBotRolloutDeferredGeneralKey(current.general), // myrmidon(BOT-ROLLOUT)
             ...preserveAccessHubHostsGeneralKey(current.general), // myrmidon(SEC1)
             ...preserveCloudConnectorGeneralKey(current.general), // myrmidon(CLOUD-CONNECTOR)
+            ...preserveGoogleAiConnectorGeneralKey(current.general), // myrmidon(GOOGLE-AI-CONNECT-UI)
             ...preserveAutonomyGeneralKey(current.general), // myrmidon(1.6-AUTONOMY)
             ...preserveTelegramNotifyGeneralKey(current.general), // myrmidon(1.6-TG-PROACTIVITY-E)
             ...preserveTelegramNotifySettingsGeneralKey(current.general), // myrmidon(TG-NOTIFY-A)
