@@ -1,5 +1,5 @@
 import { and, asc, eq, inArray, isNull, or, sql } from "drizzle-orm";
-import { agentWakeupRequests, agents, companies, heartbeatRuns, issues, type Db } from "@paperclipai/db";
+import { agentWakeupRequests, agents, companies, heartbeatRuns, issueComments, issues, type Db } from "@paperclipai/db";
 import { logger } from "../middleware/logger.js";
 // myrmidon(TEAM-LIVENESS-SETTINGS): the instance settings (and the per-agent card
 // switch) this pass obeys, so an operator can change the throttle and the wake
@@ -50,8 +50,21 @@ export const IDLE_WAKE_IDEMPOTENCY_PREFIX = "idle_pickup";
 /** Default: the sweep runs on every scheduler tick (about 30 s), like the other recovery passes. */
 export const DEFAULT_IDLE_PICKUP_INTERVAL_SEC = 30;
 export const MIN_IDLE_PICKUP_INTERVAL_SEC = 5;
-/** Default: an issue whose own run succeeded this recently is left to the handoff/recovery paths. */
-export const DEFAULT_IDLE_PICKUP_RECENT_SUCCESS_WINDOW_MS = 15 * 60 * 1000;
+/**
+ * Default: an issue whose own run succeeded this recently — and which got no new
+ * inbound activity since that run ended — is left to the handoff/recovery paths.
+ *
+ * myrmidon(IDLE-PICKUP-QUIET): two hours, not the earlier fifteen minutes. A run
+ * that ends without changing anything on its issue (no disposition, no comment,
+ * no new run) used to count as "recently succeeded" for a quarter of an hour
+ * only, so the next sweep woke the very same issue 15 minutes later, that run
+ * ended the same way, and the pair repeated every 15–20 minutes with no new
+ * input on the board: four idle wakes on one issue inside an hour. The vendor
+ * handoff/recovery paths act within minutes, so two hours is the window in which
+ * a silent success still means "this issue was just worked". A comment the run
+ * did not write itself ends the silence — see `issueHasInboundActivitySince`.
+ */
+export const DEFAULT_IDLE_PICKUP_RECENT_SUCCESS_WINDOW_MS = 2 * 60 * 60 * 1000;
 
 /**
  * Company-wide wake budget: at most this many idle-pickup wakes for one company
@@ -99,6 +112,10 @@ export function readIdlePickupEnabled(env: NodeJS.ProcessEnv = process.env): boo
  * idle-pickup wake for that same issue (the successful-run-handoff and
  * stranded-recovery paths own the next step there). `0` disables the
  * suppression; invalid values fall back to the default.
+ *
+ * myrmidon(IDLE-PICKUP-QUIET): inside the window the suppression holds only
+ * while the issue stays silent — a comment written after that run ended, by
+ * anyone other than the run itself, reopens the issue for idle pickup.
  */
 export function readIdlePickupRecentSuccessWindowMs(env: NodeJS.ProcessEnv = process.env): number {
   const raw = env[IDLE_PICKUP_RECENT_SUCCESS_WINDOW_MS_ENV]?.trim();
@@ -460,6 +477,7 @@ export async function idlePickupForAgent(
     idlePickupCandidateRows(deps.db, agent.companyId, agent.id),
     deps.db
       .select({
+        id: heartbeatRuns.id,
         contextSnapshot: heartbeatRuns.contextSnapshot,
         status: heartbeatRuns.status,
         finishedAt: heartbeatRuns.finishedAt,
@@ -499,20 +517,24 @@ export async function idlePickupForAgent(
   // step for exactly that shape (a disposition is missing, and those paths send
   // the instructive wake). Waking it again here only races them — and in tests
   // it turns one background run into a chain that leaks into the next suite.
-  const recentlySucceededIssueIds = new Set(
-    liveRuns
-      .filter((run) => run.status === "succeeded")
-      .map((run) => ({
-        issueId: readNonEmptyString(run.contextSnapshot?.issueId),
-        endedAt: run.finishedAt ?? run.startedAt ?? run.createdAt,
-      }))
-      .filter(
-        (run): run is { issueId: string; endedAt: Date } =>
-          Boolean(run.issueId) &&
-          Date.now() - run.endedAt.getTime() < recentSuccessWindowMs,
-      )
-      .map((run) => run.issueId),
-  );
+  //
+  // myrmidon(IDLE-PICKUP-QUIET): the run is not the whole story — what happened
+  // on the issue after it ended is. A success that moved nothing (no new
+  // comment, nobody asking) leaves nothing to wake for, while a success whose
+  // issue got a new comment meanwhile is work waiting for the agent. The latest
+  // success per issue decides, because its silence is the one that must hold.
+  const recentSuccessesByIssueId = new Map<string, { runId: string; endedAt: Date }>();
+  for (const run of liveRuns) {
+    if (run.status !== "succeeded") continue;
+    const issueId = readNonEmptyString(run.contextSnapshot?.issueId);
+    if (!issueId) continue;
+    const endedAt = run.finishedAt ?? run.startedAt ?? run.createdAt;
+    if (Date.now() - endedAt.getTime() >= recentSuccessWindowMs) continue;
+    const known = recentSuccessesByIssueId.get(issueId);
+    if (!known || known.endedAt.getTime() < endedAt.getTime()) {
+      recentSuccessesByIssueId.set(issueId, { runId: run.id, endedAt });
+    }
+  }
 
   // Highest priority first, oldest blocked-transition breaks ties: the same
   // order the queued-run start path uses for one agent's runs.
@@ -535,11 +557,25 @@ export async function idlePickupForAgent(
       result.alreadyActive += 1;
       continue;
     }
-    if (recentlySucceededIssueIds.has(candidate.id)) {
+    const recentSuccess = recentSuccessesByIssueId.get(candidate.id);
+    if (recentSuccess) {
       // The issue just had a successful run without a disposition; the
       // successful-run-handoff / stranded-recovery paths own that next step.
-      result.alreadyActive += 1;
-      continue;
+      //
+      // myrmidon(IDLE-PICKUP-QUIET): unless the issue got inbound activity after
+      // that run ended — a comment the run did not write itself. Then the wake is
+      // the point of this feature (and a comment wake already queued for the
+      // issue still filters it out further down, in hasCoveringWake).
+      const spokenSinceRun = await issueHasInboundActivitySince(deps.db, {
+        companyId: agent.companyId,
+        issueId: candidate.id,
+        since: recentSuccess.endedAt,
+        excludeRunId: recentSuccess.runId,
+      });
+      if (!spokenSinceRun) {
+        result.alreadyActive += 1;
+        continue;
+      }
     }
     // A wake already covers this issue in any non-terminal status (queued,
     // deferred_issue_execution, claimed — not only "queued"): the admission
@@ -611,6 +647,41 @@ export async function idlePickupForAgent(
     }
   }
   return result;
+}
+
+/**
+ * Did the issue get inbound activity after `since`?
+ *
+ * myrmidon(IDLE-PICKUP-QUIET): the quiet window after a successful run is only
+ * quiet while nothing arrives on the issue. A comment someone else wrote is the
+ * signal that a person (or another agent) is waiting on an answer, and the
+ * agent's own run does not answer a question asked after it exited. A comment
+ * the recent run wrote itself (`created_by_run_id`) does not count — runs report
+ * on their issue as the last thing they do, and that report is not new input.
+ *
+ * An assignee change is not checked here: a reassignment produces its own wake
+ * through the assignment path, so this pass has nothing to add for it.
+ */
+async function issueHasInboundActivitySince(
+  db: Db,
+  input: { companyId: string; issueId: string; since: Date; excludeRunId: string | null },
+): Promise<boolean> {
+  const rows = await db
+    .select({ id: issueComments.id })
+    .from(issueComments)
+    .where(
+      and(
+        eq(issueComments.companyId, input.companyId),
+        eq(issueComments.issueId, input.issueId),
+        isNull(issueComments.deletedAt),
+        sql`${issueComments.createdAt} > ${input.since.toISOString()}::timestamptz`,
+        input.excludeRunId
+          ? sql`(${issueComments.createdByRunId} is null or ${issueComments.createdByRunId} <> ${input.excludeRunId}::uuid)`
+          : undefined,
+      ),
+    )
+    .limit(1);
+  return Boolean(rows[0]);
 }
 
 /**
