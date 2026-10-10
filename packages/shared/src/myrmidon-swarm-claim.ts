@@ -342,11 +342,20 @@ export const PHEROMONE_NUMBER_KEYS = [
   "agingStep",
   "agingCap",
   "failPenalty",
-  "cooldownBaseMin",
-  "cooldownCapMin",
 ] as const;
 
 export type PheromoneNumberKey = (typeof PHEROMONE_NUMBER_KEYS)[number];
+
+/**
+ * myrmidon(1.6.5 SWARM-PANEL-COOLING, OPE-6894): `cooldownBaseMin` and
+ * `cooldownCapMin` lived in the `pheromone` subset but no server code ever
+ * read them — the real cooling rule is `general.swarm` (F-26 wake guard,
+ * `myrmidon-swarm-wake.ts` + `wake-task-guard.ts`). They are retired here:
+ * the schema refuses them (`pheromoneSchema` is `.strict()`), and a stored
+ * row that still carries them is stripped, not rejected, so an existing
+ * swarm-claim block keeps parsing.
+ */
+export const PHEROMONE_RETIRED_KEYS = ["cooldownBaseMin", "cooldownCapMin"] as const;
 
 export const PHEROMONE_FIELD_DEFAULTS: Record<PheromoneNumberKey, number> = {
   critical: 100,
@@ -357,8 +366,6 @@ export const PHEROMONE_FIELD_DEFAULTS: Record<PheromoneNumberKey, number> = {
   agingStep: 1,
   agingCap: 5,
   failPenalty: 10,
-  cooldownBaseMin: 30,
-  cooldownCapMin: 720,
 };
 
 const pheromoneNumberSchema = z
@@ -367,21 +374,34 @@ const pheromoneNumberSchema = z
   .min(0)
   .max(100000);
 
-export const pheromoneSchema = z
-  .object({
-    critical: pheromoneNumberSchema,
-    high: pheromoneNumberSchema,
-    medium: pheromoneNumberSchema,
-    low: pheromoneNumberSchema,
-    agingStepHours: pheromoneNumberSchema,
-    agingStep: pheromoneNumberSchema,
-    agingCap: pheromoneNumberSchema,
-    failPenalty: pheromoneNumberSchema,
-    cooldownBaseMin: pheromoneNumberSchema,
-    cooldownCapMin: pheromoneNumberSchema,
-  })
-  .partial()
-  .strict();
+/**
+ * A stored `pheromone` subset from before OPE-6894 may still carry the dead
+ * cooldown keys. Strip them on read so the strict schema keeps accepting the
+ * row (mirrors `dropRetiredSwarmKeys` one level up).
+ */
+function dropRetiredPheromoneKeys(raw: unknown): unknown {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return raw;
+  const copy = { ...(raw as Record<string, unknown>) };
+  for (const key of PHEROMONE_RETIRED_KEYS) delete copy[key];
+  return copy;
+}
+
+export const pheromoneSchema = z.preprocess(
+  dropRetiredPheromoneKeys,
+  z
+    .object({
+      critical: pheromoneNumberSchema,
+      high: pheromoneNumberSchema,
+      medium: pheromoneNumberSchema,
+      low: pheromoneNumberSchema,
+      agingStepHours: pheromoneNumberSchema,
+      agingStep: pheromoneNumberSchema,
+      agingCap: pheromoneNumberSchema,
+      failPenalty: pheromoneNumberSchema,
+    })
+    .partial()
+    .strict(),
+);
 
 /**
  * 1.6.5 (F-27 PHEROMONE): bounds of the numeric strength a task carries

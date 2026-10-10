@@ -1094,7 +1094,8 @@
     "saved": "Saved. The feed uses the new windows from its next build.",
     "save": "Save",
     "reset": "Use defaults",
-    "note": "Stored in the instance settings; there is no environment variable behind either value."  },
+    "note": "Stored in the instance settings; there is no environment variable behind either value."
+  },
   "telegramCard": {
     "title": "Telegram",
     "intro": "The Telegram bridge addresses this agent by these aliases and files its card under the group title in /agents.",
@@ -1114,5 +1115,95 @@
     "saving": "Saving…",
     "saved": "Saved",
     "saveFailed": "Could not save"
+  },
+  "swarmClaim": {
+    "title": "Self-organization (swarm)",
+    "intro": "The board itself matches a free agent to each unassigned task by caste and scent, and wakes that agent on its own task. Every value applies without a restart — the server re-reads these settings on each claim and sweep tick. Turning the swarm off releases the live leases immediately; assignees are not touched. Environment variables stay forced overrides; each field shows whether the saved value or the override is in force.",
+    "enableLabel": "Enable the swarm",
+    "enableHelp": "One switch for the whole matching pipeline. When it is on, an unassigned task with a caste waits in that caste's queue until a free agent appears.",
+    "sourceSaved": "Saved here",
+    "sourceEnv": "Environment override",
+    "sourceDefault": "Default",
+    "statusLine": "{{queued}} unassigned task(s) waiting · {{claimed}} claimed in the last hour · {{cancelled}} cancelled in the last hour",
+    "pheromonesTitle": "Pheromones",
+    "pheromonesHelp": "The priority → strength mapping seeds a task's pheromone; waiting adds strength (aging) and failed runs subtract it (evaporation) until the task changes. The queue orders by the effective strength.",
+    "pheromone": {
+      "critical": {
+        "label": "Critical (P0) strength",
+        "help": "Strength a new critical (P0) task starts with."
+      },
+      "high": {
+        "label": "High strength",
+        "help": "Strength a new high task starts with."
+      },
+      "medium": {
+        "label": "Medium strength",
+        "help": "Strength a new medium task starts with."
+      },
+      "low": {
+        "label": "Low strength",
+        "help": "Strength a new low task starts with."
+      },
+      "agingStepHours": {
+        "label": "Aging step, hours",
+        "help": "How many hours of waiting make one aging step."
+      },
+      "agingStep": {
+        "label": "Aging increment",
+        "help": "Strength added per aging step."
+      },
+      "agingCap": {
+        "label": "Aging cap",
+        "help": "Total strength aging can add to one task."
+      },
+      "failPenalty": {
+        "label": "Evaporation penalty per failed run",
+        "help": "Strength subtracted per failed run since the last task change."
+      }
+    },
+    "p0Label": "P0 preempts the queue",
+    "p0Help": "On — a critical task is the top of the queue. Off — the queue is strictly by effective strength.",
+    "advanced": "Advanced",
+    "advancedLabel": {
+      "leaseTtlSec": "Lease TTL, seconds",
+      "maxActiveTasks": "Max active tasks per agent",
+      "sweepIntervalSec": "Sweep interval, seconds"
+    },
+    "noCeilingPlaceholder": "No ceiling",
+    "requiredPlaceholder": "Required",
+    "saving": "Saving...",
+    "save": "Save self-organization settings",
+    "journalTitle": "Change journal",
+    "journalHelp": "Who changed the swarm settings, and when (newest first).",
+    "journalEmpty": "No changes recorded yet.",
+    "journalNoKeys": "(no keys)",
+    "loading": "Loading self-organization settings...",
+    "saveFailed": "Saving the self-organization settings failed.",
+    "loadFailed": "Failed to load the self-organization settings.",
+    "releasedNote": "Swarm switched off: {{released}} live lease(s) released.",
+    "err": {
+      "leaseTtlSec": "Enter a whole number from 60 to 86400",
+      "maxActiveTasks": "Enter a whole number from 1 to 100, or leave it empty for no ceiling",
+      "sweepIntervalSec": "Enter a whole number of at least 5",
+      "pheromone": "Enter a whole number from 0 to 100000, or leave it empty for the default"
+    },
+    "cooling": {
+      "title": "Task cooling",
+      "intro": "How long a task waits before its next automatic wake after a stale run. One rule for the whole board (the wake-task guard): base × 2^(attempts − 1), clamped to the ceiling. Applies without a restart; the swarm-claim settings above are untouched.",
+      "loading": "Loading the cooling settings...",
+      "gateLabel": "Drop wakes without a task",
+      "gateHelp": "On — an automatic wake that names no existing task closes as skipped before any run starts (0 tokens). Off — such wakes are recorded as before.",
+      "baseLabel": "Cooldown base, minutes",
+      "baseHelp": "The first cooling window after a stale automatic run (1–1440). Empty uses the default, 30.",
+      "ceilingLabel": "Cooldown ceiling, hours",
+      "ceilingHelp": "The largest window after repeated stale runs (1–168). Empty uses the default, 24.",
+      "save": "Save cooling settings",
+      "saveFailed": "Saving the cooling settings failed.",
+      "savedNote": "Cooling settings saved — they apply on the next wake, no restart.",
+      "err": {
+        "cooldownBaseMin": "Enter a whole number from 1 to 1440, or leave it empty for the default",
+        "cooldownCeilingHours": "Enter a whole number from 1 to 168, or leave it empty for the default"
+      }
+    }
   }
 }
