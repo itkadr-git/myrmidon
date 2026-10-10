@@ -345,7 +345,7 @@ export async function reapSetupTokenLeases(
       released += 1;
     } catch {
       failed += 1;
-      log("[paperclip] Setup-token reaper: a lease release failed; it stays retryable.");
+      log("[myrmidon] Setup-token reaper: a lease release failed; it stays retryable.");
     }
   }
   return { released, failed };
@@ -1309,7 +1309,7 @@ export class SetupTokenSessionService {
     try {
       session.process.stop();
     } catch {
-      this.log("[paperclip] Setup-token session: the process stop step errored.");
+      this.log("[myrmidon] Setup-token session: the process stop step errored.");
     }
     await this.runCleanup(session, resolved);
   }
@@ -1368,7 +1368,7 @@ export class SetupTokenSessionService {
       try {
         await this.store.markState(this.identityOf(session), state);
       } catch {
-        this.log("[paperclip] Setup-token session: the cleanup record update failed; it stays retryable.");
+        this.log("[myrmidon] Setup-token session: the cleanup record update failed; it stays retryable.");
       }
     }
     await this.releaseLeaseSafely(session.lease);
@@ -1382,7 +1382,7 @@ export class SetupTokenSessionService {
     try {
       await this.store.remove(this.identityOf(session));
     } catch {
-      this.log("[paperclip] Setup-token session: the cleanup record removal failed; it stays retryable.");
+      this.log("[myrmidon] Setup-token session: the cleanup record removal failed; it stays retryable.");
     }
     this.sessions.delete(session.id);
   }
@@ -1408,7 +1408,7 @@ export class SetupTokenSessionService {
     } catch {
       // The lease release stays retryable and alertable. The startup reaper
       // releases any lease that a crash or a failure left behind.
-      this.log("[paperclip] Setup-token session: the lease release failed; the reaper retries it.");
+      this.log("[myrmidon] Setup-token session: the lease release failed; the reaper retries it.");
     }
   }
 

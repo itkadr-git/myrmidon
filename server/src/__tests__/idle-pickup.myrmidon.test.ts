@@ -134,6 +134,7 @@ describeEmbeddedPostgres("idlePickupForAgent (IDLE-PICKUP)", () => {
     status?: string;
     priority?: string;
     parentId?: string | null;
+    monitorNextCheckAt?: Date | null;
   }) {
     const id = randomUUID();
     await db.insert(issues).values({
@@ -144,6 +145,7 @@ describeEmbeddedPostgres("idlePickupForAgent (IDLE-PICKUP)", () => {
       priority: input.priority ?? "medium",
       assigneeAgentId: input.agentId,
       ...(input.parentId ? { parentId: input.parentId } : {}),
+      ...(input.monitorNextCheckAt ? { monitorNextCheckAt: input.monitorNextCheckAt } : {}),
     });
     return id;
   }
@@ -469,6 +471,50 @@ describeEmbeddedPostgres("idlePickupForAgent (IDLE-PICKUP)", () => {
     void firstId;
   });
 
+  it("does not wake an issue whose monitor check is scheduled in the future (IDLE-PICKUP-MONITOR)", async () => {
+    const { companyId, agentId } = await seedAgent();
+    await seedIssue({
+      companyId,
+      agentId,
+      status: "in_progress",
+      monitorNextCheckAt: new Date(Date.now() + 60 * 60 * 1000),
+    });
+    const deps = fakeDeps();
+
+    const result = await idlePickupForAgent(deps, { id: agentId, companyId });
+
+    expect(result.considered).toBe(0);
+    expect(result.woken).toBe(0);
+    expect(deps.enqueueWakeup).not.toHaveBeenCalled();
+  });
+
+  it("wakes an issue whose monitor check time has already passed (the tick owns that wake, but readiness is not suppressed)", async () => {
+    const { companyId, agentId } = await seedAgent();
+    const issueId = await seedIssue({
+      companyId,
+      agentId,
+      status: "in_progress",
+      monitorNextCheckAt: new Date(Date.now() - 60 * 1000),
+    });
+    const deps = fakeDeps();
+
+    const result = await idlePickupForAgent(deps, { id: agentId, companyId });
+
+    expect(result.woken).toBe(1);
+    expect(result.issueIds).toEqual([issueId]);
+  });
+
+  it("wakes an issue without any monitor scheduled (null monitorNextCheckAt)", async () => {
+    const { companyId, agentId } = await seedAgent();
+    const issueId = await seedIssue({ companyId, agentId });
+    const deps = fakeDeps();
+
+    const result = await idlePickupForAgent(deps, { id: agentId, companyId });
+
+    expect(result.woken).toBe(1);
+    expect(result.issueIds).toEqual([issueId]);
+  });
+
   it("release path: finishing a run on issue A with issue B ready wakes exactly B, never A", async () => {
     const { companyId, agentId } = await seedAgent();
     const issueA = await seedIssue({ companyId, agentId, status: "in_progress" });
@@ -692,6 +738,22 @@ describeEmbeddedPostgres("idlePickupForAgent (IDLE-PICKUP)", () => {
       await seedLiveRun({ companyId, agentId, issueId, status: "queued" });
 
       expect(await findTopReadyIssueForAgent(db, { id: agentId, companyId })).toBeNull();
+    });
+
+    it("skips a task whose monitor check is scheduled in the future and binds to the next ready one", async () => {
+      const { companyId, agentId } = await seedAgent();
+      await seedIssue({
+        companyId,
+        agentId,
+        status: "in_progress",
+        priority: "critical",
+        monitorNextCheckAt: new Date(Date.now() + 60 * 60 * 1000),
+      });
+      const nextId = await seedIssue({ companyId, agentId, priority: "low" });
+
+      const top = await findTopReadyIssueForAgent(db, { id: agentId, companyId });
+
+      expect(top?.id).toBe(nextId);
     });
   });
 });

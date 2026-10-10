@@ -422,6 +422,14 @@ import {
 import { resolveChatRunPresentationAuthorizationReason } from "./chat-run-publications.js";
 import { projectService } from "./projects.js";
 import {
+  getProjectTokenQuotaBlock,
+  recordProjectTokenUsage,
+} from "../myrmidon/project-token-quota/service.js"; // myrmidon(1.6.6 QUOTA-V2)
+import {
+  PROJECT_TOKEN_QUOTA_EXCEEDED_ERROR_CODE,
+  projectTokenQuotaRejectionMessage,
+} from "@paperclipai/shared"; // myrmidon(1.6.6 QUOTA-V2)
+import {
   authorizationService,
   type AuthorizationActor,
 } from "./authorization.js";
@@ -5500,7 +5508,7 @@ async function listUnresolvedBlockerSummaries(
 export function formatRuntimeWorkspaceWarningLog(warning: string) {
   return {
     stream: "stdout" as const,
-    chunk: `[paperclip] ${warning}\n`,
+    chunk: `[myrmidon] ${warning}\n`,
   };
 }
 
@@ -6097,7 +6105,7 @@ export function buildWorkspaceConfigFreshnessOperation(
       previousWorkspaceId: input.previousWorkspaceId,
       activeWorkspaceId: input.activeWorkspaceId,
     },
-    system: `[paperclip] ${workspaceConfigFreshnessActionLabel(input.decision.action)} after config freshness check${categorySummary}: ${reasonSummary}\n`,
+    system: `[myrmidon] ${workspaceConfigFreshnessActionLabel(input.decision.action)} after config freshness check${categorySummary}: ${reasonSummary}\n`,
   };
 }
 
@@ -19773,6 +19781,15 @@ export function heartbeatService(
         costCents: additionalCostCents,
         occurredAt: new Date(),
       });
+      // myrmidon(1.6.6 QUOTA-V2): fold the run's tokens into the project's
+      // quota usage counters (no row / no project = a no-op).
+      if (ledgerScope.projectId) {
+        await recordProjectTokenUsage(db, {
+          companyId: agent.companyId,
+          projectId: ledgerScope.projectId,
+          tokens: inputTokens + cachedInputTokens + outputTokens,
+        });
+      }
     }
   }
 
@@ -23101,7 +23118,7 @@ export function heartbeatService(
         if (runScopedMentionedSkillKeys.length > 0) {
           await onLog(
             "stdout",
-            `[paperclip] Enabled run-scoped skills from issue mentions: ${runScopedMentionedSkillKeys.join(", ")}\n`,
+            `[myrmidon] Enabled run-scoped skills from issue mentions: ${runScopedMentionedSkillKeys.join(", ")}\n`,
           );
         }
         for (const warning of runtimeWorkspaceWarnings) {
@@ -23181,7 +23198,7 @@ export function heartbeatService(
           } catch (err) {
             await onLog(
               "stderr",
-              `[paperclip] Failed to post workspace-ready comment: ${err instanceof Error ? err.message : String(err)}\n`,
+              `[myrmidon] Failed to post workspace-ready comment: ${err instanceof Error ? err.message : String(err)}\n`,
             );
           }
         }
@@ -24213,7 +24230,7 @@ export function heartbeatService(
                   .join(", ");
                 await onLog(
                   "stderr",
-                  `[paperclip] App connection${connections.length === 1 ? "" : "s"} unavailable: ${names}. Continuing this run without ${connections.length === 1 ? "it" : "them"}; reconnect from Apps to restore access.\n`,
+                  `[myrmidon] App connection${connections.length === 1 ? "" : "s"} unavailable: ${names}. Continuing this run without ${connections.length === 1 ? "it" : "them"}; reconnect from Apps to restore access.\n`,
                 );
               },
             });
@@ -24307,7 +24324,7 @@ export function heartbeatService(
               } catch {
                 await onLog(
                   "stderr",
-                  "[paperclip] GitHub runtime transport unavailable; continuing without managed GitHub access.\n",
+                  "[myrmidon] GitHub runtime transport unavailable; continuing without managed GitHub access.\n",
                 );
               }
             }
@@ -24911,7 +24928,7 @@ export function heartbeatService(
             } catch (err) {
               await onLog(
                 "stderr",
-                `[paperclip] Failed to post adapter-managed runtime comment: ${err instanceof Error ? err.message : String(err)}\n`,
+                `[myrmidon] Failed to post adapter-managed runtime comment: ${err instanceof Error ? err.message : String(err)}\n`,
               );
             }
           }
@@ -25236,7 +25253,7 @@ export function heartbeatService(
             );
             await onLog(
               "stderr",
-              `[paperclip] Failed to complete skill test run: ${err instanceof Error ? err.message : String(err)}\n`,
+              `[myrmidon] Failed to complete skill test run: ${err instanceof Error ? err.message : String(err)}\n`,
             );
           }
           const livenessRun = finalizedRun;
@@ -25375,7 +25392,7 @@ export function heartbeatService(
           } catch (err) {
             await onLog(
               "stderr",
-              `[paperclip] Failed to resolve run presentation: ${err instanceof Error ? err.message : String(err)}\n`,
+              `[myrmidon] Failed to resolve run presentation: ${err instanceof Error ? err.message : String(err)}\n`,
             );
           }
           if (outcome === "failed" && isMaxTurnExhaustionRun(livenessRun)) {
@@ -26917,6 +26934,46 @@ export function heartbeatService(
         scopeType: budgetBlock.scopeType,
         scopeId: budgetBlock.scopeId,
       });
+    }
+
+    // myrmidon(1.6.6 QUOTA-V2): the project token quota gate — before a run is
+    // queued, the project's daily/weekly token limits are checked; an
+    // over-limit window refuses the enqueue with the stable code and a
+    // readable sentence. A project without a quota row passes untouched.
+    if (projectId && isUuidLike(projectId)) {
+      const quotaBlock = await getProjectTokenQuotaBlock(
+        db,
+        agent.companyId,
+        projectId,
+      );
+      if (quotaBlock) {
+        const project = await db
+          .select({ name: projects.name })
+          .from(projects)
+          .where(eq(projects.id, projectId))
+          .then((rows) => rows[0] ?? null);
+        const quotaReason = projectTokenQuotaRejectionMessage({
+          projectName: project?.name ?? projectId,
+          windowKind: quotaBlock.windowKind,
+          tokensUsed: quotaBlock.tokensUsed,
+          tokenLimit: quotaBlock.tokenLimit,
+        });
+        await writeSkippedRequest("project.token_quota_exceeded", {
+          error: quotaReason,
+        }, {
+          projectId,
+          windowKind: quotaBlock.windowKind,
+          tokenLimit: quotaBlock.tokenLimit,
+          tokensUsed: quotaBlock.tokensUsed,
+        });
+        throw conflict(quotaReason, {
+          code: PROJECT_TOKEN_QUOTA_EXCEEDED_ERROR_CODE,
+          projectId,
+          windowKind: quotaBlock.windowKind,
+          tokenLimit: quotaBlock.tokenLimit,
+          tokensUsed: quotaBlock.tokensUsed,
+        });
+      }
     }
 
     const invokability = await getAgentInvokability(agent);

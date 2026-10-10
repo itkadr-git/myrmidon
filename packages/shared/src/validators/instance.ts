@@ -22,6 +22,11 @@ import { storedBotImageRolloutSettingsSchema } from "../myrmidon-bot-image-rollo
 import { storedSessionGenerationsSettingsSchema } from "../myrmidon-session-generations.js";
 // myrmidon(C0): run admission limits that can be changed while the server runs
 import { storedRunLimitsSchema } from "../myrmidon-runtime-limits.js";
+// myrmidon(RUN-STALL-SETTINGS): the run stall detection settings stored in instance settings
+import { runStallSettingsSchema } from "../myrmidon-run-stall.js";
+// myrmidon(1.6.6 CORPUS-2.0 ч.C): the corpus module settings (module switch, parse
+// service base URL, embedder, limits), lenient stored shape.
+import { storedCorpusSettingsSchema } from "../myrmidon-corpus.js";
 // myrmidon(PARALLEL-HELPERS): company ceiling/default for parallel helper
 // subagents, changed from the instance settings page and /api/myrmidon/parallel-helpers.
 import { parallelHelpersSettingsSchema, patchParallelHelpersSettingsSchema } from "../myrmidon-parallel-helpers.js";
@@ -116,6 +121,18 @@ export const instanceGeneralSettingsSchema = z.object({
   // myrmidon(1.6.5 RUN-ADMISSION): the shape also tolerates a row saved
   // before `maxHostLoadPercentPerCore` existed.
   runLimits: storedRunLimitsSchema.optional(),
+  // myrmidon(RUN-STALL-SETTINGS): the run stall detection settings, changed
+  // from the instance settings page and /api/myrmidon/run-stall; absent means
+  // "use the environment variable, then the default" (see
+  // packages/shared/src/myrmidon-run-stall.ts). Canonical: every key present,
+  // numbers whole and in range, so a strict miss here cannot hide behind an
+  // older row — the key did not exist before 1.6.5.
+  runStall: runStallSettingsSchema.optional(),
+  // myrmidon(1.6.6 CORPUS-2.0 ч.C): the knowledge-corpus module settings,
+  // changed from /api/myrmidon/corpus/settings; absent means "use the
+  // environment variable, then the default (off)". Lenient: a row with unknown
+  // keys or with an invalid value still parses (see myrmidon-corpus.ts).
+  corpus: storedCorpusSettingsSchema.optional(),
   // myrmidon(BOT-DISK E): the host disk usage threshold, changed from
   // /api/myrmidon/host-disk; absent means "use the environment variable, then
   // the default (85)".
@@ -241,6 +258,13 @@ export const instanceGeneralSettingsSchema = z.object({
   // myrmidon(1.6.3 PLUGIN-ENTITLEMENT A): the ed25519 verification public key
   // (PEM) for entitlement tokens; absent means no token can verify.
   pluginEntitlementPublicKey: z.string().min(1).max(2000).optional(),
+  // myrmidon(1.6.6 SETTINGS-UI C-4): the attention-feed windows, changed from
+  // GET/PATCH /api/myrmidon/attention-feed; both are read by
+  // server/src/services/attention.ts on the next feed build, so a PATCH needs
+  // no restart. Absent means the default (7 days, 45 s) — see
+  // packages/shared/src/myrmidon-attention-feed.ts.
+  attentionFailedRunHorizonDays: z.number().int().min(1).max(365).optional(),
+  attentionFeedCacheTtlSeconds: z.number().int().min(0).max(300).optional(),
 }).strict();
 
 export const patchInstanceGeneralSettingsSchema = z
