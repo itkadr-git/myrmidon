@@ -15,8 +15,9 @@
 //     administrative outcome `interaction_expired`.
 //
 // Both paths post one system comment on the task ("expired without an
-// answer" / resolved-by-silence) and wake the card's author exactly once
-// with wakeReason `interaction_expired` — the limiter is the idempotency
+// answer" / resolved-by-silence) and wake the card's author exactly once —
+// expired cards with wakeReason `interaction_expired`, silence-resolved cards
+// with wakeReason `interaction_resolved` — the limiter is the idempotency
 // key `owner-card-expired:<interactionId>` on agentWakeupRequests (the same
 // receipt mechanism as the pending-interaction wake sweep), so a repeated
 // pass never duplicates the wake.
@@ -47,13 +48,18 @@ import {
 } from "@paperclipai/shared";
 import { logger } from "../../middleware/logger.js";
 import { logActivity } from "../../services/activity-log.js";
+import { issueService } from "../../services/issues.js";
+import { issueThreadInteractionService } from "../../services/issue-thread-interactions.js";
 import {
   readOwnerCardTtlSettings,
   type OwnerCardTtlSettings,
 } from "./settings.js";
 
-/** The wake reason the sweep wakes the card's author with. */
+/** The wake reason the sweep wakes the card's author with for expired cards. */
 export const OWNER_CARD_EXPIRED_WAKE_REASON = "interaction_expired";
+/** The wake reason for silence-resolved cards: distinct from expired so the
+ *  agent does not read "resolved" as "expired". */
+export const OWNER_CARD_SILENCE_RESOLVED_WAKE_REASON = "interaction_resolved";
 /** Idempotency prefix of the one author wake per expired card. */
 export const OWNER_CARD_EXPIRED_WAKE_IDEMPOTENCY_PREFIX = "owner-card-expired:";
 /** The systemId the sweep resolves/expires cards under. */
@@ -310,7 +316,8 @@ export function createOwnerCardTtlSweep(deps: OwnerCardTtlSweepDeps) {
           answeredAt: null,
         };
         const payload = buildOwnerCardPayloadWithDelivery(row.payload, delivery);
-        if (ownerCardResolvesBySilence(row.payload)) {
+        const isSilenceResolved = ownerCardResolvesBySilence(row.payload);
+        if (isSilenceResolved) {
           const cls = classifyOwnerCardPayload(row.payload);
           const resolved = await resolveByRecommendedOption(deps.db, row, cls.recommendedOption);
           if (!resolved) continue; // a concurrent resolver owns the card now
@@ -325,7 +332,10 @@ export function createOwnerCardTtlSweep(deps: OwnerCardTtlSweepDeps) {
           result.expired += 1;
         }
         if (wakeBudgetLeft > 0 && row.createdByAgentId) {
-          const woken = await wakeAuthor(deps, row, now);
+          const wakeReason = isSilenceResolved
+            ? OWNER_CARD_SILENCE_RESOLVED_WAKE_REASON
+            : OWNER_CARD_EXPIRED_WAKE_REASON;
+          const woken = await wakeAuthor(deps, row, now, wakeReason);
           if (woken) {
             wakeBudgetLeft -= 1;
             result.woken += 1;
@@ -388,37 +398,50 @@ async function resolveByRecommendedOption(
   row: OwnerCardTtlRow,
   recommendedOption: "accept" | "reject",
 ): Promise<{ status: string } | null> {
-  // Direct row update, not the issue-thread-interactions service: the accept
-  // path drags in the full workspace-finalize/policy machinery (post-commit
-  // publications, continuation issue, activity fan-out) which the scheduler
-  // sweep does not need — and under the serial CI shard it can push a single
-  // card close past the per-test timeout. Silence resolution is a narrow
-  // administrative close with the system actor; the compare-and-set on
-  // `status = pending` keeps a concurrent human answer authoritative, and
-  // the comment/activity/wake fan-out stays in the sweep itself.
-  const now = new Date();
-  const outcome = recommendedOption === "reject" ? "rejected" : "accepted";
-  const updated = await db
-    .update(issueThreadInteractions)
-    .set({
-      status: outcome,
-      result: {
-        version: 1,
-        outcome,
-        reason: "silence_means_recommended",
-      },
-      resolvedAt: now,
-      updatedAt: now,
+  // Load the issue context the service needs (projectId, goalId, status).
+  const [issue] = await db
+    .select({
+      id: issues.id,
+      companyId: issues.companyId,
+      projectId: issues.projectId,
+      goalId: issues.goalId,
+      status: issues.status,
     })
-    .where(
-      and(
-        eq(issueThreadInteractions.id, row.id),
-        eq(issueThreadInteractions.status, "pending"),
-      ),
-    )
-    .returning({ id: issueThreadInteractions.id });
-  if (updated.length === 0) return null; // a concurrent resolver owns the card now
-  return { status: outcome };
+    .from(issues)
+    .where(eq(issues.id, row.issueId))
+    .limit(1);
+  if (!issue || issue.companyId !== row.companyId) return null;
+
+  const interactionSvc = issueThreadInteractionService(db);
+  const actor = {
+    systemId: OWNER_CARD_SWEEP_SYSTEM_ID,
+    resolutionDetails: {
+      reason: "silence_means_recommended",
+      sweep: true,
+    },
+  };
+
+  try {
+    const resolved =
+      recommendedOption === "reject"
+        ? await interactionSvc.rejectInteraction(issue, row.id, {
+            reason: "silence_means_recommended",
+          }, actor)
+        : await interactionSvc.acceptInteraction(issue, row.id, {}, actor);
+    const interaction = "interaction" in resolved ? resolved.interaction : resolved;
+    return { status: interaction.status };
+  } catch (error) {
+    // CAS: a concurrent resolver (human answer) owns the card now.
+    if (
+      error &&
+      typeof error === "object" &&
+      "status" in error &&
+      (error as { status: number }).status === 409
+    ) {
+      return null;
+    }
+    throw error;
+  }
 }
 
 async function postSweepComment(
@@ -485,6 +508,7 @@ async function wakeAuthor(
   deps: OwnerCardTtlSweepDeps,
   row: OwnerCardTtlRow,
   now: Date,
+  wakeReason: string = OWNER_CARD_EXPIRED_WAKE_REASON,
 ): Promise<boolean> {
   const agentId = row.createdByAgentId;
   if (!agentId) return false;
@@ -504,12 +528,12 @@ async function wakeAuthor(
   await deps.wakeup(agentId, {
     source: "automation",
     triggerDetail: "system",
-    reason: OWNER_CARD_EXPIRED_WAKE_REASON,
+    reason: wakeReason,
     payload: {
       issueId: row.issueId,
       interactionId: row.id,
       interactionKind: "request_confirmation",
-      interactionStatus: "expired",
+      interactionStatus: wakeReason === OWNER_CARD_SILENCE_RESOLVED_WAKE_REASON ? "resolved" : "expired",
       mutation: "interaction",
       sweptAt: now.toISOString(),
     },
@@ -517,7 +541,7 @@ async function wakeAuthor(
       issueId: row.issueId,
       taskId: row.issueId,
       interactionId: row.id,
-      wakeReason: OWNER_CARD_EXPIRED_WAKE_REASON,
+      wakeReason,
       source: "owner_card_ttl_sweep",
     },
     idempotencyKey,

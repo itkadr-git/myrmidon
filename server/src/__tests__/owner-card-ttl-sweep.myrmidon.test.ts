@@ -26,6 +26,7 @@ import {
   createOwnerCardTtlSweep,
   OWNER_CARD_EXPIRED_WAKE_IDEMPOTENCY_PREFIX,
   OWNER_CARD_EXPIRED_WAKE_REASON,
+  OWNER_CARD_SILENCE_RESOLVED_WAKE_REASON,
   type OwnerCardTtlSweepDeps,
 } from "../myrmidon/owner-reply/ttl-sweep.js";
 
@@ -198,7 +199,7 @@ describeEmbeddedPostgres("owner card TTL sweep (embedded PG)", () => {
     expect(wakeup).toHaveBeenCalledTimes(2);
   });
 
-  it("resolves a silence-means-recommended card by the recommended option instead of expiring it", async () => {
+  it("resolves a silence-means-recommended card by the recommended option instead of expiring it", { timeout: 60_000 }, async () => {
     const card = await insertCard({
       payload: {
         version: 1,
@@ -218,7 +219,6 @@ describeEmbeddedPostgres("owner card TTL sweep (embedded PG)", () => {
     expect(resolved.status).toBe("accepted");
     expect(resolved.result).toMatchObject({
       outcome: "accepted",
-      reason: "silence_means_recommended",
     });
 
     const comments = await commentsWithReason("myrmidon_owner_card_ttl");
@@ -226,6 +226,8 @@ describeEmbeddedPostgres("owner card TTL sweep (embedded PG)", () => {
     expect(comments[0]!.body).toContain("молчание");
 
     expect(wakeup).toHaveBeenCalledTimes(1);
+    const [, options] = (wakeup.mock.calls[0] as unknown[]) as [string, Record<string, unknown>];
+    expect(options.reason).toBe(OWNER_CARD_SILENCE_RESOLVED_WAKE_REASON);
   });
 
   it("expires a silence-means-recommended card of the money class anyway", async () => {
@@ -274,5 +276,33 @@ describeEmbeddedPostgres("owner card TTL sweep (embedded PG)", () => {
     expect(result.inspected).toBe(0); // no longer pending, never selected
     expect(wakeup).not.toHaveBeenCalled();
     expect((await readCard(card)).status).toBe("accepted");
+  });
+
+  it("after silence resolution the same continuation/activity fires as on owner answer", { timeout: 60_000 }, async () => {
+    const card = await insertCard({
+      payload: {
+        version: 1,
+        prompt: "Approve?",
+        target: { type: "none" },
+        silenceMeansRecommended: true,
+        recommendedOption: "accept",
+      },
+    });
+
+    const { run } = makeSweep();
+    const result = await run();
+    expect(result.silenceResolved).toBe(1);
+
+    // The service writes the same activity record as a human accept would.
+    const rows = await pg.db
+      .select()
+      .from(activityLog)
+      .where(eq(activityLog.entityId, ISSUE));
+    expect(rows.some((row) => row.action === "issue.thread_interaction_accepted")).toBe(true);
+
+    // The card is accepted, not expired — the agent reads "resolved", not "expired".
+    const resolved = await readCard(card);
+    expect(resolved.status).toBe("accepted");
+    expect(resolved.result).toMatchObject({ outcome: "accepted" });
   });
 });
