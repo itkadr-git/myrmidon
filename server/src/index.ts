@@ -26,6 +26,7 @@ import { warnIfUnsupportedNodeVersion } from "@paperclipai/shared/node-version";
 import { and, eq } from "drizzle-orm";
 import {
   createDb,
+  createPostgresJsClient,
   ensurePostgresDatabase,
   formatEmbeddedPostgresError,
   getPostgresDataDirectory,
@@ -137,6 +138,7 @@ import {
   formatBoardProcessesComposition,
 } from "@paperclipai/shared"; // myrmidon(1.6.6 PROCS-J): the board's process composition
 import { readResolvedBoardProcesses } from "./myrmidon/board-processes/settings.js"; // myrmidon(1.6.6 PROCS-J)
+import { ProcessBus } from "./services/process-bus.js"; // myrmidon(1.6.6 RUN-DISPATCH-NOTIFY, OPE-6977)
 import { startLitellmBudgetSync } from "./myrmidon/litellm-budget-sync/index.js"; // myrmidon(1.7-BUDGET-CONFIG-C)
 import { startLitellmModelReconciliation } from "./myrmidon/litellm-sync/startup-reconciler.js"; // myrmidon(1.6.1 MODEL-PROVIDERS B)
 import { startModelFallbackSignalSweep } from "./myrmidon/litellm-fallback-signal/sweep.js"; // myrmidon(BOT-RUNTIME-TUNING D)
@@ -956,8 +958,42 @@ async function startServerWithDatabaseTeardown(
     }
   };
   const pluginWorkerManager = createPluginWorkerManager();
+  // myrmidon(1.6.6 RUN-DISPATCH-NOTIFY, OPE-6977): in a multi-process deployment
+  // (a role other than `all` is set) start the process bus (PROCS-1.3): api
+  // processes publish `run_queued` onto it, the executor subscribes, and the
+  // part-A resweep remains the carrier of correctness. A dedicated postgres.js
+  // client with max: 1 — `sql.listen` pins its connection for the lifetime of
+  // the listener, and the client owns no other work. Single-process (the
+  // default, role `all` or unset) has no bus: the dispatcher is inline.
+  const processRoleValue = process.env.PAPERCLIP_PROCESS_ROLE?.trim().toLowerCase() ?? "";
+  const multiProcessDeployment = processRoleValue !== "" && processRoleValue !== "all";
+  const processBus = multiProcessDeployment
+    ? new ProcessBus(
+        // The driver comes through @paperclipai/db: the server package has no
+        // direct `postgres` dependency.
+        createPostgresJsClient(activeDatabaseConnectionString, { maxConnections: 1 }),
+      )
+    : null;
+  if (processBus) {
+    try {
+      await processBus.start();
+      logger.info({ role: processRoleValue }, "process bus started (PROCS-1.3)");
+    } catch (err) {
+      // The bus is the accelerator, never the carrier of correctness: a bus
+      // that cannot listen degrades the notify mode to the resweep, so the
+      // failure is logged and the process starts without it.
+      logger.error({ err }, "process bus failed to start; notify mode degrades to the resweep");
+    }
+  }
   const heartbeat = config.heartbeatSchedulerEnabled
-    ? heartbeatService(db as any, { pluginWorkerManager })
+    ? heartbeatService(db as any, {
+        pluginWorkerManager,
+        // myrmidon(1.6.6 RUN-DISPATCH-NOTIFY, OPE-6977): the role gate of T1.1 —
+        // this process executes runs unless its role says otherwise (`api`).
+        // The bus of the `notify` mode: null in a single-process deployment.
+        executesRuns: processRoleValue !== "api",
+        processBus,
+      })
     : null;
   const decisionServiceOptions = {
     wakeOriginAgent: createDecisionWakeOriginAgent(heartbeat?.wakeup ?? null),
@@ -1347,7 +1383,15 @@ async function startServerWithDatabaseTeardown(
   // sweep passes zero, so a restart retries a stranded orphan at once.
   const ENVIRONMENT_LEASE_CLEANUP_SWEEP_BACKOFF_MS = 5 * 60 * 1000;
   const environmentLeaseCleanupHeartbeat =
-    heartbeat ?? heartbeatService(db as any, { pluginWorkerManager });
+    heartbeat ??
+    heartbeatService(db as any, {
+      pluginWorkerManager,
+      // myrmidon(1.6.6 RUN-DISPATCH-NOTIFY, OPE-6977): the same role gate and
+      // bus as the primary heartbeat above — consistent behavior when the
+      // scheduler is off but lease cleanup still builds a service.
+      executesRuns: processRoleValue !== "api",
+      processBus,
+    });
   const connectionDeliveries = connectionIntentDeliveryService(db as any, environmentLeaseCleanupHeartbeat);
   const questionResponseDeliveries = questionResponseDeliveryService(db as any, {
     heartbeat: environmentLeaseCleanupHeartbeat,
@@ -2438,6 +2482,16 @@ async function startServerWithDatabaseTeardown(
       prepareHotRestartShutdown,
       waitForHeartbeatSchedulerIdle,
     });
+    // myrmidon(PROCS-1.3): the bus stops with the rest of the background work —
+    // its postgres.js client and the LISTEN connections go before the shared
+    // pool closes.
+    if (processBus) {
+      try {
+        await processBus.stop();
+      } catch (err) {
+        logger.error({ err, signal }, "process bus stop failed during shutdown");
+      }
+    }
     const skipHeartbeatDrain = heartbeatShutdown.hotRestart?.skipDrain === true;
     const selectiveDrainRunIds = heartbeatShutdown.hotRestart?.drainRunIds ?? null;
     if (skipHeartbeatDrain) {
