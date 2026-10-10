@@ -267,6 +267,8 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
       // vendor write path silently drops the key, so the module could only ever
       // be switched on from the environment.
       ...(parsed.data.corpus ? { corpus: parsed.data.corpus } : {}),
+      // myrmidon(PROCS-1.1): the stored process settings survive every general write
+      ...(parsed.data.processes ? { processes: parsed.data.processes } : {}),
       // myrmidon(BOT-DISK E): the stored host disk threshold survives every general write
       ...(parsed.data.hostDisk ? { hostDisk: parsed.data.hostDisk } : {}),
       // myrmidon(BOT-DISK-A): the stored bot draft-directory lifecycle survives every general write

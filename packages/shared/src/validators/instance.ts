@@ -9,6 +9,7 @@ import {
 import { feedbackDataSharingPreferenceSchema } from "./feedback.js";
 import { shapeWithoutDefaults } from "./partial.js";
 // myrmidon(WORKSPACE-HYGIENE): workspace disk quotas that can be changed while the server runs
+import { processesSettingsSchema } from "../myrmidon-processes.js";
 import { workspaceHygieneLimitsSchema } from "../myrmidon-workspace-hygiene.js";
 import { hostDiskSettingsSchema } from "../myrmidon-host-disk.js";
 import { alertRecoverySettingsSchema } from "../myrmidon-alert-recovery.js";
@@ -133,6 +134,9 @@ export const instanceGeneralSettingsSchema = z.object({
   // environment variable, then the default (off)". Lenient: a row with unknown
   // keys or with an invalid value still parses (see myrmidon-corpus.ts).
   corpus: storedCorpusSettingsSchema.optional(),
+  // myrmidon(PROCS-1.1): the board's process settings (mode, api count, lease,
+  // event bus, admission store, proxy) survive every general write.
+  processes: processesSettingsSchema.optional(),
   // myrmidon(BOT-DISK E): the host disk usage threshold, changed from
   // /api/myrmidon/host-disk; absent means "use the environment variable, then
   // the default (85)".
