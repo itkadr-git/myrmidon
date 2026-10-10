@@ -339,6 +339,9 @@ export const instanceGeneralSettingsSchema = z.object({
   // edited at Instance settings -> Processes; absent means the defaults, which
   // are exactly today's single-process behavior (mode `single`).
   processes: boardProcessesSettingsSchema.optional(),
+  // myrmidon(1.6.3 PLUGIN-ENTITLEMENT A): the ed25519 verification public key
+  // (PEM) for entitlement tokens; absent means no token can verify.
+  pluginEntitlementPublicKey: z.string().min(1).max(2000).optional(),
 }).strict();
 
 export const patchInstanceGeneralSettingsSchema = z

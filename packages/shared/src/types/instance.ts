@@ -407,6 +407,14 @@ export interface InstanceGeneralSettings {
    * validator of the same field (packages/shared/src/validators/instance.ts).
    */
   processes?: BoardProcessesSettings;
+  /**
+   * myrmidon(1.6.3 PLUGIN-ENTITLEMENT A): the ed25519 verification public key
+   * (PEM) for plugin entitlement tokens, changed from the instance settings
+   * page. Absent means "no verification key" — no entitlement token can
+   * verify, so every gated plugin stays unactivated. Kept in sync with the
+   * validator of the same field (packages/shared/src/validators/instance.ts).
+   */
+  pluginEntitlementPublicKey?: string;
 }
 
 export interface BoardProcessesSettings {
