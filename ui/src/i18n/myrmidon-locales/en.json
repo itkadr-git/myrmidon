@@ -1034,5 +1034,25 @@
     "saved": "Saved. The feed uses the new windows from its next build.",
     "save": "Save",
     "reset": "Use defaults",
-    "note": "Stored in the instance settings; there is no environment variable behind either value."  }
+    "note": "Stored in the instance settings; there is no environment variable behind either value."  },
+  "telegramCard": {
+    "title": "Telegram",
+    "intro": "The Telegram bridge addresses this agent by these aliases and files its card under the group title in /agents.",
+    "aliasesLabel": "Telegram aliases",
+    "aliasesHint": "Lowercase letters, digits and underscores. Leave empty to use the alias computed from the agent name.",
+    "defaultAliasNote": "No aliases set — the bridge answers to the name default @{{alias}}.",
+    "noDefaultAliasNote": "No aliases set, and the name carries no usable default. Add one so the agent is reachable in Telegram.",
+    "addPlaceholder": "alias",
+    "add": "Add",
+    "removeAlias": "Remove alias",
+    "invalidAlias": "An alias may only contain lowercase latin letters, digits and underscores.",
+    "duplicateAlias": "This alias is already in the list.",
+    "groupLabel": "Telegram group",
+    "groupHint": "The group title the /agents list shows this card under. Empty groups the card by its name prefix.",
+    "groupPlaceholder": "group title",
+    "save": "Save Telegram settings",
+    "saving": "Saving…",
+    "saved": "Saved",
+    "saveFailed": "Could not save"
+  }
 }
