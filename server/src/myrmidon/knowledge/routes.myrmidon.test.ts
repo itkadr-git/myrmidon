@@ -178,6 +178,11 @@ describe("myrmidon(1.6.6 K-2) knowledge REST gates", () => {
       role: "engineer",
       parkCard: { actionRequestId: "card-42" },
     });
+    // The stub module must return a NON-auto item for the requested slug:
+    // the default fixture lives in `glossary`, an auto section, and the gate
+    // would let the publish through instead of parking the card.
+    const item = makeItem({ slug: "playbooks/runbook", folderPath: "playbooks" });
+    (deps.module.get as ReturnType<typeof vi.fn>).mockResolvedValue(item);
     const res = await request(app(deps, agentActor))
       .post(`${base}/items/playbooks/runbook/publish`)
       .send({ revisionId: "rev-2" });

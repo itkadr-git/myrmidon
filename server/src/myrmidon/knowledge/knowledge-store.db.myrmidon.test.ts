@@ -334,19 +334,12 @@ describe("myrmidon(1.6.6 KNOWLEDGE-2.0 K-1) module hygiene", () => {
     .filter((name) => name.endsWith(".ts") && !name.includes(".test."))
     .sort();
 
-  it("the module dir holds exactly the known module files (K-1 core + K-8 seed)", () => {
-    // K-1: domain/index/service/store. K-8 (OPE-5961, #1207) added the seed of
-    // decisions and product knowledge: seed.ts (runner), seed-data.ts and
-    // seed-product.ts (data). New files must be listed here deliberately.
+  it("the module dir holds exactly the known K-1 + K-2 + K-8 files", () => {
     expect(sources).toEqual([
-      "domain.ts",
-      "index.ts",
-      "seed-data.ts",
-      "seed-product.ts",
-      "seed.ts",
-      "service.ts",
-      "store.ts",
+      "domain.ts", "index.ts", "mcp.ts", "routes.ts", "seed-data.ts",
+      "seed-product.ts", "seed.ts", "service.ts", "store.ts",
     ]);
+  });
   });
 
   for (const name of sources) {
