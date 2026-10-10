@@ -56,6 +56,8 @@ import { preserveTelegramNotifyGeneralKey } from "../myrmidon/telegram-notify/pr
 import { preserveTelegramNotifySettingsGeneralKey } from "../myrmidon/telegram-notify/settings-store.js";
 // myrmidon(1.6.1-WIP-LIMIT-A): keep the stored WIP limits across vendor writes of `general`
 import { preserveWipLimitGeneralKey } from "../myrmidon/wip-limit/settings.js";
+// myrmidon(1.6.6 PROCS-J): keep the board's process counts across vendor writes of `general`
+import { preserveBoardProcessesGeneralKey } from "../myrmidon/board-processes/settings.js";
 // myrmidon(1.6.1 VOICE-STT A1): keep the per-company STT runtime settings across vendor writes of `general`
 import { preserveSttGeneralKey } from "../myrmidon/stt/store.js";
 // myrmidon(1.7-BUDGET-CONFIG-B): keep the stored budget enforcement mode
@@ -258,6 +260,9 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
       ...(parsed.data.workspaceHygiene ? { workspaceHygiene: parsed.data.workspaceHygiene } : {}),
       // myrmidon(C0): the stored run admission limits survive every general write
       ...(parsed.data.runLimits ? { runLimits: parsed.data.runLimits } : {}),
+      // myrmidon(RUN-STALL-SETTINGS): the stored run stall detection settings
+      // survive every general write
+      ...(parsed.data.runStall ? { runStall: parsed.data.runStall } : {}),
       // myrmidon(1.6.6 CORPUS-2.0 ч.C): the stored corpus module settings survive
       // every general write (the switch, the parse service URL, the embedder and
       // the limits are edited on their own settings page). Without this line the
@@ -344,6 +349,16 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
       // myrmidon(1.6.3 PLUGIN-ENTITLEMENT A): the stored verification public key
       // survives every general write (edited on its own settings block).
       ...(parsed.data.pluginEntitlementPublicKey ? { pluginEntitlementPublicKey: parsed.data.pluginEntitlementPublicKey } : {}),
+      // myrmidon(ATTENTION-WINDOW-CACHE): the attention feed's failed-run
+      // horizon (days) and cache TTL (seconds) survive every general write —
+      // without these lines the whitelist drops the keys, a PATCH answers 200
+      // yet stores nothing, and any later write wipes a hand-set value.
+      ...(parsed.data.attentionFailedRunHorizonDays !== undefined
+        ? { attentionFailedRunHorizonDays: parsed.data.attentionFailedRunHorizonDays }
+        : {}),
+      ...(parsed.data.attentionFeedCacheTtlSeconds !== undefined
+        ? { attentionFeedCacheTtlSeconds: parsed.data.attentionFeedCacheTtlSeconds }
+        : {}),
     };
   }
   return {
@@ -701,6 +716,11 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
             ...preservePluginEntitlementPublicKeyGeneralKey(current.general), // myrmidon(1.6.3 PLUGIN-ENTITLEMENT A)
             ...preserveTelegramDmProgressGeneralKey(current.general), // myrmidon(DM-PROGRESS)
             ...preserveFallbackSignalGeneralKey(current.general), // myrmidon(BOT-RUNTIME-TUNING D2)
+            ...preserveBoardProcessesGeneralKey(current.general), // myrmidon(1.6.6 PROCS-J)
+            // The preserve line above restores the stored row: a patch that carries
+            // the counts wins (the same rule as DM-PROGRESS), and it is validated
+            // where every other read of the key is — at startup.
+            ...(patch.processes !== undefined ? { processes: nextGeneral.processes } : {}),
             // The preserve line above restores the old stored value: a patch
             // that carries the key must win, the same rule as DM-PROGRESS.
             ...(patch.modelFallbackSignal !== undefined ? { modelFallbackSignal: nextGeneral.modelFallbackSignal } : {}),

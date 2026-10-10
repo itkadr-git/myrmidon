@@ -19,6 +19,7 @@ import { cn } from "../lib/utils";
 import { useSignOut } from "@/hooks/useSignOut";
 import { MaintenanceSettingsPanel } from "@/components/myrmidon/MaintenanceSettingsPanel"; // myrmidon(R3)
 import { RuntimeLimitsSettingsPanel } from "@/components/myrmidon/RuntimeLimitsSettingsPanel"; // myrmidon(C0)
+import { RunStallSettingsPanel } from "@/components/myrmidon/RunStallSettingsPanel"; // myrmidon(RUN-STALL-SETTINGS)
 import { BudgetEnforcementSettingsPanel } from "@/components/myrmidon/BudgetEnforcementSettingsPanel"; // myrmidon(1.7-BUDGET-CONFIG-B)
 import { AgentExchangeSettingsPanel } from "@/components/myrmidon/AgentExchangeSettingsPanel"; // myrmidon(1.7-AGENT-EXCHANGE-A)
 import { TelegramDmProgressSettingsPanel } from "@/components/myrmidon/TelegramDmProgressSettingsPanel"; // myrmidon(DM-PROGRESS)
@@ -40,6 +41,7 @@ import { ReviewReworkSettingsPanel } from "@/components/myrmidon/ReviewReworkSet
 import { ForagingSettingsPanel } from "@/components/myrmidon/ForagingSettingsPanel"; // myrmidon(1.6.1-FORAGING-LIMITS-UI)
 import { AboutSettingsPanel } from "@/components/myrmidon/AboutSettingsPanel"; // myrmidon(ABOUT)
 import { DeployJobsPanel } from "@/components/myrmidon/DeployJobsPanel"; // myrmidon(R5-A)
+import { BoardProcessesSettingsPanel } from "@/components/myrmidon/BoardProcessesSettingsPanel"; // myrmidon(1.6.6 PROCS-0.1)
 import { PluginEntitlementSettings } from "@/components/myrmidon/PluginEntitlementSettingsPanel"; // myrmidon(PLUGIN-ENTITLEMENT C)
 import { PRODUCT_NAME, UPSTREAM_ATTRIBUTION } from "@/lib/myrmidon-product"; // myrmidon(B1a)
 import { useTranslation } from "@/i18n"; // myrmidon(UI-RU)
@@ -162,6 +164,7 @@ export function InstanceGeneralSettings({ embedded = false }: { embedded?: boole
 
       <MaintenanceSettingsPanel /> {/* myrmidon(R3) */}
       <RuntimeLimitsSettingsPanel /> {/* myrmidon(C0) */}
+      <RunStallSettingsPanel /> {/* myrmidon(RUN-STALL-SETTINGS) */}
       <BudgetEnforcementSettingsPanel /> {/* myrmidon(1.7-BUDGET-CONFIG-B) */}
       <AgentExchangeSettingsPanel /> {/* myrmidon(1.7-AGENT-EXCHANGE-A) */}
       <TelegramDmProgressSettingsPanel /> {/* myrmidon(DM-PROGRESS) */}
@@ -182,6 +185,7 @@ export function InstanceGeneralSettings({ embedded = false }: { embedded?: boole
       <ReviewReworkSettingsPanel /> {/* myrmidon(REVIEW-REWORK) */}
       <ForagingSettingsPanel /> {/* myrmidon(1.6.1-FORAGING-LIMITS-UI) */}
       <DeployJobsPanel /> {/* myrmidon(R5-A) */}
+      <BoardProcessesSettingsPanel /> {/* myrmidon(1.6.6 PROCS-0.1) */}
       <PluginEntitlementSettings /> {/* myrmidon(PLUGIN-ENTITLEMENT C) */}
 
       {showDeploymentStatus && (

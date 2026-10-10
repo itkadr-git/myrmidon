@@ -127,7 +127,7 @@ export function TeamLivenessSettingsPanelView({
     draft.numbers[key] ?? String(settings[key]);
 
   return (
-    <section className="space-y-4" data-testid="myrmidon-team-liveness">
+    <section className="space-y-4" id="team-liveness-settings" data-testid="myrmidon-team-liveness">
       <div className="space-y-1">
         <div className="flex items-center gap-2">
           <Activity className="h-4 w-4 text-muted-foreground" />
