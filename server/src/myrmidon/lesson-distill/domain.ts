@@ -60,7 +60,7 @@ export interface RegulationCandidate {
  * what it cannot type.
  */
 export function isLessonUnit(unit: Pick<LessonOccurrence, "factType" | "text">, tags: readonly string[] = []): boolean {
-  const fact = unit.factType?.trim().toLowerCase();
+  const fact = unit.factType?.trim().toLowerCase() ?? null;
   if (fact === LESSON_FACT_TYPE) return true;
   return fact === null && tags.some((tag) => tag.trim().toLowerCase() === LESSON_FACT_TYPE);
 }
@@ -73,8 +73,8 @@ export function normalizeLessonText(text: string): string {
   return text
     .toLowerCase()
     .replace(/\s+/g, " ")
-    .replace(/[.!?,;:]+$/g, "")
-    .trim();
+    .trim()
+    .replace(/[.!?,;:]+$/g, "");
 }
 
 /** The window: `[since, until)` ending at the pass. */

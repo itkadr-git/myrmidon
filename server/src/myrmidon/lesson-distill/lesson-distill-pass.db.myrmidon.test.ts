@@ -63,7 +63,9 @@ describeEmbeddedPostgres("myrmidon(1.7 L-4) the lesson distill pass over the dat
     };
   }
 
-  /** A company with two agents whose banks answer from the given items. */
+  /** A company with two agents whose banks answer from the given items. The
+   * items are split per bank: bank-0 gets the even-indexed items, bank-1 the
+   * odd ones — a real pair of agents retains each lesson once, not twice. */
   async function makeCompany(items: HindsightMemoryItem[]): Promise<{ companyId: string; passDeps: Parameters<typeof runLessonDistillPass>[0] }> {
     const company = await db
       .insert(companies)
@@ -78,19 +80,23 @@ describeEmbeddedPostgres("myrmidon(1.7 L-4) the lesson distill pass over the dat
         adapterConfig: { hindsight: { bankId: `bank-${i}` } },
       });
     }
+    const perBank = (bankIndex: number): HindsightMemoryItem[] =>
+      items.filter((_, index) => index % 2 === bankIndex);
     return {
       companyId: company.id,
       passDeps: {
         db,
-        client: (bankId: string) => fakeClient(bankId, items),
+        client: (bankId: string) => fakeClient(perBank),
       },
     };
   }
 
-  function fakeClient(expectedBankId: string, items: HindsightMemoryItem[]): MemoryHindsightClient {
+  function fakeClient(itemsFor: (bankIndex: number) => HindsightMemoryItem[]): MemoryHindsightClient {
     return {
       async list(bankId: string) {
-        if (bankId !== expectedBankId) return { items: [], total: 0, limit: 100, offset: 0 };
+        const bankIndex = Number(bankId.slice("bank-".length));
+        if (!Number.isInteger(bankIndex)) return { items: [], total: 0, limit: 100, offset: 0 };
+        const items = itemsFor(bankIndex);
         return { items, total: items.length, limit: 100, offset: 0 };
       },
       async invalidate() {},
