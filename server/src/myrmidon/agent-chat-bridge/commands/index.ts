@@ -1,6 +1,16 @@
 /**
  * X8 bridged direct-message command contract (agent-chat-bridge).
  *
+ * myrmidon(1.6.6 CH-CONNECTOR-D) batch 3 (OPE-6976, call map OPE-6629 points
+ * 71-72): the direct path is deprecated. The core reaches the command menu
+ * through the bridge seams `channel-connectors/bridge/commands.js` and
+ * `channel-connectors/bridge/locales.js` only; with the bridge flag on a
+ * registered channel connector serves the theme and this module stays behind
+ * the seam as the legacy fallback. The canonical list `TELEGRAM_DM_COMMANDS`
+ * is contract data: it stays on this module's value even through the seam (see
+ * the seam's note). Do not add a new direct importer; removal is the follow-up
+ * step, not this PR.
+ *
  * A bridged Telegram direct message that starts with a `/command` is
  * intercepted before it reaches the agent, OpenClaw-style: `/help`, `/new`,
  * `/model`, `/think`, `/stop`, `/status`, plus the compatibility replies

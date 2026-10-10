@@ -148,7 +148,10 @@ import {
   projectChatPublicationBatch,
 } from "./chat-publication-batches.js";
 
-import { telegramAttachmentForUpload } from "./chat-telegram-photo.js";
+// myrmidon(1.6.6 CH-CONNECTOR-D): the upload, ephemeral-callback, media and
+// rich-intake themes are reached through the bridge seam, so a channel
+// connector can serve them.
+import { telegramAttachmentForUpload } from "../myrmidon/channel-connectors/bridge/telegram-photo.js";
 import {
   parseTelegramCallbackReceipt,
   readTelegramCallbackProvenance,
@@ -157,12 +160,12 @@ import {
   // myrmidon(B1b): stored rows may still carry the pre-rename notice text.
   isStoredTelegramPrivateActionUnavailableText,
   type TelegramCallbackReceipt,
-} from "./chat-telegram-ephemeral.js";
+} from "../myrmidon/channel-connectors/bridge/telegram-ephemeral.js";
 import {
   hasTelegramMediaProvenance,
   identifyTelegramMedia,
   telegramMediaNeedsIdentification,
-} from "./chat-telegram-media-intake.js";
+} from "../myrmidon/channel-connectors/bridge/telegram-media.js";
 // myrmidon(1.6.1 VOICE-STT B): inbound transcription of Telegram voice/audio.
 // myrmidon(1.6.6 CH-CONNECTOR-D): the voice intake theme is reached through the
 // bridge seam, so a channel connector can serve it.
@@ -171,7 +174,7 @@ import {
   type TelegramVoiceSttCompanyGate,
   type TelegramVoiceTranscriber,
 } from "../myrmidon/channel-connectors/bridge/voice-stt.js";
-import { normalizeTelegramRichMessage } from "./chat-telegram-rich-intake.js";
+import { normalizeTelegramRichMessage } from "../myrmidon/channel-connectors/bridge/telegram-rich.js";
 import {
   TELEGRAM_DRAFT_ACTION_KIND,
   TELEGRAM_DRAFT_STOPPED_REASON,
@@ -389,8 +392,10 @@ import {
   createOmissionTracker,
   telegramAttachmentOmissionNotice,
 } from "../myrmidon/chat-attachment-omission.js";
-import { TELEGRAM_DM_COMMANDS, telegramDmCommandsForLocale } from "../myrmidon/agent-chat-bridge/commands/index.js";
-import { telegramDmMenuLocale } from "../myrmidon/agent-chat-bridge/locales/index.js";
+// myrmidon(1.6.6 CH-CONNECTOR-D): the DM command-menu and menu-locale themes are
+// reached through the bridge seam, so a channel connector can serve them.
+import { TELEGRAM_DM_COMMANDS, telegramDmCommandsForLocale } from "../myrmidon/channel-connectors/bridge/commands.js";
+import { telegramDmMenuLocale } from "../myrmidon/channel-connectors/bridge/locales.js";
 // myrmidon(CHAT-HOLD): no silent queue in a bridged Telegram chat.
 import {
   chatNoticeLanguage,

@@ -162,7 +162,8 @@ import { myrmidonCloudConnectorRoutes } from "./myrmidon/cloud-connector/index.j
 import { myrmidonBoardProcessRegistryRoutes } from "./myrmidon/process-registry/index.js"; // myrmidon(1.6.6 PROCS-0.1)
 import { myrmidonAutonomyRoutes } from "./myrmidon/autonomy/index.js"; // myrmidon(1.6-AUTONOMY)
 // myrmidon(1.6-TG-PROACTIVITY-E): head-bot proactivity gate/bundling sweep
-import { sweepTelegramNotifyProactivity } from "./myrmidon/telegram-notify/sweep.js";
+// myrmidon(1.6.6 CH-CONNECTOR-D): the proactivity sweep is reached through the bridge seam.
+import { sweepTelegramNotifyProactivity } from "./myrmidon/channel-connectors/bridge/notify-sweep.js";
 import { accessHubRoutes } from "./myrmidon/access-hub/routes.js"; // myrmidon(SEC1)
 import { ui2LanguageRoutes } from "./myrmidon/ui2-language/routes.js"; // myrmidon(UI2-I18N)
 import { myrmidonForagingRoutes } from "./myrmidon/foraging/index.js"; // myrmidon(1.6-FORAGE)
@@ -191,7 +192,8 @@ import { myrmidonCtoChatRoutes } from "./myrmidon/cto-chat/index.js";
 // myrmidon(1.6-SWARM-CLAIM-B): the lead's supervisor surface over the role queues
 import { myrmidonSwarmSupervisorRoutes } from "./myrmidon/swarm-claim-supervisor/index.js"; // myrmidon(1.6-SWARM-CLAIM-B)
 // myrmidon(TG-NOTIFY-A): the telegramNotify settings core (contract, GET/PATCH, changelog)
-import { myrmidonTelegramNotifyRoutes } from "./myrmidon/telegram-notify/index.js";
+// myrmidon(1.6.6 CH-CONNECTOR-D): the notify track is reached through the bridge seam.
+import { myrmidonTelegramNotifyRoutes } from "./myrmidon/channel-connectors/bridge/notify.js";
 import { instanceSettingsService } from "./services/instance-settings.js";
 import { openApiRoutes } from "./routes/openapi.js";
 import {

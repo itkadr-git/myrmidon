@@ -30,7 +30,18 @@ export type ChannelBridgeThemeKey =
   | "telegram-notify/topic-inbound"
   | "telegram-notify/topic-inbound-settings"
   | "telegram-voice-stt-intake/index"
-  | "telegram-voice-stt-intake/wiring";
+  | "telegram-voice-stt-intake/wiring"
+  // myrmidon(1.6.6 CH-CONNECTOR-D) batch 3 (OPE-6976, the map points 53-77):
+  // the notify track, the DM command menus and the Telegram helper modules.
+  | "telegram-notify/index"
+  | "telegram-notify/sweep"
+  | "telegram-notify/proactivity-policy"
+  | "telegram-notify/settings-store"
+  | "agent-chat-bridge/commands"
+  | "services/chat-telegram-media-intake"
+  | "services/chat-telegram-photo"
+  | "services/chat-telegram-ephemeral"
+  | "services/chat-telegram-rich-intake";
 
 /**
  * The symbols a connector serves for one theme. Every symbol left out keeps
