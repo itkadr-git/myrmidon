@@ -247,6 +247,7 @@ export const knowledgeSuggestions = pgTable(
   (table) => ({
     nestStatusIdx: index("knowledge_suggestions_nest_status_idx").on(table.nestId, table.status),
     companyIdx: index("knowledge_suggestions_company_idx").on(table.companyId),
+    // L-5: provenance lookups (which external suggestions are pending).
     trustIdx: index("knowledge_suggestions_trust_idx").on(table.trust),
   }),
 );
