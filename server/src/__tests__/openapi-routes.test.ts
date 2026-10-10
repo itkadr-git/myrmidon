@@ -102,7 +102,37 @@ const explicitOpenApiOperationCoverageExclusions = new Set([
 // request handler. The company-and-environment Claude setup-token login routes
 // now have request handlers, so the set is empty. A new contract-first route
 // belongs here only until its handler lands.
-const specOnlyContractFirstRoutes = new Set<string>([]);
+//
+// myrmidon(1.6.6 KNOWLEDGE-2.0 K-2): the knowledge service REST + MCP routes
+// are mounted from server/src/myrmidon/knowledge/ (see app.ts), outside the
+// ROUTES_DIR this scanner reads, so they can never appear in loadActualRoutes.
+// They are documented contract-first in openapi.ts — the deliverable of
+// OPE-5955 — and the handlers exist; only the scanner's directory scope keeps
+// them off the "actual" side.
+const specOnlyContractFirstRoutes = new Set<string>([
+  "GET /api/myrmidon/companies/{companyId}/knowledge/search",
+  "GET /api/myrmidon/companies/{companyId}/knowledge/items",
+  "GET /api/myrmidon/companies/{companyId}/knowledge/items/{idOrSlug}",
+  "GET /api/myrmidon/companies/{companyId}/knowledge/items/{idOrSlug}/revisions",
+  "GET /api/myrmidon/companies/{companyId}/knowledge/items/{idOrSlug}/revisions/{revisionId}",
+  "GET /api/myrmidon/companies/{companyId}/knowledge/items/{idOrSlug}/backlinks",
+  "GET /api/myrmidon/companies/{companyId}/knowledge/suggestions",
+  "GET /api/myrmidon/companies/{companyId}/knowledge/export",
+  "POST /api/myrmidon/companies/{companyId}/knowledge/items",
+  "POST /api/myrmidon/companies/{companyId}/knowledge/items/{idOrSlug}/revisions",
+  "POST /api/myrmidon/companies/{companyId}/knowledge/items/{idOrSlug}/draft",
+  "POST /api/myrmidon/companies/{companyId}/knowledge/items/{idOrSlug}/submit",
+  "POST /api/myrmidon/companies/{companyId}/knowledge/items/{idOrSlug}/publish",
+  "POST /api/myrmidon/companies/{companyId}/knowledge/items/{idOrSlug}/approve",
+  "POST /api/myrmidon/companies/{companyId}/knowledge/items/{idOrSlug}/rollback",
+  "POST /api/myrmidon/companies/{companyId}/knowledge/items/{idOrSlug}/archive",
+  "POST /api/myrmidon/companies/{companyId}/knowledge/items/{idOrSlug}/supersede",
+  "POST /api/myrmidon/companies/{companyId}/knowledge/propose",
+  "POST /api/myrmidon/companies/{companyId}/knowledge/suggestions/{suggestionId}/accept",
+  "POST /api/myrmidon/companies/{companyId}/knowledge/suggestions/{suggestionId}/decline",
+  "POST /api/myrmidon/companies/{companyId}/knowledge/import",
+  "POST /api/myrmidon/companies/{companyId}/knowledge/mcp",
+]);
 
 function createApp() {
   const app = express();
