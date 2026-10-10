@@ -5493,7 +5493,7 @@ export function CompanySkills() {
           onMoveSelected={showInstalledFolders ? (folderId) => void moveSelectedSkills(folderId) : undefined}
           onCreateFolderAndMoveSelected={showInstalledFolders ? () => openCreateFolder(selectedSkillIds) : undefined}
           onClearSelected={showInstalledFolders ? () => setSelectedSkillIds([]) : undefined}
-          folderNudgeStorageKey={showInstalledFolders ? `paperclip:skills-folder-nudge:${selectedCompanyId ?? "none"}` : undefined}
+          folderNudgeStorageKey={showInstalledFolders ? `myrmidon:skills-folder-nudge:${selectedCompanyId ?? "none"}` : undefined}
         />
       ) : activeView === "installed" && selectedSkillId ? (
         <SkillDetailPage

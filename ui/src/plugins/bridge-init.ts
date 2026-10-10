@@ -251,7 +251,7 @@ function PluginSdkIssuesList({
   companyId,
   projectId = null,
   filters,
-  viewStateKey = "paperclip:plugin-issues-view",
+  viewStateKey = "myrmidon:plugin-issues-view",
   initialSearch,
   createIssueLabel,
   searchWithinLoadedIssues = true,

@@ -68,7 +68,7 @@ import type {
   RoutineVariable,
 } from "@paperclipai/shared";
 
-const LAST_SECTION_STORAGE_KEY = "paperclip.routineLastSection";
+const LAST_SECTION_STORAGE_KEY = "myrmidon.routineLastSection";
 
 export function buildRoutineProjectOptions(
   projects: ReadonlyArray<{ id: string; name: string; description?: string | null; archivedAt?: Date | string | null }>,

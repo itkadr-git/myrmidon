@@ -1174,7 +1174,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     await flushReact();
 
     expect(JSON.parse(window.sessionStorage.getItem(
-      "paperclip.connector-enrollment-access:github",
+      "myrmidon.connector-enrollment-access:github",
     ) ?? "null")).toEqual({
       companyId: "company-1",
       grantKind: "agent",
@@ -1201,7 +1201,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     const coldLoadClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     await render(coldLoadClient);
 
-    expect(window.sessionStorage.getItem("paperclip.connector-enrollment-access:github")).toBeNull();
+    expect(window.sessionStorage.getItem("myrmidon.connector-enrollment-access:github")).toBeNull();
     mockCompany.value = {
       selectedCompanyId: "company-1",
       selectedCompany: { id: "company-1", name: "Paperclip" },
@@ -1218,7 +1218,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
 
     expect(container.textContent).toContain("Step 2 of 2");
     expect(window.sessionStorage.getItem(
-      "paperclip.connector-enrollment-access:github",
+      "myrmidon.connector-enrollment-access:github",
     )).toBeNull();
     await act(async () => {
       buttonByText("Continue to GitHub")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
@@ -1242,7 +1242,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
         ? `source=${slug}&stage=setup&cloud_connector=enrolled`
         : `source=${slug}`;
       if (enrollmentReturn) {
-        window.sessionStorage.setItem(`paperclip.connector-enrollment-access:${slug}`, JSON.stringify({
+        window.sessionStorage.setItem(`myrmidon.connector-enrollment-access:${slug}`, JSON.stringify({
           companyId: "company-1", grantKind: "user", installChoice: "all", agentIds: [],
         }));
       }

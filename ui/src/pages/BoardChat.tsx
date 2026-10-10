@@ -249,7 +249,7 @@ export function BoardChat() {
     if (loadedDraftCompanyRef.current === selectedCompanyId) return;
     try {
       const saved = sessionStorage.getItem(
-        `paperclip.boardChat.draft.${selectedCompanyId}`,
+        `myrmidon.boardChat.draft.${selectedCompanyId}`,
       );
       setInput(saved ?? "");
     } catch {
@@ -265,7 +265,7 @@ export function BoardChat() {
     if (!selectedCompanyId) return;
     if (loadedDraftCompanyRef.current !== selectedCompanyId) return;
     try {
-      const key = `paperclip.boardChat.draft.${selectedCompanyId}`;
+      const key = `myrmidon.boardChat.draft.${selectedCompanyId}`;
       if (input) {
         sessionStorage.setItem(key, input);
       } else {
@@ -461,7 +461,7 @@ export function BoardChat() {
     if (!container) return;
 
     try {
-      const saved = sessionStorage.getItem("paperclip.boardChat.scrollTop");
+      const saved = sessionStorage.getItem("myrmidon.boardChat.scrollTop");
       if (saved != null) {
         const parsed = Number(saved);
         if (Number.isFinite(parsed)) {
@@ -512,7 +512,7 @@ export function BoardChat() {
         rafId = null;
         try {
           sessionStorage.setItem(
-            "paperclip.boardChat.scrollTop",
+            "myrmidon.boardChat.scrollTop",
             String(container.scrollTop),
           );
         } catch { /* sessionStorage unavailable */ }

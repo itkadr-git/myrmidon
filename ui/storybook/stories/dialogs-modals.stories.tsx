@@ -32,8 +32,8 @@ import {
 } from "../fixtures/paperclipData";
 
 const COMPANY_ID = "company-storybook";
-const SELECTED_COMPANY_STORAGE_KEY = "paperclip.selectedCompanyId";
-const ISSUE_DRAFT_STORAGE_KEY = "paperclip:issue-draft";
+const SELECTED_COMPANY_STORAGE_KEY = "myrmidon.selectedCompanyId";
+const ISSUE_DRAFT_STORAGE_KEY = "myrmidon:issue-draft";
 
 const storybookGoals: Goal[] = [
   {

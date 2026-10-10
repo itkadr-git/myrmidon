@@ -220,7 +220,7 @@ export function Issues() {
       agents={agents}
       projects={projects}
       liveIssueIds={liveIssueIds}
-      viewStateKey="paperclip:issues-view"
+      viewStateKey="myrmidon:issues-view"
       rowPresentation={issuesPresentation.rowPresentation}
       toolbarPresentation={issuesPresentation.toolbarPresentation}
       issueLinkState={issueLinkState}

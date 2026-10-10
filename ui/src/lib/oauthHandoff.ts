@@ -6,7 +6,7 @@ import { resolveAuthorizationTarget } from "./authorizationUrl";
 // (paperclip.cloud-oauth-handoff.v1 etc.) stay untouched until DEBRAND part c/stage 4.
 const CLOUD_HANDOFF_PATH = "/cloud/connections/handoff";
 const CLOUD_REAUTH_PATH = "/cloud/connections/reauth";
-const PENDING_HANDOFF_KEY = "paperclip.cloud-oauth-handoff.v1";
+const PENDING_HANDOFF_KEY = "myrmidon.cloud-oauth-handoff.v1";
 
 export type PreparedOAuthNavigation = {
   kind: "authorization" | "reauthentication";

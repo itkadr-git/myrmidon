@@ -38,7 +38,7 @@ describe("SidebarContext", () => {
 
   beforeEach(() => {
     localStorage.clear();
-    localStorage.setItem("paperclip.sidebar.collapsed", "1");
+    localStorage.setItem("myrmidon.sidebar.collapsed", "1");
     capturedValue = null;
     Object.defineProperty(window, "innerWidth", {
       configurable: true,

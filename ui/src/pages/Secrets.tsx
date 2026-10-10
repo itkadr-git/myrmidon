@@ -138,7 +138,7 @@ type ProvidedByFilter = "all" | SecretValueProvider;
 type SecretsTab = "secrets" | "my-secrets" | "vaults" | "proposals";
 type SecretsViewMode = "folders" | "flat";
 
-const SECRETS_VIEW_MODE_STORAGE_KEY = "paperclip.secrets.viewMode";
+const SECRETS_VIEW_MODE_STORAGE_KEY = "myrmidon.secrets.viewMode";
 
 function readStoredViewMode(): SecretsViewMode | null {
   try {

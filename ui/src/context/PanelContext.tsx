@@ -1,7 +1,7 @@
 import { createContext, useCallback, useContext, useState, type ReactNode } from "react";
 import type { SidePanelContentMode } from "@/components/side-panel";
 
-const STORAGE_KEY = "paperclip:panel-visible";
+const STORAGE_KEY = "myrmidon:panel-visible";
 
 interface PanelContextValue {
   panelContent: ReactNode | null;

@@ -18,10 +18,22 @@
     <link rel="manifest" href="/site.webmanifest" crossorigin="use-credentials" />
     <script>
       (() => {
-        const key = "paperclip.theme";
+        const key = "myrmidon.theme";
+        // DEBRAND (OPE-5806): lazy migration of the legacy theme key before
+        // first paint, synchronous — myrmidon(DB3)
+        const legacyKey = "paperclip.theme";
         const darkThemeColor = "#18181b";
         const lightThemeColor = "#ffffff";
         try {
+          if (window.localStorage.getItem(key) === null) {
+            const legacy = window.localStorage.getItem(legacyKey);
+            if (legacy !== null) {
+              window.localStorage.setItem(key, legacy);
+              window.localStorage.removeItem(legacyKey);
+            } else if (legacy === "") {
+              window.localStorage.removeItem(legacyKey);
+            }
+          }
           const stored = window.localStorage.getItem(key);
           const prefersDark =
             typeof window.matchMedia === "function" &&

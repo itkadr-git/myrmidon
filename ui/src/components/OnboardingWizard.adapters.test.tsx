@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // --- Mocks (hoisted so vi.mock factories can close over them) ----------------
 
-const ONBOARDING_STORAGE_KEY = "paperclip-onboarding-state";
+const ONBOARDING_STORAGE_KEY = "myrmidon-onboarding-state";
 
 const mockDialog = vi.hoisted(() => ({
   onboardingOpen: true,
