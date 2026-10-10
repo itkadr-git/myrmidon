@@ -57,8 +57,8 @@ describe("PF-4 shouldResetTaskSessionForWake", () => {
     expect(shouldResetTaskSessionForWake({ wakeReason: "issue_commented" })).toBe(false);
   });
 
-  it("does not reset for transient_failure_retry (resume in-flight work)", () => {
-    expect(shouldResetTaskSessionForWake({ wakeReason: "transient_failure_retry" })).toBe(false);
+  it("resets for transient_failure_retry (OPE-6168, upstream #15487: a retry must not inherit the failed transcript)", () => {
+    expect(shouldResetTaskSessionForWake({ wakeReason: "transient_failure_retry" })).toBe(true);
   });
 
   it("does not reset for unknown wake reasons", () => {
@@ -113,7 +113,12 @@ describe("PF-4 describeSessionResetReason", () => {
 
   it("returns null for non-resetting wake reasons", () => {
     expect(describeSessionResetReason({ wakeReason: "issue_commented" })).toBeNull();
-    expect(describeSessionResetReason({ wakeReason: "transient_failure_retry" })).toBeNull();
+    expect(
+      describeSessionResetReason({
+        wakeReason: "transient_failure_retry",
+        codexTransientFallbackMode: "same_session",
+      }),
+    ).toBeNull();
     expect(describeSessionResetReason({ wakeReason: "unknown_reason" })).toBeNull();
     expect(describeSessionResetReason(null)).toBeNull();
     expect(describeSessionResetReason(undefined)).toBeNull();
@@ -131,6 +136,7 @@ describe("PF-4 describeSessionResetReason", () => {
       { forceFreshSession: true },
       { wakeReason: "issue_commented" },
       { wakeReason: "transient_failure_retry" },
+      { wakeReason: "transient_failure_retry", codexTransientFallbackMode: "same_session" },
       { wakeReason: "unknown_reason" },
       null,
       undefined,

@@ -9,6 +9,7 @@ import type {
 } from "@paperclipai/adapter-utils";
 import { githubLauncherPayload } from "@paperclipai/adapter-utils/github-launcher";
 import { measureSections } from "@paperclipai/adapter-utils/prompt-meter";
+import { classifyInputOverflow } from "@paperclipai/adapter-utils/input-overflow";
 import {
   asNumber,
   asString,
@@ -1363,7 +1364,10 @@ export function mapFinalResultForTest(input: {
             .toLowerCase()
             .includes(HERMES_GATEWAY_KEY_NOT_ALLOWED_SIGNATURE)
         ? "permanent_config_error"
-        : null;
+        : mapped.errorCode === "hermes_gateway_run_failed" &&
+            classifyInputOverflow(errorMessage)
+          ? "input_overflow"
+          : null;
   return {
     exitCode: mapped.exitCode,
     signal: mapped.signal,
