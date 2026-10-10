@@ -21,6 +21,8 @@ import { getActorInfo } from "../../routes/authz.js";
 // bridge's language (null when unset).
 // myrmidon(1.6.5-TG-LOCALE-C): the same read now also reports the instance
 // setting and resolves the full order env → user → instance → default.
+// myrmidon(1.6.6 CH-CONNECTOR-D): the bridge locale is read through the seam.
+import { forcedBridgeLocale } from "../channel-connectors/bridge/locales.js";
 import {
   createUi2LanguageService,
   ui2LanguageAuditEntries,
