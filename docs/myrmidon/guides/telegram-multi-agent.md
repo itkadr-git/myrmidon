@@ -15,7 +15,11 @@ An alias is a short handle for an agent, stored in the agent card as `telegramAl
 
 When two agents could match, an alias beats a name, and a name beats a title.
 
-Setting or changing aliases is a card edit by an administrator; there is no chat command for it.
+Setting or changing aliases is a card edit by an administrator — the card's
+**Telegram** section edits them right in the UI
+([agent-telegram-card.md](agent-telegram-card.md)); there is no chat command
+for it. While the list is empty, the bridge answers to a default alias
+computed from the agent name (the last dash-separated segment, lower-cased).
 
 ## `/agents` — who can be addressed
 
