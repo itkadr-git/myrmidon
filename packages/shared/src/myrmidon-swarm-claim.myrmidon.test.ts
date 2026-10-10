@@ -31,6 +31,8 @@ import {
   swarmLeaseExpiresAt,
   swarmPriorityRank,
   DEFAULT_PHEROMONE_DYNAMICS,
+  PHEROMONE_NUMBER_KEYS,
+  PHEROMONE_RETIRED_KEYS,
   effectivePheromone,
   pheromoneDynamicsOf,
   pheromoneStrengthForPriority,
@@ -461,6 +463,33 @@ describe("swarm pheromone settings", () => {
     const merged = mergeSwarmClaimSettings(base, { pheromone: { critical: 250 } });
     expect(merged.pheromone).toEqual({ critical: 250 });
     expect(mergeSwarmClaimSettings(base, { enabled: true }).enabled).toBe(true);
+  });
+
+  // myrmidon(1.6.5 SWARM-PANEL-COOLING, OPE-6894) — red side: the pheromone
+  // subset carries NO cooling knobs. `cooldownBaseMin` / `cooldownCapMin`
+  // lived here but no server code ever read them; the one rule that acts is
+  // `general.swarm` (F-26 wake guard). The keys are retired: they are stripped
+  // on parse, so neither a PATCH nor a stored pre-OPE-6894 row can keep them.
+  it("carries no cooldown fields: the keys are gone from the contract and vanish on parse", () => {
+    expect(PHEROMONE_NUMBER_KEYS).not.toContain("cooldownBaseMin");
+    expect(PHEROMONE_NUMBER_KEYS).not.toContain("cooldownCapMin");
+    expect(PHEROMONE_RETIRED_KEYS).toEqual(["cooldownBaseMin", "cooldownCapMin"]);
+    const base = { enabled: true, leaseTtlSec: 900, maxActiveTasks: 3, sweepIntervalSec: 30 };
+
+    // the write path can never store them: the strict subset schema drops the
+    // dead keys on parse, so a PATCH naming them yields an empty subset,
+    const patched = patchSwarmClaimSettingsSchema.safeParse({
+      pheromone: { cooldownBaseMin: 30, cooldownCapMin: 720 },
+    });
+    expect(patched.success).toBe(true);
+    expect(patched.data.pheromone).toEqual({});
+    // and the tolerant read path (dropRetiredPheromoneKeys) accepts a stored
+    // pre-OPE-6894 row but drops only the dead keys — the real settings stay.
+    const stored = normalizeSwarmClaimSettings({
+      ...base,
+      pheromone: { critical: 250, cooldownBaseMin: 30, cooldownCapMin: 720 },
+    });
+    expect(stored?.pheromone).toEqual({ critical: 250 });
   });
 });
 
