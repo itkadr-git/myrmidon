@@ -128,11 +128,23 @@ const en = {
   "ui2.settings.runs.minFreeMemoryMb": "Min free memory (MB)",
   "ui2.settings.runs.runMemoryEstimateMb": "Memory estimate per run (MB)",
   "ui2.settings.runs.minFreeHostMemoryMb": "Min free host memory (MB)",
-  "ui2.settings.runs.maxHostLoadPercentPerCore": "Max host load per core above the host's background (% of a core)",
-  // myrmidon(1.6.5 RUN-ADMISSION rc.2): the ceiling is counted above the load
-  // the host carries on its own, so the label says so and the panel shows the
-  // current reading next to the field.
-  "ui2.settings.runs.maxHostLoadPercentPerCore.hint": "Only the load the runs add is counted: the services that keep the host busy on their own do not close this ceiling. Default 90.",
+  "ui2.settings.runs.maxHostLoadPercentPerCore": "Max host load per core above the host's background (% of a core) — deprecated",
+  // myrmidon(1.6.5 RUN-ADMISSION rc.3): the gate decides on the measured CPU
+  // utilisation now; the load-average ceiling only decides for a settings row
+  // saved before rc.3, so the label and the hint say it is deprecated.
+  "ui2.settings.runs.maxHostLoadPercentPerCore.hint": "Deprecated: since 1.6.5 rc.3 the gate decides on the measured CPU busy percent above; this legacy ceiling only decides for a settings row saved before rc.3 that has neither CPU ceiling set. Only the load the runs add is counted: the services that keep the host busy on their own do not close this ceiling. Default 90.",
+  "ui2.settings.runs.maxHostCpuBusyPercent": "Max host CPU busy (% of all cores)",
+  "ui2.settings.runs.maxHostCpuBusyPercent.hint": "The deciding ceiling: a new run starts only while the host CPU's non-idle share (from /proc/stat over a short window) stays under this ABSOLUTE percent of all cores. Unlike the load average, utilisation measures real work, so no background is subtracted. Default 90. Off means the busy reading never closes the gate.",
+  "ui2.settings.runs.maxHostCpuPsiSomeAvg10": "Max host CPU pressure (PSI some avg10, %)",
+  "ui2.settings.runs.maxHostCpuPsiSomeAvg10.hint": "A new run starts only while the PSI cpu 'some avg10' (the percent of the last ten minutes with at least one task stalled on the CPU, from /proc/pressure/cpu) stays under this value. Off unless set: pressure rises on an oversubscribed CPU, not on a slow disk, so it guards a different failure than the busy ceiling.",
+  "ui2.settings.runs.hostLoad.busyNow": "Host CPU right now: {{busy}} % busy",
+  "ui2.settings.runs.hostLoad.busyPending": "Host CPU right now: busy % not measured yet (the first sample window has not elapsed)",
+  "ui2.settings.runs.hostLoad.psi": "PSI some avg10 {{psi}} % (ceiling {{threshold}} %)",
+  "ui2.settings.runs.hostLoad.psiUnknown": "PSI some avg10 unreadable (ceiling {{threshold}} %)",
+  "ui2.settings.runs.hostLoad.busyOpen": "ceiling {{threshold}} % busy is open: new runs start",
+  "ui2.settings.runs.hostLoad.busyClosed": "ceiling {{threshold}} % busy is closed: new runs wait in the queue{{reason}}",
+  "ui2.settings.runs.hostLoad.auxLoad": "Auxiliary: load average {{load}} % of a core (load {{load1}} on {{cores}} core(s)){{above}}",
+  "ui2.settings.runs.hostLoad.unknownReason": "The host load cannot be read, so the ceiling is inactive: {{reason}}",
   "ui2.settings.runs.hostLoad.now": "Host now: {{load}} % of a core (load {{load1}} on {{cores}} core(s))",
   "ui2.settings.runs.hostLoad.above": "{{above}} % of a core above the host's background floor of {{background}} %",
   "ui2.settings.runs.hostLoad.open": "ceiling {{threshold}} % is open: new runs start",
@@ -382,8 +394,23 @@ const ru: Record<Ui2MessageKey, string> = {
   "ui2.settings.runs.minFreeMemoryMb": "Минимум свободной памяти (МБ)",
   "ui2.settings.runs.runMemoryEstimateMb": "Оценка памяти на прогон (МБ)",
   "ui2.settings.runs.minFreeHostMemoryMb": "Минимум свободной памяти хоста (МБ)",
-  "ui2.settings.runs.maxHostLoadPercentPerCore": "Максимум нагрузки хоста на ядро сверх фоновой (% ядра)",
-  "ui2.settings.runs.maxHostLoadPercentPerCore.hint": "Считается только нагрузка, которую добавляют прогоны: сервисы, которые сами держат хост занятым, этот потолок не закрывают. По умолчанию 90.",
+  "ui2.settings.runs.maxHostLoadPercentPerCore": "Максимум нагрузки хоста на ядро сверх фоновой (% ядра) — устарело",
+  // myrmidon(1.6.5 RUN-ADMISSION rc.3): гейт теперь решает по измеренной
+  // загрузке процессора; потолок load average решает только для строки
+  // настроек, сохранённой до rc.3, — об этом говорят и метка, и подсказка.
+  "ui2.settings.runs.maxHostLoadPercentPerCore.hint": "Устарело: с 1.6.5 rc.3 гейт решает по измеренной занятости CPU выше; этот старый потолок решает только для строки настроек, сохранённой до rc.3, в которой не задан ни один CPU-потолок. Считается только нагрузка, которую добавляют прогоны: сервисы, которые сами держат хост занятым, этот потолок не закрывают. По умолчанию 90.",
+  "ui2.settings.runs.maxHostCpuBusyPercent": "Максимум занятости CPU хоста (% всех ядер)",
+  "ui2.settings.runs.maxHostCpuBusyPercent.hint": "Решающий потолок: новый прогон стартует, пока доля не-idle времени CPU (из /proc/stat за короткое окно) держится ниже этого АБСОЛЮТНОГО процента всех ядер. В отличие от load average, занятость измеряет реальную работу, поэтому фон не вычитается. По умолчанию 90. «Выкл» — занятость гейт не закрывает.",
+  "ui2.settings.runs.maxHostCpuPsiSomeAvg10": "Максимум давления CPU хоста (PSI some avg10, %)",
+  "ui2.settings.runs.maxHostCpuPsiSomeAvg10.hint": "Новый прогон стартует, пока PSI cpu «some avg10» (процент последних десяти минут, когда хотя бы одна задача ждала CPU, из /proc/pressure/cpu) держится ниже этого значения. Выключен, пока не задан: давление растёт от пересыщения CPU, а не от медленного диска, — это страж другого отказа, чем потолок занятости.",
+  "ui2.settings.runs.hostLoad.busyNow": "CPU хоста сейчас: занят на {{busy}} %",
+  "ui2.settings.runs.hostLoad.busyPending": "CPU хоста сейчас: занятость ещё не измерена (первое окно замера не прошло)",
+  "ui2.settings.runs.hostLoad.psi": "PSI some avg10 {{psi}} % (потолок {{threshold}} %)",
+  "ui2.settings.runs.hostLoad.psiUnknown": "PSI some avg10 не читается (потолок {{threshold}} %)",
+  "ui2.settings.runs.hostLoad.busyOpen": "потолок занятости {{threshold}} % открыт: новые прогоны стартуют",
+  "ui2.settings.runs.hostLoad.busyClosed": "потолок занятости {{threshold}} % закрыт: новые прогоны ждут в очереди{{reason}}",
+  "ui2.settings.runs.hostLoad.auxLoad": "Дополнительно: load average {{load}} % ядра (загрузка {{load1}} на {{cores}} ядер){{above}}",
+  "ui2.settings.runs.hostLoad.unknownReason": "Нагрузка хоста не читается, потолок не действует: {{reason}}",
   "ui2.settings.runs.hostLoad.now": "Хост сейчас: {{load}} % ядра (загрузка {{load1}} на {{cores}} ядер)",
   "ui2.settings.runs.hostLoad.above": "{{above}} % ядра сверх фоновой базы хоста {{background}} %",
   "ui2.settings.runs.hostLoad.open": "потолок {{threshold}} % открыт: новые прогоны стартуют",
