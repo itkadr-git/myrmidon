@@ -32,6 +32,20 @@ describe("Context Window Error Detection", () => {
     expect(isContextWindowError(message)).toBe(false);
   });
 
+  it("should detect a context compression timeout", () => {
+    // Production shapes (09.10.2026): a run lost to compression must be
+    // recoverable (session reset), never a sticky agent error.
+    expect(
+      isContextWindowError(
+        "Context compression timed out: approximately 214 298 / 378 739 tokens",
+      ),
+    ).toBe(true);
+    expect(
+      isContextWindowError("Context compression timed out without reducing this conversation"),
+    ).toBe(true);
+    expect(isContextWindowError("CONTEXT COMPRESSION TIMED OUT")).toBe(true);
+  });
+
   it("should return false for null or undefined", () => {
     expect(isContextWindowError(null)).toBe(false);
     expect(isContextWindowError(undefined)).toBe(false);

@@ -18,6 +18,7 @@ import {
   BOT_DISK_LAYOUT_KEYS,
   botRoleGetsSharedCache,
   BOT_DISK_SETTING_KEYS,
+  BOT_DISK_WORKSPACE_LIFECYCLE_KEYS,
   BOT_DISK_UPDATED_ACTION,
   mergeBotDiskSettings,
   resolveBotDiskSettings,
@@ -116,6 +117,11 @@ export function botDiskService(
         // keys (cache path, git mirrors, pnpm store) ride the same key.
         for (const key of BOT_DISK_LAYOUT_KEYS) {
           if (JSON.stringify(before.settings[key]) !== JSON.stringify(next[key])) changedKeys.push(key);
+        }
+        // myrmidon(1.6.6-SETTINGS-UI-B): the workspace-lifecycle numbers of the
+        // same object belong in the audit trail too.
+        for (const key of BOT_DISK_WORKSPACE_LIFECYCLE_KEYS) {
+          if (before.settings[key] !== next[key]) changedKeys.push(key);
         }
 
         await deps.settings.updateGeneral({ botDisk: next });

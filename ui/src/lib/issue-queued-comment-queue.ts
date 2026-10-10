@@ -41,10 +41,19 @@ export function normalizeIssueQueuedCommentQueue(
         typeof entry?.position === "number" && Number.isFinite(entry.position)
           ? entry.position
           : sourcePosition;
+      // myrmidon(UPSTREAM-13539): retain the immutable interaction-response
+      // projection so Part B can render it read-only (vendor d0b67bfe7).
+      const response = record(entry?.source);
       return [
         {
           comment: comment as unknown as IssueComment,
           position,
+          ...(response?.kind === "interaction" && typeof response.interactionId === "string"
+            && typeof response.interactionKind === "string" ? { source: {
+              kind: "interaction" as const, interactionId: response.interactionId,
+              interactionKind: response.interactionKind,
+              requiresFreshSession: response.requiresFreshSession === true,
+            } } : {}),
           canEdit: entry?.canEdit === true,
           canDiscard: entry?.canDiscard === true,
         },
