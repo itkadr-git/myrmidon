@@ -2122,6 +2122,69 @@
       "when": 1791254886182,
       "tag": "0305_base_skills",
       "breakpoints": true
+    },
+    {
+      "idx": 306,
+      "version": "7",
+      "when": 1791312571333,
+      "tag": "0306_audit_indexes_heartbeat_issues",
+      "breakpoints": true
+    },
+    {
+      "idx": 307,
+      "version": "7",
+      "when": 1770000000447,
+      "tag": "0307_foraging_spend",
+      "breakpoints": true
+    },
+    {
+      "idx": 308,
+      "version": "7",
+      "when": 1791500200000,
+      "tag": "0308_agent_exchange_rooms",
+      "breakpoints": true
+    },
+    {
+      "idx": 309,
+      "version": "7",
+      "when": 1791700000000,
+      "tag": "0309_corpus_module",
+      "breakpoints": true
+    },
+    {
+      "idx": 310,
+      "version": "7",
+      "when": 1791700000001,
+      "tag": "0310_corpus_pgvector",
+      "breakpoints": true
+    },
+    {
+      "idx": 311,
+      "version": "7",
+      "when": 1791700000002,
+      "tag": "0311_board_processes",
+      "breakpoints": true
+    },
+    {
+      "idx": 312,
+      "version": "7",
+      "when": 1791700000003,
+      "tag": "0312_project_token_quotas",
+      "breakpoints": true
+    },
+    {
+      "idx": 313,
+      "version": "7",
+      "when": 1791700000004,
+      "tag": "0313_knowledge_module",
+      "breakpoints": true
+    },
+    {
+      "idx": 314,
+      "version": "7",
+      "when": 1791700000005,
+      "tag": "0314_evals_knowledge_gate",
+      "breakpoints": true
     }
   ]
 }

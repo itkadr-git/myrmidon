@@ -50,6 +50,12 @@ import type {
 } from "@paperclipai/shared";
 import { badRequest } from "../errors.js";
 import { listAttentionExhaustedRuns } from "./attention-exhausted-runs.js";
+import { buildPromptBudgetAttentionCards } from "../myrmidon/prompt-budget/attention.js";
+import { buildPromptBudgetStatus } from "../myrmidon/prompt-budget/status.js";
+import {
+  PROMPT_BUDGET_SETTINGS_KEY,
+  normalizePromptBudgetSettings,
+} from "@paperclipai/shared";
 import { budgetService } from "./budgets.js";
 import { hostDiskRuntime } from "../myrmidon/host-disk/index.js"; // myrmidon(BOT-DISK E)
 import { cloneHygieneSignals, lifecycleNotEffective } from "../myrmidon/bot-containers/clone-hygiene.js"; // myrmidon(1.6.2-BOT-DISK-C)
@@ -85,6 +91,15 @@ import {
   staleBlockSignalSeverity,
   staleBlockSignalWhyNow,
 } from "../myrmidon/stale-block/attention.js";
+// myrmidon(OPE-6011): the held-task card (a settled execution-reconciliation
+// hold silently skipping every wake of the task's assignee).
+import {
+  listExecutionHoldCards,
+  executionHoldSignalDedupKey,
+  executionHoldSignalDetail,
+  executionHoldSignalSeverity,
+  executionHoldSignalWhyNow,
+} from "../myrmidon/execution-hold/attention.js";
 // myrmidon(REVIEW-ROUTING): the cards of a task in review with no reviewer, or
 // a review without a verdict for too long.
 import {
@@ -101,13 +116,11 @@ import {
   WIP_LIMIT_SETTINGS_KEY,
   normalizeWipLimitSettings,
 } from "@paperclipai/shared";
-// myrmidon(1.6.3 PROMPT-BUDGET B): the prompt-budget threshold cards.
-import { buildPromptBudgetAttentionCards } from "../myrmidon/prompt-budget/attention.js";
-import { buildPromptBudgetStatus } from "../myrmidon/prompt-budget/status.js";
+// myrmidon(1.6.1-FORAGING-LIMITS-UI): the learning-spend operator signals.
 import {
-  PROMPT_BUDGET_SETTINGS_KEY,
-  normalizePromptBudgetSettings,
-} from "@paperclipai/shared";
+  readForagingAutoOffSignal,
+  readForagingLimitSignal,
+} from "../myrmidon/foraging/limits.js";
 // myrmidon(1.7-BUDGET-CONFIG-B): the enforcement mode shown on the budget card.
 import { resolveBudgetEnforcement } from "@paperclipai/shared";
 
@@ -149,6 +162,8 @@ const ATTENTION_SOURCE_KINDS: AttentionSourceKind[] = [
   "wip_limit",
   // myrmidon(REVIEW-ROUTING): no reviewer available, or a review overdue.
   "review_routing",
+  // myrmidon(OPE-6011): a held task's silent-wake notice.
+  "execution_hold",
 ];
 
 const SEVERITY_RANK: Record<AttentionSeverity, number> = {
@@ -186,9 +201,13 @@ const SOURCE_RANK: Record<AttentionSourceKind, number> = {
   // are refused), so it ranks above the advisory notices, next to the lifecycle
   // events of the same disk it shares.
   bot_disk_quota: 17,
-  // myrmidon(1.6.5 PROMPT-BUDGET B): an over-threshold prompt is a capacity
+  // myrmidon(1.6.3 PROMPT-BUDGET B): an over-threshold prompt is a capacity
   // warning on one agent — advice, ranked with the other workload notices.
   prompt_budget_alert: 18,
+  foraging_limit: 13,
+  // myrmidon(OPE-6011): a held task blocks all of its wakes — ranked with the
+  // other machine-recovery stops, just below a recovery action itself.
+  execution_hold: 1,
 };
 
 const PENDING_INTERACTION_STATUSES = ["pending"] as const;
@@ -253,6 +272,23 @@ type AttentionListOptions = AttentionFeedQuery & {
 type AttentionServiceOptions = {
   openDecisionLimit?: number;
   now?: () => number;
+  /**
+   * test/operator override for the failed-run window horizon;
+   * when unset the value comes from instance_settings.general
+   * .attentionFailedRunHorizonDays (default 7 days).
+   */
+  failedRunHorizonDays?: number;
+  /**
+   * override for the feed cache TTL in milliseconds; when unset
+   * the value comes from instance_settings.general.attentionFeedCacheTtlSeconds
+   * (default 45 s). 0 disables the cache for this service instance.
+   */
+  feedCacheTtlMs?: number;
+  /**
+   * tests: override for how long the runtime-settings read is
+   * memoised per Db. 0 forces every list() to re-read instance_settings.
+   */
+  settingsCacheTtlMs?: number;
 };
 
 function emptyCounts(): Record<AttentionSourceKind, number> {
@@ -1164,16 +1200,120 @@ function readRunIssueId(contextSnapshot: Record<string, unknown> | null) {
   return typeof issueId === "string" && issueId.length > 0 ? issueId : null;
 }
 
-export function attentionService(db: Db, serviceOptions: AttentionServiceOptions = {}) {
-  const openDecisionLimit = Math.min(
-    Math.max(Math.trunc(serviceOptions.openDecisionLimit ?? OPEN_DECISION_DEFAULT_LIMIT), 1),
-    OPEN_DECISION_MAX_LIMIT,
-  );
-  return {
-    list: async (companyId: string, options: AttentionListOptions = {}): Promise<AttentionFeed> => {
-      if (options.all && !options.queue && !options.allowUnscopedAll) {
-        throw badRequest("all requires a queue filter");
+
+// ---------------------------------------------------------------------------
+// attention-latency fix: runtime knobs + per-company feed cache.
+//
+// Both settings live in instance_settings.general and are read the same direct
+// way budgetEnforcement is read in this file (one settings select, resolver
+// precedence, no new migration). Values are memoized per Db handle for a few
+// seconds so a feed storm cannot turn the knob read into a second hot query.
+// ---------------------------------------------------------------------------
+
+const ATTENTION_FAILED_RUN_HORIZON_DEFAULT_DAYS = 7;
+const ATTENTION_FEED_CACHE_TTL_DEFAULT_MS = 45_000;
+const ATTENTION_SETTINGS_READ_TTL_MS = 5_000;
+
+type AttentionRuntimeSettings = {
+  failedRunHorizonDays: number;
+  feedCacheTtlMs: number;
+};
+
+type AttentionBuildOptions = {
+  userId?: string | null;
+  includeDismissed: boolean;
+  all: boolean;
+  openDecisionLimit: number;
+  failedRunHorizonDays: number;
+};
+
+type AttentionFeedSnapshot = {
+  items: AttentionItem[];
+  builtAtMs: number;
+};
+
+const attentionSettingsCache = new WeakMap<
+  Db,
+  { readAtMs: number; settings: AttentionRuntimeSettings }
+>();
+
+function clampNumber(value: unknown, min: number, max: number): number | null {
+  if (typeof value !== "number" || !Number.isFinite(value)) return null;
+  if (value < min) return min;
+  if (value > max) return max;
+  return value;
+}
+
+async function readAttentionRuntimeSettings(
+  db: Db,
+  settingsCacheTtlMs: number = ATTENTION_SETTINGS_READ_TTL_MS,
+): Promise<AttentionRuntimeSettings> {
+  const cached = attentionSettingsCache.get(db);
+  const readAt = Date.now();
+  if (settingsCacheTtlMs > 0 && cached && readAt - cached.readAtMs < settingsCacheTtlMs) {
+    return cached.settings;
       }
+  const rows = await db
+    .select({ general: instanceSettings.general })
+    .from(instanceSettings)
+    .limit(1)
+    .then((result) => result)
+    .catch(() => [] as { general: Record<string, unknown> }[]);
+  const general = rows[0]?.general ?? {};
+  const settings: AttentionRuntimeSettings = {
+    failedRunHorizonDays:
+      clampNumber(general.attentionFailedRunHorizonDays, 1, 365)
+      ?? ATTENTION_FAILED_RUN_HORIZON_DEFAULT_DAYS,
+    feedCacheTtlMs:
+      (clampNumber(general.attentionFeedCacheTtlSeconds, 0, 300)
+        ?? ATTENTION_FEED_CACHE_TTL_DEFAULT_MS / 1000) * 1000,
+  };
+  attentionSettingsCache.set(db, { readAtMs: readAt, settings });
+  return settings;
+}
+
+type AttentionFeedCacheEntry = { expiresAtMs: number; snapshot: AttentionFeedSnapshot };
+
+const attentionFeedCaches = new WeakMap<Db, Map<string, AttentionFeedCacheEntry>>();
+
+function attentionFeedCacheFor(db: Db): Map<string, AttentionFeedCacheEntry> {
+  let cache = attentionFeedCaches.get(db);
+  if (!cache) {
+    cache = new Map<string, AttentionFeedCacheEntry>();
+    attentionFeedCaches.set(db, cache);
+  }
+  return cache;
+}
+
+/**
+ * Drop cached feed snapshots for a company (or the whole Db).
+ * The cache's only required invalidation is TTL expiry; this hook exists so
+ * write paths that must show up on the very next read (and the test suite,
+ * which reads before/after states inside one TTL window) can force a rebuild.
+ */
+export function invalidateAttentionFeedCache(db: Db, companyId?: string) {
+  const cache = attentionFeedCaches.get(db);
+  if (!cache) return;
+  if (!companyId) {
+    cache.clear();
+    return;
+  }
+  for (const key of cache.keys()) {
+    if (key.startsWith(`${companyId}|`)) cache.delete(key);
+  }
+}
+
+async function buildAttentionFeedSnapshot(
+  db: Db,
+  companyId: string,
+  options: AttentionBuildOptions,
+  serviceOptions: AttentionServiceOptions,
+): Promise<AttentionFeedSnapshot> {
+  // the full unpaginated feed rebuild — every source collector
+  // and ~15 sequential queries. list() reaches this only when the per-company
+  // cache entry is missing or expired; request-level filtering, sorting,
+  // paging, and training lookups stay outside it.
+  const snapshotBuiltAt = Date.now();
       const [prefix, dismissals] = await Promise.all([
         companyPrefix(db, companyId),
         dismissalByKey(db, companyId, options.userId),
@@ -1383,7 +1523,7 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
         .orderBy(desc(decisions.updatedAt), desc(decisions.id));
       const openDecisions = options.all
         ? await openDecisionQuery
-        : await openDecisionQuery.limit(openDecisionLimit);
+    : await openDecisionQuery.limit(options.openDecisionLimit);
       // Bundle titles let the feed render a single "Agent proposed N decisions"
       // group header over sibling decisions (v1 still decides each independently).
       const bundleIds = [...new Set(openDecisions.map((decision) => decision.bundleId).filter((value): value is string => Boolean(value)))];
@@ -1759,7 +1899,14 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
         }));
       }
 
-      const failedRows = await listAttentionExhaustedRuns(db, companyId);
+  // the failed-run window is clamped to a fixed horizon
+  // (instance_settings.general.attentionFailedRunHorizonDays, default 7 days)
+  // so a month-old unresolved failure no longer drags a months-wide scan of
+  // heartbeat_runs into every feed build.
+  const failedRunCreatedAtAfter = new Date(now - options.failedRunHorizonDays * 24 * 60 * 60 * 1000);
+  const failedRows = await listAttentionExhaustedRuns(db, companyId, {
+    createdAtAfter: failedRunCreatedAtAfter,
+  });
       const failedIssueIds = failedRows.map((row) => readRunIssueId(row.contextSnapshot));
       const failedAgentIds = [...new Set(failedRows.map((row) => row.agentId))];
       const oldestFailedRunCreatedAt = failedRows.reduce<Date | null>((oldest, row) => {
@@ -1787,7 +1934,15 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
             .where(and(
               eq(heartbeatRuns.companyId, companyId),
               inArray(heartbeatRuns.agentId, failedAgentIds),
-              gt(heartbeatRuns.createdAt, oldestFailedRunCreatedAt),
+          // created_at > greatest(oldestFailedRunCreatedAt,
+          // now - horizon): the JS-side max mirrors greatest() and keeps the
+          // scan window from growing with the oldest unresolved failure.
+          gt(
+            heartbeatRuns.createdAt,
+            failedRunCreatedAtAfter > oldestFailedRunCreatedAt
+              ? failedRunCreatedAtAfter
+              : oldestFailedRunCreatedAt,
+          ),
             ))
           : Promise.resolve([]),
       ]);
@@ -2350,6 +2505,63 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
         }));
       }
 
+      // myrmidon(OPE-6011): one card per task whose wakes a settled
+      // execution-reconciliation hold is blocking — the hold that until now
+      // left the task silently refusing every wake. Computed live from the
+      // same data the dispatcher reads, so the card exists exactly while the
+      // hold blocks and disappears once it is superseded (an explicit wake,
+      // a recovery resolution, or the Confirm verb below). Confirm posts to
+      // /issues/:id/execution-hold/confirm-continue: the person attests the
+      // failed run left no external action, the hold is superseded and the
+      // assignee is woken explicitly.
+      for (const card of await listExecutionHoldCards(db, companyId)) {
+        add(createItem({
+          companyId,
+          sourceKind: "execution_hold",
+          subject: {
+            kind: "issue",
+            id: card.issueId,
+            companyId,
+            title: card.issueTitle ?? "Task",
+            identifier: card.issueIdentifier,
+            status: card.issueStatus,
+            href: card.issueIdentifier ? `/${prefix}/issues/${card.issueIdentifier}` : null,
+            metadata: {
+              recoveryActionId: card.actionId,
+              cause: card.cause,
+              failedRunId: card.failedRunId,
+            },
+          },
+          whyNow: executionHoldSignalWhyNow(card),
+          decisionVerbs: decisionVerbs(
+            {
+              id: "confirm_continue",
+              label: "Confirm: no external actions — continue",
+              description:
+                "Attest that the failed run performed no external action, lift the hold, and wake the assignee.",
+            },
+            { id: "inspect", label: "Inspect", description: "Open the task and check the failed run." },
+            { id: "dismiss", label: "Dismiss", description: "Dismiss this notice (the hold stays). " },
+          ),
+          inlineResolvable: false,
+          entryRule:
+            "a settled execution-reconciliation hold (replay=blocked) is the issue's newest effective blocker and the issue has an assignee",
+          exitRule:
+            "the hold is superseded (explicit wake, recovery resolution, or the Confirm verb), or the issue loses its assignee.",
+          dedupKey: executionHoldSignalDedupKey(card),
+          severity: executionHoldSignalSeverity(),
+          activityAt: card.activityAt,
+          createdAt: card.activityAt,
+          updatedAt: card.activityAt,
+          relatedIssue: null,
+          detail: {
+            kind: "generic",
+            summaryExcerpt: excerpt(executionHoldSignalDetail(card)),
+            images: [],
+          },
+        }));
+      }
+
       // myrmidon(TRACING-HEALTH): the "LLM tracing" non-ok state raises ONE
       // card on the operator desk, deduped by state — the parent ticket's
       // rule is "signal to the operator role, never the owner", and the
@@ -2658,6 +2870,52 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
         }));
       }
 
+      // myrmidon(1.6.1-FORAGING-LIMITS-UI): the learning sweep hit a spend
+      // limit, or the cost-per-task threshold switched it off. The signal is
+      // recorded by the pass itself (foraging/limits.ts) into the process-level
+      // registry; the feed computes the card on the fly, the same shape the
+      // stale-block and tracing-health signals use. The limit card disappears
+      // when a pass runs without a stop; the auto-off card stays until an
+      // operator re-enables learning.
+      for (const foragingSignal of [
+        readForagingLimitSignal(companyId),
+        readForagingAutoOffSignal(companyId),
+      ]) {
+        if (!foragingSignal) continue;
+        add(createItem({
+          companyId,
+          sourceKind: "foraging_limit",
+          subject: {
+            kind: "foraging_sweep",
+            id: `foraging:${companyId}`,
+            companyId,
+            title: "Learning (foraging)",
+            identifier: null,
+            status: null,
+            href: `/${prefix}/foraging`,
+            metadata: { dedupKey: foragingSignal.dedupKey },
+          },
+          whyNow: foragingSignal.whyNow,
+          decisionVerbs: decisionVerbs(
+            { id: "inspect", label: "Inspect", description: "Open the Foraging page and the learning limits." },
+          ),
+          inlineResolvable: true,
+          entryRule: "a foraging pass stopped on a spend limit, or the cost-per-task threshold switched learning off",
+          exitRule: "the next pass runs without a stop (limit card), learning is re-enabled, or the row is dismissed.",
+          dedupKey: foragingSignal.dedupKey,
+          severity: foragingSignal.severity,
+          activityAt: foragingSignal.activityAt,
+          createdAt: foragingSignal.activityAt,
+          updatedAt: foragingSignal.activityAt,
+          relatedIssue: null,
+          detail: {
+            kind: "generic",
+            summaryExcerpt: excerpt(foragingSignal.whyNow),
+            images: [],
+          },
+        }));
+      }
+
       const deduped = new Map<string, AttentionItem>();
       for (const item of collected) {
         const current = deduped.get(item.dedupKey);
@@ -2667,6 +2925,78 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
       const collectedItems = [...deduped.values()].sort(compareAttentionItems);
       await decisionQueueService(db).materializeSeededQueues(companyId, collectedItems);
       const enrichedItems = await enrichAttentionItems(db, companyId, collectedItems, now);
+  return { items: enrichedItems, builtAtMs: snapshotBuiltAt };
+}
+
+export function attentionService(db: Db, serviceOptions: AttentionServiceOptions = {}) {
+  const openDecisionLimit = Math.min(
+    Math.max(Math.trunc(serviceOptions.openDecisionLimit ?? OPEN_DECISION_DEFAULT_LIMIT), 1),
+    OPEN_DECISION_MAX_LIMIT,
+  );
+  return {
+    list: async (companyId: string, options: AttentionListOptions = {}): Promise<AttentionFeed> => {
+      if (options.all && !options.queue && !options.allowUnscopedAll) {
+        throw badRequest("all requires a queue filter");
+      }
+      const settings = await readAttentionRuntimeSettings(
+        db,
+        serviceOptions.settingsCacheTtlMs ?? ATTENTION_SETTINGS_READ_TTL_MS,
+      );
+      const failedRunHorizonDays =
+        serviceOptions.failedRunHorizonDays ?? settings.failedRunHorizonDays;
+      const feedCacheTtlMs = serviceOptions.feedCacheTtlMs ?? settings.feedCacheTtlMs;
+      // A caller-provided clock is a test/operator state override — snapshots
+      // built under it must not leak into the shared per-company cache.
+      const cacheEnabled = !serviceOptions.now && feedCacheTtlMs > 0;
+      const buildOptions: AttentionBuildOptions = {
+        userId: options.userId,
+        includeDismissed: options.includeDismissed === true,
+        all: options.all === true,
+        openDecisionLimit,
+        failedRunHorizonDays,
+      };
+      const now = serviceOptions.now?.() ?? Date.now();
+      const includeDismissed = options.includeDismissed === true;
+
+      let enrichedItems: AttentionItem[];
+      if (cacheEnabled) {
+        // cache key = company + everything that changes the
+        // unpaginated snapshot (userId and includeDismissed feed the add()
+        // dismissal filter, all changes the open-decision slice). queue,
+        // archived, sort, activity window and cursor/limit are applied to the
+        // snapshot per request and need no separate entry.
+        // Staleness contract: dismiss, snooze, archive and other writes made
+        // during the TTL window surface on the feed with up to feedCacheTtlMs
+        // delay; the snapshot itself is read-only downstream (every step maps
+        // to fresh item objects), so shared references are safe here.
+        const cacheKey = [
+          companyId,
+          buildOptions.userId ?? "",
+          buildOptions.includeDismissed ? "d" : "",
+          buildOptions.all ? "a" : "",
+          buildOptions.openDecisionLimit,
+          // different horizons (settings change, per-service override) must
+          // never share a snapshot
+          buildOptions.failedRunHorizonDays,
+        ].join("|");
+        const cache = attentionFeedCacheFor(db);
+        const cachedEntry = cache.get(cacheKey);
+        if (cachedEntry && cachedEntry.expiresAtMs > now) {
+          enrichedItems = cachedEntry.snapshot.items;
+        } else {
+          const snapshot = await buildAttentionFeedSnapshot(db, companyId, buildOptions, serviceOptions);
+          if (cache.size > 32) {
+            for (const [key, entry] of cache) {
+              if (entry.expiresAtMs <= now) cache.delete(key);
+            }
+          }
+          cache.set(cacheKey, { expiresAtMs: snapshot.builtAtMs + feedCacheTtlMs, snapshot });
+          enrichedItems = snapshot.items;
+        }
+      } else {
+        const snapshot = await buildAttentionFeedSnapshot(db, companyId, buildOptions, serviceOptions);
+        enrichedItems = snapshot.items;
+      }
 
       const activitySince = parseActivityBoundary(options.activitySince, "activitySince");
       const activityUntil = parseActivityBoundary(options.activityUntil, "activityUntil");

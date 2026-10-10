@@ -1,6 +1,8 @@
 import type { AdapterRuntimeCommandSpec, ServerAdapterModule } from "./types.js";
 import { parseAdapterModelsEnv } from "../services/adapter-models-env.js";
 import { stampClaudeAgentIdHeader } from "./claude-agent-id-header.js";
+// myrmidon(B1c): product name in user-facing runner texts; see product.ts.
+import { PRODUCT_NAME } from "../myrmidon/product.js";
 import {
   buildSandboxNpmInstallCommand,
   getAdapterSessionManagement,
@@ -390,7 +392,8 @@ const paperclipRunnerAdapter: ServerAdapterModule = {
         ? error
         : new PaperclipRunnerProviderProfileError(
             "paperclip_runner_provider_unsupported",
-            "Paperclip Runner provider configuration is invalid.",
+            // myrmidon(B1c): visible test-failure text names our product part.
+            `${PRODUCT_NAME} Runner provider configuration is invalid.`,
           );
       return {
         adapterType: "paperclip_runner",
@@ -510,7 +513,8 @@ const paperclipRunnerAdapter: ServerAdapterModule = {
         )
       : buildNpmRuntimeCommandSpec(config, "codex", "@openai/codex@0.153.4"),
   agentConfigurationDoc:
-    "# Paperclip Runner\n\nAdapter: paperclip_runner\n\nRuns Codex, OpenCode, Claude Managed, AWS AgentCore, or ACPX Claude through the Rust Paperclip runner and authenticated PRP transport. Pi is not available through the qualified ACPX profile. Managed providers use company-scoped qualified profiles, explicit retention acknowledgement, and spend limits.\n",
+    // myrmidon(B1c): visible agent-configuration document names our product part.
+    `# ${PRODUCT_NAME} Runner\n\nAdapter: paperclip_runner\n\nRuns Codex, OpenCode, Claude Managed, AWS AgentCore, or ACPX Claude through the Rust ${PRODUCT_NAME} runner and authenticated PRP transport. Pi is not available through the qualified ACPX profile. Managed providers use company-scoped qualified profiles, explicit retention acknowledgement, and spend limits.\n`,
   getConfigSchema: () => ({
     fields: [
       {
@@ -606,7 +610,7 @@ const paperclipRunnerAdapter: ServerAdapterModule = {
         label: "Estimated session ceiling (USD)",
         type: "number" as const,
         default: 1,
-        hint: "Paperclip estimate; AWS does not provide a per-session currency hard stop.",
+        hint: `${PRODUCT_NAME} estimate; AWS does not provide a per-session currency hard stop.`,
         meta: { visibleWhen: { key: "provider", value: "aws_agentcore" } },
       },
       {
@@ -931,7 +935,7 @@ const externalAdaptersReady: Promise<void> = (async () => {
       const overriding = BUILTIN_ADAPTER_TYPES.has(externalAdapter.type);
       if (overriding) {
         console.log(
-          `[paperclip] External adapter "${externalAdapter.type}" overrides built-in adapter`,
+          `[myrmidon] External adapter "${externalAdapter.type}" overrides built-in adapter`,
         );
         // Save the original builtin for later restoration.
         const existing = adaptersByType.get(externalAdapter.type);
@@ -945,7 +949,7 @@ const externalAdaptersReady: Promise<void> = (async () => {
       );
     }
   } catch (err) {
-    console.error("[paperclip] Failed to load external adapters:", err);
+    console.error("[myrmidon] Failed to load external adapters:", err);
   }
 })();
 
@@ -1020,7 +1024,7 @@ function getDeclaredAdapterModels(): ReturnType<typeof parseAdapterModelsEnv> {
     value = parseAdapterModelsEnv(process.env);
   } catch (err) {
     console.error(
-      "[paperclip] Invalid PAPERCLIP_ADAPTER_MODELS; ignoring declared model lists:",
+      "[myrmidon] Invalid PAPERCLIP_ADAPTER_MODELS; ignoring declared model lists:",
       err,
     );
   }
@@ -1110,12 +1114,12 @@ export function setOverridePaused(type: string, paused: boolean): boolean {
   const wasPaused = pausedOverrides.has(type);
   if (paused && !wasPaused) {
     pausedOverrides.add(type);
-    console.log(`[paperclip] Override paused for "${type}" — builtin adapter restored`);
+    console.log(`[myrmidon] Override paused for "${type}" — builtin adapter restored`);
     return true;
   }
   if (!paused && wasPaused) {
     pausedOverrides.delete(type);
-    console.log(`[paperclip] Override resumed for "${type}" — external adapter active`);
+    console.log(`[myrmidon] Override resumed for "${type}" — external adapter active`);
     return true;
   }
   return false;

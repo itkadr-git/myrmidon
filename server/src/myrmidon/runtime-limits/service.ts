@@ -18,12 +18,12 @@
 
 import type { Db } from "@paperclipai/db";
 import {
-  RUN_LIMIT_KEYS,
+  RUN_LIMITS_PATCH_KEYS,
   mergeRunLimits,
   resolveRunLimits,
-  type ResolvedRunLimits,
   type RunLimits,
   type RunLimitsPatch,
+  type ResolvedRunLimits,
 } from "@paperclipai/shared";
 import { logger } from "../../middleware/logger.js";
 import { instanceSettingsService, logActivity } from "../../services/index.js";
@@ -54,6 +54,27 @@ export type RuntimeLimitsView = ResolvedRunLimits & {
     oldestQueuedAt: string | null;
     /** The agent whose run waits longest, or null when the queue is empty. */
     oldestQueuedAgentId: string | null;
+  } | null;
+  /**
+   * myrmidon(1.6.5 C0-ui): the memory the load screen is about — the host's
+   * free memory as the admission's host floor reads it, and the server
+   * container's own cgroup usage (the container the run budgets of
+   * `minFreeMemoryMb` are counted against). Each side is `null` when it
+   * cannot be read (the host meminfo is missing or virtualized, the process
+   * is not in a cgroup v2 with a limit), so the screen shows nothing rather
+   * than a number it made up. The snapshot does not decide admission; it
+   * only reports what the admission already reads for its gates.
+   */
+  memory: {
+    host: {
+      availableMb: number;
+      totalMb: number;
+    } | null;
+    container: {
+      limitMb: number;
+      usedMb: number;
+      freeMb: number;
+    } | null;
   } | null;
 };
 
@@ -99,6 +120,12 @@ export interface RuntimeLimitsServiceDeps {
    * never fails on it.
    */
   queueSnapshot?(): Promise<RuntimeLimitsView["queue"]>;
+  /**
+   * myrmidon(1.6.5 C0-ui): the live memory snapshot for the GET view — host
+   * memory and the server container's cgroup. `null` when the reading fails,
+   * so the view never fails on it (same rule as the queue snapshot).
+   */
+  memorySnapshot?(): RuntimeLimitsView["memory"];
   env?: Record<string, string | undefined>;
 }
 
@@ -164,6 +191,21 @@ export function runtimeLimitsService(
     }
   }
 
+  /**
+   * myrmidon(1.6.5 C0-ui): the live memory snapshot (host + server container
+   * cgroup), or null when the reading fails. Reading it must never fail the
+   * view, exactly like the queue snapshot above.
+   */
+  function memorySnapshot(): RuntimeLimitsView["memory"] {
+    if (!deps.memorySnapshot) return null;
+    try {
+      return deps.memorySnapshot();
+    } catch (err) {
+      logger.warn({ err }, "run admission memory snapshot unavailable for the runtime limits view");
+      return null;
+    }
+  }
+
   return {
     read: async (): Promise<RuntimeLimitsView> => {
       const general = await deps.settings.getGeneral();
@@ -171,6 +213,7 @@ export function runtimeLimitsService(
         ...resolveRunLimits({ stored: general.runLimits, env }),
         hostLoad: hostLoad(),
         queue: await queueSnapshot(),
+        memory: memorySnapshot(),
       };
     },
 
@@ -179,7 +222,9 @@ export function runtimeLimitsService(
         const general = await deps.settings.getGeneral();
         const before = resolveRunLimits({ stored: general.runLimits, env });
         const next = mergeRunLimits(before.limits, patch);
-        const changedKeys = RUN_LIMIT_KEYS.filter((key) => before.limits[key] !== next[key]);
+        const changedKeys = RUN_LIMITS_PATCH_KEYS.filter(
+          (key) => (before.limits[key] ?? null) !== (next[key] ?? null),
+        );
 
         await deps.settings.updateGeneral({ runLimits: next });
 
@@ -213,6 +258,7 @@ export function runtimeLimitsService(
           ...resolveRunLimits({ stored: next, env }),
           hostLoad: hostLoad(),
           queue: await queueSnapshot(),
+          memory: memorySnapshot(),
         };
       }),
   };

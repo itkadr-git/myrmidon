@@ -91,7 +91,9 @@ import { CloudsSettingsPage } from "./components/myrmidon/clouds/CloudsSettingsP
 import { StackScreen } from "./components/myrmidon/stack/StackScreen"; // myrmidon(SUC)
 import { AutonomyMatrixScreen } from "./components/myrmidon/autonomy/AutonomyMatrixContainer"; // myrmidon(1.6 AUTONOMY-MATRIX B)
 import { WipLimitScreen } from "./components/myrmidon/wip-limit/WipLimitScreenContainer"; // myrmidon(1.6.1 WIP-LIMIT B)
+import { OwnerDeliveryScreen } from "./components/myrmidon/owner-delivery/OwnerDeliveryScreenContainer"; // myrmidon(1.6.5-OWNER-DM-FILTER)
 import { ReviewRoutingScreen } from "./components/myrmidon/review-routing/ReviewRoutingScreenContainer"; // myrmidon(REVIEW-ROUTING)
+import { CorpusScreen } from "./components/myrmidon/corpus/CorpusScreenContainer"; // myrmidon(1.6.6 CORPUS E)
 
 import { ModelProvidersScreen } from "./components/myrmidon/model-providers/ModelProvidersContainer"; // myrmidon(1.6.1 MODEL-PROVIDERS C)
 import { CastesScreen } from "./components/myrmidon/castes/CastesContainer"; // myrmidon(1.6.1 CUSTOM-CASTES C)
@@ -221,7 +223,9 @@ function boardRoutes(streamlinedUiEnabled: boolean) {
       <Route path="company/settings/browsers" element={<BrowsersSettingsPage />} /> {/* myrmidon(BROWSER-CONSOLE) */}
       <Route path="company/settings/autonomy" element={<AutonomyMatrixScreen />} /> {/* myrmidon(1.6 AUTONOMY-MATRIX B) */}
       <Route path="company/settings/wip-limit" element={<WipLimitScreen />} /> {/* myrmidon(1.6.1 WIP-LIMIT B) */}
+      <Route path="company/settings/owner-delivery" element={<OwnerDeliveryScreen />} /> {/* myrmidon(1.6.5-OWNER-DM-FILTER) */}
       <Route path="company/settings/review-routing" element={<ReviewRoutingScreen />} /> {/* myrmidon(REVIEW-ROUTING) */}
+      <Route path="company/settings/corpus" element={<CorpusScreen />} /> {/* myrmidon(1.6.6 CORPUS E): the knowledge corpus settings screen route */}
 
       <Route path="company/settings/castes" element={<ModelProvidersScreen />} /> {/* myrmidon(1.6.1 MODEL-PROVIDERS C): the ui2 "Castes and models" section route */}
       <Route path="company/settings/caste-directory" element={<CastesScreen />} /> {/* myrmidon(1.6.1 CUSTOM-CASTES C): the caste directory settings screen route */}
@@ -630,11 +634,12 @@ export function OnboardingRoutePage() {
               to send this click: creation lives on Cloud, and in-app creation
               is a 403 floor. A button that does nothing is worse than none, so
               say why instead of rendering an inert control. */}
+          {/* myrmidon(DB1): DEBRAND 1.6.6-a — visible copy renames the vendor cloud to "Myrmidon Cloud". */}
           {!matchedCompany && cloudInstance && !createStackUrl ? (
             <p className="text-sm text-muted-foreground">
               {t("app.cloudCreateUnavailable", {
                 defaultValue:
-                  "Organizations are created in Paperclip Cloud. This instance can't reach it right now — try again from your Cloud portfolio.",
+                  "Organizations are created in Myrmidon Cloud. This instance can't reach it right now — try again from your Cloud portfolio.",
               })}
             </p>
           ) : (
@@ -759,11 +764,12 @@ function NoCompaniesStartPage() {
         <div className="mt-4">
           {/* Same as the onboarding route: no Cloud origin means nowhere to
               send the click, and in-app creation is a 403 floor here. */}
+          {/* myrmidon(DB1): DEBRAND 1.6.6-a — visible copy renames the vendor cloud to "Myrmidon Cloud". */}
           {cloudInstance && !createStackUrl ? (
             <p className="text-sm text-muted-foreground">
               {t("app.cloudCreateUnavailable", {
                 defaultValue:
-                  "Organizations are created in Paperclip Cloud. This instance can't reach it right now — try again from your Cloud portfolio.",
+                  "Organizations are created in Myrmidon Cloud. This instance can't reach it right now — try again from your Cloud portfolio.",
               })}
             </p>
           ) : (

@@ -18,13 +18,59 @@
 #   DEVBUILD_BASE  - base directory on the VPS (e.g. /srv/devbuild)
 #
 # The ssh key is expected at /opt/devbuild-ssh/id_ed25519 (mounted by the
-# runtime template, see part C of BUILD-OFFLOAD). If the env vars are unset,
-# print a pointer to the devbuild skill and exit 1.
+# runtime template, see part C of BUILD-OFFLOAD). Alternatively the board may
+# hand the key over as the secret env DEVBUILD_SSH_KEY_DATA (the key text
+# itself): when the file is absent the script materializes the env key into a
+# private 0600 file under the run scratch (DEVBUILD-IN-BOTS). If the env vars
+# are unset, print a pointer to the devbuild skill and exit 1.
 #
 # Resource limits for the remote command are NOT imposed here — they are the
 # fleet operator's business (part D). This script is only transport plus the
 # cache environment.
 set -euo pipefail
+
+# myrmidon(1.6.5 BOT-DISK-H2g): resolve_git_dir <path> — what kind of git
+# checkout <path> (or the nearest parent) is. A plain clone has a `.git`
+# DIRECTORY; a worktree of a shared bare base has a `.git` FILE reading
+# `gitdir: <base>/worktrees/<name>` (absolute, or relative to the worktree).
+# Prints four tab-free lines: kind (clone|worktree|none), root, gitdir,
+# commondir (the bare base for a worktree, the gitdir itself for a clone).
+# Reads only plain files and directories — never `.git/...` of a worktree as a
+# directory, never git itself (the image wraps git); exit 1 and kind=none when
+# nothing is found or the file is malformed.
+resolve_git_dir() {
+  local dir="${1:?resolve_git_dir: path required}" depth=0 gf line gd cdir
+  dir="$(cd "$dir" 2>/dev/null && pwd -P)" || { printf 'none\n\n\n\n'; return 1; }
+  while [ "$depth" -lt 32 ]; do
+    gf="$dir/.git"
+    if [ -d "$gf" ]; then
+      printf 'clone\n%s\n%s\n%s\n' "$dir" "$gf" "$gf"
+      return 0
+    elif [ -f "$gf" ]; then
+      IFS= read -r line < "$gf" || true
+      case "$line" in "gitdir: "*) gd="${line#gitdir: }" ;; *) printf 'none\n\n\n\n'; return 1 ;; esac
+      case "$gd" in /*) ;; *) gd="$dir/$gd" ;; esac
+      [ -d "$gd" ] || { printf 'none\n\n\n\n'; return 1; }
+      gd="$(cd "$gd" && pwd -P)"
+      cdir="$gd"
+      if [ -f "$gd/commondir" ]; then
+        IFS= read -r line < "$gd/commondir" || true
+        case "$line" in /*) cdir="$line" ;; *) cdir="$gd/$line" ;; esac
+        cdir="$(cd "$cdir" 2>/dev/null && pwd -P)" || { printf 'none\n\n\n\n'; return 1; }
+      fi
+      printf 'worktree\n%s\n%s\n%s\n' "$dir" "$gd" "$cdir"
+      return 0
+    fi
+    [ "$dir" = "/" ] && break
+    dir="$(dirname "$dir")"
+    depth=$((depth + 1))
+  done
+  printf 'none\n\n\n\n'
+  return 1
+}
+
+# Sourced by the test (and nothing else): stop before the transport part.
+if [ "${BASH_SOURCE[0]}" != "$0" ]; then return 0; fi
 
 readonly DEVBUILD_SSH_KEY_PATH="/opt/devbuild-ssh/id_ed25519"
 readonly DEVBUILD_CACHES="/srv/devcache"
@@ -50,6 +96,12 @@ Required environment:
 
 Optional environment:
   DEVBUILD_SSH_KEY    overrides the key path (default: /opt/devbuild-ssh/id_ed25519)
+  DEVBUILD_SSH_KEY_DATA  the key itself (OpenSSH private key text). When the
+                      key file is absent/unreadable and this is set, the key is
+                      written to a private 0700 directory (0600 file) under the
+                      run scratch, never into /workspace. This is how the board
+                      hands the key to a bot whose container has no
+                      /opt/devbuild-ssh mount.
   DEVBUILD_WORKSPACE  local workspace to sync (default: /workspace)
 
 See the devbuild skill (skills/devbuild/SKILL.md) for examples, caches and
@@ -83,6 +135,26 @@ if [ ! -d "$WORKSPACE_SRC" ]; then
   echo "devbuild: workspace directory $WORKSPACE_SRC does not exist" >&2
   exit 1
 fi
+
+# myrmidon(1.6.5 DEVBUILD-IN-BOTS): the board can hand the key to a bot as the
+# secret env DEVBUILD_SSH_KEY_DATA instead of the /opt/devbuild-ssh file mount
+# (the mount needs the operator's MYRMIDON_BOT_MOUNT_SOURCES entry; the env
+# needs none). When the key file is absent or unreadable and the env key is
+# present, materialize it into a private directory under the run scratch —
+# never into /workspace (the synced tree) or a shared /tmp. The directory is
+# per-process ($$ in the name), removed on exit, and the file is 0600, which
+# is what ssh requires of a private key.
+if [ ! -r "$SSH_KEY" ] && [ -n "${DEVBUILD_SSH_KEY_DATA:-}" ]; then
+  key_dir="${TMPDIR:-${HERMES_HOME:-/data/hermes}/cache/scratch}/devbuild-key.$$"
+  mkdir -p "$key_dir" && chmod 0700 "$key_dir" || {
+    echo "devbuild: cannot create the private key directory under ${TMPDIR:-${HERMES_HOME:-/data/hermes}/cache/scratch}" >&2
+    exit 1
+  }
+  SSH_KEY="$key_dir/id_ed25519"
+  ( umask 077; printf '%s\n' "$DEVBUILD_SSH_KEY_DATA" > "$SSH_KEY" )
+  trap 'rm -rf "$key_dir"' EXIT
+fi
+
 if [ ! -r "$SSH_KEY" ]; then
   echo "devbuild: ssh key $SSH_KEY is missing or not readable - see the devbuild skill" >&2
   exit 1
@@ -138,7 +210,8 @@ rsync -a --delete --info=stats1 \
 # script ship another directory to a shared path — and only plain path
 # characters are accepted.
 hermes_home="${HERMES_HOME:-/data/hermes}"
-local_mirror="${MYRMIDON_GIT_LOCAL_MIRROR:-$(grep -m1 -E '^MYRMIDON_GIT_LOCAL_MIRROR=' "${hermes_home}/.env" 2>/dev/null | cut -d= -f2- | tr -d "\"'")}"
+# (no .env or no such line is normal: grep's status must not kill the script under pipefail)
+local_mirror="${MYRMIDON_GIT_LOCAL_MIRROR:-$({ grep -m1 -E '^MYRMIDON_GIT_LOCAL_MIRROR=' "${hermes_home}/.env" 2>/dev/null || true; } | cut -d= -f2- | tr -d "\"'")}"
 devbuild_git="${DEVBUILD_CACHES}/git"
 declare -A mirror_shipped=()
 map_args=()
@@ -179,6 +252,40 @@ while [ "$#" -ge 3 ]; do
   sed -i "s|^${old}\$|${new}|" "$remote_file"
 done
 REWRITE
+fi
+
+# myrmidon(1.6.5 BOT-DISK-H2g): a task copy may be a git WORKTREE of the bot's
+# bare base (myr-ws open): /workspace/<KEY>/.git is a one-line file naming
+# <base>/worktrees/<name> on THIS container, and the objects live in the base.
+# Ship the base (without other worktrees' admin dirs) plus this worktree's admin
+# dir to a per-bot place in the devcache git directory and repoint both the
+# `.git` file and the admin dir's back-reference (`gitdir`) at the VPS paths.
+# Only bases under the container's myrmidon git-base root with plain path
+# characters are followed.
+git_kind=""; git_root=""; git_dir=""; git_common=""
+if res="$(resolve_git_dir "$WORKSPACE_SRC")"; then
+  { read -r git_kind; read -r git_root; read -r git_dir; read -r git_common; } <<<"$res"
+fi
+if [ "$git_kind" = "worktree" ] && [ "$git_root" = "$(cd "$WORKSPACE_SRC" && pwd -P)" ]; then
+  wt_base_root="${MYRMIDON_GIT_BASE_DIR:-${hermes_home:-${HERMES_HOME:-/data/hermes}}/.myrmidon/git-base}"
+  wt_name="$(basename "$git_dir")"
+  case "$git_common" in "${wt_base_root%/}"/*) ;; *) echo "devbuild: worktree base $git_common is outside $wt_base_root - not shipped" >&2; exit 1 ;; esac
+  case "$git_common$wt_name$bot_name" in *[!A-Za-z0-9._/-]*) echo "devbuild: unsupported characters in the worktree git paths" >&2; exit 1 ;; esac
+  wt_key="$(printf '%s' "$git_common" | sha256sum | cut -c1-16)"
+  remote_base="${DEVBUILD_CACHES}/git-wt/${bot_name}/${wt_key}.git"
+  ssh "${SSH_OPTS[@]}" "$DEVBUILD_USER@$DEVBUILD_HOST" "mkdir -p '$remote_base/worktrees/$wt_name'"
+  rsync -a --info=stats0 --exclude 'worktrees/' \
+    -e "ssh ${SSH_OPTS[*]}" \
+    "$git_common/" "$DEVBUILD_USER@$DEVBUILD_HOST:$remote_base/"
+  rsync -a --delete --info=stats0 \
+    -e "ssh ${SSH_OPTS[*]}" \
+    "$git_dir/" "$DEVBUILD_USER@$DEVBUILD_HOST:$remote_base/worktrees/$wt_name/"
+  ssh "${SSH_OPTS[@]}" "$DEVBUILD_USER@$DEVBUILD_HOST" bash -s -- "$dest_root" "$remote_base" "$wt_name" <<'WTREWRITE'
+set -eu
+dest_root="$1"; base="$2"; name="$3"
+printf 'gitdir: %s/worktrees/%s\n' "$base" "$name" > "$dest_root/.git"
+printf '%s/.git\n' "$dest_root" > "$base/worktrees/$name/gitdir"
+WTREWRITE
 fi
 
 # Run the command remotely, with the shared caches exported and the cwd at

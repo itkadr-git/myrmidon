@@ -93,6 +93,16 @@
 # On a failed health check the script stops with maintenance still on and
 # prints the rollback command.
 #
+# DB-TUNING (OPE-5009): after the health check the deploy applies and verifies
+# the PostgreSQL settings from the database audit (OPE-4270) — declaratively,
+# from scripts/myrmidon/deploy/db-tuning.sql, through DB_TUNE_COMMAND; every
+# DB_TUNE_EXPECTED pair is then checked with SHOW (DB_TUNE_SHOW_COMMAND) and a
+# mismatch fails the deploy exactly like a failed health check (maintenance
+# stays on, rollback.sh returns the settings via DB_TUNE_ROLLBACK_COMMAND).
+# All four DB_TUNE_* settings are optional: an empty DB_TUNE_COMMAND skips the
+# step, so an installation that does not manage its database settings still
+# deploys.
+#
 # --dry-run runs EVERY check the real run makes before it changes anything and
 # fails exactly when the real run would: the CI image checks, the boot unit, the
 # compose project of the full file set (with compose's own error text), every
@@ -529,6 +539,11 @@ if [[ "$DRY_RUN" == "1" ]]; then
     plan "6. set image in $OVERRIDE_PATH to $ref; docker compose up -d --no-deps $COMPOSE_SERVICE"
     plan "7. verify $HEALTH_URL: status ok, version ${expect_version:-<from image label>}, commit ${expect_commit:-<from image label>}"
     plan "7b. verify the LLM tracing callbacks (OTLP only; refuses the legacy 'langfuse' callback against a v4 Langfuse server; logs a skip when no MYR_TRACING_* input is configured)"
+    if [[ -n "$DB_TUNE_COMMAND" ]]; then
+      plan "7d. DB-TUNING: apply the PostgreSQL settings of the audit (DB_TUNE_COMMAND runs the declarative source scripts/myrmidon/deploy/db-tuning.sql), record the previous SHOW values, then verify every DB_TUNE_EXPECTED pair through DB_TUNE_SHOW_COMMAND; a mismatch is DEPLOY FAILED (maintenance stays on, rollback.sh returns the settings via DB_TUNE_ROLLBACK_COMMAND)"
+    else
+      plan "7d. DB-TUNING: skipped (DB_TUNE_COMMAND is empty): the PostgreSQL settings of the audit are not managed by this deploy"
+    fi
     plan "8. leave maintenance (the exit POST returns when the window is marked leaving; the deploy waits for the state off, MAINTENANCE_EXIT_WAIT_SEC=${MAINTENANCE_EXIT_WAIT_SEC}s); then the post-deploy fleet check (no issue blocked in the deploy window, the window retired; needs BOARD_API_URL/BOARD_COMPANY_ID, otherwise skipped)"
   fi
   if [[ "$MYR_SMOKE_ENABLED" == "1" ]]; then
@@ -797,6 +812,48 @@ if ! "$MYR_SCRIPT_DIR/tracing-check.sh" \
   ${MYRMIDON_TRACING_TOKEN_FILE:+--token-file "$MYRMIDON_TRACING_TOKEN_FILE"}; then
   log "DEPLOY FAILED: $ref is running and healthy, but the LLM tracing checks are refused. Maintenance stays on."
   log "Fix the tracing configuration (OTLP only, 'langfuse_otel'; a delivering install; pinned images) and run the deploy again."
+  log "Roll back with: $MYR_SCRIPT_DIR/rollback.sh --config $config"
+  exit 1
+fi
+
+# DB-TUNING (OPE-5009): the PostgreSQL settings of the audit (OPE-4270) are
+# applied HERE, declaratively — the values live in db-tuning.sql in this
+# repository and only the deploy runs them (never a manual ALTER SYSTEM).
+# The step number says 7d because 7b (the tracing guard above) and 7c (the
+# dockergate config inside the window) are taken; like the health and tracing
+# steps it runs only when the board image switched.
+# After applying, every DB_TUNE_EXPECTED pair is verified through
+# DB_TUNE_SHOW_COMMAND (SHOW); a mismatch fails the deploy exactly like a
+# failed health check: maintenance stays on and the rollback command is
+# printed. When the apply itself fails or the SHOW check mismatches, this
+# deploy run first returns the previous settings itself (DB_TUNE_ROLLBACK_COMMAND;
+# the image rolls back too, so the tuned settings must not outlive it), then
+# fails. With an empty DB_TUNE_COMMAND the step logs a skip and the deploy
+# continues — an installation that does not manage its settings still deploys.
+log "7d/8 apply+verify DB settings"
+# The true pre-tuning SHOW values must be captured BEFORE the first apply —
+# the helper records every parameter once (an already-recorded value is kept),
+# so a re-deploy does not overwrite the pre-audit values with the tuned ones.
+db_tune_record_previous
+if ! db_tune_apply; then
+  log "DEPLOY FAILED: the DB-TUNING apply command failed. Maintenance stays on."
+  if [[ -n "$DB_TUNE_ROLLBACK_COMMAND" ]]; then
+    log "returning the database to the previous settings (DB_TUNE_ROLLBACK_COMMAND)"
+    db_tune_rollback || log "WARNING: DB_TUNE_ROLLBACK_COMMAND failed; the database settings may be half-applied"
+  fi
+  log "Fix the DB-TUNING settings (see the command output above) and run the deploy again."
+  log "Roll back with: $MYR_SCRIPT_DIR/rollback.sh --config $config"
+  exit 1
+fi
+if ! db_tune_verify "deploy"; then
+  log "DEPLOY FAILED: $ref is running and healthy, but the DB-TUNING SHOW check does not match DB_TUNE_EXPECTED. Maintenance stays on."
+  if [[ -n "$DB_TUNE_ROLLBACK_COMMAND" ]]; then
+    log "returning the database to the previous settings (DB_TUNE_ROLLBACK_COMMAND)"
+    db_tune_rollback || log "WARNING: DB_TUNE_ROLLBACK_COMMAND failed; the database settings may keep the new values"
+  else
+    log "WARNING: DB_TUNE_ROLLBACK_COMMAND is empty: the half-applied settings were NOT rolled back (roll back with: $MYR_SCRIPT_DIR/rollback.sh --config $config)"
+  fi
+  log "Fix the DB-TUNING settings (see the MISMATCH lines above) and run the deploy again."
   log "Roll back with: $MYR_SCRIPT_DIR/rollback.sh --config $config"
   exit 1
 fi

@@ -17,7 +17,6 @@ import {
 } from "./service.js";
 
 const COMPANY_ID = "22222222-2222-4222-8222-222222222222";
-
 const member = {
   type: "board",
   source: "session",
@@ -37,7 +36,15 @@ const agentActor = {
 
 const ENV_ONLY = { MYRMIDON_MAX_CONCURRENT_RUNS: "8" };
 // myrmidon(1.6.2 RUN-ADMISSION): the start ramp and the host floor are on by default.
-const RAMP_AND_HOST = { maxStartsPerMinute: 5, minFreeHostMemoryMb: 15360, maxHostLoadPercentPerCore: 90 };
+// myrmidon(1.6.5 RUN-ADMISSION, rc.3): the busy ceiling joins the default-on
+// set; the PSI ceiling stays off until the operator sets it.
+const RAMP_AND_HOST = {
+  maxStartsPerMinute: 5,
+  minFreeHostMemoryMb: 15360,
+  maxHostLoadPercentPerCore: 90,
+  maxHostCpuBusyPercent: 90,
+  maxHostCpuPsiSomeAvg10: null,
+};
 // myrmidon(1.6.5 RUN-FAIRNESS): the per-agent start share is on by default.
 const SHARE = { maxPerAgentStartSharePercent: 15 };
 
@@ -50,6 +57,8 @@ interface HarnessOptions {
   hostLoad?: RuntimeLimitsServiceDeps["hostLoad"];
   /** myrmidon(1.6.5 RUN-FAIRNESS): the live queue snapshot the view carries. */
   queueSnapshot?: RuntimeLimitsServiceDeps["queueSnapshot"];
+  /** myrmidon(1.6.5 C0-ui): the live memory snapshot the view carries. */
+  memorySnapshot?: RuntimeLimitsServiceDeps["memorySnapshot"];
 }
 
 function harness(options: HarnessOptions = {}) {
@@ -80,6 +89,7 @@ function harness(options: HarnessOptions = {}) {
     scheduleResweep: () => calls.push("resweep"),
     ...(options.hostLoad ? { hostLoad: options.hostLoad } : {}),
     ...(options.queueSnapshot ? { queueSnapshot: options.queueSnapshot } : {}),
+    ...(options.memorySnapshot ? { memorySnapshot: options.memorySnapshot } : {}),
     env: options.env ?? ENV_ONLY,
   };
 
@@ -120,6 +130,9 @@ describe("myrmidon(C0) runtime limits: reading the effective values", () => {
       // myrmidon(1.6.5 RUN-FAIRNESS): without a queue snapshot source the view
       // carries none.
       queue: null,
+      // myrmidon(1.6.5 C0-ui): without a memory snapshot source the view
+      // carries none.
+      memory: null,
     });
   });
 
@@ -133,6 +146,13 @@ describe("myrmidon(C0) runtime limits: reading the effective values", () => {
       backgroundPercentPerCore: 115,
       load15PercentPerCore: 115,
       loadAboveBackgroundPercent: 5,
+      // myrmidon(1.6.5 rc.3): the row keeps the legacy decision, so the new
+      // fields report "not consulted".
+      cpuBusyPercent: null,
+      busyThresholdPercent: null,
+      psiSomeAvg10: null,
+      psiThresholdPercent: null,
+      source: "load-average" as const,
       reason: null,
       heldSince: null,
     };
@@ -396,5 +416,53 @@ describe("myrmidon(1.6.5 RUN-FAIRNESS) runtime limits: the queue snapshot", () =
     });
     const resFailing = await request(failing.app).get(URL).expect(200);
     expect(resFailing.body.queue).toBeNull();
+  });
+});
+
+describe("myrmidon(1.6.5 C0-ui) runtime limits: the memory snapshot", () => {
+  const SNAPSHOT = {
+    host: { availableMb: 45056, totalMb: 131072 },
+    container: { limitMb: 8192, usedMb: 3000, freeMb: 5192 },
+  };
+
+  it("carries the host and container memory in the read view", async () => {
+    const { app } = harness({ memorySnapshot: () => SNAPSHOT });
+    const res = await request(app).get(URL).expect(200);
+    expect(res.body.memory).toEqual(SNAPSHOT);
+  });
+
+  it("returns the memory snapshot after an update too", async () => {
+    const h = harness({ memorySnapshot: () => SNAPSHOT });
+    const res = await request(h.withActor(admin)).patch(URL).send({ maxConcurrentRuns: 60 }).expect(200);
+    expect(res.body.memory).toEqual(SNAPSHOT);
+  });
+
+  it("reads null when the snapshot source is missing, and survives a source failure", async () => {
+    const missing = harness();
+    const resMissing = await request(missing.app).get(URL).expect(200);
+    expect(resMissing.body.memory).toBeNull();
+
+    const failing = harness({
+      memorySnapshot: () => {
+        throw new Error("cgroup is not readable");
+      },
+    });
+    const resFailing = await request(failing.app).get(URL).expect(200);
+    expect(resFailing.body.memory).toBeNull();
+  });
+
+  it("a limit changed without a restart takes effect in the view the admission applies", async () => {
+    // The endpoint proof of item 3: the setting is written through the same
+    // route, the admission is re-applied at once (the `apply` call), and the
+    // very next GET answers with the new value — no restart anywhere.
+    const h = harness({ memorySnapshot: () => SNAPSHOT });
+    const patched = await request(h.withActor(admin)).patch(URL).send({ maxConcurrentRuns: 7 }).expect(200);
+    expect(patched.body.limits.maxConcurrentRuns).toBe(7);
+    expect(patched.body.sources.maxConcurrentRuns).toBe("settings");
+    expect(h.calls).toContain("apply:7");
+
+    const read = await request(h.app).get(URL).expect(200);
+    expect(read.body.limits.maxConcurrentRuns).toBe(7);
+    expect(read.body.memory).toEqual(SNAPSHOT);
   });
 });

@@ -84,6 +84,22 @@ import { logger } from "../middleware/logger.js";
  * and a genuinely busier host is absorbed within tens of minutes. 90 now means
  * "90 % of one core ABOVE what the host is busy with anyway".
  *
+ * myrmidon(1.6.5 RUN-ADMISSION, rc.3): the load average is not a measurement
+ * of how busy the CPU is — it counts runnable and blocked tasks, so a host
+ * waiting on disk or on a contended lock looks overloaded and holds runs that
+ * the CPU could take (06.10: load1 65.7 on 16 cores, 203 % above the
+ * background floor, 11 runs held while the CPU was 60–75 % busy and 15–25 %
+ * idle). The decision now reads CPU utilisation instead: the non-idle share
+ * of all cores from the /proc/stat counters over a short window (the delta of
+ * two readings kept in the admission), and optionally the PSI cpu stall
+ * average (`some avg10` of /proc/pressure/cpu), both ABSOLUTE percents of the
+ * whole CPU — utilisation already measures real work, so no background floor
+ * is subtracted. The ceiling is `maxHostCpuBusyPercent` (default 90) plus the
+ * operator-set `maxHostCpuPsiSomeAvg10` (off unless set). When either is in
+ * force the load average only feeds the report fields. `maxHostLoadPercentPerCore`
+ * keeps deciding alone for a settings row saved before rc.3 (the new keys are
+ * absent there, which means off — deprecated but working).
+ *
  * No locks: the server is one Node.js thread, and `reserve` checks and counts
  * without awaiting anything, so two agents cannot both take the last slot.
  */
@@ -95,6 +111,9 @@ export const RUN_MEMORY_ESTIMATE_MB_ENV = RUN_LIMITS_ENV_KEYS.runMemoryEstimateM
 export const MIN_FREE_HOST_MEMORY_MB_ENV = RUN_LIMITS_ENV_KEYS.minFreeHostMemoryMb;
 // myrmidon(1.6.5 RUN-ADMISSION): the host CPU ceiling.
 export const MAX_HOST_LOAD_PERCENT_PER_CORE_ENV = RUN_LIMITS_ENV_KEYS.maxHostLoadPercentPerCore;
+// myrmidon(1.6.5 RUN-ADMISSION, rc.3): the CPU busy ceiling and the PSI cpu ceiling.
+export const MAX_HOST_CPU_BUSY_PERCENT_ENV = RUN_LIMITS_ENV_KEYS.maxHostCpuBusyPercent;
+export const MAX_HOST_CPU_PSI_SOME_AVG10_ENV = RUN_LIMITS_ENV_KEYS.maxHostCpuPsiSomeAvg10;
 /** myrmidon(1.6.2 RUN-ADMISSION): where the host meminfo is read; default /proc/meminfo. */
 export const HOST_MEMINFO_PATH_ENV = "MYRMIDON_HOST_MEMINFO_PATH";
 const DEFAULT_HOST_MEMINFO_PATH = "/proc/meminfo";
@@ -111,6 +130,22 @@ const HOST_CPU_HOLD_CONTINUITY_MS = 2 * 60_000;
 /** myrmidon(1.6.5 RUN-ADMISSION): where the host load average is read; default /proc/loadavg. */
 export const HOST_LOADAVG_PATH_ENV = "MYRMIDON_HOST_LOADAVG_PATH";
 const DEFAULT_HOST_LOADAVG_PATH = "/proc/loadavg";
+/** myrmidon(1.6.5 RUN-ADMISSION, rc.3): where the host CPU counters are read; default /proc/stat. */
+export const HOST_PROCSTAT_PATH_ENV = "MYRMIDON_HOST_PROCSTAT_PATH";
+const DEFAULT_HOST_PROCSTAT_PATH = "/proc/stat";
+/** myrmidon(1.6.5 RUN-ADMISSION, rc.3): where the PSI cpu stall numbers are read. */
+export const HOST_PRESSURE_CPU_PATH_ENV = "MYRMIDON_HOST_PRESSURE_CPU_PATH";
+const DEFAULT_HOST_PRESSURE_CPU_PATH = "/proc/pressure/cpu";
+/**
+ * myrmidon(1.6.5 RUN-ADMISSION, rc.3): the shortest window a CPU busy
+ * percentage is measured over. The counters are a cumulative sum since boot,
+ * so the percentage is the delta between two readings; two readings closer
+ * than this are the same measurement, not a new one. The queue resweep asks
+ * every 15 s, so a real window of hundreds of milliseconds is normally
+ * reached a hundred times over; the floor only matters for a burst of
+ * `reserve` calls in one tick.
+ */
+export const CPU_BUSY_SAMPLE_WINDOW_MS = 250;
 /**
  * myrmidon(1.6.5 RUN-ADMISSION, rc.2): how fast the background floor of the
  * host may rise, in percent of one core per minute. The floor is the lowest
@@ -291,6 +326,37 @@ export function readCgroupFreeMemoryBytes(
   return limit.known ? limit.freeBytes : null;
 }
 
+/**
+ * myrmidon(1.6.5 C0-ui): the cgroup memory of this process as three numbers —
+ * the limit, the effective usage (current minus the reclaimable inactive page
+ * cache) and the free headroom — or null when there is no cgroup v2 limit to
+ * read (cgroup v1, `memory.max` is "max", a file is unreadable). The load
+ * screen reports these; the admission's memory guard decides on the same
+ * `freeBytes` rule.
+ */
+export function readCgroupMemoryUsageBytes(
+  root = "/sys/fs/cgroup",
+  readFile: (path: string) => string = (path) => readFileSync(path, "utf8"),
+): { limitBytes: number; usedBytes: number; freeBytes: number } | null {
+  let maxRaw: string;
+  let currentRaw: string;
+  let statRaw: string;
+  try {
+    maxRaw = readFile(`${root}/memory.max`).trim();
+    currentRaw = readFile(`${root}/memory.current`).trim();
+    statRaw = readFile(`${root}/memory.stat`);
+  } catch {
+    return null;
+  }
+  if (maxRaw === "max") return null;
+  const limitBytes = Number(maxRaw);
+  const current = Number(currentRaw);
+  if (!Number.isFinite(limitBytes) || !Number.isFinite(current)) return null;
+  const inactive = Number(/^inactive_file (\d+)$/m.exec(statRaw)?.[1] ?? 0);
+  const usedBytes = Math.max(0, current - inactive);
+  return { limitBytes, usedBytes, freeBytes: limitBytes - usedBytes };
+}
+
 /** myrmidon(1.6.2 RUN-ADMISSION): the host's memory, or why it cannot be read. */
 export type HostMemoryReading =
   | { known: true; availableBytes: number; totalBytes: number }
@@ -400,6 +466,102 @@ export function readHostCpuLoad(
   return { known: true, load1, load15, cores };
 }
 
+/** myrmidon(1.6.5 RUN-ADMISSION, rc.3): one /proc/stat aggregate sample. */
+export interface CpuStatSample {
+  /** tick: idle + iowait */
+  idle: number;
+  /** tick: the whole line (all fields summed) */
+  total: number;
+}
+
+/** myrmidon(1.6.5 RUN-ADMISSION, rc.3): a /proc/stat sample, or why there is none. */
+export type HostCpuStatProbe =
+  | { known: true; sample: CpuStatSample }
+  | { known: false; reason: string };
+
+/**
+ * One sample of the aggregate `cpu ` line of /proc/stat. The kernel's
+ * jiffies-tick fields are cumulative since boot; user, nice, system, idle,
+ * iowait, irq, softirq and steal are summed for the total, idle is the
+ * (idle + iowait) pair. A missing iowait field (a very old kernel) is read as
+ * 0, which cannot make a busy percent negative.
+ */
+export function readHostCpuStatProbe(
+  options: {
+    statPath?: string;
+    readFile?: (path: string) => string;
+  } = {},
+): HostCpuStatProbe {
+  const statPath = options.statPath ?? DEFAULT_HOST_PROCSTAT_PATH;
+  const readFile = options.readFile ?? ((path: string) => readFileSync(path, "utf8"));
+  let raw: string;
+  try {
+    raw = readFile(statPath);
+  } catch {
+    return { known: false, reason: `${statPath} is not readable` };
+  }
+  // The aggregate line starts the file: "cpu  user nice system idle iowait ..."
+  const line = /^cpu\s+(.*)$/m.exec(raw)?.[1];
+  if (!line) return { known: false, reason: `${statPath} has no aggregate 'cpu ' line` };
+  const fields = line.trim().split(/\s+/).map(Number);
+  if (fields.length < 4 || fields.slice(0, 4).some((n) => !Number.isFinite(n))) {
+    return { known: false, reason: `${statPath} 'cpu ' line has no numeric tick fields: '${line.trim().slice(0, 80)}'` };
+  }
+  const idle = fields[3]! + (Number.isFinite(fields[4]) ? fields[4]! : 0);
+  let total = 0;
+  for (const n of fields) if (Number.isFinite(n)) total += n;
+  if (total <= 0) {
+    return { known: false, reason: `${statPath} 'cpu ' line totals ${total} ticks, which cannot measure a percentage` };
+  }
+  return { known: true, sample: { idle, total } };
+}
+
+/**
+ * myrmidon(1.6.5 RUN-ADMISSION, rc.3): the non-idle share of all cores over
+ * the window between `previous` and `current`, as an absolute 0–100 percent
+ * of the whole CPU. A window with no elapsed ticks is not a measurement
+ * (two readings in the same jiffies tick); the caller keeps the older value.
+ */
+export function cpuBusyPercentFromDelta(previous: CpuStatSample, current: CpuStatSample): number | null {
+  const deltaTotal = current.total - previous.total;
+  if (deltaTotal <= 0) return null;
+  const deltaIdle = Math.max(0, current.idle - previous.idle);
+  const percent = 100 * (1 - deltaIdle / deltaTotal);
+  return Math.min(100, Math.max(0, Math.round(percent * 10) / 10));
+}
+
+/** myrmidon(1.6.5 RUN-ADMISSION, rc.3): the PSI cpu pressure, or why it cannot be read. */
+export type HostCpuPsiReading =
+  | { known: true; someAvg10: number }
+  | { known: false; reason: string };
+
+/**
+ * The `some avg10` field of /proc/pressure/cpu: the share of the last ten
+ * minutes during which at least one task could not run on a CPU because of
+ * contention, 0–100. Like loadavg and stat, the kernel does not namespace it,
+ * so a plain container reads the host's pressure.
+ */
+export function readHostCpuPsi(
+  options: {
+    pressurePath?: string;
+    readFile?: (path: string) => string;
+  } = {},
+): HostCpuPsiReading {
+  const pressurePath = options.pressurePath ?? DEFAULT_HOST_PRESSURE_CPU_PATH;
+  const readFile = options.readFile ?? ((path: string) => readFileSync(path, "utf8"));
+  let raw: string;
+  try {
+    raw = readFile(pressurePath);
+  } catch {
+    return { known: false, reason: `${pressurePath} is not readable` };
+  }
+  const someAvg10 = Number.parseFloat(/^some\s+avg10=(\d+(?:\.\d+)?)/m.exec(raw)?.[1] ?? "");
+  if (!Number.isFinite(someAvg10)) {
+    return { known: false, reason: `${pressurePath} has no numeric 'some avg10=' field: '${raw.trim().slice(0, 80)}'` };
+  }
+  return { known: true, someAvg10 };
+}
+
 /**
  * myrmidon(1.6.5 RUN-ADMISSION, rc.2): the background floor of the host — the
  * load the host carries without the runs this admission starts.
@@ -493,11 +655,31 @@ export interface HostMemoryGate {
   heldSince: Date | null;
 }
 
+/**
+ * myrmidon(1.6.5 C0-ui): the memory the run-load screen is about — the host's
+ * memory and the server container's own cgroup usage. Read with the same
+ * primitives `reserve` gates on, so the screen and the admission never
+ * disagree. `container` is null when the process is not in a cgroup v2 with
+ * a limit or the files cannot be read — the screen shows nothing rather than
+ * a number it made up. The snapshot does not decide admission.
+ */
+export interface RunMemorySnapshot {
+  host: {
+    availableMb: number;
+    totalMb: number;
+  } | null;
+  container: {
+    limitMb: number;
+    usedMb: number;
+    freeMb: number;
+  } | null;
+}
+
 /** myrmidon(1.6.5 RUN-ADMISSION): the host CPU ceiling as the admission sees it now. */
 export interface HostCpuGate {
   /** `off`: no ceiling set; `unknown`: load unreadable (ceiling inactive); `open`/`closed`. */
   state: "off" | "unknown" | "open" | "closed";
-  /** The ceiling in percent of one core, or null when off. */
+  /** The load-average ceiling in percent of one core, or null when off. */
   thresholdPercent: number | null;
   /** Host 1-minute load average, when known. */
   load1: number | null;
@@ -520,6 +702,31 @@ export interface HostCpuGate {
    * closed when it reaches `thresholdPercent`.
    */
   loadAboveBackgroundPercent: number | null;
+  /**
+   * myrmidon(1.6.5 rc.3): the non-idle share of all cores over the busy
+   * sample window, an absolute 0–100 percent of the whole CPU, when known.
+   * null while no window has elapsed yet (first call after the start) or the
+   * counters cannot be read.
+   */
+  cpuBusyPercent: number | null;
+  /** myrmidon(1.6.5 rc.3): the busy ceiling in percent of the whole CPU, or null when off. */
+  busyThresholdPercent: number | null;
+  /**
+   * myrmidon(1.6.5 rc.3): the PSI cpu pressure — the `some avg10` field of
+   * /proc/pressure/cpu, the share of the last ten minutes with at least one
+   * task stalled on CPU — when read. null when the ceiling is off and the
+   * file was not consulted, or it cannot be read.
+   */
+  psiSomeAvg10: number | null;
+  /** myrmidon(1.6.5 rc.3): the PSI ceiling in percent, or null when off (the default). */
+  psiThresholdPercent: number | null;
+  /**
+   * myrmidon(1.6.5 rc.3): which reading decided the state: 'cpu-busy' when
+   * the busy or PSI ceiling is in force (load average then only reports),
+   * 'load-average' for the legacy row that carries neither new key, null
+   * when off or unknown.
+   */
+  source: "cpu-busy" | "load-average" | null;
   /** Why the ceiling is closed or unknown, for logs; null when open or off. */
   reason: string | null;
   /** Since when the ceiling has held runs back (continuous hold), or null. */
@@ -585,6 +792,13 @@ export interface RunAdmission {
    * does not pile wakes onto a saturated host.
    */
   hostCpuGate(): HostCpuGate;
+  /**
+   * myrmidon(1.6.5 C0-ui): the host memory and the server container's own
+   * cgroup usage as the admission reads them, for the run-load screen. Reads
+   * the same files `reserve` gates on; takes no slot. `container` is null
+   * when there is no cgroup v2 limit to read.
+   */
+  memorySnapshot(): RunMemorySnapshot;
 }
 
 export function createRunAdmission(options: {
@@ -600,6 +814,14 @@ export function createRunAdmission(options: {
   onHostMemoryHold?: (event: { state: "closed" | "open"; gate: HostMemoryGate; heldMs: number }) => void;
   /** myrmidon(1.6.5): host load source; defaults to /proc/loadavg + os.cpus(). */
   hostCpuLoad?: () => HostCpuReading;
+  /**
+   * myrmidon(1.6.5 RUN-ADMISSION, rc.3): a sample of the host's /proc/stat
+   * counters; defaults to reading the file. The admission keeps the previous
+   * sample and its time, and computes the busy percent from the delta.
+   */
+  hostCpuStatProbe?: () => HostCpuStatProbe;
+  /** myrmidon(1.6.5 rc.3): the PSI cpu pressure; defaults to /proc/pressure/cpu. */
+  hostCpuPsi?: () => HostCpuPsiReading;
   /** myrmidon(1.6.5): the host CPU ceiling unreadable, so it stays inactive. */
   onHostCpuUnavailable?: (reason: string) => void;
   /** myrmidon(1.6.5): the CPU ceiling started (`closed`) or stopped (`open`) holding runs back. */
@@ -610,6 +832,8 @@ export function createRunAdmission(options: {
   const freeMemoryBytes = options.freeMemoryBytes ?? (() => readCgroupFreeMemoryBytes());
   const hostMemory = options.hostMemory ?? (() => readHostMemory());
   const hostCpuLoad = options.hostCpuLoad ?? (() => readHostCpuLoad());
+  const hostCpuStatProbe = options.hostCpuStatProbe ?? (() => readHostCpuStatProbe());
+  const hostCpuPsi = options.hostCpuPsi ?? (() => readHostCpuPsi());
   const now = options.now ?? Date.now;
   const starts: number[] = [];
   // myrmidon(1.6.5 RUN-FAIRNESS): starts that asked to count against the
@@ -632,6 +856,12 @@ export function createRunAdmission(options: {
   // with the limit, so switching the ceiling off and on again does not throw
   // away what the host's background is.
   const hostLoadFloor = createHostLoadFloor();
+  // myrmidon(1.6.5 RUN-ADMISSION, rc.3): the previous /proc/stat sample and
+  // when it was taken, the base of the busy window. Like the background floor
+  // this lives with the admission: a new `reserve` reads the counters and
+  // compares them with the last reading instead of sleeping for a window.
+  let statBase: { sample: CpuStatSample; at: number } | null = null;
+  let lastBusyPercent: number | null = null;
 
   function prune(at: number) {
     while (starts.length > 0 && at - starts[0]! >= START_WINDOW_MS) starts.shift();
@@ -678,34 +908,173 @@ export function createRunAdmission(options: {
 
   /** myrmidon(1.6.5 RUN-ADMISSION): the host CPU ceiling, evaluated like the memory floor. */
   function evaluateHostCpuGate(at: number): HostCpuGate {
-    const thresholdPercent = limits.maxHostLoadPercentPerCore;
+    const loadThreshold = limits.maxHostLoadPercentPerCore;
+    // The two rc.3 ceilings. `undefined` is a row saved before rc.3: the key
+    // is absent, which means "off" — the row keeps deciding on load average.
+    const busyThreshold = limits.maxHostCpuBusyPercent ?? null;
+    const psiThreshold = limits.maxHostCpuPsiSomeAvg10 ?? null;
+    const busyActive = busyThreshold !== null;
+    const psiActive = psiThreshold !== null;
+    const decidingOnBusy = busyActive || psiActive;
     const held = cpuHold.current(at);
     const heldSince = held === null ? null : new Date(held);
-    if (thresholdPercent === null) {
+
+    if (!decidingOnBusy && loadThreshold === null) {
       return {
         state: "off",
-        thresholdPercent,
+        thresholdPercent: loadThreshold,
         load1: null,
         cores: null,
         loadPercentPerCore: null,
         backgroundPercentPerCore: null,
         load15PercentPerCore: null,
         loadAboveBackgroundPercent: null,
+        cpuBusyPercent: null,
+        busyThresholdPercent: busyThreshold,
+        psiSomeAvg10: null,
+        psiThresholdPercent: psiThreshold,
+        source: null,
         reason: null,
         heldSince: null,
       };
     }
+
+    const emptyLoadFields = {
+      load1: null as number | null,
+      cores: null as number | null,
+      loadPercentPerCore: null as number | null,
+      backgroundPercentPerCore: null as number | null,
+      load15PercentPerCore: null as number | null,
+      loadAboveBackgroundPercent: null as number | null,
+    };
+
+    if (decidingOnBusy) {
+      // myrmidon(1.6.5 rc.3): the decision is made on real CPU utilisation.
+      // Fold the /proc/stat delta into the window state. A failed counters
+      // read is `unknown` — the ceiling cannot pretend to measure nothing.
+      const probe = hostCpuStatProbe();
+      if (!probe.known) {
+        return {
+          state: "unknown",
+          thresholdPercent: loadThreshold,
+          ...emptyLoadFields,
+          cpuBusyPercent: lastBusyPercent,
+          busyThresholdPercent: busyThreshold,
+          psiSomeAvg10: null,
+          psiThresholdPercent: psiThreshold,
+          source: null,
+          reason: probe.reason,
+          heldSince,
+        };
+      }
+      // A window shorter than CPU_BUSY_SAMPLE_WINDOW_MS (or one in which the
+      // kernel counters did not move) is the same measurement, not a new one:
+      // keep the previous percentage and the base sample, so the window keeps
+      // growing until it is worth reading.
+      if (statBase !== null && at - statBase.at >= CPU_BUSY_SAMPLE_WINDOW_MS) {
+        const percent = cpuBusyPercentFromDelta(statBase.sample, probe.sample);
+        if (percent !== null) {
+          lastBusyPercent = percent;
+          statBase = { sample: probe.sample, at };
+        }
+      } else if (statBase === null) {
+        statBase = { sample: probe.sample, at };
+      }
+      // The first call after the start has no base window yet: nothing is
+      // measured, and an unmeasured ceiling does not hold runs (fixed by a
+      // test). The reading itself already stands as the base for the next one.
+      const cpuBusyPercent = lastBusyPercent;
+
+      // PSI is only consulted when the operator set its ceiling; an
+      // unreadable pressure file with a set ceiling makes the whole reading
+      // unknown (the ceiling it guards cannot be applied).
+      let psiSomeAvg10: number | null = null;
+      if (psiActive) {
+        const psi = hostCpuPsi();
+        if (!psi.known) {
+          return {
+            state: "unknown",
+            thresholdPercent: loadThreshold,
+            ...emptyLoadFields,
+            cpuBusyPercent,
+            busyThresholdPercent: busyThreshold,
+            psiSomeAvg10: null,
+            psiThresholdPercent: psiThreshold,
+            source: null,
+            reason: psi.reason,
+            heldSince,
+          };
+        }
+        psiSomeAvg10 = psi.someAvg10;
+      }
+
+      // Load average still reports (design: auxiliary only), with its rc.2
+      // background arithmetic so the old fields keep their meaning. It is
+      // allowed to fail here: it no longer decides anything.
+      const loadReading = hostCpuLoad();
+      const loadFields = { ...emptyLoadFields };
+      if (loadReading.known) {
+        const loadPercentPerCore = Math.round((loadReading.load1 / loadReading.cores) * 100);
+        const load15PercentPerCore =
+          loadReading.load15 === null ? null : Math.round((loadReading.load15 / loadReading.cores) * 100);
+        const backgroundPercentPerCore = hostLoadFloor.observe(
+          at,
+          Math.min(loadPercentPerCore, load15PercentPerCore ?? loadPercentPerCore),
+        );
+        loadFields.load1 = loadReading.load1;
+        loadFields.cores = loadReading.cores;
+        loadFields.loadPercentPerCore = loadPercentPerCore;
+        loadFields.load15PercentPerCore = load15PercentPerCore;
+        loadFields.backgroundPercentPerCore = backgroundPercentPerCore;
+        loadFields.loadAboveBackgroundPercent = loadPercentPerCore - backgroundPercentPerCore;
+      }
+
+      const fields = {
+        thresholdPercent: loadThreshold,
+        ...loadFields,
+        cpuBusyPercent,
+        busyThresholdPercent: busyThreshold,
+        psiSomeAvg10,
+        psiThresholdPercent: psiThreshold,
+        source: "cpu-busy" as const,
+      };
+      if (busyActive && cpuBusyPercent !== null && cpuBusyPercent >= busyThreshold) {
+        return {
+          state: "closed",
+          ...fields,
+          reason: `host CPU is ${cpuBusyPercent} % busy (non-idle share of all cores over the sample window) at or above the ${busyThreshold} % busy ceiling`,
+          heldSince,
+        };
+      }
+      if (psiActive && psiSomeAvg10 !== null && psiSomeAvg10 >= psiThreshold) {
+        return {
+          state: "closed",
+          ...fields,
+          reason: `host CPU pressure some avg10 is ${psiSomeAvg10} % at or above the ${psiThreshold} % PSI ceiling`,
+          heldSince,
+        };
+      }
+      return { state: "open", ...fields, reason: null, heldSince };
+    }
+
+    // Legacy rule: the row carries neither rc.3 key, so the load average
+    // decides exactly as before rc.3 (deprecated, kept for old rows).
     const reading = hostCpuLoad();
     if (!reading.known) {
       return {
         state: "unknown",
-        thresholdPercent,
+        thresholdPercent: loadThreshold,
         load1: null,
         cores: null,
         loadPercentPerCore: null,
         backgroundPercentPerCore: null,
         load15PercentPerCore: null,
         loadAboveBackgroundPercent: null,
+        cpuBusyPercent: null,
+        busyThresholdPercent: busyThreshold,
+        psiSomeAvg10: null,
+        psiThresholdPercent: psiThreshold,
+        source: null,
         reason: reading.reason,
         heldSince,
       };
@@ -723,21 +1092,30 @@ export function createRunAdmission(options: {
     );
     const loadAboveBackgroundPercent = loadPercentPerCore - backgroundPercentPerCore;
     const fields = {
-      thresholdPercent,
+      thresholdPercent: loadThreshold,
       load1: reading.load1,
       cores: reading.cores,
       loadPercentPerCore,
       backgroundPercentPerCore,
       load15PercentPerCore,
       loadAboveBackgroundPercent,
+      cpuBusyPercent: null as number | null,
+      busyThresholdPercent: busyThreshold,
+      psiSomeAvg10: null as number | null,
+      psiThresholdPercent: psiThreshold,
+      source: "load-average" as const,
     };
-    if (loadAboveBackgroundPercent < thresholdPercent) {
+    // Reaching this branch means the gate is on the legacy path: the `off`
+    // return above already covered `loadThreshold === null`, but TypeScript
+    // cannot narrow through the boolean flag, so assert it locally.
+    const loadCeiling = loadThreshold as number;
+    if (loadAboveBackgroundPercent < loadCeiling) {
       return { state: "open", ...fields, reason: null, heldSince };
     }
     return {
       state: "closed",
       ...fields,
-      reason: `host load average ${reading.load1.toFixed(2)} on ${reading.cores} core(s) is ${loadPercentPerCore} % of a core, ${loadAboveBackgroundPercent} % of a core above the host's background floor of ${backgroundPercentPerCore} %, at or above the ${thresholdPercent} % CPU ceiling`,
+      reason: `host load average ${reading.load1.toFixed(2)} on ${reading.cores} core(s) is ${loadPercentPerCore} % of a core, ${loadAboveBackgroundPercent} % of a core above the host's background floor of ${backgroundPercentPerCore} %, at or above the ${loadThreshold} % CPU ceiling`,
       heldSince,
     };
   }
@@ -798,19 +1176,26 @@ export function createRunAdmission(options: {
       // floor: both are host readings, the memory one fails first on the
       // 05.10 pattern and the log should name the floor that held. A run
       // refused by the ceiling stays `queued` like one refused by the floor.
-      if (limits.maxHostLoadPercentPerCore !== null && allowed > 0) {
-        const gate = evaluateHostCpuGate(at);
-        if (gate.state === "closed") {
-          allowed = 0;
-          denial ??= "host_cpu";
-          if (cpuHold.start(at)) {
-            options.onHostCpuHold?.({ state: "closed", gate: { ...gate, heldSince: new Date(at) }, heldMs: 0 });
-          }
-        } else {
-          if (gate.state === "unknown") options.onHostCpuUnavailable?.(gate.reason ?? "unknown");
-          const heldMs = cpuHold.end(at);
-          if (heldMs !== null) {
-            options.onHostCpuHold?.({ state: "open", gate, heldMs });
+      // myrmidon(1.6.5 rc.3): the gate is consulted when the busy/PSI
+      // ceiling is in force OR the legacy load ceiling is set — one call,
+      // `evaluateHostCpuGate` picks the deciding source.
+      if ((limits.maxHostCpuBusyPercent ?? null) !== null
+        || (limits.maxHostCpuPsiSomeAvg10 ?? null) !== null
+        || limits.maxHostLoadPercentPerCore !== null) {
+        if (allowed > 0) {
+          const gate = evaluateHostCpuGate(at);
+          if (gate.state === "closed") {
+            allowed = 0;
+            denial ??= "host_cpu";
+            if (cpuHold.start(at)) {
+              options.onHostCpuHold?.({ state: "closed", gate: { ...gate, heldSince: new Date(at) }, heldMs: 0 });
+            }
+          } else {
+            if (gate.state === "unknown") options.onHostCpuUnavailable?.(gate.reason ?? "unknown");
+            const heldMs = cpuHold.end(at);
+            if (heldMs !== null) {
+              options.onHostCpuHold?.({ state: "open", gate, heldMs });
+            }
           }
         }
       }
@@ -860,11 +1245,24 @@ export function createRunAdmission(options: {
       limits.runMemoryEstimateMb = next.runMemoryEstimateMb;
       limits.minFreeHostMemoryMb = next.minFreeHostMemoryMb;
       limits.maxHostLoadPercentPerCore = next.maxHostLoadPercentPerCore;
+      // myrmidon(1.6.5 RUN-ADMISSION, rc.3): the two CPU-utilisation ceilings
+      // (absent on a row saved before rc.3 stays absent — the load-average
+      // rule keeps deciding for that row).
+      limits.maxHostCpuBusyPercent = next.maxHostCpuBusyPercent;
+      limits.maxHostCpuPsiSomeAvg10 = next.maxHostCpuPsiSomeAvg10;
       // A floor switched off (or changed) ends the hold it caused; the next
       // reservation measures again against the new floor. Same for the CPU
-      // ceiling (myrmidon 1.6.5).
+      // ceiling (myrmidon 1.6.5) and for every CPU ceiling of it (rc.3): the
+      // hold belongs to the gate, not to the individual threshold, so it is
+      // reset when no CPU ceiling remains in force.
       if (next.minFreeHostMemoryMb === null) hostMemoryHold.reset();
-      if (next.maxHostLoadPercentPerCore === null) cpuHold.reset();
+      if (
+        (next.maxHostCpuBusyPercent ?? null) === null &&
+        (next.maxHostCpuPsiSomeAvg10 ?? null) === null &&
+        next.maxHostLoadPercentPerCore === null
+      ) {
+        cpuHold.reset();
+      }
     },
     limits() {
       return { ...limits };
@@ -878,6 +1276,30 @@ export function createRunAdmission(options: {
       const at = now();
       prune(at);
       return evaluateHostCpuGate(at);
+    },
+    // myrmidon(1.6.5 C0-ui): the memory the run-load screen is about — the
+    // host's memory and the server container's own cgroup usage, read with
+    // the same probes `reserve` gates on (`hostMemory` for the host floor,
+    // `freeMemoryBytes` for the container budget; the usage split for the
+    // screen comes from the same cgroup files). A side that cannot be read
+    // is null rather than an invented number; the snapshot decides nothing.
+    memorySnapshot(): RunMemorySnapshot {
+      const reading = hostMemory();
+      const host = reading.known
+        ? {
+            availableMb: Math.floor(reading.availableBytes / MB),
+            totalMb: Math.floor(reading.totalBytes / MB),
+          }
+        : null;
+      const usage = readCgroupMemoryUsageBytes();
+      const container: RunMemorySnapshot["container"] = usage
+        ? {
+            limitMb: Math.floor(usage.limitBytes / MB),
+            usedMb: Math.floor(usage.usedBytes / MB),
+            freeMb: Math.floor(usage.freeBytes / MB),
+          }
+        : null;
+      return { host, container };
     },
   };
 }
@@ -958,16 +1380,23 @@ function logHostCpuHold(event: { state: "closed" | "open"; gate: HostCpuGate; he
     backgroundPercentPerCore: event.gate.backgroundPercentPerCore,
     loadAboveBackgroundPercent: event.gate.loadAboveBackgroundPercent,
     thresholdPercent: event.gate.thresholdPercent,
+    // myrmidon(1.6.5 rc.3): the reading that decides — CPU utilisation and
+    // pressure — and which of the two rules the gate ran on.
+    cpuBusyPercent: event.gate.cpuBusyPercent,
+    busyThresholdPercent: event.gate.busyThresholdPercent,
+    psiSomeAvg10: event.gate.psiSomeAvg10,
+    psiThresholdPercent: event.gate.psiThresholdPercent,
+    source: event.gate.source,
   };
   if (event.state === "closed") {
     logger.warn(
       { ...fields, reason: event.gate.reason },
-      "run admission holds new runs: the host CPU load is at or above the ceiling above the host's background; runs stay queued and are retried",
+      "run admission holds new runs: the host CPU is at or above the ceiling; runs stay queued and are retried",
     );
   } else {
     logger.info(
       { ...fields, heldMs: event.heldMs },
-      "run admission resumes starting runs: the host CPU load is back below the ceiling above the host's background",
+      "run admission resumes starting runs: the host CPU is back below the ceiling",
     );
   }
 }
@@ -1000,6 +1429,9 @@ export function sharedRunAdmission(): RunAdmission {
     const meminfoPath = process.env[HOST_MEMINFO_PATH_ENV]?.trim() || undefined;
     // myrmidon(1.6.5 RUN-ADMISSION): the host load average path, like meminfo.
     const loadavgPath = process.env[HOST_LOADAVG_PATH_ENV]?.trim() || undefined;
+    // myrmidon(1.6.5 RUN-ADMISSION, rc.3): the CPU counters and PSI paths.
+    const statPath = process.env[HOST_PROCSTAT_PATH_ENV]?.trim() || undefined;
+    const pressurePath = process.env[HOST_PRESSURE_CPU_PATH_ENV]?.trim() || undefined;
     shared = createRunAdmission({
       limits: readRunAdmissionLimits(),
       onMemoryLimitUnavailable: warnMemoryLimitUnavailableOnce,
@@ -1007,6 +1439,8 @@ export function sharedRunAdmission(): RunAdmission {
       onHostMemoryUnavailable: warnHostMemoryUnavailableOnce,
       onHostMemoryHold: logHostMemoryHold,
       hostCpuLoad: () => readHostCpuLoad({ loadavgPath }),
+      hostCpuStatProbe: () => readHostCpuStatProbe({ statPath }),
+      hostCpuPsi: () => readHostCpuPsi({ pressurePath }),
       onHostCpuUnavailable: warnHostCpuUnavailableOnce,
       onHostCpuHold: logHostCpuHold,
     });
@@ -1100,6 +1534,12 @@ export interface HostCpuHoldSignal {
   backgroundPercentPerCore: number | null;
   loadAboveBackgroundPercent: number | null;
   thresholdPercent: number | null;
+  /** myrmidon(1.6.5 rc.3): the utilisation reading and ceilings that decided. */
+  cpuBusyPercent: number | null;
+  busyThresholdPercent: number | null;
+  psiSomeAvg10: number | null;
+  psiThresholdPercent: number | null;
+  source: "cpu-busy" | "load-average" | null;
   reason: string | null;
 }
 
@@ -1127,6 +1567,13 @@ export function hostCpuHoldSignal(
     backgroundPercentPerCore: gate.backgroundPercentPerCore,
     loadAboveBackgroundPercent: gate.loadAboveBackgroundPercent,
     thresholdPercent: gate.thresholdPercent,
+    // myrmidon(1.6.5 rc.3): what decided the hold — the utilisation reading,
+    // the ceilings, and the source the gate ran on.
+    cpuBusyPercent: gate.cpuBusyPercent,
+    busyThresholdPercent: gate.busyThresholdPercent,
+    psiSomeAvg10: gate.psiSomeAvg10,
+    psiThresholdPercent: gate.psiThresholdPercent,
+    source: gate.source,
     reason: gate.reason,
   };
 }

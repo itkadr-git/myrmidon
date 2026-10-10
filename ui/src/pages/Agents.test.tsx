@@ -311,7 +311,9 @@ describe("Agents", () => {
 
     mockAgentsApi.list.mockResolvedValue([
       makeAgent({
-        adapterConfig: { model: "gpt-5.4" },
+        // myrmidon(PERF-DIET-G): the list row carries the precomputed model, not
+        // the adapter config.
+        adapterModel: "gpt-5.4",
         // Old enough that relativeTime() falls back to an absolute date string.
         lastHeartbeatAt: new Date("2026-01-15T00:00:00Z"),
       }),

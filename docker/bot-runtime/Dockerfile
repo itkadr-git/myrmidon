@@ -210,13 +210,14 @@ RUN /opt/hermes-src/.venv/bin/python -c 'import aiohttp, mcp, hindsight_client'
 
 # myrmidon(G1): import smoke for every module a patch in patches/ changes
 # (hermes_state: 04, 06; tools.environments.base and base_session_env: 02; gateway.run: 05;
-# gateway.platforms.api_server_runs, tools.environments.local and tools.github_broker_context: 09)
+# gateway.platforms.api_server_runs, tools.environments.local and tools.github_broker_context: 09;
+# tools.run_workspace (also api_server_runs/local): 10)
 # plus the vendored memory provider (a relative-import package, so a broken plugin tree
 # fails the build here, not at the first bot start). `git apply` only proves the hunks
 # land; a patch that applies cleanly but breaks a module's imports or top-level code
 # would otherwise surface only when a bot starts. No bytecode is written, so the sealed
 # tree stays as the build left it.
-RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python -c 'import hermes_state, tools.environments.base, tools.environments.base_session_env, gateway.run, gateway.platforms.api_server_runs, tools.environments.local, tools.github_broker_context'
+RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python -c 'import hermes_state, tools.environments.base, tools.environments.base_session_env, gateway.run, gateway.platforms.api_server_runs, tools.environments.local, tools.github_broker_context, tools.run_workspace, tools.github_launcher_context, agent.redact, tools.delegation_live_log'
 
 # myrmidon(G1): behaviour check for patch 06 — the state-DB generation probe must not
 # walk /proc/self/fd once per write while the gateway holds hundreds of descriptors
@@ -231,10 +232,29 @@ RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/
 # (contextvars), bridge into terminal child envs, and never touch the process
 # env shared by concurrent runs.
 RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/github_broker_run_scope.py /opt/hermes-src
+# myrmidon(BOT-DISK-H5b): behaviour regression for 10-run-workspace-open.patch
+# (bot-disk contract C6): the workspace body field must run `myr-ws open`
+# (fake CLI via MYRMIDON_WS_BIN) with the contract argv, bind the opened path as
+# cwd + MYRMIDON_TASK_WORKSPACE per run, fall back to /scratch with a warning on
+# exit codes 3/4/5, and be a no-op — never an inherited stale value — without
+# the field.
+RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/run_workspace_open.py /opt/hermes-src
+# myrmidon(G1): behaviour regression for 11-run-scoped-github-launcher.patch
+# (NONCONTAINER-GITHUB-LAUNCHER): the github_launcher body field stages the
+# managed git/gh wrappers and the credential helper under the run's own
+# directory, puts it first on that run's PATH (login profiles included), and a
+# run without a capability or with a malformed payload stages nothing at all.
+RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/github_launcher_run_scope.py /opt/hermes-src
+# myrmidon(G1): behaviour regression for 12-redact-pcp-patterns.patch and
+# 13-delegation-live-log-mode-0600.patch (LIVE-TRANSCRIPT-PCP): the pcp_ board-key
+# family must be masked by the prefix pass (no leak into a delegation live transcript),
+# the transcript file must be created 0o600 from the first byte, and control prose must
+# not mask accidentally (the pass, not the file, is what closes the leak).
+RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/delegation_live_log_redact.py /opt/hermes-src
 # myrmidon(G1): names imported inside functions of the patched modules resolve too
 # (the import smoke above runs only top-level imports; a missing lazily imported name
 # broke every run of the 1.6.0 dev image while the build passed).
-RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/lazy_imports_resolve.py /opt/hermes-src hermes_state tools.environments.base tools.environments.base_session_env gateway.run gateway.platforms.api_server_runs tools.environments.local tools.github_broker_context
+RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/lazy_imports_resolve.py /opt/hermes-src hermes_state tools.environments.base tools.environments.base_session_env gateway.run gateway.platforms.api_server_runs tools.environments.local tools.github_broker_context tools.run_workspace tools.github_launcher_context
 
 # The provider itself, through hermes' OWN discovery path (the same one the gateway uses at
 # start): a staging home gets the same symlink the entrypoint will make at run time, and
@@ -746,12 +766,14 @@ RUN chmod 0755 /opt/paperclip/bin/git /opt/paperclip/bin/bot-clone-hygiene \
 # github-broker wrappers above: Node scripts, node --check at build
 # time, /opt only.
 COPY --chown=root:root build-wrappers/devbuild-gate.js build-wrappers/blocked-tool.js \
+     build-wrappers/heavy-fallback.js \
      build-wrappers/pnpm build-wrappers/tsc build-wrappers/vitest \
      build-wrappers/gradle build-wrappers/go /opt/paperclip/bin/
 RUN chmod 0755 /opt/paperclip/bin/pnpm /opt/paperclip/bin/tsc /opt/paperclip/bin/vitest \
      /opt/paperclip/bin/gradle /opt/paperclip/bin/go \
   && chmod 0644 /opt/paperclip/bin/devbuild-gate.js /opt/paperclip/bin/blocked-tool.js \
-  && for f in devbuild-gate.js blocked-tool.js pnpm tsc vitest gradle go; do \
+     /opt/paperclip/bin/heavy-fallback.js \
+  && for f in devbuild-gate.js blocked-tool.js heavy-fallback.js pnpm tsc vitest gradle go; do \
        /opt/node24/bin/node --check /opt/paperclip/bin/$f; \
      done
 

@@ -23,6 +23,7 @@
 //  - the container image builder and docker-compose network (G1).
 
 import type { Db } from "@paperclipai/db";
+import { laneInterval } from "../monitoring/board-load/lanes.js"; // myrmidon(1.6.6 PROCS-0.3A)
 import { maintenanceHeartbeatPort, maintenanceService } from "../maintenance/index.js";
 import { heartbeatService } from "../../services/index.js";
 import {
@@ -44,6 +45,7 @@ import {
   type MaintenanceWindowView,
   type ReconcileOutcome,
 } from "./reconciler.js";
+import { clearBotRolloutDeferred, recordBotRolloutDeferred, runDeferredRolloutWatcher } from "./deferred-reconciler.js";
 import type { CompiledProfile } from "./types.js";
 // myrmidon(PERF-DIET-G): the cache one sweep shares between the bots it reconciles.
 import type { BotProfilePass } from "./profile-pass.js";
@@ -153,6 +155,23 @@ export interface BotContainerRuntimeDeps {
   network: string;
   /** Defaults to the process-wide lock; tests pass their own. */
   lock?: BotKeyLock;
+  /** myrmidon(BOT-ROLLOUT): the database the deferred-rollout records live in
+   *  (deferred-store.ts). With it, a deferred pass records itself and a
+   *  converging pass removes the record, and the sweep runs the watcher that
+   *  retries the recorded bots; without it (tests that never defer) both are
+   *  skipped. */
+  db?: Db;
+  /** myrmidon(BOT-ROLLOUT): audit sink for the watcher's backstop retire
+   *  (wired at startup from logActivity); optional. */
+  rolloutAudit?: (entry: {
+    companyId: string;
+    action: string;
+    entityId: string;
+    agentId: string;
+    details: Record<string, unknown>;
+  }) => Promise<void>;
+  /** myrmidon(BOT-ROLLOUT): companyId lookup for that audit row. */
+  rolloutCompanyIdOf?: (agentId: string) => Promise<string | null>;
 }
 
 export type ApplyBotContainerOutcome = ReconcileOutcome | { kind: "not_applicable"; reason: string };
@@ -241,6 +260,16 @@ export async function applyBotContainerNow(
     });
     if (passCountsForFreshness(outcome)) lastPassStartedAtMs.set(botKey, passStartedAt);
     else lastPassStartedAtMs.delete(botKey);
+    // myrmidon(BOT-ROLLOUT): a deferred pass that had a real change to apply
+    // records itself so the watcher (same sweep) retries it until the bot
+    // frees up; a converging pass removes the record. See
+    // deferred-reconciler.ts; never throws.
+    await syncDeferredRolloutRecord(deps, {
+      agentId: agent.agentId,
+      botKey,
+      targetImage: spec.image,
+      outcome,
+    });
     if (deps.syncCard && leavesContainerApplied(outcome)) {
       await syncCardAfterReconcile(agent.agentId, botKey, deps.syncCard, deps.activity);
     }
@@ -297,6 +326,34 @@ function leavesContainerApplied(outcome: ReconcileOutcome): boolean {
     outcome.kind === "applied_restart" ||
     outcome.kind === "unchanged"
   );
+}
+
+/**
+ * myrmidon(BOT-ROLLOUT): keeps the deferred-rollout record of one bot in
+ * step with the pass that just ran. `deferred` means the pass had a real
+ * change to apply (reconcileBot only defers a drift-class or restart-class
+ * change — an unchanged bot exits before the pause path) and the bot is
+ * busy: record it. A converged pass (anything applied or verifiably
+ * unchanged) removes the record — a card image changed back mid-deferral
+ * converges exactly this way. An errored pass keeps the record: the next
+ * sweep retries it. Never throws and needs `deps.db`.
+ */
+async function syncDeferredRolloutRecord(
+  deps: BotContainerRuntimeDeps,
+  pass: { agentId: string; botKey: string; targetImage: string; outcome: ReconcileOutcome },
+): Promise<void> {
+  if (!deps.db) return;
+  if (pass.outcome.kind === "deferred") {
+    await recordBotRolloutDeferred(deps.db, {
+      botKey: pass.botKey,
+      agentId: pass.agentId,
+      targetImage: pass.targetImage,
+      reason: pass.outcome.reason,
+    });
+    return;
+  }
+  if (pass.outcome.kind === "error") return;
+  await clearBotRolloutDeferred(deps.db, pass.botKey);
 }
 
 async function syncCardAfterReconcile(
@@ -480,13 +537,31 @@ export function startBotContainerReconciliation(
       } finally {
         if (pass) deps.endProfilePass?.(pass);
       }
+      // myrmidon(BOT-ROLLOUT): retry the bots whose drifted change deferred on
+      // this or an earlier sweep, inside the same tick (no scheduler of its
+      // own). After the regular passes, so a sweep that just fixed a bot does
+      // not retry it. Never throws: a failing watcher must not fail the sweep.
+      if (deps.db && !stopped) {
+        await runDeferredRolloutWatcher(deps.db, {
+          maintenance: deps.maintenance,
+          activity: deps.activity,
+          applyNow: (agent, applyOpts) => applyBotContainerNow(agent, deps, { env: opts.env, force: applyOpts.force }),
+          readAgent: (agentId) =>
+            deps.readAgent
+              ? deps.readAgent(agentId)
+              : Promise.resolve(agents.find((a) => a.agentId === agentId) ?? null),
+          audit: deps.rolloutAudit,
+          companyIdOf: deps.rolloutCompanyIdOf,
+          env: opts.env,
+        }).catch(() => undefined);
+      }
     })().finally(() => {
       tickInFlight = null;
     });
     return tickInFlight;
   }
 
-  const timer = setInterval(() => void tick(), intervalMs);
+  const timer = laneInterval("bot_reconcile", intervalMs, () => tick());
   timer.unref?.();
   void tick();
 
@@ -532,6 +607,22 @@ export {
 } from "./concurrency-sync.js";
 export type { GatewayConcurrencyStatus } from "./concurrency-sync.js";
 export { dockerBotContainerDriver, readDockerDriverConfig } from "./docker-driver.js";
+// myrmidon(BOT-ROLLOUT): deferred-rollout records and the watcher (part C of
+// the busy-bot rollout fix).
+export {
+  BOT_ROLLOUT_DEFERRED_GENERAL_KEY,
+  readBotRolloutDeferredDocument,
+  type BotRolloutDeferredDocument,
+  type BotRolloutDeferredRecord,
+} from "./deferred-store.js";
+export {
+  BOT_ROLLOUT_DEFERRED_GRACE_FACTOR,
+  BOT_ROLLOUT_DEFERRED_MAX_WAIT_ENV,
+  DEFAULT_BOT_ROLLOUT_DEFERRED_MAX_WAIT_SEC,
+  readBotRolloutDeferredMaxWaitSec,
+  runDeferredRolloutWatcher,
+  type DeferredRolloutWatcherDeps,
+} from "./deferred-reconciler.js";
 export { botProfileWiring } from "./profile-ports.js";
 export { createActivityWarningSink, createBotProfileCompile } from "./profile-compile.js";
 export type { BotProfileAgentRecord, BotProfilePorts, BotProfileCompileOptions } from "./profile-compile.js";

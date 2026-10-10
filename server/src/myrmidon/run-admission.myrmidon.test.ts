@@ -1,18 +1,23 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   AGENT_START_SHARE_WINDOW_MS,
+  CPU_BUSY_SAMPLE_WINDOW_MS,
   HOST_CPU_HOLD_SIGNAL_MS,
   HOST_MEMORY_HOLD_SIGNAL_MS,
   applyRunAdmissionLimits,
   createRunAdmission,
+  cpuBusyPercentFromDelta,
   currentRunAdmissionLimits,
   evaluateAgentStartShare,
   hostCpuHoldSignal,
   hostMemoryHoldSignal,
   orderAgentIdsByOldestQueuedRun,
   readHostCpuLoad,
+  readHostCpuPsi,
+  readHostCpuStatProbe,
   readHostMemory,
   readCgroupFreeMemoryBytes,
+  readCgroupMemoryUsageBytes,
   readRunAdmissionLimits,
   resetSharedRunAdmissionForTests,
   scheduleQueuedResweep,
@@ -27,12 +32,25 @@ const NO_MEMORY = {
   // myrmidon(1.6.5 RUN-FAIRNESS): the start share is a limit the admission
   // does not read yet (part 1); the fixtures carry its default.
   maxPerAgentStartSharePercent: 15,
+  // myrmidon(1.6.5 rc.3): the CPU ceilings are off unless a test says
+  // otherwise; absent keeps the legacy load-average rule for the suite.
+  maxHostCpuBusyPercent: null,
+  maxHostCpuPsiSomeAvg10: null,
 };
 const MB = 1024 * 1024;
 
 describe("readRunAdmissionLimits", () => {
-  it("treats unset, empty, zero and garbage as no limit; the ramp, the host floor and the CPU ceiling default on", () => {
-    const DEFAULT_ON = { maxStartsPerMinute: 5, minFreeHostMemoryMb: 15360, maxHostLoadPercentPerCore: 90, maxPerAgentStartSharePercent: 15 };
+  it("treats unset, empty, zero and garbage as no limit; the ramp, the host floor and the CPU ceilings default on", () => {
+    // myrmidon(1.6.5 rc.3): the busy ceiling defaults on; the PSI ceiling
+    // defaults off — only an operator-set value closes the gate on pressure.
+    const DEFAULT_ON = {
+      maxStartsPerMinute: 5,
+      minFreeHostMemoryMb: 15360,
+      maxHostLoadPercentPerCore: 90,
+      maxPerAgentStartSharePercent: 15,
+      maxHostCpuBusyPercent: 90,
+      maxHostCpuPsiSomeAvg10: null,
+    };
     expect(readRunAdmissionLimits({})).toEqual({
       maxConcurrentRuns: null,
       minFreeMemoryMb: null,
@@ -44,7 +62,7 @@ describe("readRunAdmissionLimits", () => {
     ).toEqual({ maxConcurrentRuns: null, minFreeMemoryMb: null, runMemoryEstimateMb: 300, ...DEFAULT_ON });
     expect(
       readRunAdmissionLimits({ MYRMIDON_MAX_RUN_STARTS_PER_MINUTE: "0", MYRMIDON_MIN_FREE_HOST_MEMORY_MB: "off" }),
-    ).toEqual({ maxConcurrentRuns: null, maxStartsPerMinute: null, ...NO_MEMORY, maxHostLoadPercentPerCore: 90, maxPerAgentStartSharePercent: 15 });
+    ).toEqual({ ...DEFAULT_ON, maxConcurrentRuns: null, maxStartsPerMinute: null, minFreeMemoryMb: null, minFreeHostMemoryMb: null, runMemoryEstimateMb: 300 });
     expect(
       readRunAdmissionLimits({
         MYRMIDON_MAX_CONCURRENT_RUNS: " 12 ",
@@ -62,7 +80,20 @@ describe("readRunAdmissionLimits", () => {
       minFreeHostMemoryMb: 8192,
       maxHostLoadPercentPerCore: null,
       maxPerAgentStartSharePercent: 15,
+      // myrmidon(1.6.5 rc.3): the new ceilings keep their own rules — busy
+      // defaults on when unset, PSI stays off until set.
+      maxHostCpuBusyPercent: 90,
+      maxHostCpuPsiSomeAvg10: null,
     });
+    expect(
+      readRunAdmissionLimits({
+        MYRMIDON_MAX_HOST_CPU_BUSY_PERCENT: "85",
+        MYRMIDON_MAX_HOST_CPU_PSI_SOME_AVG10: "40",
+      }),
+    ).toMatchObject({ maxHostCpuBusyPercent: 85, maxHostCpuPsiSomeAvg10: 40 });
+    expect(
+      readRunAdmissionLimits({ MYRMIDON_MAX_HOST_CPU_BUSY_PERCENT: "off", MYRMIDON_MAX_HOST_CPU_PSI_SOME_AVG10: "off" }),
+    ).toMatchObject({ maxHostCpuBusyPercent: null, maxHostCpuPsiSomeAvg10: null });
   });
 });
 
@@ -165,6 +196,49 @@ describe("memory headroom", () => {
         throw new Error("ENOENT");
       }),
     ).toBeNull();
+  });
+});
+
+describe("myrmidon(1.6.5 C0-ui) the memory snapshot of the load screen", () => {
+  it("reports the cgroup usage as limit, usage and free, with the inactive cache reclaimable", () => {
+    const files: Record<string, string> = {
+      "/cg/memory.max": "8589934592\n",
+      "/cg/memory.current": "7800532992\n",
+      "/cg/memory.stat": "anon 4545642496\ninactive_file 2337927168\nactive_file 401641472\n",
+    };
+    expect(readCgroupMemoryUsageBytes("/cg", (path) => files[path]!)).toEqual({
+      limitBytes: 8589934592,
+      usedBytes: 7800532992 - 2337927168,
+      freeBytes: 8589934592 - (7800532992 - 2337927168),
+    });
+    // No cgroup v2 limit (cgroup v1, `memory.max` is "max", unreadable file)
+    // — nothing to report, and the load screen shows nothing rather than a
+    // number it made up.
+    expect(readCgroupMemoryUsageBytes("/cg", (path) => (path.endsWith("max") ? "max" : "0"))).toBeNull();
+    expect(
+      readCgroupMemoryUsageBytes("/none", () => {
+        throw new Error("ENOENT");
+      }),
+    ).toBeNull();
+  });
+
+  it("the admission's snapshot carries the host and the container memory, each null when unreadable", () => {
+    const GB = 1024 * MB;
+    const admission = createRunAdmission({
+      limits: { ...NO_MEMORY, maxConcurrentRuns: null, maxStartsPerMinute: null },
+      hostMemory: () => ({ known: true as const, availableBytes: 44 * GB, totalBytes: 128 * GB }),
+    });
+    const snapshot = admission.memorySnapshot();
+    expect(snapshot.host).toEqual({ availableMb: 44 * 1024, totalMb: 128 * 1024 });
+    // The test process is not under a cgroup v2 limit, so the container side
+    // is null — and the test still proves the view carries it when it reads.
+    expect(snapshot.container === null || typeof snapshot.container.usedMb === "number").toBe(true);
+
+    const blind = createRunAdmission({
+      limits: { ...NO_MEMORY, maxConcurrentRuns: null, maxStartsPerMinute: null },
+      hostMemory: () => ({ known: false as const, reason: "no meminfo" }),
+    });
+    expect(blind.memorySnapshot().host).toBeNull();
   });
 });
 
@@ -718,6 +792,7 @@ describe("myrmidon(1.6.5 RUN-ADMISSION) host CPU ceiling", () => {
     expect(readHostCpuLoad({ readFile: () => "garly\n", cpuCount: () => 4 })).toMatchObject({ known: false });
   });
 });
+
 // ---------------------------------------------------------------------------
 // myrmidon(1.6.5 RUN-FAIRNESS): the fair queue at a busy global cap.
 //
@@ -964,5 +1039,267 @@ describe("myrmidon(1.6.5 RUN-FAIRNESS)", () => {
       expect(winners).toEqual([AGENT_A]); // the 25-minute waiter, not the first in line
       expect(admission.lastDenialReason()).toBe("global_cap");
     });
+  });
+});
+
+describe("myrmidon(1.6.5 RUN-ADMISSION, rc.3) host CPU busy ceiling", () => {
+  // The busy ceiling on, the load ceiling on as well: on the 06.10 host both
+  // were active (the stored row carries the legacy 90), and the decision must
+  // now come from the /proc/stat delta, with load average only reporting.
+  const BUSY_CEILING = {
+    maxConcurrentRuns: null,
+    maxStartsPerMinute: null,
+    ...NO_MEMORY,
+    maxHostCpuBusyPercent: 90,
+  };
+  // The legacy row: neither rc.3 key present — the load average still decides.
+  const loadOnly = (busy: number | null, psi: number | null = null) => {
+    // busy/psi `undefined` = the stored row saved before rc.3.
+    return {
+      maxConcurrentRuns: null,
+      maxStartsPerMinute: null,
+      ...NO_MEMORY,
+      maxHostLoadPercentPerCore: 90,
+      ...(busy === null ? { maxHostCpuBusyPercent: undefined } : { maxHostCpuBusyPercent: busy }),
+      ...(psi === null ? { maxHostCpuPsiSomeAvg10: undefined } : { maxHostCpuPsiSomeAvg10: psi }),
+    };
+  };
+
+  /**
+   * A /proc/stat source driven by the test: `set(idle, total)` moves the
+   * cumulative counters, the admission computes the busy percent from the
+   * delta between the windows it keeps.
+   */
+  const statSource = (idle = 1000, total = 1000) => {
+    const state = { idle, total };
+    return {
+      set(nextIdle: number, nextTotal: number) {
+        state.idle = nextIdle;
+        state.total = nextTotal;
+      },
+      probe: () => ({ known: true as const, sample: { idle: state.idle, total: state.total } }),
+    };
+  };
+
+  /**
+   * The 06.10 host: a mass wake pushed the 1-minute load to 65.7 on 16 cores
+   * (the 15-minute average still 5.0 — the spike shape the incident had),
+   * while the CPU itself was only about 70 % busy. On the load-average rule
+   * this picture holds runs (the floor stays low, the spike is all "added"
+   * load); on the busy rule they pass. This fixture is the guard case: it
+   * must be RED against main's run-admission.ts and green with rc.3.
+   */
+  const saturatedLoad = (load1 = 65.7, load15 = 5.0) => () => ({
+    known: true as const,
+    load1,
+    load15,
+    cores: 16,
+  });
+
+  it("admits runs on a host whose load average screams but whose CPU has headroom (the 06.10 case)", () => {
+    let clock = 0;
+    const stat = statSource(300, 1000); // base: 30 % idle of 1000 ticks
+    const admission = createRunAdmission({
+      limits: { ...BUSY_CEILING, maxHostLoadPercentPerCore: 90 },
+      hostCpuLoad: saturatedLoad(),
+      hostCpuStatProbe: stat.probe,
+      now: () => clock,
+    });
+    // The first call after the start only takes the base reading: nothing is
+    // measured yet, and an unmeasured ceiling does not hold runs.
+    expect(admission.hostCpuGate()).toMatchObject({ state: "open", cpuBusyPercent: null, source: "cpu-busy" });
+    // Move the counters: 1000 more total ticks of which 300 idle → 70 % busy.
+    stat.set(600, 2000);
+    clock = CPU_BUSY_SAMPLE_WINDOW_MS;
+    expect(admission.hostCpuGate()).toMatchObject({ state: "open", cpuBusyPercent: 70 });
+    // Load average 65.7 / 16 cores is 411 % of a core — the legacy rule closed
+    // on this; the busy rule admits, with load still reported alongside.
+    expect(admission.reserve(3)).toBe(3);
+    expect(admission.hostCpuGate()).toMatchObject({
+      state: "open",
+      source: "cpu-busy",
+      cpuBusyPercent: 70,
+      busyThresholdPercent: 90,
+      loadPercentPerCore: 411,
+      thresholdPercent: 90,
+    });
+  });
+
+  it("holds runs when the CPU is saturated, even below the legacy load ceiling", () => {
+    let clock = 0;
+    const stat = statSource(100, 1000);
+    const admission = createRunAdmission({
+      // The legacy ceiling off: only the busy rule is in force.
+      limits: { ...BUSY_CEILING },
+      hostCpuLoad: () => ({ known: false, reason: "unused" }),
+      hostCpuStatProbe: stat.probe,
+      now: () => clock,
+    });
+    admission.hostCpuGate(); // take the base
+    // 99 % busy over the next window: 1000 more ticks, 10 idle.
+    stat.set(110, 2000);
+    clock = CPU_BUSY_SAMPLE_WINDOW_MS;
+    expect(admission.hostCpuGate()).toMatchObject({ state: "closed", cpuBusyPercent: 99 });
+    expect(admission.reserve(2)).toBe(0);
+    expect(admission.limited()).toBe(true);
+    const gate = admission.hostCpuGate();
+    expect(gate.reason).toMatch(/99 % busy .* at or above the 90 % busy ceiling/);
+    // The counters calm down: 500 total ticks with 350 idle → 30 % busy.
+    stat.set(460, 2500);
+    clock = 2 * CPU_BUSY_SAMPLE_WINDOW_MS;
+    expect(admission.reserve(2)).toBe(2);
+    expect(admission.hostCpuGate().state).toBe("open");
+  });
+
+  it("closes on PSI pressure only when the operator set the ceiling", () => {
+    let clock = 0;
+    const stat = statSource(100, 1000);
+    const psiReads = vi.fn(() => ({ known: true as const, someAvg10: 45 }));
+    const admission = createRunAdmission({
+      limits: { ...BUSY_CEILING, maxHostCpuPsiSomeAvg10: 40 },
+      hostCpuLoad: () => ({ known: false, reason: "unused" }),
+      hostCpuStatProbe: stat.probe,
+      hostCpuPsi: psiReads,
+      now: () => clock,
+    });
+    admission.hostCpuGate(); // take the base window
+    stat.set(600, 2000); // 50 % busy — open by the busy rule
+    clock = CPU_BUSY_SAMPLE_WINDOW_MS;
+    expect(admission.reserve(1)).toBe(0);
+    const gate = admission.hostCpuGate();
+    expect(gate).toMatchObject({ state: "closed", cpuBusyPercent: 50, psiSomeAvg10: 45, psiThresholdPercent: 40 });
+    expect(gate.reason).toMatch(/some avg10 is 45 % at or above the 40 % PSI ceiling/);
+  });
+
+  it("does not read or apply PSI when the ceiling is unset", () => {
+    const psiReads = vi.fn(() => ({ known: true as const, someAvg10: 95 }));
+    const admission = createRunAdmission({
+      limits: { ...BUSY_CEILING }, // PSI undefined → off
+      hostCpuLoad: () => ({ known: false, reason: "unused" }),
+      hostCpuStatProbe: () => ({ known: true as const, sample: { idle: 100, total: 1000 } }),
+      hostCpuPsi: psiReads,
+    });
+    expect(admission.reserve(1)).toBe(1);
+    expect(admission.hostCpuGate().psiSomeAvg10).toBeNull();
+    expect(psiReads).not.toHaveBeenCalled();
+  });
+
+  it("leaves the other limits in charge when /proc/stat cannot be read, logging the reason once", () => {
+    const unavailable = vi.fn();
+    const admission = createRunAdmission({
+      limits: { ...BUSY_CEILING, maxConcurrentRuns: 2 },
+      hostCpuLoad: () => ({ known: false, reason: "unused" }),
+      hostCpuStatProbe: () => ({ known: false, reason: "/proc/stat is not readable" }),
+      onHostCpuUnavailable: unavailable,
+    });
+    expect(admission.reserve(5)).toBe(2);
+    expect(unavailable).toHaveBeenCalledWith("/proc/stat is not readable");
+    expect(admission.hostCpuGate()).toMatchObject({ state: "unknown", reason: "/proc/stat is not readable" });
+  });
+
+  it("reports unknown when the PSI file cannot be read while its ceiling is set", () => {
+    const admission = createRunAdmission({
+      limits: { ...BUSY_CEILING, maxHostCpuPsiSomeAvg10: 40 },
+      hostCpuLoad: () => ({ known: false, reason: "unused" }),
+      hostCpuStatProbe: () => ({ known: true as const, sample: { idle: 100, total: 1000 } }),
+      hostCpuPsi: () => ({ known: false, reason: "/proc/pressure/cpu is not readable" }),
+    });
+    expect(admission.hostCpuGate()).toMatchObject({
+      state: "unknown",
+      reason: "/proc/pressure/cpu is not readable",
+    });
+  });
+
+  it("keeps the load-average rule for a settings row saved before rc.3 (backward compatibility)", () => {
+    // The legacy 05.10 picture: load 95 on 16 cores, background at 100 % of a
+    // core → 494 % above the floor, at or above the 90 % ceiling: closed.
+    const admission = createRunAdmission({
+      limits: loadOnly(null, null),
+      hostCpuLoad: () => ({ known: true, load1: 95, load15: 16, cores: 16 }),
+      hostCpuStatProbe: () => ({ known: true as const, sample: { idle: 500, total: 1000 } }), // 50 % busy: idle host
+    });
+    expect(admission.reserve(1)).toBe(0);
+    expect(admission.hostCpuGate()).toMatchObject({ state: "closed", source: "load-average", cpuBusyPercent: null });
+  });
+
+  it("takes over from load average as soon as the busy ceiling is set on the fly", () => {
+    const admission = createRunAdmission({
+      limits: loadOnly(null, null), // legacy row: only the load ceiling decides
+      hostCpuLoad: () => ({ known: true, load1: 95, load15: 16, cores: 16 }),
+      hostCpuStatProbe: () => ({ known: true as const, sample: { idle: 500, total: 1000 } }), // an idle host
+    });
+    // Legacy: load 95 on 16 cores is 494 % above the background floor — closed.
+    expect(admission.reserve(1)).toBe(0);
+    expect(admission.hostCpuGate()).toMatchObject({ state: "closed", source: "load-average" });
+    // The operator saves limits on this instance: the busy rule takes over and
+    // the saturated load average no longer holds anything back.
+    admission.updateLimits(loadOnly(90, null));
+    expect(admission.reserve(1)).toBe(1);
+    expect(admission.hostCpuGate()).toMatchObject({ state: "open", source: "cpu-busy", busyThresholdPercent: 90 });
+  });
+
+  it("ends the CPU hold when the busy ceiling is switched off", () => {
+    let clock = 0;
+    const stat = statSource(0, 1000);
+    const events: string[] = [];
+    const admission = createRunAdmission({
+      limits: { ...BUSY_CEILING },
+      hostCpuLoad: () => ({ known: false, reason: "unused" }),
+      hostCpuStatProbe: stat.probe,
+      onHostCpuHold: (event) => events.push(event.state),
+      now: () => clock,
+    });
+    admission.hostCpuGate(); // base
+    stat.set(5, 2000); // ~99.7 % busy
+    clock = CPU_BUSY_SAMPLE_WINDOW_MS;
+    expect(admission.reserve(1)).toBe(0);
+    expect(events).toEqual(["closed"]);
+    expect(admission.hostCpuGate().heldSince).not.toBeNull();
+    // Switch the busy ceiling off (no other ceiling remains): the hold resets.
+    admission.updateLimits({ ...BUSY_CEILING, maxHostCpuBusyPercent: null });
+    expect(admission.hostCpuGate().state).toBe("off");
+    expect(admission.hostCpuGate().heldSince).toBeNull();
+  });
+
+  it("ignores a delta window in which the counters did not move", () => {
+    let clock = 0;
+    const stat = statSource(300, 1000);
+    const admission = createRunAdmission({
+      limits: { ...BUSY_CEILING },
+      hostCpuLoad: () => ({ known: false, reason: "unused" }),
+      hostCpuStatProbe: stat.probe,
+      now: () => clock,
+    });
+    admission.hostCpuGate(); // base at clock 0
+    clock = CPU_BUSY_SAMPLE_WINDOW_MS;
+    // Second call after the window but with identical counters: no measurement,
+    // and the base stays where it was (the window keeps growing).
+    expect(admission.hostCpuGate()).toMatchObject({ state: "open", cpuBusyPercent: null });
+    stat.set(600, 2000);
+    clock = CPU_BUSY_SAMPLE_WINDOW_MS * 2;
+    expect(admission.hostCpuGate()).toMatchObject({ state: "open", cpuBusyPercent: 70 });
+  });
+
+  it("reads the busy sample from /proc/stat and the pressure from /proc/pressure/cpu", () => {
+    const stat =
+      "cpu  100 20 80 700 50 5 5 0 0 0\ncpu0 50 10 40 350 25 2 2 0 0 0\ncpu1 50 10 40 350 25 3 3 0 0 0\nintr 1234\n";
+    expect(readHostCpuStatProbe({ statPath: "/proc/stat", readFile: () => stat })).toEqual({
+      known: true,
+      sample: { idle: 700 + 50, total: 100 + 20 + 80 + 700 + 50 + 5 + 5 },
+    });
+    expect(readHostCpuStatProbe({ readFile: () => "intr 5\n" })).toMatchObject({ known: false });
+    expect(
+      readHostCpuStatProbe({
+        readFile: () => {
+          throw new Error("ENOENT");
+        },
+      }),
+    ).toMatchObject({ known: false, reason: /not readable/ });
+    const psi = "some avg10=2.50 avg60=1.20 avg300=0.50 total=12345678\nfull avg10=0.10 avg60=0.05 avg300=0.01 total=42\n";
+    expect(readHostCpuPsi({ readFile: () => psi })).toEqual({ known: true, someAvg10: 2.5 });
+    expect(readHostCpuPsi({ readFile: () => "nope\n" })).toMatchObject({ known: false });
+    expect(cpuBusyPercentFromDelta({ idle: 300, total: 1000 }, { idle: 600, total: 2000 })).toBe(70);
+    expect(cpuBusyPercentFromDelta({ idle: 300, total: 1000 }, { idle: 300, total: 1000 })).toBeNull();
+    expect(cpuBusyPercentFromDelta({ idle: 300, total: 1000 }, { idle: 300, total: 1001 })).toBeCloseTo(100, 0);
   });
 });

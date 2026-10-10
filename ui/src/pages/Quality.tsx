@@ -25,6 +25,8 @@ import {
   type BaselineMetricRow,
   type BaselineSource,
 } from "@/api/baseline";
+// myrmidon(1.6.5-BASELINE-COMPARE-UI): pinned-snapshot comparison block.
+import { BaselineCompareBlock } from "./BaselineCompareBlock";
 
 const NO_COMPANY = "__none__";
 
@@ -318,6 +320,13 @@ export function Quality({ embedded = false }: QualityProps = {}) {
             rows={data.byRole}
             keyHeader={t("quality.columns.role")}
             rowTestId="quality-by-role-table"
+            t={t}
+          />
+          {/* myrmidon(1.6.5-BASELINE-COMPARE-UI): comparison with the pinned snapshot */}
+          <BaselineCompareBlock
+            companyId={companyId}
+            from={from || undefined}
+            to={to || undefined}
             t={t}
           />
         </div>

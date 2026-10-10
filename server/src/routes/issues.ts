@@ -1,9 +1,12 @@
+// myrmidon(UPSTREAM-13539): resolved interaction cards project into the comment queue (wait/steer/interrupt).
+import { queuedInteractionId, readQueuedInteractionResponse, hasQueuedInteractionResponse } from "../myrmidon/upstream-steer/queued-interaction-response.js";
 import { deliverConversationComments, isConversation } from "../services/agent-conversations.js";
 import { issueRecoveryActionReadModel } from "../services/issue-recovery-actions.js";
 import { getExecutionBlocker } from "../services/execution-blocker.js";
 // myrmidon(L2): clears a closed "do not replay" hold on plain resolve;
 // see docs/myrmidon/DIVERGENCE.md "L2".
 import { clearSettledReplayBlock } from "../myrmidon/settled-holds/clear.js";
+import { supersedeExplicitWakeSettledHold } from "../myrmidon/settled-holds/supersede-explicit-wake.js";
 // myrmidon(HOLD-READY): a board unblock (out of blocked, or a reassignment)
 // clears the issue's settled replay hold and re-plans its parked wakes.
 import {
@@ -14,7 +17,7 @@ import {
   replanParkedWakesAfterUnblock,
   type HumanUnblockResult,
 } from "../myrmidon/settled-holds/human-unblock.js";
-import { extractIssueReferenceIdentifiers, requiresExecutionReconciliation } from "@paperclipai/shared";
+import { extractIssueReferenceIdentifiers, requiresExecutionReconciliation, EXECUTION_RECONCILIATION_CAUSES } from "@paperclipai/shared";
 import {
   validateExecutionReconciliation,
   markExecutionReconciliation,
@@ -2728,7 +2731,9 @@ async function queueResolvedInteractionContinuationWakeup(input: {
       publication.idempotencyKey ===
       `interaction:${input.interaction.id}:${publication.endpointId}`,
   );
-  void input.heartbeat
+  // myrmidon(UPSTREAM-13539): await the continuation wake — the queue projection
+  // and the O1 outbox retire below only make sense once the wake is durable.
+  await input.heartbeat
     .wakeup(input.issue.assigneeAgentId, {
       source: "automation",
       triggerDetail: "system",
@@ -4651,6 +4656,8 @@ export function issueRoutes(
       companyId: string;
       status: string;
       assigneeUserId?: string | null;
+      // myrmidon(UPSTREAM-13539): the queued-response guard below needs the assignee agent.
+      assigneeAgentId?: string | null;
       executionState?: unknown;
       monitorNextCheckAt?: Date | null;
       reviewPolicy?: IssueReviewPolicy | null;
@@ -4677,6 +4684,22 @@ export function issueRoutes(
     const pendingInteractions = interactions.filter(
       (interaction) => interaction.status === "pending",
     );
+    // myrmidon(UPSTREAM-13539): anti-reassign — a card resolved by THIS run is a live path.
+    // Acceptance can commit just before its continuation wake is persisted.
+    // The source run may still be finishing its original review handoff. The
+    // resolved card from that exact run is evidence of the in-flight response;
+    // an old card from an earlier run is not a new review path.
+    const resolvedSourceResponse = input.actorType === "agent" && input.actorRunId
+      ? interactions.find(interaction =>
+          interaction.sourceRunId === input.actorRunId &&
+          interaction.createdByAgentId === input.actorAgentId &&
+          (!input.reviewInteractionId || interaction.id === input.reviewInteractionId) &&
+          ["accepted", "answered", "rejected"].includes(interaction.status) &&
+          (interaction.continuationPolicy === "wake_assignee" ||
+            (interaction.continuationPolicy === "wake_assignee_on_accept" &&
+              ["accepted", "answered"].includes(interaction.status))))
+      : undefined;
+    if (resolvedSourceResponse) return null;
     if (input.reviewInteractionId) {
       const designatedReviewConfirmation = pendingInteractions.find(
         (interaction) =>
@@ -4740,6 +4763,8 @@ export function issueRoutes(
       return null;
 
     if (pendingInteractions.length > 0) return null;
+    // myrmidon(UPSTREAM-13539): a saved card answer is a live continuation even though its card is no longer pending.
+    if (await hasQueuedInteractionResponse(db, input.existing.companyId, input.existing.id, input.existing.assigneeAgentId)) return null;
 
     const approvals = await issueApprovalsSvc.listApprovalsForIssue(
       input.existing.id,
@@ -5595,6 +5620,13 @@ export function issueRoutes(
       id: string;
       companyId: string;
     },
+    // myrmidon(OPE-6241): withdraw of the actor's own interaction tolerates a
+    // responsible-user mismatch (automation runs carry a service account, not
+    // the key owner's user id). myrmidon(OPE-6547): resolution routes
+    // (accept/reject/respond/verdicts) tolerate it unconditionally for the same
+    // reason — the key owner is never the run's responsible user, and the
+    // resolver-audience decision remains the authorization boundary there.
+    opts?: { allowResponsibleUserMismatch?: boolean },
   ) {
     if (req.actor.type !== "agent") return null;
     const runId = req.actor.runId?.trim();
@@ -5627,7 +5659,8 @@ export function issueRoutes(
       !run ||
       run.companyId !== issue.companyId ||
       run.agentId !== req.actor.agentId ||
-      (actorResponsibleUserId !== null &&
+      (!opts?.allowResponsibleUserMismatch &&
+        actorResponsibleUserId !== null &&
         run.responsibleUserId !== undefined &&
         run.responsibleUserId !== actorResponsibleUserId)
     ) {
@@ -5805,7 +5838,22 @@ export function issueRoutes(
     // Actor-only gates deliberately precede the interaction lookup. An actor
     // outside the issue's trusted/watchdog scope must not learn whether an
     // interaction id exists on that issue.
-    const runId = await assertAgentInteractionRunAttribution(req, res, issue);
+    //
+    // myrmidon(OPE-6547): an agent API key authenticates the call as its
+    // *owner*, while the run carrying the mutation records the run's own
+    // responsible user — the issue's responsible user, a steering comment
+    // author, or the company default for an automation/heartbeat run. Those are
+    // routinely different users, so requiring them to match rejected every
+    // key-authenticated resolution with `interaction_run_attribution_required`
+    // (accept/reject/respond/verdicts) and left agent request confirmations
+    // pending forever. The gate keeps its real work: the run must exist, belong
+    // to this company and to the authenticated agent, and the resolver-audience
+    // decision plus containment below still decide who may resolve (addressee,
+    // creator exclusion, human-only, governed actions). The key owner's user id
+    // never carried authority over the interaction here.
+    const runId = await assertAgentInteractionRunAttribution(req, res, issue, {
+      allowResponsibleUserMismatch: true,
+    });
     if (runId === false) return false;
     if (
       !(await assertIssueThreadInteractionContainmentAllowed(req, res, issue))
@@ -6024,9 +6072,18 @@ export function issueRoutes(
       return true;
     }
     const actorAgentId = req.actor.agentId;
+    // myrmidon(OPE-6241): the creator/assignee check is computed before the
+    // run-attribution gate so withdrawing one's OWN card can tolerate a
+    // responsible-user mismatch. That check is redundant here: the run is
+    // already bound to the same agent, company and issue scope, and the
+    // creator/assignee authorization below still decides who may withdraw.
+    const isCreator = interaction.createdByAgentId === actorAgentId;
+    const isAssignee = issue.assigneeAgentId === actorAgentId;
     if (
       !actorAgentId ||
-      (await assertAgentInteractionRunAttribution(req, res, issue)) === false
+      (await assertAgentInteractionRunAttribution(req, res, issue, {
+        allowResponsibleUserMismatch: isCreator || isAssignee,
+      })) === false
     )
       return false;
     if (
@@ -6034,8 +6091,6 @@ export function issueRoutes(
     )
       return false;
 
-    const isCreator = interaction.createdByAgentId === actorAgentId;
-    const isAssignee = issue.assigneeAgentId === actorAgentId;
     if (!isCreator && !isAssignee) {
       res.status(403).json({
         error:
@@ -7035,7 +7090,8 @@ export function issueRoutes(
     for (const wake of rows) {
       if (
         readObject(wake.payload).issueId !== issue.id ||
-        queuedCommentIdsFromWakePayload(wake.payload).length === 0
+        // myrmidon(UPSTREAM-13539): interaction receipts are queue entries too, without comment ids.
+        (queuedCommentIdsFromWakePayload(wake.payload).length === 0 && !queuedInteractionId(wake.payload))
       )
         continue;
       if (wake.status === "deferred_issue_execution") {
@@ -7066,6 +7122,11 @@ export function issueRoutes(
     issueId: string,
     wake: IssueQueueWake | null,
   ) {
+    // myrmidon(UPSTREAM-13539): project the resolved card as the queue's single synthetic comment.
+    if (wake && queuedInteractionId(wake.payload)) {
+      const response = await readQueuedInteractionResponse(executor as Db, wake.companyId, issueId, wake.payload);
+      return response ? [response.comment] : [];
+    }
     const ids = queuedCommentIdsFromWakePayload(wake?.payload);
     if (ids.length === 0) return [];
     const rows = await executor
@@ -7077,7 +7138,8 @@ export function issueRoutes(
     const byId = new Map(rows.map((row) => [row.id, row]));
     return ids.flatMap((id) => {
       const row = byId.get(id);
-      return row && !row.deletedAt ? [row] : [];
+      // myrmidon(UPSTREAM-13539): normalize authorType so the queue renderer never sees null.
+      return row && !row.deletedAt ? [{ ...row, authorType: row.authorType ?? (row.authorAgentId ? "agent" as const : "user" as const) }] : [];
     });
   }
 
@@ -7127,7 +7189,8 @@ export function issueRoutes(
             .then((state) => state.disposition)
             .catch(() => "temporarily_unavailable" as const));
     const wait = queueState?.state === "deferred" ? readObject(readObject(wake?.payload).executionWait) : {};
-    return buildQueuedCommentQueueSnapshot({
+    // myrmidon(UPSTREAM-13539): below, an interaction receipt overrides the comment entries with one immutable projection.
+    const queue = buildQueuedCommentQueueSnapshot({
       issueId: input.issue.id,
       executionWait: typeof wait.reason === "string" && typeof wait.message === "string"
         ? { reason: wait.reason, message: wait.message } : null,
@@ -7140,6 +7203,14 @@ export function issueRoutes(
       actorType: input.actor.actorType,
       actorId: input.actor.actorId,
     });
+    // myrmidon(UPSTREAM-13539): the projected card entry is immutable (canEdit/canDiscard false);
+    // a fresh-session card answers can only be delivered by Interrupt, never steered.
+    if (wake && queuedInteractionId(wake.payload)) {
+      const response = await readQueuedInteractionResponse(input.executor as Db, input.issue.companyId, input.issue.id, wake.payload);
+      if (response?.source.requiresFreshSession) queue.steeringDisposition = "unsupported";
+      queue.entries = response ? [{ comment: response.comment, source: response.source, position: 0, canEdit: false, canDiscard: false }] : [];
+    }
+    return queue;
   }
 
   function assertQueueMutationTarget(input: {
@@ -7202,7 +7273,8 @@ export function issueRoutes(
     if (
       !wake ||
       readObject(wake.payload).issueId !== input.issue.id ||
-      queuedCommentIdsFromWakePayload(wake.payload).length === 0
+      // myrmidon(UPSTREAM-13539): interaction receipts pass the target check without comment ids.
+      (queuedCommentIdsFromWakePayload(wake.payload).length === 0 && !queuedInteractionId(wake.payload))
     ) {
       throw conflict("The queued message is no longer pending", {
         code: "queued_comment_not_pending",
@@ -9699,6 +9771,179 @@ export function issueRoutes(
           activeRecoveryAction: null,
         },
         recoveryAction: result.recoveryAction,
+      });
+    },
+  );
+
+  // myrmidon(OPE-6011): the explicit-exit route for a settled
+  // execution-reconciliation hold ("execution_reconciliation_required"). A
+  // person (or the task's own assignee) attests the failed run performed no
+  // external action, the blocking "do not replay" record is superseded, and
+  // the assignee is woken explicitly so the held task can resume. Called
+  // from the attention feed's execution_hold card and from the task's own
+  // hold banner; see server/src/myrmidon/execution-hold/attention.ts.
+  router.post(
+    "/issues/:id/execution-hold/confirm-continue",
+    async (req, res) => {
+      const id = req.params.id as string;
+      const existing = await getAccessibleResource(
+        req,
+        res,
+        svc.getById(id),
+        "Issue not found",
+      );
+      if (!existing) return;
+      if (!(await assertIssueReadAllowed(req, res, existing))) return;
+      if (
+        await assertLowTrustControlPlaneDenied(
+          req,
+          res,
+          existing.companyId,
+          existing,
+        )
+      )
+        return;
+
+      const actor = getActorInfo(req);
+      // A person (the operator or the task's owner) is always allowed. An
+      // agent may confirm only for the task assigned to it — the agent is
+      // attesting about *its own* failed run, never about another agent's.
+      if (req.actor.type === "agent") {
+        if (!req.actor.agentId || existing.assigneeAgentId !== req.actor.agentId) {
+          throw forbidden("Only the assignee can confirm an execution hold for this task", {
+            issueId: existing.id,
+            assigneeAgentId: existing.assigneeAgentId,
+            actorAgentId: req.actor.agentId ?? null,
+            source: "execution_hold_confirm_continue",
+            securityPrinciples: [
+              "Least Privilege",
+              "Complete Mediation",
+              "Secure Defaults",
+            ],
+          });
+        }
+      }
+
+      const result = await db.transaction(async (tx) => {
+        const lockedIssue = await tx
+          .select()
+          .from(issueRows)
+          .where(
+            and(
+              eq(issueRows.companyId, existing.companyId),
+              eq(issueRows.id, existing.id),
+            ),
+          )
+          .for("update")
+          .then((rows) => rows[0] ?? null);
+        if (!lockedIssue) throw notFound("Issue not found");
+
+        // Newest effective settled blocker — the same record
+        // execution-blocker.ts's non-explicit read would hold on.
+        const [blocker] = await tx
+          .select()
+          .from(issueRecoveryActions)
+          .where(
+            and(
+              eq(issueRecoveryActions.companyId, lockedIssue.companyId),
+              eq(issueRecoveryActions.sourceIssueId, lockedIssue.id),
+              inArray(issueRecoveryActions.cause, [...EXECUTION_RECONCILIATION_CAUSES]),
+              inArray(issueRecoveryActions.status, ["resolved", "cancelled"]),
+            ),
+          )
+          .orderBy(desc(issueRecoveryActions.updatedAt), desc(issueRecoveryActions.id))
+          .limit(1);
+        const blockerRecovery = blocker
+          ? ((blocker.evidence.automaticRecovery ?? null) as Record<string, unknown> | null)
+          : null;
+        if (!blocker || blockerRecovery?.replay !== "blocked") {
+          throw notFound("No execution hold on this task", {
+            issueId: lockedIssue.id,
+          });
+        }
+
+        const supersededAction = await supersedeExplicitWakeSettledHold({
+          db: tx as unknown as Db,
+          issueId: lockedIssue.id,
+          companyId: lockedIssue.companyId,
+          successorRunId: null,
+          requestedByActorType: req.actor.type === "agent" ? "agent" : "user",
+          requestedByActorId: actor.actorId,
+        });
+        if (!supersededAction) {
+          throw conflict("The failed run has not released its execution claim yet; the hold cannot be confirmed", {
+            issueId: lockedIssue.id,
+          });
+        }
+
+        const postCommitActivityPublications: ActivityPublication[] = [];
+        // The row was just updated inside this same transaction by the
+        // supersede above; the activity must see the final row, so write it
+        // after the supersede's own write (drizzle serialises them).
+        await logActivity(
+          tx as unknown as Db,
+          {
+            companyId: lockedIssue.companyId,
+            actorType: actor.actorType,
+            actorId: actor.actorId,
+            agentId: actor.agentId,
+            runId: actor.runId,
+            action: "issue.execution_hold_confirmed",
+            entityType: "issue",
+            entityId: lockedIssue.id,
+            details: {
+              recoveryActionId: blocker.id,
+              cause: blocker.cause,
+              supersededCount: supersededAction.supersededCount,
+            },
+          },
+          postCommitActivityPublications,
+        );
+        return { issue: lockedIssue, blocker, supersededAction, postCommitActivityPublications };
+      });
+
+      for (const publication of result.postCommitActivityPublications)
+        publishActivity(publication);
+
+      // Wake the assignee explicitly — an on_demand/manual wake with the
+      // confirming person as the requester IS an explicit wake per
+      // wake-classification, so it bypasses any (already-superseded) hold and
+      // starts the run now.
+      if (result.issue.assigneeAgentId) {
+        try {
+          await heartbeat.wakeup(result.issue.assigneeAgentId, {
+            source: "on_demand",
+            triggerDetail: "manual",
+            reason: "issue_execution_hold_confirmed",
+            payload: {
+              issueId: result.issue.id,
+              recoveryActionId: result.blocker.id,
+            },
+            contextSnapshot: {
+              issueId: result.issue.id,
+              taskId: result.issue.id,
+              wakeReason: "issue_execution_hold_confirmed",
+            },
+            requestedByActorType: req.actor.type === "agent" ? "agent" : "user",
+            requestedByActorId: actor.actorId,
+          });
+        } catch (err) {
+          logger.warn(
+            {
+              err,
+              issueId: result.issue.id,
+              agentId: result.issue.assigneeAgentId,
+            },
+            "failed to wake agent after execution hold confirmation",
+          );
+        }
+      }
+
+      res.json({
+        issueId: result.issue.id,
+        recoveryActionId: result.blocker.id,
+        supersededCount: result.supersededAction.supersededCount,
+        assigneeWoken: result.issue.assigneeAgentId != null,
       });
     },
   );
@@ -13483,6 +13728,14 @@ export function issueRoutes(
         !!existing.createdByUserId &&
         nextAssigneeUserId === existing.createdByUserId;
 
+      // myrmidon(UPSTREAM-13539): an agent handing an issue back must not orphan a queued card response.
+      if (assigneeWillChange && actor.actorType === "agent" &&
+          existing.assigneeAgentId === actor.agentId && updateFields.status === "in_review" &&
+          await hasQueuedInteractionResponse(db, existing.companyId, existing.id, existing.assigneeAgentId)) {
+        throw conflict("The user already responded. Keep the current assignee so the queued response can continue after this run.", {
+          code: "interaction_response_queued",
+        });
+      }
       if (assigneeWillChange && !transition.workflowControlledAssignment) {
         if (!isAgentReturningIssueToCreator) {
           await assertCanAssignTasks(req, existing.companyId, {
@@ -15598,10 +15851,12 @@ export function issueRoutes(
           allowStoppedTarget: true,
         });
         assertQueueMutationTarget({ queue: locked.queue, queueId: req.body.queueId, revision: req.body.revision });
-        if (locked.queue.protocol !== "legacy" || locked.state !== "deferred" ||
+        // myrmidon(UPSTREAM-13539): Interrupt is allowed for fresh-session card answers on any protocol.
+        const freshResponse = locked.queue.entries.some(entry => entry.source?.requiresFreshSession);
+        if ((locked.queue.protocol !== "legacy" && !freshResponse) || locked.state !== "deferred" ||
             !locked.queue.entries.length ||
             (locked.activeRun && locked.activeRun.agentId !== locked.wake.agentId)) {
-          throw conflict("This queue does not support legacy interruption");
+          throw conflict("This queue does not support interruption");
         }
         if (locked.activeRun && locked.activeRun.status !== "running" &&
             !["succeeded", "failed", "timed_out", "interrupted", "cancelled"].includes(locked.activeRun.status)) {
@@ -15660,12 +15915,22 @@ export function issueRoutes(
       );
       if (!issue) return;
       if (issue.conversationAgentId) throw conflict("Conversation messages are processed in order at turn boundaries");
+      // myrmidon(UPSTREAM-13539): steer of an interaction response requires comment rights on the issue.
+      const decision = await decideIssueAccess(req, issue, "issue:comment");
+      if (!decision.allowed) throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
       const actor = getActorInfo(req);
+      // myrmidon(UPSTREAM-13539): resolve whether the steered message id is a projected card response.
+      const responseWake = await db.select().from(agentWakeupRequests).where(and(
+        eq(agentWakeupRequests.id, req.body.queueId), eq(agentWakeupRequests.companyId, issue.companyId),
+      )).then(rows => rows[0]);
+      const response = responseWake ? await readQueuedInteractionResponse(db, issue.companyId, issue.id, responseWake.payload) : null;
       const steeringIdentity = await reserveSteeredIdentity(db, {
         companyId: issue.companyId,
         runId: req.body.targetRunId,
         issueId: issue.id,
         messageId: commentId,
+        // myrmidon(UPSTREAM-13539): steer with interaction provenance, not comment provenance.
+        source: response?.comment.id === commentId ? "interaction" : "comment",
       });
       let steeringDeliveryAttempted = false;
       let acknowledgedTurnId: string | null = null;
@@ -15799,11 +16064,19 @@ export function issueRoutes(
             });
           }
 
+          // myrmidon(UPSTREAM-13539): fresh-session answers cannot be steered into the current turn.
+          if (entry.source?.requiresFreshSession) {
+            throw conflict("This approval needs a fresh turn. Interrupt or wait for the current turn to finish.", {
+              code: "queued_response_requires_fresh_session",
+            });
+          }
           steeringDeliveryAttempted = true;
           const acknowledgement =
-            (steeringIdentity
-              ? await storedSteeringAcknowledgement(tx, steeringIdentity)
-              : null) ??
+            // myrmidon(UPSTREAM-13539): an interaction steer has no reserved comment identity;
+            // fall back to the active run + message id for the acknowledgement receipt.
+            (await storedSteeringAcknowledgement(tx, steeringIdentity ?? {
+              companyId: issue.companyId, runId: locked.activeRun.id, messageId: commentId,
+            })) ??
             (await steerNativeSession({
               runId: locked.activeRun.id,
               message: entry.comment.body,
