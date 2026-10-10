@@ -8,13 +8,17 @@
 //  * the flag is off — the legacy module itself is returned: one boolean check
 //    per call, no copy, no wrapper beyond the seam's own forwarding;
 //  * the flag is on and the connector serves the theme — the served symbols are
-//    spread over the legacy module once and cached, so a connector that serves
-//    only part of a theme cannot break the rest of it (fail-open);
+//    spread over the legacy module once and cached, each function wrapped by the
+//    fallback chain (fallback.ts, CH-CONNECTOR-G): a connector that serves only
+//    part of a theme cannot break the rest of it, and a served symbol that
+//    throws, rejects or runs out of time hands the call back to the legacy
+//    module instead of failing the bridge;
 //  * the flag is on and nothing serves the theme — the legacy module again.
 import {
   channelBridgeAdapterEnabled,
   CHANNEL_BRIDGE_ADAPTER_ENV,
 } from "./flag.js";
+import { withChannelBridgeFallback } from "./fallback.js";
 
 export { CHANNEL_BRIDGE_ADAPTER_ENV };
 
@@ -73,7 +77,7 @@ export function channelBridgeTheme<T extends object>(
   if (source === undefined) return legacy;
   const face = themeFaces.get(key);
   if (face !== undefined) return face as T;
-  const merged = { ...legacy, ...source } as T;
+  const merged = withChannelBridgeFallback(legacy, source as unknown as Partial<T>, key);
   themeFaces.set(key, merged);
   return merged;
 }
