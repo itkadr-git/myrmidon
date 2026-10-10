@@ -53,6 +53,22 @@ export interface RuntimeLimitsView {
   sources: Record<RunLimitKey, RunLimitsSource>;
   hostLoad: RuntimeLimitsHostLoad | null;
   queue: RuntimeLimitsQueueSnapshot | null;
+  /**
+   * myrmidon(1.6.5 C0-ui): the live memory snapshot — the host's available
+   * memory and the server container's cgroup usage. `null` when the server
+   * does not serve it yet or cannot read it.
+   */
+  memory?: RuntimeLimitsMemorySnapshot | null;
+}
+
+/**
+ * myrmidon(1.6.5 C0-ui): the memory snapshot the GET view ships — the host's
+ * memory and the server container's cgroup usage. Each side is null when the
+ * server cannot read it.
+ */
+export interface RuntimeLimitsMemorySnapshot {
+  host: { availableMb: number; totalMb: number } | null;
+  container: { limitMb: number; usedMb: number; freeMb: number } | null;
 }
 
 export const runtimeLimitsQueryKey = ["myrmidon", "runtime-limits"] as const;
@@ -100,6 +116,31 @@ function formatQueueSince(iso: string, now: Date): string {
   const waitedMs = now.getTime() - at.getTime();
   const waitedMin = Math.max(0, Math.floor(waitedMs / 60_000));
   return waitedMin >= 1 ? `${clock} UTC (${waitedMin} min ago)` : `${clock} UTC`;
+}
+
+/**
+ * myrmidon(1.6.5 C0-ui): one line for the load screen — the host's available
+ * memory against its total and the server container's cgroup usage against
+ * its limit, the numbers the admission's memory floors decide on. A side the
+ * server cannot read is simply not mentioned; `null` when the server sent no
+ * snapshot at all, so the panel shows nothing rather than a number it made up.
+ */
+export function describeMemorySnapshot(
+  memory: RuntimeLimitsMemorySnapshot | null | undefined,
+): string | null {
+  if (!memory || (!memory.host && !memory.container)) return null;
+  const parts: string[] = [];
+  if (memory.host) {
+    parts.push(
+      `Host memory: ${memory.host.availableMb.toLocaleString("en-US")} MB available of ${memory.host.totalMb.toLocaleString("en-US")} MB.`,
+    );
+  }
+  if (memory.container) {
+    parts.push(
+      `Server container: ${memory.container.usedMb.toLocaleString("en-US")} MB used of ${memory.container.limitMb.toLocaleString("en-US")} MB (${memory.container.freeMb.toLocaleString("en-US")} MB free).`,
+    );
+  }
+  return parts.join(" ");
 }
 
 /**

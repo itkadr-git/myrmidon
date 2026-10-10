@@ -179,12 +179,12 @@ async function stopAndDispose(driver: SetupTokenPtyDriver, log: (line: string) =
   try {
     driver.stop();
   } catch {
-    log("[paperclip] Setup-token login: the process stop step errored.");
+    log("[myrmidon] Setup-token login: the process stop step errored.");
   }
   try {
     await driver.dispose();
   } catch {
-    log("[paperclip] Setup-token login: the driver dispose step errored.");
+    log("[myrmidon] Setup-token login: the driver dispose step errored.");
   }
 }
 
@@ -204,6 +204,8 @@ export async function runSetupTokenLogin(
   const { onPrompt, provideCode, onCredential, timeoutMs, signal } = options;
   const command = options.command ?? CLAUDE_SETUP_TOKEN_COMMAND;
   const codeSubmitSettleMs = options.codeSubmitSettleMs ?? CODE_SUBMIT_SETTLE_MS;
+  // myrmidon(DB2): OPE-5805-b — fixed diagnostics below carry the [myrmidon] tag;
+  // the transport binding forwards them verbatim and its allowlist pins this tag.
   const log = options.log ?? (() => {});
 
   // A private controller that fans a timeout or a cancellation into the
@@ -251,7 +253,7 @@ export async function runSetupTokenLogin(
     try {
       code = await provideCode(controller.signal);
     } catch {
-      log("[paperclip] Setup-token login: the code input step errored.");
+      log("[myrmidon] Setup-token login: the code input step errored.");
       return;
     }
     if (controller.signal.aborted) return;
@@ -265,9 +267,9 @@ export async function runSetupTokenLogin(
       if (controller.signal.aborted) return;
       driver.write(CODE_SUBMISSION_TERMINATOR);
       codeSubmitted = true;
-      log("[paperclip] Setup-token login: sent the browser code to the prompt.");
+      log("[myrmidon] Setup-token login: sent the browser code to the prompt.");
     } catch {
-      log("[paperclip] Setup-token login: the code input step errored.");
+      log("[myrmidon] Setup-token login: the code input step errored.");
     }
   };
 
@@ -297,10 +299,10 @@ export async function runSetupTokenLogin(
     try {
       if (!onCredential) return false;
       await onCredential(bytes);
-      log("[paperclip] Setup-token login: delivered the credential to the sink.");
+      log("[myrmidon] Setup-token login: delivered the credential to the sink.");
       return true;
     } catch {
-      log("[paperclip] Setup-token login: the credential delivery step errored.");
+      log("[myrmidon] Setup-token login: the credential delivery step errored.");
       return false;
     } finally {
       bytes.fill(0);
@@ -317,7 +319,7 @@ export async function runSetupTokenLogin(
         promptSurfaced = true;
         buffer = "";
         onPrompt(prompt);
-        log("[paperclip] Setup-token login: surfaced the sign-in prompt.");
+        log("[myrmidon] Setup-token login: surfaced the sign-in prompt.");
         if (!submitStarted) {
           submitStarted = true;
           submitPromise = submitCode();
@@ -350,7 +352,7 @@ export async function runSetupTokenLogin(
 
   try {
     if (signal?.aborted) {
-      log("[paperclip] Setup-token login cancelled before start.");
+      log("[myrmidon] Setup-token login cancelled before start.");
       return result("cancelled", null);
     }
 
@@ -362,17 +364,17 @@ export async function runSetupTokenLogin(
     await submitPromise;
 
     if (raced.kind === "timeout") {
-      log("[paperclip] Setup-token login timed out; stopping the process.");
+      log("[myrmidon] Setup-token login timed out; stopping the process.");
       return result("timeout", null);
     }
     if (raced.kind === "cancelled") {
-      log("[paperclip] Setup-token login cancelled; stopping the process.");
+      log("[myrmidon] Setup-token login cancelled; stopping the process.");
       return result("cancelled", null);
     }
 
     const exitCode = raced.exitCode;
     if (exitCode !== 0) {
-      log("[paperclip] Setup-token login command ended with a non-zero exit code.");
+      log("[myrmidon] Setup-token login command ended with a non-zero exit code.");
       return result("failure", exitCode);
     }
 
@@ -382,12 +384,12 @@ export async function runSetupTokenLogin(
     // reports success only after the sink resolves.
     const delivered = await deliverCredential();
     if (!delivered) {
-      log("[paperclip] Setup-token login: the credential did not land; treating the run as a failure.");
+      log("[myrmidon] Setup-token login: the credential did not land; treating the run as a failure.");
       return result("failure", exitCode);
     }
     credentialDelivered = true;
 
-    log("[paperclip] Setup-token login command ended successfully.");
+    log("[myrmidon] Setup-token login command ended successfully.");
     return result("success", exitCode);
   } catch {
     // Convert any driver error to a fixed, non-secret error. The original error
