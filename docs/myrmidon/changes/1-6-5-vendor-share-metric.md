@@ -22,7 +22,7 @@ settings-section: Track 5 — operations
 - `scripts/myrmidon/release/vendor-share-notes.mjs` (new) builds and parses the
   line; its unit contract is `vendor-share-notes.myrmidon.test.mjs` (11 tests),
   and the publisher integration lives in `release-publish.test.mjs` (3 more, the
-  acceptance criteria of OPE-4152).
+  test suite).
 
 ## changelog-ru
 
@@ -42,7 +42,7 @@ settings-section: Track 5 — operations
 - `scripts/myrmidon/release/vendor-share-notes.mjs` (новый) строит и разбирает
   строку; юнит-контракт — `vendor-share-notes.myrmidon.test.mjs` (11 тестов),
   интеграция с публикатором — в `release-publish.test.mjs` (ещё 3, критерии
-  приёмки OPE-4152).
+  тестов).
 ## settings-en
 
 | `MYRMIDON_RELEASE_VENDOR_SHARE_STATE` | VENDOR-SHARE-METRIC | unset | Offline seam: a JSON share summary used instead of `vendor-share.mjs` when the release notes need the vendor-derived line (the same idea as `MYRMIDON_RELEASE_REGISTRY_STATE`); read by `scripts/myrmidon/release/vendor-share-notes.mjs`, never by the server | Unset — the share is computed by `vendor-share.mjs` against the checkout; the tests feed a file |
@@ -55,4 +55,4 @@ settings-section: Track 5 — operations
 
 ## divergence
 
-| VENDOR-SHARE-METRIC | Заметки релиза несут долю vendor-производных файлов и её дельту к прошлому релизу: `publish-github-release.sh` после сборки тела релиза дописывает раздел `## Vendor-derived files` строкой `Vendor-derived files: N of M (X %), Δ to <тег>: +d pp (+k files)`; числа даёт `vendor-share.mjs`, прошлая строка разбирается из заметок прошлого релиза, сбой подсчёта не ломает публикацию (`не посчитано` плюс предупреждение) | Файлы вендора не тронуты; наши: `scripts/myrmidon/release/publish-github-release.sh` (новый шаг 3b), + `scripts/myrmidon/release/vendor-share-notes.mjs` | Правило продукта: доля унаследованного кода измеряется каждым релизом, динамика видна в заметках (OPE-4152, 1.6.5) | `scripts/myrmidon/release/vendor-share-notes.myrmidon.test.mjs`; `scripts/myrmidon/release/release-publish.test.mjs` (раздел долей: строка с дельтой, «нет данных», «не посчитано») | Никогда, наше поведение. Снятие — убрать шаг 3b из публикатора, удалить модуль и тесты | (этот PR) |
+| VENDOR-SHARE-METRIC | Заметки релиза несут долю vendor-производных файлов и её дельту к прошлому релизу: `publish-github-release.sh` после сборки тела релиза дописывает раздел `## Vendor-derived files` строкой `Vendor-derived files: N of M (X %), Δ to <тег>: +d pp (+k files)`; числа даёт `vendor-share.mjs`, прошлая строка разбирается из заметок прошлого релиза, сбой подсчёта не ломает публикацию (`не посчитано` плюс предупреждение) | Файлы вендора не тронуты; наши: `scripts/myrmidon/release/publish-github-release.sh` (новый шаг 3b), + `scripts/myrmidon/release/vendor-share-notes.mjs` | Правило продукта: доля унаследованного кода измеряется каждым релизом, динамика видна в заметках (1.6.5) | `scripts/myrmidon/release/vendor-share-notes.myrmidon.test.mjs`; `scripts/myrmidon/release/release-publish.test.mjs` (раздел долей: строка с дельтой, «нет данных», «не посчитано») | Никогда, наше поведение. Снятие — убрать шаг 3b из публикатора, удалить модуль и тесты | (этот PR) |

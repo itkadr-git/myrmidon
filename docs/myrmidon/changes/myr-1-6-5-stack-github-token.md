@@ -4,7 +4,7 @@ settings-section: 1.3 — STACK-UPDATES stack registry (SUA, parts A and B)
 
 ## changelog-en
 
-### 1.6.5 STACK-UPDATES: optional GitHub token for the stack release check (OPE-5564)
+### 1.6.5 STACK-UPDATES: optional GitHub token for the stack release check
 
 - `MYRMIDON_STACK_GITHUB_TOKEN` (secret class): an optional read-only GitHub
   token (fine-grained PAT with public-repo read, no scopes needed) for the
@@ -21,7 +21,7 @@ settings-section: 1.3 — STACK-UPDATES stack registry (SUA, parts A and B)
 
 ## changelog-ru
 
-### 1.6.5 STACK-UPDATES: опциональный GitHub-токен для сверки релизов стека (OPE-5564)
+### 1.6.5 STACK-UPDATES: опциональный GitHub-токен для сверки релизов стека
 
 - `MYRMIDON_STACK_GITHUB_TOKEN` (класс secret): опциональный read-only токен
   GitHub (fine-grained PAT с доступом к публичным репозиториям, без scope)
