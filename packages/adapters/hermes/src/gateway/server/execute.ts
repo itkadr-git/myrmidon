@@ -29,6 +29,13 @@ import {
   STOP_GRACE_MS,
   STOP_REQUEST_TIMEOUT_MS,
 } from "../shared/constants.js";
+// myrmidon(N4-RUN-LIVENESS): event-based run liveness behind
+// MYRMIDON_RUN_LIVENESS_EVENTS (default off); see run-liveness-events.ts.
+import {
+  installRunLivenessWatch,
+  resolveRunLivenessEvents,
+  touchRunLiveness,
+} from "./run-liveness-events.js";
 import {
   allowsInsecureRemoteHttp,
   isRemotePlainHttp,
@@ -94,6 +101,11 @@ type ExecutionState = {
    * (message.delta only — see RUNTIME_PROGRESS_DELTA_THROTTLE_MS), or null
    * before the first one. */
   lastRuntimeProgressAt: number | null;
+  /** myrmidon(N4-RUN-LIVENESS): Date.now() of the newest gateway event
+   * (handleEvent stamps every SSE frame); the liveness watch reads it.
+   * Initialized at run creation, so a run whose stream never connects still
+   * stalls after its full timeoutSec. */
+  lastEventAtMs: number;
 };
 
 type TextRedactor = (value: string) => string;
@@ -766,6 +778,7 @@ function createExecutionState(runId: string): ExecutionState {
     deltaLineBuffer: "",
     toolPreviews: new Map(),
     lastRuntimeProgressAt: null,
+    lastEventAtMs: Date.now(),
   };
 }
 
@@ -1073,6 +1086,9 @@ async function handleEvent(input: {
   const record = asRecord(parsed);
   const eventName = eventNameFromData(parsed, frame.event);
   state.lastEventName = eventName;
+  // myrmidon(N4-RUN-LIVENESS): every gateway event is proof of life; the
+  // liveness watch (when enabled) reads this stamp instead of the wall clock.
+  touchRunLiveness(state);
 
   if (debugEvents) {
     // myrmidon(G4): raw event JSON is now opt-in (adapterConfig.debugEvents);
@@ -2145,10 +2161,30 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   }).catch(() => undefined);
 
   let timeoutTimer: ReturnType<typeof setTimeout> | null = null;
+  let disposeLivenessWatch: (() => void) | null = null;
+  // myrmidon(N4-RUN-LIVENESS): with MYRMIDON_RUN_LIVENESS_EVENTS (or the
+  // card's livenessEvents) on, the fixed wall-clock timer is replaced by a
+  // silence watch — a run that keeps emitting gateway events past its
+  // timeoutSec is alive and is left alone; only a run whose event stream has
+  // been silent for the whole budget is reported timed out. Off (default) —
+  // the vendor's fixed timer below, unchanged.
+  const livenessByEvents = timeoutMs > 0 && resolveRunLivenessEvents(ctx.config.livenessEvents);
+  let fireTimeout: () => void = () => undefined;
   const timeoutPromise = new Promise<"timeout">((resolve) => {
     if (timeoutMs <= 0) return;
+    if (livenessByEvents) {
+      fireTimeout = () => resolve("timeout");
+      return;
+    }
     timeoutTimer = setTimeout(() => resolve("timeout"), timeoutMs);
   });
+  if (livenessByEvents) {
+    disposeLivenessWatch = installRunLivenessWatch({
+      state,
+      timeoutMs,
+      onStalled: fireTimeout,
+    });
+  }
   // myrmidon(G4): operator cancellation — see gateway-parity-gap.md #22.
   const cancelPromise = new Promise<"cancelled">((resolve) => {
     if (!ctx.signal) return;
@@ -2161,6 +2197,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   const outcome = await Promise.race([state.terminalPromise, timeoutPromise, cancelPromise]);
   if (timeoutTimer) clearTimeout(timeoutTimer);
+  // myrmidon(N4-RUN-LIVENESS): the silence watch reschedules itself; without
+  // the disposer its next tick would outlive a finished/cancelled run.
+  disposeLivenessWatch?.();
   controller.abort();
   // myrmidon(G4): handleEvent's SSE terminal branch already flushes the
   // trailing partial delta line, but pollStatus's terminal branch (the
