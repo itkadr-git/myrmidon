@@ -34,3 +34,5 @@ export {
   type SeedKnowledgeOptions,
   type SeedKnowledgeResult,
 } from "./seed.js";
+// K-2 (part B): the REST surface — /api/myrmidon/companies/:companyId/knowledge/*.
+export { knowledgeRoutes, myrmidonKnowledgeRoutes, type KnowledgeRoutesDeps } from "./routes.js";
