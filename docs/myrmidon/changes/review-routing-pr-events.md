@@ -7,43 +7,22 @@ settings-section: REVIEW-ROUTING: automatic reviewer for tasks in review
 
 ### Review routing by pull-request events (REVIEW-ROUTING-PR-A)
 
-- The review-routing sweep now also watches pull requests, so a review task is
-  born the moment a PR turns green instead of waiting for the next manual
-  "work through the PR queue" round. The shared `reviewRouting` settings gain a
-  `prWatch` block (`enabled`, `repositories`, `maxOpenReviewsPerReviewer`,
-  `maxNewAssignmentsPerPass`, `pollIntervalSec`, `steward.{enabled, roles,
-  maxMergesPerSteward}`); every field absent or malformed falls back to its
-  default without blanking the sibling keys, the same rule the outer block
-  already follows.
-- A pass resolves each open PR's head through GitHub (combined commit status —
-  no statuses at all counts as green for repos without CI — plus the review
-  decision derived from `GET /pulls/{n}/reviews`: latest verdict per reviewer on
-  the current head; the REST PR object has no such field). The status read is
-  cached per (repo, number, head sha) for 300 s, reviews are read fresh. A green head
-  with no verdict on that exact head gets a review task assigned to the
-  least-loaded eligible reviewer (board load and open PR-review load both
-  capped, never the PR author's linked agent, never a non-invokable agent); an
-  APPROVED green head additionally gets a merge-steward task for the
-  least-loaded agent of the steward roles. Tasks are created through the normal
-  issue path (activity log, checkout locks, review-stage machinery), carry a
-  `pull_request` work product stamped with the head sha and the routing kind,
-  and wake their assignee the same way board routing does.
-- Pushing a new commit supersedes the open task of the same lane: it is
-  cancelled with a system comment naming the new head, and the new head gets
-  its own task on the same pass. Closed or merged PRs are left to PR-sync — the
-  lane never settles them. When GitHub is unreadable the lane is inert: an
-  unknown head creates nothing, closes nothing and counts no failure.
-- New attention cards when nobody is eligible: `no_reviewer` for a green PR
-  without a free reviewer, `no_steward` for an approved PR without a free
-  steward, each carrying the PR coordinates (repository, number, head) for the
-  settings screen and the attention desk. Activity actions
-  `issue.review_routing.pr_task_created` and
-  `issue.review_routing.steward_task_created` mark every created task, and the
-  sweep result gains `prScanned`, `prTasksCreated`, `stewardTasksCreated` and
-  `prSuperseded` counters.
-- `pollIntervalSec` throttles only the PR lane; the board-task lane keeps its
-  existing 60 s behavior, and a settings change applies on the next pass
-  without a restart.
+- The review-routing sweep now watches pull requests: a green PR head gets a
+  review task for the least-loaded eligible reviewer, and an APPROVED green
+  head also gets a merge-steward task. The shared `reviewRouting` settings
+  gain a `prWatch` block (enabled, repositories, per-reviewer and per-pass
+  caps, poll interval, steward roles); a missing or malformed field falls
+  back to its default without blanking its siblings.
+- A new commit supersedes the open task of the same lane: it is cancelled
+  with a system comment naming the new head, and the new head gets its own
+  task on the same pass. Closed or merged PRs are left to PR-sync. When
+  GitHub is unreadable the lane is inert: it creates, closes and counts
+  nothing.
+- New attention cards when nobody is eligible: `no_reviewer` and
+  `no_steward`, each carrying the PR coordinates. Tasks are created through
+  the normal issue path with a `pull_request` work product stamped with the
+  head sha; the sweep result gains `prScanned`, `prTasksCreated`,
+  `stewardTasksCreated` and `prSuperseded` counters.
 
 ## changelog-ru
 

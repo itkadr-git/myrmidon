@@ -6,41 +6,19 @@ settings-section: Track 5 — operations
 
 ### DB-TUNING: the PostgreSQL settings of the database audit are applied declaratively by the deploy (deploy.sh / rollback.sh)
 
-- `scripts/myrmidon/deploy/db-tuning.sql` and
-  `scripts/myrmidon/deploy/db-tuning-rollback.sql` — the declarative source of
-  the settings from the OPE-4270 audit lives in the repository: `jit=off`,
-  `work_mem=16MB`, `wal_compression=lz4`, `autovacuum_vacuum_scale_factor=0.05`
-  (with `0.02` for `heartbeat_runs`, `agent_wakeup_requests`,
-  `company_secrets`), `autovacuum_analyze_scale_factor=0.02` for `issues`, plus
-  `pg_reload_conf()`. The rollback file resets exactly those. No manual
-  `ALTER SYSTEM` on the live server anymore.
-- `scripts/myrmidon/deploy/lib.sh` — four new optional deploy settings
-  (`load_config`): `DB_TUNE_COMMAND` applies the tuning file (empty — the step
-  is skipped), `DB_TUNE_SHOW_COMMAND` prints a `SHOW` value for the parameter
-  name in `DB_TUNE_PARAM`, `DB_TUNE_EXPECTED` lists the `name=value` pairs to
-  verify, `DB_TUNE_ROLLBACK_COMMAND` returns the previous settings (empty — the
-  settings rollback is skipped with a warning). Before the first apply the
-  live values are recorded to `$STATE_DIR/db-tuning-previous`.
-- `scripts/myrmidon/deploy/deploy.sh` — a new step after the health check:
-  apply, then verify every expected pair through SHOW; a mismatch is
-  DEPLOY FAILED — maintenance stays on, the rollback command is printed, and
-  the half-applied settings are returned via `DB_TUNE_ROLLBACK_COMMAND`
-  (same failure shape as the health step). The dry-run plan describes the step
-  like the others.
-- `scripts/myrmidon/deploy/rollback.sh` — after the image and health steps:
-  apply `DB_TUNE_ROLLBACK_COMMAND` and verify the same parameters SHOW against
-  the recorded previous values; a mismatch fails the rollback loudly with
-  maintenance staying on.
-- `scripts/myrmidon/deploy/deploy.env.example` — the four settings documented
-  with production examples.
-- `docs/myrmidon/deploy.md` / `docs/myrmidon/deploy.ru.md` — a "DB-TUNING"
-  section: the audit values, where the declarative source lives, how the
-  deploy applies and verifies (SHOW), how the rollback returns, and the exact
-  `pg_stat_statements` query for the before/after top-query timing.
-- Tests: `scripts/myrmidon/deploy/deploy.test.mjs` — the step is skipped when
-  `DB_TUNE_COMMAND` is empty; a matching SHOW passes; a SHOW mismatch fails the
-  deploy, keeps maintenance on and rolls the settings back; `rollback.sh`
-  applies `DB_TUNE_ROLLBACK_COMMAND` and restores the previous values.
+- `db-tuning.sql` / `db-tuning-rollback.sql` — the OPE-4270 audit settings
+  live in the repository (`jit=off`, `work_mem=16MB`, `wal_compression=lz4`,
+  per-table autovacuum scale factors, `pg_reload_conf()`); the rollback file
+  resets exactly those. No manual `ALTER SYSTEM` on the live server anymore.
+- Four optional deploy settings (`DB_TUNE_COMMAND`, `DB_TUNE_PARAM`,
+  `DB_TUNE_EXPECTED`, `DB_TUNE_ROLLBACK_COMMAND`): deploy applies the tuning
+  after the health check and verifies every pair through `SHOW` — a mismatch
+  is DEPLOY FAILED with maintenance on, the rollback command printed and the
+  half-applied settings returned; `rollback.sh` reapplies the previous values
+  and verifies them the same way. Live values are recorded before the first
+  apply. Empty apply/rollback commands skip the step.
+- Covered by `deploy.test.mjs` (skip-on-empty, SHOW pass, mismatch fail +
+  restore) and documented in `docs/myrmidon/deploy.md(.ru)`.
 
 ## changelog-ru
 
