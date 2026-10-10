@@ -48,6 +48,7 @@ import { cardFleetHost } from "./fleetd-hosts.js"; // myrmidon(1.6.1-BOT-DISK-B)
 import { BOT_SCOPE_GIT_OBJECTS_DIR, BOT_SCOPE_STORE_DIR, packageCacheEnv, pnpmEnv } from "./template.js"; // myrmidon(1.6.1-BOT-DISK-B, BOT-DISK-F, 1.6.5-BOT-DISK-G)
 import type { CompiledProfile } from "./types.js";
 import type { RegulationDelivery } from "../wiki-cortex/delivery.js"; // myrmidon(1.6-WIKI)
+import type { KnowledgeIndexDelivery } from "../wiki-cortex/delivery.js"; // myrmidon(1.7 KNOWLEDGE-2.0 L-3)
 
 export const HERMES_GATEWAY_ADAPTER_TYPE = "hermes_gateway";
 
@@ -204,6 +205,28 @@ export interface BotProfilePorts {
     agent: BotProfileAgentRecord,
     context: { takenPaths: readonly string[] },
   ): Promise<RegulationDelivery>;
+  /**
+   * myrmidon(1.7 KNOWLEDGE-2.0 L-3): the `KNOWLEDGE_INDEX.md` file for the
+   * agent's package — the pointer list over the knowledge pages marked
+   * `deliver_to_castes` for the agent's caste (plus the rules reminder).
+   * Optional: without it a profile carries no knowledge index. The renderer
+   * is deterministic, so an unchanged knowledge tree keeps the profile hash.
+   */
+  loadKnowledgeIndex?(agent: BotProfileAgentRecord): Promise<KnowledgeIndexDelivery>;
+  /**
+   * myrmidon(1.7 KNOWLEDGE-2.0 L-3): records what the last compile delivered
+   * into the agent's package (knowledge_deliveries) — the current-state ledger
+   * behind the agent card's "Знания в пакете" block. Optional: without it the
+   * block stays empty.
+   */
+  recordKnowledgeDelivery?(input: {
+    agentId: string;
+    companyId: string;
+    caste: string | null;
+    file: string | null;
+    indexSlugs: string[];
+    rulesCount: number;
+  }): Promise<void>;
 }
 
 export interface BotProfileCompileOptions {
@@ -405,6 +428,14 @@ export function createBotProfileCompile(
       ? await ports.loadRegulations(agent, { takenPaths: instructions.files.map((file) => file.path) })
       : { files: [], warnings: [] };
 
+    // myrmidon(1.7 KNOWLEDGE-2.0 L-3, §3.7): the knowledge index rides the same
+    // workspace-files lane one slot after the regulations — the pointer list
+    // over the pages marked `deliver_to_castes` for the agent's caste, and the
+    // "no pages" note when only rules are delivered. Same determinism contract
+    // as the regulations file: the renderer is deterministic, an unchanged
+    // knowledge tree keeps the profile hash unchanged.
+    const knowledge = ports.loadKnowledgeIndex ? await ports.loadKnowledgeIndex(agent) : null;
+
     // The gateway URL is already built from MYRMIDON_BOT_BOARD_URL (the board as the container reaches it).
     // MYRMIDON_HERMES_RUNTIME_MCP_URL_BASE is the host-side base (usually loopback), so it must not
     // rewrite this URL: inside a container that would point the bot at its own loopback.
@@ -442,7 +473,8 @@ export function createBotProfileCompile(
         // (the adapter's `instructions` field, not scanned); see instructions-source.ts.
         instructions: "",
         // myrmidon(1.6-WIKI): the approved regulations of the agent's role, beside the bundle's files.
-        workspaceFiles: [...instructions.files, ...regulations.files],
+        // myrmidon(1.7 KNOWLEDGE-2.0 L-3): + the knowledge index file, when the agent's caste has delivered pages or rules.
+        workspaceFiles: [...instructions.files, ...regulations.files, ...(knowledge?.file ? [knowledge.file] : [])],
         llmApiKey,
         apiServerKey: apiServerKey.value,
         paperclipApiKey: paperclipApiKey.value,
@@ -462,6 +494,28 @@ export function createBotProfileCompile(
     );
 
     const result = compileHermesProfileDetailed(built.input);
+    // myrmidon(1.7 KNOWLEDGE-2.0 L-3, §3.7): record what the compiled package
+    // carried, so the agent card can show the "Знания в пакете" block and an
+    // operator can answer "what does this bot know?" from the board. Written
+    // on every compile (the table is the current-state ledger, not a log);
+    // keyed by the agent, carrying the applied revision ids the index
+    // pointed at. A recording failure must not fail the compile.
+    if (knowledge) {
+      try {
+        await ports.recordKnowledgeDelivery?.({
+          agentId,
+          companyId: agent.companyId,
+          caste: knowledge.caste,
+          file: knowledge.file?.path ?? null,
+          indexSlugs: knowledge.indexSlugs,
+          rulesCount: knowledge.rulesCount,
+        });
+      } catch (error) {
+        reportWarnings(agentId, botKey, [
+          `knowledge delivery: recording the delivered index failed (${error instanceof Error ? error.message : String(error)})`,
+        ]);
+      }
+    }
     await reportWarnings(agentId, botKey, [
       ...(ports.listMcpServers ? [] : [NO_BOARD_GATEWAY_WARNING]),
       ...gatewayWarnings,

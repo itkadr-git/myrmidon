@@ -50,6 +50,16 @@ export interface BotContainerStatus {
   gatewayConcurrencyNote: string | null;
   /** The gateway limits runs below the board's limit (unmanaged gateway, recently 429). */
   gatewayConcurrencyWarning: string | null;
+  /** myrmidon(1.7 KNOWLEDGE-2.0 L-3): what the last compile delivered into the bot's
+   *  package (the knowledge_deliveries ledger) — the «Знания в пакете» block data.
+   *  Absent on an older server. */
+  knowledgeDelivery?: {
+    caste: string | null;
+    file: string | null;
+    indexSlugs: string[];
+    rulesCount: number;
+    compiledAt: string;
+  } | null;
 }
 
 export type BotContainerApplyOutcome =

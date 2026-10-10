@@ -191,6 +191,9 @@ describe("myrmidon(W2b) bot container routes: status", () => {
       },
       gatewayConcurrencyNote: APPLIED_LIMIT_PENDING_NOTE,
       gatewayConcurrencyWarning: null,
+      // myrmidon(1.7 KNOWLEDGE-2.0 L-3): no delivery recorded for this agent (the test
+      // deps do not wire readKnowledgeDelivery) — the block stays empty.
+      knowledgeDelivery: null,
     });
     // No profile hashes leave the server.
     expect(JSON.stringify(res.body)).not.toContain("restartHash");

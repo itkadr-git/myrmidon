@@ -8,6 +8,15 @@
 
 export * from "./domain.js";
 export {
+  renderKnowledgeIndex,
+  selectIndexPages,
+  pageAppliesToCastes,
+  ANY_CASTE,
+  type KnowledgeIndexEntry,
+  type KnowledgeIndexInput,
+  type KnowledgeIndexPageInput,
+} from "./delivery-index.js";
+export {
   createKnowledgeService,
   type KnowledgeActor,
   type KnowledgeService,

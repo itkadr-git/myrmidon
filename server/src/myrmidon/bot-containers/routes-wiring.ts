@@ -12,7 +12,7 @@
 // of guessing.
 
 import { and, desc, eq, gte } from "drizzle-orm";
-import { agents, heartbeatRuns, type Db } from "@paperclipai/db";
+import { agents, heartbeatRuns, knowledgeDeliveries, type Db } from "@paperclipai/db";
 import { forbidden } from "../../errors.js";
 import { accessService } from "../../services/index.js";
 import { authorizationDeniedDetails } from "../../services/authorization.js";
@@ -103,6 +103,39 @@ export function myrmidonBotContainerRoutes(db: Db) {
         .limit(1)
         .then((rows) => rows[0] ?? null);
       return row ? row.createdAt.toISOString() : null;
+    },
+    /**
+     * myrmidon(1.7 KNOWLEDGE-2.0 L-3): the agent's knowledge delivery ledger row
+     * (knowledge_deliveries), written by the profile compiler on each compile.
+     * The ledger carries no caste/file/rules columns — they are folded into the
+     * bundle-hash string the compiler records; the block only needs the slugs,
+     * the rule count and the compile time, so the hash part is not echoed here.
+     */
+    readKnowledgeDelivery: async (agentId) => {
+      const [row] = await db
+        .select({
+          indexItemIds: knowledgeDeliveries.indexItemIds,
+          rulesRevisionIds: knowledgeDeliveries.rulesRevisionIds,
+          bundleHash: knowledgeDeliveries.bundleHash,
+          compiledAt: knowledgeDeliveries.compiledAt,
+        })
+        .from(knowledgeDeliveries)
+        .where(eq(knowledgeDeliveries.agentId, agentId))
+        .limit(1);
+      if (!row) return null;
+      // The bundle hash is "file|caste|slugs|rulesCount" (profile-ports.ts); the
+      // slugs/rulesCount are re-derived from their own columns, so the parse is
+      // limited to the caste part (field 2), tolerating an older format.
+      const parts = row.bundleHash.split("|");
+      const caste = parts.length === 4 && parts[1] !== "-" ? parts[1] : null;
+      const rulesCount = row.rulesRevisionIds.length;
+      return {
+        caste,
+        file: parts[0] ?? null,
+        indexSlugs: row.indexItemIds,
+        rulesCount,
+        compiledAt: row.compiledAt.toISOString(),
+      };
     },
     assertCanUpdateAgent: async (req, agent) => {
       access ??= accessService(db);

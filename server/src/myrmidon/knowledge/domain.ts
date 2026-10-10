@@ -270,6 +270,11 @@ export interface KnowledgeTreePage {
   status: KnowledgeItemStatus;
   approvalRequired: boolean;
   approverKind: string | null;
+  /**
+   * myrmidon(1.7 KNOWLEDGE-2.0 L-3, §3.7): castes the page is delivered to in
+   * `KNOWLEDGE_INDEX.md` (`["*"]` = every caste; empty/null = not delivered).
+   */
+  deliverToCastes: string[];
   content: string;
 }
 
@@ -308,6 +313,7 @@ export function serializeKnowledgeTree(doc: KnowledgeTreeDoc): Buffer {
       `status: ${page.status}`,
       `approval_required: ${page.approvalRequired ? "true" : "false"}`,
       `approver_kind: ${page.approverKind ?? ""}`,
+      `deliver_to_castes: ${(page.deliverToCastes ?? []).join(",")}`,
       `content_bytes: ${Buffer.byteLength(page.content, "utf8")}`,
       PAGE_META_END,
     ].join("\n");
@@ -378,6 +384,10 @@ export function parseKnowledgeTree(buf: Buffer): KnowledgeTreeDoc {
       status: meta.status,
       approvalRequired: meta.approval_required === "true",
       approverKind: meta.approver_kind ? meta.approver_kind : null,
+      deliverToCastes:
+        meta.deliver_to_castes && meta.deliver_to_castes.length > 0
+          ? meta.deliver_to_castes.split(",")
+          : [],
       content,
     });
   }
