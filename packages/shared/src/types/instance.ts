@@ -400,6 +400,14 @@ export interface InstanceGeneralSettings {
    * attention-feed cache; 0 disables it, absent means the default (45).
    */
   attentionFeedCacheTtlSeconds?: number;
+  /**
+   * myrmidon(1.6.3 PLUGIN-ENTITLEMENT A): the ed25519 verification public key
+   * (PEM) for plugin entitlement tokens, changed from the instance settings
+   * page. Absent means "no verification key" — no entitlement token can
+   * verify, so every gated plugin stays unactivated. Kept in sync with the
+   * validator of the same field (packages/shared/src/validators/instance.ts).
+   */
+  pluginEntitlementPublicKey?: string;
 }
 
 

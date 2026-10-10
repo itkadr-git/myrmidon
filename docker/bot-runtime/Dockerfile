@@ -213,13 +213,13 @@ RUN /opt/hermes-src/.venv/bin/python -c 'import aiohttp, mcp, hindsight_client'
 # gateway.platforms.api_server_runs, tools.environments.local and tools.github_broker_context: 09;
 # tools.run_workspace (also api_server_runs/local): 10; tools.github_launcher_context: 11;
 # agent.session_persistence,
-# api_server_runs: 12)
+# api_server_runs: 12; agent.redact: 13; tools.delegation_live_log: 14)
 # plus the vendored memory provider (a relative-import package, so a broken plugin tree
 # fails the build here, not at the first bot start). `git apply` only proves the hunks
 # land; a patch that applies cleanly but breaks a module's imports or top-level code
 # would otherwise surface only when a bot starts. No bytecode is written, so the sealed
 # tree stays as the build left it.
-RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python -c 'import hermes_state, tools.environments.base, tools.environments.base_session_env, gateway.run, gateway.platforms.api_server_runs, tools.environments.local, tools.github_broker_context, tools.run_workspace, tools.github_launcher_context, agent.session_persistence'
+RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python -c 'import hermes_state, tools.environments.base, tools.environments.base_session_env, gateway.run, gateway.platforms.api_server_runs, tools.environments.local, tools.github_broker_context, tools.run_workspace, tools.github_launcher_context, agent.session_persistence, agent.redact, tools.delegation_live_log'
 
 # myrmidon(G1): behaviour check for patch 06 — the state-DB generation probe must not
 # walk /proc/self/fd once per write while the gateway holds hundreds of descriptors
@@ -256,6 +256,12 @@ RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/
 # segment, refuses path escapes and malformed fields, clears the segment on an empty
 # list, and verify re-reads the disk.
 RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/run_skills.py /opt/hermes-src
+# myrmidon(G1): behaviour regression for 14-redact-pcp-patterns.patch and
+# 15-delegation-live-log-mode-0600.patch (LIVE-TRANSCRIPT-PCP): the pcp_ board-key
+# family must be masked by the prefix pass (no leak into a delegation live transcript),
+# the transcript file must be created 0o600 from the first byte, and control prose must
+# not mask accidentally (the pass, not the file, is what closes the leak).
+RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/delegation_live_log_redact.py /opt/hermes-src
 # myrmidon(G1): names imported inside functions of the patched modules resolve too
 # (the import smoke above runs only top-level imports; a missing lazily imported name
 # broke every run of the 1.6.0 dev image while the build passed).
