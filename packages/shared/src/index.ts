@@ -2888,6 +2888,10 @@ export * from "./myrmidon-agent-memory.js";
 // the model-family table, the cross-family role config, the pure debate
 // engine (roles, rounds, token ceiling, cost) and the result-document shape.
 export * from "./myrmidon-debate.js";
+// myrmidon(1.7-DEBATE-ASYM-B): the per-caste debate configuration — the stored
+// override entry (enabled, role models, prompts, rounds, token ceiling), the
+// resolution over the instance configuration and the run gate.
+export * from "./myrmidon-debate-castes.js";
 
 // myrmidon(PLUGIN-ENTITLEMENT C): plugin entitlement keys contract.
 export * from "./myrmidon-plugin-entitlement.js";
