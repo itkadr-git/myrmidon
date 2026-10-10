@@ -329,6 +329,15 @@ export function knowledgeMcpRoutes(deps: KnowledgeMcpDeps) {
         return { backlinks: await mod.backlinks(String(args.idOrSlug ?? "")) };
       }
       case "knowledge_propose": {
+        // §3.4: a proposal without sources is refused before the Zod parse —
+        // the schema pins sources min(1), and a raw ZodError would surface as
+        // an unnamed validation failure instead of the contract reason code.
+        if (!Array.isArray(args.sources) || args.sources.length === 0) {
+          throw unprocessable("A knowledge proposal must name at least one source.", {
+            code: "knowledge_propose_requires_sources",
+            field: "sources",
+          });
+        }
         const input = knowledgeProposeSchema.parse({ targetSlug: args.targetSlug, title: args.title, body: args.body, sources: args.sources });
         assertCleanWrite(input.body, "body");
         return {
@@ -342,6 +351,12 @@ export function knowledgeMcpRoutes(deps: KnowledgeMcpDeps) {
         };
       }
       case "rule_propose": {
+        if (!Array.isArray(args.sources) || args.sources.length === 0) {
+          throw unprocessable("A rule proposal must name at least one source.", {
+            code: "knowledge_propose_requires_sources",
+            field: "sources",
+          });
+        }
         const input = knowledgeProposeSchema.parse({ targetSlug: args.targetSlug, title: args.title, body: args.body, sources: args.sources });
         assertCleanWrite(input.body, "body");
         return {

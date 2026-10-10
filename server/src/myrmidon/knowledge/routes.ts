@@ -4,18 +4,18 @@
 //
 //   GET    /api/myrmidon/companies/:companyId/knowledge/search
 //   GET    /api/myrmidon/companies/:companyId/knowledge/items
-//   GET    /api/myrmidon/companies/:companyId/knowledge/items/:idOrSlug
-//   GET    /api/myrmidon/companies/:companyId/knowledge/items/:idOrSlug/revisions
-//   GET    /api/myrmidon/companies/:companyId/knowledge/items/:idOrSlug/revisions/:revisionId
-//   GET    /api/myrmidon/companies/:companyId/knowledge/items/:idOrSlug/backlinks
+//   GET    /api/myrmidon/companies/:companyId/knowledge/items/*idOrSlug
+//   GET    /api/myrmidon/companies/:companyId/knowledge/items/*idOrSlug/revisions
+//   GET    /api/myrmidon/companies/:companyId/knowledge/items/*idOrSlug/revisions/:revisionId
+//   GET    /api/myrmidon/companies/:companyId/knowledge/items/*idOrSlug/backlinks
 //   POST   /api/myrmidon/companies/:companyId/knowledge/items
-//   POST   /api/myrmidon/companies/:companyId/knowledge/items/:idOrSlug/draft
-//   POST   /api/myrmidon/companies/:companyId/knowledge/items/:idOrSlug/submit
-//   POST   /api/myrmidon/companies/:companyId/knowledge/items/:idOrSlug/publish
-//   POST   /api/myrmidon/companies/:companyId/knowledge/items/:idOrSlug/approve
-//   POST   /api/myrmidon/companies/:companyId/knowledge/items/:idOrSlug/rollback
-//   POST   /api/myrmidon/companies/:companyId/knowledge/items/:idOrSlug/archive
-//   POST   /api/myrmidon/companies/:companyId/knowledge/items/:idOrSlug/supersede
+//   POST   /api/myrmidon/companies/:companyId/knowledge/items/*idOrSlug/draft
+//   POST   /api/myrmidon/companies/:companyId/knowledge/items/*idOrSlug/submit
+//   POST   /api/myrmidon/companies/:companyId/knowledge/items/*idOrSlug/publish
+//   POST   /api/myrmidon/companies/:companyId/knowledge/items/*idOrSlug/approve
+//   POST   /api/myrmidon/companies/:companyId/knowledge/items/*idOrSlug/rollback
+//   POST   /api/myrmidon/companies/:companyId/knowledge/items/*idOrSlug/archive
+//   POST   /api/myrmidon/companies/:companyId/knowledge/items/*idOrSlug/supersede
 //   POST   /api/myrmidon/companies/:companyId/knowledge/propose
 //   GET    /api/myrmidon/companies/:companyId/knowledge/suggestions
 //   POST   /api/myrmidon/companies/:companyId/knowledge/suggestions/:id/accept
@@ -270,20 +270,7 @@ export function knowledgeRoutes(deps: KnowledgeRoutesDeps) {
     }
   });
 
-  router.get("/myrmidon/companies/:companyId/knowledge/items/:idOrSlug", async (req: Request, res: Response) => {
-    const companyId = companyOf(req);
-    await assertKnowledgeToolAccess(req, "knowledge_read");
-    const mod = deps.moduleFor(companyId);
-    try {
-      const item = await mod.get(req.params.idOrSlug as string);
-      if (!item) throw notFound(`No knowledge item ${JSON.stringify(req.params.idOrSlug)} in this company.`);
-      res.json({ item });
-    } catch (err) {
-      throw toHttpError(err);
-    }
-  });
-
-  router.get("/myrmidon/companies/:companyId/knowledge/items/:idOrSlug/revisions", async (req: Request, res: Response) => {
+  router.get("/myrmidon/companies/:companyId/knowledge/items/*idOrSlug/revisions", async (req: Request, res: Response) => {
     const companyId = companyOf(req);
     await assertKnowledgeToolAccess(req, "knowledge_read");
     const mod = deps.moduleFor(companyId);
@@ -295,7 +282,7 @@ export function knowledgeRoutes(deps: KnowledgeRoutesDeps) {
   });
 
   router.get(
-    "/myrmidon/companies/:companyId/knowledge/items/:idOrSlug/revisions/:revisionId",
+    "/myrmidon/companies/:companyId/knowledge/items/*idOrSlug/revisions/:revisionId",
     async (req: Request, res: Response) => {
       const companyId = companyOf(req);
       await assertKnowledgeToolAccess(req, "knowledge_read");
@@ -308,12 +295,28 @@ export function knowledgeRoutes(deps: KnowledgeRoutesDeps) {
     },
   );
 
-  router.get("/myrmidon/companies/:companyId/knowledge/items/:idOrSlug/backlinks", async (req: Request, res: Response) => {
+  router.get("/myrmidon/companies/:companyId/knowledge/items/*idOrSlug/backlinks", async (req: Request, res: Response) => {
     const companyId = companyOf(req);
     await assertKnowledgeToolAccess(req, "knowledge_backlinks");
     const mod = deps.moduleFor(companyId);
     try {
       res.json({ backlinks: await mod.backlinks(req.params.idOrSlug as string) });
+    } catch (err) {
+      throw toHttpError(err);
+    }
+  });
+
+  // NOTE: the bare item route is registered after the suffixed GET routes:
+  // `*idOrSlug` is greedy (the slug itself carries `/`, e.g. glossary/term),
+  // so registered earlier it would shadow `/revisions` and `/backlinks`.
+  router.get("/myrmidon/companies/:companyId/knowledge/items/*idOrSlug", async (req: Request, res: Response) => {
+    const companyId = companyOf(req);
+    await assertKnowledgeToolAccess(req, "knowledge_read");
+    const mod = deps.moduleFor(companyId);
+    try {
+      const item = await mod.get(req.params.idOrSlug as string);
+      if (!item) throw notFound(`No knowledge item ${JSON.stringify(req.params.idOrSlug)} in this company.`);
+      res.json({ item });
     } catch (err) {
       throw toHttpError(err);
     }
@@ -382,7 +385,7 @@ export function knowledgeRoutes(deps: KnowledgeRoutesDeps) {
   );
 
   router.post(
-    "/myrmidon/companies/:companyId/knowledge/items/:idOrSlug/draft",
+    "/myrmidon/companies/:companyId/knowledge/items/*idOrSlug/draft",
     validate(knowledgeDraftSchema),
     async (req: Request, res: Response) => {
       const companyId = companyOf(req);
@@ -407,7 +410,7 @@ export function knowledgeRoutes(deps: KnowledgeRoutesDeps) {
     },
   );
 
-  router.post("/myrmidon/companies/:companyId/knowledge/items/:idOrSlug/submit", async (req: Request, res: Response) => {
+  router.post("/myrmidon/companies/:companyId/knowledge/items/*idOrSlug/submit", async (req: Request, res: Response) => {
     const companyId = companyOf(req);
     await assertKnowledgeToolAccess(req, "knowledge_write_draft");
     const mod = deps.moduleFor(companyId);
@@ -421,7 +424,7 @@ export function knowledgeRoutes(deps: KnowledgeRoutesDeps) {
   });
 
   router.post(
-    "/myrmidon/companies/:companyId/knowledge/items/:idOrSlug/publish",
+    "/myrmidon/companies/:companyId/knowledge/items/*idOrSlug/publish",
     validate(knowledgePublishSchema),
     async (req: Request, res: Response) => {
       const companyId = companyOf(req);
@@ -440,7 +443,7 @@ export function knowledgeRoutes(deps: KnowledgeRoutesDeps) {
   );
 
   router.post(
-    "/myrmidon/companies/:companyId/knowledge/items/:idOrSlug/approve",
+    "/myrmidon/companies/:companyId/knowledge/items/*idOrSlug/approve",
     validate(knowledgeApproveSchema),
     async (req: Request, res: Response) => {
       const companyId = companyOf(req);
@@ -473,7 +476,7 @@ export function knowledgeRoutes(deps: KnowledgeRoutesDeps) {
   );
 
   router.post(
-    "/myrmidon/companies/:companyId/knowledge/items/:idOrSlug/rollback",
+    "/myrmidon/companies/:companyId/knowledge/items/*idOrSlug/rollback",
     validate(knowledgeRollbackSchema),
     async (req: Request, res: Response) => {
       const companyId = companyOf(req);
@@ -496,7 +499,7 @@ export function knowledgeRoutes(deps: KnowledgeRoutesDeps) {
     },
   );
 
-  router.post("/myrmidon/companies/:companyId/knowledge/items/:idOrSlug/archive", async (req: Request, res: Response) => {
+  router.post("/myrmidon/companies/:companyId/knowledge/items/*idOrSlug/archive", async (req: Request, res: Response) => {
     const companyId = companyOf(req);
     await assertKnowledgeToolAccess(req, "knowledge_publish");
     const mod = deps.moduleFor(companyId);
@@ -509,7 +512,7 @@ export function knowledgeRoutes(deps: KnowledgeRoutesDeps) {
   });
 
   router.post(
-    "/myrmidon/companies/:companyId/knowledge/items/:idOrSlug/supersede",
+    "/myrmidon/companies/:companyId/knowledge/items/*idOrSlug/supersede",
     validate(knowledgeSupersedeSchema),
     async (req: Request, res: Response) => {
       const companyId = companyOf(req);
@@ -532,30 +535,40 @@ export function knowledgeRoutes(deps: KnowledgeRoutesDeps) {
 
   router.post(
     "/myrmidon/companies/:companyId/knowledge/propose",
-    validate(knowledgeProposeSchema),
     async (req: Request, res: Response) => {
       const companyId = companyOf(req);
       await assertKnowledgeToolAccess(req, "knowledge_propose");
       // §3.4: a proposal without sources is refused 422 before the store sees
-      // it — the criterion «knowledge_propose без источников → 422».
+      // it — the criterion «knowledge_propose без источников → 422». This
+      // check runs before the Zod parse on purpose: the shared schema pins
+      // sources min(1), and the generic ZodError branch of the error handler
+      // answers 400, which would bury the contract-status the API promises.
       if (!Array.isArray(req.body?.sources) || req.body.sources.length === 0) {
         throw unprocessable("A knowledge proposal must name at least one source.", {
           code: "knowledge_propose_requires_sources",
           field: "sources",
         });
       }
-      assertCleanWrite(req.body.body, "body");
+      assertCleanWrite(String(req.body?.body ?? ""), "body");
+      const parsed = knowledgeProposeSchema.safeParse(req.body ?? {});
+      if (!parsed.success) {
+        throw unprocessable("Invalid knowledge proposal payload.", {
+          code: "knowledge_propose_invalid",
+          issues: parsed.error.issues.map((issue) => ({ path: issue.path.join("."), message: issue.message })),
+        });
+      }
+      const body = parsed.data;
       const mod = deps.moduleFor(companyId);
       const actor = actorOf(req);
       try {
         const suggestion = await mod.suggest(
           { actorType: actor.actorType, actorId: actor.actorId },
           {
-            body: req.body.body,
-            rationale: req.body.title ?? null,
-            targetSlug: req.body.targetSlug ?? null,
-            sourceKind: req.body.sources[0]!.kind,
-            sourceRef: req.body.sources[0]!.ref,
+            body: body.body,
+            rationale: body.title ?? null,
+            targetSlug: body.targetSlug ?? null,
+            sourceKind: body.sources[0]!.kind,
+            sourceRef: body.sources[0]!.ref,
           },
         );
         res.status(201).json({ suggestion });
