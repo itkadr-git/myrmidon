@@ -171,6 +171,25 @@ describe("install.sh", () => {
     const urls = fs.readFileSync(path.join(sb.dir, "curl.log"), "utf8");
     assert.ok(urls.includes("/releases/latest/download/release-components.json"), urls);
     assert.ok(!urls.includes("api.github.com"), `no anonymous API call expected, got: ${urls}`);
+    // The board refuses every Host header it was not told about, the machine's
+    // own address included, so the allow list travels with the install.
+    assert.match(env, /MYRMIDON_ALLOWED_HOSTNAMES=\S+/);
+    assert.match(compose, /PAPERCLIP_ALLOWED_HOSTNAMES: "\$\{MYRMIDON_ALLOWED_HOSTNAMES:?/);
+  });
+
+  it("opens the board by IP and names that address in the allow list", () => {
+    const sb = sandbox();
+    // The address the installer prints has to reach the board on the first
+    // click: a bare hostname only resolves for whoever has DNS for it.
+    const r = run(sb, [], { MYRMIDON_ALLOWED_HOSTS: "board.test,10.20.30.40" });
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(envFile(sb), /MYRMIDON_ALLOWED_HOSTNAMES=board\.test,10\.20\.30\.40/);
+    assert.match(envFile(sb), /MYRMIDON_PUBLIC_URL=http:\/\/10\.20\.30\.40:3100/);
+    assert.match(r.stdout, /Address:\s+http:\/\/10\.20\.30\.40:3100/);
+    assert.match(
+      fs.readFileSync(path.join(sb.opt, "compose.yml"), "utf8"),
+      /PAPERCLIP_ALLOWED_HOSTNAMES: "\$\{MYRMIDON_ALLOWED_HOSTNAMES:?/,
+    );
   });
 
   it("refuses a fresh database that reports another vector version", () => {

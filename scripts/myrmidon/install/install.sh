@@ -387,11 +387,38 @@ check_foreign() {
   die "$DIR is not empty and carries no .myrmidon-install stamp: this installer will not touch a directory it did not create"
 }
 
+# The board answers 403 to every Host header it was not told about — including
+# the machine's own IP address ("private-hostname guard"). Name the addresses
+# this host answers on, so the address printed at the end actually opens instead
+# of the operator meeting a refusal on the first click.
+allowed_hosts() {
+  local list="${MYRMIDON_ALLOWED_HOSTS:-}"
+  if [[ -z "$list" ]]; then
+    list="$(hostname -f 2>/dev/null || true),$(hostname 2>/dev/null || true)"
+    list="$list,$(hostname -I 2>/dev/null | tr ' ' ',' || true)"
+    if command -v ip >/dev/null 2>&1; then
+      list="$list,$(ip -4 -o addr show scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | tr '\n' ',' || true)"
+    fi
+  fi
+  printf '%s\n' "$list" | tr ',' '\n' | awk '{ gsub(/^[ \t]+|[ \t]+$/, ""); if (length($0) && !seen[$0]++) { printf "%s%s", (n++ ? "," : ""), $0 } }'
+}
+
+# The address an operator opens the board at when none was given: the first IPv4
+# of this host. A bare hostname only resolves for whoever has DNS for it, while
+# the IP works from any machine on the network.
+default_public_url() {
+  local ip
+  ip="$(allowed_hosts | tr ',' '\n' | grep -E '^([0-9]{1,3}\.){3}[0-9]{1,3}$' | head -n 1 || true)"
+  [[ -n "$ip" ]] || ip="$(hostname -f 2>/dev/null || hostname)"
+  printf 'http://%s:%s' "$ip" "$PORT"
+}
+
 write_env() {
   [[ -n "${POSTGRES_PASSWORD:-}" ]] || POSTGRES_PASSWORD="$(rand_hex 24)"
   [[ -n "${BETTER_AUTH_SECRET:-}" ]] || BETTER_AUTH_SECRET="$(rand_hex 32)"
   [[ -n "${PAPERCLIP_TOOL_ACTION_SIGNING_SECRET:-}" ]] || PAPERCLIP_TOOL_ACTION_SIGNING_SECRET="$(rand_hex 32)"
-  [[ -n "$PUBLIC_URL" ]] || PUBLIC_URL="http://$(hostname -f 2>/dev/null || hostname):$PORT"
+  [[ -n "$PUBLIC_URL" ]] || PUBLIC_URL="$(default_public_url)"
+  ALLOWED_HOSTNAMES="${ALLOWED_HOSTNAMES:-$(allowed_hosts)}"
 
   umask 077
   cat > "$DIR/deploy.env" <<ENV
@@ -403,6 +430,7 @@ MYRMIDON_RELEASE_TAG=$RELEASE_TAG
 MYRMIDON_INSTALL_DIR=$DIR
 MYRMIDON_PORT=$PORT
 MYRMIDON_PUBLIC_URL=$PUBLIC_URL
+MYRMIDON_ALLOWED_HOSTNAMES=$ALLOWED_HOSTNAMES
 MYRMIDON_BOARD_DIGEST=$BOARD_DIGEST
 MYRMIDON_DOCKERGATE_DIGEST=$DOCKERGATE_DIGEST
 MYRMIDON_BOT_DIGEST=$BOT_DIGEST
@@ -461,6 +489,7 @@ services:
       PAPERCLIP_DEPLOYMENT_MODE: "authenticated"
       PAPERCLIP_DEPLOYMENT_EXPOSURE: "private"
       PAPERCLIP_PUBLIC_URL: "${MYRMIDON_PUBLIC_URL}"
+      PAPERCLIP_ALLOWED_HOSTNAMES: "${MYRMIDON_ALLOWED_HOSTNAMES:?MYRMIDON_ALLOWED_HOSTNAMES must be set}"
       PAPERCLIP_TOOL_ACTION_SIGNING_SECRET: "${PAPERCLIP_TOOL_ACTION_SIGNING_SECRET:?PAPERCLIP_TOOL_ACTION_SIGNING_SECRET must be set}"
       BETTER_AUTH_SECRET: "${BETTER_AUTH_SECRET:?BETTER_AUTH_SECRET must be set}"
       DATABASE_URL: "postgres://${POSTGRES_USER:-paperclip}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-paperclip}"
@@ -791,7 +820,7 @@ interactive_questions() {
       "Интерактивный режим: Enter оставляет значение в скобках."
   DIR="$(ask "$( [[ "$LANG_CODE" == ru ]] && echo 'Каталог установки' || echo 'Install directory' )" "$DIR")"
   PORT="$(ask "$( [[ "$LANG_CODE" == ru ]] && echo 'Порт доски' || echo 'Board port' )" "$PORT")"
-  PUBLIC_URL="$(ask "$( [[ "$LANG_CODE" == ru ]] && echo 'Адрес, по которому открывают доску' || echo 'Address the board is opened at' )" "${PUBLIC_URL:-http://$(hostname -f 2>/dev/null || hostname):$PORT}")"
+  PUBLIC_URL="$(ask "$( [[ "$LANG_CODE" == ru ]] && echo 'Адрес, по которому открывают доску' || echo 'Address the board is opened at' )" "${PUBLIC_URL:-$(default_public_url)}")"
   [[ "$DIR" == /* ]] || die "--dir must be an absolute path"
   [[ "$PORT" =~ ^[0-9]+$ ]] || die "--port must be a number"
 }
