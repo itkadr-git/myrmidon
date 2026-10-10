@@ -124,7 +124,9 @@ import {
   queueStallSignalTitle,
   queueStallSignalWhyNow,
   type QueueStallSignal,
-} from "../myrmidon/stuck-queued/attention.js";// myrmidon(REPLAY-BLOCK-TRIAGE): the locked-task card with a named responsible.
+} from "../myrmidon/stuck-queued/attention.js";
+
+// myrmidon(REPLAY-BLOCK-TRIAGE): the locked-task card with a named responsible.
 import {
   listReplayLockedCards,
   replayLockedDedupKey,
@@ -132,7 +134,9 @@ import {
   replayLockedResponsible,
   replayLockedSeverity,
   replayLockedWhyNow,
-} from "../myrmidon/replay-blocked/attention.js";// myrmidon(REVIEW-ROUTING): the cards of a task in review with no reviewer, or
+} from "../myrmidon/replay-blocked/attention.js";
+
+// myrmidon(REVIEW-ROUTING): the cards of a task in review with no reviewer, or
 // a review without a verdict for too long.
 import {
   readReviewRoutingSignals,
@@ -225,8 +229,10 @@ const ATTENTION_SOURCE_KINDS: AttentionSourceKind[] = [
   // myrmidon(1.6.5-F21-B): owner decision cards waiting on the owner.
   "owner_pending_card",
   // myrmidon(1.6.6 OPE-7198): banned or exhausted Codex / ChatGPT subscription accounts.
-  "codex_pool_alert",  // myrmidon(REPLAY-BLOCK-TRIAGE): a task locked by a settled replay hold.
-  "replay_locked",];
+  "codex_pool_alert",
+  // myrmidon(REPLAY-BLOCK-TRIAGE): a task locked by a settled replay hold.
+  "replay_locked",
+];
 
 const SEVERITY_RANK: Record<AttentionSeverity, number> = {
   critical: 0,
@@ -296,10 +302,12 @@ const SOURCE_RANK: Record<AttentionSourceKind, number> = {
   secret_off_run_reads: 18,
   secret_off_run_grant_expiring: 18,
   // myrmidon(1.6.6 OPE-7198): pool account alerts are high/medium operational notices.
-  codex_pool_alert: 4,  // myrmidon(REPLAY-BLOCK-TRIAGE): the same locked-task family, one rank below:
-  // an execution_hold card has its own Confirm verb; the replay_locked card only
-  // routes to a human owner.
-  replay_locked: 2,};
+  codex_pool_alert: 4,
+  // myrmidon(REPLAY-BLOCK-TRIAGE): the same locked-task family, one rank below.
+  // An execution_hold card has its own Confirm verb; replay_locked only routes
+  // to a human owner.
+  replay_locked: 2,
+};
 
 const PENDING_INTERACTION_STATUSES = ["pending"] as const;
 const OPEN_RECOVERY_STATUSES = ["active", "escalated"] as const;
@@ -3105,7 +3113,12 @@ async function buildAttentionFeedSnapshot(
           relatedIssue: null,
           detail: {
             kind: "generic",
-            summaryExcerpt: excerpt(ownerCardsTitle),      // myrmidon(REPLAY-BLOCK-TRIAGE): one card per task locked by a settled
+            summaryExcerpt: excerpt(ownerCardsTitle),
+          },
+        }));
+      }
+
+      // myrmidon(REPLAY-BLOCK-TRIAGE): one card per task locked by a settled
       // "do not replay" hold, naming the responsible (the assignee's manager,
       // else the board operator) and a 24h triage deadline. Computed live from
       // the recovery rows, so it disappears on Restore/Done/Cancel or when the
@@ -3154,11 +3167,11 @@ async function buildAttentionFeedSnapshot(
           relatedIssue: null,
           detail: {
             kind: "generic",
-            summaryExcerpt: excerpt(replayLockedDetail(card)),            images: [],
+            summaryExcerpt: excerpt(replayLockedDetail(card)),
+            images: [],
           },
         }));
       }
-
 
       // myrmidon(1.6.5 F-09): a queued run older than the stall threshold
       // without a waitReason — the sweep should have explained it, so the
