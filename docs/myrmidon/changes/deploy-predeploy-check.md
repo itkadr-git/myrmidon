@@ -1,39 +1,21 @@
 ## changelog-en
+### The board image is proven on a copy of the production database before the window; rollback without a live board (PREDEPLOY-DB-CHECK)
 
-### PREDEPLOY-DB-CHECK: the board image is proven on a copy of the production database before the window; the components roll out before the board; rollback without a live board
-
-- `scripts/myrmidon/deploy/predeploy-board-check.sh` (new) — before the
-  maintenance window the predeploy dump is restored into a throwaway Postgres
-  and the new board image is started next to the NEW dockergate of the same
-  release, on its own docker network (no bot container, no production
-  dockergate). The check waits for `/api/health` `status: ok` with the version
-  and commit of the image and then walks the attention list and the main company
-  routes; any failure stops the deploy BEFORE the window with nothing on
-  production changed. The 05.10 incident it exists for: the 1.6.3 board started
-  fine against the empty CI database and crashed on production DATA (an
-  attention card whose key was not a uuid) inside the window.
-- `scripts/myrmidon/deploy/deploy.sh` — step 3b runs that check before the
-  deploy window marker; the changed release COMPONENTS now roll out inside the
-  window BEFORE the board is switched (DOCKERGATE-FIRST), so the board is
-  verified against the new dockergate and not the running one (the 1.6.3 board
-  never became `ok` against the old dockergate: `route_not_allowed`, and
-  dockergate rolled out only after the board check); the all-or-nothing rollback
-  rolls the board back only when its image line was actually written.
-- `scripts/myrmidon/deploy/rollback.sh` — ROLLBACK-WITHOUT-BOARD: entering and
-  leaving maintenance no longer requires the board API to answer. A rollback
-  usually runs BECAUSE the board is down; a failed enter/exit is logged loudly
-  and the rollback continues, the image switch and the health check still decide.
-- `scripts/myrmidon/deploy/lib.sh` — `maintenance_enter` reports an enter that
-  did not happen (api: the POST did not answer; hook: the command failed)
-  instead of logging `entered` over a failed POST.
-- `scripts/myrmidon/deploy/deploy.env.example` — the new `MYRMIDON_PREDEPLOY_*`
-  settings; the check is on by default.
-- Tests: `scripts/myrmidon/deploy/predeploy-board-check.test.mjs` (new) walks
-  the whole throwaway stack against fake `docker`/`curl`; the deploy,
-  release-gate, bot-image-rollout, deploy-from-job and tracing harnesses grew
-  the pre-window check, the component-before-board order, the board-less
-  rollback and the copy-teardown cases.
-
+- `scripts/myrmidon/deploy/predeploy-board-check.sh` (new): before the
+  maintenance window the production dump is restored into a throwaway Postgres
+  and the new board image runs next to the new dockergate on an isolated
+  network; it waits for `/api/health` `ok` with the image's version, walks the
+  attention list and main routes, and any failure stops the deploy with
+  nothing changed on production (the 1.6.3 crash on production data inside
+  the window is why it exists).
+- deploy.sh step 3b runs it pre-window; changed components roll out BEFORE
+  the board switch; rollback of the board happens only if its image line was
+  written.
+- rollback.sh no longer needs the board API to enter/leave maintenance — a
+  rollback usually runs BECAUSE the board is down; the image switch and health
+  check still decide. `maintenance_enter` reports a failed enter honestly.
+- New `MYRMIDON_PREDEPLOY_*` settings (check on by default); tests walk the
+  whole throwaway stack against fake `docker`/`curl`.
 ## changelog-ru
 
 ### PREDEPLOY-DB-CHECK: образ доски проверяется на копии боевой базы до окна; компоненты выкатываются до доски; откат без живой доски

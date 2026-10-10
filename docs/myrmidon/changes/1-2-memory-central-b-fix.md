@@ -7,31 +7,25 @@ settings-section: Track 3 — tool gateway and Hermes adapter
 
 ### Central session history for gateway bots (MEMORY-CENTRAL-B)
 
-- A bot's conversation history can now live in the board's central hindsight
-  store instead of the container volume: with `MYRMIDON_BOT_CENTRAL_HISTORY=1`
-  (off by default) the Hermes gateway adapter saves the final output of every
-  completed run as a session-turn record in the bot's own hindsight bank
-  (documents keyed by the session key, tag `myrmidon-session-history`), and on
-  the next wake of the same session restores the last turns (default 20, card
-  field `centralHistoryMaxTurns`) into the wake input under a visible
-  "restored conversation history" header. Recreating the container volume no
-  longer loses the history: a rebuilt container reads its turns back from the
-  central store.
-- Resolution order for the store address, bank and key (first hit wins): the
-  agent card fields `adapterConfig.centralHistoryUrl` / `centralHistoryBankId`
-  / `centralHistoryApiKey` / `centralHistoryMaxTurns`, then
+- With `MYRMIDON_BOT_CENTRAL_HISTORY=1` (off by default) the Hermes gateway
+  adapter saves the final output of every completed run as a session-turn record
+  in the bot's own hindsight bank (documents keyed by the session key, tag
+  `myrmidon-session-history`) and on the next wake of the same session restores
+  the last turns (default 20, card field `centralHistoryMaxTurns`) into the wake
+  input under a visible "restored conversation history" header. Recreating the
+  container volume no longer loses the history.
+- Store address, bank and key resolve in order (first hit wins): card fields
+  `adapterConfig.centralHistoryUrl` / `centralHistoryBankId` /
+  `centralHistoryApiKey` / `centralHistoryMaxTurns`; then
   `MYRMIDON_BOT_HINDSIGHT_API_URL` / `MYRMIDON_BOT_HINDSIGHT_BANK` /
-  `MYRMIDON_HINDSIGHT_API_URL` / `HINDSIGHT_API_KEY` (the bot-env pair the
-  profile compiler already injects), then the same names in the server process
-  environment. The bank defaults to the card's `hindsight.bankId`.
-- Off or unconfigured, every path is untouched vendor behavior: no requests,
-  no logs beyond the normal ones. While on, a store failure never blocks a
-  run — a failed read continues the wake without the restored block, a failed
-  save is logged and the run result stays as it was. Only the redacted final
-  output of the run is stored (the same redaction the run result already
-  gets), and the restored block is bounded by turn count and size.
-- New files: `packages/adapters/hermes/src/gateway/server/central-history.ts`
-  and its suite; `execute.ts` only gains three marked call sites.
+  `MYRMIDON_HINDSIGHT_API_URL` / `HINDSIGHT_API_KEY`; then the same names in the
+  server environment. The bank defaults to the card's `hindsight.bankId`.
+- Off or unconfigured, vendor behaviour is untouched. While on, a store failure
+  never blocks a run (a failed read continues without the restored block, a
+  failed save is logged). Only the redacted final output is stored, and the
+  restored block is bounded by turn count and size.
+- New: `packages/adapters/hermes/src/gateway/server/central-history.ts` and its
+  suite; `execute.ts` gains three marked call sites.
 
 ## changelog-ru
 

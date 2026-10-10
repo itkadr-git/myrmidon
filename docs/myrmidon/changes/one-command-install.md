@@ -6,41 +6,31 @@ divergence-section: Трек 5 — эксплуатация
 
 ### ONE-COMMAND-INSTALL: one command brings a fresh server to a working board
 
-- `scripts/myrmidon/install/install.sh` (new) — the installer of a fresh
-  installation. It checks the machine against the system requirements and names
-  what is missing in plain language (root, Ubuntu 24.04 / Debian 13, arch, 2 CPU,
-  4 GB memory, 10 GB free disk, a free port), installs Docker and the compose
-  plugin when they are absent, resolves the latest release
-  (`releases/latest` or `--version myr-vX.Y.Z`) and its machine-readable
-  manifest `release-components.json`, and pins the board, dockergate and bot
-  images BY DIGEST — the CI-only rule the deploy scripts enforce, with no flag
-  that skips it. It generates every secret (database password, session secret,
-  tool-action signing secret), writes `deploy.env` (mode 0600), `compose.yml`
-  and the dockergate configuration, brings up the database, the board and
-  dockergate, waits for `/api/health` `status: ok` and prints the address, the
-  first-administrator link and the paths of the files it wrote.
-- Re-running the installer is the update path: it resolves the latest release,
-  dumps the database before the image line changes, switches the digests, checks
-  health and rolls back to the digests that ran before when the new board does
-  not become healthy. `--uninstall` stops and removes the stack (data kept);
-  `--uninstall --purge` also deletes the database volume and the install
-  directory. The installer asks nothing by default (`--interactive` turns the
-  three questions on) and speaks Russian or English according to the locale
-  (`--lang`).
-- `scripts/myrmidon/release/publish-github-release.sh` — every release now
-  carries the installer as the asset `install.sh`, so
+- `scripts/myrmidon/install/install.sh` (new) installs a fresh server. It checks
+  the machine and names what is missing (root, Ubuntu 24.04 / Debian 13, arch, 2
+  CPU, 4 GB memory, 10 GB free disk, a free port), installs Docker and the
+  compose plugin if absent, resolves the latest release (`releases/latest` or
+  `--version myr-vX.Y.Z`) and its manifest `release-components.json`, and pins
+  the board, dockergate and bot images BY DIGEST (no flag skips it). It
+  generates every secret, writes `deploy.env` (0600), `compose.yml` and the
+  dockergate configuration, starts the database, board and dockergate, waits for
+  `/api/health` `status: ok` and prints the address, the first-administrator
+  link and the written paths.
+- Re-running it is the update path: dump the database before the image line
+  changes, switch digests, check health, roll back to the previous digests if the
+  new board is not healthy. `--uninstall` removes the stack (data kept);
+  `--uninstall --purge` also deletes the database volume and install directory.
+  It asks nothing by default (`--interactive` enables three questions) and
+  speaks Russian or English by locale (`--lang`).
+- `scripts/myrmidon/release/publish-github-release.sh` attaches the installer to
+  every release as `install.sh`, so
   `https://github.com/itkadr-git/myrmidon/releases/latest/download/install.sh`
-  always serves the installer of the latest release. The committed file is the
-  single source of truth.
-- Tests: `scripts/myrmidon/install/install.test.mjs` (new) runs the real script
-  against fake `docker`, `curl`, `ss`, `systemctl` and `apt-get` placed first in
-  `PATH`: a fresh install pins the digests and generates the secrets, a re-run
-  against a newer release dumps the database and switches the digests, an
-  unhealthy new release rolls back to the previous digests, a release that
-  already runs changes nothing, a foreign directory is refused, `--uninstall`
-  keeps the data and `--purge` removes it, the Russian locale is honoured and a
-  malformed `--version` is refused. No test touches GitHub, a registry or a
-  docker daemon.
+  serves the latest one; the committed file is the single source.
+- Tests: `scripts/myrmidon/install/install.test.mjs` runs the real script against
+  fake `docker`, `curl`, `ss`, `systemctl`, `apt-get`: digest pinning and secrets,
+  update with a dump, rollback on an unhealthy release, no-op on the same
+  release, foreign directory refused, uninstall/purge, Russian locale, malformed
+  `--version` refused.
 
 ## changelog-ru
 

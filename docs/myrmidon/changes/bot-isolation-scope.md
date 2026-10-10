@@ -3,42 +3,22 @@ settings-section: BOT-DISK E — host disk usage signal
 ---
 
 ## changelog-en
-
 ### Selectable disk isolation scope for bots (BOT-DISK-F)
 
-- Each bot keeps its own disk by default, exactly as before. The owner can now set a **scope
-  instance** (an explicit named group, a caste, a reporting subtree, a project, an installed
-  catalog team, or the whole company) to **shared root**: its members use one host directory
-  with **one pnpm store** and a subdirectory per bot, so hard links work within a bot and across
-  the bots of the instance, and a package is stored once for all of them. Different instances never
-  share a directory. The most specific level wins: the agent's own override, group, caste,
-  subtree, project, catalog team, company; an instance set to *isolated* stops the search.
-- **Groups** are a first-class entity: create, rename, delete and change members in Instance
-  settings, "Disk isolation of bots" (and through `/api/myrmidon/companies/:id/bot-scopes`), with no
-  restart. An agent may be in several groups but only one may define its scope; an agent in several
-  groups (or projects) that each define one is flagged and the owner must choose which decides.
-  The resolver is one shared module other policies (the container scope, later) can reuse.
-- A change marks the affected bots **restart required**; nothing restarts by itself. *Apply* runs,
-  per bot, in order: pause (maintenance window), check the move (refuses on any conflict before
-  anything stops; never deletes or merges), build the replacement while the old one still runs (a
-  gate refusal changes nothing), stop, move the three directories by `rename`, swap in the new
-  container, start-time hard-link self-check, resume. Not run on any host by this change.
-- Container: a member has one bind, `<shared root>/<instance>:/bot-scope`, and a tmpfs over `/data`
-  with links into its own `<botKey>/` subdirectory, made by the entrypoint from
-  `MYRMIDON_BOT_SCOPE_SUBDIR`; the profile points pnpm at `/bot-scope/.pnpm-store`. Image: new label
-  `myrmidon.bot-runtime.scope=1`, `WORKDIR /` (the entrypoint enters `/workspace`), `/bot-scope`
-  write-safe. Rebuild the bot image before the first shared bot.
-- dockergate accepts the shared bind only for a bot enrolled for that instance
-  (`bots[].scopeInstances`, new `scopeRoot`), and only the instance's own directory; the gate
-  checks the instance tree like a volume root. Deploy the gate and the board together and enrol
-  the bots **before** applying a scope change. See [bot-disk-cache.md](../bot-disk-cache.md) and
-  [dockergate.md](../dockergate.md).
-- **Trade-off:** members of one instance run as one uid and mount the whole instance directory,
-  so each can read and write the others' `hermes/` (keys included), `workspace` and `scratch`.
-  Share only between bots that trust each other.
-- DB: tables `myrmidon_scope_groups`, `myrmidon_scope_group_members`, `myrmidon_scope_settings`,
-  `myrmidon_scope_agent_prefs` (migration 0300).
-
+- Each bot keeps its own disk by default. The owner can now set a scope
+  instance (named group, caste, reporting subtree, project, catalog team, or
+  the whole company) to shared root: members share one host directory and one
+  pnpm store, so hard links work across the bots of the instance. The most
+  specific level wins.
+- Groups are a first-class entity, managed in Instance settings or through
+  `/api/myrmidon/companies/:id/bot-scopes`, with no restart.
+- A change marks bots `restart required`; apply runs a checked sequence per
+  bot (pause, dry-run of the move, build the replacement, stop, rename, swap,
+  start-time self-check, resume). Nothing restarts by itself.
+- dockergate accepts the shared bind only for enrolled bots; deploy the gate
+  and the board together and enrol before applying.
+- Trade-off: members share one uid and directory — share only between bots
+  that trust each other. DB: four `myrmidon_scope_*` tables (migration 0300).
 ## changelog-ru
 
 ### Выбираемая область изоляции дисков ботов (BOT-DISK-F)

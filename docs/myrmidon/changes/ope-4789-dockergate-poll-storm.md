@@ -1,50 +1,22 @@
 ## changelog-en
-
 ### Dockergate poll storm removed (OPE-4789, second half of OPE-4752)
 
-The board's container layer talked to dockergate far more often than the
-planned once-a-minute sweep: the clone-hygiene report collector rode the 5 s
-maintenance tick (per-bot inspect + archive read per tick), the reconciler
-paid two inspects per bot per pass (status and the drift check each read
-their own), the drift check re-read the shared-cache/scope settings three
-times per pass, the health wait after a start polled inspect once a second
-while the image's own HEALTHCHECK runs every 30 s, a canary wave pass and
-the sweep pass for the same bot duplicated each other, and a 429 from the
-gate was a terminal error every caller retried at once. On a 74-bot fleet
-this summed to ~30 requests/s against the gate's global limit and 1.5-hour
-fleet rollouts with 28 refusals.
+The board talked to dockergate far more than the planned once-a-minute sweep:
+~30 requests/s on a 74-bot fleet, hour-and-a-half rollouts, 28 refusals.
 
-- The clone-report collector runs at most once a minute now (the reports
-  feed hourly-TTL attention signals; nothing an operator can act on is
-  lost) and asks the driver for running bots only, so a stopped bot's
-  inspect+marker pair is not paid on every pass.
-- One reconcile pass costs one inspect and one marker read: the drift check
-  reuses the inspect the status read already paid for
-  (`BotContainerStatus.inspect`), and the template context behind the
-  create body (shared package cache path, git-mirror flag, scope layout) is
-  cached per bot for 60 s instead of being re-read three times per pass.
-- The health wait after a (re)start polls every 3 s, matching the image's
-  own 30 s HEALTHCHECK cadence instead of polling 30× between two verdict
-  changes.
-- A second `applyBotContainerNow` for one bot within 30 s of a pass
-  (sweep × canary wave tick) is answered from freshness instead of
-  re-reading everything; the card's "Apply now" button, secret-rotation
-  restarts and the canary wave itself pass `force: true` and always run a
-  real pass — a rollout asks for a change by definition, so the window
-  must not answer it from freshness and mark the bot done on the old
-  image. A pass that
-  errored never stamps, so a transient docker failure is retried on the
-  next tick.
-- A 429 from dockergate is retried by the call that got it — after the
-  gate's `Retry-After` hint when one arrives, otherwise after a growing
-  backoff (1 s, 2 s, 4 s, capped at 8 s, at most 4 attempts) — instead of
-  failing the pass into an immediate caller retry.
+- The clone-report collector runs at most once a minute and asks only about
+  running bots.
+- One reconcile pass costs one inspect and one marker read; the create-body
+  template context is cached 60 s per bot instead of re-read three times.
+- The health wait after a start polls every 3 s, matching the image's 30 s
+  HEALTHCHECK cadence.
+- A duplicated apply within 30 s answers from freshness; real changes (Apply
+  now, secret rotation, canary wave) pass `force: true` and always run.
+- A 429 is retried by the call that got it — after `Retry-After` or a capped
+  backoff (1/2/4/8 s, max 4 attempts) — not by every caller at once.
 
-Measured on the fake daemon (docker-driver.myrmidon.test.ts, OPE-4789
-suite): an unchanged sweep pass over one bot costs 2 dockergate requests
-(was 3+), a canary-overlapped pass costs the same 2 (was 6), and a burst
-that hits the gate's limit resolves in place instead of multiplying.
-
+Measured on the fake daemon: a plain sweep costs 2 gate requests (was 3+), a
+canary-overlapped pass 2 (was 6).
 ## changelog-ru
 
 ### Шторм опроса dockergate убран (OPE-4789, вторая половина OPE-4752)

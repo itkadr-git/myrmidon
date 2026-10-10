@@ -3,33 +3,22 @@ settings-section: Track 5 — operations
 ---
 
 ## changelog-en
-
 ### Deploy hardening: a deploy that fails early and says why (DEPLOY-HARDENING)
 
-- **One source of truth per component image.** The generated override file of each local
-  release component is what the deploy writes, the rollback restores and the boot unit reads
-  (the canonical unit lists the component overrides; `SYSTEMD_UNIT_INSTALL=1` replaces the unit
-  of the previous release, a foreign unit is still refused). The "previous" image is the image of
-  the running container (`docker inspect`), not a file; a stale override is corrected to the image
-  that runs before the deploy starts. The compose project of every component check includes the
-  board image override, so a valid project is no longer reported as "not a service", and an
-  invalid one is reported with compose's own error text.
-- **`--dry-run` runs the real preflight.** Before the first pull and the dump, in a dry run and a
-  real run alike: the compose project, the CI image checks, the boot unit, every component's service
-  and health setting, the dockergate config check of the edited config (by the new binary, as its
-  own user, on a copy keeping the file's owner and mode). The dry run fails
-  exactly when the real run would.
-- **dockergate health without a ping the host cannot make.** dockergate's socket answers only the
-  board's main process, so the documented `_ping` probe from the host could never pass. dockergate is
-  now proven by its log: the container runs and its newest `self-check ok` / `config_reloaded` line
-  reports the new version and the hash of its config. dockergate logs `configHash` on both lines.
-  `MYR_DOCKERGATE_HEALTH_URL` is no longer used. The rollback uses the same proof.
-- **Config writes keep owner and mode, and a reload is verified.** Edits of the dockergate config,
-  the fleetd config and the override files keep the owner and mode of the file they replace (a strict
-  `umask` no longer turns the config into `0600 root`, which dockergate's user could not read); after
-  SIGHUP the deploy checks that dockergate loaded the new config hash and fails loudly otherwise.
-  The output of `dockergate check-config` is logged when it refuses.
-
+- One source of truth per component image: the generated override file is
+  what the deploy writes, the rollback restores and the boot unit reads; the
+  previous image comes from `docker inspect`, not a file, and a stale
+  override is corrected before the deploy starts.
+- `--dry-run` runs the real preflight: compose project, boot unit, service
+  and health settings and the dockergate config check on the edited copy —
+  the dry run fails exactly when the real run would.
+- dockergate health is proven by its log (`self-check ok` /
+  `config_reloaded` reporting the new version and config hash), not by a
+  `_ping` the host cannot make through the socket; rollback uses the same
+  proof.
+- Config writes keep the file's owner and mode (a strict umask no longer
+  makes dockergate's config unreadable), and after SIGHUP the deploy verifies
+  the loaded config hash and fails loudly otherwise.
 ## changelog-ru
 
 ### Усиление выката: выкат падает рано и объясняет почему (DEPLOY-HARDENING)

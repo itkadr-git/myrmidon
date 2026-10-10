@@ -2,28 +2,25 @@
 
 ### The GitHub App of the board serves non-container runs too (GITHUB-SHARED-IDENTITY)
 
-- A run whose execution target is local or SSH — the development agents on the
-  build machine, and the bots whose container `fleetd` starts on a second
-  machine — had no GitHub credential path of its own: the launcher that the
-  board stages for such a run asked the broker without naming a repository, so a
-  run whose only identity is a self-hosted GitHub App never received a token,
-  and the agents kept pushing with a static token from their environment.
+- A run whose execution target is local or SSH (the development agents on the
+  build machine, and bots whose container `fleetd` starts on a second machine)
+  had no GitHub credential path: the launcher staged for it asked the broker
+  without naming a repository, so a run whose only identity is a self-hosted
+  GitHub App never got a token and the agents kept pushing with a static token.
 - The launcher now stages `git-credential-paperclip` next to its `git` and `gh`
-  and gives Git the same configuration the bot image installs in
-  `/etc/gitconfig`: the leading empty `credential.helper`, ours scoped to
-  github.com over https, and `useHttpPath = true`. git then hands the helper the
-  repository path of the operation and the helper asks the broker for exactly
-  that `owner/repo`; the `gh` wrapper names the repository from `-R`/`--repo`,
-  `GH_REPO` or the `origin` remote, and a `git` command names the remote written
-  into its arguments or the `origin` remote of its working directory.
+  and gives Git the configuration the bot image installs in `/etc/gitconfig`: the
+  leading empty `credential.helper`, ours scoped to github.com over https, and
+  `useHttpPath = true`. git hands the helper the repository path and the helper
+  asks the broker for exactly that `owner/repo`; the `gh` wrapper names the
+  repository from `-R`/`--repo`, `GH_REPO` or the `origin` remote, and a `git`
+  command from the remote in its arguments or the `origin` of its directory.
 - An operation that names no usable repository, or one no App serves, stays
-  without managed credentials: git and `gh` keep working exactly as before.
-  Only the token, the terminal-prompt switch and the commit identity are taken
-  from the broker's answer, so a broker-supplied credential helper can never
-  replace the staged one. No token, static or minted, is written to a file.
-- After the agents of the second list are moved over, their static GitHub tokens
-  (`env.GITHUB_TOKEN`, `~/.git-credentials`) are removed, so one path serves
-  every development agent.
+  without managed credentials and works as before. Only the token, the
+  terminal-prompt switch and the commit identity are taken from the broker's
+  answer, so a broker-supplied helper never replaces the staged one. No token is
+  written to a file.
+- Once the second list's agents are moved over, their static GitHub tokens
+  (`env.GITHUB_TOKEN`, `~/.git-credentials`) are removed.
 
 ## changelog-ru
 

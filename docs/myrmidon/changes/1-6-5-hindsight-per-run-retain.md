@@ -4,33 +4,19 @@ settings-section: Settings in the agent record (not environment variables)
 ---
 
 ## changelog-en
+### Memory is written once per run; run-start recall is conditional (1.6.5 PERF-DIET HS/D1)
 
-### Memory is written once per run and run-start recall is conditional (1.6.5 PERF-DIET HS/D1)
-
-- The memory fork (`packages/plugins/hindsight-paperclip`, version
-  `0.3.0-myrmidon.2`) no longer writes one memory per ticket comment. A run's
-  comments wait in run-scoped plugin state and are retained as one consolidated
-  digest per bank when the run finishes: the document is headed
-  `Run <runId> digest` and lists the comments with their author and ticket,
-  and its metadata carries `kind: "run-digest"`, `runId`, `agentIds`,
-  `issueIds` and `commentCount`. Duplicate comment ids collapse, bodies under
-  200 characters and board-machinery comments (a `## …` heading, a status
-  change, a wake notice, a `Review:` verdict) are dropped, and the buffer is
-  cleared after the flush. A comment outside a run — a human's, or an event
-  that carries no run id — is retained immediately, as before, because it is
-  new input for whichever run picks the ticket up next. A failed retention is
-  a warning in the plugin log; the run never fails because of memory.
-- Run-start recall became conditional. The new plugin instance configuration
-  field `recallOnRunStart` (not an environment variable) takes `new-issue`
-  (the default), `always` or `never`. `new-issue` searches the agent's bank
-  only when the agent has not already searched for this ticket, so repeated
-  wakes of one ticket no longer pay for the same local rerank; `always` keeps
-  the previous behaviour, `never` turns run-start recall off. The
-  `hindsight_recall` tool still searches on demand.
-- Memory bank routing is unchanged: the card's
-  `adapterConfig.hindsight.bankId`, then `bankByAgentId`, then the agent stays
-  closed.
-
+- The hindsight memory fork (`0.3.0-myrmidon.2`) no longer writes one memory
+  per ticket comment: a run's comments wait in run-scoped plugin state and
+  are retained as one `Run <runId> digest` per bank at run end (metadata
+  carries `kind: "run-digest"`, run/agent/issue ids, comment count; duplicate
+  ids collapse, short bodies and board-machinery comments drop). A comment
+  outside a run is retained immediately, as before. A failed retention is a
+  warning; the run never fails because of memory.
+- Run-start recall takes the plugin config field `recallOnRunStart`:
+  `new-issue` (default — search only when the agent has not already searched
+  this ticket), `always` (old behaviour) or `never`. `hindsight_recall` still
+  searches on demand. Bank routing is unchanged.
 ## changelog-ru
 
 ### Память пишется раз за прогон, а поиск на старте прогона стал условным (1.6.5 PERF-DIET HS/D1)

@@ -2,40 +2,33 @@
 
 ### Alert recovery: the owner task of an alarm and the automatic close (1.6.6-MONITORING-D)
 
-- An alarm from Zabbix or Alertmanager now becomes a task of the owning role
-  instead of a thread of messages: the task carries the numbered recovery steps
-  of the runbook of that trigger, the link to its document, and the metric the
-  owner checks when the steps are done. A trigger with no runbook of its own
-  falls back to the generic runbook, which still ships steps and a document.
+- A Zabbix or Alertmanager alarm now becomes a task of the owning role: it
+  carries the numbered recovery steps of the trigger's runbook, the link to its
+  document and the metric the owner checks afterwards. A trigger with no runbook
+  of its own falls back to the generic one.
 - The runbook registry (`server/src/myrmidon/monitoring/alert-recovery/runbook.ts`)
-  selects by trigger key: an exact trigger match first, then the longest matching
-  fragment (`disk`, `filesystem`, `space` → `disk-space-low`; `unreachable`,
-  `icmp`, `zabbix agent` → `host-unreachable`; `scrape`, `prometheus` →
-  `metrics-scrape-failing`). The documents live in `docs/myrmidon/runbooks/` and
-  a test fails if a registered runbook has no document on disk.
-- The task closes by itself once the alarm has stayed resolved for the hold
-  (10 minutes by default): the scheduler tick closes it, comments the metric and
-  the resolve time, and only ever writes to tasks it opened itself
-  (`originKind = alert_recovery`), so a task a person took over is never
-  overruled.
-- A repeat alarm inside the recurrence window (60 minutes by default) comes back
-  into the same task — a comment, the task is reopened if it had already closed —
-  instead of opening a second one. A repeat before the hold is up cancels the
-  automatic close and the hold restarts from the next resolve. A resolve event
-  that arrives twice does not push the close away.
-- Both numbers are instance settings, changed live through
-  `GET`/`PATCH /api/myrmidon/monitoring/alert-recovery` (PATCH is instance-admin,
-  the same rule as the rest of the instance settings), stored in
-  `instance_settings.general.alertRecovery`, read over the environment on every
-  event and every sweep pass. The GET reports, per key, whether the settings row,
-  the environment or the default is in force, plus the runbook registry and the
-  alert journal of the company with the due time of every automatic close.
-- An operator or the intake can drive a real alarm through the lifecycle with
-  `POST /api/myrmidon/monitoring/alert-recovery/events` — the normalized event
-  (source, trigger, status, severity, hosts, time) that the Zabbix/Alertmanager
-  intake of the monitoring part produces once an alarm fires again or resolves.
-- Every settings change is written to the activity log for every company
-  (`instance.alert_recovery.updated`).
+  selects by trigger key: exact match first, then the longest matching fragment
+  (`disk`, `filesystem`, `space` -> `disk-space-low`; `unreachable`, `icmp`,
+  `zabbix agent` -> `host-unreachable`; `scrape`, `prometheus` ->
+  `metrics-scrape-failing`). Documents live in `docs/myrmidon/runbooks/`; a test
+  fails if a registered runbook has no document.
+- The task closes by itself once the alarm has stayed resolved for the hold (10
+  minutes by default): the scheduler tick closes it and comments the metric and
+  resolve time. It only writes to tasks it opened (`originKind = alert_recovery`),
+  so a task a person took over is never overruled.
+- A repeat alarm inside the recurrence window (60 minutes by default) returns to
+  the same task (a comment; reopened if closed) instead of a second one. A repeat
+  before the hold is up cancels the automatic close; a resolve event that arrives
+  twice does not push the close away.
+- Both numbers are instance settings: `GET`/`PATCH
+  /api/myrmidon/monitoring/alert-recovery` (PATCH instance-admin), stored in
+  `instance_settings.general.alertRecovery`, applied live. The GET reports per
+  key whether the row, the environment or the default is in force, plus the
+  runbook registry and the company's alert journal with each close's due time.
+  Every change is logged (`instance.alert_recovery.updated`).
+- `POST /api/myrmidon/monitoring/alert-recovery/events` drives a real alarm
+  through the lifecycle with the normalized event (source, trigger, status,
+  severity, hosts, time) the Zabbix/Alertmanager intake produces.
 
 ## changelog-ru
 

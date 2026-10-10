@@ -6,31 +6,24 @@ divergence-section: 1.6.1 — BOT-RUNTIME-TUNING D: attention-сигнал «ф�
 
 ### Model fallback signal: the threshold is a board setting, and the signal shows on the bot's card (1.6.5 BOT-RUNTIME-TUNING-D2)
 
-- The thresholds of the model fallback signal are now instance settings, not
-  deployment values read once at startup: `GET`/`PATCH
-  /api/myrmidon/model-fallback/settings` read and write
+- The model fallback signal thresholds are instance settings, not startup
+  values: `GET`/`PATCH /api/myrmidon/model-fallback/settings` read and write
   `instance_settings.general.modelFallbackSignal` (board reads, instance-admin
-  writes), and every key of the answer carries its origin — `settings`, `env`
-  or `default`. The sweep re-resolves the row on every tick and schedules the
-  next pass with the interval it returns, so an operator changes N%, the
-  window, the minimum call count or the sweep period and the next pass obeys,
-  without a restart of the board. The `MYRMIDON_MODEL_FALLBACK_*` variables
+  writes); every key reports its origin (`settings`, `env` or `default`). The
+  sweep re-resolves the row each tick and schedules the next pass by the
+  returned interval, so a change of N%, the window, the minimum call count or the
+  sweep period applies without a restart. `MYRMIDON_MODEL_FALLBACK_*` variables
   keep working as per-key overrides.
-- The signal is now visible on the agent's own card, not only in the attention
-  feed. `GET /api/myrmidon/companies/:companyId/model-fallback/status` returns
-  the last sweep's rows — per agent: attributed calls, fallbacks, share, the
-  models that actually served, and whether the agent is above the threshold —
-  together with the effective numbers; the agents list renders a
-  `fallback N%` badge on an agent that is above the threshold and nothing at
-  all for a healthy bot.
-- With the switch off the sweep does no gateway request at all: the loop stays
-  armed, reads one settings row per interval and clears both registries, so a
-  card or a badge from an earlier window cannot linger after the signal is
-  switched off, and turning it back on takes effect within one interval.
-- Nothing was duplicated from the 1.6.1 delivery of this signal (module
-  `server/src/myrmidon/litellm-fallback-signal/`, attention kind
-  `model_fallback_alert`): this change adds the settings and the per-agent
-  status on top of it, and the existing policy tests stay green.
+- The signal shows on the agent's card, not only in the attention feed.
+  `GET /api/myrmidon/companies/:companyId/model-fallback/status` returns the last
+  sweep's rows per agent (attributed calls, fallbacks, share, serving models,
+  above-threshold flag) with the effective numbers; the agents list renders a
+  `fallback N%` badge for an agent above the threshold.
+- With the switch off the sweep makes no gateway request: it reads one settings
+  row per interval and clears both registries, so no stale card or badge
+  lingers, and turning it on takes effect within one interval.
+- Built on the 1.6.1 module `server/src/myrmidon/litellm-fallback-signal/`
+  (attention kind `model_fallback_alert`); the existing policy tests stay green.
 
 ## changelog-ru
 
