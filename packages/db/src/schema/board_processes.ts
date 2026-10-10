@@ -58,3 +58,20 @@ export const boardProcesses = pgTable(
     lastSeenIdx: index("board_processes_last_seen_idx").on(table.lastSeenAt),
   }),
 );
+
+/**
+ * Leader leases of the board (design §5.1/§7.2): one row per named lease
+ * (`scheduler`, `backup`, ...). `holder_boot_id` points at the owner's
+ * `board_processes.boot_id` (no FK: a reaped process must not block the
+ * takeover of its lease), `epoch` grows on every handover (fencing token) and
+ * `expires_at` is the TTL deadline. Today the table has no writer — a
+ * single-process board holds no lease — and the read route answers an empty
+ * list; the lease holder of the later stages writes here.
+ */
+export const boardLeases = pgTable("board_leases", {
+  name: text("name").primaryKey(),
+  holderBootId: text("holder_boot_id"),
+  epoch: bigint("epoch", { mode: "number" }).notNull().default(0),
+  acquiredAt: timestamp("acquired_at", { withTimezone: true }),
+  expiresAt: timestamp("expires_at", { withTimezone: true }),
+});

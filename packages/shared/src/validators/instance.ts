@@ -107,6 +107,24 @@ export const backupRetentionPolicySchema = z.object({
   keepLastOnly: z.boolean().optional(),
 });
 
+// myrmidon(1.6.6 PROCS-1.7 part A): the lease-relevant half of
+// `general.processes`. The counts half (api/worker) is owned by PROCS-J in
+// `packages/shared/src/myrmidon-board-processes.ts`; the stored row is shared
+// between both, so this schema passthrough-accepts the fields it does not own
+// (api, worker, and anything a later part adds). Every field has a default
+// and the defaults are the single-process board: nothing changes until an
+// operator explicitly switches `mode` to `split`.
+export const boardProcessesSettingsSchema = z
+  .object({
+    mode: z.enum(["single", "split"]).default("single"),
+    apiCount: z.number().int().min(1).max(4).default(1),
+    leaderLeaseTtlSec: z.number().int().min(5).max(300).default(30),
+    liveEventsBus: z.enum(["local", "pg"]).default("local"),
+    admissionStore: z.enum(["memory", "db"]).default("memory"),
+    singletonProxy: z.boolean().default(true),
+  })
+  .passthrough();
+
 export const instanceGeneralSettingsSchema = z.object({
   censorUsernameInLogs: z.boolean().default(false),
   keyboardShortcuts: z.boolean().default(false),
