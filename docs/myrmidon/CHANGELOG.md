@@ -12,6 +12,1428 @@ version file to edit. Base Paperclip version is in the image label
 
 ## 1.6.5
 
+### `/agents` in Telegram answers with buttons (1.6.5 F-07 part B)
+
+- `/agents` in the owner's bridged Telegram chat now opens the company's directions as buttons, each with the count of its live agents. A direction opens its agents (ten to a page, "More" for the rest), and an agent opens its own card with three actions: **Write to this agent** (the same effect as `/to <alias>`: the chat's default addressee becomes that agent), **Model** (the model this chat uses for that agent and the choices it has) and **Stop** (stops that agent's runs in this chat only). Paused, retired, service and terminated cards are not listed.
+- `/agents text` keeps the plain grouped list for a client without buttons.
+- The buttons work for ten minutes and only for the owner of that Telegram conversation; a stale button answers "send /agents again", another person's click changes nothing. Button and message texts follow the chat owner's language (en/ru catalogs).
+
+### Racing "Apply now" presses no longer leak a wrapped unique violation (1.6.5 CI-RACE)
+
+- When two POSTs raced for one bot, the loser of the `bot_apply_jobs`
+  live-job unique index hit the database rejection and re-read the winner's
+  row — but only when the error reached it as a plain Postgres error. Drizzle
+  wraps driver failures in its own `Failed query: ...` error and the SQLSTATE
+  code lives on `cause`, so the local copies of `isUniqueViolation` in
+  `server/src/myrmidon/bot-containers/apply-jobs.ts` and
+  `scope-wiring.ts` — which read only the top-level error — missed it and
+  re-threw. The flake surfaced as a red CI on `rel/1.6.5-rc.7`
+  ("two racing acquires of one bot end with one job and one creator").
+- Both copies are deleted; the modules now import the canonical
+  `isUniqueViolation` from `server/src/db-errors.ts`, which unwraps the
+  `cause` chain (same helper the swarm-claim store and recovery service
+  already use, covered by `server/src/__tests__/db-errors.test.ts`).
+- Call-site behaviour is unchanged everywhere: losers still hand back the
+  winner's row (`created=false`), scope-group conflicts still answer
+  `null` / `"name-taken"`.
+- Guard: `server/src/myrmidon/bot-containers/apply-jobs.myrmidon.test.ts`
+  gains a deterministic test — a proxy over the real database throws the
+  drizzle-wrapped 23505 exactly once (after the winner's row lands for
+  real) and the store must return the winner instead of raising. Red on
+  the old code, green on the fix.
+
+### An agent can no longer bounce a task into blocked forever (BLOCKED-LOOP, 1.6.5)
+
+- Every return to `blocked` is legal on its own and rewrites
+  `blockedTransitionAt`, so a task whose agent re-blocked it again and again
+  on a condition the board does not model woke the agent again and again.
+- Now an agent that returns a task to `blocked` more than
+  `MYRMIDON_BLOCKED_LOOP_MAX_RETURNS` times (default 3) in a row with the same
+  blocker set and the same `unblockDescriptor` gets `422` with
+  `code: "blocked_loop_limit"`; the message says to express the external wait
+  with an issue monitor (`executionPolicy.monitor.nextCheckAt`) or
+  `unblockDescriptor.reasonRef` kind `event`/`date`.
+- The streak is reset by a change of the blocker set, a different
+  `unblockDescriptor`, any action of a person, or a move of the task to
+  `done`, `cancelled` or `in_review`. Board and other human actors are never
+  limited. A rejection is recorded as the activity `myrmidon.blocked_loop.rejected`
+  (streak, limit, task identifier) so the lead can see it.
+
+### Bot disk: integration test of the whole mechanism and the canary / shutdown runbook (1.6.5 BOT-DISK-H)
+
+- New `scripts/myrmidon/bot-runtime/bot-disk-integration.test.mjs` runs the botd
+  loop, rules, archive module and the `myr-ws` inventory/close/restore together
+  on real git: closing grace, clean-pushed removal, archive before removal of
+  unpushed work, restore, fail-safe with the board down, orphan grace, drift
+  prune, and a failing archive that keeps the copy.
+- New runbook `docs/myrmidon/bot-disk-canary-runbook.md` (with a Russian
+  version): what the test covers and what only a stand can, the canary on three
+  development bots with its measurements, the stop switch, and the shutdown of
+  the host-side cleanup scripts with preconditions, rollback and the 14-day
+  deletion check.
+- Fix: `myr-ws restore <KEY>` works after `myr-ws close` without a manual re-open. `close` passes the repository to the archive (it is stored in the manifest entry) and `restore` reads it from there when the registry has no entry.
+
+### The bot image rollout script follows the async "Apply now" (BOT-IMAGE-ROLLOUT)
+
+- Since 1.6.5 `POST /api/myrmidon/agents/:id/bot-container/apply` answers 202
+  with `{applyId, status}`. `bot-image-rollout.sh` read `.outcome.kind` from that
+  answer, found none and reported every bot as FAILED while the containers were
+  switching in the background (the rc.12 rollout, 08.10).
+- Now the script polls `GET .../bot-container/apply/:applyId` until
+  `succeeded|failed` (at most `MYRMIDON_BOT_IMAGE_ROLLOUT_APPLY_WAIT_SEC`,
+  default 300, every `MYRMIDON_BOT_IMAGE_ROLLOUT_APPLY_POLL_SEC`, default 4).
+  `failed` fails the bot with the job's error in the journal; a timeout is
+  "deferred" (the sweep finishes it). The bots of a batch are therefore switched
+  one after another again.
+- `succeeded` is not taken as proof (a busy bot's deferred pass is recorded as
+  succeeded): the bot counts as switched only when
+  `GET .../bot-container/status` shows the container running on the release
+  image, otherwise it is deferred and retried. The old synchronous answer
+  (`outcome.kind`) is still understood.
+
+### The bot image rollout ends with a card-vs-container fact check and a standard deferred re-run pass (BOT-IMAGE-ROLLOUT)
+
+- After the switch loop `bot-image-rollout.sh` now verifies the FACT for every
+  tracked bot: the image in the agent card (`adapterConfig.container.image`)
+  against the image of the running container (`GET
+  /api/myrmidon/agents/:id/bot-container/status`, the same board API the script
+  already uses; the rollout host is the container host). A printed per-bot
+  table classifies every bot `switched | deferred(<reason>) | failed |
+  mismatch` and the rollout summary JSON gains `verdict` plus the per-bot
+  verification rows, so `deploy.sh` and the operator see the fact, not the
+  intent.
+- Exit rules follow the fact, not the apply answers: `mismatch > 0` or
+  `failed > 0` — `DEGRADED`, exit 1. Only deferred bots remain — exit 0 with a
+  `WARNING` and the printed re-run command. A deferred bot whose card and
+  container agree is still deferred, never a mismatch; a `failed` pass outcome
+  outranks a agreeing fact.
+- `--retry-deferred [--wait-sec N]` (default `N=30`,
+  `MYRMIDON_BOT_IMAGE_ROLLOUT_RETRY_WAIT_SEC`) is the sanctioned repeat pass:
+  it reloads the deferred list from the previous rollout's summary (missing
+  summary — fail closed, exit 1; never a silent empty retry), re-switches only
+  those bots with `N` seconds of patience per bot, then verifies and prints
+  the same table. No pass ever interrupts a running bot.
+
+### Bot-created skills are imported back into the board's skill catalog (1.6.5 BOT-SKILL-BACKIMPORT)
+
+- A skill a bot creates at runtime lives in its container at
+  `~/.hermes/skills` on the bot's volume and used to vanish with a volume
+  recreation. With `MYRMIDON_BOT_SKILL_BACKIMPORT=1` (off by default) every
+  reconcile pass of a live bot also reads that directory back out of the
+  container (Docker archive API; no exec, no container change) and upserts
+  the new and changed skills into the company's skill catalog as company-local
+  skills (`sourceKind "managed_local"` — the same shape a UI-created local
+  skill gets, key `company/<companyId>/<slug>`, a `bot_backimport_agent` marker in
+  the skill's metadata distinguishes them). The import also adds
+  `company/<companyId>/<slug>` to the author bot's desired skills, so the
+  profile compiler delivers the catalog copy back into a recreated volume —
+  that is the volume-recreation criterion. A newly imported skill is set to
+  lifecycle *candidate* (a bot-written, untrusted skill: it reaches the
+  company's pilot agents and its own author bot through the normal delivery
+  path — the compiler delivers a candidate to the agent named by the skill's
+  `bot_backimport_agent` marker even outside `MYRMIDON_SKILL_PILOT_AGENTS` — and
+  an operator verifies it to fleet-wide; the import never promotes). A catalog entry the
+  marker does not own (a human-created skill with the same slug, another
+  bot's back-import) is never overwritten — the import refuses and records
+  the failure. Factory-bundled Hermes skills are filtered out by
+  `skills/.bundled_manifest`, and the Hermes category layout
+  `skills/<category>/<name>/SKILL.md` is read natively.
+- Change detection is a content hash over the skill's file set: a skill whose
+  files match the catalog copy is skipped without a version cut, so an
+  untouched bot skill does not grow a version per sweep. An update rewrites
+  the catalog skill's managed directory to exactly the container copy (a file
+  the bot deleted disappears) and cuts one version.
+- The board's own delivery directory `hermes/skills-board` is never read
+  back: it is the profile's managed content, and re-importing it would echo
+  the catalog into itself. A skill the bot copied or edited under its own
+  `hermes/skills` imports as the company's own copy — from the catalog's
+  point of view that is what "the bot changed it" means.
+- Containment: a skill over the file ceilings (200 files / 512 KiB per file,
+  the compiler's own limits), with a binary or path-unsafe file, or without a
+  SKILL.md is dropped whole; a failing import of one skill is recorded in the
+  bot's activity log and never fails the reconcile pass or the other skills.
+  A driver that cannot read the container filesystem (fleetd) simply has no
+  back-import.
+- Flag off = byte-identical previous behavior: the reconcile pass never
+  touches the skill read.
+
+### DEVBUILD-IN-BOTS: env-delivered key, a start self-check and a local heavy-run fallback (DEVBUILD-IN-BOTS)
+
+- The `devbuild` CLI accepts the build-server key as the secret env
+  `DEVBUILD_SSH_KEY_DATA` (the key text itself) when the
+  `/opt/devbuild-ssh/id_ed25519` file is not mounted — this is how the board
+  hands the key to a bot whose container has no mount. The key is
+  materialized into a per-process private directory (0700 dir, 0600 file)
+  under the run scratch — never into `/workspace` — and removed on exit. A
+  readable key file still wins over the env key; the missing-everything error
+  is unchanged.
+- The bot entrypoint runs a devbuild self-check at start: when
+  `DEVBUILD_HOST` is set it probes `devbuild 'true'` and logs one line
+  (`devbuild self-check ok: …` or `ERROR: devbuild self-check failed: …`),
+  plus a machine-readable `${HERMES_HOME}/.myrmidon/devbuild-check.json` for
+  the board. The check never stops the gateway; bots without `DEVBUILD_HOST`
+  stay silent; `MYRMIDON_DEVBUILD_CHECK=0` disables the probe.
+- Heavy build commands that pass the devbuild gate (a build container, or a
+  direct binary path in an ordinary bot container) now run with a
+  container-safe heap cap: the wrappers append
+  `--max-old-space-size=2048` (override `MYRMIDON_LOCAL_NODE_HEAP_MB`, `0`
+  disables) to the child's `NODE_OPTIONS` — a caller's own
+  `--max-old-space-size` wins — and print one stderr warning pointing at
+  `devbuild`. Version/help probes skip both. This is the fallback that keeps
+  an uncapped tsc from OOM-killing the bot container while the offload is
+  being rolled out.
+
+### The host-disk sweep measures the real mounted path and stops spamming when it cannot (1.6.5 F-03)
+
+- `MYRMIDON_HOST_DISK_DATA_ROOT` points the sweep at the directory that is
+  actually mounted into the server container (default `/data`). When the
+  path is missing the sweep result switches to `state: "unmeasured"` with a
+  `measuredPath: null` and an `error` text that names the missing path and
+  the setting to fix — instead of one `host disk usage could not be read`
+  log line per tick.
+- The transition into `unmeasured` is logged once at error level; further
+  failed ticks are debug, with the error repeated at most once an hour. When
+  the path appears, the measurement resumes without a restart and one info
+  line records the recovery.
+- Every path in `MYRMIDON_HOST_DISK_CONSUMER_PATHS` is measured on its own
+  filesystem (`usedPercent`/`usedBytes`/`totalBytes`/`freeBytes` per path) —
+  a consumer can live on a different filesystem than the data root. The main
+  result stays the data root; the per-path list is returned as
+  `measurements` from `GET /api/myrmidon/host-disk` together with the new
+  `state` and `error` fields.
+- `post-boot-check.sh` fails red when the host-disk sweep reports
+  `measuredPath: null`, so a board that boots blind does not pass the gate.
+  `POST_BOOT_CHECK_HOST_DISK=off` disables the check.
+
+### The deploy journal opens with the version of the deploy scripts (1.6.5 F-05)
+
+- `deploy.sh` and `deploy-from-job.sh` now write `deploy scripts at <git describe --tags --always>` as the first line of the deploy journal (stderr, so it lands in `job-<id>.log` of a deploy started from the UI). When git or the clone is unavailable the line reads `deploy scripts at unknown`; the stamp never aborts a deploy.
+- Guard: `scripts/myrmidon/deploy/deploy-hygiene.test.mjs` and `deploy-from-job.test.mjs` cover the first journal line, the failing-git and no-git fallbacks and the job log.
+
+### Telegram `/model` and `/think` work for gateway agents (1.6.5-F06-A)
+
+- The gateway adapter (`hermes_gateway`) is allowed for both `/model` and
+  `/think`. It compiles the same hermes profile and hands `model`/`effort` to
+  the run, so a chat override reaches it the same way it reaches `hermes_local`
+  — the note that kept it out ("until the gateway passes a model") was stale.
+- For a gateway agent `/model` lists the model catalog of the LLM gateway:
+  this agent key's own allowlist when the gateway answers it, the whole catalog
+  otherwise, and the reply says which of the two it is. The list is grouped by
+  provider family (`dashscope-*`, `zai-*`, `nous-*`), the card's own model and
+  its fallbacks stay on top, and the 30-model cap is unchanged.
+- Writing a gateway agent's `/model` or `/think` now applies its profile
+  without a restart: the reply says the change takes effect from the next
+  reply. If the apply fails, the card is restored to its previous value and the
+  reply names the reason; with the bot-containers feature off nothing is
+  treated as broken — the value stays and the reply says the new profile is not
+  applied yet.
+- `/think` checks the chosen level against the model's own effort list
+  (effort-policy): a level the model does not accept (e.g. `medium` for a GLM
+  model) is not written, and the answer names the allowed levels.
+- A refusal for an unsupported adapter now names the adapter type and the
+  reason, in the language of the chat's user.
+
+### The run journal names the model of a gateway run
+
+- Runs of the Hermes gateway are no longer recorded with `unknown` as their
+  model. The adapter now reads the model from the gateway's terminal answer in
+  order of trust — the `model` field first, then the LiteLLM route name
+  `model_group` (both at the top level and inside `usage`) — and falls back to
+  the model the run was configured with when the answer names neither. An empty
+  value or the `unknown` sentinel is not treated as a model.
+
+### Telegram `/model` and `/think`: buttons, reply-pick, edited commands, a correct model list (F06-D)
+
+- A plain `/model` (or `/think`) in a bridged Telegram DM answers with a card of inline buttons, two to a row,
+  one per listed choice (the current one marked `✓`) and an "agent default" button. A press applies the choice
+  exactly like `/model <name>` does (the value is resolved against the live list again, a running reply and the
+  reasoning-effort policy still refuse, a gateway agent's profile is applied) and the bot confirms once. A
+  second press, a press by anyone but the conversation's own linked person, or a press under another message
+  changes nothing.
+- A reply to a list message with its number (`2`), a name (`glm-5.3`) or `default` picks from it, no command
+  needed; any other reply goes to the agent as before.
+- An edited `/model …`, `/think …`, `/status`, `/help`, `/stop`, `/agents` or `/who` runs as a command instead
+  of ending as a silently filtered lifecycle row. `/new`, `/plan`, `/accept` and `/reject` are never re-run from
+  an edit.
+- The list shows every chat model the agent's key may run, of every family, with no ceiling on the count;
+  only non-chat models are dropped. "Chat" is decided by the mode the gateway declares for the model
+  (`model_info.mode`: `chat`, `responses`, `completion`), which the cost sweep now stores with each model; for a
+  model without a declared mode an id rule applies (embeddings, OCR, rerank, moderation, image/video/speech
+  generation and recognition). The board's own `hindsight-*`/`-mem` models are dropped either way. Order:
+  DashScope, then z.ai, then the other families, ids compared as numbers; the card's own models go through the
+  same filter and stand in that order, not first. Family header lines are gone. The keyboard holds up to 98
+  model buttons (Telegram's limit is 100 per message) plus "agent default"; with more models the rest are chosen
+  by number or name from the complete list, and the reply says so.
+- A model chosen for a native-provider card (`anthropic`, ...) from the gateway list is stored together with the
+  provider that routes it (`custom`), so the run never sends the card's old provider with the new model; the
+  card's own models keep its provider, and the pair is rolled back together if the profile apply fails.
+- Why a gateway agent's `/model` kept listing the whole gateway catalog: the agent's own list was read with a
+  per-agent key secret the bot profile never uses. It now reads the key the bot really sends (the card's own
+  binding of `MYRMIDON_BOT_LLM_API_KEY_ENV`, else the shared company secret, then the per-agent secret), and a
+  fallback to the whole catalog is logged with its reason code and named in the reply.
+
+### Default language of the bridged Telegram DM comes from the instance (1.6.5 F-07 part C)
+
+- The bridged Telegram DM now has an instance-wide default language:
+  `instance_settings.general.bridgeLanguage`, changed on Settings → Language
+  (or `GET`/`PATCH /api/myrmidon/bridge-language`). `GET` needs ordinary board
+  access, `PATCH` needs instance admin rights and writes an `issue.updated`
+  activity entry; the value is read through a 5-second cache, so a saved
+  change applies from the next reply without a restart.
+- The resolution order of the language a chat is answered in is now:
+  `MYRMIDON_TELEGRAM_DM_LANGUAGE` (the operator's force) → the linked board
+  user's Settings → Language choice → the instance default → English. The
+  Telegram private-chat command menu follows the same order.
+- `GET`/`PUT /api/myrmidon/ui2/language/me` reports the source of the value
+  the chat really uses (`telegramBridge.source` = `user` | `environment` |
+  `instance` | `default`, with the forced and instance values alongside), and
+  the Settings → Language panel names that source instead of describing every
+  unforced instance as the user's own choice.
+- The refusal texts for a model or reasoning effort that the adapter does not
+  serve now name the adapter, the reason and where the value is changed (the
+  agent card) in both locales, instead of a bare "unavailable for adapter X".
+
+### Telegram aliases and group are editable on the agent card (1.6.5 F-07 part D)
+
+- The agent card now has a "Telegram" section: the aliases the bridge answers
+  to (`agents.metadata.telegramAliases`) as an editable list of lowercase
+  latin rows, and the `/agents` group title (`agents.metadata.telegramGroup`)
+  as one text row with the company's existing group titles suggested through
+  a `datalist`.
+- With an empty alias list the section names the default alias the bridge
+  computes from the agent name, so the card shows what the chat really uses
+  before anyone edits it. The default rule is duplicated in the UI as a pure
+  function marked as a consolidation point — part A kept it server-side.
+- Saving goes through the existing `PATCH /api/agents/:id { metadata }`: the
+  section re-reads the agent first and merges only the two Telegram keys, so
+  every other metadata key keeps its value. Invalid (not lowercase latin) and
+  duplicate alias drafts are blocked before the save.
+- Board UI only: no server, schema or bridge change.
+
+### Run limits: the admission's refusals are visible on the runs-and-queue screen (1.6.5 F-09 B)
+
+- The Run limits section of Instance → General now shows the admission's own
+  refusal counter: how many times a queue sweep left a queued run waiting
+  because of a global or host ceiling, since the server started.
+- The line carries the breakdown by reason (the concurrency ceiling, the start
+  ramp, the server's memory floor, the host memory floor, the host CPU
+  ceiling), largest first, and the reason and time of the most recent refusal.
+  A reason the screen does not know is still shown under its own name.
+- The counter is optional in the endpoint's reply: an older server that sends
+  no `admissionDenials` renders no line at all — the screen shows nothing
+  rather than a zero it invented, and the rest of the panel is unaffected.
+
+### Wizard endpoints stuck in `verifying` are finished by live traffic (1.6.5 F-10 A)
+
+- An endpoint whose setup wizard stopped at the test step no longer needs the
+  owner to press "Finish setup" once real traffic has proven both halves of the
+  round trip: the board delivered an outgoing message through it
+  (`chat_publications` in the `published` state) and an incoming turn came back.
+  Such an endpoint becomes `active` on its own, with the test step completed,
+  the test timestamp cleared and the health line `Verified by live traffic`;
+  its tool connection turns active and healthy. The completion is recorded in
+  the activity journal (`chat_endpoint.auto_activated`, trigger
+  `live_traffic`) and can never happen twice or half-way: an endpoint with only
+  incoming or only outgoing traffic stays where the wizard put it, and for the
+  first minutes after a test starts the wizard keeps its endpoint (the owner is
+  looking at it).
+- The endpoint detail and list responses now carry `verifyingStale` — an
+  endpoint that has been sitting in the test step for more than a day while
+  deliveries keep succeeding. It is an attention flag for the interface and for
+  diagnostics, never a status change and never an error.
+
+### A Telegram endpoint leaves the setup wizard on its first successful delivery (1.6.5 F-10)
+
+- A Telegram endpoint that is still waiting for the wizard's test step (`status=verifying`, `setup.step=test`) now settles on its own, without the manual "test" click: the first publication the Telegram API accepts moves `setup.step` to `complete` and the endpoint status to `active` in the same transaction that saves the delivery receipt, and activates the endpoint's tool connection in that same save.
+- The completion update re-checks the live row (status, `setup.step=test`, runtime generation and the test window) and merges the new step into the live `setup` JSON with `.returning()`; the tool connection is only activated when the endpoint actually flipped to active, so a concurrent reconnect that empties the update leaves endpoint and connection untouched (no wiped `lastError`, no divergent health). When the send fails, the endpoint keeps the wizard state and completes on the first successful retry.
+- A manual test request against an already-active, completed Telegram endpoint returns the endpoint as an idempotent no-op instead of a 409 conflict.
+
+### botd cleanup is idempotent, silent about foreign owners and never leaves work unarchived (1.6.5 BOT-DISK-H, F-13 part A)
+
+- A removal of a path that is already gone is success: `guardedRemove` returns
+  `already gone` instead of raising ENOENT, and `retain` drops manifest entries
+  whose files all vanished silently. The ~160 ENOENT error lines per 1.5 h the
+  journal carried are gone by design.
+- A permission failure on a removal (`EACCES`/`EPERM` — the path belongs to another
+  uid) is a deferred pass, not an error: the path stays exactly where it is, ownership
+  is never changed, and `botd-attention.json` guarantees one attention line per path
+  per hour carrying the blocking code and the owner uid from `lstat`. The write-access
+  probe runs before any recursive removal or re-archival, so a foreign tree is never
+  half-removed and a deferred legacy directory is not re-archived every pass.
+- `verifyEntry` is a strict readability re-check of an archive that still exists: an
+  entry whose files are all gone fails it ("already gone" remains only `retain`'s
+  shortcut), so a vanished archive can never green-light the removal of source data.
+- When `git bundle create` fails for a reason other than "empty bundle" (a damaged
+  repository, a hung git), the whole directory — `.git` and untracked files included —
+  goes into one fallback `<base>.full.tar.zst`; a tar that lists back is a complete
+  copy of the directory, so it clears the removal (no more "archive-incomplete ... not
+  removed" keeping the disk full), and the manifest entry is marked
+  `incompleteBundle: true`. The fallback tar counts in the retention quota. The
+  fallback is bounded: a directory over 2 GiB, or an archive filesystem without room
+  for it, refuses the tar (nothing deleted) instead of filling the archive disk, and
+  every spawned git/tar carries a 10-minute timeout so a hung tool cannot hold a pass.
+  All `tar -tf` verification streams the listing to /dev/null or a chunked counter
+  instead of buffering it in memory. If even the tar cannot be written or verified,
+  nothing is deleted. The tar of a legacy directory without `.git` (`archiveTree`) has
+  the same bounds: over 2 GiB (`.git` not counted) or without room in the archive root
+  it refuses, and the directory stays. An unknown amount of free space (a failed
+  `statfs`) counts as none.
+- Archive retention (30 days / 2 GiB) runs once per executed botd pass, after the
+  actions; the entries archived in that pass are never evicted by the quota.
+- The rhythm of the rules: the same op on the same path is not attempted more than
+  once per hour (`botd-cooldown.json`, keyed by path+op — a different op on the same
+  path is a different decision); a repeat inside the window is a silent skip —
+  no log line, no report row. Every executed pass ends with one summary line
+  `botd loop: cleaned N, deferred M (reasons…)` instead of per-path noise.
+- No new environment settings; the two caches live next to `disk-state.json` under
+  `$MYRMIDON_WS_HOME`, are best-effort (an unwritable cache only loses the silence)
+  and sweep entries older than a day on every write, so they never grow without a
+  bound.
+
+### Context compaction: per-pass batch ceiling as a live setting; the backup-source contract written down (1.6.5-F14B)
+
+- The compaction pass's ceiling `CONTEXT_COMPACT_MAX_BATCHES` (batches of 500
+  rows per company per pass) is no longer a build-time constant: the pass
+  resolves `general.datastoreCare.retention.contextCompactMaxBatches` first,
+  then the `MYRMIDON_CONTEXT_COMPACT_MAX_BATCHES` environment override, then
+  the default of 10, and re-reads it every pass — so the first live passes on
+  an IO-starved board are throttled with a `PATCH /api/myrmidon/datastore-care`
+  without a rebuild or restart. `GET /api/myrmidon/datastore-care` reports the
+  ceiling with its source (`settings` | `env` | `default`).
+- The agreed backup source of the retention gate is documented as a contract:
+  the board's built-in DB Backup is the primary fresh-backup producer, a
+  host-side `pg_dump -Fc` dump (`*.dump`) is accepted by extension as a
+  fallback intended for shipping to external storage, and with the prefix
+  knob unset or empty any `*.sql.gz`/`*.dump` in the dir counts (names not
+  matching a set prefix are still reported as `candidates`). The row-deletion
+  sweep (data retention) follows the same rule, so both gates agree.
+- New setting "The machine is backed up externally"
+  (`general.datastoreCare.retention.externalMachineBackup`, a checkbox in the
+  Data retention panel, also `PATCH /api/myrmidon/datastore-care` and
+  `PATCH /api/myrmidon/data-retention`). When the whole machine is backed up
+  on another host and no local dump is produced, the backup gate of BOTH
+  cleanups (run-context compaction and deletion of old rows) passes without
+  looking for a local file; the persisted gate report then says
+  `externalMachineBackup: true`. Off by default: with it off, the gates behave
+  as before and wait for a fresh local dump.
+- Fix: the data-retention windows no longer fall back to the defaults when the
+  same stored block also holds the compaction keys (`heartbeatRunContextDays`,
+  `contextLastRun`, ...): only the three window keys are validated there.
+- The gate's contract is pinned by tests: a failed freshness check against an
+  embedded Postgres still writes the full `contextLastRun.backupGate` report
+  with honest field names and `waitingForBackup: true`, while the legacy trap
+  field `backupCheckedAt` keeps its meaning (newest backup mtime, not check
+  time) — it is deliberately not renamed (state migration).
+
+### Attention feed: the decision-retention state is written in the background, not on the read (1.6.5 F-15)
+
+- `GET /api/companies/:id/attention` used to upsert the decision-retention
+  rows that back the feed (`decision_retention`) inside the request, so every
+  poll of the screen wrote to the database and the feed's own latency included
+  those writes.
+- The read path now only projects the state already stored (a read-only batch
+  read) and parks the fresh snapshot in a per-company debounced scheduler. The
+  retention sweep — the periodic pass that also runs auto-archive — drains the
+  parked snapshots on the server's schedule: one pass per company at a time,
+  at most one pass per company per 30 seconds, only the newest snapshot kept.
+- A read never waits for the sync and never fails because of it: a failed
+  background pass is logged and dropped, and the feed keeps rendering the
+  state the previous pass stored until the next snapshot retried by the sweep
+  succeeds.
+
+### Partial lifecycle index for the attention screen's exhausted-runs query (1.6.5 F-15)
+
+- The attention screen (`server/src/services/attention-exhausted-runs.ts`)
+  looks for runs whose bounded retry budget ran out: it filters
+  `heartbeat_run_events` by `company_id` + `event_type = 'lifecycle'` +
+  `message like 'Bounded retry exhausted%'` before joining the run rows. The
+  two non-unique indexes on the table (`company_run`, `company_created`) do not
+  carry `event_type`, so the leg read every event row of the whole table — a
+  sequential scan, one of the measured legs behind the feed's p50 2.3 s / p95
+  4.7 s, measured on a production trace.
+- Migration `packages/db/src/migrations/0381_attention_exhausted_lifecycle_idx.sql`
+  adds one partial b-tree index
+  `heartbeat_run_events_company_lifecycle_run_idx (company_id, event_type, run_id)`
+  `WHERE event_type = 'lifecycle'`: the scan shrinks to the lifecycle slice of
+  one company. Additive index-only migration: no query text, no schema and no
+  behaviour change.
+- Measured on embedded PostgreSQL with 83 200 seeded events across 20 companies
+  (synthetic data, no production rows): the exhausted-runs leg went from
+  `Seq Scan ... Rows Removed by Filter: 83 095` at 20.2 ms to
+  `Bitmap Heap Scan ... Bitmap Index Scan on heartbeat_run_events_company_lifecycle_run_idx`
+  at 0.87 ms — 23x faster, 1443 → 62 shared buffers.
+- `CREATE INDEX IF NOT EXISTS` (not CONCURRENTLY — drizzle migrations run
+  transactionally). `heartbeat_run_events` is bucketed "large" by the
+  migration-safety checker (10 833 local rows × 250), so the statement carries
+  the explicit `paperclip:migration-safety-ignore` note as 0307/0308 do for
+  their large tables; production deploys run through the operator's maintenance
+  mode and the partial predicate keeps the build cost at the lifecycle slice.
+- Guard: `packages/db/src/attention-exhausted-lifecycle-index.myrmidon.test.ts`
+  checks the migration file, the journal entry and the snapshot statically,
+  confirms on embedded Postgres that the leg is served by the index and falls
+  back to the sequential scan after `DROP INDEX` (the assertions have teeth),
+  and applies the migration statement twice on one database to prove
+  idempotency.
+
+### Issue list agent defaults: agents get compact, capped, description-free list responses (F16, part A)
+
+- `GET /api/companies/:companyId/issues` used to answer 1.5–4 MB to a bare agent request, because the full response carries every issue's `description`. For an actor of type `agent` the endpoint now applies agent-oriented defaults: a request without `view` is answered as `view=compact`, `limit` defaults to 200, and the compact body omits `description` (the agent fetches the body of the one issue it needs via the detail endpoint).
+- An agent's explicit `limit` above 500 is refused with 400 and a pagination hint (`offset` / `afterId`) instead of being silently clamped. The full view stays reachable through an explicit `view=full` together with an explicit `limit <= 100`; `view=full` without a limit is refused (the agent default of 200 already exceeds the full-view cap).
+- The behaviour is gated by the instance setting `issuesListAgentDefaults` in `instance_settings.general` (changed without a deploy). The key is absent on instances that never toggled it, and absent means ON (defect-fix on). `{enabled: false}` restores the pre-feature agent behaviour byte-for-byte.
+- The board actor is untouched: a bare board request keeps the full response, `limit=1000` is clamped as before, and `view=full` stays a 400 (the UI compatibility contract).
+
+### Plugin worker errors no longer leak `err.data`; unknown tool key is 400 for agents too (F17 part 2)
+
+- `packages/plugins/sdk/src/worker-rpc-host.ts`: a plugin handler's `err.data`
+  is forwarded only for `UNKNOWN_ACTION` (RPC code `-32007`), and only when the
+  payload round-trips through JSON. A cyclic reference or a `BigInt` in `data`
+  previously threw inside the bare `JSON.stringify` of `serializeMessage`, the
+  outer `.catch` retried with the same payload and swallowed — the host waited
+  for the RPC timeout. Now the response goes out without `data`. For every
+  other error code `data` is dropped entirely: an ofetch `FetchError` carries
+  the external service's response body in `.data`, and the bridges forwarded it
+  to the browser/agent as `details`.
+- `server/src/routes/plugins.ts`: `POST /plugins/tools/execute` on the agent
+  (toolGateway) path now maps `UNKNOWN_ACTION` (-32007) to **400** with
+  `{ code: "UNKNOWN_ACTION", details }` — the same contract the board path
+  already had — instead of 500/502.
+- `packages/plugins/plugin-llm-wiki`: the «jobs ↔ handlers» guard actually
+  fails now when a manifest job has no worker handler or vice versa (the old
+  test spied on `runJob` itself and swallowed the rejection), and the
+  package's tests run in CI again (`react` is a devDependency so vitest can
+  load it inside the workspace; the host still supplies `react` at runtime
+  per the `peerDependencies` contract).
+
+### Scheduled wiki folder health check gets its missing handler (1.6.5-F17)
+
+- The llm-wiki plugin's hourly `folder-health-check` job no longer fails with
+  «No handler registered»: the worker now registers the handler declared by
+  the manifest.
+- Each run logs one line per company and one summary line, and writes a
+  `folderHealth` metric point (gauge 1 while no configured wiki root is
+  unhealthy, 0 otherwise; labels carry the healthy/unhealthy/notConfigured
+  counts). Companies with no wiki root configured report a not-configured
+  status (logged at debug level) and are not counted as unhealthy.
+
+### Unknown plugin action/data/tool keys answer 400 UNKNOWN_ACTION with the list of known keys (1.6.5-F17)
+
+- The plugin SDK worker host now reports an unknown action, data, or tool key
+  as a structured error: JSON-RPC code `-32007`
+  (`PLUGIN_RPC_ERROR_CODES.UNKNOWN_ACTION`) whose `data` carries
+  `{ error, known }` — `error` is one of `unknown_action`,
+  `unknown_data_key`, `unknown_tool`, and `known` lists the keys the worker
+  actually registered. (Unknown job keys are not part of this contract:
+  `runJob` for an unregistered job still throws a plain error.)
+- The plugin bridge maps that code to a caller error. The four bridge routes
+  (`POST /api/plugins/:pluginId/bridge/data`, `.../bridge/action`,
+  `.../data/:key`, `.../actions/:key`) now answer `400` with
+  `{ code: "UNKNOWN_ACTION", message, details }` instead of `502`, and the
+  board path of `POST /api/plugins/tools/execute` answers `400` with
+  `{ error, code: "UNKNOWN_ACTION", details }` (no `message` field)
+  instead of `500` (`UNKNOWN_ACTION` joins `PLUGIN_BRIDGE_ERROR_CODES`). An
+  unavailable or not-ready worker still answers `502`; only the unknown-key
+  class moved.
+- Handler errors from worker RPC methods now forward their `err.data` payload
+  to the caller (error codes were already propagated before). The follow-up
+  release entry «worker `err.data` is forwarded only for `UNKNOWN_ACTION`
+  and only when JSON-serializable» covers how much `data` rides along.
+
+### Tools gallery and connections accept a granted agent, not only a board actor (F22)
+
+- `GET /companies/:companyId/tools/gallery`, `GET /companies/:companyId/tools/connections`,
+  `GET /tool-connections/:id`, `POST /companies/:companyId/tools/connections`,
+  `PATCH /tool-connections/:id` and `PUT /tool-connections/:id/installs` now admit an
+  agent actor holding an explicit company grant: `tools:admin` or
+  `tools:manage_connections` for reads, `tools:manage_connections` for mutations.
+  Without a grant the agent gets 403; board actors keep their previous semantics.
+- `DELETE /tool-connections/:id` stays operator-only for agents (403 with an
+  explanatory message): removing a connection revokes every grant built on it, and
+  the "with approval" interaction path is not reachable from this route without a
+  task context.
+- Every agent access on these surfaces writes a `tool_access_audit_events` row
+  (actorType `agent`, action `tool_access.<surface>`, read/write or a denied
+  delete), next to the unchanged activity-log rows.
+
+### Off-run self-secret reads via a time-boxed `secrets:read_off_run` grant (F-23)
+
+- New permission `secrets:read_off_run`. It is issued by board actors only (the
+  agent card toggle, `PATCH /agents/:id/permissions` with `offRunSecretRead`, or the
+  existing principal grants) and is always time-boxed: without an explicit
+  deadline it expires 30 days out, and enabling it again renews the term to a
+  fresh 30 days. An expired grant is denied centrally (`deny_expired_grant`).
+- With an active grant, an agent acting without a run (operator CLI/session) may call
+  `GET /api/agents/me/secrets` and gets the metadata of its own bound secrets, never
+  values. Only an own agent key with the `standard` scope is admitted; automation and
+  service keys are rejected. `GET /companies/:companyId/secrets` stays board-only.
+  Without the grant the historical `403 "Run-bound agent authentication required"`
+  is returned unchanged.
+- Every off-run listing writes a `secret_access_events` row with
+  `details = { offRun: true, access: "agent_self_metadata", keyId, remoteAddress,
+  listedSecretCount }`; a failed audit write fails the request (500). `remoteAddress`
+  is Express `req.ip` (honors `trust proxy`, by default the socket peer); a
+  client-supplied `X-Forwarded-For` is never recorded.
+- The attention feed gets two advisory items: `secret_off_run_reads` (reads in the
+  last 24 hours) and `secret_off_run_grant_expiring` (a grant expires within 3 days).
+- Migration `0382` adds `principal_permission_grants.expires_at` and
+  `secret_access_events.details`. The agent card shows the grant state and expiry
+  in the Permissions section; the full settings UI is deferred to 1.6.6.
+
+### Automatic wakes without a task are closed before the model; stale tasks cool down (1.6.5 F-26 T5)
+
+- A swarm wake (`swarm_matched`, `idle_pickup`, `issue_assigned`,
+  `swarm_claim_queue`) that names no existing task — no issue id in the wake
+  context or an issue that no longer exists — no longer starts a model run.
+  It is recorded as skipped at the moment the wake is queued, before any
+  adapter exists, so it costs zero tokens; each such closure lands in the
+  activity journal as `heartbeat.wake_skipped_taskless` with the gate reason
+  (`no_task` / `task_missing`). Manual wakes, chat and every other wake
+  source are untouched: a manual wake of a user always passes, even for a
+  deleted task.
+- A task that produces no movement stops being woken in circles. When the
+  last automatic run of a task ended stale — failed, timed out,
+  `blocked`/`needs_followup`, or succeeded without advancing a `todo` task —
+  and the task did not move since (a comment, or a status / assignee /
+  description change; the row's `updatedAt` is not a signal, a finished run
+  bumps it itself), the task
+  cools down for `cooldownBaseMin · 2^(n-1)` minutes (base 30, capped at
+  24 h), where n is the number of consecutive stale runs since the last movement.
+  A comment or real task update by a user or by an agent other than the stale run's own lifts the window immediately; when it expires the
+  task becomes a wake candidate again. Idle pickup obeys the window, and the
+  new read-only `GET /api/myrmidon/companies/:id/swarm/cooling` lists every
+  cooling task with its trigger, window length and next allowed wake time.
+  System actors (the run itself, execution-recovery, automation) never count as movement.
+- Both knobs live in instance general settings under `general.swarm`
+  (`runWithoutTaskGate`, `cooldownBaseMin`, `cooldownCeilingHours`); absent
+  settings mean the defaults above, and a malformed block degrades to
+  defaults rather than breaking the wake path.
+
+### Task pheromone strength and task caste (1.6.5 F-27 PHEROMONE, rework per architect project 09.10)
+
+- Effective pheromone (design §2.3): the stored strength plus aging
+  (+1 per 24 h waiting, cap +5) minus a penalty (−10 per failed run since the last
+  task change), floored at 0. A "task change" is a comment, or an audit row by a
+  person or an agent, written after the failed run (the system actor and the run's
+  own release stamp do not count). The SQL twin in
+  `server/src/myrmidon/swarm-claim/effective-pheromone.ts` orders every queue read
+  (before the candidate LIMIT), so a strong fresh task is never cut off.
+  Parameters live in `instance_settings.general.swarmClaim.pheromone`.
+- UI: the issue card has "Caste" (directory select), "Pheromone strength" (number
+  with an effective-strength hint) and a "P0" checkbox bound to `priority=critical`;
+  the project card has "Default caste". The run-priority scoring gains a
+  `pheromoneWeight × eff` term (default weight 1), bounded to 100 points so a huge
+  strength cannot lift a run over the role and release bands.
+
+### A task with a scheduled monitor is not picked up by idle pickup (IDLE-PICKUP-MONITOR)
+
+- An issue whose `monitor_next_check_at` lies in the future no longer counts
+  as a ready idle-pickup candidate: its wake already has an owner —
+  `tickDueIssueMonitors` fires it exactly at the scheduled time (for the
+  `in_progress`/`in_review` statuses). Until now the candidate prefilter never
+  read the column, and such an issue burned a no-op run on every sweep pass
+  until the monitor fired.
+- The filter is one shared SQL prefilter, so both consumers follow at once:
+  the periodic sweep and the WAKE-BIND binding (`findTopReadyIssueForAgent`),
+  which picks the task a manual wake without an explicit issue binds to.
+- An elapsed monitor (`monitor_next_check_at <= now`) is NOT excluded: the
+  monitor tick owns that wake, and suppressing readiness there serves nothing.
+- The behaviour is strict — no switch is added and none is needed.
+
+### LITELLM-WORKERS-A: the LiteLLM worker-process count is stored, resized live and reported (1.6.5)
+
+- The board stores a target number of LiteLLM gateway workers per company
+  (instance settings key `myrmidonLitellmWorkersCompanies`, written under a row
+  lock) and reports it with the CPU ceiling (`maxByCpu`) and the memory ceiling
+  (`maxByMemory`, `floor(memoryGb / 1.5)`).
+- `GET /api/myrmidon/companies/:companyId/litellm/workers` answers the current
+  pool size, the target, the ceilings and the live metrics (per-worker CPU,
+  median latency, queue depth); an absent number is reported as absent, not as
+  zero. `perWorkerCpu` is a percentage (0..100), as the Costs page draws it.
+  When no source knows the pool size (the declared baseline counts as one),
+  `current` is `null` and `currentSource` is `unknown`; the Costs page shows
+  "unknown".
+- `PUT …/workers` with `{ "target": <integer> }` stores the target and moves the
+  gunicorn pool to it with TTIN/TTOU signals, without a gateway restart. A
+  target above the memory or CPU ceiling is a 400 with `details.reason`
+  `above_memory` or `above_cpu`. When no source knows the pool size, the target
+  is stored and the pool is left alone. Only an instance admin may PUT (the pool
+  is one per instance), and whole resizes are serialised by a database advisory
+  lock, so two concurrent PUTs signal only for the difference.
+
+### LITELLM-WORKERS-UI: the "Gateway workers" tab on the Costs page (1.6.5)
+
+- The Costs page gains a third gateway tab, "Gateway workers", beside
+  "Gateway" and "Gateway keys": an input for the desired LiteLLM process
+  count (seeded from the server's `target`), the CPU and memory ceilings
+  shown as hints, an Apply button behind a confirm step, and a status line
+  while `current` moves to `target`. A target above `maxByMemory` is caught
+  on the client; a 400 from the server is shown with the server's own text.
+- Metrics card: per-worker CPU bars, median response time and the request
+  queue depth, refreshed every 30 seconds from
+  `GET /api/myrmidon/companies/:id/litellm/workers`.
+- Auto-select card: shows the switch state and turns it on or off through
+  the same `PUT …/workers` (the threshold logic itself runs on the server).
+  When the backend does not carry the optional `auto` field, the switch is
+  disabled with an explanation — manual control keeps working.
+
+### `myr-ws close` and `myr-ws restore` share one archive root (1.6.5 BOT-DISK-H)
+
+- `close` called the archive module without a root, so the archive went to the
+  module's production default while `restore` looked under
+  `<MYRMIDON_WS_HOME>/archive`: with `MYRMIDON_WS_HOME` overridden a closed
+  copy could not be restored. The root is now one function of the home
+  (`archiveRootOf` in the `myr-ws` layout); `close` passes it to the archive and
+  `restore` reads it. With the default home nothing changes.
+
+### Board process registry, leader leases and the `general.processes` setting (PROCS-0.1)
+
+The board now keeps a registry of its own OS processes. Migration `0388_board_processes`
+adds two tables: `board_processes` (one row per running process: boot id, role, pid,
+host, container, version, start and last-pulse time, API port, event loop lag, RSS) and
+`board_leases` (named leader leases: holder boot id, epoch, acquisition and expiry
+time). Each process writes its own row at boot and refreshes it every 10 seconds; rows
+silent for more than 2 minutes are reaped by a process that owns background work. Two
+read routes serve the «Процессы» panel: `GET /api/myrmidon/board-processes` (the rows
+with age, status and the answering process marked) and
+`GET /api/myrmidon/processes/leases` (the leases joined to their holder's row; an empty
+list while nobody holds a lease). Both are for board members only.
+
+The instance setting `general.processes` (`mode` single/split, `apiCount` 1..4,
+`leaderLeaseTtlSec` 5..300, `liveEventsBus`, `admissionStore`, `singletonProxy`) is
+stored and returned by the general settings API; absent means the defaults, which are
+the single-process board. Nothing changes on a one-process board: it writes one registry
+row and no leases. The setting is only stored for now — the supervisor that acts on
+`split` lands in a later stage, so `split` has no effect yet.
+
+### The leader lease of the board is visible in the panel (PROCS-1.7 part B)
+
+Instance settings now carries a leader-lease block: one row per `board_leases`
+entry — the lease name (scheduler, backup, bot operations), the holder (`boot_id`
+plus the `hostname`/`pid`/role of its `board_processes` row while that row still
+exists), `epoch`, `acquired_at`, `expires_at`, and whether the process behind the
+panel is the leader of that lease.
+
+- The block reads `GET /api/myrmidon/processes/leases` and refreshes every 10
+  seconds; a `leader_changed` live event cuts the wait short, so a handover is
+  visible without restarting the board. The route is part A of the same task
+  (part A of the lease-route task) and is mocked with `docs/myrmidon/board-leases-contract/*.json`
+  until that half merges — the two halves do not touch the same files.
+- Every state is spelled out instead of showing an empty cell: a lease whose
+  process row is gone, an expired lease with the epoch and lifetime that came
+  with it, and an empty lease table. Timestamps are printed in UTC so the panel
+  lines up with the server log.
+- If the route is missing from the build (or the API is down), the block reports
+  "No data" and the rest of the panel keeps working; the page does not fail.
+- A single-process board behaves as before: one lease row, held by the running
+  process. The block is self-contained, so the «Процессы» panel (PROCS-0.1) picks
+  it up with one import and one line.
+
+### Board process metrics: event loop delay, memory, live-event flow (PROCS-Q3)
+
+`GET /metrics` now answers five more families: `myrmidon_board_event_loop_lag_seconds`
+(p50/p99/max summary, measured between scrapes), `myrmidon_board_process_rss_bytes`,
+`myrmidon_board_heap_bytes` (used/total), `myrmidon_board_live_events_total` and
+`myrmidon_board_live_event_bytes_total` (per live-event kind, cumulative since boot).
+This is the measurement half of этап 0 of the multi-process project: no scaling of the
+board may be argued without these numbers first.
+
+Nothing new stores or configures: the delay comes from Node's `monitorEventLoopDelay`
+(read-and-reset, so a quantile describes exactly the scrape interval), the memory from
+`process.memoryUsage()`, and the live-event flow from an ordinary subscriber of the
+existing `services/live-events.ts` emitter — the publisher is not modified. The
+observers start lazily on the first authorized scrape, so an endpoint nobody scrapes
+costs nothing. A failing process read zeroes the five families by name in
+`myrmidon_scrape_errors` and never kills the scrape, exactly as the DB families already
+behave. Measured overhead of the per-event listener (Node 24, 100k events with JSON
+payload serialization through the real `recordLiveEvent` path): **0.85 µs per event**,
+85 ms total — at a sustained 1000 events/second that is 0.085 % of one CPU core, an
+order of magnitude below the 1 % budget.
+
+### Swarm self-organization: the board matches tasks to free agents itself (1.6.5-SWARM-SELFORG)
+
+- One switch — **Instance → General → "Self-organization (swarm)" → "Enable the swarm"** — and the board itself matches every unassigned ready task with a free agent of the right caste and wakes it with that task in hand. Off by default; the role and company lists are gone — the swarm is either on or off.
+- Queue order inside a caste: P0 (critical) first, then the task's effective pheromone strength (strength + aging − penalty for failed runs), then queue age. Tuned in the panel's "Pheromones" block (`general.swarmClaim.pheromone`).
+- A task whose last automatic run moved nothing cools down — `general.swarm.cooldownBaseMin` (30 min) doubling per stale run, capped by `general.swarm.cooldownCeilingHours` (24 h); any comment or task change lifts the window at once.
+- No more "wake up and look for work" passes: every automatic run starts with a concrete task; a wake without one closes as skipped before the adapter starts — zero tokens.
+- User guide: [guides/swarm-self-organization.md](../guides/swarm-self-organization.md) (Russian: [swarm-self-organization.ru.md](../guides/swarm-self-organization.ru.md)).
+
+### Swarm self-organisation panel, supervisor overview and menu entries (1.6.5 SWARM-T4)
+
+- The Instance → General section is now "Self-organisation (swarm)": one master switch, a live status line, a Pheromones block (priority seeds, aging, evaporation penalty, cooldown) and an Advanced block (lease TTL, per-agent ceiling, sweep interval).
+- The pilot lists are gone: the master switch is the only gate. The environment overrides `MYRMIDON_SWARM_CLAIM_ENABLED_ROLES` and `MYRMIDON_SWARM_CLAIM_ENABLED_COMPANY_IDS` are removed in 1.6.5 and are no longer read; remove them from the environment.
+- Swarm supervisor: queue rows carry the effective pheromone strength, the nest agent and the waiting time; the overview adds free agents, recent matches, cooling tasks and warnings. The pilot-report route is removed.
+- The menu lists "Swarm: queues" and "Foraging"; the streamlined sidebar keeps both visible.
+
+### Internal delegation no longer quarantines lead tasks, without weakening the trust check
+
+- A task written from another agent's same-company run used to be sent to
+  `low_trust_review/quarantined`, so its executor got no GitHub token. The
+  quarantine is now lifted for that case only when both hold: the actor's run
+  id is authenticated (the signed agent JWT `run_id` claim — the
+  `X-Paperclip-Run-Id` header sent with an agent API key is client-supplied and
+  never lifts a quarantine) and the run's provenance is on an explicit
+  allowlist of internal sources (`assignment`/`automation`/`timer` invocations
+  with scheduler-style wake sources). Answers to external-chat questions
+  (`issue.interaction.respond`), comment wakes, chat/webhook markers and any
+  unlisted source stay quarantined.
+- Quarantined tasks are refused GitHub credentials with a structured reason and
+  the release path (`POST /api/issues/:id/low-trust/promotions`).
+- Migration `0387_low_trust_internal_release_candidates` is a dry run: it writes
+  `issue.low_trust_release_candidate` audit rows (issue ids) for quarantined
+  tasks with provably internal origin and changes no issue. An operator reviews
+  the list and releases confirmed tasks through the promotion endpoint.
+
+### Vendor-derived share in the release notes (1.6.5 VENDOR-SHARE-METRIC)
+
+- Every release published by `publish-github-release.sh` now carries a
+  `## Vendor-derived files` section: the share of files inherited from vendor
+  code and its delta to the previous release —
+  `Vendor-derived files: 6123 of 6812 (89.89%), Δ to myr-v1.6.4: +0.10 pp (+7 files)`.
+  The numbers come from `scripts/myrmidon/vendor-share.mjs` (already in main),
+  the previous line is parsed out of the previous release's own notes; a release
+  published before the metric reads
+  `нет данных (no vendor-share line in that release)`.
+- The metric is advisory: when the share cannot be computed (no vendor base in
+  the checkout, unreadable state file) the section says `не посчитано` with a
+  warning and the release still goes out — a metric failure never fails a
+  publish.
+- `scripts/myrmidon/release/vendor-share-notes.mjs` (new) builds and parses the
+  line; its unit contract is `vendor-share-notes.myrmidon.test.mjs` (11 tests),
+  and the publisher integration lives in `release-publish.test.mjs` (3 more, the
+  test suite).
+
+### PREDEPLOY-PG-COMPAT: the version comparison and the extension read really run on Debian/PGDG servers (1.6.6)
+
+- `scripts/myrmidon/deploy/predeploy-board-check.sh` — the dump-header parser
+  kept only the leading major digits. A Debian/PGDG server records its version
+  with the package tail (`; Dumped from database version: 18 (Debian
+  18.6-1.pgdg12+2)`); the previous sed did not anchor the end, so the whole
+  tail landed in `dump_major` and the arithmetic comparison died with
+  `((: 18 (Debian 18.6-1.pgdg12+2): syntax error in expression` — bash does
+  not abort on a failed arithmetic expression inside `if`, so the version
+  check of the rc.11/rc.12 deploys (08.10) was silently skipped. The copy's
+  `SHOW server_version` answer is parsed the same way.
+- The two psql probes against the copy (`SHOW server_version`,
+  `SELECT extname FROM pg_available_extensions`) no longer swallow stderr
+  into `/dev/null`. They run through one helper that retries three times
+  (`POLL_INTERVAL_SEC` apart) and captures the psql error; if the list still
+  cannot be read, the WARNING names the captured error instead of failing
+  silently. This is the second silent skip of the same deploys
+  (`WARNING: the copy's extension list could not be read`).
+- Tests: `scripts/myrmidon/deploy/predeploy-board-check.test.mjs` — the fake
+  docker answers the real Debian-tailed headers
+  (`18 (Debian 18.6-1.pgdg12+2)`, `17.2 (Ubuntu 17.2-1.pgdg22.04+1)`) and can
+  make each probe fail with a psql error. New cases: younger copy with a
+  tailed header is refused with no `syntax error in expression` in the output,
+  equal majors pass, the extension list is read and a missing extension is
+  refused, a failing extension probe is retried and its error appears in the
+  WARNING, the version WARNING carries the probe error. Every new case fails
+  on the previous script.
+
+### 1.6.5 F-26 T3 — castes become configurable, agents get nests (CASTES-AND-NESTS)
+
+- Castes: `agent_castes.is_default` with a partial unique index per company
+  (migration `0385_agent_castes_default_and_nests`, index
+  `agent_castes_company_default_uq`; backfill to `engineer`, otherwise the first
+  key). The catalogue moves the flag in one transaction on
+  `PATCH /api/myrmidon/companies/:id/castes/:key {isDefault:true}`; clearing the
+  flag on its holder answers `409 caste_default_required`, and deleting the
+  default caste requires `reassignTo` — the flag moves to the target together
+  with its agents.
+- Nests: the table `agent_nests(company_id, agent_id, project_id)` and
+  `GET/PUT /api/myrmidon/companies/:id/agents/:agentId/nests` — the project list
+  of one agent, empty meaning the whole company. A foreign project or a foreign
+  agent is rejected as a whole (400/404), the write goes into the company
+  journal.
+- Matcher ports in `server/src/myrmidon/castes/index.ts`:
+  `resolveTaskCaste(db, {companyId, issueId})` (task caste → project default →
+  company default) and `agentNests(db, agentId)`, plus the SQL fragments
+  `taskCasteKeySql` / `agentNestsAllowSql` for a one-query filter — the contract
+  T1 builds on. Castes are no longer hard-coded in the swarm logic: `AGENT_ROLES`
+  is not read there, the 12 vendor roles are seeded as the default caste and
+  marked "template" in the UI.
+- UI: the default radio and the agent/queue/free counters on the castes screen,
+  the nests section on the agent card, IA v2 routes (`…/settings/castes`,
+  `…/settings/models`; the old `caste-directory` redirects) and i18n keys in
+  every locale.
+
+### Release freeze gate sees the tag CI (1.6.5)
+
+- `scripts/myrmidon/release/release-freeze.sh` now selects the tag CI by
+  `myrmidon-ci-tag.yml` runs with `head_branch == the tag` (the pipeline that
+  runs on the tag itself), with `myrmidon-ci.yml` main-branch runs of the
+  same commit kept as a fallback. Previously the gate filtered on
+  `myrmidon-ci.yml` only, so the verdict stayed "missing" forever and the
+  release freeze never cleared even with a green tag CI.
+- `scripts/myrmidon/release/release-body.mjs` now refuses a release body over
+  GitHub's 125000-character limit BEFORE the publish step, naming the byte
+  count, instead of dying at `gh release create` with a bare HTTP 422 after
+  all CI gates already passed.
+
+### Board measurement instrumentation: load lanes, api-load p95, pg_stat_statements, cpu-profile (PROCS-0.3A, stage 0 of OPE-5394)
+
+- `server/src/myrmidon/monitoring/board-load/lanes.ts` — the load lanes of the
+  board as an `AsyncLocalStorage` seam: `http_route`, `heartbeat_tick`,
+  `chat_reconcile`, `execution_control`, `bot_reconcile`, `run_supervision`.
+  Work outside every lane is reported as `untagged` instead of being spread
+  over the lanes, `laneInterval()` wraps a periodic pass in its lane without
+  touching its period or `unref`-ability, and `resolveLaneMetricsSource()`
+  mirrors the process-metrics source seam.
+- `server/src/myrmidon/monitoring/board-load/request-load.ts` — a bounded ring
+  journal of finished `/api` requests and the p50/p95/p99/max summary per
+  route over a window. Percentiles are nearest-rank (the reported p95 is a
+  request the board actually served), route labels collapse ids
+  (`/api/issues/<uuid>/comments` → `/api/issues/:id/comments`) and keep the
+  words that name the endpoint, and `boardRequestLoadMiddleware()` tags and
+  journals every request on the api router.
+- `server/src/myrmidon/monitoring/board-load/cpu-profile.ts` — capture of a
+  `--cpu-prof`-shaped profile through the board itself: `inspector` session,
+  60 s ceiling, one capture at a time (`CpuProfileBusyError`), and the last
+  capture retained in memory for download. Nothing is armed until an operator
+  asks for a capture, so the default behaviour of the board does not change.
+- `server/src/myrmidon/monitoring/board-load/pg-stat-statements.ts` — the
+  top-N statements by total time read off `pg_stat_statements`, with the three
+  ways it can be missing (`extension_missing`, `extension_not_loaded`,
+  `no_privilege`) answered as a report the operator can read rather than as an
+  error. Installing the extension stays part B.
+- `server/src/myrmidon/monitoring/board-load/routes.ts` — the operator surface
+  under `/api/myrmidon/board-load/*`: `lanes`, `api-load`,
+  `pg-stat-statements` (each read behind board-org access), `cpu-profile`
+  status/capture/download (behind instance admin; `MYRMIDON_CPU_PROFILE_ENABLED`
+  set to `false` takes the capability off the board without a deploy).
+- `server/src/myrmidon/monitoring/board-load/index.ts` — the mount point:
+  `boardLoadApp(db)` next to the other myrmidon routers, plus the request-lane
+  middleware in front of everything the api router serves.
+- `server/src/myrmidon/monitoring/metrics/metrics.ts` — the exposition gains
+  `myrmidon_board_db_queries_total{lane}` and
+  `myrmidon_board_lane_busy_seconds_total{lane}`, read through the same
+  guarded scrape as the process families (a throwing lane read zeroes the
+  families and names them in `scrape_errors` instead of failing the scrape).
+- `packages/db/src/query-observer.ts` — `createDb({ onQuery })`, which reports
+  each issued statement to the caller's lane. Statements issued inside
+  `db.transaction(...)` do not pass through it (documented limitation).
+- Wiring: the heartbeat tick, the chat-reconcile fallback, the
+  execution-control sweep and the bot reconciliation timer run in their lanes;
+  the run-event write is `run_supervision` when nobody else owns the context.
+- Tests: `lanes.myrmidon.test.ts`, `request-load.myrmidon.test.ts`,
+  `routes.myrmidon.test.ts` and two cases in `exposition.myrmidon.test.ts`;
+  `selfcheck.myrmidon.test.ts` counts the seven board-process families.
+
+### A busy bot no longer holds the bot image rollout (BOT-ROLLOUT-SKIP-BUSY)
+
+- The batch pass of `bot-image-rollout.sh` no longer waits on a busy bot: a bot whose agent is not paused/idle (or whose apply answers `deferred`) moves to a tail list, and its batch ends as soon as the free bots are switched — the next batch starts at once. Before this, one busy bot held its whole batch for the full `MYRMIDON_BOT_IMAGE_ROLLOUT_BOT_TIMEOUT_SEC` (the rc.3 / rc.5 fact: 15 batches stretched to 3.5–4 h).
+- After the last batch a tail pass retries the deferred bots until the same deadline; a bot that frees up (paused/idle) switches at once, inside the same run.
+- Past the deadline an optional force stage can apply the still-deferred bots without the status gate. It is OFF by default (`MYRMIDON_BOT_IMAGE_ROLLOUT_FORCE_DEFERRED_SEC=0`): the reconciler drains only 300 s and then the maintenance interrupts a longer run, so an operator opts in with an explicit number of seconds. Without it, a still-busy bot stays deferred and the reconciler's periodic sweep completes it.
+- A failed apply (HTTP error, failed job, unexpected outcome) after the card PATCH returns the card to its previous container block, so the card names the image it had before; it is skipped when the container already runs the release image. Only the card's container block is restored: agent keys the apply pass re-issued are not rolled back. A failed revert is logged and journaled loudly.
+- The final report lists every bot still not on the release image with its reason (agent status / the deferred reason of the apply outcome), and the summary JSON gains `deferredBots: [{id, reason}]` (an addition only — no existing field renamed).
+- Ported from main (PR #820) onto the 1.6.5 release branch together with the async-apply work of the branch: one script, no duplicate pass.
+
+### The bot runtime entrypoint sets umask 077: run files are born owner-only (BOT-UMASK)
+
+- `docker/bot-runtime/entrypoint.sh` sets `umask 077` right after its `set
+  -euo pipefail` prologue, before the first mkdir/write of the bot tree, and
+  logs one line (`[bot-runtime] umask 077 (run files owner-only)`). The umask
+  is inherited by every child of the entrypoint (gateway → session →
+  terminal/tool processes), so every file a run creates — scratch dumps,
+  cache, tmp helpers written by plain shell redirection — is born `0600`
+  (directories `0700`) without any cooperation from the workload.
+- Why: every bot on a host runs as uid `10001`; the mode bits are the only
+  barrier between one run's scratch/cache and another bot's processes, and
+  the default umask 022 made run artifacts world-readable inside the shared
+  uid. There is no `UMASK` environment variable and no pam-umask (no login
+  session), so the entrypoint is the only point that covers all children.
+- Tested in `scripts/myrmidon/bot-runtime/entrypoint.test.mjs`
+  (`docker/bot-runtime/entrypoint.sh umask 077` describe): a static ordering
+  check that the umask line precedes the first file write, and a behavioural
+  probe that exec's a stub hermes recording its inherited umask — `0077`,
+  with a file born `0600` and a directory `0700`. The probe is red on the
+  base revision and green with the fix.
+
+### Fix: chat reconciliation work gates failed on every call (DB-PERF-C-P5)
+
+- The cheap work gates bound a JavaScript `Date` as a parameter inside raw
+  `sql` templates (`next_attempt_at <= $1`, `updated_at > $1`), which the
+  postgres-js driver cannot serialise. Every gate probe threw, so the log
+  filled with `Failed to reconcile chat run milestones` and `Failed to
+  reconcile chat publications` roughly every 30 seconds. Timestamps are now
+  bound as ISO strings with an explicit `::timestamptz` cast. A regression test
+  runs the gates against a real PostgreSQL.
+
+### Cross-family judge for reference-task scoring (EVALS-JUDGE-FAMILY)
+
+- The judge of an eval run is now picked from a model **family different from the evaluated agent's** model. `server/src/myrmidon/evals/model-family.ts` maps model ids to families (qwen, gpt, claude, glm, deepseek, kimi, gemini, llama, mistral, yi, phi, o1, o3 …; the table is extensible in code). Matching is token-anchored: a substring counts only at a token boundary (`deepyida` is not yi, `chaos` is not o3, `mystique`/`dolphin` are not phi).
+- A prioritized judge list (UI setting / env forced override) is scanned top-down; the first entry whose family differs from the agent model family judges the run. Default list: the free models this deployment's gateway actually serves (`qwen-plus-free, qwen-max-free, qwen-turbo-free` — `SERVED_FREE_GATEWAY_MODELS`, the same trio `DEFAULT_EVALS_MODEL` verifies); a paid model judges only when the operator explicitly lists it.
+- A gateway failure of the selected judge no longer aborts the run: the next candidate is tried, and when every priority candidate fails, the configured `MYRMIDON_EVALS_MODEL` gets a last chance. The run fails only if the whole chain fails; the last error is then re-thrown.
+- When no cross-family candidate exists, the run is still scored and every task carries `sameFamily: true` in the result plus a server-log warning — the owner sees that the judge rated "its own". The same flag marks tasks judged on the last-chance configured model.
+- The evaluated agent model and the judging model are reported per task; the agent model is resolved at run time from the subject role (`subjectModelFor`), so no schema change is needed.
+- Guides: [evals-judge-family-selection.md](../guides/evals-judge-family-selection.md) / [RU](../guides/evals-judge-family-selection.ru.md).
+
+### A queued run always says why it waits; non-startable runs are cancelled; the operator gets a `queue_stall` card (F-09)
+
+- `server/src/services/heartbeat.ts`: every silent exit of the queued-run sweep
+  now leaves a reason on the run (`waitReason`): `scheduling_suppressed` when
+  the sweep is suppressed by scheduling, `maintenance` while the agent's
+  maintenance window is open, `agent_not_invokable` for an agent that is not
+  invokable without being cancelled. The runs the admission gate leaves queued
+  carry the gate's reason, written in the same pass before the claim phase
+  (the last observed denial, `global_cap` when none was recorded). A run that no
+  exit explained keeps `waitReason = null` on purpose: the `queue_stall` card
+  names it instead of a guessed reason.
+- `server/src/modules/run-dispatch/domain/policy.ts`: a queued run whose task
+  is in `backlog` is cancelled with the new error code
+  `queued_run_issue_not_startable`, before the per-agent ceiling and fair-share
+  exits, so a busy agent loses its backlog runs too. A run whose task is hidden
+  stays queued (the Summarizer pattern).
+- `server/src/services/attention.ts` + `server/src/myrmidon/stuck-queued/attention.ts`:
+  new attention kind `queue_stall` — a queued run older than the stall
+  threshold *and* without a `waitReason` raises a card whose subject is the run
+  (`kind: "run"`, sourceId = run id), so several stalled runs never collapse
+  into one card.
+- `server/src/services/decision-queues.ts`: the `queue_stall` card resolves
+  through the queue decisions; its verbs are `inspect` (open the run) and
+  `dismiss` (the notice goes away, the run stays queued), both keyed by the run
+  id the card was raised for.
+- `server/src/myrmidon/run-admission.ts`: admission denials are counted
+  (`admissionDenials`: total, byReason, lastReason, lastAt) and exposed on the
+  runtime-limits view.
+
+### Owner decision cards now expire on a TTL and close themselves (1.6.5-F21-B)
+
+- `server/src/myrmidon/owner-reply/ttl-sweep.ts` — a scheduler-tick sweep:
+  a pending owner `request_confirmation` card older than
+  `MYRMIDON_OWNER_CARD_TTL_MS` (72 h) is closed in the first pass. A card with
+  `payload.silenceMeansRecommended: true` outside the guarded classes
+  (`money`, `external_world`, `deploy`) is resolved by its recommended option;
+  every other overdue card goes `expired` with the "expired without an
+  answer" comment on the task and ONE wake of the author with the reason
+  `interaction_expired` (the `agentWakeupRequests` idempotency key limits the
+  wake to one per card, repeat passes wake nobody). The sweep derives the
+  delivery metadata (`sentTo`/`sentAt`/`answeredAt`) from the card itself and
+  the existing owner-message comments, and folds it into the card payload.
+- `server/src/myrmidon/owner-reply/attention.ts` — the attention-feed card
+  «owner cards pending: N (older than 3 days: M)», computed live from the
+  same interaction rows; a new `owner_pending_card` source kind.
+- Tests: `ttl-sweep.myrmidon.test.ts` (the pure classification, TTL gate,
+  decision-class boundary, payload pack, env parsing) and
+  `ttl-sweep-sweep.myrmidon.test.ts` (embedded PG: overdue cards closed in
+  one pass, exactly one wake, silence resolution, the money-class guard, the
+  concurrency compare-and-set).
+
+- hermes_gateway adapter now reconciles Paperclip-managed skills before POST
+  /v1/runs: the run carries its desired skills in the paperclip_skills body
+  field, the gateway materializes them into the agent profile's
+  skills/paperclip-managed segment before the model starts, and the run fails
+  with "Cannot start without the required Paperclip-managed skills" unless
+  every desired entry is verified on the gateway side (re-read from disk).
+  An unassigned skill is removed: an empty desired set is sent as [] and the
+  gateway clears the profile's managed segment. Previously gateway
+  agents silently ran without any company skills.
+
+### Hermes profile skills are verified by fact, migrated, and never shared (HERMES-SKILLS-DELIVERY-CHECK)
+
+- `reconcileHermesPaperclipSkills` proves the result instead of trusting the install
+  calls: it reads the agent's skills directory again and names every desired skill whose
+  link is absent, broken, foreign or pointed at the wrong source. A run that cannot
+  deliver a desired skill now fails at start with the skill name and the reason instead
+  of running without it.
+- Reconcile migrates what an earlier rollout left behind in a profile: a link that
+  resolves into the shared `~/.hermes/skills` tree is relinked to the managed source of
+  the same skill, and a link whose destination is gone is moved to
+  `<HERMES_HOME>/skills.pre-myrmidon/<name>.pre-myrmidon-<date>` — kept as evidence,
+  never deleted — so the managed skill can take its place. Both steps apply to profiles
+  only; without `HERMES_HOME` the agent keeps the vendor behaviour in the shared scope.
+- The profile race is pinned by tests: two agents with different `HERMES_HOME` reconcile
+  in parallel without overwriting each other's links, and a third agent without
+  `HERMES_HOME` neither breaks nor gets broken by the profiles.
+
+### The media MCP block joins a bot profile only when the bot's card carries a media token; without one the board shows a «media not connected» attention card instead of HTTP 401 noise (1.6.5 F-11 ч.A)
+
+- Before this change the `media` MCP server (the sidecar of `tools/media-mcp`)
+  was on the static per-card MCP list of 31 bots that had no token, so every
+  media call returned `HTTP 401` — about 1 048 log lines an hour across the
+  fleet. The profile compiler now decides per bot
+  (`server/src/myrmidon/bot-containers/media-mcp.ts`, `profile-compile.ts`)
+  on the single token source: the card env entry `MEDIA_TOOLS_TOKEN`
+  (`mediaTokenFromEnv`, the frozen MEDIA-PROVISION contract of
+  `media-acl-export.ts` — the same entry the board-side exporter hashes into
+  the facade's `bots.json`). When the entry resolves non-empty, the profile
+  gets the `media:` block in `hermes/config.yaml` plus `MEDIA_TOOLS_URL` in
+  `hermes/.env`; the token itself travels in the card env, so the compiler
+  never writes or resolves a second secret. The URL comes from
+  `MYRMIDON_MEDIA_MCP_URL` (default `http://media-mcp:8080/mcp`).
+- A statically declared `media` MCP server (a card's or the instance-wide
+  `MYRMIDON_BOT_MCP_SERVERS`) no longer survives a missing card token: the
+  compiler filters the name out and the compiled profile has no `media`
+  server at all. Operators should still remove the static entry from the
+  settings — until then the filter is what stops the 401 flood.
+- Without a token there is no media block and no media env, so the bot never
+  calls the sidecar and the 401 stream stops. Instead the compiler records a
+  per-pass «media not connected» signal; the attention feed turns it into one
+  card per bot of the new source kind `bot_media_mcp` (severity `low`,
+  advisory rank 13 — one step below `model_fallback_alert` (medium)), cleared automatically as
+  soon as a pass sees the token. The bot-side client
+  (`tools/media-mcp/bot-scripts/media_client.py`) raises
+  `MediaNotConnectedError` before any HTTP request when `MEDIA_TOOLS_TOKEN`
+  is empty and the bot is not in peer-auth mode, and maps an unexpected 401
+  to the same «media is not connected» state — a configuration state, not a
+  runtime error.
+- Peer-auth bots keep working, but they lose the `media` MCP block too: the
+  block is emitted only when the card carries a bearer token
+  (`MEDIA_TOOLS_TOKEN`). A bot that authenticates to the facade by `peer_host`
+  (auth.py, `config.example.json`) sets `MEDIA_TOOLS_PEER_AUTH=1` in its card
+  env — it calls the facade directly (its scripts already know the endpoint),
+  without a bearer token; the client then sends no Authorization header and
+  does not raise. `MEDIA_TOOLS_PEER_AUTH` only affects the bot-side client;
+  the compiler does not read it and no `media` block is emitted either way.
+- The media service registry (`bots.json`) has exactly one owner: the
+  board-side exporter of MEDIA-PROVISION (`media-acl-export.ts`), which
+  rewrites it from the cards and stores sha256 digests. The compiler and the
+  bot scripts consume the registry's contract; no second generator exists.
+
+### Gateway run reattach is lease-guarded and periodic (T1.6)
+
+- A board process no longer steals gateway runs that belong to a live
+  controller. The reattach sweep (startup and the new 30-second periodic
+  pass) only claims runs whose legacy controller lease is absent or expired;
+  a live lease under another boot id is reported as skipped and left to its
+  owner. This removes the "Legacy controller lease lost" abort when a second
+  board process starts alongside a running one.
+- A graceful hot restart still adopts its predecessor's runs immediately:
+  the departing process records its controller boot id in the restart-intent
+  shutdown snapshot, and the successor's startup pass marks it adoptable, so
+  no run is waited out or duplicated.
+- When an executor process dies, its gateway runs are reattached on a live
+  process by the periodic pass once the lease expires — before the orphan
+  reaper's stale window finalizes them as "Process lost".
+- Single-process boards keep the previous behavior: startup reattach runs
+  exactly as before, plus the same sweep now also ticks periodically.
+
+### 1.6.5 STACK-UPDATES: optional GitHub token for the stack release check
+
+- `MYRMIDON_STACK_GITHUB_TOKEN` (secret class): an optional read-only GitHub
+  token (fine-grained PAT with public-repo read, no scopes needed) for the
+  scheduled and manual stack release check. When set, every api.github.com
+  request of the check (release/tag lists and the compare API — one shared
+  JSON port) carries `authorization: Bearer <token>`.
+- Anonymous behaviour is the default: unset or blank env → no authorization
+  header, the 60 requests/hour per egress IP budget. A valid token lifts the
+  budget to 5000 requests/hour.
+- An invalid or revoked token is ordinary data: GitHub answers 401/403 and the
+  status is recorded per component as an HTTP error, the previous cache is
+  kept — exactly like any other HTTP status. The value is never logged and
+  never returned by any route.
+
+### Stale-block watchdog: an event reason can carry a deadline (BLOCKER-WAKE-LOOP B)
+
+- `unblockDescriptor.reasonRef {kind:"event"}` accepts an optional `dueAt`
+  deadline. Once it passes, the reason is judged dead even while the
+  `isEventStillSet` seam still reports the gate set — an unwired gate key can
+  no longer hold a task blocked forever (the seam default is still-set).
+- A deadline lift is reported as "the event deadline passed" in the system
+  comment and the activity row. Event reasons without a deadline and all
+  `kind:"date"` reasons are judged exactly as before (backward compatible).
+- New executor-facing section "Waiting on an external condition" in
+  `docs/myrmidon/guides/stale-block.md` (+ Russian mirror): express a date,
+  tag or event wait as `reasonRef {kind:"date"|"event", dueAt}` or an issue
+  monitor `executionPolicy.monitor.nextCheckAt` — never a homemade
+  blocked↔todo wake loop; the watchdog is the ceiling, the monitor is the
+  alarm clock.
+
+### 1.6.5 F-07 /agents: grouped agent list with a role, a live status and default aliases
+
+- `/agents` in a bridged Telegram DM prints one group per direction instead
+  of a flat list: the title comes from the card itself
+  (`agents.metadata.telegramGroup`) or, when it is absent, from the agent-name
+  prefix (`adm-*` → Infrastructure / Myrmidon, `bbq-*` → bbq, `work-*` → work,
+  the rest → Other). Group titles are catalogue strings (en + ru).
+- Every line names the agent, its role (`agents.title`, one line), its live
+  status (`agents.status`: idle / running / paused, localised) and its aliases;
+  the current addressee is marked.
+- Written-off cards no longer take a slot: terminated, pending-approval and
+  retired-by-name (`-retired` suffix) agents, plus service cards without a live
+  board presence, are hidden. Paused cards stay out of the default list and
+  come back on request (`listCompanyAddressableAgents(..., { includePaused: true })`),
+  and a group holding paused cards says how many wait. The fixed
+  60-agent cut-off is gone — the Telegram transport splits a long reply itself.
+- Default aliases: an agent without `telegramAliases` answers to the last
+  dash-separated segment of its name, lower-cased (`qa-dev-eng-15` → `15`);
+  collisions get `-2`, `-3` (`work-runner-2` → `2-2` when `2` is taken). It is
+  computed on read only — nothing is written to the card — and `/to`,
+  `/who` and `@mention` all resolve it through the same loader.
+
+### 1.6.5 F-26 SWARM: board events reach the matcher
+
+- The issue service (`services/issues.ts`) calls `notifySwarmIssueEvent`
+  (`server/src/myrmidon/swarm-claim/events.ts`) after a create and after an update: a ready
+  task created without an owner, and a change of status, of the owner (taken off), of the
+  caste label or of the blockers on such a task, go to `matcher.forIssue`. The hook never
+  throws into the caller and never blocks the write; inside someone else's transaction the
+  pairing waits for the commit.
+- Lifting an agent's pause (`resumeAgentAfterPause`) calls `matcher.forAgent`.
+- Turning the swarm off takes effect without a restart: the matcher is built per event and
+  reads the switch at that moment; a swarm that is off does not touch the database.
+- `claimNextTaskForAgent` and `POST …/swarm-claim/claim` take the task through
+  `matcher.forAgent` (an explicit pull: the agent's live run does not make it busy and nobody
+  is woken) instead of inserting a lease of their own.
+- The supervisor's lease release (`rebalance.ts`) now takes the owner off the task and calls
+  `matcher.forIssue`; "wake the next agent of the role by load" is gone — it produced the same
+  pair again and the `reassigned → skipped` cancellation.
+
+### 1.6.5 F-26 SWARM (final review): castes in the supervisor rebalance, pilot leftovers, the real wake path
+
+- The supervisor's rebalance matcher (`swarm-claim-supervisor/routes.ts`) is built with the caste
+  directory (`createCasteDirectoryReader`), like the sweep and the claim API: a task released by the
+  supervisor is not handed to an agent of a `swarmEligible=false` caste and respects the caste ceiling.
+- Pilot leftovers are gone: the subtitle and the pilot report columns in the supervisor page locales,
+  the "swarm claim pilot" paragraph and the `swarm_claim_queue` wake in the `paperclip` skill (now: the
+  board itself assigns a task to a free agent of the caste and wakes it on that task), README lines.
+- An embedded-Postgres test with the real wake path: the matcher assigns the task, the wake goes
+  `queueIssueAssignmentWakeup` -> `heartbeat.wakeup`, a run for the task is created and is not closed as
+  `skipped` / `issue_reassigned`.
+
+### 1.6.5 F-26 SWARM (review of 09.10): the loop, the assignment transaction, castes and the host gate, a lease with a wake
+
+- The loop on the release path is closed: a freed agent is not offered the task whose run has
+  just ended (`excludeIssueId`); its own assigned `todo` task is woken only while idle pickup is
+  on (instance switch and the agent card) and out of the company's shared per-minute wake
+  budget. A task inside its cooling window is neither assigned nor woken: the matcher asks the
+  product's one cooling rule — `isIssueCoolingDown` of `wake-task-guard.ts` (F-26 T5, design
+  §4.3; the base and ceiling of the window are `general.swarm`) — through the adapter
+  `swarm-claim/cooling.ts`. The matcher keeps no rule of its own. The rule now reads not only
+  runs with `invocation_source = 'automation'` but also runs woken for `swarm_matched` /
+  `swarm_claim_queue` / `idle_pickup` whatever their source: the matcher wakes the assignee
+  through the assignment path (`assignment`), and a task it keeps handing out that keeps
+  failing cools down too. A person's manual runs never start a cooling.
+- The matcher's assignment is one transaction: a lock on the task row, the lease, the
+  assignment through the issues service (its checks, its event and the `issue.updated`
+  activity). The wake is queued after the commit with `rethrowOnError`; when it cannot be
+  queued (an error or an admission refusal) the assignment and the lease are rolled back and
+  `issue.swarm_matched_rolled_back` is logged. "Assigned, leased, no run" can no longer happen.
+- The caste directory (`swarmEligible`, the caste ceiling) reaches the periodic pass and the
+  release path (`createCasteDirectoryReader`). The release path and the re-match of an expired
+  lease go through the host's real run-admission gate (memory and CPU); with the gate closed an
+  expired lease is not released and its owner stays.
+- A lease with no run does not expire while a wake for its task is in flight (`queued` /
+  `deferred_issue_execution` / `claimed`, not parked on a hold). "Has a live run" at expiry
+  means a live run of THIS task, not any run of the agent.
+- Only an agent the wake layer will accept enters the matcher's pool: invokability
+  (`evaluateAgentInvokability` — status and the reporting chain), the maintenance window and the
+  budget block (`swarm-claim/availability.ts`). A wake refused anyway hands the same task to the
+  next agent of the pool in the same pass — one agent that cannot be woken no longer starves a
+  task or writes a rollback every 30 seconds. A task whose project hit its budget (the same block
+  the wake layer checks with the task's issue and project) is skipped with no lease, wake or
+  rollback; the agents stay free for the rest of the caste's queue.
+
+### 1.6.5 F-26 SWARM: the supervisor's pilot report is removed
+
+- There is no swarm pilot any more, and with it no "pilot vs BASELINE" report: removed
+  `swarm-claim-supervisor/pilot-report.ts`, the route
+  `GET …/swarm-claim/supervisor/pilot-report`, the variable `MYRMIDON_SWARM_PILOT_BASELINE_DOC`,
+  the `pilotReport` client in `ui/src/api/swarmSupervisor.ts` and the "Pilot vs BASELINE" tab on
+  the supervisor page. The role overview, the queues, the leases and the manual lease release stay.
+
+### 1.6.5 SWARM-SETTINGS: the swarm has one switch, there is no pilot
+
+- Instance → General → **"Self-organisation (swarm)"**: one `Swarm enabled` switch (off by
+  default; in production it is turned on by `MYRMIDON_SWARM_CLAIM_ENABLED=1` or here). Which
+  agents take part is decided by the caste directory (the caste's `swarmEligible` flag) and the
+  switch in the agent's card (`swarmQueueEligible`), nothing else.
+- Removed: the "Roles in scope" and "Companies in scope" fields, the "Idle wake batch" field,
+  the variables `MYRMIDON_SWARM_CLAIM_ENABLED_ROLES`, `MYRMIDON_SWARM_CLAIM_ENABLED_COMPANY_IDS`,
+  `MYRMIDON_SWARM_IDLE_WAKE_BATCH`, the function `orderIdleWakeAgents`, and the hardcoded rule "an agent others report to takes no tasks"
+  (`hasDirectReports`). A lead gets tasks when its caste is `swarmEligible`; to keep it out,
+  give it a caste with the flag off or turn the switch off in its card.
+- The swarm settings stay under `general.swarmClaim` (`general.swarm` is the F-26 wake-guard
+  block: the run-only-with-a-task gate and the cooling window). A value saved by an earlier
+  build with the pilot fields is read as is: the extra fields are dropped and the switch is not
+  lost.
+- The release reason for leases freed when the swarm is switched off is now `swarm_disabled`
+  (was `pilot_disabled`); old activity rows stay as they were.
+- How to check: turn the switch on and watch the status line under it —
+  "claimed in the last hour" grows, "cancelled in the last hour" does not. Details in
+  [guides/swarm-claim-settings.md](../guides/swarm-claim-settings.md).
+
+### 1.6.5 F-26 SWARM: the board pairs a task with a free agent itself
+
+- The board now has a matcher (`server/src/myrmidon/swarm-claim/matcher.ts`, design §3): for a
+  ready task it finds a free agent of the task's caste in its nest, writes the lease
+  (`issue_claims`) and sets the assignee in one transaction, and only then wakes that agent —
+  a wake always carries the id of a task that already belongs to it (key
+  `swarm_matched:<issueId>`). No free agent — nobody is woken. A pick refusing one task does
+  not close the queue.
+- The matcher is wired into the production path: the sweeper's safety net
+  (`swarmClaimSweeper.sweep()`) calls `matchCompany` instead of the old idle pass; the release
+  path of a run (`heartbeat.ts`) calls `forAgent` for the freed agent instead of idle-pickup
+  while the swarm is on; a lease expired on a `todo` with no run behind it takes the owner off
+  the task (activity `issue.swarm_claim.unassigned_on_expiry`) and re-matches it; the explicit
+  pull `POST …/swarm-claim/claim` goes through the same `forAgent`.
+- The agent's own assigned task comes first: it is woken on a ready task of its own that has
+  neither a live lease nor a wake in flight. Assigning only `assignee IS NULL` tasks was a
+  regression — such a task never reached its own agent again.
+- There is no rotation, and none is written: the pick is the scent (T10), a full tie goes to
+  the smallest `agents.id`; the "longest idle first" order is gone from the core.
+- Removed with the pass: `sweepIdleWakes`, `idle-wake.ts`, `idle-queue.ts`,
+  `MYRMIDON_SWARM_IDLE_WAKE_BATCH` and its read in `sweep.ts`, `wakeNextAgentForIssueRole`
+  (releasing the lease and re-matching replaces "wake the next agent of the caste").
+- The pilot is removed entirely (see the separate swarm-settings entry): the "Roles/Companies
+  in scope" fields, the variables `MYRMIDON_SWARM_CLAIM_ENABLED_ROLES` / `_COMPANY_IDS` and
+  `idleWakeBatch` are gone from the schema, the UI and the env. The swarm is turned on by one
+  switch; whether an agent takes part is decided by the caste directory (`swarmEligible`) and
+  the switch in the agent's card.
+- The matcher has no order, routing or cooling rule of its own — it asks the ones the product
+  has. A caste's pool is read with the F-27 queue SQL: the caste of an unassigned task is
+  `unassignedTaskRoutedToRole` (the task's caste → the project's default caste → the `role:`
+  label → the default role), the order is `swarmQueueOrderBy` (P0 → effective pheromone
+  strength: strength + aging − the penalty for failed runs from `failedRunsDerivedSql` → age →
+  id). The matcher walks the rows in that order and never re-sorts them. The cooling is
+  `isIssueCoolingDown` of `wake-task-guard.ts` (F-26 T5) through the adapter
+  `swarm-claim/cooling.ts`; a task inside its cooling window is neither assigned nor woken.
+
+### The owner's answer in a chat does not wait for the automatic-run floors (1.6.5 OWNER-CHAT-ADMISSION, rc.7)
+
+- An answer to a message the owner wrote in a chat (Telegram or web) is admitted by `minFreeMemoryMb`, the hard floor, applied to the server container's free memory and to the host's `MemAvailable` (less the budget of runs still starting). The host floor `minFreeHostMemoryMb` and the CPU ceiling `maxHostLoadPercentPerCore` pace the automatic runs (schedules, monitors, background follow-ups) and no longer hold the owner's own turn back: with the host between `minFreeMemoryMb` and `minFreeHostMemoryMb` the answer starts at once while the automatic runs stay `queued`; on a host below `minFreeMemoryMb` it waits too.
+- The turn is recognised by its durable inbound chat receipt (`chat-inbound:…`, actor `user`) that the queued run points at; the chat's own "retry the failed run" button and a chat wake opened by a system actor are not the owner's turn. The sweep ranks the owner's turns ahead of every automatic run, whatever task state either has (a turn whose task waits for dependencies keeps its place behind the ready runs), so a turn that still waits is the first one started. The idempotency key prefix `chat-inbound:` is reserved: the public agent wakeup routes reject it (`422`).
+- The chat notice is staged only while the turn really waits, i.e. while `minFreeMemoryMb` holds it (on the container or on the host); the old text "the server is short of memory" no longer appears for a merely busy host. The notice says the answer is first in the queue and that the queue is re-checked every 15 seconds; it does not promise a start time. Nothing changes for a run that stays `queued`: its wait reason still reads `host_memory` / `host_cpu` / `memory`.
+- The pipeline, the operator's card and the queue screen say who waits at which value: the host floors and the CPU ceiling wait for the automatic runs, `minFreeMemoryMb` waits for everything.
+
+### Multi-process board mode (BOARD-PROCESSES): operator documentation
+
+The board can run as several Node processes in one container: one worker holds
+the loops and singleton state, and N api children (1..4) serve HTTP with
+`reusePort`. The mode is set in the interface at Instance settings → «Процессы»
+and applies without a restart. The default stays `single` (one process does
+everything) — nothing changes unless the operator explicitly switches to
+`split`. An emergency fallback `PAPERCLIP_PROCESS_MODE=single` forces the
+one-process mode on boot, bypassing the database. Documentation of the mode,
+its settings, ports, and dockergate implications is in deploy.md, SETTINGS.md,
+and dockergate.md.
+
+### Prompt-budget advice and deep analysis (PROMPT-BUDGET part C)
+
+- The agent card's Overview tab carries a "Prompt budget advice" panel: the last run's
+  prompt breakdown by parts, a concrete recommendation for every part whose share crosses
+  30% (Critical from 50%; below 2000 prompt tokens no advice is produced — the thresholds
+  are code constants, not settings), and a "Deep analysis" button that files a task for a
+  cheap-model optimizer agent. The optimizer drafts instruction edits as a comment on that
+  task; nothing is scheduled and nothing is changed automatically.
+- The optimizer agent is the instance general setting `promptBudget.optimizerAgentId`
+  (no environment variable); the deep POST answers 422 with a clear message when it is
+  absent, not a uuid, the analysed agent itself, or not an agent of the company. Dedup:
+  one deep task per target agent per run.
+- API: `GET /api/myrmidon/companies/:companyId/prompt-budget/agents/:agentId/advice`
+  (company member), `POST .../advice/deep` (board). Operator guide:
+  [guides/prompt-budget-advice.md](guides/prompt-budget-advice.md).
+
+### Review routing by pull-request events (REVIEW-ROUTING-PR-A)
+
+- The review-routing sweep now also watches pull requests, so a review task is
+  born the moment a PR turns green instead of waiting for the next manual
+  "work through the PR queue" round. The shared `reviewRouting` settings gain a
+  `prWatch` block (`enabled`, `repositories`, `maxOpenReviewsPerReviewer`,
+  `maxNewAssignmentsPerPass`, `pollIntervalSec`, `steward.{enabled, roles,
+  maxMergesPerSteward}`); every field absent or malformed falls back to its
+  default without blanking the sibling keys, the same rule the outer block
+  already follows.
+- A pass resolves each open PR's head through GitHub (combined commit status —
+  no statuses at all counts as green for repos without CI — plus the review
+  decision derived from `GET /pulls/{n}/reviews`: latest verdict per reviewer on
+  the current head; the REST PR object has no such field). The status read is
+  cached per (repo, number, head sha) for 300 s, reviews are read fresh. A green head
+  with no verdict on that exact head gets a review task assigned to the
+  least-loaded eligible reviewer (board load and open PR-review load both
+  capped, never the PR author's linked agent, never a non-invokable agent); an
+  APPROVED green head additionally gets a merge-steward task for the
+  least-loaded agent of the steward roles. Tasks are created through the normal
+  issue path (activity log, checkout locks, review-stage machinery), carry a
+  `pull_request` work product stamped with the head sha and the routing kind,
+  and wake their assignee the same way board routing does.
+- Pushing a new commit supersedes the open task of the same lane: it is
+  cancelled with a system comment naming the new head, and the new head gets
+  its own task on the same pass. Closed or merged PRs are left to PR-sync — the
+  lane never settles them. When GitHub is unreadable the lane is inert: an
+  unknown head creates nothing, closes nothing and counts no failure.
+- New attention cards when nobody is eligible: `no_reviewer` for a green PR
+  without a free reviewer, `no_steward` for an approved PR without a free
+  steward, each carrying the PR coordinates (repository, number, head) for the
+  settings screen and the attention desk. Activity actions
+  `issue.review_routing.pr_task_created` and
+  `issue.review_routing.steward_task_created` mark every created task, and the
+  sweep result gains `prScanned`, `prTasksCreated`, `stewardTasksCreated` and
+  `prSuperseded` counters.
+- `pollIntervalSec` throttles only the PR lane; the board-task lane keeps its
+  existing 60 s behavior, and a settings change applies on the next pass
+  without a restart.
+
+### An agent starts its most important ready task first, and starvation no longer outranks it (1.6.5 RUN-PRIORITY-PICK)
+
+- The per-agent pass of the run sweep now starts the agent's **most important
+  ready task** instead of merely the best of the runs already standing in the
+  queue. An event run on a low-priority task (a comment, `issue_continuation_needed`,
+  `execution_hold_cleared` and the like) no longer holds the agent while its
+  critical task — assigned, ready and without a run — waits for a slot it never
+  entered: the task that never got a run was the one the comparison could not
+  see, because the single selection by task importance ran only for an agent
+  without a live run. The pass reads the agent's top ready task with the idle
+  pickup's own rules, compares **task** importance — the issue-priority step
+  plus the pheromone strength, never the composed run weight, so a
+  long wait can never outrank it — and when it is strictly more important than
+  the best standing run, wakes it and leaves the standing runs queued with the
+  wait reason `higher_priority_ready` (`Более важная готовая задача агента` /
+  `the agent's more important ready task goes first` in the runs panel, en/ru).
+  Only a real wake reorders anything: an exhausted wake budget, a paused agent,
+  a coalesced duplicate or the idle-pickup behaviour switched off all fall back
+  to the pass's own order, so the sweep can never hold an agent without giving
+  it work instead.
+- An operator's Stop stays durable: the cancelled task is not pushed back into
+  the queue by the sweep alone — it becomes fair game again only on a newer
+  event on that task.
+- "Starved for longer than the limit" no longer means "above every critical
+  task of any role": the starvation escape lift is bounded by the distance to
+  the next issue-priority step, so it lifts a run inside its own importance step
+  and can never reach a more important task, whatever the wait. A run of the
+  heaviest step keeps the escape lane — nothing is more important than a
+  critical task — and aging keeps its own, unchanged budget.
+
+### Merge steward refreshes the head with update-branch and waits for green CI (UPDATE-BRANCH-STEWARD)
+
+- The review-routing merge steward lands approved PRs in the open. When the
+  sweep sees an APPROVED green head, the steward task it creates carries an
+  explicit three-step landing path: `gh pr update-branch <repo>#<n>` (GitHub's
+  `PUT /repos/{owner}/{repo}/pulls/{pull_number}/update-branch` — a no-op when
+  the branch is already current), then waiting for the refreshed head to go
+  green, then `gh pr merge <repo>#<n> --merge`.
+- The wait is enforced by the lane's own head rules, not by new code: the
+  update-branch push moves the PR head, so the review verdict must be
+  re-checked on the new head (the resolver filters reviews by the current head
+  sha), and the old steward task is superseded and cancelled the moment the
+  recorded head stops matching. The sweep creates a fresh steward task for the
+  new head only when it turns green with APPROVED on it — which is precisely
+  "wait for green CI on the updated branch, then merge".
+- The freshness guarantee lives in the open: the `main-protection` ruleset
+  runs with strict required status checks and GitHub refuses to merge a PR
+  whose branch is behind its base, so update-branch before the merge is what
+  keeps the landing head — and after it main — green. The refresh works on any
+  repository, including `itkadr-git/myrmidon` (a personal account, where
+  platform-side ordering features do not exist).
+- No settings changed and no new environment variables: the merge-steward
+  block (`prWatch.steward`) keeps its shape; only the action the created
+  steward task instructs changed.
+
+### Voice STT runtime settings: full contour over the API (VOICE-STT A1-fix)
+
+- `PATCH /api/myrmidon/companies/:companyId/voice-stt` now accepts `baseUrl`,
+  `keySecret` and `deepgramKeySecret` on top of the previous fields
+  (`enabled`, `backend`, `model`, `language`, `diarization`,
+  `maxDurationSec`): the whole STT contour (gateway/Deepgram address and the
+  secret names) can be set per company without an env change or a restart.
+  The fields share the null-semantics of `model`: an explicit `null` clears
+  the stored value back to the environment default, an omitted field keeps
+  the current one. The GET response (the `settingsView`) keeps `baseUrl` but
+  does not return `keySecret` / `deepgramKeySecret` — secret names are
+  write-only over the API, secret values are never returned. See
+  [SETTINGS.md](SETTINGS.md), the VOICE-STT section.
+
+## 1.6.5
+
 ### Central session history for gateway bots (MEMORY-CENTRAL-B)
 
 - With `MYRMIDON_BOT_CENTRAL_HISTORY=1` (off by default) the Hermes gateway
