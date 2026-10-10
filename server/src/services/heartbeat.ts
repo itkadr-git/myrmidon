@@ -698,6 +698,16 @@ import {
   sharedRunAdmission,
   type RunAdmissionDenialReason,
 } from "../myrmidon/run-admission.js";
+// myrmidon(1.6.6 RUN-DISPATCH, OPE-6443): the start-strategy dispatcher and the
+// 30 s resweep for "queued without running" — part A of T1.4 (design OPE-5394).
+// The default mode is the vendor path, unchanged; see the module for the contract.
+import {
+  createRunStartDispatcher,
+  listAgentsWithQueuedRunsAndNoRunningRun,
+  queuedResweepArmDecision,
+  startQueuedResweepTimer,
+} from "../myrmidon/run-dispatch/index.js";
+import { loadRunDispatchSettings } from "../myrmidon/run-dispatch/settings.js";
 // myrmidon(PERF-DIET-K): issue-scoped session generations for the container
 // Hermes gateway — one task's session key gains a `:g<N>` once it passes its
 // age/activity threshold, so the task's Hermes state stays bounded
@@ -20044,6 +20054,50 @@ export function heartbeatService(
     });
   }
 
+  // myrmidon(1.6.6 RUN-DISPATCH, OPE-6443): the start dispatcher and the periodic
+  // resweep for "queued without running" — part A of T1.4 (design OPE-5394,
+  // section 3 channel `run_queued`, line 140). The strategy lives in
+  // `instance_settings.general.processes.runStartDispatch`, default `inline`,
+  // which is the vendor path above, byte for byte; the interval lives in
+  // `...processes.queuedResweepSec`, default 30.
+  //
+  // The resweep is the fallback the queue never had: a queued run is started
+  // synchronously from wakeups/completions, and the 15 s resweep of
+  // run-admission.ts is a one-shot timer armed only after an admission denial.
+  // A start request whose notification never arrives therefore waits for the 5 min
+  // scheduler tick (`resumeQueuedRuns`, index.ts). This pass closes that gap once
+  // per interval on the process that owns the queue, independent of the process
+  // bus (T1.3) the `notify` mode will publish to.
+  const runDispatchLog = {
+    info: (fields: Record<string, unknown>, message: string) => logger.info(fields, message),
+    error: (fields: Record<string, unknown>, message: string) => logger.error(fields, message),
+  };
+  const runStartDispatcher = createRunStartDispatcher({
+    listQueuedAgents: (options) => listAgentsWithQueuedRunsAndNoRunningRun(db, options),
+    startNextQueuedRunForAgent: (agentId, options) => startNextQueuedRunForAgent(agentId, options),
+    loadSettings: () => loadRunDispatchSettings(db),
+    readCutoff: () => getWorktreeExecutionCutoff(),
+    log: runDispatchLog,
+  });
+  // The worker timer of the pass. Part B swaps this local arming rule for the role
+  // gate of T1.1 (`role.executesRuns` plus the background-work gate); until then it
+  // is off under a test runner and can be switched off with
+  // MYRMIDON_QUEUED_RESWEEP=0 — see queuedResweepArmDecision.
+  const queuedResweepArming = queuedResweepArmDecision(runtimeEnv);
+  const stopQueuedResweep = queuedResweepArming.armed
+    ? startQueuedResweepTimer({
+        sweep: () => runStartDispatcher.sweepQueuedWithoutRunning(),
+        loadSettings: () => loadRunDispatchSettings(db),
+        onError: (err) => logger.error({ err }, "queued run resweep pass failed"),
+      })
+    : null;
+  if (!queuedResweepArming.armed) {
+    logger.info(
+      { reason: queuedResweepArming.reason },
+      "queued run resweep is not armed in this process",
+    );
+  }
+
   // Await every background heartbeat execution that is currently in flight. A
   // draining run can, in its finally block, promote and dispatch the next queued
   // run for the same agent — that follow-up execution is registered in the set
@@ -20061,6 +20115,10 @@ export function heartbeatService(
     for (const timer of nativeSessionResumeDispatchTimers.values()) {
       clearTimeout(timer);
     }
+    // myrmidon(1.6.6 RUN-DISPATCH, OPE-6443): disarm the periodic queued resweep
+    // with the rest of the background work, so a drained service has no pass left
+    // scheduled behind it.
+    stopQueuedResweep?.();
     nativeSessionResumeDispatchTimers.clear();
     while (
       activeWakeupPromises.size > 0 ||
@@ -30203,6 +30261,10 @@ export function heartbeatService(
     // step is due; logic in myrmidon/auto-resume.ts. Called by the scheduler
     // tick in server/src/index.ts on its own single-flight queue.
     sweepAutoResume: (now?: Date) => autoResumeSweeper.sweep(now),
+    // myrmidon(1.6.6 RUN-DISPATCH, OPE-6443): one pass over the agents that have a
+    // queued run and no running run. The 30 s worker timer calls it; tests and the
+    // `notify` mode's fallback (part B) can call it directly.
+    sweepQueuedRunsWithoutRunning: () => runStartDispatcher.sweepQueuedWithoutRunning(),
     // Override-aware scheduling-suppression check (honors the worktree
     // run-execution experimental setting). Callers outside the service that
     // gate on suppression should prefer this over the env-only resolver.
