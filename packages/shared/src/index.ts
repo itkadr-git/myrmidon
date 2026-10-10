@@ -2811,6 +2811,14 @@ export * from "./myrmidon-bot-workspace.js";
 export * from "./myrmidon-session-generations.js";
 // myrmidon(C0): live run-admission limits shared by the server, the UI and the settings validator.
 export * from "./myrmidon-runtime-limits.js";
+// myrmidon(RUN-STALL-SETTINGS): live run-stall detection settings shared by the server, the UI
+// and the settings validator.
+export * from "./myrmidon-run-stall.js";
+// myrmidon(1.6.6 PROCS-J): the board's process composition — the counts stored in
+// `instance_settings.general.processes`, their resolution against today's single process
+// and the startup refusal of a row that asks for no process at all. Shared by the server
+// (the startup gate), the settings validator and the settings types.
+export * from "./myrmidon-board-processes.js";
 // myrmidon(1.6.6 CORPUS-2.0 ч.C): the knowledge-corpus module contract — settings
 // (switch, parse service, embedder, limits), wire shapes and route paths — shared by
 // the server (ч.C), the MCP tools (ч.D) and the board UI screen (ч.E).
@@ -2861,7 +2869,11 @@ export * from "./myrmidon-telegram-notify.js";
 // myrmidon(1.6.1-WIP-LIMIT-A): the shared contract of the per-agent WIP limit —
 // the settings shape, the limit resolver and the status feed rows.
 export * from "./myrmidon-wip-limit.js";
+// myrmidon(1.6.6 QUOTA-V2): the shared contract of the project token quota —
+// the stable refusal code, window kinds, quota/body schemas and the message.
+export * from "./myrmidon-project-token-quota.js";
 export * from "./myrmidon-prompt-budget.js"; // myrmidon(1.6.3 PROMPT-BUDGET B)
+export * from "./myrmidon-long-task-context.js"; // myrmidon(1.6.6 LONG-TASK-CONTEXT)
 // myrmidon(1.7-BUDGET-CONFIG-B): the shared contract of budget enforcement —
 // the global mode (signal_only / soft / hard), its storage key and resolver.
 export * from "./myrmidon-budget-enforcement.js";
