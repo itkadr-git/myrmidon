@@ -79,7 +79,9 @@ describeProcs("worker process on one test database (PROCS-1.5 ч.H)", () => {
       port: await pickFreePort(),
     });
     // The worker child: owns the heartbeat executor and the background
-    // sweeps, answers only its loopback readiness probe.
+    // sweeps, answers its loopback readiness probe on a port of its own —
+    // the board listener of the worker child still binds PORT (stage 1), so
+    // the probe port must not collide with it.
     worker = await startApiProcess({
       baseDir,
       index: 1,
@@ -88,6 +90,7 @@ describeProcs("worker process on one test database (PROCS-1.5 ч.H)", () => {
       entry: WORKER_ENTRY,
       readyPath: "/internal/ready",
       port: await pickFreePort(),
+      probePort: await pickFreePort(),
       // The worker boot runs the full startServer startup (migrations check,
       // recovery, sweep arming) before the probe reports ready — give it the
       // same budget the cold-boot api children get.
