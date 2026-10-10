@@ -134,6 +134,7 @@ import { createPauseGuardSweepFromHeartbeat } from "./myrmidon/pause-guard/index
 import { startRunPriority } from "./myrmidon/run-priority/index.js"; // myrmidon(1.6.5 RUN-PRIORITY A)
 import { startBotContainers, stopBotContainers } from "./myrmidon/bot-containers/startup.js"; // myrmidon(W2a)
 import { startLitellmCostSweep, stopLitellmCostSweep } from "./myrmidon/litellm-costs/startup.js"; // myrmidon(M2-A)
+import { startBoardProcessRegistry, stopBoardProcessRegistry } from "./myrmidon/process-registry/index.js"; // myrmidon(1.6.5 PROCS-0.1)
 import { startLitellmBudgetSync } from "./myrmidon/litellm-budget-sync/index.js"; // myrmidon(1.7-BUDGET-CONFIG-C)
 import { startLitellmModelReconciliation } from "./myrmidon/litellm-sync/startup-reconciler.js"; // myrmidon(1.6.1 MODEL-PROVIDERS B)
 import { startModelFallbackSignalSweep } from "./myrmidon/litellm-fallback-signal/sweep.js"; // myrmidon(BOT-RUNTIME-TUNING D)
@@ -1713,6 +1714,21 @@ async function startServerWithDatabaseTeardown(
     startStackCheckSweep(db as any); // myrmidon(SUB): scheduled stack release check; a no-op unless MYRMIDON_STACK_CHECK_INTERVAL_SEC is set
     startTelegramNotifyJobs(db as any); // myrmidon(1.6.1-TG-NOTIFY-B): digest/escalation jobs; a no-op unless the owner settings enable them
     startTgNotifySweep({ db: db as any, settings: dbErrorChannelSettingsSource(db as any) }); // myrmidon(1.6-TG-NOTIFY-C): board errors → Telegram chat/topic; a no-op unless the owner settings enable it
+    // myrmidon(1.6.5 PROCS-0.1): the process registry pulse — this process's
+    // row every 10 s, stale rows reaped by the process that owns timers. The
+    // behavior with mode=single is exactly today's: one process, one row.
+    {
+      const boundBoardAddress =
+        typeof server.address === "function" ? server.address() : null;
+      startBoardProcessRegistry(db as any, {
+        apiPort:
+          typeof boundBoardAddress === "object" && boundBoardAddress
+            ? boundBoardAddress.port
+            : listenPort,
+        onError: (error, phase) =>
+          logger.warn({ err: error, phase }, "board process registry tick failed"),
+      });
+    }
     startScentQueue(db as any); // myrmidon(1.6.5 F-26 T10 SCENT): the markup queue on its own timer — never a heartbeat pass; a no-op unless general.swarm.scent.enabled
     const heartbeatSchedulingSuppression = await heartbeat.resolveSchedulingSuppression();
 
@@ -2342,6 +2358,7 @@ async function startServerWithDatabaseTeardown(
     runContextColumnsBackfill?.stop(); // OPE-5007 П2
     stopBotContainers(); // myrmidon(W2a)
     stopLitellmCostSweep(); // myrmidon(M2-A)
+    stopBoardProcessRegistry(); // myrmidon(1.6.5 PROCS-0.1)
     stopBaselineSnapshots(); // myrmidon(1.6-BASELINE)
     stopDatastoreCare(); // myrmidon(DBC-4)
     stopForagingSweep(); // myrmidon(1.6-FORAGE)

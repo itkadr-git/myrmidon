@@ -67,6 +67,18 @@ edit, and delete castes; the role on the agent card is a key from this
 directory, and changes are visible to the swarm at once, without a restart
 ([custom-castes](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/custom-castes.md)).
 
+## Parallel helpers
+
+Agents can split a task across parallel helper subagents
+(`delegate_task`). On the card of a `hermes_gateway` agent, the **Parallel
+helpers** section turns this on and sets the per-agent limit, the helper
+model and an optional per-helper turn budget; **Instance → General →
+"Parallel helpers"** sets the company ceiling (default `10`, hard cap `50`)
+and the per-agent default (`2`), and shows a capacity hint summing the
+resolved limits against the host's build slots. Saving applies on every bot's
+next reconcile tick, without a restart. Details:
+[parallel-helpers](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/parallel-helpers.md).
+
 ## Backups
 
 The database backup retention policy lives in the general instance settings
@@ -78,6 +90,15 @@ that fails verification is deleted, previous backups are kept and the run
 fails with the reason
 ([changelog](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/CHANGELOG.md),
 1.6.5 BACKUP-KEEP-LAST).
+
+Backup and restore runs are not bounded by the database's
+`statement_timeout`: since 1.6.5 every connection the backup or the restore
+opens sets the session `statement_timeout` to `0` — no limit — (a startup
+parameter of the JavaScript client, and `PGOPTIONS="-c statement_timeout=0"`
+for the pg_dump/psql child processes), so a long `COPY` of a large table is
+never aborted by a database-wide limit set with
+`ALTER DATABASE ... SET statement_timeout`. All other board connections
+keep the database limit unchanged (1.6.5 BACKUP-STATEMENT-TIMEOUT).
 
 ## Also in the interface
 

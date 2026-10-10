@@ -43,7 +43,10 @@ import { ReviewReworkSettingsPanel } from "@/components/myrmidon/ReviewReworkSet
 import { ForagingSettingsPanel } from "@/components/myrmidon/ForagingSettingsPanel"; // myrmidon(1.6.1-FORAGING-LIMITS-UI)
 import { AboutSettingsPanel } from "@/components/myrmidon/AboutSettingsPanel"; // myrmidon(ABOUT)
 import { DeployJobsPanel } from "@/components/myrmidon/DeployJobsPanel"; // myrmidon(R5-A)
+import { BoardProcessesSettingsPanel } from "@/components/myrmidon/BoardProcessesSettingsPanel"; // myrmidon(1.6.5 BOARD-PROCESSES)
+import { BoardLeasesPanel } from "@/components/myrmidon/BoardLeasesPanel"; // myrmidon(1.6.5 BOARD-PROCESSES)
 import { PluginEntitlementSettings } from "@/components/myrmidon/PluginEntitlementSettingsPanel"; // myrmidon(PLUGIN-ENTITLEMENT C)
+import { AttentionFeedSettingsPanel } from "@/components/myrmidon/AttentionFeedSettingsPanel"; // myrmidon(1.6.5 F-15)
 import { PRODUCT_NAME, UPSTREAM_ATTRIBUTION } from "@/lib/myrmidon-product"; // myrmidon(B1a)
 import { useTranslation } from "@/i18n"; // myrmidon(UI-RU)
 
@@ -187,7 +190,10 @@ export function InstanceGeneralSettings({ embedded = false }: { embedded?: boole
       <ReviewReworkSettingsPanel /> {/* myrmidon(REVIEW-REWORK) */}
       <ForagingSettingsPanel /> {/* myrmidon(1.6.1-FORAGING-LIMITS-UI) */}
       <DeployJobsPanel /> {/* myrmidon(R5-A) */}
+      <BoardProcessesSettingsPanel /> {/* myrmidon(1.6.5 BOARD-PROCESSES) */}
+      <BoardLeasesPanel /> {/* myrmidon(1.6.5 BOARD-PROCESSES) */}
       <PluginEntitlementSettings /> {/* myrmidon(PLUGIN-ENTITLEMENT C) */}
+      <AttentionFeedSettingsPanel /> {/* myrmidon(1.6.5 F-15) */}
 
       {showDeploymentStatus && (
       <section>
