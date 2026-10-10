@@ -13,17 +13,16 @@ import { deliverReconciledExecutions, settleUnrecoverableExecutions } from "./se
 import { reconcileSafeNativeReplacements } from "./services/native-runtime/native-safe-replacement.js";
 import { reconcileAbandonedExecutionControl } from "./services/execution-control-reconciliation.js";
 import { EXECUTION_RECONCILIATION_INTERVAL_MS } from "./services/execution-control-deadline.js";
-import { laneInterval, recordLaneDbQuery } from "./myrmidon/monitoring/board-load/lanes.js"; // myrmidon(1.6.6 PROCS-0.3A): load lanes
 import { connectionIntentDeliveryService } from "./services/connection-intent-delivery.js";
 import { existsSync, readFileSync, rmSync } from "node:fs";
-import { createServer } from "node:http";
+import { createServer, type Server as HttpServer } from "node:http";
 import { resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
 import { pathToFileURL } from "node:url";
 import type { Request as ExpressRequest, RequestHandler } from "express";
 import { warnIfUnsupportedNodeVersion } from "@paperclipai/shared/node-version";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import {
   createDb,
   ensurePostgresDatabase,
@@ -59,6 +58,12 @@ import { getOperatorSettingDefaults } from "./services/setting-defaults.js";
 import { setupEnvironmentCustomImageTerminalWebSocketServer } from "./realtime/environment-custom-image-terminal-ws.js";
 import { setupLiveEventsWebSocketServer } from "./realtime/live-events-ws.js";
 import { startBrowserBridge } from "./myrmidon/browser-bridge/index.js"; // myrmidon(EXTCASE-B)
+import {
+  PROCESS_ROLE_API_PORT,
+  PROCESS_ROLE_ENV,
+  processRole,
+  type ProcessRoleProfile,
+} from "./services/process-role.js"; // myrmidon(PROCS-1.1)
 import { setupRunnerPrpWebSocketServer } from "./realtime/runner-prp-ws.js";
 import { cloudActorHeaderSourceFromHeaders, resolveCloudTenantActor } from "./middleware/auth.js";
 import {
@@ -128,6 +133,8 @@ import { flushInFlightRunLogMirrors } from "./services/run-log-store.js";
 import { startMaintenanceMode } from "./myrmidon/maintenance/index.js"; // myrmidon(R3)
 import { startDeployJobs } from "./myrmidon/deploy-jobs/index.js"; // myrmidon(R5-A)
 import { startRuntimeLimits } from "./myrmidon/runtime-limits/index.js"; // myrmidon(C0)
+import { startProcessesSettings, createProcessSupervisor, reportReadyToSupervisor, wireSupervisorDrainHandler, type SupervisorListenerHandle } from "./myrmidon/processes/index.js"; // myrmidon(PROCS-1.1/1.2)
+import { resolveProcessesSettings } from "@paperclipai/shared";
 import { startBehaviorSettings } from "./myrmidon/behavior-settings/index.js"; // myrmidon(SETTINGS-CORE)
 import { startBotContainers, stopBotContainers } from "./myrmidon/bot-containers/startup.js"; // myrmidon(W2a)
 import { startLitellmCostSweep, stopLitellmCostSweep } from "./myrmidon/litellm-costs/startup.js"; // myrmidon(M2-A)
@@ -155,7 +162,7 @@ import { createBotDiskQuotaScheduler } from "./myrmidon/bot-containers/bot-disk-
 // myrmidon(BOT-DISK E): measures the host disk and signals when it crosses the threshold
 import { createHostDiskScheduler } from "./myrmidon/host-disk/index.js"; // myrmidon(BOT-DISK E)
 import { createAlertRecoveryScheduler } from "./myrmidon/monitoring/alert-recovery/index.js"; // myrmidon(1.6.6-MONITORING-D)
-import { createRunStallSweepFromHeartbeat, registerRunStallSweep, startRunStall } from "./myrmidon/run-stall/index.js"; // myrmidon(RUN-STALL)
+import { createRunStallSweepFromHeartbeat } from "./myrmidon/run-stall/index.js"; // myrmidon(RUN-STALL)
 // myrmidon(HERMES-RUN-REATTACH): reattach live gateway runs after a board restart
 import { sweepGatewayRunReattach, GATEWAY_REATTACH_SWEEP_INTERVAL_MS } from "./myrmidon/gateway-run-reattach.js";
 import { readHotRestartIntent } from "./services/hot-restart.js"; // myrmidon(T1.6): predecessor boot id for the startup reattach pass
@@ -271,6 +278,28 @@ async function startServerWithDatabaseTeardown(
   await sentryReady;
   ensureDecisionSigningSecret();
   let config = loadConfig();
+
+  // myrmidon(PROCS-1.1): the one switch point for what this process is. Every
+  // gate on background work below reads this profile; the role is resolved once
+  // per process and never changes while it runs. An unknown value keeps the
+  // unchanged `all` behavior and is reported instead of silently inventing a
+  // role.
+  const processRoleProfile: ProcessRoleProfile = processRole();
+  if (processRoleProfile.invalidValue) {
+    logger.warn(
+      {
+        env: PROCESS_ROLE_ENV,
+        value: processRoleProfile.rawValue,
+        fallback: processRoleProfile.role,
+      },
+      "myrmidon(PROCS-1.1): unknown process role — falling back to the unchanged 'all' role",
+    );
+  } else if (processRoleProfile.source === "env") {
+    logger.info(
+      { role: processRoleProfile.role },
+      `myrmidon(PROCS-1.1): process role '${processRoleProfile.role}' set by ${PROCESS_ROLE_ENV}`,
+    );
+  }
   initTelemetry({ enabled: config.telemetryEnabled });
   if (process.env.PAPERCLIP_SECRETS_PROVIDER === undefined) {
     process.env.PAPERCLIP_SECRETS_PROVIDER = config.secretsProvider;
@@ -373,6 +402,36 @@ async function startServerWithDatabaseTeardown(
     return "applied (pending migrations)";
   }
   
+  /**
+   * myrmidon(PROCS-1.1): the counterpart of {@link ensureMigrations} for a
+   * process that does not own the schema — an api process waits until the
+   * worker has applied the migrations instead of applying (or refusing) them
+   * itself. The wait is bounded and fails loud: a board that never gets its
+   * schema must not serve requests against a stale one.
+   */
+  const MIGRATION_WAIT_TIMEOUT_MS = 120_000;
+  const MIGRATION_WAIT_POLL_MS = 1_000;
+  async function awaitMigrationsApplied(connectionString: string): Promise<MigrationSummary> {
+    const deadline = Date.now() + MIGRATION_WAIT_TIMEOUT_MS;
+    let state = await inspectMigrations(connectionString);
+    while (state.status !== "upToDate") {
+      if (Date.now() >= deadline) {
+        throw new Error(
+          `PostgreSQL migrations are still not applied after ${Math.round(MIGRATION_WAIT_TIMEOUT_MS / 1000)}s. ` +
+            `PAPERCLIP_PROCESS_ROLE=api waits for the migration-owning process (worker/all); ` +
+            `start it, or run pnpm db:migrate.`,
+        );
+      }
+      logger.info(
+        { status: state.status, reason: "reason" in state ? state.reason : undefined },
+        "myrmidon(PROCS-1.1): waiting for the migration-owning process to finish migrations",
+      );
+      await new Promise((resolve) => setTimeout(resolve, MIGRATION_WAIT_POLL_MS));
+      state = await inspectMigrations(connectionString);
+    }
+    return "already applied";
+  }
+
   function isPostgresConnectionString(connectionString: string): boolean {
     try {
       const parsed = new URL(connectionString);
@@ -478,9 +537,18 @@ async function startServerWithDatabaseTeardown(
   assertCloudDatabaseContract();
   if (config.databaseUrl) {
     const migrationUrl = config.databaseMigrationUrl ?? config.databaseUrl;
-    migrationSummary = await ensureMigrations(migrationUrl, "PostgreSQL");
+    // myrmidon(PROCS-1.1): only the role that owns background work applies
+    // migrations; an api process waits for them instead of racing its worker
+    // sibling over the same schema change.
+    migrationSummary = processRoleProfile.migrations === "await"
+      ? await awaitMigrationsApplied(migrationUrl)
+      : await ensureMigrations(migrationUrl, "PostgreSQL");
   
-    db = createDb(config.databaseUrl, { onQuery: () => recordLaneDbQuery() });
+    db = createDb(config.databaseUrl, {
+      // myrmidon(PROCS-1.2): an api child serves HTTP only and shares the
+      // database with its siblings — it gets a smaller pool than the worker.
+      maxConnections: processRoleProfile.role === "api" ? 6 : undefined,
+    });
     pluginMigrationDb = config.databaseMigrationUrl ? createDb(config.databaseMigrationUrl) : db;
     logger.info("Using external PostgreSQL via DATABASE_URL/config");
     activeDatabaseConnectionString = config.databaseUrl;
@@ -688,7 +756,7 @@ async function startServerWithDatabaseTeardown(
       autoApply: shouldAutoApplyFirstRunMigrations,
     });
   
-    db = createDb(embeddedConnectionString, { onQuery: () => recordLaneDbQuery() });
+    db = createDb(embeddedConnectionString);
     pluginMigrationDb = db;
     logger.info("Embedded PostgreSQL ready");
     activeDatabaseConnectionString = embeddedConnectionString;
@@ -736,11 +804,50 @@ async function startServerWithDatabaseTeardown(
     }
   }
 
-  const requestedListenPort = config.port;
-  const listenPort = await detectPort({
-    port: requestedListenPort,
-    hostname: config.host,
-  });
+  // myrmidon(PROCS-1.1): the role decides the primary bind. The api role shares
+  // 0.0.0.0:3100 with its siblings through `reusePort`, so a busy port is
+  // expected there and must NOT make detect-port hand out the next free one —
+  // that is exactly how N api processes drift onto different ports.
+  // myrmidon(PROCS-1.2): `publicListener` is the worker's own server on :3100
+  // once it is open — the single-mode start, or the supervisor's
+  // single↔split and emergency-single transitions. The shutdown path closes
+  // it; the supervisor's own handle keeps the same server alive in between.
+  let publicListener: HttpServer | null = null;
+  let liveEventsClients: ReadonlySet<{ close(code?: number, reason?: string): void }> = new Set();
+  function toSupervisorListener(server: HttpServer): SupervisorListenerHandle & { server: HttpServer } {
+    return {
+      server,
+      get listening() {
+        return server.listening;
+      },
+      close: () =>
+        new Promise<void>((resolveClose) => {
+          server.close(() => resolveClose());
+          server.closeIdleConnections();
+        }),
+      closeIdleConnections: () => server.closeIdleConnections(),
+      closeAllConnections: () => server.closeAllConnections(),
+    };
+  }
+  const roleListen = processRoleProfile.listen;
+  const primaryListenHost = roleListen.host ?? config.host;
+  // myrmidon(PROCS-1.2): the worker's public bind exists for the process to
+  // have a stable name; with the supervisor in charge the worker opens its own
+  // listener through `openPublicListener` (and the api child ignores this —
+  // its bind comes from the profile). A worker on the default 0.0.0.0 host in
+  // single mode serves the same :3100 it always did.
+  const requestedListenPort = roleListen.port ?? config.port;
+  // myrmidon(PROCS-1.2): the worker's :3100 is supervisor-managed — it opens
+  // and closes with the mode and with the children's health, and a busy port
+  // there is a sibling child, not a reason to drift. detect-port stays out of
+  // that lane; the api role already skips it through reusePort above.
+  const supervisorManagedPublicPort = processRoleProfile.role === "worker" && !roleListen.reusePort;
+  const listenPort = roleListen.reusePort || supervisorManagedPublicPort
+    ? requestedListenPort
+    : await detectPort({
+        port: requestedListenPort,
+        hostname: primaryListenHost,
+      });
   if (config.authBaseUrlMode === "explicit" && config.authPublicBaseUrl) {
     config.authPublicBaseUrl = rewriteLoopbackUrlPort(config.authPublicBaseUrl, listenPort);
   }
@@ -956,7 +1063,12 @@ async function startServerWithDatabaseTeardown(
     }
   };
   const pluginWorkerManager = createPluginWorkerManager();
-  const heartbeat = config.heartbeatSchedulerEnabled
+  // myrmidon(PROCS-1.1): an api process never claims or executes runs, so it
+  // builds no heartbeat service at all. That single gate covers the whole
+  // `if (heartbeat)` block below — startup recovery, every sweep, the scheduler
+  // interval and the plugin workers — which is what the api-role timer test
+  // asserts.
+  const heartbeat = config.heartbeatSchedulerEnabled && processRoleProfile.executesRuns
     ? heartbeatService(db as any, { pluginWorkerManager })
     : null;
   const decisionServiceOptions = {
@@ -966,9 +1078,75 @@ async function startServerWithDatabaseTeardown(
   // document parsed fail-closed above (`plugins.autoInstall`). Absent env means
   // self-hosted: createApp falls back to its built-in kubernetes-only default.
   const managedPluginAutoInstall = managedConfig?.plugins.autoInstall ?? null;
+  // myrmidon(PROCS-1.1/1.2): the stored process settings are read once the
+  // schema is in place. The worker resolves its supervisor first so this read
+  // — and every later PATCH — drives it: a stored `split` forks the api
+  // children right away. The emergency escape PAPERCLIP_PROCESS_MODE=single
+  // wins over the stored row inside resolveProcessesSettings (§7.2).
+  const processSupervisor = processRoleProfile.role === "worker"
+    ? createProcessSupervisor({
+        openPublicListener: async () => {
+          if (publicListener?.listening) return toSupervisorListener(publicListener);
+          const server = createServer(app as unknown as Parameters<typeof createServer>[0]);
+          // reusePort: the api children may still hold :3100 when the worker
+          // re-opens it (drain-to-single) — the same trick the children use.
+          await new Promise<void>((resolveListen, rejectListen) => {
+            server.once("error", rejectListen);
+            server.listen({ host: "0.0.0.0", port: PROCESS_ROLE_API_PORT, reusePort: true }, () => {
+              server.off("error", rejectListen);
+              resolveListen();
+            });
+          });
+          publicListener = server;
+          logger.warn({ port: PROCESS_ROLE_API_PORT }, "myrmidon(PROCS-1.2): worker listens on the public port itself");
+          return toSupervisorListener(server);
+        },
+        drainPublicListener: async (handle, graceMs) => {
+          const server = (handle as SupervisorListenerHandle & { server?: HttpServer }).server;
+          if (!server?.listening) return;
+          for (const client of liveEventsClients) {
+            try {
+              client.close(1012, "worker leaves the public lane");
+            } catch {
+              // a client that died between the set read and the close is fine
+            }
+          }
+          const closed = new Promise<void>((resolveClose) => {
+            server.close(() => resolveClose());
+            server.closeIdleConnections();
+          });
+          const forceTimer = setTimeout(() => {
+            server.closeAllConnections();
+          }, graceMs);
+          forceTimer.unref?.();
+          await closed;
+          clearTimeout(forceTimer);
+          if (publicListener === server) publicListener = null;
+        },
+        writeAttentionSignal: (details) => {
+          // myrmidon(PROCS-1.2): the emergency fallback must be visible to the
+          // operator. The attention feed is per-company and the sweep lane is
+          // a sibling task; the structured log line is the durable record
+          // here, and logActivity keeps it in the journal.
+          logger.error(
+            { ...details, signal: "myrmidon.processes_emergency_single" },
+            "myrmidon(PROCS-1.2): emergency fallback to single — no live api child within the grace window",
+          );
+        },
+      })
+    : null;
+  if (processSupervisor) {
+    logger.info("myrmidon(PROCS-1.2): process supervisor wired on the worker");
+  }
+  await startProcessesSettings(db as any, processSupervisor);
   const app = await createApp(db as any, {
     uiMode,
     serverPort: listenPort,
+    // myrmidon(PROCS-1.1): an api process serves the board surface and nothing
+    // periodic — the workers, exports, spools and plugin jobs stay with the
+    // background role.
+    backgroundWork: processRoleProfile.runsBackground,
+    processSupervisor,
     storageService,
     feedbackExportService: feedback,
     databaseBackupService: {
@@ -1045,7 +1223,7 @@ async function startServerWithDatabaseTeardown(
   setupEnvironmentCustomImageTerminalWebSocketServer(server, db as any, {
     pluginWorkerManager,
   });
-  setupLiveEventsWebSocketServer(server, db as any, {
+  const liveEventsWss = setupLiveEventsWebSocketServer(server, db as any, {
     deploymentMode: config.deploymentMode,
     resolveSessionFromHeaders,
     // Cloud-proxied browsers carry trusted x-paperclip-cloud-* headers instead
@@ -1063,6 +1241,15 @@ async function startServerWithDatabaseTeardown(
       return { userId: actor.userId, companyIds: actor.companyIds };
     },
   });
+  // myrmidon(PROCS-1.2): the drain paths close these with 1012. The helper
+  // returns { wss, clients } on the real path; mocked tests may stub the call
+  // entirely, so tolerate a bare/missing result by falling back to the empty
+  // registry the drain already handles.
+  const liveEventsClientsRegistry =
+    liveEventsWss && typeof liveEventsWss === "object" && "clients" in liveEventsWss
+      ? (liveEventsWss as { clients?: ReadonlySet<{ close(code?: number, reason?: string): void }> }).clients
+      : undefined;
+  if (liveEventsClientsRegistry) liveEventsClients = liveEventsClientsRegistry;
 
   // myrmidon(EXTCASE-B): the browser extension dials in at /bridge/v1; the board
   // never dials the client PC. Attached next to the other websocket lanes.
@@ -1074,21 +1261,102 @@ async function startServerWithDatabaseTeardown(
   // to this address; delaying listen until after orphan reconciliation makes
   // authenticated adoption impossible and turns a healthy process into a
   // duplicate-provider risk.
+  // myrmidon(PROCS-1.2): the supervisor (below, in the main flow) decides
+  // whether the worker serves the public port itself — from the stored mode
+  // and the children's health. The worker always binds :3100 at startup the
+  // way it did before the split; a stored split then drains it as soon as the
+  // api children report ready. The api child binds through its own profile
+  // (reusePort) and is untouched here.
   await new Promise<void>((resolveListen, rejectListen) => {
     const onError = (err: Error) => {
       server.off("error", onError);
       rejectListen(err);
     };
     server.once("error", onError);
-    server.listen(listenPort, config.host, () => {
+    const onBound = () => {
       server.off("error", onError);
       logger.info(
-        `Server listener bound on ${config.host}:${listenPort}; startup recovery in progress`,
+        `Server listener bound on ${primaryListenHost}:${listenPort}${roleListen.reusePort ? " (reusePort)" : ""}; startup recovery in progress`,
       );
       resolveListen();
-    });
+    };
+    // myrmidon(PROCS-1.1): a reusable-port listener joins its siblings on the
+    // same port instead of taking the next free one.
+    if (roleListen.reusePort) {
+      server.listen({ port: listenPort, host: primaryListenHost, reusePort: true }, onBound);
+    } else {
+      server.listen(listenPort, primaryListenHost, onBound);
+    }
   });
   startupListenerBound = true;
+
+  // myrmidon(PROCS-1.2): the role split of the public listener and the IPC
+  // contract with the worker.
+  //
+  //  - api child: this server IS the public lane; it is not in `publicListener`
+  //    because the existing shutdown path already closes `server`. What it owes
+  //    the worker is the `ready` report (listening + SELECT 1) and a drain
+  //    handler for apiCount-down and split→single.
+  //  - worker: this server is the public lane in single mode; the supervisor
+  //    opens/closes it through `openPublicListener`/`drainPublicListener`
+  //    above, keyed by the same `publicListener` variable.
+  if (processRoleProfile.role === "api") {
+    // SELECT 1 after listening — the worker counts a child ready only when the
+    // database answered, so a child whose pool is wedged restarts instead of
+    // silently holding a share of the traffic.
+    void (async () => {
+      try {
+        await db.execute(sql`SELECT 1`);
+        reportReadyToSupervisor();
+      } catch (err) {
+        logger.error({ err }, "myrmidon(PROCS-1.2): api child readiness probe failed — not reporting ready");
+      }
+    })();
+    wireSupervisorDrainHandler({
+      server,
+      wsClients: () => liveEventsClients,
+      shutdownAppServices: app.locals.paperclipShutdown,
+      exit: (code) => process.exit(code),
+      setTimeout: (fn, ms) => setTimeout(fn, ms),
+      log: {
+        info: (f, m) => logger.info(f, m),
+        warn: (f, m) => logger.warn(f, m),
+      },
+    });
+  } else {
+    // myrmidon(PROCS-1.2): the worker's startup listener becomes the
+    // supervisor's single-mode listener. In a stored split the supervisor's
+    // first apply (startProcessesSettings above ran before createApp — the
+    // fork+ready+drain cycle) closes it as soon as the children are ready.
+    publicListener = server;
+  }
+
+  /**
+   * myrmidon(PROCS-1.1): the worker's internal listener. In a split deployment
+   * the api processes reach the board through this loopback bind, which is never
+   * exposed (a single-process `all` deployment opens none).
+   */
+  async function openWorkerLoopbackListener(): Promise<ReturnType<typeof createServer> | null> {
+    const spec = processRoleProfile.loopbackListen;
+    if (!spec) return null;
+    const listener = createServer(app as unknown as Parameters<typeof createServer>[0]);
+    await new Promise<void>((resolveLoopback, rejectLoopback) => {
+      const onError = (err: Error) => {
+        listener.off("error", onError);
+        rejectLoopback(err);
+      };
+      listener.once("error", onError);
+      listener.listen(spec.port, spec.host, () => {
+        listener.off("error", onError);
+        logger.info(
+          `myrmidon(PROCS-1.1): worker internal listener bound on ${spec.host}:${spec.port}`,
+        );
+        resolveLoopback();
+      });
+    });
+    return listener;
+  }
+  const workerLoopbackServer = await openWorkerLoopbackListener();
 
   try {
     const result = await workspaceOperationService(db as any)
@@ -1260,15 +1528,6 @@ async function startServerWithDatabaseTeardown(
         issues: issueService(db as any),
       })
     : null;
-  // myrmidon(RUN-STALL-SETTINGS, 1.6.5): settings saved from the UI apply to
-  // this sweep instance without a restart; the stored row is applied right
-  // after registration, before the first scheduler tick.
-  registerRunStallSweep(runStallSweep);
-  if (runStallSweep) {
-    void startRunStall(db as any).catch((err) =>
-      logger.error({ err }, "failed to apply the stored run stall settings at startup"),
-    );
-  }
   const executionControlSweeps = [
     ["finalization", () => reconcileAbandonedExecutionControl(db)],
     ["replacement", () => heartbeat ? reconcileSafeNativeReplacements(db, new Date(), { verifyStoppedSession: run => verifyStoppedNativeSessionForReplacement(db, run) }) : undefined],
@@ -1290,20 +1549,16 @@ async function startServerWithDatabaseTeardown(
         .finally(() => { executionControlSweepsInFlight.delete(queue); }));
     }
   };
-  const executionControlInterval = laneInterval(
-    "execution_control",
-    EXECUTION_RECONCILIATION_INTERVAL_MS,
-    sweepExecutionControl,
-  );
-  executionControlInterval.unref?.();
-  sweepExecutionControl();
+  // myrmidon(PROCS-1.1): execution-control reconciliation is background work.
+  const executionControlInterval = processRoleProfile.runsBackground
+    ? setInterval(sweepExecutionControl, EXECUTION_RECONCILIATION_INTERVAL_MS)
+    : null;
+  executionControlInterval?.unref?.();
+  // myrmidon(PROCS-1.1): the startup pass of the same sweeps is background work
+  // too — an api process must not reconcile or settle executions at boot.
+  if (processRoleProfile.runsBackground) sweepExecutionControl();
   const startHeartbeatSchedulerInterval = (callback: () => void) => {
-    heartbeatSchedulerInterval = laneInterval(
-      "heartbeat_tick",
-      config.heartbeatSchedulerIntervalMs,
-      callback,
-      (error) => logger.error({ err: error }, "heartbeat scheduler interval failed"),
-    );
+    heartbeatSchedulerInterval = setInterval(callback, config.heartbeatSchedulerIntervalMs);
     heartbeatSchedulerInterval?.unref?.();
   };
   const externalObjects = externalObjectService(db as any, {
@@ -1601,6 +1856,11 @@ async function startServerWithDatabaseTeardown(
   scheduleGitHubConnectionEventPoll();
   scheduleGitHubConnectionContinuitySweep();
 
+  // myrmidon(PROCS-1.2): the whole heartbeat/sweep block below is the worker
+  // role's business. An api child serves HTTP only — it builds the objects the
+  // app layer imports (with inert no-op handles) and skips every scheduler,
+  // so a split never multiplies the sweep cadence by the api count.
+  if (processRoleProfile.runsBackground) {
   if (heartbeat) {
     const secretProposals = createSecretProposalsService(db as any);
     const decisionExecutor = decisionService(db as any, decisionServiceOptions);
@@ -2286,7 +2546,10 @@ async function startServerWithDatabaseTeardown(
         logger.error({ err }, "heartbeat scheduler tick failed");
       }));
     });
-  } else {
+  } else if (processRoleProfile.runsBackground) {
+    // myrmidon(PROCS-1.1): the sweeps in this branch belong to the background
+    // role — an api process whose heartbeat is disabled schedules none of them,
+    // its worker sibling owns the orphan-sandbox cleanup and the rest.
     // The heartbeat scheduler is disabled, but the orphan-sandbox cleanup sweep
     // is still required. A failed acquire can leak a paid provider sandbox, so
     // this path retries the teardown at startup and on the interval, exactly as
@@ -2306,7 +2569,8 @@ async function startServerWithDatabaseTeardown(
       scheduleGitHubConnectionContinuitySweep();
     });
   }
-  
+  } // end myrmidon(PROCS-1.2) runsBackground gate around the heartbeat/sweep block
+
   // myrmidon(P11): with catch-up enabled the cadence starts after the catch-up check below
   const backupCatchUp = readBackupCatchUpSettings();
   if (backupCatchUp.enabled === false && backupCatchUp.invalidValue !== undefined) {
@@ -2315,7 +2579,7 @@ async function startServerWithDatabaseTeardown(
       "Database backup catch-up disabled: expected 'none' or '<IANA zone> HH:MM-HH:MM'",
     );
   }
-  if (config.databaseBackupEnabled) {
+  if (config.databaseBackupEnabled && processRoleProfile.runsBackups) {
     const backupIntervalMs = config.databaseBackupIntervalMinutes * 60 * 1000;
 
     logger.info(
@@ -2340,7 +2604,7 @@ async function startServerWithDatabaseTeardown(
   const { waitForExternalAdapters } = await import("./adapters/registry.js");
   await waitForExternalAdapters();
   // myrmidon(P11): catch up a missed backup slot and anchor the cadence to the newest dump
-  if (config.databaseBackupEnabled && backupCatchUp.enabled) {
+  if (config.databaseBackupEnabled && backupCatchUp.enabled && processRoleProfile.runsBackups) {
     startBackupCatchUp({
       settings: backupCatchUp,
       backupDir: config.databaseBackupDir,
@@ -2420,7 +2684,17 @@ async function startServerWithDatabaseTeardown(
   ) => {
     await systemdNotify(["--stopping", `--status=Stopping after ${signal}`]);
     heartbeatSchedulerStopped = true;
-    clearInterval(executionControlInterval);
+    if (executionControlInterval) clearInterval(executionControlInterval);
+    // myrmidon(PROCS-1.2): the children go first — SIGTERM each, stop the
+    // restart timers — so a worker exit never leaves a served api orphan.
+    if (processSupervisor) {
+      await processSupervisor.shutdown().catch((err) => {
+        logger.error({ err }, "myrmidon(PROCS-1.2): supervisor shutdown failed");
+      });
+    }
+    // myrmidon(PROCS-1.1): the worker's internal listener is a second server,
+    // so it needs its own close.
+    workerLoopbackServer?.close();
     stopBotContainers(); // myrmidon(W2a)
     stopLitellmCostSweep(); // myrmidon(M2-A)
     stopBoardProcessRegistry(); // myrmidon(1.6.6 PROCS-0.1)
