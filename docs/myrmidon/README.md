@@ -1,6 +1,6 @@
 # Myrmidon
 
-Myrmidon — плоскость управления компаниями из ИИ-агентов: доска задач, агенты и их прогоны,
+Myrmidon — система управления компаниями из ИИ-агентов на своём сервере: доска задач, агенты и их прогоны,
 инструменты MCP, чаты, рутины. Это самостоятельный продукт на основе Paperclip. Мы развиваем его
 для постоянной работы большого парка агентов: прогоны не теряются, агенты изолированы друг от
 друга, доску можно обслуживать и обновлять без потерь.
@@ -81,6 +81,7 @@ Myrmidon — плоскость управления компаниями из �
 | [guides/fleet-dashboard-monitoring.md](guides/fleet-dashboard-monitoring.md) | API данных дашборда флота (1.6.6 MONITORING C): настройки подключений VM/Zabbix (`env:`/`file:`-ссылки на токены), снимок флота `GET /api/myrmidon/monitoring/dashboard`, самопроверка источников |
 | [guides/cloud-connector.md](guides/cloud-connector.md) | Облака через коннектор (1.4): аккаунт владельца, корни-папки, раздача доступа агентам, инструменты, журнал |
 | [guides/tracing-health.md](guides/tracing-health.md) | Здоровье LLM-трейсинга: карточка «LLM tracing» в настройках компании, состояния, сигнал оператору, журнал переходов |
+| [guides/tracing.md](guides/tracing.md) | LLM-трейсинг целиком: конвейер LiteLLM → OTLP → Langfuse v4 → ClickHouse `events_core`, проверка здоровья, deploy-гард 7b, пин пары образов, живой контракт-тест |
 | [guides/reference-task-evals.md](guides/reference-task-evals.md) | Эталоны и судья (1.6 EVALS-A): корпус эталонных задач, LLM-судья за шлюзом, вердикт «порог+повтор», экспорт в Langfuse |
 | [guides/bridge-extension.md](guides/bridge-extension.md) | Браузерный мост, расширение (части C и D): действия open/read/click/fill/download/screenshot, шаг подтверждения человеком, сопряжение кодом, сборка и load-unpacked |
 | [guides/browser-bridge-gateway.md](guides/browser-bridge-gateway.md) | Браузерный мост, шлюз (EXTCASE-B): исходящее WSS-соединение расширения, сопряжение кодом, allowlist, политика подписи, журнал |
