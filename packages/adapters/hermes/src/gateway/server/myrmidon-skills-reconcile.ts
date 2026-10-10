@@ -93,8 +93,13 @@ export async function reconcileGatewayPaperclipSkills(
   if (!Object.prototype.hasOwnProperty.call(config, "paperclipRuntimeSkills")) {
     return null;
   }
+  // The default reader MUST decode: fs.readFile(path) without an encoding
+  // returns a Buffer, which JSON.stringify turns into {"type":"Buffer","data":[...]}
+  // on the wire; the receiver then skips the entry (content is not a string) and
+  // the run fails with "skill was not materialized in the run profile".
   const readFile =
-    options.readFile ?? ((await import("node:fs/promises")).readFile as unknown as (path: string) => Promise<string>);
+    options.readFile ??
+    (async (path: string): Promise<string> => (await import("node:fs/promises")).readFile(path, "utf8"));
   const availableEntries = await readPaperclipRuntimeSkillEntries(config, options.moduleDir);
   // Same desired-set contract as hermes_local (src/server/skills.ts:216-222):
   // resolveLegacyPaperclipDesiredSkillNames returns [] when the config carries
@@ -169,6 +174,15 @@ export function factCheckGatewayPaperclipSkills(input: {
   desiredEntries: Array<{ key: string; name: string }>;
 }): void {
   const present = new Set(input.skills.map((s) => s.name));
+  // The receiver skips an entry whose content is not a non-empty string (a
+  // Buffer serializes to an object), so check the shape that crosses the wire.
+  for (const skill of input.skills) {
+    if (typeof skill.content !== "string" || skill.content.trim().length === 0) {
+      throw new Error(
+        `Cannot start without the required Paperclip-managed skills: ${skill.name}: content is not a non-empty string in the assembled run-body field`,
+      );
+    }
+  }
   for (const { key, name } of input.desiredEntries) {
     if (!present.has(name)) {
       throw new Error(
