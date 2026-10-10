@@ -190,6 +190,11 @@ import { myrmidonWikiCortexRoutes } from "./myrmidon/wiki-cortex/wiring.js";
 import { myrmidonCtoChatRoutes } from "./myrmidon/cto-chat/index.js";
 // myrmidon(1.6-SWARM-CLAIM-B): the lead's supervisor surface over the role queues
 import { myrmidonSwarmSupervisorRoutes } from "./myrmidon/swarm-claim-supervisor/index.js"; // myrmidon(1.6-SWARM-CLAIM-B)
+// myrmidon(1.6.6 PROCS-1.5): per-process readiness and the balancer's /healthz
+import {
+  myrmidonProcessReadinessRoutes,
+  type ProcessSupervisorReadinessSource,
+} from "./myrmidon/process-readiness/index.js";
 // myrmidon(TG-NOTIFY-A): the telegramNotify settings core (contract, GET/PATCH, changelog)
 import { myrmidonTelegramNotifyRoutes } from "./myrmidon/telegram-notify/index.js";
 import { instanceSettingsService } from "./services/instance-settings.js";
@@ -595,6 +600,11 @@ export async function createApp(
     localPluginDir?: string;
     pluginMigrationDb?: Db;
     pluginWorkerManager?: PluginWorkerManager;
+    /** myrmidon(1.6.6 PROCS-1.5): the supervisor view the aggregate `/healthz`
+     * reads — desired api count plus the readiness of each child (PROCS-1.2).
+     * Absent on today's single process and on an api child; `/healthz` then
+     * answers for this process itself. */
+    processSupervisor?: ProcessSupervisorReadinessSource | null;
     decisionServiceOptions: DecisionServiceOptions;
     betterAuthHandler?: express.RequestHandler;
     resolveSession?: (
@@ -682,6 +692,16 @@ export async function createApp(
   // REPLACES whatever actor the request otherwise resolved to, and only on
   // the one endpoint it authorizes (see the middleware for the contract).
   app.use(cloudControlMiddleware());
+  // myrmidon(1.6.6 PROCS-1.5): the readiness contract of the split layout. A
+  // load balancer and the container runtime probe these paths at the root, so
+  // they live next to /api/health and not under /api. They read no credentials
+  // and expose no company data — a role, a boot id, a count and three cheap
+  // statuses (db ping, boot phase, bus flag) — so no actor is required.
+  app.use(
+    // The supervisor comes from `opts` or from the process-local registry,
+    // which the split wiring fills in while booting.
+    myrmidonProcessReadinessRoutes(db, { processSupervisor: opts.processSupervisor ?? null }),
+  );
   app.use("/api/auth", authRoutes(db));
   if (opts.betterAuthHandler) {
     app.all("/api/auth/{*authPath}", opts.betterAuthHandler);
