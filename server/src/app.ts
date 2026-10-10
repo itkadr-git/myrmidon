@@ -608,11 +608,16 @@ export async function createApp(
     localPluginDir?: string;
     pluginMigrationDb?: Db;
     pluginWorkerManager?: PluginWorkerManager;
-    /** myrmidon(1.6.6 PROCS-1.5): the supervisor view the aggregate `/healthz`
-     * reads — desired api count plus the readiness of each child (PROCS-1.2).
+    /** myrmidon(1.6.6 PROCS-1.5): the worker's process supervisor — the
+     * aggregate `/healthz` reads its desired api count and child readiness
+     * (PROCS-1.2), and PATCH /api/myrmidon/processes on this process drives
+     * it. Structurally assignable to ProcessSupervisorReadinessSource.
      * Absent on today's single process and on an api child; `/healthz` then
      * answers for this process itself. */
-    processSupervisor?: ProcessSupervisorReadinessSource | null;
+    processSupervisor?: import("./myrmidon/processes/index.js").ProcessSupervisor | null;
+    // ProcessSupervisor (PROCS-1.2) is structurally assignable to the
+    // readiness view (PROCS-1.5) — state() and children() match, so one
+    // declaration serves both call sites.
     decisionServiceOptions: DecisionServiceOptions;
     betterAuthHandler?: express.RequestHandler;
     resolveSession?: (
@@ -627,13 +632,6 @@ export async function createApp(
     managedPluginAutoInstall?: readonly string[] | null;
     /** Test override for the bundled plugin catalog root. */
     bundledPluginCatalogRoot?: string;
-    /**
-     * myrmidon(PROCS-1.2): the worker's process supervisor, so PATCH
-     * /api/myrmidon/processes on this process drives it. An api child is
-     * constructed without one — it stores the row, the worker applies its own
-     * read of the same row.
-     */
-    processSupervisor?: import("./myrmidon/processes/index.js").ProcessSupervisor | null;
   },
 ) {
   const app = express();
