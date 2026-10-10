@@ -215,6 +215,10 @@ export const knowledgeSources = pgTable(
 export const KNOWLEDGE_SUGGESTION_STATUSES = ["pending", "accepted", "declined"] as const;
 export type KnowledgeSuggestionStatus = (typeof KNOWLEDGE_SUGGESTION_STATUSES)[number];
 
+/** The provenance trust of a suggestion (§2.2): internal evidence or external url. */
+export const KNOWLEDGE_SUGGESTION_TRUSTS = ["internal", "external"] as const;
+export type KnowledgeSuggestionTrust = (typeof KNOWLEDGE_SUGGESTION_TRUSTS)[number];
+
 export const knowledgeSuggestions = pgTable(
   "knowledge_suggestions",
   {
@@ -231,6 +235,8 @@ export const knowledgeSuggestions = pgTable(
     rationale: text("rationale"),
     sourceKind: text("source_kind").$type<KnowledgeSourceKind>(),
     sourceRef: text("source_ref"),
+    /** Provenance trust (L-5): `external` = the only source is a foreign url. */
+    trust: text("trust").$type<KnowledgeSuggestionTrust>(),
     status: text("status").$type<KnowledgeSuggestionStatus>().notNull().default("pending"),
     createdByAgentId: text("created_by_agent_id"),
     createdByUserId: text("created_by_user_id"),

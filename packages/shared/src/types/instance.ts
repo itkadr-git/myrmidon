@@ -41,9 +41,6 @@ import type { PluginEntitlementKey } from "../myrmidon-plugin-entitlement.js";
 import type { TelegramDmProgressSettings } from "../myrmidon-telegram-dm-progress.js";
 // myrmidon(BOT-RUNTIME-TUNING D2): the fallback-signal settings of the same row.
 import type { StoredFallbackSignalSettings } from "../myrmidon-fallback-signal.js";
-// myrmidon(1.6.5-PAUSE-GUARD): the forgotten-operator-pause guard of the same
-// general settings row.
-import type { StoredPauseGuardSettings } from "../myrmidon-pause-guard.js";
 import type { ForagingIdleGateSettings } from "../myrmidon-foraging-idle-gate.js";
 
 // myrmidon(1.6.1-FORAGING-LIMITS-UI)
