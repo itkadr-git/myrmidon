@@ -11,7 +11,7 @@ import type { MigratePagePlan } from "./map.js";
 export interface PlannedPage {
   path: string;
   bytes: number;
-  /** The page title (frontmatter title, else first H1, else the file name). */
+  /** The page title (frontmatter, else the catalog title, else the first H1, else the file name). */
   title?: string;
   /** Effective plan: the map entry when the operator wrote one, else the seed. */
   plan: MigratePagePlan;

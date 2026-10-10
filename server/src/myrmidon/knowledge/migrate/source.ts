@@ -21,7 +21,7 @@ export interface SourcePage {
   frontmatter: ParsedFrontmatter;
   /** The fields the frontmatter supplied, already mapped to knowledge fields. */
   fields: FrontmatterFields;
-  /** Title from the frontmatter, else the first H1, else the file name. */
+  /** Title: frontmatter (page or catalog), else the catalog title, else the first H1, else the file name. */
   title: string;
 }
 
