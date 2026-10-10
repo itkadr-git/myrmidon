@@ -14,6 +14,9 @@ import { logActivity } from "../services/activity-log.js";
 /** Max rows a single CSV export will stream (guards against runaway exports). */
 const AUDIT_CSV_EXPORT_MAX_ROWS = 10_000;
 const AUDIT_CSV_PAGE_SIZE = 200;
+// myrmidon(AUDIT-JSONL): page size of the fork-only JSONL audit export.
+/** Page size of the JSONL export when the caller does not pass an explicit limit. */
+const AUDIT_JSONL_PAGE_SIZE = 200;
 const CSV_FORMULA_CHARS = /^[=+\-@\t\r]/;
 
 const AUDIT_CSV_COLUMNS = [
@@ -114,6 +117,16 @@ const agentActionAuditQuerySchema = z.object({
   to: z.coerce.date().optional(),
   cursor: z.string().min(1).optional(),
   limit: z.coerce.number().int().min(1).max(200).default(50),
+});
+
+// myrmidon(AUDIT-JSONL): fork-only JSONL export of the agent action audit feed.
+/**
+ * JSONL export query. The `limit` value stays optional so the export applies
+ * its own page size when the caller omits it, while the 200-row ceiling of the
+ * read API still caps an explicit value.
+ */
+const agentActionAuditExportQuerySchema = agentActionAuditQuerySchema.extend({
+  limit: z.coerce.number().int().min(1).max(200).optional(),
 });
 
 export function activityRoutes(db: Db) {
@@ -324,6 +337,64 @@ export function activityRoutes(db: Db) {
     res.setHeader("Content-Type", "text/csv; charset=utf-8");
     res.setHeader("Content-Disposition", `attachment; filename="agent-audit-${companyId}.csv"`);
     res.send(auditRowsToCsv(rows));
+  });
+
+  // myrmidon(AUDIT-JSONL): JSONL export of the agent action audit feed.
+  router.get("/companies/:companyId/audit/agent-actions.jsonl", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    await assertAgentAuditPermission(req, companyId);
+    const parsedQuery = agentActionAuditExportQuerySchema.safeParse(req.query);
+    if (!parsedQuery.success) {
+      throw badRequest("Invalid agent action audit query", parsedQuery.error.issues);
+    }
+    // Unlike the CSV export (which drives its own pagination to a complete
+    // file), the JSONL export honors the caller's cursor and limit: a long
+    // audit tail is consumed page by page, and the cursor for the next page
+    // travels in the `X-Next-Cursor` response header.
+    const { limit, ...filters } = parsedQuery.data;
+    const page = await agentAudit.list({
+      companyId,
+      ...filters,
+      limit: limit ?? AUDIT_JSONL_PAGE_SIZE,
+    });
+
+    // The export is itself an auditable act (same precedent as the CSV export):
+    // record who exported what filter set and how many rows left the system.
+    const actorUserId = req.actor.type === "board" ? req.actor.userId ?? null : null;
+    await logActivity(db, {
+      companyId,
+      actorType: actorUserId ? "user" : "system",
+      actorId: actorUserId ?? "local-board",
+      action: "audit.exported",
+      entityType: "company",
+      entityId: companyId,
+      details: {
+        format: "jsonl",
+        rowCount: page.items.length,
+        truncated: page.nextCursor !== null,
+        filters: {
+          actorScope: filters.actorScope,
+          agentId: filters.agentId ?? null,
+          responsibleUserId: filters.responsibleUserId ?? null,
+          runId: filters.runId ?? null,
+          entityType: filters.entityType ?? null,
+          entityId: filters.entityId ?? null,
+          action: filters.action ?? null,
+          actorType: filters.actorType ?? null,
+          from: filters.from ? filters.from.toISOString() : null,
+          to: filters.to ? filters.to.toISOString() : null,
+        },
+      },
+    });
+
+    // One JSON object per line; `JSON.stringify` escapes embedded newlines, so
+    // every emitted line is exactly one record.
+    const lines = page.items.map((item) => JSON.stringify(item));
+    res.setHeader("Content-Type", "application/x-ndjson; charset=utf-8");
+    res.setHeader("Content-Disposition", `attachment; filename="agent-audit-${companyId}.jsonl"`);
+    res.setHeader("X-Audit-Row-Count", String(page.items.length));
+    if (page.nextCursor) res.setHeader("X-Next-Cursor", page.nextCursor);
+    res.send(lines.length > 0 ? `${lines.join("\n")}\n` : "");
   });
 
   router.post("/companies/:companyId/activity", validate(createActivitySchema), async (req, res) => {
