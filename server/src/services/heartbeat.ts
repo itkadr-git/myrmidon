@@ -427,6 +427,14 @@ import {
 import { resolveChatRunPresentationAuthorizationReason } from "./chat-run-publications.js";
 import { projectService } from "./projects.js";
 import {
+  getProjectTokenQuotaBlock,
+  recordProjectTokenUsage,
+} from "../myrmidon/project-token-quota/service.js"; // myrmidon(1.6.6 QUOTA-V2)
+import {
+  PROJECT_TOKEN_QUOTA_EXCEEDED_ERROR_CODE,
+  projectTokenQuotaRejectionMessage,
+} from "@paperclipai/shared"; // myrmidon(1.6.6 QUOTA-V2)
+import {
   authorizationService,
   type AuthorizationActor,
 } from "./authorization.js";
@@ -19782,6 +19790,15 @@ export function heartbeatService(
         costCents: additionalCostCents,
         occurredAt: new Date(),
       });
+      // myrmidon(1.6.6 QUOTA-V2): fold the run's tokens into the project's
+      // quota usage counters (no row / no project = a no-op).
+      if (ledgerScope.projectId) {
+        await recordProjectTokenUsage(db, {
+          companyId: agent.companyId,
+          projectId: ledgerScope.projectId,
+          tokens: inputTokens + cachedInputTokens + outputTokens,
+        });
+      }
     }
   }
 
@@ -26960,6 +26977,46 @@ export function heartbeatService(
         scopeType: budgetBlock.scopeType,
         scopeId: budgetBlock.scopeId,
       });
+    }
+
+    // myrmidon(1.6.6 QUOTA-V2): the project token quota gate — before a run is
+    // queued, the project's daily/weekly token limits are checked; an
+    // over-limit window refuses the enqueue with the stable code and a
+    // readable sentence. A project without a quota row passes untouched.
+    if (projectId && isUuidLike(projectId)) {
+      const quotaBlock = await getProjectTokenQuotaBlock(
+        db,
+        agent.companyId,
+        projectId,
+      );
+      if (quotaBlock) {
+        const project = await db
+          .select({ name: projects.name })
+          .from(projects)
+          .where(eq(projects.id, projectId))
+          .then((rows) => rows[0] ?? null);
+        const quotaReason = projectTokenQuotaRejectionMessage({
+          projectName: project?.name ?? projectId,
+          windowKind: quotaBlock.windowKind,
+          tokensUsed: quotaBlock.tokensUsed,
+          tokenLimit: quotaBlock.tokenLimit,
+        });
+        await writeSkippedRequest("project.token_quota_exceeded", {
+          error: quotaReason,
+        }, {
+          projectId,
+          windowKind: quotaBlock.windowKind,
+          tokenLimit: quotaBlock.tokenLimit,
+          tokensUsed: quotaBlock.tokensUsed,
+        });
+        throw conflict(quotaReason, {
+          code: PROJECT_TOKEN_QUOTA_EXCEEDED_ERROR_CODE,
+          projectId,
+          windowKind: quotaBlock.windowKind,
+          tokenLimit: quotaBlock.tokenLimit,
+          tokensUsed: quotaBlock.tokensUsed,
+        });
+      }
     }
 
     const invokability = await getAgentInvokability(agent);
