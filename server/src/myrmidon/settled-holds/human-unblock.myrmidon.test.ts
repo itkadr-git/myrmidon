@@ -167,9 +167,11 @@ describeEmbeddedPostgres("a board unblock lifts a settled replay hold (HOLD-READ
   }
 
   // myrmidon(REPLAY-BLOCK-TRIAGE): an agent acting through the board API with
-  // its own JWT (no run: a wake's own PATCH keeps the issue's run lock; here
-  // the agent edits the task it is assigned to, the lead-hand-off case).
-  function agentApp(companyId: string, agentId: string) {
+  // its own JWT inside its heartbeat run (every real agent PATCH carries the
+  // run: the cross-issue gate refuses an agent write without one). The
+  // lead-hand-off case: the agent edits the task assigned to it, run context
+  // scoped to that task.
+  function agentApp(companyId: string, agentId: string, runId: string) {
     const server = express();
     server.use(express.json());
     server.use((req, _res, next) => {
@@ -177,7 +179,7 @@ describeEmbeddedPostgres("a board unblock lifts a settled replay hold (HOLD-READ
         type: "agent",
         agentId,
         companyId,
-        runId: null,
+        runId,
         source: "agent_jwt",
       };
       next();
@@ -186,6 +188,30 @@ describeEmbeddedPostgres("a board unblock lifts a settled replay hold (HOLD-READ
     server.use("/api", agentRoutes(db));
     server.use(errorHandler);
     return server;
+  }
+
+  // The caller's heartbeat run: persisted, scoped to the issue (source ===
+  // target is the agent-own-task case the cross-issue cap does not charge).
+  // Finished explicitly by the test so the shared afterEach run-drain does not
+  // wait on a hand-seeded "running" row.
+  async function seedActorRun(companyId: string, agentId: string, issueId: string) {
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      invocationSource: "on_demand",
+      status: "running",
+      contextSnapshot: { issueId, taskId: issueId },
+    });
+    return runId;
+  }
+
+  async function finishActorRun(runId: string) {
+    await db
+      .update(heartbeatRuns)
+      .set({ status: "succeeded", finishedAt: new Date() })
+      .where(eq(heartbeatRuns.id, runId));
   }
 
   async function seedAgent(companyId: string, name: string) {
@@ -354,11 +380,13 @@ describeEmbeddedPostgres("a board unblock lifts a settled replay hold (HOLD-READ
   it("an agent reassignment of the held task clears the hold and wakes the new assignee", async () => {
     const { companyId, agentId, issueId, actionId } = await seedStuck();
     const otherAgentId = await seedAgent(companyId, "agent-b");
-    const server = agentApp(companyId, agentId);
+    const runId = await seedActorRun(companyId, agentId, issueId);
+    const server = agentApp(companyId, agentId, runId);
 
     const patched = await request(server)
       .patch(`/api/issues/${issueId}`)
       .send({ assigneeAgentId: otherAgentId });
+    await finishActorRun(runId);
     expect(patched.status, JSON.stringify(patched.body)).toBe(200);
 
     expect(await replayOf(actionId)).toMatchObject({
@@ -376,9 +404,11 @@ describeEmbeddedPostgres("a board unblock lifts a settled replay hold (HOLD-READ
   // an agent's hand) must not clear the hold — the executor did not change.
   it("an agent PATCH without an assignee change leaves the hold in place", async () => {
     const { companyId, agentId, issueId, actionId } = await seedStuck();
-    const server = agentApp(companyId, agentId);
+    const runId = await seedActorRun(companyId, agentId, issueId);
+    const server = agentApp(companyId, agentId, runId);
 
     const patched = await request(server).patch(`/api/issues/${issueId}`).send({ title: "renamed by the assignee" });
+    await finishActorRun(runId);
     expect(patched.status, JSON.stringify(patched.body)).toBe(200);
     expect(await replayOf(actionId)).toMatchObject({ replay: "blocked" });
   }, TEST_TIMEOUT_MS);

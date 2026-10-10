@@ -1245,6 +1245,12 @@ type AttentionBuildOptions = {
 type AttentionFeedSnapshot = {
   items: AttentionItem[];
   builtAtMs: number;
+  // myrmidon(REPLAY-BLOCK-TRIAGE): the feed stamp is part of the snapshot, not
+  // of the request. A cached snapshot must read identical to the response that
+  // stored it (the feed-cache contract test asserts `second` deep-equals
+  // `first`); stamping `new Date()` per request made two reads inside one TTL
+  // differ by a millisecond whenever the rebuild crossed a ms boundary.
+  generatedAt: string;
 };
 
 const attentionSettingsCache = new WeakMap<
@@ -2995,7 +3001,11 @@ async function buildAttentionFeedSnapshot(
       const collectedItems = [...deduped.values()].sort(compareAttentionItems);
       await decisionQueueService(db).materializeSeededQueues(companyId, collectedItems);
       const enrichedItems = await enrichAttentionItems(db, companyId, collectedItems, now);
-  return { items: enrichedItems, builtAtMs: snapshotBuiltAt };
+  return {
+    items: enrichedItems,
+    builtAtMs: snapshotBuiltAt,
+    generatedAt: new Date().toISOString(),
+  };
 }
 
 export function attentionService(db: Db, serviceOptions: AttentionServiceOptions = {}) {
@@ -3029,6 +3039,12 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
       const includeDismissed = options.includeDismissed === true;
 
       let enrichedItems: AttentionItem[];
+      // myrmidon(REPLAY-BLOCK-TRIAGE): the stamp travels with the snapshot: a
+      // cached read must reproduce the response that stored it byte-for-byte
+      // (the feed-cache contract test deep-equals second with first; a
+      // per-request stamp broke equality whenever two reads straddled a
+      // millisecond boundary).
+      let feedGeneratedAt: string;
       if (cacheEnabled) {
         // cache key = company + everything that changes the
         // unpaginated snapshot (userId and includeDismissed feed the add()
@@ -3053,6 +3069,7 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
         const cachedEntry = cache.get(cacheKey);
         if (cachedEntry && cachedEntry.expiresAtMs > now) {
           enrichedItems = cachedEntry.snapshot.items;
+          feedGeneratedAt = cachedEntry.snapshot.generatedAt;
         } else {
           const snapshot = await buildAttentionFeedSnapshot(db, companyId, buildOptions, serviceOptions);
           if (cache.size > 32) {
@@ -3062,10 +3079,12 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
           }
           cache.set(cacheKey, { expiresAtMs: snapshot.builtAtMs + feedCacheTtlMs, snapshot });
           enrichedItems = snapshot.items;
+          feedGeneratedAt = snapshot.generatedAt;
         }
       } else {
         const snapshot = await buildAttentionFeedSnapshot(db, companyId, buildOptions, serviceOptions);
         enrichedItems = snapshot.items;
+        feedGeneratedAt = snapshot.generatedAt;
       }
 
       const activitySince = parseActivityBoundary(options.activitySince, "activitySince");
@@ -3160,7 +3179,7 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
 
       return {
         companyId,
-        generatedAt: new Date().toISOString(),
+        generatedAt: feedGeneratedAt,
         totalCount: rankedItems.length,
         // Desk badge: distinct items that surfaced
         // today OR carry an explicit decide-by deadline due today/past. Counted

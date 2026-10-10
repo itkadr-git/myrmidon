@@ -1,5 +1,3 @@
-# 1.6.6 — REPLAY-BLOCK-TRIAGE: locked tasks stop piling up silently
-
 ## changelog-en
 
 ### A reassignment clears the settled replay hold; locked tasks surface in the attention feed
