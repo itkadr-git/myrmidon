@@ -164,11 +164,13 @@ import {
   telegramMediaNeedsIdentification,
 } from "./chat-telegram-media-intake.js";
 // myrmidon(1.6.1 VOICE-STT B): inbound transcription of Telegram voice/audio.
+// myrmidon(1.6.6 CH-CONNECTOR-D): the voice intake theme is reached through the
+// bridge seam, so a channel connector can serve it.
 import {
   transcribeTelegramVoiceIntake,
   type TelegramVoiceSttCompanyGate,
   type TelegramVoiceTranscriber,
-} from "../myrmidon/telegram-voice-stt-intake/index.js";
+} from "../myrmidon/channel-connectors/bridge/voice-stt.js";
 import { normalizeTelegramRichMessage } from "./chat-telegram-rich-intake.js";
 import {
   TELEGRAM_DRAFT_ACTION_KIND,
@@ -242,6 +244,8 @@ import {
   type IssueAssignmentWakeupDeps,
 } from "./issue-assignment-wakeup.js";
 import { issueService } from "./issues.js";
+// myrmidon(1.6.6 CH-CONNECTOR-D): the bridged-DM theme is reached through the
+// bridge seam, so a channel connector can serve it.
 import {
   afterTelegramDmMessage,
   decideTelegramDmBinding,
@@ -249,14 +253,16 @@ import {
   handleTelegramDmCommand,
   refuseUnlinkedTelegramDm,
   type TelegramDmBridgeDeps,
-} from "../myrmidon/agent-chat-bridge/bridge.js";
+} from "../myrmidon/channel-connectors/bridge/agent-bridge.js";
 // myrmidon(X9b): @<alias> addressing — addressee resolution for the bridge
 // call site and the leading-token strip for an addressed turn's body (reply
 // prefixing and the mention quote live in issues.ts / cross-channel.ts; the
 // addressed reply rides the normal publication lane).
-import { stripLeadingMentionToken as x9StripAddressToken } from "../myrmidon/agent-chat-bridge/addressing.js";
-import { resolveBridgedAddressee } from "../myrmidon/agent-chat-bridge/bridge.js";
-import type { TelegramAddressee } from "../myrmidon/agent-chat-bridge/addressing.js";
+// myrmidon(1.6.6 CH-CONNECTOR-D): the addressing theme is reached through the
+// bridge seam, so a channel connector can serve it.
+import { stripLeadingMentionToken as x9StripAddressToken } from "../myrmidon/channel-connectors/bridge/addressing.js";
+import { resolveBridgedAddressee } from "../myrmidon/channel-connectors/bridge/agent-bridge.js";
+import type { TelegramAddressee } from "../myrmidon/channel-connectors/bridge/addressing.js";
 // myrmidon(U2): company-wide interaction lookup for callbacks on cards
 // delivered to the owner's Telegram conversation from other tasks.
 import { listInteractionForCallback } from "../myrmidon/owner-delivery/callback-interaction-lookup.js";
@@ -395,26 +401,30 @@ import {
   type ChatWaitReason,
 } from "../myrmidon/chat-holds/wait-notice.js";
 import { currentHostMemoryGate } from "../myrmidon/run-admission.js";
+// myrmidon(1.6.6 CH-CONNECTOR-D): the DM switches are reached through the
+// bridge seam, so a channel connector can serve them.
 import {
   telegramDmConversationsConfigured,
   telegramDmConversationsEnabled,
-} from "../myrmidon/agent-chat-bridge/settings.js";
+} from "../myrmidon/channel-connectors/bridge/dm-conversations.js";
 // myrmidon(TG-NOTIFY-D): inbound topic settings + gate for Telegram forum
 // topics (server/src/myrmidon/telegram-notify/). Off by default: the
 // settings document lives in instance settings; the gate only relaxes the
 // vendor's addressed requirement when the owner enabled topic inbound. The
 // reader lives in its own module, so the track's contract module
 // (`telegram-notify/settings.ts`, part B) stays untouched.
+// myrmidon(1.6.6 CH-CONNECTOR-D): the topic-inbound settings are reached
+// through the bridge seam, so a channel connector can serve them.
 import {
   readTelegramNotifyInbound,
   type TelegramNotifyInboundSettings,
-} from "../myrmidon/telegram-notify/topic-inbound-settings.js";
+} from "../myrmidon/channel-connectors/bridge/topic-inbound-settings.js";
 // myrmidon(TG-NOTIFY-D): pure gate/title/body helpers for topic inbound.
 import {
   topicInboundAdmitted,
   topicTaskBody,
   topicTaskTitle,
-} from "../myrmidon/telegram-notify/topic-inbound.js";
+} from "../myrmidon/channel-connectors/bridge/topic-inbound.js";
 // myrmidon(U1): settings for the editable DM status message and inline split
 // (release 1.4, item 3).
 import {
