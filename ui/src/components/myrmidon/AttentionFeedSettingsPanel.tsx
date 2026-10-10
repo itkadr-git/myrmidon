@@ -2,9 +2,14 @@
 // unresolved failed or timed-out run and how long it reuses the feed it built
 // per company. Both are editable while the server runs — saving writes the
 // instance settings row and the feed re-reads it on the next build, no restart.
+//
+// Visible strings run through the fork i18n catalog (myrmidon-locales/*.json),
+// section `attentionFeed` — the RU-no-latin gate counts this panel as a core
+// settings screen.
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Radar } from "lucide-react";
+import { useTranslation } from "@/i18n";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -15,19 +20,24 @@ import {
   type AttentionFeedPatch,
 } from "./attentionFeedApi";
 
-function sourceLabel(source: AttentionFeedLimitSource): string {
-  return source === "settings" ? "Saved" : "Default";
+type Translate = (key: string, options?: Record<string, unknown>) => string;
+
+function sourceLabel(source: AttentionFeedLimitSource, t: Translate): string {
+  return source === "settings"
+    ? t("attentionFeed.sourceSettings")
+    : t("attentionFeed.sourceDefault");
 }
 
-function integerError(raw: string, min: number, max: number): string | null {
+function integerError(raw: string, min: number, max: number, t: Translate): string | null {
   const value = Number(raw);
   if (!Number.isInteger(value) || value < min || value > max) {
-    return `Enter a whole number between ${min} and ${max}`;
+    return t("attentionFeed.integerError", { min, max });
   }
   return null;
 }
 
 export function AttentionFeedSettingsPanel() {
+  const { t } = useTranslation() as { t: Translate };
   const queryClient = useQueryClient();
   const { data: view } = useQuery({
     queryKey: attentionFeedQueryKey,
@@ -54,7 +64,7 @@ export function AttentionFeedSettingsPanel() {
     },
     onError: () => {
       setSaved(false);
-      setError("Could not save the attention feed windows. Try again.");
+      setError(t("attentionFeed.saveError"));
     },
   });
 
@@ -68,6 +78,7 @@ export function AttentionFeedSettingsPanel() {
       horizonDraft,
       bounds.failedRunHorizonDays.min,
       bounds.failedRunHorizonDays.max,
+      t,
     );
     if (horizonIssue) {
       setError(horizonIssue);
@@ -77,6 +88,7 @@ export function AttentionFeedSettingsPanel() {
       cacheTtlDraft,
       bounds.feedCacheTtlSeconds.min,
       bounds.feedCacheTtlSeconds.max,
+      t,
     );
     if (cacheTtlIssue) {
       setError(cacheTtlIssue);
@@ -105,16 +117,14 @@ export function AttentionFeedSettingsPanel() {
     <section className="space-y-4 rounded-lg border p-4" data-testid="attention-feed-panel">
       <div className="flex items-center gap-2">
         <Radar className="size-4 text-muted-foreground" />
-        <h3 className="text-sm font-medium">Attention feed</h3>
+        <h3 className="text-sm font-medium">{t("attentionFeed.title")}</h3>
       </div>
       <p className="text-sm text-muted-foreground" data-testid="attention-feed-hint">
-        How far back the feed looks for an unresolved failed or timed-out run, and how long it keeps
-        the feed it built per company. Saving applies at once — the feed re-reads the settings row on
-        its next build, no restart.
+        {t("attentionFeed.hint")}
       </p>
 
       <div className="space-y-2">
-        <Label htmlFor="attention-feed-horizon">Failed-run horizon, days</Label>
+        <Label htmlFor="attention-feed-horizon">{t("attentionFeed.horizonLabel")}</Label>
         <div className="flex items-center gap-2">
           <Input
             id="attention-feed-horizon"
@@ -126,8 +136,11 @@ export function AttentionFeedSettingsPanel() {
           />
           {bounds && (
             <span className="text-xs text-muted-foreground" data-testid="attention-feed-horizon-bounds">
-              {bounds.failedRunHorizonDays.min}–{bounds.failedRunHorizonDays.max}, default{" "}
-              {bounds.failedRunHorizonDays.default}
+              {t("attentionFeed.bounds", {
+                min: bounds.failedRunHorizonDays.min,
+                max: bounds.failedRunHorizonDays.max,
+                default: bounds.failedRunHorizonDays.default,
+              })}
             </span>
           )}
           {view && (
@@ -135,14 +148,14 @@ export function AttentionFeedSettingsPanel() {
               className="rounded bg-muted px-2 py-0.5 text-xs text-muted-foreground"
               data-testid="attention-feed-horizon-source"
             >
-              {sourceLabel(view.sources.failedRunHorizonDays)}
+              {sourceLabel(view.sources.failedRunHorizonDays, t)}
             </span>
           )}
         </div>
       </div>
 
       <div className="space-y-2">
-        <Label htmlFor="attention-feed-cache-ttl">Feed cache TTL, seconds</Label>
+        <Label htmlFor="attention-feed-cache-ttl">{t("attentionFeed.cacheTtlLabel")}</Label>
         <div className="flex items-center gap-2">
           <Input
             id="attention-feed-cache-ttl"
@@ -154,8 +167,11 @@ export function AttentionFeedSettingsPanel() {
           />
           {bounds && (
             <span className="text-xs text-muted-foreground" data-testid="attention-feed-cache-ttl-bounds">
-              {bounds.feedCacheTtlSeconds.min}–{bounds.feedCacheTtlSeconds.max}, default{" "}
-              {bounds.feedCacheTtlSeconds.default}, 0 turns the cache off
+              {t("attentionFeed.boundsCacheTtl", {
+                min: bounds.feedCacheTtlSeconds.min,
+                max: bounds.feedCacheTtlSeconds.max,
+                default: bounds.feedCacheTtlSeconds.default,
+              })}
             </span>
           )}
           {view && (
@@ -163,7 +179,7 @@ export function AttentionFeedSettingsPanel() {
               className="rounded bg-muted px-2 py-0.5 text-xs text-muted-foreground"
               data-testid="attention-feed-cache-ttl-source"
             >
-              {sourceLabel(view.sources.feedCacheTtlSeconds)}
+              {sourceLabel(view.sources.feedCacheTtlSeconds, t)}
             </span>
           )}
         </div>
@@ -176,7 +192,7 @@ export function AttentionFeedSettingsPanel() {
       )}
       {saved && !error && (
         <p className="text-sm text-emerald-600" data-testid="attention-feed-saved">
-          Saved. The feed uses the new windows from its next build.
+          {t("attentionFeed.saved")}
         </p>
       )}
 
@@ -187,7 +203,7 @@ export function AttentionFeedSettingsPanel() {
           disabled={!horizonChanged && !cacheTtlChanged}
           onClick={submit}
         >
-          Save
+          {t("attentionFeed.save")}
         </Button>
         <Button
           type="button"
@@ -195,12 +211,12 @@ export function AttentionFeedSettingsPanel() {
           data-testid="attention-feed-reset"
           onClick={resetToDefaults}
         >
-          Use defaults
+          {t("attentionFeed.reset")}
         </Button>
       </div>
 
       <p className="text-xs text-muted-foreground" data-testid="attention-feed-settings-note">
-        Stored in the instance settings; there is no environment variable behind either value.
+        {t("attentionFeed.note")}
       </p>
     </section>
   );
