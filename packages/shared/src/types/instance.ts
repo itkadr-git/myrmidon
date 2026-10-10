@@ -3,6 +3,8 @@ import type { FeedbackDataSharingPreference } from "./feedback.js";
 import type { WorkspaceHygieneLimits } from "../myrmidon-workspace-hygiene.js";
 // myrmidon(C0): the run admission limits stored in instance settings
 import type { StoredRunLimits } from "../myrmidon-runtime-limits.js";
+// myrmidon(1.6.5 RUN-PRIORITY A): the stored run queue priority shape.
+import type { StoredRunPriority } from "../myrmidon-run-priority.js";
 // myrmidon(RUN-STALL-SETTINGS): the run stall detection settings stored in instance settings
 import type { RunStallValues } from "../myrmidon-run-stall.js";
 // myrmidon(1.6.6 PROCS-J): the board's process composition stored in instance settings
@@ -164,6 +166,13 @@ export interface InstanceGeneralSettings {
    * 1.6.5 RUN-ADMISSION).
    */
   runLimits?: StoredRunLimits;
+  /**
+   * myrmidon(1.6.5 RUN-PRIORITY A): run queue priority settings — role/issue
+   * weights, the current release tag and bonus, aging and the starvation
+   * limit — changed from `GET`/`PATCH /api/myrmidon/run-priority`. Absent
+   * means "use the environment variable, then the default".
+   */
+  runPriority?: StoredRunPriority;
   /**
    * myrmidon(RUN-STALL-SETTINGS): the run stall detection settings, changed
    * from the instance settings page and `GET`/`PATCH /api/myrmidon/run-stall`.
