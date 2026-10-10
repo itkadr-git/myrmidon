@@ -39,6 +39,7 @@ const page = (over: Partial<KnowledgeTreePage> = {}): KnowledgeTreePage => ({
   status: "draft",
   approvalRequired: false,
   approverKind: null,
+  deliverToCastes: [], // myrmidon(1.7 KNOWLEDGE-2.0 L-3)
   content: "Body text.\n",
   ...over,
 });
