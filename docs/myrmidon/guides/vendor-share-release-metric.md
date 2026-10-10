@@ -16,7 +16,7 @@ It lands in the release body under its own heading:
 ```
 
 The share itself is measured by `scripts/myrmidon/vendor-share.mjs` (merged in
-#563 / OPE-4151) against the vendor base commit recorded in
+#563) against the vendor base commit recorded in
 `scripts/myrmidon/vendor-base.txt`. The delta compares against the **previous
 release's own line**, so the wording of the metric is its own history: the
 previous body is read with `gh release view <previous tag> --json body` and the

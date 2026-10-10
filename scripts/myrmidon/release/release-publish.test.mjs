@@ -9,6 +9,8 @@ import {
   buildBody,
   buildManifest,
   COMPONENTS,
+  enforceBodyLimit,
+  GITHUB_RELEASE_BODY_LIMIT,
   MANIFEST_NAME,
   componentDigest,
   componentDigests,
@@ -878,6 +880,57 @@ describe("release-body.mjs: body construction", () => {
     assert.match(body, /check-release-support\.sh --from-tag 1\.6\.0/);
     // no private addresses, no token-shaped strings
     assert.doesNotMatch(body, /(?<!\d)(?:10|192|172)\.\d+\.\d+\.\d+(?!\d)/);
+  });
+
+  it("refuses a body over GitHub's 125000-character limit before publish (the 1.6.5-rc.6 422)", () => {
+    // An rc body collects every pending change fragment; a long release
+    // window overruns GitHub's release-body limit and `gh release create`
+    // dies with HTTP 422 after all gates passed. The builder must refuse
+    // first, naming the limit and the byte count. In rel the same notes are
+    // additionally shortened to fit (RELEASE_BODY_MAX_CHARS, the rc.11 fit),
+    // so the refusal is the last line of defence for a caller that bypasses
+    // the fit: it is asserted through the injectable `fail` seam — importing
+    // release-body.mjs must never exit the runner.
+    const over = "x".repeat(GITHUB_RELEASE_BODY_LIMIT + 1);
+    const seen = [];
+    const refused = enforceBodyLimit(over, "1.6.5-rc.6", { fail: (message) => seen.push(message) });
+    assert.equal(refused, null, "an over-long body is never returned");
+    assert.equal(seen.length, 1, "the refusal is reported exactly once");
+    assert.match(seen[0], /125000/);
+    assert.match(seen[0], /125001 characters/);
+    assert.match(seen[0], /body is too long|characters/);
+
+    const atLimit = "x".repeat(GITHUB_RELEASE_BODY_LIMIT);
+    const calls = [];
+    const kept = enforceBodyLimit(atLimit, "1.6.5-rc.6", { fail: (message) => calls.push(message) });
+    assert.equal(kept, atLimit, "a body exactly at the limit passes through untouched");
+    assert.deepEqual(calls, []);
+  });
+
+  it("an rc body from a huge fragment set is shortened to fit, not refused (the rc.11 fit)", () => {
+    // The other half of the rc.6/rc.11 story: on the fragment path the body
+    // never reaches the GitHub limit — it is cut at a line boundary and
+    // points at the full changelog, so a long release window still publishes.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "release-body-limit-"));
+    fs.mkdirSync(path.join(dir, "docs/myrmidon/changes"), { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, "docs/myrmidon/changes/huge.md"),
+      `## changelog-en\n\n### Huge entry\n\n- ${"x".repeat(130000)}\n`,
+    );
+    const registryState = {
+      myrmidon: "sha256:a", "myrmidon-dockergate": "sha256:b",
+      "myrmidon-fleetd": "sha256:c", "myrmidon-hermes": "sha256:d",
+    };
+    fs.writeFileSync(path.join(dir, "registry-state.json"), JSON.stringify(registryState));
+    fs.writeFileSync(path.join(dir, "docs/myrmidon/CHANGELOG.md"), "# Changelog\n");
+    const r = spawnSync("node", [BUILDER, "--registry-state", path.join(dir, "registry-state.json"), "1.6.5-rc.6"], {
+      cwd: dir,
+      encoding: "utf8",
+    });
+    assert.equal(r.status, 0, `expected a publishable body, got: ${r.stderr.slice(0, 300)}`);
+    assert.ok(r.stdout.length <= RELEASE_BODY_MAX_CHARS, `body ${r.stdout.length} > ${RELEASE_BODY_MAX_CHARS}`);
+    assert.match(r.stdout, /Full notes: \[docs\/myrmidon\/CHANGELOG\.md,/);
+    assert.match(r.stdout, /## Component images \(digests\)/);
   });
 });
 

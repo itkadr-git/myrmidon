@@ -1,6 +1,6 @@
 ## changelog-en
 
-### Internal delegation no longer quarantines lead tasks, without weakening the trust check (OPE-6671)
+### Internal delegation no longer quarantines lead tasks, without weakening the trust check
 
 - A task written from another agent's same-company run used to be sent to
   `low_trust_review/quarantined`, so its executor got no GitHub token. The
@@ -21,7 +21,7 @@
 
 ## changelog-ru
 
-### Внутреннее делегирование больше не отправляет задачи лидов в карантин, проверка доверия не ослаблена (OPE-6671)
+### Внутреннее делегирование больше не отправляет задачи лидов в карантин, проверка доверия не ослаблена
 
 - Задача, записанная из прогона другого агента той же компании, попадала в
   `low_trust_review/quarantined`, и исполнитель не получал токен GitHub.

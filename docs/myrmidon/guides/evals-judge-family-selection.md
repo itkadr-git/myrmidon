@@ -4,7 +4,7 @@ Reference-task scores are produced by a judge model behind the company's LLM
 gateway. Historically the judge ran on the configured `MYRMIDON_EVALS_MODEL`
 (default `qwen-plus-free`), while most agents in the fleet also run on
 DashScope/Qwen models — the judge was scoring "its own" family. Since
-myrmidon 1.6.5 (OPE-4143, wave 1.6.2 backlog) the judge is picked from a
+myrmidon 1.6.5 the judge is picked from a
 different model family than the agent being evaluated whenever the candidate
 list allows it, and a collision is visible in the result.
 
@@ -47,7 +47,7 @@ list allows it, and a collision is visible in the result.
 
 - In the run record: `scores.tasks[].sameFamily` (per judged task).
 - In the server log: the same-family fallback warning.
-- The board UI badge (OPE-4150, child task) renders `sameFamily` from the
+- The board UI badge renders `sameFamily` from the
   stored scores.
 
 ## Related settings
