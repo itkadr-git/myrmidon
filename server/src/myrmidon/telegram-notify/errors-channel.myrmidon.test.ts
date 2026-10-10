@@ -53,6 +53,7 @@ import {
   sweepErrorChannel,
   type ErrorChannelSettings,
 } from "./errors.js";
+import { createTgNotifySweepRunner } from "./errors-sweep.js";
 import { readTelegramNotifyErrors, TELEGRAM_NOTIFY_SETTINGS_GENERAL_KEY } from "./errors-settings.js";
 import { emptyTelegramNotifyDocument } from "@paperclipai/shared";
 import { attentionService } from "../../services/attention.js";
@@ -593,6 +594,45 @@ describeEmbeddedPostgres("telegram-notify errors channel (TG-NOTIFY-C)", () => {
       .from(chatPublications)
       .where(eq(chatPublications.companyId, companyId));
     expect(rows.filter((row) => row.idempotencyKey.startsWith(ERROR_CHANNEL_PUBLICATION_PREFIX))).toHaveLength(3);
+  });
+
+  it("the quota holds across passes of one runner and is charged only for newly staged cards", async () => {
+    const { companyId, agentId } = await seedCompany();
+    await seedDmConversation(companyId, agentId, "770099");
+    await writeSettings({ ...ISSUE_CENTRAL_ERROR, maxPerHour: 5 }, companyId);
+    const makeCards = (from: number, to: number) =>
+      Array.from({ length: to - from }, (_, offset) =>
+        card({
+          id: `failed-run-${from + offset}`,
+          companyId,
+          sourceKind: "failed_run",
+          severity: "high",
+          dedupKey: `failed:run-${from + offset}`,
+          title: "agent-a run failed",
+          subjectId: `run-${from + offset}`,
+          whyNow: "Run failed after automatic retries were exhausted.",
+        }),
+      );
+    let cards = makeCards(0, 3);
+    const runner = createTgNotifySweepRunner({
+      db,
+      settings: settingsSource,
+      feed: { list: async (id: string) => (id === companyId ? cards : []) },
+    });
+    const first = await runner.tick();
+    expect(first.sent).toBe(3);
+    // Pass 2: the 3 old cards are already staged (no new row, no quota), 4 new
+    // arrive; only 2 of them fit into the remaining quota of the hour.
+    cards = makeCards(0, 7);
+    const second = await runner.tick();
+    expect(second.sent).toBe(2);
+    expect(second.droppedRateLimited).toBe(2);
+    // Pass 3: the hour is used up; nothing more is staged, nothing queued.
+    cards = makeCards(0, 9);
+    const third = await runner.tick();
+    expect(third.sent).toBe(0);
+    const rows = await db.select().from(chatPublications).where(eq(chatPublications.companyId, companyId));
+    expect(rows.filter((row) => row.idempotencyKey.startsWith(ERROR_CHANNEL_PUBLICATION_PREFIX))).toHaveLength(5);
   });
 
   it("targets the topicId conversation when the setting names a topic thread", async () => {
