@@ -698,6 +698,19 @@ import {
   sharedRunAdmission,
   type RunAdmissionDenialReason,
 } from "../myrmidon/run-admission.js";
+// myrmidon(1.6.6 RUN-DISPATCH, OPE-6443): the start-strategy dispatcher and the
+// 30 s resweep for "queued without running" — part A of T1.4 (design OPE-5394).
+// The default mode is the vendor path, unchanged; see the module for the contract.
+import {
+  createRunStartDispatcher,
+  createRunQueuedBusListener,
+  buildRunQueuedPayload,
+  listAgentsWithQueuedRunsAndNoRunningRun,
+  queuedResweepArmDecision,
+  startQueuedResweepTimer,
+  type RunQueuedBus,
+} from "../myrmidon/run-dispatch/index.js";
+import { loadRunDispatchSettings } from "../myrmidon/run-dispatch/settings.js";
 // myrmidon(PERF-DIET-K): issue-scoped session generations for the container
 // Hermes gateway — one task's session key gains a `:g<N>` once it passes its
 // age/activity threshold, so the task's Hermes state stays bounded
@@ -9164,6 +9177,19 @@ export interface HeartbeatServiceOptions {
   environmentRuntime?: HeartbeatEnvironmentRuntime;
   runtimeEnv?: Record<string, string | undefined>;
   /**
+   * myrmidon(1.6.6 RUN-DISPATCH-NOTIFY, OPE-6444): the role gate of T1.1 —
+   * whether THIS process executes runs. Absent (T1.1 not wired into the
+   * heartbeat yet) is `true`: single-process behaviour, unchanged.
+   */
+  executesRuns?: boolean;
+  /**
+   * myrmidon(1.6.6 RUN-DISPATCH-NOTIFY, OPE-6444): the process bus of T1.3 the
+   * `notify` mode publishes `run_queued` to, and the worker listener subscribes
+   * to. Absent: `notify` degrades to "queued waits for the resweep" (the part-A
+   * behaviour), nothing starts remotely.
+   */
+  processBus?: RunQueuedBus | null;
+  /**
    * Provider-boundary seam for persisted native-run recovery tests. Keeping
    * the seam here exercises the production reaper, claim, execution, package
    * session loop, persistence port, and finalizer without spawning a provider.
@@ -9665,7 +9691,9 @@ export function heartbeatService(
             wakeupRequestId: effect.run.wakeupRequestId,
           },
         });
-        await startNextQueuedRunForAgent(effect.run.agentId);
+        // myrmidon(1.6.6 RUN-DISPATCH-NOTIFY, OPE-6444): through the dispatcher
+        // — an api process in `notify` publishes run_queued instead of starting.
+        await runStartDispatcher.dispatchRunStart(effect.run.agentId);
       } else {
         await logActivity(db, {
           companyId: effect.companyId,
@@ -19182,7 +19210,7 @@ export function heartbeatService(
       await finalizeAgentStatus(run.agentId, "failed", baseMessage, {
         wasFirstHeartbeat: timerClaimWasFirstHeartbeat(run),
       });
-      await startNextQueuedRunForAgent(run.agentId);
+      await runStartDispatcher.dispatchRunStart(run.agentId);
       runningProcesses.delete(run.id);
       reaped.push(run.id);
     }
@@ -19439,7 +19467,7 @@ export function heartbeatService(
       // myrmidon: one agent's failure (e.g. a duplicate routine issue on claim)
       // must not stop the sweep for every agent queued after it
       try {
-        await startNextQueuedRunForAgent(
+        await runStartDispatcher.dispatchRunStart(
           agentId,
           // myrmidon(1.6.5 RUN-FAIRNESS): the share gate holds an agent only
           // while OTHER agents wait — a lone queue is never throttled.
@@ -20044,6 +20072,85 @@ export function heartbeatService(
     });
   }
 
+  // myrmidon(1.6.6 RUN-DISPATCH, OPE-6443): the start dispatcher and the periodic
+  // resweep for "queued without running" — part A of T1.4 (design OPE-5394,
+  // section 3 channel `run_queued`, line 140). The strategy lives in
+  // `instance_settings.general.processes.runStartDispatch`, default `inline`,
+  // which is the vendor path above, byte for byte; the interval lives in
+  // `...processes.queuedResweepSec`, default 30.
+  //
+  // The resweep is the fallback the queue never had: a queued run is started
+  // synchronously from wakeups/completions, and the 15 s resweep of
+  // run-admission.ts is a one-shot timer armed only after an admission denial.
+  // A start request whose notification never arrives therefore waits for the 5 min
+  // scheduler tick (`resumeQueuedRuns`, index.ts). This pass closes that gap once
+  // per interval on the process that owns the queue, independent of the process
+  // bus (T1.3) the `notify` mode will publish to.
+  const runDispatchLog = {
+    info: (fields: Record<string, unknown>, message: string) => logger.info(fields, message),
+    error: (fields: Record<string, unknown>, message: string) => logger.error(fields, message),
+  };
+  const runStartDispatcher = createRunStartDispatcher({
+    listQueuedAgents: (options) => listAgentsWithQueuedRunsAndNoRunningRun(db, options),
+    startNextQueuedRunForAgent: (agentId, options) => startNextQueuedRunForAgent(agentId, options),
+    loadSettings: () => loadRunDispatchSettings(db),
+    readCutoff: () => getWorktreeExecutionCutoff(),
+    // myrmidon(1.6.6 RUN-DISPATCH-NOTIFY, OPE-6444): the role gate of T1.1 and
+    // the bus publish of the `notify` mode. Inject `executesRuns` only where the
+    // role split is wired: absent means a single-process deployment, and the
+    // notify branch then keeps the part-A shape (publish, never start locally)
+    // only when it is actually injected.
+    executesRuns: options.executesRuns !== undefined ? () => options.executesRuns! : undefined,
+    requestRemoteStart: options.processBus
+      ? async (agentId) => {
+          // The payload contract of T1.3: {agentId, companyId, schemaVersion: 1}.
+          const agent = await db
+            .select({ companyId: agents.companyId })
+            .from(agents)
+            .where(eq(agents.id, agentId))
+            .then((rows) => rows[0] ?? null);
+          if (!agent) return;
+          await options.processBus!.publish(
+            "run_queued",
+            buildRunQueuedPayload(agentId, agent.companyId),
+          );
+        }
+      : undefined,
+    log: runDispatchLog,
+  });
+  // The worker-side listener of the `notify` mode: a process that executes runs
+  // subscribes to `run_queued` and starts locally; every bus (re-)listen runs
+  // the part-A resweep dogon. An api process never subscribes.
+  const runQueuedBusListener =
+    options.processBus && (options.executesRuns ?? true)
+      ? createRunQueuedBusListener(options.processBus, {
+          startNextQueuedRunForAgent: (agentId) => startNextQueuedRunForAgent(agentId),
+          sweepQueuedWithoutRunning: () => runStartDispatcher.sweepQueuedWithoutRunning(),
+          log: runDispatchLog,
+        })
+      : null;
+  runQueuedBusListener?.start();
+  // The worker timer of the pass. myrmidon(1.6.6 RUN-DISPATCH-NOTIFY, OPE-6444):
+  // the arming rule of part A plus the role gate — an api process
+  // (`executesRuns: false`) never arms the pass. Off under a test runner and
+  // switchable with MYRMIDON_QUEUED_RESWEEP=0 — see queuedResweepArmDecision.
+  const queuedResweepArming = queuedResweepArmDecision(runtimeEnv, {
+    runsBackground: options.executesRuns ?? true,
+  });
+  const stopQueuedResweep = queuedResweepArming.armed
+    ? startQueuedResweepTimer({
+        sweep: () => runStartDispatcher.sweepQueuedWithoutRunning(),
+        loadSettings: () => loadRunDispatchSettings(db),
+        onError: (err) => logger.error({ err }, "queued run resweep pass failed"),
+      })
+    : null;
+  if (!queuedResweepArming.armed) {
+    logger.info(
+      { reason: queuedResweepArming.reason },
+      "queued run resweep is not armed in this process",
+    );
+  }
+
   // Await every background heartbeat execution that is currently in flight. A
   // draining run can, in its finally block, promote and dispatch the next queued
   // run for the same agent — that follow-up execution is registered in the set
@@ -20061,6 +20168,13 @@ export function heartbeatService(
     for (const timer of nativeSessionResumeDispatchTimers.values()) {
       clearTimeout(timer);
     }
+    // myrmidon(1.6.6 RUN-DISPATCH, OPE-6443): disarm the periodic queued resweep
+    // with the rest of the background work, so a drained service has no pass left
+    // scheduled behind it.
+    stopQueuedResweep?.();
+    // myrmidon(1.6.6 RUN-DISPATCH-NOTIFY, OPE-6444): drop the bus subscription and
+    // the reconnect dogon with the rest of the shutdown.
+    runQueuedBusListener?.stop();
     nativeSessionResumeDispatchTimers.clear();
     while (
       activeWakeupPromises.size > 0 ||
@@ -30203,6 +30317,14 @@ export function heartbeatService(
     // step is due; logic in myrmidon/auto-resume.ts. Called by the scheduler
     // tick in server/src/index.ts on its own single-flight queue.
     sweepAutoResume: (now?: Date) => autoResumeSweeper.sweep(now),
+    // myrmidon(1.6.6 RUN-DISPATCH, OPE-6443): one pass over the agents that have a
+    // queued run and no running run. The 30 s worker timer calls it; tests and the
+    // `notify` mode's fallback (part B) can call it directly.
+    sweepQueuedRunsWithoutRunning: () => runStartDispatcher.sweepQueuedWithoutRunning(),
+    // myrmidon(1.6.6 RUN-DISPATCH-NOTIFY, OPE-6444): the dispatcher itself —
+    // the api process of the notify mode publishes `run_queued` through it.
+    dispatchRunStart: (agentId: string, options?: { otherAgentsWaiting?: boolean }) =>
+      runStartDispatcher.dispatchRunStart(agentId, options),
     // Override-aware scheduling-suppression check (honors the worktree
     // run-execution experimental setting). Callers outside the service that
     // gate on suppression should prefer this over the env-only resolver.
