@@ -5,7 +5,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { ForagingCandidateInput, ForagingCandidatePort } from "./domain.js";
 import { createForagingService } from "./service.js";
-import type { ForagingReader } from "./service.js";
+import type { ForagingIdleCheck, ForagingReader } from "./service.js";
 import type {
   ForagingFindingInsert,
   ForagingFindingRow,
@@ -376,5 +376,238 @@ describe("myrmidon(1.6-FORAGE) sweep pass", () => {
     const state = await service.budgetState("company-a");
     expect(state.maxCostCents).toBe(50);
     expect(state.spentCents).toBeLessThanOrEqual(50);
+  });
+});// myrmidon(1.6.3-FORAGING-IDLE-GATE): the gate itself — the acceptance rules of
+// the ticket, the per-role filtering inside one pass, and the live toggle
+// switch (the service object is never recreated between passes).
+
+/** An idle check whose answer the test scripts per role. */
+function scriptedIdleCheck(
+  reasonsByRole: Record<string, "queue_not_empty" | "no_idle_agent" | null>,
+): ForagingIdleCheck {
+  const reasons = { ...reasonsByRole };
+  return {
+    async roleIdleReason(_companyId, role) {
+      return reasons[role] ?? null;
+    },
+  };
+}
+
+/** A settings-page stand-in: the general row the gate re-reads on every pass. */
+function fakeGeneralStore(start: Record<string, unknown> = {}) {
+  const state: { general: Record<string, unknown> } = { general: { ...start } };
+  return {
+    getGeneral: async () => state.general,
+    set(key: string, value: unknown) {
+      state.general[key] = value;
+    },
+  };
+}
+
+type ServiceDeps = Parameters<typeof createForagingService>[0];
+
+/** The deps of the gate tests: the pass itself runs with no spend limits. */
+function gateDeps(overrides: Partial<ServiceDeps> & Pick<ServiceDeps, "store" | "reader">): ServiceDeps {
+  return {
+    candidatePort: EMPTY_PORT,
+    resolveSettings: async () => ({
+      enabled: true,
+      intervalMs: 3_600_000,
+      budget: { maxCostCents: 0, enabled: false },
+      settings: { ...NO_LIMITS_SETTINGS },
+    }),
+    ...overrides,
+  };
+}
+
+describe("myrmidon(1.6.3-FORAGING-IDLE-GATE) gate in the sweep pass", () => {
+  it("acceptance 1: a role with a queued unassigned task is skipped with queue_not_empty", async () => {
+    const store = createMemoryStore([{ id: "s1", role: "engineer", url: "https://example.com/a" }]);
+    const service = createForagingService(
+      gateDeps({
+        store,
+        reader: fakeReader({ "https://example.com/a": "one\ntwo\n" }),
+        idleGate: fakeGeneralStore(),
+        idleCheck: scriptedIdleCheck({ engineer: "queue_not_empty" }),
+      }),
+    );
+    const result = await service.runPass("company-a");
+    expect(result.skippedReason).toBe("queue_not_empty");
+    expect(result.sourcesRead).toBe(0);
+    expect(store.sources.get("s1")?.lastSnapshot).toBeNull();
+  });
+
+  it("acceptance 1: the skip reason reaches the pass journal", async () => {
+    const info = vi.fn();
+    const store = createMemoryStore([{ id: "s1", role: "engineer", url: "https://example.com/a" }]);
+    const service = createForagingService(
+      gateDeps({
+        store,
+        reader: fakeReader({}),
+        idleGate: fakeGeneralStore(),
+        idleCheck: scriptedIdleCheck({ engineer: "no_idle_agent" }),
+        log: { info, warn: vi.fn(), error: vi.fn() } as unknown as ServiceDeps["log"],
+      }),
+    );
+    await service.runPass("company-a");
+    const skipCall = info.mock.calls.find((args) => String(args[1]).includes("role is busy"));
+    expect(skipCall).toBeDefined();
+    expect(skipCall?.[0]).toMatchObject({ role: "engineer", reason: "no_idle_agent" });
+    const doneCall = info.mock.calls.find((args) => String(args[1]).includes("foraging pass done"));
+    expect(doneCall?.[0]).toMatchObject({ skippedReason: "no_idle_agent" });
+  });
+
+  it("acceptance 2: an empty queue plus a free agent lets the pass read the source", async () => {
+    const store = createMemoryStore([{ id: "s1", role: "engineer", url: "https://example.com/a" }]);
+    const service = createForagingService(
+      gateDeps({
+        store,
+        reader: fakeReader({ "https://example.com/a": "one\ntwo\n" }),
+        idleGate: fakeGeneralStore(),
+        idleCheck: scriptedIdleCheck({ engineer: null }),
+      }),
+    );
+    const result = await service.runPass("company-a");
+    expect(result.skippedReason).toBeUndefined();
+    expect(result.sourcesRead).toBe(1);
+    expect(store.sources.get("s1")?.lastSnapshot).toEqual(["one", "two"]);
+  });
+
+  it("acceptance 3: switching the toggle off restores the old behaviour WITHOUT recreating the service", async () => {
+    const store = createMemoryStore([{ id: "s1", role: "engineer", url: "https://example.com/a" }]);
+    const general = fakeGeneralStore();
+    const service = createForagingService(
+      gateDeps({
+        store,
+        reader: fakeReader({ "https://example.com/a": "one\ntwo\n" }),
+        idleGate: general,
+        idleCheck: scriptedIdleCheck({ engineer: "queue_not_empty" }),
+      }),
+    );
+
+    // The gate is on and the role is busy: the pass skips it.
+    const first = await service.runPass("company-a");
+    expect(first.skippedReason).toBe("queue_not_empty");
+    expect(first.sourcesRead).toBe(0);
+
+    // The operator flips the toggle off in the settings page: the very next
+    // pass on the SAME service object reads the source.
+    general.set("foragingIdleGate", { enabled: false });
+    const second = await service.runPass("company-a");
+    expect(second.skippedReason).toBeUndefined();
+    expect(second.sourcesRead).toBe(1);
+    expect(store.sources.get("s1")?.lastSnapshot).toEqual(["one", "two"]);
+
+    // And back on: the busy role is skipped again, still the same service.
+    general.set("foragingIdleGate", { enabled: true });
+    const third = await service.runPass("company-a");
+    expect(third.sourcesRead).toBe(0);
+    expect(third.skippedReason).toBe("queue_not_empty");
+  });
+
+  it("a busy role does not abort the sweep: the other roles' sources are still read", async () => {
+    const store = createMemoryStore([
+      { id: "s1", role: "engineer", url: "https://example.com/eng" },
+      { id: "s2", role: "smm", url: "https://example.com/smm" },
+    ]);
+    const service = createForagingService(
+      gateDeps({
+        store,
+        reader: fakeReader({
+          "https://example.com/eng": "e",
+          "https://example.com/smm": "s",
+        }),
+        idleGate: fakeGeneralStore(),
+        idleCheck: scriptedIdleCheck({ engineer: "queue_not_empty", smm: null }),
+      }),
+    );
+    const result = await service.runPass("company-a");
+    expect(result.sourcesRead).toBe(1);
+    expect(store.sources.get("s1")?.lastSnapshot).toBeNull(); // the busy role
+    expect(store.sources.get("s2")?.lastSnapshot).toEqual(["s"]); // the idle one
+  });
+
+  it("no free agent of the role skips its sources with no_idle_agent", async () => {
+    const store = createMemoryStore([{ id: "s1", role: "engineer", url: "https://example.com/a" }]);
+    const service = createForagingService(
+      gateDeps({
+        store,
+        reader: fakeReader({ "https://example.com/a": "x" }),
+        idleGate: fakeGeneralStore(),
+        idleCheck: scriptedIdleCheck({ engineer: "no_idle_agent" }),
+      }),
+    );
+    const result = await service.runPass("company-a");
+    expect(result.skippedReason).toBe("no_idle_agent");
+    expect(result.sourcesRead).toBe(0);
+  });
+
+  it("the idle check runs once per role per pass, not once per source", async () => {
+    const store = createMemoryStore([
+      { id: "s1", role: "engineer", url: "https://example.com/a" },
+      { id: "s2", role: "engineer", url: "https://example.com/b" },
+    ]);
+    const roleIdleReason = vi.fn(async () => null as "queue_not_empty" | "no_idle_agent" | null);
+    const service = createForagingService(
+      gateDeps({
+        store,
+        reader: fakeReader({ "https://example.com/a": "a", "https://example.com/b": "b" }),
+        idleGate: fakeGeneralStore(),
+        idleCheck: { roleIdleReason },
+      }),
+    );
+    await service.runPass("company-a");
+    expect(roleIdleReason).toHaveBeenCalledTimes(1);
+  });
+
+  it("a stored setting beats the env value (the settings page is the source of truth)", async () => {
+    const store = createMemoryStore([{ id: "s1", role: "engineer", url: "https://example.com/a" }]);
+    const general = fakeGeneralStore({ foragingIdleGate: { enabled: true } });
+    const service = createForagingService(
+      gateDeps({
+        store,
+        reader: fakeReader({ "https://example.com/a": "x" }),
+        // The stored value says ON, the environment says OFF: the stored value
+        // wins (the env only overrides an instance that never saved it).
+        idleGate: { getGeneral: general.getGeneral, env: { MYRMIDON_FORAGING_IDLE_GATE_ENABLED: "0" } },
+        idleCheck: scriptedIdleCheck({ engineer: "queue_not_empty" }),
+      }),
+    );
+    const result = await service.runPass("company-a");
+    expect(result.skippedReason).toBe("queue_not_empty");
+    expect(result.sourcesRead).toBe(0);
+  });
+
+  it("a failing idle check fails open: the source is read", async () => {
+    const store = createMemoryStore([{ id: "s1", role: "engineer", url: "https://example.com/a" }]);
+    const service = createForagingService(
+      gateDeps({
+        store,
+        reader: fakeReader({ "https://example.com/a": "one\n" }),
+        idleGate: fakeGeneralStore(),
+        idleCheck: {
+          async roleIdleReason() {
+            throw new Error("db is down");
+          },
+        },
+      }),
+    );
+    const result = await service.runPass("company-a");
+    expect(result.skippedReason).toBeUndefined();
+    expect(result.sourcesRead).toBe(1);
+  });
+
+  it("no idle gate wired: the pass is not gated at all", async () => {
+    const store = createMemoryStore([{ id: "s1", role: "engineer", url: "https://example.com/a" }]);
+    const service = createForagingService(
+      gateDeps({
+        store,
+        reader: fakeReader({ "https://example.com/a": "one\n" }),
+        idleCheck: scriptedIdleCheck({ engineer: "queue_not_empty" }),
+      }),
+    );
+    const result = await service.runPass("company-a");
+    expect(result.skippedReason).toBeUndefined();
+    expect(result.sourcesRead).toBe(1);
   });
 });

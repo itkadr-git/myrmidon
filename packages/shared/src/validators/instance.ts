@@ -72,6 +72,7 @@ import {
 // percent of the model window, fallback window, optimizer agent) stored in the
 // same general settings row.
 import { promptBudgetSettingsSchema } from "../myrmidon-prompt-budget.js";
+import { foragingIdleGateSettingsSchema } from "../myrmidon-foraging-idle-gate.js";
 
 // myrmidon(1.6.6 LONG-TASK-CONTEXT): the long-task context guard settings
 // (switch, reset threshold percent, fallback window, history budget) stored in
@@ -284,6 +285,11 @@ export const instanceGeneralSettingsSchema = z.object({
   // fields another part of the same feature stores there; absent (or an absent
   // count) means the default { api: 1, worker: 0 } = today's single process.
   processes: storedBoardProcessesSettingsSchema.optional(),
+  // myrmidon(1.6.3-FORAGING-IDLE-GATE): whether foraging runs only when the
+  // role is idle (empty queue + a free agent), changed from
+  // /api/myrmidon/foraging/idle-gate; absent means the environment variable,
+  // then the default (on).
+  foragingIdleGate: foragingIdleGateSettingsSchema.optional(),
 }).strict();
 
 export const patchInstanceGeneralSettingsSchema = z
