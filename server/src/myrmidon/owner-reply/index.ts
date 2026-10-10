@@ -64,3 +64,45 @@ export {
 
 /** The wording→decision mapping the inbound owner-chat writer plugs in. */
 export { classifyOwnerReplyText } from "./owner-reply-classifier.js";
+
+// myrmidon(1.6.5-F21-B): TTL sweep, attention and settings exports (separate lines).
+export {
+  createOwnerCardTtlSweep,
+  createOwnerCardTtlScheduler,
+  classifyOwnerCardPayload,
+  ownerCardResolvesBySilence,
+  isExpiredOwnerCardRow,
+  buildOwnerCardPayloadWithDelivery,
+  OWNER_CARD_EXPIRED_WAKE_REASON,
+  OWNER_CARD_EXPIRED_WAKE_IDEMPOTENCY_PREFIX,
+  OWNER_CARD_SWEEP_SYSTEM_ID,
+  OWNER_CARD_TTL_ACTIVITY_ACTION,
+  OWNER_CARD_EXPIRED_COMMENT,
+  OWNER_CARD_SILENCE_RESOLVED_COMMENT,
+  OWNER_CARD_GUARDED_DECISION_CLASSES,
+  type OwnerCardPayloadClass,
+  type OwnerCardGuardedDecisionClass,
+  type OwnerCardDeliveryMeta,
+  type OwnerCardTtlRow,
+  type OwnerCardTtlSweepDeps,
+  type OwnerCardTtlSweepResult,
+} from "./ttl-sweep.js";
+export {
+  summarizeOwnerPendingCards,
+  ownerCardsAttentionDedupKey,
+  ownerCardsAttentionTitle,
+  ownerCardsAttentionWhyNow,
+  type OwnerPendingCardsSummary,
+} from "./attention.js";
+export {
+  readOwnerCardTtlSettings,
+  OWNER_CARD_TTL_MS_ENV,
+  OWNER_CARD_SWEEP_INTERVAL_SEC_ENV,
+  OWNER_CARD_SWEEP_WAKE_BUDGET_ENV,
+  OWNER_CARD_STALE_AGE_MS,
+  DEFAULT_OWNER_CARD_TTL_MS,
+  DEFAULT_OWNER_CARD_SWEEP_INTERVAL_SEC,
+  DEFAULT_OWNER_CARD_SWEEP_PAGE_SIZE,
+  DEFAULT_OWNER_CARD_SWEEP_WAKE_BUDGET,
+  type OwnerCardTtlSettings,
+} from "./settings.js";
