@@ -1,6 +1,6 @@
 # Myrmidon
 
-Myrmidon — плоскость управления компаниями из ИИ-агентов: доска задач, агенты и их прогоны,
+Myrmidon — система управления командой ИИ-агентов на своём сервере: доска задач, агенты и их прогоны,
 инструменты MCP, чаты, рутины. Это самостоятельный продукт на основе Paperclip. Мы развиваем его
 для постоянной работы большого парка агентов: прогоны не теряются, агенты изолированы друг от
 друга, доску можно обслуживать и обновлять без потерь.
@@ -86,7 +86,7 @@ Myrmidon — плоскость управления компаниями из �
 | [guides/browser-bridge-gateway.md](guides/browser-bridge-gateway.md) | Браузерный мост, шлюз (EXTCASE-B): исходящее WSS-соединение расширения, сопряжение кодом, allowlist, политика подписи, журнал |
 | [guides/connector-panel.md](guides/connector-panel.md) | Панель коннекторов (Company settings → Connectors): устройства, выдача кодов, allowlist, политика подписи, журнал |
 | [guides/ocr.md](guides/ocr.md) | Путь OCR: PDF в текст в workspace бота — инструмент `ocr.pdf`, бэкенды, лимиты, журнал |
-| [guides/owner-telegram-cards.md](guides/owner-telegram-cards.md) | Доставка карточек вопросов и согласований владельцу задачи в Telegram-личку с агентом-автором (U2) |
+| [guides/owner-telegram-cards.md](guides/owner-telegram-cards.md) | Как решения владельца доходят до его Telegram-лички с агентом-автором: режим `via_bot` по умолчанию (сообщение бота, ответ текстом) или карточки с кнопками (U2) |
 | [guides/cto-chat-planner.md](guides/cto-chat-planner.md) | Планировщик чата с доской (CTO-CHAT B): текст владельца — в предложенный эпик с задачами и критериями приёмки, карточка согласования, вход из Telegram DM, коды ошибок |
 | [guides/external-mcp-connectors.md](guides/external-mcp-connectors.md) | Внешние MCP-коннекторы: подключение любого HTTP MCP-сервера без кода форка — вердикт разведки, две точки входа, гранты агентам, регламент и проверка здоровья |
 | [guides/mcp-tool-names.md](guides/mcp-tool-names.md) | Имена MCP-инструментов доски: `myrmidon*` вместо `paperclip*`, алиасы старых имён на один релиз, план снятия в 1.8 |

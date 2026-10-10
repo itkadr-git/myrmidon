@@ -10,9 +10,35 @@ If the company runs the Telegram DM bridge (X8b, see
 card also reaches the owner's Telegram as a message from the bot that belongs
 to the authoring agent. The owner can answer without opening the board.
 
+## The delivery mode
+
+How an owner decision reaches the owner's Telegram is the instance's
+owner-delivery mode (`instance_settings.general[ownerDelivery]`, read with
+`GET /api/myrmidon/owner-delivery`, changed with
+`PATCH /api/myrmidon/owner-delivery`, `{ "mode": ... }`, instance
+administrator; the Company Settings screen "Owner Telegram delivery" shows the
+same three choices). The modes:
+
+- `via_bot` — the default; an instance that never stored the setting is in
+  this mode. No card with buttons is published to the owner's Telegram at
+  all. Instead the agent that raised the question is woken on the same task
+  with the open decision in its prompt and writes the owner one plain bot
+  message that explains what to decide, why, each option with its
+  consequence, and a recommendation. The owner answers in the chat with
+  ordinary text, and the agent records the decision on the card (see
+  "The `via_bot` mode" below).
+- `owner_decisions_only` — only the cards that wait for the owner are
+  delivered as cards with buttons. The rest of this page describes this
+  card delivery.
+- `all` — every card an agent raises is delivered.
+
+An explicitly saved `owner_decisions_only` or `all` keeps its behaviour;
+only instances without a stored mode follow the new default.
+
 ## When a card is delivered to Telegram
 
-All of the following must hold:
+In the `via_bot` mode a card never reaches the owner's Telegram — the bot
+message replaces it. In the other two modes, all of the following must hold:
 
 1. The card is a pending `ask_user_questions` or `request_confirmation`
    created by an agent (not by a user or the system). Other interaction kinds
@@ -69,8 +95,37 @@ particular:
 There is no fallback to another agent's bot and no queueing "until the owner
 opens a DM": delivery is best-effort at the moment the card is enqueued.
 
+## The `via_bot` mode
+
+In the default `via_bot` mode the owner never sees a card with buttons: the
+decision arrives as an ordinary message from the agent's bot, and the owner
+answers it with ordinary text in the same Telegram chat.
+
+- After an agent creates a question or confirmation that only the owner can
+  decide, the agent is woken on the same task with the open decision in its
+  prompt and must explain it to the owner in one message: what to decide,
+  why it matters now, each option with its consequence, and a
+  recommendation. One message per question; several open questions for the
+  same owner are covered by one summary message, not a stream.
+- The message is written into the owner's standing Telegram DM with the
+  authoring agent (`POST /api/myrmidon/owner-message`). Only the author of
+  an open owner decision may write it; a second message about an
+  already-explained question is refused while the owner has not answered.
+- The owner's text answer arrives in the same chat marked as a reply to the
+  open decision. The agent then closes the card on the board in the owner's
+  name (`POST /api/myrmidon/owner-message/resolve`) — and only by pointing to
+  the id of the owner's own message in that chat, written after the
+  explanation (`ownerReplyCommentId`). An unclear or partial answer closes
+  nothing: the agent asks one short clarifying question in the chat and
+  waits.
+- The card stays on the board as the record of the decision. Confirmations
+  that authorize a tool action, a secret or a connection are never closed
+  from a chat reply; they stay explicit decisions on the board.
+
 ## Settings involved
 
+- `ownerDelivery` (instance settings, Company Settings → "Owner Telegram
+  delivery") — the delivery mode; see "The delivery mode" above.
 - `MYRMIDON_TELEGRAM_DM_CONVERSATIONS` — enables the X8b bridge per Telegram
   endpoint (comma-separated endpoint ids or `*`); see
   [SETTINGS.md](../SETTINGS.md). The owner-delivery extension needs no setting
@@ -78,7 +133,14 @@ opens a DM": delivery is best-effort at the moment the card is enqueued.
 
 ## Source of truth
 
-- Call site: `server/src/services/chat-interaction-publications.ts`
+- Mode contract: `packages/shared/src/myrmidon-owner-delivery.ts`
+  (`OWNER_DELIVERY_MODES`, `ownerDeliveryAllowsCard`); settings read/write:
+  `server/src/myrmidon/owner-delivery/settings.ts`
+  (marker `myrmidon(1.6.5-OWNER-VIA-BOT)`).
+- Bot message and owner-reply resolution:
+  `server/src/myrmidon/owner-delivery/owner-message.ts`,
+  `server/src/myrmidon/owner-delivery/routes.ts`.
+- Call site for card delivery: `server/src/services/chat-interaction-publications.ts`
   (marker `myrmidon(U2)`, after the vendor binding lookup).
 - Binding search: `server/src/myrmidon/owner-delivery/telegram-owner-bindings.ts`.
 - Callback resolution: `server/src/myrmidon/owner-delivery/callback-interaction-lookup.ts`.

@@ -199,8 +199,9 @@ what exists as of 1.6.4 (latest release; 1.6.5-rc.13 is the current release cand
 
 ### Channels
 
-- **The owner's channel.** Question and confirmation cards reach the owner's
-  Telegram and can be answered there
+- **The owner's channel.** Owner decisions reach the owner's Telegram — a
+  plain bot message the owner answers in text (the default), or a card with
+  buttons — and can be answered there
   ([owner-telegram-cards](docs/myrmidon/guides/owner-telegram-cards.md)); a
   run shows one live status message in the DM
   ([telegram-dm-status](docs/myrmidon/guides/telegram-dm-status.md)).
