@@ -53,6 +53,7 @@ Myrmidon — плоскость управления компаниями из �
 | [media-tools.md](media-tools.md) | Общие медиа- и офисные инструменты для контейнерных ботов: сервис media-mcp, хранилище и квоты, инструменты (ffmpeg, офис, OCR, `dwg_convert`), развёртывание и границы изоляции (русская версия: [media-tools.ru.md](media-tools.ru.md)) |
 | [board-key-rotation.md](board-key-rotation.md) | Runbook оператора: ротация и отзыв ключей доски / PAT по ролям (ROLE-SCOPED-TOKENS) |
 | [stack-updates.md](stack-updates.md) | Цикл обновлений стека: откуда «наше» и «у автора», отставание, вердикт «патч закрыт», плановая сверка и карточка `stack_update` (STACK-UPDATES часть D) |
+| [multi-instance.md](multi-instance.md) | Многопроцессный режим доски (1.6.6 BOARD-PROCESSES): роли worker/api, настройка, панель «Процессы», `/internal/ready` и `/healthz`, drain при выкате |
 | [tracks/](tracks/) | Задания шести треков V1.0 |
 | [SESSION-PROMPTS.md](SESSION-PROMPTS.md) | Промпты для запуска сессий по трекам |
 | [guides/](guides/) | Руководства пользователя и администратора — таблица ниже |
