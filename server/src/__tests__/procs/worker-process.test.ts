@@ -134,10 +134,6 @@ describeProcs("worker process on one test database (PROCS-1.5 ч.H)", () => {
     const apiRow = view.processes.find((row) => row.role === "api");
     expect(apiRow, "api row in board_processes").toBeDefined();
     expect(apiRow?.apiPort).toBe(api!.port);
-    } finally {
-      console.log("=== API OUTPUT ===\n" + api!.output());
-      console.log("=== WORKER OUTPUT ===\n" + worker!.output());
-    }
   }, 120_000);
 
   it("scenario 2: the worker probe serves /healthz for the container runtime", async () => {
