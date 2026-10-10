@@ -162,6 +162,7 @@ import { sweepGatewayRunReattach, GATEWAY_REATTACH_SWEEP_INTERVAL_MS } from "./m
 import { readHotRestartIntent } from "./services/hot-restart.js"; // myrmidon(T1.6): predecessor boot id for the startup reattach pass
 import { createTaskPrSyncScheduler } from "./myrmidon/task-pr-sync/index.js"; // myrmidon(TASK-PR-SYNC)
 import { createStaleBlockScheduler } from "./myrmidon/stale-block/index.js"; // myrmidon(STALE-BLOCK)
+import { createOwnerCardTtlScheduler } from "./myrmidon/owner-reply/index.js"; // myrmidon(1.6.5-F21-B)
 import { createReviewRoutingScheduler } from "./myrmidon/review-routing/index.js"; // myrmidon(REVIEW-ROUTING)
 import { createReviewReworkScheduler } from "./myrmidon/review-rework/index.js"; // myrmidon(REVIEW-REWORK)
 import { buildWipLimitSweeper } from "./myrmidon/wip-limit/index.js"; // myrmidon(1.6.1-WIP-LIMIT-A)
@@ -1397,6 +1398,18 @@ async function startServerWithDatabaseTeardown(
   // blocked tasks through the ordinary issue update path. Opt-in via
   // MYRMIDON_STALE_BLOCK_ENABLED; the interval is enforced inside the sweep.
   const scheduleStaleBlockSweep = createStaleBlockScheduler({ db: db as any, track: trackHeartbeatSchedulerWork });
+  // myrmidon(1.6.5-F21-B): the periodic owner-card TTL pass — an owner
+  // request_confirmation the owner leaves unanswered past
+  // MYRMIDON_OWNER_CARD_TTL_MS is resolved by its recommended option
+  // (silence-means-recommended) or expired, and the author is woken once with
+  // `interaction_expired`. Settings are read on every pass; the interval is
+  // enforced inside the sweep.
+  const scheduleOwnerCardTtlSweep = createOwnerCardTtlScheduler({
+    db: db as any,
+    wakeup: ((agentId: string, options: Record<string, unknown>) =>
+      environmentLeaseCleanupHeartbeat.wakeup(agentId, options as any)),
+    track: trackHeartbeatSchedulerWork,
+  });
   // myrmidon(REVIEW-ROUTING): a task in review with no reviewer gets one from
   // the reviewer roles (least loaded, never its author or assignee); a review
   // without a verdict past the configured hours is signalled and reassigned.
@@ -2028,6 +2041,7 @@ async function startServerWithDatabaseTeardown(
         schedulePendingInteractionWakeSweep(); // myrmidon(P12)
         scheduleTaskPrSyncSweep(); // myrmidon(TASK-PR-SYNC)
         scheduleStaleBlockSweep(); // myrmidon(STALE-BLOCK)
+        scheduleOwnerCardTtlSweep(); // myrmidon(1.6.5-F21-B)
         scheduleReviewRoutingSweep(); // myrmidon(REVIEW-ROUTING)
         scheduleReviewReworkSweep(); // myrmidon(REVIEW-REWORK)
         scheduleWipLimitSweep(); // myrmidon(1.6.1-WIP-LIMIT-A)
@@ -2234,6 +2248,7 @@ async function startServerWithDatabaseTeardown(
       schedulePendingInteractionWakeSweep(); // myrmidon(P12)
       scheduleAutoResumeSweep(); // myrmidon(AUTO-RESUME)
       scheduleStaleBlockSweep(); // myrmidon(STALE-BLOCK)
+      scheduleOwnerCardTtlSweep(); // myrmidon(1.6.5-F21-B)
       scheduleReviewRoutingSweep(); // myrmidon(REVIEW-ROUTING)
       scheduleReviewReworkSweep(); // myrmidon(REVIEW-REWORK)
       scheduleGitHubConnectionEventPoll();
