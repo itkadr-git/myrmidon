@@ -23,6 +23,11 @@ case "$*" in
   *"network inspect"*) exit 0 ;;
   *"network create"*) exit 0 ;;
   *pg_dump*) echo "PGDUMP-FAKE-CONTENT"; exit 0 ;;
+  *pg_isready*) exit 0 ;;
+  # The installer enables the vector extension of the knowledge corpus and reads
+  # its version back: the fake database answers the version query.
+  *"CREATE EXTENSION IF NOT EXISTS vector"*) exit 0 ;;
+  *"extname='vector'"*) echo "\${FAKE_VECTOR_VERSION:-0.8.7}"; exit 0 ;;
   *"ps -q"*) if [ -f "$SANDBOX/up" ]; then echo "c0ffee"; fi; exit 0 ;;
 esac
 exit 0
@@ -136,6 +141,25 @@ describe("install.sh", () => {
       compose.includes("${MYRMIDON_BOARD_REPOSITORY:?the board repository must be set}@${MYRMIDON_BOARD_DIGEST:?the board digest must be set}"),
       "the board image reference is built from the manifest repository and digest",
     );
+    // CORPUS (1.6.6): the knowledge corpus keeps embeddings in a `vector` column,
+    // so the database image ships pgvector and the installer ENABLES the extension
+    // in the fresh database before the board starts. An image that merely offers
+    // the binary would leave the module switched off; the board itself does not
+    // create the extension.
+    assert.match(compose, /image:\s*pgvector\/pgvector:0\.8\.7-pg17/, "the database image must ship pgvector");
+    assert.ok(
+      calls(sb).includes("CREATE EXTENSION IF NOT EXISTS vector"),
+      "the fresh install must enable the vector extension",
+    );
+    assert.match(r.stderr, /vector extension: 0\.8\.7/, "the install log names the version it enabled");
+    const stackOrder = calls(sb)
+      .split("\n")
+      .filter((l) => l.includes("CREATE EXTENSION") || l.includes("up -d"));
+    assert.equal(stackOrder.length, 3, stackOrder.join(" | "));
+    assert.ok(
+      stackOrder[0].includes("up -d db") && stackOrder[1].includes("CREATE EXTENSION") && stackOrder[2].includes("up -d"),
+      `the extension must be created between the database and the board: ${stackOrder.join(" | ")}`,
+    );
     const config = JSON.parse(fs.readFileSync(path.join(sb.opt, "dockergate", "config.json"), "utf8"));
     assert.deepEqual(config.images, [`ghcr.io/itkadr-git/myrmidon-hermes@${C}`]);
     assert.equal(config.caller.mode, "container-main-process");
@@ -147,6 +171,14 @@ describe("install.sh", () => {
     const urls = fs.readFileSync(path.join(sb.dir, "curl.log"), "utf8");
     assert.ok(urls.includes("/releases/latest/download/release-components.json"), urls);
     assert.ok(!urls.includes("api.github.com"), `no anonymous API call expected, got: ${urls}`);
+  });
+
+  it("refuses a fresh database that reports another vector version", () => {
+    const sb = sandbox();
+    const r = run(sb, [], { FAKE_VECTOR_VERSION: "0.7.0" });
+    assert.equal(r.status, 1, "the pinned extension version is part of the acceptance of a fresh install");
+    assert.match(r.stderr, /reports vector 0\.7\.0/);
+    assert.match(r.stderr, /installs vector 0\.8\.7/);
   });
 
   it("refuses a manifest that does not name a board digest", () => {
@@ -186,7 +218,10 @@ describe("install.sh", () => {
     assert.match(envFile(sb), /MYRMIDON_VERSION=1\.6\.6/);
     assert.match(envFile(sb), new RegExp(`MYRMIDON_BOARD_DIGEST=${A}`));
     const ups = calls(sb).split("\n").filter((l) => l.includes("up -d"));
-    assert.equal(ups.length, 3, "install, failed switch and rollback each recreate the stack");
+    // The fresh install brings the database up on its own (the vector extension of
+    // the knowledge corpus has to exist before the board starts), then the stack:
+    // two calls, plus the failed switch and the rollback.
+    assert.equal(ups.length, 4, "install (database, then stack), failed switch and rollback each recreate the stack");
   });
 
   it("does nothing when the running release is already the latest", () => {

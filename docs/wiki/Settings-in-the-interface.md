@@ -51,6 +51,18 @@ interval, P0 preemption) are edited live in **Instance → General → Role
 queues (SWARM-CLAIM)**
 ([swarm-claim-settings](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/swarm-claim-settings.md)).
 
+## Parallel helpers
+
+Agents can split a task across parallel helper subagents
+(`delegate_task`). On the card of a `hermes_gateway` agent, the **Parallel
+helpers** section turns this on and sets the per-agent limit, the helper
+model and an optional per-helper turn budget; **Instance → General →
+"Parallel helpers"** sets the company ceiling (default `10`, hard cap `50`)
+and the per-agent default (`2`), and shows a capacity hint summing the
+resolved limits against the host's build slots. Saving applies on every bot's
+next reconcile tick, without a restart. Details:
+[parallel-helpers](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/parallel-helpers.md).
+
 ## Backups
 
 The database backup retention policy lives in the general instance settings
@@ -82,3 +94,14 @@ keep the database limit unchanged (1.6.5 BACKUP-STATEMENT-TIMEOUT).
 - **Budget enforcement** — signal only, pause with a card to the owner, or
   hard refusal of new runs; set live for the instance
   ([budget-enforcement](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/budget-enforcement.md)).
+- **Attention feed windows** — the "Attention feed" panel on Instance →
+  General (since 1.6.6) edits how far back the attention feed looks for an
+  unresolved failed or timed-out run (1–365 days, default 7) and how long
+  the built feed is reused per company (0–300 seconds, default 45; `0`
+  turns the cache off). Each field shows its bounds, the built-in default
+  and whether the value in force comes from the saved settings row or from
+  the default. Saving applies without a restart: the feed picks the new
+  value up on its next build. Read by any board member, written by an
+  instance administrator via `GET`/`PATCH /api/myrmidon/attention-feed`
+  (stored as `attentionFailedRunHorizonDays` and
+  `attentionFeedCacheTtlSeconds` in the instance settings).

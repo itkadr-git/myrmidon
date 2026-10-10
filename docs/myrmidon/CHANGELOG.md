@@ -621,6 +621,32 @@ version file to edit. Base Paperclip version is in the image label
   "spent" only when no monthly budget is configured, ending the
   "$0 of $0" placeholder.
 
+### Bot runtime tuning from the profile compiler (BOT-RUNTIME-TUNING part B)
+
+- The bot profile compiler writes three settings into each bot's
+  `hermes/config.yaml` that it never wrote before:
+  `compression.threshold_tokens` (an absolute token cap — Hermes compresses
+  at the lower of its ratio threshold and this count, so a long session on a
+  large-window model no longer grows to half the window before compacting),
+  `model.context_length` (the context window of the card's model, from the
+  card's own `models.contextLength` or the instance's
+  `MYRMIDON_BOT_MODEL_CONTEXT_LENGTH` alias map), and the auxiliary models
+  `auxiliary.title_generation.model` / `auxiliary.compression.model` (the
+  title generator and the compression summarizer stop riding the main,
+  expensive model). Instance settings:
+  `MYRMIDON_BOT_COMPRESSION_THRESHOLD_TOKENS`,
+  `MYRMIDON_BOT_MODEL_CONTEXT_LENGTH`,
+  `MYRMIDON_BOT_AUX_TITLE_MODEL`, `MYRMIDON_BOT_AUX_COMPRESSION_MODEL`.
+  The card's entry always wins over the instance setting; unset stays unset
+  (no compiler-invented defaults). Values are validated in ranges at compile
+  time (10 000–2 000 000 for the token cap, 8 000–10 000 000 for the context
+  window): an out-of-range or non-integer value is dropped with a profile
+  warning in the container activity log — never a compile failure. Settings
+  are read on every profile build, and a change restarts the affected bot
+  containers on the next pass. Settings documentation:
+  [SETTINGS.md](SETTINGS.md) § Bot containers.
+
+
 ### Board administrators from agents (ADMIN-AGENT part C)
 
 - The UI half of making an agent a board administrator. The agent card's
@@ -673,6 +699,24 @@ version file to edit. Base Paperclip version is in the image label
   [SETTINGS.md](SETTINGS.md) § PARALLEL-HELPERS.
 
 ## 1.6.0
+
+### Telegram notifications (TG-NOTIFY-SETTINGS, part A: the settings core)
+
+- The company-level settings that say what the board sends to the owner in
+  Telegram: the daily digest, error notifications, inbound rules, escalations
+  and head-bot proactivity, as ONE runtime-changeable contract
+  (`packages/shared/src/myrmidon-telegram-notify.ts` — types and zod
+  validators shared by the server and the UI). Storage without migration:
+  the `myrmidonTelegramNotifySettings` key of `instance_settings.general`,
+  company-keyed. API: `GET /api/myrmidon/telegram-notify` answers the full
+  document (every field of every section always present), `PATCH
+  /api/myrmidon/telegram-notify` applies a partial update; each changed
+  field is recorded in a bounded changelog (200 entries) with the actor, the
+  field path and the from/to values. Reads need company access; PATCH is
+  board only. Every section defaults to OFF — with the defaults the owner
+  keeps receiving only the replies to their own messages and the U2 decision
+  cards; the parts that actually send (digest, errors, inbound, escalations,
+  proactivity) consume this contract. No environment variables are added.
 
 ### CTO chat planner (CTO-CHAT B)
 
