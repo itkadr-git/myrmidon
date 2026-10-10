@@ -29,7 +29,7 @@ import { createDbForagingStore, type ForagingStore } from "./store.js";
 import { createDbForagingSkillStore, createForagingCandidatePort } from "./candidate-port.js";
 import { skillLifecycleService } from "../skill-lifecycle/index.js";
 import { createKnowledgeModule } from "../knowledge/service.js";
-import { createForagingKnowledgePort } from "./knowledge-port.js";
+import { createForagingKnowledgePort, createDbForagingQuarantineStore } from "./knowledge-port.js";
 import { foragingRoutes } from "./routes.js";
 import {
   foragingIdleGateService,
