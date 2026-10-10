@@ -24,6 +24,10 @@ import { storedSessionGenerationsSettingsSchema } from "../myrmidon-session-gene
 import { storedRunLimitsSchema } from "../myrmidon-runtime-limits.js";
 // myrmidon(RUN-STALL-SETTINGS): the run stall detection settings stored in instance settings
 import { runStallSettingsSchema } from "../myrmidon-run-stall.js";
+// myrmidon(1.6.6 PROCS-J): the board's process counts (`api`, `worker`) stored in the same
+// general row; the row is read and validated at startup (see
+// packages/shared/src/myrmidon-board-processes.ts).
+import { storedBoardProcessesSettingsSchema } from "../myrmidon-board-processes.js";
 // myrmidon(1.6.6 CORPUS-2.0 ч.C): the corpus module settings (module switch, parse
 // service base URL, embedder, limits), lenient stored shape.
 import { storedCorpusSettingsSchema } from "../myrmidon-corpus.js";
@@ -265,6 +269,12 @@ export const instanceGeneralSettingsSchema = z.object({
   // packages/shared/src/myrmidon-attention-feed.ts.
   attentionFailedRunHorizonDays: z.number().int().min(1).max(365).optional(),
   attentionFeedCacheTtlSeconds: z.number().int().min(0).max(300).optional(),
+  // myrmidon(1.6.6 PROCS-J): the counts of the board's process composition —
+  // how many HTTP processes (`api`) and scheduler processes (`worker`) the
+  // deployment asks for. The stored row is accepted as it is, including the
+  // fields another part of the same feature stores there; absent (or an absent
+  // count) means the default { api: 1, worker: 0 } = today's single process.
+  processes: storedBoardProcessesSettingsSchema.optional(),
 }).strict();
 
 export const patchInstanceGeneralSettingsSchema = z
