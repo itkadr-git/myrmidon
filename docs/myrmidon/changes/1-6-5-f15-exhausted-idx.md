@@ -13,7 +13,7 @@ divergence-section: Трек 2 — ядро побудок и прогонов
   two non-unique indexes on the table (`company_run`, `company_created`) do not
   carry `event_type`, so the leg read every event row of the whole table — a
   sequential scan, one of the measured legs behind the feed's p50 2.3 s / p95
-  4.7 s (OPE-6346 trace).
+  4.7 s, measured on a production trace.
 - Migration `packages/db/src/migrations/0381_attention_exhausted_lifecycle_idx.sql`
   adds one partial b-tree index
   `heartbeat_run_events_company_lifecycle_run_idx (company_id, event_type, run_id)`
@@ -49,7 +49,7 @@ divergence-section: Трек 2 — ядро побудок и прогонов
   присоединения строк прогона. Два обычные индекса таблицы (`company_run`,
   `company_created`) не включают `event_type`, поэтому ножка читала все
   события таблицы целиком — последовательное чтение, одна из замеренных ножек
-  p50 2,3 с / p95 4,7 с ленты (трассировка OPE-6346).
+  p50 2,3 с / p95 4,7 с ленты (замерено на боевой трассировке).
 - Миграция `packages/db/src/migrations/0381_attention_exhausted_lifecycle_idx.sql`
   добавляет один частичный b-tree индекс
   `heartbeat_run_events_company_lifecycle_run_idx (company_id, event_type, run_id)`
@@ -75,4 +75,4 @@ divergence-section: Трек 2 — ядро побудок и прогонов
 
 ## divergence
 
-| F-15-EXH-IDX | Частичный индекс `heartbeat_run_events_company_lifecycle_run_idx (company_id, event_type, run_id) WHERE event_type = 'lifecycle'` для ножки «исчерпанные прогоны» ленты внимания | `packages/db/src/schema/heartbeat_run_events.ts` (объявление индекса, метка `myrmidon(1.6.5-F-15)`), `packages/db/src/migrations/0381_attention_exhausted_lifecycle_idx.sql` и мета (снапшот 0381, запись журнала); запросы и поведение вендора не правятся | Трассировка OPE-6346: существующие индексы таблицы не покрывают `event_type`, планировщик читал таблицу событий целиком на каждый опрос ленты (p50 2,3 с / p95 4,7 с); вендорского индекса под этот предикат нет | `packages/db/src/attention-exhausted-lifecycle-index.myrmidon.test.ts` (статика: файл/журнал/снапшот + сверка выражения; embedded PG: ножка на индексе, откат на Seq Scan после DROP INDEX, двойное применение идемпотентно) | Когда вендор сам покроет предикат `event_type = 'lifecycle'` индексом или перепишет запрос — удалить объявление с меткой `myrmidon(1.6.5-F-15)` и тест-сторож; миграция 0381 односторонняя, индекс назад не откатывается | (этот PR) |
+| F-15-EXH-IDX | Частичный индекс `heartbeat_run_events_company_lifecycle_run_idx (company_id, event_type, run_id) WHERE event_type = 'lifecycle'` для ножки «исчерпанные прогоны» ленты внимания | `packages/db/src/schema/heartbeat_run_events.ts` (объявление индекса, метка `myrmidon(1.6.5-F-15)`), `packages/db/src/migrations/0381_attention_exhausted_lifecycle_idx.sql` и мета (снапшот 0381, запись журнала); запросы и поведение вендора не правятся | Боевая трассировка: существующие индексы таблицы не покрывают `event_type`, планировщик читал таблицу событий целиком на каждый опрос ленты (p50 2,3 с / p95 4,7 с); вендорского индекса под этот предикат нет | `packages/db/src/attention-exhausted-lifecycle-index.myrmidon.test.ts` (статика: файл/журнал/снапшот + сверка выражения; embedded PG: ножка на индексе, откат на Seq Scan после DROP INDEX, двойное применение идемпотентно) | Когда вендор сам покроет предикат `event_type = 'lifecycle'` индексом или перепишет запрос — удалить объявление с меткой `myrmidon(1.6.5-F-15)` и тест-сторож; миграция 0381 односторонняя, индекс назад не откатывается | (этот PR) |
