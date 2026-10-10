@@ -1358,6 +1358,12 @@ type AttentionBuildOptions = {
 type AttentionFeedSnapshot = {
   items: AttentionItem[];
   builtAtMs: number;
+  // myrmidon(REPLAY-BLOCK-TRIAGE): the feed stamp is part of the snapshot, not
+  // of the request. A cached snapshot must read identical to the response that
+  // stored it (the feed-cache contract test asserts `second` deep-equals
+  // `first`); stamping `new Date()` per request made two reads inside one TTL
+  // differ by a millisecond whenever the rebuild crossed a ms boundary.
+  generatedAt: string;
 };
 
 const attentionSettingsCache = new WeakMap<
@@ -3904,7 +3910,11 @@ async function buildAttentionFeedSnapshot(
         now,
         serviceOptions.decisionRetentionSync ?? decisionRetentionSyncScheduler(db),
       );
-  return { items: enrichedItems, builtAtMs: snapshotBuiltAt };
+  return {
+    items: enrichedItems,
+    builtAtMs: snapshotBuiltAt,
+    generatedAt: new Date(snapshotBuiltAt).toISOString(),
+  };
 }
 
 export function attentionService(db: Db, serviceOptions: AttentionServiceOptions = {}) {
@@ -3938,10 +3948,7 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
       const includeDismissed = options.includeDismissed === true;
 
       let enrichedItems: AttentionItem[];
-      // generatedAt describes the snapshot, not the request: a served snapshot
-      // can be up to the stale window old, so a request-time stamp would
-      // misreport the feed's age (the UI measures item ages against it). A
-      // rebuild stamps a fresh value; a cache hit keeps the build time.
+      // generatedAt travels with the snapshot so cache hits report its build time.
       let snapshotBuiltAtMs = now;
       if (cacheEnabled) {
         // cache key = company + everything that changes the
