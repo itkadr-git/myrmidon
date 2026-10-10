@@ -55,6 +55,18 @@
 
 -
 
+## Architecture Decisions
+
+<!--
+  Required. Which ADR does this PR implement or change? Link the file(s) under
+  `docs/architecture/adr/` and state "implements" or "changes". If the PR touches
+  an area covered by an invariant in `docs/architecture/README.md` (INV-10..INV-13),
+  name the invariant and confirm the arch-invariants CI gate stays green. If no
+  ADR applies, write "None" and say why.
+-->
+
+-
+
 ## Verification
 
 <!--
@@ -102,6 +114,7 @@
 - [ ] I have run tests locally and they pass
 - [ ] I have added or updated tests where applicable
 - [ ] I have updated relevant documentation to reflect my changes
+- [ ] I have linked the ADR this PR implements or changes, or stated why none applies
 - [ ] I have considered and documented any risks above
 - [ ] All Paperclip CI gates are green
 - [ ] Greptile is 5/5 with no open P2s, recommendations, or follow-ups
