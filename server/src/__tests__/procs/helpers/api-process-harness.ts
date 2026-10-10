@@ -151,10 +151,11 @@ function childEnv(handle: {
   port: number;
   connectionString: string;
   role: string;
+  probePort?: number;
 }): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...process.env };
   for (const key of OWNED_ENV_KEYS) delete env[key];
-  return {
+  const result: NodeJS.ProcessEnv = {
     ...env,
     NODE_ENV: process.env.NODE_ENV ?? "test",
     PORT: String(handle.port),
@@ -173,12 +174,12 @@ function childEnv(handle: {
     PAPERCLIP_UI_DEV_MIDDLEWARE: "false",
     PAPERCLIP_OPEN_ON_LISTEN: "false",
   };
-  if (handle.role === "worker") {
+  if (handle.role === "worker" && handle.probePort !== undefined) {
     // The worker's loopback probe (ч.H): the board config above still binds
     // its own listener on PORT, so the probe must not fight it for the port.
-    env.MYRMIDON_WORKER_PORT = String(handle.port);
+    result.MYRMIDON_WORKER_PORT = String(handle.probePort);
   }
-  return env;
+  return result;
 }
 
 export type StartApiProcessOptions = {
@@ -193,6 +194,11 @@ export type StartApiProcessOptions = {
   entry?: string;
   /** Probe path the harness waits on (the worker answers /internal/ready). */
   readyPath?: string;
+  /** Loopback port of the worker's readiness probe (ч.H); must differ from
+   * `port`, which the board listener of the worker child still binds. When
+   * set and `role` is "worker", the harness waits on the probe port and the
+   * handle's baseUrl/port point at the probe. */
+  probePort?: number;
 };
 
 /** Spawns one `api` process and waits until it answers `/api/health` with 200.
@@ -212,7 +218,7 @@ export async function startApiProcess(
 
   const child = spawn(process.execPath, [resolveTsxCli(), options.entry ?? SERVER_ENTRY], {
     cwd: REPO_ROOT,
-    env: childEnv({ home, port, connectionString: options.connectionString, role }),
+    env: childEnv({ home, port, connectionString: options.connectionString, role, probePort: options.probePort }),
     stdio: ["ignore", "pipe", "pipe"],
   });
 
@@ -226,8 +232,8 @@ export async function startApiProcess(
   const handle: ApiProcessHandle = {
     index: options.index,
     role,
-    port,
-    baseUrl: `http://127.0.0.1:${port}`,
+    port: options.probePort ?? port,
+    baseUrl: `http://127.0.0.1:${options.probePort ?? port}`,
     home,
     child,
     output: () => output,
