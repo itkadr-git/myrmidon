@@ -248,6 +248,7 @@ function makeSkill(overrides: Partial<CompanySkillDetail> = {}): CompanySkillDet
     sourcePath: null,
     currentVersion: null,
     starredByCurrentActor: false,
+    requiredEnv: [],
     existingForks: [],
     ...overrides,
   };

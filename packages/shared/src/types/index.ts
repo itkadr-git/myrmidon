@@ -189,6 +189,8 @@ export type {
   CompanySkillResetRequest,
   CompanySkillImportRequest,
   CompanySkillImportResult,
+  CompanySkillDiscoveredSkill,
+  CompanySkillDiscoverResult,
   CompanySkillProjectScanRequest,
   CompanySkillProjectBrowseRequest,
   CompanySkillProjectBrowseEntry,
