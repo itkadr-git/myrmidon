@@ -66,6 +66,7 @@ import {
 } from "./myrmidon-runtime-mcp.js";
 // myrmidon(M1): card models in the run-scoped config.yaml
 import { materializeHermesRunModels } from "./myrmidon-profile-config.js";
+import { deleteProductEnv, readProductEnv, readProductEnvFrom, writeProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
 
 // ---------------------------------------------------------------------------
 // Config helpers
@@ -168,7 +169,7 @@ export function buildPrompt(
   // Build API URL — ensure it has the /api path
   let paperclipApiUrl =
     cfgString(config.paperclipApiUrl) ||
-    process.env.PAPERCLIP_API_URL ||
+    readProductEnv("API_URL") ||
     "http://127.0.0.1:3100/api";
   // Ensure /api suffix
   if (!paperclipApiUrl.endsWith("/api")) {
@@ -511,23 +512,23 @@ export async function execute(
     ...buildRuntimeToolsEnv(ctx.runtimeTools),
   };
 
-  if (ctx.runId) env.PAPERCLIP_RUN_ID = ctx.runId;
+  if (ctx.runId) writeProductEnv(env, "RUN_ID", ctx.runId); // myrmidon(REBRAND-C)
 
   // PAPERCLIP_API_KEY is never accepted from config — the harness-minted run
   // token is the only source of Paperclip API identity.
-  delete env.PAPERCLIP_API_KEY;
+  deleteProductEnv(env, "API_KEY");
   // Wake context travels in the prompt; drop both inherited and configured copies.
-  delete env.PAPERCLIP_WAKE_PAYLOAD_JSON;
-  if ((ctx as any).authToken) env.PAPERCLIP_API_KEY = (ctx as any).authToken;
+  deleteProductEnv(env, "WAKE_PAYLOAD_JSON");
+  if ((ctx as any).authToken) writeProductEnv(env, "API_KEY", (ctx as any).authToken); // myrmidon(REBRAND-C)
 
   // BUG FIX: Read task context from ctx.context (wake context), not ctx.config (adapter config)
   const ctxContext = (ctx as any).context || {};
   const envTaskId = cfgString(ctxContext.taskId) || cfgString(ctxContext.issueId) || cfgString(ctx.config?.taskId);
-  if (envTaskId) env.PAPERCLIP_TASK_ID = envTaskId;
+  if (envTaskId) writeProductEnv(env, "TASK_ID", envTaskId); // myrmidon(REBRAND-C)
   const envWakeReason = cfgString(ctxContext.wakeReason) || cfgString(ctx.config?.wakeReason);
-  if (envWakeReason) env.PAPERCLIP_WAKE_REASON = envWakeReason;
+  if (envWakeReason) writeProductEnv(env, "WAKE_REASON", envWakeReason); // myrmidon(REBRAND-C)
   const envCommentId = cfgString(ctxContext.commentId) || cfgString(ctxContext.wakeCommentId) || cfgString(ctx.config?.commentId);
-  if (envCommentId) env.PAPERCLIP_WAKE_COMMENT_ID = envCommentId;
+  if (envCommentId) writeProductEnv(env, "WAKE_COMMENT_ID", envCommentId); // myrmidon(REBRAND-C)
 
   // myrmidon(P4): materialize ctx.runtimeMcp into a temporary HERMES_HOME and
   // allow the run-scoped servers through `-t`. Agents without assigned

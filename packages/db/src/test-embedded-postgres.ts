@@ -8,6 +8,7 @@ import {
   formatEmbeddedPostgresError,
 } from "./embedded-postgres-error.js";
 import { prepareEmbeddedPostgresNativeRuntime } from "./embedded-postgres-native.js";
+import { readProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
 
 // Time budget (ms) for a vitest test in the embedded-Postgres cost class: a
 // test that starts an embedded Postgres cluster and runs migrations. Measured
@@ -51,8 +52,8 @@ const DEFAULT_PAPERCLIP_EMBEDDED_POSTGRES_PORT = 54329;
 function getReservedTestPorts(): Set<number> {
   const configuredPorts = [
     DEFAULT_PAPERCLIP_EMBEDDED_POSTGRES_PORT,
-    Number.parseInt(process.env.PAPERCLIP_EMBEDDED_POSTGRES_PORT ?? "", 10),
-    ...String(process.env.PAPERCLIP_TEST_POSTGRES_RESERVED_PORTS ?? "")
+    Number.parseInt(readProductEnv("EMBEDDED_POSTGRES_PORT") ?? "", 10),
+    ...String(readProductEnv("TEST_POSTGRES_RESERVED_PORTS") ?? "")
       .split(",")
       .map((value) => Number.parseInt(value.trim(), 10)),
   ];

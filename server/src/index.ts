@@ -189,6 +189,7 @@ import type {
   InstanceDatabaseBackupRunResult,
   InstanceDatabaseBackupTrigger,
 } from "./routes/instance-database-backups.js";
+import { readProductEnv, writeProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
 
 type BetterAuthSessionUser = {
   id: string;
@@ -272,14 +273,14 @@ async function startServerWithDatabaseTeardown(
   ensureDecisionSigningSecret();
   let config = loadConfig();
   initTelemetry({ enabled: config.telemetryEnabled });
-  if (process.env.PAPERCLIP_SECRETS_PROVIDER === undefined) {
-    process.env.PAPERCLIP_SECRETS_PROVIDER = config.secretsProvider;
+  if (readProductEnv("SECRETS_PROVIDER") === undefined) {
+    writeProductEnv(process.env, "SECRETS_PROVIDER", config.secretsProvider); // myrmidon(REBRAND-C)
   }
-  if (process.env.PAPERCLIP_SECRETS_STRICT_MODE === undefined) {
-    process.env.PAPERCLIP_SECRETS_STRICT_MODE = config.secretsStrictMode ? "true" : "false";
+  if (readProductEnv("SECRETS_STRICT_MODE") === undefined) {
+    writeProductEnv(process.env, "SECRETS_STRICT_MODE", config.secretsStrictMode ? "true" : "false"); // myrmidon(REBRAND-C)
   }
-  if (process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE === undefined) {
-    process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE = config.secretsMasterKeyFilePath;
+  if (readProductEnv("SECRETS_MASTER_KEY_FILE") === undefined) {
+    writeProductEnv(process.env, "SECRETS_MASTER_KEY_FILE", config.secretsMasterKeyFilePath); // myrmidon(REBRAND-C)
   }
   
   type MigrationSummary =
@@ -296,8 +297,8 @@ async function startServerWithDatabaseTeardown(
   }
   
   async function promptApplyMigrations(migrations: string[]): Promise<boolean> {
-    if (process.env.PAPERCLIP_MIGRATION_AUTO_APPLY === "true") return true;
-    if (process.env.PAPERCLIP_MIGRATION_PROMPT === "never") return false;
+    if (readProductEnv("MIGRATION_AUTO_APPLY") === "true") return true;
+    if (readProductEnv("MIGRATION_PROMPT") === "never") return false;
     if (!stdin.isTTY || !stdout.isTTY) return true;
   
     const prompt = createInterface({ input: stdin, output: stdout });
@@ -508,7 +509,7 @@ async function startServerWithDatabaseTeardown(
     const configuredPort = config.embeddedPostgresPort;
     let port = configuredPort;
     const logBuffer = createEmbeddedPostgresLogBuffer(120);
-    const verboseEmbeddedPostgresLogs = process.env.PAPERCLIP_EMBEDDED_POSTGRES_VERBOSE === "true";
+    const verboseEmbeddedPostgresLogs = readProductEnv("EMBEDDED_POSTGRES_VERBOSE") === "true";
     const appendEmbeddedPostgresLog = (message: unknown) => {
       logBuffer.append(message);
       if (!verboseEmbeddedPostgresLogs) {
@@ -885,11 +886,11 @@ async function startServerWithDatabaseTeardown(
   );
   const databaseBackupMaxAgeHours = Math.max(
     1,
-    Number(process.env.PAPERCLIP_DB_BACKUP_MAX_AGE_HOURS) ||
+    Number(readProductEnv("DB_BACKUP_MAX_AGE_HOURS")) ||
       Math.max(26, Math.ceil((config.databaseBackupIntervalMinutes / 60) * 2)),
   );
   const databaseBackupAlertFile =
-    process.env.PAPERCLIP_DB_BACKUP_ALERT_FILE ||
+    readProductEnv("DB_BACKUP_ALERT_FILE") ||
     resolve(config.databaseBackupDir, "..", "health", "db-backup-to-s3.failure");
   const databaseBackupAlertFiles = [
     databaseBackupAlertFile,
@@ -1025,7 +1026,7 @@ async function startServerWithDatabaseTeardown(
     bindHost: runtimeListenHost,
     port: listenPort,
   });
-  const configuredApiUrl = process.env.PAPERCLIP_API_URL?.trim() || runtimeApiUrl;
+  const configuredApiUrl = readProductEnv("API_URL")?.trim() || runtimeApiUrl;
   const runtimeApiCandidates = buildRuntimeApiCandidateUrls({
     preferredApiUrl: configuredApiUrl,
     authPublicBaseUrl: config.authPublicBaseUrl ?? null,
@@ -1033,11 +1034,11 @@ async function startServerWithDatabaseTeardown(
     bindHost: runtimeListenHost,
     port: listenPort,
   });
-  process.env.PAPERCLIP_LISTEN_HOST = runtimeListenHost;
-  process.env.PAPERCLIP_LISTEN_PORT = String(listenPort);
-  process.env.PAPERCLIP_RUNTIME_API_URL = runtimeApiUrl;
-  process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON = JSON.stringify(runtimeApiCandidates);
-  process.env.PAPERCLIP_API_URL = configuredApiUrl;
+  writeProductEnv(process.env, "LISTEN_HOST", runtimeListenHost); // myrmidon(REBRAND-C)
+  writeProductEnv(process.env, "LISTEN_PORT", String(listenPort)); // myrmidon(REBRAND-C)
+  writeProductEnv(process.env, "RUNTIME_API_URL", runtimeApiUrl); // myrmidon(REBRAND-C)
+  writeProductEnv(process.env, "RUNTIME_API_CANDIDATES_JSON", JSON.stringify(runtimeApiCandidates)); // myrmidon(REBRAND-C)
+  writeProductEnv(process.env, "API_URL", configuredApiUrl); // myrmidon(REBRAND-C)
 
   let startupListenerBound = false;
   try {
@@ -1559,8 +1560,8 @@ async function startServerWithDatabaseTeardown(
   const tools = toolAccessService(db as any, {
     deploymentMode: config.deploymentMode,
     deploymentExposure: config.deploymentExposure,
-    trustedLocalStdioRuntimeHost: process.env.PAPERCLIP_TRUSTED_MCP_RUNTIME_HOST
-      ?? process.env.PAPERCLIP_TOOL_RUNTIME_TRUSTED_HOST
+    trustedLocalStdioRuntimeHost: readProductEnv("TRUSTED_MCP_RUNTIME_HOST")
+      ?? readProductEnv("TOOL_RUNTIME_TRUSTED_HOST")
       ?? null,
   });
   const scheduleGitHubConnectionEventPoll = () => {
@@ -2368,7 +2369,7 @@ async function startServerWithDatabaseTeardown(
   void systemdNotify(["--ready", `--status=Listening on ${config.host}:${listenPort}`]).then((notified) => {
     if (notified) logger.info("Notified systemd that Myrmidon is ready");
   });
-  if (process.env.PAPERCLIP_OPEN_ON_LISTEN === "true") {
+  if (readProductEnv("OPEN_ON_LISTEN") === "true") {
     const openHost = config.host === "0.0.0.0" || config.host === "::" ? "127.0.0.1" : config.host;
     const url = `http://${openHost}:${listenPort}`;
     void import("open")

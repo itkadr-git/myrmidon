@@ -28,6 +28,7 @@ import {
   chatQuestionFormActionRecords,
   createChatQuestionFormDraft,
 } from "./chat-question-forms.js";
+import { readProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
 
 const MAX_NATIVE_QUESTION_OPTIONS = 12;
 const QUESTION_ACTION_PREFIX = "pcq:";
@@ -116,12 +117,12 @@ function terminalNativeInteractionCopy(
 
 export function publicChatInteractionTaskUrl(issueId: string): string | null {
   const configured =
-    process.env.PAPERCLIP_AUTH_PUBLIC_BASE_URL?.trim() ||
+    readProductEnv("AUTH_PUBLIC_BASE_URL")?.trim() ||
     process.env.BETTER_AUTH_URL?.trim() ||
     process.env.BETTER_AUTH_BASE_URL?.trim() ||
-    process.env.PAPERCLIP_PUBLIC_URL?.trim() ||
+    readProductEnv("PUBLIC_URL")?.trim() ||
     readConfigFile()?.auth?.publicBaseUrl?.trim() ||
-    process.env.PAPERCLIP_MANAGED_RUNTIME_PUBLIC_URL?.trim();
+    readProductEnv("MANAGED_RUNTIME_PUBLIC_URL")?.trim();
   return safeChatTaskUrl(configured, issueId);
 }
 

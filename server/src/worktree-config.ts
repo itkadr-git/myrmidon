@@ -16,6 +16,7 @@ import {
 } from "@paperclipai/shared/worktree-port-registry";
 import { resolvePaperclipConfigPath, resolvePaperclipEnvPath } from "./paths.js";
 import { rewriteUrlPort } from "./url-utils.js";
+import { readProductEnv, readProductEnvFrom, writeProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
 // myrmidon(B1c): product name in user-facing texts; see product.ts.
 import { PRODUCT_NAME as PN } from "./myrmidon/product.js";
 
@@ -111,7 +112,7 @@ function resolveWorktreeRuntimeContext(
   env: NodeJS.ProcessEnv,
   overrideConfigPath?: string,
 ): WorktreeRuntimeContext | null {
-  if (env.PAPERCLIP_IN_WORKTREE !== "true") return null;
+  if (readProductEnvFrom(env, "IN_WORKTREE") !== "true") return null;
 
   const configPath = resolvePaperclipConfigPath(overrideConfigPath);
   const envPath = resolvePaperclipEnvPath(configPath);
@@ -124,9 +125,9 @@ function resolveWorktreeRuntimeContext(
   // layout and its own persisted env already declares it a worktree;
   // otherwise the repair would rewrite main-instance config and env files.
   if (path.basename(path.dirname(configPath)) !== ".paperclip") return null;
-  if (persistedEnv.PAPERCLIP_IN_WORKTREE !== "true") return null;
+  if (readProductEnvFrom(persistedEnv, "IN_WORKTREE") !== "true") return null;
 
-  const persistedConfigPath = nonEmpty(persistedEnv.PAPERCLIP_CONFIG);
+  const persistedConfigPath = nonEmpty(readProductEnvFrom(persistedEnv, "CONFIG"));
   const persistedConfigLooksStale =
     persistedConfigPath !== null &&
     path.resolve(expandHomePrefix(persistedConfigPath)) !== path.resolve(configPath) &&
@@ -134,17 +135,17 @@ function resolveWorktreeRuntimeContext(
   const stablePersistedEnv = persistedConfigLooksStale ? {} : persistedEnv;
   const worktreeRoot = path.resolve(path.dirname(configPath), "..");
   const worktreeName =
-    nonEmpty(stablePersistedEnv.PAPERCLIP_WORKTREE_NAME) ??
-    nonEmpty(env.PAPERCLIP_WORKTREE_NAME) ??
+    nonEmpty(readProductEnvFrom(stablePersistedEnv, "WORKTREE_NAME")) ??
+    nonEmpty(readProductEnvFrom(env, "WORKTREE_NAME")) ??
     path.basename(worktreeRoot);
   const instanceId =
-    nonEmpty(stablePersistedEnv.PAPERCLIP_INSTANCE_ID) ??
-    nonEmpty(env.PAPERCLIP_INSTANCE_ID) ??
+    nonEmpty(readProductEnvFrom(stablePersistedEnv, "INSTANCE_ID")) ??
+    nonEmpty(readProductEnvFrom(env, "INSTANCE_ID")) ??
     sanitizeWorktreeInstanceId(worktreeName);
   const homeDir = resolveHomeAwarePath(
-    nonEmpty(stablePersistedEnv.PAPERCLIP_HOME) ??
-      nonEmpty(env.PAPERCLIP_HOME) ??
-      nonEmpty(env.PAPERCLIP_WORKTREES_DIR) ??
+    nonEmpty(readProductEnvFrom(stablePersistedEnv, "HOME")) ??
+      nonEmpty(readProductEnvFrom(env, "HOME")) ??
+      nonEmpty(readProductEnvFrom(env, "WORKTREES_DIR")) ??
       "~/.paperclip-worktrees",
   );
   const instanceRoot = path.resolve(homeDir, "instances", instanceId);
@@ -457,11 +458,11 @@ export function maybeRepairLegacyWorktreeConfigAndEnvFiles(): {
     return { repairedConfig: false, repairedEnv: false };
   }
 
-  process.env.PAPERCLIP_HOME = context.homeDir;
-  process.env.PAPERCLIP_INSTANCE_ID = context.instanceId;
-  process.env.PAPERCLIP_CONFIG = context.configPath;
-  process.env.PAPERCLIP_CONTEXT = context.contextPath;
-  process.env.PAPERCLIP_WORKTREE_NAME = context.worktreeName;
+  writeProductEnv(process.env, "HOME", context.homeDir); // myrmidon(REBRAND-C)
+  writeProductEnv(process.env, "INSTANCE_ID", context.instanceId); // myrmidon(REBRAND-C)
+  writeProductEnv(process.env, "CONFIG", context.configPath); // myrmidon(REBRAND-C)
+  writeProductEnv(process.env, "CONTEXT", context.contextPath); // myrmidon(REBRAND-C)
+  writeProductEnv(process.env, "WORKTREE_NAME", context.worktreeName); // myrmidon(REBRAND-C)
 
   let repairedConfig = false;
   if (fs.existsSync(context.configPath)) {
@@ -538,8 +539,8 @@ export function maybeRepairLegacyWorktreeConfigAndEnvFiles(): {
     : null;
   const existingEnvEntries = parseEnvFile(existingContents ?? "");
   const toolActionSigningSecret =
-    nonEmpty(process.env.PAPERCLIP_TOOL_ACTION_SIGNING_SECRET) ??
-    nonEmpty(existingEnvEntries.PAPERCLIP_TOOL_ACTION_SIGNING_SECRET) ??
+    nonEmpty(readProductEnv("TOOL_ACTION_SIGNING_SECRET")) ??
+    nonEmpty(readProductEnvFrom(existingEnvEntries, "TOOL_ACTION_SIGNING_SECRET")) ??
     randomBytes(32).toString("hex");
 
   const managedEnvEntries: Record<string, string> = {
@@ -553,8 +554,8 @@ export function maybeRepairLegacyWorktreeConfigAndEnvFiles(): {
     PAPERCLIP_TOOL_ACTION_SIGNING_SECRET: toolActionSigningSecret,
   };
 
-  process.env.PAPERCLIP_DB_BACKUP_ENABLED = "false";
-  process.env.PAPERCLIP_TOOL_ACTION_SIGNING_SECRET = toolActionSigningSecret;
+  writeProductEnv(process.env, "DB_BACKUP_ENABLED", "false"); // myrmidon(REBRAND-C)
+  writeProductEnv(process.env, "TOOL_ACTION_SIGNING_SECRET", toolActionSigningSecret); // myrmidon(REBRAND-C)
   const repairedContents = updateEnvFileContents(
     existingContents ?? emptyWorktreeEnvFileContents(),
     managedEnvEntries,

@@ -169,6 +169,10 @@ export function buildPluginWorkerEnv(input: {
 }): Record<string, string> {
   const processEnv = input.processEnv ?? process.env;
   const env: Record<string, string> = {
+    // myrmidon(REBRAND-C): pass both spellings; plugins read MYRMIDON_* with
+    // the PAPERCLIP_* alias fallback.
+    MYRMIDON_DEPLOYMENT_MODE: input.instanceInfo.deploymentMode ?? "",
+    MYRMIDON_DEPLOYMENT_EXPOSURE: input.instanceInfo.deploymentExposure ?? "",
     PAPERCLIP_DEPLOYMENT_MODE: input.instanceInfo.deploymentMode ?? "",
     PAPERCLIP_DEPLOYMENT_EXPOSURE: input.instanceInfo.deploymentExposure ?? "",
   };
