@@ -99,7 +99,7 @@ describeEmbeddedPostgres("owner card TTL sweep (embedded PG)", () => {
       issueId: ISSUE,
       kind: "request_confirmation",
       status: "pending",
-      effectiveResolverPolicy: "any",
+      effectiveResolverPolicy: "anyone",
       addresseeUserId: OWNER_USER,
       createdByAgentId: AUTHOR_AGENT,
       payload: { version: 1, prompt: "Approve?", target: { type: "none" } },
@@ -212,6 +212,7 @@ describeEmbeddedPostgres("owner card TTL sweep (embedded PG)", () => {
 
     const { run, wakeup } = makeSweep();
     const result = await run();
+    expect(result.failureKinds, "sweep failures").toEqual([]);
     expect(result.silenceResolved).toBe(1);
     expect(result.expired).toBe(0);
 
@@ -291,6 +292,7 @@ describeEmbeddedPostgres("owner card TTL sweep (embedded PG)", () => {
 
     const { run } = makeSweep();
     const result = await run();
+    expect(result.failureKinds, "sweep failures").toEqual([]);
     expect(result.silenceResolved).toBe(1);
 
     // The service writes the same activity record as a human accept would.

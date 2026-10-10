@@ -215,6 +215,9 @@ export interface OwnerCardTtlSweepResult {
   silenceResolved: number;
   woken: number;
   failed: number;
+  /** Per failed card: the error class name and HTTP status only (never the
+   *  message, code or cause — they can carry a credential). */
+  failureKinds: string[];
 }
 
 /**
@@ -303,6 +306,7 @@ export function createOwnerCardTtlSweep(deps: OwnerCardTtlSweepDeps) {
       silenceResolved: 0,
       woken: 0,
       failed: 0,
+      failureKinds: [],
     };
 
     for (const row of rows) {
@@ -341,13 +345,15 @@ export function createOwnerCardTtlSweep(deps: OwnerCardTtlSweepDeps) {
             result.woken += 1;
           }
         }
-      } catch {
-        // Log a constant errorKind only: the exception can carry a credential
-        // in its message, code, cause or stack. The card stays pending and the
-        // next pass retries it.
+      } catch (error) {
+        // Log a constant errorKind plus the error class and HTTP status only:
+        // the exception can carry a credential in its message, code, cause or
+        // stack. The card stays pending and the next pass retries it.
         result.failed += 1;
+        const failureKind = describeFailureKind(error);
+        result.failureKinds.push(failureKind);
         logger.warn(
-          { errorKind: "owner_card_ttl_sweep_failed", interactionId: row.id },
+          { errorKind: "owner_card_ttl_sweep_failed", failureKind, interactionId: row.id },
           "owner card TTL sweep failed for one card",
         );
       }
@@ -393,6 +399,18 @@ async function expireOwnerCard(
  * service with the system actor — the same path the owner's own accept/reject
  * takes, so policy, activity and continuation behave identically.
  */
+function describeFailureKind(error: unknown): string {
+  const name =
+    error && typeof error === "object" && typeof (error as { constructor?: { name?: unknown } }).constructor?.name === "string"
+      ? String((error as { constructor: { name: string } }).constructor.name)
+      : typeof error;
+  const status =
+    error && typeof error === "object" && typeof (error as { status?: unknown }).status === "number"
+      ? (error as { status: number }).status
+      : null;
+  return status === null ? name : `${name}:${status}`;
+}
+
 async function resolveByRecommendedOption(
   db: Db,
   row: OwnerCardTtlRow,
