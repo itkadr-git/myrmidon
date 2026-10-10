@@ -275,3 +275,5 @@ export {
 // myrmidon(1.6.5 ASYNC-BOT-APPLY): the "Apply now" journal — one row per apply
 // request, its background pass and its final outcome (including the error).
 export { botApplyJobs, BOT_APPLY_JOB_STATUSES, type BotApplyJobStatus } from "./bot_apply_jobs.js";
+// myrmidon(1.6.5 PROCS-0.1): the process registry and leader leases of the board.
+export { boardProcesses, boardLeases } from "./board_processes.js";

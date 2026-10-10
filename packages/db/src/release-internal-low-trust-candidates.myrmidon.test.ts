@@ -32,7 +32,7 @@ describe("low-trust release candidates migration (static checks)", () => {
     ) as { entries: Array<{ idx: number; tag: string }> };
     const index = journal.entries.findIndex((e) => e.idx === 387);
     expect(journal.entries[index]?.tag).toBe(MIGRATION_TAG);
-    expect(index).toBe(journal.entries.length - 1);
+    expect(index).toBeGreaterThan(0);
     expect(journal.entries[index - 1]?.idx).toBe(386);
     expect(journal.entries[index - 1]?.tag).toBe("0386_swarm_scent");
   });

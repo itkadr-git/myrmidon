@@ -2277,6 +2277,13 @@
       "name": "0387_low_trust_internal_release_candidates",
       "tag": "0387_low_trust_internal_release_candidates",
       "breakpoints": true
+    },
+    {
+      "idx": 388,
+      "version": "7",
+      "when": 1791528262161,
+      "tag": "0388_board_processes",
+      "breakpoints": true
     }
   ]
 }

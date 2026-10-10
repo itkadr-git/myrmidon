@@ -384,6 +384,9 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
       ...(parsed.data.attentionFeedCacheTtlSeconds !== undefined
         ? { attentionFeedCacheTtlSeconds: parsed.data.attentionFeedCacheTtlSeconds }
         : {}),
+      // myrmidon(1.6.5 PROCS-0.1): the stored multi-process mode survives every
+      // general write; absent means the defaults (single process).
+      ...(parsed.data.processes ? { processes: parsed.data.processes } : {}),
       // myrmidon(1.6.3 PLUGIN-ENTITLEMENT A): the stored verification public key
       // survives every general write (edited on its own settings block).
       ...(parsed.data.pluginEntitlementPublicKey ? { pluginEntitlementPublicKey: parsed.data.pluginEntitlementPublicKey } : {}),
