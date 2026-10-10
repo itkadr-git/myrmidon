@@ -115,7 +115,7 @@ export interface KnowledgeRoutesDeps {
 
 function toHttpError(err: unknown): unknown {
   if (err instanceof KnowledgeDomainError) {
-    return new HttpError(err.status, err.message, err.code);
+    return new HttpError(err.status, err.message, { code: err.code });
   }
   return err;
 }
@@ -157,7 +157,9 @@ export function knowledgeRoutes(deps: KnowledgeRoutesDeps) {
       ? await deps.agentHasToolAccess({ agentId: actor.agentId ?? actor.actorId ?? "", companyId: companyOf(req), toolName })
       : false;
     if (!allowed) {
-      throw forbidden("knowledge access requires a tool grant (permissions.toolAccess)", KNOWLEDGE_TOOL_ACCESS_DENIED_CODE);
+      throw forbidden("knowledge access requires a tool grant (permissions.toolAccess)", {
+        code: KNOWLEDGE_TOOL_ACCESS_DENIED_CODE,
+      });
     }
   }
 
@@ -168,7 +170,7 @@ export function knowledgeRoutes(deps: KnowledgeRoutesDeps) {
     if (scan.flagged) {
       throw unprocessable(
         `${field} matched the injection guardrails (score ${scan.score.toFixed(2)}: ${scan.matched.join(", ")}). Refused before write.`,
-        KNOWLEDGE_INJECTION_FLAGGED_CODE,
+        { code: KNOWLEDGE_INJECTION_FLAGGED_CODE, field },
       );
     }
   }
@@ -193,7 +195,9 @@ export function knowledgeRoutes(deps: KnowledgeRoutesDeps) {
     const role = deps.roleForAgent ? await deps.roleForAgent(agentId) : null;
     const verdict = resolveAutonomy(role, "knowledge_publish", matrix, agentId);
     if (verdict === "forbidden") {
-      throw forbidden("knowledge_publish is forbidden for this actor by the autonomy matrix", "autonomy_forbidden");
+      throw forbidden("knowledge_publish is forbidden for this actor by the autonomy matrix", {
+        code: "autonomy_forbidden",
+      });
     }
     if (verdict === "approval_required") {
       const card = deps.parkPublishForApproval
@@ -210,7 +214,7 @@ export function knowledgeRoutes(deps: KnowledgeRoutesDeps) {
       const err = new HttpError(
         409,
         `knowledge_publish outside the auto sections requires approval. Card ${card?.actionRequestId ?? "(unavailable)"} parked.`,
-        KNOWLEDGE_APPROVAL_REQUIRED_CODE,
+        { code: KNOWLEDGE_APPROVAL_REQUIRED_CODE, actionRequestId: card?.actionRequestId ?? null },
       );
       throw err;
     }
@@ -222,7 +226,7 @@ export function knowledgeRoutes(deps: KnowledgeRoutesDeps) {
     if (actor.actorType === "agent" && itemKind === "rule") {
       throw forbidden(
         "rule_approve is forbidden for agents (тест П4): a rule changes what every agent of a caste is told, only the human approves one.",
-        KNOWLEDGE_RULE_APPROVE_FORBIDDEN_CODE,
+        { code: KNOWLEDGE_RULE_APPROVE_FORBIDDEN_CODE },
       );
     }
   }

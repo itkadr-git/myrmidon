@@ -161,7 +161,7 @@ import { myrmidonMonitoringDashboardRoutes } from "./myrmidon/monitoring/dashboa
 import { myrmidonCloudConnectorRoutes } from "./myrmidon/cloud-connector/index.js"; // myrmidon(CLOUD-CONNECTOR)
 import { myrmidonBoardProcessRegistryRoutes } from "./myrmidon/process-registry/index.js"; // myrmidon(1.6.6 PROCS-0.1)
 import { myrmidonAutonomyRoutes } from "./myrmidon/autonomy/index.js"; // myrmidon(1.6-AUTONOMY)
-import { myrmidonKnowledgeRoutes } from "./myrmidon/knowledge/index.js"; // myrmidon(1.6.6 KNOWLEDGE-2.0 K-2)
+import { myrmidonKnowledgeRoutes, myrmidonKnowledgeMcpRoutes } from "./myrmidon/knowledge/index.js"; // myrmidon(1.6.6 KNOWLEDGE-2.0 K-2)
 // myrmidon(1.6-TG-PROACTIVITY-E): head-bot proactivity gate/bundling sweep
 import { sweepTelegramNotifyProactivity } from "./myrmidon/telegram-notify/sweep.js";
 import { accessHubRoutes } from "./myrmidon/access-hub/routes.js"; // myrmidon(SEC1)
@@ -1001,6 +1001,7 @@ export async function createApp(
   api.use(myrmidonPromptBudgetRoutes(db)); // myrmidon(1.6.3 PROMPT-BUDGET B): prompt-budget threshold settings and status
   api.use(myrmidonAutonomyRoutes(db)); // myrmidon(1.6-AUTONOMY): role × action-class matrix and regulations
   api.use(myrmidonKnowledgeRoutes(db)); // myrmidon(1.6.6 KNOWLEDGE-2.0 K-2): one service, one set of rights (REST)
+  api.use(myrmidonKnowledgeMcpRoutes(db)); // myrmidon(1.6.6 KNOWLEDGE-2.0 K-2): company knowledge MCP endpoint (tools/list + tools/call)
   api.use(accessHubRoutes(db)); // myrmidon(SEC1): access-hub routes
   api.use(myrmidonBrowserBridgeRoutes(db)); // myrmidon(EXTCASE-B): bridge panel (codes, devices, allowlist)
   api.use(myrmidonOcrRoutes(db)); // myrmidon(EXT-CASE-OCR): company OCR MCP endpoint (ocr.pdf)
