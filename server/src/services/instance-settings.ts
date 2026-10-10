@@ -346,6 +346,10 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
       // general settings page. Without this line the normalizer drops the key, so a
       // PATCH would not roundtrip and the run dispatch would never read the row.
       ...(parsed.data.sessions ? { sessions: parsed.data.sessions } : {}),
+      // myrmidon(1.6.6 PROCS-1.7 part A): the stored processes settings
+      // (the multi-process mode, design OPE-5394 §5.7) survive every general
+      // write — they are edited at Instance settings -> «Процессы».
+      ...(parsed.data.processes ? { processes: parsed.data.processes } : {}),
       // myrmidon(1.6.3 PLUGIN-ENTITLEMENT A): the stored verification public key
       // survives every general write (edited on its own settings block).
       ...(parsed.data.pluginEntitlementPublicKey ? { pluginEntitlementPublicKey: parsed.data.pluginEntitlementPublicKey } : {}),

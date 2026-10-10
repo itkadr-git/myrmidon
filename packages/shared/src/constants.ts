@@ -952,6 +952,9 @@ export const LIVE_EVENT_TYPES = [
   "plugin.ui.updated",
   "plugin.worker.crashed",
   "plugin.worker.restarted",
+  // myrmidon(1.6.6 PROCS-1.7, design OPE-5394 §5.4.4): a board lease changed
+  // holder — payload carries { lease, holderBootId, epoch }.
+  "board.leader_changed",
 ] as const;
 export type LiveEventType = (typeof LIVE_EVENT_TYPES)[number];
 
