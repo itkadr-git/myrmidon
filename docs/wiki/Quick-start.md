@@ -6,7 +6,7 @@ The shortest path to a running board. One command on a fresh server (see
 [System requirements](System-requirements)):
 
 ```sh
-curl -fsSL https://github.com/itkadr-git/myrmidon/releases/download/myr-v1.6.5-rc.5/install.sh | sudo bash
+curl -fsSL https://github.com/itkadr-git/myrmidon/releases/download/myr-v1.6.5-rc.15/install.sh | sudo bash
 ```
 
 Until the 1.6.5 final ships, the command installs the current release

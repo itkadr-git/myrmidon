@@ -6,7 +6,7 @@
 Скопируйте её на сервер и запустите — дальше установщик делает всё сам:
 
 ```sh
-curl -fsSL https://github.com/itkadr-git/myrmidon/releases/download/myr-v1.6.5-rc.5/install.sh | sudo bash
+curl -fsSL https://github.com/itkadr-git/myrmidon/releases/download/myr-v1.6.5-rc.15/install.sh | sudo bash
 ```
 
 Пока финальный выпуск 1.6.5 не вышел, команда ставит текущего кандидата —
@@ -77,7 +77,7 @@ Myrmidon 1.6.6 установлен и отвечает.
 Чтобы добавить параметр к однострочной команде, сначала скачайте скрипт:
 
 ```sh
-curl -fsSL -O https://github.com/itkadr-git/myrmidon/releases/download/myr-v1.6.5-rc.5/install.sh
+curl -fsSL -O https://github.com/itkadr-git/myrmidon/releases/download/myr-v1.6.5-rc.15/install.sh
 sudo bash install.sh --version myr-vX.Y.Z
 ```
 
