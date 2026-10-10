@@ -1815,6 +1815,7 @@ async function startServerWithDatabaseTeardown(
     // still owns a row in board_processes; a single process with the
     // scheduler disabled keeps today's behaviour (no row) exactly.
     if (heartbeat || boardProcessRole === "api") {
+      process.stderr.write(`[PROCS-DEBUG] registering role=${boardProcessRole} heartbeat=${heartbeat ? "yes" : "no"}\n`);
       startBoardProcessRegistry(db as any, {
         apiPort:
           boardProcessRole === "worker"
