@@ -26,6 +26,7 @@ import { TelegramDmProgressSettingsPanel } from "@/components/myrmidon/TelegramD
 import { DebateSettingsPanel } from "@/components/myrmidon/DebateSettingsPanel"; // myrmidon(1.7-DEBATE-ASYM-A)
 import { HostDiskSettingsPanel } from "@/components/myrmidon/HostDiskSettingsPanel"; // myrmidon(BOT-DISK E)
 import { PromptBudgetSettingsPanel } from "@/components/myrmidon/PromptBudgetSettingsPanel"; // myrmidon(1.6.3 PROMPT-BUDGET B)
+import { DataRetentionSettingsPanel } from "@/components/myrmidon/DataRetentionSettingsPanel"; // myrmidon(1.6.5-DB-RETENTION)
 import { AttentionFeedSettingsPanel } from "@/components/myrmidon/AttentionFeedSettingsPanel"; // myrmidon(1.6.6 SETTINGS-UI C-4)
 import { BotDiskSettingsPanel } from "@/components/myrmidon/BotDiskSettingsPanel"; // myrmidon(1.6.1-BOT-DISK-B)
 import { BotScopePanel } from "@/components/myrmidon/BotScopePanel"; // myrmidon(BOT-DISK-F)
@@ -171,6 +172,7 @@ export function InstanceGeneralSettings({ embedded = false }: { embedded?: boole
       <DebateSettingsPanel /> {/* myrmidon(1.7-DEBATE-ASYM-A) */}
       <HostDiskSettingsPanel /> {/* myrmidon(BOT-DISK E) */}
       <PromptBudgetSettingsPanel /> {/* myrmidon(1.6.3 PROMPT-BUDGET B) */}
+      <DataRetentionSettingsPanel /> {/* myrmidon(1.6.5-DB-RETENTION) */}
       <AttentionFeedSettingsPanel /> {/* myrmidon(1.6.6 SETTINGS-UI C-4) */}
       <BotDiskSettingsPanel /> {/* myrmidon(1.6.1-BOT-DISK-B) */}
       <BotScopePanel /> {/* myrmidon(BOT-DISK-F) */}
