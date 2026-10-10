@@ -117,6 +117,33 @@ export function assertValidTags(tags: readonly string[]): void {
   }
 }
 
+/** The one wildcard role: a rule that governs every caste of the company. */
+export const RULE_ROLE_ANY = "*";
+
+/**
+ * §3.1 rules: a rule's `roles` name the castes it governs. Each entry is a
+ * caste key (`CASTE_KEY_PATTERN`) or the wildcard `*`. Duplicates collapse;
+ * order is preserved (the export format depends on it).
+ */
+export function assertValidRoles(roles: readonly string[]): string[] {
+  const seen: string[] = [];
+  for (const role of roles) {
+    if (role === RULE_ROLE_ANY) {
+      if (!seen.includes(RULE_ROLE_ANY)) seen.push(RULE_ROLE_ANY);
+      continue;
+    }
+    if (!/^[a-z0-9][a-z0-9_-]{0,59}$/.test(role)) {
+      throw new KnowledgeDomainError(
+        "invalid_metadata",
+        400,
+        `Role "${role}" must be a caste key (lowercase latin, digits, - or _) or "${RULE_ROLE_ANY}".`,
+      );
+    }
+    if (!seen.includes(role)) seen.push(role);
+  }
+  return seen;
+}
+
 /**
  * `[[...]]` link syntax: `[[slug]]`, `[[slug|alias]]`, `[[slug#anchor]]`.
  * A target is invalid if empty or contains a nested bracket.
@@ -181,6 +208,30 @@ export interface KnowledgeApprover {
 }
 
 /**
+ * myrmidon(1.6.6 KNOWLEDGE-2.0 K-3): the approver a rule needs is a *human*
+ * authority of the board, never a caste the caller types by hand. The grades
+ * mirror the company membership roles (viewer < operator < admin < owner): a
+ * higher grade always satisfies a lower requirement, so the owner can approve
+ * what the board operator could, and the operator can never approve what the
+ * owner reserved for himself (owner's matrix of 29.09: platform/SMM rules —
+ * "Alex"). An unknown kind (an agent presenting its caste key, a viewer)
+ * satisfies nothing.
+ */
+export const APPROVER_KIND_RANK: Readonly<Record<string, number>> = {
+  operator: 1,
+  admin: 2,
+  owner: 3,
+};
+
+/** True when an approver presenting `presented` may approve a `required` rule. */
+export function approverKindSatisfies(required: string | null, presented: string | null | undefined): boolean {
+  const need = required ? APPROVER_KIND_RANK[required] : undefined;
+  const have = presented ? APPROVER_KIND_RANK[presented] : undefined;
+  if (need == null || have == null) return required != null && required === presented;
+  return have >= need;
+}
+
+/**
  * S4, the approval gate, pure:
  *   - an approval-required item without `approverKind` can never be approved
  *     (403 — the acceptance criterion "approve rules без approver_kind → 403");
@@ -189,6 +240,7 @@ export interface KnowledgeApprover {
  *   - items that do not require approval (a plain note in an auto section)
  *     approve on any identified actor.
  */
+/** The gate an approval goes through (S4). */
 export function assertApprovable(item: KnowledgeApprovalGateItem, approver: KnowledgeApprover): void {
   if (!item.approvalRequired) return;
   if (!item.approverKind) {
@@ -198,7 +250,7 @@ export function assertApprovable(item: KnowledgeApprovalGateItem, approver: Know
       `This item requires approval but has no approver_kind; it cannot be approved until one is set.`,
     );
   }
-  if (approver.kind !== item.approverKind) {
+  if (!approverKindSatisfies(item.approverKind, approver.kind)) {
     throw new KnowledgeDomainError(
       "approver_kind_mismatch",
       403,
@@ -267,6 +319,8 @@ export interface KnowledgeTreePage {
   /** Folder path without the slug segment ("" = nest root). */
   folder: string;
   tags: string[];
+  /** Castes the item governs (caste keys, `*` = every caste). §3.1 rules. */
+  roles: string[];
   status: KnowledgeItemStatus;
   approvalRequired: boolean;
   approverKind: string | null;
@@ -305,6 +359,7 @@ export function serializeKnowledgeTree(doc: KnowledgeTreeDoc): Buffer {
       `summary: ${page.summary ?? ""}`,
       `folder: ${page.folder}`,
       `tags: ${page.tags.join(",")}`,
+      `roles: ${page.roles.join(",")}`,
       `status: ${page.status}`,
       `approval_required: ${page.approvalRequired ? "true" : "false"}`,
       `approver_kind: ${page.approverKind ?? ""}`,
@@ -375,6 +430,7 @@ export function parseKnowledgeTree(buf: Buffer): KnowledgeTreeDoc {
       summary: meta.summary ? meta.summary : null,
       folder: meta.folder ?? "",
       tags: meta.tags && meta.tags.length > 0 ? meta.tags.split(",") : [],
+      roles: meta.roles && meta.roles.length > 0 ? meta.roles.split(",") : [],
       status: meta.status,
       approvalRequired: meta.approval_required === "true",
       approverKind: meta.approver_kind ? meta.approver_kind : null,

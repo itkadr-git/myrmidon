@@ -14,6 +14,7 @@
 // A delivered file never overwrites the agent's own bundle: when the bundle
 // already ships a REGULATIONS.md, that one wins and the compile reports why.
 
+import { resolvedRules, type ResolvedRule, type RulesReadPort } from "../knowledge/rules.js";
 import { REGULATIONS_WORKSPACE_FILE, renderRegulationsMarkdown } from "./render.js";
 import type { ApprovedRegulation } from "./types.js";
 
@@ -26,6 +27,42 @@ export interface RegulationWorkspaceFile {
 /** Just the resolver half of the service, so delivery can be faked in tests. */
 export interface RegulationResolver {
   resolved(companyId: string, role: string): Promise<ApprovedRegulation[]>;
+}
+
+/**
+ * myrmidon(1.6.6 KNOWLEDGE-2.0 K-3): the carrier the fleet reads is the
+ * knowledge module — `knowledge.rules.resolved(nest, caste)`, one nest per
+ * company today (`nestId === companyId`) — not the wiki tables. The adapter
+ * keeps the resolver contract the profile compile already speaks, so the
+ * delivery path did not have to change shape: it asks by company and caste and
+ * gets the approved `kind=rule` items of that caste, with the sources of the
+ * delivered revision for the `Source:`/`Provenance:` lines.
+ */
+export function createKnowledgeRegulationResolver(read: RulesReadPort & { companyId: string }): RegulationResolver {
+  return {
+    async resolved(companyId: string, role: string): Promise<ApprovedRegulation[]> {
+      if (companyId !== read.companyId) return [];
+      const rules = await resolvedRules(read, role);
+      return rules.map(approvedRegulationFromRule);
+    },
+  };
+}
+
+/**
+ * One resolved rule as the delivery path reads it: `version` is the number the
+ * text came from, and `pageId` equals the `slug` — the knowledge page id is the
+ * slug (K-3 criterion "wikiPageId = slug").
+ */
+export function approvedRegulationFromRule(rule: ResolvedRule): ApprovedRegulation {
+  return {
+    pageId: rule.pageId,
+    slug: rule.slug,
+    title: rule.title,
+    content: rule.content,
+    version: rule.revisionNumber,
+    roles: rule.roles,
+    sources: rule.sources,
+  };
 }
 
 export interface RegulationDeliveryTarget {
