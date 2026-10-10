@@ -850,7 +850,7 @@
     "months_one": "{{count}} month",
     "months_other": "{{count}} months",
     "feedbackSharingTitle": "AI feedback sharing",
-    "feedbackSharingHint": "Control whether thumbs up and thumbs down votes can send the voted AI output to Paperclip Labs. Votes are always saved locally.",
+    "feedbackSharingHint": "Control whether thumbs up and thumbs down votes can send the voted AI output to Myrmidon Labs. Votes are always saved locally.",
     "termsOfService": "Read our terms of service",
     "feedbackPrompt": "No default is saved yet. The next thumbs up or thumbs down choice will ask once and then save the answer here.",
     "alwaysAllow": "Always allow",
@@ -1018,5 +1018,49 @@
     "ageHours": "{{count}} h",
     "ageDays": "{{count}} d",
     "ageSeconds": "{{count}} s"
+  },
+  "processes": {
+    "title": "Board processes",
+    "subtitle": "Every running board process refreshes its own row every 10 seconds: its role, when it started, and the event-loop lag and memory of its last pulse. A row older than two minutes is stale and the leader reaps it.",
+    "loading": "Loading processes…",
+    "empty": "No board process has reported yet. A process writes its row right after it starts.",
+    "error": "Could not read the process registry. Try again.",
+    "self": "this process",
+    "selfMissing": "This process has no row yet: the pulse writes it once the registry is up.",
+    "colProcess": "Process",
+    "colRole": "Role",
+    "colHost": "PID / host",
+    "colPort": "Port",
+    "colVersion": "Version",
+    "colStarted": "Uptime",
+    "colPulse": "Last pulse",
+    "colLag": "Loop lag, ms",
+    "colRss": "Memory",
+    "role": {
+      "all": "board (single)",
+      "worker": "worker",
+      "api": "API"
+    },
+    "pidHost": "{{pid}} on {{host}}",
+    "ageSeconds": "{{seconds}} s ago",
+    "ageMinutes": "{{minutes}} min ago",
+    "ageHours": "{{hours}} h ago",
+    "cadence": "Pulse every {{pulse}} s; a row older than {{stale}} s is stale."
+  },
+  "attentionFeed": {
+    "title": "Attention feed",
+    "hint": "How far back the feed looks for an unresolved failed or timed-out run, and how long it keeps the feed it built per company. Saving applies at once — the feed re-reads the settings row on its next build, no restart.",
+    "horizonLabel": "Failed-run horizon, days",
+    "cacheTtlLabel": "Feed cache TTL, seconds",
+    "bounds": "{{min}}–{{max}}, default {{default}}",
+    "boundsCacheTtl": "{{min}}–{{max}}, default {{default}}, 0 turns the cache off",
+    "sourceSettings": "Saved",
+    "sourceDefault": "Default",
+    "integerError": "Enter a whole number between {{min}} and {{max}}",
+    "saveError": "Could not save the attention feed windows. Try again.",
+    "saved": "Saved. The feed uses the new windows from its next build.",
+    "save": "Save",
+    "reset": "Use defaults",
+    "note": "Stored in the instance settings; there is no environment variable behind either value."
   }
 }
