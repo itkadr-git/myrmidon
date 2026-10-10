@@ -73,6 +73,11 @@ import {
 // same general settings row.
 import { promptBudgetSettingsSchema } from "../myrmidon-prompt-budget.js";
 
+// myrmidon(1.6.6 LONG-TASK-CONTEXT): the long-task context guard settings
+// (switch, reset threshold percent, fallback window, history budget) stored in
+// the same general settings row.
+import { longTaskContextSettingsSchema } from "../myrmidon-long-task-context.js";
+
 // myrmidon(1.6.5 BOT-RUNTIME-TUNING D2): the fallback-signal settings (switch,
 // threshold percent, minimum calls, window and sweep interval) stored in the
 // same general settings row.
@@ -250,6 +255,10 @@ export const instanceGeneralSettingsSchema = z.object({
   // /api/myrmidon/companies/:id/prompt-budget/settings; absent means the
   // defaults (warn 70, crit 90, enabled, 200k fallback window).
   promptBudget: promptBudgetSettingsSchema.optional(),
+  // myrmidon(1.6.6 LONG-TASK-CONTEXT): the guard's thresholds, changed from the
+  // instance settings row; absent means the defaults (enabled, reset at 70% of
+  // the model window, 200k fallback window, 24k history characters).
+  longTaskContext: longTaskContextSettingsSchema.optional(),
   // myrmidon(1.6.5 BOT-RUNTIME-TUNING D2): the fallback-signal settings, changed
   // from /api/myrmidon/model-fallback/settings; absent means "use the
   // environment variable, then the default" (see

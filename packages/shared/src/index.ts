@@ -2873,6 +2873,7 @@ export * from "./myrmidon-wip-limit.js";
 // the stable refusal code, window kinds, quota/body schemas and the message.
 export * from "./myrmidon-project-token-quota.js";
 export * from "./myrmidon-prompt-budget.js"; // myrmidon(1.6.3 PROMPT-BUDGET B)
+export * from "./myrmidon-long-task-context.js"; // myrmidon(1.6.6 LONG-TASK-CONTEXT)
 // myrmidon(1.7-BUDGET-CONFIG-B): the shared contract of budget enforcement —
 // the global mode (signal_only / soft / hard), its storage key and resolver.
 export * from "./myrmidon-budget-enforcement.js";
