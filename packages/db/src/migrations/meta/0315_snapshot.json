@@ -54065,11 +54065,17 @@
         "knowledge_suggestions_trust_idx": {
           "name": "knowledge_suggestions_trust_idx",
           "columns": [
-            "trust"
+            {
+              "expression": "trust",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
           ],
           "isUnique": false,
-          "with": {},
-          "where": ""
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         }
       },
       "foreignKeys": {
