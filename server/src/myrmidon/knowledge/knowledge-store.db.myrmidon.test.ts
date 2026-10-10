@@ -23,6 +23,7 @@ import {
   companies,
   createDb,
   createPgKnowledgeSearchIndex,
+  knowledgeDeliveries,
   knowledgeItems,
   knowledgeLinks,
   knowledgeRevisions,
@@ -66,9 +67,33 @@ describeEmbeddedPostgres("myrmidon(1.6.6 KNOWLEDGE-2.0 K-1) knowledge store over
 
   afterEach(async () => {
     await db.delete(activityLog);
-    await db.delete(knowledgeSources);
-    await db.delete(knowledgeRevisions);
-    await db.delete(knowledgeItems);
+  it("the module dir holds exactly the known module files (K-1 core + K-2 surfaces + K-8 seed + L-3 index)", () => {
+    // K-1: domain/index/service/store. K-8 (OPE-5961, #1207) added the seed of
+    // decisions and product knowledge: seed.ts (runner), seed-data.ts and
+    // seed-product.ts (data). L-7 (#1349) added lint.ts. K-2 part B added the
+    // REST (routes.ts) and MCP (mcp.ts) surfaces. L-3 (KNOWLEDGE_INDEX.md in
+    // the agent package) added delivery-index.ts, rules.ts carries the rules
+    // resolver. New files must be listed here deliberately.
+    expect(sources).toEqual([
+      "delivery-index.ts",
+      "deviations.ts",
+      "domain.ts",
+      "git-export-git.ts",
+      "git-export-job.ts",
+      "git-export.ts",
+      "index.ts",
+      "lint.ts",
+      "mcp.ts",
+      "routes.ts",
+      "rules.ts",
+      "seed-data.ts",
+      "seed-product.ts",
+      "seed.ts",
+      "service.ts",
+      "settings-routes.ts",
+      "settings.ts",
+      "store.ts",
+    ]);    await db.delete(knowledgeItems);
     await db.delete(myrmidonWikiRegulations);
     await db.delete(agentCastes);
     await db.delete(agents);
@@ -1102,6 +1127,82 @@ describeEmbeddedPostgres("myrmidon(1.6.6 KNOWLEDGE-2.0 K-1) knowledge store over
       expect(newRev.title).toBe("Updated Title");
       expect(newRev.summary).toBe("Updated summary");
     });
+
+  // --------------------------------------------- myrmidon(1.7 KNOWLEDGE-2.0 L-3)
+
+  it("deliver_to_castes round-trips through create, exportTree and the row mapping", async () => {
+    companyId = await makeCompany();
+    const store = makeStore();
+    const marked = await store.create(
+      { companyId, nestId: companyId, slug: "marked", title: "Marked", content: "c", deliverToCastes: ["dev", "*"] },
+      AGENT,
+    );
+    expect(marked.deliverToCastes).toEqual(["dev", "*"]);
+    expect((await store.get(companyId, "marked"))!.deliverToCastes).toEqual(["dev", "*"]);
+
+    const unmarked = await store.create(
+      { companyId, nestId: companyId, slug: "plain", title: "Plain", content: "c" },
+      AGENT,
+    );
+    expect(unmarked.deliverToCastes).toEqual([]);
+
+    const tree = await store.exportTree(companyId);
+    expect(tree.toString("utf8")).toContain("deliver_to_castes: dev,*");
+    const imported = await store.importTree(companyId, companyId, tree, AGENT);
+    expect(imported.created + imported.updated).toBeGreaterThan(0);
+    expect((await store.get(companyId, "marked"))!.deliverToCastes).toEqual(["dev", "*"]);
+  });
+
+  it("recordKnowledgeDelivery writes one current-state row per agent; an unchanged hash rewrites nothing", async () => {
+    companyId = await makeCompany();
+    const store = makeStore();
+    const input = {
+      companyId,
+      nestId: companyId,
+      agentId: BOT.actorId as string,
+      bundleHash: "KNOWLEDGE_INDEX.md|dev|a,b|2",
+      rulesRevisionIds: ["rev-1", "rev-2"],
+      indexItemIds: ["a", "b"],
+    };
+    await store.recordKnowledgeDelivery(input);
+    const first = await store.getKnowledgeDelivery(BOT.actorId as string);
+    expect(first).toMatchObject({ bundleHash: input.bundleHash, indexItemIds: ["a", "b"], rulesRevisionIds: ["rev-1", "rev-2"] });
+    expect(new Date(first!.compiledAt).getTime()).toBeGreaterThan(0);
+
+    // The same hash is a no-op; a changed hash overwrites the row (current state, not a log).
+    const compiledAt = first!.compiledAt;
+    await store.recordKnowledgeDelivery(input);
+    expect((await store.getKnowledgeDelivery(BOT.actorId as string))!.compiledAt).toBe(compiledAt);
+
+    await store.recordKnowledgeDelivery({ ...input, bundleHash: "KNOWLEDGE_INDEX.md|dev|a|1", rulesRevisionIds: ["rev-1"], indexItemIds: ["a"] });
+    const updated = await store.getKnowledgeDelivery(BOT.actorId as string);
+    expect(updated!.bundleHash).toBe("KNOWLEDGE_INDEX.md|dev|a|1");
+    expect(updated!.indexItemIds).toEqual(["a"]);
+    expect(updated!.compiledAt).not.toBe(compiledAt);
+
+    const rows = await db
+      .select()
+      .from(knowledgeDeliveries)
+      .where(eq(knowledgeDeliveries.agentId, BOT.actorId as string));
+    expect(rows).toHaveLength(1);
+  });
+
+  it("listPublishedRules lists only published rule items with their revision numbers", async () => {
+    companyId = await makeCompany();
+    const store = makeStore();
+    await store.create(
+      { companyId, nestId: companyId, slug: "rule-1", title: "R1", kind: "rule", approverKind: "owner", content: "be kind" },
+      AGENT,
+    );
+    await store.create({ companyId, nestId: companyId, slug: "page-1", title: "P1", content: "words" }, AGENT);
+    await store.submit(companyId, "rule-1", AGENT);
+    await store.approve(companyId, "rule-1", OWNER, { publish: true });
+    await store.publish(companyId, "page-1", AGENT);
+
+    const rules = await store.listPublishedRules(companyId);
+    expect(rules).toHaveLength(1);
+    expect(rules[0]).toMatchObject({ slug: "rule-1", revisionNumber: 1 });
+    expect(rules[0]!.revisionId).not.toBeNull();
   });
 
   describe("myrmidon(1.7-REDACT) per-nest redaction on create/draft (OPE-8660)", () => {
@@ -1154,13 +1255,15 @@ describe("myrmidon(1.6.6 KNOWLEDGE-2.0 K-1) module hygiene", () => {
     .filter((name) => name.endsWith(".ts") && !name.includes(".test."))
     .sort();
 
-  it("the module dir holds exactly the known module files (K-1 core + K-2 surfaces + K-8 seed)", () => {
+  it("the module dir holds exactly the known module files (K-1 core + K-2 surfaces + K-8 seed + L-3 index)", () => {
     // K-1: domain/index/service/store. K-8 (OPE-5961, #1207) added the seed of
     // decisions and product knowledge: seed.ts (runner), seed-data.ts and
     // seed-product.ts (data). L-7 (#1349) added lint.ts. K-2 part B added the
-    // REST (routes.ts) and MCP (mcp.ts) surfaces. New files must be listed
+    // REST (routes.ts) and MCP (mcp.ts) surfaces. L-3 added delivery-index.ts
+    // (KNOWLEDGE_INDEX.md rendering/filtering). New files must be listed
     // here deliberately.
     expect(sources).toEqual([
+      "delivery-index.ts",
       "deviations.ts",
       "domain.ts",
       "git-export-git.ts",

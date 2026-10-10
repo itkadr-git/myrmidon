@@ -50,6 +50,7 @@ import {
   type AnyPgColumn,
 } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
+import { agents } from "./agents.js";
 
 /** The knowledge kinds of the 2.0 model (§3.2). `skill_card` is the skill's
  *  knowledge card written by the K-7 backfill and kept by the lifecycle. */
@@ -102,12 +103,17 @@ export const knowledgeItems = pgTable(
     roles: jsonb("roles").$type<string[]>().notNull().default([]),
     /** True for rules (kind "rule" is seeded with this true): publish needs approve. */
     approvalRequired: boolean("approval_required").notNull().default(false),
-    /**
-     * Which kind of approver the rule needs (caste key, owner's decision
+    /** Which kind of approver the rule needs (caste key, owner's decision
      * K-3/§3.1). Null on an approval-required item means nobody can approve
      * it — `approve` answers 403 (S4).
      */
     approverKind: text("approver_kind"),
+    /**
+     * myrmidon(1.7 KNOWLEDGE-2.0 L-3, §3.7): the castes this page is delivered
+     * to in `KNOWLEDGE_INDEX.md`. Null/empty = the page is not pointed at any
+     * agent's package. `["*"]` = every caste. Read at profile compile.
+     */
+    deliverToCastes: jsonb("deliver_to_castes").$type<string[]>(),
     /**
      * The revision the fleet reads. No foreign key on purpose: items and
      * revisions reference each other, and the invariant "the pointer is an
@@ -418,4 +424,42 @@ export const knowledgeSettings = pgTable(
 );
 
 export type KnowledgeSettings = typeof knowledgeSettings.$inferSelect;
-export type NewKnowledgeSettings = typeof knowledgeSettings.$inferInsert;
+export type NewKnowledgeSettings = typeof knowledgeSettings.$
+
+/**
+ * myrmidon(1.7 KNOWLEDGE-2.0 L-3, §3.7): what an agent's package actually
+ * carried at its last profile compile — the bundle hash, the delivered rule
+ * revisions and the index page ids, per agent. One row per agent (upserted on
+ * every compile that changes the bundle; an unchanged bundle writes nothing).
+ * The agent card's "Knowledge in the package" block reads this table, and the
+ * mismatch between the rules the caste resolves today and the revisions
+ * recorded here is the "approved but not delivered" signal.
+ */
+export const knowledgeDeliveries = pgTable(
+  "knowledge_deliveries",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    companyId: uuid("company_id")
+      .notNull()
+      .references(() => companies.id, { onDelete: "cascade" }),
+    nestId: uuid("nest_id")
+      .notNull()
+      .references(() => companies.id, { onDelete: "cascade" }),
+    /** The agent (bot) the package was compiled for. */
+    agentId: uuid("agent_id")
+      .notNull()
+      .references(() => agents.id, { onDelete: "cascade" }),
+    /** Hash of the delivered knowledge files (the profile's own hash covers them too). */
+    bundleHash: text("bundle_hash").notNull(),
+    /** Numbers of the rule revisions the delivered REGULATIONS.md rendered. */
+    rulesRevisionIds: jsonb("rules_revision_ids").$type<string[]>().notNull().default([]),
+    /** Slugs of the knowledge pages the delivered KNOWLEDGE_INDEX.md points at. */
+    indexItemIds: jsonb("index_item_ids").$type<string[]>().notNull().default([]),
+    compiledAt: timestamp("compiled_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    agentUq: uniqueIndex("knowledge_deliveries_agent_uq").on(table.agentId),
+    nestIdx: index("knowledge_deliveries_nest_idx").on(table.nestId),
+    companyIdx: index("knowledge_deliveries_company_idx").on(table.companyId),
+  }),
+);

@@ -75,6 +75,14 @@ export function createKnowledgeModule(db: Db, companyId: string, options: Knowle
     decideSuggestion: (actor: Parameters<typeof service.decideSuggestion>[1], input: Omit<Parameters<typeof service.decideSuggestion>[2], "companyId"> & { suggestionId: string; decision: "accepted" | "declined" }) =>
       service.decideSuggestion(nestId, actor, { ...input, companyId }),
     listSuggestions: (status?: Parameters<typeof service.listSuggestions>[1]) => service.listSuggestions(nestId, status),
+    // myrmidon(1.7 KNOWLEDGE-2.0 L-3, §3.7): the delivery journal — what an
+    // agent's compiled package carried at its last compile, and the published
+    // rules of the nest (the card's "approved now" side). Nest-scoped like
+    // every other call; see store.ts for the idempotence (bundle hash).
+    recordKnowledgeDelivery: (input: Omit<Parameters<typeof service.recordKnowledgeDelivery>[0], "companyId" | "nestId">) =>
+      service.recordKnowledgeDelivery({ ...input, companyId, nestId }),
+    getKnowledgeDelivery: (agentId: string) => service.getKnowledgeDelivery(agentId),
+    listPublishedRules: () => service.listPublishedRules(nestId),
     exportTree: () => service.exportTree(nestId),
     importTree: (buf: Buffer, actor: Parameters<typeof service.importTree>[3], opts?: Parameters<typeof service.importTree>[4]) =>
       service.importTree(companyId, nestId, buf, actor, opts),

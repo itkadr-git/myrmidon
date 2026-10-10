@@ -75,9 +75,14 @@ import type { BotContainerActivitySink } from "./reconciler.js";
 import type { BotProfilePass } from "./profile-pass.js";
 import type { CompiledProfile } from "./types.js";
 // myrmidon(1.6-WIKI): approved wiki regulations reach a bot through its compiled profile.
-import { createKnowledgeRegulationResolver, loadRegulationWorkspaceFiles } from "../wiki-cortex/delivery.js";
+import {
+  createKnowledgeRegulationResolver,
+  DEFAULT_AGENT_ROLE,
+  loadKnowledgeIndexDelivery,
+  loadRegulationWorkspaceFiles,
+} from "../wiki-cortex/delivery.js";
 import { createKnowledgeModule } from "../knowledge/index.js";
-import { readAppliedScopeLayout } from "./scope-wiring.js"; // myrmidon(BOT-DISK-F)
+import { resolvedRules } from "../knowledge/rules.js"; // myrmidon(1.7 L-3): the caste filter of the delivered rulesimport { readAppliedScopeLayout } from "./scope-wiring.js"; // myrmidon(BOT-DISK-F)
 import { readBotDiskLayout, readBotDiskMechanics, readCloneIdleTtlSecForRole, readSharedPackageCachePathForRole } from "./bot-disk-service.js"; // myrmidon(1.6.1-BOT-DISK-B, 1.6.2-BOT-DISK-C, 1.6.5-BOT-DISK-H5c)
 
 export { BOT_AGENT_API_KEY_NAME };
@@ -201,8 +206,7 @@ export function createDbBotProfilePorts(db: Db): BotProfilePorts {
     const created = createKnowledgeModule(db, companyId);
     knowledgeModules.set(companyId, created);
     return created;
-  };
-  const resolveCardEnv = createCardEnvResolver(
+  };  const resolveCardEnv = createCardEnvResolver(
     {
       resolveEnvBindings: (companyId, bindings, context) => secrets.resolveEnvBindings(companyId, bindings, context),
       async readSecretStamp(companyId, secretId) {
@@ -545,6 +549,58 @@ export function createDbBotProfilePorts(db: Db): BotProfilePorts {
     async loadRegulations(agent, context) {
       const resolver = createKnowledgeRegulationResolver(knowledgeModuleFor(agent.companyId));
       return loadRegulationWorkspaceFiles(resolver, { companyId: agent.companyId, role: agent.role }, context);
+    },
+
+    // myrmidon(1.7 KNOWLEDGE-2.0 L-3, §3.7): the `KNOWLEDGE_INDEX.md` file for the
+    // agent's package. The nest is the company (one nest per company); the caste
+    // is the agent's role key. Read per compile — the deterministic renderer keeps
+    // unchanged trees hash-stable. A compile with neither delivered pages nor
+    // rules yields no file, so untouched agents keep byte-identical profiles.
+    // The rule set is resolved through the SAME caste filter the REGULATIONS.md
+    // carrier uses (`resolvedRules(read, caste)`), so the index's rule count and
+    // the ledger below describe exactly the rules this agent's package carries —
+    // never the whole company's published rules (review remark, OPE-8120).
+    async loadKnowledgeIndex(agent) {
+      const caste = (agent.role ?? "").trim() || null;
+      const module = knowledgeModuleFor(agent.companyId);
+      const [pages, resolved] = await Promise.all([
+        module.listItems({ status: "published" }),
+        resolvedRules(module, caste ?? DEFAULT_AGENT_ROLE),
+      ]);
+      return loadKnowledgeIndexDelivery({
+        companyId: agent.companyId,
+        caste,
+        rulesCount: resolved.length,
+        pages: pages.map((page) => ({
+          slug: page.slug,
+          title: page.title,
+          summary: page.summary,
+          kind: page.kind,
+          status: page.status,
+          deliverToCastes: page.deliverToCastes,
+        })),
+      });
+    },
+
+    // myrmidon(1.7 KNOWLEDGE-2.0 L-3, §3.7): the current-state ledger of what a
+    // bot's compiled package carried — keyed by agent, updated per compile. The
+    // store itself skips the write when the bundle hash is unchanged, so an
+    // idle fleet stops writing. The revision ids recorded are the delivered
+    // revisions of exactly the caste-resolved rules (same filter as
+    // REGULATIONS.md), matched by the slug the resolution returned.
+    async recordKnowledgeDelivery(input) {
+      const module = knowledgeModuleFor(input.companyId);
+      const [rules, resolved] = await Promise.all([
+        module.listPublishedRules(),
+        resolvedRules(module, input.caste ?? DEFAULT_AGENT_ROLE),
+      ]);
+      const revisionIdBySlug = new Map(rules.map((rule) => [rule.slug, rule.revisionId ?? rule.itemId]));
+      await module.recordKnowledgeDelivery({
+        agentId: input.agentId,
+        bundleHash: `${input.file ?? "none"}|${input.caste ?? "-"}|${input.indexSlugs.join(",")}|${input.rulesCount}`,
+        rulesRevisionIds: resolved.map((rule) => revisionIdBySlug.get(rule.slug) ?? rule.pageId),
+        indexItemIds: input.indexSlugs,
+      });
     },
   };
 }
