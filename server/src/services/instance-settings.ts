@@ -56,6 +56,8 @@ import { preserveTelegramNotifyGeneralKey } from "../myrmidon/telegram-notify/pr
 import { preserveTelegramNotifySettingsGeneralKey } from "../myrmidon/telegram-notify/settings-store.js";
 // myrmidon(1.6.1-WIP-LIMIT-A): keep the stored WIP limits across vendor writes of `general`
 import { preserveWipLimitGeneralKey } from "../myrmidon/wip-limit/settings.js";
+// myrmidon(1.6.6 PROCS-J): keep the board's process counts across vendor writes of `general`
+import { preserveBoardProcessesGeneralKey } from "../myrmidon/board-processes/settings.js";
 // myrmidon(1.6.1 VOICE-STT A1): keep the per-company STT runtime settings across vendor writes of `general`
 import { preserveSttGeneralKey } from "../myrmidon/stt/store.js";
 // myrmidon(1.7-BUDGET-CONFIG-B): keep the stored budget enforcement mode
@@ -714,6 +716,11 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
             ...preservePluginEntitlementPublicKeyGeneralKey(current.general), // myrmidon(1.6.3 PLUGIN-ENTITLEMENT A)
             ...preserveTelegramDmProgressGeneralKey(current.general), // myrmidon(DM-PROGRESS)
             ...preserveFallbackSignalGeneralKey(current.general), // myrmidon(BOT-RUNTIME-TUNING D2)
+            ...preserveBoardProcessesGeneralKey(current.general), // myrmidon(1.6.6 PROCS-J)
+            // The preserve line above restores the stored row: a patch that carries
+            // the counts wins (the same rule as DM-PROGRESS), and it is validated
+            // where every other read of the key is — at startup.
+            ...(patch.processes !== undefined ? { processes: nextGeneral.processes } : {}),
             // The preserve line above restores the old stored value: a patch
             // that carries the key must win, the same rule as DM-PROGRESS.
             ...(patch.modelFallbackSignal !== undefined ? { modelFallbackSignal: nextGeneral.modelFallbackSignal } : {}),
