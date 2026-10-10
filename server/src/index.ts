@@ -41,6 +41,7 @@ import {
   companyMemberships,
   instanceUserRoles,
 } from "@paperclipai/db";
+import type { Db } from "@paperclipai/db";
 import detectPort from "detect-port";
 import { createApp } from "./app.js";
 import { loadConfig } from "./config.js";
@@ -131,7 +132,8 @@ import { startRuntimeLimits } from "./myrmidon/runtime-limits/index.js"; // myrm
 import { startBehaviorSettings } from "./myrmidon/behavior-settings/index.js"; // myrmidon(SETTINGS-CORE)
 import { startBotContainers, stopBotContainers } from "./myrmidon/bot-containers/startup.js"; // myrmidon(W2a)
 import { startLitellmCostSweep, stopLitellmCostSweep } from "./myrmidon/litellm-costs/startup.js"; // myrmidon(M2-A)
-import { startBoardProcessRegistry, stopBoardProcessRegistry } from "./myrmidon/process-registry/index.js"; // myrmidon(1.6.6 PROCS-0.1)
+import { startBoardProcessRegistry, stopBoardProcessRegistry, resolveBoardProcessRole, roleOwnsBackgroundWork } from "./myrmidon/process-registry/index.js"; // myrmidon(1.6.6 PROCS-0.1)
+import type { BoardProcessRole } from "./myrmidon/process-registry/index.js"; // myrmidon(1.6.6 PROCS-1.5 ч.H)
 import { startLitellmBudgetSync } from "./myrmidon/litellm-budget-sync/index.js"; // myrmidon(1.7-BUDGET-CONFIG-C)
 import { startLitellmModelReconciliation } from "./myrmidon/litellm-sync/startup-reconciler.js"; // myrmidon(1.6.1 MODEL-PROVIDERS B)
 import { startModelFallbackSignalSweep } from "./myrmidon/litellm-fallback-signal/sweep.js"; // myrmidon(BOT-RUNTIME-TUNING D)
@@ -218,6 +220,18 @@ export interface StartedServer {
   listenPort: number;
   apiUrl: string;
   databaseUrl: string;
+  /** myrmidon(1.6.6 PROCS-1.5 ч.H): the drizzle client this runtime opened.
+   * The standalone worker entry (server/src/worker.ts) hands it to the
+   * readiness probe so `/internal/ready` checks the same pool the sweeps
+   * run against. */
+  db: Db;
+  /** myrmidon(1.6.6 PROCS-1.5 ч.H): the role this process runs under
+   * (`PAPERCLIP_PROCESS_ROLE`, `all` when unset) and whether it owns the
+   * background timers and the run executor. Exposed so the standalone worker
+   * entry (server/src/worker.ts) reports the same identity the registry row
+   * carries. */
+  processRole: BoardProcessRole;
+  ownsBackgroundWork: boolean;
   shutdown: (signal?: "SIGINT" | "SIGTERM") => Promise<void>;
 }
 
@@ -926,7 +940,20 @@ async function startServerWithDatabaseTeardown(
     }
   };
   const pluginWorkerManager = createPluginWorkerManager();
-  const heartbeat = config.heartbeatSchedulerEnabled
+  // myrmidon(1.6.6 PROCS-1.5 ч.H, design BOARD-PROCESSES §2.3): one switch for
+  // the process role. An `api` process only serves HTTP — the heartbeat
+  // executor and every background sweep stay on the `worker`/`all` role, so a
+  // split board never double-runs them. `all` (today's single process, the
+  // default when PAPERCLIP_PROCESS_ROLE is unset) keeps every behaviour.
+  const boardProcessRole = resolveBoardProcessRole();
+  const ownsBackgroundWork = roleOwnsBackgroundWork(boardProcessRole);
+  if (!ownsBackgroundWork) {
+    logger.info(
+      { role: boardProcessRole },
+      "process role gate: background timers and the run executor stay off in this process",
+    );
+  }
+  const heartbeat = config.heartbeatSchedulerEnabled && ownsBackgroundWork
     ? heartbeatService(db as any, { pluginWorkerManager })
     : null;
   const decisionServiceOptions = {
@@ -1059,6 +1086,8 @@ async function startServerWithDatabaseTeardown(
     });
   });
   startupListenerBound = true;
+  const boundBoardAddress =
+    typeof server.address === "function" ? server.address() : null;
 
   try {
     const result = await workspaceOperationService(db as any)
@@ -1234,7 +1263,11 @@ async function startServerWithDatabaseTeardown(
   // this sweep instance without a restart; the stored row is applied right
   // after registration, before the first scheduler tick.
   registerRunStallSweep(runStallSweep);
-  if (runStallSweep) {
+  // myrmidon(1.6.6 PROCS-1.5 ч.H): the run-stall sweep is a periodic pass
+  // over running executions (design §2.2) — it belongs to the role that owns
+  // background work. An api child neither registers the sweep nor applies the
+  // stored settings; the worker's copy does both.
+  if (runStallSweep && ownsBackgroundWork) {
     void startRunStall(db as any).catch((err) =>
       logger.error({ err }, "failed to apply the stored run stall settings at startup"),
     );
@@ -1260,13 +1293,15 @@ async function startServerWithDatabaseTeardown(
         .finally(() => { executionControlSweepsInFlight.delete(queue); }));
     }
   };
-  const executionControlInterval = laneInterval(
-    "execution_control",
-    EXECUTION_RECONCILIATION_INTERVAL_MS,
-    sweepExecutionControl,
-  );
-  executionControlInterval.unref?.();
-  sweepExecutionControl();
+  const executionControlInterval = ownsBackgroundWork
+    ? laneInterval(
+        "execution_control",
+        EXECUTION_RECONCILIATION_INTERVAL_MS,
+        sweepExecutionControl,
+      )
+    : null;
+  executionControlInterval?.unref?.();
+  if (ownsBackgroundWork) sweepExecutionControl();
   const startHeartbeatSchedulerInterval = (callback: () => void) => {
     heartbeatSchedulerInterval = laneInterval(
       "heartbeat_tick",
@@ -1558,18 +1593,23 @@ async function startServerWithDatabaseTeardown(
       }));
   };
 
-  await connectionDeliveries.sweepPending();
-  await app.locals.toolGateway.sweepActionReviews().catch((err: unknown) => logger.error({ err }, "startup tool review recovery failed"));
-  await app.locals.toolActionDeliveries.sweepPending().catch((err: unknown) => logger.error({ err }, "startup tool review delivery sweep failed"));
-  await questionResponseDeliveries.sweepPending().then((result) => {
-    if (result.scanned > 0) {
-      logger.info(result, "startup question-response delivery sweep completed");
-    }
-  }).catch((err) => {
-    logger.error({ err }, "startup question-response delivery sweep failed");
-  });
-  scheduleGitHubConnectionEventPoll();
-  scheduleGitHubConnectionContinuitySweep();
+  // myrmidon(1.6.6 PROCS-1.5 ч.H): these startup deliveries and polls belong
+  // to the role that owns background work (design §2.2); an api child must
+  // not deliver queued interactions or poll GitHub on its own.
+  if (ownsBackgroundWork) {
+    await connectionDeliveries.sweepPending();
+    await app.locals.toolGateway.sweepActionReviews().catch((err: unknown) => logger.error({ err }, "startup tool review recovery failed"));
+    await app.locals.toolActionDeliveries.sweepPending().catch((err: unknown) => logger.error({ err }, "startup tool review delivery sweep failed"));
+    await questionResponseDeliveries.sweepPending().then((result) => {
+      if (result.scanned > 0) {
+        logger.info(result, "startup question-response delivery sweep completed");
+      }
+    }).catch((err) => {
+      logger.error({ err }, "startup question-response delivery sweep failed");
+    });
+    scheduleGitHubConnectionEventPoll();
+    scheduleGitHubConnectionContinuitySweep();
+  }
 
   if (heartbeat) {
     const secretProposals = createSecretProposalsService(db as any);
@@ -1746,35 +1786,56 @@ async function startServerWithDatabaseTeardown(
     await startRuntimeLimits(db as any); // myrmidon(C0): stored run admission limits in force before the scheduler starts runs
     await startBehaviorSettings(db as any); // myrmidon(SETTINGS-CORE): stored behavior settings in force without a restart
     await startMaintenanceMode(db as any); // myrmidon(R3): load open maintenance windows before startup recovery starts runs
-    startDeployJobs(db as any); // myrmidon(R5-A): resume an interface deploy job; no-op unless MYRMIDON_DEPLOY_ENABLED
-    startBotContainers(db as any); // myrmidon(W2a): bot container sweep and the card's "Apply now" runtime; a no-op unless MYRMIDON_BOT_CONTAINERS is on
-    startLitellmCostSweep(db as any); // myrmidon(M2-A): gateway spend sweep; a no-op unless MYRMIDON_LITELLM_* is set
-    startLitellmBudgetSync(db as any); // myrmidon(1.7-BUDGET-CONFIG-C): LiteLLM budget projection; a no-op unless the gateway contour is set and the document enables it
-    startLitellmModelReconciliation(db as any); // myrmidon(1.6.1 MODEL-PROVIDERS B): reconcile LiteLLM models with DB state
-    startModelFallbackSignalSweep(db as any); // myrmidon(BOT-RUNTIME-TUNING D): model fallback attention signals; a no-op unless MYRMIDON_MODEL_FALLBACK_ENABLED=1
-    startBaselineSnapshots(db as any); // myrmidon(1.6-BASELINE): freeze the 14-day metric window; a no-op unless MYRMIDON_BASELINE_INTERVAL_SEC is set
-    startForagingSweep(db as any); // myrmidon(1.6-FORAGE): source comparison sweep; a no-op unless MYRMIDON_FORAGING_ENABLED=1
-    startAlertsSweep(db as any); // myrmidon(1.6.6-ALERTS): dedup registry cleanup of closed alerts; a no-op unless MYRMIDON_ALERTS_SWEEP_INTERVAL_SEC is set
-    startTracingAttentionSweep(db as any); // myrmidon(TRACING-HEALTH): keep the "LLM tracing" operator signal fresh; a no-op unless the tracing settings are on
-    startBotCanary(db as any); // myrmidon(R5-B): resume an open bot image rollout; a no-op unless MYRMIDON_BOT_CANARY is on
-    startStackCheckSweep(db as any); // myrmidon(SUB): scheduled stack release check; a no-op unless MYRMIDON_STACK_CHECK_INTERVAL_SEC is set
-    startTelegramNotifyJobs(db as any); // myrmidon(1.6.1-TG-NOTIFY-B): digest/escalation jobs; a no-op unless the owner settings enable them
-    startTgNotifySweep({ db: db as any, settings: dbErrorChannelSettingsSource(db as any) }); // myrmidon(1.6-TG-NOTIFY-C): board errors → Telegram chat/topic; a no-op unless the owner settings enable it
+    // myrmidon(1.6.6 PROCS-1.5 ч.H): every periodic `start*` below is a
+    // background sweep with external effects (design §2.2) — it belongs to
+    // the role that owns background work. An api child skips them all; the
+    // default `all` role keeps every one, byte-for-byte today's behaviour.
+    if (ownsBackgroundWork) {
+      startDeployJobs(db as any); // myrmidon(R5-A): resume an interface deploy job; no-op unless MYRMIDON_DEPLOY_ENABLED
+      startBotContainers(db as any); // myrmidon(W2a): bot container sweep and the card's "Apply now" runtime; a no-op unless MYRMIDON_BOT_CONTAINERS is on
+      startLitellmCostSweep(db as any); // myrmidon(M2-A): gateway spend sweep; a no-op unless MYRMIDON_LITELLM_* is set
+      startLitellmBudgetSync(db as any); // myrmidon(1.7-BUDGET-CONFIG-C): LiteLLM budget projection; a no-op unless the gateway contour is set and the document enables it
+      startLitellmModelReconciliation(db as any); // myrmidon(1.6.1 MODEL-PROVIDERS B): reconcile LiteLLM models with DB state
+      startModelFallbackSignalSweep(db as any); // myrmidon(BOT-RUNTIME-TUNING D): model fallback attention signals; a no-op unless MYRMIDON_MODEL_FALLBACK_ENABLED=1
+      startBaselineSnapshots(db as any); // myrmidon(1.6-BASELINE): freeze the 14-day metric window; a no-op unless MYRMIDON_BASELINE_INTERVAL_SEC is set
+      startForagingSweep(db as any); // myrmidon(1.6-FORAGE): source comparison sweep; a no-op unless MYRMIDON_FORAGING_ENABLED=1
+      startAlertsSweep(db as any); // myrmidon(1.6.6-ALERTS): dedup registry cleanup of closed alerts; a no-op unless MYRMIDON_ALERTS_SWEEP_INTERVAL_SEC is set
+      startTracingAttentionSweep(db as any); // myrmidon(TRACING-HEALTH): keep the "LLM tracing" operator signal fresh; a no-op unless the tracing settings are on
+      startBotCanary(db as any); // myrmidon(R5-B): resume an open bot image rollout; a no-op unless MYRMIDON_BOT_CANARY is on
+      startStackCheckSweep(db as any); // myrmidon(SUB): scheduled stack release check; a no-op unless MYRMIDON_STACK_CHECK_INTERVAL_SEC is set
+      startTelegramNotifyJobs(db as any); // myrmidon(1.6.1-TG-NOTIFY-B): digest/escalation jobs; a no-op unless the owner settings enable them
+      startTgNotifySweep({ db: db as any, settings: dbErrorChannelSettingsSource(db as any) }); // myrmidon(1.6-TG-NOTIFY-C): board errors → Telegram chat/topic; a no-op unless the owner settings enable it
+    }
     // myrmidon(1.6.6 PROCS-0.1): the process registry pulse — this process's
     // row every 10 s, stale rows reaped by the process that owns timers. The
     // behavior with mode=single is exactly today's: one process, one row.
-    {
-      const boundBoardAddress =
-        typeof server.address === "function" ? server.address() : null;
+    // myrmidon(1.6.6 PROCS-1.5 ч.H): a worker/api child registers with its
+    // role from PAPERCLIP_PROCESS_ROLE; an api-less worker reports no port.
+    // An api child has no heartbeat service in this process (gated above) but
+    // still owns a row in board_processes; a single process with the
+    // scheduler disabled keeps today's behaviour (no row) exactly.
+    process.stderr.write(`[PROCS-DEBUG] pre-registry role=${boardProcessRole} heartbeat=${heartbeat ? "yes" : "no"}\n`);
+    if (heartbeat || boardProcessRole === "api") {
+      process.stderr.write(`[PROCS-DEBUG] registering role=${boardProcessRole} heartbeat=${heartbeat ? "yes" : "no"}\n`);
       startBoardProcessRegistry(db as any, {
         apiPort:
-          typeof boundBoardAddress === "object" && boundBoardAddress
-            ? boundBoardAddress.port
-            : listenPort,
-        onError: (error, phase) =>
-          logger.warn({ err: error, phase }, "board process registry tick failed"),
+          boardProcessRole === "worker"
+            ? null
+            : typeof boundBoardAddress === "object" && boundBoardAddress
+              ? boundBoardAddress.port
+              : listenPort,
+        onError: (error, phase) => {
+          process.stderr.write(`[PROCS-DEBUG] registry tick failed phase=${phase} err=${String(error)}\n`);
+          logger.warn({ err: error, phase }, "board process registry tick failed");
+        },
       });
     }
+    // myrmidon(1.6.6 PROCS-1.5 ч.H): on an api child `heartbeat` is null by
+    // design — this whole startup-recovery + periodic-sweep block belongs to
+    // the role that owns background work (the worker, or the single process).
+    // Without the gate the child would crash on the first `heartbeat.` call
+    // right after registering (observed: two-api e2e saw an empty registry).
+    if (heartbeat) {
     const heartbeatSchedulingSuppression = await heartbeat.resolveSchedulingSuppression();
 
     // Reap orphaned runs before timer ticks start so wakeups cannot coalesce
@@ -2256,6 +2317,7 @@ async function startServerWithDatabaseTeardown(
         logger.error({ err }, "heartbeat scheduler tick failed");
       }));
     });
+    }
   } else {
     // The heartbeat scheduler is disabled, but the orphan-sandbox cleanup sweep
     // is still required. A failed acquire can leak a paid provider sandbox, so
@@ -2277,7 +2339,10 @@ async function startServerWithDatabaseTeardown(
     });
   }
   
-  // myrmidon(P11): with catch-up enabled the cadence starts after the catch-up check below
+  // myrmidon(P11): with catch-up enabled the cadence starts after the catch-up check below.
+  // myrmidon(1.6.6 PROCS-1.5 ч.H): a scheduled backup is a background sweep
+  // (design §2.2) — an api child never arms it; the worker role keeps the
+  // cadence exactly as the single process does today.
   const backupCatchUp = readBackupCatchUpSettings();
   if (backupCatchUp.enabled === false && backupCatchUp.invalidValue !== undefined) {
     logger.warn(
@@ -2285,7 +2350,7 @@ async function startServerWithDatabaseTeardown(
       "Database backup catch-up disabled: expected 'none' or '<IANA zone> HH:MM-HH:MM'",
     );
   }
-  if (config.databaseBackupEnabled) {
+  if (config.databaseBackupEnabled && ownsBackgroundWork) {
     const backupIntervalMs = config.databaseBackupIntervalMinutes * 60 * 1000;
 
     logger.info(
@@ -2310,7 +2375,7 @@ async function startServerWithDatabaseTeardown(
   const { waitForExternalAdapters } = await import("./adapters/registry.js");
   await waitForExternalAdapters();
   // myrmidon(P11): catch up a missed backup slot and anchor the cadence to the newest dump
-  if (config.databaseBackupEnabled && backupCatchUp.enabled) {
+  if (config.databaseBackupEnabled && ownsBackgroundWork && backupCatchUp.enabled) {
     startBackupCatchUp({
       settings: backupCatchUp,
       backupDir: config.databaseBackupDir,
@@ -2390,7 +2455,7 @@ async function startServerWithDatabaseTeardown(
   ) => {
     await systemdNotify(["--stopping", `--status=Stopping after ${signal}`]);
     heartbeatSchedulerStopped = true;
-    clearInterval(executionControlInterval);
+    if (executionControlInterval) clearInterval(executionControlInterval);
     stopBotContainers(); // myrmidon(W2a)
     stopLitellmCostSweep(); // myrmidon(M2-A)
     stopBoardProcessRegistry(); // myrmidon(1.6.6 PROCS-0.1)
@@ -2507,6 +2572,9 @@ async function startServerWithDatabaseTeardown(
     listenPort,
     apiUrl: configuredApiUrl,
     databaseUrl: activeDatabaseConnectionString,
+    db: db as Db,
+    processRole: boardProcessRole,
+    ownsBackgroundWork,
     shutdown: (signal = "SIGTERM") => shutdown(signal, false),
   };
   } catch (error) {
