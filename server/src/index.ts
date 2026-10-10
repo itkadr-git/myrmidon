@@ -1826,6 +1826,12 @@ async function startServerWithDatabaseTeardown(
           logger.warn({ err: error, phase }, "board process registry tick failed"),
       });
     }
+    // myrmidon(1.6.6 PROCS-1.5 ч.H): on an api child `heartbeat` is null by
+    // design — this whole startup-recovery + periodic-sweep block belongs to
+    // the role that owns background work (the worker, or the single process).
+    // Without the gate the child would crash on the first `heartbeat.` call
+    // right after registering (observed: two-api e2e saw an empty registry).
+    if (heartbeat) {
     const heartbeatSchedulingSuppression = await heartbeat.resolveSchedulingSuppression();
 
     // Reap orphaned runs before timer ticks start so wakeups cannot coalesce
@@ -2307,6 +2313,7 @@ async function startServerWithDatabaseTeardown(
         logger.error({ err }, "heartbeat scheduler tick failed");
       }));
     });
+    }
   } else {
     // The heartbeat scheduler is disabled, but the orphan-sandbox cleanup sweep
     // is still required. A failed acquire can leak a paid provider sandbox, so
