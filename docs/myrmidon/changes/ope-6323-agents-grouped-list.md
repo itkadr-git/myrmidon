@@ -1,6 +1,6 @@
 ## changelog-en
 
-### 1.6.5 F-07 /agents: grouped agent list with a role, a live status and default aliases (OPE-6323)
+### 1.6.5 F-07 /agents: grouped agent list with a role, a live status and default aliases
 
 - `/agents` in a bridged Telegram DM prints one group per direction instead
   of a flat list: the title comes from the card itself
@@ -17,14 +17,14 @@
   and a group holding paused cards says how many wait. The fixed
   60-agent cut-off is gone — the Telegram transport splits a long reply itself.
 - Default aliases: an agent without `telegramAliases` answers to the last
-  dash-separated segment of its name, lower-cased (`adm-dev-eng-15` → `15`);
+  dash-separated segment of its name, lower-cased (`qa-dev-eng-15` → `15`);
   collisions get `-2`, `-3` (`work-runner-2` → `2-2` when `2` is taken). It is
   computed on read only — nothing is written to the card — and `/to`,
   `/who` and `@mention` all resolve it through the same loader.
 
 ## changelog-ru
 
-### 1.6.5 F-07 /agents: список агентов группами, с ролью, живым статусом и дефолтными алиасами (OPE-6323)
+### 1.6.5 F-07 /agents: список агентов группами, с ролью, живым статусом и дефолтными алиасами
 
 - `/agents` в бридже Telegram DM печатает по группе на направление вместо
   плоского списка: название берётся с самой карточки
@@ -41,7 +41,7 @@
   группа с паузой сообщает, сколько ждёт. Фиксированное обрезание на 60 агентов
   убрано — длинный ответ Telegram-транспорт делит сам.
 - Дефолтные алиасы: агент без `telegramAliases` отвечает на последний
-  сегмент своего имени после дефисов в нижнем регистре (`adm-dev-eng-15` → `15`);
+  сегмент своего имени после дефисов в нижнем регистре (`qa-dev-eng-15` → `15`);
   коллизии получают суффикс `-2`, `-3` (`work-runner-2` → `2-2`, если `2` занят).
   Вычисляется только на чтении — в карточку ничего не пишется, — и `/to`, `/who`
   и `@mention` резолвят его через общий загрузчик.
