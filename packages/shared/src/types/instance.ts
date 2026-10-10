@@ -5,6 +5,8 @@ import type { WorkspaceHygieneLimits } from "../myrmidon-workspace-hygiene.js";
 import type { StoredRunLimits } from "../myrmidon-runtime-limits.js";
 // myrmidon(RUN-STALL-SETTINGS): the run stall detection settings stored in instance settings
 import type { RunStallValues } from "../myrmidon-run-stall.js";
+// myrmidon(1.6.6 PROCS-J): the board's process composition stored in instance settings
+import type { StoredBoardProcessesSettings } from "../myrmidon-board-processes.js";
 // myrmidon(1.6.6 CORPUS-2.0 ч.C): the knowledge-corpus module settings of the same row
 import type { StoredCorpusSettings } from "../myrmidon-corpus.js";
 import type { HostDiskSettings } from "../myrmidon-host-disk.js";
@@ -110,6 +112,16 @@ export interface InstanceGeneralSettings {
    */
   attentionFailedRunHorizonDays?: number;
   attentionFeedCacheTtlSeconds?: number;
+  /**
+   * myrmidon(1.6.6 PROCS-J): the counts of the board's process composition —
+   * how many HTTP processes (`api`) and scheduler processes (`worker`) the
+   * deployment asks for, read once at startup. An unusable row stops the board
+   * with a precise error instead of a guessed composition; absent means the
+   * default { api: 1, worker: 0 } = today's single process. Kept in sync with
+   * the validator of the same field
+   * (packages/shared/src/validators/instance.ts).
+   */
+  processes?: StoredBoardProcessesSettings;
   /**
    * myrmidon(BOT-DISK-A): the bot draft-directory lifecycle, changed from
    * `GET`/`PATCH /api/myrmidon/bot-disk`. Absent means "use the environment

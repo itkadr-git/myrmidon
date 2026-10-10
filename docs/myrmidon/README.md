@@ -53,6 +53,7 @@ Myrmidon — плоскость управления компаниями из �
 | [media-tools.md](media-tools.md) | Общие медиа- и офисные инструменты для контейнерных ботов: сервис media-mcp, хранилище и квоты, инструменты (ffmpeg, офис, OCR, `dwg_convert`), развёртывание и границы изоляции (русская версия: [media-tools.ru.md](media-tools.ru.md)) |
 | [board-key-rotation.md](board-key-rotation.md) | Runbook оператора: ротация и отзыв ключей доски / PAT по ролям (ROLE-SCOPED-TOKENS) |
 | [stack-updates.md](stack-updates.md) | Цикл обновлений стека: откуда «наше» и «у автора», отставание, вердикт «патч закрыт», плановая сверка и карточка `stack_update` (STACK-UPDATES часть D) |
+| [multi-instance.md](multi-instance.md) | Многопроцессный режим доски (1.6.6 BOARD-PROCESSES): роли worker/api, настройка, панель «Процессы», `/internal/ready` и `/healthz`, drain при выкате |
 | [tracks/](tracks/) | Задания шести треков V1.0 |
 | [SESSION-PROMPTS.md](SESSION-PROMPTS.md) | Промпты для запуска сессий по трекам |
 | [guides/](guides/) | Руководства пользователя и администратора — таблица ниже |
@@ -95,6 +96,7 @@ Myrmidon — плоскость управления компаниями из �
 | [guides/task-pr-sync.md](guides/task-pr-sync.md) | Закрытие задачи по слитым PR: проход по рабочим продуктам `pull_request`, возврат исполнителю без слияния, гейты после выката, сторож побудок |
 | [guides/commander-chat.md](guides/commander-chat.md) | Экран «Чат с Полководцем» в интерфейсе 2.0 (CTO-CHAT A): входы (рейка, телефон, палитра с подсказкой `Ctrl K`), запрос свободным текстом, предложенный план, карточка согласования, тот же поток из Telegram-лички |
 | [guides/alibaba-image-connector.md](guides/alibaba-image-connector.md) | Коннектор alibaba-image (1.6): бесплатные генерация и правка картинок для агентов — инструменты и модели реестра, запуск контейнера в окне выката (порт 8083, ключ :ro, общий workspace), подключение ботам через external-MCP и гранты, смоук |
+| [guides/long-task-context.md](guides/long-task-context.md) | Гард контекста долгой задачи (1.6.6 LONG-TASK-CONTEXT): предпороговый сброс сессии задачи по доле окна модели, таймаут сжатия как восстановимый сбой, предел объёма истории в payload побудки, настройки `longTaskContext` |
 | [guides/wiki-regulations.md](guides/wiki-regulations.md) | Регламенты компании в вики (1.6 WIKI-CORTEX): жизненный цикл «черновик → одобрено», ревизии и откат, роли и ключ `*`, доставка `REGULATIONS.md` в профиль бота, агент-википедист |
 | [guides/agent-board-admin.md](guides/agent-board-admin.md) | Администратор доски из агентов (1.6.1 ADMIN-AGENT): переключатель «Board administrator» на вкладке Permissions карточки агента, кто его видит, страница Members с бейджем админа-агента, fail-closed чтение флага, серверная семантика — 17 ключей операторского набора, снимок грантов, запрет само-включения |
 | [guides/wip-limit.md](guides/wip-limit.md) | Лимит WIP (1.6.1 WIP-LIMIT): экран «WIP limit» в настройках компании (умолчание и лимиты по агентам, живая загрузка), бейдж wip/limit в списке агентов, сигнал сверх лимита (карточка внимания + system-notice, sweep 300 с, лид-правило), контракт API |
@@ -111,6 +113,7 @@ Myrmidon — плоскость управления компаниями из �
 | [guides/debate-asym.md](guides/debate-asym.md) | Движок асимметричных дебатов (1.7 DEBATE-ASYM A): генератор/критик/судья из разных семейств моделей, независимые первые ответы, ≤3 круга, потолок токенов, остановка по `[AGREE]`; документ `debate-result` на задаче со стоимостью, cost-события на уровне задачи, живые настройки и запуск по API через матрицу автономии |
 | [media-tools.md](media-tools.md) | Общие медиа- и офисные инструменты для контейнерных ботов: сервис media-mcp, хранилище и квоты, инструменты (ffmpeg, офис, OCR, `dwg_convert`), развёртывание и границы изоляции |
 | [guides/parallel-helpers.md](guides/parallel-helpers.md) | Параллельные помощники (1.6 PARALLEL-HELPERS): секция «Parallel helpers» в карточке агента (вкл/выкл, лимит, модель, бюджет ходов), потолок и умолчание компании с подсказкой о ёмкости в настройках инстанса, секция `delegation` в профиле бота, встроенный навык |
+| [guides/custom-castes.md](guides/custom-castes.md) | Свои касты (CUSTOM-CASTES): справочник ролей компании в базе, двенадцать встроенных каст при первом чтении, поля касты, REST API с переводом агентов при удалении, живое чтение без перезапуска |
 | [guides/issue-list-agent-defaults.md](guides/issue-list-agent-defaults.md) | Умолчания списка задач для агентов (1.6.5 F-16 A): compact без `view`, limit 200 по умолчанию / максимум 500 с 400-подсказкой про пагинацию, без `description` в compact, полный вид только `view=full&limit<=100`, настройка `issuesListAgentDefaults`, доска без изменений |
 
 ## Сборка и запуск
