@@ -713,11 +713,13 @@ import {
 import { shouldRetryOriginalExecutorForInfraInterrupt } from "../myrmidon/infra-interrupts.js";
 // myrmidon(X8d): quote the same person's other conversation (web <-> Telegram)
 // myrmidon(X9b): quoted context of the Telegram chat an @<alias> mention arrived in
+// myrmidon(1.6.6 CH-CONNECTOR-D): the cross-channel theme is reached through the
+// bridge seam, so a channel connector can serve it.
 import {
   appendCrossChannelDelta,
   buildCrossChannelContext,
   buildMentionedChatContext,
-} from "../myrmidon/agent-chat-bridge/cross-channel.js";
+} from "../myrmidon/channel-connectors/bridge/cross-channel.js";
 
 // myrmidon(M3): owner signal on a budget hard-stop (see budget-signal.ts)
 import {

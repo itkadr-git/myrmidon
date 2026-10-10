@@ -194,10 +194,12 @@ import { buildIssueChanges } from "./issue-change-receipt.js";
 import { projectSafeChatPublication } from "./chat-publication-projection.js";
 // myrmidon(X8g): absolute board links in the copy of an agent reply that reaches Telegram
 // myrmidon(X9b): display-name prefix for an @<alias>-addressed agent's reply
+// myrmidon(1.6.6 CH-CONNECTOR-D): the board-link theme is reached through the
+// bridge seam, so a channel connector can serve it.
 import {
   absolutizedTextByTelegramEndpoint,
   addressedReplyPrefixByTelegramEndpoint,
-} from "../myrmidon/agent-chat-bridge/links.js";
+} from "../myrmidon/channel-connectors/bridge/links.js";
 import { stageChannelTaskCompletionPublication } from "../myrmidon/channel-task-control-completion.js";
 import { issueThreadInteractionAttentionAgentAllowed } from "./issue-thread-interaction-resolution.js";
 
