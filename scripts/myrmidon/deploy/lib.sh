@@ -365,6 +365,13 @@ load_config() {
   : "${COMPOSE_SERVICE:?COMPOSE_SERVICE is required}"
   : "${COMPOSE_FILES:=docker-compose.yml}"
   : "${COMPOSE_OVERRIDE_FILE:=docker-compose.myrmidon-image.yml}"
+  # myrmidon(COMPOSE-SET-ANCHOR): the declared compose set of the board is
+  # kept in a machine-readable anchor block (one fragment per line between
+  # board-mount-set:begin/end markers); a watchdog compares it with the live
+  # container label. Empty settings disable the sync step below.
+  : "${MYRMIDON_COMPOSE_SET_ANCHOR_FILE:=}"
+  : "${MYRMIDON_COMPOSE_SET_ANCHOR_GIT:=}"
+  : "${MYRMIDON_COMPOSE_SET_LABEL_SOURCE:=}"
   : "${HEALTH_URL:?HEALTH_URL is required}"
   : "${HEALTH_TIMEOUT_SEC:=300}"
   : "${HEALTH_TOKEN_FILE:=}"
@@ -808,6 +815,157 @@ take_dump() {
 record_history() {
   mkdir -p "$STATE_DIR"
   printf '%s %s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" "$2" >>"$HISTORY_FILE"
+}
+
+# --- COMPOSE-SET-ANCHOR (the 07.10 drift) -------------------------------------
+# myrmidon(COMPOSE-SET-ANCHOR): a release deploy can itself change the set of
+# compose files the board runs from (COMPOSE_FILES, the board image override
+# and the component override files written by this deploy). Installations keep
+# the declared set in a machine-readable anchor block — a file that lists one
+# compose fragment per line between `board-mount-set:begin`/`board-mount-set:end`
+# markers — and a watchdog compares that list against the live container's
+# com.docker.compose.project.config_files label. When the deploy changes the
+# set and the anchor is not updated in the same deploy, the watchdog drifts on
+# the next run and an operator has to register the change by hand after the
+# fact (the 07.10 incident).
+#
+# sync_compose_set_anchor() closes that gap: after the board container was
+# (re)created it reads the LIVE label of the container this deploy manages,
+# compares it (by basename, the way the watchdog compares) with the fragment
+# list in the anchor block, and when they differ rewrites the block and commits
+# the anchor file with one commit whose message names the deploy reference.
+#
+# Settings (all optional, see deploy.env.example; empty = the step is skipped
+# with a log line, so an installation without an anchor still deploys):
+#   MYRMIDON_COMPOSE_SET_ANCHOR_FILE  the file carrying the begin/end block
+#   MYRMIDON_COMPOSE_SET_ANCHOR_GIT   the git repository of that file
+#                                     (the commit lands there; may equal
+#                                     ANCHOR_FILE's parent repo)
+#   MYRMIDON_COMPOSE_SET_LABEL_SOURCE an optional shell command that prints
+#                                     the live config_files label (overrides
+#                                     the docker inspect of the local daemon,
+#                                     so the step is testable on a stand)
+#
+# The function never fails the deploy: a healthy board outranks a drifted
+# anchor, and the watchdog still catches the residue on its next run (the
+# anchor block's format and the watchdog itself are not touched here).
+# Returns 0 always; the outcome is logged and, when something was rewritten,
+# ANCHOR_SYNC_COMMIT holds the commit sha.
+sync_compose_set_anchor() {
+  ANCHOR_SYNC_COMMIT=""
+  ANCHOR_SYNC_ACTION="skipped"
+  if [[ -z "$MYRMIDON_COMPOSE_SET_ANCHOR_FILE" ]]; then
+    log "COMPOSE-SET-ANCHOR: skipped (MYRMIDON_COMPOSE_SET_ANCHOR_FILE is empty; the declared compose set is not managed by this deploy)"
+    return 0
+  fi
+  local anchor_file="$MYRMIDON_COMPOSE_SET_ANCHOR_FILE"
+  if [[ ! -f "$anchor_file" ]]; then
+    log "WARNING: COMPOSE-SET-ANCHOR: the anchor file does not exist: $anchor_file (nothing was rewritten; check the setting)"
+    return 0
+  fi
+  local label_raw
+  if [[ -n "$MYRMIDON_COMPOSE_SET_LABEL_SOURCE" ]]; then
+    label_raw="$(bash -c "$MYRMIDON_COMPOSE_SET_LABEL_SOURCE" 2>/dev/null || true)"
+  else
+    # The board container this deploy manages, by the labels compose puts on it
+    # (the same lookup board_running_image() uses; works even when the compose
+    # files do not validate).
+    local board_id
+    board_id="$(docker ps -a -q \
+      --filter "label=com.docker.compose.service=$COMPOSE_SERVICE" \
+      --filter "label=com.docker.compose.project.working_dir=$COMPOSE_DIR" 2>/dev/null | head -n1)" || board_id=""
+    if [[ -z "$board_id" ]]; then
+      log "WARNING: COMPOSE-SET-ANCHOR: no container of service $COMPOSE_SERVICE in project $COMPOSE_DIR (the container may not exist yet); the anchor was not re-checked"
+      return 0
+    fi
+    label_raw="$(docker inspect -f '{{index .Config.Labels "com.docker.compose.project.config_files"}}' "$board_id" 2>/dev/null || true)"
+  fi
+  if [[ -z "$label_raw" ]]; then
+    log "WARNING: COMPOSE-SET-ANCHOR: no live config_files label on the board container; the anchor was not re-checked"
+    return 0
+  fi
+  # Compare by basename, the way the watchdog does: the anchor names fragments
+  # relative to a project directory, the label carries absolute paths.
+  local label_basenames anchor_basenames
+  label_basenames="$(printf '%s\n' "$label_raw" | tr ',' '\n' | sed 's#.*/##; s/^[[:space:]]*//; s/[[:space:]]*$//' | sed '/^$/d' | sort -u)"
+  anchor_basenames="$(sed -n '/board-mount-set:begin/,/board-mount-set:end/p' "$anchor_file" | grep -oE '^[[:space:]]*[A-Za-z0-9._/-]+\.ya?ml[[:space:]]*$' | sed 's#^.*/##; s/^[[:space:]]*//; s/[[:space:]]*$//' | sort -u)"
+  if [[ -z "$anchor_basenames" ]]; then
+    log "WARNING: COMPOSE-SET-ANCHOR: no readable board-mount-set block in $anchor_file (the block format is the watchdog's contract and is not created here); the anchor was not re-checked"
+    return 0
+  fi
+  if [[ "$anchor_basenames" == "$label_basenames" ]]; then
+    ANCHOR_SYNC_ACTION="match"
+    log "COMPOSE-SET-ANCHOR: the anchor matches the live set ($(printf '%s' "$label_basenames" | grep -c . || true) fragments)"
+    return 0
+  fi
+  # Diverged: rewrite the block from the live label, keeping one fragment per
+  # line between the markers exactly as the format expects. The live label
+  # carries absolute paths; the block keeps them verbatim (the watchdog's
+  # parser accepts paths, and the project directory is the label's own).
+  local tmp printed=0 anchor_dir in_block=0
+  anchor_dir="$(dirname "$anchor_file")"
+  tmp="$(mktemp "$anchor_file.XXXXXX")"
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    if [[ "$line" == *board-mount-set:begin* ]]; then
+      printf '%s\n' "$line" >>"$tmp"
+      # Write fragments relative to the anchor file's own directory when they
+      # live under it (the anchor's own style, and the watchdog resolves
+      # relative names against its project dir); absolute otherwise. The
+      # watchdog's parser accepts both shapes.
+      printf '%s\n' "$label_raw" | tr ',' '\n' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | sed '/^$/d' \
+        | while IFS= read -r frag; do
+            case "$frag" in
+              "$anchor_dir"/*) printf '%s\n' "${frag#"$anchor_dir"/}" ;;
+              *) printf '%s\n' "$frag" ;;
+            esac
+          done >>"$tmp"
+      printed=1
+      in_block=1
+      continue
+    fi
+    if [[ "$in_block" == "1" ]]; then
+      # the old fragment lines of the block are dropped; the end marker closes it
+      if [[ "$line" == *board-mount-set:end* ]]; then
+        printf '%s\n' "$line" >>"$tmp"
+        in_block=0
+      fi
+      continue
+    fi
+    printf '%s\n' "$line" >>"$tmp"
+  done <"$anchor_file"
+  if [[ "$printed" != "1" ]]; then
+    rm -f "$tmp"
+    log "WARNING: COMPOSE-SET-ANCHOR: no board-mount-set:begin marker in $anchor_file; nothing was rewritten"
+    return 0
+  fi
+  # Replace atomically, keep owner and mode (a config write rule).
+  local mode owner
+  mode="$(stat -c '%a' "$anchor_file" 2>/dev/null || printf '644')"
+  owner="$(stat -c '%u:%g' "$anchor_file" 2>/dev/null || printf '')"
+  mv -f "$tmp" "$anchor_file"
+  chmod "$mode" "$anchor_file"
+  [[ -n "$owner" ]] && chown "$owner" "$anchor_file" 2>/dev/null || true
+  ANCHOR_SYNC_ACTION="rewritten"
+  log "COMPOSE-SET-ANCHOR: the live set differs from the anchor; the block was rewritten from the live label:"
+  log "  anchor had: $(printf '%s' "$anchor_basenames" | tr '\n' ' ')"
+  log "  live label: $(printf '%s' "$label_basenames" | tr '\n' ' ')"
+  # One commit naming the deploy, when the anchor lives in a git repository.
+  if command -v git >/dev/null 2>&1 && [[ -n "$MYRMIDON_COMPOSE_SET_ANCHOR_GIT" && -d "$MYRMIDON_COMPOSE_SET_ANCHOR_GIT/.git" ]]; then
+    local rel msg
+    rel="$(realpath --relative-to="$MYRMIDON_COMPOSE_SET_ANCHOR_GIT" "$anchor_file" 2>/dev/null || printf '%s' "$anchor_file")"
+    msg="chore(deploy): sync board-mount-set anchor to the live compose set (deploy $MYRMIDON_IMAGE@${digest:-<unknown>})"
+    if git -C "$MYRMIDON_COMPOSE_SET_ANCHOR_GIT" add -- "$rel" >/dev/null 2>&1 \
+      && ANCHOR_SYNC_COMMIT="$(git -C "$MYRMIDON_COMPOSE_SET_ANCHOR_GIT" commit -m "$msg" -- "$rel" 2>/dev/null \
+        && git -C "$MYRMIDON_COMPOSE_SET_ANCHOR_GIT" rev-parse --short HEAD 2>/dev/null)"; then
+      log "COMPOSE-SET-ANCHOR: committed $rel as $ANCHOR_SYNC_COMMIT in $MYRMIDON_COMPOSE_SET_ANCHOR_GIT"
+    else
+      ANCHOR_SYNC_COMMIT=""
+      log "WARNING: COMPOSE-SET-ANCHOR: the git commit of $rel failed (the file is rewritten; commit it by hand)"
+    fi
+  else
+    log "WARNING: COMPOSE-SET-ANCHOR: MYRMIDON_COMPOSE_SET_ANCHOR_GIT is not a git repository; the file is rewritten, commit it by hand"
+  fi
+  return 0
 }
 
 # --- DB-TUNING (OPE-5009): the PostgreSQL settings of the audit, declaratively
