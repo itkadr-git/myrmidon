@@ -2246,6 +2246,8 @@ async function startServerWithDatabaseTeardown(
     startTelegramNotifyJobs(db as any); // myrmidon(1.6.1-TG-NOTIFY-B): digest/escalation jobs; a no-op unless the owner settings enable them
     startTgNotifySweep({ db: db as any, settings: dbErrorChannelSettingsSource(db as any) }); // myrmidon(1.6-TG-NOTIFY-C): board errors → Telegram chat/topic; a no-op unless the owner settings enable it
     startScentQueue(db as any); // myrmidon(1.6.5 F-26 T10 SCENT): the markup queue on its own timer — never a heartbeat pass; a no-op unless general.swarm.scent.enabled
+    // myrmidon(1.6.6 PROCS-1.5 ч.H): api children do not own heartbeat work.
+    if (heartbeat) {
     const heartbeatSchedulingSuppression = await heartbeat.resolveSchedulingSuppression();
 
     // Reap orphaned runs before timer ticks start so wakeups cannot coalesce
@@ -2742,6 +2744,7 @@ async function startServerWithDatabaseTeardown(
         logger.error({ err }, "heartbeat scheduler tick failed");
       }));
     });
+    }
   } else if (processRoleProfile.runsBackground) {
     // myrmidon(PROCS-1.1): the sweeps in this branch belong to the background
     // role — an api process whose heartbeat is disabled schedules none of them,
