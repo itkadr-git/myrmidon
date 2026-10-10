@@ -792,6 +792,16 @@ if ! "$MYR_SCRIPT_DIR/verify-health.sh" --url "$HEALTH_URL" --timeout "$HEALTH_T
   exit 1
 fi
 
+# COMPOSE-SET-ANCHOR (OPE-7010, the 07.10 drift): this deploy may have changed
+# the set of compose files the board runs from (the image override, the
+# component override files written above). The declared set is kept in an
+# anchor block that a watchdog compares with the live container label; when
+# the deploy changes the set, the anchor must change in the same deploy or the
+# watchdog drifts (trigger 34121 class) and an operator registers it by hand.
+# The step is best-effort: a healthy board outranks a drifted anchor, and the
+# step never fails the deploy (the watchdog still catches the residue).
+sync_compose_set_anchor
+
 # TRACING-HEALTH: the gateway must carry the OTLP-only callback set. A legacy
 # `langfuse` callback against a v4 Langfuse server makes the gateway reject
 # about 12k events per hour while everything looks healthy, so a refusal stops
