@@ -42,6 +42,7 @@ import {
   type AutonomyServiceDeps,
 } from "./service.js";
 import { dbAutonomyStore } from "./store.js";
+import { listKnowledgeAutonomyRegulations } from "./knowledge-regulations.js";
 
 const regulationCreateSchema = z.object({
   role: z.string().min(1).max(120),
@@ -111,6 +112,8 @@ export interface AutonomyRoutesDeps {
   listChangeLog: AutonomyServiceDeps["listChangeLog"];
   /** The audit sink. Production wires the activity log over the database; tests record. */
   logActivity: AutonomyServiceDeps["logActivity"];
+  /** The knowledge-backed compatibility projection for rule reads. */
+  listRegulations?: (companyId: string) => ReturnType<typeof listKnowledgeAutonomyRegulations>;
   now?: () => Date;
   newId?: () => string;
 }
@@ -123,6 +126,7 @@ export function myrmidonAutonomyRoutes(db: Db) {
     logActivity: async (input) => {
       await logActivity(db, input);
     },
+    listRegulations: (companyId) => listKnowledgeAutonomyRegulations(db, companyId),
   });
 }
 
@@ -149,7 +153,15 @@ export function autonomyRoutes(deps: AutonomyRoutesDeps) {
 
   router.get("/myrmidon/autonomy", async (req, res) => {
     const companyId = companyOf(req);
-    res.json(await service.snapshot(companyId));
+    const snapshot = await service.snapshot(companyId);
+    const regulations = deps.listRegulations ? await deps.listRegulations(companyId) : snapshot.regulations;
+    res.json({ ...snapshot, regulations });
+  });
+
+  router.get("/myrmidon/autonomy.regulations", async (req, res) => {
+    const companyId = companyOf(req);
+    const regulations = deps.listRegulations ? await deps.listRegulations(companyId) : (await service.snapshot(companyId)).regulations;
+    res.json({ regulations });
   });
 
   router.patch("/myrmidon/autonomy/matrix", validate(autonomyMatrixPatchSchema), async (req, res) => {

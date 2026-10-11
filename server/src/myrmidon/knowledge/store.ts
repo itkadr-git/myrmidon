@@ -41,6 +41,7 @@ import {
   assertRuleFields,
   assertSingleLine,
   assertValidSlug,
+  assertValidRoles,
   assertValidTags,
   draftPointerFields,
   extractLinkTargets,
@@ -76,6 +77,7 @@ export interface KnowledgeItemDto {
   status: KnowledgeItemStatus;
   folderPath: string;
   tags: string[];
+  roles: string[];
   approvalRequired: boolean;
   approverKind: string | null;
   deliveredRevisionId: string | null;
@@ -130,6 +132,7 @@ export interface CreateKnowledgeInput {
   summary?: string | null;
   folderPath?: string;
   tags?: string[];
+  roles?: string[];
   approvalRequired?: boolean;
   approverKind?: string | null;
   sources?: Array<{ kind: KnowledgeSourceKind; ref: string; note?: string | null }>;
@@ -187,6 +190,7 @@ function toItemDto(row: ItemRow): KnowledgeItemDto {
     status: row.status,
     folderPath: row.folderPath,
     tags: row.tags ?? [],
+    roles: row.roles ?? [],
     approvalRequired: row.approvalRequired,
     approverKind: row.approverKind,
     deliveredRevisionId: row.deliveredRevisionId,
@@ -335,6 +339,13 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
     if (input.summary != null) assertSingleLine(input.summary, "Summary");
     assertValidTags(input.tags ?? []);
     const kind = input.kind ?? "note";
+    const roles = assertValidRoles(input.roles ?? []);
+    if (kind === "rule" && roles.length === 0) {
+      throw new KnowledgeDomainError("invalid_metadata", 400, "A rule (kind \"rule\") needs at least one role.");
+    }
+    if (kind !== "rule" && roles.length > 0) {
+      throw new KnowledgeDomainError("invalid_metadata", 400, "Roles are only valid on rules (kind \"rule\").");
+    }
     const approvalRequired = kind === "rule" ? true : (input.approvalRequired ?? false);
     assertRuleFields(kind, approvalRequired, input.approverKind ?? null);
 
@@ -360,6 +371,7 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
           status: "draft",
           folderPath: input.folderPath ?? "",
           tags: input.tags ?? [],
+          roles,
           approvalRequired,
           approverKind: input.approverKind ?? null,
           deliveredRevisionId: null,
@@ -1041,6 +1053,7 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
       summary: item.summary,
       folder: item.folderPath,
       tags: item.tags ?? [],
+      roles: item.roles ?? [],
       status: item.status,
       approvalRequired: item.approvalRequired,
       approverKind: item.approverKind,
@@ -1089,6 +1102,7 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
               status: page.status,
               folderPath: page.folder,
               tags: page.tags,
+              roles: page.roles,
               approvalRequired: page.approvalRequired,
               approverKind: page.approverKind,
               deliveredRevisionId: null,
@@ -1147,6 +1161,7 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
             summary: page.summary,
             folderPath: page.folder,
             tags: page.tags,
+            roles: page.roles,
             approvalRequired: page.approvalRequired,
             approverKind: page.approverKind,
             kind: page.kind,
