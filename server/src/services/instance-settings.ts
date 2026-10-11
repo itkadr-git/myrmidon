@@ -337,6 +337,11 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
       // this line the vendor write path silently drops the key and the settings
       // could only ever come from the environment.
       ...(parsed.data.teamLiveness ? { teamLiveness: parsed.data.teamLiveness } : {}),
+      // myrmidon(CA-A): the stored channel settings document (general.channelSettings,
+      // incl. the channel access mode) survives every general write. Without this
+      // line the vendor write path drops the key and the mode set on the board
+      // screen never reaches the admission gate.
+      ...(parsed.data.channelSettings !== undefined ? { channelSettings: parsed.data.channelSettings } : {}),
       // myrmidon(BOT-RUNTIME-TUNING D2): the stored fallback-signal settings
       // survive every general write (they are edited on their own settings
       // page). Without this line `updateGeneral` normalizes the patch away, so

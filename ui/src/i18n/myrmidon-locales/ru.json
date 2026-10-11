@@ -30,8 +30,8 @@
     "unread": "непрочитано",
     "decisionsBadge": "решений",
     "quality": "Качество",
-    "swarmSupervisor": "Swarm-надзор",
-    "foraging": "Фораж"
+    "swarmSupervisor": "Надзор за роем",
+    "foraging": "Фуражирование"
   },
   "common": {
     "cancel": "Отмена",
