@@ -1,5 +1,13 @@
 // myrmidon(1.6-TG-PROACTIVITY-E): the proactivity + bundling sweep.
 //
+// myrmidon(1.6.6 CH-CONNECTOR-D) batch 3 (OPE-6976, call map OPE-6629 point 65):
+// the direct path is deprecated. The head-bot sweep of `server/src/app.ts`
+// reaches `sweepTelegramNotifyProactivity` through the bridge seam
+// `channel-connectors/bridge/notify-sweep.js` only; with the bridge flag on a
+// registered channel connector serves the theme and this module stays behind
+// the seam as the legacy fallback. Do not add a new direct importer; removal is
+// the follow-up step, not this PR.
+//
 // One periodic pass, wired into the chat reconciliation coordinator's
 // publication lane (server/src/app.ts, marker `myrmidon(1.6-TG-PROACTIVITY-E)`):
 //

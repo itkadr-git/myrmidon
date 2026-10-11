@@ -147,8 +147,9 @@ import { startTracingAttentionSweep, stopTracingAttentionSweep } from "./myrmido
 import { startBotCanary, stopBotCanary } from "./myrmidon/bot-containers/canary-index.js"; // myrmidon(R5-B)
 import { startStackCheckSweep } from "./myrmidon/stack-registry/index.js"; // myrmidon(SUB)
 // myrmidon(1.6.1-TG-NOTIFY-B): daily digest and escalation jobs over the owner Telegram notify settings (all off by default)
-import { startTelegramNotifyJobs } from "./myrmidon/telegram-notify/index.js";
-import { startTgNotifySweep, dbErrorChannelSettingsSource } from "./myrmidon/telegram-notify/index.js"; // myrmidon(1.6-TG-NOTIFY-C)
+// myrmidon(1.6.6 CH-CONNECTOR-D): the notify jobs entry is reached through the bridge seam.
+import { startTelegramNotifyJobs } from "./myrmidon/channel-connectors/bridge/notify.js";
+import { startTgNotifySweep, dbErrorChannelSettingsSource } from "./myrmidon/channel-connectors/bridge/notify.js"; // myrmidon(1.6-TG-NOTIFY-C)
 import { interactionContinuationOutboxService } from "./myrmidon/interaction-continuation-outbox.js"; // myrmidon(O1)
 import { createWorkspaceHygieneScheduler } from "./myrmidon/workspace-hygiene/index.js"; // myrmidon(WORKSPACE-HYGIENE)
 import { createBotDiskQuotaScheduler } from "./myrmidon/bot-containers/bot-disk-quota-runtime.js"; // myrmidon(1.6.1-BOT-DISK-C)

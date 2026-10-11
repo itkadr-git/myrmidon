@@ -1,3 +1,12 @@
+// myrmidon(1.6.6 CH-CONNECTOR-D) batch 3 (OPE-6976, call map OPE-6629 points
+// 74-76): the direct path is deprecated. The core reaches the ephemeral
+// callback theme (`chat-channels.ts`, `chat-sdk-runtime.ts`) through the bridge
+// seam `channel-connectors/bridge/telegram-ephemeral.js` only; with the bridge
+// flag on a registered channel connector serves the theme and this module stays
+// behind the seam as the legacy fallback. The notice text
+// `TELEGRAM_PRIVATE_ACTION_UNAVAILABLE` is stored-row data: it stays on this
+// module's value even through the seam (see the seam's note). Do not add a new
+// direct importer; removal is the follow-up step, not this PR.
 import { createHash } from "node:crypto";
 // myrmidon(B1): product name in the user-facing text below; see product.ts.
 import { PRODUCT_NAME } from "../myrmidon/product.js";
