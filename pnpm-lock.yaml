@@ -391,6 +391,28 @@ importers:
         specifier: ^7.0.2
         version: 7.0.2
 
+  packages/corpus:
+    dependencies:
+      '@paperclipai/db':
+        specifier: workspace:*
+        version: link:../db
+      drizzle-orm:
+        specifier: ^0.45.2
+        version: 0.45.2(@opentelemetry/api@1.9.1)(kysely@0.29.5)(pg@8.18.0)(postgres@3.4.9(patch_hash=sryle6qd5qfmnxvoebal4gashi))
+    devDependencies:
+      '@types/node':
+        specifier: ^24.0.0
+        version: 24.13.3
+      postgres:
+        specifier: ^3.4.9
+        version: 3.4.9(patch_hash=sryle6qd5qfmnxvoebal4gashi)
+      typescript:
+        specifier: ^7.0.2
+        version: 7.0.2
+      vitest:
+        specifier: ^4.1.11
+        version: 4.1.11(@opentelemetry/api@1.9.1)(@types/node@24.13.3)(esbuild@0.28.2)(jiti@2.7.0)(jsdom@30.0.1(@noble/hashes@2.4.0))(tsx@4.23.12)
+
   packages/db:
     dependencies:
       '@paperclipai/shared':
@@ -7644,7 +7666,6 @@ packages:
 
   opencode-ai@1.18.29:
     resolution: {integrity: sha512-syIDVwlrYTgTOXzZe9SkInJWethbq6l3SNC762UeXyO0a9V0wGfd+U4yACvppwNBnhIsl0j2QPYYCyLpNaSomg==}
-    cpu: [arm64, x64]
     os: [darwin, linux, win32]
     hasBin: true
 

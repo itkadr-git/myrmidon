@@ -37,6 +37,11 @@ import {
   type ProcessMetricsSample,
   type ProcessMetricsSource,
 } from "./process-metrics.js";
+import {
+  resolveLaneMetricsSource,
+  type BoardLaneMetricsSource,
+  type BoardLaneSample,
+} from "../board-load/lanes.js";
 
 /** Content type of the Prometheus text exposition format, version 0.0.4. */
 export const METRICS_CONTENT_TYPE = "text/plain; version=0.0.4; charset=utf-8";
@@ -76,10 +81,16 @@ export const METRIC_FAMILIES = [
   // myrmidon(1.6.5-PROCS-Q3): the process families — the loop delay, the
   // memory of this process, and the live-event flow (design §1, этап 0).
   "myrmidon_board_event_loop_lag_seconds",
+  // myrmidon(1.6.6 PROCS-0.1): event-loop utilization (design §5.1, этап 0).
+  "myrmidon_board_event_loop_utilization",
   "myrmidon_board_process_rss_bytes",
   "myrmidon_board_heap_bytes",
   "myrmidon_board_live_events_total",
   "myrmidon_board_live_event_bytes_total",
+  // myrmidon(1.6.6-PROCS-0.3A): the load lanes — which shape of board work
+  // spends the CPU and issues the DB statements (design OPE-5394 §1 П2).
+  "myrmidon_board_db_queries_total",
+  "myrmidon_board_lane_busy_seconds_total",
 ] as const;
 
 export type MetricFamily = (typeof METRIC_FAMILIES)[number];
@@ -117,6 +128,12 @@ export interface MetricsSnapshotFields {
    * exist even before the first event of a kind was published.
    */
   process?: ProcessMetricsSample | null;
+  /**
+   * myrmidon(1.6.6-PROCS-0.3A): the load lanes of this process, read from the
+   * in-process registry (no DB). null renders HELP/TYPE with no samples —
+   * the two families exist even before the first lane ran.
+   */
+  lanes?: BoardLaneSample[] | null;
 }
 
 /** The fields plus the scrape bookkeeping rendered into the exposition text. */
@@ -145,6 +162,13 @@ export interface MetricsCollectorDeps {
    * production default (no fake needed for the DB families).
    */
   processMetrics?: ProcessMetricsSource | null;
+  /**
+   * myrmidon(1.6.6-PROCS-0.3A): where the lane half comes from. Production
+   * reads the in-process registry; tests inject fakes. Absent → the
+   * production default — a test that renders lanes injects its own source,
+   * so no test ever depends on another test's counters.
+   */
+  laneMetrics?: BoardLaneMetricsSource | null;
 }
 
 /** Reads the run counters — one grouped query, whole instance. */
@@ -358,11 +382,19 @@ export async function collectMetricsParts(deps: MetricsCollectorDeps): Promise<M
   );
   // myrmidon(1.6.5-PROCS-Q3): the process half rides the same guarded
   // scrape: a throwing source zeroes it (HELP/TYPE render without samples)
-  // and names the five families, never kills the scrape.
+  // and names the six families, never kills the scrape.
   const processSample = await guarded(
-    "myrmidon_board_event_loop_lag_seconds|myrmidon_board_process_rss_bytes|myrmidon_board_heap_bytes|myrmidon_board_live_events_total|myrmidon_board_live_event_bytes_total",
+    "myrmidon_board_event_loop_lag_seconds|myrmidon_board_event_loop_utilization|myrmidon_board_process_rss_bytes|myrmidon_board_heap_bytes|myrmidon_board_live_events_total|myrmidon_board_live_event_bytes_total",
     () => Promise.resolve().then(resolveProcessMetricsSource(deps.processMetrics)),
     null as ProcessMetricsSample | null,
+  );
+  // myrmidon(1.6.6-PROCS-0.3A): the lane half rides the same guarded scrape —
+  // a throwing source zeroes it and names the two families, never kills the
+  // scrape. The registry itself cannot throw; the guard is here for the seam.
+  const laneSample = await guarded(
+    "myrmidon_board_db_queries_total|myrmidon_board_lane_busy_seconds_total",
+    () => Promise.resolve().then(resolveLaneMetricsSource(deps.laneMetrics)),
+    null as BoardLaneSample[] | null,
   );
 
   return {
@@ -379,6 +411,7 @@ export async function collectMetricsParts(deps: MetricsCollectorDeps): Promise<M
       agentErrorSignals: errorSignals,
       llmCostCentsWindow: costWindow,
       process: processSample,
+      lanes: laneSample,
     },
     errors,
     now,
@@ -598,6 +631,18 @@ export function renderMetricsText(snapshot: MetricsSnapshot): string {
   );
   blocks.push(
     familyBlock(
+      "myrmidon_board_event_loop_utilization",
+      "Share of the event loop window the board process was busy (0..1) since the previous scrape.",
+      "gauge",
+      proc && proc.eventLoopUtilization
+        ? [
+            `myrmidon_board_event_loop_utilization ${formatSampleValue(proc.eventLoopUtilization.utilization)}`,
+          ]
+        : [],
+    ),
+  );
+  blocks.push(
+    familyBlock(
       "myrmidon_board_process_rss_bytes",
       "Resident set size of the board process.",
       "gauge",
@@ -639,6 +684,39 @@ export function renderMetricsText(snapshot: MetricsSnapshot): string {
         ? proc.liveEvents.map(
             (row) =>
               `myrmidon_board_live_event_bytes_total{kind="${escapeLabelValue(row.type)}"} ${formatSampleValue(row.bytes)}`,
+          )
+        : [],
+    ),
+  );
+
+  // myrmidon(1.6.6-PROCS-0.3A): the load lanes. Every lane renders even at
+  // zero — a lane that never ran is information ("this work does not happen
+  // on this process"), and a missing series would be indistinguishable from
+  // an uninstrumented one. The DB family carries no `lane` label of its own
+  // (`untagged` is the residue, not a lane).
+  const lanes = snapshot.lanes ?? null;
+  blocks.push(
+    familyBlock(
+      "myrmidon_board_db_queries_total",
+      "DB statements issued by the board process per load lane, cumulative since boot (work outside every lane is counted as untagged; statements inside a transaction are not counted by the driver observer).",
+      "counter",
+      lanes
+        ? lanes.map(
+            (row) =>
+              `myrmidon_board_db_queries_total{lane="${escapeLabelValue(row.lane)}"} ${formatSampleValue(row.dbQueries)}`,
+          )
+        : [],
+    ),
+  );
+  blocks.push(
+    familyBlock(
+      "myrmidon_board_lane_busy_seconds_total",
+      "Wall time the board process spent inside each load lane, cumulative since boot (seconds).",
+      "counter",
+      lanes
+        ? lanes.map(
+            (row) =>
+              `myrmidon_board_lane_busy_seconds_total{lane="${escapeLabelValue(row.lane)}"} ${formatSampleValue(row.busyMs / 1000)}`,
           )
         : [],
     ),

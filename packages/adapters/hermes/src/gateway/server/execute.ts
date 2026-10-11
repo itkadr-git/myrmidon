@@ -405,7 +405,11 @@ function buildInput(ctx: AdapterExecutionContext, paperclipApiUrl: string | null
     // idempotencyRunId) — see the idempotencyKey comment in execute() for
     // why it is never ctx.context.retryOfRunId.
     `- Run ID: ${idempotencyRunId}`,
-    ...(paperclipApiUrl ? [`- Paperclip API URL: ${paperclipApiUrl}`] : []),
+    ...(paperclipApiUrl
+      ? [
+          `- Paperclip API URL: ${paperclipApiUrl} (as configured for the Hermes host; if curl from inside this run fails with empty reply/403, fall back to the \`$PAPERCLIP_API_URL\` env var instead of treating the board as down)`,
+        ]
+      : []),
     ...(issueWorkMode ? [`- Issue work mode: ${issueWorkMode}`] : []),
     "",
     ...(ctx.context.conversationMode === true || isPaperclipRecoveryWakePayload(ctx.context.paperclipWake)
