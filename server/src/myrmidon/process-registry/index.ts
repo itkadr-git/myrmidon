@@ -34,6 +34,8 @@ export {
 } from "./domain.js";
 export { createBoardProcessPulse } from "./pulse.js";
 export { createBoardProcessStore } from "./store.js";
+export { createBoardLeaseStore, serializeBoardLeases } from "./leases.js";
+export type { BoardLeaseRow, BoardLeaseStore } from "./leases.js";
 export type { BoardProcessIdentity, BoardProcessRole } from "./domain.js";
 export type { BoardProcessPulse } from "./pulse.js";
 export type { BoardProcessRow, BoardProcessStore } from "./store.js";
