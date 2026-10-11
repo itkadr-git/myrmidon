@@ -310,3 +310,34 @@ export const knowledgeSearch = pgTable(
     nestIdx: index("knowledge_search_nest_idx").on(table.nestId),
   }),
 );
+
+/**
+ * myrmidon(1.7 KNOWLEDGE-2.0 L-11): one settings row per company for
+ * "Settings → Knowledge". Nullable columns mean "not set from the screen";
+ * the resolver then falls through to the environment variable and finally the
+ * default, and badges the winning layer. `section_reviewers` is always a
+ * list (empty when nothing was saved).
+ */
+export const knowledgeSettings = pgTable(
+  "knowledge_settings",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    companyId: uuid("company_id")
+      .notNull()
+      .references(() => companies.id, { onDelete: "cascade" }),
+    maxItems: integer("max_items"),
+    maxRevisionBytes: integer("max_revision_bytes"),
+    autoAcceptEnabled: boolean("auto_accept_enabled"),
+    autoAcceptMinConfidence: text("auto_accept_min_confidence"),
+    schedule: text("schedule"),
+    sectionReviewers: jsonb("section_reviewers")
+      .$type<Array<{ section: string; reviewerKind: "user" | "agent"; reviewerId: string }>>()
+      .notNull()
+      .default([]),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    companyUq: uniqueIndex("knowledge_settings_company_uq").on(table.companyId),
+  }),
+);

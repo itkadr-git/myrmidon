@@ -24,3 +24,5 @@ export {
   type ImportTreeResult,
 } from "./store.js";
 export { createKnowledgeModule, type KnowledgeModule, type KnowledgeModuleOptions } from "./service.js";
+export { myrmidonKnowledgeSettingsRoutes } from "./routes.js";
+export { createKnowledgeSettingsService, type KnowledgeSettingsService, type KnowledgeSettingsActor } from "./settings.js";

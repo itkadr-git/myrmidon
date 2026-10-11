@@ -95,6 +95,9 @@ describe("CompanySettingsNav", () => {
     // myrmidon(1.6.6 CORPUS E): the knowledge corpus tab.
     expect(getCompanySettingsTab("/company/settings/corpus")).toBe("corpus");
     expect(getCompanySettingsTab("/PAP/company/settings/corpus")).toBe("corpus");
+    // myrmidon(1.7 KNOWLEDGE-2.0 L-11): the knowledge settings tab.
+    expect(getCompanySettingsTab("/company/settings/knowledge")).toBe("knowledge");
+    expect(getCompanySettingsTab("/PAP/company/settings/knowledge")).toBe("knowledge");
   });
 
   function renderNav(

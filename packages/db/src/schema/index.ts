@@ -284,6 +284,7 @@ export {
   knowledgeSources,
   knowledgeSuggestions,
   knowledgeEvents,
+  knowledgeSettings,
   KNOWLEDGE_KINDS,
   KNOWLEDGE_ITEM_STATUSES,
   KNOWLEDGE_REVISION_STATUSES,
