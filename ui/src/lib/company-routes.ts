@@ -31,6 +31,12 @@ const BOARD_ROUTE_ROOTS = new Set([
   "search",
   "settings",
   "timeline",
+  "swarm-claim",
+  "foraging",
+  "quality",
+  "status",
+  "cases",
+  "pipelines",
 ]);
 
 const GLOBAL_ROUTE_ROOTS = new Set(["auth", "invite", "board-claim", "cli-auth", "docs", "instance"]);

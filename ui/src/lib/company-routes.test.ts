@@ -7,6 +7,18 @@ import {
 } from "./company-routes";
 
 describe("company routes", () => {
+  it.each(["swarm-claim", "foraging", "quality", "status", "cases", "pipelines"])(
+    "scopes the Myrmidon %s menu route to the current company",
+    (root) => {
+      const path = `/${root}?view=all#details`;
+      expect(isBoardPathWithoutPrefix(path)).toBe(true);
+      expect(extractCompanyPrefixFromPath(path)).toBeNull();
+      expect(applyCompanyPrefix(path, "OPE")).toBe(`/OPE${path}`);
+      expect(applyCompanyPrefix(`/OPE${path}`, "OPE")).toBe(`/OPE${path}`);
+      expect(toCompanyRelativePath(`/OPE${path}`)).toBe(path);
+    },
+  );
+
   it("treats the task-list alias as an unprefixed board route", () => {
     expect(isBoardPathWithoutPrefix("/tasks")).toBe(true);
     expect(extractCompanyPrefixFromPath("/tasks")).toBeNull();
