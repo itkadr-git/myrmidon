@@ -25,6 +25,23 @@ export const AUTONOMY_ACTION_CLASSES = [
   "delete",
   "pause_wake_agents",
   "change_instructions",
+  // myrmidon(1.6.6 KNOWLEDGE-2.0 K-2): publishing a knowledge item into the
+  // delivered pointer. The per-section reviewer kind still applies on top: an
+  // `auto` section resolves to `allowed` by the default below, everything else
+  // is parked as an approval card.
+  "knowledge_publish",
+  // myrmidon(1.6.6 KNOWLEDGE-2.0 K-2): approving a `rule` item. A rule changes
+  // what every agent of a caste is told, so an agent must never approve one —
+  // the safe default is `forbidden` and the route refuses the call before the
+  // matrix is even consulted (test П4).
+  "rule_approve",
+  // myrmidon(1.6.6 KNOWLEDGE-2.0 K-2): promoting a skill candidate into the
+  // delivered set. Approval-required by default; only the human (or the role
+  // the matrix names) promotes.
+  "skill_promote",
+  // myrmidon(1.6.6 KNOWLEDGE-2.0 K-2): publishing knowledge outside the
+  // platform (posts, letters, public pages). Always a human decision.
+  "knowledge_external_publish",
   "other",
 ] as const;
 
@@ -229,6 +246,16 @@ export const AUTONOMY_SAFE_DEFAULTS: Record<AutonomyActionClass, AutonomyVerdict
   delete: "allowed",
   pause_wake_agents: "allowed",
   change_instructions: "allowed",
+  // myrmidon(1.6.6 KNOWLEDGE-2.0 K-2) safe defaults (§6, решение 08.10):
+  // publishing outside the `auto` sections is parked as an approval card; the
+  // route layer resolves an `auto` section to `allowed` explicitly, so the
+  // default below only ever governs non-auto sections.
+  knowledge_publish: "approval_required",
+  // A rule is approved by the human only, whatever the agent's instructions
+  // say (тест П4).
+  rule_approve: "forbidden",
+  skill_promote: "approval_required",
+  knowledge_external_publish: "forbidden",
   other: "allowed",
 };
 

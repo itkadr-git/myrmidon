@@ -2862,6 +2862,7 @@ export * from "./myrmidon-fallback-signal.js";
 export * from "./myrmidon-base-skills.js";
 // myrmidon(1.6-AUTONOMY): role × action-class matrix, verdict resolver and per-role regulations.
 export * from "./myrmidon-autonomy.js";
+export * from "./myrmidon-knowledge-tools.js";
 // myrmidon(1.6-CTO-CHAT-B): the owner-message-to-epic proposal contract of the CTO chat.
 export * from "./myrmidon-cto-chat.js";
 // myrmidon(1.6-TG-PROACTIVITY-E): the telegramNotify proactivity contract (mode, rarely ceiling, per-agent override).

@@ -24,3 +24,5 @@ export {
   type ImportTreeResult,
 } from "./store.js";
 export { createKnowledgeModule, type KnowledgeModule, type KnowledgeModuleOptions } from "./service.js";
+// K-2 (part B): the REST surface — /api/myrmidon/companies/:companyId/knowledge/*.
+export { knowledgeRoutes, myrmidonKnowledgeRoutes, type KnowledgeRoutesDeps } from "./routes.js";
