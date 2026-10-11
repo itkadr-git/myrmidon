@@ -10,9 +10,10 @@ describe("company routes", () => {
   it.each(["swarm-claim", "foraging", "quality", "status", "cases", "pipelines", "stack"])(
     "scopes the Myrmidon %s menu route to the current company",
     (root) => {
-      const path = `/${root}?view=all#details`;
-      expect(isBoardPathWithoutPrefix(path)).toBe(true);
-      expect(extractCompanyPrefixFromPath(path)).toBeNull();
+      const pathname = `/${root}`;
+      const path = `${pathname}?view=all#details`;
+      expect(isBoardPathWithoutPrefix(pathname)).toBe(true);
+      expect(extractCompanyPrefixFromPath(pathname)).toBeNull();
       expect(applyCompanyPrefix(path, "OPE")).toBe(`/OPE${path}`);
       expect(applyCompanyPrefix(`/OPE${path}`, "OPE")).toBe(`/OPE${path}`);
       expect(toCompanyRelativePath(`/OPE${path}`)).toBe(path);

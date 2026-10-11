@@ -211,6 +211,8 @@ describe("App Activity routing (PAP-16302)", () => {
     ["/swarm-claim", "SWARM_SUPERVISOR@/PAP/swarm-claim"],
     ["/foraging", "FORAGING@/PAP/foraging"],
   ])("redirects the unprefixed Myrmidon route %s to the selected company", async (path: string, expected: string) => {
+    // These pages live in the production surface (Streamlined UI off), where the sidebar shows them.
+    streamlinedUiState.enabled = false;
     const root = renderAppAt(container, path);
     await waitForRoute(container, expected);
     expect(container.textContent).not.toContain("NOT_FOUND");
