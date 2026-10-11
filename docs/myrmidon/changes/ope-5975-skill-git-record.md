@@ -20,8 +20,6 @@ divergence-section: KNOWLEDGE-2.0 — единый модуль знаний
 
 ## divergence-new
 
-<!-- after: KNOWLEDGE-2.0 — единый модуль знаний -->
-
 ### 1.7 — KNOWLEDGE-2.0 L-13: git record for verified skills
 
 The verified skill record is an explicit bridge for architecture invariant I-6: the configured git repository owns the exact file snapshot of a verified skill. `skill_promotion` records that snapshot before saving the lifecycle state. Startup and the signed webhook refresh the local mirror; delivery fails closed and exposes `missing` or `content_mismatch` drift when the database's verified snapshot has no exact git counterpart. Candidate skills remain database-only and follow the existing pilot delivery rules.
