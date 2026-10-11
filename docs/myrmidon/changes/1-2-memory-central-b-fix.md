@@ -12,7 +12,7 @@ settings-section: Track 3 — tool gateway and Hermes adapter
   (off by default) the Hermes gateway adapter saves the final output of every
   completed run as a session-turn record in the bot's own hindsight bank
   (documents keyed by the session key, tag `myrmidon-session-history`), and on
-  the next wake of the same session restores the last turns (default 20, card
+  the next wake of the same session restores the last turns (default 10, card
   field `centralHistoryMaxTurns`) into the wake input under a visible
   "restored conversation history" header. Recreating the container volume no
   longer loses the history: a rebuilt container reads its turns back from the
@@ -42,7 +42,7 @@ settings-section: Track 3 — tool gateway and Hermes adapter
   выключено) адаптер Hermes gateway сохраняет финальный вывод каждого
   завершённого прогона как запись хода сессии в собственный hindsight-банк
   бота (документы по ключу сессии, тег `myrmidon-session-history`), а при
-  следующей побудке той же сессии поднимает последние ходы (по умолчанию 20,
+  следующей побудке той же сессии поднимает последние ходы (по умолчанию 10,
   поле карточки `centralHistoryMaxTurns`) во вход побудки под видимым
   заголовком восстановленной истории. Пересоздание тома контейнера больше не
   теряет историю: пересобранный контейнер читает ходы из центра.
@@ -68,4 +68,4 @@ settings-section: Track 3 — tool gateway and Hermes adapter
 
 ## settings-en
 
-| `MYRMIDON_BOT_CENTRAL_HISTORY` | MEMORY-CENTRAL-B | off | Turns on central session history for the Hermes gateway adapter: the run's final output is saved to the bot's hindsight bank and the last turns are restored into the wake input of the same session. Needs a resolvable store address and bank (card fields `centralHistoryUrl`/`centralHistoryBankId`/`centralHistoryApiKey`, or `MYRMIDON_BOT_HINDSIGHT_API_URL`/`MYRMIDON_BOT_HINDSIGHT_BANK`/`HINDSIGHT_API_KEY`; the bank falls back to the card's `hindsight.bankId`) — a truthy flag without address or bank stays disabled. `1`/`true`/`yes`/`on` enables | Do not set, or `0`/`false`/`off`/`no`. Disabled = byte-identical vendor behavior: no requests, no restored block, no save. Per card instead of env: `adapterConfig.centralHistory: "0"` is not a kill switch for the env flag — clear the env instead. `adapterConfig.centralHistoryMaxTurns` (1–200, default 20) bounds how many turns are restored |
+| `MYRMIDON_BOT_CENTRAL_HISTORY` | MEMORY-CENTRAL-B | off | Turns on central session history for the Hermes gateway adapter: the run's final output is saved to the bot's hindsight bank and the last turns are restored into the wake input of the same session. Needs a resolvable store address and bank (card fields `centralHistoryUrl`/`centralHistoryBankId`/`centralHistoryApiKey`, or `MYRMIDON_BOT_HINDSIGHT_API_URL`/`MYRMIDON_BOT_HINDSIGHT_BANK`/`HINDSIGHT_API_KEY`; the bank falls back to the card's `hindsight.bankId`) — a truthy flag without address or bank stays disabled. `1`/`true`/`yes`/`on` enables | Do not set, or `0`/`false`/`off`/`no`. Disabled = byte-identical vendor behavior: no requests, no restored block, no save. Per card instead of env: `adapterConfig.centralHistory: "0"` is not a kill switch for the env flag — clear the env instead. `adapterConfig.centralHistoryMaxTurns` (1–50, default 10) bounds how many turns are restored |
