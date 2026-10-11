@@ -191,9 +191,9 @@
       }
     },
     {
-      "id": "12-run-scoped-paperclip-skills",
+      "id": "13-run-scoped-paperclip-skills",
       "kind": "patch",
-      "patch": "docker/bot-runtime/patches/12-run-scoped-paperclip-skills.patch",
+      "patch": "docker/bot-runtime/patches/13-run-scoped-paperclip-skills.patch",
       "files": [
         "gateway/platforms/api_server_runs.py",
         "tools/environments/local.py",
