@@ -31,6 +31,7 @@ import {
   issueRecoveryActions,
   issueTreeHolds,
   issues,
+  myrmidonChannelAllowedUsers,
   principalPermissionGrants,
 } from "@paperclipai/db";
 import type { ChatProvider } from "@paperclipai/shared";
@@ -1572,6 +1573,263 @@ describeEmbeddedPostgres("Telegram direct messages become a standing Agent Chat 
         firstPost.mock.calls.some(([text]) => text.includes("link your Telegram account")),
       ).toBe(true),
     );
+  });
+
+  // myrmidon(CA-A): the channel allowlist — the owner's rule that who may
+  // write to the bots is a board setting keyed by channel identity (no board
+  // account required). These scenarios run the full inbound pipeline in
+  // "allowlist" mode: refuse-and-card for strangers, serve for admitted
+  // senders, handle matching, revoked rows, and the untouched vendor path
+  // while the mode is "sponsor".
+  describe("channel allowlist (CA-A)", () => {
+    async function setChannelAccessMode(mode: "sponsor" | "allowlist") {
+      if (mode === "sponsor") {
+        delete process.env.MYRMIDON_CHANNEL_ACCESS_MODE;
+        return;
+      }
+      process.env.MYRMIDON_CHANNEL_ACCESS_MODE = mode;
+    }
+
+    async function insertAllowedUser(input: {
+      companyId: string;
+      externalId: string;
+      handle?: string | null;
+      status?: "active" | "revoked";
+    }) {
+      await db.insert(myrmidonChannelAllowedUsers).values({
+        companyId: input.companyId,
+        provider: "telegram",
+        externalId: input.externalId,
+        handle: input.handle ?? null,
+        scope: "company",
+        status: input.status ?? "active",
+        addedBy: "owner-user",
+      });
+    }
+
+    async function accessCards(companyId: string, userId: string) {
+      return db
+        .select()
+        .from(issues)
+        .where(
+          and(
+            eq(issues.companyId, companyId),
+            like(issues.originId, `channel-access:telegram:${userId}:%`),
+          ),
+        )
+        .then((rows) => rows);
+    }
+
+    afterEach(async () => {
+      delete process.env.MYRMIDON_CHANNEL_ACCESS_MODE;
+      await db.delete(myrmidonChannelAllowedUsers);
+      // The stored toggle from the last scenario must not leak into the
+      // sibling X8b suites running on this same database.
+      await instanceSettingsService(db).updateGeneral({
+        channelSettings: { channel: { channelAccessMode: "sponsor" } },
+      });
+    });
+
+    it("serves the sponsor-mode guest exactly as before the change", async () => {
+      // Byte-for-byte vendor behavior when the mode is the default:
+      // the unlinked sender is served as a guest (the pre-CA-A path), and
+      // no access-request card is raised — nothing CA-A touches fires.
+      const fixture = await seedCompany();
+      const { callbacks, endpoint } = await configuredTelegramEndpoint(fixture);
+      const { post } = await sendTelegramDm({
+        callbacks,
+        endpointId: endpoint.id,
+        channelId: "700021",
+        text: "guest speaks",
+        userId: "700021",
+        messageId: 1,
+      });
+      // the endpoint's assigned agent's own DM thread is not this sender's
+      // thread; assert what CA-A must NOT do: no card, no refusal effect.
+      await vi.waitFor(async () => {
+        const cards = await accessCards(fixture.companyId, "700021");
+        expect(cards).toHaveLength(0);
+      });
+      const actions = await db
+        .select()
+        .from(chatActions)
+        .where(eq(chatActions.endpointId, endpoint.id));
+      expect(
+        actions.some((row) => row.providerActionId.startsWith("provider_effect:ca-")),
+      ).toBe(false);
+    });
+
+    it("refuses an unlinked unadmitted sender with one line and an access card to the owner", async () => {
+      const fixture = await seedCompany();
+      const { callbacks, endpoint } = await configuredTelegramEndpoint(fixture);
+      await setChannelAccessMode("allowlist");
+      const { post } = await sendTelegramDm({
+        callbacks,
+        endpointId: endpoint.id,
+        channelId: "700022",
+        text: "let me in",
+        userId: "700022",
+        messageId: 1,
+      });
+
+      await vi.waitFor(() =>
+        expect(
+          post.mock.calls.some(([text]) => String(text).includes("Доступ к этому боту не предоставлен")),
+        ).toBe(true),
+      );
+      // Not served: no conversation binding for this sender.
+      expect(await conversationRow(endpoint.id, "700022")).toBeNull();
+      // The X8b "workspace members" notice must not double-answer: exactly
+      // one CA-A refusal effect, zero X8b refusal effects for this endpoint.
+      const actions = await db
+        .select()
+        .from(chatActions)
+        .where(eq(chatActions.endpointId, endpoint.id));
+      expect(
+        actions.filter((row) => row.providerActionId.startsWith("provider_effect:ca-refusal:")),
+      ).toHaveLength(1);
+      expect(
+        actions.filter((row) => row.providerActionId.startsWith("provider_effect:x8-refusal:")),
+      ).toHaveLength(0);
+
+      // The owner gets the card, carrying the identity needed to admit.
+      const cards = await accessCards(fixture.companyId, "700022");
+      expect(cards).toHaveLength(1);
+      expect(cards[0]!.title).toContain("Запрос доступа");
+      expect(cards[0]!.description).toContain("700022");
+      expect(cards[0]!.responsibleUserId).toBe("owner-user");
+    });
+
+    it("raises one card per sender per UTC day under a message flood", async () => {
+      const fixture = await seedCompany();
+      const { callbacks, endpoint } = await configuredTelegramEndpoint(fixture);
+      await setChannelAccessMode("allowlist");
+      await sendTelegramDm({
+        callbacks, endpointId: endpoint.id, channelId: "700023",
+        text: "first", userId: "700023", messageId: 1,
+      });
+      await sendTelegramDm({
+        callbacks, endpointId: endpoint.id, channelId: "700023",
+        text: "second", userId: "700023", messageId: 2,
+      });
+      const cards = await accessCards(fixture.companyId, "700023");
+      expect(cards).toHaveLength(1);
+      const actions = await db
+        .select()
+        .from(chatActions)
+        .where(eq(chatActions.endpointId, endpoint.id));
+      expect(
+        actions.filter((row) => row.providerActionId.startsWith("provider_effect:ca-refusal:")),
+      ).toHaveLength(1);
+    });
+
+    it("serves an admitted sender without any board account", async () => {
+      const fixture = await seedCompany();
+      const { callbacks, endpoint } = await configuredTelegramEndpoint(fixture);
+      await setChannelAccessMode("allowlist");
+      await insertAllowedUser({ companyId: fixture.companyId, externalId: "700024" });
+      const { post } = await sendTelegramDm({
+        callbacks, endpointId: endpoint.id, channelId: "700024",
+        text: "hello admitted", userId: "700024", messageId: 1,
+      });
+      await vi.waitFor(async () => {
+        expect(await conversationRow(endpoint.id, "700024")).not.toBeNull();
+      });
+      const actions = await db
+        .select()
+        .from(chatActions)
+        .where(eq(chatActions.endpointId, endpoint.id));
+      expect(
+        actions.some((row) => row.providerActionId.startsWith("provider_effect:ca-")),
+      ).toBe(false);
+      expect(await accessCards(fixture.companyId, "700024")).toHaveLength(0);
+      void post;
+    });
+
+    it("admits by handle when the stored id does not match", async () => {
+      const fixture = await seedCompany();
+      const { callbacks, endpoint } = await configuredTelegramEndpoint(fixture);
+      await setChannelAccessMode("allowlist");
+      // sendTelegramDm's author carries userName "alex"; the row stores it
+      // with different case — the matcher is case- and @-insensitive.
+      await insertAllowedUser({ companyId: fixture.companyId, externalId: "999999", handle: "@Alex" });
+      await sendTelegramDm({
+        callbacks, endpointId: endpoint.id, channelId: "700025",
+        text: "by handle", userId: "700025", messageId: 1,
+      });
+      await vi.waitFor(async () => {
+        expect(await conversationRow(endpoint.id, "700025")).not.toBeNull();
+      });
+    });
+
+    it("returns a revoked row's sender to the refusal path", async () => {
+      const fixture = await seedCompany();
+      const { callbacks, endpoint } = await configuredTelegramEndpoint(fixture);
+      await setChannelAccessMode("allowlist");
+      await insertAllowedUser({ companyId: fixture.companyId, externalId: "700026" });
+      await sendTelegramDm({
+        callbacks, endpointId: endpoint.id, channelId: "700026",
+        text: "served while active", userId: "700026", messageId: 1,
+      });
+      await vi.waitFor(async () => {
+        expect(await conversationRow(endpoint.id, "700026")).not.toBeNull();
+      });
+      await db
+        .update(myrmidonChannelAllowedUsers)
+        .set({ status: "revoked", updatedAt: new Date() });
+      await sendTelegramDm({
+        callbacks, endpointId: endpoint.id, channelId: "700026",
+        text: "after revoke", userId: "700026", messageId: 2,
+      });
+      const cards = await accessCards(fixture.companyId, "700026");
+      expect(cards).toHaveLength(1);
+    });
+
+    it("leaves a linked board member on the vendor path untouched", async () => {
+      const fixture = await seedCompany();
+      const { callbacks, endpoint } = await configuredTelegramEndpoint(fixture);
+      await setChannelAccessMode("allowlist");
+      await linkTelegramPrincipal({
+        companyId: fixture.companyId,
+        endpointId: endpoint.id,
+        userId: "700027",
+        boardUserId: "owner-user",
+      });
+      await sendTelegramDm({
+        callbacks, endpointId: endpoint.id, channelId: "700027",
+        text: "member speaks", userId: "700027", messageId: 1,
+      });
+      await vi.waitFor(async () => {
+        const [conversation] = await db
+          .select()
+          .from(chatConversations)
+          .where(
+            and(
+              eq(chatConversations.endpointId, endpoint.id),
+              eq(chatConversations.externalConversationId, "700027"),
+            ),
+          )
+          .then((rows) => rows);
+        expect(conversation).toBeDefined();
+      });
+      // the standing bridge conversation is owned by the linked board user
+      expect(telegramConversationUserId("owner-user")).toContain("telegram:");
+      expect(await accessCards(fixture.companyId, "700027")).toHaveLength(0);
+    });
+
+    it("the stored settings document switches the mode without a restart", async () => {
+      const fixture = await seedCompany();
+      const { callbacks, endpoint } = await configuredTelegramEndpoint(fixture);
+      await instanceSettingsService(db).updateGeneral({
+        channelSettings: { channel: { channelAccessMode: "allowlist" } },
+      });
+      await sendTelegramDm({
+        callbacks, endpointId: endpoint.id, channelId: "700028",
+        text: "stored toggle", userId: "700028", messageId: 1,
+      });
+      const cards = await accessCards(fixture.companyId, "700028");
+      expect(cards).toHaveLength(1);
+    });
   });
 
   it("keeps a bridged conversation active across a literal /new comment and resumes any hold", async () => {
