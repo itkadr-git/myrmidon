@@ -69,6 +69,7 @@ export function createCasteService(deps: CasteServiceDeps) {
       swarmEligible: row.swarmEligible,
       maxActiveTasks: row.maxActiveTasks,
       builtIn: row.builtIn,
+      sensitive: row.sensitive,
       createdAt: row.createdAt.toISOString(),
       updatedAt: row.updatedAt.toISOString(),
     };
@@ -106,6 +107,7 @@ export function createCasteService(deps: CasteServiceDeps) {
       defaultModel: input.body.defaultModel ?? null,
       swarmEligible: input.body.swarmEligible ?? true,
       maxActiveTasks: input.body.maxActiveTasks ?? null,
+      sensitive: input.body.sensitive ?? false,
       builtIn: false,
     });
     await input.activity?.({
@@ -149,6 +151,7 @@ export function createCasteService(deps: CasteServiceDeps) {
     if (input.body.maxActiveTasks !== undefined) {
       patch.maxActiveTasks = input.body.maxActiveTasks;
     }
+    if (input.body.sensitive !== undefined) patch.sensitive = input.body.sensitive;
     if (Object.keys(patch).length === 0) {
       throw badRequest("no mutable fields in the patch", { code: "caste_patch_empty" });
     }
