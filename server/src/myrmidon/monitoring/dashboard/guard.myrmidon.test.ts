@@ -5,7 +5,7 @@
 // red when the module is missing or the entry point lost its wiring — cutting
 // the module removes the import, and this file then fails to resolve it.
 
-import { readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
@@ -41,16 +41,17 @@ describe("monitoring dashboard wiring guard", () => {
     expect(MONITORING_SETTINGS_GENERAL_KEY).toBe("myrmidonMonitoringDashboard");
   });
 
-  it("the monitoring settings keys are documented in SETTINGS.md (via the change fragment)", () => {
-    // The shared SETTINGS.md is only folded at release cut; the fragment of
-    // this branch carries the entries and the collect check enforces them.
-    // Fragment file names use dashes for the version parts (convention:
-    // myr-<ver>-<slug>.md) — scan the changes dir by marker instead of
-    // hardcoding one file name.
+  it("the monitoring settings keys are documented in SETTINGS.md (or an open change fragment)", () => {
+    // Between release cuts the entries live in a per-PR change fragment; the
+    // cut folds them into SETTINGS.md and deletes the fragments. Either place
+    // counts; the fragments directory may be empty or missing after a cut.
+    const key = "myrmidonMonitoringDashboard";
     const changesDir = fileURLToPath(new URL("../../../../../docs/myrmidon/changes/", import.meta.url));
-    const documented = readdirSync(changesDir, { withFileTypes: true })
-      .filter((entry) => entry.isFile() && entry.name.endsWith(".md") && entry.name.toLowerCase() !== "readme.md")
-      .some((entry) => readFileSync(join(changesDir, entry.name), "utf8").includes("myrmidonMonitoringDashboard"));
-    expect(documented).toBe(true);
+    const inSettings = readFileSync(SETTINGS_MD, "utf8").includes(key);
+    const inFragment = existsSync(changesDir)
+      && readdirSync(changesDir, { withFileTypes: true })
+        .filter((entry) => entry.isFile() && entry.name.endsWith(".md") && entry.name.toLowerCase() !== "readme.md")
+        .some((entry) => readFileSync(join(changesDir, entry.name), "utf8").includes(key));
+    expect(inSettings || inFragment).toBe(true);
   });
 });
