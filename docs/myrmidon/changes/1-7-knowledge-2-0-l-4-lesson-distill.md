@@ -69,14 +69,18 @@ divergence-section: KNOWLEDGE-2.0 — единый модуль знаний
   одно упоминание не даёт ничего; повтор вне окна не считается; второй проход
   обновляет, а не дублирует.
 
-## settings-en-append
+## settings-en-new
 
-<!-- section: 1.7 — KNOWLEDGE-2.0 L-4 (hindsight lesson distillation sweep) -->
+<!-- after: 1.6.3 — PROMPT-BUDGET C: prompt-budget advice and deep analysis -->
+
+### 1.7 — KNOWLEDGE-2.0 L-4 (hindsight lesson distillation sweep)
 
 The lesson distill sweep is a background worker of the knowledge module: once per hour it walks the active companies, reads the lessons their agents retained in hindsight over the last 24 hours, and turns every lesson repeated ≥ 2 times into one pending knowledge suggestion marked `[lesson-distill:regulation_candidate]` (sourceKind `run`, evidence in the rationale; the curator decides the rest). The sweep is off by default — `MYRMIDON_LESSON_DISTILL_ENABLED=1` enables it. `MYRMIDON_LESSON_DISTILL_PERIOD_MINUTES` (default 60), `MYRMIDON_LESSON_DISTILL_WINDOW_HOURS` (default 24) and `MYRMIDON_LESSON_DISTILL_REPEAT_THRESHOLD` (default 2) tune the pass; the memory service address comes from `MYRMIDON_MEMORY_BASE_URL` / `MYRMIDON_MEMORY_API_KEY` or the stored memory card settings.
 
-## settings-ru-append
+## settings-ru-new
 
-<!-- section: 1.7 — KNOWLEDGE-2.0 L-4 (обход дистилляции уроков hindsight) -->
+<!-- after: 1.6.3 — PROMPT-BUDGET C: рекомендации по оптимизации промпта и глубокий разбор -->
+
+### 1.7 — KNOWLEDGE-2.0 L-4 (обход дистилляции уроков hindsight)
 
 Обход дистилляции уроков — фоновый воркер модуля знаний: раз в час он проходит активные компании, читает уроки, которые их агенты удержали в hindsight за последние 24 часа, и каждый урок с ≥ 2 повторами превращает в одно pending-предложение знаний с меткой `[lesson-distill:regulation_candidate]` (sourceKind `run`, доказательства в rationale; дальше решает куратор). Обход выключен по умолчанию — включает `MYRMIDON_LESSON_DISTILL_ENABLED=1`. Настройки прохода: `MYRMIDON_LESSON_DISTILL_PERIOD_MINUTES` (по умолчанию 60), `MYRMIDON_LESSON_DISTILL_WINDOW_HOURS` (24) и `MYRMIDON_LESSON_DISTILL_REPEAT_THRESHOLD` (2); адрес сервиса памяти — `MYRMIDON_MEMORY_BASE_URL` / `MYRMIDON_MEMORY_API_KEY` либо сохранённые настройки карточки памяти.
