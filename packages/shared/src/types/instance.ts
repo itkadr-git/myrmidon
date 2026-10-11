@@ -9,7 +9,9 @@ import type { RunStallValues } from "../myrmidon-run-stall.js";
 import type { StoredBoardProcessesSettings } from "../myrmidon-board-processes.js";
 // myrmidon(1.6.6 CORPUS-2.0 ч.C): the knowledge-corpus module settings of the same row
 import type { StoredCorpusSettings } from "../myrmidon-corpus.js";
+import type { ProcessesSettings } from "../myrmidon-processes.js";
 import type { HostDiskSettings } from "../myrmidon-host-disk.js";
+import type { AlertRecoverySettings } from "../myrmidon-alert-recovery.js";
 // myrmidon(BOT-DISK-A): the bot draft-directory lifecycle stored in instance settings
 import type { StoredBotDiskSettings } from "../myrmidon-bot-disk.js";
 // myrmidon(1.6.1-BOT-DISK-C): per-bot disk quota of its own general settings key.
