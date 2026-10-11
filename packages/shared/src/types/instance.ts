@@ -9,10 +9,7 @@ import type { RunStallValues } from "../myrmidon-run-stall.js";
 import type { StoredBoardProcessesSettings } from "../myrmidon-board-processes.js";
 // myrmidon(1.6.6 CORPUS-2.0 ч.C): the knowledge-corpus module settings of the same row
 import type { StoredCorpusSettings } from "../myrmidon-corpus.js";
-// myrmidon(PROCS-1.1): the board's process settings, see myrmidon-processes.ts.
-import type { ProcessesSettings } from "../myrmidon-processes.js";
 import type { HostDiskSettings } from "../myrmidon-host-disk.js";
-import type { AlertRecoverySettings } from "../myrmidon-alert-recovery.js";
 // myrmidon(BOT-DISK-A): the bot draft-directory lifecycle stored in instance settings
 import type { StoredBotDiskSettings } from "../myrmidon-bot-disk.js";
 // myrmidon(1.6.1-BOT-DISK-C): per-bot disk quota of its own general settings key.
@@ -115,15 +112,10 @@ export interface InstanceGeneralSettings {
   attentionFailedRunHorizonDays?: number;
   attentionFeedCacheTtlSeconds?: number;
   /**
-   * myrmidon(1.6.6 PROCS-J): the counts of the board's process composition —
-   * how many HTTP processes (`api`) and scheduler processes (`worker`) the
-   * deployment asks for, read once at startup. An unusable row stops the board
-   * with a precise error instead of a guessed composition; absent means the
-   * default { api: 1, worker: 0 } = today's single process. Kept in sync with
-   * the validator of the same field
-   * (packages/shared/src/validators/instance.ts).
+   * myrmidon(PROCS-1.1): the board's process settings, stored under
+   * `instance_settings.general.processes`.
    */
-  processes?: StoredBoardProcessesSettings;
+  processes?: ProcessesSettings;
   /**
    * myrmidon(BOT-DISK-A): the bot draft-directory lifecycle, changed from
    * `GET`/`PATCH /api/myrmidon/bot-disk`. Absent means "use the environment
@@ -166,9 +158,6 @@ export interface InstanceGeneralSettings {
    * 1.6.5 RUN-ADMISSION).
    */
   runLimits?: StoredRunLimits;
-  // myrmidon(PROCS-1.1): the board's process settings (design OPE-5394 §7.2),
-  // stored under the same key the instance-settings validator carries.
-  processes?: ProcessesSettings;
   /**
    * myrmidon(RUN-STALL-SETTINGS): the run stall detection settings, changed
    * from the instance settings page and `GET`/`PATCH /api/myrmidon/run-stall`.
