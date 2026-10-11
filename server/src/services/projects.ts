@@ -29,6 +29,7 @@ import {
   type PluginManagedProjectResolution,
 } from "@paperclipai/shared";
 import { unprocessable } from "../errors.js";
+import { createCasteStore } from "../myrmidon/castes/store.js"; // myrmidon(PROJECT-DEFAULT-CASTE)
 import { listCurrentRuntimeServicesForProjectWorkspaces } from "./workspace-runtime-read-model.js";
 import { parseProjectExecutionWorkspacePolicy } from "./execution-workspace-policy.js";
 import { mergeProjectWorkspaceRuntimeConfig, readProjectWorkspaceRuntimeConfig } from "./project-workspace-runtime-config.js";
@@ -567,11 +568,21 @@ async function ensureSinglePrimaryWorkspace(
 }
 
 export function projectService(db: Db) {
+  // myrmidon(PROJECT-DEFAULT-CASTE): validate against the project's company directory.
+  const castes = createCasteStore({ db });
+  async function assertDefaultCaste(companyId: string, key: string | null | undefined) {
+    if (key == null) return;
+    await castes.seedIfMissing(companyId);
+    if (!(await castes.findCaste(companyId, key))) {
+      throw unprocessable("Unknown project default caste", { code: "project_default_caste_unknown" });
+    }
+  }
   const createProject = async (
     companyId: string,
     data: Omit<typeof projects.$inferInsert, "companyId"> & { goalIds?: string[] },
   ): Promise<ProjectWithGoals> => {
     const { goalIds: inputGoalIds, ...projectData } = data;
+    await assertDefaultCaste(companyId, projectData.defaultCasteKey); // myrmidon(PROJECT-DEFAULT-CASTE)
     const ids = resolveGoalIds({ goalIds: inputGoalIds, goalId: projectData.goalId });
     if (ids && ids.length > 0) await assertGoalsBelongToCompany(db, companyId, ids);
 
@@ -871,6 +882,7 @@ export function projectService(db: Db) {
         .where(eq(projects.id, id))
         .then((rows) => rows[0] ?? null);
       if (!existingProject) return null;
+      await assertDefaultCaste(existingProject.companyId, projectData.defaultCasteKey); // myrmidon(PROJECT-DEFAULT-CASTE)
       if (ids && ids.length > 0) {
         await assertGoalsBelongToCompany(db, existingProject.companyId, ids);
       }
