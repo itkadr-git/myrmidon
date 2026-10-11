@@ -173,6 +173,7 @@ describeDb("leader-lease protocol (PROCS-1.7)", () => {
     expect(la.isLeader()).toBe(false);
     expect(lostSignal).not.toBeNull();
     expect(lostSignal!.aborted).toBe(true);
+    expect(lostSignal!.reason).toBe("renew-failed");
   });
 });
 

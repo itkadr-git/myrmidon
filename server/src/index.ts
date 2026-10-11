@@ -2398,7 +2398,13 @@ async function startServerWithDatabaseTeardown(
       backupDir: config.databaseBackupDir,
       intervalMinutes: config.databaseBackupIntervalMinutes,
       isInFlight: () => databaseBackupInFlight,
-      runBackup: () => runServerDatabaseBackup("scheduled"),
+      runBackup: () => {
+        // myrmidon(PROCS-1.7): catch-up passes use the same leader gate as the
+        // regular backup interval; otherwise an api process could run the
+        // startup catch-up before the first interval callback checks the lease.
+        if (!leaderLeaseManager.isLeader("backup")) return Promise.resolve();
+        return runServerDatabaseBackup("scheduled");
+      },
       logger,
     });
   }
