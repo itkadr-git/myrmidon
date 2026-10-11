@@ -75,7 +75,32 @@ async function tickCompany(db: Db, companyId: string, ports: ScentQueuePorts): P
   const secretName = env[SCENT_KEY_SECRET_ENV]?.trim() || "MYRMIDON_EVALS_API_KEY";
   const resolve = ports.resolveSecret ?? defaultResolveSecret;
   const apiKey = await resolve(db, companyId, secretName);
-  if (!baseUrl || !apiKey) return; // contour not configured — nothing to do
+  if (!baseUrl || !apiKey) {
+    // OPE-7190: a parked queue must not be silent. Without this entry the
+    // acceptance SQL (activity_log by action) cannot distinguish "classifier
+    // off" from "classifier broken" — the exact blindness that hid the 1.6.5
+    // contour gap for a day. Throttled to one entry per company per hour.
+    const seen = await db.execute(sql`
+      select count(*)::int as n
+      from activity_log
+      where action = 'swarm.scent_contour_unconfigured'
+        and company_id = ${companyId}
+        and created_at > now() - interval '1 hour'
+    `);
+    const recent = Number((seen as unknown as Array<{ n: number }>)[0]?.n ?? 0);
+    if (recent === 0) {
+      await logActivity(db, {
+        companyId,
+        actorType: "system",
+        actorId: "system",
+        action: "swarm.scent_contour_unconfigured",
+        entityType: "company",
+        entityId: companyId,
+        details: { baseUrlConfigured: Boolean(baseUrl), keyConfigured: Boolean(apiKey) },
+      }).catch(() => undefined);
+    }
+    return;
+  }
 
   const castes = await createCasteStore({ db }).listCastes(companyId);
   const casteKeys = castes.map((c: { key: string }) => c.key);

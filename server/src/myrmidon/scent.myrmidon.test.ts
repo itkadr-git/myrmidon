@@ -20,7 +20,7 @@
 //     on the next tick;
 //  8. the settings reader: defaults, stored override, env kill switch.
 
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PgDialect } from "drizzle-orm/pg-core";
 import {
   DEFAULT_SCENT_SETTINGS,
@@ -477,5 +477,63 @@ describe("startScentQueue: no re-entrant ticks", () => {
     stop();
     await vi.advanceTimersByTimeAsync(SCENT_QUEUE_TICK_MS * 3);
     expect(started).toBe(2);
+  });
+});
+
+// --- OPE-7190: a parked queue must journal why it parks -------------------------
+
+// Hoisted by vitest regardless of position. The queue module imports
+// logActivity directly, so the journal is asserted through the mock.
+const unconfiguredJournal = vi.hoisted(() => vi.fn(async () => undefined));
+vi.mock("../../services/activity-log.js", () => ({
+  logActivity: (...args: unknown[]) => unconfiguredJournal(...(args as [never])),
+}));
+vi.mock("../../services/instance-settings.js", () => ({
+  instanceSettingsService: () => ({
+    getGeneral: async () => ({}), // no stored swarm section → schema defaults, enabled=true
+  }),
+}));
+
+describe("scent queue: unconfigured contour is visible in the activity log", () => {
+  beforeEach(() => {
+    // A contour configured via env would skip the park gate entirely and
+    // crash the stub db deeper in the tick — force the empty-contour world.
+    delete process.env.MYRMIDON_SCENT_BASE_URL;
+    delete process.env.MYRMIDON_EVALS_BASE_URL;
+  });
+
+  it("journals swarm.scent_contour_unconfigured when the contour is empty", async () => {
+    // The scenario of the 1.6.5 acceptance: enabled=true, a pending backlog,
+    // and a completely empty contour (no base URL, no key). The queue parked
+    // silently for a day; the journal entry is the fix's observable.
+    unconfiguredJournal.mockClear();
+    const db = {
+      execute: () => Promise.resolve([{ n: 0 }]), // no entry in the last hour → write one
+    };
+    delete process.env.MYRMIDON_SCENT_BASE_URL;
+    delete process.env.MYRMIDON_EVALS_BASE_URL;
+    await runScentQueueTick(db as never, {
+      listCompanyIds: async () => ["c1"],
+      resolveSecret: async () => null, // no company secret, no env fallback
+    });
+    expect(unconfiguredJournal).toHaveBeenCalledTimes(1);
+    const entry = unconfiguredJournal.mock.calls[0][0] as {
+      action: string;
+      details: Record<string, unknown>;
+    };
+    expect(entry.action).toBe("swarm.scent_contour_unconfigured");
+    expect(entry.details).toEqual({ baseUrlConfigured: false, keyConfigured: false });
+  });
+
+  it("stays silent when an entry already exists within the hour (throttle)", async () => {
+    unconfiguredJournal.mockClear();
+    const db = {
+      execute: () => Promise.resolve([{ n: 1 }]), // already journaled in the last hour
+    };
+    await runScentQueueTick(db as never, {
+      listCompanyIds: async () => ["c1"],
+      resolveSecret: async () => null,
+    });
+    expect(unconfiguredJournal).not.toHaveBeenCalled();
   });
 });
