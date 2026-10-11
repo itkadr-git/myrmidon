@@ -107,6 +107,20 @@ vi.mock("./pages/Costs.production", () => ({
   },
 }));
 
+vi.mock("./pages/SwarmSupervisor.production", () => ({
+  SwarmSupervisor: () => {
+    const location = useLocation();
+    return <div>{`SWARM_SUPERVISOR@${location.pathname}`}</div>;
+  },
+}));
+
+vi.mock("./pages/Foraging", () => ({
+  Foraging: () => {
+    const location = useLocation();
+    return <div>{`FORAGING@${location.pathname}`}</div>;
+  },
+}));
+
 vi.mock("./pages/NotFound", () => ({
   NotFoundPage: ({ scope }: { scope: string }) => <div>{`NOT_FOUND:${scope}`}</div>,
 }));
@@ -190,6 +204,18 @@ describe("App Activity routing (PAP-16302)", () => {
     const root = renderAppAt(container, "/PAP/activity");
     await waitForRoute(container, "ACTIVITY_PAGE@/PAP/activity");
     expect(container.textContent).not.toContain("No organization matches prefix");
+    flushSync(() => root.unmount());
+  });
+
+  it.each([
+    ["/swarm-claim", "SWARM_SUPERVISOR@/PAP/swarm-claim"],
+    ["/foraging", "FORAGING@/PAP/foraging"],
+  ])("redirects the unprefixed Myrmidon route %s to the selected company", async (path: string, expected: string) => {
+    // These pages live in the production surface (Streamlined UI off), where the sidebar shows them.
+    streamlinedUiState.enabled = false;
+    const root = renderAppAt(container, path);
+    await waitForRoute(container, expected);
+    expect(container.textContent).not.toContain("NOT_FOUND");
     flushSync(() => root.unmount());
   });
 
