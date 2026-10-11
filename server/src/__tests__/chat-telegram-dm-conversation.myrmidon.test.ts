@@ -1827,8 +1827,9 @@ describeEmbeddedPostgres("Telegram direct messages become a standing Agent Chat 
         callbacks, endpointId: endpoint.id, channelId: "700028",
         text: "stored toggle", userId: "700028", messageId: 1,
       });
-      const cards = await accessCards(fixture.companyId, "700028");
-      expect(cards).toHaveLength(1);
+      await vi.waitFor(async () => {
+        expect(await accessCards(fixture.companyId, "700028")).toHaveLength(1);
+      });
     });
   });
 
