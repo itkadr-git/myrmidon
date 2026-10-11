@@ -1,4 +1,4 @@
-# Open issue project backfill
+## Summary
 
 This tool is a snapshot-based, read-only planner. It never connects to Paperclip or changes issue records; production application remains an operator/release action after review and CI.
 
