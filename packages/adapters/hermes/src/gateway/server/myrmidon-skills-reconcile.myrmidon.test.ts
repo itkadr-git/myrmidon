@@ -1,3 +1,6 @@
+import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { describe, expect, it, vi, afterEach } from "vitest";
 import {
   buildPaperclipSkillsField,
@@ -254,5 +257,43 @@ describe("buildPaperclipSkillsField", () => {
 
   it("exposes the field name the run body must carry", () => {
     expect(PAPERCLIP_SKILLS_FIELD).toBe("paperclip_skills");
+  });
+});
+
+describe("reconcileGatewayPaperclipSkills with the default file reader (real wire shape)", () => {
+  it("reads SKILL.md as a utf8 string so the JSON run body carries content as a string", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "skills-wire-"));
+    try {
+      const source = path.join(dir, "bbq-content-plan");
+      await mkdir(source, { recursive: true });
+      const markdown = "---\nname: bbq-content-plan\n---\nКонтент-план: проверка кириллицы\n";
+      await writeFile(path.join(source, "SKILL.md"), markdown, "utf8");
+      const name = "bbq-content-plan--385deb2632";
+      const config = skillConfig(
+        [skillEntry("local/a945e2422a/bbq-content-plan", name, source)],
+        ["local/a945e2422a/bbq-content-plan"],
+      );
+      // No readFile override: this is the production reader.
+      const result = await reconcileGatewayPaperclipSkills(config, { moduleDir: MODULE_DIR });
+      const field = buildPaperclipSkillsField(result)!;
+      expect(typeof field[0].content).toBe("string");
+      // What the receiver (tools/run_skills.py) sees after the JSON hop.
+      const wire = JSON.parse(JSON.stringify({ paperclip_skills: field }));
+      expect(wire.paperclip_skills).toEqual([{ path: name, name, content: markdown }]);
+      expect(() =>
+        factCheckGatewayPaperclipSkills({ skills: field, desiredEntries: result!.desiredEntries }),
+      ).not.toThrow();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("fact-check rejects an entry whose content is not a string (a Buffer would serialize to an object)", () => {
+    const skills = [
+      { path: "a--1", name: "a--1", content: Buffer.from("x") as unknown as string },
+    ];
+    expect(() =>
+      factCheckGatewayPaperclipSkills({ skills, desiredEntries: [{ key: "k", name: "a--1" }] }),
+    ).toThrow(/content is not a non-empty string/);
   });
 });
