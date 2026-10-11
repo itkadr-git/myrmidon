@@ -36,11 +36,15 @@ describe("metrics self-check probe", () => {
     // (1.6.5-PROCS-Q3 five process families, the event-loop utilization of
     // PROCS-0.1 as the sixth, the two PROCS-0.3A lane families as the seventh
     // and eighth) are likewise not DB reads — they survive a broken
-    // database too.
-    expect(result.families_ok).toBe(1 + 8);
+    // database too, and so does a ninth family: the bridge fallback counters of
+    // myrmidon(1.6.6-CH-CONNECTOR-G), which read the in-process registry of the
+    // seam (design OPE-6985) instead of the database.
+    expect(result.families_ok).toBe(1 + 9);
     const expectedFailed = METRIC_FAMILIES.filter(
       (family) =>
-        family !== "myrmidon_scrape_errors" && !family.startsWith("myrmidon_board_"),
+        family !== "myrmidon_scrape_errors" &&
+        family !== "myrmidon_adapter_fallback_total" &&
+        !family.startsWith("myrmidon_board_"),
     ).sort();
     expect(result.families_failed.sort()).toEqual(expectedFailed);
     expect(result.checked_at).toBe(NOW.toISOString());

@@ -42,6 +42,11 @@ import {
   type BoardLaneMetricsSource,
   type BoardLaneSample,
 } from "../board-load/lanes.js";
+import {
+  resolveChannelBridgeFallbackSource,
+  type ChannelBridgeFallbackSample,
+  type ChannelBridgeFallbackSource,
+} from "../../channel-connectors/bridge/fallback-counters.js";
 
 /** Content type of the Prometheus text exposition format, version 0.0.4. */
 export const METRICS_CONTENT_TYPE = "text/plain; version=0.0.4; charset=utf-8";
@@ -91,6 +96,10 @@ export const METRIC_FAMILIES = [
   // spends the CPU and issues the DB statements (design OPE-5394 §1 П2).
   "myrmidon_board_db_queries_total",
   "myrmidon_board_lane_busy_seconds_total",
+  // myrmidon(1.6.6-CH-CONNECTOR-G): the fallback chain of the bridge seam — how
+  // often the channel adapter did not answer and the direct path took the call
+  // back, per reason (design OPE-6985).
+  "myrmidon_adapter_fallback_total",
 ] as const;
 
 export type MetricFamily = (typeof METRIC_FAMILIES)[number];
@@ -134,6 +143,13 @@ export interface MetricsSnapshotFields {
    * the two families exist even before the first lane ran.
    */
   lanes?: BoardLaneSample[] | null;
+  /**
+   * myrmidon(1.6.6-CH-CONNECTOR-G): the bridge fallback counters of this
+   * process, read from the in-process registry (no DB). null renders HELP/TYPE
+   * with no samples; a present sample renders every known reason, zeros
+   * included, so a missing series can only mean an unwired counter.
+   */
+  adapterFallbacks?: ChannelBridgeFallbackSample[] | null;
 }
 
 /** The fields plus the scrape bookkeeping rendered into the exposition text. */
@@ -169,6 +185,12 @@ export interface MetricsCollectorDeps {
    * so no test ever depends on another test's counters.
    */
   laneMetrics?: BoardLaneMetricsSource | null;
+  /**
+   * myrmidon(1.6.6-CH-CONNECTOR-G): where the bridge fallback counters come
+   * from. Production reads the in-process registry of the seam; tests inject a
+   * fake, so no test depends on another test's fallbacks.
+   */
+  adapterFallbacks?: ChannelBridgeFallbackSource | null;
 }
 
 /** Reads the run counters — one grouped query, whole instance. */
@@ -396,6 +418,14 @@ export async function collectMetricsParts(deps: MetricsCollectorDeps): Promise<M
     () => Promise.resolve().then(resolveLaneMetricsSource(deps.laneMetrics)),
     null as BoardLaneSample[] | null,
   );
+  // myrmidon(1.6.6-CH-CONNECTOR-G): the fallback counters of the bridge seam
+  // ride the same guarded scrape. The registry cannot throw; the guard is here
+  // for the seam, the way it is for the lanes.
+  const fallbackSample = await guarded(
+    "myrmidon_adapter_fallback_total",
+    () => Promise.resolve().then(resolveChannelBridgeFallbackSource(deps.adapterFallbacks)),
+    null as ChannelBridgeFallbackSample[] | null,
+  );
 
   return {
     fields: {
@@ -412,6 +442,7 @@ export async function collectMetricsParts(deps: MetricsCollectorDeps): Promise<M
       llmCostCentsWindow: costWindow,
       process: processSample,
       lanes: laneSample,
+      adapterFallbacks: fallbackSample,
     },
     errors,
     now,
@@ -717,6 +748,25 @@ export function renderMetricsText(snapshot: MetricsSnapshot): string {
         ? lanes.map(
             (row) =>
               `myrmidon_board_lane_busy_seconds_total{lane="${escapeLabelValue(row.lane)}"} ${formatSampleValue(row.busyMs / 1000)}`,
+          )
+        : [],
+    ),
+  );
+
+  // myrmidon(1.6.6-CH-CONNECTOR-G): the fallback chain of the bridge seam. Both
+  // reasons render even at zero — "the adapter never fell back" is exactly what
+  // an operator looks for after a rollout, and a missing series would hide an
+  // unwired counter instead of reporting it.
+  const fallbacks = snapshot.adapterFallbacks ?? null;
+  blocks.push(
+    familyBlock(
+      "myrmidon_adapter_fallback_total",
+      "Bridge adapter calls that did not answer and were served by the direct path instead, per reason, cumulative since boot.",
+      "counter",
+      fallbacks
+        ? fallbacks.map(
+            (row) =>
+              `myrmidon_adapter_fallback_total{reason="${escapeLabelValue(row.reason)}"} ${formatSampleValue(row.count)}`,
           )
         : [],
     ),

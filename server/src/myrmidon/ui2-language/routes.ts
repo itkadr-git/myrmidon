@@ -19,7 +19,8 @@ import { getActorInfo } from "../../routes/authz.js";
 // myrmidon(1.7-TG-LOCALE): the Settings → Language screen shows the source of
 // the effective value, including the instance-wide env force on the Telegram
 // bridge's language (null when unset).
-import { forcedBridgeLocale } from "../agent-chat-bridge/locales/index.js";
+// myrmidon(1.6.6 CH-CONNECTOR-D): the bridge locale is read through the seam.
+import { forcedBridgeLocale } from "../channel-connectors/bridge/locales.js";
 import {
   createUi2LanguageService,
   ui2LanguageAuditEntries,
