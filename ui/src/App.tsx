@@ -853,6 +853,7 @@ export function App() {
           <Route path="audit" element={<UnprefixedBoardRedirect />} />
           <Route path="swarm-claim" element={<UnprefixedBoardRedirect />} />
           <Route path="foraging" element={<UnprefixedBoardRedirect />} />
+          <Route path="stack" element={<UnprefixedBoardRedirect />} />
           {streamlinedUiEnabled ? (
             <>
               <Route path="audit/*" element={<UnprefixedBoardRedirect />} />

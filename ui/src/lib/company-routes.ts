@@ -37,6 +37,7 @@ const BOARD_ROUTE_ROOTS = new Set([
   "status",
   "cases",
   "pipelines",
+  "stack",
 ]);
 
 const GLOBAL_ROUTE_ROOTS = new Set(["auth", "invite", "board-claim", "cli-auth", "docs", "instance"]);

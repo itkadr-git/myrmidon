@@ -7,7 +7,7 @@ import {
 } from "./company-routes";
 
 describe("company routes", () => {
-  it.each(["swarm-claim", "foraging", "quality", "status", "cases", "pipelines"])(
+  it.each(["swarm-claim", "foraging", "quality", "status", "cases", "pipelines", "stack"])(
     "scopes the Myrmidon %s menu route to the current company",
     (root) => {
       const path = `/${root}?view=all#details`;
