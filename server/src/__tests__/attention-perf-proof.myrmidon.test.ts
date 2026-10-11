@@ -26,6 +26,14 @@ import { listAttentionExhaustedRuns } from "../services/attention-exhausted-runs
 // in attention.ts), then times attentionService.list() N times and fails when
 // p95 >= 2000 ms.
 //
+// Part A (ATTENTION-WINDOW-CACHE, #788) semantics this harness now mirrors:
+// the failed-run window is clamped to a fixed horizon
+// (instance_settings.general.attentionFailedRunHorizonDays, default 7 d) —
+// created_at > greatest(oldestFailedRunCreatedAt, now - horizon) — and the
+// built feed is cached per company for attentionFeedCacheTtlSeconds (default
+// 45 s). The first timed list() is the cold build, the rest hit the cache; the
+// gate below pins BOTH the cold build and p95 under the 2 s criterion.
+//
 // Env gate (same shape as docker/bot-runtime/g4-contract-check.sh +
 // g4-contract.myrmidon.test.mjs): the static wiring checks below ALWAYS run,
 // the live benchmark runs only when ATTENTION_PERF_CHECK=1, so plain CI and
@@ -35,6 +43,7 @@ import { listAttentionExhaustedRuns } from "../services/attention-exhausted-runs
 //   ATTENTION_PERF_VOLUME=100000                    seeded heartbeat_runs rows
 //   ATTENTION_PERF_SAMPLES=15                       timed list() calls
 //   ATTENTION_PERF_WINDOW_DAYS=30                   age of the oldest unresolved failed run
+//   ATTENTION_PERF_HORIZON_DAYS=7                   failed-run horizon clamp (part A default)
 //   ATTENTION_PERF_REPORT_DIR=/tmp                  write <dir>/attention-plans.txt / attention-perf.json
 
 const perfEnabled = process.env.ATTENTION_PERF_CHECK === "1";
@@ -100,7 +109,11 @@ describe("attention perf proof (static wiring)", () => {
     expect(exhaustedRuns).toMatch(/like 'Bounded retry exhausted%'/);
     expect(exhaustedRuns).toMatch(/jsonb_build_object\(/);
     expect(attentionSource).toMatch(/oldestFailedRunCreatedAt/);
-    expect(attentionSource).toMatch(/gt\(heartbeatRuns\.createdAt, oldestFailedRunCreatedAt\)/);
+    // part A window clamp: greatest(oldestFailedRunCreatedAt, now - horizon)
+    expect(attentionSource).toMatch(/failedRunCreatedAtAfter > oldestFailedRunCreatedAt/);
+    expect(attentionSource).toMatch(/failedRunHorizonDays/);
+    // part A per-company feed cache knobs
+    expect(attentionSource).toMatch(/feedCacheTtlMs/);
     expect(attentionSource).toMatch(/->> 'issueId'/);
   });
 
@@ -147,8 +160,10 @@ describeLive("attention perf proof (live, seeded production-volume load)", () =>
     // Seed ~`volume` heartbeat_runs spread over the last `windowDays` days.
     // ~0.6 % of rows are failed/timed_out, with the OLDEST failed run pinned at
     // the start of the window: this reproduces the production symptom from
-    // OPE-5269 — the newest unresolved failure is old, so the newerRuns window
-    // (created_at > oldestFailedRunCreatedAt) spans the whole table.
+    // OPE-5269 — the newest unresolved failure is old. WITHOUT part A the
+    // newerRuns window (created_at > oldestFailedRunCreatedAt) spans the whole
+    // table; WITH part A's horizon clamp (7 d default) the scan reads only the
+    // recent tail, which is exactly the effect this "after" run measures.
     // context_snapshot is ~3-4 KB per row (issueId/taskId/taskKey/wakeReason
     // plus a fat continuation payload): large enough to force TOAST, matching
     // the production detoast cost the audit called out (no operator stats were
@@ -217,7 +232,13 @@ describeLive("attention perf proof (live, seeded production-volume load)", () =>
     };
 
     // ── Plan capture: the two hot attention queries ────────────────────────
-    const exhaustedQuery = listAttentionExhaustedRuns(db, companyId);
+    // Part A clamps the exhausted-runs read to the same fixed horizon the
+    // service passes (createdAtAfter = now - failedRunHorizonDays, default 7 d).
+    const horizonDays = envInt("ATTENTION_PERF_HORIZON_DAYS", 7);
+    const failedRunCreatedAtAfter = new Date(Date.now() - horizonDays * 24 * 60 * 60 * 1000);
+    const exhaustedQuery = listAttentionExhaustedRuns(db, companyId, {
+      createdAtAfter: failedRunCreatedAtAfter,
+    });
     const exhaustedStmt = exhaustedQuery.toSQL();
     const exhaustedSqlText = inlineParams(exhaustedStmt.sql, exhaustedStmt.params as readonly unknown[]);
     const planA = await db.execute(sql.raw(`EXPLAIN (ANALYZE, BUFFERS) ${exhaustedSqlText}`));
@@ -233,6 +254,12 @@ describeLive("attention perf proof (live, seeded production-volume load)", () =>
       WHERE company_id = '${companyId}'::uuid AND status = 'failed'
     `)) as unknown as Array<{ oldest: string | null }>;
     const oldestFailedRunCreatedAt = new Date(oldestRow[0]?.oldest ?? new Date(0));
+    // Mirror part A: the shipped window is created_at > greatest(oldestFailed-
+    // RunCreatedAt, now - horizonDays) — a month-old failure no longer drags a
+    // whole-table scan into the build.
+    const windowStart = failedRunCreatedAtAfter > oldestFailedRunCreatedAt
+      ? failedRunCreatedAtAfter
+      : oldestFailedRunCreatedAt;
 
     const failedAgentIds = agentIds;
     const newerRunsQuery = db
@@ -246,12 +273,12 @@ describeLive("attention perf proof (live, seeded production-volume load)", () =>
       .where(and(
         eq(heartbeatRuns.companyId, companyId),
         inArray(heartbeatRuns.agentId, failedAgentIds),
-        gt(heartbeatRuns.createdAt, oldestFailedRunCreatedAt),
+        gt(heartbeatRuns.createdAt, windowStart),
       ));
     const newerStmt = newerRunsQuery.toSQL();
     const newerSqlText = inlineParams(newerStmt.sql, newerStmt.params as readonly unknown[]);
     const planB = await db.execute(sql.raw(`EXPLAIN (ANALYZE, BUFFERS) ${newerSqlText}`));
-    emit("=== EXPLAIN ANALYZE: newerRuns window scan (attention.ts oldestFailedRunCreatedAt window) ===");
+    emit(`=== EXPLAIN ANALYZE: newerRuns window scan (attention.ts greatest(oldestFailedRunCreatedAt, now - ${horizonDays}d) clamp) ===`);
     emit((planB as unknown as Array<{ "QUERY PLAN"?: string }>).map((row) => row["QUERY PLAN"] ?? JSON.stringify(row)).join("\n"));
 
     // Timed raw runs of both hot queries (median + p95 of the query itself).
@@ -285,9 +312,13 @@ describeLive("attention perf proof (live, seeded production-volume load)", () =>
     const sortedList = [...listTimings].sort((a, b) => a - b);
     const p50 = percentile(sortedList, 50);
     const p95 = percentile(sortedList, 95);
-    emit(`=== attention list() (${samples} samples, volume=${volume}, windowDays=${windowDays}) ===`);
+    const coldMs = listTimings[0] ?? Number.NaN;
+    const warm = [...listTimings].slice(1).sort((a, b) => a - b);
+    emit(`=== attention list() (${samples} samples, volume=${volume}, windowDays=${windowDays}, horizonDays=${horizonDays}) ===`);
     emit(`feed items: ${lastItemCount}`);
-    emit(`p50=${p50.toFixed(0)}ms p95=${p95.toFixed(0)}ms max=${sortedList[sortedList.length - 1].toFixed(0)}ms`);
+    emit(`cold build (first list(), cache miss): ${coldMs.toFixed(0)}ms`);
+    emit(`warm cache hits: p50=${percentile(warm, 50).toFixed(0)}ms p95=${percentile(warm, 95).toFixed(0)}ms (n=${warm.length})`);
+    emit(`all samples p50=${p50.toFixed(0)}ms p95=${p95.toFixed(0)}ms max=${sortedList[sortedList.length - 1].toFixed(0)}ms`);
     emit(`all samples: ${listTimings.map((ms) => ms.toFixed(0)).join(", ")} ms`);
 
     if (reportDir) {
@@ -295,10 +326,13 @@ describeLive("attention perf proof (live, seeded production-volume load)", () =>
       fs.writeFileSync(path.join(reportDir, "attention-plans.txt"), report.join("\n"));
       fs.writeFileSync(
         path.join(reportDir, "attention-perf.json"),
-        JSON.stringify({ volume, windowDays, samples, p50Ms: p50, p95Ms: p95, listMs: listTimings, thresholdMs: P95_THRESHOLD_MS }, null, 2),
+        JSON.stringify({ volume, windowDays, horizonDays, samples, coldMs, p50Ms: p50, p95Ms: p95, listMs: listTimings, thresholdMs: P95_THRESHOLD_MS }, null, 2),
       );
     }
 
     expect(p95).toBeLessThan(P95_THRESHOLD_MS);
+    // Part A's cache makes warm hits ~free; the honest production risk is the
+    // COLD build (first request after TTL expiry), so pin it under the gate too.
+    expect(coldMs).toBeLessThan(P95_THRESHOLD_MS);
   }, 1_800_000);
 });
