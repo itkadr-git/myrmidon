@@ -131,12 +131,20 @@ import { startRuntimeLimits } from "./myrmidon/runtime-limits/index.js"; // myrm
 import { startBehaviorSettings } from "./myrmidon/behavior-settings/index.js"; // myrmidon(SETTINGS-CORE)
 import { startBotContainers, stopBotContainers } from "./myrmidon/bot-containers/startup.js"; // myrmidon(W2a)
 import { startLitellmCostSweep, stopLitellmCostSweep } from "./myrmidon/litellm-costs/startup.js"; // myrmidon(M2-A)
-import { startBoardProcessRegistry, stopBoardProcessRegistry } from "./myrmidon/process-registry/index.js"; // myrmidon(1.6.6 PROCS-0.1)
+import {
+  startBoardProcessRegistry,
+  stopBoardProcessRegistry,
+  boardProcessRegistryIdentity,
+} from "./myrmidon/process-registry/index.js"; // myrmidon(1.6.6 PROCS-0.1 + PROCS-1.7): process registry pulse + leader-lease identity (design OPE-5394 §5.1)
 import {
   assertBoardProcessesStartable,
   formatBoardProcessesComposition,
 } from "@paperclipai/shared"; // myrmidon(1.6.6 PROCS-J): the board's process composition
 import { readResolvedBoardProcesses } from "./myrmidon/board-processes/settings.js"; // myrmidon(1.6.6 PROCS-J)
+import {
+  createLeaderLeaseManager,
+  type LeaderLeaseManager,
+} from "./myrmidon/leader-lease/index.js"; // myrmidon(PROCS-1.7): leader lease (design OPE-5394 §5)
 import { startLitellmBudgetSync } from "./myrmidon/litellm-budget-sync/index.js"; // myrmidon(1.7-BUDGET-CONFIG-C)
 import { startLitellmModelReconciliation } from "./myrmidon/litellm-sync/startup-reconciler.js"; // myrmidon(1.6.1 MODEL-PROVIDERS B)
 import { startModelFallbackSignalSweep } from "./myrmidon/litellm-fallback-signal/sweep.js"; // myrmidon(BOT-RUNTIME-TUNING D)
@@ -1228,6 +1236,39 @@ async function startServerWithDatabaseTeardown(
   }>) | null = null;
   let heartbeatSchedulerStopped = false;
   let heartbeatSchedulerInterval: ReturnType<typeof setInterval> | null = null;
+  let runContextColumnsBackfill: { stop(): void } | null = null; // OPE-5007 П2
+
+  // myrmidon(PROCS-1.7, design OPE-5394 §5): the leader lease manager. The
+  // registry pulse itself is started by PROCS-0.1 in the listen callback
+  // below (one pulse per process, §5.1); here we only bind the manager to the
+  // same boot identity. The manager enters the contender loop only when
+  // `general.processes.mode === "split"` — with the setting absent the board
+  // behaves exactly as before (one process, no lease rows written, no timers).
+  // The lease manager owns the leader-only gates the background sweeps read
+  // (`isLeader`, `leaderSignal`).
+  const boardProcessIdentity = boardProcessRegistryIdentity();
+  const leaderLeaseManager: LeaderLeaseManager = createLeaderLeaseManager(db as any, {
+    bootId: boardProcessIdentity.bootId,
+    readProcessesSetting: async () => {
+      try {
+        const general = await instanceSettingsService(db).getGeneral();
+        return (general as { processes?: { mode?: string; leaderLeaseTtlSec?: number } }).processes ?? null;
+      } catch (err) {
+        logger.warn({ err }, "processes settings read failed; keeping single-process behaviour");
+        return null;
+      }
+    },
+    resolveSystemCompanyId: async () => {
+      try {
+        const rows = await db.select({ id: companies.id }).from(companies).limit(1);
+        return rows[0]?.id ?? null;
+      } catch {
+        return null;
+      }
+    },
+    log: (level, msg, meta) => logger[level === "error" ? "error" : level === "warn" ? "warn" : "info"](meta ?? {}, msg),
+  });
+  leaderLeaseManager.start();
   // myrmidon(T1.6): clock for the periodic gateway-reattach pass. The startup
   // pass refreshes it too, so the first periodic tick waits one full interval
   // instead of doubling up on candidates the startup sweep just scanned.
@@ -1280,6 +1321,11 @@ async function startServerWithDatabaseTeardown(
   ] as const;
   const sweepExecutionControl = () => {
     if (heartbeatSchedulerStopped) return;
+    // myrmidon(PROCS-1.7, design OPE-5394 §5.1): with the multi-process mode
+    // on, only the lease leader runs the execution-control sweeps; the api
+    // processes skip them (§5.4 — the former leader returns to the contender
+    // loop and stops its sweeps on `onLost`).
+    if (!leaderLeaseManager.isLeader("scheduler")) return;
     // Independent durable queues must not block one another. Each queue remains
     // single-flight; a later sweep observes committed transitions from its peers.
     for (const [queue, work] of executionControlSweeps) {
@@ -1290,6 +1336,9 @@ async function startServerWithDatabaseTeardown(
         .finally(() => { executionControlSweepsInFlight.delete(queue); }));
     }
   };
+  // myrmidon(PROCS-1.7, design OPE-5394 §5.4): the sweeps above run on the
+  // leader epoch; when the lease is lost the in-flight pass must stop. The
+  // leader-lease manager aborts the epoch signal on `onLost`.
   const executionControlInterval = laneInterval(
     "execution_control",
     EXECUTION_RECONCILIATION_INTERVAL_MS,
@@ -2328,6 +2377,9 @@ async function startServerWithDatabaseTeardown(
     );
     if (!backupCatchUp.enabled) // myrmidon(P11)
     setInterval(() => {
+      // myrmidon(PROCS-1.7, design OPE-5394 §5.1): the backup is leader-only
+      // work; with the multi-process mode on, the api processes skip it.
+      if (!leaderLeaseManager.isLeader("backup")) return;
       void runServerDatabaseBackup("scheduled").catch(() => {
         // runServerDatabaseBackup already logs the failure with context.
       });
@@ -2432,6 +2484,11 @@ async function startServerWithDatabaseTeardown(
       clearInterval(heartbeatSchedulerInterval);
       heartbeatSchedulerInterval = null;
     }
+
+    // myrmidon(PROCS-1.7, design OPE-5394 §5.3): release the leader leases
+    // right after the timers stop so a standby takes over within one renewal
+    // tick (≤ 1 s handover at a graceful shutdown).
+    await leaderLeaseManager.releaseAll();
 
     const heartbeatShutdown = await coordinateHeartbeatSchedulerShutdown({
       signal,
