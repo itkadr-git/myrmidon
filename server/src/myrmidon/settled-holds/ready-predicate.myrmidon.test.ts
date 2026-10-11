@@ -41,7 +41,10 @@ vi.mock("../../middleware/logger.js", () => ({
 }));
 
 import { findTopReadyIssueForAgent, idlePickupForAgent } from "../idle-pickup.js";
-import { terminalizeLegacyExecution } from "../../services/legacy-execution-recovery.js";
+import {
+  legacyExecutionNeedsReconciliation,
+  terminalizeLegacyExecution,
+} from "../../services/legacy-execution-recovery.js";
 import { listRoleQueue, listUnassignedQueue } from "../swarm-claim/queue.js";
 import { listIdleRolePairs } from "../swarm-claim/idle-queue.js";
 import { issueHasLiveClaimOrWake } from "../swarm-claim/sweep.js";
@@ -202,7 +205,11 @@ describeEmbeddedPostgres("HOLD-READY: ready means not held, and a parked wake is
           finishedAt: new Date(),
         })
         .returning();
-      await terminalizeLegacyExecution({ db, run: run!, status: "cancelled" });
+      // Production only terminalizes (and so opens a reconciliation action)
+      // when the predicate asks for it; a review-wait cancellation must not.
+      if (legacyExecutionNeedsReconciliation(run!)) {
+        await terminalizeLegacyExecution({ db, run: run!, status: "cancelled" });
+      }
 
       const enqueueWakeup = enqueueSpy();
       const result = await pickup(enqueueWakeup, { id: agentId, companyId });
