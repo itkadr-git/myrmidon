@@ -1,3 +1,4 @@
+// myrmidon(DEBRAND-c): persist browser state under the Myrmidon namespace.
 import {
   useCallback,
   useEffect,
@@ -94,7 +95,7 @@ export function SidebarShell({
   collapsed = false,
   peeking = false,
   resizable = false,
-  storageKey = "paperclip.sidebar.width",
+  storageKey = "myrmidon.sidebar.width",
   className,
   onPanelMouseEnter,
   onPanelMouseLeave,
