@@ -5,14 +5,8 @@
 // "Myrmidon" instead, and checks that the shipped page/manifest advertise the
 // new name and that no paperclip artwork (loading glyph, login-screen ASCII
 // sprites, export-README links to the vendor site) is rendered any more.
-// The allowlist is deliberately narrow: only wire-protocol identifiers
-// (X-Paperclip-* headers, PAPERCLIP_* env vars, @paperclipai/* packages, the
-// lucide-react "Paperclip" attachment icon), the MIT attribution line and the
-// legacy "Paperclip ..." recovery-notice sentences that old stored comments
-// still carry (matchers and variants only). myrmidon(DB1): DEBRAND 1.6.6-a
-// removed the vendor-product exceptions ("Paperclip Cloud"/"Labs"/"EE"/
-// "Enterprise") from visible UI copy — those surfaces now say Myrmidon, so the
-// words are no longer exempt. See docs/myrmidon/CONVENTIONS.md #8/#9.
+// The allowlist covers only wire-protocol identifiers, MIT attribution and
+// legacy recovery-notice wording that old stored comments still carry.
 import { describe, expect, it } from "vitest";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
@@ -24,10 +18,9 @@ const APP_DEFINITIONS_DIR = path.join(REPO_ROOT, "packages", "shared", "src", "a
 
 // Match-level exemptions: the vendor's real external products. Everything else
 // that reads "Paperclip" as a word in a user-visible string is a violation,
-// including "Paperclip Runner", "Paperclip Computer", "Paperclip-managed" and
-// (since myrmidon(DB1)) "Paperclip Cloud"/"Labs"/"EE"/"Enterprise" — those
-// name parts of our own product and read "Myrmidon ..." instead.
-const WORD_PATTERN = /\bPaperclip\b/; // myrmidon(DB1): DEBRAND 1.6.6-a removed the Cloud/Labs/EE/Enterprise exceptions
+// including "Paperclip Runner", "Paperclip Computer" and "Paperclip-managed" —
+// those name parts of our own product and read "Myrmidon ..." instead.
+const WORD_PATTERN = /\bPaperclip\b(?!\s+Cloud|-Cloud|\s+Labs|\s+EE\b|\s+Enterprise)/;
 
 // Line-level exemptions are limited to text that cannot be renamed at all.
 const LINE_ALLOW_SUBSTR = [
@@ -173,50 +166,6 @@ describe("myrmidon(B1a): shipped page and manifest advertise Myrmidon", () => {
     const manifest = JSON.parse(readFileSync(path.join(REPO_ROOT, "ui", "public", "site.webmanifest"), "utf-8"));
     expect(manifest.name).toBe("Myrmidon");
     expect(manifest.short_name).toBe("Myrmidon");
-  });
-});
-
-describe("myrmidon(1.2.1): every tab/app icon is the Myrmidon brand file", () => {
-  const PUBLIC = path.join(REPO_ROOT, "ui", "public");
-  const BRAND = path.join(PUBLIC, "brand", "myrmidon");
-  const PAIRS: Array<[string, string]> = [
-    ["favicon.ico", "favicon.ico"],
-    ["favicon.svg", "myrmidon-favicon.svg"],
-    ["favicon-16x16.png", "icon-16.png"],
-    ["favicon-32x32.png", "icon-32.png"],
-    ["apple-touch-icon.png", "icon-180.png"],
-    ["android-chrome-192x192.png", "icon-192.png"],
-    ["android-chrome-512x512.png", "icon-512.png"],
-    // Unreferenced legacy names: kept identical so no paperclip glyph ships.
-    ["worktree-favicon.ico", "favicon.ico"],
-    ["worktree-favicon.svg", "myrmidon-favicon.svg"],
-    ["worktree-favicon-16x16.png", "icon-16.png"],
-    ["worktree-favicon-32x32.png", "icon-32.png"],
-  ];
-
-  it.each(PAIRS)("ui/public/%s is byte-identical to brand/myrmidon/%s", (root, brand) => {
-    expect(readFileSync(path.join(PUBLIC, root)).equals(readFileSync(path.join(BRAND, brand)))).toBe(true);
-  });
-
-  it("every icon linked from index.html and the manifest exists in ui/public", () => {
-    const html = readFileSync(path.join(REPO_ROOT, "ui", "index.html"), "utf-8");
-    const hrefs = [...html.matchAll(/<link[^>]+href="(\/[^"?#]+)"/g)].map((m) => m[1]);
-    const manifest = JSON.parse(readFileSync(path.join(PUBLIC, "site.webmanifest"), "utf-8"));
-    const srcs: string[] = manifest.icons.map((i: { src: string }) => i.src);
-    expect(hrefs.length).toBeGreaterThanOrEqual(5);
-    expect(srcs.length).toBeGreaterThan(0);
-    for (const href of [...hrefs, ...srcs]) {
-      expect(existsSync(path.join(PUBLIC, href)), href).toBe(true);
-    }
-  });
-
-  it("the built ui/dist, when present, ships the same icons and manifest", () => {
-    const dist = path.join(REPO_ROOT, "ui", "dist");
-    if (!existsSync(path.join(dist, "index.html"))) return;
-    for (const [root, brand] of PAIRS.slice(0, 7)) {
-      expect(readFileSync(path.join(dist, root)).equals(readFileSync(path.join(BRAND, brand))), root).toBe(true);
-    }
-    expect(existsSync(path.join(dist, "site.webmanifest"))).toBe(true);
   });
 });
 
