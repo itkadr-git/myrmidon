@@ -43,8 +43,8 @@ if (argv.includes("--help")) {
   console.log(${JSON.stringify(help)});
   process.exit(0);
 }
-if (argv.includes("--list-models")) {
-  console.log("provider  model\\ngoogle    gemini-3-flash-preview");
+if (argv.includes("--list-models") || (argv.includes("models") && argv.includes("ls"))) {
+  console.log("provider  model\\ngoogle    gemini-3-flash-preview\\nopenai    gpt-4o");
   process.exit(0);
 }
 if (argv.includes("--version") || argv[0] === "version") {

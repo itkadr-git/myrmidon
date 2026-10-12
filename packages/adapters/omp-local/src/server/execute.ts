@@ -138,11 +138,21 @@ async function ensureOmpSkillsInjected(
 async function buildOmpSkillsDir(
   config: Record<string, unknown>,
   targetDir?: string,
+  extraSkills: Array<{ key: string; runtimeName: string; source: string }> = [],
 ): Promise<string> {
   const target = targetDir ?? path.join(await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-omp-skills-")), "skills");
   await fs.mkdir(target, { recursive: true });
-  const availableEntries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
-  const desiredNames = new Set(resolveLegacyPaperclipDesiredSkillNames(config, availableEntries));
+  const configuredEntries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
+  const availableEntries = [...configuredEntries];
+  for (const extra of extraSkills) {
+    if (!availableEntries.some((existing) => existing.key === extra.key)) {
+      availableEntries.push(extra);
+    }
+  }
+  const desiredNames = new Set([
+    ...resolveLegacyPaperclipDesiredSkillNames(config, availableEntries),
+    ...extraSkills.map((entry) => entry.key),
+  ]);
   for (const entry of availableEntries) {
     if (!desiredNames.has(entry.key)) continue;
     if (isPaperclipSkillSourceMissing(entry)) continue;
@@ -396,8 +406,37 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   }
 
   // Materialize skills in managed skills directory
-  const ompSkillEntries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
-  const desiredOmpSkillNames = resolveLegacyPaperclipDesiredSkillNames(config, ompSkillEntries);
+  const rawContextSkills = Array.isArray((context as Record<string, unknown> | undefined)?.paperclipSkills)
+    ? ((context as Record<string, unknown>).paperclipSkills as Array<Record<string, unknown>>)
+    : [];
+  const contextSkillEntries: Array<{ key: string; runtimeName: string; source: string }> = rawContextSkills
+    .map((s) => {
+      const name = typeof s?.name === "string" ? s.name.trim() : "";
+      const skillPath = typeof s?.path === "string" ? s.path.trim() : "";
+      if (!name || !skillPath) return null;
+      return {
+        key: name.toLowerCase(),
+        runtimeName: name,
+        source: path.resolve(skillPath),
+      };
+    })
+    .filter((entry): entry is { key: string; runtimeName: string; source: string } => entry !== null);
+
+  const configuredSkillEntries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
+  const ompSkillEntries = [...configuredSkillEntries];
+  for (const entry of contextSkillEntries) {
+    if (!ompSkillEntries.some((existing) => existing.key === entry.key)) {
+      ompSkillEntries.push(entry);
+    }
+  }
+
+  const legacyDesired = resolveLegacyPaperclipDesiredSkillNames(config, ompSkillEntries);
+  const desiredOmpSkillNames = Array.from(
+    new Set([
+      ...legacyDesired,
+      ...contextSkillEntries.map((entry) => entry.key),
+    ]),
+  );
   const targetSkillsDir = localAgentConfigDir
     ? path.join(localAgentConfigDir, "skills")
     : resolveOmpSkillsHome({ env });
@@ -486,7 +525,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         }
         const effectiveAgentConfigDir = localAgentConfigDir || managedRemoteAgentConfigDir!;
         const remoteSkillsStagingDir = path.join(effectiveAgentConfigDir, "skills");
-        localSkillsDir = await buildOmpSkillsDir(config, remoteSkillsStagingDir);
+        localSkillsDir = await buildOmpSkillsDir(config, remoteSkillsStagingDir, contextSkillEntries);
 
         await onLog(
           "stdout",

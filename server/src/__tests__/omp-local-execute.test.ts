@@ -91,7 +91,7 @@ describe("omp_local execute", () => {
       });
 
       expect(result.exitCode).toBe(0);
-      expect(result.errorMessage).toBeUndefined();
+      expect(result.errorMessage).toBeNull();
     } finally {
       if (previousHome === undefined) delete process.env.HOME;
       else process.env.HOME = previousHome;
