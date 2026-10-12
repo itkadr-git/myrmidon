@@ -38,6 +38,8 @@ export const AGENT_ADAPTER_TYPES = [
   "kimi_local",
   "opencode_local",
   "pi_local",
+  // myrmidon(OMP-LOCAL): Oh My Pi local adapter
+  "omp_local",
   "cursor",
   "openclaw_gateway",
 ] as const;

@@ -219,6 +219,42 @@ function textForQuestionInteraction(
   return lines.join("\n");
 }
 
+/**
+ * myrmidon: a native question card shows the full text of every option in its
+ * body and short numbered buttons. Telegram cuts long inline-button labels on
+ * a phone ("Поручить вла…"), so the owner could not read what each button
+ * meant; the body carries the complete options, the help text and the task
+ * link, the buttons only the number and the opening words.
+ */
+export const NATIVE_QUESTION_BUTTON_LABEL_MAX = 24;
+
+export function nativeQuestionButtonLabel(index: number, label: string): string {
+  const prefix = `${index + 1}. `;
+  const text = label.trim().replace(/\s+/g, " ");
+  const room = NATIVE_QUESTION_BUTTON_LABEL_MAX - prefix.length;
+  const chars = Array.from(text);
+  if (chars.length <= room) return prefix + text;
+  return prefix + chars.slice(0, room - 1).join("").trimEnd() + "…";
+}
+
+export function nativeQuestionCardBody(
+  question: AskUserQuestionsQuestion,
+  taskUrl: string | null,
+): string {
+  const lines: string[] = [];
+  if (question.helpText?.trim()) lines.push(question.helpText.trim(), "");
+  question.options.forEach((option, index) => {
+    const description = option.description?.trim();
+    lines.push(
+      description
+        ? `${index + 1}. ${option.label.trim()} — ${description}`
+        : `${index + 1}. ${option.label.trim()}`,
+    );
+  });
+  if (taskUrl) lines.push("", taskUrl);
+  return lines.join("\n");
+}
+
 function genericInteractionText(taskUrl: string | null): string {
   return [
     `This task needs an authorized response in ${PRODUCT_NAME}.`,
@@ -370,10 +406,10 @@ export async function enqueueIssueInteractionChatPublications(
           },
         ]
       : supportsCallbacks
-        ? questionActionTokens.map(({ actionId, option }) => ({
+        ? questionActionTokens.map(({ actionId, option }, index) => ({
             type: "callback" as const,
             actionId,
-            label: option.label,
+            label: nativeQuestionButtonLabel(index, option.label),
           }))
         : confirmation
           ? confirmationActionTokens.map(({ actionId, decision }) => ({
@@ -426,7 +462,9 @@ export async function enqueueIssueInteractionChatPublications(
                 : `Response needed in ${PRODUCT_NAME}`,
           body:
             interaction.kind === "ask_user_questions"
-              ? (question?.helpText ?? undefined)
+              ? supportsCallbacks && question
+                ? nativeQuestionCardBody(question, taskUrl)
+                : (question?.helpText ?? undefined)
               : interaction.kind === "request_confirmation"
                 ? (interaction.payload.detailsMarkdown ?? undefined)
                 : `Open the task in ${PRODUCT_NAME} to review and respond.`,

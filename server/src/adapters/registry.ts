@@ -132,6 +132,16 @@ import {
   listPiModels,
 } from "@paperclipai/adapter-pi-local/server";
 import { agentConfigurationDoc as piAgentConfigurationDoc } from "@paperclipai/adapter-pi-local";
+// myrmidon(OMP-LOCAL): register omp_local adapter
+import {
+  execute as ompExecute,
+  listOmpSkills,
+  syncOmpSkills,
+  testEnvironment as ompTestEnvironment,
+  sessionCodec as ompSessionCodec,
+  listOmpModels,
+} from "@paperclipai/adapter-omp-local/server";
+import { agentConfigurationDoc as ompAgentConfigurationDoc } from "@paperclipai/adapter-omp-local";
 import { BUILTIN_ADAPTER_TYPES } from "./builtin-adapter-types.js";
 import { buildExternalAdapters } from "./plugin-loader.js";
 import { getDisabledAdapterTypes } from "../services/adapter-plugin-store.js";
@@ -843,6 +853,27 @@ const piLocalAdapter: ServerAdapterModule = {
   agentConfigurationDoc: piAgentConfigurationDoc,
 };
 
+// myrmidon(OMP-LOCAL): omp_local adapter
+const ompLocalAdapter: ServerAdapterModule = {
+  type: "omp_local",
+  runtimeToolDelivery: "environment",
+  execute: ompExecute,
+  testEnvironment: ompTestEnvironment,
+  listSkills: listOmpSkills,
+  syncSkills: syncOmpSkills,
+  sessionCodec: ompSessionCodec,
+  sessionManagement: getAdapterSessionManagement("omp_local") ?? undefined,
+  models: [],
+  listModels: listOmpModels,
+  supportsLocalAgentJwt: true,
+  supportsInstructionsBundle: true,
+  instructionsPathKey: "instructionsFilePath",
+  requiresMaterializedRuntimeSkills: true,
+  getRuntimeCommandSpec: (config) =>
+    buildNpmRuntimeCommandSpec(config, "omp", "@oh-my-pi/pi-coding-agent@18.9.2"),
+  agentConfigurationDoc: ompAgentConfigurationDoc,
+};
+
 const adaptersByType = new Map<string, ServerAdapterModule>();
 
 // For builtin types that are overridden by an external adapter, we keep the
@@ -862,6 +893,7 @@ function registerBuiltInAdapters() {
     paperclipRunnerAdapter,
     openCodeLocalAdapter,
     piLocalAdapter,
+    ompLocalAdapter,
     cursorCloudAdapter,
     cursorLocalAdapter,
     geminiLocalAdapter,
