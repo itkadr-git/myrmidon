@@ -45,7 +45,7 @@ index c6aeb92..4e6b2cc 100644
      self._activate_admitted_request()
      # A canonical Bot Chat that a Desktop holds live is that Desktop's to run: executing here would
      # be a second writer beside its lease (#114959). The owner's mailbox takes the turn and its
-@@ -842,6 +862,30 @@ def _run_agent_sync(self, run: _RunLaunch, agent, approval_notify, *, _api_serve
+@@ -842,6 +862,32 @@ def _run_agent_sync(self, run: _RunLaunch, agent, approval_notify, *, _api_serve
                          run.run_id, "run.workspace_fallback",
                          key=run.workspace.get("key", ""), path=opened["path"],
                          exit_code=opened["exit_code"], warning=opened["error"]))
@@ -63,9 +63,11 @@ index c6aeb92..4e6b2cc 100644
 +                written = materialize_run_skills(run.paperclip_skills)
 +                missing = verify_run_skills(run.paperclip_skills, written)
 +                if missing is not None:
++                    from tools.run_skills import skip_reason
 +                    raise RuntimeError(
 +                        "Cannot start without the required Paperclip-managed skills: "
-+                        f"{missing}: skill was not materialized in the run profile")
++                        f"{missing}: skill was not materialized in the run profile "
++                        f"({skip_reason(run.paperclip_skills, missing)})")
 +                from tools.skills_tool import _skills_dir
 +                resets.append((set_run_skills_dir(
 +                    str(_skills_dir() / "paperclip-managed")), reset_run_skills_dir))
@@ -105,7 +107,7 @@ index 1875be3..899c437 100644
      items: Mapping[str, str], out: dict, *, unwrap_force: bool,
 --- /dev/null
 +++ b/tools/run_skills.py
-@@ -0,0 +1,144 @@
+@@ -0,0 +1,169 @@
 +"""myrmidon(G1): run-scoped Paperclip-managed skill materialization (1.6.6-HERMES-SKILLS-A).
 +
 +The board's hermes_gateway adapter cannot reach the gateway's filesystem: it
@@ -250,3 +252,28 @@ index 1875be3..899c437 100644
 +        if isinstance(name, str) and name.strip() and name.strip() not in written:
 +            return name.strip()
 +    return None
++
++def skip_reason(entries: List[Dict[str, Any]], name: str) -> str:
++    """Why the entry called ``name`` was not written (for the run-failure message).
++
++    The board adapter once sent ``content`` as a serialized Node Buffer
++    (``{"type": "Buffer", ...}``); the guards silently skipped every entry and
++    the only symptom was "not materialized". Name the guard that fired.
++    """
++    for entry in entries[:_MAX_SKILLS]:
++        if not isinstance(entry, dict):
++            continue
++        entry_name = entry.get("name")
++        if not (isinstance(entry_name, str) and entry_name.strip() == name):
++            continue
++        if _safe_relpath(entry.get("path")) is None:
++            return f"unsafe or empty path {entry.get('path')!r}"
++        content = entry.get("content")
++        if not isinstance(content, str):
++            return f"content is {type(content).__name__}, expected str"
++        if not content.strip():
++            return "content is empty"
++        if len(content.encode("utf-8", "ignore")) > _MAX_CONTENT_BYTES:
++            return f"content exceeds {_MAX_CONTENT_BYTES} bytes"
++        return "unknown"
++    return "no such entry in the field (names are matched exactly)"
