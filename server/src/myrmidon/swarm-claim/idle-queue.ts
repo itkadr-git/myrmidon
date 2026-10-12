@@ -130,6 +130,7 @@ async function listReadyQueueCandidates(db: Db, companyId: string) {
       identifier: issues.identifier,
       priority: issues.priority,
       queuedAt: issues.createdAt,
+      projectId: issues.projectId,
       assigneeAgentId: issues.assigneeAgentId,
       assigneeRole: agents.role,
       labels: sql<string[]>`coalesce((
@@ -204,6 +205,7 @@ async function listReadyQueueCandidates(db: Db, companyId: string) {
       identifier: row.identifier,
       priority: row.priority,
       queuedAt: row.queuedAt,
+      projectId: row.projectId,
       assigneeAgentId: row.assigneeAgentId,
     },
     assigneeAgentId: row.assigneeAgentId,

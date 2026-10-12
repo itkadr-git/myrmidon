@@ -122,6 +122,11 @@ export interface AgentListItem extends Agent {
   // myrmidon(PERF-DIET-G): adapterConfig->>'model' of the row, computed by the
   // server so the slim list keeps the model column without shipping the config.
   adapterModel: string | null;
+  // myrmidon(1.6.6 PROJECT-SCOPED-CLAIM): the projects the agent is a member
+  // of (its leads + joined project_memberships) — the same rule the bot
+  // containers' scope wiring uses. The board UI filters the roster by it
+  // client-side (OPE-7282); a detail read does not carry it.
+  projectIds: string[];
 }
 
 export interface AgentDetail extends Agent {
