@@ -123,6 +123,30 @@ describe("prometheus exposition format", () => {
     expect(text).not.toContain("myrmidon_board_lane_busy_seconds_total{");
   });
 
+  // myrmidon(1.6.6 CONNECTOR-IN): the ingress counter rides the same scrape.
+  // Both paths render whenever the counter was read — zero included, so the
+  // operator reads "nothing goes through a connector yet" off the graph
+  // instead of guessing it from a missing series.
+  it("renders the ingress counter per path, zero included", () => {
+    const read = renderMetricsText(snapshot({ chatIngress: { adapter: 3, direct: 4 } }));
+
+    expect(read).toContain("# TYPE myrmidon_chat_ingress_total counter");
+    expect(read).toContain('myrmidon_chat_ingress_total{path="adapter"} 3');
+    expect(read).toContain('myrmidon_chat_ingress_total{path="direct"} 4');
+
+    const idle = renderMetricsText(snapshot({ chatIngress: { adapter: 0, direct: 0 } }));
+
+    expect(idle).toContain('myrmidon_chat_ingress_total{path="adapter"} 0');
+    expect(idle).toContain('myrmidon_chat_ingress_total{path="direct"} 0');
+  });
+
+  it("renders the ingress family without samples when the counter was not read", () => {
+    const text = renderMetricsText(snapshot());
+
+    expect(text).toContain("# HELP myrmidon_chat_ingress_total ");
+    expect(text).not.toContain("myrmidon_chat_ingress_total{");
+  });
+
   it("renders the process families without samples when there is no process read", () => {
     const text = renderMetricsText(snapshot({ process: null }));
     expect(text).toContain("# TYPE myrmidon_board_event_loop_lag_seconds summary");

@@ -16,6 +16,39 @@ import {
   type ChatProviderName,
 } from "./contract.js";
 
+/** The endpoint fields of one `chat_endpoints` row, as its reader has them.
+ *  The vendor row carries more; this is the read-only shape of the contract. */
+export interface ChannelEndpointRowInput {
+  readonly id: string;
+  readonly companyId: string;
+  readonly publicId: string;
+  readonly provider: string;
+  readonly status: string;
+}
+
+/** Project one row the way the contract reads it: an id, a provider, the
+ *  company, the public id and the status. Null when the provider is outside our
+ *  set — a row no connector reads stays with the vendor path.
+ *
+ *  The webhook path already holds the row, so it hands it over here instead of
+ *  reading the table a second time (ingress.ts). */
+export function channelEndpointIngressView(
+  row: ChannelEndpointRowInput | null | undefined,
+): ChannelEndpointView | null {
+  if (row === null || row === undefined || !isChatProviderName(row.provider)) {
+    return null;
+  }
+  const provider: ChatProviderName = row.provider;
+
+  return {
+    id: row.id,
+    companyId: row.companyId,
+    provider,
+    publicId: row.publicId,
+    status: row.status,
+  };
+}
+
 /** The store over the vendor chat tables. */
 export function channelConnectorStore(db: Db): ChannelConnectorStore {
   return {
@@ -35,19 +68,7 @@ export function channelConnectorStore(db: Db): ChannelConnectorStore {
         .where(eq(chatEndpoints.id, endpointId))
         .limit(1);
 
-      const row = rows[0];
-      if (row === undefined || !isChatProviderName(row.provider)) {
-        return null;
-      }
-      const provider: ChatProviderName = row.provider;
-
-      return {
-        id: row.id,
-        companyId: row.companyId,
-        provider,
-        publicId: row.publicId,
-        status: row.status,
-      };
+      return channelEndpointIngressView(rows[0]);
     },
   };
 }

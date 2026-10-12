@@ -42,6 +42,12 @@ import {
   type BoardLaneMetricsSource,
   type BoardLaneSample,
 } from "../board-load/lanes.js";
+// myrmidon(1.6.6 CONNECTOR-IN): the inbound reads of the channel connectors —
+// the in-process counter the ingress seam keeps (design section 4 and 7).
+import {
+  channelIngressCounters,
+  type ChannelIngressCounters,
+} from "../../channel-connectors/ingress.js";
 
 /** Content type of the Prometheus text exposition format, version 0.0.4. */
 export const METRICS_CONTENT_TYPE = "text/plain; version=0.0.4; charset=utf-8";
@@ -91,6 +97,10 @@ export const METRIC_FAMILIES = [
   // spends the CPU and issues the DB statements (design OPE-5394 §1 П2).
   "myrmidon_board_db_queries_total",
   "myrmidon_board_lane_busy_seconds_total",
+  // myrmidon(1.6.6 CONNECTOR-IN): the inbound reads of the channel connectors
+  // by path — the adapter and the vendor path that still reads in parallel
+  // (design section 4, the inbound flow).
+  "myrmidon_chat_ingress_total",
 ] as const;
 
 export type MetricFamily = (typeof METRIC_FAMILIES)[number];
@@ -134,6 +144,14 @@ export interface MetricsSnapshotFields {
    * the two families exist even before the first lane ran.
    */
   lanes?: BoardLaneSample[] | null;
+  /**
+   * myrmidon(1.6.6 CONNECTOR-IN): the inbound reads of this process by path,
+   * read from the in-process counter of the connector seam (no DB). null
+   * renders HELP/TYPE with no samples; both paths render as samples whenever
+   * the counter was read — zero included, so "nothing reads through a
+   * connector yet" is readable off the graph.
+   */
+  chatIngress?: ChannelIngressCounters | null;
 }
 
 /** The fields plus the scrape bookkeeping rendered into the exposition text. */
@@ -169,6 +187,12 @@ export interface MetricsCollectorDeps {
    * so no test ever depends on another test's counters.
    */
   laneMetrics?: BoardLaneMetricsSource | null;
+  /**
+   * myrmidon(1.6.6 CONNECTOR-IN): where the ingress half comes from. Production
+   * reads the in-process counter of the connector seam; a test injects its own,
+   * so no test depends on another test's reads.
+   */
+  chatIngress?: (() => ChannelIngressCounters) | null;
 }
 
 /** Reads the run counters — one grouped query, whole instance. */
@@ -396,6 +420,14 @@ export async function collectMetricsParts(deps: MetricsCollectorDeps): Promise<M
     () => Promise.resolve().then(resolveLaneMetricsSource(deps.laneMetrics)),
     null as BoardLaneSample[] | null,
   );
+  // myrmidon(1.6.6 CONNECTOR-IN): the ingress half rides the same guarded
+  // scrape: an in-process counter that cannot throw today, guarded anyway so a
+  // future source cannot kill the scrape — it names its family instead.
+  const chatIngress = await guarded(
+    "myrmidon_chat_ingress_total",
+    () => Promise.resolve().then(() => (deps.chatIngress ?? channelIngressCounters)()),
+    null as ChannelIngressCounters | null,
+  );
 
   return {
     fields: {
@@ -412,6 +444,7 @@ export async function collectMetricsParts(deps: MetricsCollectorDeps): Promise<M
       llmCostCentsWindow: costWindow,
       process: processSample,
       lanes: laneSample,
+      chatIngress,
     },
     errors,
     now,
@@ -718,6 +751,26 @@ export function renderMetricsText(snapshot: MetricsSnapshot): string {
             (row) =>
               `myrmidon_board_lane_busy_seconds_total{lane="${escapeLabelValue(row.lane)}"} ${formatSampleValue(row.busyMs / 1000)}`,
           )
+        : [],
+    ),
+  );
+
+  // myrmidon(1.6.6 CONNECTOR-IN): the inbound reads of the channel connectors.
+  // Both paths render as samples whenever the counter was read, zero included:
+  // "all ingress is read by the vendor path because no connector is registered
+  // yet" is information, and a missing series would be indistinguishable from
+  // an uninstrumented read.
+  const ingress = snapshot.chatIngress ?? null;
+  blocks.push(
+    familyBlock(
+      "myrmidon_chat_ingress_total",
+      "Inbound chat events read per path, cumulative since boot: read by the channel connector of the provider (adapter) or by the vendor path (direct).",
+      "counter",
+      ingress
+        ? [
+            `myrmidon_chat_ingress_total{path="adapter"} ${formatSampleValue(ingress.adapter)}`,
+            `myrmidon_chat_ingress_total{path="direct"} ${formatSampleValue(ingress.direct)}`,
+          ]
         : [],
     ),
   );
