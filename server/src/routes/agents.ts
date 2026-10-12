@@ -1,4 +1,5 @@
 import { listOpenRouterModels } from "../services/openrouter-models.js";
+import { notModifiedOrSetEtag } from "../middleware/version-key-etag.js";
 // myrmidon(B1c): product name in user-facing runner errors; see product.ts.
 import { PRODUCT_NAME } from "../myrmidon/product.js";
 import { prepareManagedAiRuntime, assertManagedAiProjectAuth, stripAiAuthBindings } from "../services/ai-connection-runtime.js";
@@ -4115,6 +4116,14 @@ export function agentRoutes(
     },
   );
 
+function getActorIdentityPart(req: Request): string {
+  if (!req.actor) return "none";
+  const type = req.actor.type || "none";
+  const id = req.actor.userId || req.actor.agentId || "none";
+  const isInstanceAdmin = req.actor.isInstanceAdmin ? "admin" : "user";
+  return `${type}:${id}:${isInstanceAdmin}`;
+}
+
   router.get("/companies/:companyId/agents", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
@@ -4125,6 +4134,11 @@ export function agentRoutes(
       });
       return;
     }
+
+    const actorPart = getActorIdentityPart(req);
+    const vk = await svc.listSummariesVersionKey(companyId, actorPart);
+    if (notModifiedOrSetEtag(req, res, vk)) return;
+
     const result = await filterAgentsForActor(req, await svc.listSummaries(companyId));
     const canReadConfigs = await actorCanReadConfigurationsForCompany(req, companyId);
     // myrmidon(PERF-DIET-G): the list is a slim projection. It carries no
@@ -6981,6 +6995,11 @@ export function agentRoutes(
     const limitParam = req.query.limit as string | undefined;
     const limit = limitParam ? Math.max(1, Math.min(1000, parseInt(limitParam, 10) || 200)) : undefined;
     const summary = req.query.summary === "true" || req.query.summary === "1";
+
+    const actorPart = getActorIdentityPart(req);
+    const vk = await heartbeat.listVersionKey(companyId, agentId, limit, summary, actorPart);
+    if (notModifiedOrSetEtag(req, res, vk)) return;
+
     const runs = await heartbeat.list(companyId, agentId, limit, { summary });
     res.json(await runRedactions.redactForRuns(companyId, runs));
   });
