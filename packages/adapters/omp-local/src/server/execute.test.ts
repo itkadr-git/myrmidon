@@ -4,92 +4,135 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { resetOmpModelsCacheForTests } from "./models.js";
 
+type ProcessResultShape = {
+  exitCode: number | null;
+  signal: string | null;
+  timedOut: boolean;
+  stdout: string;
+  stderr: string;
+  pid: number | null;
+  startedAt: string | null;
+  finishedAt?: string | null;
+  durationMs?: number | null;
+  errorCode?: string | null;
+};
+
+type PrepareRuntimeCallShape = {
+  runId: string;
+  target: unknown;
+  adapterKey: string;
+  assets?: Array<{ key: string; localDir: string; followSymlinks?: boolean }>;
+  [key: string]: unknown;
+};
+
 const {
   runAdapterExecutionTargetProcess,
   runAdapterExecutionTargetShellCommand,
   prepareAdapterExecutionTargetRuntime,
-  ensureAdapterExecutionTargetCommandResolvable,
-  resolveAdapterExecutionTargetCommandForLogs,
 } = vi.hoisted(() => ({
-  runAdapterExecutionTargetProcess: vi.fn(async () => ({
-    exitCode: 0,
-    signal: null,
-    timedOut: false,
-    stdout: JSON.stringify({
-      type: "turn_end",
-      message: {
-        role: "assistant",
-        content: "done",
-        usage: {
-          input: 10,
-          output: 20,
-          cacheRead: 0,
-          cost: { total: 0.01 },
+  runAdapterExecutionTargetProcess: vi.fn(
+    async (
+      _runId?: string,
+      _target?: unknown,
+      _command?: string,
+      _args?: string[],
+      _options?: { env?: Record<string, string>; [key: string]: unknown },
+    ): Promise<ProcessResultShape> => ({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      stdout: JSON.stringify({
+        type: "turn_end",
+        message: {
+          role: "assistant",
+          content: "done",
+          usage: {
+            input: 10,
+            output: 20,
+            cacheRead: 0,
+            cost: { total: 0.01 },
+          },
         },
+        toolResults: [],
+      }),
+      stderr: "",
+      pid: 123,
+      startedAt: new Date().toISOString(),
+    }),
+  ),
+  runAdapterExecutionTargetShellCommand: vi.fn(
+    async (
+      _runId?: string,
+      _target?: unknown,
+      _command?: string,
+      _options?: unknown,
+    ): Promise<{
+      exitCode: number | null;
+      signal: string | null;
+      timedOut: boolean;
+      stdout: string;
+      stderr: string;
+    }> => ({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      stdout: "",
+      stderr: "",
+    }),
+  ),
+  prepareAdapterExecutionTargetRuntime: vi.fn(
+    async (_input?: PrepareRuntimeCallShape) => ({
+      workspaceRemoteDir: "/remote/workspace",
+      runtimeRootDir: "/remote/runtime",
+      assetDirs: {
+        skills: "/remote/runtime/skills",
+        agentConfig: "/remote/runtime/agentConfig",
       },
-      toolResults: [],
+      restoreWorkspace: vi.fn(async () => undefined),
     }),
-    stderr: "",
-    pid: 123,
-    startedAt: new Date().toISOString(),
-  })),
-  runAdapterExecutionTargetShellCommand: vi.fn(async () => ({
-    exitCode: 0,
-    signal: null,
-    timedOut: false,
-    stdout: "",
-    stderr: "",
-  })),
-  prepareAdapterExecutionTargetRuntime: vi.fn(async () => ({
-    workspaceRemoteDir: "/remote/workspace",
-    runtimeRootDir: "/remote/runtime",
-    assetDirs: {
-      skills: "/remote/runtime/skills",
-      agentConfig: "/remote/runtime/agentConfig",
-    },
-    restoreWorkspace: vi.fn(async () => undefined),
-  })),
-  ensureAdapterExecutionTargetCommandResolvable: vi.fn(async () => undefined),
-  resolveAdapterExecutionTargetCommandForLogs: vi.fn(async () => "omp"),
+  ),
 }));
 
-const { runChildProcess, ensureCommandResolvable, resolveCommandForLogs } = vi.hoisted(() => ({
-  runChildProcess: vi.fn(async () => ({
-    exitCode: 0,
-    signal: null,
-    timedOut: false,
-    stdout: JSON.stringify({
-      models: [
-        { provider: "openai", id: "gpt-4o", selector: "openai/gpt-4o" },
-      ],
-    }),
-    stderr: "",
-    pid: 123,
-    startedAt: new Date().toISOString(),
-  })),
-  ensureCommandResolvable: vi.fn(async () => undefined),
-  resolveCommandForLogs: vi.fn(async () => "omp"),
-}));
-
-vi.mock("@paperclipai/adapter-utils/execution-target", async (importOriginal) => {
-  const actual = (await importOriginal()) as Record<string, unknown>;
+vi.mock("./models.js", async (importOriginal) => {
+  const actual = (await importOriginal()) as typeof import("./models.js");
   return {
     ...actual,
-    ensureAdapterExecutionTargetCommandResolvable,
-    resolveAdapterExecutionTargetCommandForLogs,
-    runAdapterExecutionTargetProcess,
-    runAdapterExecutionTargetShellCommand,
-    prepareAdapterExecutionTargetRuntime,
+    ensureOmpModelConfiguredAndAvailable: vi.fn(async () => undefined),
   };
 });
 
-vi.mock("@paperclipai/adapter-utils/server-utils", async (importOriginal) => {
-  const actual = (await importOriginal()) as Record<string, unknown>;
+vi.mock("@paperclipai/adapter-utils/execution-target", async (importOriginal) => {
+  const actual = (await importOriginal()) as typeof import("@paperclipai/adapter-utils/execution-target");
   return {
     ...actual,
-    ensureCommandResolvable,
-    resolveCommandForLogs,
-    runChildProcess,
+    ensureAdapterExecutionTargetCommandResolvable: async (...args: Parameters<typeof actual.ensureAdapterExecutionTargetCommandResolvable>) => {
+      if (args[0] === "omp") return;
+      return actual.ensureAdapterExecutionTargetCommandResolvable(...args);
+    },
+    resolveAdapterExecutionTargetCommandForLogs: async (...args: Parameters<typeof actual.resolveAdapterExecutionTargetCommandForLogs>) => {
+      if (args[0] === "omp") return "omp";
+      return actual.resolveAdapterExecutionTargetCommandForLogs(...args);
+    },
+    runAdapterExecutionTargetProcess: (...args: Parameters<typeof actual.runAdapterExecutionTargetProcess>) => {
+      if (args[2] === "omp") {
+        return runAdapterExecutionTargetProcess(...args);
+      }
+      return actual.runAdapterExecutionTargetProcess(...args);
+    },
+    runAdapterExecutionTargetShellCommand: (...args: Parameters<typeof actual.runAdapterExecutionTargetShellCommand>) => {
+      const runId = args[0] ?? "";
+      const shellCmd = args[2] ?? "";
+      if (runId.startsWith("run-") || shellCmd.includes(".jsonl") || shellCmd.includes("head -n 1")) {
+        return runAdapterExecutionTargetShellCommand(...args);
+      }
+      return actual.runAdapterExecutionTargetShellCommand(...args);
+    },
+    prepareAdapterExecutionTargetRuntime: (...args: Parameters<typeof actual.prepareAdapterExecutionTargetRuntime>) => {
+      if (args[0]?.adapterKey === "omp") {
+        return prepareAdapterExecutionTargetRuntime(...args);
+      }
+      return actual.prepareAdapterExecutionTargetRuntime(...args);
+    },
   };
 });
 
@@ -399,8 +442,8 @@ describe("omp local execution", () => {
     });
 
     expect(runAdapterExecutionTargetProcess).toHaveBeenCalledTimes(2);
-    const firstCallArgs = (runAdapterExecutionTargetProcess.mock.calls[0] as unknown as [string, unknown, string, string[]])[3];
-    const secondCallArgs = (runAdapterExecutionTargetProcess.mock.calls[1] as unknown as [string, unknown, string, string[]])[3];
+    const firstCallArgs = runAdapterExecutionTargetProcess.mock.calls[0]?.[3];
+    const secondCallArgs = runAdapterExecutionTargetProcess.mock.calls[1]?.[3];
     expect(firstCallArgs).toContain("--session");
     expect(secondCallArgs).not.toContain("--session");
     expect(secondCallArgs).toContain("--session-dir");
@@ -591,7 +634,7 @@ describe("omp local execution", () => {
         kind: "remote",
         transport: "sandbox",
         providerKey: "test",
-        spec: {},
+        remoteCwd: "/remote/workspace",
       },
       agent: {
         id: "agent-1",
@@ -620,24 +663,18 @@ describe("omp local execution", () => {
     });
 
     expect(prepareAdapterExecutionTargetRuntime).toHaveBeenCalled();
-    const prepareCall = prepareAdapterExecutionTargetRuntime.mock.calls[0][0] as {
-      assets: Array<{ key: string; localDir: string; followSymlinks?: boolean }>;
-    };
-    const skillsAsset = prepareCall.assets.find((a) => a.key === "skills");
-    const agentConfigAsset = prepareCall.assets.find((a) => a.key === "agentConfig");
+    const prepareCall = prepareAdapterExecutionTargetRuntime.mock.calls[0]?.[0];
+    const skillsAsset = prepareCall?.assets?.find((a) => a.key === "skills");
+    const agentConfigAsset = prepareCall?.assets?.find((a) => a.key === "agentConfig");
     expect(skillsAsset).toBeDefined();
     expect(skillsAsset?.followSymlinks).toBe(true);
     expect(agentConfigAsset).toBeDefined();
     expect(agentConfigAsset?.followSymlinks).toBe(true);
 
-    const targetProcCall = runAdapterExecutionTargetProcess.mock.calls[0] as unknown as [
-      string,
-      unknown,
-      string,
-      string[],
-      { env: Record<string, string> },
-    ];
-    expect(targetProcCall[4].env.PI_CODING_AGENT_DIR).toBe("/remote/runtime/agentConfig");
-    expect(targetProcCall[4].env.OMP_CODING_AGENT_DIR).toBe("/remote/runtime/agentConfig");
+    const targetProcCall = runAdapterExecutionTargetProcess.mock.calls[0];
+    expect(targetProcCall).toBeDefined();
+    const targetProcOptions = targetProcCall?.[4];
+    expect(targetProcOptions?.env?.PI_CODING_AGENT_DIR).toBe("/remote/runtime/agentConfig");
+    expect(targetProcOptions?.env?.OMP_CODING_AGENT_DIR).toBe("/remote/runtime/agentConfig");
   });
 });
