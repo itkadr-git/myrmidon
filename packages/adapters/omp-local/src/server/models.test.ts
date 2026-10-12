@@ -83,5 +83,16 @@ google/gemini-2.5-pro
         { id: "google/gemini-2.5-pro", label: "google/gemini-2.5-pro" },
       ]);
     });
+
+    it("ignores log warnings and non-model lines", () => {
+      const output = `
+WARN   failed to fetch remote plugin manifest
+INFO   loaded cache from disk
+error: something went wrong
+openai/gpt-4o
+`;
+      const parsed = parseModelsOutput(output);
+      expect(parsed).toEqual([{ id: "openai/gpt-4o", label: "openai/gpt-4o" }]);
+    });
   });
 });

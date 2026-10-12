@@ -30,7 +30,7 @@ export function resolveOmpSkillsHome(config: Record<string, unknown>): string {
   if (agentDir) {
     return path.join(path.resolve(agentDir), "skills");
   }
-  const configuredHome = asString(env.HOME);
+  const configuredHome = asString(env.HOME) ?? asString(config.agentHome);
   const home = configuredHome ? path.resolve(configuredHome) : os.homedir();
   return path.join(home, ".omp", "agent", "skills");
 }

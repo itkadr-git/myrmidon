@@ -13,6 +13,23 @@ function firstNonEmptyLine(text: string): string {
   );
 }
 
+const IGNORED_MODEL_HEADINGS = new Set([
+  "provider",
+  "model",
+  "context",
+  "max-out",
+  "warn",
+  "warning",
+  "info",
+  "error",
+  "debug",
+  "notice",
+  "note",
+]);
+
+const VALID_PROVIDER_RE = /^[a-zA-Z0-9_-]+$/;
+const VALID_MODEL_RE = /^[a-zA-Z0-9._:/-]+$/;
+
 export function parseModelsOutput(output: string): AdapterModel[] {
   // First attempt: JSON parse
   try {
@@ -62,7 +79,11 @@ export function parseModelsOutput(output: string): AdapterModel[] {
       const cells = line.split(/[│|]/).map((c) => c.trim()).filter(Boolean);
       if (cells.length > 0 && currentProvider) {
         const modelName = cells[0];
-        if (modelName && modelName !== "model") {
+        if (
+          modelName &&
+          !IGNORED_MODEL_HEADINGS.has(modelName.toLowerCase()) &&
+          VALID_MODEL_RE.test(modelName)
+        ) {
           const id = modelName.includes("/") ? modelName : `${currentProvider}/${modelName}`;
           parsed.push({ id, label: id });
         }
@@ -75,7 +96,14 @@ export function parseModelsOutput(output: string): AdapterModel[] {
     if (parts.length >= 2) {
       const provider = parts[0].trim();
       const model = parts[1].trim();
-      if (provider && model && provider !== "provider" && model !== "model") {
+      if (
+        provider &&
+        model &&
+        VALID_PROVIDER_RE.test(provider) &&
+        VALID_MODEL_RE.test(model) &&
+        !IGNORED_MODEL_HEADINGS.has(provider.toLowerCase()) &&
+        !IGNORED_MODEL_HEADINGS.has(model.toLowerCase())
+      ) {
         const id = model.includes("/") ? model : `${provider}/${model}`;
         parsed.push({ id, label: id });
         continue;
@@ -83,8 +111,14 @@ export function parseModelsOutput(output: string): AdapterModel[] {
     }
 
     // Single model id with provider prefix, e.g. "openai/gpt-4o"
-    if (/^[a-zA-Z0-9._-]+\/[a-zA-Z0-9._-]+$/.test(line)) {
-      parsed.push({ id: line, label: line });
+    if (/^[a-zA-Z0-9_-]+\/[a-zA-Z0-9._-]+$/.test(line)) {
+      const [prov, mod] = line.split("/");
+      if (
+        !IGNORED_MODEL_HEADINGS.has(prov.toLowerCase()) &&
+        !IGNORED_MODEL_HEADINGS.has(mod.toLowerCase())
+      ) {
+        parsed.push({ id: line, label: line });
+      }
     }
   }
 
@@ -194,7 +228,7 @@ export async function discoverOmpModels(input: {
     throw new Error(detail ? `\`omp models ls\` failed: ${detail}` : "`omp models ls` failed.");
   }
 
-  const output = result.stdout || result.stderr;
+  const output = result.stdout.trim() ? result.stdout : "";
   return sortModels(dedupeModels(parseModelsOutput(output)));
 }
 

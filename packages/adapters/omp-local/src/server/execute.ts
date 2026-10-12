@@ -60,6 +60,7 @@ import { shellQuote } from "@paperclipai/adapter-utils/ssh";
 import { PRODUCT_NAME } from "@paperclipai/adapter-utils";
 import { isOmpUnknownSessionError, parseOmpJsonl } from "./parse.js";
 import { ensureOmpModelConfiguredAndAvailable } from "./models.js";
+import { resolveOmpSkillsHome } from "./skills.js";
 import { prepareOmpRuntimeConfig } from "./runtime-config.js";
 import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 
@@ -134,16 +135,18 @@ async function ensureOmpSkillsInjected(
   }
 }
 
-async function buildOmpSkillsDir(config: Record<string, unknown>): Promise<string> {
-  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-omp-skills-"));
-  const target = path.join(tmp, "skills");
+async function buildOmpSkillsDir(
+  config: Record<string, unknown>,
+  targetDir?: string,
+): Promise<string> {
+  const target = targetDir ?? path.join(await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-omp-skills-")), "skills");
   await fs.mkdir(target, { recursive: true });
   const availableEntries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
   const desiredNames = new Set(resolveLegacyPaperclipDesiredSkillNames(config, availableEntries));
   for (const entry of availableEntries) {
     if (!desiredNames.has(entry.key)) continue;
     if (isPaperclipSkillSourceMissing(entry)) continue;
-    await fs.symlink(entry.source, path.join(target, entry.runtimeName));
+    await fs.symlink(entry.source, path.join(target, entry.runtimeName)).catch(() => undefined);
   }
   return target;
 }
@@ -214,21 +217,68 @@ async function readSavedSessionCwd(input: {
   }
 }
 
-async function findLatestCreatedSessionFile(sessionDir: string): Promise<string | null> {
-  try {
-    const entries = await fs.readdir(sessionDir, { withFileTypes: true });
-    const jsonlFiles: Array<{ name: string; mtime: number }> = [];
-    for (const entry of entries) {
-      if (entry.isFile() && entry.name.endsWith(".jsonl")) {
-        const stat = await fs.stat(path.join(sessionDir, entry.name));
-        jsonlFiles.push({ name: entry.name, mtime: stat.mtimeMs });
+async function listSessionFiles(input: {
+  runId: string;
+  sessionDir: string;
+  executionTarget: ReturnType<typeof readAdapterExecutionTarget>;
+  cwd: string;
+  env: Record<string, string>;
+  timeoutSec: number;
+  graceSec: number;
+}): Promise<string[]> {
+  if (!adapterExecutionTargetIsRemote(input.executionTarget)) {
+    try {
+      const entries = await fs.readdir(input.sessionDir, { withFileTypes: true });
+      const files: Array<{ path: string; mtime: number }> = [];
+      for (const entry of entries) {
+        if (entry.isFile() && entry.name.endsWith(".jsonl")) {
+          const fullPath = path.join(input.sessionDir, entry.name);
+          const stat = await fs.stat(fullPath);
+          files.push({ path: fullPath, mtime: stat.mtimeMs });
+        }
       }
+      files.sort((a, b) => b.mtime - a.mtime);
+      return files.map((f) => f.path);
+    } catch {
+      return [];
     }
-    jsonlFiles.sort((a, b) => b.mtime - a.mtime);
-    return jsonlFiles.length > 0 ? path.join(sessionDir, jsonlFiles[0].name) : null;
-  } catch {
-    return null;
   }
+
+  try {
+    const result = await runAdapterExecutionTargetShellCommand(
+      input.runId,
+      input.executionTarget,
+      `if [ -d ${shellQuote(input.sessionDir)} ]; then ls -1t ${shellQuote(input.sessionDir)}/*.jsonl 2>/dev/null || true; fi`,
+      {
+        cwd: input.cwd,
+        env: input.env,
+        timeoutSec: input.timeoutSec > 0 ? Math.min(input.timeoutSec, 15) : 15,
+        graceSec: input.graceSec,
+      },
+    );
+    if (result.timedOut || (result.exitCode ?? 0) !== 0) return [];
+    return result.stdout
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0 && line.endsWith(".jsonl"));
+  } catch {
+    return [];
+  }
+}
+
+async function findNewlyCreatedSessionFile(input: {
+  runId: string;
+  sessionDir: string;
+  executionTarget: ReturnType<typeof readAdapterExecutionTarget>;
+  cwd: string;
+  env: Record<string, string>;
+  timeoutSec: number;
+  graceSec: number;
+  existingSessionFiles: Set<string>;
+}): Promise<string | null> {
+  const currentFiles = await listSessionFiles(input);
+  const newFiles = currentFiles.filter((f) => !input.existingSessionFiles.has(f));
+  return newFiles.length > 0 ? newFiles[0] : null;
 }
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
@@ -350,7 +400,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const desiredOmpSkillNames = resolveLegacyPaperclipDesiredSkillNames(config, ompSkillEntries);
   const targetSkillsDir = localAgentConfigDir
     ? path.join(localAgentConfigDir, "skills")
-    : path.join(os.homedir(), ".omp", "agent", "skills");
+    : resolveOmpSkillsHome({ env, agentHome });
 
   if (!executionTargetIsRemote) {
     await ensureOmpSkillsInjected(onLog, ompSkillEntries, targetSkillsDir, desiredOmpSkillNames);
@@ -427,10 +477,17 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     let remoteRuntimeRootDir: string | null = null;
     let localSkillsDir: string | null = null;
     let paperclipBridge: Awaited<ReturnType<typeof startAdapterExecutionTargetPaperclipBridge>> = null;
+    let managedRemoteAgentConfigDir: string | null = null;
 
     if (executionTargetIsRemote) {
       try {
-        localSkillsDir = await buildOmpSkillsDir(config);
+        if (!localAgentConfigDir) {
+          managedRemoteAgentConfigDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-omp-agent-config-"));
+        }
+        const effectiveAgentConfigDir = localAgentConfigDir || managedRemoteAgentConfigDir!;
+        const remoteSkillsStagingDir = path.join(effectiveAgentConfigDir, "skills");
+        localSkillsDir = await buildOmpSkillsDir(config, remoteSkillsStagingDir);
+
         await onLog(
           "stdout",
           `[paperclip] Syncing workspace and OMP runtime assets to ${describeAdapterExecutionTarget(executionTarget)}.\n`,
@@ -451,12 +508,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
               localDir: localSkillsDir,
               followSymlinks: true,
             },
-            ...(localAgentConfigDir
-              ? [{
-                  key: "agentConfig",
-                  localDir: localAgentConfigDir,
-                }]
-              : []),
+            {
+              key: "agentConfig",
+              localDir: effectiveAgentConfigDir,
+              followSymlinks: true,
+            },
           ],
         });
         restoreRemoteWorkspace = () =>
@@ -479,14 +535,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           env.HOME = preparedRemoteRuntime.runtimeRootDir;
         }
         remoteRuntimeRootDir = preparedRemoteRuntime.runtimeRootDir;
-        if (localAgentConfigDir && preparedRemoteRuntime.assetDirs.agentConfig) {
+        if (preparedRemoteRuntime.assetDirs.agentConfig) {
           env.PI_CODING_AGENT_DIR = preparedRemoteRuntime.assetDirs.agentConfig;
           env.OMP_CODING_AGENT_DIR = preparedRemoteRuntime.assetDirs.agentConfig;
         }
       } catch (error) {
         await Promise.allSettled([
           restoreRemoteWorkspace?.(),
-          localSkillsDir ? fs.rm(path.dirname(localSkillsDir), { recursive: true, force: true }).catch(() => undefined) : Promise.resolve(),
+          managedRemoteAgentConfigDir ? fs.rm(managedRemoteAgentConfigDir, { recursive: true, force: true }).catch(() => undefined) : Promise.resolve(),
         ]);
         throw error;
       }
@@ -777,6 +833,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       };
     };
 
+    let preRunSessionFiles = new Set<string>();
+
     const toResult = async (
       attempt: {
         proc: { exitCode: number | null; signal: string | null; timedOut: boolean; stdout: string; stderr: string; errorCode?: string | null };
@@ -798,8 +856,17 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
       // Discover or confirm session file
       let finalSessionPath: string | null = resumedSessionPath;
-      if (!finalSessionPath && !clearSessionOnMissingSession && !executionTargetIsRemote) {
-        finalSessionPath = await findLatestCreatedSessionFile(effectiveSessionDir);
+      if (!finalSessionPath && !clearSessionOnMissingSession) {
+        finalSessionPath = await findNewlyCreatedSessionFile({
+          runId,
+          sessionDir: effectiveSessionDir,
+          executionTarget: runtimeExecutionTarget,
+          cwd,
+          env: executionTargetIsRemote ? env : runtimeEnv,
+          timeoutSec,
+          graceSec,
+          existingSessionFiles: preRunSessionFiles,
+        });
       }
 
       const resolvedSessionId = clearSessionOnMissingSession ? null : finalSessionPath;
@@ -860,6 +927,18 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         systemPromptFile = await writePromptFile(renderedSystemPromptExtension, { fileName: "system-prompt.md" });
       }
 
+      preRunSessionFiles = new Set(
+        await listSessionFiles({
+          runId,
+          sessionDir: effectiveSessionDir,
+          executionTarget: runtimeExecutionTarget,
+          cwd,
+          env: executionTargetIsRemote ? env : runtimeEnv,
+          timeoutSec,
+          graceSec,
+        }),
+      );
+
       const initialSessionToResume = canResumeSession ? runtimeSessionId : null;
       const initial = await runAttempt(initialSessionToResume);
       const initialFailed =
@@ -884,7 +963,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       await Promise.all([
         paperclipBridge?.stop(),
         restoreRemoteWorkspace?.(),
-        localSkillsDir ? fs.rm(path.dirname(localSkillsDir), { recursive: true, force: true }).catch(() => undefined) : Promise.resolve(),
+        managedRemoteAgentConfigDir ? fs.rm(managedRemoteAgentConfigDir, { recursive: true, force: true }).catch(() => undefined) : Promise.resolve(),
       ]);
     }
   } finally {
