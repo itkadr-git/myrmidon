@@ -31,6 +31,17 @@ import {
   startProcessMetricsObservation,
   type ProcessMetricsSource,
 } from "./process-metrics.js";
+import {
+  BOARD_PROCESS_STALE_MS,
+  boardProcessAgeSeconds,
+  boardProcessBootId,
+  boardProcessStatus,
+  resolveBoardProcessRole,
+} from "../../process-registry/domain.js";
+import {
+  createBoardProcessStore,
+  type BoardProcessStore,
+} from "../../process-registry/store.js";
 
 /** Settings env: the NAME of the company secret holding the scraper token. */
 export const METRICS_TOKEN_SECRET_ENV = "MYRMIDON_METRICS_TOKEN_SECRET";
@@ -64,6 +75,13 @@ export interface MetricsRoutesDeps {
    * memory, live events). Absent → the production in-process source.
    */
   processMetrics?: ProcessMetricsSource | null;
+  /**
+   * myrmidon(1.6.6 OPE-6959): the registry read seam behind /internal/procs.
+   * Absent → the production store on `db`.
+   */
+  processStore?: BoardProcessStore;
+  /** Role override (tests); `PAPERCLIP_PROCESS_ROLE` via the registry domain otherwise. */
+  role?: string;
 }
 
 /**
@@ -132,6 +150,10 @@ export function myrmidonMetricsRoutes(deps: MetricsRoutesDeps) {
   const defaultLatencyWindowSec = clampLatencyWindowSec(env[METRICS_LATENCY_WINDOW_ENV]);
   const runSelfCheck: (deps: MetricsCollectorDeps) => Promise<MetricsSelfCheck> =
     deps.runSelfCheck ?? runMetricsSelfCheck;
+  // myrmidon(1.6.6 OPE-6959): the role of THIS process, stamped on every
+  // metric sample and reported by /internal/procs.
+  const role = deps.role ?? resolveBoardProcessRole(env.PAPERCLIP_PROCESS_ROLE);
+  const processStore: BoardProcessStore = deps.processStore ?? createBoardProcessStore(deps.db);
 
   // myrmidon(1.6.5-PROCS-Q3): the process observers (delay histogram +
   // live-event subscribers) start lazily on the FIRST authorized scrape and
@@ -176,9 +198,48 @@ export function myrmidonMetricsRoutes(deps: MetricsRoutesDeps) {
       now: deps.now,
       errorWindowSec: clampErrorWindowSec(query.window ?? defaultErrorWindowSec),
       latencyWindowSec: clampLatencyWindowSec(query.latency_window ?? defaultLatencyWindowSec),
+      role,
       ...(deps.processMetrics !== undefined ? { processMetrics: deps.processMetrics } : {}),
     });
     res.status(200).set("Content-Type", METRICS_CONTENT_TYPE).send(renderMetricsText(snapshot));
+  });
+
+  // myrmidon(1.6.6 OPE-6959, design BOARD-PROCESSES этап 1): the internal
+  // process list the orchestrator and the scraper read. It answers from the
+  // same registry rows the «Процессы» panel shows, trimmed to the fields the
+  // machines need — role, pid, uptime, ready — and guarded by the same
+  // bearer token as /metrics (this router is mounted at the origin root,
+  // outside /api, so there is no board actor on the request).
+  router.get("/internal/procs", async (req: Request, res: Response) => {
+    if (!(await authorized(req, res))) return;
+
+    const at = deps.now();
+    try {
+      const rows = await processStore.listProcesses();
+      res.status(200).json({
+        role,
+        selfBootId: boardProcessBootId,
+        staleAfterSeconds: Math.round(BOARD_PROCESS_STALE_MS / 1000),
+        processes: rows.map((row) => ({
+          role: row.role,
+          pid: row.pid,
+          startedAt: row.startedAt.toISOString(),
+          uptimeSeconds: boardProcessAgeSeconds(row.startedAt, at),
+          ready: boardProcessStatus(row.lastSeenAt, at, BOARD_PROCESS_STALE_MS) === "live",
+          self: row.bootId === boardProcessBootId,
+        })),
+      });
+    } catch {
+      // Same contract as the self-check probe: a failed read still answers
+      // with a shape, never a stack — a caller polling procs during a DB
+      // outage gets a well-formed empty list, not an error page.
+      res.status(200).json({
+        role,
+        selfBootId: boardProcessBootId,
+        staleAfterSeconds: Math.round(BOARD_PROCESS_STALE_MS / 1000),
+        processes: [],
+      });
+    }
   });
 
   // Self-check link (myrmidon 1.6.6 annex): the probe answers under the
