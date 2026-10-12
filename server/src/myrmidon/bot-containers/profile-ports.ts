@@ -116,10 +116,10 @@ async function getOrCreateSecret(
   name: string,
   description: string,
   generate: () => string,
-): Promise<{ secretId: string; value: string }> {
-  const existingId = (await secrets.getByName(companyId, name))?.id;
-  if (existingId) {
-    return { secretId: existingId, value: await secrets.resolveSecretValue(companyId, existingId, "latest") };
+): Promise<{ secretId: string; value: string; version: number }> {
+  const existing = await secrets.getByName(companyId, name);
+  if (existing) {
+    return { secretId: existing.id, value: await secrets.resolveSecretValue(companyId, existing.id, "latest"), version: existing.latestVersion };
   }
   let secretId: string;
   try {
@@ -131,11 +131,14 @@ async function getOrCreateSecret(
     secretId = created.id;
   } catch (err) {
     // A parallel create (another process, or the card sync racing this tick) won: use its secret.
-    const raced = (await secrets.getByName(companyId, name))?.id;
+    const raced = await secrets.getByName(companyId, name);
     if (!raced) throw err;
-    secretId = raced;
+    // myrmidon(BOT-KEY-401): the raced row's CURRENT version — the value below is
+    // resolved from "latest", so the version handed back is the one that value lives at.
+    return { secretId: raced.id, value: await secrets.resolveSecretValue(companyId, raced.id, "latest"), version: raced.latestVersion };
   }
-  return { secretId, value: await secrets.resolveSecretValue(companyId, secretId, "latest") };
+  // A fresh secret has exactly version 1; re-reading the row for it would be one more query per create.
+  return { secretId, value: await secrets.resolveSecretValue(companyId, secretId, "latest"), version: 1 };
 }
 
 // ---------------------------------------------------------------------------
@@ -240,14 +243,20 @@ export function createDbBotProfilePorts(db: Db): BotProfilePorts {
     },
 
     async ensureApiServerKey(agent) {
-      const { secretId, value } = await getOrCreateSecret(
+      // myrmidon(BOT-KEY-401): the version of the secret the returned value came
+      // from — compile writes that VALUE into the profile's .env, so the card's
+      // secret_ref (card-sync.ts) pins exactly this version and is only re-pinned
+      // once the container actually runs a profile carrying it. A version bump
+      // without a container switch (a rotation, then a failed apply) no longer
+      // moves the card's key out from under the old container.
+      const { secretId, value, version } = await getOrCreateSecret(
         secrets,
         agent.companyId,
         apiServerKeySecretName(agent.id),
         `Hermes API server key of the bot container for agent ${agent.name}`,
         generateToken,
       );
-      return { secretId, value };
+      return { secretId, value, version };
     },
 
     async ensureAgentApiKey(agent) {
@@ -528,7 +537,7 @@ export function botProfileWiring(
    *  bot is done, so nothing survives into the next tick. */
   beginProfilePass: () => BotProfilePass;
   endProfilePass: (pass: BotProfilePass) => void;
-  syncCard: (agentId: string, botKey: string) => Promise<BotCardSyncResult>;
+  syncCard: (agentId: string, botKey: string, appliedApiServerKeyVersion: number) => Promise<BotCardSyncResult>;
   releaseStrayGateways: (keepAgentIds: ReadonlySet<string>) => Promise<{ released: number; warnings: string[] }>;
 } {
   const ports = createDbBotProfilePorts(db);

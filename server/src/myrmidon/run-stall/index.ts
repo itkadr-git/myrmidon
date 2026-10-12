@@ -5,8 +5,10 @@
 // call site (CONVENTIONS.md §8).
 
 import type { Db } from "@paperclipai/db";
+import type { RunStallValues } from "@paperclipai/shared";
 import { logger } from "../../middleware/logger.js";
 import { logActivity } from "../../services/activity-log.js";
+import { instanceSettingsService } from "../../services/index.js";
 import { isRunUnderMaintenance } from "../maintenance/gate.js";
 import {
   RUN_STALL_ERROR_CODE,
@@ -14,6 +16,8 @@ import {
   RUN_STALL_WAKE_IDEMPOTENCY_PREFIX,
   RUN_STALL_WAKE_REASON,
 } from "./constants.js";
+import { runStallRoutes } from "./routes.js";
+import { runStallService, type RunStallServiceDeps } from "./settings-service.js";
 import { createRunStallSweep, type RunStallSweep } from "./sweep.js";
 // myrmidon(TEAM-LIVENESS-SETTINGS): the effective knobs the pass obeys, resolved
 // from the settings row over the environment on every pass.
@@ -150,3 +154,67 @@ export { countRunStallInterrupts, RUN_STALL_METRIC_WINDOW_MS } from "./metrics.j
 export { RUN_STALL_ERROR_CODE, RUN_STALL_WAKE_REASON } from "./constants.js";
 export { classifyRunStall, progressAnchorAt, progressSilenceMs, shouldReturnIssueToTodo } from "./policy.js";
 export { readRunStallSettings, readRunStallEnabled } from "./settings.js";
+export { runStallService, RUN_STALL_ACTION } from "./settings-service.js";
+export type {
+  RunStallActor,
+  RunStallService,
+  RunStallServiceDeps,
+  RunStallView,
+} from "./settings-service.js";
+export { runStallRoutes } from "./routes.js";
+
+// myrmidon(RUN-STALL-SETTINGS, 1.6.5): the live sweep instance a
+// settings write applies to. The sweep is built later in startup than the
+// routes are mounted (it needs the heartbeat service), so the apply target is
+// a registry entry, not a constructor argument: a PATCH that lands before the
+// sweep exists still persists and audits, and startup applies the stored row
+// to the sweep when it is created — the write is never lost.
+let liveRunStallSweep: RunStallSweep | null = null;
+
+export function registerRunStallSweep(sweep: RunStallSweep | null): void {
+  liveRunStallSweep = sweep;
+}
+
+export function applyRunStallSettings(settings: RunStallValues): void {
+  liveRunStallSweep?.applySettings(settings);
+}
+
+function defaultRunStallDeps(db: Db): RunStallServiceDeps {
+  return {
+    settings: instanceSettingsService(db),
+    listCompanyIds: () => instanceSettingsService(db).listCompanyIds(),
+    logActivity: (entry) => logActivity(db, entry),
+    apply: applyRunStallSettings,
+  };
+}
+
+/** Router for app.ts: GET/PATCH /api/myrmidon/run-stall. */
+export function myrmidonRunStallRoutes(db: Db) {
+  return runStallRoutes(db, runStallService(db, defaultRunStallDeps(db)));
+}
+
+/**
+ * Startup: put the stored run stall detection settings in force. A failed read
+ * must not stop the server: the sweep keeps the environment values it was
+ * created with, which is exactly the pre-feature behaviour.
+ */
+export async function startRunStall(db: Db): Promise<void> {
+  try {
+    const view = await runStallService(db, defaultRunStallDeps(db)).read();
+    applyRunStallSettings({
+      enabled: view.settings.enabled,
+      thresholdSec: view.settings.thresholdSec,
+      checkIntervalSec: view.settings.checkIntervalSec,
+      pageSize: view.settings.pageSize,
+    });
+    logger.info(
+      { settings: view.settings, sources: view.sources },
+      "run stall detection settings at startup",
+    );
+  } catch (err) {
+    logger.error(
+      { err },
+      "failed to read the stored run stall detection settings; the environment values stay in force",
+    );
+  }
+}

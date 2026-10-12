@@ -851,6 +851,9 @@ export function App() {
           <Route path="pipelines/:pipelineId/cases/:caseId" element={<UnprefixedBoardRedirect />} />
           <Route path="artifacts" element={<UnprefixedBoardRedirect />} />
           <Route path="audit" element={<UnprefixedBoardRedirect />} />
+          <Route path="swarm-claim" element={<UnprefixedBoardRedirect />} />
+          <Route path="foraging" element={<UnprefixedBoardRedirect />} />
+          <Route path="stack" element={<UnprefixedBoardRedirect />} />
           {streamlinedUiEnabled ? (
             <>
               <Route path="audit/*" element={<UnprefixedBoardRedirect />} />

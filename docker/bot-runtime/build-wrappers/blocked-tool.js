@@ -30,6 +30,7 @@
 
 const { spawn } = require("node:child_process");
 const { devbuildPresent, refusalMessage } = require("./devbuild-gate.js");
+const { applyHeavyFallback } = require("./heavy-fallback.js");
 
 const VERSION_PROBES = new Set(["--version", "-v", "version", "-V", "--help", "-h", "help"]);
 
@@ -38,8 +39,18 @@ function isVersionProbe(argv) {
   return argv.length > 0 && argv.every((a) => VERSION_PROBES.has(a) || a.startsWith("-"));
 }
 
-function runReal(realPath, argv) {
-  const child = spawn(realPath, argv, { stdio: "inherit" });
+function runReal(realPath, argv, tool = "build", { light = false } = {}) {
+  // myrmidon(1.6.5 DEVBUILD-IN-BOTS): the heavy pass-through lane runs
+  // inside this container's cgroup — cap the child heap and say so once,
+  // so an uncapped tsc cannot take the bot down with it. Light probes
+  // (version/help) skip both.
+  let env = process.env;
+  if (!light) {
+    const fb = applyHeavyFallback(tool);
+    env = fb.env;
+    if (fb.warning) process.stderr.write(fb.warning + "\n");
+  }
+  const child = spawn(realPath, argv, { stdio: "inherit", env });
   for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
     process.on(signal, () => child.kill(signal));
   }
@@ -58,8 +69,13 @@ function runReal(realPath, argv) {
 function makeWrapper(tool, realPath) {
   return function main() {
     const argv = process.argv.slice(2);
-    if (devbuildPresent() || isVersionProbe(argv)) {
-      runReal(realPath, argv);
+    if (isVersionProbe(argv)) {
+      // A version/help probe is not a build: no cap, no warning.
+      runReal(realPath, argv, tool, { light: true });
+      return;
+    }
+    if (devbuildPresent()) {
+      runReal(realPath, argv, tool);
       return;
     }
     process.stderr.write(refusalMessage(tool, argv) + "\n");

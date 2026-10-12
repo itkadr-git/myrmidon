@@ -121,8 +121,11 @@ export interface BotProfilePorts {
   /** A company secret's current value by name; null when there is no such secret. */
   readCompanySecret(companyId: string, name: string): Promise<string | null>;
   /** The bot's gateway key (API_SERVER_KEY): created once as a company secret, then reused.
-   *  `secretId` is what the card's `apiKey` secret_ref points at (card-sync.ts). */
-  ensureApiServerKey(agent: BotProfileAgentRecord): Promise<{ value: string; secretId: string }>;
+   *  `secretId` is what the card's `apiKey` secret_ref points at (card-sync.ts).
+   *  myrmidon(BOT-KEY-401): `version` is the secret version whose VALUE compile wrote into
+   *  the profile's .env; the card is pinned to it (never "latest"), and only after the
+   *  container actually runs a profile with that value. */
+  ensureApiServerKey(agent: BotProfileAgentRecord): Promise<{ value: string; secretId: string; version: number }>;
   /** The bot's own board API key (PAPERCLIP_API_KEY): created once, company secret, then reused. */
   ensureAgentApiKey(agent: BotProfileAgentRecord): Promise<{ value: string; warnings?: string[] }>;
   /** Company skills the card's desiredSkills name, as files, keyed by runtime name.
@@ -462,6 +465,9 @@ export function createBotProfileCompile(
     );
 
     const result = compileHermesProfileDetailed(built.input);
+    // myrmidon(BOT-KEY-401): hand the card sync the exact secret version whose value
+    // the .env carries, so it pins the card to it only once the container runs this profile.
+    result.profile.apiServerKeyVersion = apiServerKey.version;
     await reportWarnings(agentId, botKey, [
       ...(ports.listMcpServers ? [] : [NO_BOARD_GATEWAY_WARNING]),
       ...gatewayWarnings,

@@ -13,6 +13,7 @@ import { deliverReconciledExecutions, settleUnrecoverableExecutions } from "./se
 import { reconcileSafeNativeReplacements } from "./services/native-runtime/native-safe-replacement.js";
 import { reconcileAbandonedExecutionControl } from "./services/execution-control-reconciliation.js";
 import { EXECUTION_RECONCILIATION_INTERVAL_MS } from "./services/execution-control-deadline.js";
+import { laneInterval, recordLaneDbQuery } from "./myrmidon/monitoring/board-load/lanes.js"; // myrmidon(1.6.6 PROCS-0.3A): load lanes
 import { connectionIntentDeliveryService } from "./services/connection-intent-delivery.js";
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import { createServer } from "node:http";
@@ -131,6 +132,11 @@ import { startBehaviorSettings } from "./myrmidon/behavior-settings/index.js"; /
 import { startBotContainers, stopBotContainers } from "./myrmidon/bot-containers/startup.js"; // myrmidon(W2a)
 import { startLitellmCostSweep, stopLitellmCostSweep } from "./myrmidon/litellm-costs/startup.js"; // myrmidon(M2-A)
 import { startBoardProcessRegistry, stopBoardProcessRegistry } from "./myrmidon/process-registry/index.js"; // myrmidon(1.6.6 PROCS-0.1)
+import {
+  assertBoardProcessesStartable,
+  formatBoardProcessesComposition,
+} from "@paperclipai/shared"; // myrmidon(1.6.6 PROCS-J): the board's process composition
+import { readResolvedBoardProcesses } from "./myrmidon/board-processes/settings.js"; // myrmidon(1.6.6 PROCS-J)
 import { startLitellmBudgetSync } from "./myrmidon/litellm-budget-sync/index.js"; // myrmidon(1.7-BUDGET-CONFIG-C)
 import { startLitellmModelReconciliation } from "./myrmidon/litellm-sync/startup-reconciler.js"; // myrmidon(1.6.1 MODEL-PROVIDERS B)
 import { startModelFallbackSignalSweep } from "./myrmidon/litellm-fallback-signal/sweep.js"; // myrmidon(BOT-RUNTIME-TUNING D)
@@ -149,7 +155,7 @@ import { createBotDiskQuotaScheduler } from "./myrmidon/bot-containers/bot-disk-
 // myrmidon(BOT-DISK E): measures the host disk and signals when it crosses the threshold
 import { createHostDiskScheduler } from "./myrmidon/host-disk/index.js"; // myrmidon(BOT-DISK E)
 import { createAlertRecoveryScheduler } from "./myrmidon/monitoring/alert-recovery/index.js"; // myrmidon(1.6.6-MONITORING-D)
-import { createRunStallSweepFromHeartbeat } from "./myrmidon/run-stall/index.js"; // myrmidon(RUN-STALL)
+import { createRunStallSweepFromHeartbeat, registerRunStallSweep, startRunStall } from "./myrmidon/run-stall/index.js"; // myrmidon(RUN-STALL)
 // myrmidon(HERMES-RUN-REATTACH): reattach live gateway runs after a board restart
 import { sweepGatewayRunReattach, GATEWAY_REATTACH_SWEEP_INTERVAL_MS } from "./myrmidon/gateway-run-reattach.js";
 import { readHotRestartIntent } from "./services/hot-restart.js"; // myrmidon(T1.6): predecessor boot id for the startup reattach pass
@@ -474,7 +480,7 @@ async function startServerWithDatabaseTeardown(
     const migrationUrl = config.databaseMigrationUrl ?? config.databaseUrl;
     migrationSummary = await ensureMigrations(migrationUrl, "PostgreSQL");
   
-    db = createDb(config.databaseUrl);
+    db = createDb(config.databaseUrl, { onQuery: () => recordLaneDbQuery() });
     pluginMigrationDb = config.databaseMigrationUrl ? createDb(config.databaseMigrationUrl) : db;
     logger.info("Using external PostgreSQL via DATABASE_URL/config");
     activeDatabaseConnectionString = config.databaseUrl;
@@ -682,7 +688,7 @@ async function startServerWithDatabaseTeardown(
       autoApply: shouldAutoApplyFirstRunMigrations,
     });
   
-    db = createDb(embeddedConnectionString);
+    db = createDb(embeddedConnectionString, { onQuery: () => recordLaneDbQuery() });
     pluginMigrationDb = db;
     logger.info("Embedded PostgreSQL ready");
     activeDatabaseConnectionString = embeddedConnectionString;
@@ -852,6 +858,31 @@ async function startServerWithDatabaseTeardown(
     shareClient: createFeedbackTraceShareClientFromConfig(config),
   });
   const backupSettingsSvc = instanceSettingsService(db);
+  // myrmidon(1.6.6 PROCS-J): the board's process composition — how many HTTP
+  // processes (`api`) and scheduler processes (`worker`) this deployment runs —
+  // is read once here, from the same stored settings row everything else reads,
+  // before anything is created. A row that cannot be read (counts that are not
+  // whole numbers >= 0, or a composition with no process at all) refuses startup
+  // with the fix in the message instead of running a topology nobody asked for.
+  // An absent key — the usual case — resolves to { api: 1, worker: 0 }: today's
+  // single process, byte for byte.
+  const boardProcesses = await readResolvedBoardProcesses(instanceSettingsService(db));
+  try {
+    assertBoardProcessesStartable(boardProcesses);
+  } catch (err) {
+    logger.error(
+      { err, problems: boardProcesses.problems },
+      "board processes setting is unusable; refusing to start (fail closed)",
+    );
+    throw err;
+  }
+  logger.info(
+    {
+      boardProcesses: formatBoardProcessesComposition(boardProcesses.settings),
+      boardProcessesSources: boardProcesses.sources,
+    },
+    "board process composition", // myrmidon(1.6.6 PROCS-J)
+  );
   const databaseBackupMaxAgeHours = Math.max(
     1,
     Number(process.env.PAPERCLIP_DB_BACKUP_MAX_AGE_HOURS) ||
@@ -1229,6 +1260,15 @@ async function startServerWithDatabaseTeardown(
         issues: issueService(db as any),
       })
     : null;
+  // myrmidon(RUN-STALL-SETTINGS, 1.6.5): settings saved from the UI apply to
+  // this sweep instance without a restart; the stored row is applied right
+  // after registration, before the first scheduler tick.
+  registerRunStallSweep(runStallSweep);
+  if (runStallSweep) {
+    void startRunStall(db as any).catch((err) =>
+      logger.error({ err }, "failed to apply the stored run stall settings at startup"),
+    );
+  }
   const executionControlSweeps = [
     ["finalization", () => reconcileAbandonedExecutionControl(db)],
     ["replacement", () => heartbeat ? reconcileSafeNativeReplacements(db, new Date(), { verifyStoppedSession: run => verifyStoppedNativeSessionForReplacement(db, run) }) : undefined],
@@ -1250,11 +1290,20 @@ async function startServerWithDatabaseTeardown(
         .finally(() => { executionControlSweepsInFlight.delete(queue); }));
     }
   };
-  const executionControlInterval = setInterval(sweepExecutionControl, EXECUTION_RECONCILIATION_INTERVAL_MS);
+  const executionControlInterval = laneInterval(
+    "execution_control",
+    EXECUTION_RECONCILIATION_INTERVAL_MS,
+    sweepExecutionControl,
+  );
   executionControlInterval.unref?.();
   sweepExecutionControl();
   const startHeartbeatSchedulerInterval = (callback: () => void) => {
-    heartbeatSchedulerInterval = setInterval(callback, config.heartbeatSchedulerIntervalMs);
+    heartbeatSchedulerInterval = laneInterval(
+      "heartbeat_tick",
+      config.heartbeatSchedulerIntervalMs,
+      callback,
+      (error) => logger.error({ err: error }, "heartbeat scheduler interval failed"),
+    );
     heartbeatSchedulerInterval?.unref?.();
   };
   const externalObjects = externalObjectService(db as any, {

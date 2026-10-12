@@ -81,7 +81,7 @@ function fakeBoard(overrides: Partial<BotProfilePorts> = {}): FakeBoard {
       calls.push("ensureApiServerKey");
       const name = `api-server-key-${record.id}`;
       if (!secrets.has(name)) secrets.set(name, `fake-api-server-key-${secrets.size}`);
-      return { value: secrets.get(name) as string, secretId: `secret-${name}` };
+      return { value: secrets.get(name) as string, secretId: `secret-${name}`, version: 1 };
     },
     async ensureAgentApiKey(record) {
       calls.push("ensureAgentApiKey");
@@ -1090,7 +1090,7 @@ describe("myrmidon(PERF-DIET-G) createBotProfileCompile — one read per pass", 
         return name === "FLEET_LLM_API_KEY" ? "fake-llm-key-0001" : null;
       },
       async ensureApiServerKey(record) {
-        return { value: `fake-api-server-key-${record.id}`, secretId: `secret-${record.id}` };
+        return { value: `fake-api-server-key-${record.id}`, secretId: `secret-${record.id}`, version: 1 };
       },
       async ensureAgentApiKey(record) {
         return { value: `fake-paperclip-api-key-${record.id}` };

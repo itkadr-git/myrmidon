@@ -878,6 +878,31 @@ describe("release-body.mjs: body construction", () => {
     assert.doesNotMatch(body, /(?<!\d)(?:10|192|172)\.\d+\.\d+\.\d+(?!\d)/);
   });
 
+  it("condenses a notes section over GitHub's limit to its entry headings (the 1.6.6-rc.1 publish)", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "release-body-condense-"));
+    fs.mkdirSync(path.join(dir, "docs/myrmidon/changes"), { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, "docs/myrmidon/changes/huge.md"),
+      `## changelog-en\n\n### Huge entry\n\n- ${"x".repeat(130000)}\n`,
+    );
+    const registryState = {
+      myrmidon: "sha256:a", "myrmidon-dockergate": "sha256:b",
+      "myrmidon-fleetd": "sha256:c", "myrmidon-hermes": "sha256:d",
+    };
+    fs.writeFileSync(path.join(dir, "registry-state.json"), JSON.stringify(registryState));
+    fs.writeFileSync(path.join(dir, "docs/myrmidon/CHANGELOG.md"), "# Changelog\n");
+    const r = spawnSync("node", [BUILDER, "--registry-state", path.join(dir, "registry-state.json"), "1.6.5-rc.6"], {
+      cwd: dir,
+      encoding: "utf8",
+    });
+    assert.equal(r.status, 0, r.stderr);
+    assert.ok(r.stdout.length <= 125000);
+    assert.match(r.stdout, /^- Huge entry$/m);
+    assert.match(r.stdout, /docs\/myrmidon\/CHANGELOG\.md/);
+    assert.doesNotMatch(r.stdout, /x{1000}/);
+    assert.match(r.stderr, /publishing the entry headings/);
+  });
+
   it("refuses a body over GitHub's 125000-character limit before publish (the 1.6.5-rc.6 422)", () => {
     // An rc body collects every pending change fragment; a long release
     // window overruns GitHub's release-body limit and `gh release create`
@@ -887,7 +912,7 @@ describe("release-body.mjs: body construction", () => {
     fs.mkdirSync(path.join(dir, "docs/myrmidon/changes"), { recursive: true });
     fs.writeFileSync(
       path.join(dir, "docs/myrmidon/changes/huge.md"),
-      `## changelog-en\n\n### Huge entry\n\n- ${"x".repeat(130000)}\n`,
+      `## changelog-en\n\n### ${"Huge heading ".repeat(11000)}\n\n- entry\n`,
     );
     const registryState = {
       myrmidon: "sha256:a", "myrmidon-dockergate": "sha256:b",

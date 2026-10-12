@@ -251,10 +251,15 @@ RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/
 # the transcript file must be created 0o600 from the first byte, and control prose must
 # not mask accidentally (the pass, not the file, is what closes the leak).
 RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/delegation_live_log_redact.py /opt/hermes-src
+# myrmidon(1.6.6-HERMES-SKILLS-A): behaviour regression for 14-run-scoped-paperclip-skills.patch —
+# the run body's paperclip_skills entries land in the profile's managed segment (hashed
+# `slug--hash` names and the ~60 KB operational skill included), stale entries go, and a
+# skipped entry fails the run WITH its reason (1.6.6-rc.1: Buffer content, bare message).
+RUN PYTHONDONTWRITEBYTECODE=1 HERMES_HOME=/tmp/run-skills-test /opt/hermes-src/.venv/bin/python /tmp/patch-tests/run_skills_materialize.py /opt/hermes-src
 # myrmidon(G1): names imported inside functions of the patched modules resolve too
 # (the import smoke above runs only top-level imports; a missing lazily imported name
 # broke every run of the 1.6.0 dev image while the build passed).
-RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/lazy_imports_resolve.py /opt/hermes-src hermes_state tools.environments.base tools.environments.base_session_env gateway.run gateway.platforms.api_server_runs tools.environments.local tools.github_broker_context tools.run_workspace tools.github_launcher_context
+RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/lazy_imports_resolve.py /opt/hermes-src hermes_state tools.environments.base tools.environments.base_session_env gateway.run gateway.platforms.api_server_runs tools.environments.local tools.github_broker_context tools.run_workspace tools.github_launcher_context tools.run_skills
 
 # The provider itself, through hermes' OWN discovery path (the same one the gateway uses at
 # start): a staging home gets the same symlink the entrypoint will make at run time, and
@@ -766,12 +771,14 @@ RUN chmod 0755 /opt/paperclip/bin/git /opt/paperclip/bin/bot-clone-hygiene \
 # github-broker wrappers above: Node scripts, node --check at build
 # time, /opt only.
 COPY --chown=root:root build-wrappers/devbuild-gate.js build-wrappers/blocked-tool.js \
+     build-wrappers/heavy-fallback.js \
      build-wrappers/pnpm build-wrappers/tsc build-wrappers/vitest \
      build-wrappers/gradle build-wrappers/go /opt/paperclip/bin/
 RUN chmod 0755 /opt/paperclip/bin/pnpm /opt/paperclip/bin/tsc /opt/paperclip/bin/vitest \
      /opt/paperclip/bin/gradle /opt/paperclip/bin/go \
   && chmod 0644 /opt/paperclip/bin/devbuild-gate.js /opt/paperclip/bin/blocked-tool.js \
-  && for f in devbuild-gate.js blocked-tool.js pnpm tsc vitest gradle go; do \
+     /opt/paperclip/bin/heavy-fallback.js \
+  && for f in devbuild-gate.js blocked-tool.js heavy-fallback.js pnpm tsc vitest gradle go; do \
        /opt/node24/bin/node --check /opt/paperclip/bin/$f; \
      done
 

@@ -1,4 +1,5 @@
 import { createCoalescedAsyncTrigger } from "../../services/chat-publication-reconciliation.js";
+import { laneInterval } from "../monitoring/board-load/lanes.js";
 
 /**
  * Gets the fallback interval for chat reconciliation in milliseconds.
@@ -49,10 +50,10 @@ export function createReconcileInterval(input: {
   const startFallbackTimer = () => {
     if (stopped || fallbackTimer) return;
     
-    fallbackTimer = setInterval(() => {
+    fallbackTimer = laneInterval("chat_reconcile", fallbackIntervalMs, () => {
       // Only run fallback reconciliation if no recent event-driven activity
-      eventTrigger.poll();
-    }, fallbackIntervalMs);
+      return eventTrigger.poll();
+    });
     
     // Unref the timer so it doesn't keep the process alive
     if (fallbackTimer && typeof (fallbackTimer as any).unref === 'function') {

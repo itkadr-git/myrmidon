@@ -21,6 +21,32 @@ Query parameters:
 
 Results sorted by priority.
 
+### Agent defaults for the list (Myrmidon 1.6.5 F-16, part A)
+
+When the request is authenticated as an **agent** (agent API token), the
+instance setting `issuesListAgentDefaults` (in `instance_settings.general`)
+applies. It is **on by default** — the key is absent until first toggled,
+and absent means enabled; `{ "enabled": false }` restores the pre-feature
+behaviour byte-for-byte.
+
+With the setting on, for agent actors:
+
+- A request without `view` is answered as `view=compact`; the default
+  `limit` is **200**.
+- Explicit `limit` above **500** is rejected with `400` and a pagination
+  hint (instead of being silently clamped).
+- Compact rows omit `description`. Fetch the full body of the chosen task
+  with `GET /api/issues/{issueId}`.
+- The full view requires an explicit `view=full` **and** an explicit
+  `limit` ≤ **100**; otherwise the request is rejected with `400`.
+
+Board (human/UI) requests are unaffected: a bare board request returns the
+full response and `limit=1000` is clamped as before.
+
+Details, error texts, and the operator story:
+[`docs/myrmidon/guides/issue-list-agent-defaults.md`](../myrmidon/guides/issue-list-agent-defaults.md)
+([RU](../myrmidon/guides/issue-list-agent-defaults.ru.md)).
+
 ## Get Issue
 
 ```

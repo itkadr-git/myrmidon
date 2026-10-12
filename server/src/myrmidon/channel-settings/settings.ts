@@ -35,6 +35,10 @@ export interface ChannelSettingValue<T> {
 
 /** The effective channel settings the API (and later the screen) reads. */
 export interface ChannelSettings {
+  // myrmidon(CA-A): who may write to the bots — "sponsor" (the vendor
+  // guest-sponsor path) or "allowlist" (the board channel allowlist decides;
+  // OPE-4949).
+  channelAccessMode: ChannelSettingValue<string>;
   telegramDmConversations: ChannelSettingValue<string>;
   telegramDmStatus: ChannelSettingValue<boolean>;
   telegramSplitMaxParts: ChannelSettingValue<number>;
@@ -53,6 +57,7 @@ export type ChannelSettingKey = Exclude<keyof ChannelSettings, "telegramApiBaseU
 
 /** The keys the interface may change, in the order the screen lists them. */
 export const CHANNEL_SETTING_KEYS: readonly ChannelSettingKey[] = [
+  "channelAccessMode",
   "telegramDmConversations",
   "telegramDmStatus",
   "telegramSplitMaxParts",
@@ -67,6 +72,7 @@ export const CHANNEL_SETTING_KEYS: readonly ChannelSettingKey[] = [
 
 /** A PATCH body: only the keys present are changed. */
 export interface ChannelSettingsPatch {
+  channelAccessMode?: string;
   telegramDmConversations?: string;
   telegramDmStatus?: boolean;
   telegramSplitMaxParts?: number;
@@ -87,6 +93,19 @@ export interface ChannelSettingsDocument {
 // Environment names. The MYRMIDON_* spelling is fixed: the settings screen
 // shows these names, and a deployment that keeps using the environment keeps
 // working unchanged.
+// myrmidon(CA-A): the channel access mode lives with the channel-allowlist
+// module (its resolver reads the same stored document); the constants are
+// pure and import without a cycle.
+export {
+  CHANNEL_ACCESS_MODE_ENV,
+  CHANNEL_ACCESS_MODE_KEY,
+  DEFAULT_CHANNEL_ACCESS_MODE,
+  resolveChannelAccessMode,
+} from "../channel-allowlist/settings.js";
+import {
+  CHANNEL_ACCESS_MODE_ENV,
+  DEFAULT_CHANNEL_ACCESS_MODE,
+} from "../channel-allowlist/settings.js";
 export const TELEGRAM_DM_CONVERSATIONS_ENV = "MYRMIDON_TELEGRAM_DM_CONVERSATIONS";
 export const TELEGRAM_DM_STATUS_ENV = "MYRMIDON_TELEGRAM_DM_STATUS";
 export const TELEGRAM_SPLIT_MAX_PARTS_ENV = "MYRMIDON_TELEGRAM_SPLIT_MAX_PARTS";
@@ -103,6 +122,7 @@ export const TELEGRAM_API_BASE_URL_ENV = "TELEGRAM_API_BASE_URL";
 export const CHANNEL_SETTING_ENV_NAMES: Readonly<
   Record<ChannelSettingKey | "telegramApiBaseUrl", string>
 > = {
+  channelAccessMode: CHANNEL_ACCESS_MODE_ENV,
   telegramDmConversations: TELEGRAM_DM_CONVERSATIONS_ENV,
   telegramDmStatus: TELEGRAM_DM_STATUS_ENV,
   telegramSplitMaxParts: TELEGRAM_SPLIT_MAX_PARTS_ENV,
@@ -175,6 +195,13 @@ function readPositiveIntOrNull(value: unknown, _fallback: number | null): number
   return Number.isNaN(parsed) || parsed <= 0 ? null : parsed;
 }
 
+/** "sponsor" / "allowlist"; anything else falls back (a typo cannot lock
+ * every guest out: the default keeps the vendor path). */
+function readChannelAccessModeValue(value: unknown, fallback: string): string {
+  const raw = typeof value === "string" ? value.trim().toLowerCase() : "";
+  return raw === "sponsor" || raw === "allowlist" ? raw : fallback;
+}
+
 type Coerce<T> = (value: unknown, fallback: T) => T;
 
 /** One key: environment first, then the stored value, then the default. */
@@ -212,6 +239,13 @@ export function getEffectiveChannelSettings(
   const base = envRaw("telegramApiBaseUrl")?.trim() ?? "";
 
   return {
+    channelAccessMode: resolve(
+      block.channelAccessMode,
+      envRaw("channelAccessMode"),
+      CHANNEL_ACCESS_MODE_ENV,
+      DEFAULT_CHANNEL_ACCESS_MODE,
+      readChannelAccessModeValue,
+    ),
     telegramDmConversations: resolve(
       block.telegramDmConversations,
       envRaw("telegramDmConversations"),
@@ -326,7 +360,11 @@ export function parseChannelSettingsPatch(input: unknown): ChannelSettingsPatch 
       throw new Error(`unknown channel setting: ${key}`);
     }
     const typed = key as ChannelSettingKey;
-    if (typed === "telegramDmConversations") {
+    if (typed === "channelAccessMode") {
+      if (value !== "sponsor" && value !== "allowlist") {
+        throw new Error("channelAccessMode must be 'sponsor' or 'allowlist'");
+      }
+    } else if (typed === "telegramDmConversations") {
       if (typeof value !== "string") throw new Error("telegramDmConversations must be a string");
     } else if (typed === "telegramDmStatus") {
       if (typeof value !== "boolean") throw new Error("telegramDmStatus must be a boolean");

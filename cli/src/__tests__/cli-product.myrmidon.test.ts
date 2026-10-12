@@ -29,8 +29,11 @@ describe("cli product naming", () => {
       console.log = original;
     }
     const text = lines.join("\n");
-    expect(text).toContain("Myrmidon");
-    expect(text).not.toContain("Paperclip");
-    expect(text).toContain(MYRMIDON_ART.join("\n"));
+    // CI enables color output (picocolors honors CI/FORCE_COLOR), so the
+    // printed art carries ANSI SGR sequences. Compare against the plain text.
+    const plain = text.replace(/\u001b\[[0-9;]*m/g, "");
+    expect(plain).toContain("Myrmidon");
+    expect(plain).not.toContain("Paperclip");
+    expect(plain).toContain(MYRMIDON_ART.join("\n"));
   });
 });

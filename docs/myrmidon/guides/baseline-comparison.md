@@ -28,10 +28,18 @@ the direction: green — better than the baseline, red — worse (cycle time,
 review time, return rate and cost are "lower is better"; tasks completed is
 "higher is better").
 
-The server-side `differences` block of the compare answer is a company-wide
-summary; the per-project/per-role rows are derived on the client from the two
-keyed rows. A row without a counterpart on the other side shows "—" instead
-of a delta.
+The server-side `differences` block of the compare answer carries the same
+deltas per key: `differences.byProject[key]` and `differences.byRole[key]`
+hold the per-metric `{ absolute, percentage }` pairs for every group present
+on both sides of the comparison (there is no `reviewTimeP90` entry — the
+BASELINE contract has no p90 for review time). A group that exists on only
+one side gets no entry, and its row shows "—" instead of a delta — the
+compare block derives its rows from `current.by*` and `baseline.by*` matched
+by key, so the display does not depend on the server block. The delta
+percentages are computed per key, so a task is never counted twice (once
+under its project and once under its role). `percentage` is `null` when the
+baseline value is 0: a change from 0 is real, but it has no meaningful
+percentage. A `null` project key appears under the `""` record key.
 
 ## No pinned snapshot is not an error
 

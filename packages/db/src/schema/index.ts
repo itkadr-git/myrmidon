@@ -21,6 +21,7 @@ export { invites } from "./invites.js";
 export { joinRequests } from "./join_requests.js";
 export { budgetPolicies } from "./budget_policies.js";
 export { budgetIncidents } from "./budget_incidents.js";
+export { projectTokenQuotas } from "./project_token_quotas.js"; // myrmidon(1.6.6 QUOTA-V2)
 export { agentConfigRevisions } from "./agent_config_revisions.js";
 export { agentInstructionsRevisions, type AgentInstructionsRevisionFile } from "./agent_instructions_revisions.js";
 export { agentApiKeys } from "./agent_api_keys.js";
@@ -254,6 +255,9 @@ export {
 } from "./myrmidon_wiki_regulations.js";
 // myrmidon(1.6-EVALS): reference tasks and judge runs for the evals module.
 export { evalReferenceTasks, evalRuns } from "./myrmidon_evals.js";
+// myrmidon(CA-A): the channel allowlist — who may write to the company's bots,
+// keyed by channel identity (no board account required).
+export { myrmidonChannelAllowedUsers } from "./myrmidon_channel_allowed_users.js";
 // myrmidon(1.6.1 MODEL-PROVIDERS): company model-provider registry and model cache.
 export {
   modelProviders,
@@ -273,3 +277,24 @@ export {
 } from "./corpus.js";
 // myrmidon(1.6.6 PROCS-0.1): the process registry of the board (design §5.1).
 export { boardProcesses } from "./board_processes.js";
+// myrmidon(1.6.6 KNOWLEDGE-2.0 K-1): the knowledge module — items, revisions,
+// links, sources, suggestions, events. Additive tables, nest-scoped.
+export {
+  knowledgeItems,
+  knowledgeRevisions,
+  knowledgeSearch,
+  knowledgeLinks,
+  knowledgeSources,
+  knowledgeSuggestions,
+  knowledgeEvents,
+  KNOWLEDGE_KINDS,
+  KNOWLEDGE_ITEM_STATUSES,
+  KNOWLEDGE_REVISION_STATUSES,
+  KNOWLEDGE_SOURCE_KINDS,
+  KNOWLEDGE_SUGGESTION_STATUSES,
+  type KnowledgeKind,
+  type KnowledgeItemStatus,
+  type KnowledgeRevisionStatus,
+  type KnowledgeSourceKind,
+  type KnowledgeSuggestionStatus,
+} from "./knowledge.js";

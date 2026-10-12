@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   PAPERCLIP_RUNNER_DEFAULT_MODELS,
+  PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES,
   isPaperclipRunnerProvider,
   resolvePaperclipRunnerModel,
   resolvePaperclipRunnerPermissionMode,
@@ -21,6 +22,32 @@ describe("Paperclip Runner permission defaults", () => {
       "ask",
     );
     expect(resolvePaperclipRunnerPermissionMode("acpx", undefined)).toBe(
+      "approve-reads",
+    );
+  });
+
+  // myrmidon(1.6.6 PLUGIN-REGISTRY 3/3, OPE-5065 piece B): the agent-card
+  // mode selector exposes exactly the three existing permissionMode values
+  // under operator-facing labels (full auto / restricted / deny). The
+  // vendor's fourth mode (approve-paperclip) must never enter the catalog,
+  // and the runtime values stay the contract the executor reads.
+  it("maps the ACPX agent-card modes onto the three existing values", () => {
+    const acpx = PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES.acpx;
+    expect(acpx.options.map((option) => option.value)).toEqual([
+      "approve-all",
+      "approve-reads",
+      "deny-all",
+    ]);
+    expect(acpx.options.map((option) => option.label)).toEqual([
+      "Full auto (approve all)",
+      "Restricted (approve reads)",
+      "Deny all (forbidden)",
+    ]);
+    expect(acpx.defaultMode).toBe("approve-reads");
+    for (const value of ["approve-all", "approve-reads", "deny-all"]) {
+      expect(resolvePaperclipRunnerPermissionMode("acpx", value)).toBe(value);
+    }
+    expect(resolvePaperclipRunnerPermissionMode("acpx", "approve-paperclip")).toBe(
       "approve-reads",
     );
   });
