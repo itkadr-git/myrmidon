@@ -31394,7 +31394,9 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         if (!value || typeof value !== "object") return [];
         const object = value as Record<string, unknown>;
         return [
-          ...(object.label === "High" && typeof object.custom_id === "string"
+          ...(typeof object.label === "string" &&
+          object.label.endsWith(". High") &&
+          typeof object.custom_id === "string"
             ? [object.custom_id]
             : []),
           ...Object.values(object).flatMap(findHighButton),
