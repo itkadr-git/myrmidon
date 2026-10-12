@@ -695,4 +695,64 @@ describe("omp local execution", () => {
     expect(targetProcOptions?.env?.PI_CODING_AGENT_DIR).toBe("/remote/runtime/agentConfig");
     expect(targetProcOptions?.env?.OMP_CODING_AGENT_DIR).toBe("/remote/runtime/agentConfig");
   });
+
+  it("prepends existing skill bin/ dirs to PATH and ignores skills without bin/ dir", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-omp-skill-path-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    const skillWithBinDir = path.join(rootDir, "skills", "skill-with-bin");
+    const skillWithBinBinDir = path.join(skillWithBinDir, "bin");
+    const skillWithoutBinDir = path.join(rootDir, "skills", "skill-without-bin");
+    await mkdir(workspaceDir, { recursive: true });
+    await mkdir(skillWithBinBinDir, { recursive: true });
+    await mkdir(skillWithoutBinDir, { recursive: true });
+
+    runAdapterExecutionTargetProcess.mockImplementationOnce(async () => ({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      stdout: `${JSON.stringify({ type: "session", version: 3, id: "session-1", timestamp: new Date().toISOString(), cwd: workspaceDir })}\n${JSON.stringify({ type: "turn_start" })}\n${JSON.stringify({ type: "turn_end", message: { role: "assistant", content: [{ type: "text", text: "done" }] }, toolResults: [] })}\n${JSON.stringify({ type: "agent_end", messages: [] })}\n`,
+      stderr: "",
+      pid: 1,
+      startedAt: new Date().toISOString(),
+    }));
+
+    await execute({
+      runId: "run-skill-path-unit",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "OMP Unit Agent",
+        adapterType: "omp_local",
+        adapterConfig: {},
+      },
+      runtime: {
+        sessionId: null,
+        sessionParams: null,
+        sessionDisplayId: null,
+        taskKey: null,
+      },
+      config: {
+        command: "omp",
+        cwd: workspaceDir,
+        model: "openai/gpt-4o",
+      },
+      context: {
+        paperclipSkills: [
+          { name: "skill-with-bin", path: skillWithBinDir },
+          { name: "skill-without-bin", path: skillWithoutBinDir },
+        ],
+      },
+      authToken: "run-jwt-token",
+      onLog: async () => {},
+    });
+
+    const targetProcCall = runAdapterExecutionTargetProcess.mock.calls[0];
+    expect(targetProcCall).toBeDefined();
+    const targetProcOptions = targetProcCall?.[4];
+    const pathValue = targetProcOptions?.env?.PATH || targetProcOptions?.env?.Path || "";
+    const entries = pathValue.split(path.delimiter);
+    expect(entries[0]).toBe(skillWithBinBinDir);
+    expect(entries).not.toContain(path.join(skillWithoutBinDir, "bin"));
+  });
 });

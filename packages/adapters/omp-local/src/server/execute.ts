@@ -143,15 +143,15 @@ async function buildOmpSkillsDir(
   const target = targetDir ?? path.join(await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-omp-skills-")), "skills");
   await fs.mkdir(target, { recursive: true });
   const configuredEntries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
-  const availableEntries = [...configuredEntries];
-  for (const extra of extraSkills) {
-    if (!availableEntries.some((existing) => existing.key === extra.key)) {
-      availableEntries.push(extra);
+  const availableEntries = [...extraSkills];
+  for (const entry of configuredEntries) {
+    if (!availableEntries.some((existing) => existing.key === entry.key)) {
+      availableEntries.push(entry);
     }
   }
   const desiredNames = new Set([
-    ...resolveLegacyPaperclipDesiredSkillNames(config, availableEntries),
     ...extraSkills.map((entry) => entry.key),
+    ...resolveLegacyPaperclipDesiredSkillNames(config, availableEntries),
   ]);
   for (const entry of availableEntries) {
     if (!desiredNames.has(entry.key)) continue;
@@ -423,8 +423,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     .filter((entry): entry is { key: string; runtimeName: string; source: string } => entry !== null);
 
   const configuredSkillEntries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
-  const ompSkillEntries = [...configuredSkillEntries];
-  for (const entry of contextSkillEntries) {
+  const ompSkillEntries = [...contextSkillEntries];
+  for (const entry of configuredSkillEntries) {
     if (!ompSkillEntries.some((existing) => existing.key === entry.key)) {
       ompSkillEntries.push(entry);
     }
@@ -433,8 +433,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const legacyDesired = resolveLegacyPaperclipDesiredSkillNames(config, ompSkillEntries);
   const desiredOmpSkillNames = Array.from(
     new Set([
-      ...legacyDesired,
       ...contextSkillEntries.map((entry) => entry.key),
+      ...legacyDesired,
     ]),
   );
   const targetSkillsDir = localAgentConfigDir
@@ -447,9 +447,21 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   try {
     const injectedSkillKeys = new Set(desiredOmpSkillNames);
-    const skillBinDirs = ompSkillEntries
+    const candidateBinDirs = ompSkillEntries
       .filter((entry) => injectedSkillKeys.has(entry.key) && entry.source.length > 0)
       .map((entry) => path.join(entry.source, "bin"));
+    const skillBinDirs = (
+      await Promise.all(
+        candidateBinDirs.map(async (binDir) => {
+          try {
+            const stat = await fs.stat(binDir);
+            return stat.isDirectory() ? binDir : null;
+          } catch {
+            return null;
+          }
+        }),
+      )
+    ).filter((dir): dir is string => dir !== null);
 
     const mergedEnv = ensurePathInEnv({ ...myrmidonInheritedProcessEnv(config, "omp_local"), ...env });
     const pathKey =
