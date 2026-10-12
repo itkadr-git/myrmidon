@@ -21431,7 +21431,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       )
       .then((rows) => rows[0]);
     const action = publication.payload.card?.actions?.find(
-      (candidate) => candidate.type === "callback" && candidate.label === "One",
+      (candidate) => candidate.type === "callback" && candidate.label.endsWith(". One"),
     );
     if (
       !publication.providerMessageId ||
@@ -31383,7 +31383,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       }
       const highAction = questionPublication.payload.card?.actions?.find(
         (candidate) =>
-          candidate.type === "callback" && candidate.label === "High",
+          candidate.type === "callback" && candidate.label.endsWith(". High"),
       );
       if (!highAction || highAction.type !== "callback") {
         throw new Error("Discord question callback was not projected");
@@ -31394,7 +31394,9 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         if (!value || typeof value !== "object") return [];
         const object = value as Record<string, unknown>;
         return [
-          ...(object.label === "High" && typeof object.custom_id === "string"
+          ...(typeof object.label === "string" &&
+          object.label.endsWith(". High") &&
+          typeof object.custom_id === "string"
             ? [object.custom_id]
             : []),
           ...Object.values(object).flatMap(findHighButton),
@@ -34321,7 +34323,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     );
     expect(callbackActions).toHaveLength(2);
     const highAction = callbackActions?.find(
-      (action) => action.label === "High",
+      (action) => action.label.endsWith(". High"),
     );
     if (!highAction || highAction.type !== "callback")
       throw new Error("High-priority callback was not projected");
@@ -37398,7 +37400,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         throw new Error("Telegram question publication was not delivered");
       const action = publication.payload.card?.actions?.find(
         (candidate) =>
-          candidate.type === "callback" && candidate.label === "High",
+          candidate.type === "callback" && candidate.label.endsWith(". High"),
       );
       if (!action || action.type !== "callback")
         throw new Error("Telegram callback action was not projected");
