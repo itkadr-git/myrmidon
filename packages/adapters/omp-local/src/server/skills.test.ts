@@ -49,15 +49,18 @@ describe("syncOmpSkills", () => {
     await fs.writeFile(path.join(fakeSkillSource, "SKILL.md"), "# Test Skill", "utf8");
 
     const ctx = {
+      agentId: "agent-1",
+      companyId: "company-1",
+      adapterType: "omp_local",
       config: {
         env: {
           PI_CODING_AGENT_DIR: tmpDir,
         },
       },
-      skills: [],
     };
 
     const snapshot = await syncOmpSkills(ctx, []);
-    expect(snapshot.skillsHome).toBe(skillsHome);
+    expect(snapshot.adapterType).toBe("omp_local");
+    expect((await fs.stat(skillsHome)).isDirectory()).toBe(true);
   });
 });
