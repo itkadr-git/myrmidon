@@ -11,15 +11,13 @@
 //                     ∨ exists project_memberships(company_id, project_id,
 //                           user_id = agent.id, state = 'joined')
 //
-// `project_memberships.user_id` is the polymorphic principal id — for an
-// agent it is the agent's own id, which is exactly the comparison
-// `scope-wiring.listAgents` performs (`inArray(projectMemberships.userId, ids)`
-// over agent ids). A task that carries a `project_id` is self-servable only
-// by a member of that project; a task without one stays open to the company.
-// A task assigned to an agent is a manual action and is never gated here.
+// `project_memberships.user_id` is polymorphic. For an agent, membership
+// counts only when that ID resolves to an agent in the same company; this
+// keeps human-user IDs from masquerading as agent IDs. A task without a
+// project stays open to the company. A manually assigned task is never gated.
 
 import { and, eq, isNotNull, sql, type SQL } from "drizzle-orm";
-import { issues, projectMemberships, projects, type Db } from "@paperclipai/db";
+import { agents, issues, projectMemberships, projects, type Db } from "@paperclipai/db";
 
 /**
  * The claim gate over the outer `issues` row (a SQL twin of
@@ -36,15 +34,24 @@ export function projectScopedClaimGate(agentId: string): SQL {
       from projects p
       where p.company_id = ${issues.companyId}
         and p.id = ${issues.projectId}
+        and exists (
+          select 1 from agents a
+          where a.id = ${agentId}
+            and a.company_id = ${issues.companyId}
+        )
         and (
           p.lead_agent_id = ${agentId}
           or exists (
             select 1
             from project_memberships pm
+              join agents a
+                on a.company_id = pm.company_id
+               and a.id::text = pm.user_id
             where pm.company_id = ${issues.companyId}
               and pm.project_id = ${issues.projectId}
               and pm.user_id = ${agentId}
               and pm.state = 'joined'
+              and a.id = ${agentId}
           )
         )
     )
@@ -71,6 +78,13 @@ export async function projectMembershipByProject(
         userId: projectMemberships.userId,
       })
       .from(projectMemberships)
+      .innerJoin(
+        agents,
+        and(
+          eq(projectMemberships.userId, sql`${agents.id}::text`),
+          eq(projectMemberships.companyId, agents.companyId),
+        ),
+      )
       .where(
         and(
           eq(projectMemberships.companyId, companyId),

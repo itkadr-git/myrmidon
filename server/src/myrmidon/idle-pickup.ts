@@ -6,6 +6,7 @@ import { logger } from "../middleware/logger.js";
 // budget without restarting the server — a restart drops every run in flight.
 import { resolveAgentTeamLiveness, type ResolvedTeamLiveness } from "@paperclipai/shared";
 import { issueHasNoExecutionHold, wakeNotParkedOnExecutionHold } from "./settled-holds/ready-predicate.js";
+import { projectScopedClaimGate } from "./project-membership.js";
 
 /**
  * Idle pickup (IDLE-PICKUP, Myrmidon 1.3).
@@ -348,6 +349,9 @@ function idlePickupCandidateRows(db: Db, companyId: string, agentId: string) {
       and(
         eq(issues.companyId, companyId),
         eq(issues.assigneeAgentId, agentId),
+        // A task assigned manually to this agent remains theirs, but stale or
+        // cross-project assignments must not turn into an automatic pickup.
+        projectScopedClaimGate(agentId),
         isNull(issues.assigneeUserId),
         isNull(issues.hiddenAt),
         isNull(issues.conversationAgentId),
