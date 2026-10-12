@@ -2,9 +2,14 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { resetOmpModelsCacheForTests } from "./models.js";
 
-const { runChildProcess, ensureCommandResolvable, resolveCommandForLogs } = vi.hoisted(() => ({
-  runChildProcess: vi.fn(async () => ({
+const {
+  runAdapterExecutionTargetProcess,
+  ensureAdapterExecutionTargetCommandResolvable,
+  resolveAdapterExecutionTargetCommandForLogs,
+} = vi.hoisted(() => ({
+  runAdapterExecutionTargetProcess: vi.fn(async () => ({
     exitCode: 0,
     signal: null,
     timedOut: false,
@@ -26,14 +31,40 @@ const { runChildProcess, ensureCommandResolvable, resolveCommandForLogs } = vi.h
     pid: 123,
     startedAt: new Date().toISOString(),
   })),
+  ensureAdapterExecutionTargetCommandResolvable: vi.fn(async () => undefined),
+  resolveAdapterExecutionTargetCommandForLogs: vi.fn(async () => "omp"),
+}));
+
+const { runChildProcess, ensureCommandResolvable, resolveCommandForLogs } = vi.hoisted(() => ({
+  runChildProcess: vi.fn(async () => ({
+    exitCode: 0,
+    signal: null,
+    timedOut: false,
+    stdout: JSON.stringify({
+      models: [
+        { provider: "openai", id: "gpt-4o", selector: "openai/gpt-4o" },
+      ],
+    }),
+    stderr: "",
+    pid: 123,
+    startedAt: new Date().toISOString(),
+  })),
   ensureCommandResolvable: vi.fn(async () => undefined),
   resolveCommandForLogs: vi.fn(async () => "omp"),
 }));
 
-vi.mock("@paperclipai/adapter-utils/server-utils", async () => {
-  const actual = await vi.importActual<typeof import("@paperclipai/adapter-utils/server-utils")>(
-    "@paperclipai/adapter-utils/server-utils",
-  );
+vi.mock("@paperclipai/adapter-utils/execution-target", async (importOriginal) => {
+  const actual = (await importOriginal()) as Record<string, unknown>;
+  return {
+    ...actual,
+    ensureAdapterExecutionTargetCommandResolvable,
+    resolveAdapterExecutionTargetCommandForLogs,
+    runAdapterExecutionTargetProcess,
+  };
+});
+
+vi.mock("@paperclipai/adapter-utils/server-utils", async (importOriginal) => {
+  const actual = (await importOriginal()) as Record<string, unknown>;
   return {
     ...actual,
     ensureCommandResolvable,
@@ -49,6 +80,7 @@ describe("omp local execution", () => {
 
   afterEach(async () => {
     vi.clearAllMocks();
+    resetOmpModelsCacheForTests();
     while (cleanupDirs.length > 0) {
       const dir = cleanupDirs.pop();
       if (!dir) continue;
@@ -90,9 +122,11 @@ describe("omp local execution", () => {
       onLog: async () => {},
     });
 
-    const call = runChildProcess.mock.calls[0] as unknown as [string, string, string[]] | undefined;
+    const call = runAdapterExecutionTargetProcess.mock.calls[0] as unknown as
+      | [string, unknown, string, string[]]
+      | undefined;
     expect(call).toBeDefined();
-    const args = call![2];
+    const args = call![3];
     expect(args).not.toContain("--session");
     expect(args).toContain("--session-dir");
     expect(args).not.toContain("--skill");
@@ -148,9 +182,11 @@ describe("omp local execution", () => {
       onLog: async () => {},
     });
 
-    const call = runChildProcess.mock.calls[0] as unknown as [string, string, string[]] | undefined;
+    const call = runAdapterExecutionTargetProcess.mock.calls[0] as unknown as
+      | [string, unknown, string, string[]]
+      | undefined;
     expect(call).toBeDefined();
-    const args = call![2];
+    const args = call![3];
     expect(args).toContain("--session");
     expect(args).toContain(sessionFilePath);
   });
@@ -203,9 +239,11 @@ describe("omp local execution", () => {
       onLog: async () => {},
     });
 
-    const call = runChildProcess.mock.calls[0] as unknown as [string, string, string[]] | undefined;
+    const call = runAdapterExecutionTargetProcess.mock.calls[0] as unknown as
+      | [string, unknown, string, string[]]
+      | undefined;
     expect(call).toBeDefined();
-    const args = call![2];
+    const args = call![3];
     expect(args).not.toContain("--session");
     expect(args).toContain("--session-dir");
   });
