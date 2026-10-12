@@ -1892,7 +1892,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         // the run loudly when an entry did not land.
         factCheckGatewayPaperclipSkills({
           skills: paperclipSkillsField,
-          desiredSkills: skillsReconcile.desiredSkills,
+          expected: skillsReconcile.expected,
         });
         await ctx.onLog(
           "stdout",

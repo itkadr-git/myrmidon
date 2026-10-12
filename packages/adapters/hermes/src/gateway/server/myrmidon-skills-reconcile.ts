@@ -35,8 +35,29 @@ export interface GatewaySkillEntry {
 export interface GatewaySkillsReconcileResult {
   /** Run-body field value, in canonical path order. */
   skills: GatewaySkillEntry[];
-  /** Desired keys after canonicalization (what the fact-check requires). */
+  /** Desired keys after canonicalization. */
   desiredSkills: string[];
+  /**
+   * What the fact-check requires: for every desired key that has an available
+   * runtime entry, the exact name reconcile put into the run-body field
+   * (`runtimeName ?? last key segment`). The names are resolved ONCE, here,
+   * so reconcile and the fact-check cannot disagree (hashed runtime names
+   * `slug--hash` of every non-`paperclipai/paperclip/` key broke the old
+   * `key.split("/").pop()` comparison).
+   */
+  expected: Array<{ key: string; name: string }>;
+  /**
+   * Desired keys with no available runtime entry (deleted / not attached to
+   * the company). hermes_local ignores them silently (skills.ts reconcile
+   * loops over availableEntries only); the gateway mirrors that: they are
+   * skipped and reported in the run log, never fatal.
+   */
+  unavailable: string[];
+}
+
+/** The single place that decides the delivery name of a runtime entry. */
+export function resolveGatewaySkillName(entry: { key: string; runtimeName?: string | null }): string {
+  return asString(entry.runtimeName) ?? entry.key.split("/").pop() ?? entry.key;
 }
 
 function asString(value: unknown): string | null {
@@ -83,8 +104,14 @@ export async function reconcileGatewayPaperclipSkills(
   if (!Object.prototype.hasOwnProperty.call(config, "paperclipRuntimeSkills")) {
     return null;
   }
+  // The encoding is mandatory: fs.readFile(path) without it resolves to a
+  // Buffer, which JSON.stringify turns into {"type":"Buffer","data":[...]} in
+  // the run body; the image then rejects the entry ("skill was not
+  // materialized in the run profile") for every skill, not only the hashed
+  // ones (1.6.6-rc.1 incident).
   const readFile =
-    options.readFile ?? ((await import("node:fs/promises")).readFile as unknown as (path: string) => Promise<string>);
+    options.readFile ??
+    (async (path: string) => (await import("node:fs/promises")).readFile(path, "utf-8"));
   const availableEntries = await readPaperclipRuntimeSkillEntries(config, options.moduleDir);
   // Same desired-set contract as hermes_local (src/server/skills.ts:216-222):
   // resolveLegacyPaperclipDesiredSkillNames returns [] when the config carries
@@ -94,6 +121,14 @@ export async function reconcileGatewayPaperclipSkills(
   const desiredSkills = resolveLegacyPaperclipDesiredSkillNames(config, availableEntries);
   const desiredSet = new Set(desiredSkills);
   const entries: GatewaySkillEntry[] = [];
+  const expected: Array<{ key: string; name: string }> = [];
+  const availableKeys = new Set(availableEntries.map((e) => e.key));
+  const unavailable = desiredSkills.filter((key) => !availableKeys.has(key));
+  if (unavailable.length > 0) {
+    await options.onLog?.(
+      `[hermes-gateway] Warning: desired skill(s) with no runtime entry are skipped (same as hermes_local): ${unavailable.join(", ")}\n`,
+    );
+  }
   for (const entry of availableEntries) {
     if (!desiredSet.has(entry.key)) continue;
     if (isPaperclipSkillSourceMissing(entry)) {
@@ -116,8 +151,14 @@ export async function reconcileGatewayPaperclipSkills(
         `Cannot start without the required Paperclip-managed skills: ${entry.key}: cannot read the skill source (${reason})`,
       );
     }
-    const name = asString(entry.runtimeName) ?? entry.key.split("/").pop() ?? entry.key;
+    if (typeof content !== "string" || content.trim().length === 0) {
+      throw new Error(
+        `Cannot start without the required Paperclip-managed skills: ${entry.key}: SKILL.md is empty or not text`,
+      );
+    }
+    const name = resolveGatewaySkillName(entry);
     entries.push({ path: name, name, content });
+    expected.push({ key: entry.key, name });
   }
   entries.sort((a, b) => a.path.localeCompare(b.path));
   if (entries.length > 0) {
@@ -125,7 +166,7 @@ export async function reconcileGatewayPaperclipSkills(
       `[hermes-gateway] Delivering ${entries.length} Paperclip-managed skill(s) in the run body: ${entries.map((e) => e.name).join(", ")}\n`,
     );
   }
-  return { skills: entries, desiredSkills };
+  return { skills: entries, desiredSkills, expected, unavailable };
 }
 
 function joinPath(dir: string, leaf: string): string {
@@ -147,14 +188,13 @@ function joinPath(dir: string, leaf: string): string {
  */
 export function factCheckGatewayPaperclipSkills(input: {
   skills: GatewaySkillEntry[];
-  desiredSkills: string[];
+  expected: Array<{ key: string; name: string }>;
 }): void {
   const present = new Set(input.skills.map((s) => s.name));
-  for (const key of input.desiredSkills) {
-    const name = key.split("/").pop() ?? key;
+  for (const { key, name } of input.expected) {
     if (!present.has(name)) {
       throw new Error(
-        `Cannot start without the required Paperclip-managed skills: ${name}: missing from the assembled run-body field`,
+        `Cannot start without the required Paperclip-managed skills: ${key} (${name}): missing from the assembled run-body field`,
       );
     }
   }
