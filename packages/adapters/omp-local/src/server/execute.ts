@@ -860,7 +860,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         finalSessionPath = await findNewlyCreatedSessionFile({
           runId,
           sessionDir: effectiveSessionDir,
-          executionTarget: runtimeExecutionTarget,
+          executionTarget: runtimeExecutionTarget ?? null,
           cwd,
           env: executionTargetIsRemote ? env : runtimeEnv,
           timeoutSec,
@@ -931,7 +931,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         await listSessionFiles({
           runId,
           sessionDir: effectiveSessionDir,
-          executionTarget: runtimeExecutionTarget,
+          executionTarget: runtimeExecutionTarget ?? null,
           cwd,
           env: executionTargetIsRemote ? env : runtimeEnv,
           timeoutSec,

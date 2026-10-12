@@ -105,6 +105,8 @@ vi.mock("@paperclipai/adapter-utils/execution-target", async (importOriginal) =>
   const actual = (await importOriginal()) as typeof import("@paperclipai/adapter-utils/execution-target");
   return {
     ...actual,
+    // The callback bridge is not under test here (asset staging and env are).
+    startAdapterExecutionTargetPaperclipBridge: async () => null,
     ensureAdapterExecutionTargetCommandResolvable: async (...args: Parameters<typeof actual.ensureAdapterExecutionTargetCommandResolvable>) => {
       if (args[0] === "omp") return;
       return actual.ensureAdapterExecutionTargetCommandResolvable(...args);
@@ -115,7 +117,9 @@ vi.mock("@paperclipai/adapter-utils/execution-target", async (importOriginal) =>
     },
     runAdapterExecutionTargetProcess: (...args: Parameters<typeof actual.runAdapterExecutionTargetProcess>) => {
       if (args[2] === "omp") {
-        return runAdapterExecutionTargetProcess(...args);
+        return runAdapterExecutionTargetProcess(
+          ...(args as unknown as Parameters<typeof runAdapterExecutionTargetProcess>),
+        );
       }
       return actual.runAdapterExecutionTargetProcess(...args);
     },
@@ -630,11 +634,25 @@ describe("omp local execution", () => {
 
     await execute({
       runId: "run-remote",
+      authToken: "test-host-api-token",
       executionTarget: {
         kind: "remote",
         transport: "sandbox",
         providerKey: "test",
         remoteCwd: "/remote/workspace",
+        // Sandbox targets execute through the provider runtime runner; session listing
+        // (ls on the target) goes through it, so the test supplies a minimal one.
+        runner: {
+          execute: async () => ({
+            exitCode: 0,
+            signal: null,
+            timedOut: false,
+            stdout: "",
+            stderr: "",
+            pid: 1,
+            startedAt: new Date().toISOString(),
+          }),
+        } as never,
       },
       agent: {
         id: "agent-1",
