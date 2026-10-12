@@ -33,6 +33,7 @@ export function setupEfforts(adapter: string, model = ""): string[] {
         .map((option) => option.value)
         .filter(Boolean);
     case "pi_local":
+    case "omp_local":
       return ["off", "minimal", "low", "medium", "high", "xhigh"];
     case "grok_local":
       return ["low", "medium", "high"];
