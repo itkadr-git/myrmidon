@@ -247,4 +247,60 @@ describe("omp local execution", () => {
     expect(args).not.toContain("--session");
     expect(args).toContain("--session-dir");
   });
+
+  it("starts a fresh session without --session when session belongs to another agent", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-omp-foreign-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    const foreignSessionDir = path.join(os.homedir(), ".omp", "paperclips", "company-1", "agent-other");
+    await mkdir(workspaceDir, { recursive: true });
+    await mkdir(foreignSessionDir, { recursive: true });
+    cleanupDirs.push(path.join(os.homedir(), ".omp", "paperclips", "company-1"));
+
+    const sessionFilePath = path.join(foreignSessionDir, "session-foreign.jsonl");
+    await writeFile(
+      sessionFilePath,
+      `${JSON.stringify({ type: "session", cwd: workspaceDir })}\n`,
+      "utf8",
+    );
+
+    await execute({
+      runId: "run-foreign",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "OMP Builder",
+        adapterType: "omp_local",
+        adapterConfig: {},
+      },
+      runtime: {
+        sessionId: sessionFilePath,
+        sessionParams: {
+          sessionId: sessionFilePath,
+          cwd: workspaceDir,
+        },
+        sessionDisplayId: "session-foreign",
+        taskKey: null,
+      },
+      config: {
+        command: "omp",
+        model: "openai/gpt-4o",
+      },
+      context: {
+        paperclipWorkspace: {
+          cwd: workspaceDir,
+          source: "project_primary",
+        },
+      },
+      onLog: async () => {},
+    });
+
+    const call = runAdapterExecutionTargetProcess.mock.calls[0] as unknown as
+      | [string, unknown, string, string[]]
+      | undefined;
+    expect(call).toBeDefined();
+    const args = call![3];
+    expect(args).not.toContain("--session");
+    expect(args).toContain("--session-dir");
+  });
 });

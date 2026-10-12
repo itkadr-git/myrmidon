@@ -543,11 +543,21 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       executionCwdsMatch(runtimeSessionCwd, effectiveExecutionCwd, executionTargetIsRemote);
 
     // Verify session belongs to this agent and company (isolation)
-    const sessionBelongsToAgent = runtimeSessionId.length > 0 && (
-      runtimeSessionId.includes(`/${agent.companyId}/${agent.id}/`) ||
-      runtimeSessionId.includes(`-${agent.id}.`) ||
-      runtimeSessionId.startsWith(effectiveSessionDir)
-    );
+    const normalizedSessionPath = runtimeSessionId.replace(/\\/g, "/");
+    const isolatedLocalTree = "/.omp/paperclips/";
+    const agentLocalSegment = `/.omp/paperclips/${agent.companyId}/${agent.id}`;
+    const remoteSessionBase = remoteRuntimeRootDir
+      ? path.posix.join(remoteRuntimeRootDir, "sessions")
+      : null;
+    const agentRemoteSegment = `/sessions/${agent.companyId}/${agent.id}`;
+    const sessionBelongsToOtherAgent =
+      (normalizedSessionPath.includes(isolatedLocalTree) &&
+        !normalizedSessionPath.includes(agentLocalSegment)) ||
+      (executionTargetIsRemote &&
+        Boolean(remoteSessionBase && normalizedSessionPath.includes(remoteSessionBase)) &&
+        !normalizedSessionPath.includes(agentRemoteSegment));
+
+    const sessionBelongsToAgent = runtimeSessionId.length > 0 && !sessionBelongsToOtherAgent;
 
     const savedSessionCwd =
       runtimeSessionId.length > 0 && sessionBelongsToAgent
