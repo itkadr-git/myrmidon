@@ -1,4 +1,7 @@
 import { describe, expect, it, vi, afterEach } from "vitest";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import {
   buildPaperclipSkillsField,
   factCheckGatewayPaperclipSkills,
@@ -164,33 +167,113 @@ describe("reconcileGatewayPaperclipSkills", () => {
 });
 
 describe("factCheckGatewayPaperclipSkills", () => {
-  it("passes when every desired skill is in the assembled field", () => {
+  it("passes when every expected skill is in the assembled field", () => {
     expect(() =>
       factCheckGatewayPaperclipSkills({
         skills: [{ path: "alpha", name: "alpha", content: "x" }],
-        desiredSkills: ["company/alpha"],
+        expected: [{ key: "company/alpha", name: "alpha" }],
       }),
     ).not.toThrow();
   });
 
-  it("throws before POST /v1/runs when a desired skill is missing from the assembled field", () => {
+  it("throws before POST /v1/runs when an expected skill is missing from the assembled field", () => {
     expect(() =>
       factCheckGatewayPaperclipSkills({
         skills: [{ path: "alpha", name: "alpha", content: "x" }],
-        desiredSkills: ["company/alpha", "company/beta"],
+        expected: [
+          { key: "company/alpha", name: "alpha" },
+          { key: "company/beta", name: "beta--0123456789" },
+        ],
       }),
     ).toThrow(
-      "Cannot start without the required Paperclip-managed skills: beta: missing from the assembled run-body field",
+      "Cannot start without the required Paperclip-managed skills: company/beta (beta--0123456789): missing from the assembled run-body field",
     );
   });
 
-  it("throws when the field is empty but skills are desired", () => {
+  it("throws when the field is empty but skills are expected", () => {
     expect(() =>
       factCheckGatewayPaperclipSkills({
         skills: [],
-        desiredSkills: ["company/alpha"],
+        expected: [{ key: "company/alpha", name: "alpha" }],
       }),
-    ).toThrow("Cannot start without the required Paperclip-managed skills: alpha");
+    ).toThrow("Cannot start without the required Paperclip-managed skills: company/alpha");
+  });
+});
+
+describe("reconcile + fact-check with hashed runtime names (1.6.6-rc.1 regression)", () => {
+  const HASHED = [
+    ["company/c1/external-calls", "external-calls--a1b2c3d4e5", "/s/ec"],
+    ["paperclip-plugin-tools", "paperclip-plugin-tools--0011223344", "/s/pt"],
+    ["paperclipai/bundled/doc-maintenance", "doc-maintenance--5566778899", "/s/dm"],
+    ["local/dev-worktree-disk", "dev-worktree-disk--aabbccddee", "/s/dw"],
+    ["paperclipai/paperclip/paperclip", "paperclip", "/s/pc"],
+  ] as const;
+
+  it("delivers hashed names and the fact-check accepts them", async () => {
+    const config = skillConfig(
+      HASHED.map(([k, r, src]) => skillEntry(k, r, src)),
+      HASHED.map(([k]) => k),
+    );
+    const result = await reconcileGatewayPaperclipSkills(config, {
+      moduleDir: MODULE_DIR,
+      readFile: vi.fn(async () => "---\nname: x\n---\nbody"),
+    });
+    expect(result!.skills.map((s) => s.name).sort()).toEqual(HASHED.map(([, r]) => r).sort());
+    // every path is acceptable to the image (_NAME_SAFE: a-z 0-9 . _ -)
+    for (const s of result!.skills) expect(s.path).toMatch(/^[a-z0-9._-]+$/);
+    expect(() =>
+      factCheckGatewayPaperclipSkills({ skills: result!.skills, expected: result!.expected }),
+    ).not.toThrow();
+  });
+
+  it("a desired key with no runtime entry is skipped and logged, like hermes_local", async () => {
+    const onLog = vi.fn();
+    const config = skillConfig(
+      [skillEntry("company/alpha", "alpha--0011223344", "/s/a")],
+      ["company/alpha", "company/gone"],
+    );
+    const result = await reconcileGatewayPaperclipSkills(config, {
+      moduleDir: MODULE_DIR,
+      readFile: vi.fn(async () => "x"),
+      onLog,
+    });
+    expect(result!.unavailable).toEqual(["company/gone"]);
+    expect(result!.expected).toEqual([{ key: "company/alpha", name: "alpha--0011223344" }]);
+    expect(onLog.mock.calls.map((c) => c[0]).join("")).toContain("company/gone");
+    expect(() =>
+      factCheckGatewayPaperclipSkills({ skills: result!.skills, expected: result!.expected }),
+    ).not.toThrow();
+  });
+});
+
+describe("default file reader (1.6.6-rc.1 regression: Buffer content in the run body)", () => {
+  it("reads SKILL.md as text, so the serialized run body carries a string content", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "gw-skill-"));
+    try {
+      await fs.mkdir(path.join(dir, "alpha"));
+      await fs.writeFile(path.join(dir, "alpha", "SKILL.md"), "---\nname: alpha\n---\nТекст", "utf-8");
+      const config = skillConfig(
+        [skillEntry("company/alpha", "alpha--0011223344", path.join(dir, "alpha"))],
+        ["company/alpha"],
+      );
+      const result = await reconcileGatewayPaperclipSkills(config, { moduleDir: MODULE_DIR });
+      const wire = JSON.parse(JSON.stringify({ paperclip_skills: buildPaperclipSkillsField(result) }));
+      expect(typeof wire.paperclip_skills[0].content).toBe("string");
+      expect(wire.paperclip_skills[0].content).toContain("Текст");
+      expect(wire.paperclip_skills[0].path).toBe("alpha--0011223344");
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses a non-text or empty SKILL.md before the POST", async () => {
+    const config = skillConfig([skillEntry("company/alpha", "alpha", "/s/a")], ["company/alpha"]);
+    await expect(
+      reconcileGatewayPaperclipSkills(config, {
+        moduleDir: MODULE_DIR,
+        readFile: vi.fn(async () => Buffer.from("x") as unknown as string),
+      }),
+    ).rejects.toThrow("SKILL.md is empty or not text");
   });
 });
 
@@ -200,7 +283,7 @@ describe("buildPaperclipSkillsField", () => {
   });
 
   it("returns undefined for an empty delivery, so JSON drops the field entirely", () => {
-    expect(buildPaperclipSkillsField({ skills: [], desiredSkills: [] })).toBeUndefined();
+    expect(buildPaperclipSkillsField({ skills: [], desiredSkills: [], expected: [], unavailable: [] })).toBeUndefined();
   });
 
   it("exposes the field name the run body must carry", () => {
