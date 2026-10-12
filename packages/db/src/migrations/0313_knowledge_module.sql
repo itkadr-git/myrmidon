@@ -1,6 +1,6 @@
 CREATE EXTENSION IF NOT EXISTS unaccent;--> statement-breakpoint
 CREATE EXTENSION IF NOT EXISTS pg_trgm;--> statement-breakpoint
-CREATE OR REPLACE FUNCTION knowledge_unaccent(txt text) RETURNS text LANGUAGE sql IMMUTABLE PARALLEL SAFE AS $$ SELECT public.unaccent('unaccent'::regdictionary, coalesce(txt, '')) $$;--> statement-breakpoint
+CREATE OR REPLACE FUNCTION knowledge_unaccent(txt text) RETURNS text LANGUAGE sql IMMUTABLE PARALLEL SAFE AS $$ SELECT public.unaccent('public.unaccent'::regdictionary, coalesce(txt, '')) $$;--> statement-breakpoint
 CREATE TABLE "knowledge_events" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"company_id" uuid NOT NULL,
