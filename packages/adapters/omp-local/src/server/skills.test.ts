@@ -30,6 +30,14 @@ describe("resolveOmpSkillsHome", () => {
     expect(home).toBe(path.resolve("/tmp/custom-omp-agent/skills"));
   });
 
+  it("ignores the workspace agentHome: the omp process reads its own HOME", () => {
+    const home = resolveOmpSkillsHome({
+      env: { HOME: "/tmp/fake-home" },
+      agentHome: "/tmp/workspace-agent-home",
+    });
+    expect(home).toBe(path.resolve("/tmp/fake-home/.omp/agent/skills"));
+  });
+
   it("falls back to HOME/.omp/agent/skills", () => {
     const home = resolveOmpSkillsHome({
       env: { HOME: "/tmp/fake-home" },

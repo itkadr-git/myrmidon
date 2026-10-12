@@ -400,7 +400,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const desiredOmpSkillNames = resolveLegacyPaperclipDesiredSkillNames(config, ompSkillEntries);
   const targetSkillsDir = localAgentConfigDir
     ? path.join(localAgentConfigDir, "skills")
-    : resolveOmpSkillsHome({ env, agentHome });
+    : resolveOmpSkillsHome({ env });
 
   if (!executionTargetIsRemote) {
     await ensureOmpSkillsInjected(onLog, ompSkillEntries, targetSkillsDir, desiredOmpSkillNames);

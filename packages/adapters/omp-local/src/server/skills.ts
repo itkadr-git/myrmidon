@@ -30,7 +30,9 @@ export function resolveOmpSkillsHome(config: Record<string, unknown>): string {
   if (agentDir) {
     return path.join(path.resolve(agentDir), "skills");
   }
-  const configuredHome = asString(env.HOME) ?? asString(config.agentHome);
+  // The omp process reads ~/.omp/agent/skills of its own HOME: only an explicit env.HOME
+  // (the one the process gets) may move it, never the workspace agentHome.
+  const configuredHome = asString(env.HOME);
   const home = configuredHome ? path.resolve(configuredHome) : os.homedir();
   return path.join(home, ".omp", "agent", "skills");
 }
