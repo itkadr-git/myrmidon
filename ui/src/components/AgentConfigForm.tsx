@@ -1334,7 +1334,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
         ? "mode"
         : adapterType === "opencode_local"
           ? "variant"
-          : adapterType === "pi_local" ? "thinking" : "effort";
+          : adapterType === "pi_local" || adapterType === "omp_local" ? "thinking" : "effort";
   // myrmidon(BOT-TUNING-C): hermes_local offers only the values the selected
   // model accepts (GLM: low/high/max, no medium) instead of the claude list.
   const isHermesLocalEffort = adapterType === "hermes_local";
@@ -1352,7 +1352,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
           ? openCodeThinkingEffortOptions
           : adapterType === "kimi_local"
             ? kimiThinkingEffortOptions
-            : adapterType === "pi_local"
+            : adapterType === "pi_local" || adapterType === "omp_local"
               ? [{ id: "", label: "Auto" }, ...["off", "minimal", "low", "medium", "high", "xhigh"].map(id => ({ id, label: id }))]
               : isHermesLocalEffort
                 // myrmidon(BOT-TUNING-C): the per-model list; "" compiles to
@@ -1904,9 +1904,9 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 open={modelOpen}
                 onOpenChange={setModelOpen}
                 defaultLabel={adapterType === "claude_local" ? `Default (${DEFAULT_CLAUDE_LOCAL_MODEL})` : undefined}
-                allowDefault={adapterType !== "opencode_local" && adapterType !== "pi_local" && adapterType !== "paperclip_runner"}
-                required={adapterType === "opencode_local" || adapterType === "pi_local"}
-                groupByProvider={adapterType === "opencode_local" || adapterType === "pi_local"}
+                allowDefault={adapterType !== "opencode_local" && adapterType !== "pi_local" && adapterType !== "omp_local" && adapterType !== "paperclip_runner"}
+                required={adapterType === "opencode_local" || adapterType === "pi_local" || adapterType === "omp_local"}
+                groupByProvider={adapterType === "opencode_local" || adapterType === "pi_local" || adapterType === "omp_local"}
                 creatable
                 detectedModel={detectedModel}
                 detectedModelCandidates={[]}
@@ -1981,7 +1981,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                   value={eff("adapterConfig", "models", config.models)}
                   onChange={(next) => mark("adapterConfig", "models", next)}
                   renderModelPicker={(picker) => (
-                    <ModelDropdown models={models} value={picker.value} onChange={picker.onChange} open={picker.open} onOpenChange={picker.onOpenChange} allowDefault required={false} groupByProvider={adapterType === "opencode_local" || adapterType === "pi_local"} creatable />
+                    <ModelDropdown models={models} value={picker.value} onChange={picker.onChange} open={picker.open} onOpenChange={picker.onOpenChange} allowDefault required={false} groupByProvider={adapterType === "opencode_local" || adapterType === "pi_local" || adapterType === "omp_local"} creatable />
                   )}
                 />
               )}
@@ -2071,6 +2071,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                         gemini_local: "gemini",
                         kimi_local: "kimi",
                         pi_local: "pi",
+                        omp_local: "omp",
                         cursor: "agent",
                         opencode_local: "opencode",
                       } as Record<string, string>)[adapterType] ?? adapterType.replace(/_local$/, "")
