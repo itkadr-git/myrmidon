@@ -19,9 +19,15 @@ shown as editable, split messages (opt-in settings).
 ## Decision cards in Telegram
 
 When an agent needs the owner's decision — a question card or a
-confirmation card on a task — the card is delivered to the owner's Telegram
-and the owner answers it there; the answer lands on the task as if it had
-been given in the board UI.
+confirmation card on a task — the decision reaches the owner's Telegram in
+the shape the instance's owner-delivery mode picks. In the default `via_bot`
+mode there is no card with buttons: the agent's bot writes the owner one
+plain message that explains what to decide and why, and the owner answers
+with ordinary text in the same chat; the agent records the decision on the
+card. Instances that keep the `owner_decisions_only` or `all` mode receive
+the card itself, and the owner answers it there; either way the answer lands
+on the task as if it had been given in the board UI. The mode is set in
+Company Settings, "Owner Telegram delivery".
 
 ## Digests and escalations
 
