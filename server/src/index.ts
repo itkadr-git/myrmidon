@@ -1858,6 +1858,22 @@ async function startServerWithDatabaseTeardown(
   scheduleGitHubConnectionEventPoll();
   scheduleGitHubConnectionContinuitySweep();
 
+  // myrmidon(1.6.6 PROCS-0.1): the process registry pulse — this process's
+  // row every 10 s, stale rows reaped by the process that owns timers. The
+  // behavior with mode=single is exactly today's: one process, one row.
+  {
+    const boundBoardAddress =
+      typeof server.address === "function" ? server.address() : null;
+    startBoardProcessRegistry(db as any, {
+      apiPort:
+        typeof boundBoardAddress === "object" && boundBoardAddress
+          ? boundBoardAddress.port
+          : listenPort,
+      onError: (error, phase) =>
+        logger.warn({ err: error, phase }, "board process registry tick failed"),
+    });
+  }
+
   // myrmidon(PROCS-1.2): the whole heartbeat/sweep block below is the worker
   // role's business. An api child serves HTTP only — it builds the objects the
   // app layer imports (with inert no-op handles) and skips every scheduler,
@@ -2057,21 +2073,6 @@ async function startServerWithDatabaseTeardown(
     startStackCheckSweep(db as any); // myrmidon(SUB): scheduled stack release check; a no-op unless MYRMIDON_STACK_CHECK_INTERVAL_SEC is set
     startTelegramNotifyJobs(db as any); // myrmidon(1.6.1-TG-NOTIFY-B): digest/escalation jobs; a no-op unless the owner settings enable them
     startTgNotifySweep({ db: db as any, settings: dbErrorChannelSettingsSource(db as any) }); // myrmidon(1.6-TG-NOTIFY-C): board errors → Telegram chat/topic; a no-op unless the owner settings enable it
-    // myrmidon(1.6.6 PROCS-0.1): the process registry pulse — this process's
-    // row every 10 s, stale rows reaped by the process that owns timers. The
-    // behavior with mode=single is exactly today's: one process, one row.
-    {
-      const boundBoardAddress =
-        typeof server.address === "function" ? server.address() : null;
-      startBoardProcessRegistry(db as any, {
-        apiPort:
-          typeof boundBoardAddress === "object" && boundBoardAddress
-            ? boundBoardAddress.port
-            : listenPort,
-        onError: (error, phase) =>
-          logger.warn({ err: error, phase }, "board process registry tick failed"),
-      });
-    }
     const heartbeatSchedulingSuppression = await heartbeat.resolveSchedulingSuppression();
 
     // Reap orphaned runs before timer ticks start so wakeups cannot coalesce
