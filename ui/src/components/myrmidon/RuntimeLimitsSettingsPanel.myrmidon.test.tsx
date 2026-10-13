@@ -45,7 +45,8 @@ const view: RuntimeLimitsView = {
     minFreeHostMemoryMb: "default",
     maxHostLoadPercentPerCore: "default",
   } as Record<RunLimitKey, RunLimitsSource>,
-  // myrmidon(1.6.5 rc.2): the live host reading the ceiling is applied to.
+  // myrmidon(1.6.5 RUN-ADMISSION rc.3): the live host reading the gate
+  // decides on — busy percent, PSI, verdict.
   hostLoad: {
     state: "open",
     thresholdPercent: 90,
@@ -55,6 +56,11 @@ const view: RuntimeLimitsView = {
     backgroundPercentPerCore: 115,
     load15PercentPerCore: 115,
     loadAboveBackgroundPercent: 5,
+    cpuBusyPercent: 62,
+    busyThresholdPercent: 90,
+    psiSomeAvg10: null,
+    psiThresholdPercent: null,
+    source: "cpu-busy",
     reason: null,
     heldSince: null,
   },
@@ -115,9 +121,11 @@ describe("myrmidon(C0) run limits panel", () => {
       runMemoryEstimateMb: 300,
       minFreeHostMemoryMb: 15360,
       maxHostLoadPercentPerCore: 90,
-      // myrmidon(1.6.5 RUN-FAIRNESS): the fair share ships at its default 15
-      // until the server serves the key.
       maxPerAgentStartSharePercent: 15,
+      // myrmidon(1.6.5 RUN-ADMISSION rc.3): an unserved key saves as off
+      // (null), like every other optional ceiling.
+      maxHostCpuBusyPercent: null,
+      maxHostCpuPsiSomeAvg10: null,
     });
   });
 
@@ -221,8 +229,98 @@ describe("myrmidon(C0) run limits panel", () => {
     expect(onSave).toHaveBeenLastCalledWith(expect.objectContaining({ maxHostLoadPercentPerCore: null }));
   });
 
-  it("myrmidon(1.6.5 rc.2): shows the current host load and the background floor next to the ceiling", () => {
+  it("myrmidon(1.6.5 RUN-ADMISSION rc.3): the host line leads with the busy percent, the load average is auxiliary", () => {
     render(view);
+    const line = container.querySelector("[data-testid=runtime-limit-host-load]")?.textContent ?? "";
+    // The deciding signal comes first: the measured busy percent against its
+    // absolute threshold, then the verdict...
+    expect(line).toContain("Host CPU right now: 62 % busy");
+    expect(line).toContain("Ceiling 90 % busy: open — new runs start.");
+    // ... and the load average follows as the auxiliary reading.
+    expect(line).toContain(
+      "Auxiliary: load average 120 % of a core (load 19.2 on 16 core(s)), 5 % of a core above the host's background floor of 115 %.",
+    );
+    // The busy hint names the absolute percent of all cores.
+    expect(container.textContent).toContain("ABSOLUTE percent of all cores");
+  });
+
+  it("myrmidon(1.6.5 RUN-ADMISSION rc.3): names a busy-closed gate with its reason and the PSI reading", () => {
+    render({
+      ...view,
+      hostLoad: {
+        ...view.hostLoad!,
+        state: "closed",
+        cpuBusyPercent: 93,
+        psiSomeAvg10: 41,
+        psiThresholdPercent: 40,
+        reason: "host CPU is 93 % busy (non-idle share of all cores over the sample window) at or above the 90 % busy ceiling",
+      },
+    });
+    const line = container.querySelector("[data-testid=runtime-limit-host-load]")?.textContent ?? "";
+    expect(line).toContain("Host CPU right now: 93 % busy, PSI some avg10 41 % (ceiling 40 %).");
+    expect(line).toContain("Ceiling 90 % busy: closed — new runs wait in the queue");
+    expect(line).toContain("(host CPU is 93 % busy");
+    expect(line).toContain("Auxiliary: load average 120 % of a core");
+  });
+
+  it("myrmidon(1.6.5 RUN-ADMISSION rc.3): an unmeasured first window and an unreadable counter render honestly", () => {
+    render({ ...view, hostLoad: { ...view.hostLoad!, cpuBusyPercent: null } });
+    const pending = container.querySelector("[data-testid=runtime-limit-host-load]")?.textContent ?? "";
+    expect(pending).toContain("busy % not measured yet");
+    expect(pending).toContain("Ceiling 90 % busy: open");
+
+    render({
+      ...view,
+      hostLoad: { ...view.hostLoad!, state: "unknown", reason: "cannot read /proc/stat" },
+    });
+    expect(container.querySelector("[data-testid=runtime-limit-host-load]")?.textContent).toBe(
+      "Host load is unreadable, so the ceiling is inactive: cannot read /proc/stat",
+    );
+  });
+
+  it("myrmidon(1.6.5 RUN-ADMISSION rc.3): edits the CPU busy and PSI ceilings and switches them off with an empty field", () => {
+    const onSave = render(view);
+    // An unserved key renders empty (off) like every other optional ceiling.
+    expect(field("maxHostCpuBusyPercent").value).toBe("");
+    expect(field("maxHostCpuPsiSomeAvg10").value).toBe("");
+    type("maxHostCpuBusyPercent", "85");
+    type("maxHostCpuPsiSomeAvg10", "40");
+    flushSync(() => saveButton().dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    expect(onSave).toHaveBeenLastCalledWith(
+      expect.objectContaining({ maxHostCpuBusyPercent: 85, maxHostCpuPsiSomeAvg10: 40 }),
+    );
+    type("maxHostCpuBusyPercent", "");
+    flushSync(() => saveButton().dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    expect(onSave).toHaveBeenLastCalledWith(expect.objectContaining({ maxHostCpuBusyPercent: null }));
+  });
+
+  it("myrmidon(1.6.5 RUN-ADMISSION rc.3): a legacy gate that still decides on load average keeps the old line", () => {
+    render({
+      ...view,
+      hostLoad: {
+        ...view.hostLoad!,
+        state: "closed",
+        source: "load-average",
+        cpuBusyPercent: null,
+        busyThresholdPercent: null,
+        load1: 33.6,
+        loadPercentPerCore: 210,
+        loadAboveBackgroundPercent: 95,
+      },
+    });
+    const closed = container.querySelector("[data-testid=runtime-limit-host-load]")?.textContent ?? "";
+    expect(closed).toContain("Host load right now: 210 % of a core");
+    expect(closed).toContain("95 % of a core above the host's background floor of 115 %");
+    expect(closed).toContain("Ceiling 90 %: closed — new runs wait in the queue.");
+  });
+
+  it("myrmidon(1.6.5 rc.2): shows the current host load and the background floor next to the ceiling", () => {
+    // rc.3 note: this is the legacy load-average line — mocked with
+    // source: "load-average", the rule a settings row saved before rc.3 decides on.
+    render({
+      ...view,
+      hostLoad: { ...view.hostLoad!, source: "load-average" },
+    });
     const line = container.querySelector("[data-testid=runtime-limit-host-load]")?.textContent ?? "";
     // The numbers the ceiling counts: the reading, the host's own background
     // and the part the runs add — the rc.1 panel showed only the typed number.
@@ -240,6 +338,7 @@ describe("myrmidon(C0) run limits panel", () => {
       hostLoad: {
         ...view.hostLoad!,
         state: "closed",
+        source: "load-average",
         load1: 33.6,
         loadPercentPerCore: 210,
         loadAboveBackgroundPercent: 95,
@@ -308,6 +407,8 @@ describe("myrmidon(C0) run limits panel", () => {
         minFreeHostMemoryMb: "15360",
         maxHostLoadPercentPerCore: "90",
         maxPerAgentStartSharePercent: "20",
+        maxHostCpuBusyPercent: "85",
+        maxHostCpuPsiSomeAvg10: "",
       }),
     ).toEqual({
       patch: {
@@ -318,6 +419,8 @@ describe("myrmidon(C0) run limits panel", () => {
         minFreeHostMemoryMb: 15360,
         maxHostLoadPercentPerCore: 90,
         maxPerAgentStartSharePercent: 20,
+        maxHostCpuBusyPercent: 85,
+        maxHostCpuPsiSomeAvg10: null,
       },
       errors: {},
     });

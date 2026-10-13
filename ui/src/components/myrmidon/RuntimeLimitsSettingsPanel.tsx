@@ -19,17 +19,20 @@ import {
 } from "./runtimeLimitsApi";
 
 /**
- * myrmidon(1.6.5 RUN-FAIRNESS part 3): the single-agent start share arrives
- * with part 2's shared key (`maxPerAgentStartSharePercent`, 1..100 or off,
- * default 15). This panel is merged before part 2 lands, so the field is
- * carried as a string literal, not a `RunLimitKey` — part 2 promotes it into
- * `RUN_LIMIT_KEYS` and both parts then type-check against the shared name.
+ * myrmidon(1.6.5 RUN-ADMISSION rc.3, part B): the two CPU-utilisation
+ * ceilings joined `RunLimits` with part A but were left out of
+ * `RUN_LIMIT_KEYS`, so they are not `RunLimitKey`s yet — same situation the
+ * fair-share field had before part 2. The panel carries them as string
+ * literals and reads their values from the typed `limits` object; their
+ * source label falls back to "default" (a source map for them arrives with
+ * the shared key promotion).
  */
-const FAIR_SHARE_KEY = "maxPerAgentStartSharePercent";
+const CPU_BUSY_KEY = "maxHostCpuBusyPercent";
+const CPU_PSI_KEY = "maxHostCpuPsiSomeAvg10";
 
-type PanelLimitKey = RunLimitKey | typeof FAIR_SHARE_KEY;
+type PanelLimitKey = RunLimitKey | typeof CPU_BUSY_KEY | typeof CPU_PSI_KEY;
 
-/** The field ids/draft keys of the panel (the shared keys plus the fair-share literal). */
+/** The field ids/draft keys of the panel (the shared keys plus the rc.3 CPU ceiling literals). */
 export type { PanelLimitKey };
 
 const FIELDS: Array<{ key: PanelLimitKey; label: string; hint: string; optional: boolean }> = [
@@ -67,8 +70,22 @@ const FIELDS: Array<{ key: PanelLimitKey; label: string; hint: string; optional:
   {
     // myrmidon(1.6.5 RUN-ADMISSION)
     key: "maxHostLoadPercentPerCore",
-    label: "Max host load per core, % of a core",
-    hint: "A new run starts only while the host's 1-minute load average is this many percent of one CPU core ABOVE the load the host carries on its own (100 = one core fully busy). The host's own background — the services that keep it busy without any run — does not close the ceiling: only the load the runs add counts. Default 90. Empty switches the ceiling off.",
+    label: "Max host load per core, % of a core (deprecated)",
+    hint: "Deprecated: since 1.6.5 rc.3 the gate decides on the measured CPU busy percent below; this legacy ceiling only decides for a settings row saved before rc.3 that has neither CPU ceiling set. A new run starts only while the host's 1-minute load average is this many percent of one CPU core ABOVE the load the host carries on its own (100 = one core fully busy). The host's own background — the services that keep it busy without any run — does not close the ceiling: only the load the runs add counts. Default 90. Empty switches the ceiling off.",
+    optional: true,
+  },
+  {
+    // myrmidon(1.6.5 RUN-ADMISSION rc.3): the ceiling the gate decides on now.
+    key: CPU_BUSY_KEY,
+    label: "Max host CPU busy, % of all cores",
+    hint: "A new run starts only while the host CPU's non-idle share (from /proc/stat over a short window) stays under this ABSOLUTE percent of all cores. Unlike the load average, utilisation measures real work, so no background is subtracted. Default 90. Empty switches the ceiling off.",
+    optional: true,
+  },
+  {
+    // myrmidon(1.6.5 RUN-ADMISSION rc.3): the optional PSI cpu pressure ceiling.
+    key: CPU_PSI_KEY,
+    label: "Max host CPU pressure (PSI some avg10), %",
+    hint: "A new run starts only while the PSI cpu 'some avg10' (the percent of the last ten minutes with at least one task stalled on the CPU, from /proc/pressure/cpu) stays under this value. Off unless set: pressure rises on an oversubscribed CPU, not on a slow disk, so it guards a different failure than the busy ceiling. Empty switches the ceiling off.",
     optional: true,
   },
   {
@@ -76,7 +93,7 @@ const FIELDS: Array<{ key: PanelLimitKey; label: string; hint: string; optional:
     // the run starts in a 10-minute window; past it its new runs wait until
     // the others have had their turn. The shared key lands with part 2 of the
     // feature; until the server serves it the field stays at its default 15.
-    key: FAIR_SHARE_KEY,
+    key: "maxPerAgentStartSharePercent",
     label: "Single-agent start share, % per 10 min",
     hint: "The most starts one agent may take in a 10-minute window, in percent. Past its share its new runs wait until the other agents have had their turn, so a hot agent cannot occupy the queue. Default 15. Empty switches the limit off (100 = no limit).",
     optional: true,
@@ -101,7 +118,7 @@ export function parseRunLimitsDraft(draft: Record<PanelLimitKey, string>): Draft
     }
     // myrmidon(1.6.5 RUN-FAIRNESS): a share is a percentage — over 100 it
     // limits nothing and only looks like it does.
-    if (key === FAIR_SHARE_KEY && value !== null && value > 100) {
+    if (key === "maxPerAgentStartSharePercent" && value !== null && value > 100) {
       errors[key] = "Enter a whole number from 1 to 100, or leave it empty";
       continue;
     }
@@ -124,21 +141,26 @@ export function parseRunLimitsDraft(draft: Record<PanelLimitKey, string>): Draft
       runMemoryEstimateMb: estimate,
       minFreeHostMemoryMb: parsed.minFreeHostMemoryMb,
       maxHostLoadPercentPerCore: parsed.maxHostLoadPercentPerCore,
-      // myrmidon(1.6.5 RUN-FAIRNESS): not yet a key of RunLimitsPatch — part 2
-      // adds it to the shared schema; the PATCH body already carries it.
-      [FAIR_SHARE_KEY]: parsed[FAIR_SHARE_KEY],
+      maxPerAgentStartSharePercent: parsed.maxPerAgentStartSharePercent,
+      // myrmidon(1.6.5 RUN-ADMISSION rc.3): the two CPU-utilisation ceilings —
+      // `patchRunLimitsSchema` accepts both.
+      maxHostCpuBusyPercent: parsed.maxHostCpuBusyPercent,
+      maxHostCpuPsiSomeAvg10: parsed.maxHostCpuPsiSomeAvg10,
     },
     errors,
   };
 }
 
-/** Read a limit from the view: a shared key from `limits`, the fair-share key with its default. */
+/** Read a limit from the view: every key now comes from the typed `limits` object. */
 function readLimit(limits: RunLimits, key: PanelLimitKey): number | null {
-  if (key === FAIR_SHARE_KEY) {
-    const value = (limits as Record<string, unknown>)[FAIR_SHARE_KEY];
-    return typeof value === "number" && Number.isInteger(value) && value >= 1 && value <= 100 ? value : 15;
+  const value = limits[key] as number | null | undefined;
+  if (value === undefined) {
+    // An older server that does not serve the key yet (a pre-part-2 server
+    // has no fair share, a pre-rc.3 server has no CPU ceilings): the fair
+    // share shows its built-in default, every other absent key shows as off.
+    return key === "maxPerAgentStartSharePercent" ? 15 : null;
   }
-  return limits[key];
+  return value;
 }
 
 function toDraft(limits: RunLimits): Record<PanelLimitKey, string> {
@@ -222,7 +244,7 @@ export function RuntimeLimitsSettingsPanelView({
                   </span>
                 ) : null}
               </div>
-              {key === "maxHostLoadPercentPerCore" && hostLoadLine ? (
+              {key === "maxHostCpuBusyPercent" && hostLoadLine ? (
                 <p data-testid="runtime-limit-host-load" className="text-xs text-muted-foreground">
                   {hostLoadLine}
                 </p>
