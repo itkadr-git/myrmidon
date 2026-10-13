@@ -334,8 +334,8 @@ describe("myrmidon(1.6.6 KNOWLEDGE-2.0 K-1) module hygiene", () => {
     .filter((name) => name.endsWith(".ts") && !name.includes(".test."))
     .sort();
 
-  it("the module dir holds exactly the K-1 files", () => {
-    expect(sources).toEqual(["domain.ts", "index.ts", "service.ts", "store.ts"]);
+  it("the module dir holds exactly the K-1 + K-2 files", () => {
+    expect(sources).toEqual(["domain.ts", "index.ts", "mcp.ts", "routes.ts", "service.ts", "store.ts"]);
   });
 
   for (const name of sources) {

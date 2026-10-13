@@ -65,7 +65,11 @@ describe("myrmidon(1.6-AUTONOMY) resolver", () => {
   it("is total: every action class resolves even with an empty ruleset", () => {
     const m = matrix();
     for (const actionClass of AUTONOMY_ACTION_CLASSES) {
-      expect(resolveAutonomy("engineer", actionClass, m)).toBe("allowed");
+      // The K-2 knowledge classes ship safe defaults that are NOT "allowed"
+      // (rule_approve: forbidden, knowledge_publish/skill_promote:
+      // approval_required, knowledge_external_publish: forbidden) — the old
+      // totality rule (default = allowed) holds for the classic classes only.
+      expect(resolveAutonomy("engineer", actionClass, m)).toBe(AUTONOMY_SAFE_DEFAULTS[actionClass]);
     }
   });
 
