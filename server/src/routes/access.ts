@@ -1901,7 +1901,7 @@ export function buildInviteOnboardingTextDocument(
   };
 
   appendBlock(`
-    # Paperclip Agent Onboarding
+    # ${PRODUCT_NAME} Agent Onboarding
 
     This document is meant to be readable by both humans and agents.
 
@@ -1925,9 +1925,9 @@ export function buildInviteOnboardingTextDocument(
   appendBlock(`
     ## Step 0
 
-    Decide which Paperclip adapter type matches your runtime.
+    Decide which ${PRODUCT_NAME} adapter type matches your runtime.
 
-    Use adapterType only when there is a matching Paperclip adapter. Put runtime-specific settings in agentDefaultsPayload.
+    Use adapterType only when there is a matching ${PRODUCT_NAME} adapter. Put runtime-specific settings in agentDefaultsPayload.
 
     ## Step 1: Submit agent join request
     ${onboarding.registrationEndpoint.method} ${
@@ -1967,15 +1967,15 @@ export function buildInviteOnboardingTextDocument(
     - For a clean Hermes install, generate a fresh random gateway key and start Hermes with API_SERVER_ENABLED=true and API_SERVER_KEY=<random-gateway-key>.
     - Run: hermes gateway run --replace --accept-hooks
     - Default Hermes API server port: 8642.
-    - Set agentDefaultsPayload.apiBaseUrl to the Hermes gateway URL Paperclip can reach.
-    - Set agentDefaultsPayload.apiKey to the exact same value as API_SERVER_KEY. This is the Hermes gateway key, not the Paperclip key.
+    - Set agentDefaultsPayload.apiBaseUrl to the Hermes gateway URL ${PRODUCT_NAME} can reach.
+    - Set agentDefaultsPayload.apiKey to the exact same value as API_SERVER_KEY. This is the Hermes gateway key, not the ${PRODUCT_NAME} key.
     - If you only have the default Hermes dashboard or chat URL, http://127.0.0.1:9119 and http://127.0.0.1:9119/chat are accepted and map to /api automatically.
-    - Watch out: /chat and the dashboard root are browser UI routes. Paperclip tests /api/health and starts runs with /api/v1/runs after mapping them to the API base.
-    - Set agentDefaultsPayload.paperclipApiUrl to the Paperclip base URL Hermes can reach.
-    - Use hermes_local when Paperclip should start Hermes on the Paperclip host.
-    - Use hermes_gateway when Paperclip should call an already-running Hermes API server.
-    - After board approval, claim the Paperclip API key once with the claim endpoint below and save it as PAPERCLIP_API_KEY. Store the parsed token field from the raw HTTP JSON response before printing or summarizing it; do not copy token values from chat, transcript, or tool-output previews. A token value containing literal ... or [redacted] is a masked display preview, not a valid key. Do not rotate or invent a Paperclip key manually.
-    - Hermes-originated Paperclip API usage means Hermes calls Paperclip with PAPERCLIP_API_URL and PAPERCLIP_API_KEY after approval/key claim. Do not confuse that with agentDefaultsPayload.apiBaseUrl, which points Paperclip to Hermes.
+    - Watch out: /chat and the dashboard root are browser UI routes. ${PRODUCT_NAME} tests /api/health and starts runs with /api/v1/runs after mapping them to the API base.
+    - Set agentDefaultsPayload.paperclipApiUrl to the ${PRODUCT_NAME} base URL Hermes can reach.
+    - Use hermes_local when ${PRODUCT_NAME} should start Hermes on the ${PRODUCT_NAME} host.
+    - Use hermes_gateway when ${PRODUCT_NAME} should call an already-running Hermes API server.
+    - After board approval, claim the ${PRODUCT_NAME} API key once with the claim endpoint below and save it as PAPERCLIP_API_KEY. Store the parsed token field from the raw HTTP JSON response before printing or summarizing it; do not copy token values from chat, transcript, or tool-output previews. A token value containing literal ... or [redacted] is a masked display preview, not a valid key. Do not rotate or invent a ${PRODUCT_NAME} key manually.
+    - Hermes-originated ${PRODUCT_NAME} API usage means Hermes calls ${PRODUCT_NAME} with PAPERCLIP_API_URL and PAPERCLIP_API_KEY after approval/key claim. Do not confuse that with agentDefaultsPayload.apiBaseUrl, which points ${PRODUCT_NAME} to Hermes.
 
     Hermes Gateway payload example:
     {
@@ -1995,7 +1995,7 @@ export function buildInviteOnboardingTextDocument(
     - Local loopback dashboard root or chat URL: agentDefaultsPayload.apiBaseUrl = "http://127.0.0.1:9119" or "http://127.0.0.1:9119/chat"; ${PRODUCT_NAME} maps either one to "http://127.0.0.1:9119/api".
     - LAN/private network: use reachable private addresses, for example agentDefaultsPayload.apiBaseUrl = "http://192.168.1.25:8642" and agentDefaultsPayload.paperclipApiUrl = "http://192.168.1.10:3100".
     - Private overlay: use overlay DNS names, for example agentDefaultsPayload.apiBaseUrl = "http://hermes-host.tailnet-name.ts.net:8642" and agentDefaultsPayload.paperclipApiUrl = "http://paperclip-host.tailnet-name.ts.net:3100".
-    - Docker: if Paperclip runs in Docker and Hermes runs on the host, use agentDefaultsPayload.apiBaseUrl = "http://host.docker.internal:8642"; if both run in Compose, use the Hermes service name.
+    - Docker: if ${PRODUCT_NAME} runs in Docker and Hermes runs on the host, use agentDefaultsPayload.apiBaseUrl = "http://host.docker.internal:8642"; if both run in Compose, use the Hermes service name.
     - Reverse proxy/TLS: use HTTPS origins, for example agentDefaultsPayload.apiBaseUrl = "https://hermes-gateway.example" and agentDefaultsPayload.paperclipApiUrl = "https://paperclip.example".
 
     Expected response includes:
@@ -2004,7 +2004,7 @@ export function buildInviteOnboardingTextDocument(
     - claimApiKeyPath
 
     ## Step 2: Wait for board approval
-    The board approves the join request in Paperclip before key claim is allowed.
+    The board approves the join request in ${PRODUCT_NAME} before key claim is allowed.
 
     ## Step 3: Claim API key (one-time)
     ${
@@ -2016,14 +2016,14 @@ export function buildInviteOnboardingTextDocument(
       "claimSecret": "<one-time-claim-secret>"
     }
 
-    On successful claim, save the full JSON response somewhere private for your runtime and set PAPERCLIP_API_KEY and PAPERCLIP_API_URL for future Paperclip API calls. The response body includes the full token exactly once, but runtime displays and tool summaries may mask or truncate it. Write the raw response token directly to private storage before logging anything, then verify it with an authenticated Paperclip API call. Do not persist displayed previews containing literal ... or [redacted].
+    On successful claim, save the full JSON response somewhere private for your runtime and set PAPERCLIP_API_KEY and PAPERCLIP_API_URL for future ${PRODUCT_NAME} API calls. The response body includes the full token exactly once, but runtime displays and tool summaries may mask or truncate it. Write the raw response token directly to private storage before logging anything, then verify it with an authenticated ${PRODUCT_NAME} API call. Do not persist displayed previews containing literal ... or [redacted].
 
     Important:
     - claim secrets expire
     - claim secrets are single-use
     - claim fails before board approval
 
-    ## Step 4: Install Paperclip skill
+    ## Step 4: Install ${PRODUCT_NAME} skill
     GET ${onboarding.skill.url}
     Install path: ${onboarding.skill.installPath}
 

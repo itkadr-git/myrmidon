@@ -2,6 +2,7 @@ import * as p from "@clack/prompts";
 import pc from "picocolors";
 import { normalizeHostnameInput } from "../config/hostnames.js";
 import { readConfig, resolveConfigPath, writeConfig } from "../config/store.js";
+import { PRODUCT_NAME } from "../myrmidon-product.js";
 
 export async function addAllowedHostname(host: string, opts: { config?: string }): Promise<void> {
   const configPath = resolveConfigPath(opts.config);
@@ -27,7 +28,7 @@ export async function addAllowedHostname(host: string, opts: { config?: string }
   } else {
     p.log.success(`Added allowed hostname: ${pc.cyan(normalized)}`);
     p.log.message(
-      pc.dim("Restart the Paperclip server for this change to take effect."),
+      pc.dim(`Restart the ${PRODUCT_NAME} server for this change to take effect.`),
     );
   }
 

@@ -562,7 +562,7 @@ describe("worktree helpers", () => {
       availableMigrations: ["0001_initial.sql", "0002_current.sql"],
       appliedMigrations: ["0001_initial.sql", "0003_unknown.sql"],
       journalEntryCount: 3,
-    }, "sourcePrefix")).toThrow("Migration journal is not a prefix of this Paperclip checkout");
+    }, "sourcePrefix")).toThrow("Migration journal is not a prefix of this Myrmidon checkout");
   });
 
   it("accepts a current source whose migration application order differs from filename order", () => {

@@ -1,8 +1,10 @@
 /**
- * Server-side SVG renderer for Paperclip org charts.
+ * Server-side SVG renderer for Myrmidon org charts.
  * Supports 5 visual styles: monochrome, nebula, circuit, warmth, schematic.
  * Pure SVG output — no browser/Playwright needed. PNG via sharp.
  */
+
+import { PRODUCT_NAME } from "../myrmidon/product.js";
 
 export interface OrgNode {
   id: string;
@@ -566,7 +568,7 @@ const MYRMIDON_LOGO_SVG = `<g>
     <path d="M386,466 L421,497 C428,503 431,512 429,521 L417,589 C415,599 409,607 401,613 L386,628 L371,613 C363,607 357,599 355,589 L343,521 C341,512 344,503 351,497 Z"/>
     <path d="M386,620 L437,654 C455,666 463,688 459,712 C453,749 426,795 405,817 C399,823 393,826 386,826 C379,826 373,823 367,817 C346,795 319,749 313,712 C309,688 317,666 335,654 Z"/>
   </g>
-  <text x="26" y="12" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="600" fill="currentColor">Myrmidon</text>
+  <text x="26" y="12" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="600" fill="currentColor">${PRODUCT_NAME}</text>
 </g>`;
 
 // ── Public API ───────────────────────────────────────────────────

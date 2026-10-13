@@ -58,6 +58,7 @@ import {
   shouldOfferForegroundStart,
 } from "../onboard-service.js";
 import { readInstallManifest, isManagedExecutable } from "../install-store.js";
+import { PRODUCT_NAME } from "../myrmidon-product.js";
 
 type SetupMode = "quickstart" | "advanced";
 
@@ -440,7 +441,7 @@ export async function onboard(opts: OnboardOptions): Promise<void> {
 
   if (existingConfig) {
     p.log.message(
-      pc.dim("Existing Paperclip install detected; keeping the current configuration unchanged."),
+      pc.dim(`Existing ${PRODUCT_NAME} install detected; keeping the current configuration unchanged.`),
     );
     p.log.message(pc.dim(`Use ${pc.cyan("paperclipai configure")} if you want to change settings.`));
 
@@ -499,7 +500,7 @@ export async function onboard(opts: OnboardOptions): Promise<void> {
     let shouldRunNow = !serviceInstalled && (opts.run === true || opts.yes === true);
     if (shouldOfferForegroundStart({ serviceInstalled, startAlreadyDecided: shouldRunNow, invokedByRun: opts.invokedByRun === true, interactive: Boolean(process.stdin.isTTY && process.stdout.isTTY) })) {
       const answer = await p.confirm({
-        message: "Start Paperclip now?",
+        message: `Start ${PRODUCT_NAME} now?`,
         initialValue: true,
       });
       if (!p.isCancel(answer)) {
@@ -512,7 +513,7 @@ export async function onboard(opts: OnboardOptions): Promise<void> {
       return;
     }
 
-    p.outro("Existing Paperclip setup is ready.");
+    p.outro(`Existing ${PRODUCT_NAME} setup is ready.`);
     return;
   }
 
@@ -771,7 +772,7 @@ export async function onboard(opts: OnboardOptions): Promise<void> {
   let shouldRunNow = !serviceInstalled && (opts.run === true || opts.yes === true);
   if (shouldOfferForegroundStart({ serviceInstalled, startAlreadyDecided: shouldRunNow, invokedByRun: opts.invokedByRun === true, interactive: Boolean(process.stdin.isTTY && process.stdout.isTTY) })) {
     const answer = await p.confirm({
-      message: "Start Paperclip now?",
+      message: `Start ${PRODUCT_NAME} now?`,
       initialValue: true,
     });
     if (!p.isCancel(answer)) {

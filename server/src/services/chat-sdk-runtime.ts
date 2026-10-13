@@ -883,7 +883,7 @@ function assertDiscordAdapterCompatibility(adapter: Adapter, chat: Chat): void {
   const discord = adapter as unknown as DiscordAdapterInternals;
   if (discord.paperclipCompatibilityRevision !== "paperclip-discord-v6") {
     throw new DiscordAdapterCompatibilityError(
-      "Paperclip patch revision paperclip-discord-v6 is unavailable",
+      `${PRODUCT_NAME} patch revision paperclip-discord-v6 is unavailable`,
     );
   }
   if (typeof discord.startGatewayListener !== "function") {
