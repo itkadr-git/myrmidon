@@ -2412,7 +2412,11 @@ mod tests {
         )
         .unwrap()
         .unwrap();
-        let read_timeout = transport.socket.read_timeout().unwrap().expect("read_timeout");
+        let read_timeout = transport
+            .socket
+            .read_timeout()
+            .unwrap()
+            .expect("read_timeout");
         assert!(
             (240..=260).contains(&read_timeout.as_millis()),
             "expected read_timeout near {:?}, got {:?}",
