@@ -7,6 +7,16 @@ divergence-section: Трек 3 — шлюз инструментов и адап
 
 ## changelog-en
 
+- hermes_gateway runs now resume across a board restart: the pre-reaper
+  reattach sweep uses the gateway run ID saved on the heartbeat run, so an
+  in-flight run can finish and its result remains visible instead of being
+  lost or started again. A gateway HTTP 429 means "busy", not failure:
+  `transient_upstream` keeps the run idle for retry, honoring `Retry-After`
+  for up to 8 attempts with a one-hour ceiling. Cancelling the board run sends
+  `POST /v1/runs/{id}/stop` to stop its gateway run. To verify, restart the
+  board while a gateway run is active; confirm it completes and its result is
+  visible in the board.
+
 - hermes_gateway adapter now reconciles Paperclip-managed skills before POST
   /v1/runs: the run carries its desired skills in the paperclip_skills body
   field, the gateway materializes them into the agent profile's
@@ -16,6 +26,17 @@ divergence-section: Трек 3 — шлюз инструментов и адап
   agents silently ran without any company skills.
 
 ## changelog-ru
+
+- Прогоны hermes_gateway теперь продолжаются после перезапуска доски:
+  выполняемый до reaper sweep использует сохранённый в heartbeat run ID
+  шлюзового прогона, поэтому активный прогон может завершиться, а его
+  результат останется виден вместо потери или повторного запуска. HTTP 429
+  от шлюза означает «занят», а не ошибку: `transient_upstream` оставляет
+  прогон в ожидании повтора, учитывая `Retry-After`; допускается до 8 попыток
+  с пределом в один час. При отмене прогона на доске отправляется
+  `POST /v1/runs/{id}/stop`, чтобы остановить прогон шлюза. Проверка:
+  перезапустить доску во время активного gateway-прогона и убедиться, что
+  он завершился, а его результат виден на доске.
 
 - Адаптер hermes_gateway теперь сверяет управляемые навыки Paperclip до POST
   /v1/runs: ран несёт нужные навыки в поле paperclip_skills, шлюз материализует
