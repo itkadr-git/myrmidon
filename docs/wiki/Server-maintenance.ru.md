@@ -51,6 +51,10 @@
 - **Проверка здоровья трассировки LLM** показывает молчаливую поломку
   конвейера LiteLLM → Langfuse карточкой статуса и сигналом оператору —
   вместо пустых таблиц, которые замечают только через дни.
+- **API данных дашборда флота** собирает хосты флота, контейнеры ботов,
+  прокси LiteLLM и сборочный VPS из VictoriaMetrics и Zabbix (оба — только
+  чтение) в один снимок; подключения настраиваются на компанию, а
+  самопроверка проверяет каждый источник.
 - Стенд-сценарий живучести команды — проверка, позволяющая выключить
   внешний сторож оператора: доска сама поднимает команду после гибели шлюза
   посреди запуска.
@@ -74,6 +78,7 @@
 - [Сигнал заполнения диска хоста](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/host-disk.md)
 - [Очистка рабочих областей после слияния](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/workspace-cleanup.md)
 - [Реестр стека](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/stack-registry.md)
+- [Данные дашборда флота: подключения VictoriaMetrics + Zabbix, API снимка, самопроверка](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/fleet-dashboard-monitoring.md)
 - [Баннер обслуживания](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/maintenance-banner.md)
 - [Консоль сервера](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/server-console.md)
 - [Автоматический откат по здоровью](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/deploy-auto-rollback.md)

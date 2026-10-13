@@ -242,6 +242,16 @@ import {
   type IssueAssignmentWakeupDeps,
 } from "./issue-assignment-wakeup.js";
 import { issueService } from "./issues.js";
+// myrmidon(CA-A): the channel allowlist — the board-decided list of who may
+// write to the bots (channel identity, board account optional), the one-line
+// refusal and the owner's access-request card. Telegram is the first
+// consumer of this general channel-layer mechanism.
+import {
+  admitChannelPrincipal,
+  admitChannelWriter,
+} from "../myrmidon/channel-allowlist/service.js";
+import { handleChannelAccessRefusalGuarded } from "../myrmidon/channel-allowlist/refusal.js";
+import { readChannelAccessMode } from "../myrmidon/channel-allowlist/settings.js";
 import {
   afterTelegramDmMessage,
   decideTelegramDmBinding,
@@ -10502,6 +10512,23 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         userId: allowed ? link.userId : null,
       };
     }
+    // myrmidon(CA-A): in "allowlist" mode the board list — not guest
+    // sponsorship — answers for unlinked senders, at the mutation boundary
+    // exactly as at admission. Re-read inside this transaction (the advisory
+    // lock above already serialized the identity's link changes) so a board
+    // revocation cannot race the inbound snapshot. The "sponsor" mode keeps
+    // the vendor path byte-for-byte.
+    if (
+      await readChannelAccessMode(tx as unknown as Db) === "allowlist"
+    ) {
+      const admitted = await admitChannelPrincipal(tx as unknown as Db, {
+        companyId: endpoint.companyId,
+        provider: endpoint.provider,
+        endpointId: endpoint.id,
+        principalId,
+      });
+      return { allowed: admitted, linkedDenied: false, userId: null };
+    }
     if (!endpoint.allowUnlinkedPeople) {
       return { allowed: false, linkedDenied: false, userId: null };
     }
@@ -16016,9 +16043,34 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         endpoint.allowUnlinkedPeople
           ? await sponsorAllowsGuest(endpoint)
           : false;
-      const principalAllowed =
-        !principalResolution.linkedDenied &&
-        (principalResolution.userId !== null || guestSponsorAllowed);
+      // myrmidon(CA-A): the board channel allowlist — the owner's rule that
+      // who may write to the bots is a setting on the board, by channel
+      // identity, with no board account required. When the access mode is
+      // "allowlist", an unlinked sender is served only if the allowlist
+      // admits them: guest sponsorship no longer admits anyone (the card
+      // flow answers the rest with one line to the sender and an
+      // access-request to the owner). Linked board members keep the vendor
+      // path untouched. The mode is read live (no restart), and every other
+      // provider keeps the pre-change behavior while the mode is "sponsor".
+      let allowlistAdmitted = false;
+      const channelAccessMode = await readChannelAccessMode(db);
+      if (
+        channelAccessMode === "allowlist" &&
+        principalResolution.userId === null &&
+        !principalResolution.linkedDenied
+      ) {
+        allowlistAdmitted = await admitChannelWriter(db, {
+          companyId: endpoint.companyId,
+          provider: endpoint.provider,
+          externalId: principalResolution.principal.externalId,
+          handle: principalResolution.principal.handle,
+          endpointId: endpoint.id,
+        });
+      }
+      const principalAllowed = !principalResolution.linkedDenied && (
+        channelAccessMode === "allowlist"
+          ? principalResolution.userId !== null || allowlistAdmitted
+          : principalResolution.userId !== null || guestSponsorAllowed);
       const activationAllowed = addressed || existingConversation !== null;
       const allowed =
         endpointAllowed &&
@@ -16091,10 +16143,12 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
             : principalResolution.linkedDenied
               ? "Linked Myrmidon account is not currently permitted"
               : !principalAllowed
-                ? endpoint.allowUnlinkedPeople
+              ? channelAccessMode === "allowlist"
+                ? "External identity is not on the channel allowlist"
+                : endpoint.allowUnlinkedPeople
                   ? "Endpoint sponsor can no longer authorize external guests"
                   : "External identity must be linked to a Myrmidon account"
-                : "Message did not address the agent or an active task thread";
+              : "Message did not address the agent or an active task thread";
         await db
           .update(chatDeliveries)
           .set({
@@ -16116,7 +16170,8 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           telegramDmConversationsEnabled(endpoint.id) &&
           endpointAllowed &&
           destinationAllowed &&
-          !principalAllowed
+          !principalAllowed &&
+          channelAccessMode !== "allowlist"
         ) {
           const effectContext =
             runtimeContext ??
@@ -16133,6 +16188,43 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
             deliveryId: activeDelivery.id,
             resourceId: resource.id,
             runtimeContext: effectContext,
+          });
+        }
+        // myrmidon(CA-A): in "allowlist" mode, a sender nobody admits gets
+        // the one-line refusal and the owner an access-request card (once
+        // per sender per UTC day). In this mode the older X8b "ask an
+        // administrator" notice is switched off above — the allowlist
+        // answers instead, with the card as the owner's action point.
+        if (
+          channelAccessMode === "allowlist" &&
+          endpointAllowed &&
+          destinationAllowed &&
+          !principalAllowed &&
+          !principalResolution.linkedDenied &&
+          principalResolution.userId === null
+        ) {
+          const caEffectContext =
+            runtimeContext ??
+            runtimeContextForRecord(
+              (await endpointRecord(endpoint.id)) ??
+                (() => {
+                  throw new Error("Chat endpoint is unavailable");
+                })(),
+            );
+          await handleChannelAccessRefusalGuarded(db, x8TelegramDmBridgeDeps, {
+            companyId: endpoint.companyId,
+            endpoint,
+            thread,
+            addressed,
+            principalId: principalResolution.principal.id,
+            provider: endpoint.provider,
+            externalId: principalResolution.principal.externalId,
+            handle: principalResolution.principal.handle,
+            displayName: principalResolution.principal.displayName,
+            deliveryId: activeDelivery.id,
+            resourceId: resource.id,
+            runtimeContext: caEffectContext,
+            sendNotice: true,
           });
         }
         return;

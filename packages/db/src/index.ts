@@ -42,3 +42,14 @@ export { loadWithoutEmbeddedPostgresExitHooks } from "./embedded-postgres-lifecy
 export { issueRelations } from "./schema/issue_relations.js";
 export { issueReferenceMentions } from "./schema/issue_reference_mentions.js";
 export * from "./schema/index.js";
+
+// myrmidon(1.6.6 KNOWLEDGE-2.0 K-1): pg implementation of the knowledge
+// module's SearchIndex port (tsvector + pg_trgm + unaccent on
+// `knowledge_search`); the module stays free of dialect SQL by reaching the
+// index only through this adapter.
+export {
+  createPgKnowledgeSearchIndex,
+  type KnowledgeSearchIndex,
+  type KnowledgeSearchPage,
+  type KnowledgeSearchHit,
+} from "./knowledge-search.js";

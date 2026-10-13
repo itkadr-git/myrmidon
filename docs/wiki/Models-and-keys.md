@@ -44,6 +44,24 @@ them and how much free memory it keeps (`MYRMIDON_MAX_CONCURRENT_RUNS`,
 limits are changeable at runtime from the UI or the API, without restarting
 the server and without interrupting runs already in flight.
 
+## An empty gateway model catalog signals itself
+
+The spend collection sweep refreshes the gateway's model catalog
+(`/v1/model/info`) on every pass. A successful pass that returns 0 models
+raises one attention card per company — "Gateway model catalog is empty",
+severity high — instead of leaving an empty catalog to fail silently. The
+usual cause is the accounting key (`MYRMIDON_LITELLM_KEY_SECRET`) created
+with a restricted model list: the gateway answers an empty list on a
+perfectly successful request, and everything that reads the catalog
+(prices, model lists, entry limits) quietly stops working. The card is
+deduped — repeated empty passes keep the same card, the first pass that
+sees a non-empty catalog clears it, and the pass right after server start
+records the same way, so a misconfigured key surfaces immediately. The fix
+is operational: re-create the accounting key with an empty model list (all
+models visible) and access to `/spend/logs/v2` and `/v1/model/info`. See
+[SETTINGS.md](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/SETTINGS.md),
+`MYRMIDON_LITELLM_KEY_SECRET`.
+
 ## In detail
 
 - [Company model providers](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/model-providers.md)

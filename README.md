@@ -138,7 +138,7 @@ by default — the full reference is
 
 Release notes live in [docs/myrmidon/CHANGELOG.md](docs/myrmidon/CHANGELOG.md)
 (Russian: [CHANGELOG.ru.md](docs/myrmidon/CHANGELOG.ru.md)). Highlights of
-what exists as of 1.6.4 (latest release; 1.6.5-rc.13 is the current release candidate):
+what exists as of 1.6.4 (latest release; 1.6.5-rc.14 is the current release candidate):
 
 ### Work and agents
 
@@ -199,8 +199,9 @@ what exists as of 1.6.4 (latest release; 1.6.5-rc.13 is the current release cand
 
 ### Channels
 
-- **The owner's channel.** Question and confirmation cards reach the owner's
-  Telegram and can be answered there
+- **The owner's channel.** Owner decisions reach the owner's Telegram — a
+  plain bot message the owner answers in text (the default), or a card with
+  buttons — and can be answered there
   ([owner-telegram-cards](docs/myrmidon/guides/owner-telegram-cards.md)); a
   run shows one live status message in the DM
   ([telegram-dm-status](docs/myrmidon/guides/telegram-dm-status.md)).
@@ -273,7 +274,7 @@ what exists as of 1.6.4 (latest release; 1.6.5-rc.13 is the current release cand
 Full notes per release: [CHANGELOG.md](docs/myrmidon/CHANGELOG.md) and the
 [releases page](https://github.com/itkadr-git/myrmidon/releases) — latest is
 [1.6.4](https://github.com/itkadr-git/myrmidon/releases/tag/myr-v1.6.4);
-[1.6.5-rc.13](https://github.com/itkadr-git/myrmidon/releases/tag/myr-v1.6.5-rc.13)
+[1.6.5-rc.14](https://github.com/itkadr-git/myrmidon/releases/tag/myr-v1.6.5-rc.14)
 is the current release candidate.
 
 - **1.6.3 — one deploy for every component.** `deploy.sh --release` updates
