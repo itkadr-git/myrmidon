@@ -129,6 +129,16 @@ async function createEmbeddedPostgresTestInstance(tempDirPrefix: string) {
     port,
     persistent: true,
     initdbFlags: ["--encoding=UTF8", "--locale=C", "--lc-messages=C"],
+    // Embedded Postgres refuses to initdb/start as OS uid 0 ("Postgres does not
+    // support running as root"), which silently turned the support probe — and
+    // every embedded suite behind it — into a skip inside root-only build
+    // containers (devbuild runs its image as root; CI runners are non-root, so
+    // this branch is inert there). `createPostgresUser` makes embedded-postgres
+    // create a dedicated OS user and drop privileges, which is exactly what
+    // uid-0 bootstrapping needs. Non-root: no flag, behavior unchanged.
+    ...(typeof process.getuid === "function" && process.getuid() === 0
+      ? { createPostgresUser: true }
+      : {}),
     onLog: (message) => logBuffer.append(message),
     onError: (message) => logBuffer.append(message),
   });
