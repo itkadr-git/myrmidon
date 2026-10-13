@@ -514,7 +514,7 @@ describe("TaskChatThread runtime transcript selection", () => {
     expect(nativeRuns.map((run) => run.id)).toEqual(["native-run"]);
   });
 
-  it("uses runner-only controls only for an actual native Paperclip Runner run", () => {
+  it("uses runner-only controls only for an actual native Myrmidon Runner run", () => {
     nativeTranscriptState.transcriptByRun.set("native-run", [
       {
         kind: "assistant",
@@ -2155,7 +2155,7 @@ describe("TaskChatThread runtime transcript selection", () => {
 
   it.each([
     ...["claude_local", "codex_local", "cursor", "gemini_local", "opencode_local",
-      "pi_local", "grok_local", "kimi_local", "hermes_local"].flatMap((adapterType) =>
+      "pi_local", "omp_local", "grok_local", "kimi_local", "hermes_local"].flatMap((adapterType) =>
       ["failed", "timed_out"].map((status) => ({ adapterType, status, runtimeMode: "legacy" as const,
         cause: "legacy_execution_requires_reconciliation", canRetry: true }))),
     { adapterType: "paperclip_runner", status: "failed", runtimeMode: "native" as const,
@@ -2955,7 +2955,7 @@ describe("TaskChatThread queued message actions", () => {
   });
 });
 
-describe("TaskChatThread Paperclip Runner queue", () => {
+describe("TaskChatThread Myrmidon Runner queue", () => {
   const queuedComment = {
     id: "queued-prp-1",
     companyId: "company-1",

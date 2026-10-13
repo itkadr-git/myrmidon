@@ -132,6 +132,16 @@ import {
   listPiModels,
 } from "@paperclipai/adapter-pi-local/server";
 import { agentConfigurationDoc as piAgentConfigurationDoc } from "@paperclipai/adapter-pi-local";
+// myrmidon(OMP-LOCAL): register omp_local adapter
+import {
+  execute as ompExecute,
+  listOmpSkills,
+  syncOmpSkills,
+  testEnvironment as ompTestEnvironment,
+  sessionCodec as ompSessionCodec,
+  listOmpModels,
+} from "@paperclipai/adapter-omp-local/server";
+import { agentConfigurationDoc as ompAgentConfigurationDoc } from "@paperclipai/adapter-omp-local";
 import { BUILTIN_ADAPTER_TYPES } from "./builtin-adapter-types.js";
 import { buildExternalAdapters } from "./plugin-loader.js";
 import { getDisabledAdapterTypes } from "../services/adapter-plugin-store.js";
@@ -843,6 +853,27 @@ const piLocalAdapter: ServerAdapterModule = {
   agentConfigurationDoc: piAgentConfigurationDoc,
 };
 
+// myrmidon(OMP-LOCAL): omp_local adapter
+const ompLocalAdapter: ServerAdapterModule = {
+  type: "omp_local",
+  runtimeToolDelivery: "environment",
+  execute: ompExecute,
+  testEnvironment: ompTestEnvironment,
+  listSkills: listOmpSkills,
+  syncSkills: syncOmpSkills,
+  sessionCodec: ompSessionCodec,
+  sessionManagement: getAdapterSessionManagement("omp_local") ?? undefined,
+  models: [],
+  listModels: listOmpModels,
+  supportsLocalAgentJwt: true,
+  supportsInstructionsBundle: true,
+  instructionsPathKey: "instructionsFilePath",
+  requiresMaterializedRuntimeSkills: true,
+  getRuntimeCommandSpec: (config) =>
+    buildNpmRuntimeCommandSpec(config, "omp", "@oh-my-pi/pi-coding-agent@18.9.2"),
+  agentConfigurationDoc: ompAgentConfigurationDoc,
+};
+
 const adaptersByType = new Map<string, ServerAdapterModule>();
 
 // For builtin types that are overridden by an external adapter, we keep the
@@ -862,6 +893,7 @@ function registerBuiltInAdapters() {
     paperclipRunnerAdapter,
     openCodeLocalAdapter,
     piLocalAdapter,
+    ompLocalAdapter,
     cursorCloudAdapter,
     cursorLocalAdapter,
     geminiLocalAdapter,
@@ -935,7 +967,7 @@ const externalAdaptersReady: Promise<void> = (async () => {
       const overriding = BUILTIN_ADAPTER_TYPES.has(externalAdapter.type);
       if (overriding) {
         console.log(
-          `[paperclip] External adapter "${externalAdapter.type}" overrides built-in adapter`,
+          `[myrmidon] External adapter "${externalAdapter.type}" overrides built-in adapter`,
         );
         // Save the original builtin for later restoration.
         const existing = adaptersByType.get(externalAdapter.type);
@@ -949,7 +981,7 @@ const externalAdaptersReady: Promise<void> = (async () => {
       );
     }
   } catch (err) {
-    console.error("[paperclip] Failed to load external adapters:", err);
+    console.error("[myrmidon] Failed to load external adapters:", err);
   }
 })();
 
@@ -1024,7 +1056,7 @@ function getDeclaredAdapterModels(): ReturnType<typeof parseAdapterModelsEnv> {
     value = parseAdapterModelsEnv(process.env);
   } catch (err) {
     console.error(
-      "[paperclip] Invalid PAPERCLIP_ADAPTER_MODELS; ignoring declared model lists:",
+      "[myrmidon] Invalid PAPERCLIP_ADAPTER_MODELS; ignoring declared model lists:",
       err,
     );
   }
@@ -1114,12 +1146,12 @@ export function setOverridePaused(type: string, paused: boolean): boolean {
   const wasPaused = pausedOverrides.has(type);
   if (paused && !wasPaused) {
     pausedOverrides.add(type);
-    console.log(`[paperclip] Override paused for "${type}" — builtin adapter restored`);
+    console.log(`[myrmidon] Override paused for "${type}" — builtin adapter restored`);
     return true;
   }
   if (!paused && wasPaused) {
     pausedOverrides.delete(type);
-    console.log(`[paperclip] Override resumed for "${type}" — external adapter active`);
+    console.log(`[myrmidon] Override resumed for "${type}" — external adapter active`);
     return true;
   }
   return false;
