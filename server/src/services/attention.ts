@@ -94,12 +94,21 @@ import {
 // myrmidon(OPE-6011): the held-task card (a settled execution-reconciliation
 // hold silently skipping every wake of the task's assignee).
 import {
-  listExecutionHoldCards,
   executionHoldSignalDedupKey,
   executionHoldSignalDetail,
   executionHoldSignalSeverity,
   executionHoldSignalWhyNow,
+  listExecutionHoldCards,
 } from "../myrmidon/execution-hold/attention.js";
+// myrmidon(REPLAY-BLOCK-TRIAGE): the locked-task card with a named responsible.
+import {
+  listReplayLockedCards,
+  replayLockedDedupKey,
+  replayLockedDetail,
+  replayLockedResponsible,
+  replayLockedSeverity,
+  replayLockedWhyNow,
+} from "../myrmidon/replay-blocked/attention.js";
 // myrmidon(REVIEW-ROUTING): the cards of a task in review with no reviewer, or
 // a review without a verdict for too long.
 import {
@@ -164,6 +173,8 @@ const ATTENTION_SOURCE_KINDS: AttentionSourceKind[] = [
   "review_routing",
   // myrmidon(OPE-6011): a held task's silent-wake notice.
   "execution_hold",
+  // myrmidon(REPLAY-BLOCK-TRIAGE): a task locked by a settled replay hold.
+  "replay_locked",
 ];
 
 const SEVERITY_RANK: Record<AttentionSeverity, number> = {
@@ -208,6 +219,10 @@ const SOURCE_RANK: Record<AttentionSourceKind, number> = {
   // myrmidon(OPE-6011): a held task blocks all of its wakes — ranked with the
   // other machine-recovery stops, just below a recovery action itself.
   execution_hold: 1,
+  // myrmidon(REPLAY-BLOCK-TRIAGE): the same locked-task family, one rank below:
+  // an execution_hold card has its own Confirm verb; the replay_locked card only
+  // routes to a human owner.
+  replay_locked: 2,
 };
 
 const PENDING_INTERACTION_STATUSES = ["pending"] as const;
@@ -1230,6 +1245,12 @@ type AttentionBuildOptions = {
 type AttentionFeedSnapshot = {
   items: AttentionItem[];
   builtAtMs: number;
+  // myrmidon(REPLAY-BLOCK-TRIAGE): the feed stamp is part of the snapshot, not
+  // of the request. A cached snapshot must read identical to the response that
+  // stored it (the feed-cache contract test asserts `second` deep-equals
+  // `first`); stamping `new Date()` per request made two reads inside one TTL
+  // differ by a millisecond whenever the rebuild crossed a ms boundary.
+  generatedAt: string;
 };
 
 const attentionSettingsCache = new WeakMap<
@@ -2562,6 +2583,61 @@ async function buildAttentionFeedSnapshot(
         }));
       }
 
+      // myrmidon(REPLAY-BLOCK-TRIAGE): one card per task locked by a settled
+      // "do not replay" hold, naming the responsible (the assignee's manager,
+      // else the board operator) and a 24h triage deadline. Computed live from
+      // the recovery rows, so it disappears on Restore/Done/Cancel or when the
+      // hold clears (including the reassignment clear above). The dedup key
+      // carries the UTC day: dismissing silences the card for a day, and it
+      // re-surfaces daily while the task stays locked.
+      for (const card of await listReplayLockedCards(db, companyId, now)) {
+        const responsible = replayLockedResponsible(card);
+        add(createItem({
+          companyId,
+          sourceKind: "replay_locked",
+          subject: {
+            kind: "issue",
+            id: card.issueId,
+            companyId,
+            title: card.issueTitle ?? "Task",
+            identifier: card.issueIdentifier,
+            status: card.issueStatus,
+            href: card.issueIdentifier ? `/${prefix}/issues/${card.issueIdentifier}` : null,
+            metadata: {
+              recoveryActionId: card.recoveryActionId,
+              cause: card.cause,
+              heldAt: card.heldAt,
+              dueAt: card.dueAt,
+              responsibleKind: responsible.kind,
+              responsibleId: responsible.id,
+              responsibleLabel: responsible.label,
+            },
+          },
+          whyNow: replayLockedWhyNow(card),
+          decisionVerbs: decisionVerbs(
+            { id: "inspect", label: "Open and triage", description: "Open the task's Replay-blocked card: Review and clear, restore, or close it." },
+            { id: "reassign", label: "Reassign", description: "Assign the task to a working executor — the hold clears with the reassignment." },
+            { id: "dismiss", label: "Dismiss for today", description: "Silence this notice until tomorrow; it re-surfaces while the task stays locked." },
+          ),
+          inlineResolvable: false,
+          entryRule:
+            "a settled no-replay hold (replay=blocked) is the issue's newest effective blocker and the issue is not done/cancelled.",
+          exitRule:
+            "the hold is cleared (recovery resolve, reassignment, operator clear) or the issue is done/cancelled.",
+          dedupKey: replayLockedDedupKey(card),
+          severity: replayLockedSeverity(card),
+          activityAt: card.heldAt,
+          createdAt: card.heldAt,
+          updatedAt: card.heldAt,
+          relatedIssue: null,
+          detail: {
+            kind: "generic",
+            summaryExcerpt: excerpt(replayLockedDetail(card)),
+            images: [],
+          },
+        }));
+      }
+
       // myrmidon(TRACING-HEALTH): the "LLM tracing" non-ok state raises ONE
       // card on the operator desk, deduped by state — the parent ticket's
       // rule is "signal to the operator role, never the owner", and the
@@ -2925,7 +3001,11 @@ async function buildAttentionFeedSnapshot(
       const collectedItems = [...deduped.values()].sort(compareAttentionItems);
       await decisionQueueService(db).materializeSeededQueues(companyId, collectedItems);
       const enrichedItems = await enrichAttentionItems(db, companyId, collectedItems, now);
-  return { items: enrichedItems, builtAtMs: snapshotBuiltAt };
+  return {
+    items: enrichedItems,
+    builtAtMs: snapshotBuiltAt,
+    generatedAt: new Date().toISOString(),
+  };
 }
 
 export function attentionService(db: Db, serviceOptions: AttentionServiceOptions = {}) {
@@ -2959,6 +3039,12 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
       const includeDismissed = options.includeDismissed === true;
 
       let enrichedItems: AttentionItem[];
+      // myrmidon(REPLAY-BLOCK-TRIAGE): the stamp travels with the snapshot: a
+      // cached read must reproduce the response that stored it byte-for-byte
+      // (the feed-cache contract test deep-equals second with first; a
+      // per-request stamp broke equality whenever two reads straddled a
+      // millisecond boundary).
+      let feedGeneratedAt: string;
       if (cacheEnabled) {
         // cache key = company + everything that changes the
         // unpaginated snapshot (userId and includeDismissed feed the add()
@@ -2983,6 +3069,7 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
         const cachedEntry = cache.get(cacheKey);
         if (cachedEntry && cachedEntry.expiresAtMs > now) {
           enrichedItems = cachedEntry.snapshot.items;
+          feedGeneratedAt = cachedEntry.snapshot.generatedAt;
         } else {
           const snapshot = await buildAttentionFeedSnapshot(db, companyId, buildOptions, serviceOptions);
           if (cache.size > 32) {
@@ -2992,10 +3079,12 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
           }
           cache.set(cacheKey, { expiresAtMs: snapshot.builtAtMs + feedCacheTtlMs, snapshot });
           enrichedItems = snapshot.items;
+          feedGeneratedAt = snapshot.generatedAt;
         }
       } else {
         const snapshot = await buildAttentionFeedSnapshot(db, companyId, buildOptions, serviceOptions);
         enrichedItems = snapshot.items;
+        feedGeneratedAt = snapshot.generatedAt;
       }
 
       const activitySince = parseActivityBoundary(options.activitySince, "activitySince");
@@ -3090,7 +3179,7 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
 
       return {
         companyId,
-        generatedAt: new Date().toISOString(),
+        generatedAt: feedGeneratedAt,
         totalCount: rankedItems.length,
         // Desk badge: distinct items that surfaced
         // today OR carry an explicit decide-by deadline due today/past. Counted

@@ -81,6 +81,8 @@ const SOURCE_META: Record<AttentionSourceKind, SourceMeta> = {
   foraging_limit: { label: "Learning limit" },
   // myrmidon(1.6.5-OPE-6011): label for the execution-reconciliation hold source.
   execution_hold: { label: "Execution hold" },
+  // myrmidon(REPLAY-BLOCK-TRIAGE): label for the replay-locked task source.
+  replay_locked: { label: "Replay locked" },
 };
 
 export function sourceMeta(kind: AttentionSourceKind): SourceMeta {

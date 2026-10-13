@@ -309,6 +309,8 @@ async function sourceIssueId(
     case "review_routing":
     // myrmidon(OPE-6011): the held-task card's subject is the held task.
     case "execution_hold":
+    // myrmidon(REPLAY-BLOCK-TRIAGE): the replay-locked card's subject too.
+    case "replay_locked":
     case "stale_block": {
       const row = await db
         .select({ id: issues.id })
