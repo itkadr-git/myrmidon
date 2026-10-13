@@ -1,0 +1,25 @@
+## changelog-en
+
+### Complete busy-agent profile updates (L6-PROFILE-UPDATE-STARVATION)
+
+- Maintenance drain completion waits for owned interrupted runs to finish teardown before promoting retries.
+- Agent status exposes pending profile-update time while an agent-scoped maintenance window is open.
+
+## changelog-ru
+
+### Завершение обновления профиля занятого агента (L6-PROFILE-UPDATE-STARVATION)
+
+- Слив обслуживания ждёт завершения teardown прерванных прогонов перед продвижением повторов.
+- Статус агента показывает время ожидания обновления профиля при открытом окне обслуживания агента.
+
+## divergence
+
+| L6-PROFILE-UPDATE-STARVATION | Maintenance drain completion and profile pending visibility | `server/src/myrmidon/maintenance/{domain,service,settings,index}.ts`, `server/src/myrmidon/bot-containers/routes.ts` | Busy agents could keep profile updates pending because interrupted retries were not promoted after teardown. | `server/src/myrmidon/maintenance/drain-complete.myrmidon.test.ts` | Remove the marked maintenance drain and status changes when the vendor provides equivalent behavior. | This PR |
+
+## settings-en
+
+| `MYRMIDON_MAINTENANCE_STUCK_GRACE_SEC` | L6-PROFILE-UPDATE-STARVATION | `60` | Grace period after the drain deadline before an agent-scoped stuck window is retired. | Unset to use the default. |
+
+## settings-ru
+
+| `MYRMIDON_MAINTENANCE_STUCK_GRACE_SEC` | L6-PROFILE-UPDATE-STARVATION | `60` | Период ожидания после дедлайна слива перед удалением зависшего окна агента. | Удалить переменную, чтобы использовать значение по умолчанию. |

@@ -189,7 +189,11 @@ describeEmbeddedPostgres("maintenance drain completion (L6)", () => {
     expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, runId)))[0]!.status).toBe("scheduled_retry");
 
     // The vendor teardown completes; only now can the tick promote retry and
-    // finish draining. The retry remains gated until exit.
+    // finish draining. The tick may observe teardown immediately after the
+    // interrupt, so only assert the gated state if teardown was still pending.
+    if ((await svc.status({ type: "agent", id: agentId })).windows[0]?.state === "entering") {
+      expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, runId)))[0]!.status).toBe("scheduled_retry");
+    }
     await heartbeatService(db).drainActiveRunExecutions();
     await svc.tick();
     const window = (await svc.status({ type: "agent", id: agentId })).windows[0]!;
