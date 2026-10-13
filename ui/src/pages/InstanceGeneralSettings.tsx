@@ -19,7 +19,7 @@ import { cn } from "../lib/utils";
 import { useSignOut } from "@/hooks/useSignOut";
 import { MaintenanceSettingsPanel } from "@/components/myrmidon/MaintenanceSettingsPanel"; // myrmidon(R3)
 import { RuntimeLimitsSettingsPanel } from "@/components/myrmidon/RuntimeLimitsSettingsPanel"; // myrmidon(C0)
-import { RunStallSettingsPanel } from "@/components/myrmidon/RunStallSettingsPanel"; // myrmidon(RUN-STALL-SETTINGS)
+import { ProcessesSettingsPanel } from "@/components/myrmidon/ProcessesSettingsPanel"; // myrmidon(PROCS-1.1)
 import { BudgetEnforcementSettingsPanel } from "@/components/myrmidon/BudgetEnforcementSettingsPanel"; // myrmidon(1.7-BUDGET-CONFIG-B)
 import { AgentExchangeSettingsPanel } from "@/components/myrmidon/AgentExchangeSettingsPanel"; // myrmidon(1.7-AGENT-EXCHANGE-A)
 import { TelegramDmProgressSettingsPanel } from "@/components/myrmidon/TelegramDmProgressSettingsPanel"; // myrmidon(DM-PROGRESS)
@@ -164,7 +164,7 @@ export function InstanceGeneralSettings({ embedded = false }: { embedded?: boole
 
       <MaintenanceSettingsPanel /> {/* myrmidon(R3) */}
       <RuntimeLimitsSettingsPanel /> {/* myrmidon(C0) */}
-      <RunStallSettingsPanel /> {/* myrmidon(RUN-STALL-SETTINGS) */}
+      <ProcessesSettingsPanel /> {/* myrmidon(PROCS-1.1): the processes of the board, applied without a restart */}
       <BudgetEnforcementSettingsPanel /> {/* myrmidon(1.7-BUDGET-CONFIG-B) */}
       <AgentExchangeSettingsPanel /> {/* myrmidon(1.7-AGENT-EXCHANGE-A) */}
       <TelegramDmProgressSettingsPanel /> {/* myrmidon(DM-PROGRESS) */}

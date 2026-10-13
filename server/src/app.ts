@@ -104,6 +104,7 @@ import { myrmidonDeployJobsRoutes } from "./myrmidon/deploy-jobs/index.js"; // m
 import { myrmidonRuntimeLimitsRoutes } from "./myrmidon/runtime-limits/index.js"; // myrmidon(C0)
 import { myrmidonRunStallRoutes } from "./myrmidon/run-stall/index.js"; // myrmidon(RUN-STALL-SETTINGS)
 import { myrmidonCorpusRoutes, resolveCorpusPorts } from "./myrmidon/corpus/index.js"; // myrmidon(1.6.6 CORPUS-2.0 ч.C)
+import { myrmidonProcessesRouter } from "./myrmidon/processes/index.js"; // myrmidon(PROCS-1.1)
 import { myrmidonBudgetEnforcementRoutes } from "./myrmidon/budget-enforcement/index.js"; // myrmidon(1.7-BUDGET-CONFIG-B)
 import { myrmidonBehaviorSettingsRoutes } from "./myrmidon/behavior-settings/index.js"; // myrmidon(SETTINGS-CORE)
 import { myrmidonTelegramDmProgressRoutes } from "./myrmidon/telegram-dm-progress/index.js"; // myrmidon(DM-PROGRESS)
@@ -194,10 +195,7 @@ import { myrmidonCtoChatRoutes } from "./myrmidon/cto-chat/index.js";
 // myrmidon(1.6-SWARM-CLAIM-B): the lead's supervisor surface over the role queues
 import { myrmidonSwarmSupervisorRoutes } from "./myrmidon/swarm-claim-supervisor/index.js"; // myrmidon(1.6-SWARM-CLAIM-B)
 // myrmidon(1.6.6 PROCS-1.5): per-process readiness and the balancer's /healthz
-import {
-  myrmidonProcessReadinessRoutes,
-  type ProcessSupervisorReadinessSource,
-} from "./myrmidon/process-readiness/index.js";
+import { myrmidonProcessReadinessRoutes } from "./myrmidon/process-readiness/index.js";
 // myrmidon(TG-NOTIFY-A): the telegramNotify settings core (contract, GET/PATCH, changelog)
 import { myrmidonTelegramNotifyRoutes } from "./myrmidon/telegram-notify/index.js";
 import { instanceSettingsService } from "./services/instance-settings.js";
@@ -588,6 +586,13 @@ export async function createApp(
       }): Promise<unknown>;
     };
     databaseBackupService?: InstanceDatabaseBackupService;
+    /**
+     * myrmidon(PROCS-1.1): whether this process performs the periodic work the
+     * app owns — export flushes, spool sweeps, plugin job scheduling, channel
+     * polling and the boot-time reconciliations. An `api`-role process passes
+     * `false`; the default keeps every existing caller on today's behavior.
+     */
+    backgroundWork?: boolean;
     databaseBackupHealth?: InspectDatabaseBackupHealthOptions;
     deploymentMode: DeploymentMode;
     deploymentExposure: DeploymentExposure;
@@ -603,11 +608,6 @@ export async function createApp(
     localPluginDir?: string;
     pluginMigrationDb?: Db;
     pluginWorkerManager?: PluginWorkerManager;
-    /** myrmidon(1.6.6 PROCS-1.5): the supervisor view the aggregate `/healthz`
-     * reads — desired api count plus the readiness of each child (PROCS-1.2).
-     * Absent on today's single process and on an api child; `/healthz` then
-     * answers for this process itself. */
-    processSupervisor?: ProcessSupervisorReadinessSource | null;
     decisionServiceOptions: DecisionServiceOptions;
     betterAuthHandler?: express.RequestHandler;
     resolveSession?: (
@@ -622,6 +622,13 @@ export async function createApp(
     managedPluginAutoInstall?: readonly string[] | null;
     /** Test override for the bundled plugin catalog root. */
     bundledPluginCatalogRoot?: string;
+    /**
+     * myrmidon(PROCS-1.2): the worker's process supervisor, so PATCH
+     * /api/myrmidon/processes on this process drives it. An api child is
+     * constructed without one — it stores the row, the worker applies its own
+     * read of the same row.
+     */
+    processSupervisor?: import("./myrmidon/processes/index.js").ProcessSupervisor | null;
   },
 ) {
   const app = express();
@@ -662,6 +669,10 @@ export async function createApp(
   );
   app.use("/api", apiCompression());
   app.use(httpLogger);
+  // myrmidon(PROCS-1.1): one flag decides whether this app process performs its
+  // own periodic work. The `api` role passes false; anything that omits the
+  // option keeps today's behavior.
+  const backgroundWorkEnabled = opts.backgroundWork !== false;
   const privateHostnameGateEnabled = shouldEnablePrivateHostnameGuard({
     deploymentMode: opts.deploymentMode,
     deploymentExposure: opts.deploymentExposure,
@@ -948,6 +959,7 @@ export async function createApp(
   api.use(myrmidonRuntimeLimitsRoutes(db)); // myrmidon(C0)
   api.use(myrmidonRunStallRoutes(db)); // myrmidon(RUN-STALL-SETTINGS)
   api.use(myrmidonCorpusRoutes(db, { ports: resolveCorpusPorts })); // myrmidon(1.6.6 CORPUS-2.0 ч.C): corpus datasets/documents/search + module settings
+  api.use(myrmidonProcessesRouter(db as any, opts.processSupervisor ?? null)); // myrmidon(PROCS-1.1/1.2): GET/PATCH /api/myrmidon/processes, applied without a restart
   api.use(myrmidonBudgetEnforcementRoutes(db)); // myrmidon(1.7-BUDGET-CONFIG-B)
   api.use(myrmidonBehaviorSettingsRoutes(db)); // myrmidon(SETTINGS-CORE): unified behavior settings, UI→env→default without restart
   api.use(myrmidonTelegramDmProgressRoutes(db)); // myrmidon(DM-PROGRESS): live progress steps of the Telegram DM status
@@ -1347,8 +1359,13 @@ export async function createApp(
 
   app.use(errorHandler);
 
-  jobCoordinator.start();
-  scheduler.start();
+  // myrmidon(PROCS-1.1): the plugin job coordinator and its scheduler are
+  // background work. An api process starts neither, so it also forks no plugin
+  // worker.
+  if (backgroundWorkEnabled) {
+    jobCoordinator.start();
+    scheduler.start();
+  }
   let feedbackExportShuttingDown = false;
   let feedbackExportTimer: ReturnType<typeof setInterval> | null = null;
   const disableFeedbackExportFlushes = () => {
@@ -1375,16 +1392,20 @@ export async function createApp(
     }
   };
 
-  feedbackExportTimer = opts.feedbackExportService
+  // myrmidon(PROCS-1.1): feedback export flushes and channel polling are
+  // periodic work — an api process schedules neither.
+  feedbackExportTimer = opts.feedbackExportService && backgroundWorkEnabled
     ? setInterval(() => {
         void flushPendingFeedbackExports();
       }, FEEDBACK_EXPORT_FLUSH_INTERVAL_MS)
     : null;
   feedbackExportTimer?.unref?.();
-  if (opts.feedbackExportService) {
+  if (opts.feedbackExportService && backgroundWorkEnabled) {
     void flushPendingFeedbackExports();
   }
-  emailChannels.start();
+  if (backgroundWorkEnabled) {
+    emailChannels.start();
+  }
   const flushChatPublications = async () => {
     // myrmidon(1.6-TG-PROACTIVITY-E): bundle U2 cards past the window and
     // drain rarely queues into the durable outbox before the lane runs, so
@@ -1438,7 +1459,11 @@ export async function createApp(
   );
   // Remove the old 1-second polling interval; reconciliation now happens based on events
   // with a fallback timer that triggers only when idle
-  chatReconciliation.reconcile();
+  // myrmidon(PROCS-1.1): the boot-time reconciliation is background work, like
+  // every other sweep — an api process leaves it to its worker sibling.
+  if (backgroundWorkEnabled) {
+    chatReconciliation.reconcile();
+  }
   // Abandoned chunked-import spool sweep: hourly (plus once at startup),
   // deleting spool dirs whose transfer saw no activity for 24h and cancelling
   // their still-open ledger runs. Same setInterval + unref + shutdown-clear
@@ -1459,18 +1484,24 @@ export async function createApp(
       });
   };
   let importTransferSweepTimer: ReturnType<typeof setInterval> | null =
-    setInterval(
-      sweepImportTransferSpools,
-      IMPORT_TRANSFER_SPOOL_SWEEP_INTERVAL_MS,
-    );
-  importTransferSweepTimer.unref?.();
+    // myrmidon(PROCS-1.1): an api process owns no spool sweeps.
+    backgroundWorkEnabled
+      ? setInterval(
+          sweepImportTransferSpools,
+          IMPORT_TRANSFER_SPOOL_SWEEP_INTERVAL_MS,
+        )
+      : null;
+  importTransferSweepTimer?.unref?.();
   // Startup only (never on the hourly interval — that would kill live
   // applies): apply jobs are in-memory in this single process, so any run
   // still "applying" now was interrupted by the previous shutdown and would
   // otherwise 409 every retry forever. Fail those stranded runs — their
   // spooled parts stay reusable — then run the normal sweep once.
-  void companyTransferRunService
-    .recoverStrandedApplyingRuns(db)
+  void (backgroundWorkEnabled
+    // myrmidon(PROCS-1.1): recovering stranded applies mutates runs — the
+    // background role owns it; an api process resolves to an empty result.
+    ? companyTransferRunService.recoverStrandedApplyingRuns(db)
+    : Promise.resolve<string[]>([]))
     .then((recovered) => {
       if (recovered.length > 0) {
         logger.warn(
@@ -1483,7 +1514,8 @@ export async function createApp(
       logger.error({ err }, "stranded company transfer apply recovery failed");
     })
     .finally(() => {
-      sweepImportTransferSpools();
+      // myrmidon(PROCS-1.1): the follow-up sweep is background work too.
+      if (backgroundWorkEnabled) sweepImportTransferSpools();
     });
   void toolDispatcher.initialize().catch((err) => {
     logger.error({ err }, "Failed to initialize plugin tool dispatcher");

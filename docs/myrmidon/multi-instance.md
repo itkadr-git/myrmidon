@@ -15,8 +15,7 @@ and how to watch it while it runs.
 
 ## Current state in 1.6.6
 
-The mode is being delivered in parts. As of this writing, the board already
-ships:
+The board ships the complete split layout:
 
 - the **process registry**: every board process writes a row about itself to
   the `board_processes` table every 10 seconds (role, pid, hostname, version,
@@ -29,24 +28,19 @@ ships:
   (one `SELECT 1` with a 1-second deadline), `migrations` (boot phase), and
   `bus` (event-bus subscription, reported as `not_applicable` until a process
   uses the bus);
-- **`GET /healthz`** — the aggregate verdict for a load balancer. On today's
-  single process it reports that process alone (`scope: "process"`). Once the
-  process supervisor is in, it answers 200 only when **all** api processes are
-  ready (`scope: "supervisor"`, with counters `api: {desired, ready, starting}`,
-  the supervisor state, and a machine-readable `reason`).
-
-Still **expected in the release candidate** (not merged to main yet; described
-below as designed, per the BOARD-PROCESSES design document):
-
-- the **process supervisor** — the worker forks the api children, they share
-  port 3100 via `SO_REUSEPORT`, and the board moves between single and split
-  **live, without a container restart**;
+- **`GET /healthz`** — the aggregate verdict for a load balancer. In split
+  mode it answers 200 only when every desired api child is ready; its body
+  carries `scope: "supervisor"`, `api: {desired, ready, starting}`, the
+  supervisor state, and a machine-readable `reason`;
+- the **process supervisor**: the worker starts api children through
+  `SO_REUSEPORT`, applies `mode` and `apiCount` changes live, drains children
+  before removal, restarts unexpected exits with backoff, and temporarily
+  resumes the public listener if no api child remains;
 - the **`processes` settings key** (`instance_settings.general.processes`) and
-  its API `GET`/`PATCH /api/myrmidon/processes`;
-- the **`role` label on every metrics family** and the
-  **`GET /internal/procs`** endpoint on the metrics router.
+  its API `GET`/`PATCH /api/myrmidon/processes`.
 
-Sections that describe the pending parts are marked *«expected in rc»*.
+The `role` label on every metrics family and `GET /internal/procs` remain
+separate delivery work.
 
 ## When to enable it
 
@@ -79,7 +73,7 @@ falls back to `all` with a warning at startup. Operators normally never set it
 by hand: in the supervised layout the worker forks the api children and sets
 `PAPERCLIP_PROCESS_ROLE=api` (plus `PAPERCLIP_PARENT_BOOT_ID`) itself.
 
-## Configuration (expected in rc)
+## Configuration
 
 The split is configured from the board interface — **Instance → General →
 «Processes of the board»** — or through the API. The values live in
@@ -179,7 +173,7 @@ Point the load balancer or container runtime at:
 Both endpoints set `Cache-Control: no-store`, read no credentials, and expose
 no company data.
 
-## Deploys and drain (expected in rc)
+## Deploys and drain
 
 Switching modes never needs a container restart — the supervisor moves the
 board live:
