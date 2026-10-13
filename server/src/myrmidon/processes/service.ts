@@ -189,7 +189,8 @@ export function defaultProcessesSettingsDeps(db: Db, supervisor: ProcessSupervis
     // ProcessesSettingsDeps contract structural (see above).
     settings: {
       getGeneral: () => settings.getGeneral(),
-      updateGeneral: (patch) => settings.updateGeneral(patch),
+      updateGeneral: (patch) =>
+        settings.updateGeneral(patch as unknown as Parameters<typeof settings.updateGeneral>[0]),
     },
     listCompanyIds: () => settings.listCompanyIds(),
     logActivity: (entry) => logActivity(db, entry),
