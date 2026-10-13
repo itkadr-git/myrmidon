@@ -34,6 +34,11 @@ import { aiConnectionBindingSchema } from "@paperclipai/shared";
 // automatic behaviours obey the settings page without a restart.
 import { myrmidonTeamLivenessReader } from "../myrmidon/team-liveness/index.js";
 import { resolveAgentTeamLiveness } from "@paperclipai/shared";
+import {
+  COMPRESSION_TIMEOUT_ERROR_SIGNATURES,
+  buildLongTaskContextResetNotice,
+  evaluateLongTaskContextReset,
+} from "../myrmidon/long-task-context/index.js";
 import { executionBlockerPredicate, getExecutionBlocker } from "./execution-blocker.js";
 import { CONVERSATION_CONTINUATION_POLICY, claimedAdapterType, runUsedConversationAdapter, hasConversationContinuationPolicy, isConversationAdapter } from "./conversation-continuation.js";
 import { recordExecutionWait } from "./execution-wait.js";
@@ -422,6 +427,14 @@ import {
 import { resolveChatRunPresentationAuthorizationReason } from "./chat-run-publications.js";
 import { projectService } from "./projects.js";
 import {
+  getProjectTokenQuotaBlock,
+  recordProjectTokenUsage,
+} from "../myrmidon/project-token-quota/service.js"; // myrmidon(1.6.6 QUOTA-V2)
+import {
+  PROJECT_TOKEN_QUOTA_EXCEEDED_ERROR_CODE,
+  projectTokenQuotaRejectionMessage,
+} from "@paperclipai/shared"; // myrmidon(1.6.6 QUOTA-V2)
+import {
   authorizationService,
   type AuthorizationActor,
 } from "./authorization.js";
@@ -689,6 +702,7 @@ import {
 // Hermes gateway — one task's session key gains a `:g<N>` once it passes its
 // age/activity threshold, so the task's Hermes state stays bounded
 import { resolveHeartbeatSessionGeneration } from "../myrmidon/session-generations/index.js";
+import { getIdleStopService } from "../myrmidon/idle-stop-startup.js";
 // myrmidon(S2-hostcred): a run never inherits the host's GitHub credentials
 import {
   filterHostGitHubCredentialEnv,
@@ -956,6 +970,10 @@ function nonRetryablePreflightFailureCode(error: unknown): string | null {
  */
 const CONTEXT_WINDOW_ERROR_SIGNATURES = [
   "Context compression could not bring this session under the model's context window",
+  // myrmidon(1.6.6 LONG-TASK-CONTEXT): the runtime's compression-TIMEOUT shapes.
+  // Before this they matched no signature, so a run lost to compression landed
+  // in `error` and the task stayed dead until a human reset the session by hand.
+  ...COMPRESSION_TIMEOUT_ERROR_SIGNATURES,
   "Exceeded limit on max bytes to request body",
   "context window exceeded",
   "session too large",
@@ -996,6 +1014,8 @@ const GIT_SENSITIVE_LOCAL_ADAPTER_TYPES = new Set([
   "kimi_local",
   "opencode_local",
   "pi_local",
+  // myrmidon(OMP-LOCAL): local OMP git sensitive adapter
+  "omp_local",
 ]);
 export { MAX_TURN_CONTINUATION_RETRY_REASON };
 export const MAX_TURN_CONTINUATION_WAKE_REASON = "max_turns_continuation_retry";
@@ -1385,6 +1405,8 @@ const SESSIONED_LOCAL_ADAPTERS = new Set([
   "kimi_local",
   "opencode_local",
   "pi_local",
+  // myrmidon(OMP-LOCAL): sessioned local OMP adapter
+  "omp_local",
 ]);
 // Routes and the scheduler construct separate heartbeatService instances, but
 // they must agree on in-process adapter executions when reaping stale runs.
@@ -3783,6 +3805,7 @@ interface WakeupOptions {
   issueStateGuard?: {
     statuses: string[];
     assigneeAgentId: string;
+    statusVersion?: number;
   };
   /** Keep causally distinct external chat continuations out of an existing run. */
   allowRunCoalescing?: boolean;
@@ -5499,7 +5522,7 @@ async function listUnresolvedBlockerSummaries(
 export function formatRuntimeWorkspaceWarningLog(warning: string) {
   return {
     stream: "stdout" as const,
-    chunk: `[paperclip] ${warning}\n`,
+    chunk: `[myrmidon] ${warning}\n`,
   };
 }
 
@@ -6096,7 +6119,7 @@ export function buildWorkspaceConfigFreshnessOperation(
       previousWorkspaceId: input.previousWorkspaceId,
       activeWorkspaceId: input.activeWorkspaceId,
     },
-    system: `[paperclip] ${workspaceConfigFreshnessActionLabel(input.decision.action)} after config freshness check${categorySummary}: ${reasonSummary}\n`,
+    system: `[myrmidon] ${workspaceConfigFreshnessActionLabel(input.decision.action)} after config freshness check${categorySummary}: ${reasonSummary}\n`,
   };
 }
 
@@ -10356,6 +10379,15 @@ export function heartbeatService(
     }
     const deliveryPayload = response ? { ...payload } : withQueuedCommentIdsInWakePayload(payload, commentIds);
     delete deliveryPayload.queuedCommentInterrupt;
+    // myrmidon(1.6.6-UPSTREAM-HANDOFF-B): the vendor sets the guard version only
+    // at its own enqueue sites; the board's delivery records the version it saw.
+    // This delivery may wait behind a running turn and be admitted much later,
+    // so a wake that arrives after a later handoff (or a fresh blocked
+    // decision) is dropped by the guard instead of starting a turn for the
+    // state it no longer describes.
+    const [guardedDeliveryIssue] = await db.select({ statusVersion: issues.statusVersion }).from(issues).where(and(
+      eq(issues.companyId, companyId), eq(issues.id, issueId),
+    )).limit(1);
     await enqueueWakeup(wake.agentId, {
       source: "on_demand", triggerDetail: "manual", reason: "issue_commented",
       // myrmidon(UPSTREAM-13539): interaction deliveries carry the original wake context, not comment ids.
@@ -10367,7 +10399,11 @@ export function heartbeatService(
           }, commentIds),
       requestedByActorType: "user", requestedByActorId: actorId,
       ...(interrupted ? { queuedCommentInterruptId: queueId } : { queuedCommentRequestId: queueId }),
-      issueStateGuard: { assigneeAgentId: wake.agentId, statuses: ["todo", "in_progress", "in_review", "blocked"] },
+      issueStateGuard: {
+        assigneeAgentId: wake.agentId,
+        statuses: ["todo", "in_progress", "in_review", "blocked"],
+        ...(guardedDeliveryIssue ? { statusVersion: guardedDeliveryIssue.statusVersion } : {}),
+      },
       idempotencyKey: `queued-comment-${interrupted ? "interrupt" : "delivery"}:${queueId}`,
     }, queueId);
   }
@@ -17623,6 +17659,24 @@ export function heartbeatService(
 
     await setWakeupStatus(claimed.wakeupRequestId, "claimed", { claimedAt });
 
+    // IDLE-STOP: wake the container before proceeding with run execution
+    const idleStopService = getIdleStopService();
+    if (idleStopService) {
+      try {
+        await idleStopService.ensureStartedAndHealthy(claimed.agentId);
+      } catch (err) {
+        logger.error(
+          { err, runId: claimed.id, agentId: claimed.agentId },
+          "claimQueuedRun: container failed to start or become healthy, cannot proceed with run",
+        );
+        await cancelRunInternal(
+          claimed.id,
+          `Cancelled because container failed to start: ${err instanceof Error ? err.message : String(err)}`,
+        );
+        return null;
+      }
+    }
+
     // Fix A (lazy locking): stamp executionRunId now that the run is actually running,
     // not at queue time. Guard is idempotent — safe if called more than once.
     const claimedContext = parseObject(claimed.contextSnapshot);
@@ -19759,6 +19813,15 @@ export function heartbeatService(
         costCents: additionalCostCents,
         occurredAt: new Date(),
       });
+      // myrmidon(1.6.6 QUOTA-V2): fold the run's tokens into the project's
+      // quota usage counters (no row / no project = a no-op).
+      if (ledgerScope.projectId) {
+        await recordProjectTokenUsage(db, {
+          companyId: agent.companyId,
+          projectId: ledgerScope.projectId,
+          tokens: inputTokens + cachedInputTokens + outputTokens,
+        });
+      }
     }
   }
 
@@ -21580,6 +21643,23 @@ export function heartbeatService(
       const configuredModel =
         readConfiguredModelFromAdapterConfig(runtimeConfig);
       const wakeSessionResetReason = describeSessionResetReason(context);
+      // myrmidon(1.6.6 LONG-TASK-CONTEXT): drop a task session that is ALREADY
+      // at the threshold before the run resumes it. The runtime's own
+      // compression is what times out on an ever-running task ("Context
+      // compression timed out ..."), and a reset after the fact costs the run;
+      // the run then starts clean from the continuation summary, so the payload
+      // stops growing with the age of the task.
+      const longTaskContext =
+        taskSession != null
+          ? await evaluateLongTaskContextReset({
+              db,
+              settings: instanceSettingsService(db),
+              companyId: agent.companyId,
+              agentId: agent.id,
+              issueId: issueRef?.id ?? null,
+              model: configuredModel,
+            })
+          : null;
       const sessionConfigFreshness = resolveTaskSessionConfigFreshness({
         hasTaskSession: taskSession != null,
         configuredModel,
@@ -21591,9 +21671,13 @@ export function heartbeatService(
           acceptedPlanContinuationWake && !acceptedPlanWakeRoutingDecision,
       });
       const resetTaskSession =
-        shouldResetTaskSessionForWake(context) || sessionConfigFreshness.reset;
+        shouldResetTaskSessionForWake(context) ||
+        sessionConfigFreshness.reset ||
+        (longTaskContext?.plan.reset ?? false);
       const sessionResetReason =
-        sessionConfigFreshness.reasons.join("; ") || null;
+        [sessionConfigFreshness.reasons.join("; "), longTaskContext?.plan.reason]
+          .filter((value): value is string => Boolean(value))
+          .join("; ") || null;
       const taskSessionForRun = resetTaskSession ? null : taskSession;
       const previousSessionParams =
         explicitResumeSessionParams ??
@@ -22611,6 +22695,19 @@ export function heartbeatService(
                 : `Skipping saved session resume because ${sessionResetReason}.`,
             ]
           : []),
+        // myrmidon(1.6.6 LONG-TASK-CONTEXT): a session dropped by the context
+        // guard says so in the run's own context — the agent must know its
+        // earlier turns are not in this session and where the thread stays
+        // readable, instead of assuming it still has that history.
+        ...(longTaskContext?.plan.reset
+          ? [
+              buildLongTaskContextResetNotice({
+                plan: longTaskContext.plan,
+                settings: longTaskContext.settings,
+                issueId: issueRef?.id ?? null,
+              }),
+            ]
+          : []),
       ];
       context.paperclipWorkspace = {
         cwd: executionWorkspace.cwd,
@@ -23087,7 +23184,7 @@ export function heartbeatService(
         if (runScopedMentionedSkillKeys.length > 0) {
           await onLog(
             "stdout",
-            `[paperclip] Enabled run-scoped skills from issue mentions: ${runScopedMentionedSkillKeys.join(", ")}\n`,
+            `[myrmidon] Enabled run-scoped skills from issue mentions: ${runScopedMentionedSkillKeys.join(", ")}\n`,
           );
         }
         for (const warning of runtimeWorkspaceWarnings) {
@@ -23167,7 +23264,7 @@ export function heartbeatService(
           } catch (err) {
             await onLog(
               "stderr",
-              `[paperclip] Failed to post workspace-ready comment: ${err instanceof Error ? err.message : String(err)}\n`,
+              `[myrmidon] Failed to post workspace-ready comment: ${err instanceof Error ? err.message : String(err)}\n`,
             );
           }
         }
@@ -24199,7 +24296,7 @@ export function heartbeatService(
                   .join(", ");
                 await onLog(
                   "stderr",
-                  `[paperclip] App connection${connections.length === 1 ? "" : "s"} unavailable: ${names}. Continuing this run without ${connections.length === 1 ? "it" : "them"}; reconnect from Apps to restore access.\n`,
+                  `[myrmidon] App connection${connections.length === 1 ? "" : "s"} unavailable: ${names}. Continuing this run without ${connections.length === 1 ? "it" : "them"}; reconnect from Apps to restore access.\n`,
                 );
               },
             });
@@ -24293,7 +24390,7 @@ export function heartbeatService(
               } catch {
                 await onLog(
                   "stderr",
-                  "[paperclip] GitHub runtime transport unavailable; continuing without managed GitHub access.\n",
+                  "[myrmidon] GitHub runtime transport unavailable; continuing without managed GitHub access.\n",
                 );
               }
             }
@@ -24897,7 +24994,7 @@ export function heartbeatService(
             } catch (err) {
               await onLog(
                 "stderr",
-                `[paperclip] Failed to post adapter-managed runtime comment: ${err instanceof Error ? err.message : String(err)}\n`,
+                `[myrmidon] Failed to post adapter-managed runtime comment: ${err instanceof Error ? err.message : String(err)}\n`,
               );
             }
           }
@@ -25222,7 +25319,7 @@ export function heartbeatService(
             );
             await onLog(
               "stderr",
-              `[paperclip] Failed to complete skill test run: ${err instanceof Error ? err.message : String(err)}\n`,
+              `[myrmidon] Failed to complete skill test run: ${err instanceof Error ? err.message : String(err)}\n`,
             );
           }
           const livenessRun = finalizedRun;
@@ -25361,7 +25458,7 @@ export function heartbeatService(
           } catch (err) {
             await onLog(
               "stderr",
-              `[paperclip] Failed to resolve run presentation: ${err instanceof Error ? err.message : String(err)}\n`,
+              `[myrmidon] Failed to resolve run presentation: ${err instanceof Error ? err.message : String(err)}\n`,
             );
           }
           if (outcome === "failed" && isMaxTurnExhaustionRun(livenessRun)) {
@@ -26905,6 +27002,46 @@ export function heartbeatService(
       });
     }
 
+    // myrmidon(1.6.6 QUOTA-V2): the project token quota gate — before a run is
+    // queued, the project's daily/weekly token limits are checked; an
+    // over-limit window refuses the enqueue with the stable code and a
+    // readable sentence. A project without a quota row passes untouched.
+    if (projectId && isUuidLike(projectId)) {
+      const quotaBlock = await getProjectTokenQuotaBlock(
+        db,
+        agent.companyId,
+        projectId,
+      );
+      if (quotaBlock) {
+        const project = await db
+          .select({ name: projects.name })
+          .from(projects)
+          .where(eq(projects.id, projectId))
+          .then((rows) => rows[0] ?? null);
+        const quotaReason = projectTokenQuotaRejectionMessage({
+          projectName: project?.name ?? projectId,
+          windowKind: quotaBlock.windowKind,
+          tokensUsed: quotaBlock.tokensUsed,
+          tokenLimit: quotaBlock.tokenLimit,
+        });
+        await writeSkippedRequest("project.token_quota_exceeded", {
+          error: quotaReason,
+        }, {
+          projectId,
+          windowKind: quotaBlock.windowKind,
+          tokenLimit: quotaBlock.tokenLimit,
+          tokensUsed: quotaBlock.tokensUsed,
+        });
+        throw conflict(quotaReason, {
+          code: PROJECT_TOKEN_QUOTA_EXCEEDED_ERROR_CODE,
+          projectId,
+          windowKind: quotaBlock.windowKind,
+          tokenLimit: quotaBlock.tokenLimit,
+          tokensUsed: quotaBlock.tokensUsed,
+        });
+      }
+    }
+
     const invokability = await getAgentInvokability(agent);
     if (!invokability.invokable) {
       if (opts.requestedByActorType !== "user" || executionWaitRequestId) {
@@ -27239,6 +27376,7 @@ export function heartbeatService(
               conversationUserId: issues.conversationUserId,
               conversationState: issues.conversationState,
               status: issues.status,
+              statusVersion: issues.statusVersion,
               projectId: issues.projectId,
               projectWorkspaceId: issues.projectWorkspaceId,
               executionWorkspaceId: issues.executionWorkspaceId,
@@ -27507,7 +27645,8 @@ export function heartbeatService(
           if (
             issueStateGuard &&
             (!issueStateGuard.statuses.includes(issue.status) ||
-              issue.assigneeAgentId !== issueStateGuard.assigneeAgentId)
+              issue.assigneeAgentId !== issueStateGuard.assigneeAgentId ||
+              (issueStateGuard.statusVersion !== undefined && issue.statusVersion !== issueStateGuard.statusVersion))
           ) {
             await tx.insert(agentWakeupRequests).values({
               ...durableReceiptFields,
@@ -27526,6 +27665,10 @@ export function heartbeatService(
                   actualStatus: issue.status,
                   expectedAssigneeAgentId: issueStateGuard.assigneeAgentId,
                   actualAssigneeAgentId: issue.assigneeAgentId,
+                  // myrmidon(1.6.6-UPSTREAM-HANDOFF-B): the vendor journal names only
+                  // the status and the assignee; a version-only mismatch needs the version.
+                  expectedStatusVersion: issueStateGuard.statusVersion ?? null,
+                  actualStatusVersion: issue.statusVersion,
                 },
               },
               status: "skipped",

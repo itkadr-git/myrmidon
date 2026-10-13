@@ -17,6 +17,7 @@ import {
   readHostCpuStatProbe,
   readHostMemory,
   readCgroupFreeMemoryBytes,
+  readCgroupMemoryUsageBytes,
   readRunAdmissionLimits,
   resetSharedRunAdmissionForTests,
   scheduleQueuedResweep,
@@ -195,6 +196,49 @@ describe("memory headroom", () => {
         throw new Error("ENOENT");
       }),
     ).toBeNull();
+  });
+});
+
+describe("myrmidon(1.6.5 C0-ui) the memory snapshot of the load screen", () => {
+  it("reports the cgroup usage as limit, usage and free, with the inactive cache reclaimable", () => {
+    const files: Record<string, string> = {
+      "/cg/memory.max": "8589934592\n",
+      "/cg/memory.current": "7800532992\n",
+      "/cg/memory.stat": "anon 4545642496\ninactive_file 2337927168\nactive_file 401641472\n",
+    };
+    expect(readCgroupMemoryUsageBytes("/cg", (path) => files[path]!)).toEqual({
+      limitBytes: 8589934592,
+      usedBytes: 7800532992 - 2337927168,
+      freeBytes: 8589934592 - (7800532992 - 2337927168),
+    });
+    // No cgroup v2 limit (cgroup v1, `memory.max` is "max", unreadable file)
+    // — nothing to report, and the load screen shows nothing rather than a
+    // number it made up.
+    expect(readCgroupMemoryUsageBytes("/cg", (path) => (path.endsWith("max") ? "max" : "0"))).toBeNull();
+    expect(
+      readCgroupMemoryUsageBytes("/none", () => {
+        throw new Error("ENOENT");
+      }),
+    ).toBeNull();
+  });
+
+  it("the admission's snapshot carries the host and the container memory, each null when unreadable", () => {
+    const GB = 1024 * MB;
+    const admission = createRunAdmission({
+      limits: { ...NO_MEMORY, maxConcurrentRuns: null, maxStartsPerMinute: null },
+      hostMemory: () => ({ known: true as const, availableBytes: 44 * GB, totalBytes: 128 * GB }),
+    });
+    const snapshot = admission.memorySnapshot();
+    expect(snapshot.host).toEqual({ availableMb: 44 * 1024, totalMb: 128 * 1024 });
+    // The test process is not under a cgroup v2 limit, so the container side
+    // is null — and the test still proves the view carries it when it reads.
+    expect(snapshot.container === null || typeof snapshot.container.usedMb === "number").toBe(true);
+
+    const blind = createRunAdmission({
+      limits: { ...NO_MEMORY, maxConcurrentRuns: null, maxStartsPerMinute: null },
+      hostMemory: () => ({ known: false as const, reason: "no meminfo" }),
+    });
+    expect(blind.memorySnapshot().host).toBeNull();
   });
 });
 

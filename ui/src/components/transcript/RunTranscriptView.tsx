@@ -454,7 +454,12 @@ function parseSystemActivity(text: string): { activityId?: string; name: string;
 
 function shouldHideNiceModeStderr(text: string): boolean {
   const normalized = compactWhitespace(text).toLowerCase();
-  return normalized.startsWith("[paperclip] skipping saved session resume");
+  // myrmidon(DB2): OPE-5805-b renamed the server log tag to [myrmidon]; keep
+  // matching the legacy [paperclip] tag so transcripts from older runs still hide.
+  return (
+    normalized.startsWith("[myrmidon] skipping saved session resume") ||
+    normalized.startsWith("[paperclip] skipping saved session resume")
+  );
 }
 
 function groupCommandBlocks(blocks: TranscriptBlock[]): TranscriptBlock[] {

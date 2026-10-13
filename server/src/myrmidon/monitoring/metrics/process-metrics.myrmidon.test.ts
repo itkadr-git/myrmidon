@@ -18,11 +18,16 @@ import {
 import {
   defaultProcessMetricsSource,
   disableEventLoopMonitor,
+  disablePulseEventLoopMonitor,
   enableEventLoopMonitor,
+  enablePulseEventLoopMonitor,
+  eventLoopUtilizationSupported,
   liveEventCountersSnapshot,
   readEventLoopSample,
+  readEventLoopUtilizationSample,
   readMemorySample,
   readProcessMetrics,
+  readPulseEventLoopLagMs,
   recordLiveEvent,
   resetProcessMetricsState,
   resolveProcessMetricsSource,
@@ -173,6 +178,59 @@ describe("process metrics: event loop delay", () => {
   });
 });
 
+describe("process metrics: event loop utilization (1.6.6 PROCS-0.1)", () => {
+  afterEach(() => {
+    resetProcessMetricsState();
+  });
+
+  it("reports the API as available on a runtime that has it", () => {
+    expect(eventLoopUtilizationSupported()).toBe(true);
+  });
+
+  it("reads a 0..1 window ratio and opens a fresh window on every read", () => {
+    const first = readEventLoopUtilizationSample();
+    expect(first).not.toBe(null);
+    expect(first!.utilization).toBeGreaterThanOrEqual(0);
+    expect(first!.utilization).toBeLessThanOrEqual(1);
+    const second = readEventLoopUtilizationSample();
+    expect(second).not.toBe(null);
+    expect(second!.utilization).toBeGreaterThanOrEqual(0);
+    expect(second!.utilization).toBeLessThanOrEqual(1);
+  });
+
+  it("rides the process read the metrics exposition uses", () => {
+    expect(readProcessMetrics()).toHaveProperty("eventLoopUtilization.utilization");
+  });
+});
+
+describe("process metrics: the pulse histogram of the registry", () => {
+  afterEach(() => {
+    disablePulseEventLoopMonitor();
+  });
+
+  it("reads null while the pulse monitor is off", () => {
+    disablePulseEventLoopMonitor();
+    expect(readPulseEventLoopLagMs()).toBe(null);
+  });
+
+  it("reads and resets its own window without consuming the scrape histogram", async () => {
+    enableEventLoopMonitor();
+    enablePulseEventLoopMonitor();
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      const lagMs = readPulseEventLoopLagMs();
+      expect(lagMs).not.toBe(null);
+      expect(lagMs!).toBeGreaterThanOrEqual(0);
+      // Two consumers, two windows: the 10 s pulse must not shorten what
+      // myrmidon_board_event_loop_lag_seconds describes at scrape time.
+      expect(readEventLoopSample()).not.toBe(null);
+      expect(readPulseEventLoopLagMs()).not.toBe(null);
+    } finally {
+      disableEventLoopMonitor();
+    }
+  });
+});
+
 describe("process metrics: memory gauges", () => {
   it("reports RSS/heap of this process in positive bytes", () => {
     const memory = readMemorySample();
@@ -191,6 +249,7 @@ describe("process metrics: the source seam", () => {
   it("accepts function and object forms", () => {
     const sample = {
       eventLoop: null,
+      eventLoopUtilization: null,
       memory: { rssBytes: 1, heapUsedBytes: 1, heapTotalBytes: 2 },
       liveEvents: [],
     };
@@ -204,7 +263,7 @@ describe("process metrics: the source seam", () => {
     expect(readProcessMetrics().memory.heapTotalBytes).toBeGreaterThan(0);
   });
 
-  it("a throwing process source names the five families and keeps the scrape alive", async () => {
+  it("a throwing process source names the six families and keeps the scrape alive", async () => {
     const collected = await collectMetricsParts(
       baseDeps({
         processMetrics: () => {
@@ -215,7 +274,7 @@ describe("process metrics: the source seam", () => {
     const boardFamilies = collected.errors
       .flatMap((entry) => entry.split("|"))
       .filter((family) => family.startsWith("myrmidon_board_"));
-    expect(boardFamilies).toHaveLength(5);
+    expect(boardFamilies).toHaveLength(6);
     expect(collected.fields.process).toBe(null);
     // The DB half still failed independently — and nothing crashed.
     expect(collected.errors.length).toBeGreaterThan(5);
@@ -224,6 +283,7 @@ describe("process metrics: the source seam", () => {
   it("the collector wires the injected fake into the snapshot", async () => {
     const sample = {
       eventLoop: { p50Seconds: 0.01, p99Seconds: 0.02, maxSeconds: 0.5 },
+      eventLoopUtilization: { utilization: 0.25 },
       memory: { rssBytes: 1000, heapUsedBytes: 500, heapTotalBytes: 800 },
       liveEvents: [{ type: "agent_status", count: 3, bytes: 90 }],
     };

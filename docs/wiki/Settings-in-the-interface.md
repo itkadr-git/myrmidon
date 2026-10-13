@@ -63,6 +63,14 @@ resolved limits against the host's build slots. Saving applies on every bot's
 next reconcile tick, without a restart. Details:
 [parallel-helpers](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/parallel-helpers.md).
 
+## Agent castes (the company role directory)
+
+**Company Settings → Agent castes** — the company's own directory of agent
+roles. It starts from the twelve built-in castes and the owner can create,
+edit, and delete castes; the role on the agent card is a key from this
+directory, and changes are visible to the swarm at once, without a restart
+([custom-castes](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/custom-castes.md)).
+
 ## Backups
 
 The database backup retention policy lives in the general instance settings
@@ -94,3 +102,14 @@ keep the database limit unchanged (1.6.5 BACKUP-STATEMENT-TIMEOUT).
 - **Budget enforcement** — signal only, pause with a card to the owner, or
   hard refusal of new runs; set live for the instance
   ([budget-enforcement](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/budget-enforcement.md)).
+- **Attention feed windows** — the "Attention feed" panel on Instance →
+  General (since 1.6.6) edits how far back the attention feed looks for an
+  unresolved failed or timed-out run (1–365 days, default 7) and how long
+  the built feed is reused per company (0–300 seconds, default 45; `0`
+  turns the cache off). Each field shows its bounds, the built-in default
+  and whether the value in force comes from the saved settings row or from
+  the default. Saving applies without a restart: the feed picks the new
+  value up on its next build. Read by any board member, written by an
+  instance administrator via `GET`/`PATCH /api/myrmidon/attention-feed`
+  (stored as `attentionFailedRunHorizonDays` and
+  `attentionFeedCacheTtlSeconds` in the instance settings).

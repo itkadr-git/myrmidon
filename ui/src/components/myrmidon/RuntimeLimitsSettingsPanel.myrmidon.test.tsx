@@ -60,6 +60,8 @@ const view: RuntimeLimitsView = {
   },
   // myrmidon(1.6.5 RUN-FAIRNESS): the queue snapshot the endpoint reports.
   queue: null,
+  // myrmidon(1.6.5 C0-ui): the memory snapshot the endpoint reports.
+  memory: null,
 };
 
 function render(value: RuntimeLimitsView | null, onSave = vi.fn(), pending = false, error: string | null = null) {
@@ -183,6 +185,29 @@ describe("myrmidon(C0) run limits panel", () => {
     );
     render({ ...view, queue: null });
     expect(container.querySelector("[data-testid=runtime-limit-queue]")).toBeNull();
+  });
+
+  it("myrmidon(1.6.5 C0-ui): shows the host and container memory next to the queue", () => {
+    render({
+      ...view,
+      memory: {
+        host: { availableMb: 45056, totalMb: 131072 },
+        container: { limitMb: 8192, usedMb: 3000, freeMb: 5192 },
+      },
+    });
+    const line = container.querySelector("[data-testid=runtime-limit-memory]")?.textContent ?? "";
+    expect(line).toContain("Host memory: 45,056 MB available of 131,072 MB");
+    expect(line).toContain("Server container: 3,000 MB used of 8,192 MB (5,192 MB free)");
+  });
+
+  it("myrmidon(1.6.5 C0-ui): a missing memory snapshot or side renders cleanly", () => {
+    render({ ...view, memory: { host: null, container: { limitMb: 8192, usedMb: 3000, freeMb: 5192 } } });
+    const line = container.querySelector("[data-testid=runtime-limit-memory]")?.textContent ?? "";
+    expect(line).not.toContain("Host memory");
+    expect(line).toContain("Server container: 3,000 MB used");
+
+    render({ ...view, memory: null });
+    expect(container.querySelector("[data-testid=runtime-limit-memory]")).toBeNull();
   });
 
   it("myrmidon(1.6.5): edits the host CPU ceiling and switches it off with an empty field", () => {

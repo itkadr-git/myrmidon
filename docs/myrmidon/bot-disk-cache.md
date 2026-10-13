@@ -210,6 +210,10 @@ made by the image, not mounts:
 | `/workspace` (the working directory) | link to `/data/workspace`, which links to `/bot/workspace` |
 | `/scratch` | link to `/data/scratch`, which links to `/bot/scratch` |
 
+The driver picks the layout from the image's `myrmidon.bot-runtime.contract`
+label before any create/recreate/drift body is built, and an image without a
+supported contract is refused before anything is created.
+
 The host layout is unchanged (`<root>/<key>/{hermes,workspace,scratch}`), so
 nothing on disk moves. The read-only and shared cache mounts stay separate binds
 (`/cache/pnpm`, `/cache/go-mod`, `/cache/go-build`, `/cache/gradle`, `/cache/git`).
@@ -220,6 +224,39 @@ only write files and never need a hard link. dockergate accepts the bot body
 with the single `<root>/<key>:/bot` bind and the helper body with the three
 narrow ones; `/bot` and `/data` are reserved container paths a card mount cannot
 take.
+
+**Traversal of `/bot` itself.** The whole tree lives behind the bot's root, so the
+root must at least let the bot's uid `10001` enter it: a host directory left by an
+external operation as `root:65532 0710` (or any mode without the traversal bit) hides
+everything under `/bot` from the bot, and the entrypoint then fails on an unreadable
+`.env` without naming the real cause. At every apply the prepare helper also carries
+the bot's root bind (`<root>/<key>:/bot`, its fourth bind — the gate accepts exactly
+these four) and normalizes the root's mode to `0711` with one non-recursive `chmod`:
+enterable, not browsable (no `r`), the owner stays `root`, and the content is never
+listed, written or chowned. The fix is idempotent — an external `0710`/`0700` stops
+being fatal at the next apply. If a bot still starts on a root it cannot enter (it
+was never applied after the external change), the entrypoint fails in one line
+naming the traversal problem and the fix (recreate the bot) instead of the
+misleading `API_SERVER_KEY is required`. A member of a shared scope needs no such
+line: its tree root is the instance directory, which the prepare script already
+chowns to uid `10001` and chmods `0700`.
+
+**Which layout a bot gets is decided by its image, not by the template alone.**
+The bot runtime image declares its contract in the label
+`myrmidon.bot-runtime.contract` (BOT-LAYOUT-V, 1.6.5). Contract `2` is the
+single mount above. Contract `1` — the release images from before the layout
+change, such as 1.6.4 — keeps the three separate binds `/data/hermes`,
+`/workspace` and `/scratch` (the same three host directories, mounted directly),
+because such an image resolves `HERMES_HOME` through the real mount and
+crash-loops under the single mount. The transition images built between the
+layout change and this versioning carry contract `1` **and** the scope label
+`myrmidon.bot-runtime.scope="1"`, and get the single mount. The template-drift
+check compares a container against the create body built for **its own image's**
+contract, so a bot on an old image neither reports a phantom `Binds` drift nor
+gets recreated under a layout its image cannot boot. For a legacy-layout
+container the board reads the profile marker and the clone-hygiene report
+through `/data/hermes` instead of `/bot/hermes`. An image whose label declares
+no supported contract is refused before anything is created.
 
 ### Hard-linked node_modules
 
@@ -272,8 +309,14 @@ although the install succeeds.
 
 ### Migrating running bots to the single mount
 
-Nothing on the host moves, so a bot only needs a new container. Per bot, with the
-board running the reconcile pass (or by hand):
+Nothing on the host moves, so a bot only needs a new container. Since
+BOT-LAYOUT-V (1.6.5) the layout follows the image's contract label instead of
+the board template alone: a bot pinned to a contract `1` image is deliberately
+created and recreated with the legacy three-bind layout, and only a bot on a
+contract `2` (or transition-scope) image gets the single mount — so rolling out
+the new board no longer recreates old-image bots under the wrong layout.
+A bot moves to the single mount when its card is moved to a contract `2` image.
+For that bot, with the board running the reconcile pass (or by hand):
 
 1. **Pause** the bot's agent in the board (no new runs; wait for open turns).
 2. Roll out the new bot image and board (the container template changes: the
