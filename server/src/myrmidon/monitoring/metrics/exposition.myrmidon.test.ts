@@ -14,6 +14,7 @@ import {
 
 function snapshot(overrides: Partial<MetricsSnapshot> = {}): MetricsSnapshot {
   return {
+    role: "all",
     runsActive: 2,
     runsQueued: 5,
     runsFailedTotal: 7,
@@ -87,12 +88,33 @@ describe("prometheus exposition format", () => {
     // 2 heap kinds + 2 live-event counters + 2 live-event byte counters = 10,
     // plus the utilization gauge (1.6.6 PROCS-0.1) = 25.
     expect(sampleLines).toHaveLength(25);
-    expect(text).toContain('myrmidon_role_queue_tasks{role="engineer",status="todo"} 3');
-    expect(text).toContain('myrmidon_role_queue_tasks{role="reviewer",status="in_review"} 2');
-    expect(text).toContain('myrmidon_board_event_loop_lag_seconds{quantile="0.99"} 0.13');
-    expect(text).toContain("myrmidon_board_event_loop_utilization 0.42");
-    expect(text).toContain('myrmidon_board_heap_bytes{kind="used"} 120000000');
-    expect(text).toContain('myrmidon_board_live_events_total{kind="run_finished"} 3');
+    expect(text).toContain('myrmidon_role_queue_tasks{role="all",assignee_role="engineer",status="todo"} 3');
+    expect(text).toContain('myrmidon_role_queue_tasks{role="all",assignee_role="reviewer",status="in_review"} 2');
+    expect(text).toContain('myrmidon_board_event_loop_lag_seconds{role="all",quantile="0.99"} 0.13');
+    expect(text).toContain("myrmidon_board_event_loop_utilization{role=\"all\"} 0.42");
+    expect(text).toContain('myrmidon_board_heap_bytes{role="all",kind="used"} 120000000');
+    expect(text).toContain('myrmidon_board_live_events_total{role="all",kind="run_finished"} 3');
+  });
+
+  // myrmidon(1.6.6 OPE-6959): every sample carries the process role label —
+  // the metric names stay, the label set grows. A worker scrape renders
+  // role="worker" on every family, the api processes role="api".
+  it("stamps the snapshot role on every sample", () => {
+    const text = renderMetricsText(
+      snapshot({
+        role: "worker",
+        lanes: [{ lane: "heartbeat_tick", dbQueries: 5, busyMs: 10, executions: 2 }],
+      }),
+    );
+    const sampleLines = text.split("\n").filter((line) => line.startsWith("myrmidon_"));
+    expect(sampleLines.length).toBeGreaterThan(0);
+    for (const line of sampleLines) {
+      expect(line, `sample must carry role: ${line}`).toContain('role="worker"');
+    }
+    expect(text).toContain("myrmidon_runs_active{role=\"worker\"} 2");
+    expect(text).toContain('myrmidon_board_db_queries_total{role="worker",lane="heartbeat_tick"} 5');
+    // Metric names are untouched by the role label.
+    expect(text).toContain("# HELP myrmidon_runs_active ");
   });
 
   // myrmidon(1.6.6 PROCS-0.3A): the load lanes ride the same scrape, so the
@@ -108,10 +130,10 @@ describe("prometheus exposition format", () => {
       }),
     );
 
-    expect(text).toContain('myrmidon_board_db_queries_total{lane="http_route"} 12');
-    expect(text).toContain('myrmidon_board_db_queries_total{lane="heartbeat_tick"} 0');
-    expect(text).toContain('myrmidon_board_lane_busy_seconds_total{lane="http_route"} 0.0345');
-    expect(text).toContain('myrmidon_board_lane_busy_seconds_total{lane="heartbeat_tick"} 0');
+    expect(text).toContain('myrmidon_board_db_queries_total{role="all",lane="http_route"} 12');
+    expect(text).toContain('myrmidon_board_db_queries_total{role="all",lane="heartbeat_tick"} 0');
+    expect(text).toContain('myrmidon_board_lane_busy_seconds_total{role="all",lane="http_route"} 0.0345');
+    expect(text).toContain('myrmidon_board_lane_busy_seconds_total{role="all",lane="heartbeat_tick"} 0');
   });
 
   it("renders the lane families without samples when no lanes were read", () => {
@@ -130,7 +152,7 @@ describe("prometheus exposition format", () => {
     expect(text).not.toContain("myrmidon_board_event_loop_lag_seconds{");
     expect(text).not.toContain("myrmidon_board_live_events_total{");
     // The DB half is untouched by the missing process read.
-    expect(text).toContain("myrmidon_runs_active 2");
+    expect(text).toContain('myrmidon_runs_active{role="all"} 2');
   });
 
   it("omits the loop quantile samples while the histogram is not enabled", () => {
@@ -138,15 +160,15 @@ describe("prometheus exposition format", () => {
       snapshot({ process: { eventLoop: null, eventLoopUtilization: null, memory: { rssBytes: 1, heapUsedBytes: 1, heapTotalBytes: 2 }, liveEvents: [] } }),
     );
     expect(text).not.toContain("myrmidon_board_event_loop_lag_seconds{");
-    expect(text).toContain("myrmidon_board_process_rss_bytes 1");
+    expect(text).toContain('myrmidon_board_process_rss_bytes{role="all"} 1');
     expect(text).toContain("# TYPE myrmidon_board_live_events_total counter");
     expect(text).not.toContain("myrmidon_board_live_events_total{");
   });
 
   it("renders run duration quantiles with the quantile label", () => {
     const text = renderMetricsText(snapshot());
-    expect(text).toContain('myrmidon_run_duration_seconds{quantile="0.5"} 42.5');
-    expect(text).toContain('myrmidon_run_duration_seconds{quantile="0.95"} 130.25');
+    expect(text).toContain('myrmidon_run_duration_seconds{role="all",quantile="0.5"} 42.5');
+    expect(text).toContain('myrmidon_run_duration_seconds{role="all",quantile="0.95"} 130.25');
   });
 
   it("omits quantile samples when there is no finished run in the window", () => {
@@ -173,7 +195,7 @@ describe("prometheus exposition format", () => {
         roleQueueTasks: [{ role: 'eng"ni\\er\nx', status: "todo", count: 1 }],
       }),
     );
-    expect(text).toContain('myrmidon_role_queue_tasks{role="eng\\"ni\\\\er\\nx",status="todo"} 1');
+    expect(text).toContain('myrmidon_role_queue_tasks{role="all",assignee_role="eng\\"ni\\\\er\\nx",status="todo"} 1');
   });
 
   it("formats sample values without NaN or exponent noise", () => {

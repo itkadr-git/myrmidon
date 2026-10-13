@@ -26,6 +26,12 @@ export interface CompiledProfile {
    *  copy is what the applied-state marker records, so the board can show the value
    *  the gateway was actually given instead of inferring it. */
   maxConcurrentRuns?: number;
+  /** myrmidon(BOT-KEY-401): which company-secret version of the bot's API_SERVER_KEY
+   *  this profile's .env carries. The card's adapterConfig.apiKey secret_ref is pinned
+   *  to exactly this version and is only re-pinned after a pass that actually applied
+   *  the profile to the container (card-sync.ts), so a compile whose container switch
+   *  fails later never leaves the card pointing at a key the old container rejects. */
+  apiServerKeyVersion?: number;
 }
 
 export interface AppliedProfileState {

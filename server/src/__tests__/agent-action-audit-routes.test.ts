@@ -510,6 +510,93 @@ describePostgres("agent action audit routes", () => {
     expect(logged).toHaveLength(0);
   });
 
+  // myrmidon(AUDIT-JSONL): JSONL export cases for the agent action audit feed.
+  it("exports the audit feed as JSONL with agent/period filters and cursor pagination", async () => {
+    const { company, agent, otherAgent, comment, issueDocument } = await seed();
+    const app = await createApp(db, {
+      type: "board", userId: "local-board", companyIds: [company.id], source: "local_implicit", isInstanceAdmin: false,
+    });
+
+    // First page: the caller's limit is honored, one JSON object per line.
+    const first = await request(app)
+      .get(`/api/companies/${company.id}/audit/agent-actions.jsonl?limit=1`);
+    expect(first.status, JSON.stringify(first.body)).toBe(200);
+    expect(first.headers["content-type"]).toContain("application/x-ndjson");
+    expect(first.headers["content-disposition"]).toContain(`agent-audit-${company.id}.jsonl`);
+    expect(first.headers["x-audit-row-count"]).toBe("1");
+    const firstLines = first.text.trim().split("\n");
+    expect(firstLines).toHaveLength(1);
+    const firstRow = JSON.parse(firstLines[0]!);
+    expect(firstRow.action).toBe("issue.comment.created");
+    expect(firstRow.agentId).toBe(agent.id);
+    expect(firstRow.entity).toMatchObject({
+      issue: { identifier: `${company.issuePrefix}-1`, title: "Audit target" },
+      comment: { id: comment.id, excerpt: "A useful comment excerpt for the audit feed." },
+    });
+
+    // The next page is reachable through the cursor header and does not repeat rows.
+    const cursor = first.headers["x-next-cursor"] as string;
+    expect(cursor).toBeTruthy();
+    const second = await request(app)
+      .get(`/api/companies/${company.id}/audit/agent-actions.jsonl?limit=1&cursor=${encodeURIComponent(cursor)}`);
+    expect(second.status, JSON.stringify(second.body)).toBe(200);
+    const secondRow = JSON.parse(second.text.trim());
+    expect(secondRow.id).not.toBe(firstRow.id);
+    expect(secondRow.action).toBe("issue.document.updated");
+
+    // The complete page ends the walk: no cursor header and one line per row.
+    const whole = await request(app)
+      .get(`/api/companies/${company.id}/audit/agent-actions.jsonl`);
+    expect(whole.text.trim().split("\n")).toHaveLength(3);
+    expect(whole.headers["x-next-cursor"]).toBeUndefined();
+
+    // Agent filter: only the seeded agent's two rows.
+    const byAgent = await request(app)
+      .get(`/api/companies/${company.id}/audit/agent-actions.jsonl?agentId=${agent.id}`);
+    const agentRows = byAgent.text.trim().split("\n").map((line) => JSON.parse(line));
+    expect(agentRows).toHaveLength(2);
+    expect(agentRows.every((row: { agentId: string }) => row.agentId === agent.id)).toBe(true);
+    expect(agentRows.some((row: { agentId: string }) => row.agentId === otherAgent.id)).toBe(false);
+
+    // Period filter: only the document row falls inside the window.
+    const byPeriod = await request(app).get(
+      `/api/companies/${company.id}/audit/agent-actions.jsonl`
+      + "?from=2026-07-17T00:00:01.500Z&to=2026-07-17T00:00:02.500Z",
+    );
+    const periodRows = byPeriod.text.trim().split("\n").map((line) => JSON.parse(line));
+    expect(periodRows).toHaveLength(1);
+    expect(periodRows[0]).toMatchObject({ action: "issue.document.updated", entityId: issueDocument.id });
+
+    // Every export is recorded as an auditable action of its own.
+    const logged = (await db.select().from(activityLog)).filter((row) => row.action === "audit.exported");
+    expect(logged).toHaveLength(5);
+    expect(logged.every((row) => row.entityType === "company" && row.entityId === company.id)).toBe(true);
+    expect(logged.map((row) => (row.details as { format?: string } | null)?.format)).toEqual(
+      ["jsonl", "jsonl", "jsonl", "jsonl", "jsonl"],
+    );
+    expect(logged.some((row) => (row.details as { rowCount?: number } | null)?.rowCount === 3)).toBe(true);
+  });
+
+  it("rejects an out-of-range JSONL export limit", async () => {
+    const { company } = await seed();
+    const response = await request(await createApp(db, {
+      type: "board", userId: "local-board", companyIds: [company.id], source: "local_implicit", isInstanceAdmin: false,
+    })).get(`/api/companies/${company.id}/audit/agent-actions.jsonl?limit=500`);
+    expect(response.status).toBe(400);
+  });
+
+  it("denies JSONL export without the audit permission and logs nothing", async () => {
+    const { company } = await seed();
+    const response = await request(await createApp(db, {
+      type: "board", userId: "reader", companyIds: [company.id], source: "session", isInstanceAdmin: false,
+    })).get(`/api/companies/${company.id}/audit/agent-actions.jsonl`);
+    expect(response.status).toBe(403);
+    expect(response.body.error).toContain("audit:view_agent_actions");
+
+    const logged = (await db.select().from(activityLog)).filter((row) => row.action === "audit.exported");
+    expect(logged).toHaveLength(0);
+  });
+
   it("allows a signed-in board user with the explicit permission", async () => {
     const { company } = await seed();
     await db.insert(companyMemberships).values({

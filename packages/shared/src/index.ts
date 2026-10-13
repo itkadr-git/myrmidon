@@ -2915,3 +2915,6 @@ export * from "./myrmidon-foraging.js";
 // myrmidon(1.7-AGENT-EXCHANGE-A): the discussion-room contract (room model,
 // settings with source tracking, request bodies).
 export * from "./myrmidon-agent-exchange.js";
+// myrmidon(CA-A): the channel allowlist contract (OPE-4949) — who may write to
+// the company's bots; shared by the server gate and the board screen.
+export * from "./myrmidon-channel-allowlist.js";

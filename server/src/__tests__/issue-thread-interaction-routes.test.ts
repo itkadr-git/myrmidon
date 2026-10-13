@@ -1117,9 +1117,27 @@ describe.sequential("issue thread interaction routes", () => {
     expect(mockInteractionService.withdrawInteraction).not.toHaveBeenCalled();
   });
 
-  // myrmidon(OPE-6241): the responsible-user relaxation is scoped to the
-  // withdraw route; accept keeps the strict attribution gate.
-  it("still rejects accept from an automation run with a service responsible user", async () => {
+  // myrmidon(OPE-6547): an agent API key authenticates as its owner, while an
+  // automation/heartbeat run records the issue's or the company's responsible
+  // user. Resolution routes must not require that match — the resolver-audience
+  // decision stays the authorization boundary.
+  it("allows the assignee agent to accept from an automation run with a service responsible user", async () => {
+    mockIssueService.getById.mockResolvedValueOnce(createIssue({ status: "todo" }));
+    mockInteractionService.getForIssue.mockResolvedValueOnce({
+      id: "interaction-6547",
+      kind: "request_confirmation",
+      status: "pending",
+      createdByAgentId: CREATED_AGENT_ID,
+      sourceRunId: RUN_1,
+      requestedResolverPolicy: "board_or_agents",
+      effectiveResolverPolicy: "board_or_agents",
+      continuationPolicy: "wake_assignee",
+      payload: { version: 1, prompt: "Proceed?" },
+    });
+    mockInteractionService.acceptInteraction.mockResolvedValueOnce({
+      interaction: acceptedOutboxInteraction("interaction-6547", "wake_assignee"),
+      createdIssues: [],
+    });
     const app = await createApp({
       type: "agent",
       agentId: ASSIGNEE_AGENT_ID,
@@ -1137,11 +1155,62 @@ describe.sequential("issue thread interaction routes", () => {
       responsibleUserId: "svc-automation-runner",
     };
     const res = await request(app)
-      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-withdraw/accept")
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-6547/accept")
       .send({ reason: "looks fine" });
-    expect(res.status).toBe(422);
-    expect(res.body).toMatchObject({ code: "interaction_run_attribution_required" });
-    expect(mockInteractionService.acceptInteraction).not.toHaveBeenCalled();
+    expect(res.status).toBe(200);
+    expect(mockInteractionService.acceptInteraction).toHaveBeenCalled();
+  });
+
+  it("allows the assignee agent to reject from an automation run with a service responsible user", async () => {
+    mockIssueService.getById.mockResolvedValueOnce(createIssue({ status: "todo" }));
+    mockInteractionService.getForIssue.mockResolvedValueOnce({
+      id: "interaction-6547",
+      kind: "request_confirmation",
+      status: "pending",
+      createdByAgentId: CREATED_AGENT_ID,
+      sourceRunId: RUN_1,
+      requestedResolverPolicy: "board_or_agents",
+      effectiveResolverPolicy: "board_or_agents",
+      continuationPolicy: "wake_assignee",
+      payload: { version: 1, prompt: "Proceed?" },
+    });
+    mockInteractionService.rejectInteraction.mockResolvedValueOnce({
+      id: "interaction-6547",
+      companyId: "company-1",
+      issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      kind: "request_confirmation",
+      status: "rejected",
+      continuationPolicy: "wake_assignee",
+      idempotencyKey: null,
+      sourceCommentId: null,
+      sourceRunId: RUN_1,
+      payload: { version: 1, prompt: "Proceed?" },
+      result: { version: 1, outcome: "rejected", reason: "Needs changes" },
+      createdAt: "2026-04-20T12:00:00.000Z",
+      updatedAt: "2026-04-20T12:05:00.000Z",
+      resolvedAt: "2026-04-20T12:05:00.000Z",
+    });
+    const app = await createApp({
+      type: "agent",
+      agentId: ASSIGNEE_AGENT_ID,
+      companyId: "company-1",
+      runId: RUN_2,
+      onBehalfOfUserId: "user-human-owner",
+      onBehalfOfMemberships: [
+        { companyId: "company-1", status: "active", membershipRole: "member" },
+      ],
+    });
+    mockRunAttribution.value = {
+      runId: RUN_2,
+      companyId: "company-1",
+      agentId: ASSIGNEE_AGENT_ID,
+      responsibleUserId: "svc-automation-runner",
+    };
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-6547/reject")
+      .send({ reason: "Needs changes" });
+    expect(res.status).toBe(200);
+    expect(mockInteractionService.rejectInteraction).toHaveBeenCalled();
   });
 
   it("allows the assignee agent to withdraw without waking itself", async () => {
