@@ -10,11 +10,17 @@ export interface StaleBlockReason {
   issueId: string | null;
   /** For kind=event: the gate/event key. */
   eventKey: string | null;
-  /** For kind=date: the ISO due timestamp. */
+  /** For kind=date: the ISO due timestamp. For kind=event: optional deadline
+   * after which the event reason dies even if the gate is still set. */
   dueAt: string | null;
 }
 
-export type StaleBlockReasonDeadWhy = "blocker_done" | "blocker_cancelled" | "due_at_passed" | "event_cleared";
+export type StaleBlockReasonDeadWhy =
+  | "blocker_done"
+  | "blocker_cancelled"
+  | "due_at_passed"
+  | "event_deadline_passed"
+  | "event_cleared";
 
 export type StaleBlockReasonVerdict =
   | { kind: "dead"; why: StaleBlockReasonDeadWhy }
@@ -35,7 +41,10 @@ export interface StaleBlockPolicyFacts {
  * forever. A date reason dies once its `dueAt` has passed. An event reason
  * dies once the gate is no longer set. Unknown facts (a missing blocker row
  * read as `undefined` by the caller) are the caller's decision, not the
- * policy's: pass `blockerStatus: null` only for a verified gone row.
+ * policy's: pass `blockerStatus: null` only for a verified gone row. An event
+ * reason may carry an optional `dueAt` deadline: once it passes, the reason is
+ * dead even if the gate is still set (unwired gates would otherwise live
+ * forever — the `isEventStillSet` seam defaults to still-set).
  */
 export function judgeStaleBlockReason(
   reason: StaleBlockReason,
@@ -48,6 +57,14 @@ export function judgeStaleBlockReason(
     return { kind: "live" };
   }
   if (reason.kind === "event") {
+    // myrmidon(BLOCKER-WAKE-LOOP-B): an optional `dueAt` on an event reason is
+    // the executor's own deadline for the wait. After it passes the reason is
+    // dead even while `isEventStillSet` still answers `true` — this is the
+    // guard against an unwired gate key living forever (the seam default is
+    // "still set", so without a deadline such a block never lifts).
+    if (reason.dueAt !== null && Date.parse(reason.dueAt) <= facts.now.getTime()) {
+      return { kind: "dead", why: "event_deadline_passed" };
+    }
     // myrmidon(HUMAN-REVIEW-WAIT): an event reason without a key names no gate
     // the sweep can read, so the unknown-facts rule above applies: only an
     // explicit `false` from the wiring kills the block. A key-less event reason
@@ -99,6 +116,7 @@ export function describeStaleBlockReason(why: StaleBlockReasonDeadWhy): string {
     case "blocker_done": return "the blocking task is done";
     case "blocker_cancelled": return "the blocking task is cancelled";
     case "due_at_passed": return "the due date passed";
+    case "event_deadline_passed": return "the event deadline passed";
     case "event_cleared": return "the gate or event no longer applies";
   }
 }

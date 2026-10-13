@@ -702,6 +702,7 @@ import {
 // Hermes gateway — one task's session key gains a `:g<N>` once it passes its
 // age/activity threshold, so the task's Hermes state stays bounded
 import { resolveHeartbeatSessionGeneration } from "../myrmidon/session-generations/index.js";
+import { getIdleStopService } from "../myrmidon/idle-stop-startup.js";
 // myrmidon(S2-hostcred): a run never inherits the host's GitHub credentials
 import {
   filterHostGitHubCredentialEnv,
@@ -1013,6 +1014,8 @@ const GIT_SENSITIVE_LOCAL_ADAPTER_TYPES = new Set([
   "kimi_local",
   "opencode_local",
   "pi_local",
+  // myrmidon(OMP-LOCAL): local OMP git sensitive adapter
+  "omp_local",
 ]);
 export { MAX_TURN_CONTINUATION_RETRY_REASON };
 export const MAX_TURN_CONTINUATION_WAKE_REASON = "max_turns_continuation_retry";
@@ -1402,6 +1405,8 @@ const SESSIONED_LOCAL_ADAPTERS = new Set([
   "kimi_local",
   "opencode_local",
   "pi_local",
+  // myrmidon(OMP-LOCAL): sessioned local OMP adapter
+  "omp_local",
 ]);
 // Routes and the scheduler construct separate heartbeatService instances, but
 // they must agree on in-process adapter executions when reaping stale runs.
@@ -17653,6 +17658,24 @@ export function heartbeatService(
     publishRunLifecyclePluginEvent(claimed);
 
     await setWakeupStatus(claimed.wakeupRequestId, "claimed", { claimedAt });
+
+    // IDLE-STOP: wake the container before proceeding with run execution
+    const idleStopService = getIdleStopService();
+    if (idleStopService) {
+      try {
+        await idleStopService.ensureStartedAndHealthy(claimed.agentId);
+      } catch (err) {
+        logger.error(
+          { err, runId: claimed.id, agentId: claimed.agentId },
+          "claimQueuedRun: container failed to start or become healthy, cannot proceed with run",
+        );
+        await cancelRunInternal(
+          claimed.id,
+          `Cancelled because container failed to start: ${err instanceof Error ? err.message : String(err)}`,
+        );
+        return null;
+      }
+    }
 
     // Fix A (lazy locking): stamp executionRunId now that the run is actually running,
     // not at queue time. Guard is idempotent — safe if called more than once.

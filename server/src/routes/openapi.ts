@@ -5184,6 +5184,39 @@ registry.registerPath({
   },
 });
 
+// myrmidon(AUDIT-JSONL): fork-only JSONL export of the agent action audit feed.
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/audit/agent-actions.jsonl",
+  tags: ["activity"],
+  summary: "Export agent action audit entries as JSONL",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    query: z.object({
+      agentId: z.string().guid().optional(),
+      responsibleUserId: z.string().min(1).optional(),
+      runId: z.string().guid().optional(),
+      entityType: z.string().min(1).optional(),
+      entityId: z.string().min(1).optional(),
+      action: z.string().min(1).optional(),
+      actorType: z.enum(["agent", "user", "system", "plugin"]).optional(),
+      from: z.string().datetime().optional(),
+      to: z.string().datetime().optional(),
+      cursor: z.string().min(1).optional(),
+      limit: z.coerce.number().int().min(1).max(200).optional(),
+    }),
+  },
+  responses: {
+    200: {
+      description: "Agent action audit export, one JSON object per line",
+      content: { "application/x-ndjson": { schema: z.string() } },
+    },
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+  },
+});
+
 registry.registerPath({
   method: "post",
   path: "/api/companies/{companyId}/activity",

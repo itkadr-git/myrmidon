@@ -18,6 +18,10 @@
       "kind": "vitest-project"
     },
     {
+      "package": "@paperclipai/adapter-omp-local",
+      "kind": "vitest-project"
+    },
+    {
       "package": "@paperclipai/adapter-pi-local",
       "kind": "vitest-project"
     },
