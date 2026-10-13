@@ -61,6 +61,23 @@ import {
   type DeployJobStatus,
 } from "./domain.js";
 import { readDeployJobsSettings, type DeployJobsSettings } from "./settings.js";
+// myrmidon(1.7-AUTO-UPDATE-B): the update policy the scheduler executes — the
+// maintenance window, the mode (manual / auto by an approved release) and the
+// fleet canary. readAutoUpdateDocument reads the interface's value; the env
+// override is folded in by resolveAutoUpdateSettings, which also reports the
+// source of each value.
+import {
+  autoUpdateStart,
+  canaryPlan,
+  canaryVerdict,
+  resolveAutoUpdateSettings,
+  windowState,
+  type AutoUpdateResolution,
+  type AutoUpdateSettings,
+  defaultAutoUpdateSettings,
+  type CanaryPhase,
+} from "./auto-update.js";
+import { mutateAutoUpdateDocument, readAutoUpdateDocument } from "./auto-update-store.js";
 
 /** Storage the service talks to: the instance_settings row (or a test double). */
 export interface DeployJobStore {
@@ -89,6 +106,46 @@ function fakeStore(db: unknown): DeployJobStore | null {
 
 function resolveStore(db: Db): DeployJobStore {
   return fakeStore(db) ?? defaultStore(db);
+}
+
+/**
+ * The update policy of the settings row (1.7-AUTO-UPDATE-B). It is read through
+ * the row itself, like the deploy jobs' own key. A document store standing in
+ * for the row (tests) carries no policy, which is the same as a row that has
+ * never been written: the defaults apply, and the caller sees that as the
+ * source of the value.
+ */
+function readPolicy(dbArg: Db): Promise<AutoUpdateSettings> {
+  const fake = (dbArg as unknown as { readAutoUpdate?: () => Promise<AutoUpdateSettings> } | null)?.readAutoUpdate;
+  if (typeof fake === "function") return fake();
+  if (fakeStore(dbArg)) return Promise.resolve(defaultAutoUpdateSettings());
+  return readAutoUpdateDocument(dbArg);
+}
+
+/**
+ * B-3 (1.7-AUTO-UPDATE-B): claim (jobId != null) or release (jobId == null) an
+ * approval in the policy's own row. The read-modify-write and the decision both
+ * run under the row lock, so two ticks (or a restart racing them) cannot both
+ * win the same approval.
+ */
+async function claimApprovalInStore(db: Db, input: { tag: string; digest: string; jobId: string | null }): Promise<boolean> {
+  const { result } = await mutateAutoUpdateDocument(db, (current) => {
+    const approval = current.approvals.find((a) => a.tag === input.tag && a.digest === input.digest);
+    if (!approval) return { next: null, result: false };
+    if (input.jobId === null) {
+      if (approval.jobId === null) return { next: null, result: false };
+      return {
+        next: { ...current, approvals: current.approvals.map((a) => (a === approval ? { ...a, jobId: null } : a)) },
+        result: true,
+      };
+    }
+    if (approval.jobId !== null) return { next: null, result: false };
+    return {
+      next: { ...current, approvals: current.approvals.map((a) => (a === approval ? { ...a, jobId: input.jobId } : a)) },
+      result: true,
+    };
+  });
+  return result;
 }
 import { mutateDeployJobDocument, readDeployJobDocument } from "./store.js";
 import { verifyImage, type ProbeDeps } from "./registry.js";
@@ -119,6 +176,26 @@ export interface HostReport {
   at?: string;
 }
 
+/**
+ * The fleet half of a board update (1.7-AUTO-UPDATE-B, B-2): the bots of this
+ * instance, the canary batch that switches first and the rest that may only
+ * follow a healthy batch. The deploy scheduler owns the decision (canaryPlan /
+ * canaryVerdict) and the host-side rollout is behind this port, the same way
+ * the window and the health check are. No port = the instance does not roll a
+ * fleet out from the board, and the phase records exactly that instead of
+ * pretending.
+ */
+export interface FleetCanaryPort {
+  /** The bots to switch, in the order they should switch. */
+  targets(): Promise<string[]>;
+  /** Start the canary batch of `digest`; the rest must not start yet. */
+  startCanary(input: { jobId: string; digest: string; canary: string[]; reason: string }): Promise<void>;
+  /** Where the canary batch stands: running, healthy or failed. */
+  verdict(input: { jobId: string; digest: string; canary: string[] }): Promise<{ phase: CanaryPhase; detail?: string | null }>;
+  /** Let the rest of the fleet follow a healthy canary batch. */
+  startRest(input: { jobId: string; digest: string; rest: string[] }): Promise<void>;
+}
+
 export interface DeployJobServiceDeps {
   maintenance: DeployMaintenancePort;
   /** Read the host executor's report file (or fetch it); null when there is none yet. */
@@ -129,6 +206,24 @@ export interface DeployJobServiceDeps {
   settings?: DeployJobsSettings;
   probes?: ProbeDeps;
   logActivity?: typeof logActivity;
+  /**
+   * 1.7-AUTO-UPDATE-B: read the update policy from the interface. Called on
+   * every use, never cached: a setting changed in the interface must take
+   * effect without a restart (the ticket's own rule).
+   */
+  readAutoUpdate?: () => Promise<AutoUpdateSettings>;
+  /** Test seam for the resolved policy (stored value + env override + sources). */
+  autoUpdatePolicy?: () => Promise<AutoUpdateResolution>;
+  /** The fleet canary port; absent when the instance has no fleet rollout. */
+  fleetCanary?: FleetCanaryPort;
+  /**
+   * B-3 (1.7-AUTO-UPDATE-B): mark an approved release as started (or release
+   * the mark when the start did not happen), so `auto_release` starts exactly
+   * one job per approval. Returns true when this caller won the claim. The
+   * default writes the approval back into the policy's own row
+   * (instance_settings.general.myrmidonAutoUpdate) under its row lock.
+   */
+  claimApproval?: (input: { tag: string; digest: string; jobId: string | null }) => Promise<boolean>;
 }
 
 export class DeployJobError extends Error {
@@ -154,6 +249,168 @@ export function deployJobsService(db: Db, deps: DeployJobServiceDeps) {
   const now = deps.now ?? (() => new Date());
   const settings = deps.settings ?? readDeployJobsSettings();
   const audit = deps.logActivity ?? ((dbArg, entry) => logActivity(dbArg, entry));
+  // The policy is read per use (see DeployJobServiceDeps.readAutoUpdate): the
+  // interface is the source of truth and env is only a forced override.
+  const readStoredAutoUpdate = deps.readAutoUpdate ?? (() => readPolicy(db));
+  const resolvePolicy = deps.autoUpdatePolicy ?? (async () => resolveAutoUpdateSettings(await readStoredAutoUpdate()));
+  const claimApproval = deps.claimApproval ?? ((input) => claimApprovalInStore(db, input));
+
+  /**
+   * B-3 (1.7-AUTO-UPDATE-B): `auto_release` mode starts a deploy by itself, but
+   * only for a release a human approved in the interface and only inside the
+   * window. The approval is claimed before anything else happens, so a second
+   * tick (or a restart) cannot start the same release twice.
+   *
+   * A job the scheduler started is kept even when the image is refused: the
+   * approval stays spent, so a bad digest cannot be retried on every tick. The
+   * way back is the operator's: withdraw the tag on the screen (allowed once
+   * the job is terminal) and approve the fixed digest. Only a start that threw
+   * — a conflict with a job that appeared meanwhile, a store error — gives the
+   * approval back, because nothing was created at all.
+   */
+  async function startApprovedRelease(at: Date): Promise<DeployJobView | null> {
+    if (!settings.enabled) return null;
+    const policy = await resolvePolicy();
+    const decision = autoUpdateStart({ settings: policy.settings, now: at });
+    const candidate = decision.candidate;
+    if (!decision.allowed || !candidate) return null;
+    const claim = { tag: candidate.tag, digest: candidate.digest };
+    const jobId = randomUUID();
+    if (!(await claimApproval({ ...claim, jobId }))) return null;
+    let started: DeployJobView;
+    try {
+      started = await create(
+        { reference: candidate.digest, reason: `approved release ${candidate.tag} (auto mode, ${decision.window.reason})` },
+        candidate.approvedBy,
+        { id: jobId },
+      );
+    } catch (err) {
+      // Nothing was created: give the approval back rather than spending it.
+      await claimApproval({ ...claim, jobId: null }).catch(() => undefined);
+      logger.warn({ err, tag: candidate.tag }, "the approved release could not be started by the scheduler");
+      return null;
+    }
+    // The job exists without a click: say why, in the same trail the click path
+    // writes (the interface shows it next to the job).
+    await auditFor(started, "auto_started", candidate.approvedBy, { tag: candidate.tag, window: decision.window.reason });
+    return started;
+  }
+
+  /**
+   * B-1 (1.7-AUTO-UPDATE-B): a verified job whose maintenance window is shut
+   * waits in `waiting_window` instead of opening the window. Nothing else may
+   * start in the meantime (the job stays active), and the tick above resumes
+   * the deploy as soon as the window opens.
+   */
+  async function awaitWindowOrEnter(job: DeployJob) {
+    const at = now();
+    const policy = await resolvePolicy();
+    const state = windowState(policy.settings.window, at);
+    if (state.open) {
+      await enterMaintenance(job);
+      return;
+    }
+    await write((doc) => {
+      const current = doc.jobs.find((j) => j.id === job.id);
+      if (!current || current.status !== "verified") return { next: null, result: null };
+      const next = appendStep(
+        { ...current, status: "waiting_window", windowOpensAt: state.opensAt, updatedAt: at.toISOString() },
+        "waiting_window",
+        `the deploy waits for the maintenance window: ${state.reason}`,
+        at,
+      );
+      return { next: { ...doc, jobs: doc.jobs.map((j) => (j.id === job.id ? next : j)) }, result: next.status };
+    });
+  }
+
+  /**
+   * B-2 (1.7-AUTO-UPDATE-B): the board switched and is healthy. The fleet does
+   * not switch at once: the canary batch goes first and the rest only follows a
+   * healthy batch (canaryPlan/canaryVerdict). Without a fleet port the phase is
+   * recorded as such — the instance simply has no fleet to roll out.
+   */
+  async function handToFleetCanary(jobId: string, detail: string, report: HostReport) {
+    const at = now();
+    const policy = await resolvePolicy();
+    const port = deps.fleetCanary;
+    let plan = canaryPlan([], policy.settings.canary);
+    if (port) {
+      const targets = await port.targets().catch((err) => {
+        logger.error({ err, jobId }, "failed to read the fleet of the canary batch");
+        return [] as string[];
+      });
+      plan = canaryPlan(targets, policy.settings.canary);
+    }
+    const startable = port !== undefined && plan.enabled && plan.canary.length > 0;
+    const { result } = await write((doc) => {
+      const current = doc.jobs.find((j) => j.id === jobId);
+      if (!current || current.status !== "running") return { next: null, result: null as DeployJob | null };
+      const next = appendStep(
+        {
+          ...current,
+          status: startable ? "fleet_canary" : "succeeded",
+          healthVersion: report.version ?? null,
+          healthCommit: report.commit ?? null,
+          canaryBatch: startable ? plan.canary : [],
+          fleetRest: startable ? plan.rest : [],
+          canaryStartedAt: startable ? at.toISOString() : null,
+          failureReason: null,
+          updatedAt: at.toISOString(),
+        },
+        startable ? "fleet_canary" : "succeeded",
+        startable
+          ? `${detail}; the fleet follows the canary batch first: ${plan.reason}`
+          : `${detail}; fleet: ${port ? plan.reason : "no fleet canary on this instance, the fleet is not rolled out from the board"}`,
+        at,
+      );
+      const jobs = doc.jobs.map((j) => (j.id === jobId ? next : j));
+      return startable
+        ? { next: { ...doc, jobs }, result: next as DeployJob | null }
+        : { next: retireJob({ ...doc, jobs }, jobId, at), result: next as DeployJob | null };
+    });
+    if (!result) return;
+    if (!startable) {
+      await deps.maintenance.exit("deploy finished").catch((err) => {
+        logger.error({ err, jobId }, "failed to leave maintenance after deploy");
+      });
+      return;
+    }
+    try {
+      await port!.startCanary({
+        jobId,
+        digest: result.digest,
+        canary: plan.canary,
+        reason: `board deploy ${result.digest.slice(0, 19)} is healthy: the canary batch switches before the rest`,
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      await completeCanary(jobId, "canary_failed", `the canary batch could not be started: ${message}`);
+    }
+  }
+
+  /**
+   * B-2: retire the job at the end of the canary phase. `canary_failed` is a
+   * terminal failure like `failed_health`: the rest of the fleet stays on the
+   * previous image and the operator reads the reason in the interface.
+   */
+  async function completeCanary(jobId: string, status: Extract<DeployJobStatus, "succeeded" | "canary_failed">, detail: string) {
+    const at = now();
+    const { result } = await write((doc) => {
+      const job = doc.jobs.find((j) => j.id === jobId);
+      if (!job || job.status !== "fleet_canary") return { next: null, result: null as DeployJob | null };
+      const next = appendStep(
+        { ...job, status, failureReason: status === "canary_failed" ? detail : null, updatedAt: at.toISOString() },
+        status,
+        detail,
+        at,
+      );
+      return { next: retireJob({ ...doc, jobs: doc.jobs.map((j) => (j.id === jobId ? next : j)) }, jobId, at), result: next as DeployJob | null };
+    });
+    if (!result) return;
+    await deps.maintenance.exit(status === "succeeded" ? "deploy finished" : "deploy canary failed").catch((err) => {
+      logger.error({ err, jobId }, "failed to leave maintenance after the fleet canary");
+    });
+  }
 
   async function findActiveJob(): Promise<DeployJob | null> {
     const doc = await store.read();
@@ -203,7 +460,7 @@ export function deployJobsService(db: Db, deps: DeployJobServiceDeps) {
   }
 
   /** Create a job and start verification. */
-  async function create(input: { reference: string; reason?: string }, actor: { actorType: string; actorId: string }): Promise<DeployJobView> {
+  async function create(input: { reference: string; reason?: string }, actor: { actorType: string; actorId: string }, opts: { id?: string } = {}): Promise<DeployJobView> {
     if (!settings.enabled) {
       throw new DeployJobError(503, "deploys from the interface are not enabled on this instance (MYRMIDON_DEPLOY_ENABLED)");
     }
@@ -219,7 +476,7 @@ export function deployJobsService(db: Db, deps: DeployJobServiceDeps) {
         throw err;
       }
       const job = newDeployJob({
-        id: randomUUID(),
+        id: opts.id ?? randomUUID(),
         companyId: "", // filled below from the first company; instance-level feature
         digest,
         reason: (input.reason ?? `deploy ${DEPLOY_IMAGE_REPOSITORY}@${digest.slice(0, 19)}`).slice(0, 500),
@@ -237,7 +494,7 @@ export function deployJobsService(db: Db, deps: DeployJobServiceDeps) {
     const applied = await applyVerification(created.id, verification);
     let job: DeployJob = applied;
     if (job.status === "verified") {
-      await enterMaintenance(job);
+      await awaitWindowOrEnter(job);
     } else {
       await auditFor(job, "image_refused", actor, { reason: job.failureReason });
     }
@@ -350,25 +607,127 @@ export function deployJobsService(db: Db, deps: DeployJobServiceDeps) {
   async function tick(): Promise<void> {
     const doc = await store.read();
     const job = doc.jobs.find((j) => isDeployJobActive(j.status));
-    if (!job) return;
     const at = now();
+    if (!job) {
+      // B-3 (1.7-AUTO-UPDATE-B): nothing is running, so this is the moment
+      // `auto_release` may pick up a release a human approved. In `manual` mode
+      // nothing starts without a click. A failed attempt stays on the approval
+      // and is retried by the next tick.
+      try {
+        await startApprovedRelease(at);
+      } catch (err) {
+        logger.error({ err }, "failed to start the approved release");
+      }
+      return;
+    }
 
     // A step stuck too long aborts the job: the interface must not leave a
     // half-open window forever (MYRMIDON_DEPLOY_STEP_TIMEOUT_SEC per status).
+    // Two phases are exempt from that budget and carry their own instead:
+    // `waiting_window` (the window may be a week away — B-1) and
+    // `fleet_canary` (the batch is watched for its own settle time — B-2).
     const lastStep = job.steps[job.steps.length - 1];
-    if (lastStep && at.getTime() - Date.parse(job.updatedAt) > settings.stepTimeoutMs) {
+    const waited = at.getTime() - Date.parse(job.updatedAt);
+    if (job.status === "waiting_window" && waited > settings.windowWaitTimeoutMs) {
+      await failJob(job.id, "aborted", `the maintenance window did not open within ${Math.round(settings.windowWaitTimeoutMs / 1000)}s (window opens ${job.windowOpensAt ?? "never"})`);
+      return;
+    }
+    if (job.status === "fleet_canary" && waited > settings.canaryTimeoutMs) {
+      await completeCanary(job.id, "canary_failed", `the fleet canary did not report a verdict within ${Math.round(settings.canaryTimeoutMs / 1000)}s`);
+      return;
+    }
+    if (lastStep && job.status !== "waiting_window" && job.status !== "fleet_canary" && waited > settings.stepTimeoutMs) {
       await failJob(job.id, "aborted", `step ${job.status} exceeded the timeout (${Math.round(settings.stepTimeoutMs / 1000)}s)`);
       return;
     }
 
     switch (job.status) {
+      case "waiting_window": {
+        // B-1: hold the deploy until the window opens. The interface shows when
+        // it opens; a changed setting takes effect on the next tick.
+        const policy = await resolvePolicy();
+        const state = windowState(policy.settings.window, at);
+        if (!state.open) {
+          if (state.opensAt !== job.windowOpensAt) {
+            await write((doc2) => {
+              const current = doc2.jobs.find((j) => j.id === job.id);
+              if (!current || current.status !== "waiting_window") return { next: null, result: null };
+              const next = appendStep(
+                { ...current, windowOpensAt: state.opensAt, updatedAt: at.toISOString() },
+                "waiting_window",
+                `still outside the maintenance window: ${state.reason}`,
+                at,
+              );
+              return { next: { ...doc2, jobs: doc2.jobs.map((j) => (j.id === job.id ? next : j)) }, result: next.status };
+            });
+          }
+          return;
+        }
+        const ready = (await store.read()).jobs.find((j) => j.id === job.id);
+        if (ready && ready.status === "waiting_window") {
+          await write((doc2) => {
+            const current = doc2.jobs.find((j) => j.id === job.id);
+            if (!current || current.status !== "waiting_window") return { next: null, result: null };
+            const next = appendStep(
+              { ...current, windowOpensAt: null, updatedAt: at.toISOString() },
+              "waiting_window",
+              `the maintenance window is open: ${state.reason}`,
+              at,
+            );
+            return { next: { ...doc2, jobs: doc2.jobs.map((j) => (j.id === job.id ? next : j)) }, result: next.status };
+          });
+          const fresh = (await store.read()).jobs.find((j) => j.id === job.id);
+          if (fresh && fresh.status === "waiting_window") await enterMaintenance(fresh);
+        }
+        return;
+      }
+      case "fleet_canary": {
+        // B-2: the board switched; the canary batch is watched for at least the
+        // configured settle time, and only a healthy batch lets the rest follow.
+        if (!deps.fleetCanary) {
+          await completeCanary(job.id, "succeeded", "no fleet canary on this instance: nothing to wait for");
+          return;
+        }
+        const policy = await resolvePolicy();
+        const startedAt = job.canaryStartedAt === null ? at.getTime() : Date.parse(job.canaryStartedAt);
+        if (at.getTime() - startedAt < policy.settings.canary.healthSettleSec * 1000) return;
+        const port = deps.fleetCanary;
+        const readVerdict = await port
+          .verdict({ jobId: job.id, digest: job.digest, canary: job.canaryBatch })
+          .catch((err) => {
+            logger.error({ err, jobId: job.id }, "failed to read the fleet canary verdict");
+            return { phase: "running" as CanaryPhase, detail: null };
+          });
+        const gate = canaryVerdict({
+          phase: readVerdict.phase,
+          canary: job.canaryBatch,
+          rest: job.fleetRest,
+          detail: readVerdict.detail ?? null,
+        });
+        if (gate.stopReason) {
+          await completeCanary(job.id, "canary_failed", gate.stopReason);
+          return;
+        }
+        if (!gate.proceed) return;
+        if (job.fleetRest.length > 0) {
+          try {
+            await port.startRest({ jobId: job.id, digest: job.digest, rest: job.fleetRest });
+          } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            await completeCanary(job.id, "canary_failed", `the canary batch was healthy but the rest could not be started: ${message}`);
+            return;
+          }
+        }
+        await completeCanary(job.id, "succeeded", gate.detail);
+        return;
+      }
       case "pending":
       case "verifying": {
         // Verification normally completes in create(); a restart left it here.
         const verification = await verifyImage(`${DEPLOY_IMAGE_REPOSITORY}@${job.digest}`, deps.probes);
         await applyVerification(job.id, verification);
         const fresh = (await store.read()).jobs.find((j) => j.id === job.id);
-        if (fresh && fresh.status === "verified") await enterMaintenance(fresh);
+        if (fresh && fresh.status === "verified") await awaitWindowOrEnter(fresh);
         return;
       }
       case "maintenance_entering": {
@@ -582,6 +941,13 @@ export function deployJobsService(db: Db, deps: DeployJobServiceDeps) {
   }
 
   async function finish(jobId: string, status: Extract<DeployJobStatus, "succeeded" | "failed_health">, detail: string, report: HostReport) {
+    // 1.7-AUTO-UPDATE-B (B-2): a healthy board switch is not the end of an
+    // update — the fleet canary phase follows, and only it retires the job.
+    // (A failed health check keeps the old path: the rollback owns it.)
+    if (status === "succeeded") {
+      await handToFleetCanary(jobId, detail, report);
+      return;
+    }
     const at = now();
     const { result } = await write((doc) => {
       const job = doc.jobs.find((j) => j.id === jobId);
@@ -592,7 +958,7 @@ export function deployJobsService(db: Db, deps: DeployJobServiceDeps) {
           status,
           healthVersion: report.version ?? null,
           healthCommit: report.commit ?? null,
-          failureReason: status === "failed_health" ? detail : null,
+          failureReason: detail,
           updatedAt: at.toISOString(),
         },
         status,
@@ -603,13 +969,9 @@ export function deployJobsService(db: Db, deps: DeployJobServiceDeps) {
       return { next: retired, result: next };
     });
     if (!result) return;
-    // Leave maintenance on success; on a failed health check the window stays
-    // on for the rollback, the same contract as deploy.sh step 7.
-    if (status === "succeeded") {
-      await deps.maintenance.exit("deploy finished").catch((err) => {
-        logger.error({ err, jobId }, "failed to leave maintenance after deploy");
-      });
-    }
+    // A failed health check keeps the window on for the rollback, the same
+    // contract as deploy.sh step 7; the successful path never reaches here
+    // (it hands the fleet to the canary phase above).
     await auditFor(result, status, { actorType: "system", actorId: "myrmidon-deploy-jobs" }, { detail });
   }
 
