@@ -520,6 +520,47 @@ loopback и стримит один кусок в секунду, чтобы п�
 контракту bot-runtime) и монтирует `/workspace`/`/scratch` как tmpfs uid 10001,
 повторяя раскладку томов драйвера контейнеров.
 
+### Рабочие копии задач: `myr-ws`, перехват `git clone`, отказы по квоте (1.6.5 BOT-DISK-H, контракт H0)
+
+Как бот теперь получает копию задачи, по интерфейсному контракту
+(`docs/myrmidon/bot-disk-contract/README.md`):
+
+- Прогон приходит с полем `workspace: {key, repo, baseRef?}`. Гейтвей сам
+  открывает копию командой `myr-ws open <key> <repo> [--base <baseRef>]
+  --json` и стартует прогон с `MYRMIDON_TASK_WORKSPACE=/workspace/<key>` в
+  качестве рабочего каталога. Если `open` падает с кодом 3/4/5 (квота, лимит
+  баз, сеть), прогон всё равно стартует — в `/scratch`, с предупреждением в
+  событиях.
+- Копия — **worktree** голой базы бота
+  `$HERMES_HOME/.myrmidon/git-base/<owner>/<repo>.git` на ветке `bot/<KEY>`:
+  ни своих объектов у копии, ни promisor-паков, ни токена в `.git/config`
+  (учётные данные остаются на `git-credential-paperclip`).
+- `git clone https://github.com/<owner>/<repo>` внутри контейнера
+  перехватывается в `myr-ws open`: с выставленным `MYRMIDON_TASK_WORKSPACE`
+  открывается копия задачи, без него клон становится scratch-копией
+  `/scratch/<name>`. Флаги `--filter`, `--depth`, `--mirror` и `--bare`
+  игнорируются с сообщением — объекты уже есть в базе. Настоящий git лежит в
+  `/opt/paperclip/libexec/git` вне PATH.
+- Команды `myr-ws`: `open <KEY> [owner/repo] [--base <ref>] [--scratch]`,
+  `list`, `close <KEY> [--force]`, `restore <KEY>`, `migrate`; общий флаг
+  `--json`. Коды выхода: `0` — ок, `2` — неверные аргументы, `3` — отказ по
+  квоте/диску, сообщение начинается с `BOT_DISK_QUOTA_EXCEEDED:`, `4` —
+  репозиторий сверх лимита баз (8), `5` — сеть/fetch, `6` — нет такой
+  копии/архива, `7` — незапушенная работа без `--force`.
+- При `BOT_DISK_QUOTA_EXCEEDED:` раздел ботов переполнен или превысил уровень
+  отказа: прекрати клонировать, закоммить и запушь готовое, сообщи доске, не
+  повторяй попытку в цикле.
+- Агент в контейнере `botd` следует желаемому состоянию доски
+  (`GET /api/myrmidon/bots/me/workspaces`): копия задачи, ставшей
+  терминальной / переназначенной / со слитым PR, переводится в `closing`,
+  переживает отсрочку (`general.botDisk.graceClosingMinutes`, по умолчанию 30
+  минут) и удаляется; незапушенная работа сначала архивируется
+  (`$HERMES_HOME/.myrmidon/archive/`, потолок 2 ГиБ / 30 суток) и
+  восстанавливается командой `myr-ws restore <KEY>`. Scratch-копии умирают по
+  TTL простоя (`general.botDisk.scratchTtlHours`, по умолчанию 24 часа).
+  Когда доска недоступна, botd не удаляет ничего. Состояние диска botd
+  возвращает доске через `POST /api/myrmidon/bots/me/disk-report`.
+
 ## Что ещё не проверено
 
 Этот Dockerfile и entrypoint написаны по чтению эталонной выгрузки `hermes-agent` и
