@@ -150,6 +150,12 @@ describe("resolveSessionKey", () => {
     ).toBe("paperclip:company:company-1:agent:agent-1:issue:issue-1");
   });
 
+  it("starts a fresh gateway session for a server-assigned generation (OPE-6168)", () => {
+    const base = { strategy: "issue" as const, companyId: "company-1", agentId: "agent-1", runId: "run-1", issueId: "issue-1" };
+    expect(resolveSessionKey({ ...base, generation: 1 })).toBe("paperclip:company:company-1:agent:agent-1:issue:issue-1");
+    expect(resolveSessionKey({ ...base, generation: 3 })).toBe("paperclip:company:company-1:agent:agent-1:issue:issue-1:g3");
+  });
+
   it("omits the session key for none strategy", () => {
     expect(
       resolveSessionKey({
@@ -1173,6 +1179,23 @@ describe("mapFinalResultForTest", () => {
     expect(result.errorCode).toBe("hermes_gateway_run_failed");
     expect(result.errorMessage).toBe("boom");
     expect(result.errorFamily).toBeUndefined();
+  });
+
+  it("marks a provider input-length rejection as input_overflow, not transient (OPE-6168)", () => {
+    const result = mapFinalResultForTest({
+      terminal: {
+        runId: "run-1",
+        status: "failed",
+        payload: {
+          status: "failed",
+          error: "InternalError.Algo.InvalidParameter: Range of input length should be [1, 1048576]",
+        },
+      },
+      outputChunks: [],
+      sessionKey: "session-key",
+      strategy: "issue",
+    });
+    expect(result.errorFamily).toBe("input_overflow");
   });
 
   // myrmidon(RECOVERY-HERMES-GATEWAY): the upstream-restart signature is the
