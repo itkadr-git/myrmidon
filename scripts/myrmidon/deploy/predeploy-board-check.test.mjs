@@ -191,7 +191,7 @@ describe("predeploy-board-check.sh (PREDEPLOY-DB-CHECK: the 05.10 incident)", ()
     // DEPLOY-HYGIENE (OPE-5107): the copy's data lives in a NAMED volume of
     // this run (an anonymous one survives `docker rm -f` and stays on the
     // disk), mounted into the throwaway Postgres and removed with the stack
-    assert.match(log, /docker run -d --name myr-predeploy-db-[^ ]+ --network myr-predeploy-[^ ]+ -v myr-predeploy-dbvol-bbbbbbbb-\d+:\/var\/lib\/postgresql\/data/);
+    assert.match(log, /docker run -d --name myr-predeploy-db-[^ ]+ --network myr-predeploy-[^ ]+ -v myr-predeploy-dbvol-bbbbbbbb-\d+:\/var\/lib\/postgresql /);
     assert.match(log, /docker volume rm -f myr-predeploy-dbvol-bbbbbbbb-\d+/);
     // everything was removed again
     assert.match(log, /docker rm -f myr-predeploy-board-[^ ]+ myr-predeploy-dockergate-[^ ]+ myr-predeploy-db-/);
