@@ -203,11 +203,14 @@ export function decideTick(window: MaintenanceWindow, runningRunIds: string[], n
   const deadlineMs = Date.parse(window.drainDeadlineAt);
   if (nowMs < deadlineMs) return { kind: "none" };
   if (window.onTimeout === "interrupt_and_retry") {
-    const unowned = runningRunIds.filter((id) => !window.interruptedRunIds.includes(id));
-    if (unowned.length > 0) return { kind: "interrupt", runIds: unowned };
-    // Every run in scope was interrupted by this window and has left
-    // "running": the drain is complete for this window's part.
-    return { kind: "drained_after_interrupts" };
+    // Teardown must finish before retries are promoted or the window leaves
+    // entering. Any running run, including one already interrupted by us, is
+    // still holding the drain open.
+    if (runningRunIds.length > 0) {
+      const unowned = runningRunIds.filter((id) => !window.interruptedRunIds.includes(id));
+      return unowned.length > 0 ? { kind: "interrupt", runIds: unowned } : { kind: "none" };
+    }
+    return window.interruptedRunIds.length > 0 ? { kind: "drained_after_interrupts" } : { kind: "mark_on" };
   }
   return window.drainTimedOut ? { kind: "none" } : { kind: "mark_timed_out" };
 }
@@ -224,10 +227,9 @@ export function isStuckOpenWindow(
   now: Date,
   stuckGraceMs: number = DEFAULT_STUCK_GRACE_MS,
 ): boolean {
-  // `leaving` windows are finished by the tick's own leaving path
-  // (finishLeaving retires unconditionally); the backstop targets windows
-  // that still hold admission (entering/on).
-  if (window.state === "leaving") return false;
+  // The backstop is only authorized for agent-scoped profile maintenance;
+  // never retire deployment-wide or company maintenance windows here.
+  if (window.scope.type !== "agent" || window.state === "leaving") return false;
   const cutoff = Date.parse(window.drainDeadlineAt) + stuckGraceMs;
   return now.getTime() >= cutoff;
 }

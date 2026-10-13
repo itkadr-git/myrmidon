@@ -179,21 +179,24 @@ describeEmbeddedPostgres("maintenance drain completion (L6)", () => {
     const interrupted = await run(runId);
     expect(interrupted).toMatchObject({ status: "cancelled" });
 
-    // The vendor's teardown lands: the cancelled run is gone from "running".
-    await heartbeatService(db).drainActiveRunExecutions();
+    // Retries remain scheduled until every run interrupted by this window
+    // has completed teardown. The window must not be marked on early.
+    await svc.tick();
+    expect((await svc.status({ type: "agent", id: agentId })).windows[0]).toMatchObject({
+      state: "entering",
+      runningRuns: 1,
+    });
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, runId)))[0]!.status).toBe("scheduled_retry");
 
-    // The next tick (if the drain had not already completed) promotes the
-    // scheduled retry (queued, gated by admission while the window is open)
-    // and the window turns `on`. On unfixed main the window stays `entering`
-    // and this expectation fails — the update never applies.
+    // The vendor teardown completes; only now can the tick promote retry and
+    // finish draining. The retry remains gated until exit.
+    await heartbeatService(db).drainActiveRunExecutions();
     await svc.tick();
     const window = (await svc.status({ type: "agent", id: agentId })).windows[0]!;
     expect(window).toMatchObject({ state: "on", runningRuns: 0, interruptedRuns: 1 });
     const retry = (await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, runId)))[0]!;
-    expect(["queued", "scheduled_retry"]).toContain(retry.status);
+    expect(retry.status).toBe("queued");
 
-    // The retry does NOT start while the window gates admission.
-    await heartbeatService(db).promoteDueScheduledRetries();
     await heartbeatService(db).resumeQueuedRuns();
     expect((await run(retry.id)).status).not.toBe("running");
 
