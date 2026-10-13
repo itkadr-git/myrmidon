@@ -140,7 +140,7 @@ flowchart LR
 
 Релизные заметки — в [docs/myrmidon/CHANGELOG.ru.md](docs/myrmidon/CHANGELOG.ru.md)
 (английская версия: [CHANGELOG.md](docs/myrmidon/CHANGELOG.md)). Главное на
-версии 1.6.4 (последний выпуск; 1.6.5-rc.13 — текущий кандидат в выпуски):
+версии 1.6.4 (последний выпуск; 1.6.5-rc.14 — текущий кандидат в выпуски):
 
 ### Работа и агенты
 
@@ -285,7 +285,7 @@ flowchart LR
 [CHANGELOG.ru.md](docs/myrmidon/CHANGELOG.ru.md) и [страница
 выпусков](https://github.com/itkadr-git/myrmidon/releases) — последний:
 [1.6.4](https://github.com/itkadr-git/myrmidon/releases/tag/myr-v1.6.4);
-[1.6.5-rc.13](https://github.com/itkadr-git/myrmidon/releases/tag/myr-v1.6.5-rc.13)
+[1.6.5-rc.14](https://github.com/itkadr-git/myrmidon/releases/tag/myr-v1.6.5-rc.14)
 — текущий кандидат в выпуски.
 
 - **1.6.3 — один выкат для всех компонентов.** `deploy.sh --release`
