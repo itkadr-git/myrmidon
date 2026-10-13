@@ -93,7 +93,10 @@ export interface TelegramEscalationsSettings {
 /** Head-bot proactivity: whether the bot may write unprompted. */
 export interface TelegramProactivitySettings {
   mode: TelegramProactivityMode;
-  /** Cap per day when mode is "rarely". */
+  /**
+   * Cap per day when mode is "rarely". Range 1–50 — the single contract
+   * (see telegramProactivitySettingsSchema for the provenance note).
+   */
   rarelyMaxPerDay: number;
 }
 
@@ -170,7 +173,17 @@ export const telegramEscalationsSettingsSchema = z.object({
 
 export const telegramProactivitySettingsSchema = z.object({
   mode: z.enum(TELEGRAM_PROACTIVITY_MODES),
-  rarelyMaxPerDay: z.number().int().min(0).max(1000),
+  // myrmidon(1.6.1-TG-NOTIFY): the single rarelyMaxPerDay range — 1–50, the
+  // merged (pull request 397) proactivity contract. The literal is repeated (not the
+  // MAX_TELEGRAM_NOTIFY_PROACTIVITY_RARELY_PER_DAY constant) because that
+  // constant lives in the part-E block below; a shared test asserts both stay 50.
+  // The pre-merge part-A draft said 0–1000; pull request 397 won because the server gate
+  // (clampRarelyMaxPerDay) already enforces 1–50 and the docs row says so.
+  rarelyMaxPerDay: z
+    .number()
+    .int()
+    .min(1)
+    .max(50),
 }).strict();
 
 export const telegramNotifySettingsSchema = z.object({
@@ -340,7 +353,13 @@ export function parseTelegramNotifyDocument(raw: unknown): TelegramNotifyDocumen
     },
     proactivity: {
       mode: enumValue(p.mode, TELEGRAM_PROACTIVITY_MODES, defaults.proactivity.mode),
-      rarelyMaxPerDay: int(p.rarelyMaxPerDay, defaults.proactivity.rarelyMaxPerDay, 0, 1000),
+      rarelyMaxPerDay: int(
+        p.rarelyMaxPerDay,
+        defaults.proactivity.rarelyMaxPerDay,
+        1,
+        // Same literal as the schema above: 50, the merged rarely ceiling.
+        50,
+      ),
     },
   };
   const changelog = Array.isArray(raw.changelog)
