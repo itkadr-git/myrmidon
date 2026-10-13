@@ -88,6 +88,47 @@ curl -X PATCH \
 A `0`, a negative, a fractional or a non-numeric value, a `null` memory budget
 or an unknown key is rejected with `400` and nothing is written.
 
+## The load view (1.6.5)
+
+The same `GET /api/myrmidon/runtime-limits` is also the run-load screen of
+the instance: next to the limits themselves it carries three live snapshots,
+each read by the same admission that gates on it:
+
+- `queue` — runs in flight against the ceiling, how many wait, and the head
+  of the queue with its agent;
+- `hostLoad` — the host CPU load the ceiling is measured against;
+- `memory` — the memory the memory floors decide on:
+
+```json
+"memory": {
+  "host": { "availableMb": 21450, "totalMb": 32768 },
+  "container": { "limitMb": 4096, "usedMb": 1630, "freeMb": 2466 }
+}
+```
+
+`memory.host` is the host's `MemAvailable`/`MemTotal` as the host memory
+floor reads them (see "The host memory floor" above). `memory.container` is
+the server container's own cgroup v2 usage against its limit: `memory.max`
+minus `memory.current`, with the reclaimable `inactive_file` page cache
+counted as free — the same rule the `minFreeMemoryMb` floor applies. Either
+side is `null` when the server cannot read it (no `/proc/meminfo` or a
+virtualized one, no cgroup v2 limit), and the whole `memory` block is `null`
+on an older server or when the read failed — a consumer shows nothing rather
+than a number the server made up. The snapshot only reports; it does not
+decide admission.
+
+Both settings panels — Instance → General «Run limits» and Settings →
+«Runs & queue» — show the snapshot as a line next to the queue line:
+
+```
+Host memory: 21,450 MB available of 32,768 MB. Server container: 1,630 MB
+used of 4,096 MB (2,466 MB free).
+```
+
+A side the server could not read is simply not mentioned. A changed limit is
+visible in the next read of the view, in the snapshot as well as in the
+admission — no restart.
+
 ## What happens after a change
 
 The change is persisted to `instance_settings.general.runLimits`, an activity
