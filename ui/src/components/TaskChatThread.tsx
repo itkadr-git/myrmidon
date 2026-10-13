@@ -2370,7 +2370,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     pendingComposerInputs[0] ??
     null;
   const interactionDraftKey = selectedPendingInput
-    ? `paperclip:task-input:${issueId ?? "unknown"}:${selectedPendingInput.key}`
+    ? `myrmidon:task-input:${issueId ?? "unknown"}:${selectedPendingInput.key}`
     : undefined;
   const openPendingTakeover = useCallback(() => {
     setTakeoverMode("open");

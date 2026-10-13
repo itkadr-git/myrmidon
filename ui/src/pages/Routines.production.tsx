@@ -362,8 +362,8 @@ export function Routines() {
     variables: [],
   });
   const routineViewStateKey = selectedCompanyId
-    ? `paperclip:routines-view:${selectedCompanyId}`
-    : "paperclip:routines-view";
+    ? `myrmidon:routines-view:${selectedCompanyId}`
+    : "myrmidon:routines-view";
   const [routineViewState, setRoutineViewState] = useState<RoutineViewState>(() => getRoutineViewState(routineViewStateKey));
   const folderSelection = normalizeFolderSelection(searchParams.get("folder"));
 
@@ -940,7 +940,7 @@ export function Routines() {
             agents={agents}
             projects={projects}
             liveIssueIds={liveIssueIds}
-            viewStateKey="paperclip:routine-recent-runs-view"
+            viewStateKey="myrmidon:routine-recent-runs-view"
             issueLinkState={recentRunsIssueLinkState}
             onUpdateIssue={(id, data) => updateIssue.mutate({ id, data })}
           />
@@ -1263,7 +1263,7 @@ export function Routines() {
           ) : null}
           {routineViewState.groupBy === "folder" && !hasRoutineFolders && !foldersLoading && visibleRoutines.length > 0 ? (
             <AllUnfiledBanner
-              storageKey={`paperclip:routines-folder-nudge:${selectedCompanyId ?? "none"}`}
+              storageKey={`myrmidon:routines-folder-nudge:${selectedCompanyId ?? "none"}`}
               itemLabelPlural="routines"
               onCreateFolder={() => openCreateFolder()}
             />

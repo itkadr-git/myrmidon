@@ -14,7 +14,7 @@ export const DRAFT_DEBOUNCE_MS = 800;
 // Chat drafts and uncertain submissions belong to this browser tab. Sharing a
 // submission fence across tabs prevents intentional concurrent conversation turns.
 function draftStorage(draftKey: string): Storage {
-  return draftKey.startsWith("paperclip:agent-chat-draft:") ? sessionStorage : localStorage;
+  return draftKey.startsWith("myrmidon:agent-chat-draft:") ? sessionStorage : localStorage;
 }
 
 export function loadDraft(draftKey: string): string {

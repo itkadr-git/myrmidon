@@ -20,11 +20,18 @@ import { initPluginBridge } from "./plugins/bridge-init";
 import { PluginLauncherProvider } from "./plugins/launchers";
 import { startPerfMeasureReaper } from "./lib/perf-measure-reaper";
 import { getOrCreatePaperclipReactRoot } from "./lib/react-root";
+import { migrateLegacyPaperclipStorage } from "./lib/storage-brand-migration";
 import { startServiceWorkerUpdates } from "./lib/service-worker-updates";
 import "@mdxeditor/editor/style.css";
 import "./index.css";
 
 initPluginBridge(React, ReactDOM);
+
+// DEBRAND (OPE-5806): one-time startup sweep of legacy `paperclip.*` browser
+// storage keys into `myrmidon.*` before any component reads them. Lazy per-key
+// migration via readMigratedStorageItem covers keys written after boot.
+// myrmidon(DB3)
+migrateLegacyPaperclipStorage();
 
 // React 19.2 emits an unbounded stream of performance.measure() entries for its
 // DevTools performance tracks and never clears them; on a long-lived tab they

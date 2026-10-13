@@ -55,7 +55,7 @@ function FullPageTimelineHarness() {
   const { selectedCompanyId, setSelectedCompanyId } = useCompany();
 
   useEffect(() => {
-    window.localStorage.setItem("paperclip.selectedCompanyId", COMPANY_ID);
+    window.localStorage.setItem("myrmidon.selectedCompanyId", COMPANY_ID);
     if (selectedCompanyId !== COMPANY_ID) {
       setSelectedCompanyId(COMPANY_ID);
     }

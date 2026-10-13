@@ -12,7 +12,7 @@ export interface ShellRouteClassification {
   builtInContextualSurface: Exclude<ContextualSidebarSurface, `plugin:${string}`> | null;
 }
 
-const CONTEXTUAL_ORIGIN_KEY_PREFIX = "paperclip.contextualSidebar.origin";
+const CONTEXTUAL_ORIGIN_KEY_PREFIX = "myrmidon.contextualSidebar.origin";
 
 export function getCompanyPathSegments(pathname: string, companyPrefix: string | undefined): string[] {
   if (!companyPrefix) return [];

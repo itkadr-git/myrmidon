@@ -227,7 +227,7 @@ export function AgentChatPrototype({
   }, [contextInitiallyOpen, setPanelVisible]);
   useLayoutEffect(() => {
     const originalFetch = window.fetch;
-    const recentKey = `paperclip.recentAgentChats:${issue.companyId}:user-board`;
+    const recentKey = `myrmidon.recentAgentChats:${issue.companyId}:user-board`;
     const previousRecents = localStorage.getItem(recentKey);
     if (entryScenario) localStorage.setItem(recentKey, "[]");
     const chats = new Map<
@@ -543,7 +543,7 @@ export function AgentChatPrototype({
       if (entryScenario) {
         if (previousRecents === null) localStorage.removeItem(recentKey);
         else localStorage.setItem(recentKey, previousRecents);
-        window.dispatchEvent(new Event("paperclip:recent-agent-chats"));
+        window.dispatchEvent(new Event("myrmidon:recent-agent-chats"));
       }
       queryClient.clear();
     };

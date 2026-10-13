@@ -1017,7 +1017,7 @@ type PipelineTransitionEdge = { fromStageId: string; toStageId: string; label?: 
 type PipelineBoardGroupBy = "none" | "builtFor";
 
 const PIPELINE_BOARD_UNGROUPED_KEY = "__ungrouped";
-const PIPELINE_BOARD_GROUP_BY_STORAGE_PREFIX = "paperclip.pipelineBoard.groupBy.";
+const PIPELINE_BOARD_GROUP_BY_STORAGE_PREFIX = "myrmidon.pipelineBoard.groupBy.";
 
 function asText(value: unknown): string | null {
   if (typeof value !== "string") return null;
@@ -3314,7 +3314,7 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
                   currentUserId={currentUserId}
                   userLabelMap={userLabelMap}
                   userProfileMap={userProfileMap}
-                  draftKey={`paperclip:pipeline-item-conversation-draft:${activeConversationIssue.id}`}
+                  draftKey={`myrmidon:pipeline-item-conversation-draft:${activeConversationIssue.id}`}
                   autoScrollToLatestOnInitialLoad={false}
                   enableReassign
                   reassignOptions={commentReassignOptions}

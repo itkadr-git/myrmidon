@@ -121,7 +121,7 @@ function executionWorkspaceTabPath(workspaceId: string, tab: ExecutionWorkspaceB
 function LegacyWorkspaceTabRedirect({ workspaceId }: { workspaceId: string }) {
   useEffect(() => {
     try {
-      localStorage.removeItem(`paperclip:execution-workspace-tab:${workspaceId}`);
+      localStorage.removeItem(`myrmidon:execution-workspace-tab:${workspaceId}`);
     } catch {}
   }, [workspaceId]);
 
@@ -583,7 +583,7 @@ function ExecutionWorkspaceIssuesList({
       projects={projectOptions}
       liveIssueIds={liveIssueIds}
       projectId={project?.id}
-      viewStateKey="paperclip:execution-workspace-issues-view"
+      viewStateKey="myrmidon:execution-workspace-issues-view"
       baseCreateIssueDefaults={createIssueDefaults}
       onUpdateIssue={(id, data) => updateIssue.mutate({ id, data })}
     />

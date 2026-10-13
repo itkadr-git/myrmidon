@@ -110,7 +110,7 @@ type EnrollmentAccessState = {
 };
 
 function enrollmentAccessStorageKey(appKey: string): string {
-  return `paperclip.connector-enrollment-access:${appKey}`;
+  return `myrmidon.connector-enrollment-access:${appKey}`;
 }
 
 function validEnrollmentAccessState(value: unknown): value is EnrollmentAccessState {

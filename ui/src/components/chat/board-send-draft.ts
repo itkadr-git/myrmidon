@@ -72,7 +72,7 @@ export function boardSendDraftKey(
   endpointId: string,
   conversationId: string,
 ) {
-  return `paperclip:board-send:v1:${JSON.stringify([companyId, issueId, endpointId, conversationId])}`;
+  return `myrmidon:board-send:v1:${JSON.stringify([companyId, issueId, endpointId, conversationId])}`;
 }
 
 export function readBoardSendDraft(key: string): RetainedBoardSend | null {

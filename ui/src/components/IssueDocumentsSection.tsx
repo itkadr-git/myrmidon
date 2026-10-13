@@ -85,7 +85,7 @@ type DocumentSubjectConfig = {
 
 const DOCUMENT_AUTOSAVE_DEBOUNCE_MS = 900;
 const DOCUMENT_KEY_PATTERN = /^[a-z0-9][a-z0-9_-]*$/;
-const getFoldedDocumentsStorageKey = (issueId: string) => `paperclip:issue-document-folds:${issueId}`;
+const getFoldedDocumentsStorageKey = (issueId: string) => `myrmidon:issue-document-folds:${issueId}`;
 
 function loadFoldedDocumentKeys(issueId: string) {
   if (typeof window === "undefined") return [];
