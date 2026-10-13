@@ -23,6 +23,20 @@ export interface IssueAssignmentWakeupDeps {
   ) => Promise<unknown>;
 }
 
+// myrmidon(1.6.6 PLUGIN-REGISTRY 2/3): mirrors vendor paperclipai/paperclip
+// #13738 (commit 0f5fafe16). A closed issue must never queue an assignment
+// wake. The guard lives in this single shared service, not per call point, so
+// every caller (issue create, child_create, accepted_plan_decomposition,
+// interaction_accept, status-card/summary-slot generation, chat/routine/
+// secret-proposal wakes) is covered at once. An explicit status transition
+// that reopens a closed issue still wakes the assignee through the normal
+// PATCH/update path — that path reads the NEW status before queueing.
+function isClosedIssueStatus(
+  status: string | null | undefined,
+): status is "done" | "cancelled" {
+  return status === "done" || status === "cancelled";
+}
+
 export function queueIssueAssignmentWakeup(input: {
   heartbeat: IssueAssignmentWakeupDeps;
   issue: {
@@ -47,7 +61,13 @@ export function queueIssueAssignmentWakeup(input: {
   rethrowOnError?: boolean;
   durableChatRequest?: DurableChatWakeupRequest;
 }) {
-  if (!input.issue.assigneeAgentId || input.issue.status === "backlog") return;
+  if (
+    !input.issue.assigneeAgentId ||
+    input.issue.status === "backlog" ||
+    isClosedIssueStatus(input.issue.status)
+  ) {
+    return;
+  }
 
   // myrmidon(X8a): an Agent Chat conversation keeps one provider session
   // keyed by issue id, regardless of the taskKey a caller passed in. Without

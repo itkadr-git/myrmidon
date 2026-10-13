@@ -420,6 +420,17 @@ image (`true`, `0.0.0.0`, `8642`, `/data/hermes`, `1`,
 `/data/hermes/lazy-packages`, `/data:/workspace:/scratch`) — override only
 if the container topology needs something else.
 
+The entrypoint sets `umask 077` before its first file write, so every file a
+run creates — scratch dumps, cache, tmp helpers — is born `0600` (directories
+`0700`). Every bot on a host shares uid `10001`, and the mode bits are the
+only barrier between one run's scratch/cache and another bot's processes;
+the umask is inherited by every child of the entrypoint (gateway → session →
+terminal/tool), so no cooperation from the workload is needed. Files that
+are legitimately shared between processes of the same container (the
+`${HERMES_HOME}/.myrmidon/*.json` start report read by the container's own
+reporter, ipc sockets, logs collected by the host's root-side janitor) keep
+working: their readers are the same uid or root.
+
 ## Bot-runtime contract
 
 The image declares `myrmidon.bot-runtime.contract="1"` (an OCI label,
@@ -446,6 +457,12 @@ The container has ONE writable bind, the bot's whole tree, at `/bot` (with `herm
 are links the image makes into it (`/data/hermes` → `/bot/hermes`, `/workspace` →
 `/data/workspace` → `/bot/workspace`, `/scratch` → `/data/scratch` → `/bot/scratch`), not
 mounts. The ownership requirement applies to the three directories inside `/bot`.
+The `/bot` root itself must also let uid `10001` enter it: the driver's prepare
+helper normalizes the host directory's mode to `0711` (owner `root` kept,
+non-recursive, the content untouched) at every apply, and when a bot still starts
+on a root it cannot enter, `entrypoint.sh` fails with a line naming the traversal
+problem and the fix (recreate the bot) instead of the misleading
+`API_SERVER_KEY is required`.
 
 A member of a **shared isolation scope** (BOT-DISK-F, label `myrmidon.bot-runtime.scope=1`) has no
 `/bot`: its one mount is the scope instance's directory at `/bot-scope`, a tmpfs over `/data`

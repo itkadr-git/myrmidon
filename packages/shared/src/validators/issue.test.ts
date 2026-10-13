@@ -250,6 +250,29 @@ describe("issue validators", () => {
         },
       }).success,
     ).toBe(true);
+    // myrmidon(BLOCKER-WAKE-LOOP-B): kind=event may carry an optional dueAt
+    // deadline (the stale-block watchdog kills the block after it passes).
+    expect(
+      updateIssueSchema.parse({
+        status: "blocked",
+        unblockDescriptor: {
+          owner: "board",
+          action: "Wait for the tag",
+          reasonRef: { kind: "event", eventKey: "release-1.6", dueAt: "2026-10-20T00:00:00.000Z" },
+        },
+      }).unblockDescriptor?.reasonRef,
+    ).toEqual({ kind: "event", eventKey: "release-1.6", dueAt: "2026-10-20T00:00:00.000Z" });
+    // event with a non-datetime dueAt — rejected
+    expect(
+      updateIssueSchema.safeParse({
+        status: "blocked",
+        unblockDescriptor: {
+          owner: "board",
+          action: "Wait for the tag",
+          reasonRef: { kind: "event", eventKey: "release-1.6", dueAt: "next tuesday" },
+        },
+      }).success,
+    ).toBe(false);
     // invalid reasonRef shape — rejected
     expect(
       updateIssueSchema.safeParse({
@@ -258,6 +281,17 @@ describe("issue validators", () => {
           owner: "board",
           action: "Review the finding",
           reasonRef: { kind: "date", dueAt: "not-a-date" },
+        },
+      }).success,
+    ).toBe(false);
+    // kind=event without eventKey — still rejected (superRefine unchanged)
+    expect(
+      updateIssueSchema.safeParse({
+        status: "blocked",
+        unblockDescriptor: {
+          owner: "board",
+          action: "Wait for the tag",
+          reasonRef: { kind: "event", dueAt: "2026-10-20T00:00:00.000Z" },
         },
       }).success,
     ).toBe(false);

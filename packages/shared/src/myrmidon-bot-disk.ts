@@ -1,4 +1,12 @@
 import { z } from "zod";
+// myrmidon(1.6.6-SETTINGS-UI-B): the workspace-lifecycle field schemas are the
+// ones `myrmidon-bot-workspace.ts` validates with — the same `general.botDisk`
+// object, one source of truth for the ranges.
+import {
+  wsGraceClosingMinutesSchema,
+  wsPartitionPercentSchema,
+  wsScratchTtlHoursSchema,
+} from "./myrmidon-bot-workspace.js";
 
 /**
  * Bot draft-directory lifecycle settings (myrmidon BOT-DISK, part A).
@@ -60,6 +68,10 @@ export const BOT_DISK_ENV_KEYS = {
   idleTtlMs: "MYRMIDON_BOT_DISK_IDLE_TTL_MS",
 } as const;
 
+/**
+ * The env-backed lifecycle keys of the stored `general.botDisk` object
+ * (SETTINGS registry): the part-A sweep switch and idle TTL.
+ */
 export const BOT_DISK_SETTING_KEYS = ["enabled", "idleTtlMs"] as const;
 
 export type BotDiskSettingKey = (typeof BOT_DISK_SETTING_KEYS)[number];
@@ -221,6 +233,13 @@ export const botDiskSettingsSchema = z
   .object({
     enabled: z.boolean(),
     idleTtlMs: idleTtlMsSchema,
+    // myrmidon(1.6.6-SETTINGS-UI-B): the workspace-lifecycle numbers (absent =
+    // WS_BOT_DISK_SETTING_DEFAULTS); stored in this same object, PATCH-able.
+    graceClosingMinutes: wsGraceClosingMinutesSchema.optional(),
+    scratchTtlHours: wsScratchTtlHoursSchema.optional(),
+    partitionThresholdPercent: wsPartitionPercentSchema.optional(),
+    partitionRefuseOpenPercent: wsPartitionPercentSchema.optional(),
+    partitionCriticalPercent: wsPartitionPercentSchema.optional(),
     // myrmidon(1.6.1-BOT-DISK-B): absent = no shared package cache.
     sharedPackageCachePath: cachePathSchema.optional(),
     // myrmidon(1.6.5-BOT-DISK-H11): absent = every bot keeps its own runtime.
@@ -238,6 +257,13 @@ const storedBotDiskObjectSchema = z
   .object({
     enabled: z.boolean().optional().catch(undefined),
     idleTtlMs: idleTtlMsSchema.optional().catch(undefined),
+    // myrmidon(1.6.6-SETTINGS-UI-B): kept in the canonical shape (the "no env"
+    // branch of normalize/resolve below) instead of dropped as an unknown key.
+    graceClosingMinutes: wsGraceClosingMinutesSchema.optional().catch(undefined),
+    scratchTtlHours: wsScratchTtlHoursSchema.optional().catch(undefined),
+    partitionThresholdPercent: wsPartitionPercentSchema.optional().catch(undefined),
+    partitionRefuseOpenPercent: wsPartitionPercentSchema.optional().catch(undefined),
+    partitionCriticalPercent: wsPartitionPercentSchema.optional().catch(undefined),
     sharedPackageCachePath: cachePathSchema.optional().catch(undefined),
     sharedBotRuntimePath: botRuntimePathSchema.optional().catch(undefined),
     gitMirrorRepos: gitMirrorReposSchema.optional().catch(undefined),
@@ -259,6 +285,13 @@ export const patchBotDiskSettingsSchema = z
   .object({
     enabled: z.boolean().optional(),
     idleTtlMs: idleTtlMsSchema.optional(),
+    // myrmidon(1.6.6-SETTINGS-UI-B): null (or absent) keeps the stored value /
+    // returns the key to its default; these five have no env variable.
+    graceClosingMinutes: z.union([wsGraceClosingMinutesSchema, z.null()]).optional(),
+    scratchTtlHours: z.union([wsScratchTtlHoursSchema, z.null()]).optional(),
+    partitionThresholdPercent: z.union([wsPartitionPercentSchema, z.null()]).optional(),
+    partitionRefuseOpenPercent: z.union([wsPartitionPercentSchema, z.null()]).optional(),
+    partitionCriticalPercent: z.union([wsPartitionPercentSchema, z.null()]).optional(),
     // myrmidon(1.6.1-BOT-DISK-B): a path sets the cache, null or "" turns it off.
     sharedPackageCachePath: z.union([cachePathSchema, z.literal(""), z.null()]).optional(),
     // myrmidon(1.6.5-BOT-DISK-H11): a path sets the shared runtime, null or "" turns it off.
@@ -304,6 +337,14 @@ export function normalizeStoredBotDiskSettings(raw: unknown): Partial<BotDiskSet
   const out: Partial<BotDiskSettings> = {};
   if (typeof parsed.data.enabled === "boolean") out.enabled = parsed.data.enabled;
   if (typeof parsed.data.idleTtlMs === "number") out.idleTtlMs = parsed.data.idleTtlMs;
+  // myrmidon(1.6.6-SETTINGS-UI-B): the workspace-lifecycle numbers stay in the
+  // canonical shape, so mergeBotDiskSettings does not drop them on the next
+  // layout patch (they used to live only under wsBotDiskSettingsSchema).
+  if (typeof parsed.data.graceClosingMinutes === "number") out.graceClosingMinutes = parsed.data.graceClosingMinutes;
+  if (typeof parsed.data.scratchTtlHours === "number") out.scratchTtlHours = parsed.data.scratchTtlHours;
+  if (typeof parsed.data.partitionThresholdPercent === "number") out.partitionThresholdPercent = parsed.data.partitionThresholdPercent;
+  if (typeof parsed.data.partitionRefuseOpenPercent === "number") out.partitionRefuseOpenPercent = parsed.data.partitionRefuseOpenPercent;
+  if (typeof parsed.data.partitionCriticalPercent === "number") out.partitionCriticalPercent = parsed.data.partitionCriticalPercent;
   if (typeof parsed.data.sharedPackageCachePath === "string") {
     out.sharedPackageCachePath = parsed.data.sharedPackageCachePath;
   }
@@ -343,11 +384,16 @@ export function resolveBotDiskSettings(options: {
       : envIdleTtl !== null
         ? [envIdleTtl, "env"]
         : [BOT_DISK_DEFAULT_IDLE_TTL_MS, "default"];
-
+  // myrmidon(1.6.6-SETTINGS-UI-B): the five workspace-lifecycle numbers have no
+  // env variable at all — stored value or the default the ws service applies
+  // (WS_BOT_DISK_SETTING_DEFAULTS), so they behave like the optional layout keys:
+  // present in `settings` only when stored, and not part of the env-backed
+  // sources record. mergeBotDiskSettings keeps them across patches.
   return {
     settings: {
       enabled: enabled[0],
       idleTtlMs: idleTtlMs[0],
+      ...optionalWorkspaceLifecycleKeys(stored),
       ...(stored.sharedPackageCachePath ? { sharedPackageCachePath: stored.sharedPackageCachePath } : {}),
       ...optionalLayoutKeys(stored),
     },
@@ -365,6 +411,19 @@ function optionalLayoutKeys(values: Partial<BotDiskSettings>): Partial<BotDiskSe
     ...(values.sharedCacheRoles !== undefined ? { sharedCacheRoles: values.sharedCacheRoles } : {}),
     // myrmidon(1.6.5-BOT-DISK-H11): stored or absent, like the cache path.
     ...(values.sharedBotRuntimePath !== undefined ? { sharedBotRuntimePath: values.sharedBotRuntimePath } : {}),
+  };
+}
+
+/** The 1.6.6-SETTINGS-UI-B workspace-lifecycle keys that are set, in canonical form. */
+function optionalWorkspaceLifecycleKeys(
+  values: Partial<BotDiskSettings>,
+): Pick<BotDiskSettings, "graceClosingMinutes" | "scratchTtlHours" | "partitionThresholdPercent" | "partitionRefuseOpenPercent" | "partitionCriticalPercent"> {
+  return {
+    ...(values.graceClosingMinutes !== undefined ? { graceClosingMinutes: values.graceClosingMinutes } : {}),
+    ...(values.scratchTtlHours !== undefined ? { scratchTtlHours: values.scratchTtlHours } : {}),
+    ...(values.partitionThresholdPercent !== undefined ? { partitionThresholdPercent: values.partitionThresholdPercent } : {}),
+    ...(values.partitionRefuseOpenPercent !== undefined ? { partitionRefuseOpenPercent: values.partitionRefuseOpenPercent } : {}),
+    ...(values.partitionCriticalPercent !== undefined ? { partitionCriticalPercent: values.partitionCriticalPercent } : {}),
   };
 }
 
@@ -386,6 +445,16 @@ export function mergeBotDiskSettings(
   return {
     enabled: patch.enabled === undefined ? base.enabled : patch.enabled,
     idleTtlMs: patch.idleTtlMs === undefined ? base.idleTtlMs : patch.idleTtlMs,
+    // myrmidon(1.6.6-SETTINGS-UI-B): the five workspace-lifecycle numbers merge
+    // like the layout keys: absent keeps the current value, null returns the
+    // key to its default (then the ws service reads WS_BOT_DISK_SETTING_DEFAULTS).
+    ...optionalWorkspaceLifecycleKeys({
+      graceClosingMinutes: pick(patch.graceClosingMinutes, base.graceClosingMinutes),
+      scratchTtlHours: pick(patch.scratchTtlHours, base.scratchTtlHours),
+      partitionThresholdPercent: pick(patch.partitionThresholdPercent, base.partitionThresholdPercent),
+      partitionRefuseOpenPercent: pick(patch.partitionRefuseOpenPercent, base.partitionRefuseOpenPercent),
+      partitionCriticalPercent: pick(patch.partitionCriticalPercent, base.partitionCriticalPercent),
+    }),
     ...(sharedPackageCachePath ? { sharedPackageCachePath } : {}),
     ...(sharedBotRuntimePath ? { sharedBotRuntimePath } : {}),
     ...optionalLayoutKeys({
@@ -400,6 +469,12 @@ export function mergeBotDiskSettings(
 
 /** The 1.6.2-BOT-DISK-C keys a settings change compares besides the env-backed ones. */
 export const BOT_DISK_LAYOUT_KEYS = ["sharedPackageCachePath", "sharedBotRuntimePath", "gitMirrorRepos", "gitMirrorRefreshMs", "pnpmStoreDir", "pnpmImportMethod", "sharedCacheRoles"] as const;
+
+/**
+ * myrmidon(1.6.6-SETTINGS-UI-B): the five workspace-lifecycle keys a settings
+ * change compares besides the env-backed ones (stored-only, no env variable).
+ */
+export const BOT_DISK_WORKSPACE_LIFECYCLE_KEYS = ["graceClosingMinutes", "scratchTtlHours", "partitionThresholdPercent", "partitionRefuseOpenPercent", "partitionCriticalPercent"] as const;
 
 /**
  * myrmidon(1.6.2-BOT-DISK-C): the shared-cache layout in force, with the
