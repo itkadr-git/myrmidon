@@ -10,6 +10,9 @@ import request from "supertest";
 import { describe, expect, it, vi } from "vitest";
 import type { Db } from "@paperclipai/db";
 import { errorHandler } from "../../middleware/index.js";
+// This suite runs the routes with a fake `db`; the deploy-class gate (covered by
+// autonomy.myrmidon.test.ts) is stubbed out so it does not read the matrix from it.
+vi.mock("../autonomy/deploy-class.js", () => ({ assertDeployClassAllowed: vi.fn(async () => undefined) }));
 import { deployJobsRoutes } from "./routes.js";
 import { deployJobsService, type DeployJobServiceDeps } from "./service.js";
 import { readDeployJobsSettings } from "./settings.js";
