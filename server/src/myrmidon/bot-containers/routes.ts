@@ -3,13 +3,17 @@
 // myrmidon(W2b): the API behind the "Container" section of the agent card.
 //
 //   GET  /api/myrmidon/agents/:id/bot-container/status
+//   GET  /api/myrmidon/agents/:id/bot-container/git-store
 //   POST /api/myrmidon/agents/:id/bot-container/apply
 //
-// Both are gated behind MYRMIDON_BOT_CONTAINERS (off by default): while it is off,
+// All three are gated behind MYRMIDON_BOT_CONTAINERS (off by default): while it is off,
 // status still answers (so the card can say so) but reports `enabled: false` and
 // never touches the container runtime, and apply is refused with 409. Board
 // actors only — an agent never changes its own card or restarts its own gateway
-// (same rule as agent-self-update.ts).
+// (same rule as agent-self-update.ts) — with ONE exception, myrmidon(1.6.5
+// BOT-DISK-G live check): `git-store` is read-only facts about a bot's shared
+// git-object store and answers an agent key of the same company, because the lead
+// has no board-user channel and the attention feed is board-only.
 //
 // "Apply now" reconciles the SAVED card (applyBotContainerNow reads the agent row,
 // not the form), so a card with unsaved edits has to be saved first; the UI
@@ -41,6 +45,12 @@ import {
   type GatewayConcurrencyStatus,
 } from "./concurrency-sync.js";
 import { readMaxConcurrentRuns } from "./profile-input.js";
+import { hasReleaseBotImage, resolveBotImageRolloutStatus, type BotImageRolloutStatus } from "@paperclipai/shared";
+import {
+  parseCloneReport,
+  type GitRefCheck,
+  type GitStoreState,
+} from "./clone-hygiene.js";
 import { isImageAllowed, parseImageAllowlist } from "./template.js";
 import type { BotContainerState } from "./driver.js";
 
@@ -51,6 +61,9 @@ export interface BotContainerRouteAgent {
   adapterConfig: Record<string, unknown>;
   /** The card's scheduling policy; read for heartbeat.maxConcurrentRuns. */
   runtimeConfig: Record<string, unknown>;
+  /** myrmidon(BOT-ROLLOUT): the agent's lifecycle status (idle, paused, running, …) —
+   *  the same value the rollout script reads off the agents list to decide a switch. */
+  status?: string | null;
 }
 
 export interface BotContainerRoutesDeps {
@@ -103,6 +116,10 @@ export interface BotContainerStatusResponse {
   /** myrmidon(1.6.4-BOT-CONTAINER-CARD): how the release bot-image rollout treats this bot:
    *  tracks the release, pinned (with the pinned image) or not applicable (with why). */
   imageTracking: BotImageTracking;
+  /** myrmidon(BOT-ROLLOUT): the release bot-image rollout verdict of this bot —
+   *  on the release image, or why not (busy / no release image configured /
+   *  pinned / not applicable). Additive; absent on an older server. */
+  imageRollout: BotImageRolloutStatus;
   /** myrmidon(CONCURRENCY-SYNC): runtimeConfig.heartbeat.maxConcurrentRuns, normalized
    *  exactly as the profile compiler normalizes it. Always answered, so the card can
    *  show the board's value even for a gateway the board does not manage. */
@@ -119,6 +136,55 @@ export interface BotContainerStatusResponse {
 }
 
 export type BotContainerApplyResponse = { outcome: Exclude<ApplyBotContainerOutcome, { kind: "not_applicable" }> };
+
+/**
+ * myrmidon(1.6.5 BOT-DISK-G live check): the facts of one bot's shared git-object
+ * store, read from the report the in-container reporter already writes. The
+ * acceptance of the OPE-5281 fix ("the second clone is small because the store
+ * holds the objects") needs a channel an AGENT can read: the board's own
+ * `GET /api/companies/:id/attention` is board-only (403 for an agent key), while
+ * this route lives behind the same agents-table + company boundary as the status
+ * route. Every field is answered — what is missing is explained in `note`, never
+ * an error, so a reader does not have to interpret HTTP codes.
+ */
+export interface BotGitStoreResponse {
+  /** MYRMIDON_BOT_CONTAINERS is on for this instance. */
+  enabled: boolean;
+  /** The instance has a container runtime wired (driver). */
+  runtimeConfigured: boolean;
+  /** The bot key of the container these facts belong to, when the agent has one. */
+  botKey: string | null;
+  /** The live container state; filled in only when the report was missing (to tell
+   *  a stopped container from a silent reporter), else null. */
+  containerState: BotContainerState | null;
+  /** When the board read the report. */
+  reportReadAtMs: number;
+  /** The reporter's own `inspectedAt`; null when there is no usable report. */
+  inspectedAtMs: number | null;
+  /** How old the report is at read time; null when there is no usable report. */
+  reportAgeMs: number | null;
+  /** The store's facts, read live by the reporter (docker/bot-runtime/git-reference/
+   *  bot-clone-hygiene); null when the report carries none. */
+  gitStore: GitStoreState | null;
+  /** The container-start self-check, with its own start-time store snapshot
+   *  (`storeState`) — the fallback when the reporter is silent but the store was
+   *  measured at the last start. */
+  gitRefCheck: GitRefCheck | null;
+  /** Why a field above is null; null when everything answered. */
+  note: string | null;
+}
+
+/** Why the git-store facts are absent, in the words the reader needs. */
+export const GIT_STORE_NOTE_FLAG_OFF =
+  "Bot containers are not enabled on this instance (MYRMIDON_BOT_CONTAINERS): there is no per-bot git store to read.";
+export const GIT_STORE_NOTE_NO_RUNTIME = "The bot container runtime is not configured on this instance.";
+export const GIT_STORE_NOTE_NOT_A_BOT = "This agent has no bot container of its own (not a hermes_gateway agent with a bot key).";
+export const GIT_STORE_NOTE_NO_READER = "The configured container driver cannot read the clone-hygiene report.";
+export const GIT_STORE_NOTE_NO_REPORT =
+  "The container holds no usable clone-hygiene report: not written yet, older than 24 hours, or malformed.";
+export const GIT_STORE_NOTE_NO_STORE_FACTS =
+  "The report carries no gitStore facts: the bot runs an image (or a reporter) older than the 1.6.5 shared-objects live check.";
+export const GIT_STORE_NOTE_READ_FAILED = "The container runtime did not answer while reading the clone-hygiene report.";
 
 const MAX_MESSAGE_CHARS = 500;
 
@@ -161,6 +227,14 @@ export function botContainerRoutes(deps: BotContainerRoutesDeps) {
       container: null,
       containerError: null,
       imageTracking: classifyBotImageTracking(agent.adapterType, agent.adapterConfig),
+      // myrmidon(BOT-ROLLOUT): the verdict reads the card's tracking category and
+      // the agent's status (the same source the rollout script uses) — no docker
+      // query beyond the container status below.
+      imageRollout: resolveBotImageRolloutStatus({
+        tracking: classifyBotImageTracking(agent.adapterType, agent.adapterConfig),
+        agentStatus: agent.status ?? null,
+        hasReleaseImage: hasReleaseBotImage(env),
+      }),
       boardMaxConcurrentRuns: readMaxConcurrentRuns(agent.runtimeConfig),
       gatewayConcurrency: null,
       gatewayConcurrencyNote: null,
@@ -251,6 +325,75 @@ export function botContainerRoutes(deps: BotContainerRoutesDeps) {
       return;
     }
     res.json({ outcome } satisfies BotContainerApplyResponse);
+  });
+
+  /**
+   * myrmidon(1.6.5 BOT-DISK-G live check, OPE-5281 ч.B): the shared git-object
+   * store's facts for one bot, for a reader with an AGENT key.
+   *
+   * Deliberately no assertBoard — unlike status/apply, which only a board user
+   * calls: the lead has no board-user channel, and the board's attention feed
+   * (GET /api/companies/:id/attention) answers an agent key with 403. loadAgent
+   * keeps the company boundary and the "no oracle on ids" rule.
+   *
+   * Read-only, and the cheapest read there is: no docker exec, just the report
+   * file the in-container reporter already writes (driver.readCloneReport), so
+   * asking on every acceptance run costs the bot nothing. A missing report is
+   * answered with 200 plus `note` (and the container state, to tell a stopped bot
+   * from a silent reporter) rather than an error: what the reader needs is the
+   * reason, not a status code to decode.
+   */
+  router.get("/myrmidon/agents/:id/bot-container/git-store", async (req, res) => {
+    const agent = await loadAgent(req);
+    const runtime = deps.getRuntime();
+    const botKey = botKeyForAgent(agent.id);
+    const readAtMs = Date.now();
+    const body: BotGitStoreResponse = {
+      enabled: isBotContainersEnabled(envNow()),
+      runtimeConfigured: runtime !== null,
+      botKey,
+      containerState: null,
+      reportReadAtMs: readAtMs,
+      inspectedAtMs: null,
+      reportAgeMs: null,
+      gitStore: null,
+      gitRefCheck: null,
+      note: null,
+    };
+    if (!body.enabled) {
+      body.note = GIT_STORE_NOTE_FLAG_OFF;
+    } else if (!runtime) {
+      body.note = GIT_STORE_NOTE_NO_RUNTIME;
+    } else if (!botKey || agent.adapterType !== "hermes_gateway") {
+      body.note = GIT_STORE_NOTE_NOT_A_BOT;
+    } else if (!runtime.driver.readCloneReport) {
+      body.note = GIT_STORE_NOTE_NO_READER;
+    } else {
+      try {
+        const raw = await runtime.driver.readCloneReport(botKey);
+        const report = raw === null ? null : parseCloneReport(raw, readAtMs);
+        if (report) {
+          body.inspectedAtMs = report.inspectedAtMs;
+          body.reportAgeMs = Math.max(0, readAtMs - report.inspectedAtMs);
+          body.gitStore = report.gitStore;
+          body.gitRefCheck = report.gitRefCheck;
+          // Honest at field level: a report from an image older than this change
+          // is still a report, but it carries no store facts to accept on.
+          if (!body.gitStore && !body.gitRefCheck?.storeState) body.note = GIT_STORE_NOTE_NO_STORE_FACTS;
+        } else {
+          body.note = GIT_STORE_NOTE_NO_REPORT;
+          try {
+            body.containerState = (await runtime.driver.status(botKey)).state;
+          } catch (err) {
+            logger.warn({ err, agentId: agent.id }, "bot container status query failed for the git-store facts");
+          }
+        }
+      } catch (err) {
+        logger.warn({ err, agentId: agent.id }, "bot container git-object store facts read failed");
+        body.note = GIT_STORE_NOTE_READ_FAILED;
+      }
+    }
+    res.json(body);
   });
 
   return router;

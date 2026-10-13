@@ -7,7 +7,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { RunLimitKey, RunLimitsSource } from "@paperclipai/shared";
 import type { RuntimeLimitsView } from "./runtimeLimitsApi";
-import { RuntimeLimitsSettingsPanelView, parseRunLimitsDraft } from "./RuntimeLimitsSettingsPanel";
+import { RuntimeLimitsSettingsPanelView, parseRunLimitsDraft, type PanelLimitKey } from "./RuntimeLimitsSettingsPanel";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
@@ -34,6 +34,8 @@ const view: RuntimeLimitsView = {
     runMemoryEstimateMb: 300,
     minFreeHostMemoryMb: 15360,
     maxHostLoadPercentPerCore: 90,
+    // myrmidon(1.6.5 RUN-FAIRNESS part 2): the key is in the shared RunLimits type now.
+    maxPerAgentStartSharePercent: 15,
   },
   sources: {
     maxConcurrentRuns: "env",
@@ -56,6 +58,10 @@ const view: RuntimeLimitsView = {
     reason: null,
     heldSince: null,
   },
+  // myrmidon(1.6.5 RUN-FAIRNESS): the queue snapshot the endpoint reports.
+  queue: null,
+  // myrmidon(1.6.5 C0-ui): the memory snapshot the endpoint reports.
+  memory: null,
 };
 
 function render(value: RuntimeLimitsView | null, onSave = vi.fn(), pending = false, error: string | null = null) {
@@ -65,11 +71,11 @@ function render(value: RuntimeLimitsView | null, onSave = vi.fn(), pending = fal
   return onSave;
 }
 
-function field(key: RunLimitKey): HTMLInputElement {
+function field(key: PanelLimitKey): HTMLInputElement {
   return container.querySelector(`#runtime-limit-${key}`) as HTMLInputElement;
 }
 
-function type(key: RunLimitKey, text: string) {
+function type(key: PanelLimitKey, text: string) {
   const input = field(key);
   const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
   flushSync(() => {
@@ -109,7 +115,99 @@ describe("myrmidon(C0) run limits panel", () => {
       runMemoryEstimateMb: 300,
       minFreeHostMemoryMb: 15360,
       maxHostLoadPercentPerCore: 90,
+      // myrmidon(1.6.5 RUN-FAIRNESS): the fair share ships at its default 15
+      // until the server serves the key.
+      maxPerAgentStartSharePercent: 15,
     });
+  });
+
+  it("myrmidon(1.6.5 RUN-FAIRNESS): edits the single-agent start share, default 15 until the server serves the key", () => {
+    const onSave = render(view);
+    // The server of this test predates part 2: no key in the payload — the
+    // field renders at the default 15 and reports the default source.
+    const share = field("maxPerAgentStartSharePercent");
+    expect(share.value).toBe("15");
+    expect(container.querySelector("[data-testid=runtime-limit-source-maxPerAgentStartSharePercent]")?.textContent).toBe(
+      "Default",
+    );
+    type("maxPerAgentStartSharePercent", "25");
+    flushSync(() => saveButton().dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    expect(onSave).toHaveBeenLastCalledWith(expect.objectContaining({ maxPerAgentStartSharePercent: 25 }));
+    // Empty = off (null in the patch).
+    type("maxPerAgentStartSharePercent", "");
+    flushSync(() => saveButton().dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    expect(onSave).toHaveBeenLastCalledWith(expect.objectContaining({ maxPerAgentStartSharePercent: null }));
+    // The served value wins over the default once part 2 lands — rendered on a
+    // fresh mount, since a typed draft intentionally survives a re-render.
+    flushSync(() => root.unmount());
+    container.remove();
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    render({ ...view, limits: { ...view.limits, maxPerAgentStartSharePercent: 40 } as RuntimeLimitsView["limits"] });
+    expect(field("maxPerAgentStartSharePercent").value).toBe("40");
+  });
+
+  it("myrmidon(1.6.5 RUN-FAIRNESS): a share over 100 does not save", () => {
+    const onSave = render(view);
+    type("maxPerAgentStartSharePercent", "150");
+    expect(
+      container.querySelector("[data-testid=runtime-limit-error-maxPerAgentStartSharePercent]")?.textContent,
+    ).toContain("1 to 100");
+    expect(saveButton().disabled).toBe(true);
+    flushSync(() => saveButton().dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    expect(onSave).not.toHaveBeenCalled();
+  });
+
+  it("myrmidon(1.6.5 RUN-FAIRNESS): shows the queue snapshot — active, ceiling, queue length and the head", () => {
+    render({
+      ...view,
+      queue: {
+        active: 48,
+        limit: 51,
+        queued: 12,
+        oldestQueuedAt: new Date(Date.now() - 7 * 60_000).toISOString(),
+        oldestQueuedAgentId: "agent-1",
+      },
+    });
+    const line = container.querySelector("[data-testid=runtime-limit-queue]")?.textContent ?? "";
+    expect(line).toContain("Runs in flight: 48 of at most 51.");
+    expect(line).toContain("In the queue: 12");
+    expect(line).toContain("the oldest waits since");
+    expect(line).toContain("(agent agent-1)");
+    expect(line).toContain("7 min ago");
+  });
+
+  it("myrmidon(1.6.5 RUN-FAIRNESS): an empty queue and a missing snapshot render cleanly", () => {
+    render({ ...view, queue: { active: 3, limit: null, queued: 0, oldestQueuedAt: null, oldestQueuedAgentId: null } });
+    expect(container.querySelector("[data-testid=runtime-limit-queue]")?.textContent).toBe(
+      "Runs in flight: 3 of no concurrency ceiling. The queue is empty.",
+    );
+    render({ ...view, queue: null });
+    expect(container.querySelector("[data-testid=runtime-limit-queue]")).toBeNull();
+  });
+
+  it("myrmidon(1.6.5 C0-ui): shows the host and container memory next to the queue", () => {
+    render({
+      ...view,
+      memory: {
+        host: { availableMb: 45056, totalMb: 131072 },
+        container: { limitMb: 8192, usedMb: 3000, freeMb: 5192 },
+      },
+    });
+    const line = container.querySelector("[data-testid=runtime-limit-memory]")?.textContent ?? "";
+    expect(line).toContain("Host memory: 45,056 MB available of 131,072 MB");
+    expect(line).toContain("Server container: 3,000 MB used of 8,192 MB (5,192 MB free)");
+  });
+
+  it("myrmidon(1.6.5 C0-ui): a missing memory snapshot or side renders cleanly", () => {
+    render({ ...view, memory: { host: null, container: { limitMb: 8192, usedMb: 3000, freeMb: 5192 } } });
+    const line = container.querySelector("[data-testid=runtime-limit-memory]")?.textContent ?? "";
+    expect(line).not.toContain("Host memory");
+    expect(line).toContain("Server container: 3,000 MB used");
+
+    render({ ...view, memory: null });
+    expect(container.querySelector("[data-testid=runtime-limit-memory]")).toBeNull();
   });
 
   it("myrmidon(1.6.5): edits the host CPU ceiling and switches it off with an empty field", () => {
@@ -209,6 +307,7 @@ describe("myrmidon(C0) run limits panel", () => {
         runMemoryEstimateMb: "300",
         minFreeHostMemoryMb: "15360",
         maxHostLoadPercentPerCore: "90",
+        maxPerAgentStartSharePercent: "20",
       }),
     ).toEqual({
       patch: {
@@ -218,6 +317,7 @@ describe("myrmidon(C0) run limits panel", () => {
         runMemoryEstimateMb: 300,
         minFreeHostMemoryMb: 15360,
         maxHostLoadPercentPerCore: 90,
+        maxPerAgentStartSharePercent: 20,
       },
       errors: {},
     });

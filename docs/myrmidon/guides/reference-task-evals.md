@@ -23,6 +23,32 @@ never appears in a setting, log or journal. All settings
 contour is not configured, reads still work and mutations answer `503` with
 the names of the missing settings.
 
+## New Feature: Same-Family Judge Detection (1.6.5 EVALS-JUDGE-FAMILY)
+
+The evaluation system flags the results where the judge model comes from the
+same family as the agent model being evaluated — the judge is effectively
+grading "its own kind", and that should be visible at a glance.
+
+Where it is visible: the **Reference-task results** panel in company settings
+lists the runs of the company and, for the chosen run, one row per reference
+task. A result whose `sameFamily` is `true` carries the badge and its tooltip
+next to the score.
+
+How the flag is decided: per task, from the judge model of the run and the model
+of the *subject* — the agent card of the evaluated role (`adapterConfig.model`).
+When that model cannot be resolved (no agent card for the role, or the card only
+says `default`/`auto`), the flag stays `false`: the badge is never shown on a
+guess.
+
+The judge model itself is the head of the priority list below, and the list is
+re-read on every run, so a change applies to the next evaluation without a
+restart.
+
+The priority order of judge models is an environment-only setting
+(`MYRMIDON_EVALS_JUDGE_PRIORITY_MODELS`, see [../SETTINGS.md](../SETTINGS.md)):
+there is no field for it in the interface, by agreement — the source of the value
+is the server environment and the panel shows it as such.
+
 ## The API
 
 The board API under `/api/myrmidon/companies/:companyId/evals`:

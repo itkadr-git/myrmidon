@@ -5,10 +5,16 @@
 // settings page does not restart with the environment value again. After that
 // every settings write applies itself (see service.ts).
 
-import type { Db } from "@paperclipai/db";
+import { asc, eq, sql } from "drizzle-orm";
+import { heartbeatRuns, type Db } from "@paperclipai/db";
 import { logger } from "../../middleware/logger.js";
 import { heartbeatService, instanceSettingsService, logActivity } from "../../services/index.js";
-import { applyRunAdmissionLimits, currentHostCpuGate, scheduleQueuedResweep } from "../run-admission.js";
+import {
+  applyRunAdmissionLimits,
+  currentHostCpuGate,
+  scheduleQueuedResweep,
+  sharedRunAdmission,
+} from "../run-admission.js";
 import { runtimeLimitsRoutes } from "./routes.js";
 import { runtimeLimitsService, type RuntimeLimitsServiceDeps } from "./service.js";
 
@@ -29,12 +35,39 @@ function defaultDeps(db: Db): RuntimeLimitsServiceDeps {
     // myrmidon(1.6.5 rc.2): the GET view carries the live host CPU reading, so
     // the settings page can show the load the ceiling is measured on.
     hostLoad: () => currentHostCpuGate(),
+    // myrmidon(1.6.5 RUN-FAIRNESS): the GET view also carries the queue
+    // snapshot — runs in flight against the ceiling and the oldest waiter.
+    queueSnapshot: async () => {
+      const admission = sharedRunAdmission();
+      const [row] = await db
+        .select({
+          running: sql<number>`count(*) filter (where ${heartbeatRuns.status} = 'running')`,
+          queued: sql<number>`count(*) filter (where ${heartbeatRuns.status} = 'queued')`,
+        })
+        .from(heartbeatRuns);
+      const [oldest] = await db
+        .select({ createdAt: heartbeatRuns.createdAt, agentId: heartbeatRuns.agentId })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.status, "queued"))
+        .orderBy(asc(heartbeatRuns.createdAt), asc(heartbeatRuns.id))
+        .limit(1);
+      return {
+        active: Number(row?.running ?? 0),
+        limit: admission.limits().maxConcurrentRuns,
+        queued: Number(row?.queued ?? 0),
+        oldestQueuedAt: oldest ? oldest.createdAt.toISOString() : null,
+        oldestQueuedAgentId: oldest ? oldest.agentId : null,
+      };
+    },
     scheduleResweep: () =>
       scheduleQueuedResweep(() =>
         heartbeat.resumeQueuedRuns().catch((err) => {
           logger.error({ err }, "queued run resweep after a runtime limits change failed");
         }),
       ),
+    // myrmidon(1.6.5 C0-ui): the host and container memory the load screen is
+    // about, read by the same admission that gates on it.
+    memorySnapshot: () => sharedRunAdmission().memorySnapshot(),
   };
 }
 

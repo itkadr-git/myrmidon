@@ -91,6 +91,29 @@ export interface GitRefCheck {
   store: string;
   ok: boolean;
   checks: GitRefCheckItem[];
+  /** myrmidon(1.6.5 BOT-DISK-G live check): the store's facts as snapshotted by
+   *  the entrypoint at this bot's start. Additive; null on an older image. */
+  storeState: GitStoreState | null;
+}
+
+/** myrmidon(1.6.5 BOT-DISK-G live check): the facts of a bot's shared git-object
+ *  store — how many mirrors it holds, how large it is and which repositories.
+ *  The reporter reads them live into the report's `gitStore`
+ *  (docker/bot-runtime/git-reference/bot-clone-hygiene) and the entrypoint
+ *  snapshots the same shape at start into `gitRefCheck.storeState`
+ *  (docker/bot-runtime/entrypoint.sh), so the board can tell a working store
+ *  from the empty one of OPE-5281 without an exec into the bot. */
+export interface GitStoreState {
+  /** Container path of the store; "" when the store is explicitly off. */
+  path: string;
+  /** False when MYRMIDON_GIT_LOCAL_MIRROR is explicitly empty: no store at all. */
+  enabled: boolean;
+  /** Bare mirrors found under the store (their names are in `repos`). */
+  mirrorCount: number;
+  /** Allocated size of the store in bytes (du); 0 when it could not be walked. */
+  totalBytes: number;
+  /** The mirrored repositories as `owner/repo`. */
+  repos: string[];
 }
 
 export interface CloneReport {
@@ -98,6 +121,9 @@ export interface CloneReport {
   repos: Map<string, CloneReportEntry>;
   hardlinkCheck: HardlinkCheck | null;
   gitRefCheck: GitRefCheck | null;
+  /** myrmidon(1.6.5 BOT-DISK-G live check): the store's facts, read live by the
+   *  reporter on this pass. Additive; null from an older reporter. */
+  gitStore: GitStoreState | null;
 }
 
 /** The report's `hardlinkCheck`, or null when absent or malformed. */
@@ -136,6 +162,31 @@ export function parseGitRefCheck(value: unknown): GitRefCheck | null {
     store: typeof v.store === "string" ? v.store.slice(0, 500) : "unknown",
     ok: v.ok,
     checks,
+    storeState: parseGitStoreState(v.storeState),
+  };
+}
+
+/** The report's `gitStore`, or the check's `storeState` (myrmidon 1.6.5
+ *  BOT-DISK-G live check): null when absent or malformed — an older reporter or
+ *  entrypoint simply carries no store facts, which is not an error. */
+export function parseGitStoreState(value: unknown): GitStoreState | null {
+  if (!value || typeof value !== "object") return null;
+  const v = value as Record<string, unknown>;
+  if (typeof v.enabled !== "boolean") return null;
+  if (typeof v.mirrorCount !== "number" || !Number.isInteger(v.mirrorCount) || v.mirrorCount < 0) return null;
+  if (typeof v.totalBytes !== "number" || !Number.isFinite(v.totalBytes) || v.totalBytes < 0) return null;
+  const repos: string[] = [];
+  if (Array.isArray(v.repos)) {
+    for (const item of v.repos.slice(0, 500)) {
+      if (typeof item === "string" && item.length > 0) repos.push(item.slice(0, 200));
+    }
+  }
+  return {
+    path: typeof v.path === "string" ? v.path.slice(0, 500) : "",
+    enabled: v.enabled,
+    mirrorCount: v.mirrorCount,
+    totalBytes: Math.floor(v.totalBytes),
+    repos,
   };
 }
 
@@ -181,7 +232,13 @@ export function parseCloneReport(raw: string, nowMs: number): CloneReport | null
       error: malformed ? entry.error ?? "malformed report entry" : entry.error,
     });
   }
-  return { inspectedAtMs, repos, hardlinkCheck: parseHardlinkCheck(obj.hardlinkCheck), gitRefCheck: parseGitRefCheck(obj.gitRefCheck) };
+  return {
+    inspectedAtMs,
+    repos,
+    hardlinkCheck: parseHardlinkCheck(obj.hardlinkCheck),
+    gitRefCheck: parseGitRefCheck(obj.gitRefCheck),
+    gitStore: parseGitStoreState(obj.gitStore),
+  };
 }
 
 /** Why a reported container path cannot name a clone, or null when it can. */
@@ -243,6 +300,10 @@ export function cloneHygieneSignals(): CloneHygieneSignal[] {
 }
 
 /**
+ * @deprecated since 1.6.5 BOT-DISK-H: botd sends the C4 disk report to
+ * `POST /api/myrmidon/bots/me/disk-report` (bot-disk-report-routes.ts). This path
+ * keeps working unchanged for bots that still run the old in-container report.
+ *
  * Replace the signals of one bot with those in its report. `idleTtlMs` is the
  * lifecycle TTL in force; a clone counts as idle when the report's
  * `idleSeconds` exceeds it. Returns false when the text is not a usable report.

@@ -15,6 +15,8 @@ export const PAPERCLIP_RUNNER_DEFAULT_MODELS = {
   acpx: "claude-sonnet-5",
   opencode: "openrouter/deepseek/deepseek-v4-flash-0731",
 } as const;
+// myrmidon(B1c): product name in user-facing texts; see shared myrmidon-product.
+import { PRODUCT_NAME } from "@paperclipai/shared";
 
 export interface PaperclipRunnerPermissionOption<
   TMode extends string = string,
@@ -61,7 +63,7 @@ export const PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES = {
         value: "never",
         label: "Automatic (isolated)",
         description:
-          "Run without Codex approval pauses while Paperclip keeps its independent workspace, network, and environment restrictions.",
+          `Run without Codex approval pauses while ${PRODUCT_NAME} keeps its independent workspace, network, and environment restrictions.`,
       },
     ],
   },
@@ -70,7 +72,7 @@ export const PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES = {
     configKey: "opencodePermissionMode",
     defaultMode: "ask",
     description:
-      "Controls OpenCode tool permissions inside the assigned Paperclip environment.",
+      `Controls OpenCode tool permissions inside the assigned ${PRODUCT_NAME} environment.`,
     options: [
       {
         value: "allow",
@@ -103,6 +105,13 @@ export const PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES = {
     description:
       "AWS AgentCore runs non-interactively under its qualified harness profile and Paperclip policy.",
   },
+  // myrmidon(1.6.6 PLUGIN-REGISTRY 3/3): the agent-card mode selector maps
+  // onto these THREE existing permissionMode values and nothing else. The
+  // vendor's fourth mode (approve-paperclip) is deliberately not offered —
+  // it references vendor tool semantics that do not exist in Myrmidon. The
+  // default (approve-reads) is a conscious Myrmidon divergence and must not
+  // drift with upstream renames. Labels are operator-facing (full auto /
+  // restricted / deny); the values stay the runtime contract.
   acpx: {
     configurable: true,
     configKey: "acpxPermissionMode",
@@ -117,13 +126,13 @@ export const PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES = {
       },
       {
         value: "approve-reads",
-        label: "Allow Paperclip reads",
+        label: "Restricted (approve reads)",
         description:
           "Automatically allow assigned Paperclip read tools. Other operations stop with an approval-required message because this runner has no interactive approval handler.",
       },
       {
         value: "deny-all",
-        label: "Deny all",
+        label: "Deny all (forbidden)",
         description: "Reject harness permission requests.",
       },
     ],

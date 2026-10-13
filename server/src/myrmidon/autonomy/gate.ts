@@ -29,6 +29,13 @@ import { dbAutonomyStore, agentRoleFromDb, type AutonomyStore } from "./store.js
 
 /** Stable error code the UI and tests match on. */
 export const AUTONOMY_FORBIDDEN_CODE = "autonomy_forbidden";
+/**
+ * Stable code a route answers when the verdict is `approval_required` and the
+ * calling seam has no held-action primitive yet. 1.6.2 treats the verdict as a
+ * denial at the pause/wake route seam; the held-action half is a documented
+ * follow-up (see gate.ts header).
+ */
+export const AUTONOMY_APPROVAL_REQUIRED_CODE = "autonomy_approval_required";
 
 export interface AutonomyGateDeps {
   store: AutonomyStore;
@@ -71,6 +78,13 @@ export function autonomyGate(deps: AutonomyGateDeps) {
     if (decision.verdict === "forbidden") {
       throw forbidden("This action is forbidden for this role by the autonomy matrix", {
         code: AUTONOMY_FORBIDDEN_CODE,
+        actionClass,
+        role: decision.role,
+      });
+    }
+    if (decision.verdict === "approval_required") {
+      throw forbidden("This action requires approval for this role by the autonomy matrix", {
+        code: AUTONOMY_APPROVAL_REQUIRED_CODE,
         actionClass,
         role: decision.role,
       });

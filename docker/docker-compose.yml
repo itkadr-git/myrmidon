@@ -1,6 +1,13 @@
 services:
   db:
-    image: postgres:17-alpine
+    # CORPUS (1.6.6): the knowledge corpus keeps embeddings in a `vector` column,
+    # so the development database ships the pgvector extension, like the
+    # generated compose of the installer (scripts/myrmidon/install/install.sh).
+    # The board does not create the extension itself: a fresh installation
+    # enables it in the installer, an existing volume is handled by hand —
+    # `CREATE EXTENSION IF NOT EXISTS vector;` in the board database
+    # (docs/myrmidon/runbooks/pgvector-extension.md).
+    image: pgvector/pgvector:0.8.7-pg17
     environment:
       POSTGRES_USER: paperclip
       POSTGRES_PASSWORD: paperclip

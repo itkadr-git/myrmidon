@@ -10,13 +10,29 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
   describeHostLoad,
+  describeMemorySnapshot,
+  describeQueueSnapshot,
   describeRunLimitSource,
   runtimeLimitsApi,
   runtimeLimitsQueryKey,
   type RuntimeLimitsView,
 } from "./runtimeLimitsApi";
 
-const FIELDS: Array<{ key: RunLimitKey; label: string; hint: string; optional: boolean }> = [
+/**
+ * myrmidon(1.6.5 RUN-FAIRNESS part 3): the single-agent start share arrives
+ * with part 2's shared key (`maxPerAgentStartSharePercent`, 1..100 or off,
+ * default 15). This panel is merged before part 2 lands, so the field is
+ * carried as a string literal, not a `RunLimitKey` — part 2 promotes it into
+ * `RUN_LIMIT_KEYS` and both parts then type-check against the shared name.
+ */
+const FAIR_SHARE_KEY = "maxPerAgentStartSharePercent";
+
+type PanelLimitKey = RunLimitKey | typeof FAIR_SHARE_KEY;
+
+/** The field ids/draft keys of the panel (the shared keys plus the fair-share literal). */
+export type { PanelLimitKey };
+
+const FIELDS: Array<{ key: PanelLimitKey; label: string; hint: string; optional: boolean }> = [
   {
     key: "maxConcurrentRuns",
     label: "Concurrent runs",
@@ -55,22 +71,38 @@ const FIELDS: Array<{ key: RunLimitKey; label: string; hint: string; optional: b
     hint: "A new run starts only while the host's 1-minute load average is this many percent of one CPU core ABOVE the load the host carries on its own (100 = one core fully busy). The host's own background — the services that keep it busy without any run — does not close the ceiling: only the load the runs add counts. Default 90. Empty switches the ceiling off.",
     optional: true,
   },
+  {
+    // myrmidon(1.6.5 RUN-FAIRNESS): one agent may take at most this share of
+    // the run starts in a 10-minute window; past it its new runs wait until
+    // the others have had their turn. The shared key lands with part 2 of the
+    // feature; until the server serves it the field stays at its default 15.
+    key: FAIR_SHARE_KEY,
+    label: "Single-agent start share, % per 10 min",
+    hint: "The most starts one agent may take in a 10-minute window, in percent. Past its share its new runs wait until the other agents have had their turn, so a hot agent cannot occupy the queue. Default 15. Empty switches the limit off (100 = no limit).",
+    optional: true,
+  },
 ];
 
 interface DraftParse {
-  patch: RunLimitsPatch | null;
-  errors: Partial<Record<RunLimitKey, string>>;
+  patch: (RunLimitsPatch & Record<string, number | null>) | null;
+  errors: Partial<Record<PanelLimitKey, string>>;
 }
 
 /** An empty field means "no limit"; anything else must be a positive integer. */
-export function parseRunLimitsDraft(draft: Record<RunLimitKey, string>): DraftParse {
-  const errors: Partial<Record<RunLimitKey, string>> = {};
-  const parsed = {} as Record<RunLimitKey, number | null>;
+export function parseRunLimitsDraft(draft: Record<PanelLimitKey, string>): DraftParse {
+  const errors: Partial<Record<PanelLimitKey, string>> = {};
+  const parsed = {} as Record<PanelLimitKey, number | null>;
   for (const { key, optional } of FIELDS) {
     const raw = draft[key].trim();
     const value = raw ? Number(raw) : null;
     if (raw && (value === null || !Number.isInteger(value) || value <= 0)) {
       errors[key] = "Enter a whole number greater than zero, or leave it empty";
+      continue;
+    }
+    // myrmidon(1.6.5 RUN-FAIRNESS): a share is a percentage — over 100 it
+    // limits nothing and only looks like it does.
+    if (key === FAIR_SHARE_KEY && value !== null && value > 100) {
+      errors[key] = "Enter a whole number from 1 to 100, or leave it empty";
       continue;
     }
     if (value === null && !optional) {
@@ -92,21 +124,30 @@ export function parseRunLimitsDraft(draft: Record<RunLimitKey, string>): DraftPa
       runMemoryEstimateMb: estimate,
       minFreeHostMemoryMb: parsed.minFreeHostMemoryMb,
       maxHostLoadPercentPerCore: parsed.maxHostLoadPercentPerCore,
+      // myrmidon(1.6.5 RUN-FAIRNESS): not yet a key of RunLimitsPatch — part 2
+      // adds it to the shared schema; the PATCH body already carries it.
+      [FAIR_SHARE_KEY]: parsed[FAIR_SHARE_KEY],
     },
     errors,
   };
 }
 
-function toDraft(limits: RunLimits): Record<RunLimitKey, string> {
-  return {
-    maxConcurrentRuns: limits.maxConcurrentRuns === null ? "" : String(limits.maxConcurrentRuns),
-    maxStartsPerMinute: limits.maxStartsPerMinute === null ? "" : String(limits.maxStartsPerMinute),
-    minFreeMemoryMb: limits.minFreeMemoryMb === null ? "" : String(limits.minFreeMemoryMb),
-    runMemoryEstimateMb: String(limits.runMemoryEstimateMb),
-    minFreeHostMemoryMb: limits.minFreeHostMemoryMb === null ? "" : String(limits.minFreeHostMemoryMb),
-    maxHostLoadPercentPerCore:
-      limits.maxHostLoadPercentPerCore === null ? "" : String(limits.maxHostLoadPercentPerCore),
-  };
+/** Read a limit from the view: a shared key from `limits`, the fair-share key with its default. */
+function readLimit(limits: RunLimits, key: PanelLimitKey): number | null {
+  if (key === FAIR_SHARE_KEY) {
+    const value = (limits as Record<string, unknown>)[FAIR_SHARE_KEY];
+    return typeof value === "number" && Number.isInteger(value) && value >= 1 && value <= 100 ? value : 15;
+  }
+  return limits[key];
+}
+
+function toDraft(limits: RunLimits): Record<PanelLimitKey, string> {
+  const draft = {} as Record<PanelLimitKey, string>;
+  for (const { key, optional } of FIELDS) {
+    const value = readLimit(limits, key);
+    draft[key] = value === null && optional ? "" : String(value);
+  }
+  return draft;
 }
 
 export function RuntimeLimitsSettingsPanelView({
@@ -120,14 +161,20 @@ export function RuntimeLimitsSettingsPanelView({
   pending: boolean;
   error: string | null;
 }) {
-  const [draft, setDraft] = useState<Record<RunLimitKey, string> | null>(null);
+  const [draft, setDraft] = useState<Record<PanelLimitKey, string> | null>(null);
   const current = draft ?? (view ? toDraft(view.limits) : null);
   const { patch, errors } = current
     ? parseRunLimitsDraft(current)
-    : { patch: null, errors: {} as Partial<Record<RunLimitKey, string>> };
+    : { patch: null, errors: {} as Partial<Record<PanelLimitKey, string>> };
   // myrmidon(1.6.5 RUN-ADMISSION rc.2): the live host reading next to the
   // ceiling field, so the operator sees what the number is measured against.
   const hostLoadLine = describeHostLoad(view?.hostLoad);
+  // myrmidon(1.6.5 RUN-FAIRNESS): the queue snapshot — admitted runs against
+  // the ceiling, the queue length, and the head of the queue.
+  const queueLine = describeQueueSnapshot(view?.queue);
+  // myrmidon(1.6.5 C0-ui): the memory snapshot — the host's available memory
+  // and the server container's cgroup usage, next to the queue line.
+  const memoryLine = describeMemorySnapshot(view?.memory);
 
   return (
     <section className="space-y-4" data-testid="myrmidon-runtime-limits">
@@ -165,7 +212,9 @@ export function RuntimeLimitsSettingsPanelView({
               />
               <div className="text-xs text-muted-foreground">
                 <span data-testid={`runtime-limit-source-${key}`}>
-                  {describeRunLimitSource(view.sources[key])}
+                  {/* myrmidon(1.6.5 RUN-FAIRNESS): an unknown key (the fair share before part 2
+                      lands) reports its source as the built-in default. */}
+                  {describeRunLimitSource(view.sources[key as RunLimitKey] ?? "default")}
                 </span>
                 {errors[key] ? (
                   <span data-testid={`runtime-limit-error-${key}`} className="ml-2 text-destructive">
@@ -181,6 +230,26 @@ export function RuntimeLimitsSettingsPanelView({
               <p className="text-xs text-muted-foreground">{hint}</p>
             </div>
           ))}
+          {/* myrmidon(1.6.5 RUN-FAIRNESS): the queue snapshot under the fields —
+              how full the ceiling is, how many wait, and the head of the queue. */}
+          {queueLine ? (
+            <p
+              data-testid="runtime-limit-queue"
+              className="text-xs text-muted-foreground md:col-span-2"
+            >
+              {queueLine}
+            </p>
+          ) : null}
+          {/* myrmidon(1.6.5 C0-ui): the memory snapshot — the host's memory and
+              the server container's cgroup usage, next to the queue line. */}
+          {memoryLine ? (
+            <p
+              data-testid="runtime-limit-memory"
+              className="text-xs text-muted-foreground md:col-span-2"
+            >
+              {memoryLine}
+            </p>
+          ) : null}
           <div className="md:col-span-2">
             <Button
               type="button"

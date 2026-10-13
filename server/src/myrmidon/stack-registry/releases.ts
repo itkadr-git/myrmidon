@@ -1,6 +1,8 @@
 // Stack registry (SUA, part B): the external release-source port and the pure
-// helpers of the release check. Everything here is anonymous public GitHub REST
-// (no tokens, no internal addresses) with a bounded timeout.
+// helpers of the release check. Public GitHub REST with a bounded timeout:
+// anonymous by default; an optional read-only token (MYRMIDON_STACK_GITHUB_TOKEN,
+// see settings.ts) rides as a Bearer header on every request when set. No
+// internal addresses either way.
 //
 // Error contract: a transport failure (no network, DNS, timeout) is thrown and
 // surfaces as a probe error the route turns into 503 with the previous cache
@@ -22,17 +24,20 @@ export interface StackHttpResponse {
 /** A JSON GET. Throws on transport failure; returns any HTTP status as data. */
 export type StackFetchJson = (url: string) => Promise<StackHttpResponse>;
 
-export function githubJsonPort(options: { timeoutMs?: number } = {}): StackFetchJson {
+export function githubJsonPort(options: { timeoutMs?: number; token?: string } = {}): StackFetchJson {
   const timeoutMs = options.timeoutMs ?? STACK_HTTP_TIMEOUT_MS;
+  const token = options.token?.trim() || null;
   return async (url) => {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
+      const headers: Record<string, string> = {
+        accept: "application/vnd.github+json",
+        "user-agent": "myrmidon-stack-registry",
+      };
+      if (token) headers.authorization = `Bearer ${token}`;
       const res = await fetch(url, {
-        headers: {
-          accept: "application/vnd.github+json",
-          "user-agent": "myrmidon-stack-registry",
-        },
+        headers,
         signal: controller.signal,
       });
       const text = await res.text();

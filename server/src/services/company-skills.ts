@@ -103,6 +103,8 @@ import {
   stringifyFrontmatter,
 } from "@paperclipai/shared";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
+// myrmidon(B1c): product name in user-facing skill texts; see product.ts.
+import { PRODUCT_NAME as PN } from "../myrmidon/product.js";
 import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import { ghFetch, gitHubApiBase, resolveRawGitHubUrl } from "./github-fetch.js";
 import { agentService } from "./agents.js";
@@ -2356,9 +2358,9 @@ function buildMissingRuntimeSourceDetail(skill: Pick<CompanySkill, "name" | "sou
   const marker = getMissingSourceMarker(skill.metadata);
   const sourcePath = asString(marker?.sourcePath) ?? normalizeSourceLocatorDirectory(skill.sourceLocator);
   if (sourcePath) {
-    return `Company skill "${skill.name}" is in the library, but Paperclip cannot find its local source at ${sourcePath}.`;
+    return `Company skill "${skill.name}" is in the library, but ${PN} cannot find its local source at ${sourcePath}.`;
   }
-  return `Company skill "${skill.name}" is in the library, but Paperclip cannot find a valid local runtime source for it.`;
+  return `Company skill "${skill.name}" is in the library, but ${PN} cannot find a valid local runtime source for it.`;
 }
 
 export async function findMissingLocalSkillIds(
@@ -2660,7 +2662,7 @@ function deriveSkillSourceInfo(skill: SkillSourceInfoTarget): {
   if (metadata.sourceKind === "paperclip_bundled") {
     return {
       editable: false,
-      editableReason: "Bundled Paperclip skills are read-only.",
+      editableReason: `Bundled ${PN} skills are read-only.`,
       sourceLabel: "Paperclip bundled",
       sourceBadge: "paperclip",
       sourcePath: null,
@@ -2937,7 +2939,7 @@ export function companySkillService(db: Db) {
     if (!allowed) {
       throw forbidden("Local skill source is outside approved company workspace roots", {
         code: "skill_workspace_boundary_denied",
-        remediation: "Import from a configured Paperclip workspace or the company managed-skill directory.",
+        remediation: `Import from a configured ${PN} workspace or the company managed-skill directory.`,
       });
     }
   }
@@ -5630,7 +5632,7 @@ export function companySkillService(db: Db) {
       iconUrl: storeMetadata.iconUrl ?? existingByKey?.iconUrl ?? null,
       color: storeMetadata.color ?? existingByKey?.color ?? null,
       tagline: storeMetadata.tagline ?? existingByKey?.tagline ?? catalogSkill.description.slice(0, 120),
-      authorName: storeMetadata.authorName ?? existingByKey?.authorName ?? "Paperclip",
+      authorName: storeMetadata.authorName ?? existingByKey?.authorName ?? `${PN}`,
       homepageUrl: storeMetadata.homepageUrl ?? existingByKey?.homepageUrl ?? catalogSkill.source?.url ?? null,
       categories: storeMetadata.categories.length > 0 ? storeMetadata.categories : normalizeCategoryList([catalogSkill.category, ...catalogSkill.tags]),
       sharingScope: existingByKey?.sharingScope ?? "company",

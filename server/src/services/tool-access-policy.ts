@@ -42,6 +42,8 @@ import type {
   ToolRiskLevel,
 } from "@paperclipai/shared";
 import { toolPolicyConditionsSchema } from "@paperclipai/shared";
+// myrmidon(B1c): product name in user-facing policy texts; see product.ts.
+import { PRODUCT_NAME as PN } from "../myrmidon/product.js";
 import { badRequest, conflict, notFound, unprocessable } from "../errors.js";
 import {
   effectiveToolProfileBindings,
@@ -517,7 +519,7 @@ function evaluatePolicyConditions(
       return conditionGroupFail("trustBoundary", "Policy condition requires a remote HTTP MCP tool.");
     }
     if (boolCondition(boundary.paperclipSelfOnly) === true && ctx.providerType !== "paperclip_self") {
-      return conditionGroupFail("trustBoundary", "Policy condition requires a Paperclip self tool.");
+      return conditionGroupFail("trustBoundary", `Policy condition requires a ${PN} self tool.`);
     }
     matchedGroups.push("trustBoundary");
   }

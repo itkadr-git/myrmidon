@@ -23,6 +23,7 @@
 //  - the container image builder and docker-compose network (G1).
 
 import type { Db } from "@paperclipai/db";
+import { laneInterval } from "../monitoring/board-load/lanes.js"; // myrmidon(1.6.6 PROCS-0.3A)
 import { maintenanceHeartbeatPort, maintenanceService } from "../maintenance/index.js";
 import { heartbeatService } from "../../services/index.js";
 import {
@@ -44,7 +45,10 @@ import {
   type MaintenanceWindowView,
   type ReconcileOutcome,
 } from "./reconciler.js";
+import { clearBotRolloutDeferred, recordBotRolloutDeferred, runDeferredRolloutWatcher } from "./deferred-reconciler.js";
 import type { CompiledProfile } from "./types.js";
+// myrmidon(PERF-DIET-G): the cache one sweep shares between the bots it reconciles.
+import type { BotProfilePass } from "./profile-pass.js";
 
 export const BOT_CONTAINER_ACTOR = { actorType: "system", actorId: "myrmidon-bot-containers" } as const;
 
@@ -116,14 +120,27 @@ export interface BotContainerAgent {
 export interface BotContainerRuntimeDeps {
   driver: BotContainerDriver;
   /** Builds the bot's compiled profile: createBotProfileCompile (profile-compile.ts), which
-   *  feeds G2's compileHermesProfile from the card. */
-  compile: (agentId: string, botKey: string) => Promise<CompiledProfile>;
+   *  feeds G2's compileHermesProfile from the card. myrmidon(PERF-DIET-G): `pass` is the
+   *  sweep's shared cache of the company- and instance-scoped reads; omit it for a single
+   *  compile (the card's "Apply now"), which then caches inside its own call only. */
+  compile: (agentId: string, botKey: string, pass?: BotProfilePass) => Promise<CompiledProfile>;
+  /** myrmidon(PERF-DIET-G): the pass pair of one sweep (createBotProfileCompile's
+   *  `beginPass`/`endPass`). Optional: without it the sweep compiles without a
+   *  shared cache, exactly as before. The sweep begins one pass per tick and ends
+   *  it after the last bot, so nothing survives into the next tick and a settings
+   *  or skill change still reaches the bots on the next sweep. */
+  beginProfilePass?: () => BotProfilePass;
+  endProfilePass?: (pass: BotProfilePass) => void;
   /** Optional. Runs after a reconcile pass that left the container in place with its
    *  profile applied (created / applied_* / unchanged), inside the same per-bot lock:
    *  createBotCardSync (card-sync.ts) sets the card's apiBaseUrl/apiKey to the
    *  container. A failure is recorded in the activity log; it does not change the
-   *  reconcile outcome, since the container itself is fine. */
-  syncCard?: (agentId: string, botKey: string) => Promise<{ changedKeys: string[] }>;
+   *  reconcile outcome, since the container itself is fine.
+   *  myrmidon(BOT-KEY-401): `appliedApiServerKeyVersion` is the API-server-key secret
+   *  version of the profile this pass applied (the compiled profile's
+   *  `apiServerKeyVersion`) — the card pins exactly it, so a secret rotation whose
+   *  container switch failed (or has not happened yet) never reaches the card. */
+  syncCard?: (agentId: string, botKey: string, appliedApiServerKeyVersion: number) => Promise<{ changedKeys: string[] }>;
   /** Optional. Called by every sweep with the ids of the agents the sweep reconciles: releases the board
    *  tool gateways made for any other agent (deleted, terminated, switched to another adapter or with the
    *  container turned off), which no reconcile pass reaches any more (board-gateway-ports.ts). */
@@ -142,6 +159,23 @@ export interface BotContainerRuntimeDeps {
   network: string;
   /** Defaults to the process-wide lock; tests pass their own. */
   lock?: BotKeyLock;
+  /** myrmidon(BOT-ROLLOUT): the database the deferred-rollout records live in
+   *  (deferred-store.ts). With it, a deferred pass records itself and a
+   *  converging pass removes the record, and the sweep runs the watcher that
+   *  retries the recorded bots; without it (tests that never defer) both are
+   *  skipped. */
+  db?: Db;
+  /** myrmidon(BOT-ROLLOUT): audit sink for the watcher's backstop retire
+   *  (wired at startup from logActivity); optional. */
+  rolloutAudit?: (entry: {
+    companyId: string;
+    action: string;
+    entityId: string;
+    agentId: string;
+    details: Record<string, unknown>;
+  }) => Promise<void>;
+  /** myrmidon(BOT-ROLLOUT): companyId lookup for that audit row. */
+  rolloutCompanyIdOf?: (agentId: string) => Promise<string | null>;
 }
 
 export type ApplyBotContainerOutcome = ReconcileOutcome | { kind: "not_applicable"; reason: string };
@@ -173,6 +207,13 @@ export interface ApplyBotContainerOptions {
    * sweep's recent verdict. The canary tick and the sweep use the default.
    */
   force?: boolean;
+  /**
+   * myrmidon(PERF-DIET-G): the shared cache of the sweep this pass belongs to.
+   * The card's "Apply now" and the canary tick omit it (one bot, nothing to
+   * share); the sweep hands its own to every pass of the tick, so the
+   * company-scoped reads behind the profiles are paid once per sweep.
+   */
+  pass?: BotProfilePass;
 }
 
 /**
@@ -212,19 +253,43 @@ export async function applyBotContainerNow(
     const current = await readAgentForPass(agent, botKey, deps);
     if (!current.ok) return current.outcome;
     const spec = botContainerSpec(botKey, opts.specImage ? { ...current.config, image: opts.specImage } : current.config, deps.network);
+    // myrmidon(BOT-KEY-401): the profile this pass compiled, captured beside the
+    // reconcile. The card sync below pins the card's apiKey secret_ref to the
+    // secret version THIS profile's .env carries — a version the container provably
+    // runs once the outcome is created/applied/unchanged, and never on a pass whose
+    // container switch failed (errored passes skip the sync entirely).
+    // Kept in a one-cell record: tsc narrows a bare `let` assigned only inside an
+    // async closure to its initial `null`, making any later optional-chain read
+    // `never`; a property read keeps the declared union.
+    const applied: { profile: CompiledProfile | null } = { profile: null };
     const outcome = await reconcileBot({
       agentId: agent.agentId,
       botKey,
       spec,
-      compile: () => deps.compile(agent.agentId, botKey),
+      compile: async (): Promise<CompiledProfile> => {
+        const compiled: CompiledProfile = await deps.compile(agent.agentId, botKey, opts.pass);
+        applied.profile = compiled;
+        return compiled;
+      },
       driver: deps.driver,
       maintenance: deps.maintenance,
       activity: deps.activity,
     });
     if (passCountsForFreshness(outcome)) lastPassStartedAtMs.set(botKey, passStartedAt);
     else lastPassStartedAtMs.delete(botKey);
-    if (deps.syncCard && leavesContainerApplied(outcome)) {
-      await syncCardAfterReconcile(agent.agentId, botKey, deps.syncCard, deps.activity);
+    // myrmidon(BOT-ROLLOUT): a deferred pass that had a real change to apply
+    // records itself so the watcher (same sweep) retries it until the bot
+    // frees up; a converging pass removes the record. See
+    // deferred-reconciler.ts; never throws.
+    await syncDeferredRolloutRecord(deps, {
+      agentId: agent.agentId,
+      botKey,
+      targetImage: spec.image,
+      outcome,
+    });
+    const appliedVersion = applied.profile?.apiServerKeyVersion;
+    if (deps.syncCard && leavesContainerApplied(outcome) && appliedVersion !== undefined) {
+      await syncCardAfterReconcile(agent.agentId, botKey, deps.syncCard, appliedVersion, deps.activity);
     }
     return outcome;
   });
@@ -281,15 +346,44 @@ function leavesContainerApplied(outcome: ReconcileOutcome): boolean {
   );
 }
 
+/**
+ * myrmidon(BOT-ROLLOUT): keeps the deferred-rollout record of one bot in
+ * step with the pass that just ran. `deferred` means the pass had a real
+ * change to apply (reconcileBot only defers a drift-class or restart-class
+ * change — an unchanged bot exits before the pause path) and the bot is
+ * busy: record it. A converged pass (anything applied or verifiably
+ * unchanged) removes the record — a card image changed back mid-deferral
+ * converges exactly this way. An errored pass keeps the record: the next
+ * sweep retries it. Never throws and needs `deps.db`.
+ */
+async function syncDeferredRolloutRecord(
+  deps: BotContainerRuntimeDeps,
+  pass: { agentId: string; botKey: string; targetImage: string; outcome: ReconcileOutcome },
+): Promise<void> {
+  if (!deps.db) return;
+  if (pass.outcome.kind === "deferred") {
+    await recordBotRolloutDeferred(deps.db, {
+      botKey: pass.botKey,
+      agentId: pass.agentId,
+      targetImage: pass.targetImage,
+      reason: pass.outcome.reason,
+    });
+    return;
+  }
+  if (pass.outcome.kind === "error") return;
+  await clearBotRolloutDeferred(deps.db, pass.botKey);
+}
+
 async function syncCardAfterReconcile(
   agentId: string,
   botKey: string,
   syncCard: NonNullable<BotContainerRuntimeDeps["syncCard"]>,
+  appliedApiServerKeyVersion: number,
   activity: BotContainerActivitySink | undefined,
 ): Promise<void> {
   // Never throws: neither a failing sync nor a failing activity sink may fail the pass.
   try {
-    const { changedKeys } = await syncCard(agentId, botKey);
+    const { changedKeys } = await syncCard(agentId, botKey, appliedApiServerKeyVersion);
     if (changedKeys.length > 0) {
       await activity?.record({
         level: "info",
@@ -445,19 +539,48 @@ export function startBotContainerReconciliation(
       }
       // Only after a successful listing: a failed one must not read as "no agents", which would release every gateway.
       await releaseStrayGatewaysOfSweep(agents, deps);
-      await runWithConcurrency(agents, RECONCILE_CONCURRENCY, async (agent) => {
-        if (stopped) return;
-        // reconcileBot (inside applyBotContainerNow) never throws; this catch only
-        // guards the config-reading path around it.
-        await applyBotContainerNow(agent, deps, { env: opts.env }).catch(() => undefined);
-      });
+      // myrmidon(PERF-DIET-G): one pass for the whole sweep. The company- and
+      // instance-scoped reads behind the profiles (the skill catalogue, the
+      // instance settings) were paid once per bot; inside one tick they are paid
+      // once per sweep. The pass ends here and is never reused, so each tick
+      // reads live values again — a settings or skill change reaches the bots
+      // within one interval, exactly as when every read was its own query.
+      const pass = deps.beginProfilePass?.();
+      try {
+        await runWithConcurrency(agents, RECONCILE_CONCURRENCY, async (agent) => {
+          if (stopped) return;
+          // reconcileBot (inside applyBotContainerNow) never throws; this catch only
+          // guards the config-reading path around it.
+          await applyBotContainerNow(agent, deps, { env: opts.env, ...(pass ? { pass } : {}) }).catch(() => undefined);
+        });
+      } finally {
+        if (pass) deps.endProfilePass?.(pass);
+      }
+      // myrmidon(BOT-ROLLOUT): retry the bots whose drifted change deferred on
+      // this or an earlier sweep, inside the same tick (no scheduler of its
+      // own). After the regular passes, so a sweep that just fixed a bot does
+      // not retry it. Never throws: a failing watcher must not fail the sweep.
+      if (deps.db && !stopped) {
+        await runDeferredRolloutWatcher(deps.db, {
+          maintenance: deps.maintenance,
+          activity: deps.activity,
+          applyNow: (agent, applyOpts) => applyBotContainerNow(agent, deps, { env: opts.env, force: applyOpts.force }),
+          readAgent: (agentId) =>
+            deps.readAgent
+              ? deps.readAgent(agentId)
+              : Promise.resolve(agents.find((a) => a.agentId === agentId) ?? null),
+          audit: deps.rolloutAudit,
+          companyIdOf: deps.rolloutCompanyIdOf,
+          env: opts.env,
+        }).catch(() => undefined);
+      }
     })().finally(() => {
       tickInFlight = null;
     });
     return tickInFlight;
   }
 
-  const timer = setInterval(() => void tick(), intervalMs);
+  const timer = laneInterval("bot_reconcile", intervalMs, () => tick());
   timer.unref?.();
   void tick();
 
@@ -503,9 +626,30 @@ export {
 } from "./concurrency-sync.js";
 export type { GatewayConcurrencyStatus } from "./concurrency-sync.js";
 export { dockerBotContainerDriver, readDockerDriverConfig } from "./docker-driver.js";
+// myrmidon(BOT-ROLLOUT): deferred-rollout records and the watcher (part C of
+// the busy-bot rollout fix).
+export {
+  BOT_ROLLOUT_DEFERRED_GENERAL_KEY,
+  readBotRolloutDeferredDocument,
+  type BotRolloutDeferredDocument,
+  type BotRolloutDeferredRecord,
+} from "./deferred-store.js";
+export {
+  BOT_ROLLOUT_DEFERRED_GRACE_FACTOR,
+  BOT_ROLLOUT_DEFERRED_MAX_WAIT_ENV,
+  DEFAULT_BOT_ROLLOUT_DEFERRED_MAX_WAIT_SEC,
+  readBotRolloutDeferredMaxWaitSec,
+  runDeferredRolloutWatcher,
+  type DeferredRolloutWatcherDeps,
+} from "./deferred-reconciler.js";
 export { botProfileWiring } from "./profile-ports.js";
 export { createActivityWarningSink, createBotProfileCompile } from "./profile-compile.js";
 export type { BotProfileAgentRecord, BotProfilePorts, BotProfileCompileOptions } from "./profile-compile.js";
+// myrmidon(PERF-DIET-G): the per-sweep cache of the company- and instance-scoped profile reads.
+export { beginBotProfilePass } from "./profile-pass.js";
+export type { BotProfilePass, BotProfilePassReader } from "./profile-pass.js";
+export { createBotProfileSkillLoader, readSkillFiles, versionSelectionSignature } from "./profile-skills.js";
+export type { BotProfileSkillReaders, BotProfileSkillsResult } from "./profile-skills.js";
 export { BOT_GATEWAY_PORT, createBotCardSync, gatewayApiBaseUrl, planGatewayCardSync } from "./card-sync.js";
 export type { BotCardSyncPorts, BotCardSyncResult, GatewayCardPlan } from "./card-sync.js";
 export { BOT_MCP_SERVERS_ENV, buildHermesProfileInput, readBotProfileSettings } from "./profile-input.js";

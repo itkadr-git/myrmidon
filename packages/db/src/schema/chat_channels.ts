@@ -557,6 +557,9 @@ export const chatPublications = pgTable(
       name: "chat_publications_company_comment_fk",
     }),
     index("chat_publications_work_idx").on(table.state, table.nextAttemptAt),
+    index("chat_publications_work_pending_retry_idx")
+      .on(table.state, table.nextAttemptAt)
+      .where(sql`${table.state} in ('pending', 'retry', 'streaming')`),
     uniqueIndex("chat_publications_idempotency_uq").on(
       table.companyId,
       table.idempotencyKey,
@@ -694,6 +697,9 @@ export const chatActions = pgTable(
       table.createdAt,
       table.id,
     ),
+    index("chat_actions_work_pending_retry_idx")
+      .on(table.status, table.createdAt, table.id)
+      .where(sql`${table.status} in ('received', 'processing')`),
     foreignKey({
       columns: [table.companyId, table.deliveryId],
       foreignColumns: [chatDeliveries.companyId, chatDeliveries.id],

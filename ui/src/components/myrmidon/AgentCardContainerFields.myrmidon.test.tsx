@@ -11,6 +11,7 @@ import {
   AgentCardContainerFieldsView,
   applyBlockedReason,
   concurrencyView,
+  imageRolloutText,
   imageTrackingText,
   type AgentCardContainerFieldsViewProps,
 } from "./AgentCardContainerFields";
@@ -637,5 +638,25 @@ describe("myrmidon(1.6.4-BOT-CONTAINER-CARD) legacy cards and rollout category",
     ).toBe("Bot image rollout: not applicable (container.enabled is not true).");
     renderView({ status: { ...STATUS, imageTracking: { category: "pinned", image: "img@sha256:bb", reason: "r" } } });
     expect(text("tracking")).toContain("pinned to img@sha256:bb");
+  });
+});
+
+describe("imageRolloutText (BOT-ROLLOUT)", () => {
+  it("names the release-image verdict of the card", () => {
+    expect(imageRolloutText(null)).toBeNull();
+    expect(imageRolloutText(STATUS)).toBeNull(); // older server: no imageRollout field
+    expect(
+      imageRolloutText({ ...STATUS, imageRollout: { onReleaseImage: true, targetImage: null, reason: null } }),
+    ).toBe("On the release image.");
+    expect(
+      imageRolloutText({
+        ...STATUS,
+        imageRollout: {
+          onReleaseImage: false,
+          targetImage: null,
+          reason: "agent busy (status running): переключится при освобождении",
+        },
+      }),
+    ).toContain("Not on the current release image: agent busy (status running)");
   });
 });

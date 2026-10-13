@@ -21,6 +21,7 @@ import * as serverUtils from "@paperclipai/adapter-utils/server-utils";
 import { execute } from "./execute.js";
 import {
   applyCardModelsToConfigYaml,
+  defaultEffortForModelName,
   materializeHermesRunModels,
   readHermesCardModels,
 } from "./myrmidon-profile-config.js";
@@ -158,6 +159,58 @@ describe("myrmidon(M1) card models to config.yaml", () => {
       expect.stringContaining("model.default"),
       expect.stringContaining("agent.reasoning_effort"),
     ]);
+  });
+});
+
+// myrmidon(BOT-TUNING-C): an empty card effort compiles to the model's safe
+// default instead of leaving Hermes at its global "medium".
+describe("myrmidon(BOT-TUNING-C) effort default from the card", () => {
+  it("resolves the GLM safe default for a bare and a provider-prefixed name", () => {
+    expect(defaultEffortForModelName("glm-5.3")).toBe("high");
+    expect(defaultEffortForModelName("dashscope/glm-5.3")).toBe("high");
+    expect(defaultEffortForModelName("model-a")).toBeUndefined();
+    expect(defaultEffortForModelName(undefined)).toBeUndefined();
+  });
+
+  it("an empty effort on a GLM card reads as the model default", () => {
+    expect(readHermesCardModels({ model: "glm-5.3" }).reasoningEffort).toBe("high");
+    expect(readHermesCardModels({ model: "glm-5.3", effort: "" }).reasoningEffort).toBe("high");
+    expect(readHermesCardModels({ model: "glm-5.3", effort: "Low" }).reasoningEffort).toBe("Low");
+    expect(readHermesCardModels({ model: "model-a" }).reasoningEffort).toBeUndefined();
+    expect(readHermesCardModels({}).reasoningEffort).toBeUndefined();
+  });
+
+  it("writes the GLM default into the run config and never medium", () => {
+    const result = applyCardModelsToConfigYaml("", readHermesCardModels({ model: "glm-5.3" }));
+    expect(result.configYaml).toContain('reasoning_effort: "high"');
+    expect(result.configYaml).not.toContain("medium");
+  });
+
+  it("passes a GLM-accepted effort Hermes does not know (max) through", () => {
+    const result = applyCardModelsToConfigYaml(
+      "",
+      readHermesCardModels({ model: "glm-5.3", effort: "max" }),
+    );
+    expect(result.configYaml).toContain('reasoning_effort: "max"');
+    expect(result.warnings).toEqual([]);
+  });
+
+  it("still keeps an unrecognized effort back for models on the global list", () => {
+    const result = applyCardModelsToConfigYaml(
+      "",
+      readHermesCardModels({ model: "model-a", effort: "turbo" }),
+    );
+    expect(result.configYaml).not.toContain("reasoning_effort");
+    expect(result.warnings).toEqual([expect.stringContaining("not an effort level")]);
+  });
+
+  it("keeps an effort the model rejects (GLM medium) back with a warning", () => {
+    const result = applyCardModelsToConfigYaml(
+      "",
+      readHermesCardModels({ model: "glm-5.3", effort: "medium" }),
+    );
+    expect(result.configYaml).not.toContain("reasoning_effort");
+    expect(result.warnings).toEqual([expect.stringContaining("low, high, max")]);
   });
 });
 

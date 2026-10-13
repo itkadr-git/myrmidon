@@ -5,7 +5,8 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { randomBytes, randomUUID } from "node:crypto";
-import { githubLauncherSource } from "./github-launcher.js";
+import { GITHUB_LAUNCHER_PROFILE_FILE_NAMES, githubLauncherProgramFiles } from "./github-launcher.js";
+import { GITHUB_CREDENTIAL_HELPER_PROGRAM } from "./github-credential-helper.js";
 import type { SshRemoteExecutionSpec } from "./ssh.js";
 import {
   prepareCommandManagedRuntime,
@@ -1716,11 +1717,24 @@ export async function prepareGitHubOperationLaunchers(input: {
   const managedPath = basePath ? `${directory}:${basePath}` : directory;
   // Login shells may reorder PATH through /etc/profile or path_helper. Restore
   // the managed launchers after startup without loading a host user's profile.
-  const profile = `export PATH=${shellQuote(managedPath)}\n`;
-  const files: Record<string, string> = Object.fromEntries([
-    ...["git", "gh"].map((name) => [name, githubLauncherSource()] as const),
-    ...[".zshenv", ".zprofile", ".zshrc", ".bash_profile", ".bashrc", ".profile"].map((name) => [name, profile] as const),
-  ]);
+  // Empty merge overrides clear host identity before launch, but Git treats
+  // them as an explicit empty author. Remove them once the shell has inherited
+  // its final environment; preserve nonempty per-operation identity values.
+  const clearEmptyGitIdentity = ["GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL"]
+    .map((key) => `if [ -z "\${${key}-}" ]; then unset ${key}; fi\n`)
+    .join("");
+  const profile = `export PATH=${shellQuote(managedPath)}\n${clearEmptyGitIdentity}`;
+  // myrmidon(GITHUB-SHARED-IDENTITY): the credential helper is staged next to
+  // git/gh and named in the launcher's Git config (useHttpPath), so a
+  // non-container run resolves its credential per repository through the
+  // broker — the same path the bot image wires in /etc/gitconfig. The program
+  // bodies come from githubLauncherProgramFiles() so this path and the
+  // request-content path a hermes gateway uses (githubLauncherPayload) cannot
+  // drift apart.
+  const files: Record<string, string> = {
+    ...githubLauncherProgramFiles(),
+    ...Object.fromEntries(GITHUB_LAUNCHER_PROFILE_FILE_NAMES.map((name) => [name, profile] as const)),
+  };
   if (remote) {
     const runner = adapterExecutionTargetCommandRunner(remote);
     for (const [program, body] of Object.entries(files)) {
@@ -1732,7 +1746,7 @@ export async function prepareGitHubOperationLaunchers(input: {
         timeoutMs: 15_000, shellCommand: adapterExecutionTargetShellCommand(remote),
       });
     }
-    const permissions = await runner.execute({ command: "sh", args: ["-c", `chmod 700 ${shellQuote(directory)}/git ${shellQuote(directory)}/gh && mkdir -p ${shellQuote(configDirectory)}`], cwd: remote.remoteCwd, timeoutMs: 15_000 });
+    const permissions = await runner.execute({ command: "sh", args: ["-c", `chmod 700 ${shellQuote(directory)}/git ${shellQuote(directory)}/gh ${shellQuote(directory)}/${GITHUB_CREDENTIAL_HELPER_PROGRAM} && mkdir -p ${shellQuote(configDirectory)}`], cwd: remote.remoteCwd, timeoutMs: 15_000 });
     if (permissions.exitCode !== 0) throw new Error("Could not prepare managed GitHub launchers");
   } else {
     await fs.mkdir(directory, { recursive: true, mode: 0o700 });

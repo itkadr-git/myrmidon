@@ -29,18 +29,27 @@
 #      `dockergate check-config` when a command is configured), then SIGHUP.
 #      The OLD bot images stay allowed until the last bot moved: a
 #      mid-rollout failure must not strand the un-moved bots.
-#   4. Enroll the fleet in `bots[]`: the board's agents list is the source of
+#   4. Enroll the fleet in `bots[]`: the board's agent cards are the source of
 #      truth. A bot missing from `bots[]` is exactly the `bot_not_enrolled`
 #      refusal Wiki Maintainer hit on 03.10. Limits come from the card
-#      (container.memoryMb/cpus/pidsLimit).
+#      (container.memoryMb/cpus/pidsLimit), read together with the rest of the
+#      card config from GET /companies/:id/agent-configurations (the company
+#      agents list carries no adapterConfig — PERF-DIET-G).
 #   5. Switch the bot cards to the release image, one bot at a time (canary
 #      first when --canary names one): PATCH the card's
 #      adapterConfig.container.image, then POST the card's "apply" so the
 #      board's own reconciler drains that agent alone and recreates the
-#      container. A bot with running work answers `deferred`: the rollout
-#      retries it (MYRMIDON_BOT_IMAGE_ROLLOUT_BOT_TIMEOUT_SEC per bot) and a
-#      run is never interrupted by this rollout. A deferred bot keeps its old
-#      card image until a later retry or the periodic sweep.
+#      container. A busy bot (agent status not paused/idle, or an apply that
+#      answers `deferred`) does NOT hold its batch: it moves to a tail list
+#      (deferred_tail) and the batch ends as soon as its other bots are done,
+#      so the next batch starts at once (the rc.3/rc.5 lesson: one busy bot
+#      made every batch wait MYRMIDON_BOT_IMAGE_ROLLOUT_BOT_TIMEOUT_SEC).
+#      After the last batch the tail pass retries the deferred bots until the
+#      same deadline, and past it the optional force stage
+#      (MYRMIDON_BOT_IMAGE_ROLLOUT_FORCE_DEFERRED_SEC, default = the timeout,
+#      0 disables) applies them without the status gate: the reconciler opens
+#      a maintenance window, drains the in-flight run to its end and switches
+#      right after it — a run is never interrupted.
 #   6. After every bot runs a release image, remove the superseded bot image
 #      refs from `images` (only refs of our three bot repositories, never a
 #      pinned one) and SIGHUP again. Deferred bots keep the old refs listed.
@@ -123,6 +132,14 @@ require_cmd docker curl jq
 # --- settings (see deploy.env.example) ---------------------------------------
 MYR_BOT_COMPONENTS="${MYRMIDON_BOT_IMAGE_ROLLOUT_COMPONENTS:-hermes,hermes-dev,hermes-node}"
 MYR_BOT_TIMEOUT_SEC="${MYRMIDON_BOT_IMAGE_ROLLOUT_BOT_TIMEOUT_SEC:-900}"
+# BOT-ROLLOUT-SKIP-BUSY (OPE-5098): how long after the tail-pass deadline the
+# still-deferred bots are applied WITHOUT the status gate (the reconciler
+# drains the in-flight run to its end; a run is never interrupted). Default =
+# the tail-pass timeout; 0 disables the force stage (the apply behaviour of
+# the pre-1.6.5 script).
+MYR_BOT_FORCE_DEFERRED_SEC="${MYRMIDON_BOT_IMAGE_ROLLOUT_FORCE_DEFERRED_SEC:-$MYR_BOT_TIMEOUT_SEC}"
+[[ "$MYR_BOT_FORCE_DEFERRED_SEC" =~ ^[0-9]+$ ]] \
+  || die "MYRMIDON_BOT_IMAGE_ROLLOUT_FORCE_DEFERRED_SEC must be a non-negative integer (got '$MYR_BOT_FORCE_DEFERRED_SEC')"
 MYR_BOT_DOCKERGATE_CONFIG="${MYRMIDON_BOT_IMAGE_ROLLOUT_DOCKERGATE_CONFIG:-}"
 MYR_BOT_DOCKERGATE_SIGNAL="${MYRMIDON_BOT_IMAGE_ROLLOUT_DOCKERGATE_SIGNAL_COMMAND:-}"
 MYR_BOT_FLEET_HOSTS="${MYRMIDON_BOT_IMAGE_ROLLOUT_FLEET_HOSTS:-}"
@@ -179,11 +196,22 @@ board_post_json() {
     "$BOARD_API_URL$path" 2>/dev/null || return 1
 }
 
+# The company's agent configurations: the card config (adapterConfig, the
+# container block included) of every agent of the company.
+# myrmidon(PERF-DIET-G): the company agents list (GET /companies/:id/agents)
+# no longer carries adapterConfig, so every container read below asks for the
+# configurations endpoint instead. It answers the same rows with the same
+# access rules; the agent list keeps only the narrow projection (id,
+# adapterType, status, adapterModel).
+board_configs() {
+  board_get "/companies/$BOARD_COMPANY_ID/agent-configurations"
+}
+
 # The company's hermes_gateway agents with enabled container blocks, shaped as
 # "id|memoryMb|cpus|pidsLimit" per line. Card limits are the enrollment limits.
 list_bots() {
   local body
-  body="$(board_get "/companies/$BOARD_COMPANY_ID/agents")" || return 1
+  body="$(board_configs)" || return 1
   jq -r '[.[]? | select(.adapterType == "hermes_gateway")
       | select((.adapterConfig.container // {}) | (.enabled == true))
       | [.id,
@@ -195,14 +223,14 @@ list_bots() {
 # The image a bot card pins right now ("" when the card names none).
 card_image() {
   local id="$1" body
-  body="$(board_get "/companies/$BOARD_COMPANY_ID/agents")" || return 1
+  body="$(board_configs)" || return 1
   jq -r --arg id "$id" 'first(.[]? | select(.id == $id) | .adapterConfig.container.image // "")' <<<"$body" 2>/dev/null
 }
 
 # The whole container block of a card as compact JSON ("{}" when none).
 card_container() {
   local id="$1" body
-  body="$(board_get "/companies/$BOARD_COMPANY_ID/agents")" || return 1
+  body="$(board_configs)" || return 1
   jq -c --arg id "$id" 'first(.[]? | select(.id == $id) | .adapterConfig.container // {})' <<<"$body" 2>/dev/null
 }
 
@@ -211,7 +239,7 @@ card_container() {
 # Mirrors classifyBotImageTracking (server/src/myrmidon/bot-containers/agent-config.ts).
 bot_categories() {
   local body
-  body="$(board_get "/companies/$BOARD_COMPANY_ID/agents")" || return 1
+  body="$(board_configs)" || return 1
   jq -r '.[]? | select(.adapterType == "hermes_gateway")
       | select((.adapterConfig.container | type) == "object")
       | .adapterConfig.container as $c
@@ -289,6 +317,13 @@ is_release_ref() {
 }
 
 # --- 2. pull the images everywhere the bots run ------------------------------
+# DEPLOY-HYGIENE (OPE-5107): refuse BEFORE the first pull when the filesystem
+# of /var/lib/docker cannot hold the bot images (in a dry run the check is
+# reported with the current value instead). Standalone runs only: when
+# deploy.sh drives the rollout, deploy.sh already checked the same disk.
+if [[ "$phase" != "cards" && -z "${MYRMIDON_DEPLOY_DISK_PRECHECK_DONE:-}" ]]; then
+  deploy_disk_precheck bot-image-rollout
+fi
 mapfile -t FLEET_HOSTS_LIST < <(fleet_hosts)
 for name in $(tr ',' ' ' <<<"$MYR_BOT_COMPONENTS"); do
   ref="${BOT_IMAGE_BY_NAME[$name]:-}"
@@ -447,6 +482,7 @@ if [[ "$DRY_RUN" == "1" ]]; then
   bot_log "  4. enroll every hermes_gateway bot of company $BOARD_COMPANY_ID in bots of the dockergate config"
   bot_log "  5. switch every bot card to the release image, one at a time${canary:+ (canary $canary first)}, through PATCH + apply; deferred bots retry up to ${MYR_BOT_TIMEOUT_SEC}s; no run is interrupted"
   bot_log "  6. remove the superseded bot images from images; SIGHUP"
+  bot_log "  6b. DEPLOY-HYGIENE: remove the local bot/component images older than MYRMIDON_DEPLOY_IMAGE_KEEP=${MYRMIDON_DEPLOY_IMAGE_KEEP:-1} previous release(s) (images used by a container are kept)"
   bot_log "  7. journal: $MYR_BOT_ROLLOUT_LOG"
   categories="$(bot_categories || true)"
   if [[ -n "$categories" ]]; then
@@ -547,21 +583,28 @@ card_status() {
 }
 
 # Returns 0 switched, 2 deferred (retry), 1 failed.
+# $2 == "force" drops the paused/idle status gate: the apply below goes to the
+# reconciler as-is, and its pause-and-apply path opens the maintenance window
+# and drains the in-flight run to its end (a run is never interrupted). The
+# gate is dropped only by the force stage of the tail pass.
 switch_one_bot() {
-  local id="$1" current target body out kind status
+  local id="$1" force="${2:-}" current target body out kind status
   current="$(card_image "$id" || true)"
   [[ -n "$current" ]] || current="(none)"
   target="$(release_image_for "$current")"
   # Only while the agent is paused or idle: no run is ever interrupted by the
   # rollout (an unknown status is treated as busy: fail-closed).
-  status="$(card_status "$id" || true)"
-  case "$status" in
-    idle | paused) ;;
-    *)
-      bot_log "bot $id deferred (agent status '${status:-unknown}': switched only while paused or idle)"
-      return 2
-      ;;
-  esac
+  if [[ "$force" != "force" ]]; then
+    status="$(card_status "$id" || true)"
+    case "$status" in
+      idle | paused) ;;
+      *)
+        bot_log "bot $id deferred (agent status '${status:-unknown}': switched only while paused or idle)"
+        DEFERRED_REASON="agent status '${status:-unknown}': switched only while paused or idle"
+        return 2
+        ;;
+    esac
+  fi
   if is_release_ref "$current"; then
     # The card already names the release image (a previous rollout switched
     # it or the apply stayed deferred): only re-apply, never re-PATCH.
@@ -602,6 +645,7 @@ switch_one_bot() {
       local reason
       reason="$(jq -r '.outcome.reason // "reason unknown"' <<<"$out" 2>/dev/null || true)"
       bot_log "bot $id deferred ($reason)"
+      DEFERRED_REASON="$reason"
       return 2
       ;;
     *)
@@ -653,51 +697,134 @@ bot_log "cards: $total tracking the release, $pinned pinned (left alone, listed 
 failed=0
 switched=0
 stayed_deferred=0
+deferred_tail=()
+declare -A deferred_reasons=()
 batch_no=0
 for ((start = 0; start < total; start += MYR_BOT_BATCH)); do
   batch_no=$((batch_no + 1))
   batch=("${TRACKING_BOTS[@]:start:MYR_BOT_BATCH}")
   bot_log "batch $batch_no/$batches: ${#batch[@]} bot(s)"
-  pending=("${batch[@]}")
-  deadline=$((SECONDS + MYR_BOT_TIMEOUT_SEC))
-  b_switched=0 b_failed=0
+  b_switched=0 b_failed=0 b_deferred=0
+  for id in "${batch[@]}"; do
+    rc=0
+    DEFERRED_REASON=""
+    switch_one_bot "$id" || rc=$?
+    case "$rc" in
+      0) b_switched=$((b_switched + 1)) ;;
+      2)
+        deferred_tail+=("$id")
+        deferred_reasons["$id"]="${DEFERRED_REASON:-deferred}"
+        b_deferred=$((b_deferred + 1))
+        ;;
+      *) b_failed=$((b_failed + 1)); bot_log "FAILED: bot $id did not switch" ;;
+    esac
+  done
+  switched=$((switched + b_switched))
+  failed=$((failed + b_failed))
+  bot_log "batch $batch_no/$batches done: $b_switched switched, $b_failed failed, $b_deferred deferred (progress $switched/$total)"
+  journal "batch $batch_no/$batches: $b_switched switched, $b_failed failed, $b_deferred deferred"
+done
+
+# --- tail pass: retry the deferred bots until the deadline -------------------
+tail_start=$SECONDS
+tail_deadline=$((tail_start + MYR_BOT_TIMEOUT_SEC))
+if ((${#deferred_tail[@]} > 0)); then
+  bot_log "tail pass: ${#deferred_tail[@]} deferred bot(s), deadline ${MYR_BOT_TIMEOUT_SEC}s"
+  pending=("${deferred_tail[@]}")
   while ((${#pending[@]} > 0)); do
     retry=()
     for id in "${pending[@]}"; do
       rc=0
+      DEFERRED_REASON=""
       switch_one_bot "$id" || rc=$?
       case "$rc" in
-        0) b_switched=$((b_switched + 1)) ;;
-        2) retry+=("$id") ;;
-        *) b_failed=$((b_failed + 1)); bot_log "FAILED: bot $id did not switch" ;;
+        0) switched=$((switched + 1)) ;;
+        2)
+          retry+=("$id")
+          deferred_reasons["$id"]="${DEFERRED_REASON:-deferred}"
+          ;;
+        *) failed=$((failed + 1)); bot_log "FAILED: bot $id did not switch" ;;
       esac
     done
     pending=("${retry[@]}")
     ((${#pending[@]} > 0)) || break
-    if ((SECONDS >= deadline)); then
-      for id in "${pending[@]}"; do
-        bot_log "bot $id stayed busy/deferred for ${MYR_BOT_TIMEOUT_SEC}s; its card keeps the OLD image and the periodic sweep applies it later"
-        journal "agent $id still deferred after ${MYR_BOT_TIMEOUT_SEC}s (card unchanged)"
-      done
-      stayed_deferred=$((stayed_deferred + ${#pending[@]}))
+    if ((SECONDS >= tail_deadline)); then
       break
     fi
     sleep "$POLL_INTERVAL_SEC"
   done
-  switched=$((switched + b_switched))
-  failed=$((failed + b_failed))
-  bot_log "batch $batch_no/$batches done: $b_switched switched, $b_failed failed, ${#pending[@]} deferred (progress $switched/$total)"
-  journal "batch $batch_no/$batches: $b_switched switched, $b_failed failed, ${#pending[@]} deferred"
-done
+  deferred_tail=("${pending[@]}")
+  if ((${#deferred_tail[@]} > 0)); then
+    bot_log "tail pass done: ${#deferred_tail[@]} bot(s) still deferred"
+  else
+    bot_log "tail pass done: all deferred bots switched"
+  fi
+fi
+
+# --- force stage: apply still-deferred bots without the status gate ----------
+if ((${#deferred_tail[@]} > 0)) && ((MYR_BOT_FORCE_DEFERRED_SEC > 0)); then
+  force_deadline=$((SECONDS + MYR_BOT_FORCE_DEFERRED_SEC))
+  bot_log "force stage: ${#deferred_tail[@]} deferred bot(s), applying without status gate for ${MYR_BOT_FORCE_DEFERRED_SEC}s"
+  pending=("${deferred_tail[@]}")
+  while ((${#pending[@]} > 0)); do
+    retry=()
+    for id in "${pending[@]}"; do
+      rc=0
+      DEFERRED_REASON=""
+      switch_one_bot "$id" force || rc=$?
+      case "$rc" in
+        0) switched=$((switched + 1)) ;;
+        2)
+          retry+=("$id")
+          deferred_reasons["$id"]="${DEFERRED_REASON:-deferred}"
+          ;;
+        *) failed=$((failed + 1)); bot_log "FAILED: bot $id did not switch" ;;
+      esac
+    done
+    pending=("${retry[@]}")
+    ((${#pending[@]} > 0)) || break
+    if ((SECONDS >= force_deadline)); then
+      break
+    fi
+    sleep "$POLL_INTERVAL_SEC"
+  done
+  deferred_tail=("${pending[@]}")
+  if ((${#deferred_tail[@]} > 0)); then
+    bot_log "force stage done: ${#deferred_tail[@]} bot(s) still deferred"
+  else
+    bot_log "force stage done: all deferred bots switched"
+  fi
+fi
+
+stayed_deferred=${#deferred_tail[@]}
+if ((${#deferred_tail[@]} > 0)); then
+  bot_log "final: ${#deferred_tail[@]} bot(s) not on the release image:"
+  for id in "${deferred_tail[@]}"; do
+    bot_log "  $id: ${deferred_reasons[$id]:-unknown reason}"
+  done
+fi
 
 mkdir -p "$(dirname "$MYR_BOT_SUMMARY")" 2>/dev/null || true
 pinned_json="$(printf '%s\n' "${PINNED_LIST[@]}" | jq -Rn '[inputs | select(length > 0) | split("|") | {id: .[0], image: (.[1:] | join("|"))}]')"
 na_json="$(printf '%s\n' "${NA_LIST[@]}" | jq -Rn '[inputs | select(length > 0) | split("|") | {id: .[0], reason: (.[1:] | join("|"))}]')"
+deferred_bots_json="[]"
+if ((${#deferred_tail[@]} > 0)); then
+  deferred_bots_json="["
+  first=1
+  for id in "${deferred_tail[@]}"; do
+    reason="${deferred_reasons[$id]:-unknown reason}"
+    if ((first)); then first=0; else deferred_bots_json+=","; fi
+    deferred_bots_json+="$(jq -cn --arg id "$id" --arg reason "$reason" '{id: $id, reason: $reason}')"
+  done
+  deferred_bots_json+="]"
+fi
 jq -cn --arg release "$resolution $res_ref" --argjson tracking "$total" --argjson switched "$switched" \
   --argjson deferred "$stayed_deferred" --argjson failed "$failed" --argjson pinned "$pinned" --argjson batches "$batches" \
   --argjson notApplicable "$not_applicable" --argjson pinnedBots "$pinned_json" --argjson notApplicableBots "$na_json" \
+  --argjson deferredBots "$deferred_bots_json" \
   '{release: $release, tracking: $tracking, switched: $switched, deferred: $deferred, failed: $failed, pinned: $pinned,
-    notApplicable: $notApplicable, pinnedBots: $pinnedBots, notApplicableBots: $notApplicableBots, batches: $batches}' \
+    notApplicable: $notApplicable, pinnedBots: $pinnedBots, notApplicableBots: $notApplicableBots, batches: $batches,
+    deferredBots: $deferredBots}' \
   >"$MYR_BOT_SUMMARY" 2>/dev/null || true
 
 if ((failed > 0)); then
@@ -735,4 +862,16 @@ fi
 
 bot_log "bot image rollout complete: $switched bot(s) on the release images, journal $MYR_BOT_ROLLOUT_LOG"
 journal "rollout complete: $switched bot(s) on the release images ($resolution $res_ref)"
+
+# DEPLOY-HYGIENE (OPE-5107): the bots moved to the release images — free the
+# disk of the superseded ones (older than MYRMIDON_DEPLOY_IMAGE_KEEP previous
+# releases; an image used by any container is never removed). Standalone runs
+# only: when deploy.sh drives the rollout, deploy.sh runs the same cleanup
+# once after its post-deploy steps. A failure here never fails the rollout.
+if [[ -z "${MYRMIDON_DEPLOY_DISK_PRECHECK_DONE:-}" ]]; then
+  if deploy_image_retention; then :; else
+    bot_log "WARNING: the old image cleanup failed; the rollout itself is complete (remove old images by hand: docker image ls)"
+  fi
+fi
+
 exit 0

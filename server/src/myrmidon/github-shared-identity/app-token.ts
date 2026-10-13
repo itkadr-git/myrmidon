@@ -7,23 +7,79 @@
 //   2. the installation id: the configured one, or
 //      `GET /repos/{owner}/{repo}/installation` (cached per App + repository);
 //   3. `POST /app/installations/{id}/access_tokens` with
-//      `repositories: [<repo>]` and the fixed minimal permission set below —
-//      the token can touch exactly one repository and nothing beyond code
-//      and pull requests, whatever the App registration allows.
+//      `repositories: [<repo>]` and exactly the permission list stored on the
+//      App entry (plus metadata read, which GitHub grants to every
+//      installation token anyway) — the token can touch exactly one
+//      repository and only the keys the entry allows, whatever the App
+//      registration allows beyond that.
 //
-// Tokens are cached in memory per (App, installation, repository) until five
-// minutes before expiry. Neither the private key, the JWT nor the token ever
-// reach a log line, an error message or persisted state: GitHub error bodies
-// are reduced to the HTTP status.
+// The default list is the historical fixed set (contents + pull requests
+// write), so an unchanged installation keeps minting exactly the tokens it
+// minted before. The token cache is keyed by the permission set: editing an
+// entry's permissions re-mints instead of reusing a narrower/wider token.
+//
+// Tokens are cached in memory per (App, installation, repository,
+// permissions) until five minutes before expiry. Neither the private key,
+// the JWT nor the token ever reach a log line, an error message or persisted
+// state: GitHub error bodies are reduced to the HTTP status.
 
 import { createPrivateKey, createSign } from "node:crypto";
 
-/** The only permissions an issued token carries. */
-export const GITHUB_APP_TOKEN_PERMISSIONS = Object.freeze({
+/** One repository-permission key of the installation-token API. */
+export const GITHUB_APP_TOKEN_PERMISSION_KEYS = [
+  "actions",
+  "checks",
+  "contents",
+  "deployments",
+  "environments",
+  "issues",
+  "pull_requests",
+  "workflows",
+] as const;
+
+export type GitHubAppPermissionKey = (typeof GITHUB_APP_TOKEN_PERMISSION_KEYS)[number];
+
+/**
+ * The levels a key may be stored at: `none` omits it from the token
+ * request. GitHub's access-token body accepts only `read`/`write` per key;
+ * `workflows` is `write`-only. Keys deliberately absent from the list
+ * (secrets, administration, organization permissions) cannot be requested at
+ * all — a stored document cannot widen beyond this allow-list.
+ */
+export function githubAppPermissionLevelsFor(key: GitHubAppPermissionKey): readonly ("read" | "write")[] {
+  return key === "workflows" ? (["write"] as const) : (["read", "write"] as const);
+}
+
+export type GitHubAppPermissionLevel = "none" | "read" | "write";
+/** The editable permission list of one App entry; every allow-listed key explicit. */
+export type GitHubAppPermissions = Record<GitHubAppPermissionKey, GitHubAppPermissionLevel>;
+
+/** The historical fixed set, minus the always-injected metadata read. */
+export const DEFAULT_GITHUB_APP_PERMISSIONS = Object.freeze({
+  actions: "none",
+  checks: "none",
   contents: "write",
+  deployments: "none",
+  environments: "none",
+  issues: "none",
   pull_requests: "write",
-  metadata: "read",
-} as const);
+  workflows: "none",
+} satisfies GitHubAppPermissions);
+
+/** The permissions of an entry as the token request must carry them. */
+export function githubAppTokenPermissionsFor(
+  entry?: Partial<GitHubAppPermissions>,
+): Record<string, "read" | "write"> {
+  const source = { ...DEFAULT_GITHUB_APP_PERMISSIONS, ...(entry ?? {}) };
+  const requested: Record<string, "read" | "write"> = { metadata: "read" };
+  for (const key of GITHUB_APP_TOKEN_PERMISSION_KEYS) {
+    const level = source[key];
+    if (level === "none") continue;
+    if (!githubAppPermissionLevelsFor(key).includes(level)) continue;
+    requested[key] = level;
+  }
+  return requested;
+}
 
 const GITHUB_API = "https://api.github.com";
 const TOKEN_REUSE_MARGIN_MS = 5 * 60_000;
@@ -105,6 +161,8 @@ export async function mintGitHubAppInstallationToken(input: {
   installationId: string | null;
   /** Normalized `owner/repo`. */
   repository: string;
+  /** The entry's permission list; omitted = the historical fixed set. */
+  permissions?: Partial<GitHubAppPermissions>;
   fetchImpl?: typeof fetch;
   now?: () => number;
 }): Promise<{ token: string; expiresAt: string; installationId: string; reused: boolean }> {
@@ -113,8 +171,10 @@ export async function mintGitHubAppInstallationToken(input: {
   const [owner, repo] = input.repository.split("/") as [string, string];
   const repoKey = input.repository.toLowerCase();
   const installationKey = `${input.appId}:${repoKey}`;
+  const requestedPermissions = githubAppTokenPermissionsFor(input.permissions);
+  const permissionsKey = GITHUB_APP_TOKEN_PERMISSION_KEYS.map((key) => `${key}=${requestedPermissions[key] ?? "none"}`).join(",");
   let installationId = input.installationId ?? installationCache.get(installationKey) ?? null;
-  const cacheKey = (id: string) => `${input.appId}:${id}:${repoKey}`;
+  const cacheKey = (id: string) => `${input.appId}:${id}:${repoKey}:${permissionsKey}`;
   if (installationId) {
     const cached = tokenCache.get(cacheKey(installationId));
     if (cached && cached.expiresAt - TOKEN_REUSE_MARGIN_MS > now()) {
@@ -138,7 +198,7 @@ export async function mintGitHubAppInstallationToken(input: {
     "POST",
     `/app/installations/${encodeURIComponent(installationId)}/access_tokens`,
     jwt,
-    { repositories: [repo], permissions: GITHUB_APP_TOKEN_PERMISSIONS },
+    { repositories: [repo], permissions: requestedPermissions },
   );
   const token = typeof issued.token === "string" ? issued.token : "";
   const expiresAtMs = typeof issued.expires_at === "string" ? Date.parse(issued.expires_at) : Number.NaN;

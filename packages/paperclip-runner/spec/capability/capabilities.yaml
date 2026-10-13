@@ -14,11 +14,11 @@
   ],
   "rows": [
     {
-      "id": "skill:skills/paperclip/SKILL.md:paperclip-skill:10",
+      "id": "skill:skills/paperclip/SKILL.md:myrmidon-skill:10",
       "sourceKind": "skill_heading",
       "sourceAnchor": "skills/paperclip/SKILL.md:10",
-      "title": "Paperclip Skill",
-      "expectedSemantics": "Skill guidance headed “Paperclip Skill”.",
+      "title": "Myrmidon Skill",
+      "expectedSemantics": "Skill guidance headed “Myrmidon Skill”.",
       "primaryDisposition": "optional_agent_tool",
       "requiredGrants": [],
       "assertionClasses": [

@@ -49,6 +49,9 @@ function fakeStore(seed: {
   const events: SkillLifecycleEvent[] = [];
   const currentVersionCalls: Array<{ skillId: string; versionId: string | null }> = [];
   const activities: Array<Record<string, unknown>> = [];
+  // myrmidon(PERF-DIET-G): how often the company-wide reads behind a delivery
+  // ran, so a test can show they are shared by a pass.
+  const catalogueReads = { listSkills: 0, listRecords: 0 };
   let sequence = 0;
 
   const store: SkillLifecycleStore = {
@@ -58,6 +61,7 @@ function fakeStore(seed: {
       return companyId === COMPANY ? { ...skill } : null;
     },
     async listSkills(companyId) {
+      catalogueReads.listSkills += 1;
       return companyId === COMPANY ? [...skills.values()].map((skill) => ({ ...skill })) : [];
     },
     async getRecord(companyId, skillId) {
@@ -65,6 +69,7 @@ function fakeStore(seed: {
       return companyId === COMPANY && record ? { ...record } : null;
     },
     async listRecords(companyId) {
+      catalogueReads.listRecords += 1;
       return companyId === COMPANY ? [...records.values()].map((record) => ({ ...record })) : [];
     },
     async saveRecord(record) {
@@ -101,7 +106,7 @@ function fakeStore(seed: {
     },
   };
 
-  return { store, records, events, currentVersionCalls, activities, skills };
+  return { store, records, events, currentVersionCalls, activities, skills, catalogueReads };
 }
 
 function serviceWith(store: SkillLifecycleStore, env: NodeJS.ProcessEnv = {}) {
@@ -261,6 +266,59 @@ describe("myrmidon(1.6-SKILL-LIFE): delivery by state", () => {
       const delivery = await service.resolveDelivery(COMPANY, agentId);
       expect(delivery.blockedKeys.has("example-skill")).toBe(true);
     }
+  });
+
+  it("myrmidon(PERF-DIET-G): shares the company-wide reads between the agents of one pass", async () => {
+    const harness = fakeStore({
+      skills: [{ ...SKILL_REF }],
+      versions: { [V1]: version(V1, 1, "candidate content") },
+      records: [
+        {
+          skillId: SKILL,
+          companyId: COMPANY,
+          state: "candidate",
+          verifiedVersionId: V1,
+          previousVerifiedVersionId: null,
+          approvedBy: null,
+          approvedAt: null,
+          reason: null,
+          updatedAt: "2026-10-01T00:00:00.000Z",
+        },
+      ],
+    });
+    const service = serviceWith(harness.store, { [SKILL_PILOT_AGENTS_ENV]: AGENT_PILOT });
+    // The shape of bot-containers/profile-pass.ts `BotProfilePass` — one read per
+    // key per pass. Declared here rather than imported: the lifecycle module does
+    // not depend on the bot containers.
+    const read = new Map<string, Promise<unknown>>();
+    const pass = {
+      once: <T>(key: string, source: () => Promise<T>): Promise<T> => {
+        const cached = read.get(key);
+        if (cached) return cached as Promise<T>;
+        const started = source();
+        read.set(key, started);
+        return started;
+      },
+    };
+
+    const outside = await service.resolveDelivery(COMPANY, AGENT_OTHER, pass);
+    const pilot = await service.resolveDelivery(COMPANY, AGENT_PILOT, pass);
+
+    // Both company-wide reads are paid once for both agents...
+    expect(harness.catalogueReads.listSkills).toBe(1);
+    expect(harness.catalogueReads.listRecords).toBe(1);
+    // ...while the decision stays per agent: a candidate still reaches the pilot
+    // set and nobody else.
+    expect(outside.blockedKeys.has("example-skill")).toBe(true);
+    expect(outside.reasons.get("example-skill")).toContain("candidate");
+    expect(pilot.blockedKeys.size).toBe(0);
+    expect(pilot.pinnedVersions.get("example-skill")).toBe(V1);
+
+    // Without a pass each call reads the company's skills again — what a bot
+    // compiled on its own ("Apply now") does.
+    await service.resolveDelivery(COMPANY, AGENT_OTHER);
+    expect(harness.catalogueReads.listSkills).toBe(2);
+    expect(harness.catalogueReads.listRecords).toBe(2);
   });
 
   it("treats a blank pilot setting as an empty set", () => {

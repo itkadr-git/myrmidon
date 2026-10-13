@@ -23,7 +23,10 @@
 // stop the whole board.
 
 import type { Db } from "@paperclipai/db";
+import { agents } from "@paperclipai/db";
+import { eq } from "drizzle-orm";
 import { logger } from "../../middleware/logger.js";
+import { logActivity } from "../../services/activity-log.js";
 import { listBotContainerAgents } from "./agents-query.js";
 import { isBotContainersEnabled } from "./agent-config.js";
 import type { BotContainerDriver } from "./driver.js";
@@ -38,7 +41,7 @@ import {
 import { botProfileWiring } from "./profile-ports.js";
 import type { BotContainerActivitySink, BotMaintenancePort } from "./reconciler.js";
 import { botContainerAgentReader, getBotContainerRuntime, setBotContainerRuntime } from "./routes-wiring.js";
-import { readBotCacheLayoutForBot } from "./bot-disk-service.js"; // myrmidon(1.6.1-BOT-DISK-B, 1.6.2-BOT-DISK-C)
+import { readBotCacheLayoutForBot, readSharedBotRuntimePath, startCloneReportCollection } from "./bot-disk-service.js"; // myrmidon(1.6.1-BOT-DISK-B, 1.6.2-BOT-DISK-C, 1.6.5-BOT-DISK-H11, 1.6.5-DOCKERGATE-A2A3-STORM)
 import { scopeMigrator } from "./scope-migration.js"; // myrmidon(BOT-DISK-F)
 import { readAppliedScopeLayout } from "./scope-wiring.js"; // myrmidon(BOT-DISK-F)
 
@@ -84,7 +87,10 @@ export interface BotContainersStartupPorts {
   profileWiring(
     db: Db,
     opts: { activity: BotContainerActivitySink; env: NodeJS.ProcessEnv },
-  ): Pick<BotContainerRuntimeDeps, "compile" | "syncCard" | "releaseStrayGateways">;
+  ): Pick<
+    BotContainerRuntimeDeps,
+    "compile" | "beginProfilePass" | "endProfilePass" | "syncCard" | "releaseStrayGateways"
+  >;
   maintenancePort(db: Db): BotMaintenancePort;
   listAgents(db: Db): () => Promise<BotContainerAgent[]>;
   /** One agent's card at the moment of a pass (index.ts `readAgent`): the sweep
@@ -95,6 +101,13 @@ export interface BotContainersStartupPorts {
   registerRuntime(runtime: BotContainerRuntimeDeps | null): void;
   currentRuntime(): BotContainerRuntimeDeps | null;
   startReconciliation: typeof startBotContainerReconciliation;
+  /**
+   * myrmidon(1.6.5-DOCKERGATE-A2A3-STORM): the clone-hygiene collector's own
+   * timer (bot-disk-service.startCloneReportCollection). Optional: a test that
+   * fakes the ports without it starts no collector; the real startup wires the
+   * real one. Its stop is folded into the stop of this run.
+   */
+  startCloneReportCollection?: typeof startCloneReportCollection;
   log: BotContainersLog;
 }
 
@@ -109,6 +122,10 @@ const defaultPorts: BotContainersStartupPorts = {
       // myrmidon(1.6.2-BOT-DISK-C): only bots of the configured roles get cache mounts.
       readSharedPackageCachePath: async (botKey) => (await readBotCacheLayoutForBot(db, botKey)).path,
       readGitMirrorEnabled: async (botKey) => (await readBotCacheLayoutForBot(db, botKey)).gitMirror,
+      // myrmidon(1.6.5-BOT-DISK-H11): the shared bot runtime is the same for
+      // every bot of the instance, so it is not role-gated; the driver adds the
+      // three read-only binds only when the operator has set the path.
+      readSharedBotRuntimePath: async () => readSharedBotRuntimePath(db),
     }),
   profileWiring: (db, opts) => botProfileWiring(db, opts),
   maintenancePort: (db) => realBotMaintenancePort(db),
@@ -118,6 +135,7 @@ const defaultPorts: BotContainersStartupPorts = {
   registerRuntime: setBotContainerRuntime,
   currentRuntime: getBotContainerRuntime,
   startReconciliation: startBotContainerReconciliation,
+  startCloneReportCollection,
   log: logger,
 };
 
@@ -144,12 +162,17 @@ export function startBotContainers(
   const { runtime, stopSweep } = started;
   ports.registerRuntime(runtime);
   ports.log.info({ intervalMs, network: runtime.network }, "bot container reconciliation started");
+  // myrmidon(1.6.5-DOCKERGATE-A2A3-STORM): the collector needs a registered
+  // runtime (it reads the reports through its driver), so it starts after the
+  // registration and stops with this run.
+  const stopCollector = ports.startCloneReportCollection?.(db, { env }) ?? null;
 
   let stopped = false;
   const stop = () => {
     if (stopped) return;
     stopped = true;
     stopSweep();
+    stopCollector?.();
     // Only clear the registry entry this run put there.
     if (ports.currentRuntime() === runtime) ports.registerRuntime(null);
     if (stopRunning === stop) stopRunning = null;
@@ -168,16 +191,42 @@ function build(
   try {
     const driverConfig = ports.readDriverConfig(env);
     const activity = ports.activitySink();
-    const { compile, syncCard, releaseStrayGateways } = ports.profileWiring(db, { activity, env });
+    const { compile, beginProfilePass, endProfilePass, syncCard, releaseStrayGateways } = ports.profileWiring(db, { activity, env });
     const runtime: BotContainerRuntimeDeps = {
       driver: ports.createDriver(driverConfig, db),
       compile,
+      // myrmidon(PERF-DIET-G): the sweep shares one pass between the bots it
+      // reconciles (index.ts); the wiring supplies the pair beside compile.
+      ...(beginProfilePass ? { beginProfilePass } : {}),
+      ...(endProfilePass ? { endProfilePass } : {}),
       syncCard,
       ...(releaseStrayGateways ? { releaseStrayGateways } : {}),
       maintenance: ports.maintenancePort(db),
       activity,
       readAgent: ports.readAgent(db),
       network: driverConfig.network,
+      // myrmidon(BOT-ROLLOUT): deferred-rollout records (deferred-store.ts)
+      // and the watcher's backstop audit.
+      db,
+      rolloutAudit: (entry) =>
+        logActivity(db, {
+          companyId: entry.companyId,
+          actorType: "system",
+          actorId: "myrmidon-bot-containers",
+          agentId: entry.agentId,
+          action: entry.action,
+          entityType: "myrmidon_bot_rollout",
+          entityId: entry.entityId,
+          details: entry.details,
+        }).then(() => undefined),
+      rolloutCompanyIdOf: async (agentId) => {
+        const row = await db
+          .select({ companyId: agents.companyId })
+          .from(agents)
+          .where(eq(agents.id, agentId))
+          .then((rows) => rows[0] ?? null);
+        return row?.companyId ?? null;
+      },
     };
     const stopSweep = ports.startReconciliation(ports.listAgents(db), runtime, { intervalMs, env });
     return { runtime, stopSweep };

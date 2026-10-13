@@ -115,10 +115,7 @@ describe("git wrapper: which clones get a reference", () => {
       ["fetch", "https://github.com/owner/repo"],
       ["clone", "https://github.com/owner/unmirrored", "d"], // no mirror
       ["clone", "https://gitlab.com/owner/repo", "d"],
-      ["clone", "--reference", "/x", "https://github.com/owner/repo"],
       ["clone", "--dissociate", "https://github.com/owner/repo"],
-      ["clone", "--depth", "1", "https://github.com/owner/repo"],
-      ["clone", "--depth=1", "https://github.com/owner/repo"],
       ["clone", "--filter=blob:none", "https://github.com/owner/repo"],
       ["clone", "--mirror", "https://github.com/owner/repo"],
       ["clone", "--shared", "https://github.com/owner/repo"],
@@ -131,6 +128,50 @@ describe("git wrapper: which clones get a reference", () => {
       lib.rewriteArgs(["clone", "-o", "https://github.com/owner/repo", "https://gitlab.com/o/r"], root),
       ["clone", "-o", "https://github.com/owner/repo", "https://gitlab.com/o/r"],
     );
+  });
+
+  // myrmidon(1.6.5 BOT-DISK-G-A): naming a reference or bounding the history is
+  // not a decision about OUR storage. Task clones in the field carry exactly
+  // `--reference-if-able <stale> --depth 50`; while those counted as opt-outs
+  // the store stayed empty on every bot and each clone copied a full history.
+  it("still adds the store's reference to a clone that names a reference or bounds its history", () => {
+    const root = mirrors();
+    const mirror = path.join(root, "owner", "repo.git");
+    for (const argv of [
+      ["clone", "--reference", "/x", "https://github.com/owner/repo"],
+      ["clone", "--reference-if-able", "/workspace/myrmidon", "--depth", "50", "https://github.com/owner/repo"],
+      ["clone", "--depth", "1", "https://github.com/owner/repo", "dest"],
+      ["clone", "--depth=1", "https://github.com/owner/repo"],
+      ["clone", "--shallow-since", "2026-01-01", "https://github.com/owner/repo"],
+      ["clone", "--no-local", "https://github.com/owner/repo"],
+    ]) {
+      const out = lib.rewriteArgs(argv, root);
+      assert.equal(out[1], "--reference-if-able", JSON.stringify(argv));
+      assert.equal(out[2], mirror, JSON.stringify(argv));
+      assert.deepEqual(out.slice(3), argv.slice(1), `the caller's own argv survives: ${JSON.stringify(argv)}`);
+    }
+    // A clone that does decide the storage of its own objects stays untouched.
+    for (const argv of [
+      ["clone", "--dissociate", "--depth", "1", "https://github.com/owner/repo"],
+      ["clone", "--shared", "https://github.com/owner/repo"],
+      ["clone", "-s", "https://github.com/owner/repo"],
+      ["clone", "--local", "/src", "dest"],
+      ["clone", "--mirror", "https://github.com/owner/repo"],
+      ["clone", "--filter", "blob:none", "https://github.com/owner/repo"],
+    ]) {
+      assert.deepEqual(lib.rewriteArgs(argv, root), argv, JSON.stringify(argv));
+    }
+    // The scanner names exactly the same opt-outs.
+    for (const [argv, detail] of [
+      [["clone", "--dissociate", "https://github.com/owner/repo"], "--dissociate"],
+      [["clone", "--shared", "https://github.com/owner/repo"], "--shared"],
+      [["clone", "--mirror", "https://github.com/owner/repo"], "--mirror"],
+      [["clone", "--filter=blob:none", "https://github.com/owner/repo"], "--filter=blob:none"],
+      [["clone", "--filter", "blob:none", "https://github.com/owner/repo"], "--filter"],
+    ]) {
+      assert.equal(lib.scanClone(argv).optOut, detail, JSON.stringify(argv));
+    }
+    assert.equal(lib.scanClone(["clone", "--reference-if-able", "/x", "--depth", "50", "https://github.com/owner/repo"]).optOut, null);
   });
 
   it("never builds a mirror path from an unsafe name", () => {
@@ -156,7 +197,11 @@ describe("git wrapper: which clones get a reference", () => {
     assert.deepEqual(lib.scanCloneArgs(argv), { cloneAt: 0, url: "https://github.com/owner/repo" });
     assert.deepEqual(lib.scanCloneArgs(["-C", "/x", "clone", "-b", "main", "git@github.com:owner/repo.git"]), { cloneAt: 2, url: "git@github.com:owner/repo.git" });
     assert.deepEqual(lib.scanCloneArgs(["clone", "--", "https://github.com/owner/repo"]), { cloneAt: 0, url: "https://github.com/owner/repo" });
-    for (const other of [["status"], ["clone", "--depth", "1", "https://github.com/owner/repo"], ["clone", "--reference", "/x", "https://github.com/o/r"], ["clone"], ["-c", "a=b", "fetch"]]) {
+    // A named reference or a bounded history is still a clone the store takes
+    // (BOT-DISK-G-A): only the options that decide our storage opt out.
+    assert.deepEqual(lib.scanCloneArgs(["clone", "--depth", "1", "https://github.com/owner/repo"]), { cloneAt: 0, url: "https://github.com/owner/repo" });
+    assert.deepEqual(lib.scanCloneArgs(["clone", "--reference-if-able", "/workspace/myrmidon", "--depth", "50", "https://github.com/owner/repo"]), { cloneAt: 0, url: "https://github.com/owner/repo" });
+    for (const other of [["status"], ["clone", "--dissociate", "https://github.com/owner/repo"], ["clone", "--shared", "https://github.com/owner/repo"], ["clone", "--mirror", "https://github.com/owner/repo"], ["clone"], ["-c", "a=b", "fetch"]]) {
       assert.equal(lib.scanCloneArgs(other), null, JSON.stringify(other));
     }
   });
@@ -241,6 +286,7 @@ describe("git wrapper: bot-local mirror end to end", { skip: !hasGit }, () => {
       env: {
         PATH: process.env.PATH,
         HOME: tmp,
+        HERMES_HOME: path.join(tmp, "hermes-home"), // where a bypass trail would be written
         GIT_CONFIG_NOSYSTEM: "1",
         MYRMIDON_GIT_REAL: realGit(),
         MYRMIDON_GIT_MIRROR_ROOT: mirrorRoot,
@@ -305,6 +351,70 @@ describe("git wrapper: bot-local mirror end to end", { skip: !hasGit }, () => {
     const r = runWrapper("", path.join(tmp, "no-board2"), "-c", instead, "clone", "-q", "https://github.com/owner2/repo", dest);
     assert.equal(r.status, 0, r.stderr);
     assert.ok(!fs.existsSync(path.join(dest, ".git", "objects", "info", "alternates")), "no store: a plain full clone");
+  });
+
+  // myrmidon(1.6.5 BOT-DISK-G-A): the argv task clones carry in the field —
+  // a stale reference plus a bounded history — used to opt the clone out of the
+  // store, which is why the store stayed empty on every bot of the fleet.
+  it("takes the field's task-clone argv (--reference-if-able + --depth) through the store", () => {
+    const origin = makeOrigin("field-origin");
+    const store = path.join(tmp, "field-store");
+    const noBoard = path.join(tmp, "field-no-board");
+    // The stale /workspace/<old> a task clone points at: the same repository.
+    const stale = path.join(tmp, "field-stale.git");
+    git(tmp, "clone", "-q", "--bare", origin, stale);
+    const dest = path.join(tmp, "field-clone");
+    const r = runWrapper(store, noBoard, "-c", `url.file://${origin}.insteadOf=https://github.com/owner/repo`,
+      "clone", "-q", "--reference-if-able", stale, "--depth", "50", "https://github.com/owner/repo", dest);
+    assert.equal(r.status, 0, r.stderr);
+    const mirror = path.join(store, "owner", "repo.git");
+    assert.ok(fs.existsSync(path.join(mirror, "objects")), "the field argv fills the store");
+    // The clone borrows the store's objects — next to the caller's own stale
+    // reference, which git keeps as a second alternate.
+    const alternates = fs.readFileSync(path.join(dest, ".git", "objects", "info", "alternates"), "utf8").trim().split("\n");
+    assert.ok(alternates.includes(fs.realpathSync(path.join(mirror, "objects"))), `the store is an alternate: ${alternates.join(" ")}`);
+    assert.ok(alternates.includes(fs.realpathSync(path.join(stale, "objects"))), "the caller's own reference survives");
+    assert.equal(fs.readFileSync(path.join(dest, "a.txt"), "utf8"), "a\n");
+  });
+
+  // The bypass is not silent any more: it leaves a trail the clone-hygiene
+  // reporter reads, and a clone the store takes leaves none.
+  it("records a bypass in the reporter's trail file, and stays quiet when the store takes the clone", () => {
+    const home = path.join(tmp, "hermes-home");
+    fs.rmSync(home, { recursive: true, force: true });
+    const trail = path.join(home, ".myrmidon", "git-objects-last-error.json");
+    const read = () => JSON.parse(fs.readFileSync(trail, "utf8"));
+    const store = path.join(tmp, "trail-store");
+    const noBoard = path.join(tmp, "trail-no-board");
+    const origin = makeOrigin("trail-origin");
+
+    // A clone the store takes leaves no trail at all.
+    const taken = runWrapper(store, noBoard, "-c", `url.file://${origin}.insteadOf=https://github.com/owner/repo`, "clone", "-q", "https://github.com/owner/repo", path.join(tmp, "trail-taken"));
+    assert.equal(taken.status, 0, taken.stderr);
+    assert.ok(!fs.existsSync(trail), "a clone through the store writes no bypass trail");
+
+    // A clone with its own storage decision: recorded, and said out loud.
+    const optOut = runWrapper(store, noBoard, "-c", `url.file://${origin}.insteadOf=https://github.com/owner/repo`, "clone", "-q", "--dissociate", "https://github.com/owner/repo", path.join(tmp, "trail-c1"));
+    assert.match(optOut.stderr, /\[myrmidon-git\] shared object store bypassed: the clone carries a storage option of its own \(--dissociate\)/);
+    assert.equal(read().kind, "bypass");
+    assert.equal(read().reason, "opt-out");
+    assert.equal(read().detail, "--dissociate");
+    assert.ok(read().argv.includes("clone"), `the trail records the argv: ${read().argv.join(" ")}`);
+
+    // A remote that is not GitHub at all.
+    const other = runWrapper(store, noBoard, "-c", `url.file://${origin}.insteadOf=https://gitlab.com/owner/repo`, "clone", "-q", "https://gitlab.com/owner/repo", path.join(tmp, "trail-c2"));
+    assert.equal(other.status, 0, other.stderr);
+    assert.equal(read().reason, "url");
+    assert.equal(read().url, "https://gitlab.com/owner/repo");
+    // Counters accumulate instead of being overwritten.
+    assert.equal(read().totals["bypass:opt-out"], 1);
+    assert.equal(read().totals["bypass:url"], 1);
+
+    // A deliberately switched-off store is recorded too, but stays quiet.
+    const off = runWrapper("", noBoard, "-c", `url.file://${origin}.insteadOf=https://github.com/owner/repo`, "clone", "-q", "https://github.com/owner/repo", path.join(tmp, "trail-c3"));
+    assert.equal(off.status, 0, off.stderr);
+    assert.equal(read().reason, "store-off");
+    assert.doesNotMatch(off.stderr, /bypassed/, "the documented disable is not an error");
   });
 });
 
@@ -563,5 +673,60 @@ describe("bot-clone-hygiene", { skip: !hasGit || !hasPython }, () => {
     // No file: the report carries null and nothing breaks.
     const r2 = report([volume], { MYRMIDON_GIT_OBJECTS_CHECK_FILE: path.join(base, "absent.json") });
     assert.equal(JSON.parse(fs.readFileSync(r2.reportPath, "utf8")).gitRefCheck, null);
+  });
+
+  // myrmidon(1.6.5 BOT-DISK-G live check, OPE-5281 ч.B): the store's FACTS ride
+  // the report as `gitStore`, so the live acceptance ("the store is not empty")
+  // can be read over the API instead of exec-ing into the bot.
+  it("carries the git-object store's facts in the report", () => {
+    const base = path.join(tmp, "gitstore");
+    const volume = path.join(base, "workspace");
+    const store = path.join(base, "git-objects");
+    for (const dir of [
+      path.join(store, "itkadr-git", "myrmidon.git", "objects"),
+      path.join(store, "itkadr-git", "half.git", "objects"),
+    ]) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+    fs.writeFileSync(path.join(store, "itkadr-git", "myrmidon.git", "objects", "pack-a.pack"), "pack");
+    fs.writeFileSync(path.join(store, "itkadr-git", "myrmidon.git", "HEAD"), "ref: refs/heads/main\n");
+    const home = path.join(base, "hermes");
+
+    const written = JSON.parse(fs.readFileSync(report([volume], { MYRMIDON_GIT_LOCAL_MIRROR: store, HERMES_HOME: home }).reportPath, "utf8"));
+    assert.equal(written.gitStore.enabled, true);
+    assert.equal(written.gitStore.path, store);
+    assert.deepEqual(written.gitStore.repos, ["itkadr-git/myrmidon"], "only a mirror with objects/ and HEAD is listed");
+    assert.equal(written.gitStore.mirrorCount, 1);
+    assert.ok(written.gitStore.totalBytes > 0, `the store size is reported, got ${written.gitStore.totalBytes}`);
+
+    // A store without a mirror is reported as empty: the gap the acceptance looks for.
+    const empty = path.join(base, "no-store-yet");
+    fs.mkdirSync(empty);
+    const second = JSON.parse(fs.readFileSync(report([volume], { MYRMIDON_GIT_LOCAL_MIRROR: empty, HERMES_HOME: home }).reportPath, "utf8")).gitStore;
+    assert.equal(second.enabled, true);
+    assert.equal(second.mirrorCount, 0);
+    assert.deepEqual(second.repos, []);
+
+    // The documented disable.
+    const off = JSON.parse(fs.readFileSync(report([volume], { MYRMIDON_GIT_LOCAL_MIRROR: "", HERMES_HOME: home }).reportPath, "utf8")).gitStore;
+    assert.equal(off.enabled, false);
+    assert.equal(off.path, "");
+    assert.equal(off.mirrorCount, 0);
+  });
+
+  it("reads the store the profile wrote into .env when the environment carries none", () => {
+    const base = path.join(tmp, "gitstore-envfile");
+    const volume = path.join(base, "workspace");
+    fs.mkdirSync(volume, { recursive: true });
+    const store = path.join(base, "git-objects-from-env");
+    fs.mkdirSync(path.join(store, "itkadr-git", "myrmidon.git", "objects"), { recursive: true });
+    fs.writeFileSync(path.join(store, "itkadr-git", "myrmidon.git", "HEAD"), "ref: refs/heads/main\n");
+    const home = path.join(base, "hermes");
+    fs.mkdirSync(home, { recursive: true });
+    fs.writeFileSync(path.join(home, ".env"), `MYRMIDON_GIT_LOCAL_MIRROR="${store}"\n`);
+
+    const written = JSON.parse(fs.readFileSync(report([volume], { HERMES_HOME: home }).reportPath, "utf8"));
+    assert.equal(written.gitStore.path, store);
+    assert.deepEqual(written.gitStore.repos, ["itkadr-git/myrmidon"]);
   });
 });

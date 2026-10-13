@@ -108,13 +108,19 @@ a plain clone.
 
 At every start the entrypoint runs a self-check of the whole chain: the
 `/usr/local/bin/git` shadow answers, the wrapper runs, the store is writable,
-and a real offline clone with `--reference-if-able` borrows objects. The
-result is written to `<HERMES_HOME>/.myrmidon/git-objects-check.json` and
-rides the clone-hygiene report as `gitRefCheck` (checks `usr-local-shadow`,
-`wrapper-runs`, `store-writable`, `reference-clone`). A failed check raises an
-attention card (source `bot_disk_lifecycle`, kind `gitref`) that names the
-check and the store path; the card goes away when the bot restarts and the
-self-check passes. `MYRMIDON_GIT_OBJECTS_CHECK=0` skips the self-check.
+and a real offline clone with `--reference-if-able` borrows objects. Two further
+steps watch the store itself: `store-fills` runs the command line a task clone
+uses (a bounded clone that also names a stale `--reference-if-able`) through the
+wrapper and requires a mirror in the store plus an alternates entry, and
+`store-in-use` fails when GitHub task clones exist below `/workspace` or
+`/scratch` and the store holds no mirror — the state that a silent bypass
+leaves behind. The result is written to
+`<HERMES_HOME>/.myrmidon/git-objects-check.json` and rides the clone-hygiene
+report as `gitRefCheck` (checks `usr-local-shadow`, `wrapper-runs`,
+`store-writable`, `reference-clone`, `store-fills`, `store-in-use`). A failed
+check raises an attention card (source `bot_disk_lifecycle`, kind `gitref`) that
+names the check and the store path; the card goes away when the bot restarts and
+the self-check passes. `MYRMIDON_GIT_OBJECTS_CHECK=0` skips the self-check.
 
 A clone that borrows from the store names a path of this container in its
 `objects/info/alternates`, which does not exist on the build host — `devbuild`
@@ -161,10 +167,17 @@ scp-like GitHub forms, which `/etc/gitconfig` already rewrites to https) it adds
 the container, so the clone's `objects/info/alternates` points at the mirror and
 the clone stores only what the mirror lacks: the bot's own commits and whatever
 arrived upstream since the last refresh. Nothing else changes: other
-subcommands, other hosts, repositories without a mirror, and clones that already
-choose their storage (`--reference`, `--dissociate`, `--shared`, `--local`,
-`--mirror`, `--depth`, `--filter`) run the real git with the same arguments,
-environment, streams and exit status. The credential helper
+subcommands, other hosts, repositories without a mirror, and clones that pick the
+storage of their own objects (`--dissociate`, `--shared`, `--local`, `--mirror`,
+`--filter`) run the real git with the same arguments, environment, streams and
+exit status. A bounded clone (`--depth`, `--shallow-since`, `--shallow-exclude`),
+a clone that names `--reference`/`--reference-if-able`/`--no-local` and a
+non-GitHub clone do run through the store: the wrapper adds its mirror as one
+more alternate and the clone still gets the history it asked for. A clone the
+store does not serve is not silent: the wrapper prints one `[myrmidon-git]` line
+on stderr and writes `<HERMES_HOME>/.myrmidon/git-objects-last-error.json`
+(kind, reason, detail, the command line, one counter per kind). The clone itself
+still runs and still exits with the status of the real git. The credential helper
 (`git-credential-paperclip`, installed in `/etc/gitconfig`) belongs to the real
 git and is unaffected: a clone from the mirror still fetches the missing objects
 through it. A bot that wants a self-contained clone runs `git repack -a -d` in
@@ -197,6 +210,10 @@ made by the image, not mounts:
 | `/workspace` (the working directory) | link to `/data/workspace`, which links to `/bot/workspace` |
 | `/scratch` | link to `/data/scratch`, which links to `/bot/scratch` |
 
+The driver picks the layout from the image's `myrmidon.bot-runtime.contract`
+label before any create/recreate/drift body is built, and an image without a
+supported contract is refused before anything is created.
+
 The host layout is unchanged (`<root>/<key>/{hermes,workspace,scratch}`), so
 nothing on disk moves. The read-only and shared cache mounts stay separate binds
 (`/cache/pnpm`, `/cache/go-mod`, `/cache/go-build`, `/cache/gradle`, `/cache/git`).
@@ -207,6 +224,39 @@ only write files and never need a hard link. dockergate accepts the bot body
 with the single `<root>/<key>:/bot` bind and the helper body with the three
 narrow ones; `/bot` and `/data` are reserved container paths a card mount cannot
 take.
+
+**Traversal of `/bot` itself.** The whole tree lives behind the bot's root, so the
+root must at least let the bot's uid `10001` enter it: a host directory left by an
+external operation as `root:65532 0710` (or any mode without the traversal bit) hides
+everything under `/bot` from the bot, and the entrypoint then fails on an unreadable
+`.env` without naming the real cause. At every apply the prepare helper also carries
+the bot's root bind (`<root>/<key>:/bot`, its fourth bind — the gate accepts exactly
+these four) and normalizes the root's mode to `0711` with one non-recursive `chmod`:
+enterable, not browsable (no `r`), the owner stays `root`, and the content is never
+listed, written or chowned. The fix is idempotent — an external `0710`/`0700` stops
+being fatal at the next apply. If a bot still starts on a root it cannot enter (it
+was never applied after the external change), the entrypoint fails in one line
+naming the traversal problem and the fix (recreate the bot) instead of the
+misleading `API_SERVER_KEY is required`. A member of a shared scope needs no such
+line: its tree root is the instance directory, which the prepare script already
+chowns to uid `10001` and chmods `0700`.
+
+**Which layout a bot gets is decided by its image, not by the template alone.**
+The bot runtime image declares its contract in the label
+`myrmidon.bot-runtime.contract` (BOT-LAYOUT-V, 1.6.5). Contract `2` is the
+single mount above. Contract `1` — the release images from before the layout
+change, such as 1.6.4 — keeps the three separate binds `/data/hermes`,
+`/workspace` and `/scratch` (the same three host directories, mounted directly),
+because such an image resolves `HERMES_HOME` through the real mount and
+crash-loops under the single mount. The transition images built between the
+layout change and this versioning carry contract `1` **and** the scope label
+`myrmidon.bot-runtime.scope="1"`, and get the single mount. The template-drift
+check compares a container against the create body built for **its own image's**
+contract, so a bot on an old image neither reports a phantom `Binds` drift nor
+gets recreated under a layout its image cannot boot. For a legacy-layout
+container the board reads the profile marker and the clone-hygiene report
+through `/data/hermes` instead of `/bot/hermes`. An image whose label declares
+no supported contract is refused before anything is created.
 
 ### Hard-linked node_modules
 
@@ -259,8 +309,14 @@ although the install succeeds.
 
 ### Migrating running bots to the single mount
 
-Nothing on the host moves, so a bot only needs a new container. Per bot, with the
-board running the reconcile pass (or by hand):
+Nothing on the host moves, so a bot only needs a new container. Since
+BOT-LAYOUT-V (1.6.5) the layout follows the image's contract label instead of
+the board template alone: a bot pinned to a contract `1` image is deliberately
+created and recreated with the legacy three-bind layout, and only a bot on a
+contract `2` (or transition-scope) image gets the single mount — so rolling out
+the new board no longer recreates old-image bots under the wrong layout.
+A bot moves to the single mount when its card is moved to a contract `2` image.
+For that bot, with the board running the reconcile pass (or by hand):
 
 1. **Pause** the bot's agent in the board (no new runs; wait for open turns).
 2. Roll out the new bot image and board (the container template changes: the

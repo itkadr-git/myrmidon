@@ -85,6 +85,10 @@ export function serializedServerMatcher(root = ROOT) {
     const block = source.slice(start, source.indexOf("]);", start));
     for (const m of block.matchAll(/"([^"]+\.test\.ts)"/g)) listed.add(m[1]);
   }
+  // Same pattern as routeTestPattern in scripts/run-vitest-stable.mjs: it
+  // applies to the whole server/src tree, not just src/__tests__, so
+  // suites like server/src/myrmidon/*/routes.myrmidon.test.ts (OPE-4472)
+  // are treated as serialized here too. Keep the two in sync.
   const pattern = /[^/]*(?:route|routes|authz)[^/]*\.test\.ts$/;
   return (file) => pattern.test(file) || listed.has(file);
 }

@@ -131,6 +131,18 @@ export const issues = pgTable(
       )
       .where(sql`${table.hiddenAt} is null and ${table.status} not in ('done', 'cancelled')`),
     companyPriorityIdx: index("issues_company_priority_idx").on(table.companyId, table.priority),
+    // myrmidon(DB-AUDIT-INDEXES): the issue claim lockup selects
+    // company + (id or execution_run_id or checkout_run_id) FOR UPDATE. Only
+    // partial unique indexes covered the run columns, so the statement ran a
+    // Seq Scan and locked neighbouring rows. See the db audit, P6.
+    companyExecutionRunIdx: index("issues_company_execution_run_idx").on(
+      table.companyId,
+      table.executionRunId,
+    ),
+    companyCheckoutRunIdx: index("issues_company_checkout_run_idx").on(
+      table.companyId,
+      table.checkoutRunId,
+    ),
     identifierIdx: uniqueIndex("issues_identifier_idx").on(table.identifier),
     titleSearchIdx: index("issues_title_search_idx").using("gin", table.title.op("gin_trgm_ops")),
     identifierSearchIdx: index("issues_identifier_search_idx").using("gin", table.identifier.op("gin_trgm_ops")),

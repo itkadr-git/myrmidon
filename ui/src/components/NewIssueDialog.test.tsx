@@ -60,6 +60,8 @@ const mockProjectsApi = vi.hoisted(() => ({
 
 const mockAgentsApi = vi.hoisted(() => ({
   list: vi.fn(),
+  // myrmidon(PERF-DIET-G): the dialog reads the assignee's config on demand
+  getConfiguration: vi.fn(),
   adapterModels: vi.fn(),
 }));
 
@@ -536,16 +538,21 @@ describe("NewIssueDialog", () => {
         name: "CodexCoder",
         status: "active",
         adapterType: "codex_local",
-        adapterConfig: {
-          env: {
-            AGENT_TOKEN: { type: "user_secret_ref", key: "agent_token", required: true },
-            OPTIONAL_TOKEN: { type: "user_secret_ref", key: "optional_token", required: false },
-          },
-        },
         runtimeConfig: {},
         permissions: {},
       },
     ]);
+    // myrmidon(PERF-DIET-G): the env bindings the warning reads come from the
+    // configuration read, not from the slim list row.
+    mockAgentsApi.getConfiguration.mockResolvedValue({
+      id: "agent-1",
+      adapterConfig: {
+        env: {
+          AGENT_TOKEN: { type: "user_secret_ref", key: "agent_token", required: true },
+          OPTIONAL_TOKEN: { type: "user_secret_ref", key: "optional_token", required: false },
+        },
+      },
+    });
     mockProjectsApi.list.mockResolvedValue([
       {
         id: "project-1",
@@ -584,7 +591,8 @@ describe("NewIssueDialog", () => {
         name: "CodexCoder",
         status: "active",
         adapterType: "codex_local",
-        adapterConfig: { model: "gpt-6-astra" },
+        // myrmidon(PERF-DIET-G): the inherited model comes from the list row.
+        adapterModel: "gpt-6-astra",
         runtimeConfig: {},
         permissions: {},
       },

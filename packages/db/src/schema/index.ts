@@ -21,6 +21,7 @@ export { invites } from "./invites.js";
 export { joinRequests } from "./join_requests.js";
 export { budgetPolicies } from "./budget_policies.js";
 export { budgetIncidents } from "./budget_incidents.js";
+export { projectTokenQuotas } from "./project_token_quotas.js"; // myrmidon(1.6.6 QUOTA-V2)
 export { agentConfigRevisions } from "./agent_config_revisions.js";
 export { agentInstructionsRevisions, type AgentInstructionsRevisionFile } from "./agent_instructions_revisions.js";
 export { agentApiKeys } from "./agent_api_keys.js";
@@ -192,6 +193,8 @@ export {
 } from "./company_skills.js";
 // myrmidon(1.6-SKILL-LIFE): additive skill lifecycle tables.
 export { companySkillLifecycle, companySkillLifecycleEvents } from "./company_skill_lifecycle.js";
+// myrmidon(1.6.5 BASE-SKILLS): the company-level registry of mandatory skills.
+export { companyBaseSkills } from "./company_base_skills.js";
 export { plugins } from "./plugins.js";
 export { pluginConfig } from "./plugin_config.js";
 export { pluginCompanySettings } from "./plugin_company_settings.js";
@@ -229,9 +232,20 @@ export {
 export { myrmidonFleetServers } from "./myrmidon_fleet_servers.js"; // myrmidon(SC1): fleet-server registry for the browser console
 // myrmidon(1.6-SWARM): leases of the per-role task queues.
 export { issueClaims } from "./issue_claims.js";
+// myrmidon(1.7-AGENT-EXCHANGE-A): discussion rooms on issue cards and the round grid of answers.
+export {
+  agentExchangeRooms,
+  agentExchangeMessages,
+  type AgentExchangeRoomRow,
+  type NewAgentExchangeRoomRow,
+  type AgentExchangeMessageRow,
+  type NewAgentExchangeMessageRow,
+} from "./agent_exchange_rooms.js";
 
 // myrmidon(1.6-FORAGE): source registry and findings log of FORAGING.
 export { foragingSources, foragingFindings, type ForagingSourceKind, type ForagingFindingStatus } from "./myrmidon_foraging.js";
+// myrmidon(1.6.1-FORAGING-LIMITS-UI): the spend ledger the learning limits read.
+export { foragingSpendEvents, type ForagingSpendOutcome } from "./myrmidon_foraging_spend.js";
 // myrmidon(1.6-WIKI): regulations as wiki pages — statuses, revisions and rollback.
 export {
   myrmidonWikiRegulations,
@@ -241,6 +255,9 @@ export {
 } from "./myrmidon_wiki_regulations.js";
 // myrmidon(1.6-EVALS): reference tasks and judge runs for the evals module.
 export { evalReferenceTasks, evalRuns } from "./myrmidon_evals.js";
+// myrmidon(CA-A): the channel allowlist — who may write to the company's bots,
+// keyed by channel identity (no board account required).
+export { myrmidonChannelAllowedUsers } from "./myrmidon_channel_allowed_users.js";
 // myrmidon(1.6.1 MODEL-PROVIDERS): company model-provider registry and model cache.
 export {
   modelProviders,
@@ -248,3 +265,36 @@ export {
   MODEL_PROVIDER_TYPES,
   type ModelProviderType,
 } from "./model_providers.js";
+// myrmidon(CUSTOM-CASTES): the company caste (agent role) directory.
+export { agentCastes } from "./agent_castes.js";
+// myrmidon(CORPUS-A): corpus knowledge module tables.
+export {
+  corpusDatasets,
+  corpusDocuments,
+  corpusChunks,
+  corpusParseJobs,
+  corpusSettings,
+} from "./corpus.js";
+// myrmidon(1.6.6 PROCS-0.1): the process registry of the board (design §5.1).
+export { boardProcesses } from "./board_processes.js";
+// myrmidon(1.6.6 KNOWLEDGE-2.0 K-1): the knowledge module — items, revisions,
+// links, sources, suggestions, events. Additive tables, nest-scoped.
+export {
+  knowledgeItems,
+  knowledgeRevisions,
+  knowledgeSearch,
+  knowledgeLinks,
+  knowledgeSources,
+  knowledgeSuggestions,
+  knowledgeEvents,
+  KNOWLEDGE_KINDS,
+  KNOWLEDGE_ITEM_STATUSES,
+  KNOWLEDGE_REVISION_STATUSES,
+  KNOWLEDGE_SOURCE_KINDS,
+  KNOWLEDGE_SUGGESTION_STATUSES,
+  type KnowledgeKind,
+  type KnowledgeItemStatus,
+  type KnowledgeRevisionStatus,
+  type KnowledgeSourceKind,
+  type KnowledgeSuggestionStatus,
+} from "./knowledge.js";

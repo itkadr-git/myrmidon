@@ -42,7 +42,10 @@
 # window and production is never touched (predeploy-board-check.sh). The 05.10
 # board started on CI's empty database and crashed on production data.
 #
-# Steps: pull the image by digest; remember the current digest as "previous";
+# Steps: check the free disk space BEFORE the first pull and the dump
+# (DEPLOY-HYGIENE, MYRMIDON_DEPLOY_MIN_FREE_GB; below the threshold the
+# deploy stops with nothing changed and names the cleanup candidates); pull
+# the image by digest; remember the current digest as "previous";
 # dump the database (DUMP_COMMAND, refuses an empty dump); check the image on a
 # copy of that dump (PREDEPLOY-DB-CHECK) and read-only preflight every changed
 # component; enter maintenance; wait until no runs are in progress. The window
@@ -82,10 +85,23 @@
 # board has bot containers configured; 0 restores the manual path).
 # Last, a post-deploy smoke (bot-apply-smoke.sh) waits for at least one bot
 # container to re-apply; failing that within its window the deploy reports
-# DEGRADED and prints the rollback commands.
+# DEGRADED and prints the rollback commands. Then the DEPLOY-HYGIENE image
+# retention removes the component images older than MYRMIDON_DEPLOY_IMAGE_KEEP
+# previous releases (an image any container uses is never removed; a cleanup
+# failure is a WARNING, not a failed deploy).
 #
 # On a failed health check the script stops with maintenance still on and
 # prints the rollback command.
+#
+# DB-TUNING (OPE-5009): after the health check the deploy applies and verifies
+# the PostgreSQL settings from the database audit (OPE-4270) — declaratively,
+# from scripts/myrmidon/deploy/db-tuning.sql, through DB_TUNE_COMMAND; every
+# DB_TUNE_EXPECTED pair is then checked with SHOW (DB_TUNE_SHOW_COMMAND) and a
+# mismatch fails the deploy exactly like a failed health check (maintenance
+# stays on, rollback.sh returns the settings via DB_TUNE_ROLLBACK_COMMAND).
+# All four DB_TUNE_* settings are optional: an empty DB_TUNE_COMMAND skips the
+# step, so an installation that does not manage its database settings still
+# deploys.
 #
 # --dry-run runs EVERY check the real run makes before it changes anything and
 # fails exactly when the real run would: the CI image checks, the boot unit, the
@@ -468,6 +484,15 @@ preflight_all() {
 }
 preflight_all
 
+# DEPLOY-HYGIENE (OPE-5107): refuse BEFORE the first pull and the dump when
+# the filesystem of /var/lib/docker cannot hold the images of this release
+# (MYRMIDON_DEPLOY_MIN_FREE_GB, default 15 GiB). In a dry run the check is
+# reported with the current value instead.
+deploy_disk_precheck deploy.sh
+# The check above covers the whole deploy: the bot-image rollout script skips
+# its own precheck and its own end-of-run image cleanup (deploy.sh runs them).
+export MYRMIDON_DEPLOY_DISK_PRECHECK_DONE=1
+
 if [[ "$DRY_RUN" == "1" ]]; then
   log "dry run: nothing will be changed. Plan:"
   plan "0. image check passed (read-only): $ref is in the registry, commit ${CI_IMAGE_REVISION:0:12} is on origin/main or a myr-v* tag"
@@ -476,6 +501,7 @@ if [[ "$DRY_RUN" == "1" ]]; then
     plan "0.55 preflight passed (read-only, the same checks the real run makes before its first pull): the compose project of the full file set validates; every changed component's service, health setting and CI image; the dockergate config check of the edited config with the new binary"
   fi
   plan "0.6 release components (${component_resolution:-none}, from the $component_source): board, ${MYR_RELEASE_COMPONENTS//,/, }, bot images; one maintenance window, all-or-nothing"
+  plan "0.7 disk precheck passed (read-only): ${MYRMIDON_DEPLOY_MIN_FREE_GB:-15} GiB free on the filesystem of /var/lib/docker required before the first pull (MYRMIDON_DEPLOY_MIN_FREE_GB)"
   if ((board_changed)); then
     plan "board: ${previous_image:-<none>} -> $ref"
   else
@@ -513,11 +539,17 @@ if [[ "$DRY_RUN" == "1" ]]; then
     plan "6. set image in $OVERRIDE_PATH to $ref; docker compose up -d --no-deps $COMPOSE_SERVICE"
     plan "7. verify $HEALTH_URL: status ok, version ${expect_version:-<from image label>}, commit ${expect_commit:-<from image label>}"
     plan "7b. verify the LLM tracing callbacks (OTLP only; refuses the legacy 'langfuse' callback against a v4 Langfuse server; logs a skip when no MYR_TRACING_* input is configured)"
+    if [[ -n "$DB_TUNE_COMMAND" ]]; then
+      plan "7d. DB-TUNING: apply the PostgreSQL settings of the audit (DB_TUNE_COMMAND runs the declarative source scripts/myrmidon/deploy/db-tuning.sql), record the previous SHOW values, then verify every DB_TUNE_EXPECTED pair through DB_TUNE_SHOW_COMMAND; a mismatch is DEPLOY FAILED (maintenance stays on, rollback.sh returns the settings via DB_TUNE_ROLLBACK_COMMAND)"
+    else
+      plan "7d. DB-TUNING: skipped (DB_TUNE_COMMAND is empty): the PostgreSQL settings of the audit are not managed by this deploy"
+    fi
     plan "8. leave maintenance (the exit POST returns when the window is marked leaving; the deploy waits for the state off, MAINTENANCE_EXIT_WAIT_SEC=${MAINTENANCE_EXIT_WAIT_SEC}s); then the post-deploy fleet check (no issue blocked in the deploy window, the window retired; needs BOARD_API_URL/BOARD_COMPANY_ID, otherwise skipped)"
   fi
   if [[ "$MYR_SMOKE_ENABLED" == "1" ]]; then
     plan "10. post-deploy smoke: wait for a bot container to re-apply (bot-apply-smoke.sh, timeout ${MYR_SMOKE_TIMEOUT_SEC}s); on failure the deploy reports DEGRADED and prints the rollback commands"
   fi
+  plan "11. DEPLOY-HYGIENE: remove the component images older than ${MYRMIDON_DEPLOY_IMAGE_KEEP:-1} previous release(s) per repository (MYRMIDON_DEPLOY_IMAGE_KEEP; images used by a container are always kept)"
   exit 0
 fi
 
@@ -783,6 +815,48 @@ if ! "$MYR_SCRIPT_DIR/tracing-check.sh" \
   log "Roll back with: $MYR_SCRIPT_DIR/rollback.sh --config $config"
   exit 1
 fi
+
+# DB-TUNING (OPE-5009): the PostgreSQL settings of the audit (OPE-4270) are
+# applied HERE, declaratively — the values live in db-tuning.sql in this
+# repository and only the deploy runs them (never a manual ALTER SYSTEM).
+# The step number says 7d because 7b (the tracing guard above) and 7c (the
+# dockergate config inside the window) are taken; like the health and tracing
+# steps it runs only when the board image switched.
+# After applying, every DB_TUNE_EXPECTED pair is verified through
+# DB_TUNE_SHOW_COMMAND (SHOW); a mismatch fails the deploy exactly like a
+# failed health check: maintenance stays on and the rollback command is
+# printed. When the apply itself fails or the SHOW check mismatches, this
+# deploy run first returns the previous settings itself (DB_TUNE_ROLLBACK_COMMAND;
+# the image rolls back too, so the tuned settings must not outlive it), then
+# fails. With an empty DB_TUNE_COMMAND the step logs a skip and the deploy
+# continues — an installation that does not manage its settings still deploys.
+log "7d/8 apply+verify DB settings"
+# The true pre-tuning SHOW values must be captured BEFORE the first apply —
+# the helper records every parameter once (an already-recorded value is kept),
+# so a re-deploy does not overwrite the pre-audit values with the tuned ones.
+db_tune_record_previous
+if ! db_tune_apply; then
+  log "DEPLOY FAILED: the DB-TUNING apply command failed. Maintenance stays on."
+  if [[ -n "$DB_TUNE_ROLLBACK_COMMAND" ]]; then
+    log "returning the database to the previous settings (DB_TUNE_ROLLBACK_COMMAND)"
+    db_tune_rollback || log "WARNING: DB_TUNE_ROLLBACK_COMMAND failed; the database settings may be half-applied"
+  fi
+  log "Fix the DB-TUNING settings (see the command output above) and run the deploy again."
+  log "Roll back with: $MYR_SCRIPT_DIR/rollback.sh --config $config"
+  exit 1
+fi
+if ! db_tune_verify "deploy"; then
+  log "DEPLOY FAILED: $ref is running and healthy, but the DB-TUNING SHOW check does not match DB_TUNE_EXPECTED. Maintenance stays on."
+  if [[ -n "$DB_TUNE_ROLLBACK_COMMAND" ]]; then
+    log "returning the database to the previous settings (DB_TUNE_ROLLBACK_COMMAND)"
+    db_tune_rollback || log "WARNING: DB_TUNE_ROLLBACK_COMMAND failed; the database settings may keep the new values"
+  else
+    log "WARNING: DB_TUNE_ROLLBACK_COMMAND is empty: the half-applied settings were NOT rolled back (roll back with: $MYR_SCRIPT_DIR/rollback.sh --config $config)"
+  fi
+  log "Fix the DB-TUNING settings (see the MISMATCH lines above) and run the deploy again."
+  log "Roll back with: $MYR_SCRIPT_DIR/rollback.sh --config $config"
+  exit 1
+fi
 fi
 
 log "8/8 leave maintenance"
@@ -843,6 +917,13 @@ if [[ "$MYR_SMOKE_ENABLED" == "1" ]]; then
       exit 1
     fi
   fi
+fi
+
+# DEPLOY-HYGIENE (OPE-5107): the deploy is done and healthy — free the disk of
+# the releases before the kept ones. Images used by any container are never
+# removed; a failure of the cleanup itself never fails the finished deploy.
+if deploy_image_retention; then :; else
+  log "WARNING: the old image cleanup failed; the deploy itself is complete and healthy (remove old images by hand: docker image ls)"
 fi
 
 log "release gate passed: board and ${MYR_RELEASE_COMPONENTS:-no components} rolled out together, bots re-apply"
