@@ -335,13 +335,7 @@ export function maintenanceService(
       // the window, and the next sweep re-enters: repeated windows, the
       // profile update never applies.
       const promote = deps.heartbeat.promoteDueScheduledRetries;
-      if (promote) {
-        try {
-          await promote();
-        } catch (err) {
-          logger.error({ err, windowId: window.id }, "failed to promote scheduled retries after maintenance drain");
-        }
-      }
+      if (promote) await promote();
       const at = now().toISOString();
       const { changed } = await write((doc) => {
         const current = doc.windows.find((w) => w.id === window.id);

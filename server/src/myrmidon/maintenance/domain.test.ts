@@ -118,16 +118,15 @@ describe("maintenance tick decisions", () => {
       expect(decideTick(interrupted, ["run-1", "run-2"], later)).toEqual({ kind: "interrupt", runIds: ["run-2"] });
     });
 
-    it("reports the drain complete when only its own interrupted runs are left", () => {
+    it("waits for every interrupted run to leave running before promoting retries", () => {
       const interrupted = { ...w, interruptedRunIds: ["run-1", "run-2"] };
-      // Both runs are still "running" (teardown pending) — nothing left to interrupt.
-      expect(decideTick(interrupted, ["run-1", "run-2"], later)).toEqual({ kind: "drained_after_interrupts" });
+      expect(decideTick(interrupted, ["run-1", "run-2"], later)).toEqual({ kind: "none" });
+      expect(decideTick(interrupted, ["run-2"], later)).toEqual({ kind: "none" });
+      expect(decideTick(interrupted, [], later)).toEqual({ kind: "drained_after_interrupts" });
     });
 
-    it("a partial teardown (one run left running, already interrupted) still waits", () => {
-      const interrupted = { ...w, interruptedRunIds: ["run-1", "run-2"] };
-      expect(decideTick(interrupted, ["run-2"], later)).toEqual({ kind: "drained_after_interrupts" });
-      expect(decideTick(interrupted, ["run-2"], now)).toEqual({ kind: "none" }); // before the deadline
+    it("retries are promoted when all runs have left running even if none were interrupted", () => {
+      expect(decideTick(w, [], later)).toEqual({ kind: "mark_on" });
     });
 
     it("before the deadline the window keeps draining without new decisions", () => {
@@ -150,10 +149,10 @@ describe("maintenance tick decisions", () => {
       expect(isStuckOpenWindow({ ...entering, state: "leaving" }, new Date(now.getTime() + 999_999))).toBe(false);
     });
 
-    it("the grace is configurable", () => {
-      const at = new Date(now.getTime() + 60_000 + 5_000);
-      expect(isStuckOpenWindow(entering, at, 1_000)).toBe(true);
-      expect(isStuckOpenWindow(entering, at, 60_000)).toBe(false);
+    it("does not retire deployment-wide windows with the agent backstop", () => {
+      const past = new Date(now.getTime() + 60_000 + DEFAULT_STUCK_GRACE_MS + 1_000);
+      expect(isStuckOpenWindow(window({ type: "instance" }, null), past)).toBe(false);
+      expect(isStuckOpenWindow(window({ type: "company", id: "company-a" }), past)).toBe(false);
     });
   });
 
