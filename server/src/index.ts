@@ -838,7 +838,7 @@ async function startServerWithDatabaseTeardown(
   // listener through `openPublicListener` (and the api child ignores this —
   // its bind comes from the profile). A worker on the default 0.0.0.0 host in
   // single mode serves the same :3100 it always did.
-  const requestedListenPort = roleListen.port ?? config.port;
+  const requestedListenPort = config.port ?? roleListen.port;
   // myrmidon(PROCS-1.2): the worker's :3100 is supervisor-managed — it opens
   // and closes with the mode and with the children's health, and a busy port
   // there is a sibling child, not a reason to drift. detect-port stays out of
