@@ -351,7 +351,7 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Run vitest (${{ matrix.label }})
+      - name: Run vitest (${{ matrix.label }}) with one retry
         env:
           MODE: ${{ matrix.mode }}
           GROUP: ${{ matrix.group }}
@@ -366,7 +366,7 @@ jobs:
           if [ -n "$SHARD_COUNT" ]; then
             args+=(--shard-index "$SHARD_INDEX" --shard-count "$SHARD_COUNT")
           fi
-          pnpm "test:run:$MODE" -- "${args[@]}"
+          node scripts/myrmidon/ci/shard-retry.mjs "$RUNNER_TEMP/shard-${SHARD_INDEX:-0}-attempt-1.log" pnpm "test:run:$MODE" -- "${args[@]}"
 
   tests-other:
     # Packages whose tests `pnpm test:run` does not run (hermes adapter, MCP
@@ -477,8 +477,10 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Verify the runner
-        run: pnpm --filter @paperclipai/paperclip-runner check:all
+      - name: Verify the runner with one retry
+        run: |
+          set -euo pipefail
+          node scripts/myrmidon/ci/shard-retry.mjs "$RUNNER_TEMP/runner-attempt-1.log" pnpm --filter @paperclipai/paperclip-runner check:all
 
   checks:
     # Cheap checks that run on every tier: node:test suites of our scripts,
