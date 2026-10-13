@@ -8,7 +8,7 @@
 // The allowlist covers only wire-protocol identifiers, MIT attribution and
 // legacy recovery-notice wording that old stored comments still carry.
 import { describe, expect, it } from "vitest";
-import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { PRODUCT_NAME } from "@paperclipai/shared";
 import path from "node:path";
