@@ -2898,6 +2898,8 @@ export * from "./myrmidon-telegram-dm-progress.js";
 
 // myrmidon(1.6.1 MODEL-PROVIDERS): provider secret names, defaults and API schemas.
 export * from "./myrmidon-model-providers.js";
+// myrmidon(1.6.6 MODEL-MENU A): the model menu tree, its defaults and its resolution.
+export * from "./myrmidon-model-menu.js";
 // myrmidon(REVIEW-ROUTING): automatic reviewer routing for tasks that enter
 // in_review with no reviewer — settings contract and activity actions.
 export * from "./myrmidon-review-routing.js";
