@@ -34,6 +34,11 @@ import { aiConnectionBindingSchema } from "@paperclipai/shared";
 // automatic behaviours obey the settings page without a restart.
 import { myrmidonTeamLivenessReader } from "../myrmidon/team-liveness/index.js";
 import { resolveAgentTeamLiveness } from "@paperclipai/shared";
+import {
+  COMPRESSION_TIMEOUT_ERROR_SIGNATURES,
+  buildLongTaskContextResetNotice,
+  evaluateLongTaskContextReset,
+} from "../myrmidon/long-task-context/index.js";
 import { executionBlockerPredicate, getExecutionBlocker } from "./execution-blocker.js";
 import { CONVERSATION_CONTINUATION_POLICY, claimedAdapterType, runUsedConversationAdapter, hasConversationContinuationPolicy, isConversationAdapter } from "./conversation-continuation.js";
 import { recordExecutionWait } from "./execution-wait.js";
@@ -697,6 +702,7 @@ import {
 // Hermes gateway — one task's session key gains a `:g<N>` once it passes its
 // age/activity threshold, so the task's Hermes state stays bounded
 import { resolveHeartbeatSessionGeneration } from "../myrmidon/session-generations/index.js";
+import { getIdleStopService } from "../myrmidon/idle-stop-startup.js";
 // myrmidon(S2-hostcred): a run never inherits the host's GitHub credentials
 import {
   filterHostGitHubCredentialEnv,
@@ -964,6 +970,10 @@ function nonRetryablePreflightFailureCode(error: unknown): string | null {
  */
 const CONTEXT_WINDOW_ERROR_SIGNATURES = [
   "Context compression could not bring this session under the model's context window",
+  // myrmidon(1.6.6 LONG-TASK-CONTEXT): the runtime's compression-TIMEOUT shapes.
+  // Before this they matched no signature, so a run lost to compression landed
+  // in `error` and the task stayed dead until a human reset the session by hand.
+  ...COMPRESSION_TIMEOUT_ERROR_SIGNATURES,
   "Exceeded limit on max bytes to request body",
   "context window exceeded",
   "session too large",
@@ -1004,6 +1014,8 @@ const GIT_SENSITIVE_LOCAL_ADAPTER_TYPES = new Set([
   "kimi_local",
   "opencode_local",
   "pi_local",
+  // myrmidon(OMP-LOCAL): local OMP git sensitive adapter
+  "omp_local",
 ]);
 export { MAX_TURN_CONTINUATION_RETRY_REASON };
 export const MAX_TURN_CONTINUATION_WAKE_REASON = "max_turns_continuation_retry";
@@ -1393,6 +1405,8 @@ const SESSIONED_LOCAL_ADAPTERS = new Set([
   "kimi_local",
   "opencode_local",
   "pi_local",
+  // myrmidon(OMP-LOCAL): sessioned local OMP adapter
+  "omp_local",
 ]);
 // Routes and the scheduler construct separate heartbeatService instances, but
 // they must agree on in-process adapter executions when reaping stale runs.
@@ -17645,6 +17659,24 @@ export function heartbeatService(
 
     await setWakeupStatus(claimed.wakeupRequestId, "claimed", { claimedAt });
 
+    // IDLE-STOP: wake the container before proceeding with run execution
+    const idleStopService = getIdleStopService();
+    if (idleStopService) {
+      try {
+        await idleStopService.ensureStartedAndHealthy(claimed.agentId);
+      } catch (err) {
+        logger.error(
+          { err, runId: claimed.id, agentId: claimed.agentId },
+          "claimQueuedRun: container failed to start or become healthy, cannot proceed with run",
+        );
+        await cancelRunInternal(
+          claimed.id,
+          `Cancelled because container failed to start: ${err instanceof Error ? err.message : String(err)}`,
+        );
+        return null;
+      }
+    }
+
     // Fix A (lazy locking): stamp executionRunId now that the run is actually running,
     // not at queue time. Guard is idempotent — safe if called more than once.
     const claimedContext = parseObject(claimed.contextSnapshot);
@@ -21611,6 +21643,23 @@ export function heartbeatService(
       const configuredModel =
         readConfiguredModelFromAdapterConfig(runtimeConfig);
       const wakeSessionResetReason = describeSessionResetReason(context);
+      // myrmidon(1.6.6 LONG-TASK-CONTEXT): drop a task session that is ALREADY
+      // at the threshold before the run resumes it. The runtime's own
+      // compression is what times out on an ever-running task ("Context
+      // compression timed out ..."), and a reset after the fact costs the run;
+      // the run then starts clean from the continuation summary, so the payload
+      // stops growing with the age of the task.
+      const longTaskContext =
+        taskSession != null
+          ? await evaluateLongTaskContextReset({
+              db,
+              settings: instanceSettingsService(db),
+              companyId: agent.companyId,
+              agentId: agent.id,
+              issueId: issueRef?.id ?? null,
+              model: configuredModel,
+            })
+          : null;
       const sessionConfigFreshness = resolveTaskSessionConfigFreshness({
         hasTaskSession: taskSession != null,
         configuredModel,
@@ -21622,9 +21671,13 @@ export function heartbeatService(
           acceptedPlanContinuationWake && !acceptedPlanWakeRoutingDecision,
       });
       const resetTaskSession =
-        shouldResetTaskSessionForWake(context) || sessionConfigFreshness.reset;
+        shouldResetTaskSessionForWake(context) ||
+        sessionConfigFreshness.reset ||
+        (longTaskContext?.plan.reset ?? false);
       const sessionResetReason =
-        sessionConfigFreshness.reasons.join("; ") || null;
+        [sessionConfigFreshness.reasons.join("; "), longTaskContext?.plan.reason]
+          .filter((value): value is string => Boolean(value))
+          .join("; ") || null;
       const taskSessionForRun = resetTaskSession ? null : taskSession;
       const previousSessionParams =
         explicitResumeSessionParams ??
@@ -22640,6 +22693,19 @@ export function heartbeatService(
               taskKey
                 ? `Skipping saved session resume for task "${taskKey}" because ${sessionResetReason}.`
                 : `Skipping saved session resume because ${sessionResetReason}.`,
+            ]
+          : []),
+        // myrmidon(1.6.6 LONG-TASK-CONTEXT): a session dropped by the context
+        // guard says so in the run's own context — the agent must know its
+        // earlier turns are not in this session and where the thread stays
+        // readable, instead of assuming it still has that history.
+        ...(longTaskContext?.plan.reset
+          ? [
+              buildLongTaskContextResetNotice({
+                plan: longTaskContext.plan,
+                settings: longTaskContext.settings,
+                issueId: issueRef?.id ?? null,
+              }),
             ]
           : []),
       ];

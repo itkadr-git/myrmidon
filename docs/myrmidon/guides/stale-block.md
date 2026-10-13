@@ -19,7 +19,7 @@ The reference lives in the existing `unblock_descriptor` JSON column as
 | `kind` | Required payload | The reason is a … |
 |---|---|---|
 | `issue` | `issueId` | task whose closure unblocks this one |
-| `event` | `eventKey` | gate/event that must stay set |
+| `event` | `eventKey` (`dueAt` optional — a deadline for the wait) | gate/event that must stay set |
 | `date` | `dueAt` (ISO 8601) | date after which the block is stale |
 
 The kind must carry its identifying payload (an `issue` without `issueId` is
@@ -62,7 +62,11 @@ blocked-by relations. A reason is dead when:
 - the `reasonRef.dueAt` date has passed;
 - the gate/event the `reasonRef` points at is no longer set (an unwired gate
   key is judged still-set, so a missing wiring never silently unblocks a
-  task).
+  task);
+- the `reasonRef.dueAt` deadline of an event reason (`kind=event`) has
+  passed — the reason is dead even while the gate is still set. This is the
+  bound against an unwired gate living forever: an event reason without a
+  deadline lives as long as the wiring reports the gate set.
 
 A task whose every reason is dead gets unblocked. A task with at least one
 live reason, and a task with no recognizable reason at all, is left
@@ -103,6 +107,39 @@ card per task per lift, and a card fades after
 `MYRMIDON_STALE_BLOCK_SIGNAL_TTL_MS` (24 hours by default) or when the
 operator dismisses it. A server restart also clears the cards; the task's
 system comment stays as the durable audit trail either way.
+
+## Waiting on an external condition (for executors)
+
+When a task must wait for something outside the board — a tag, a date, an
+event in another system — express the wait as a first-class board object. Do
+NOT invent a blocked↔todo loop (flip the task back to `todo` periodically to
+"check again", or park it in `blocked` with a fake blocker list): every wake
+of such a homemade loop costs the full executor context, and the board
+already ships two mechanisms that wait for free.
+
+A PATCH into `blocked` requires a reason: the transition is rejected with
+HTTP 422 ("Entering blocked requires a reason reference: non-empty
+blockedByIssueIds or unblockDescriptor.reasonRef") unless the task cites a
+live-checkable reason. Pick the mechanism by what you are waiting for:
+
+| You are waiting for … | Put on the task | What wakes it |
+|---|---|---|
+| a concrete date or deadline (a freeze ends, a window opens) | `unblockDescriptor.reasonRef {kind:"date", dueAt:"<ISO 8601>"}` — or, when you also want the task raised to act at the date, an issue monitor `executionPolicy.monitor` with `nextCheckAt` | the stale-block watchdog lifts the block after `dueAt` passed; the monitor heartbeat tick raises the task at `nextCheckAt` |
+| an external event or tag outside the board (a gate, a label, a release marker) | `unblockDescriptor.reasonRef {kind:"event", eventKey:"<name>", dueAt:"<deadline>"}` — `dueAt` is optional but strongly recommended | a wired gate is lifted as soon as the wiring reports it cleared; `dueAt` bounds the wait — after the deadline the reason is judged dead even if the gate is still set, so an unwired event cannot live forever |
+| a board task to finish | `blockedByIssueIds` or `reasonRef {kind:"issue", issueId}` | the blockers-resolved wake; the watchdog catches the silent cases (done/cancelled blockers) |
+
+How the two mechanisms complement each other:
+
+- The watchdog is the ceiling, not the alarm clock. It judges whether the
+  cited reason is dead and lifts the block (task back to `in_progress` plus
+  one system comment naming each dead reason); it does not schedule an
+  attempt at the date.
+- The issue monitor (`executionPolicy.monitor.nextCheckAt`) is the alarm
+  clock: `heartbeat.tick` raises the task at the planned moment so the
+  executor can act on schedule.
+- For an event you want both: the `eventKey` lets a wired gate clear the
+  block the moment the event goes away, and `dueAt` guarantees the block
+  dies at the latest at your deadline even when nobody ever wired the gate.
 
 ## Settings
 
