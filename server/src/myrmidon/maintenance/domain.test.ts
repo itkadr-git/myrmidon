@@ -125,7 +125,14 @@ describe("maintenance tick decisions", () => {
       expect(decideTick(interrupted, [], later)).toEqual({ kind: "drained_after_interrupts" });
     });
 
-    it("retries are promoted when all runs have left running even if none were interrupted", () => {
+    it("promotes retries only after every run has left running", () => {
+      const interrupted = { ...w, interruptedRunIds: ["run-1"] };
+      expect(decideTick(interrupted, ["run-1"], now)).toEqual({ kind: "none" });
+      expect(decideTick(interrupted, ["run-1"], later)).toEqual({ kind: "none" });
+      expect(decideTick(interrupted, [], later)).toEqual({ kind: "drained_after_interrupts" });
+    });
+
+    it("marks on when no runs ever required interruption", () => {
       expect(decideTick(w, [], later)).toEqual({ kind: "mark_on" });
     });
 
