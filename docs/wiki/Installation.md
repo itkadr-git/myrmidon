@@ -6,7 +6,7 @@ One command brings a clean server to a working Myrmidon board. Copy it onto
 the server and run it — the installer does the rest itself:
 
 ```sh
-curl -fsSL https://github.com/itkadr-git/myrmidon/releases/download/myr-v1.6.5-rc.5/install.sh | sudo bash
+curl -fsSL https://github.com/itkadr-git/myrmidon/releases/download/myr-v1.6.5-rc.15/install.sh | sudo bash
 ```
 
 Until the 1.6.5 final ships, the one-line command installs the current
@@ -77,7 +77,7 @@ last lines of its log are printed right there.
 To use an option with the one-line form, download the script first:
 
 ```sh
-curl -fsSL -O https://github.com/itkadr-git/myrmidon/releases/download/myr-v1.6.5-rc.5/install.sh
+curl -fsSL -O https://github.com/itkadr-git/myrmidon/releases/download/myr-v1.6.5-rc.15/install.sh
 sudo bash install.sh --version myr-vX.Y.Z
 ```
 

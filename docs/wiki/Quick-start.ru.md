@@ -6,7 +6,7 @@
 [Системные требования](System-requirements.ru)):
 
 ```sh
-curl -fsSL https://github.com/itkadr-git/myrmidon/releases/download/myr-v1.6.5-rc.5/install.sh | sudo bash
+curl -fsSL https://github.com/itkadr-git/myrmidon/releases/download/myr-v1.6.5-rc.15/install.sh | sudo bash
 ```
 
 Финальный выпуск 1.6.5 ещё не вышел, поэтому команда ставит текущего
