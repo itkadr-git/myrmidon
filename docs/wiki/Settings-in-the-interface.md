@@ -57,9 +57,11 @@ Agents can split a task across parallel helper subagents
 (`delegate_task`). On the card of a `hermes_gateway` agent, the **Parallel
 helpers** section turns this on and sets the per-agent limit, the helper
 model and an optional per-helper turn budget; **Instance → General →
-"Parallel helpers"** sets the company ceiling (default `10`, hard cap `50`)
-and the per-agent default (`2`), and shows a capacity hint summing the
-resolved limits against the host's build slots. Saving applies on every bot's
+"Parallel helpers"** sets the company ceiling (default `10`, no built-in
+upper bound since HELPERS-NO-CAP (1.6.1) — a saved ceiling above 50 only
+shows a host-load warning) and the per-agent default (`2`), and shows a
+capacity hint summing the resolved limits against the host's build slots.
+Saving applies on every bot's
 next reconcile tick, without a restart. Details:
 [parallel-helpers](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/parallel-helpers.md).
 
