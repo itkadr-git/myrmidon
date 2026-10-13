@@ -7,6 +7,8 @@
 // idempotent on re-run; every decision is delivered/published, not a draft).
 
 import { randomUUID } from "node:crypto";
+import { readFile } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { eq, and } from "drizzle-orm";
 import {
@@ -24,6 +26,10 @@ import { createKnowledgeService } from "./store.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
+const visionFixture = await readFile(
+  fileURLToPath(new URL("./fixtures/vision-2-0.md", import.meta.url)),
+  "utf8",
+);
 
 type Db = ReturnType<typeof createDb>;
 
@@ -97,8 +103,9 @@ describeEmbeddedPostgres("myrmidon(1.6.6 KNOWLEDGE-2.0 K-8) knowledge seed", () 
 
     // Vision is the owner's text, verbatim.
     const vision = await store.get(companyId, "product/vision");
-    expect(vision!.deliveredContent).toContain("Автономный кибер-муравейник");
-    expect(vision!.deliveredContent).toContain("стигмергии");
+    expect(vision!.deliveredContent).toBe(visionFixture);
+    expect(visionFixture.replace("Автономный кибер-муравейник", "Изменённый текст"))
+      .not.toBe(vision!.deliveredContent);
   });
 
   it("applies supersede chains (FORAGING variant-2 → включить сейчас)", async () => {
