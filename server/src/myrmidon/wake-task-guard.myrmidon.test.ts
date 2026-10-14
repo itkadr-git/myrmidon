@@ -20,6 +20,7 @@ import {
   companies,
   createDb,
   heartbeatRuns,
+  instanceSettings,
   issueComments,
   issues,
 } from "@paperclipai/db";
@@ -32,6 +33,7 @@ import {
   isIssueCoolingDown,
   decideIssueCooling,
   isRealTaskMovement,
+  readSwarmSettings,
   tasklessGateReason,
 } from "./wake-task-guard.js";
 import {
@@ -389,6 +391,33 @@ describeEmbeddedPostgres("myrmidon(1.6.5 F-26 T5) wake guard against Postgres", 
     await seedAutoRun(issueId, { status: "failed", finishedAt: new Date(now.getTime() - 90 * 60_000) });
     // 90 min ago + 30 min window < now → expired.
     expect((await isIssueCoolingDown(db, companyId, issueId, settings, now)).cooling).toBe(false);
+  });
+
+  // myrmidon(1.6.5 SWARM-PANEL-COOLING, OPE-6894) — red side: the value the
+  // "Task cooling" block saves into `general.swarm` is the one rule the guard
+  // reads back through `readSwarmSettings`, and it changes the wake decision.
+  it("a cooldown saved through the settings row changes the guard's decision", async () => {
+    const issueId = await seedIssue("todo");
+    const now = new Date();
+    // one stale automatic run 20 minutes ago: with the DEFAULT base (30 min)
+    // the task is still cooling — the wake must not fire.
+    await seedAutoRun(issueId, { status: "failed", finishedAt: new Date(now.getTime() - 20 * 60_000) });
+    expect(
+      (await isIssueCoolingDown(db, companyId, issueId, resolveSwarmSettings(undefined), now)).cooling,
+    ).toBe(true);
+
+    // what PATCH /api/instance/settings/general stores for the cooling block
+    // (the panel's save path): base 10 minutes.
+    await db.insert(instanceSettings).values({
+      general: { swarm: { cooldownBaseMin: 10, cooldownCeilingHours: 24, runWithoutTaskGate: true } },
+      experimental: {},
+    });
+
+    const saved = await readSwarmSettings(db);
+    expect(saved.cooldownBaseMin).toBe(10);
+    // the same task, the same clock: the saved value lifted the window, so
+    // the wake goes through (not cooling).
+    expect((await isIssueCoolingDown(db, companyId, issueId, saved, now)).cooling).toBe(false);
   });
 
   it("heartbeat seam: automatic swarm wake without issueId creates no run and never reaches the adapter", async () => {

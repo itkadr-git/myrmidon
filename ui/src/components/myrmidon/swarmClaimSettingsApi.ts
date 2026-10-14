@@ -9,6 +9,12 @@
 // The environment variables remain forced overrides; `sources` says per key
 // whether the UI value or the override is in force, and the panel renders
 // exactly that.
+//
+// myrmidon(1.6.5 SWARM-PANEL-COOLING, OPE-6894): every user-visible string
+// here is an i18n key of the fork catalog (en/ru) — the panel renders
+// `t(key)`. The task-cooldown block of the panel reads and writes
+// `general.swarm`, the one cooling rule the wake-task guard actually applies
+// (F-26); the dead `pheromone.cooldown*` fields are retired from the schema.
 import type {
   SwarmClaimSettings,
   SwarmClaimSettingsPatch,
@@ -47,9 +53,25 @@ export interface SwarmClaimSettingsView {
   counters?: SwarmClaimQueueCounters | null;
 }
 
-/** The one-line live status of the panel, from the GET counters; null without them. */
-export function swarmClaimStatusLine(counters: SwarmClaimQueueCounters | null | undefined): string | null {
+/**
+ * The one-line live status of the panel, from the GET counters; null without
+ * them. myrmidon(1.6.5 SWARM-PANEL-COOLING, OPE-6894): the line goes through
+ * the fork i18n catalog when a translator (the panel's `t`) is given; without
+ * one it keeps the English wording, so callers outside a React tree still get
+ * a readable line.
+ */
+export function swarmClaimStatusLine(
+  counters: SwarmClaimQueueCounters | null | undefined,
+  translate?: (key: string, options?: Record<string, unknown>) => string,
+): string | null {
   if (!counters) return null;
+  if (translate) {
+    return translate("swarmClaim.statusLine", {
+      queued: counters.queuedUnassigned,
+      claimed: counters.claimedLastHour,
+      cancelled: counters.cancelledLastHour,
+    });
+  }
   return `${counters.queuedUnassigned} unassigned task(s) waiting · ${counters.claimedLastHour} claimed in the last hour · ${counters.cancelledLastHour} cancelled in the last hour`;
 }
 
@@ -61,13 +83,18 @@ export const swarmClaimSettingsApi = {
     api.patch<SwarmClaimSettingsView>("/myrmidon/swarm-claim", patch),
 };
 
+/**
+ * myrmidon(1.6.5 SWARM-PANEL-COOLING, OPE-6894): the i18n key describing
+ * where the effective value of a field came from; the panel renders
+ * `t(describeSwarmClaimSource(…))`.
+ */
 export function describeSwarmClaimSource(source: SwarmClaimSettingSource | undefined): string {
   switch (source) {
     case "settings":
-      return "Saved here";
+      return "swarmClaim.sourceSaved";
     case "env":
-      return "Environment override";
+      return "swarmClaim.sourceEnv";
     default:
-      return "Default";
+      return "swarmClaim.sourceDefault";
   }
 }
