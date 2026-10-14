@@ -275,6 +275,7 @@ import {
   NativeChatReviewPresentationContentionError,
 } from "./native-runtime/native-chat-review-presentation.js";
 import { isExternalChatWaitAuthorizationContention } from "./native-runtime/chat-attachment-reuse.js";
+import { retryChatControlAdmission } from "./chat-control-admission-retry.js";
 import { projectSafeChatPublication } from "./chat-publication-projection.js";
 import { safeChatTaskUrl } from "./chat-task-url.js";
 import {
@@ -4144,7 +4145,26 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       )
       .orderBy(asc(chatActions.createdAt))
       .limit(limit);
-    for (const action of actions) await processReceiptReaction(action.id);
+    for (const action of actions) {
+      try {
+        await processReceiptReaction(action.id);
+      } catch (error) {
+        // The credential-mutation lease is a cross-process serialization
+        // point: a busy refusal is transient by design (the holder is working
+        // on the same endpoint). Skip this sweep pass instead of failing the
+        // caller; the action stays retryable and a later sweep or the holder
+        // itself completes the reaction.
+        if (
+          error instanceof HttpError &&
+          error.status === 409 &&
+          (error.details as { code?: string } | undefined)?.code ===
+            "chat_endpoint_credentials_busy"
+        ) {
+          continue;
+        }
+        throw error;
+      }
+    }
     return actions.length;
   }
 
@@ -14734,8 +14754,8 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         });
         return true;
       }
-      const context = await db.transaction((tx) =>
-        authorizeInboundWakeup(tx, claimed),
+      const context = await retryChatControlAdmission(() =>
+        db.transaction((tx) => authorizeInboundWakeup(tx, claimed)),
       );
       if (context.delivery.state !== "processed")
         throw new Error("chat_inbound_wakeup_acceptance_not_committed");
@@ -15794,7 +15814,14 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         // fails, keep the delivery retryable; the committed message link makes
         // the retry resume here without duplicating the task or comment.
         if (addressed && !thread.isDM) await thread.subscribe();
-        await acceptInboundWakeup(activeDelivery.id, attachmentResult);
+        // authorizeInboundWakeup takes the endpoint row NOWAIT (the issue lock is
+        // already held, so waiting would invert the ingress lock order). A
+        // concurrent ingress transaction is a rolled-back, transient refusal:
+        // retry it here instead of failing the delivery into a >=2s durable
+        // backoff that also burns one of its five attempts.
+        await retryChatControlAdmission(() =>
+          acceptInboundWakeup(activeDelivery.id, attachmentResult),
+        );
         // myrmidon(P7): send the notice once the wakeup no longer needs the endpoint lock
         const wakeProcessed = await processInboundWakeup(activeDelivery.id);
         sendOmissionNotice?.();
