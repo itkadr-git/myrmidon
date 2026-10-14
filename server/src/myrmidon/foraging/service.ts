@@ -359,25 +359,6 @@ export function createForagingService(deps: ForagingServiceDeps): ForagingServic
         enabled: settings.passBudgetCents !== null,
       };
 
-      // The spend windows are read once per pass; the per-read decisions add
-      // this pass's own spend on top (the rows are written as the pass goes).
-      const windows = await store
-        .spendWindows(companyId, utcDayStart(startedAt), utcMonthStart(startedAt))
-        .catch((err) => {
-          log.warn({ err, companyId }, "foraging: spend window read failed");
-          return { dayCents: 0, monthCents: 0, byRole: new Map<string, number>(), byAgent: new Map<string, number>() };
-        });
-      let dayCents = windows.dayCents;
-      let monthCents = windows.monthCents;
-      const passRoleSpend = new Map<string, number>();
-
-      let stoppedReason: string | null = null;
-
-      const passBudget = {
-        maxCostCents: settings.passBudgetCents ?? 0,
-        enabled: settings.passBudgetCents !== null,
-      };
-
       for (const source of sources) {
         // The pass budget is checked BEFORE the read (the 1.6 rule): a pass
         // already at its ceiling reads nothing further. The spend limits and
