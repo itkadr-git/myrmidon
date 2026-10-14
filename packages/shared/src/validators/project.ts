@@ -3,6 +3,7 @@ import { PROJECT_STATUSES, PROJECT_ICON_NAMES } from "../constants.js";
 import { envConfigSchema } from "./secret.js";
 import { trustAuthorizationPolicySchema } from "./trust-policy.js";
 import { objectWithoutDefaults } from "./partial.js";
+import { CASTE_KEY_PATTERN } from "../myrmidon-castes.js";
 
 const executionWorkspaceStrategySchema = z
   .object({
@@ -119,7 +120,7 @@ const projectFields = {
    * fall back to when a task names none — a key of the company's caste
    * directory; NULL inherits the company default.
    */
-  defaultCasteKey: z.string().trim().min(1).max(120).optional().nullable(),
+  defaultCasteKey: z.string().regex(CASTE_KEY_PATTERN).optional().nullable(),
 };
 
 export const createProjectSchema = z.object({

@@ -577,7 +577,10 @@ export function projectService(db: Db) {
     defaultCasteKey: string | null | undefined,
   ) => {
     if (defaultCasteKey == null) return;
-    const caste = await createCasteStore({ db }).findCaste(companyId, defaultCasteKey);
+    // main (#1241): a company without a directory yet gets the built-ins seeded first.
+    const castes = createCasteStore({ db });
+    await castes.seedIfMissing(companyId);
+    const caste = await castes.findCaste(companyId, defaultCasteKey);
     if (!caste) {
       throw unprocessable(`caste "${defaultCasteKey}" does not exist in this company`, {
         code: "project_caste_unknown",

@@ -1,3 +1,4 @@
+// myrmidon(DEBRAND-c): persist browser state under the Myrmidon namespace.
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowUpDown, Check, ChevronDown, Columns3, Filter, Layers, ListTree, Search, SearchX } from "lucide-react";
@@ -86,7 +87,7 @@ const defaultCaseViewState: CaseViewState = {
 };
 
 function getCaseViewStorageKey(companyId: string | null | undefined): string | null {
-  return companyId ? `paperclip:cases:${companyId}:view` : null;
+  return companyId ? `myrmidon:cases:${companyId}:view` : null;
 }
 
 function normalizeCaseColumns(value: unknown): CaseColumn[] {
