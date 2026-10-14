@@ -1067,7 +1067,7 @@ function getDeclaredAdapterModels(): ReturnType<typeof parseAdapterModelsEnv> {
 
 export async function listAdapterModels(type: string): Promise<{ id: string; label: string }[]> {
   const pluginModels = getPluginProviderModels()
-    .filter((model) => model.pluginKey === type || model.provider === type)
+    .filter((model) => model.pluginKey === type || model.provider === type || `${model.pluginKey}-plugin` === type)
     .map(({ modelId, label }) => ({ id: modelId, label }));
   if (pluginModels.length > 0) return pluginModels;
   const declaredModels = getDeclaredAdapterModels();

@@ -84,6 +84,7 @@ describe("pluginLifecycleManager.restartWorker", () => {
     mockRegistry.getById.mockResolvedValue({ ...ready, status: "disabled" });
     await lifecycle.enable("plugin-1");
     expect(getPluginProviderModels().map((model) => model.modelId)).toEqual(["example/one", "example/two"]);
+    mockRegistry.getById.mockResolvedValue(ready);
     await lifecycle.disable("plugin-1");
     expect(getPluginProviderModels()).toEqual([]);
   });
@@ -100,10 +101,12 @@ describe("pluginLifecycleManager.restartWorker", () => {
     mockRegistry.getById.mockResolvedValue({ ...ready, status: "disabled" });
     mockRegistry.updateStatus.mockImplementation(async (_id: string, value: { status: string }) => ({ ...ready, ...value }));
     await lifecycle.enable("plugin-1");
+    mockRegistry.getById.mockResolvedValue(ready);
     await lifecycle.disable("plugin-1");
     mockRegistry.getById.mockResolvedValue({ ...ready, status: "disabled" });
     await lifecycle.enable("plugin-1");
     expect(getPluginProviderModels()).toHaveLength(1);
+    mockRegistry.getById.mockResolvedValue(ready);
     await lifecycle.disable("plugin-1");
   });
 
