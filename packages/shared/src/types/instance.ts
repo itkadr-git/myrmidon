@@ -7,6 +7,8 @@ import type { StoredRunLimits } from "../myrmidon-runtime-limits.js";
 import type { RunStallValues } from "../myrmidon-run-stall.js";
 // myrmidon(1.6.6 PROCS-J): the board's process composition stored in instance settings
 import type { StoredBoardProcessesSettings } from "../myrmidon-board-processes.js";
+// myrmidon(PROCS-1.1): the board's process settings, see myrmidon-processes.ts.
+import type { ProcessesSettings } from "../myrmidon-processes.js";
 // myrmidon(1.6.6 CORPUS-2.0 ч.C): the knowledge-corpus module settings of the same row
 import type { StoredCorpusSettings } from "../myrmidon-corpus.js";
 import type { HostDiskSettings } from "../myrmidon-host-disk.js";
@@ -121,7 +123,7 @@ export interface InstanceGeneralSettings {
    * the validator of the same field
    * (packages/shared/src/validators/instance.ts).
    */
-  processes?: StoredBoardProcessesSettings;
+  processes?: StoredBoardProcessesSettings | ProcessesSettings;
   /**
    * myrmidon(BOT-DISK-A): the bot draft-directory lifecycle, changed from
    * `GET`/`PATCH /api/myrmidon/bot-disk`. Absent means "use the environment
