@@ -245,10 +245,10 @@ describeEmbeddedPostgres(
         })
         .returning();
 
-      await db.delete(instanceSettings).where(eq(instanceSettings.singletonKey, "default"));
       await instanceSettingsService(db).updateGeneral({
         [OWNER_DELIVERY_SETTINGS_KEY]: { mode: "via_bot" },
       });
+      await db.delete(instanceSettings).where(eq(instanceSettings.singletonKey, "default"));
       return { companyId, agentId, boardUserId, endpointId, dmIssue, workIssue };
     }
 
