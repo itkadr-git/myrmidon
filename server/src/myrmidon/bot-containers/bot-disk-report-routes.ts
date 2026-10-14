@@ -17,7 +17,9 @@ import {
 } from "@paperclipai/shared";
 import { badRequest, forbidden, payloadTooLarge, unauthorized } from "../../errors.js";
 import { botKeyForAgent } from "./agent-config.js";
-import { storeBotDiskReport } from "./bot-disk-report-store.js";
+import { readBotDiskReports, storeBotDiskReport } from "./bot-disk-report-store.js";
+import { assertBoardOrgAccess } from "../../routes/authz.js";
+import { dockergateDiskClientFromEnv, type DockergateDiskClient } from "./dockergate-disk-client.js";
 
 /** How soon botd should send the next report. */
 export const BOT_DISK_NEXT_REPORT_SEC = 300;
@@ -44,7 +46,12 @@ export function botDiskReportRoutes(options: { nowMs?: () => number } = {}) {
     if (bodyBytes(req) > WS_DISK_REPORT_MAX_BODY_BYTES) {
       throw payloadTooLarge(`Disk report is over ${WS_DISK_REPORT_MAX_BODY_BYTES} bytes`);
     }
-    const parsed = wsDiskReportSchema.safeParse(req.body);
+    // The board writes MYRMIDON_BOT_KEY into the bot's .env, so botd names its own
+    // key. A body without a botKey (an older botd) is stored under the caller's key;
+    // a body that names another bot is still a 403 below.
+    const raw = req.body && typeof req.body === "object" ? (req.body as Record<string, unknown>) : null;
+    const body = raw && raw.botKey === undefined ? { ...raw, botKey } : req.body;
+    const parsed = wsDiskReportSchema.safeParse(body);
     if (!parsed.success) throw badRequest("Invalid disk report", parsed.error.issues);
     const report = parsed.data;
     if (report.actions.length > WS_DISK_REPORT_MAX_ACTIONS) {
@@ -59,7 +66,34 @@ export function botDiskReportRoutes(options: { nowMs?: () => number } = {}) {
   return router;
 }
 
+/**
+ * Board reads for the "Bot disk" panel (BOT-DISK-H4d): the last report of every bot
+ * and the physical disk state from dockergate (contract C5). A failed dockergate read
+ * is a 502; the panel treats any failed read as "no data".
+ */
+export function botDiskReadRoutes(options: { disk?: DockergateDiskClient } = {}) {
+  const router = Router();
+  let disk = options.disk ?? null;
+  router.get("/myrmidon/bot-disk/reports", (req, res) => {
+    assertBoardOrgAccess(req);
+    res.json({ reports: readBotDiskReports().map((e) => ({ ...e.report, receivedAt: e.receivedAt })) });
+  });
+  router.get("/myrmidon/bot-disk/physical", async (req, res, next) => {
+    try {
+      assertBoardOrgAccess(req);
+      disk ??= dockergateDiskClientFromEnv();
+      res.json(await disk.getDisk());
+    } catch (err) {
+      next(err);
+    }
+  });
+  return router;
+}
+
 /** Router for app.ts, mounted under /api. */
 export function myrmidonBotDiskReportRoutes() {
-  return botDiskReportRoutes();
+  const router = Router();
+  router.use(botDiskReportRoutes());
+  router.use(botDiskReadRoutes());
+  return router;
 }

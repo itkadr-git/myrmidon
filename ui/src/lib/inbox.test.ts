@@ -1228,6 +1228,7 @@ describe("inbox helpers", () => {
       "project",
       "parent",
       "labels",
+      "pheromone",
       "updated",
     ]);
     expect(getAvailableInboxIssueColumns(true)).toEqual([
@@ -1239,6 +1240,7 @@ describe("inbox helpers", () => {
       "workspace",
       "parent",
       "labels",
+      "pheromone",
       "updated",
     ]);
   });

@@ -90,10 +90,14 @@ export interface Project {
   targetDate: string | null;
   color: string | null;
   icon: string | null;
-  defaultCasteKey?: string | null; // myrmidon(PROJECT-DEFAULT-CASTE): optional for older clients.
   env: AgentEnvConfig | null;
   pauseReason: PauseReason | null;
   pausedAt: Date | null;
+  /**
+   * 1.6.5 (F-27 rework 09.10, design §2.1): the caste the project's tasks
+   * fall back to when a task names none; NULL inherits the company default.
+   */
+  defaultCasteKey?: string | null;
   executionWorkspacePolicy: ProjectExecutionWorkspacePolicy | null;
   codebase: ProjectCodebase;
   workspaces: ProjectWorkspace[];

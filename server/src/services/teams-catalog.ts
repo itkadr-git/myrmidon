@@ -28,6 +28,7 @@ import { companyPortabilityService } from "./company-portability.js";
 import { companySkillService } from "./company-skills.js";
 import { logActivity } from "./activity-log.js";
 import { normalizePortablePath } from "./portable-path.js";
+import { readProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
 
 type CatalogManifestFile = CatalogManifest;
 
@@ -142,7 +143,7 @@ let cachedCatalogManifest: {
 } | null = null;
 
 function buildCatalogPackageRootCandidates() {
-  const configuredRoot = process.env.PAPERCLIP_TEAMS_CATALOG_DIR?.trim();
+  const configuredRoot = readProductEnv("TEAMS_CATALOG_DIR")?.trim();
   const candidates = [
     ...(configuredRoot ? [path.resolve(configuredRoot)] : []),
     path.resolve(process.cwd(), "packages/teams-catalog"),
@@ -684,7 +685,7 @@ async function readCatalogTeamSourceFiles(team: CatalogTeam): Promise<Record<str
 const FALLBACK_SAFE_CATALOG_ADAPTER_TYPE = "claude_local";
 
 function defaultSafeCatalogAdapterType() {
-  return process.env.PAPERCLIP_TEAMS_CATALOG_DEFAULT_ADAPTER_TYPE?.trim() || FALLBACK_SAFE_CATALOG_ADAPTER_TYPE;
+  return readProductEnv("TEAMS_CATALOG_DEFAULT_ADAPTER_TYPE")?.trim() || FALLBACK_SAFE_CATALOG_ADAPTER_TYPE;
 }
 
 /**

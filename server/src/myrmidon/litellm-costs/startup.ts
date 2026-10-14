@@ -19,6 +19,8 @@ import { logger } from "../../middleware/logger.js";
 import { secretService } from "../../services/index.js";
 import { createLitellmGatewayClient, readLitellmCostSettings, sweepLitellmCosts } from "./litellm-costs.js";
 import { listGatewayBotKeys } from "./bot-keys.js";
+// myrmidon(1.6.5-F-18): the empty-catalog signal registry (see attention.ts).
+import { resetEmptyCatalogSignals } from "./attention.js";
 
 export interface LitellmSweepPorts {
   listCompanyIds(db: Db): Promise<string[]>;
@@ -54,6 +56,10 @@ export function startLitellmCostSweep(
   if (!settings.enabled) return () => {};
   const ports: LitellmSweepPorts = { ...defaultPorts, ...opts.ports };
   stopLitellmCostSweep();
+  // myrmidon(1.6.5-F-18): a previously enabled sweep may have left an
+  // empty-catalog card behind; starting a new sweep resets the registry so a
+  // stale card cannot linger across reconfiguration.
+  resetEmptyCatalogSignals();
 
   let sweeping = false;
   let stopped = false;

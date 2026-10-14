@@ -99,6 +99,7 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
+    "@paperclipai/shared": "workspace:*",
     "@paperclipai/adapter-utils": "workspace:*",
     "picocolors": "^1.1.1"
   },

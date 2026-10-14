@@ -137,7 +137,7 @@ export class CorpusVectorSearchUnavailableError extends Error {
 
   constructor(pgError: unknown) {
     super(
-      "semantic search needs the pgvector objects of migration 0310_corpus_pgvector.sql " +
+      "semantic search needs the pgvector objects of migration 0391_corpus_pgvector.sql " +
         "(the corpus_chunks.embedding column and its HNSW index); this database was migrated " +
         "without pgvector, so only full text search is available",
     );

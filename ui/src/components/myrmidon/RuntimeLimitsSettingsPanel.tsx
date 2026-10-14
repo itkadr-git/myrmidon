@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
+  describeAdmissionDenials,
   describeHostLoad,
   describeMemorySnapshot,
   describeQueueSnapshot,
@@ -48,7 +49,7 @@ const FIELDS: Array<{ key: PanelLimitKey; label: string; hint: string; optional:
   {
     key: "minFreeMemoryMb",
     label: "Free memory to keep, MB",
-    hint: "A run starts only if the server container keeps this much memory free after it.",
+    hint: "A run starts only if the server container keeps this much memory free after it. This is the hard floor: below it everything waits, including the answer to a message the owner wrote in a chat. That answer is held by this floor alone — measured on the container and on the host's available memory — and not by the host floor below. Default 1500.",
     optional: true,
   },
   {
@@ -61,14 +62,14 @@ const FIELDS: Array<{ key: PanelLimitKey; label: string; hint: string; optional:
     // myrmidon(1.6.2 RUN-ADMISSION)
     key: "minFreeHostMemoryMb",
     label: "Free host memory to keep, MB",
-    hint: "A new run starts only while the host (where the bot containers run) has at least this much available memory; otherwise it waits in the queue. Default 15360 (15 GB).",
+    hint: "A new run starts only while the host (where the bot containers run) has at least this much available memory; otherwise it waits in the queue. The automatic runs wait here — a turn started by a message the owner wrote in a chat does not: it is admitted by the floor above (applied to the container and to the host's available memory) and goes to the front of the queue. Default 15360 (15 GB).",
     optional: true,
   },
   {
     // myrmidon(1.6.5 RUN-ADMISSION)
     key: "maxHostLoadPercentPerCore",
     label: "Max host load per core, % of a core",
-    hint: "A new run starts only while the host's 1-minute load average is this many percent of one CPU core ABOVE the load the host carries on its own (100 = one core fully busy). The host's own background — the services that keep it busy without any run — does not close the ceiling: only the load the runs add counts. Default 90. Empty switches the ceiling off.",
+    hint: "A new run starts only while the host's 1-minute load average is this many percent of one CPU core ABOVE the load the host carries on its own (100 = one core fully busy). The host's own background — the services that keep it busy without any run — does not close the ceiling: only the load the runs add counts. A turn started by a message the owner wrote in a chat does not wait for this ceiling either. Default 90. Empty switches the ceiling off.",
     optional: true,
   },
   {
@@ -175,6 +176,11 @@ export function RuntimeLimitsSettingsPanelView({
   // myrmidon(1.6.5 C0-ui): the memory snapshot — the host's available memory
   // and the server container's cgroup usage, next to the queue line.
   const memoryLine = describeMemorySnapshot(view?.memory);
+  // myrmidon(1.6.5 F-09 B): the admission's refusal counter — how often the
+  // sweep left a queued run waiting on a global/host ceiling, by reason and
+  // with the time of the last one. `null` when the server sends no counter, so
+  // the block is simply absent on an older server.
+  const denialsLine = describeAdmissionDenials(view?.admissionDenials);
 
   return (
     <section className="space-y-4" data-testid="myrmidon-runtime-limits">
@@ -248,6 +254,17 @@ export function RuntimeLimitsSettingsPanelView({
               className="text-xs text-muted-foreground md:col-span-2"
             >
               {memoryLine}
+            </p>
+          ) : null}
+          {/* myrmidon(1.6.5 F-09 B): the admission's refusal counter — why the
+              sweep left queued runs waiting, by reason, and when it last did.
+              Absent when the server sends no counter (an older server). */}
+          {denialsLine ? (
+            <p
+              data-testid="runtime-limit-admission-denials"
+              className="text-xs text-muted-foreground md:col-span-2"
+            >
+              {denialsLine}
             </p>
           ) : null}
           <div className="md:col-span-2">

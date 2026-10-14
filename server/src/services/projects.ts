@@ -29,7 +29,7 @@ import {
   type PluginManagedProjectResolution,
 } from "@paperclipai/shared";
 import { unprocessable } from "../errors.js";
-import { createCasteStore } from "../myrmidon/castes/store.js"; // myrmidon(PROJECT-DEFAULT-CASTE)
+import { createCasteStore } from "../myrmidon/castes/store.js";
 import { listCurrentRuntimeServicesForProjectWorkspaces } from "./workspace-runtime-read-model.js";
 import { parseProjectExecutionWorkspacePolicy } from "./execution-workspace-policy.js";
 import { mergeProjectWorkspaceRuntimeConfig, readProjectWorkspaceRuntimeConfig } from "./project-workspace-runtime-config.js";
@@ -568,23 +568,34 @@ async function ensureSinglePrimaryWorkspace(
 }
 
 export function projectService(db: Db) {
-  // myrmidon(PROJECT-DEFAULT-CASTE): validate against the project's company directory.
-  const castes = createCasteStore({ db });
-  async function assertDefaultCaste(companyId: string, key: string | null | undefined) {
-    if (key == null) return;
+  // 1.6.5 (F-27 rework 09.10, design §2.1): the nest's default caste must exist
+  // in the company's directory (create and update share the check — review
+  // #1047 п.5: a key typed at creation routed tasks into a queue nobody serves);
+  // null/undefined clears to the company default.
+  const assertProjectDefaultCasteExists = async (
+    companyId: string,
+    defaultCasteKey: string | null | undefined,
+  ) => {
+    if (defaultCasteKey == null) return;
+    // main (#1241): a company without a directory yet gets the built-ins seeded first.
+    const castes = createCasteStore({ db });
     await castes.seedIfMissing(companyId);
-    if (!(await castes.findCaste(companyId, key))) {
-      throw unprocessable("Unknown project default caste", { code: "project_default_caste_unknown" });
+    const caste = await castes.findCaste(companyId, defaultCasteKey);
+    if (!caste) {
+      throw unprocessable(`caste "${defaultCasteKey}" does not exist in this company`, {
+        code: "project_caste_unknown",
+      });
     }
-  }
+  };
+
   const createProject = async (
     companyId: string,
     data: Omit<typeof projects.$inferInsert, "companyId"> & { goalIds?: string[] },
   ): Promise<ProjectWithGoals> => {
     const { goalIds: inputGoalIds, ...projectData } = data;
-    await assertDefaultCaste(companyId, projectData.defaultCasteKey); // myrmidon(PROJECT-DEFAULT-CASTE)
     const ids = resolveGoalIds({ goalIds: inputGoalIds, goalId: projectData.goalId });
     if (ids && ids.length > 0) await assertGoalsBelongToCompany(db, companyId, ids);
+    await assertProjectDefaultCasteExists(companyId, projectData.defaultCasteKey);
 
     // Note: color is intentionally NOT auto-assigned. New projects default to
     // `color = null` (neutral gray) unless an explicit color is supplied. See PAP-68.
@@ -882,10 +893,12 @@ export function projectService(db: Db) {
         .where(eq(projects.id, id))
         .then((rows) => rows[0] ?? null);
       if (!existingProject) return null;
-      await assertDefaultCaste(existingProject.companyId, projectData.defaultCasteKey); // myrmidon(PROJECT-DEFAULT-CASTE)
       if (ids && ids.length > 0) {
         await assertGoalsBelongToCompany(db, existingProject.companyId, ids);
       }
+      // 1.6.5 (F-27 rework 09.10, design §2.1): the nest's default caste must
+      // exist in the company's directory; null clears to the company default.
+      await assertProjectDefaultCasteExists(existingProject.companyId, projectData.defaultCasteKey);
 
       if (projectData.name !== undefined) {
         const existingShortname = normalizeProjectUrlKey(existingProject.name);

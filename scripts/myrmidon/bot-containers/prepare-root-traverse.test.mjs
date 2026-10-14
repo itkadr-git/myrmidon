@@ -140,12 +140,23 @@ describe("prepare script: bot root traversal (BOT-ROOT-TRAVERSE)", () => {
 
   it("refuses to be a vector into the content: it never opens a path below the root", () => {
     // The script is constant text: no recursion flag, no link option, no find/glob,
-    // and its last (and only root) statement is a single chmod on the mount point.
+    // and the root statement is a single chmod on the mount point. The package-cache
+    // block (1.6.5-BOT-DISK-UV-B board side) follows it and is a fixed list of
+    // `install -d` lines — still constant, still no recursion — under a `test -d`
+    // guard so a bot without the cache bind is untouched.
     const script = fs.readFileSync(PREPARE_SH, "utf8");
     assert.doesNotMatch(script, / -R| -L| -H|find|xargs|\*|\?|`|\$\(/);
-    const rootLine = script.trimEnd().split("\n").at(-1).trim();
-    assert.equal(rootLine, "chmod 0711 bot");
-    assert.equal(script.split("\n").length, 7); // set -eu, cd, for, chmod, chown, done, root chmod
+    const lines = script.trimEnd().split("\n");
+    const rootIdx = lines.indexOf("chmod 0711 bot");
+    assert.notEqual(rootIdx, -1, "the root statement is present");
+    const cacheBlock = lines.slice(rootIdx + 1);
+    assert.equal(cacheBlock[0], "if test -d package-cache; then");
+    assert.equal(cacheBlock.at(-1), "fi");
+    const installs = cacheBlock.slice(1, -1);
+    assert.equal(installs.length, 6); // the PACKAGE_CACHE_MOUNTS list
+    for (const line of installs) {
+      assert.match(line, /^  install -d -o 10001 -g 10001 "package-cache\/[a-z-]+"$/);
+    }
     // The ownership handover the behavioural run may not execute everywhere:
     // exactly one non-recursive chown of the three mount points to the bot's uid.
     assert.match(script, /^  chown 10001:10001 "\$d"$/m);

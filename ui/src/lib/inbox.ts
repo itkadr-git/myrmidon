@@ -47,6 +47,7 @@ export const inboxIssueColumns = [
   "workspace",
   "parent",
   "labels",
+  "pheromone",
   "updated",
 ] as const;
 export type InboxIssueColumn = (typeof inboxIssueColumns)[number];
