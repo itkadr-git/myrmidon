@@ -114,13 +114,11 @@ describeEmbeddedPostgres(
           updatedAt: new Date(),
         })
         .onConflictDoNothing();
-      await db.insert(companyMemberships).values({
-        companyId,
-        principalType: "user",
-        principalId: boardUserId,
-        status: "active",
-        membershipRole: "operator",
-      });
+      const [membership] = await db.select().from(companyMemberships)
+        .where(eq(companyMemberships.companyId, companyId));
+      await db.update(companyMemberships)
+        .set({ membershipRole: "owner" })
+        .where(eq(companyMemberships.id, membership!.id));
       await db.insert(agents).values({
         id: agentId,
         companyId,
@@ -317,9 +315,6 @@ describeEmbeddedPostgres(
             version: 1 as const,
             prompt: "Proceed with the deploy?",
             detailsMarkdown: "Deploy build to production.",
-            target: { type: "issue_document" as const, key: "plan", revisionId: randomUUID() },
-            acceptLabel: "Accept",
-            rejectLabel: "Reject",
             allowDeclineReason: true,
           },
         },
