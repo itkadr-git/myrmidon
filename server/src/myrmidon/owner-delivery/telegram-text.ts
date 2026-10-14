@@ -30,10 +30,6 @@ export function telegramOwnerQuestionText(
     "",
   ];
   if (questionSet?.description?.trim()) lines.push(questionSet.description.trim(), "");
-  if (interaction.payload.helpText?.trim()) {
-    lines.push(interaction.payload.helpText.trim(), "");
-  }
-
   if (questionSet) {
     for (const question of questionSet.questions) {
       lines.push(question.header?.trim() || question.prompt.trim());
@@ -81,10 +77,10 @@ export function telegramOwnerConfirmationText(
 
   const lines = [payload.prompt.trim()];
   if (payload.detailsMarkdown?.trim()) lines.push("", payload.detailsMarkdown.trim());
+  if (payload.consequences?.trim()) lines.push("", "Последствия:", payload.consequences.trim());
   if (payload.target != null) {
     lines.push("", "Цель согласования:", JSON.stringify(payload.target));
   }
-  if (payload.consequences?.trim()) lines.push("", "Последствия:", payload.consequences.trim());
   const replyCanResolve =
     nativeTelegramConfirmationAvailable &&
     !payload.rejectRequiresReason &&
