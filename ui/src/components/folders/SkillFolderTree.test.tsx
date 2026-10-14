@@ -1,3 +1,4 @@
+// myrmidon(DEBRAND-c): persist browser state under the Myrmidon namespace.
 // @vitest-environment jsdom
 
 import { flushSync } from "react-dom";
@@ -101,7 +102,7 @@ describe("SkillFolderRail", () => {
     });
 
     expect(rail.style.width).toBe("320px");
-    expect(window.localStorage.getItem("paperclip.skills.folderRail.width")).toBe("320");
+    expect(window.localStorage.getItem("myrmidon.skills.folderRail.width")).toBe("320");
   });
 
   it("keeps virtual and folder counts on the same grid column", () => {
