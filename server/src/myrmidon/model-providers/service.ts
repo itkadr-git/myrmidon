@@ -26,6 +26,9 @@
 import { and, eq } from "drizzle-orm";
 import {
   DEFAULT_CHATGPT_POOL_MODELS,
+  getModelProviderConnector,
+  isModelProviderTypeAvailable,
+  listAvailableModelProviderTypes,
   MODEL_PROVIDER_DEFAULT_BASE_URLS,
   MODEL_PROVIDER_MODELS_PATH,
   modelProviderSecretName,
@@ -35,10 +38,15 @@ import {
   type PatchModelProviderInput,
   type PoolAccountChannelView,
   type PoolAccountLimitWindow,
+  type PoolAccountRoleSignal,
 } from "@paperclipai/shared";
 import { modelProviderModels, modelProviders, type Db } from "@paperclipai/db";
 import { badRequest, conflict, notFound, unprocessable } from "../../errors.js";
-import { evaluateAccountSignals, recordPoolAccountSignals } from "./signals.js";
+import {
+  clearPoolAccountSignals,
+  evaluateAccountSignals,
+  recordPoolAccountSignals,
+} from "./signals.js";
 
 /** The provider surface this module needs from the secret store. */
 export interface ModelProviderSecretStoreDeps {
@@ -160,11 +168,12 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
     return row;
   }
 
-  function effectiveBaseUrl(type: ModelProviderType, baseUrl: string | null | undefined): string {
+  function effectiveBaseUrl(type: string, baseUrl: string | null | undefined): string {
     const explicit = baseUrl?.trim() || null;
-    const url = explicit ?? MODEL_PROVIDER_DEFAULT_BASE_URLS[type];
+    const connector = getModelProviderConnector(type);
+    const url = explicit ?? MODEL_PROVIDER_DEFAULT_BASE_URLS[type] ?? connector?.defaultBaseUrl ?? null;
     if (!url) {
-      throw badRequest("baseUrl is required for an openai-compatible provider");
+      throw badRequest(`baseUrl is required for provider type "${type}"`);
     }
     return url.replace(/\/$/, "");
   }
@@ -190,13 +199,14 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
    * endpoint is an unprocessable error, and neither writes anything.
    */
   async function validateKey(input: {
-    type: ModelProviderType;
+    type: string;
     baseUrl: string | null | undefined;
     key: string;
   }): Promise<string[]> {
     const baseUrl = effectiveBaseUrl(input.type, input.baseUrl);
     try {
-      if (input.type === "chatgpt-pool") {
+      const connector = getModelProviderConnector(input.type);
+      if (input.type === "chatgpt-pool" || connector) {
         if (deps.catalog.listAccounts) {
           await deps.catalog.listAccounts({ baseUrl, apiKey: input.key });
         } else {
@@ -206,7 +216,7 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
             if (error instanceof ProviderAuthError) throw error;
           }
         }
-        return [...DEFAULT_CHATGPT_POOL_MODELS];
+        return connector?.defaultModels ? [...connector.defaultModels] : [...DEFAULT_CHATGPT_POOL_MODELS];
       }
 
       const { models } = await deps.catalog.listModels({ baseUrl, apiKey: input.key });
@@ -266,6 +276,13 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
       throw conflict(`a model provider named "${name}" already exists in this company`, {
         code: "model_provider_name_exists",
       });
+    }
+
+    if (!isModelProviderTypeAvailable(input.body.type)) {
+      throw badRequest(
+        `provider type "${input.body.type}" is not available; connector plugin is not registered`,
+        { code: "model_provider_type_unsupported" },
+      );
     }
 
     const models = await validateKey({
@@ -397,6 +414,7 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
       if (secretId) await deps.secrets.deleteSecret(secretId);
     }
     await deps.db.delete(modelProviders).where(eq(modelProviders.id, row.id));
+    clearPoolAccountSignals(input.companyId, input.providerId);
     await input.activity?.({
       companyId: input.companyId,
       action: "model_provider_removed",
@@ -564,14 +582,23 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
       );
 
     const nowUnix = Math.floor(now().getTime() / 1000);
+    const primaryExhausted = Boolean(
+      primary?.usedPct !== null &&
+        primary?.usedPct !== undefined &&
+        primary.usedPct >= 100,
+    );
+    const secondaryExhausted = Boolean(
+      secondary?.usedPct !== null &&
+        secondary?.usedPct !== undefined &&
+        secondary.usedPct >= 100,
+    );
     const isExhausted =
       !isBanned &&
       (state === "rate_limited" ||
         Boolean(rawUsage.limitReached) ||
         (limitedUntil !== null && limitedUntil > nowUnix) ||
-        (primary?.usedPct !== null &&
-          primary?.usedPct !== undefined &&
-          primary.usedPct >= 100));
+        primaryExhausted ||
+        secondaryExhausted);
 
     return {
       n,
@@ -609,7 +636,8 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
     providerId: string,
   ): Promise<ModelProviderChannelsView> {
     const provider = await loadProvider(companyId, providerId);
-    if (provider.type !== "chatgpt-pool") {
+    const connector = getModelProviderConnector(provider.type);
+    if (provider.type !== "chatgpt-pool" && (!connector || !connector.supportsChannels)) {
       return {
         providerId: provider.id,
         providerType: provider.type,
@@ -648,8 +676,8 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
     }
 
     const channels = rawAccounts.map(mapRawAccountToChannel);
-    const signals = evaluateAccountSignals(companyId, channels, now());
-    recordPoolAccountSignals(companyId, signals);
+    const signals = evaluateAccountSignals(companyId, provider.id, channels, now());
+    recordPoolAccountSignals(companyId, provider.id, signals);
 
     return {
       providerId: provider.id,
@@ -659,16 +687,47 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
     };
   }
 
+  async function syncPoolSignals(
+    companyId: string,
+    providerId?: string,
+  ): Promise<PoolAccountRoleSignal[]> {
+    if (providerId) {
+      const channelsView = await listChannels(companyId, providerId);
+      return channelsView.signals;
+    }
+
+    const providers = await deps.db
+      .select()
+      .from(modelProviders)
+      .where(eq(modelProviders.companyId, companyId));
+
+    const aggregated: PoolAccountRoleSignal[] = [];
+    for (const p of providers) {
+      const connector = getModelProviderConnector(p.type);
+      if (p.type === "chatgpt-pool" || connector?.supportsChannels) {
+        try {
+          const channelsView = await listChannels(companyId, p.id);
+          aggregated.push(...channelsView.signals);
+        } catch {
+          // Transport errors on one provider do not halt the company pass
+        }
+      }
+    }
+    return aggregated;
+  }
+
   return {
     createProvider,
     rotateProviderKey,
     patchProvider,
     removeProvider,
     listProviders,
+    listAvailableTypes: () => listAvailableModelProviderTypes(),
     readProvider,
     listModels,
     setModels,
     listChannels,
+    syncPoolSignals,
   };
 }
 

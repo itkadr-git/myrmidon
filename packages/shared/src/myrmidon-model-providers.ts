@@ -20,28 +20,70 @@ import { z } from "zod";
 /** Prefix of a model-provider credential name in the company secret store. */
 export const MODEL_PROVIDER_SECRET_PREFIX = "model-provider-key-";
 
-/** The provider kinds a company may register. */
-export const MODEL_PROVIDER_TYPES = [
+/** Built-in provider kinds supported out of the box without external connectors. */
+export const BUILTIN_MODEL_PROVIDER_TYPES = [
   "openai",
   "dashscope",
   "google",
   "openai-compatible",
+] as const;
+export type BuiltinModelProviderType = (typeof BUILTIN_MODEL_PROVIDER_TYPES)[number];
+
+/** Statically known provider kinds for type safety. */
+export const MODEL_PROVIDER_TYPES = [
+  ...BUILTIN_MODEL_PROVIDER_TYPES,
   "chatgpt-pool",
 ] as const;
 export type ModelProviderType = (typeof MODEL_PROVIDER_TYPES)[number];
 
-/** Default base URL per provider type; null means the provider's own default. */
+/** Default base URL per built-in provider type; null means the provider's own default. */
 export const MODEL_PROVIDER_DEFAULT_BASE_URLS: Readonly<
-  Record<ModelProviderType, string | null>
+  Record<string, string | null>
 > = {
   openai: "https://api.openai.com/v1",
   dashscope: "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
   google: "https://generativelanguage.googleapis.com/v1beta-openai",
   "openai-compatible": null,
-  "chatgpt-pool": "http://localhost:8895",
 };
 
-/** Models supported by default on the chatgpt-pool connector. */
+/** Connector specification for closed/paid or plugin-based model providers. */
+export interface ModelProviderConnectorRegistration {
+  type: string;
+  name?: string;
+  pluginKey?: string;
+  defaultBaseUrl?: string | null;
+  defaultModels?: readonly string[];
+  supportsChannels?: boolean;
+}
+
+const registeredModelProviderConnectors = new Map<string, ModelProviderConnectorRegistration>();
+
+export function registerModelProviderConnector(reg: ModelProviderConnectorRegistration): void {
+  registeredModelProviderConnectors.set(reg.type, reg);
+}
+
+export function unregisterModelProviderConnector(type: string): void {
+  registeredModelProviderConnectors.delete(type);
+}
+
+export function getModelProviderConnector(type: string): ModelProviderConnectorRegistration | null {
+  return registeredModelProviderConnectors.get(type) ?? null;
+}
+
+export function clearModelProviderConnectors(): void {
+  registeredModelProviderConnectors.clear();
+}
+
+/** Lists provider types currently available (built-in + active registered connectors). */
+export function listAvailableModelProviderTypes(): string[] {
+  return [...BUILTIN_MODEL_PROVIDER_TYPES, ...registeredModelProviderConnectors.keys()];
+}
+
+export function isModelProviderTypeAvailable(type: string): boolean {
+  return listAvailableModelProviderTypes().includes(type);
+}
+
+/** Default models for the closed chatgpt-pool connector (provided on registration). */
 export const DEFAULT_CHATGPT_POOL_MODELS = [
   "gpt-6.1-sol",
   "gpt-6-sol",
@@ -108,6 +150,7 @@ export interface PoolAccountChannelView {
 /** Role notification signal when an account is banned or limit-exhausted. */
 export interface PoolAccountRoleSignal {
   dedupKey: string;
+  providerId?: string;
   accountNumber: number;
   label: string;
   kind: "banned" | "exhausted";

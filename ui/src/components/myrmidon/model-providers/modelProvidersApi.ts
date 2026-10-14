@@ -12,14 +12,19 @@
 // response types carry only key-free fields.
 import { api } from "@/api/client";
 
-export const MODEL_PROVIDER_TYPES = [
+export const BUILTIN_MODEL_PROVIDER_TYPES = [
   "dashscope",
   "openai",
   "google",
   "openai-compatible",
+] as const;
+
+export const MODEL_PROVIDER_TYPES = [
+  ...BUILTIN_MODEL_PROVIDER_TYPES,
   "chatgpt-pool",
 ] as const;
 
+export type BuiltinModelProviderType = (typeof BUILTIN_MODEL_PROVIDER_TYPES)[number];
 export type ModelProviderType = (typeof MODEL_PROVIDER_TYPES)[number];
 
 export interface ModelProviderView {
@@ -103,6 +108,7 @@ export interface PoolAccountChannelView {
 
 export interface PoolAccountRoleSignal {
   dedupKey: string;
+  providerId?: string;
   accountNumber: number;
   label: string;
   kind: "banned" | "exhausted";
@@ -123,6 +129,7 @@ export interface ModelProviderChannelsView {
 
 export interface ModelProvidersView {
   providers: ModelProviderView[];
+  availableTypes?: ModelProviderType[] | string[];
   changeLog: ModelProviderChangeLogEntry[];
 }
 

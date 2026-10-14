@@ -3482,9 +3482,10 @@ async function buildAttentionFeedSnapshot(
             title: poolSignal.title,
             identifier: `ACC-${poolSignal.accountNumber}`,
             status: poolSignal.kind,
-            href: `/${prefix}/company/settings/castes`,
+            href: `/${prefix}/company/settings/models`,
             metadata: {
               accountNumber: poolSignal.accountNumber,
+              providerId: poolSignal.providerId,
               label: poolSignal.label,
               kind: poolSignal.kind,
               resetsAt: poolSignal.resetsAt,

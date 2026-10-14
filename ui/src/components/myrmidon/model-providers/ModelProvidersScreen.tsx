@@ -27,6 +27,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
   modelProvidersApi,
+  BUILTIN_MODEL_PROVIDER_TYPES,
   MODEL_PROVIDER_TYPES,
   sortModels,
   type AddModelProviderInput,
@@ -125,6 +126,12 @@ export function ModelProvidersScreenView({
   const providerFreeLabel = (provider: ModelProviderView) =>
     provider.free ? t("modelProviders.free") : t("modelProviders.paid");
 
+  const availableTypes: ModelProviderType[] = (
+    view.availableTypes
+      ? view.availableTypes.filter((t) => (MODEL_PROVIDER_TYPES as readonly string[]).includes(t))
+      : (BUILTIN_MODEL_PROVIDER_TYPES as readonly ModelProviderType[])
+  ) as ModelProviderType[];
+
   return (
     <div className="max-w-5xl space-y-6" data-testid="myrmidon-model-providers-screen">
       <div className="space-y-1">
@@ -168,7 +175,7 @@ export function ModelProvidersScreenView({
                 onChange={(e) => setForm({ ...form, type: e.target.value as ModelProviderType })}
                 data-testid="myrmidon-model-providers-add-type"
               >
-                {MODEL_PROVIDER_TYPES.map((type) => (
+                {availableTypes.map((type) => (
                   <option key={type} value={type}>
                     {providerTypeLabel(type)}
                   </option>

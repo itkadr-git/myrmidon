@@ -375,4 +375,57 @@ describe("myrmidon(1.6.6 OPE-7198) chatgpt-pool provider card with channels and 
     expect(container.textContent).toContain("75%");
     expect(container.textContent).toContain("Заблокирован");
   });
+
+  it("omits chatgpt-pool from type select when availableTypes excludes it", async () => {
+    const viewWithoutPool: ModelProvidersView = {
+      providers: [],
+      changeLog: [],
+      availableTypes: ["dashscope", "openai", "google", "openai-compatible"],
+    };
+
+    const { root: r } = render({ view: viewWithoutPool });
+    root = r;
+    await flushReact();
+
+    await act(async () => {
+      container
+        .querySelector('[data-testid="myrmidon-model-providers-add-toggle"]')
+        ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    const typeSelect = container.querySelector<HTMLSelectElement>(
+      '[data-testid="myrmidon-model-providers-add-type"]',
+    );
+    expect(typeSelect).not.toBeNull();
+    const options = Array.from(typeSelect?.options ?? []).map((o) => o.value);
+    expect(options).not.toContain("chatgpt-pool");
+    expect(options).toContain("openai");
+    expect(options).toContain("dashscope");
+  });
+
+  it("includes chatgpt-pool in type select when availableTypes includes it", async () => {
+    const viewWithPool: ModelProvidersView = {
+      providers: [],
+      changeLog: [],
+      availableTypes: ["dashscope", "openai", "google", "openai-compatible", "chatgpt-pool"],
+    };
+
+    const { root: r } = render({ view: viewWithPool });
+    root = r;
+    await flushReact();
+
+    await act(async () => {
+      container
+        .querySelector('[data-testid="myrmidon-model-providers-add-toggle"]')
+        ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    const typeSelect = container.querySelector<HTMLSelectElement>(
+      '[data-testid="myrmidon-model-providers-add-type"]',
+    );
+    expect(typeSelect).not.toBeNull();
+    const options = Array.from(typeSelect?.options ?? []).map((o) => o.value);
+    expect(options).toContain("chatgpt-pool");
+  });
 });
+

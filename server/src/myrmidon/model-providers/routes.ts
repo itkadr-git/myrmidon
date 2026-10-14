@@ -26,6 +26,7 @@
 import { Router, type Request } from "express";
 import {
   createModelProviderSchema,
+  listAvailableModelProviderTypes,
   patchModelProviderSchema,
   setModelProviderModelsSchema,
 } from "@paperclipai/shared";
@@ -77,7 +78,10 @@ export function modelProviderRoutes(deps: ModelProviderRoutesDeps): Router {
   router.get("/myrmidon/companies/:companyId/model-providers", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
-    res.json({ providers: await deps.service.listProviders(companyId) });
+    res.json({
+      providers: await deps.service.listProviders(companyId),
+      availableTypes: deps.service.listAvailableTypes ? deps.service.listAvailableTypes() : listAvailableModelProviderTypes(),
+    });
   });
 
   router.patch("/myrmidon/companies/:companyId/model-providers/:id", async (req, res) => {

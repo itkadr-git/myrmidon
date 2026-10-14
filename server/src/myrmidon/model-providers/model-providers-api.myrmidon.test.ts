@@ -9,7 +9,16 @@
 
 import express from "express";
 import request from "supertest";
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import {
+  clearModelProviderConnectors,
+  DEFAULT_CHATGPT_POOL_MODELS,
+  isModelProviderTypeAvailable,
+  listAvailableModelProviderTypes,
+  registerModelProviderConnector,
+  unregisterModelProviderConnector,
+} from "@paperclipai/shared";
+import { badRequest } from "../../errors.js";
 import { errorHandler } from "../../middleware/index.js";
 import { modelProviderRoutes } from "./routes.js";
 import type { ModelProviderService, ModelProviderView } from "./service.js";
@@ -41,6 +50,12 @@ function fakeService() {
   const calls: Array<{ op: string; companyId: string; providerId?: string; body?: unknown }> = [];
   const service: ModelProviderService = {
     async createProvider(input) {
+      if (!isModelProviderTypeAvailable(input.body.type)) {
+        throw badRequest(
+          `provider type "${input.body.type}" is not available; connector plugin is not registered`,
+          { code: "model_provider_type_unsupported" },
+        );
+      }
       calls.push({ op: "create", companyId: input.companyId, body: input.body });
       await input.activity?.({
         companyId: input.companyId,
@@ -48,7 +63,7 @@ function fakeService() {
         providerId: "provider-1",
         details: {},
       });
-      return providerView("provider-1");
+      return { ...providerView("provider-1"), type: input.body.type, name: input.body.name };
     },
     async rotateProviderKey(input) {
       calls.push({ op: "rotate", companyId: input.companyId, providerId: input.providerId, body: input.key });
@@ -120,6 +135,8 @@ function fakeService() {
         signals: [],
       };
     },
+    listAvailableTypes: () => listAvailableModelProviderTypes(),
+    syncPoolSignals: async () => [],
   };
   return { service, calls };
 }
@@ -294,3 +311,61 @@ describe("myrmidon(1.6.1 MODEL-PROVIDERS) routes: activity", () => {
     ]);
   });
 });
+
+describe("myrmidon(1.6.1 MODEL-PROVIDERS) connector boundary & availableTypes", () => {
+  afterEach(() => {
+    clearModelProviderConnectors();
+  });
+
+  it("omits unregistered connectors from availableTypes and rejects provider creation", async () => {
+    clearModelProviderConnectors();
+    const { server, calls } = app(member);
+
+    // GET lists available types without chatgpt-pool
+    const getRes = await request(server).get(base).expect(200);
+    expect(getRes.body.availableTypes).toBeDefined();
+    expect(getRes.body.availableTypes).not.toContain("chatgpt-pool");
+    expect(getRes.body.availableTypes).toContain("openai");
+    expect(getRes.body.availableTypes).toContain("dashscope");
+
+    // POST with unregistered type is rejected with 400 bad request
+    const postRes = await request(server)
+      .post(base)
+      .send({ type: "chatgpt-pool", name: "Codex Pool", key: KEY_VALUE })
+      .expect(400);
+
+    expect(postRes.body.error).toContain("connector plugin is not registered");
+    expect(calls.filter((c) => c.op === "create")).toHaveLength(0);
+  });
+
+  it("includes registered connector in availableTypes and allows creation", async () => {
+    registerModelProviderConnector({
+      type: "chatgpt-pool",
+      name: "ChatGPT / Codex Subscription Pool",
+      pluginKey: "myrmidon.chatgpt-pool",
+      defaultModels: DEFAULT_CHATGPT_POOL_MODELS,
+      supportsChannels: true,
+    });
+
+    const { server, calls } = app(member);
+
+    // GET now includes chatgpt-pool
+    const getRes = await request(server).get(base).expect(200);
+    expect(getRes.body.availableTypes).toContain("chatgpt-pool");
+
+    // POST succeeds
+    const postRes = await request(server)
+      .post(base)
+      .send({ type: "chatgpt-pool", name: "Codex Pool", key: KEY_VALUE })
+      .expect(201);
+
+    expect(postRes.body.type).toBe("chatgpt-pool");
+    expect(calls.filter((c) => c.op === "create")).toHaveLength(1);
+
+    // Unregistering removes it again
+    unregisterModelProviderConnector("chatgpt-pool");
+    const getRes2 = await request(server).get(base).expect(200);
+    expect(getRes2.body.availableTypes).not.toContain("chatgpt-pool");
+  });
+});
+
