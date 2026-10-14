@@ -85,6 +85,7 @@ jobs:
           BASE: ${{ github.event_name == 'merge_group' && github.event.merge_group.base_sha || github.event.pull_request.base.sha }}
           HEAD: ${{ github.event_name == 'merge_group' && github.event.merge_group.head_sha || github.event.pull_request.head.sha }}
           FULL_LABEL: ${{ github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'full-ci') }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
         run: |
           set -euo pipefail
           args=(plan --out "$RUNNER_TEMP/plan.json")
@@ -99,6 +100,7 @@ jobs:
               echo "::warning::base commit $BASE not found; forcing the full tier"
             fi
             if [ "$FULL_LABEL" = "true" ]; then args+=(--force-full); fi
+            case "$BASE_REF" in rel/*) args+=(--release-fast) ;; esac
           fi
           node scripts/myrmidon/ci/affected-tests.mjs "${args[@]}"
 
@@ -207,7 +209,7 @@ jobs:
     needs: plan
     if: ${{ needs.plan.outputs.tier == 'fast' }}
     runs-on: ${{ fromJSON(vars.MYR_RUNNER || '"ubuntu-latest"') }}
-    timeout-minutes: 30
+    timeout-minutes: 60
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -477,6 +479,10 @@ jobs:
           printf 'Running %s\n' "${files[@]}"
           node --test "${files[@]}"
 
+      - name: SQL template lint (myrmidon)
+        if: ${{ !cancelled() }}
+        run: node scripts/myrmidon/ci/sql-template-lint.mjs --root server/src
+
       - name: Secrets (gitleaks, new commits)
         if: ${{ !cancelled() }}
         env:
@@ -491,6 +497,13 @@ jobs:
           tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP" gitleaks
           "$RUNNER_TEMP/gitleaks" git --no-banner --redact --verbose \
             --config .gitleaks.toml --log-opts="$BASE..$HEAD" .
+
+      - name: AI signatures (commit messages, author, committer)
+        if: ${{ !cancelled() && github.event_name == 'pull_request' }}
+        env:
+          BASE: ${{ steps.range.outputs.base }}
+          HEAD: ${{ steps.range.outputs.head }}
+        run: node scripts/myrmidon/ai-signature-scan.mjs --commits "$BASE..$HEAD"
 
       - name: Internal addresses (private networks)
         if: ${{ !cancelled() }}

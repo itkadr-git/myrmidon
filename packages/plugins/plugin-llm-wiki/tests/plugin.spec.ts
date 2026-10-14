@@ -1,11 +1,13 @@
 import { readFileSync } from "node:fs";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createTestHarness } from "@paperclipai/plugin-sdk/testing";
-import type { Agent, Issue, PluginManagedRoutineResolution, Project } from "@paperclipai/plugin-sdk";
+import { PLUGIN_RPC_ERROR_CODES } from "@paperclipai/plugin-sdk/protocol";
+import type { Agent, Issue, PluginJobDeclaration, PluginManagedRoutineResolution, Project } from "@paperclipai/plugin-sdk";
 import manifest, {
   CURSOR_WINDOW_ROUTINE_KEY,
+  FOLDER_HEALTH_CHECK_JOB_KEY,
   INDEX_REFRESH_ROUTINE_KEY,
   NIGHTLY_LINT_ROUTINE_KEY,
   PAPERCLIP_DISTILL_SKILL_KEY,
@@ -731,7 +733,10 @@ describe("LLM Wiki plugin scaffold", () => {
       routePath: "wiki",
     });
     expect(packageJson.dependencies).toBeUndefined();
-    expect(packageJson.devDependencies?.react).toBeUndefined();
+    // `react` is a devDependency so the package's own tests (which import it)
+    // can load it inside this workspace — at runtime the host supplies react
+    // per the `peerDependencies` contract below.
+    expect(packageJson.devDependencies?.react).toBeDefined();
     expect(packageJson.devDependencies?.["react-dom"]).toBeDefined();
     expect(packageJson.devDependencies?.["@types/react-dom"]).toBeDefined();
     expect(packageJson.peerDependencies?.react).toBe(">=18");
@@ -3745,5 +3750,311 @@ Duplicate headings receive stable suffixes.
     expect(harness.dbExecutes.some((execute) => execute.sql.includes("wiki_operations"))).toBe(true);
     expect(harness.dbExecutes.some((execute) => execute.sql.includes("wiki_page_revisions"))).toBe(true);
     expect(harness.dbExecutes.some((execute) => execute.sql.includes("filed_outputs"))).toBe(true);
+  });
+  describe("blank-write protection", () => {
+    const PATH = "wiki/infra/servers/vm-core.md";
+    const ORIGINAL = "# vm-core\n\nReal content.\n";
+
+    function blankWriteHarness() {
+      const harness = createTestHarness({ manifest });
+      harness.seed({ agents: [wikiMaintainerAgent()] });
+      const files = new Map<string, string>([[PATH, ORIGINAL]]);
+      harness.ctx.localFolders.readText = async (_companyId, _folderKey, relativePath) => {
+        const value = files.get(relativePath);
+        if (value == null) throw new Error("missing");
+        return value;
+      };
+      harness.ctx.localFolders.writeTextAtomic = async (_companyId, _folderKey, relativePath, contents) => {
+        files.set(relativePath, contents);
+        return harness.ctx.localFolders.status(COMPANY_ID, "wiki-root");
+      };
+      return { harness, files };
+    }
+
+    it("write-page without a body does not truncate an existing page", async () => {
+      const { harness, files } = blankWriteHarness();
+      await plugin.definition.setup(harness.ctx);
+
+      await expect(harness.performAction("write-page", {
+        companyId: COMPANY_ID,
+        wikiId: "default",
+        path: PATH,
+      })).rejects.toThrow("contents is required");
+
+      expect(files.get(PATH)).toBe(ORIGINAL);
+      expect(harness.dbExecutes.some((execute) => execute.sql.includes("wiki_page_revisions"))).toBe(false);
+    });
+
+    it("rejects empty and whitespace-only bodies through the action and the agent tools", async () => {
+      const { harness, files } = blankWriteHarness();
+      await plugin.definition.setup(harness.ctx);
+
+      for (const contents of ["", "  \n\t\n"]) {
+        await expect(harness.performAction("write-page", {
+          companyId: COMPANY_ID,
+          wikiId: "default",
+          path: PATH,
+          contents,
+        })).rejects.toThrow("Refusing to write empty contents");
+        await expect(harness.executeTool("wiki_write_page", {
+          companyId: COMPANY_ID,
+          wikiId: "default",
+          path: PATH,
+          contents,
+        })).rejects.toThrow();
+      }
+
+      expect(files.get(PATH)).toBe(ORIGINAL);
+      expect(harness.dbExecutes.some((execute) => execute.sql.includes("wiki_page_revisions"))).toBe(false);
+    });
+
+    it("blanks a page only when allowEmpty is passed explicitly", async () => {
+      const { harness, files } = blankWriteHarness();
+      await plugin.definition.setup(harness.ctx);
+
+      await harness.performAction("write-page", {
+        companyId: COMPANY_ID,
+        wikiId: "default",
+        path: PATH,
+        contents: "",
+        allowEmpty: true,
+      });
+
+      expect(files.get(PATH)).toBe("");
+    });
+
+    it("file-as-page without contents or answer does not write a placeholder or open an operation", async () => {
+      const { harness, files } = blankWriteHarness();
+      await plugin.definition.setup(harness.ctx);
+
+      await expect(harness.performAction("file-as-page", {
+        companyId: COMPANY_ID,
+        wikiId: "default",
+        path: PATH,
+      })).rejects.toThrow("file-as-page requires contents or answer");
+
+      expect(files.get(PATH)).toBe(ORIGINAL);
+      expect(harness.dbExecutes.some((execute) => execute.sql.includes("wiki_operations"))).toBe(false);
+      const operations = await harness.ctx.issues.list({
+        companyId: COMPANY_ID,
+        originKindPrefix: String(OPERATION_ORIGIN_KIND),
+      });
+      expect(operations).toHaveLength(0);
+    });
+  });
+
+  describe("jobs ↔ handlers guard", () => {
+    it("declares every registered job in the manifest, and registers a handler for every declared job", async () => {
+      const harness = createTestHarness({ manifest });
+      await plugin.definition.setup(harness.ctx);
+
+      const declaredJobKeys = (manifest.jobs ?? []).map((job: PluginJobDeclaration) => job.jobKey);
+      expect(new Set(declaredJobKeys).size).toBe(declaredJobKeys.length);
+
+      // Red side 1: a declared job with no worker handler must reject — no
+      // `.catch` swallowing, no spy on runJob itself.
+      for (const jobKey of declaredJobKeys) {
+        await expect(
+          harness.runJob(jobKey),
+          `manifest declares job "${jobKey}" but the worker never registered a handler for it`,
+        ).resolves.toBeUndefined();
+      }
+
+      // Red side 2: a job handler present in the worker but missing from the
+      // manifest must fail the contains-check below (no exception involved).
+      // Registrations may be string literals or manifest/worker constants
+      // (e.g. FOLDER_HEALTH_CHECK_JOB_KEY), so resolve identifiers against
+      // the `export const KEY = "value"` declarations in both sources.
+      const workerSource = readFileSync(new URL("../src/worker.ts", import.meta.url), "utf8");
+      const manifestSource = readFileSync(new URL("../src/manifest.ts", import.meta.url), "utf8");
+      const constValues = new Map<string, string>();
+      for (const source of [manifestSource, workerSource]) {
+        for (const match of source.matchAll(/(?:export\s+)?const\s+([A-Z][A-Z0-9_]*)\s*=\s*["'`]([^"'`]+)["'`]/g)) {
+          constValues.set(match[1], match[2]);
+        }
+      }
+      const registeredJobKeys = [
+        ...workerSource.matchAll(/ctx\.jobs\.register\(\s*(?:"([^"]+)"|'([^']+)'|`([^`]+)`|([A-Za-z_][A-Za-z0-9_]*))/g),
+      ].map((match) => {
+        const literal = match[1] ?? match[2] ?? match[3];
+        if (literal !== undefined) return literal;
+        const resolved = constValues.get(match[4]!);
+        expect(
+          resolved,
+          `worker registers job handler via identifier "${match[4]}" but no string-literal const for it is declared in worker.ts/manifest.ts`,
+        ).toBeDefined();
+        return resolved!;
+      });
+      expect(registeredJobKeys).toContain(FOLDER_HEALTH_CHECK_JOB_KEY);
+      for (const jobKey of registeredJobKeys) {
+        expect(
+          declaredJobKeys,
+          `worker registers a handler for job "${jobKey}" but the manifest does not declare it`,
+        ).toContain(jobKey);
+      }
+      expect(new Set(registeredJobKeys).size).toBe(registeredJobKeys.length);
+    });
+
+    it("runJob rejects for a key with no registered handler (red side of the guard)", async () => {
+      const harness = createTestHarness({ manifest });
+      await plugin.definition.setup(harness.ctx);
+
+      await expect(harness.runJob("definitely-not-a-wiki-job")).rejects.toThrow(
+        "No job handler registered",
+      );
+    });
+
+    it("folder-health-check counts an unconfigured wiki root as not-configured, not unhealthy", async () => {
+      const harness = createTestHarness({ manifest });
+      harness.seed({
+        companies: [
+          { id: COMPANY_ID, name: "Paperclip", issuePrefix: "PAP" },
+          { id: "22222222-2222-4222-8222-222222222222", name: "Second Co", issuePrefix: "SEC" },
+        ] as never,
+      });
+      await plugin.definition.setup(harness.ctx);
+      // Only the first company has a configured (healthy) wiki root.
+      await harness.ctx.localFolders.configure({
+        companyId: COMPANY_ID,
+        folderKey: "wiki-root",
+        path: "/tmp/paperclip-plugin-llm-wiki-health-test",
+        requiredDirectories: [],
+        requiredFiles: [],
+      });
+
+      await expect(harness.runJob("folder-health-check")).resolves.toBeUndefined();
+
+      const completed = harness.logs.find((entry) =>
+        entry.message.includes("folder health check completed"),
+      );
+      expect(completed).toBeDefined();
+      expect(completed!.meta).toMatchObject({ companies: 2, healthy: 1, unhealthy: 0, notConfigured: 1 });
+
+      const notConfiguredNote = harness.logs.find((entry) =>
+        entry.message.includes("folder health check: not configured"),
+      );
+      expect(notConfiguredNote).toBeDefined();
+      expect(notConfiguredNote!.level).toBe("debug");
+      expect(notConfiguredNote!.meta).toMatchObject({
+        companyId: "22222222-2222-4222-8222-222222222222",
+      });
+
+      // An unconfigured root must never be reported as unhealthy or warned about.
+      expect(harness.logs.some((entry) => entry.message.includes("folder health check: unhealthy"))).toBe(false);
+
+      // The gauge stays 1: not-configured companies are not counted unhealthy.
+      expect(harness.metrics).toContainEqual(
+        expect.objectContaining({
+          name: "folderHealth",
+          value: 1,
+          tags: expect.objectContaining({ unhealthy: "0", notConfigured: "1" }),
+        }),
+      );
+    });
+
+    it("folder-health-check counts a configured but broken wiki root as unhealthy with gauge 0", async () => {
+      const harness = createTestHarness({ manifest });
+      harness.seed({
+        companies: [{ id: COMPANY_ID, name: "Paperclip", issuePrefix: "PAP" }] as never,
+      });
+      await plugin.definition.setup(harness.ctx);
+      await harness.ctx.localFolders.configure({
+        companyId: COMPANY_ID,
+        folderKey: "wiki-root",
+        path: "/tmp/paperclip-plugin-llm-wiki-health-test",
+        requiredDirectories: ["wiki/projects"],
+        requiredFiles: [],
+      });
+      // Simulate the required directory disappearing after configuration:
+      // the harness stores the status object, so flip it to broken.
+      const stored = harness.ctx.localFolders;
+      const originalStatus = stored.status.bind(stored);
+      stored.status = async (companyId: string, folderKey: string) => {
+        const status = await originalStatus(companyId, folderKey);
+        return {
+          ...status,
+          readable: false,
+          writable: false,
+          missingDirectories: ["wiki/projects"],
+          healthy: false,
+          problems: [{ code: "missing_directory" as const, message: "Missing directory", path: "wiki/projects" }],
+        };
+      };
+
+      await expect(harness.runJob("folder-health-check")).resolves.toBeUndefined();
+
+      const completed = harness.logs.find((entry) =>
+        entry.message.includes("folder health check completed"),
+      );
+      expect(completed!.meta).toMatchObject({ companies: 1, healthy: 0, unhealthy: 1, notConfigured: 0 });
+
+      const unhealthyNote = harness.logs.find((entry) =>
+        entry.message.includes("folder health check: unhealthy"),
+      );
+      expect(unhealthyNote).toBeDefined();
+      expect(unhealthyNote!.meta).toMatchObject({
+        configured: true,
+        problems: ["missing_directory"],
+      });
+
+      expect(harness.metrics).toContainEqual(
+        expect.objectContaining({
+          name: "folderHealth",
+          value: 0,
+          tags: expect.objectContaining({ unhealthy: "1", notConfigured: "0" }),
+        }),
+      );
+    });
+
+    it("folder-health-check reports a healthy fleet with gauge 1 and no warn note", async () => {
+      const harness = createTestHarness({ manifest });
+      harness.seed({
+        companies: [{ id: COMPANY_ID, name: "Paperclip", issuePrefix: "PAP" }] as never,
+      });
+      await plugin.definition.setup(harness.ctx);
+      await harness.ctx.localFolders.configure({
+        companyId: COMPANY_ID,
+        folderKey: "wiki-root",
+        path: "/tmp/paperclip-plugin-llm-wiki-health-test",
+        requiredDirectories: [],
+        requiredFiles: [],
+      });
+
+      await harness.runJob("folder-health-check");
+
+      const completed = harness.logs.find((entry) =>
+        entry.message.includes("folder health check completed"),
+      );
+      expect(completed!.meta).toMatchObject({ companies: 1, healthy: 1, unhealthy: 0 });
+      expect(harness.logs.some((entry) => entry.message.includes("folder health check: unhealthy"))).toBe(false);
+      expect(harness.metrics).toContainEqual(
+        expect.objectContaining({ name: "folderHealth", value: 1 }),
+      );
+    });
+  });
+
+  describe("unknown action surface", () => {
+    it("worker reports unknown actions with the full list of registered action keys", async () => {
+      const { PLUGIN_RPC_ERROR_CODES } = await import("@paperclipai/plugin-sdk/protocol");
+      const harness = createTestHarness({ manifest });
+      await plugin.definition.setup(harness.ctx);
+
+      await expect(harness.performAction("definitely-not-a-wiki-action", {}))
+        .rejects.toThrow("No action handler registered");
+
+      const workerSource = readFileSync(new URL("../src/worker.ts", import.meta.url), "utf8");
+      const registeredActionKeys = [
+        ...workerSource.matchAll(/ctx\.actions\.register\(\s*["'`]([^"'`]+)["'`]/g),
+      ].map((match) => match[1]).sort();
+
+      // The RPC-level shape (code + known list) is asserted in the SDK's
+      // worker-rpc-host tests; here we pin the plugin's full action surface so
+      // a removed or renamed registration cannot silently shrink the 400 list.
+      expect(registeredActionKeys.length).toBeGreaterThanOrEqual(36);
+      expect(registeredActionKeys).toContain("write-page");
+      expect(registeredActionKeys).toContain("bootstrap-root");
+      expect(new Set(registeredActionKeys).size).toBe(registeredActionKeys.length);
+      expect(PLUGIN_RPC_ERROR_CODES.UNKNOWN_ACTION).toBe(-32007);
+    });
   });
 });

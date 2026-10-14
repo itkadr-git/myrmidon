@@ -124,20 +124,31 @@ d("audit indexes migration (embedded postgres)", () => {
     for (const name of ALL_INDEXES) expect(names).toContain(name);
 
     await sql.unsafe("SET enable_seqscan = off");
-    // P3 attention-feed shape: company + agent IN + created_at window.
+    // P3 attention-feed shape: company + agent IN + created_at window. Two
+    // company/agent/created indexes serve this shape: the 0209 sibling and the
+    // attention-feed index the audit added (which extends the key with the two
+    // context snapshot ids). The planner chooses between the two by cost, so the
+    // pin here is that it uses one of them and reads no sequential scan.
     const feedPlan = await sql.unsafe(
       "EXPLAIN SELECT id FROM heartbeat_runs WHERE company_id = '00000000-0000-0000-0000-000000000001' AND agent_id IN ('00000000-0000-0000-0000-000000000002') AND created_at > now() - interval '1 day' ORDER BY created_at DESC LIMIT 50",
     );
-    expect(feedPlan.map((r) => Object.values(r)[0]).join("\n")).toContain(
-      "heartbeat_runs_company_agent_created_idx",
-    );
+    const feedPlanText = feedPlan.map((r) => Object.values(r)[0]).join("\n");
+    expect(feedPlanText).toMatch(/heartbeat_runs_(company_agent_created|attention_feed)_idx/);
+    expect(feedPlanText).not.toContain("Seq Scan");
     // P5 milestone projection shape: company + context issueId + status filter.
     const milestonePlan = await sql.unsafe(
       "EXPLAIN SELECT id FROM heartbeat_runs WHERE company_id = '00000000-0000-0000-0000-000000000001' AND context_snapshot ->> 'issueId' = 'x' AND status IN ('failed','timed_out') LIMIT 10",
     );
-    expect(milestonePlan.map((r) => Object.values(r)[0]).join("\n")).toContain(
-      "heartbeat_runs_ctx_issue_status_idx",
+    // Two indexes carry the company id and the context issueId expression: the
+    // milestone index of the audit and the attention-feed index of the same
+    // audit, which extends the key with the agent, the created_at stamp and the
+    // task id. The planner chooses between them by cost, so the pin here is that
+    // it uses one of the two and reads no sequential scan.
+    const milestonePlanText = milestonePlan.map((r) => Object.values(r)[0]).join("\n");
+    expect(milestonePlanText).toMatch(
+      /heartbeat_runs_(ctx_issue_status|attention_feed)_idx/,
     );
+    expect(milestonePlanText).not.toContain("Seq Scan");
     // P6 claim lockup shape: company + (execution_run_id or checkout_run_id).
     // On the tiny embedded table the planner may legitimately pick any
     // company-prefixed index, so the pin here is "no Seq Scan" (the production

@@ -28,6 +28,7 @@ import { t, resolveBridgeLocale, type BridgeLocale } from "../locales/index.js";
 import { buildHelpText } from "./help.js";
 // myrmidon(X9c): /agents, /to, /who — the X9a/X9b addressing surface as chat
 // commands; sticky default routing state lives in agents.ts.
+import { agentsScreenPlainText, buildAgentsGroupsReply, type AgentsScreen } from "./agents-buttons.js";
 import {
   buildAgentsReplyText,
   buildWhoReplyText,
@@ -41,16 +42,28 @@ import {
   describeCardValue,
   describeEffectiveChatValue,
   formatChatChoiceList,
+  listedChatChoices,
+  MAX_CHOICE_BUTTONS,
+  wholeCatalogText,
   readOverrideAdapterConfig,
+  resolveChatChoiceArgument,
   resolveChooserSelection,
   sourceLabelFor,
   turnInProgressText,
+  unavailableChoiceText,
+  type ChatModelCatalogReader,
   type ChatModelChooser,
 } from "./models.js";
-import { applyChatAdapterOverride } from "./overrides.js";
-import { handlePlanCommand } from "./plan.js";
+import { applyChatAdapterOverride, type ApplyChatAdapterOverrideInput, type ChatAdapterOverrideApplyDeps, type ChatAdapterOverrideBotApply } from "./overrides.js";
+// myrmidon(F06-A): a gateway agent's `/model` choices live behind the gateway,
+// not on its card — this is the read bound to that agent.
+import { createGatewayModelCatalogReader } from "../gateway-model-catalog.js";
+import { handlePlanCommand, isCompanyOwner } from "./plan.js";
 import { buildChatStatusReply } from "./status.js";
 import { stopBridgedChatRuns } from "./stop.js";
+import { issueThreadInteractionService } from "../../../services/issue-thread-interactions.js";
+import { issues } from "@paperclipai/db";
+import { and, eq } from "drizzle-orm";
 
 export interface BridgedCommandInput {
   db: Db;
@@ -72,12 +85,64 @@ export interface BridgedCommandInput {
     reason: string,
     options: { errorCode?: string; resultJson?: Record<string, unknown> },
   ) => Promise<unknown>;
+  /**
+   * myrmidon(F06-A): test seams for the gateway command surface — the profile
+   * apply of `/model` and `/think` on a gateway agent, and its model catalog.
+   * Production leaves both unset: the apply goes through the bot-containers
+   * runtime, and the catalog through this agent's own gateway key.
+   */
+  botContainerApply?: ChatAdapterOverrideApplyDeps;
+  readGatewayModelCatalog?: ChatModelCatalogReader | null;
+}
+
+/**
+ * myrmidon(F06-D): the choices of a `/model` or `/think` list as a menu — what
+ * the bridge turns into inline buttons under the list and into the record that
+ * lets a reply with a number or a name pick from it. `title` and `body` are the
+ * card text (title = the current value line, body = the list); `options[].value`
+ * is a candidate id or `default`, validated again on the click.
+ */
+export interface BridgedChoiceMenu {
+  commandName: "model" | "think";
+  title: string;
+  body: string;
+  options: Array<{ label: string; value: string }>;
 }
 
 export type BridgedCommandResult =
-  | { kind: "reply"; command: string; text: string }
+  | {
+      kind: "reply";
+      command: string;
+      text: string;
+      /**
+       * myrmidon(1.6.5 OPE-6318 part B): the reply as a card with inline
+       * buttons. `text` is its plain rendering, for a client without cards;
+       * the bridge publishes the screen when it is present.
+       */
+      screen?: AgentsScreen;
+      /** myrmidon(F06-D): set on a plain `/model` or `/think` list. */
+      choices?: BridgedChoiceMenu;
+      /** myrmidon(F06-D): `/model <x>` or `/think <x>` — whether the choice was
+       *  written (`applied`) or refused (`refused`: unknown value, turn in
+       *  progress, effort policy). Only chooser replies set it. */
+      outcome?: "applied" | "refused";
+    }
   | { kind: "message"; body: string; notice?: string }
   | null;
+
+/**
+ * myrmidon(F06-D): what a chooser command (and a button press / list reply that
+ * stands for one) needs from its caller — a subset of the command input.
+ */
+export type BridgedChooserInput = Pick<
+  BridgedCommandInput,
+  "db" | "companyId" | "agentId" | "conversationIssueId" | "boardUserId" | "botContainerApply" | "readGatewayModelCatalog"
+>;
+
+/** myrmidon(F06-D): the test seams of the chooser commands (production leaves them unset). */
+export type BridgedChooserSeams = Partial<
+  Pick<BridgedCommandInput, "botContainerApply" | "readGatewayModelCatalog">
+>;
 
 export interface BridgedCommandSpec {
   command: string;
@@ -99,6 +164,8 @@ export function telegramDmCommandsForLocale(locale: BridgeLocale): readonly Brid
     { command: "stop", description: t(locale, "menu.stop") },
     { command: "status", description: t(locale, "menu.status") },
     { command: "plan", description: t(locale, "menu.plan") },
+    { command: "accept", description: t(locale, "menu.accept") },
+    { command: "reject", description: t(locale, "menu.reject") },
     // myrmidon(X9c): addressing commands — which agent of the company this
     // chat talks to (X9a/X9b made any company agent addressable).
     { command: "agents", description: t(locale, "menu.agents") },
@@ -202,6 +269,10 @@ export async function runBridgedDirectMessageCommand(
       // `./plan.ts`, which delegates to the cto-chat telegram entry — no
       // parallel secret-resolution path here.
       return handlePlanCommand(input, parsed.args);
+    case "accept":
+      return handleAcceptCommand(input, parsed.args, locale);
+    case "reject":
+      return handleRejectCommand(input, parsed.args, locale);
     // myrmidon(X9c): addressing commands. They run on the context X8b
     // already authorized (the sender's own bridged Telegram conversation,
     // identity links included), and every DB read in agents.ts is scoped to
@@ -210,13 +281,25 @@ export async function runBridgedDirectMessageCommand(
     // turns until the next /to (see agents.ts); addressed @<alias> turns
     // (X9b) are unaffected.
     case "agents": {
-      const text = await buildAgentsReplyText(input.db, {
+      const stickyAgentId = readStickyAgentId(context.issue.assigneeAdapterOverrides);
+      // `/agents text` keeps the plain grouped list (part A) for a client
+      // without buttons; plain `/agents` opens the directions as buttons.
+      if (parsed.args.trim().toLowerCase() === "text") {
+        const text = await buildAgentsReplyText(input.db, {
+          companyId: input.companyId,
+          conversationAgentId: input.agentId,
+          stickyAgentId,
+          locale,
+        });
+        return { kind: "reply", command: "agents", text };
+      }
+      const screen = await buildAgentsGroupsReply(input.db, {
         companyId: input.companyId,
         conversationAgentId: input.agentId,
-        stickyAgentId: readStickyAgentId(context.issue.assigneeAdapterOverrides),
+        stickyAgentId,
         locale,
       });
-      return { kind: "reply", command: "agents", text };
+      return { kind: "reply", command: "agents", text: agentsScreenPlainText(screen), screen };
     }
     case "to": {
       const result = await handleToCommand({
@@ -259,6 +342,70 @@ export async function runBridgedDirectMessageCommand(
   }
 }
 
+/**
+ * myrmidon(F06-A): the gateway model catalog for this chat's agent — the test
+ * seam when one was given, else the real per-key read
+ * (gateway-model-catalog.ts). Built per command, so the read happens only when
+ * a chooser actually asks for it.
+ */
+function gatewayCatalogReader(
+  input: BridgedChooserInput,
+  agent: BridgedCommandContext["agent"],
+): ChatModelCatalogReader {
+  if (input.readGatewayModelCatalog) return input.readGatewayModelCatalog;
+  return createGatewayModelCatalogReader({
+    db: input.db,
+    companyId: input.companyId,
+    agentId: agent.id,
+    agentSlug: agent.name,
+    // myrmidon(F06-D): the key a bot really sends comes from its card.
+    adapterType: agent.adapterType,
+    adapterConfig: agent.adapterConfig,
+  });
+}
+
+/**
+ * myrmidon(F06-A): what to tell the person about the profile apply that
+ * followed their choice. A gateway agent runs a bot container, which is only
+ * as current as the last apply — so a success is worth one line, and a failure
+ * (with the rollback it caused) must never pass silently.
+ */
+function botApplyNotice(
+  botApply: ChatAdapterOverrideBotApply | undefined,
+  locale: BridgeLocale,
+): string | null {
+  if (!botApply) return null;
+  if (botApply.kind === "not_applicable") {
+    return t(locale, "chooser.applyNotApplied", { reason: botApply.reason ?? botApply.kind });
+  }
+  if (botApply.kind !== "error") return t(locale, "chooser.applyNextTurn");
+  const failure = t(locale, "chooser.applyFailed", { reason: botApply.reason ?? botApply.kind });
+  return botApply.rolledBack ? `${failure}\n${t(locale, "chooser.applyRolledBack")}` : failure;
+}
+
+/** myrmidon(F06-A): the model this chat's effort would apply to (chat override
+ *  first, then the card) — the effort policy check needs it. */
+function effectiveChatModel(context: BridgedCommandContext): string | null {
+  return describeEffectiveChatValue(
+    readOverrideAdapterConfig(context.issue.assigneeAdapterOverrides),
+    context.agent.adapterConfig,
+    "model",
+  ).value;
+}
+
+/** myrmidon(F06-A): the apply half of a chooser write, in one place, so no
+ *  call site can quietly skip applying the profile of a gateway agent. */
+function chatOverrideApplyInput(
+  input: BridgedChooserInput,
+  context: BridgedCommandContext,
+): Pick<ApplyChatAdapterOverrideInput, "adapterType" | "adapterConfig" | "botApply"> {
+  return {
+    adapterType: context.agent.adapterType,
+    adapterConfig: context.agent.adapterConfig,
+    botApply: input.botContainerApply,
+  };
+}
+
 async function handleNewCommand(
   input: BridgedCommandInput,
   context: BridgedCommandContext,
@@ -279,13 +426,15 @@ async function handleNewCommand(
     // start, not to whatever is currently running; no need to wait for it.
     checkTurnInProgress: false,
     locale,
+    // myrmidon(F06-A): a gateway agent's choices come from the gateway catalog.
+    catalog: gatewayCatalogReader(input, context.agent),
   });
   if (resolution.kind === "error") {
     return { kind: "reply", command: "new", text: resolution.text };
   }
 
   const value = resolution.kind === "default" ? null : resolution.candidate.id;
-  await applyChatAdapterOverride({
+  const overrideResult = await applyChatAdapterOverride({
     db: input.db,
     companyId: input.companyId,
     conversationAgentId: input.agentId,
@@ -297,6 +446,7 @@ async function handleNewCommand(
     // start regardless of what is currently running — same reasoning as
     // `checkTurnInProgress: false` above.
     refuseIfTurnInProgress: false,
+    ...chatOverrideApplyInput(input, context),
   });
   const modelLabel =
     resolution.kind === "default"
@@ -306,15 +456,18 @@ async function handleNewCommand(
             t(locale, "source.adapterDefault"),
         })
       : resolution.candidate.id;
+  const applyNotice = botApplyNotice(overrideResult.botApply, locale);
   return {
     kind: "message",
     body: "/new",
-    notice: t(locale, "new.withModel.notice", { model: modelLabel }),
+    notice:
+      t(locale, "new.withModel.notice", { model: modelLabel }) +
+      (applyNotice ? `\n${applyNotice}` : ""),
   };
 }
 
 async function handleChooserCommand(
-  input: BridgedCommandInput,
+  input: BridgedChooserInput,
   context: BridgedCommandContext,
   chooser: ChatModelChooser,
   args: string,
@@ -325,12 +478,22 @@ async function handleChooserCommand(
   const statusLabel = t(locale, chooser.statusLabelKey);
 
   if (!trimmed) {
-    const availability = await checkChooserAvailability(chooser, context.agent);
+    // myrmidon(F06-A): a gateway agent's choices come from the gateway catalog.
+    const availability = await checkChooserAvailability(
+      chooser,
+      context.agent,
+      gatewayCatalogReader(input, context.agent),
+    );
     if (!availability.available) {
       return {
         kind: "reply",
         command: chooser.commandName,
-        text: t(locale, chooser.unavailableTextKey),
+        text: unavailableChoiceText(
+          chooser,
+          context.agent,
+          locale,
+          availability.reasonKey ?? "chooser.reason.unsupportedAdapter",
+        ),
       };
     }
     const effective = describeEffectiveChatValue(
@@ -339,21 +502,42 @@ async function handleChooserCommand(
       chooser.adapterConfigKey,
     );
     const sourceText = sourceLabelFor(effective.source, locale);
+    const effectiveLine = t(locale, "chooser.effective", {
+      label: statusLabel,
+      value: effective.value ?? sourceText,
+      source: sourceText,
+    });
+    const listBody =
+      t(locale, "chooser.availableHeader") +
+      "\n" +
+      formatChatChoiceList(availability.candidates, locale) +
+      "\n" +
+      // The list is complete; only the keyboard is capped (MAX_CHOICE_BUTTONS).
+      (availability.candidates.length > MAX_CHOICE_BUTTONS
+        ? `${t(locale, "chooser.moreHidden", { count: MAX_CHOICE_BUTTONS })}\n`
+        : "") +
+      // myrmidon(F06-A): the per-key read failed and this is the whole
+      // gateway catalog — the person has to know the list is a superset.
+      // myrmidon(F06-D): and why the agent's own list was not used.
+      (availability.wholeCatalog ? `${wholeCatalogText(locale, availability.keyFailure)}\n` : "") +
+      t(locale, "chooser.usage", { command: chooser.commandName });
     return {
       kind: "reply",
       command: chooser.commandName,
-      text:
-        t(locale, "chooser.effective", {
-          label: statusLabel,
-          value: effective.value ?? sourceText,
-          source: sourceText,
-        }) +
-        "\n" +
-        t(locale, "chooser.availableHeader") +
-        "\n" +
-        formatChatChoiceList(availability.candidates) +
-        "\n" +
-        t(locale, "chooser.usage", { command: chooser.commandName }),
+      text: `${effectiveLine}\n${listBody}`,
+      choices: {
+        commandName: chooser.commandName,
+        title: effectiveLine,
+        body: listBody,
+        options: [
+          ...listedChatChoices(availability.candidates).map((candidate) => ({
+            // The current value is marked on its button; the value stays the bare id.
+            label: candidate.id === effective.value ? `✓ ${candidate.label}` : candidate.label,
+            value: candidate.id,
+          })),
+          { label: t(locale, "chooser.button.default"), value: "default" },
+        ],
+      },
     };
   }
 
@@ -364,9 +548,13 @@ async function handleChooserCommand(
     turnInProgress: context.turnInProgress,
     checkTurnInProgress: true,
     locale,
+    // myrmidon(F06-A): the gateway catalog for the list, and the model this
+    // chat would run for /think's effort policy check.
+    catalog: gatewayCatalogReader(input, context.agent),
+    effectiveModel: effectiveChatModel(context),
   });
   if (resolution.kind === "error") {
-    return { kind: "reply", command: chooser.commandName, text: resolution.text };
+    return { kind: "reply", command: chooser.commandName, text: resolution.text, outcome: "refused" };
   }
 
   if (resolution.kind === "default") {
@@ -382,21 +570,25 @@ async function handleChooserCommand(
       // can start in the gap between resolveChooserSelection's read above and
       // this write.
       refuseIfTurnInProgress: true,
+      ...chatOverrideApplyInput(input, context),
     });
     if (!overrideResult.applied) {
-      return { kind: "reply", command: chooser.commandName, text: turnInProgressText(locale) };
+      return { kind: "reply", command: chooser.commandName, text: turnInProgressText(locale), outcome: "refused" };
     }
+    const applyNotice = botApplyNotice(overrideResult.botApply, locale);
     return {
       kind: "reply",
       command: chooser.commandName,
-      text: t(locale, "chooser.defaultApplied", {
-        label: statusLabel,
-        agentDefault: t(locale, "chooser.agentDefaultParen", {
-          value:
-            describeCardValue(context.agent.adapterConfig, chooser.adapterConfigKey) ??
-            t(locale, "source.adapterDefault"),
-        }),
-      }),
+      outcome: "applied",
+      text:
+        t(locale, "chooser.defaultApplied", {
+          label: statusLabel,
+          agentDefault: t(locale, "chooser.agentDefaultParen", {
+            value:
+              describeCardValue(context.agent.adapterConfig, chooser.adapterConfigKey) ??
+              t(locale, "source.adapterDefault"),
+          }),
+        }) + (applyNotice ? `\n${applyNotice}` : ""),
     };
   }
 
@@ -409,15 +601,78 @@ async function handleChooserCommand(
     key: chooser.adapterConfigKey,
     value: resolution.candidate.id,
     refuseIfTurnInProgress: true,
+    ...chatOverrideApplyInput(input, context),
   });
   if (!overrideResult.applied) {
-    return { kind: "reply", command: chooser.commandName, text: turnInProgressText(locale) };
+    return { kind: "reply", command: chooser.commandName, text: turnInProgressText(locale), outcome: "refused" };
   }
+  const applyNotice = botApplyNotice(overrideResult.botApply, locale);
   return {
     kind: "reply",
     command: chooser.commandName,
-    text: t(locale, "chooser.set", { label: statusLabel, value: resolution.candidate.id }),
+    outcome: "applied",
+    text:
+      t(locale, "chooser.set", { label: statusLabel, value: resolution.candidate.id }) +
+      (applyNotice ? `\n${applyNotice}` : ""),
   };
+}
+
+/**
+ * myrmidon(F06-D): a button press under a `/model` or `/think` list. Runs the
+ * same path as `/model <value>`: the value is resolved against the live
+ * candidates again, the turn-in-progress and effort-policy refusals apply, and
+ * a gateway agent's profile is applied. The caller (the chat action handler)
+ * has already proven the press comes from this conversation's own linked
+ * person on the list message; this checks the conversation again.
+ */
+export async function runBridgedChooserPick(
+  input: BridgedChooserInput & { commandName: "model" | "think"; value: string },
+): Promise<{ text: string; outcome: "applied" | "refused" }> {
+  const locale = await resolveBridgeLocale(input.db, input.boardUserId);
+  const context = await loadBridgedCommandContext(input.db, {
+    companyId: input.companyId,
+    agentId: input.agentId,
+    boardUserId: input.boardUserId,
+    conversationIssueId: input.conversationIssueId,
+  });
+  if (!context) return { text: t(locale, "chat.notAvailable"), outcome: "refused" };
+  const chooser = input.commandName === "model" ? MODEL_CHOOSER : THINK_CHOOSER;
+  const result = await handleChooserCommand(input, context, chooser, input.value, locale);
+  if (result?.kind !== "reply") return { text: t(locale, "chat.notAvailable"), outcome: "refused" };
+  return { text: result.text, outcome: result.outcome ?? "refused" };
+}
+
+/**
+ * myrmidon(F06-D): a plain reply to a `/model` or `/think` list. A whole number
+ * or a name that resolves among that list's choices (or `default`) picks it,
+ * exactly like `/model <text>`. Anything else — an ordinary sentence that
+ * happens to be a reply to the list message — is not a choice: null, and the
+ * message goes to the agent as usual.
+ */
+export async function runBridgedChooserReply(
+  input: BridgedChooserInput & { commandName: "model" | "think"; text: string },
+): Promise<BridgedCommandResult> {
+  const arg = input.text.trim();
+  if (!arg || arg.length > 200 || arg.includes("\n")) return null;
+  const locale = await resolveBridgeLocale(input.db, input.boardUserId);
+  const context = await loadBridgedCommandContext(input.db, {
+    companyId: input.companyId,
+    agentId: input.agentId,
+    boardUserId: input.boardUserId,
+    conversationIssueId: input.conversationIssueId,
+  });
+  if (!context) return null;
+  const chooser = input.commandName === "model" ? MODEL_CHOOSER : THINK_CHOOSER;
+  const availability = await checkChooserAvailability(
+    chooser,
+    context.agent,
+    gatewayCatalogReader(input, context.agent),
+  );
+  if (!availability.available) return null;
+  const isNumber = /^\d+$/.test(arg);
+  const isDefault = arg.toLowerCase() === "default";
+  if (!isNumber && !isDefault && !resolveChatChoiceArgument(availability.candidates, arg)) return null;
+  return handleChooserCommand(input, context, chooser, arg, locale);
 }
 
 async function handleStopCommand(
@@ -455,4 +710,125 @@ async function handleStatusCommand(
     locale,
   });
   return { kind: "reply", command: "status", text };
+}
+
+/**
+ * myrmidon(1.6.3-CTO-CHAT-B): `/accept <id>` approves a pending
+ * `suggest_tasks` plan card from the owner's own bridged Telegram DM,
+ * through the same board service the portal accept route uses. Owner only,
+ * like `/plan`: the bridged chat identity alone is not enough to create work.
+ * The reply carries the link to the plan's root epic and the created count.
+ */
+async function handleAcceptCommand(
+  input: BridgedCommandInput,
+  args: string,
+  locale: BridgeLocale,
+): Promise<BridgedCommandResult> {
+  const interactionId = args.trim();
+  if (!interactionId) {
+    return { kind: "reply", command: "accept", text: t(locale, "accept.noId") };
+  }
+  if (!(await isCompanyOwner(input.db, input.companyId, input.boardUserId))) {
+    return { kind: "reply", command: "accept", text: t(locale, "accept.notOwner") };
+  }
+
+  const service = issueThreadInteractionService(input.db);
+  try {
+    const issue = await loadConversationHost(input);
+    const current = await service.getForIssue(
+      { id: issue.id, companyId: issue.companyId },
+      interactionId,
+    );
+    if (current.kind !== "suggest_tasks" || current.status !== "pending") {
+      return { kind: "reply", command: "accept", text: t(locale, "accept.notPlanOrProcessed") };
+    }
+
+    const allClientKeys = current.payload.tasks.map((task: { clientKey: string }) => task.clientKey);
+    const accepted = await service.acceptInteraction(
+      issue,
+      interactionId,
+      { selectedClientKeys: allClientKeys },
+      {
+        userId: input.boardUserId,
+        agentId: null,
+        suggestedTaskEffectsAuthorized: true,
+        conversationRootTasksAllowed: true,
+      },
+    );
+
+    // The link points at the plan's root (the draft without a parent), not at
+    // whichever issue happened to be created first.
+    const rootKey =
+      current.payload.tasks.find((task: { parentClientKey?: string | null }) => !task.parentClientKey)?.clientKey ??
+      null;
+    const createdTasks =
+      ((accepted.interaction.result as unknown as { createdTasks?: Array<{ clientKey: string; issueId: string; identifier: string | null }> } | null)
+        ?.createdTasks) ?? [];
+    const root = createdTasks.find((task) => task.clientKey === rootKey) ?? createdTasks[0] ?? null;
+    const base = (input.publicBaseUrl ?? "").replace(/\/+$/, "");
+    const epicLink = root ? (base ? `${base}/issues/${root.issueId}` : (root.identifier ?? root.issueId)) : "-";
+    return {
+      kind: "reply",
+      command: "accept",
+      text: t(locale, "accept.ok", { epicLink, count: accepted.createdIssues.length }),
+    };
+  } catch (error) {
+    const message = (error as { message?: string }).message ?? "unknown error";
+    return { kind: "reply", command: "accept", text: t(locale, "accept.error", { message }) };
+  }
+}
+
+/**
+ * myrmidon(1.6.3-CTO-CHAT-B): `/reject <id>` rejects a pending
+ * `suggest_tasks` plan card from the owner's own bridged Telegram DM,
+ * through the same board service as the portal reject route (owner only).
+ * No tasks are created; the card closes as rejected.
+ */
+async function handleRejectCommand(
+  input: BridgedCommandInput,
+  args: string,
+  locale: BridgeLocale,
+): Promise<BridgedCommandResult> {
+  const interactionId = args.trim();
+  if (!interactionId) {
+    return { kind: "reply", command: "reject", text: t(locale, "reject.noId") };
+  }
+  if (!(await isCompanyOwner(input.db, input.companyId, input.boardUserId))) {
+    return { kind: "reply", command: "reject", text: t(locale, "reject.notOwner") };
+  }
+
+  const service = issueThreadInteractionService(input.db);
+  try {
+    const issue = await loadConversationHost(input);
+    const current = await service.getForIssue(
+      { id: issue.id, companyId: issue.companyId },
+      interactionId,
+    );
+    if (current.status !== "pending") {
+      return { kind: "reply", command: "reject", text: t(locale, "reject.alreadyProcessed") };
+    }
+    if (current.kind !== "suggest_tasks") {
+      return { kind: "reply", command: "reject", text: t(locale, "reject.notPlan") };
+    }
+    await service.rejectInteraction(
+      issue,
+      interactionId,
+      { reason: "rejected_by_owner_via_telegram" },
+      { userId: input.boardUserId, agentId: null },
+    );
+    return { kind: "reply", command: "reject", text: t(locale, "reject.ok") };
+  } catch (error) {
+    const message = (error as { message?: string }).message ?? "unknown error";
+    return { kind: "reply", command: "reject", text: t(locale, "reject.error", { message }) };
+  }
+}
+
+/** The standing conversation issue with its real project/goal (children inherit them). */
+async function loadConversationHost(input: BridgedCommandInput) {
+  const [row] = await input.db
+    .select({ id: issues.id, companyId: issues.companyId, projectId: issues.projectId, goalId: issues.goalId })
+    .from(issues)
+    .where(and(eq(issues.id, input.conversationIssueId), eq(issues.companyId, input.companyId)));
+  if (!row) throw new Error("conversation issue not found");
+  return row;
 }

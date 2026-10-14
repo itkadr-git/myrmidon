@@ -69,12 +69,40 @@ company access can read as before.
 | `assertToolsRuntimeManage` (`tools:manage_runtime`) | `GET /api/companies/:companyId/tools/runtime-slots`, `POST …/runtime-slots/:id/stop`, `POST …/runtime-slots/:id/restart` |
 | `assertBoardAnyToolPermission` (any of) | `GET /api/tool-connections/:connectionId/test-agents` and the other connection test routes: `tools:use` **or** `tools:manage_connections` |
 
-The connection-configure path (configure, reconnect, delete a company
-connection) stays **board-only**: it is gated by `isToolConnectionManager`,
-which begins with `assertBoard` and answers `403 Board access required` for
-every agent actor regardless of grants. The `tools:manage_connections` grant
-only helps an agent on the connection **test** routes (the row above); it
-does not open the configure path.
+Since 1.6.5 (F-22) the tools gallery and the connection routes also admit an
+agent actor with a grant, via `assertBoardOrAgentGrant` in `authz.ts` (board
+actors pass exactly as before):
+
+| Route | Board actor | Agent actor |
+|---|---|---|
+| `GET /api/companies/:companyId/tools/gallery` | as before | `tools:admin` or `tools:manage_connections` |
+| `GET /api/companies/:companyId/tools/connections` | as before | `tools:admin` or `tools:manage_connections` |
+| `GET /api/tool-connections/:connectionId` | as before | `tools:admin` or `tools:manage_connections` |
+| `POST /api/companies/:companyId/tools/connections` | as before | `tools:manage_connections` |
+| `PATCH /api/tool-connections/:connectionId` | as before | `tools:manage_connections` |
+| `PUT /api/tool-connections/:connectionId/installs` | as before | `tools:manage_connections` |
+| `DELETE /api/tool-connections/:connectionId` | as before | 403, always — see below |
+
+An agent without the grant gets `403 Missing permission: <key>`; the company
+match is checked before the grant. An agent can never delete a company
+connection: `DELETE` always answers 403 with
+`Removing a tool connection requires operator confirmation; an agent cannot delete a connection directly`,
+because removal revokes every grant built on the connection and the
+approve-then-delete interaction needs an issue context this route does not
+have — hand the removal to an operator.
+
+Every agent call on these surfaces also writes a `tool_access_audit_events`
+row (`actorType: "agent"`, action `tool_access.gallery.read`,
+`tool_access.connections.list.read`, `tool_access.connection.read`,
+`tool_access.connections.create`, `tool_access.connection.update`,
+`tool_access.connection.installs_sync` or `tool_access.connection.delete`,
+outcome `success` or `denied`), next to the
+activity-log rows the mutations already record with `actorType: "agent"`.
+
+The other connection-configure surfaces (reconnect, per-connection services,
+apps, grants) stay **board-only**: they are gated by
+`isToolConnectionManager`, which begins with `assertBoard` and answers
+`403 Board access required` for every agent actor regardless of grants.
 
 Other connection routes keep their existing membership/role logic for board
 actors and stay board-only for mutations unless listed above; an agent's own

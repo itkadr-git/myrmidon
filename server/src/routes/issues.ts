@@ -120,6 +120,12 @@ import {
   isMarkdownAttachmentContent,
   isUuidLike,
   normalizeIssueIdentifier as normalizeIssueReferenceIdentifier,
+  // myrmidon(F16): the agent issue-list defaults (compact by default,
+  // limit 200/500, description omitted in compact) from the shared contract.
+  ISSUE_LIST_AGENT_DEFAULT_LIMIT,
+  ISSUE_LIST_AGENT_FULL_VIEW_MAX_LIMIT,
+  ISSUE_LIST_AGENT_MAX_LIMIT,
+  issueListAgentDefaultsEnabled,
   type CompactIssue,
   type CompanySearchExtractQuery,
   type CompanySearchExtractResponse,
@@ -162,6 +168,9 @@ import { isUniqueViolation } from "../db-errors.js";
 import type { StorageService } from "../storage/types.js";
 import { validate, validateIssueMutationBody } from "../middleware/validate.js";
 import * as serviceIndex from "../services/index.js";
+// myrmidon(1.6.5-BOT-DISK-H4a-INVALIDATE): drop the desired-state cache on
+// status/assignee changes so a reopened or reassigned task is not stale.
+import { invalidateDesiredStateForIssueChange } from "../myrmidon/bot-containers/bot-workspaces-invalidation.js";
 import {
   accessService,
   agentService,
@@ -262,6 +271,9 @@ import {
 } from "../attachment-types.js";
 import { queueIssueAssignmentWakeup } from "../services/issue-assignment-wakeup.js";
 import { shouldWakeAssigneeForIssueComment } from "../services/issue-comment-wakeup.js";
+// myrmidon(1.6.5 PROMPT-BUDGET-SIGNAL): recognising the signal comments the
+// board left in agent tasks, so none of them wakes an agent.
+import { isPromptBudgetSignalNotice } from "../myrmidon/prompt-budget/notice.js";
 import { createSecretProposalsService } from "../services/secret-proposals.js";
 import { notifySecretProposalResolution } from "../services/secret-proposal-notifications.js";
 import {
@@ -333,6 +345,16 @@ import { externalObjectService } from "../services/external-objects.js";
 import { getExternalChannelBindingSummary } from "../services/chat-channel-binding.js";
 import { deliverAgentUnblockNotification, isStaleBlockGuardedTransition } from "../services/routable-blocked.js";
 import {
+  BLOCKED_LOOP_SIGNATURE_KEY,
+  blockedLoopMessage,
+  blockerSetKeyOf,
+  descriptorKeyOf,
+  judgeBlockedLoop,
+  loadBlockedLoopEvents,
+  readBlockedLoopMaxReturns,
+  type BlockedLoopSignature,
+} from "../myrmidon/blocked-loop/index.js";
+import {
   assertIssueReviewVerdictActorAllowed,
   isIssueReviewVerdictInteraction,
   resolveIssueReviewRequester,
@@ -353,6 +375,14 @@ import {
 import { assertRunHasTaskSourceContext } from "../myrmidon/issue-checkout-guard.js";
 // myrmidon(L5): issue write lock only blocks while the assignee's run is live
 import { resolveIssueWriteAssigneeRunLock } from "../myrmidon/issue-write-run-lock.js";
+// myrmidon(1.6.5-OWNER-VIA-BOT): wake the author of an owner decision to explain it in a DM
+import { scheduleOwnerExplainWake } from "../myrmidon/owner-delivery/owner-message.js";
+// myrmidon(1.6.5-F21-A): the owner's own comment on a task closes the freshest
+// pending owner card of that task, without an agent run in between.
+import {
+  createOwnerReplyDeps,
+  handleOwnerTextReply,
+} from "../myrmidon/owner-reply/index.js";
 import {
   crossIssueInfluenceLimitError,
   crossIssueInfluenceRunContextError,
@@ -3027,6 +3057,11 @@ function toCompactIssue(issue: any): CompactIssue {
     status: issue.status,
     workMode: issue.workMode,
     priority: issue.priority,
+    // 1.6.5 (F-27 PHEROMONE): the list API carries the strength so the list UI
+    // can show and edit it without loading each card.
+    pheromoneStrength: issue.pheromoneStrength,
+    // 1.6.5 (F-27 rework 09.10): the caste key (design §2.1).
+    casteKey: issue.casteKey ?? null,
     reviewPolicy: issue.reviewPolicy,
     assigneeAgentId: issue.assigneeAgentId,
     assigneeUserId: issue.assigneeUserId,
@@ -8070,9 +8105,20 @@ export function issueRoutes(
       rawLimit !== undefined && /^\d+$/.test(rawLimit)
         ? Number.parseInt(rawLimit, 10)
         : null;
+    // myrmidon(F16): agent actors get the defect-fix defaults (compact view,
+    // limit 200, max 500, description omitted in compact) behind the instance
+    // setting `issuesListAgentDefaults`; absent means ON, `{enabled: false}`
+    // restores the pre-feature behaviour byte-for-byte.
+    const agentDefaultsEnabled =
+      req.actor.type === "agent" &&
+      issueListAgentDefaultsEnabled(
+        (await instanceSettings.getGeneral()).issuesListAgentDefaults,
+      );
     const limit =
       parsedLimit === null
-        ? ISSUE_LIST_DEFAULT_LIMIT
+        ? agentDefaultsEnabled
+          ? ISSUE_LIST_AGENT_DEFAULT_LIMIT
+          : ISSUE_LIST_DEFAULT_LIMIT
         : clampIssueListLimit(parsedLimit);
     const rawOffset = req.query.offset as string | undefined;
     const parsedOffset =
@@ -8083,7 +8129,12 @@ export function issueRoutes(
     const sortField = req.query.sortField as string | undefined;
     const sortDir = req.query.sortDir as string | undefined;
     const view = req.query.view as string | undefined;
-    const compactView = view === "compact";
+    // myrmidon(F16): with the agent defaults on, a bare agent request is the
+    // compact view; the full view stays reachable through an explicit
+    // `view=full` with an explicit `limit <= 100`.
+    const compactView = agentDefaultsEnabled
+      ? view === undefined || view === "compact"
+      : view === "compact";
     const hasPlanDocument = parseOptionalBooleanQuery(
       req.query.hasPlanDocument,
     );
@@ -8136,8 +8187,27 @@ export function issueRoutes(
         .json({ error: "attention must be 'blocked' when provided" });
       return;
     }
-    if (view !== undefined && view !== "compact") {
+    // myrmidon(F16): an agent with the defaults on may also pass `view=full`,
+    // and only then — the full response stays small by the limit gate below.
+    if (
+      view !== undefined &&
+      view !== "compact" &&
+      !(agentDefaultsEnabled && view === "full")
+    ) {
       res.status(400).json({ error: "view must be 'compact' when provided" });
+      return;
+    }
+    // myrmidon(F16): an agent's `view=full` is capped at an explicit
+    // `limit <= 100`; without `limit` the agent default (200) already exceeds
+    // the cap, so the request is refused with the pagination hint.
+    if (
+      agentDefaultsEnabled &&
+      view === "full" &&
+      (parsedLimit === null || parsedLimit > ISSUE_LIST_AGENT_FULL_VIEW_MAX_LIMIT)
+    ) {
+      res.status(400).json({
+        error: `view=full for agent actors requires an explicit limit up to ${ISSUE_LIST_AGENT_FULL_VIEW_MAX_LIMIT}; for larger windows paginate the default compact view with offset or afterId`,
+      });
       return;
     }
     if (
@@ -8148,6 +8218,15 @@ export function issueRoutes(
     ) {
       res.status(400).json({
         error: `limit must be a positive integer up to ${ISSUE_LIST_MAX_LIMIT}`,
+      });
+      return;
+    }
+    // myrmidon(F16): an agent's explicit limit above the agent maximum is a
+    // 400 (not a silent clamp) with the pagination hint — a bot should page
+    // through the list instead of fetching it whole.
+    if (agentDefaultsEnabled && parsedLimit !== null && parsedLimit > ISSUE_LIST_AGENT_MAX_LIMIT) {
+      res.status(400).json({
+        error: `limit must be a positive integer up to ${ISSUE_LIST_AGENT_MAX_LIMIT} for agent actors; paginate with offset or afterId for larger windows`,
       });
       return;
     }
@@ -8269,6 +8348,10 @@ export function issueRoutes(
       normalizedQuery: {
         ...listFilters,
         view: compactView ? "compact" : undefined,
+        // myrmidon(F16): the settings toggle changes the response body at an
+        // identical query (description present or omitted, default limit
+        // 500 or 200) — the cache key must not mix the two bodies.
+        issuesListAgentDefaultsEnabled: agentDefaultsEnabled || undefined,
       },
     });
     const coordinated = await coordinateIssueListGet({
@@ -8304,13 +8387,24 @@ export function issueRoutes(
               else recoveryActionByIssue.delete(issue.id);
             }),
           );
-          const compactResult = result.map((issue) =>
+          let compactResult = result.map((issue) =>
             toCompactIssue({
               ...issue,
               activeRecoveryAction: recoveryActionByIssue.get(issue.id) ?? null,
               successfulRunHandoff: handoffStates.get(issue.id) ?? null,
             }),
           );
+          // myrmidon(F16): the agent compact row omits `description` — the
+          // field that makes the bare agent list response megabyte-sized;
+          // the agent fetches the body via the detail endpoint. The ETag is
+          // computed from this already-trimmed body (and the trim flag is in
+          // the request key), so agent/board bodies never share an ETag.
+          if (agentDefaultsEnabled) {
+            compactResult = compactResult.map((row) => {
+              const { description: _omitted, ...trimmed } = row;
+              return trimmed as CompactIssue;
+            });
+          }
           return {
             kind: "compact",
             body: compactResult,
@@ -13584,6 +13678,9 @@ export function issueRoutes(
       }
       const enteringBlocked =
         existing.status !== "blocked" && updateFields.status === "blocked";
+      // myrmidon(BLOCKED-LOOP): signature of an agent return to blocked, kept
+      // in the issue.updated details so the next attempt can compare with it.
+      let blockedLoopSignature: BlockedLoopSignature | null = null;
       if (enteringBlocked) {
         const requestedBlockerIds = Array.isArray(req.body.blockedByIssueIds)
           ? [...new Set(req.body.blockedByIssueIds as string[])]
@@ -13666,6 +13763,65 @@ export function issueRoutes(
               "Entering blocked requires a reason reference: non-empty blockedByIssueIds or unblockDescriptor.reasonRef",
           });
           return;
+        }
+        // myrmidon(BLOCKED-LOOP): an agent may not keep returning the task to
+        // blocked with the same blockers and the same descriptor; the wait must
+        // be expressed as a monitor or a date/event reason instead. Board and
+        // other human actors are not limited.
+        if (req.actor.type === "agent") {
+          const maxReturns = readBlockedLoopMaxReturns();
+          let blockedLoopDecision: ReturnType<typeof judgeBlockedLoop> | null =
+            null;
+          try {
+            const blockerIds = Array.isArray(req.body.blockedByIssueIds)
+              ? (req.body.blockedByIssueIds as string[])
+              : (await svc.getRelationSummaries(existing.id)).blockedBy.map(
+                  (relation) => relation.id,
+                );
+            const signature: BlockedLoopSignature = {
+              blockerSetKey: blockerSetKeyOf(blockerIds),
+              descriptorKey: descriptorKeyOf(descriptor),
+            };
+            blockedLoopDecision = judgeBlockedLoop(
+              await loadBlockedLoopEvents(db, {
+                companyId: existing.companyId,
+                issueId: existing.id,
+                maxReturns,
+              }),
+              signature,
+              maxReturns,
+            );
+            blockedLoopSignature = signature;
+          } catch (err) {
+            // The limiter is a safety net: a failure to read the history must
+            // never stop a legal block, so it fails open.
+            logger.warn(
+              { err, issueId: existing.id },
+              "blocked-loop limiter could not evaluate the return; allowing it",
+            );
+          }
+          if (blockedLoopDecision?.blockedLoop) {
+            await logActivity(db, {
+              companyId: existing.companyId,
+              actorType: actor.actorType,
+              actorId: actor.actorId,
+              agentId: actor.agentId,
+              runId: actor.runId,
+              action: "myrmidon.blocked_loop.rejected",
+              entityType: "issue",
+              entityId: existing.id,
+              details: {
+                streak: blockedLoopDecision.streak,
+                maxReturns,
+                identifier: existing.identifier,
+              },
+            });
+            res.status(422).json({
+              error: blockedLoopMessage(maxReturns),
+              code: "blocked_loop_limit",
+            });
+            return;
+          }
         }
       }
       if (
@@ -14385,6 +14541,9 @@ export function issueRoutes(
             identifier: issue.identifier,
             authorizationReason: issueMutationAuthorizationReason,
             changes: issueChanges,
+            ...(blockedLoopSignature
+              ? { [BLOCKED_LOOP_SIGNATURE_KEY]: blockedLoopSignature }
+              : {}),
             ...(reviewInteractionId ? { reviewInteractionId } : {}),
             ...(commentBody ? { source: "comment" } : {}),
             ...(resumeRequested === true
@@ -14427,6 +14586,23 @@ export function issueRoutes(
             ),
           },
         });
+
+      // myrmidon(1.6.5-BOT-DISK-H4a-INVALIDATE): a status or assignee change
+      // makes every cached desired-state that still holds this task dangerous:
+      // the old bot may archive-delete the reopened directory, the new bot
+      // would not protect its new task for the rest of the 300 s window. Drop
+      // both bots' entries here so the next poll rebuilds from the store.
+      if (
+        Object.hasOwn(issueChanges, "status") ||
+        Object.hasOwn(issueChanges, "assigneeAgentId")
+      ) {
+        invalidateDesiredStateForIssueChange({
+          companyId: issue.companyId,
+          previousAssigneeAgentId:
+            (previous.assigneeAgentId as string | null | undefined) ?? null,
+          nextAssigneeAgentId: issue.assigneeAgentId,
+        });
+      }
 
       if (
         existing.status === "in_progress" &&
@@ -15060,6 +15236,11 @@ export function issueRoutes(
               issueAtCommentStart: existing,
               reopened,
               currentStatus: issue.status,
+              // myrmidon(1.6.5 PROMPT-BUDGET-SIGNAL): the prompt-budget notice
+              // is for the owner and the operator — the feed card, not the
+              // agent. The copies already in threads must not wake an agent
+              // either, so the guard reads the rows, not just the writer.
+              suppressesWake: isPromptBudgetSignalNotice(comment),
             });
 
           if (
@@ -16390,7 +16571,40 @@ export function issueRoutes(
           );
       }
 
-      res.status(201).json(interaction);
+      // myrmidon(1.6.5-OWNER-VIA-BOT): an owner decision raised by an agent is
+      // not shown to the owner as a card; its author is woken on this task to
+      // explain it to the owner in a direct message (no-op outside via_bot).
+      // The creation response tells the author it can explain the decision now,
+      // in this very run; the deferred wake then finds it already explained.
+      const ownerExplainOutcome = await scheduleOwnerExplainWake(db, {
+        companyId: issue.companyId,
+        issueId: issue.id,
+        interaction,
+        wakeup: (agentId, options) => heartbeat.wakeup(agentId, options),
+        requestedBy: { actorType: actor.actorType, actorId: actor.actorId },
+      }).catch((err) => {
+        logger.warn(
+          { err, issueId: issue.id, interactionId: interaction.id },
+          "failed to wake the author to explain an owner decision",
+        );
+        return null;
+      });
+
+      res.status(201).json(
+        ownerExplainOutcome === "woken"
+          ? {
+              ...interaction,
+              ownerExplain: {
+                required: true,
+                tool: "myrmidonMessageOwner",
+                interactionIds: [interaction.id],
+                instruction:
+                  "Explain this decision to the owner now with one message via myrmidonMessageOwner " +
+                  `(interactionIds: ["${interaction.id}"]). If you do it in this run, the follow-up wake does nothing.`,
+              },
+            }
+          : interaction,
+      );
     },
   );
 
@@ -18350,6 +18564,32 @@ export function issueRoutes(
         actor,
         source: "issue.comment",
       });
+      // myrmidon(1.6.5-F21-A): owner words close the owner's card.
+      //
+      // A board user answering on the task is the web half of "the owner's own
+      // words are the decision". The handler selects the freshest pending owner
+      // card of this task (created before this comment), resolves it through the
+      // ordinary resolution services with the owner attributed as the resolver,
+      // and asks which card when several are open. It is a no-op in every owner
+      // delivery mode but via_bot, and it never throws: a defect keeps the card
+      // pending instead of failing the comment the owner just wrote.
+      const taskOwnerUserId =
+        currentIssue.responsibleUserId ?? currentIssue.createdByUserId ?? null;
+      if (
+        req.actor.type === "board" &&
+        req.actor.userId &&
+        taskOwnerUserId !== null &&
+        req.actor.userId === taskOwnerUserId
+      ) {
+        await handleOwnerTextReply(createOwnerReplyDeps(db), {
+          companyId: currentIssue.companyId,
+          ownerUserId: req.actor.userId,
+          text: comment.body,
+          issueId: currentIssue.id,
+          replyCommentId: comment.id,
+          sourceRef: `comment:${comment.id}`,
+        });
+      }
       let lostReviewPathRef: string | null = null;
       if (
         currentIssue.status === "in_review" &&
@@ -18497,6 +18737,10 @@ export function issueRoutes(
           issueAtCommentStart: issue,
           reopened,
           currentStatus: wakeIssueSnapshot.status,
+          // myrmidon(1.6.5 PROMPT-BUDGET-SIGNAL): a prompt-budget notice is a
+          // signal for the owner and the operator, never a message for the
+          // agent whose prompt is already over budget.
+          suppressesWake: isPromptBudgetSignalNotice(comment),
         });
         if (assigneeId && !goalCommentSteered && shouldWakeAssigneeForComment) {
           if (reopened) {

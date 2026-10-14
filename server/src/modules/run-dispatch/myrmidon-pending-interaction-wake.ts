@@ -59,3 +59,49 @@ export async function isPendingInteractionAddresseeWake(
     .limit(1);
   return interaction !== undefined;
 }
+
+// myrmidon(1.6.5-OWNER-VIA-BOT) -----------------------------------------------
+// The wake that tells the AUTHOR of an owner decision to explain it to the
+// owner (see server/src/myrmidon/owner-delivery/owner-message.ts). The author is
+// not the card's addressee, and it is often not the assignee either, so the
+// same staleness bypass as the addressee wake applies while the decision it
+// announces is still pending and the run's agent is its author.
+
+/** The wake source of the owner-explain wake (set by owner-delivery/owner-message.ts). */
+export const OWNER_EXPLAIN_WAKE_SOURCE = "owner_explain.requested";
+
+/** Context-only precheck: the run was woken to explain an owner decision. */
+export function looksLikeOwnerExplainWake(context: Record<string, unknown>): boolean {
+  return (
+    context.wakeReason === PENDING_INTERACTION_WAKE_REASON &&
+    context.source === OWNER_EXPLAIN_WAKE_SOURCE &&
+    uuidString(context.ownerExplainInteractionId) !== null
+  );
+}
+
+export async function isOwnerExplainWake(
+  db: Db,
+  input: {
+    companyId: string;
+    issueId: string;
+    agentId: string;
+    contextSnapshot: Record<string, unknown>;
+  },
+): Promise<boolean> {
+  if (!looksLikeOwnerExplainWake(input.contextSnapshot)) return false;
+  const interactionId = uuidString(input.contextSnapshot.ownerExplainInteractionId)!;
+  const [interaction] = await db
+    .select({ id: issueThreadInteractions.id })
+    .from(issueThreadInteractions)
+    .where(
+      and(
+        eq(issueThreadInteractions.id, interactionId),
+        eq(issueThreadInteractions.companyId, input.companyId),
+        eq(issueThreadInteractions.issueId, input.issueId),
+        eq(issueThreadInteractions.status, "pending"),
+        eq(issueThreadInteractions.createdByAgentId, input.agentId),
+      ),
+    )
+    .limit(1);
+  return interaction !== undefined;
+}

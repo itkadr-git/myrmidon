@@ -256,7 +256,7 @@ describe("hybrid search index", () => {
 
     expect(error).toBeInstanceOf(CorpusVectorSearchUnavailableError);
     expect((error as CorpusVectorSearchUnavailableError).code).toBe("corpus_vector_search_unavailable");
-    expect((error as Error).message).toMatch(/0310_corpus_pgvector/);
+    expect((error as Error).message).toMatch(/0391_corpus_pgvector/);
     expect((error as Error).message).toMatch(/full text search is available/);
     expect((error as CorpusVectorSearchUnavailableError).pgError).toMatchObject(driverError);
   });

@@ -13,6 +13,7 @@ import { deliverReconciledExecutions, settleUnrecoverableExecutions } from "./se
 import { reconcileSafeNativeReplacements } from "./services/native-runtime/native-safe-replacement.js";
 import { reconcileAbandonedExecutionControl } from "./services/execution-control-reconciliation.js";
 import { EXECUTION_RECONCILIATION_INTERVAL_MS } from "./services/execution-control-deadline.js";
+import { laneInterval, recordLaneDbQuery } from "./myrmidon/monitoring/board-load/lanes.js"; // myrmidon(1.6.6 PROCS-0.3A): load lanes
 import { connectionIntentDeliveryService } from "./services/connection-intent-delivery.js";
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import { createServer, type Server as HttpServer } from "node:http";
@@ -119,6 +120,7 @@ import { maybePersistWorktreeRuntimePorts } from "./worktree-config.js";
 import { initTelemetry, getTelemetryClient } from "./telemetry.js";
 import { conflict } from "./errors.js";
 import { ensureDecisionSigningSecret } from "./services/decision-signing.js";
+import { decisionRetentionSyncScheduler } from "./services/decision-retention-sync.js";
 import { createDecisionRetentionNotifyOriginAgent, createDecisionWakeOriginAgent } from "./services/decision-wakeup.js";
 import {
   closeHttpListenerForShutdown,
@@ -136,6 +138,9 @@ import { startRuntimeLimits } from "./myrmidon/runtime-limits/index.js"; // myrm
 import { startProcessesSettings, createProcessSupervisor, reportReadyToSupervisor, wireSupervisorDrainHandler, type SupervisorListenerHandle } from "./myrmidon/processes/index.js"; // myrmidon(PROCS-1.1/1.2)
 import { resolveProcessesSettings } from "@paperclipai/shared";
 import { startBehaviorSettings } from "./myrmidon/behavior-settings/index.js"; // myrmidon(SETTINGS-CORE)
+// myrmidon(PAUSE-GUARD): resumes operator pauses left older than a threshold
+import { createPauseGuardSweepFromHeartbeat } from "./myrmidon/pause-guard/index.js";
+import { startRunPriority } from "./myrmidon/run-priority/index.js"; // myrmidon(1.6.5 RUN-PRIORITY A)
 import { startBotContainers, stopBotContainers } from "./myrmidon/bot-containers/startup.js"; // myrmidon(W2a)
 import { getBotContainerRuntime } from "./myrmidon/bot-containers/routes-wiring.js";
 import { initializeIdleStopService, shutdownIdleStopService } from "./myrmidon/idle-stop-startup.js";
@@ -150,6 +155,7 @@ import { startLitellmBudgetSync } from "./myrmidon/litellm-budget-sync/index.js"
 import { startLitellmModelReconciliation } from "./myrmidon/litellm-sync/startup-reconciler.js"; // myrmidon(1.6.1 MODEL-PROVIDERS B)
 import { startModelFallbackSignalSweep } from "./myrmidon/litellm-fallback-signal/sweep.js"; // myrmidon(BOT-RUNTIME-TUNING D)
 import { startBaselineSnapshots, stopBaselineSnapshots } from "./myrmidon/baseline/startup.js"; // myrmidon(1.6-BASELINE)
+import { startRunContextColumnsBackfill } from "./services/run-context-columns-backfill.js"; // OPE-5007 П2
 import { startForagingSweep, stopForagingSweep } from "./myrmidon/foraging/startup.js"; // myrmidon(1.6-FORAGE)
 import { startAlertsSweep } from "./myrmidon/monitoring/alerts/index.js"; // myrmidon(1.6.6-ALERTS)
 import { startTracingAttentionSweep, stopTracingAttentionSweep } from "./myrmidon/tracing-health/attention-sweep.js"; // myrmidon(TRACING-HEALTH)
@@ -158,18 +164,23 @@ import { startStackCheckSweep } from "./myrmidon/stack-registry/index.js"; // my
 // myrmidon(1.6.1-TG-NOTIFY-B): daily digest and escalation jobs over the owner Telegram notify settings (all off by default)
 import { startTelegramNotifyJobs } from "./myrmidon/telegram-notify/index.js";
 import { startTgNotifySweep, dbErrorChannelSettingsSource } from "./myrmidon/telegram-notify/index.js"; // myrmidon(1.6-TG-NOTIFY-C)
+import { startScentQueue } from "./myrmidon/scent/index.js"; // myrmidon(1.6.5 F-26 T10 SCENT)
 import { interactionContinuationOutboxService } from "./myrmidon/interaction-continuation-outbox.js"; // myrmidon(O1)
 import { createWorkspaceHygieneScheduler } from "./myrmidon/workspace-hygiene/index.js"; // myrmidon(WORKSPACE-HYGIENE)
 import { createBotDiskQuotaScheduler } from "./myrmidon/bot-containers/bot-disk-quota-runtime.js"; // myrmidon(1.6.1-BOT-DISK-C)
 // myrmidon(BOT-DISK E): measures the host disk and signals when it crosses the threshold
 import { createHostDiskScheduler } from "./myrmidon/host-disk/index.js"; // myrmidon(BOT-DISK E)
 import { createAlertRecoveryScheduler } from "./myrmidon/monitoring/alert-recovery/index.js"; // myrmidon(1.6.6-MONITORING-D)
-import { createRunStallSweepFromHeartbeat } from "./myrmidon/run-stall/index.js"; // myrmidon(RUN-STALL)
+import { startDatastoreCare, stopDatastoreCare } from "./myrmidon/datastore-care/index.js"; // myrmidon(DBC-4)
+// myrmidon(1.6.5-DB-RETENTION): sweeps runs and logs past their retention
+import { createDataRetentionScheduler } from "./myrmidon/data-retention/index.js"; // myrmidon(1.6.5-DB-RETENTION)
+import { createRunStallSweepFromHeartbeat, registerRunStallSweep, startRunStall } from "./myrmidon/run-stall/index.js"; // myrmidon(RUN-STALL)
 // myrmidon(HERMES-RUN-REATTACH): reattach live gateway runs after a board restart
 import { sweepGatewayRunReattach, GATEWAY_REATTACH_SWEEP_INTERVAL_MS } from "./myrmidon/gateway-run-reattach.js";
 import { readHotRestartIntent } from "./services/hot-restart.js"; // myrmidon(T1.6): predecessor boot id for the startup reattach pass
 import { createTaskPrSyncScheduler } from "./myrmidon/task-pr-sync/index.js"; // myrmidon(TASK-PR-SYNC)
 import { createStaleBlockScheduler } from "./myrmidon/stale-block/index.js"; // myrmidon(STALE-BLOCK)
+import { createOwnerCardTtlScheduler } from "./myrmidon/owner-reply/index.js"; // myrmidon(1.6.5-F21-B)
 import { createReviewRoutingScheduler } from "./myrmidon/review-routing/index.js"; // myrmidon(REVIEW-ROUTING)
 import { createReviewReworkScheduler } from "./myrmidon/review-rework/index.js"; // myrmidon(REVIEW-REWORK)
 import { buildWipLimitSweeper } from "./myrmidon/wip-limit/index.js"; // myrmidon(1.6.1-WIP-LIMIT-A)
@@ -198,6 +209,7 @@ import type {
   InstanceDatabaseBackupRunResult,
   InstanceDatabaseBackupTrigger,
 } from "./routes/instance-database-backups.js";
+import { readProductEnv, writeProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
 
 type BetterAuthSessionUser = {
   id: string;
@@ -303,14 +315,14 @@ async function startServerWithDatabaseTeardown(
     );
   }
   initTelemetry({ enabled: config.telemetryEnabled });
-  if (process.env.PAPERCLIP_SECRETS_PROVIDER === undefined) {
-    process.env.PAPERCLIP_SECRETS_PROVIDER = config.secretsProvider;
+  if (readProductEnv("SECRETS_PROVIDER") === undefined) {
+    writeProductEnv(process.env, "SECRETS_PROVIDER", config.secretsProvider); // myrmidon(REBRAND-C)
   }
-  if (process.env.PAPERCLIP_SECRETS_STRICT_MODE === undefined) {
-    process.env.PAPERCLIP_SECRETS_STRICT_MODE = config.secretsStrictMode ? "true" : "false";
+  if (readProductEnv("SECRETS_STRICT_MODE") === undefined) {
+    writeProductEnv(process.env, "SECRETS_STRICT_MODE", config.secretsStrictMode ? "true" : "false"); // myrmidon(REBRAND-C)
   }
-  if (process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE === undefined) {
-    process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE = config.secretsMasterKeyFilePath;
+  if (readProductEnv("SECRETS_MASTER_KEY_FILE") === undefined) {
+    writeProductEnv(process.env, "SECRETS_MASTER_KEY_FILE", config.secretsMasterKeyFilePath); // myrmidon(REBRAND-C)
   }
   
   type MigrationSummary =
@@ -327,8 +339,8 @@ async function startServerWithDatabaseTeardown(
   }
   
   async function promptApplyMigrations(migrations: string[]): Promise<boolean> {
-    if (process.env.PAPERCLIP_MIGRATION_AUTO_APPLY === "true") return true;
-    if (process.env.PAPERCLIP_MIGRATION_PROMPT === "never") return false;
+    if (readProductEnv("MIGRATION_AUTO_APPLY") === "true") return true;
+    if (readProductEnv("MIGRATION_PROMPT") === "never") return false;
     if (!stdin.isTTY || !stdout.isTTY) return true;
   
     const prompt = createInterface({ input: stdin, output: stdout });
@@ -550,6 +562,7 @@ async function startServerWithDatabaseTeardown(
       // myrmidon(PROCS-1.2): an api child serves HTTP only and shares the
       // database with its siblings — it gets a smaller pool than the worker.
       maxConnections: processRoleProfile.role === "api" ? 6 : undefined,
+      onQuery: () => recordLaneDbQuery(),
     });
     pluginMigrationDb = config.databaseMigrationUrl ? createDb(config.databaseMigrationUrl) : db;
     logger.info("Using external PostgreSQL via DATABASE_URL/config");
@@ -578,7 +591,7 @@ async function startServerWithDatabaseTeardown(
     const configuredPort = config.embeddedPostgresPort;
     let port = configuredPort;
     const logBuffer = createEmbeddedPostgresLogBuffer(120);
-    const verboseEmbeddedPostgresLogs = process.env.PAPERCLIP_EMBEDDED_POSTGRES_VERBOSE === "true";
+    const verboseEmbeddedPostgresLogs = readProductEnv("EMBEDDED_POSTGRES_VERBOSE") === "true";
     const appendEmbeddedPostgresLog = (message: unknown) => {
       logBuffer.append(message);
       if (!verboseEmbeddedPostgresLogs) {
@@ -758,7 +771,7 @@ async function startServerWithDatabaseTeardown(
       autoApply: shouldAutoApplyFirstRunMigrations,
     });
   
-    db = createDb(embeddedConnectionString);
+    db = createDb(embeddedConnectionString, { onQuery: () => recordLaneDbQuery() });
     pluginMigrationDb = db;
     logger.info("Embedded PostgreSQL ready");
     activeDatabaseConnectionString = embeddedConnectionString;
@@ -994,11 +1007,11 @@ async function startServerWithDatabaseTeardown(
   );
   const databaseBackupMaxAgeHours = Math.max(
     1,
-    Number(process.env.PAPERCLIP_DB_BACKUP_MAX_AGE_HOURS) ||
+    Number(readProductEnv("DB_BACKUP_MAX_AGE_HOURS")) ||
       Math.max(26, Math.ceil((config.databaseBackupIntervalMinutes / 60) * 2)),
   );
   const databaseBackupAlertFile =
-    process.env.PAPERCLIP_DB_BACKUP_ALERT_FILE ||
+    readProductEnv("DB_BACKUP_ALERT_FILE") ||
     resolve(config.databaseBackupDir, "..", "health", "db-backup-to-s3.failure");
   const databaseBackupAlertFiles = [
     databaseBackupAlertFile,
@@ -1205,7 +1218,7 @@ async function startServerWithDatabaseTeardown(
     bindHost: runtimeListenHost,
     port: listenPort,
   });
-  const configuredApiUrl = process.env.PAPERCLIP_API_URL?.trim() || runtimeApiUrl;
+  const configuredApiUrl = readProductEnv("API_URL")?.trim() || runtimeApiUrl;
   const runtimeApiCandidates = buildRuntimeApiCandidateUrls({
     preferredApiUrl: configuredApiUrl,
     authPublicBaseUrl: config.authPublicBaseUrl ?? null,
@@ -1213,11 +1226,11 @@ async function startServerWithDatabaseTeardown(
     bindHost: runtimeListenHost,
     port: listenPort,
   });
-  process.env.PAPERCLIP_LISTEN_HOST = runtimeListenHost;
-  process.env.PAPERCLIP_LISTEN_PORT = String(listenPort);
-  process.env.PAPERCLIP_RUNTIME_API_URL = runtimeApiUrl;
-  process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON = JSON.stringify(runtimeApiCandidates);
-  process.env.PAPERCLIP_API_URL = configuredApiUrl;
+  writeProductEnv(process.env, "LISTEN_HOST", runtimeListenHost); // myrmidon(REBRAND-C)
+  writeProductEnv(process.env, "LISTEN_PORT", String(listenPort)); // myrmidon(REBRAND-C)
+  writeProductEnv(process.env, "RUNTIME_API_URL", runtimeApiUrl); // myrmidon(REBRAND-C)
+  writeProductEnv(process.env, "RUNTIME_API_CANDIDATES_JSON", JSON.stringify(runtimeApiCandidates)); // myrmidon(REBRAND-C)
+  writeProductEnv(process.env, "API_URL", configuredApiUrl); // myrmidon(REBRAND-C)
 
   let startupListenerBound = false;
   try {
@@ -1498,6 +1511,7 @@ async function startServerWithDatabaseTeardown(
   }>) | null = null;
   let heartbeatSchedulerStopped = false;
   let heartbeatSchedulerInterval: ReturnType<typeof setInterval> | null = null;
+  let runContextColumnsBackfill: { stop(): void } | null = null; // OPE-5007 П2
   // myrmidon(T1.6): clock for the periodic gateway-reattach pass. The startup
   // pass refreshes it too, so the first periodic tick waits one full interval
   // instead of doubling up on candidates the startup sweep just scanned.
@@ -1530,6 +1544,25 @@ async function startServerWithDatabaseTeardown(
         issues: issueService(db as any),
       })
     : null;
+  // myrmidon(PAUSE-GUARD): the forgotten-pause guard. An agent the operator
+  // paused and left paused longer than the threshold is resumed through the
+  // same wake chain the resume route uses; system pauses (budget, archive,
+  // import) are never touched and names on the allowlist are skipped. The
+  // sweep rate-limits itself to its configured interval (10 minutes by
+  // default) and to at most `maxResumesPerPass` resumes per pass, so it rides
+  // this reconciliation queue without holding it.
+  const pauseGuardSweep = heartbeat
+    ? createPauseGuardSweepFromHeartbeat({ db: db as any, heartbeat })
+    : null;
+  // myrmidon(RUN-STALL-SETTINGS, 1.6.5): settings saved from the UI apply to
+  // this sweep instance without a restart; the stored row is applied right
+  // after registration, before the first scheduler tick.
+  registerRunStallSweep(runStallSweep);
+  if (runStallSweep) {
+    void startRunStall(db as any).catch((err) =>
+      logger.error({ err }, "failed to apply the stored run stall settings at startup"),
+    );
+  }
   const executionControlSweeps = [
     ["finalization", () => reconcileAbandonedExecutionControl(db)],
     ["replacement", () => heartbeat ? reconcileSafeNativeReplacements(db, new Date(), { verifyStoppedSession: run => verifyStoppedNativeSessionForReplacement(db, run) }) : undefined],
@@ -1538,6 +1571,8 @@ async function startServerWithDatabaseTeardown(
     ["automatic_disposition", () => settleUnrecoverableExecutions(db)],
     ["local_ai_login_cleanup", () => localAiLoginService(db).reapExpired()],
     ["run_stall", () => runStallSweep?.sweep()],
+    // myrmidon(PAUSE-GUARD): lifts operator pauses left older than the threshold
+    ["pause_guard", () => pauseGuardSweep?.sweep()],
   ] as const;
   const sweepExecutionControl = () => {
     if (heartbeatSchedulerStopped) return;
@@ -1553,14 +1588,19 @@ async function startServerWithDatabaseTeardown(
   };
   // myrmidon(PROCS-1.1): execution-control reconciliation is background work.
   const executionControlInterval = processRoleProfile.runsBackground
-    ? setInterval(sweepExecutionControl, EXECUTION_RECONCILIATION_INTERVAL_MS)
+    ? laneInterval("execution_control", EXECUTION_RECONCILIATION_INTERVAL_MS, sweepExecutionControl)
     : null;
   executionControlInterval?.unref?.();
   // myrmidon(PROCS-1.1): the startup pass of the same sweeps is background work
   // too — an api process must not reconcile or settle executions at boot.
   if (processRoleProfile.runsBackground) sweepExecutionControl();
   const startHeartbeatSchedulerInterval = (callback: () => void) => {
-    heartbeatSchedulerInterval = setInterval(callback, config.heartbeatSchedulerIntervalMs);
+    heartbeatSchedulerInterval = laneInterval(
+      "heartbeat_tick",
+      config.heartbeatSchedulerIntervalMs,
+      callback,
+      (error) => logger.error({ err: error }, "heartbeat scheduler interval failed"),
+    );
     heartbeatSchedulerInterval?.unref?.();
   };
   const externalObjects = externalObjectService(db as any, {
@@ -1676,6 +1716,18 @@ async function startServerWithDatabaseTeardown(
   // blocked tasks through the ordinary issue update path. Opt-in via
   // MYRMIDON_STALE_BLOCK_ENABLED; the interval is enforced inside the sweep.
   const scheduleStaleBlockSweep = createStaleBlockScheduler({ db: db as any, track: trackHeartbeatSchedulerWork });
+  // myrmidon(1.6.5-F21-B): the periodic owner-card TTL pass — an owner
+  // request_confirmation the owner leaves unanswered past
+  // MYRMIDON_OWNER_CARD_TTL_MS is resolved by its recommended option
+  // (silence-means-recommended) or expired, and the author is woken once with
+  // `interaction_expired`. Settings are read on every pass; the interval is
+  // enforced inside the sweep.
+  const scheduleOwnerCardTtlSweep = createOwnerCardTtlScheduler({
+    db: db as any,
+    wakeup: ((agentId: string, options: Record<string, unknown>) =>
+      environmentLeaseCleanupHeartbeat.wakeup(agentId, options as any)),
+    track: trackHeartbeatSchedulerWork,
+  });
   // myrmidon(REVIEW-ROUTING): a task in review with no reviewer gets one from
   // the reviewer roles (least loaded, never its author or assignee); a review
   // without a verdict past the configured hours is signalled and reassigned.
@@ -1816,8 +1868,8 @@ async function startServerWithDatabaseTeardown(
   const tools = toolAccessService(db as any, {
     deploymentMode: config.deploymentMode,
     deploymentExposure: config.deploymentExposure,
-    trustedLocalStdioRuntimeHost: process.env.PAPERCLIP_TRUSTED_MCP_RUNTIME_HOST
-      ?? process.env.PAPERCLIP_TOOL_RUNTIME_TRUSTED_HOST
+    trustedLocalStdioRuntimeHost: readProductEnv("TRUSTED_MCP_RUNTIME_HOST")
+      ?? readProductEnv("TOOL_RUNTIME_TRUSTED_HOST")
       ?? null,
   });
   const scheduleGitHubConnectionEventPoll = () => {
@@ -1885,6 +1937,9 @@ async function startServerWithDatabaseTeardown(
     const retentionExecutor = decisionRetentionService(db as any, {
       notifyOriginAgent: createDecisionRetentionNotifyOriginAgent(heartbeat.wakeup),
     });
+    // myrmidon(1.6.5-F-15-C): the attention feed read path parks its retention
+    // snapshot instead of writing it, so this sweep is also that writer.
+    const retentionSync = decisionRetentionSyncScheduler(db as any);
     drainHeartbeatRunsForShutdown = (signal, runIds) => (
       heartbeat.drainRunningRunsForShutdown(signal, new Date(), runIds)
     );
@@ -1980,6 +2035,17 @@ async function startServerWithDatabaseTeardown(
       track: trackHeartbeatSchedulerWork,
     });
 
+    // myrmidon(1.6.5-DB-RETENTION): one retention pass per tick; the sweep
+    // itself throttles to at most one pass per 10 minutes
+    // (DATA_RETENTION_SWEEP_MIN_INTERVAL_MS, operator review
+    // dbcare-review-20261008). The pass deletes old runs and logs in bounded
+    // batches (each in its own transaction) and re-reads its settings
+    // (GET/PATCH /api/myrmidon/data-retention) at the top of every pass
+    const scheduleDataRetentionSweep = createDataRetentionScheduler({
+      db: db as any,
+      track: trackHeartbeatSchedulerWork,
+    });
+
     // The restart-safe cleanup backstop for adapter login sessions. The
     // in-process five-minute timer stays the primary control. This reaper runs
     // on startup and on the scheduler interval. It deletes the login sandbox for
@@ -2053,6 +2119,7 @@ async function startServerWithDatabaseTeardown(
     );
     await startRuntimeLimits(db as any); // myrmidon(C0): stored run admission limits in force before the scheduler starts runs
     await startBehaviorSettings(db as any); // myrmidon(SETTINGS-CORE): stored behavior settings in force without a restart
+    await startRunPriority(db as any); // myrmidon(1.6.5 RUN-PRIORITY A): stored run queue priority in force before the scheduler starts runs
     await startMaintenanceMode(db as any); // myrmidon(R3): load open maintenance windows before startup recovery starts runs
     startDeployJobs(db as any); // myrmidon(R5-A): resume an interface deploy job; no-op unless MYRMIDON_DEPLOY_ENABLED
     startBotContainers(db as any); // myrmidon(W2a): bot container sweep and the card's "Apply now" runtime; a no-op unless MYRMIDON_BOT_CONTAINERS is on
@@ -2061,11 +2128,13 @@ async function startServerWithDatabaseTeardown(
     if (botContainerRuntime) {
       initializeIdleStopService(botContainerRuntime.driver, db as any);
     }
+    runContextColumnsBackfill = startRunContextColumnsBackfill(db as any, logger); // OPE-5007 П2: batched, per-batch-commit fill of the thin run-context columns (the migration only adds them)
     startLitellmCostSweep(db as any); // myrmidon(M2-A): gateway spend sweep; a no-op unless MYRMIDON_LITELLM_* is set
     startLitellmBudgetSync(db as any); // myrmidon(1.7-BUDGET-CONFIG-C): LiteLLM budget projection; a no-op unless the gateway contour is set and the document enables it
     startLitellmModelReconciliation(db as any); // myrmidon(1.6.1 MODEL-PROVIDERS B): reconcile LiteLLM models with DB state
     startModelFallbackSignalSweep(db as any); // myrmidon(BOT-RUNTIME-TUNING D): model fallback attention signals; a no-op unless MYRMIDON_MODEL_FALLBACK_ENABLED=1
     startBaselineSnapshots(db as any); // myrmidon(1.6-BASELINE): freeze the 14-day metric window; a no-op unless MYRMIDON_BASELINE_INTERVAL_SEC is set
+    startDatastoreCare(db as any); // myrmidon(DBC-4): hourly snapshots of the board's database plus their 90-day retention; a no-op unless MYRMIDON_DATASTORE_CARE_ENABLED=0
     startForagingSweep(db as any); // myrmidon(1.6-FORAGE): source comparison sweep; a no-op unless MYRMIDON_FORAGING_ENABLED=1
     startAlertsSweep(db as any); // myrmidon(1.6.6-ALERTS): dedup registry cleanup of closed alerts; a no-op unless MYRMIDON_ALERTS_SWEEP_INTERVAL_SEC is set
     startTracingAttentionSweep(db as any); // myrmidon(TRACING-HEALTH): keep the "LLM tracing" operator signal fresh; a no-op unless the tracing settings are on
@@ -2073,6 +2142,7 @@ async function startServerWithDatabaseTeardown(
     startStackCheckSweep(db as any); // myrmidon(SUB): scheduled stack release check; a no-op unless MYRMIDON_STACK_CHECK_INTERVAL_SEC is set
     startTelegramNotifyJobs(db as any); // myrmidon(1.6.1-TG-NOTIFY-B): digest/escalation jobs; a no-op unless the owner settings enable them
     startTgNotifySweep({ db: db as any, settings: dbErrorChannelSettingsSource(db as any) }); // myrmidon(1.6-TG-NOTIFY-C): board errors → Telegram chat/topic; a no-op unless the owner settings enable it
+    startScentQueue(db as any); // myrmidon(1.6.5 F-26 T10 SCENT): the markup queue on its own timer — never a heartbeat pass; a no-op unless general.swarm.scent.enabled
     const heartbeatSchedulingSuppression = await heartbeat.resolveSchedulingSuppression();
 
     // Reap orphaned runs before timer ticks start so wakeups cannot coalesce
@@ -2230,12 +2300,19 @@ async function startServerWithDatabaseTeardown(
           );
         }
 
-        const taskWatchdogsReconciled = await heartbeat.reconcileTaskWatchdogs();
-        if (taskWatchdogsReconciled.triggered > 0) {
-          logger.warn(
-            { ...taskWatchdogsReconciled },
-            "startup task-watchdog reconciliation triggered watchdog work",
-          );
+        // myrmidon(STARTUP-WATCHDOG-PAUSED): watchdog reconciliation is best
+        // effort at startup; an error here (e.g. a paused watchdog agent) must
+        // not stop the board from starting.
+        try {
+          const taskWatchdogsReconciled = await heartbeat.reconcileTaskWatchdogs();
+          if (taskWatchdogsReconciled.triggered > 0) {
+            logger.warn(
+              { ...taskWatchdogsReconciled },
+              "startup task-watchdog reconciliation triggered watchdog work",
+            );
+          }
+        } catch (err) {
+          logger.warn({ err }, "startup task-watchdog reconciliation failed; continuing startup");
         }
 
         const scanned = await heartbeat.scanSilentActiveRuns();
@@ -2289,6 +2366,12 @@ async function startServerWithDatabaseTeardown(
     await runEnvironmentLeaseCleanupSweep(0);
 
     const runRetentionSweep = async () => {
+      // Store the snapshots the feed reads have parked since the last tick, so
+      // the pass below renders and archives against the stored retention state.
+      const synced = await retentionSync.drainDue();
+      if (synced > 0) {
+        logger.info({ companies: synced }, "decision retention sync stored parked feed snapshots");
+      }
       const activeCompanies = await db.select({ id: companies.id }).from(companies).where(eq(companies.status, "active"));
       let archived = 0;
       for (const company of activeCompanies) {
@@ -2352,12 +2435,14 @@ async function startServerWithDatabaseTeardown(
         scheduleBotDiskQuotaSweep(); // myrmidon(1.6.1-BOT-DISK-C)
         scheduleHostDiskSweep(); // myrmidon(BOT-DISK E)
         scheduleAlertRecoverySweep(); // myrmidon(1.6.6-MONITORING-D)
+        scheduleDataRetentionSweep(); // myrmidon(1.6.5-DB-RETENTION)
         scheduleAdapterLoginReaperSweep();
         scheduleSetupTokenReaperSweep();
         scheduleEnvironmentLeaseCleanupSweep();
         schedulePendingInteractionWakeSweep(); // myrmidon(P12)
         scheduleTaskPrSyncSweep(); // myrmidon(TASK-PR-SYNC)
         scheduleStaleBlockSweep(); // myrmidon(STALE-BLOCK)
+        scheduleOwnerCardTtlSweep(); // myrmidon(1.6.5-F21-B)
         scheduleReviewRoutingSweep(); // myrmidon(REVIEW-ROUTING)
         scheduleReviewReworkSweep(); // myrmidon(REVIEW-REWORK)
         scheduleWipLimitSweep(); // myrmidon(1.6.1-WIP-LIMIT-A)
@@ -2569,6 +2654,7 @@ async function startServerWithDatabaseTeardown(
       schedulePendingInteractionWakeSweep(); // myrmidon(P12)
       scheduleAutoResumeSweep(); // myrmidon(AUTO-RESUME)
       scheduleStaleBlockSweep(); // myrmidon(STALE-BLOCK)
+      scheduleOwnerCardTtlSweep(); // myrmidon(1.6.5-F21-B)
       scheduleReviewRoutingSweep(); // myrmidon(REVIEW-ROUTING)
       scheduleReviewReworkSweep(); // myrmidon(REVIEW-REWORK)
       scheduleMonitoringLinkSweep(); // myrmidon(1.6.6 MONITORING E)
@@ -2640,7 +2726,7 @@ async function startServerWithDatabaseTeardown(
   void systemdNotify(["--ready", `--status=Listening on ${config.host}:${listenPort}`]).then((notified) => {
     if (notified) logger.info("Notified systemd that Myrmidon is ready");
   });
-  if (process.env.PAPERCLIP_OPEN_ON_LISTEN === "true") {
+  if (readProductEnv("OPEN_ON_LISTEN") === "true") {
     const openHost = config.host === "0.0.0.0" || config.host === "::" ? "127.0.0.1" : config.host;
     const url = `http://${openHost}:${listenPort}`;
     void import("open")
@@ -2693,6 +2779,7 @@ async function startServerWithDatabaseTeardown(
     await systemdNotify(["--stopping", `--status=Stopping after ${signal}`]);
     heartbeatSchedulerStopped = true;
     if (executionControlInterval) clearInterval(executionControlInterval);
+    runContextColumnsBackfill?.stop(); // OPE-5007 П2
     // myrmidon(PROCS-1.2): the children go first — SIGTERM each, stop the
     // restart timers — so a worker exit never leaves a served api orphan.
     if (processSupervisor) {
@@ -2708,6 +2795,7 @@ async function startServerWithDatabaseTeardown(
     stopLitellmCostSweep(); // myrmidon(M2-A)
     stopBoardProcessRegistry(); // myrmidon(1.6.6 PROCS-0.1)
     stopBaselineSnapshots(); // myrmidon(1.6-BASELINE)
+    stopDatastoreCare(); // myrmidon(DBC-4)
     stopForagingSweep(); // myrmidon(1.6-FORAGE)
     stopTracingAttentionSweep(); // myrmidon(TRACING-HEALTH)
     stopBotCanary(); // myrmidon(R5-B)

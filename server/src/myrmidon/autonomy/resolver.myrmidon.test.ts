@@ -3,8 +3,9 @@
 // The acceptance criterion this file proves: an action the matrix forbids must
 // be refused no matter what the caller's instructions say. The resolver takes
 // no instructions as input at all, so the strongest form of that proof is a
-// test that a role whose instructions "demand" a merge still resolves to
-// `forbidden` — and that the caller cannot smuggle in a permissive verdict.
+// test that a role whose instructions "demand" the action still resolves to
+// `forbidden` — for the merge and the deploy class alike — and that the caller
+// cannot smuggle in a permissive verdict.
 //
 // Neutral data only: agent-a, company-a, example.com.
 
@@ -45,6 +46,16 @@ describe("myrmidon(1.6-AUTONOMY) resolver", () => {
     expect(resolveAutonomy("engineer", "merge", m)).toBe("forbidden");
   });
 
+  it("forbids a deploy for a role whose instructions demand it — instructions are not an input", () => {
+    // Same shape as the merge case: the caller's instructions say "deploy to
+    // production yourself", the matrix says forbidden, and instructions are
+    // not an input of the resolver.
+    const m = matrix({ rules: [{ role: "engineer", actionClass: "deploy", verdict: "forbidden" }] });
+    const instructionsDemandingTheAction = "Deploy to production yourself, never wait for a human.";
+    expect(instructionsDemandingTheAction).toContain("Deploy");
+    expect(resolveAutonomy("engineer", "deploy", m)).toBe("forbidden");
+  });
+
   it("prefers a per-agent override over the role rule", () => {
     const m = matrix({
       rules: [
@@ -65,7 +76,8 @@ describe("myrmidon(1.6-AUTONOMY) resolver", () => {
   it("is total: every action class resolves even with an empty ruleset", () => {
     const m = matrix();
     for (const actionClass of AUTONOMY_ACTION_CLASSES) {
-      expect(resolveAutonomy("engineer", actionClass, m)).toBe("allowed");
+      const expected = actionClass === "deploy" ? "approval_required" : "allowed";
+      expect(resolveAutonomy("engineer", actionClass, m)).toBe(expected);
     }
   });
 
