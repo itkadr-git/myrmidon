@@ -27,36 +27,29 @@ export function telegramOwnerQuestionText(
       interaction.payload.title?.trim() ||
       interaction.title?.trim() ||
       "Нужен ответ",
-    "",
   ];
-  if (questionSet?.description?.trim()) lines.push(questionSet.description.trim(), "");
-  if (questionSet) {
-    for (const question of questionSet.questions) {
-      lines.push(question.header?.trim() || question.prompt.trim());
-      if (question.helpText?.trim()) lines.push(question.helpText.trim());
-      for (const [index, option] of (question.options ?? []).entries()) {
-        const recommendation = option.recommended ? " (рекомендуется)" : "";
-        const description = option.description?.trim();
-        lines.push(
-          `${index + 1}. ${option.label.trim()}${description ? ` — ${description}` : ""}${recommendation}`,
-        );
-      }
-      if (question.customAnswer?.enabled) {
-        lines.push(
-          `Свободный ответ: ${question.customAnswer.label?.trim() || "своими словами"}${question.customAnswer.placeholder?.trim() ? ` (${question.customAnswer.placeholder.trim()})` : ""}`,
-        );
-      }
-      lines.push(QUESTION_REPLY_GUIDANCE, "");
+  if (questionSet?.description?.trim()) lines.push("", questionSet.description.trim());
+
+  const questions = questionSet?.questions ?? interaction.payload.questions;
+  for (const question of questions) {
+    lines.push("");
+    if ("header" in question && question.header?.trim()) {
+      lines.push(question.header.trim());
     }
-  } else {
-    for (const question of interaction.payload.questions) {
-      lines.push(question.prompt.trim());
-      if (question.helpText?.trim()) lines.push(question.helpText.trim());
-      for (const [index, option] of question.options.entries()) {
-        const description = option.description?.trim();
-        lines.push(description ? `${index + 1}. ${option.label.trim()} — ${description}` : `${index + 1}. ${option.label.trim()}`);
-      }
-      lines.push(QUESTION_REPLY_GUIDANCE, "");
+    lines.push(question.prompt.trim());
+    if ("helpText" in question && question.helpText?.trim()) {
+      lines.push(question.helpText.trim());
+    }
+    for (const [index, option] of question.options.entries()) {
+      lines.push(`${index + 1}. ${option.label.trim()}`);
+      if (option.description?.trim()) lines.push(`   ${option.description.trim()}`);
+    }
+    if ("customAnswer" in question && question.customAnswer?.enabled) {
+      lines.push(`Свободный ответ: ${question.customAnswer.label?.trim() || "своими словами"}`);
+    } else if ("allowOther" in question && question.allowOther === false) {
+      lines.push("Ответьте сообщением: номером варианта");
+    } else {
+      lines.push(QUESTION_REPLY_GUIDANCE);
     }
   }
   if (taskUrl) lines.push(taskUrl);
