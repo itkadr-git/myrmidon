@@ -140,7 +140,17 @@ fi
 # /workspace: with --delete below, syncing every clone on each call shipped
 # gigabytes and mirrored unrelated checkouts.
 if [ -z "${DEVBUILD_WORKSPACE:-}" ]; then
-  top="$(git -C "$PWD" rev-parse --show-toplevel 2>/dev/null || true)"
+  # The nearest directory with a .git entry (a directory, or the one-line file of a
+  # worktree whose base lives on another volume — `git rev-parse` stops at that
+  # filesystem boundary, 14.10), walking up from $PWD but not past /workspace.
+  # /workspace is a link to the bot volume (/bot/workspace): use the logical path,
+  # and map a physical one back.
+  top=""; d="$PWD"
+  case "$d" in /bot/workspace/*) d="/workspace/${d#/bot/workspace/}" ;; esac
+  while [ -n "$d" ] && [ "$d" != "/" ] && [ "$d" != "/workspace" ]; do
+    if [ -e "$d/.git" ]; then top="$d"; break; fi
+    d="$(dirname "$d")"
+  done
   case "$top" in
     /workspace/?*) WORKSPACE_SRC="$top" ;;
     *) WORKSPACE_SRC="/workspace" ;;
