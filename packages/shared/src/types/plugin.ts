@@ -2,7 +2,6 @@ import type {
   PluginStatus,
   PluginCategory,
   PluginCapability,
-  PluginProviderModelDeclaration,
   PluginUiSlotType,
   PluginUiSlotEntityType,
   PluginStateScopeKind,
