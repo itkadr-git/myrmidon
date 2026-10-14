@@ -287,8 +287,20 @@ export function modelProviderRoutesWithSync(deps: ModelProviderRoutesWithSyncDep
         state: body.state,
         plan: body.plan ?? null,
         windows: {
-          primary: body.windows?.primary ?? null,
-          secondary: body.windows?.secondary ?? null,
+          primary: body.windows?.primary
+            ? {
+                usedPct: body.windows.primary.usedPct ?? null,
+                windowMin: body.windows.primary.windowMin ?? null,
+                resetsAt: body.windows.primary.resetsAt ?? null,
+              }
+            : null,
+          secondary: body.windows?.secondary
+            ? {
+                usedPct: body.windows.secondary.usedPct ?? null,
+                windowMin: body.windows.secondary.windowMin ?? null,
+                resetsAt: body.windows.secondary.resetsAt ?? null,
+              }
+            : null,
         },
         limitedUntil: body.limitedUntil ?? null,
         lastOk: null,

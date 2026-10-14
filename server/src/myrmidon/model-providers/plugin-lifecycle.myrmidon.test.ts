@@ -89,7 +89,7 @@ describe("myrmidon(1.6.6 OPE-7198) model provider plugin lifecycle bridge", () =
           displayName: "Custom",
           description: "Custom",
           author: "Test",
-          categories: ["developer_tools"],
+          categories: ["connector"],
           capabilities: ["agent.tools.register"],
           entrypoints: { worker: "./worker.js" },
           modelProviders: [{ type: "custom-pool", supportsChannels: true }],
