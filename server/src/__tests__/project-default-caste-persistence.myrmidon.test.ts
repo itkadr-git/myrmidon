@@ -73,7 +73,7 @@ describeEmbeddedPostgres("project default caste persistence", () => {
     expect((await service.getById(created.id))?.defaultCasteKey).toBeNull();
   });
   it("replays and reverses the additive migration", async () => {
-    const migration = readFileSync(new URL("../../../packages/db/src/migrations/0316_project_default_caste.sql", import.meta.url), "utf8");
+    const migration = readFileSync(new URL("../../../packages/db/src/migrations/0317_project_default_caste.sql", import.meta.url), "utf8");
     await db.execute(sql.raw(migration));
     await db.execute(sql.raw(migration));
     await db.execute(sql.raw('ALTER TABLE projects DROP COLUMN IF EXISTS default_caste_key'));
