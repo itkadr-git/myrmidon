@@ -202,6 +202,7 @@ describe("buildCreateContainerRequestBody — BUILD-OFFLOAD C devbuild wiring", 
       "DEVBUILD_HOST=build-host.internal",
       "DEVBUILD_USER=devbuild",
       "DEVBUILD_BASE=/srv/devbuild",
+      "DEVBUILD_BOT_NAME=agent-a",
     ]);
     expect(body.HostConfig.Binds).toEqual([
       "/srv/myrmidon/bots/agent-a:/bot",
@@ -221,6 +222,7 @@ describe("buildCreateContainerRequestBody — BUILD-OFFLOAD C devbuild wiring", 
       "DEVBUILD_HOST=build-host.internal",
       "DEVBUILD_USER=devbuild",
       "DEVBUILD_BASE=/srv/devbuild",
+      "DEVBUILD_BOT_NAME=agent-a",
     ]);
     expect(body.HostConfig.Binds).toEqual([
       "/srv/myrmidon/bots/agent-a:/bot",
