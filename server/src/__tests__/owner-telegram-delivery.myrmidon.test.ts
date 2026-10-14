@@ -30,6 +30,7 @@ import {
   type ChatProvider,
 } from "@paperclipai/shared";
 import { issueThreadInteractionService } from "../services/issue-thread-interactions.js";
+import { enqueueIssueInteractionChatPublications } from "../services/chat-interaction-publications.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { telegramConversationUserId } from "../myrmidon/agent-chat-bridge/identity.js";
 import {
@@ -243,6 +244,10 @@ describeEmbeddedPostgres(
         })
         .returning();
 
+      await db.delete(instanceSettings).where(eq(instanceSettings.singletonKey, "default"));
+      await instanceSettingsService(db).updateGeneral({
+        [OWNER_DELIVERY_SETTINGS_KEY]: { mode: "via_bot" },
+      });
       return { companyId, agentId, boardUserId, endpointId, dmIssue, workIssue };
     }
 
