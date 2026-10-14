@@ -1,3 +1,4 @@
+// myrmidon(DEBRAND-c): persist browser state under the Myrmidon namespace.
 import { useState, type FormEvent } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Archive, MoreHorizontal, Pencil, RefreshCw } from "lucide-react";
@@ -37,7 +38,7 @@ const RESTART_WAKE_RETRY_STORAGE_SUFFIX = ":restart-wake-retry";
 
 function restartWakeRetryStorageKey(companyId: string, userId: string | null) {
   // Action retry state must survive changes to the recent-task snapshot format.
-  return `paperclip.recentTasks:${companyId}:${userId ?? "__local_board__"}${RESTART_WAKE_RETRY_STORAGE_SUFFIX}`;
+  return `myrmidon.recentTasks:${companyId}:${userId ?? "__local_board__"}${RESTART_WAKE_RETRY_STORAGE_SUFFIX}`;
 }
 
 function readRestartWakeRetryIssueIds(storageKey: string | null) {
