@@ -114,11 +114,13 @@ describeEmbeddedPostgres(
           updatedAt: new Date(),
         })
         .onConflictDoNothing();
-      const [membership] = await db.select().from(companyMemberships)
-        .where(eq(companyMemberships.companyId, companyId));
-      await db.update(companyMemberships)
-        .set({ membershipRole: "owner" })
-        .where(eq(companyMemberships.id, membership!.id));
+      await db.insert(companyMemberships).values({
+        companyId,
+        principalType: "user",
+        principalId: boardUserId,
+        status: "active",
+        membershipRole: "owner",
+      });
       await db.insert(agents).values({
         id: agentId,
         companyId,
@@ -281,8 +283,10 @@ describeEmbeddedPostgres(
       expect(payload.text).toContain("Choose a deploy window");
       expect(payload.text).toContain("Which deploy window?");
       expect(payload.text).toContain("Choose one and include any timing constraints.");
-      expect(payload.text).toContain("1. Morning — Before noon");
-      expect(payload.text).toContain("2. Evening — After work");
+      expect(payload.text).toContain("1. Morning");
+      expect(payload.text).toContain("   Before noon");
+      expect(payload.text).toContain("2. Evening");
+      expect(payload.text).toContain("   After work");
       expect(payload.text).toContain("Ответьте сообщением: номером варианта или своими словами.");
       expect(payload.text).toContain("https://paperclip.local");
       expect(payload.interaction?.id).toBe(interaction.id);
