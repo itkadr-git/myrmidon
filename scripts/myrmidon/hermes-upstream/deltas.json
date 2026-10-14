@@ -260,6 +260,44 @@
         "path": "gateway/platforms/api_server_runs.py",
         "upstreamMarker": "stranded|supersed|replace_unanswered"
       }
+    },
+    {
+      "id": "16-context-economy",
+      "kind": "patch",
+      "patch": "docker/bot-runtime/patches/16-context-economy.patch",
+      "files": [
+        "agent/context_economy.py",
+        "tools/stale_result_tool.py",
+        "agent/turn_request_assembly.py",
+        "agent/tool_result_classification.py",
+        "toolsets.py"
+      ],
+      "reason": "Every model call re-sends the whole session, and its two largest parts are one wake package per run (up to 78 piled up in one session) and tool results older than eight messages. The per-call request copy now carries every wake message but the newest as a short note (run, issue, wake reason) and every stale heavy tool result as a note with a ref; the new read_stale_tool_result tool returns the original for the ref. The transcript, state.db and compaction input are untouched; HERMES_KEEP_STALE_WAKES=1 and HERMES_KEEP_STALE_TOOL_RESULTS=1 switch the two parts off, each restoring the old request byte for byte.",
+      "dropCondition": "Upstream trims superseded task prompts and stale tool results of the replayed history on the send path, with a way to read the original back.",
+      "offer": null,
+      "offerNote": "Not offered yet: see the note on delta 02 (publisher-scan wrapper pending).",
+      "probe": {
+        "source": "hermes",
+        "path": "agent/turn_request_assembly.py",
+        "upstreamMarker": "stale_tool_result|stale_wake|superseded_wake"
+      }
+    },
+    {
+      "id": "17-disabled-tools-by-name",
+      "kind": "patch",
+      "patch": "docker/bot-runtime/patches/17-disabled-tools-by-name.patch",
+      "files": [
+        "model_tools.py"
+      ],
+      "reason": "agent.disabled_toolsets works on whole toolsets, but the browser credential vault rides with the browser and vision_analyze has a toolset of its own next to tools the role uses, so their schemas (about 1.2k tokens) were sent on every call by roles that never call them. model_tools._select_tool_names now also subtracts the tools listed under agent.disabled_tools in config.yaml.",
+      "dropCondition": "Upstream offers a per-tool disable list next to agent.disabled_toolsets.",
+      "offer": null,
+      "offerNote": "Not offered yet: see the note on delta 02 (publisher-scan wrapper pending).",
+      "probe": {
+        "source": "hermes",
+        "path": "model_tools.py",
+        "upstreamMarker": "disabled_tools\\b"
+      }
     }
   ]
 }
