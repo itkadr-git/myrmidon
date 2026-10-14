@@ -148,7 +148,7 @@ describeEmbeddedPostgres("codex pool attention feed cards (OPE-7198)", () => {
     expect(bannedCard!.severity).toBe("high");
     expect(bannedCard!.subject.title).toContain("Account #2");
     expect(bannedCard!.subject.href).toContain("/company/settings/models");
-    expect(bannedCard!.whyNow).toContain("relogin or replace");
+    expect(bannedCard!.whyNow).toContain("Relogin or replace");
     expect(bannedCard!.relatedIssue).toBeNull();
 
     const exhaustedCard = cards.find((c) => c.subject.metadata?.kind === "exhausted");
