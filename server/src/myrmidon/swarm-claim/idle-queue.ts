@@ -17,7 +17,7 @@ import {
 } from "@paperclipai/shared";
 import type { SwarmIdleQueueCandidate } from "./idle-wake.js";
 import { issueHasNoExecutionHold } from "../settled-holds/ready-predicate.js";
-import { projectScopedClaimGate } from "../project-membership.js";
+import { projectScopedClaimGateForAgentSql } from "../project-membership.js";
 
 /** The read-ready role pairs of one company: queue + its agents' idle state. */
 export interface SwarmIdleRolePair {
@@ -148,7 +148,7 @@ async function listReadyQueueCandidates(db: Db, companyId: string) {
         eq(issues.companyId, companyId),
         or(
           isNull(issues.assigneeAgentId),
-          projectScopedClaimGate(issues.assigneeAgentId),
+          projectScopedClaimGateForAgentSql(issues.assigneeAgentId),
         ),
         isNull(issues.assigneeUserId),
         isNull(issues.hiddenAt),

@@ -27,6 +27,11 @@ import { agents, issues, projectMemberships, projects, type Db } from "@papercli
  * member).
  */
 export function projectScopedClaimGate(agentId: string): SQL {
+  return projectScopedClaimGateForAgentSql(sql`${agentId}`);
+}
+
+/** SQL variant for query paths that select or gate an agent id from a row. */
+export function projectScopedClaimGateForAgentSql(agentId: SQLWrapper): SQL {
   return sql`(
     ${issues.projectId} is null
     or exists (
