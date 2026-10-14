@@ -159,6 +159,7 @@ import { startRunContextColumnsBackfill } from "./services/run-context-columns-b
 import { startForagingSweep, stopForagingSweep } from "./myrmidon/foraging/startup.js"; // myrmidon(1.6-FORAGE)
 import { startAlertsSweep } from "./myrmidon/monitoring/alerts/index.js"; // myrmidon(1.6.6-ALERTS)
 import { startTracingAttentionSweep, stopTracingAttentionSweep } from "./myrmidon/tracing-health/attention-sweep.js"; // myrmidon(TRACING-HEALTH)
+import { startModelProviderPoolSweep, stopModelProviderPoolSweep } from "./myrmidon/model-providers/sweep.js"; // myrmidon(1.6.6 OPE-7198)
 import { startBotCanary, stopBotCanary } from "./myrmidon/bot-containers/canary-index.js"; // myrmidon(R5-B)
 import { startStackCheckSweep } from "./myrmidon/stack-registry/index.js"; // myrmidon(SUB)
 // myrmidon(1.6.1-TG-NOTIFY-B): daily digest and escalation jobs over the owner Telegram notify settings (all off by default)
@@ -2138,6 +2139,7 @@ async function startServerWithDatabaseTeardown(
     startForagingSweep(db as any); // myrmidon(1.6-FORAGE): source comparison sweep; a no-op unless MYRMIDON_FORAGING_ENABLED=1
     startAlertsSweep(db as any); // myrmidon(1.6.6-ALERTS): dedup registry cleanup of closed alerts; a no-op unless MYRMIDON_ALERTS_SWEEP_INTERVAL_SEC is set
     startTracingAttentionSweep(db as any); // myrmidon(TRACING-HEALTH): keep the "LLM tracing" operator signal fresh; a no-op unless the tracing settings are on
+    startModelProviderPoolSweep(db as any); // myrmidon(1.6.6 OPE-7198): keep Codex/ChatGPT pool attention signals fresh
     startBotCanary(db as any); // myrmidon(R5-B): resume an open bot image rollout; a no-op unless MYRMIDON_BOT_CANARY is on
     startStackCheckSweep(db as any); // myrmidon(SUB): scheduled stack release check; a no-op unless MYRMIDON_STACK_CHECK_INTERVAL_SEC is set
     startTelegramNotifyJobs(db as any); // myrmidon(1.6.1-TG-NOTIFY-B): digest/escalation jobs; a no-op unless the owner settings enable them
@@ -2798,6 +2800,7 @@ async function startServerWithDatabaseTeardown(
     stopDatastoreCare(); // myrmidon(DBC-4)
     stopForagingSweep(); // myrmidon(1.6-FORAGE)
     stopTracingAttentionSweep(); // myrmidon(TRACING-HEALTH)
+    stopModelProviderPoolSweep(); // myrmidon(1.6.6 OPE-7198)
     stopBotCanary(); // myrmidon(R5-B)
     if (heartbeatSchedulerInterval) {
       clearInterval(heartbeatSchedulerInterval);

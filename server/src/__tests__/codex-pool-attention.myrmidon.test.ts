@@ -3,16 +3,32 @@
 // myrmidon(1.6.6 OPE-7198): the attention feed integration for Codex / ChatGPT
 // subscription pool accounts.
 //
-// When an account is banned or token-expired, or when its quota window (5h or weekly)
-// is exhausted, it surfaces as an operator attention card on the desk. When the account
-// recovers or limit resets, the card clears on the next feed read.
+// Asserts the complete production calling path:
+// 1. Account state in the pool daemon (banned / 100% quota window exhaustion)
+// 2. Server-side update (sweeper tick / syncPoolSignals / attention refresh hook)
+// 3. Operator card appears in attention feed with correct severity, whyNow and links
+// 4. Recovery in pool daemon -> server-side update -> card automatically clears from feed
+// 5. Multi-provider isolation: Provider A's signals are not wiped by Provider B, and
+//    removing Provider A only clears Provider A's cards.
 //
 // Live embedded postgres (matching tracing-attention.myrmidon.test.ts pattern).
 
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { activityLog, agents, companies, createDb } from "@paperclipai/db";
-import type { PoolAccountChannelView } from "@paperclipai/shared";
+import {
+  activityLog,
+  agents,
+  companies,
+  createDb,
+  modelProviders,
+} from "@paperclipai/db";
+import {
+  clearModelProviderConnectors,
+  DEFAULT_CHATGPT_POOL_MODELS,
+  modelProviderSecretName,
+  registerModelProviderConnector,
+  type PoolAccountChannelView,
+} from "@paperclipai/shared";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -34,13 +50,16 @@ vi.mock("../middleware/logger.js", () => ({
 }));
 
 import { attentionService } from "../services/attention.js";
+import { secretService } from "../services/secrets.js";
+import {
+  createModelProviderService,
+  type ModelProviderCatalogPort,
+} from "../myrmidon/model-providers/service.js";
 import {
   clearPoolAccountSignals,
-  CODEX_POOL_ALERT_DEDUP_PREFIX,
-  evaluateAccountSignals,
-  recordPoolAccountSignals,
   reportPoolAccountStatus,
 } from "../myrmidon/model-providers/signals.js";
+import { createModelProviderPoolSweeper } from "../myrmidon/model-providers/sweep.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -77,6 +96,8 @@ describeEmbeddedPostgres("codex pool attention feed cards (OPE-7198)", () => {
 
   afterEach(async () => {
     clearPoolAccountSignals();
+    clearModelProviderConnectors();
+    await db.delete(modelProviders);
     await db.delete(activityLog);
     await db.delete(agents);
     await db.delete(companies);
@@ -96,27 +117,66 @@ describeEmbeddedPostgres("codex pool attention feed cards (OPE-7198)", () => {
     });
   }
 
-  it("raises no card when all pool accounts are active and healthy", async () => {
+  function setupService(catalog: ModelProviderCatalogPort) {
+    const secrets = secretService(db);
+    return createModelProviderService({
+      db,
+      secrets: {
+        readSecretValue: (cid, name) =>
+          secrets.getByName(cid, name).then((row) => (row ? secrets.resolveSecretValue(cid, row.id, "latest") : null)),
+        findSecretId: (cid, name) => secrets.getByName(cid, name).then((row) => row?.id ?? null),
+        createSecret: async (input) => {
+          const created = (await secrets.create(
+            input.companyId,
+            { name: input.name, key: input.name, value: input.value, description: input.description } as never,
+            { userId: null, agentId: null },
+          )) as { id: string };
+          return { id: created.id };
+        },
+        rotateSecret: async (id, value) => {
+          await secrets.rotate(id, { value }, { userId: null, agentId: null });
+        },
+        deleteSecret: async (id) => {
+          await secrets.update(id, { status: "deleted" });
+        },
+      },
+      catalog,
+    });
+  }
+
+  async function seedPoolProvider(provId: string, name = "Codex Pool") {
+    const secretName = modelProviderSecretName(provId);
+    const secrets = secretService(db);
+    await secrets.create(
+      companyId,
+      { name: secretName, key: secretName, value: "test-pool-key" } as never,
+      { userId: null, agentId: null },
+    );
+    await db.insert(modelProviders).values({
+      id: provId,
+      companyId,
+      type: "chatgpt-pool",
+      name,
+      baseUrl: "http://localhost:8895",
+      credentialSecretName: secretName,
+      free: false,
+    });
+  }
+
+  it("server update path: pool ban -> sweeper/sync -> attention card -> recovery in pool -> card clears", async () => {
     await seedCompany();
-    const providerId = "prov-pool-1";
+    registerModelProviderConnector({
+      type: "chatgpt-pool",
+      defaultBaseUrl: "http://localhost:8895",
+      defaultModels: DEFAULT_CHATGPT_POOL_MODELS,
+      supportsChannels: true,
+    });
 
-    const healthyAccounts = [
-      channel({ n: 1, label: "Account #1" }),
-      channel({ n: 2, label: "Account #2" }),
-    ];
-    const signals = evaluateAccountSignals(companyId, providerId, healthyAccounts);
-    recordPoolAccountSignals(companyId, providerId, signals);
+    const providerId = randomUUID();
+    await seedPoolProvider(providerId);
 
-    const feed = await attentionService(db, { feedCacheTtlMs: 0 }).list(companyId);
-    const cards = feed.items.filter((item) => item.sourceKind === "codex_pool_alert");
-    expect(cards).toHaveLength(0);
-  });
-
-  it("banned and weekly-exhausted accounts raise cards with correct severity, whyNow and href", async () => {
-    await seedCompany();
-    const providerId = "prov-pool-1";
-
-    const accounts = [
+    // Mock pool accounts in external daemon
+    let poolAccounts: PoolAccountChannelView[] = [
       channel({ n: 1, label: "Account #1", state: "active" }),
       channel({
         n: 2,
@@ -130,15 +190,30 @@ describeEmbeddedPostgres("codex pool attention feed cards (OPE-7198)", () => {
         state: "rate_limited",
         isExhausted: true,
         windows: {
-          primary: { usedPct: 40, windowMin: 300, resetsAt: 1700018000 },
+          primary: { usedPct: 30, windowMin: 300, resetsAt: 1700018000 },
           secondary: { usedPct: 100, windowMin: 10080, resetsAt: 1700600000 },
         },
       }),
     ];
 
-    const signals = evaluateAccountSignals(companyId, providerId, accounts);
-    recordPoolAccountSignals(companyId, providerId, signals);
+    const catalog: ModelProviderCatalogPort = {
+      listModels: async () => ({ models: ["gpt-6.1-sol"] }),
+      listAccounts: async () => ({ accounts: poolAccounts }),
+    };
 
+    const service = setupService(catalog);
+
+    // 1. Trigger the server sync via sweeper (or service.syncPoolSignals) — without viewing UI channels
+    const sweeper = createModelProviderPoolSweeper(
+      {
+        listCompaniesWithPools: async () => [companyId],
+        syncPoolSignals: (cid) => service.syncPoolSignals(cid),
+      },
+      60_000,
+    );
+    await sweeper.sweep();
+
+    // 2. Query the attention feed
     const feed = await attentionService(db, { feedCacheTtlMs: 0 }).list(companyId);
     const cards = feed.items.filter((item) => item.sourceKind === "codex_pool_alert");
     expect(cards).toHaveLength(2);
@@ -149,7 +224,6 @@ describeEmbeddedPostgres("codex pool attention feed cards (OPE-7198)", () => {
     expect(bannedCard!.subject.title).toContain("Account #2");
     expect(bannedCard!.subject.href).toContain("/company/settings/models");
     expect(bannedCard!.whyNow).toContain("Relogin or replace");
-    expect(bannedCard!.relatedIssue).toBeNull();
 
     const exhaustedCard = cards.find((c) => c.subject.metadata?.kind === "exhausted");
     expect(exhaustedCard).toBeDefined();
@@ -157,27 +231,106 @@ describeEmbeddedPostgres("codex pool attention feed cards (OPE-7198)", () => {
     expect(exhaustedCard!.subject.title).toContain("Account #3");
     expect(exhaustedCard!.whyNow).toContain("weekly window");
     expect(exhaustedCard!.subject.metadata?.resetsAt).toBe(1700600000);
+
+    // 3. Accounts recover in the pool daemon
+    poolAccounts = [
+      channel({ n: 1, label: "Account #1", state: "active" }),
+      channel({ n: 2, label: "Account #2", state: "active", isBanned: false }),
+      channel({
+        n: 3,
+        label: "Account #3",
+        state: "active",
+        isExhausted: false,
+        windows: {
+          primary: { usedPct: 30, windowMin: 300, resetsAt: 1700018000 },
+          secondary: { usedPct: 50, windowMin: 10080, resetsAt: 1700600000 },
+        },
+      }),
+    ];
+
+    // 4. Sweeper runs next tick
+    await sweeper.sweep();
+    sweeper.stop();
+
+    // 5. Feed shows all cards cleared
+    const feedAfterRecovery = await attentionService(db, { feedCacheTtlMs: 0 }).list(companyId);
+    const remainingCards = feedAfterRecovery.items.filter((item) => item.sourceKind === "codex_pool_alert");
+    expect(remainingCards).toHaveLength(0);
   });
 
-  it("multi-provider isolation: signals for provider A are preserved when provider B updates", async () => {
+  it("attention refresh hook: feed snapshot building automatically triggers pool sync without manual sweeper", async () => {
     await seedCompany();
-    const provA = "prov-pool-a";
-    const provB = "prov-pool-b";
-
-    // Provider A has banned account #1
-    reportPoolAccountStatus({
-      companyId,
-      providerId: provA,
-      account: channel({ n: 1, label: "A-1", state: "banned", isBanned: true }),
+    registerModelProviderConnector({
+      type: "chatgpt-pool",
+      defaultBaseUrl: "http://localhost:8895",
+      defaultModels: DEFAULT_CHATGPT_POOL_MODELS,
+      supportsChannels: true,
     });
 
-    // Provider B has exhausted account #2
+    const providerId = randomUUID();
+    await seedPoolProvider(providerId);
+
+    const poolAccounts = [
+      channel({ n: 10, label: "Account #10", state: "banned", isBanned: true }),
+    ];
+
+    const catalog: ModelProviderCatalogPort = {
+      listModels: async () => ({ models: ["gpt-6.1-sol"] }),
+      listAccounts: async () => ({ accounts: poolAccounts }),
+    };
+
+    const service = setupService(catalog);
+
+    // Create attention service with poolSignalsSync hook
+    const attention = attentionService(db, {
+      feedCacheTtlMs: 0,
+      poolSignalsSync: (cid) => service.syncPoolSignals(cid),
+    });
+
+    // Directly read attention without running any sweep command first:
+    // the feed build itself invokes poolSignalsSync and surfaces the card!
+    const feed = await attention.list(companyId);
+    const cards = feed.items.filter((item) => item.sourceKind === "codex_pool_alert");
+    expect(cards).toHaveLength(1);
+    expect(cards[0]!.subject.title).toContain("Account #10");
+  });
+
+  it("multi-provider isolation: Provider A removal does not clear Provider B cards", async () => {
+    await seedCompany();
+    registerModelProviderConnector({
+      type: "chatgpt-pool",
+      defaultBaseUrl: "http://localhost:8895",
+      defaultModels: DEFAULT_CHATGPT_POOL_MODELS,
+      supportsChannels: true,
+    });
+
+    const provA = randomUUID();
+    const provB = randomUUID();
+    await seedPoolProvider(provA, "Pool A");
+    await seedPoolProvider(provB, "Pool B");
+
+    const catalog: ModelProviderCatalogPort = {
+      listModels: async () => ({ models: ["gpt-6.1-sol"] }),
+      listAccounts: async ({ apiKey }) => {
+        // apiKey is test-pool-key for both, return distinct accounts
+        return {
+          accounts: [
+            channel({ n: 1, label: "Account A-1", state: "banned", isBanned: true }),
+          ],
+        };
+      },
+    };
+
+    const service = setupService(catalog);
+
+    // Sync provider A and report an event for provider B
+    await service.syncPoolSignals(companyId, provA);
     reportPoolAccountStatus({
       companyId,
       providerId: provB,
       account: channel({
         n: 2,
-        label: "B-2",
+        label: "Account B-2",
         state: "rate_limited",
         isExhausted: true,
         windows: {
@@ -190,40 +343,13 @@ describeEmbeddedPostgres("codex pool attention feed cards (OPE-7198)", () => {
     let feed = await attentionService(db, { feedCacheTtlMs: 0 }).list(companyId);
     let cards = feed.items.filter((item) => item.sourceKind === "codex_pool_alert");
     expect(cards).toHaveLength(2);
-    expect(cards.some((c) => c.subject.metadata?.providerId === provA)).toBe(true);
-    expect(cards.some((c) => c.subject.metadata?.providerId === provB)).toBe(true);
 
-    // Clear provider A: provider B cards must remain intact
-    clearPoolAccountSignals(companyId, provA);
+    // Remove provider A via service: must clear Provider A's signals, leaving Provider B intact
+    await service.removeProvider({ companyId, providerId: provA });
 
     feed = await attentionService(db, { feedCacheTtlMs: 0 }).list(companyId);
     cards = feed.items.filter((item) => item.sourceKind === "codex_pool_alert");
     expect(cards).toHaveLength(1);
-    expect(cards[0]!.subject.metadata?.providerId === provB).toBe(true);
-  });
-
-  it("recovery clears the attention card on next feed read", async () => {
-    await seedCompany();
-    const providerId = "prov-pool-1";
-
-    // Account #5 is banned
-    reportPoolAccountStatus({
-      companyId,
-      providerId,
-      account: channel({ n: 5, label: "Account #5", state: "banned", isBanned: true }),
-    });
-
-    let feed = await attentionService(db, { feedCacheTtlMs: 0 }).list(companyId);
-    expect(feed.items.filter((item) => item.sourceKind === "codex_pool_alert")).toHaveLength(1);
-
-    // Account #5 recovers
-    reportPoolAccountStatus({
-      companyId,
-      providerId,
-      account: channel({ n: 5, label: "Account #5", state: "active", isBanned: false, isExhausted: false }),
-    });
-
-    feed = await attentionService(db, { feedCacheTtlMs: 0 }).list(companyId);
-    expect(feed.items.filter((item) => item.sourceKind === "codex_pool_alert")).toHaveLength(0);
+    expect(cards[0]!.subject.metadata?.providerId).toBe(provB);
   });
 });

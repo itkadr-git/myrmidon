@@ -296,6 +296,25 @@ describe("myrmidon(1.6.1 MODEL-PROVIDERS) routes: channels and chatgpt-pool", ()
     expect(res.body.channels[0].windows.primary.usedPct).toBe(20);
     expect(res.body.channels[0].stateRu).toBe("Активен");
   });
+
+  it("accepts pool account status event via POST /account-status and records signal", async () => {
+    const { server } = app(member);
+    const res = await request(server)
+      .post(`${base}/provider-1/account-status`)
+      .send({
+        accountNumber: 3,
+        label: "Account #3",
+        state: "banned",
+        isBanned: true,
+      })
+      .expect(200);
+
+    expect(res.body.ok).toBe(true);
+    expect(res.body.signal).toBeDefined();
+    expect(res.body.signal.accountNumber).toBe(3);
+    expect(res.body.signal.kind).toBe("banned");
+    expect(res.body.signal.severity).toBe("high");
+  });
 });
 
 describe("myrmidon(1.6.1 MODEL-PROVIDERS) routes: activity", () => {

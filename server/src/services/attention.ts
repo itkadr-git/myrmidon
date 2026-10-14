@@ -373,6 +373,11 @@ type AttentionServiceOptions = {
    * per-Db default (`decisionRetentionSyncScheduler`).
    */
   decisionRetentionSync?: DecisionRetentionSyncSink;
+  /**
+   * myrmidon(1.6.6 OPE-7198): optional server-side hook to synchronize pool account
+   * signals before taking an attention feed snapshot.
+   */
+  poolSignalsSync?: (companyId: string) => Promise<unknown>;
 };
 
 function emptyCounts(): Record<AttentionSourceKind, number> {
@@ -3471,6 +3476,11 @@ async function buildAttentionFeedSnapshot(
       }
 
       // myrmidon(1.6.6 OPE-7198): attention cards for banned or exhausted Codex / ChatGPT pool accounts.
+      if (serviceOptions.poolSignalsSync) {
+        await serviceOptions.poolSignalsSync(companyId).catch(() => {
+          // background sync errors do not abort feed snapshot
+        });
+      }
       for (const poolSignal of readPoolAccountSignals(companyId)) {
         add(createItem({
           companyId,
