@@ -134,12 +134,17 @@ export function isDevBuildImage(image: string): boolean {
  *  DEVBUILD_SSH_CONTAINER_PATH. Null when the wiring is off — the caller adds
  *  nothing. The card's profile .env is a separate file (hermes/.env) and is not
  *  touched by this. */
-export function devbuildContainerEnv(settings: DevbuildSettings): Record<string, string> | null {
+export function devbuildContainerEnv(settings: DevbuildSettings, botKey?: string): Record<string, string> | null {
   if (settings.host === null) return null;
   return {
     DEVBUILD_HOST: settings.host,
     DEVBUILD_USER: settings.user,
     DEVBUILD_BASE: settings.base,
+    // myrmidon(1.6.6 DEVBUILD-ISOLATION): every bot container runs as the same
+    // "bot" user, so the build host copy must be keyed by the bot itself or all
+    // bots share (and --delete) one directory. The key is validated by
+    // validateBotKey (BOT_KEY_PATTERN), safe as a path segment.
+    ...(botKey ? { DEVBUILD_BOT_NAME: botKey } : {}),
   };
 }
 
