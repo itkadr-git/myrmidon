@@ -281,6 +281,7 @@ const SOURCE_RANK: Record<AttentionSourceKind, number> = {
   // myrmidon(1.6.5 F-09): a queue stall is a workload notice — advice, ranked
   // with the other capacity signals.
   queue_stall: 14,
+  provider_usage_warning: 19,
   // myrmidon(1.6.5-F-23): off-run secret reads are a deliberate surface
   // extension — visible as advice, never a stop; ranked with the other
   // advisory notices.
