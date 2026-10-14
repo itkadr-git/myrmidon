@@ -37,7 +37,13 @@ vi.mock("../services/plugin-registry.js", () => ({
   pluginRegistryService: () => mockRegistry,
 }));
 
+vi.mock("../services/plugin-loader.js", () => ({
+  pluginLoader: vi.fn(),
+}));
+vi.mock("@paperclipai/plugin-sdk", () => ({ PLUGIN_RPC_ERROR_CODES: {} }));
+
 import { pluginLifecycleManager } from "../services/plugin-lifecycle.js";
+import { getPluginProviderModels, listPluginProviderModels } from "../myrmidon/plugin-provider-models.js";
 import type { PluginLoader } from "../services/plugin-loader.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 
@@ -59,6 +65,48 @@ function makeWorkerManagerStub() {
 }
 
 describe("pluginLifecycleManager.restartWorker", () => {
+  it("exposes declared models only while plugin records are ready", async () => {
+    const ready = {
+      ...pluginRecord,
+      manifestJson: {
+        id: "example.plugin", capabilities: [],
+        providerModels: { provider: "example", baseUrl: "https://api.example.com/v1", models: [{ id: "one" }, { id: "two", label: "Two" }] },
+      },
+    } as never;
+    expect(listPluginProviderModels([ready]).map((model) => model.modelId)).toEqual(["example/one", "example/two"]);
+    expect(listPluginProviderModels([{ ...ready, status: "disabled" } as never])).toEqual([]);
+    expect(getPluginProviderModels()).toEqual([]);
+    const lifecycle = pluginLifecycleManager({} as never, { loader: {} as PluginLoader });
+    mockRegistry.getById.mockResolvedValue(ready);
+    mockRegistry.updateStatus.mockImplementation(async (_id: string, value: { status: string }) => ({ ...ready, ...value }));
+    await lifecycle.disable("plugin-1");
+    expect(getPluginProviderModels()).toEqual([]);
+    mockRegistry.getById.mockResolvedValue({ ...ready, status: "disabled" });
+    await lifecycle.enable("plugin-1");
+    expect(getPluginProviderModels().map((model) => model.modelId)).toEqual(["example/one", "example/two"]);
+    await lifecycle.disable("plugin-1");
+    expect(getPluginProviderModels()).toEqual([]);
+  });
+
+  it("re-registers dynamic models idempotently when plugin is enabled", async () => {
+    const ready = {
+      ...pluginRecord,
+      manifestJson: {
+        id: "example.plugin", capabilities: [],
+        providerModels: { provider: "example", baseUrl: "https://api.example.com/v1", models: [{ id: "one" }] },
+      },
+    } as never;
+    const lifecycle = pluginLifecycleManager({} as never, { loader: {} as PluginLoader });
+    mockRegistry.getById.mockResolvedValue({ ...ready, status: "disabled" });
+    mockRegistry.updateStatus.mockImplementation(async (_id: string, value: { status: string }) => ({ ...ready, ...value }));
+    await lifecycle.enable("plugin-1");
+    await lifecycle.disable("plugin-1");
+    mockRegistry.getById.mockResolvedValue({ ...ready, status: "disabled" });
+    await lifecycle.enable("plugin-1");
+    expect(getPluginProviderModels()).toHaveLength(1);
+    await lifecycle.disable("plugin-1");
+  });
+
   it("does a full deactivate+reactivate cycle when the loader has runtime services", async () => {
     mockRegistry.getById.mockResolvedValue(pluginRecord);
     mockRegistry.updateStatus.mockResolvedValue(pluginRecord);
