@@ -27,6 +27,7 @@ import {
   companyMemberships,
   createDb,
   heartbeatRuns,
+  instanceSettings,
   issueComments,
   issueRecoveryActions,
   issueTreeHolds,
@@ -1573,6 +1574,50 @@ describeEmbeddedPostgres("Telegram direct messages become a standing Agent Chat 
         firstPost.mock.calls.some(([text]) => text.includes("link your Telegram account")),
       ).toBe(true),
     );
+  });
+
+  it("refuses an unlinked account in the language of the instance (1.6.5-TG-LOCALE-C)", async () => {
+    const fixture = await seedCompany();
+    const { callbacks, endpoint } = await configuredTelegramEndpoint(fixture);
+    await db
+      .update(chatEndpoints)
+      .set({ allowUnlinkedPeople: false })
+      .where(eq(chatEndpoints.id, endpoint.id));
+
+    // The refusal step lives between the env force and the English default,
+    // so an instance that switched its bridge language to Russian must speak
+    // Russian to an unlinked sender, even though they have no board user.
+    const general = { bridgeLanguage: { language: "ru" } };
+    const [existing] = await db.select({ id: instanceSettings.id }).from(instanceSettings).limit(1);
+    if (existing) {
+      await db.update(instanceSettings).set({ general, updatedAt: new Date() });
+    } else {
+      await db.insert(instanceSettings).values({ general });
+    }
+
+    const { post } = await sendTelegramDm({
+      callbacks,
+      endpointId: endpoint.id,
+      channelId: "700009",
+      text: "Let me in",
+      userId: "700009",
+      messageId: 1,
+    });
+
+    await vi.waitFor(() =>
+      expect(
+        // The Russian refusal is the instance-language step in action; the
+        // English text must stay absent so the choice is unambiguous.
+        post.mock.calls.some(([text]) => text.includes("привязать ваш аккаунт Telegram")),
+      ).toBe(true),
+    );
+    expect(
+      post.mock.calls.some(([text]) => text.includes("link your Telegram account")),
+    ).toBe(false);
+
+    // Leave the singleton row as we found it: later scenarios in this file
+    // must keep speaking the default language.
+    await db.update(instanceSettings).set({ general: {}, updatedAt: new Date() });
   });
 
   it("keeps a bridged conversation active across a literal /new comment and resumes any hold", async () => {
