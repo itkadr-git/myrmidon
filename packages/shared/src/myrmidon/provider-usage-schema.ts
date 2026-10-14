@@ -23,5 +23,5 @@ export const createProviderUsageReportedEventSchema = z.object({
 }).strict();
 
 export const updateProviderUsageWarningThresholdSchema = z.object({
-  thresholdPercent: z.number().finite().gt(0).lt(100),
+  thresholdPercent: validateProviderUsageWarningThresholdSchema,
 }).strict();
