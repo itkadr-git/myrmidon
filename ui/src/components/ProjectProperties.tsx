@@ -3,6 +3,7 @@ import { environmentDisplayLabel, filterManagedSandboxSelectableEnvironments } f
 import { Link } from "@/lib/router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { Project, SharedWorkspaceConcurrency } from "@paperclipai/shared";
+import { ProjectDefaultCaste } from "./ProjectDefaultCaste";
 import { ProjectRepositories } from "./ProjectRepositories";
 import { cn, formatDate } from "../lib/utils";
 import { environmentsApi } from "../api/environments";
@@ -449,6 +450,7 @@ export function ProjectProperties({ project, repositories, onUpdate, onFieldUpda
             </p>
           )}
         </PropertyRow>
+        <ProjectDefaultCaste key={project.id} project={project} editable={Boolean(onUpdate || onFieldUpdate)} />
         {repositories ?? <ProjectRepositories key={project.id} project={project} />}
         <PropertyRow
           label={<FieldLabel label="Env" state={fieldState("env")} />}
