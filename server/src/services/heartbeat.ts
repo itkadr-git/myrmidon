@@ -29245,7 +29245,12 @@ export function heartbeatService(
                 finishedAt: new Date(),
               },
             });
-            return { kind: "skipped" as const };
+            return {
+              kind: "skipped" as const,
+              dependencyBlockedAgent: agent,
+              dependencyBlockedIssueId: issue.id,
+              dependencyBlockedReadyForPickup: !activeExecutionRun,
+            };
           }
 
           if (
@@ -29906,9 +29911,52 @@ export function heartbeatService(
       if (outcome.kind === "durable") {
         return outcome.receipt.runId ? getRun(outcome.receipt.runId) : null;
       }
-      if (outcome.kind === "deferred" || outcome.kind === "skipped") {
+      if (outcome.kind === "skipped") {
+        if (
+          "dependencyBlockedAgent" in outcome &&
+          outcome.dependencyBlockedReadyForPickup
+        ) {
+          try {
+            const releaseLiveness = await teamLivenessRead();
+            const pickupAllowed =
+              releaseLiveness.settings.idlePickupEnabled &&
+              resolveAgentTeamLiveness(
+                readAgentCard(releasedAgent?.adapterConfig),
+                releaseLiveness.settings,
+              ).idlePickupEnabled;
+            if (pickupAllowed) {
+              idleWakeBudget.configure({
+                perMinute: releaseLiveness.settings.idlePickupWakeBudgetPerMin,
+                batch: Math.min(
+                  releaseLiveness.settings.idlePickupWakeBatch,
+                  releaseLiveness.settings.idlePickupWakeBudgetPerMin,
+                ),
+              });
+              await idlePickupForAgent(
+                {
+                  db,
+                  budget: idleWakeBudget,
+                  enqueueWakeup: (nextAgentId, wakeOptions) =>
+                    enqueueWakeup(nextAgentId, wakeOptions),
+                },
+                outcome.dependencyBlockedAgent,
+                { excludeIssueId: outcome.dependencyBlockedIssueId, behaviorEnabled: true },
+              );
+            }
+          } catch (err) {
+            logger.warn(
+              {
+                err,
+                agentId: outcome.dependencyBlockedAgent.id,
+                issueId: outcome.dependencyBlockedIssueId,
+              },
+              "idle pickup after dependency-blocked wake failed",
+            );
+          }
+        }
         return null;
       }
+      if (outcome.kind === "deferred") return null;
       if (outcome.kind === "coalesced") {
         await startNextQueuedRunForAgent(agent.id);
         return outcome.run;
