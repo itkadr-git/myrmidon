@@ -89,7 +89,9 @@ describe("INV-10: no automatic wake without a task", () => {
 
   it("RED: undefined issueId does not satisfy task binding", () => {
     const dir = sandbox({ "server/src/services/bad.ts": `enqueueWakeup(agent.id, { source: "automation", payload: { issueId: undefined } });\n` });
-    assert.equal(checkWakeTaskBinding(dir).length, 0);
+    const findings = checkWakeTaskBinding(dir);
+    assert.equal(findings.length, 1);
+    assert.match(findings[0], /INV-10/);
   });
 });
 
