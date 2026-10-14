@@ -90,6 +90,7 @@ export interface Project {
   targetDate: string | null;
   color: string | null;
   icon: string | null;
+  defaultCasteKey?: string | null; // myrmidon(PROJECT-DEFAULT-CASTE): optional for older clients.
   env: AgentEnvConfig | null;
   pauseReason: PauseReason | null;
   pausedAt: Date | null;
