@@ -16,4 +16,4 @@ divergence-section: Трек 4 — чаты и навыки
 
 ## divergence
 
-| Трек 4 — чаты и навыки | MYR-1.6.6-RC2 | Owner-only Telegram `ask_user_questions` and safe `request_confirmation` publications become plain-text messages with no action buttons or executable tokens; task-bound vendor bindings and non-Telegram channels retain current behavior. | Owner DM guidance requires human-readable prompts, complete options and safe confirmation details without inline controls. | `owner-telegram-delivery.myrmidon.test.ts` | Remove the owner-only text projection and renderer; restore the existing card projection. | PR #1257 |
+| Track 4 — chats and skills | MYR-1.6.6-RC2 | Owner-only Telegram `ask_user_questions` and safe `request_confirmation` publications become plain-text messages with no action buttons or executable tokens; task-bound vendor bindings and non-Telegram channels retain current behavior. | Owner DM guidance requires human-readable prompts, complete options and safe confirmation details without inline controls. | `owner-telegram-delivery.myrmidon.test.ts` | Remove the owner-only text projection and renderer; restore the existing card projection. | PR #1258 |

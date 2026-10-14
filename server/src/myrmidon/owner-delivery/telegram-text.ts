@@ -41,7 +41,10 @@ export function telegramOwnerQuestionText(
       lines.push(question.helpText.trim());
     }
     for (const [index, option] of question.options.entries()) {
-      lines.push(`${index + 1}. ${option.label.trim()}`);
+      const recommendation = "recommended" in option && option.recommended
+        ? " (рекомендуется)"
+        : "";
+      lines.push(`${index + 1}. ${option.label.trim()}${recommendation}`);
       if (option.description?.trim()) lines.push(`   ${option.description.trim()}`);
     }
     if ("customAnswer" in question && question.customAnswer?.enabled) {
