@@ -26,7 +26,9 @@ import {
   prTaskIsSuperseded,
   reviewTaskDueForHead,
   readPrRoutingWorkProduct,
+  stewardMergeCommand,
   stewardTaskDueForHead,
+  stewardUpdateBranchCommand,
   type PullRequestHeadState,
 } from "./pr-policy.js";
 
@@ -45,6 +47,7 @@ function head(overrides: Partial<PullRequestHeadState> = {}): PullRequestHeadSta
     ci: "green",
     reviewDecision: null,
     fetchFailed: false,
+    baseRef: "main",
     ...overrides,
   };
 }
@@ -359,6 +362,53 @@ describe("PR lane triggers (pr-policy)", () => {
     expect(desc).toContain("Author: agent-a");
     expect(desc).toContain("Base: main");
     expect(desc).toContain("automatic PR review routing — green head without a review verdict");
+  });
+
+  it("UPDATE-BRANCH-STEWARD: the merge task lays out update-branch, CI wait, then merge", () => {
+    const desc = prRoutingTaskDescription(
+      head({ reviewDecision: "APPROVED", url: "https://github.com/acme/widgets/pull/7", baseRef: "main" }),
+      "merge",
+    );
+    expect(desc).toContain("automatic PR review routing — approved green head awaiting merge");
+    // Step 1: the branch refresh, spelled as the gh command the lane emits.
+    expect(desc).toContain("gh pr update-branch acme/widgets#7");
+    // Step 2: waiting for green CI on the refreshed head is explicit, and the
+    // stale head's own merge is forbidden.
+    expect(desc).toContain("Wait for the refreshed head to go green");
+    expect(desc).toContain("Do NOT merge a head that is not the PR's current head");
+    // Step 3: the merge comes last and is the plain merge command — no
+    // auto-merge flag and no hosted ordering feature anywhere in the text.
+    expect(desc).toContain("gh pr merge acme/widgets#7 --merge");
+    expect(desc).not.toMatch(/--auto\b/i);
+    expect(desc).not.toMatch(/queue/i);
+  });
+
+  it("UPDATE-BRANCH-STEWARD: the landing commands are update-branch first, plain merge second", () => {
+    const h = head({ repository: "itkadr-git/myrmidon", number: 816 });
+    expect(stewardUpdateBranchCommand(h)).toBe("gh pr update-branch itkadr-git/myrmidon#816");
+    expect(stewardMergeCommand(h)).toBe("gh pr merge itkadr-git/myrmidon#816 --merge");
+    // The merge is not the auto-merge variant: the lane merges only after the
+    // refreshed head went green, never hands the wait to GitHub.
+    expect(stewardMergeCommand(h)).not.toContain("--auto");
+  });
+
+  it("UPDATE-BRANCH-STEWARD: a superseded refreshed head stops the old merge task", () => {
+    // The steward's update-branch push moved the head: the merge task written
+    // for the old head no longer owns the landing, and a review verdict is
+    // needed on the new head before a fresh merge task is due.
+    const mergeTask = {
+      issueId: "t",
+      repository: "acme/widgets",
+      number: 7,
+      kind: "merge" as const,
+      headSha: "aaaaaaaa",
+    };
+    expect(prTaskIsSuperseded(mergeTask, "bbbbbbbb")).toBe(true);
+    const refreshed = head({ headSha: "bbbbbbbb", reviewDecision: null });
+    // The refreshed head is not approved yet: no new steward task is due…
+    expect(stewardTaskDueForHead(refreshed)).toBe(false);
+    // …until it turns green AND stays approved on the new head.
+    expect(stewardTaskDueForHead(head({ headSha: "bbbbbbbb", reviewDecision: "APPROVED" }))).toBe(true);
   });
 });
 

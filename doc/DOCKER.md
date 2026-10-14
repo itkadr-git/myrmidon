@@ -124,7 +124,11 @@ Pass `OPENAI_API_KEY` and/or `ANTHROPIC_API_KEY` to enable local adapter runs.
 
 ### Full stack (with PostgreSQL)
 
-Paperclip server + PostgreSQL 17. The database is health-checked before the server starts.
+Paperclip server + PostgreSQL 18 with pgvector (the SHARED-PG image). The
+database is health-checked before the server starts. The per-service databases
+and roles (board, litellm, langfuse, hindsight) are provisioned by the
+installer's `db-init` script; a bare `docker compose up` here brings the board
+database only.
 
 ```sh
 BETTER_AUTH_SECRET=$(openssl rand -hex 32) \
@@ -237,7 +241,7 @@ The `docker/quadlet/` directory contains unit files to run Paperclip + PostgreSQ
 |------|---------|
 | `docker/quadlet/paperclip.pod` | Pod definition — groups containers into a shared network namespace |
 | `docker/quadlet/paperclip.container` | Paperclip server — joins the pod, connects to Postgres at `127.0.0.1` |
-| `docker/quadlet/paperclip-db.container` | PostgreSQL 17 — joins the pod, health-checked |
+| `docker/quadlet/paperclip-db.container` | PostgreSQL 18 + pgvector (SHARED-PG image) — joins the pod, health-checked |
 
 ### Setup
 

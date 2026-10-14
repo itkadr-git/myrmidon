@@ -7,7 +7,7 @@
 // record and any open connection is closed in the same step, so an already
 // authenticated socket cannot keep acting on a revoked token).
 
-import type { BrowserBridgeCapability, BrowserBridgeMethod } from "@paperclipai/shared";
+import type { BrowserBridgeCapability } from "@paperclipai/shared";
 
 export interface BridgeSession {
   readonly deviceId: string;
@@ -15,8 +15,11 @@ export interface BridgeSession {
   readonly extVersion: string;
   readonly capabilities: BrowserBridgeCapability[];
   readonly connectedAt: number;
-  /** Perform one action on the device; rejects with a BridgeError on timeout/refusal. */
-  request(method: BrowserBridgeMethod, params: unknown, timeoutMs: number): Promise<unknown>;
+  /**
+   * Perform one request on the device; rejects with a BridgeError on timeout/refusal.
+   * `method` is a browser action or an extension request type (`ext.<name>`).
+   */
+  request(method: string, params: unknown, timeoutMs: number): Promise<unknown>;
   close(code: number, reason: string): void;
 }
 
@@ -40,6 +43,11 @@ export class InMemoryBridgeSessionRegistry {
 
   get(deviceId: string): BridgeSession | undefined {
     return this.sessions.get(deviceId);
+  }
+
+  /** Every live session of one company. */
+  listForCompany(companyId: string): BridgeSession[] {
+    return [...this.sessions.values()].filter((session) => session.companyId === companyId);
   }
 
   isConnected(deviceId: string): boolean {

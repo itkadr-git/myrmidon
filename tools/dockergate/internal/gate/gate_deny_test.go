@@ -1099,7 +1099,7 @@ func TestRedTeam_RT1_5_CreateBodiesOnTheWire(t *testing.T) {
 
 		c("prepare: user 1000", "helper-prepare", ".helper", `"User":"0:0"`, `"User":"1000:1000"`, deny.JSONValue),
 		c("prepare: recursive chown", "helper-prepare", ".helper", `chown 10001:10001`, `chown -R 10001:10001`, deny.ScriptMismatch),
-		c("prepare: appended command", "helper-prepare", ".helper", `chmod 0711 bot"`, `chmod 0711 bot; id"`, deny.ScriptMismatch),
+		c("prepare: appended command", "helper-prepare", ".helper", `chmod 0711 bot\n`, `chmod 0711 bot; id\n`, deny.ScriptMismatch),
 		c("prepare: network on", "helper-prepare", ".helper", `"NetworkDisabled":true`, `"NetworkDisabled":false`, deny.JSONValue),
 		c("prepare: sys_admin", "helper-prepare", ".helper", `"CapAdd":["CHOWN","FOWNER"]`, `"CapAdd":["CHOWN","FOWNER","SYS_ADMIN"]`, deny.JSONValue),
 		c("prepare: docker socket", "helper-prepare", ".helper", `"`+root+"/"+k+`/hermes:/data/hermes"`, `"/var/run/docker.sock:/data/hermes"`, deny.BindsMismatch),

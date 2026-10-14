@@ -6,6 +6,7 @@ import express from "express";
 import request from "supertest";
 import { describe, expect, it, vi } from "vitest";
 import { AGENT_DEFAULT_MAX_CONCURRENT_RUNS } from "@paperclipai/shared";
+import type { BotApplyJobStatus } from "@paperclipai/db";
 import { forbidden } from "../../errors.js";
 import { errorHandler } from "../../middleware/index.js";
 import { BOT_CONTAINERS_ENV, CONTAINER_GROUP_UNSUPPORTED_REASON } from "./agent-config.js";
@@ -81,6 +82,68 @@ function runtime(driver: BotContainerDriver): BotContainerRuntimeDeps {
   };
 }
 
+type FakeJob = {
+  id: string;
+  companyId: string;
+  botId: string;
+  created: boolean;
+  status: BotApplyJobStatus;
+  error: string | null;
+  requestedBy: string | null;
+  createdAt: Date;
+  startedAt: Date | null;
+  finishedAt: Date | null;
+};
+
+// myrmidon(1.6.5 ASYNC-BOT-APPLY): in-memory stand-in for the bot_apply_jobs
+// journal, same contract as the drizzle store (apply-jobs.ts): a live
+// (pending/running) job per bot is reused, outcomes close the job.
+function fakeApplyJobs() {
+  const jobs = new Map<string, FakeJob>();
+  let nextId = 0;
+  const live = () =>
+    [...jobs.values()].find((job) => job.status === "pending" || job.status === "running") ?? null;
+  const close = (id: string, status: BotApplyJobStatus, error: string | null) => {
+    const job = jobs.get(id);
+    if (job) Object.assign(job, { status, error, finishedAt: new Date() });
+  };
+  return {
+    jobs,
+    live,
+    acquireLiveJob: async ({ companyId, botId, requestedBy }: { companyId: string; botId: string; requestedBy: string | null }) => {
+      const existing = live();
+      if (existing) return { ...existing, created: false };
+      const id = `apply-${(nextId += 1)}`;
+      const job: FakeJob = {
+        id,
+        companyId,
+        botId,
+        created: true,
+        status: "pending",
+        error: null,
+        requestedBy,
+        createdAt: new Date(),
+        startedAt: null,
+        finishedAt: null,
+      };
+      jobs.set(id, job);
+      // Snapshot like the drizzle store does: the route's 202 body is frozen
+      // at "pending", the background pass only mutates the journal row.
+      return { ...job };
+    },
+    markRunning: async (id: string) => {
+      const job = jobs.get(id);
+      if (job) Object.assign(job, { status: "running", startedAt: new Date() });
+    },
+    markSucceeded: async (id: string) => close(id, "succeeded", null),
+    markFailed: async (id: string, error: string) => close(id, "failed", error),
+    getJob: async ({ jobId }: { botId: string; jobId: string }) => {
+      const job = jobs.get(jobId);
+      return job ? { ...job, created: false } : null;
+    },
+  };
+}
+
 function app(actor: unknown, deps: Partial<BotContainerRoutesDeps> & { agent?: BotContainerRouteAgent | null }) {
   const { agent = card(ENABLED_CARD), ...rest } = deps;
   const server = express();
@@ -95,6 +158,7 @@ function app(actor: unknown, deps: Partial<BotContainerRoutesDeps> & { agent?: B
       getAgent: async (id) => (agent && id === agent.id ? agent : null),
       getRuntime: () => null,
       applyNow: applyBotContainerNow,
+      applyJobs: fakeApplyJobs(),
       env: ENABLED_ENV,
       ...rest,
     }),
@@ -411,9 +475,28 @@ describe("myrmidon(CONCURRENCY-SYNC) status: the board's limit against the appli
   });
 });
 
-describe("myrmidon(W2b) bot container routes: apply", () => {
-  it("creates the container from the saved card and reports the outcome", async () => {
-    const create = vi.fn(async () => {});
+describe("myrmidon(W2b + 1.6.5 ASYNC-BOT-APPLY) bot container routes: apply", () => {
+  // Wait for the fire-and-forget pass of the live job to close; the route
+  // answers 202 before it finishes, the journal is the only place the outcome
+  // exists, so tests poll it the way the UI (ч.B) polls the GET status.
+  async function settle(store: ReturnType<typeof fakeApplyJobs>) {
+    for (let i = 0; i < 200; i += 1) {
+      for (const job of store.jobs.values()) {
+        if (job.status === "succeeded" || job.status === "failed") return job;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    throw new Error("apply job never settled");
+  }
+
+  it("answers 202 with the apply id in under a second and creates the container in the background", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const create = vi.fn(async () => {
+      await gate;
+    });
     const writeProfile = vi.fn(async () => {});
     const start = vi.fn(async () => {});
     const driver = fakeDriver({
@@ -422,8 +505,23 @@ describe("myrmidon(W2b) bot container routes: apply", () => {
       writeProfile,
       start,
     });
-    const res = await request(app(member, { getRuntime: () => runtime(driver) })).post(applyUrl).expect(200);
-    expect(res.body).toEqual({ outcome: { kind: "created" } });
+    const store = fakeApplyJobs();
+    const startedAt = Date.now();
+    const res = await request(app(member, { getRuntime: () => runtime(driver), applyJobs: store }))
+      .post(applyUrl)
+      .expect(202);
+    // The response must not wait for the reconcile: measured against the clock,
+    // the gate below stays shut until after this assertion block.
+    expect(Date.now() - startedAt).toBeLessThan(1000);
+    expect(res.body).toMatchObject({ status: "pending" });
+    expect(typeof res.body.applyId).toBe("string");
+    expect(create).toHaveBeenCalledTimes(1);
+
+    release();
+    const job = await settle(store);
+    expect(job).toMatchObject({ status: "succeeded", error: null });
+    expect(job.startedAt).toBeInstanceOf(Date);
+    expect(job.finishedAt).toBeInstanceOf(Date);
     expect(create).toHaveBeenCalledWith({
       botKey: AGENT_ID,
       image: "bot-image:1.1.0",
@@ -435,65 +533,146 @@ describe("myrmidon(W2b) bot container routes: apply", () => {
     });
     expect(writeProfile).toHaveBeenCalledTimes(1);
     expect(start).toHaveBeenCalledWith(AGENT_ID);
+    expect(job.requestedBy).toBe(member.userId);
+    expect(job.companyId).toBe(COMPANY_ID);
   });
 
-  it("reports an already applied card as unchanged", async () => {
-    const res = await request(app(member, { getRuntime: () => runtime(fakeDriver()) })).post(applyUrl).expect(200);
-    expect(res.body).toEqual({ outcome: { kind: "unchanged" } });
-  });
-
-  it("answers 503 while the instance has no container runtime", async () => {
-    const applyNow = vi.fn();
-    const res = await request(app(member, { applyNow })).post(applyUrl).expect(503);
-    expect(res.body).toMatchObject({ code: "bot_container_runtime_unavailable" });
-    expect(applyNow).not.toHaveBeenCalled();
-  });
-
-  it("answers 409 with the reason for a card that is not applicable", async () => {
+  it("reuses the live job for a repeat POST instead of queueing a second pass", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let creates = 0;
+    const store = fakeApplyJobs();
     const driver = fakeDriver({
-      status: async () => {
-        throw new Error("the driver must not be called for a card that is not applicable");
+      status: async (botKey) => ({ botKey, state: "missing" }),
+      create: async () => {
+        creates += 1;
+        await gate;
       },
     });
-    const off = await request(app(member, { agent: card({ ...ENABLED_CARD, enabled: false }), getRuntime: () => runtime(driver) }))
-      .post(applyUrl)
-      .expect(409);
-    expect(off.body).toMatchObject({ code: "bot_container_not_applicable" });
-    expect(off.body.error).toContain("enabled");
-
-    const other = await request(app(member, { agent: card(ENABLED_CARD, { adapterType: "hermes_local" }), getRuntime: () => runtime(driver) }))
-      .post(applyUrl)
-      .expect(409);
-    expect(other.body.error).toContain("hermes_gateway");
+    const server = app(member, { getRuntime: () => runtime(driver), applyJobs: store });
+    const first = await request(server).post(applyUrl).expect(202);
+    const second = await request(server).post(applyUrl).expect(202);
+    expect(second.body.applyId).toBe(first.body.applyId);
+    expect(["pending", "running"]).toContain(second.body.status);
+    expect(store.jobs.size).toBe(1);
+    release();
+    await settle(store);
+    expect(creates).toBe(1);
   });
 
-  it("refuses a shared container group as not applicable", async () => {
-    const res = await request(app(member, { agent: card({ ...ENABLED_CARD, group: "team-b" }), getRuntime: () => runtime(fakeDriver()) }))
-      .post(applyUrl)
-      .expect(409);
-    expect(res.body.error).toBe(CONTAINER_GROUP_UNSUPPORTED_REASON);
+  it("reports an already applied card as unchanged through the journal", async () => {
+    const store = fakeApplyJobs();
+    await request(app(member, { getRuntime: () => runtime(fakeDriver()), applyJobs: store })).post(applyUrl).expect(202);
+    const job = await settle(store);
+    expect(job.status).toBe("succeeded");
+    expect(job.error).toBeNull();
   });
 
-  it("answers 502 with the failure when the reconcile fails", async () => {
+  it("records a failed apply with the error text in the journal", async () => {
     const driver = fakeDriver({
       status: async (botKey) => ({ botKey, state: "missing" }),
       create: async () => {
         throw new Error('image "bot-image:1.1.0" is not in MYRMIDON_BOT_IMAGE_ALLOWLIST');
       },
     });
-    const res = await request(app(member, { getRuntime: () => runtime(driver) })).post(applyUrl).expect(502);
-    const message = 'image "bot-image:1.1.0" is not in MYRMIDON_BOT_IMAGE_ALLOWLIST';
-    expect(res.body).toEqual({ error: message, outcome: { kind: "error", message } });
+    const store = fakeApplyJobs();
+    const res = await request(app(member, { getRuntime: () => runtime(driver), applyJobs: store })).post(applyUrl).expect(202);
+    const job = await settle(store);
+    expect(job.status).toBe("failed");
+    expect(job.error).toBe('image "bot-image:1.1.0" is not in MYRMIDON_BOT_IMAGE_ALLOWLIST');
+    // ...and the status route serves exactly that from the stored row.
+    const status = await request(app(viewer, { getRuntime: () => runtime(driver), applyJobs: store }))
+      .get(`${applyUrl}/${res.body.applyId}`)
+      .expect(200);
+    expect(status.body).toMatchObject({ status: "failed", error: job.error });
+    expect(status.body.startedAt).toBeTruthy();
+    expect(status.body.finishedAt).toBeTruthy();
   });
 
-  it("clips a very long failure message", async () => {
+  it("clips a very long failure into the journal instead of the response", async () => {
     const driver = fakeDriver({
       status: async () => {
         throw new Error("x".repeat(2000));
       },
     });
-    const res = await request(app(member, { getRuntime: () => runtime(driver) })).post(applyUrl).expect(502);
-    expect(res.body.outcome.message.length).toBeLessThanOrEqual(501);
+    const store = fakeApplyJobs();
+    await request(app(member, { getRuntime: () => runtime(driver), applyJobs: store })).post(applyUrl).expect(202);
+    const job = await settle(store);
+    expect(job.status).toBe("failed");
+    expect(job.error!.length).toBeLessThanOrEqual(501);
+  });
+
+  it("answers 503 while the instance has no container runtime, before any job row exists", async () => {
+    const applyNow = vi.fn();
+    const store = fakeApplyJobs();
+    const res = await request(app(member, { applyNow, applyJobs: store })).post(applyUrl).expect(503);
+    expect(res.body).toMatchObject({ code: "bot_container_runtime_unavailable" });
+    expect(applyNow).not.toHaveBeenCalled();
+    expect(store.jobs.size).toBe(0);
+  });
+
+  it("answers 409 with the reason for a card that is not applicable, without journaling it", async () => {
+    const driver = fakeDriver({
+      status: async () => {
+        throw new Error("the driver must not be called for a card that is not applicable");
+      },
+    });
+    const store = fakeApplyJobs();
+    const off = await request(
+      app(member, { agent: card({ ...ENABLED_CARD, enabled: false }), getRuntime: () => runtime(driver), applyJobs: store }),
+    )
+      .post(applyUrl)
+      .expect(409);
+    expect(off.body).toMatchObject({ code: "bot_container_not_applicable" });
+    expect(off.body.error).toContain("enabled");
+
+    const other = await request(
+      app(member, { agent: card(ENABLED_CARD, { adapterType: "hermes_local" }), getRuntime: () => runtime(driver), applyJobs: store }),
+    )
+      .post(applyUrl)
+      .expect(409);
+    expect(other.body.error).toContain("hermes_gateway");
+    expect(store.jobs.size).toBe(0);
+  });
+
+  it("refuses a shared container group as not applicable", async () => {
+    const store = fakeApplyJobs();
+    const res = await request(
+      app(member, { agent: card({ ...ENABLED_CARD, group: "team-b" }), getRuntime: () => runtime(fakeDriver()), applyJobs: store }),
+    )
+      .post(applyUrl)
+      .expect(409);
+    expect(res.body.error).toBe(CONTAINER_GROUP_UNSUPPORTED_REASON);
+    expect(store.jobs.size).toBe(0);
+  });
+
+  it("the status route answers 404 for an unknown apply id", async () => {
+    const store = fakeApplyJobs();
+    await request(app(member, { getRuntime: () => runtime(fakeDriver()), applyJobs: store })).post(applyUrl).expect(202);
+    await request(app(member, { getRuntime: () => runtime(fakeDriver()), applyJobs: store }))
+      .get(`${applyUrl}/apply-does-not-exist`)
+      .expect(404);
+  });
+
+  it("the status route reads only the journal, never the runtime", async () => {
+    const store = fakeApplyJobs();
+    let statusCalls = 0;
+    const driver = fakeDriver({
+      status: async (botKey) => {
+        statusCalls += 1;
+        return { botKey, state: "missing" };
+      },
+    });
+    await request(app(member, { getRuntime: () => runtime(driver), applyJobs: store })).post(applyUrl).expect(202);
+    await settle(store);
+    const before = statusCalls;
+    const res = await request(app(viewer, { getRuntime: () => runtime(driver), applyJobs: store }))
+      .get(`${applyUrl}/apply-1`)
+      .expect(200);
+    expect(res.body.status).toBe("succeeded");
+    expect(statusCalls).toBe(before);
   });
 });
 

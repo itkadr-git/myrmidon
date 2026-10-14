@@ -769,6 +769,29 @@ const support = await getEmbeddedPostgresTestSupport();
       expect(vault.resolveUserSecretValue).not.toHaveBeenCalled();
     });
 
+    it("points a quarantined-task denial at the promotion path, not at agent permissions", async () => {
+      const input = await seed();
+      await grant(input, "A");
+      await db
+        .update(issues)
+        .set({
+          identifier: "OPE-6471",
+          sourceTrust: {
+            preset: LOW_TRUST_REVIEW_PRESET,
+            disposition: "quarantined",
+            sourceIssueId: input.issueId,
+          },
+        })
+        .where(eq(issues.id, input.issueId));
+      const result = await resolveGitHubOperationCredentials(db, input);
+      expect(result).toMatchObject({ status: "unavailable", env: {} });
+      expect(result.reason).toContain("OPE-6471");
+      expect(result.reason).toContain("quarantined");
+      expect(result.reason).toContain(`/issues/${input.issueId}/low-trust/promotions`);
+      expect(result.reason).toContain("not because the agent lacks permissions");
+      expect(vault.resolveUserSecretValue).not.toHaveBeenCalled();
+    });
+
     it("fails closed for missing or malformed bound task/project references", async () => {
       const input = await seed();
       await grant(input, "A");

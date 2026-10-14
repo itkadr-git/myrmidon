@@ -31,6 +31,7 @@ import {
   VERIFIED_RUNTIME_EXECUTABLE_ENV,
   verifiedRuntimeExecutableHandoff,
 } from "./verified-runtime-executable.js";
+import { readProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
 
 const MAX_PACKAGE_JSON_BYTES = 256 * 1024;
 const MAX_AGENT_COMMAND_BYTES = 16 * 1024 * 1024;
@@ -796,11 +797,11 @@ function defaultPackageJsonResolver(
   packageName: string,
   issuerPackageJsonPath?: string,
 ): string {
-  const providerPackageRoot = process.env.PAPERCLIP_ACPX_PROVIDER_PACKAGE_ROOT;
+  const providerPackageRoot = readProductEnv("ACPX_PROVIDER_PACKAGE_ROOT");
   if (providerPackageRoot !== undefined) {
     return createAcpxPackageJsonResolver(
       providerPackageRoot,
-      process.env.PAPERCLIP_ACPX_PROVIDER_PACKAGE_MANIFEST,
+      readProductEnv("ACPX_PROVIDER_PACKAGE_MANIFEST"),
     )(packageName, issuerPackageJsonPath);
   }
   // Source-mode and direct runtimes still have a stable module URL. The

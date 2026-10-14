@@ -37,6 +37,7 @@ describe("worktree port registry lock", () => {
     const firstEntered = deferred();
     const releaseFirst = deferred();
     let secondEntered = false;
+    let observedLockAgeMs = 0;
 
     const first = withWorktreePortRegistryLock(homeDir, async () => {
       fs.renameSync(path.join(lockPath, "owner.json"), path.join(lockPath, "owner.unavailable.json"));
@@ -48,12 +49,16 @@ describe("worktree port registry lock", () => {
       })}\n`);
       const oldTimestamp = new Date(Date.now() - 10_000);
       fs.utimesSync(lockPath, oldTimestamp, oldTimestamp);
+      // Capture the staleness synchronously: the lock heartbeat worker runs in
+      // a separate thread and refreshes mtime roughly every second, so reading
+      // it after an `await` would race the refresh and produce a ~0 age.
+      observedLockAgeMs = Date.now() - fs.statSync(lockPath).mtimeMs;
       firstEntered.resolve();
       await releaseFirst.promise;
     });
     await firstEntered.promise;
 
-    expect(Date.now() - fs.statSync(lockPath).mtimeMs).toBeGreaterThan(5_000);
+    expect(observedLockAgeMs).toBeGreaterThan(5_000);
 
     const second = withWorktreePortRegistryLock(homeDir, async () => {
       secondEntered = true;

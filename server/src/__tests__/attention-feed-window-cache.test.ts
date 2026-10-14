@@ -279,7 +279,7 @@ describeEmbeddedPostgres("attention failed-run horizon and feed cache", () => {
     const afterSecond = databaseSelectCount();
 
     expect(first.items.filter((item) => item.sourceKind === "failed_run").map((i) => i.subject.id).sort()).toEqual([seeded.fresh]);
-    expect(second).toEqual({ ...first, generatedAt: second.generatedAt });
+    expect(second).toEqual(first);
     expect(afterFirst - beforeFirst).toBeGreaterThanOrEqual(12);
     // cached snapshot: at most the memoised settings read may hit the db
     expect(afterSecond - beforeSecond).toBeLessThanOrEqual(2);

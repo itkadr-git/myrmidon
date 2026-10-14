@@ -20,6 +20,7 @@ import {
   type ResolvedClientContext,
 } from "./common.js";
 import { ApiRequestError } from "../../client/http.js";
+import { readProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
 
 interface TeamBrowseOptions extends BaseClientOptions {
   kind?: string;
@@ -383,7 +384,7 @@ function shouldRequestInstallApproval(error: unknown, opts: TeamInstallOptions):
 }
 
 function isPaperclipTaskRun(): boolean {
-  return Boolean(process.env.PAPERCLIP_TASK_ID?.trim());
+  return Boolean(readProductEnv("TASK_ID")?.trim());
 }
 
 async function requestInstallApproval(
@@ -453,7 +454,7 @@ function redactInstallSecretValues(options: CatalogTeamInstallOptions): CatalogT
 }
 
 function resolveApprovalIssueIds(opts: TeamInstallOptions): string[] | undefined {
-  const issueId = opts.approvalIssueId?.trim() || process.env.PAPERCLIP_TASK_ID?.trim();
+  const issueId = opts.approvalIssueId?.trim() || readProductEnv("TASK_ID")?.trim();
   if (!issueId) return undefined;
   return isUuidLike(issueId) ? [issueId] : undefined;
 }

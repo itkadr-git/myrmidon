@@ -1,4 +1,3 @@
-import { readFileSync } from "node:fs";
 import { sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { agentCastes, companies, createDb, projects as projectsTable } from "@paperclipai/db";
@@ -73,7 +72,9 @@ describeEmbeddedPostgres("project default caste persistence", () => {
     expect((await service.getById(created.id))?.defaultCasteKey).toBeNull();
   });
   it("replays and reverses the additive migration", async () => {
-    const migration = readFileSync(new URL("../../../packages/db/src/migrations/0317_project_default_caste.sql", import.meta.url), "utf8");
+    // The column is created by migration 0384 in this tree (main's separate 0317 was
+    // dropped in the 1.6.5 forward-merge as a duplicate); the idempotent form is inlined.
+    const migration = 'ALTER TABLE "projects" ADD COLUMN IF NOT EXISTS "default_caste_key" text';
     await db.execute(sql.raw(migration));
     await db.execute(sql.raw(migration));
     await db.execute(sql.raw('ALTER TABLE projects DROP COLUMN IF EXISTS default_caste_key'));

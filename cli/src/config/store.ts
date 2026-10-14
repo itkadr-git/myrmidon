@@ -10,6 +10,7 @@ import {
   resolveDefaultConfigPath,
   resolvePaperclipInstanceId,
 } from "./home.js";
+import { readProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
 
 const DEFAULT_CONFIG_BASENAME = "config.json";
 
@@ -33,7 +34,7 @@ function findConfigFileFromAncestors(startDir: string): string | null {
 
 export function resolveConfigPath(overridePath?: string): string {
   if (overridePath) return path.resolve(overridePath);
-  if (process.env.PAPERCLIP_CONFIG) return path.resolve(process.env.PAPERCLIP_CONFIG);
+  if (readProductEnv("CONFIG")) return path.resolve(readProductEnv("CONFIG")!);
   return findConfigFileFromAncestors(process.cwd()) ?? resolveDefaultConfigPath(resolvePaperclipInstanceId());
 }
 

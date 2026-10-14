@@ -35,7 +35,7 @@ import {
 import { parseIssueExecutionState } from "../../../services/issue-execution-policy.js";
 import { decideQueuedRunStaleness, decideScheduledRetryGate } from "../domain/policy.js";
 // myrmidon(P2): pending interaction addressee wake
-import { isPendingInteractionAddresseeWake } from "../myrmidon-pending-interaction-wake.js";
+import { isOwnerExplainWake, isPendingInteractionAddresseeWake } from "../myrmidon-pending-interaction-wake.js";
 import type {
   QueuedRunFacts,
   ReviewParticipantFacts,
@@ -332,6 +332,7 @@ export function createPostgresRunDispatchAdapter(
         monitorNextCheckAt: issues.monitorNextCheckAt,
         // myrmidon(HUMAN-REVIEW-WAIT): read for collectDispositionRepairSourceState below.
         reviewPolicy: issues.reviewPolicy,
+        hiddenAt: issues.hiddenAt,
       })
       .from(issues)
       .where(and(eq(issues.id, issueId), eq(issues.companyId, input.companyId)));
@@ -350,6 +351,8 @@ export function createPostgresRunDispatchAdapter(
     facts.issueAssigneeAgentId = issue.assigneeAgentId;
     facts.issueExecutionRunId = issue.executionRunId;
     facts.issueCheckoutRunId = issue.checkoutRunId;
+    // myrmidon(1.6.5 F-09): a hidden issue is not startable.
+    facts.issueHiddenAt = issue.hiddenAt;
     if (input.conversationContinuation) {
       const [interactions, linkedApprovals] = await Promise.all([
         dbOrTx.select({ id: issueThreadInteractions.id }).from(issueThreadInteractions).where(and(
@@ -490,6 +493,7 @@ export function createPostgresRunDispatchAdapter(
         executionRunId: issues.executionRunId,
         checkoutRunId: issues.checkoutRunId,
         executionState: issues.executionState,
+        hiddenAt: issues.hiddenAt,
       })
       .from(issues)
       .where(and(eq(issues.id, issueId), eq(issues.companyId, input.companyId)));
@@ -503,12 +507,17 @@ export function createPostgresRunDispatchAdapter(
       ISSUE_TREE_CONTROL_INTERACTION_WAKE_REASONS,
     );
     // myrmidon(P2): a pending interaction wakes its addressee, who may not be the assignee
-    const pendingInteractionAddresseeWake = await isPendingInteractionAddresseeWake(dbOrTx, {
+    // myrmidon(1.6.5-OWNER-VIA-BOT): the wake that asks the AUTHOR of an owner decision to explain it
+    // to the owner gets the same bypass: the author is not the addressee and not always the assignee
+    const ownerWakeFacts = {
       companyId: input.companyId,
       issueId,
       agentId: input.agentId,
       contextSnapshot: context,
-    });
+    };
+    const pendingInteractionAddresseeWake =
+      (await isPendingInteractionAddresseeWake(dbOrTx, ownerWakeFacts)) ||
+      (await isOwnerExplainWake(dbOrTx, ownerWakeFacts));
     const resumeIntent = context.resumeIntent === true || context.followUpRequested === true;
     const wakeReason = readNonEmptyString(context.wakeReason);
     const retryReason =
@@ -578,6 +587,7 @@ export function createPostgresRunDispatchAdapter(
       issueAssigneeAgentId: issue?.assigneeAgentId ?? null,
       issueExecutionRunId: issue?.executionRunId ?? null,
       issueCheckoutRunId: issue?.checkoutRunId ?? null,
+      issueHiddenAt: issue?.hiddenAt ?? null,
       isResolvedInteractionContinuation,
       isConnectionContinuation: (isResolvedInteractionContinuation && context.interactionKind === "connection_intent")
         || context.source === "connection_tools.refreshed",

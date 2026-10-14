@@ -51,7 +51,7 @@ export const PROBE_SEARCH_INDEX_SCHEMA: SearchIndexSchema = {
 
 /**
  * Btree indexes of the probe tables, mirroring the ones the corpus migration creates on the same
- * columns (`packages/db/src/migrations/0309_corpus_module.sql`).
+ * columns (`packages/db/src/migrations/0390_corpus_module.sql`).
  *
  * They are not decoration. The search SQL joins chunks to documents by `document_id` and narrows
  * documents by `(dataset_id, status)`, and a stand without those indexes does not measure the same
