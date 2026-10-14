@@ -285,6 +285,41 @@ export function Ui2RunsSettings() {
       : oldestWaitReasonKey
     : null;
 
+  // myrmidon(1.6.5 F-09): the admission denial counter — how many reservations
+  // the gates refused since the server started (the sweep that could not start
+  // a queued run), broken down by the gate that refused, plus the most recent
+  // refusal. A server that does not serve the field yet sends no counter, so
+  // the block stays hidden rather than showing a made-up zero.
+  const admissionTotal = ((): number | null => {
+    const total = view.admissionDenials?.total;
+    return typeof total === "number" && Number.isFinite(total) && total >= 0 ? total : null;
+  })();
+
+  const admissionDenialRows = ((): Array<{ reason: string; label: string; count: number }> => {
+    const byReason = view.admissionDenials?.byReason;
+    if (!byReason || typeof byReason !== "object") return [];
+    return Object.entries(byReason)
+      .filter((entry): entry is [string, number] => typeof entry[1] === "number" && entry[1] > 0)
+      .map(([reason, count]) => ({
+        reason,
+        // An unknown reason (a server ahead of this UI) renders as the raw
+        // value, not as an untranslated key — same rule as the queue line.
+        label: isKnownWaitReason(reason) ? t(`ui2.settings.runs.waitReason.${reason}` as never) : reason,
+        count,
+      }))
+      .sort((left, right) => right.count - left.count || left.reason.localeCompare(right.reason));
+  })();
+
+  const admissionLastLine = ((): string | null => {
+    const reason = view.admissionDenials?.lastReason;
+    if (typeof reason !== "string" || reason === "") return null;
+    const label = isKnownWaitReason(reason) ? t(`ui2.settings.runs.waitReason.${reason}` as never) : reason;
+    const lastAt = view.admissionDenials?.lastAt;
+    return typeof lastAt === "string" && lastAt !== ""
+      ? t("ui2.settings.runs.denials.lastAt", { reason: label, at: formatQueueSince(lastAt) })
+      : t("ui2.settings.runs.denials.last", { reason: label });
+  })();
+
   return (
     <Ui2Page title={t("ui2.settings.runs.title")} subtitle={t("ui2.settings.runs.subtitle")}>
       <Ui2Section title={t("ui2.settings.runs.title")}>
@@ -390,6 +425,35 @@ export function Ui2RunsSettings() {
           {waitReasonLabel ? (
             <p data-testid="ui2-run-queue-wait-reason" className="text-xs text-muted-foreground">
               {t("ui2.settings.runs.queue.waitReason", { reason: waitReasonLabel })}
+            </p>
+          ) : null}
+        </div>
+      ) : null}
+
+      {/* myrmidon(1.6.5 F-09): the admission denial counter — how many times the
+          sweep refused to start a queued run since the server started, by gate
+          and with the most recent refusal. Hidden when the server serves no
+          counter (an older server, or no admission yet). */}
+      {admissionTotal !== null ? (
+        <div className="ui2-run-admission-denials">
+          <p data-testid="ui2-run-admission-denials" className="text-xs text-muted-foreground">
+            {t("ui2.settings.runs.denials.total", { total: admissionTotal })}
+          </p>
+          {admissionDenialRows.length > 0 ? (
+            <ul
+              data-testid="ui2-run-admission-denials-by-reason"
+              className="ui2-run-admission-denials-reasons flex flex-col"
+            >
+              {admissionDenialRows.map((row) => (
+                <li key={row.reason} className="text-xs text-muted-foreground">
+                  {t("ui2.settings.runs.denials.byReason", { reason: row.label, count: row.count })}
+                </li>
+              ))}
+            </ul>
+          ) : null}
+          {admissionLastLine ? (
+            <p data-testid="ui2-run-admission-denials-last" className="text-xs text-muted-foreground">
+              {admissionLastLine}
             </p>
           ) : null}
         </div>
