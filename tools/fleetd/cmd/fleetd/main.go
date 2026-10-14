@@ -6,13 +6,17 @@
 package main
 
 import (
+	"archive/tar"
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
+	"time"
 )
 
 // botStatus is the driver contract's BotContainerStatus.
@@ -54,10 +58,11 @@ type profile struct {
 // config is the JSON configuration (see docs/myrmidon/fleetd-vmexec.md).
 // Unknown keys are rejected at load time, the same discipline as dockergate.
 type config struct {
-	Listen   string `json:"listen"`
-	Token    string `json:"token"`
-	Upstream string `json:"upstream"`
-	Bots     []bot  `json:"bots"`
+	Listen     string `json:"listen"`
+	Token      string `json:"token"`
+	Upstream   string `json:"upstream"`
+	VolumeRoot string `json:"volumeRoot,omitempty"`
+	Bots       []bot  `json:"bots"`
 }
 
 type bot struct {
@@ -214,6 +219,12 @@ func (s *server) route(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, map[string]bool{"drift": false})
+	case action == "snapshot" && r.Method == http.MethodPost:
+		s.handleSnapshot(w, r, botKey)
+	case action == "restore" && r.Method == http.MethodPost:
+		s.handleRestore(w, r, botKey)
+	case action == "quarantine" && r.Method == http.MethodPost:
+		s.handleQuarantine(w, r, botKey)
 	default:
 		if r.Method == http.MethodPost || r.Method == http.MethodPut {
 			http.Error(w, "route_not_allowed", http.StatusForbidden)
@@ -221,6 +232,138 @@ func (s *server) route(w http.ResponseWriter, r *http.Request) {
 		}
 		http.Error(w, "method_not_allowed", http.StatusMethodNotAllowed)
 	}
+}
+
+func (s *server) volumeRoot() string {
+	if s.cfg.VolumeRoot != "" {
+		return s.cfg.VolumeRoot
+	}
+	return "/srv/myrmidon-bots"
+}
+
+func (s *server) handleSnapshot(w http.ResponseWriter, r *http.Request, botKey string) {
+	dir := filepath.Join(s.volumeRoot(), botKey)
+	fi, err := os.Stat(dir)
+	if err != nil || !fi.IsDir() {
+		http.Error(w, "datadir_not_found", http.StatusNotFound)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/x-tar+zstd")
+	zw := newZstdRawWriter(w)
+	defer zw.Close()
+
+	tw := tar.NewWriter(zw)
+	defer tw.Close()
+
+	err = filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(dir, path)
+		if err != nil {
+			return err
+		}
+		if rel == "." {
+			return nil
+		}
+		hdr, err := tar.FileInfoHeader(info, "")
+		if err != nil {
+			return err
+		}
+		hdr.Name = filepath.ToSlash(rel)
+		hdr.Uid = 10001
+		hdr.Gid = 10001
+		if err := tw.WriteHeader(hdr); err != nil {
+			return err
+		}
+		if info.IsDir() {
+			return nil
+		}
+		f, err := os.Open(path)
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+		_, err = io.Copy(tw, f)
+		return err
+	})
+	if err != nil {
+		log.Printf("snapshot error for %s: %v", botKey, err)
+	}
+}
+
+func (s *server) handleRestore(w http.ResponseWriter, r *http.Request, botKey string) {
+	dir := filepath.Join(s.volumeRoot(), botKey)
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		http.Error(w, fmt.Sprintf("cannot create datadir: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	zr := newZstdRawReader(r.Body)
+	tr := tar.NewReader(zr)
+
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			http.Error(w, fmt.Sprintf("invalid archive: %v", err), http.StatusBadRequest)
+			return
+		}
+
+		clean := filepath.Clean(hdr.Name)
+		if strings.HasPrefix(clean, "..") || filepath.IsAbs(clean) {
+			http.Error(w, "path_traversal_denied", http.StatusBadRequest)
+			return
+		}
+
+		target := filepath.Join(dir, clean)
+		if hdr.FileInfo().IsDir() {
+			if err := os.MkdirAll(target, hdr.FileInfo().Mode()); err != nil {
+				http.Error(w, fmt.Sprintf("mkdir failed: %v", err), http.StatusInternalServerError)
+				return
+			}
+			continue
+		}
+
+		if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
+			http.Error(w, fmt.Sprintf("mkdir parent failed: %v", err), http.StatusInternalServerError)
+			return
+		}
+
+		f, err := os.OpenFile(target, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, hdr.FileInfo().Mode())
+		if err != nil {
+			http.Error(w, fmt.Sprintf("create file failed: %v", err), http.StatusInternalServerError)
+			return
+		}
+		if _, err := io.Copy(f, tr); err != nil {
+			f.Close()
+			http.Error(w, fmt.Sprintf("write file failed: %v", err), http.StatusInternalServerError)
+			return
+		}
+		f.Close()
+	}
+
+	writeJSON(w, map[string]string{"status": "restored"})
+}
+
+func (s *server) handleQuarantine(w http.ResponseWriter, r *http.Request, botKey string) {
+	dir := filepath.Join(s.volumeRoot(), botKey)
+	fi, err := os.Stat(dir)
+	if err != nil || !fi.IsDir() {
+		writeJSON(w, map[string]string{"status": "quarantined"})
+		return
+	}
+
+	target := filepath.Join(s.volumeRoot(), fmt.Sprintf(".quarantined-%s-%d", botKey, time.Now().Unix()))
+	if err := os.Rename(dir, target); err != nil {
+		http.Error(w, fmt.Sprintf("quarantine rename failed: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	writeJSON(w, map[string]string{"status": "quarantined", "path": target})
 }
 
 func (s *server) enrolled(botKey string) bool {
