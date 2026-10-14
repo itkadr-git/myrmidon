@@ -97,6 +97,9 @@ import { readMediaMcpSignals } from "../myrmidon/bot-containers/media-mcp.js";
 // volume at/over its quota; the feed turns the registry into cards.
 import { buildBotDiskCards, readBotDiskReports } from "../myrmidon/bot-containers/bot-disk-cards.js"; // myrmidon(1.6.5 BOT-DISK-H4c)
 import { readBotDiskQuotaSignals } from "../myrmidon/bot-containers/bot-quota.js";
+// myrmidon(OPE-7202): provider-reported warnings surface before reset.
+import { buildProviderUsageAttentionCard } from "../myrmidon/provider-usage/attention.js";
+import { providerUsageService } from "./provider-usage.js";
 
 // myrmidon(STALE-BLOCK): the lifted-block operator signal registry.
 import {
@@ -215,6 +218,7 @@ const ATTENTION_SOURCE_KINDS: AttentionSourceKind[] = [
   "owner_pending_card",
   // myrmidon(1.6.6 OPE-7198): banned or exhausted Codex / ChatGPT subscription accounts.
   "codex_pool_alert",
+  "provider_usage_warning",
 ];
 
 const SEVERITY_RANK: Record<AttentionSeverity, number> = {
@@ -1527,6 +1531,29 @@ async function buildAttentionFeedSnapshot(
         if (!includeDismissed && dismissal?.isActive) return;
         collected.push({ ...item, dismissal });
       };
+
+      for (const aggregate of await providerUsageService(db).list(companyId)) {
+        const warning = aggregate.warning;
+        if (!warning || Date.parse(warning.observedAt) >= Date.parse(warning.resetsAt)) continue;
+        const card = buildProviderUsageAttentionCard(warning);
+        add(createItem({
+          companyId,
+          sourceKind: "provider_usage_warning",
+          subject: { kind: "company", id: companyId, companyId, title: card.title, identifier: null, status: null, href: `/${prefix}/apps`, metadata: card.metadata },
+          whyNow: card.whyNow,
+          decisionVerbs: [],
+          inlineResolvable: false,
+          entryRule: `provider usage reached ${warning.thresholdPercent}% before reset`,
+          exitRule: "provider window resets or usage falls below threshold",
+          dedupKey: card.dedupKey,
+          severity: card.severity,
+          activityAt: warning.observedAt,
+          createdAt: warning.observedAt,
+          updatedAt: warning.observedAt,
+          relatedIssue: null,
+          detail: { kind: "provider_usage", provider: warning.provider, windowKind: warning.window === "package" ? "package" : warning.window === "rolling_5h" ? "5h" : "week", usedPercent: warning.limit > 0 ? warning.used / warning.limit * 100 : 0, thresholdPercent: warning.thresholdPercent, resetsAt: warning.resetsAt, credentialRef: warning.credentialRef, images: [] },
+        }));
+      }
 
       const pendingApprovals = await db
         .select({

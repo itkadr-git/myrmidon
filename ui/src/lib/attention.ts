@@ -297,6 +297,8 @@ export function attentionDetailLine(item: AttentionItem): string | null {
     }
     case "generic":
       return quote(detail.summaryExcerpt);
+    case "provider_usage":
+      return `${detail.provider}: ${Math.round(detail.usedPercent)}% used (warning at ${detail.thresholdPercent}%, resets ${detail.resetsAt})`;
     default:
       return null;
   }

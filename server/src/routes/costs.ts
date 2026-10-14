@@ -1,5 +1,6 @@
 import { Router } from "express";
 import type { Db } from "@paperclipai/db";
+import type { Request, Response } from "express";
 import {
   createCostEventSchema,
   createFinanceEventSchema,
@@ -7,11 +8,17 @@ import {
   resolveBudgetIncidentSchema,
   updateBudgetSchema,
   upsertBudgetPolicySchema,
+  createProviderUsageReportedEventSchema,
+  updateProviderUsageWarningThresholdSchema,
+  PROVIDER_USAGE_WARNING_THRESHOLD_SETTING,
+  type ProviderUsageReportedEventV1,
+  type ProviderUsageAggregate,
+  type ProviderUsageWarning,
 } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
 import {
-  budgetService,
   costService,
+  budgetService,
   financeService,
   companyService,
   agentService,
@@ -20,7 +27,10 @@ import {
   accessService,
   logActivity,
 } from "../services/index.js";
+import { providerUsageService } from "../services/provider-usage.js";
 import { assertBoard, assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
+import { instanceSettings } from "@paperclipai/db";
+import { eq } from "drizzle-orm";
 import { fetchAllQuotaWindows } from "../services/quota-windows.js";
 import { badRequest } from "../errors.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
@@ -63,6 +73,7 @@ export function costRoutes(
   const agents = agentService(db);
   const issues = issueService(db);
   const access = accessService(db);
+  const providerUsage = providerUsageService(db);
 
   async function resolveIssueByRef(rawId: string) {
     const identifier = normalizeIssueIdentifier(rawId);
@@ -111,7 +122,7 @@ export function costRoutes(
     return false;
   }
 
-  router.post("/companies/:companyId/cost-events", validate(createCostEventSchema), async (req, res) => {
+  router.post("/companies/:companyId/cost-events", validate(createCostEventSchema), async (req: Request, res: Response) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
 
@@ -140,7 +151,7 @@ export function costRoutes(
     res.status(201).json(event);
   });
 
-  router.post("/companies/:companyId/finance-events", validate(createFinanceEventSchema), async (req, res) => {
+  router.post("/companies/:companyId/finance-events", validate(createFinanceEventSchema), async (req: Request, res: Response) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     assertBoard(req);
@@ -170,7 +181,64 @@ export function costRoutes(
     res.status(201).json(event);
   });
 
-  router.get("/companies/:companyId/costs/summary", async (req, res) => {
+  const emitWarning = async (companyId: string, req: Request, warning: ProviderUsageWarning, ownerIssueId?: string) => {
+    if (!ownerIssueId) return;
+    const ownerIssue = await resolveIssueByRef(ownerIssueId);
+    if (!ownerIssue || ownerIssue.companyId !== companyId) return;
+    const metricUsed = warning.limit > 0 ? warning.used / warning.limit * 100 : 0;
+    const description = `${warning.provider} usage reached ${metricUsed.toFixed(1)}% for ${warning.metric}; ${warning.remaining} remaining before ${warning.resetsAt}. Credential reference: ${warning.credentialRef}.`;
+    await issues.addComment(ownerIssue.id, `Provider usage warning: ${description}`, { agentId: req.actor.agentId, runId: req.header("X-Paperclip-Run-Id") ?? null }, { authorType: "agent", clientRequestId: `provider-usage-warning:${warning.key}` });
+  };
+  router.post("/companies/:companyId/provider-usage-reports", validate(createProviderUsageReportedEventSchema), async (req: Request, res: Response) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    if (req.actor.type !== "agent") {
+      res.status(403).json({ error: "Provider usage reports must be submitted by an agent adapter" });
+      return;
+    }
+    const event = req.body as ProviderUsageReportedEventV1;
+    const result = await providerUsage.ingest(companyId, event);
+    if (result.duplicate) {
+      res.status(200).json({ accepted: false, duplicate: true });
+      return;
+    }
+    if (result.warning) await emitWarning(companyId, req, result.warning, event.ownerIssueId);
+    res.status(202).json({ accepted: result.accepted, aggregate: result.aggregate, warning: result.warning });
+  });
+
+  router.get("/companies/:companyId/provider-usage", async (req: Request, res: Response) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    if (!await assertCompanyCostReadAllowed(req, res, companyId)) return;
+    res.json({ thresholdPercent: await providerUsage.thresholdForCompany(companyId), usage: await providerUsage.list(companyId) });
+  });
+
+  router.patch("/companies/:companyId/provider-usage-warning-threshold", validate(updateProviderUsageWarningThresholdSchema), async (req: Request, res: Response) => {
+    const companyId = req.params.companyId as string;
+    assertBoard(req);
+    assertCompanyAccess(req, companyId);
+    const actor = getActorInfo(req);
+    const current = await db.select().from(instanceSettings).limit(1);
+    const general = { ...((current[0]?.general as Record<string, unknown> | undefined) ?? {}), [PROVIDER_USAGE_WARNING_THRESHOLD_SETTING]: req.body.thresholdPercent };
+    if (current[0]) {
+      await db.update(instanceSettings).set({ general, updatedAt: new Date() }).where(eq(instanceSettings.id, current[0].id));
+    } else {
+      await db.insert(instanceSettings).values({ general });
+    }
+    await logActivity(db, {
+      companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      action: "provider_usage.warning_threshold_updated",
+      entityType: "provider_usage_settings",
+      entityId: companyId,
+      details: { thresholdPercent: req.body.thresholdPercent },
+    });
+    res.json({ thresholdPercent: req.body.thresholdPercent });
+  });
+
+  router.get("/companies/:companyId/costs/summary", async (req: Request, res: Response) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     if (!(await assertCompanyCostReadAllowed(req, res, companyId))) return;
@@ -178,8 +246,7 @@ export function costRoutes(
     const summary = await costs.summary(companyId, range);
     res.json(summary);
   });
-
-  router.get("/issues/:id/cost-summary", async (req, res) => {
+  router.get("/issues/:id/cost-summary", async (req: Request, res: Response) => {
     const rawId = req.params.id as string;
     const issue = await getAccessibleResource(req, res, resolveIssueByRef(rawId), "Issue not found");
     if (!issue) return;
@@ -189,7 +256,7 @@ export function costRoutes(
     res.json(summary);
   });
 
-  router.get("/companies/:companyId/costs/by-agent", async (req, res) => {
+  router.get("/companies/:companyId/costs/by-agent", async (req: Request, res: Response) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     if (!(await assertCompanyCostReadAllowed(req, res, companyId))) return;
@@ -201,7 +268,7 @@ export function costRoutes(
     res.json(rows);
   });
 
-  router.get("/companies/:companyId/costs/by-agent-model", async (req, res) => {
+  router.get("/companies/:companyId/costs/by-agent-model", async (req: Request, res: Response) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     if (!(await assertCompanyCostReadAllowed(req, res, companyId))) return;
@@ -210,7 +277,7 @@ export function costRoutes(
     res.json(rows);
   });
 
-  router.get("/companies/:companyId/costs/by-provider", async (req, res) => {
+  router.get("/companies/:companyId/costs/by-provider", async (req: Request, res: Response) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     if (!(await assertCompanyCostReadAllowed(req, res, companyId))) return;
@@ -219,7 +286,7 @@ export function costRoutes(
     res.json(rows);
   });
 
-  router.get("/companies/:companyId/costs/by-biller", async (req, res) => {
+  router.get("/companies/:companyId/costs/by-biller", async (req: Request, res: Response) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     if (!(await assertCompanyCostReadAllowed(req, res, companyId))) return;
@@ -228,7 +295,7 @@ export function costRoutes(
     res.json(rows);
   });
 
-  router.get("/companies/:companyId/costs/finance-summary", async (req, res) => {
+  router.get("/companies/:companyId/costs/finance-summary", async (req: Request, res: Response) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     if (!(await assertCompanyCostReadAllowed(req, res, companyId))) return;
@@ -237,7 +304,7 @@ export function costRoutes(
     res.json(summary);
   });
 
-  router.get("/companies/:companyId/costs/finance-by-biller", async (req, res) => {
+  router.get("/companies/:companyId/costs/finance-by-biller", async (req: Request, res: Response) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     if (!(await assertCompanyCostReadAllowed(req, res, companyId))) return;
@@ -246,7 +313,7 @@ export function costRoutes(
     res.json(rows);
   });
 
-  router.get("/companies/:companyId/costs/finance-by-kind", async (req, res) => {
+  router.get("/companies/:companyId/costs/finance-by-kind", async (req: Request, res: Response) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     if (!(await assertCompanyCostReadAllowed(req, res, companyId))) return;
@@ -255,7 +322,7 @@ export function costRoutes(
     res.json(rows);
   });
 
-  router.get("/companies/:companyId/costs/finance-events", async (req, res) => {
+  router.get("/companies/:companyId/costs/finance-events", async (req: Request, res: Response) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     if (!(await assertCompanyCostReadAllowed(req, res, companyId))) return;
@@ -265,7 +332,7 @@ export function costRoutes(
     res.json(rows);
   });
 
-  router.get("/companies/:companyId/costs/window-spend", async (req, res) => {
+  router.get("/companies/:companyId/costs/window-spend", async (req: Request, res: Response) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     if (!(await assertCompanyCostReadAllowed(req, res, companyId))) return;
@@ -273,7 +340,7 @@ export function costRoutes(
     res.json(rows);
   });
 
-  router.get("/companies/:companyId/costs/quota-windows", async (req, res) => {
+  router.get("/companies/:companyId/costs/quota-windows", async (req: Request, res: Response) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     assertBoard(req);
@@ -288,7 +355,7 @@ export function costRoutes(
     res.json(results);
   });
 
-  router.get("/companies/:companyId/budgets/overview", async (req, res) => {
+  router.get("/companies/:companyId/budgets/overview", async (req: Request, res: Response) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     if (!(await assertCompanyCostReadAllowed(req, res, companyId))) return;
@@ -299,7 +366,7 @@ export function costRoutes(
   router.post(
     "/companies/:companyId/budgets/policies",
     validate(upsertBudgetPolicySchema),
-    async (req, res) => {
+    async (req: Request, res: Response) => {
       assertBoard(req);
       const companyId = req.params.companyId as string;
       assertCompanyAccess(req, companyId);
@@ -311,7 +378,7 @@ export function costRoutes(
   router.post(
     "/companies/:companyId/budget-incidents/:incidentId/resolve",
     validate(resolveBudgetIncidentSchema),
-    async (req, res) => {
+    async (req: Request, res: Response) => {
       assertBoard(req);
       const companyId = req.params.companyId as string;
       const incidentId = req.params.incidentId as string;
@@ -321,7 +388,7 @@ export function costRoutes(
     },
   );
 
-  router.get("/companies/:companyId/costs/by-project", async (req, res) => {
+  router.get("/companies/:companyId/costs/by-project", async (req: Request, res: Response) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     if (!(await assertCompanyCostReadAllowed(req, res, companyId))) return;
@@ -330,7 +397,7 @@ export function costRoutes(
     res.json(rows);
   });
 
-  router.patch("/companies/:companyId/budgets", validate(updateBudgetSchema), async (req, res) => {
+  router.patch("/companies/:companyId/budgets", validate(updateBudgetSchema), async (req: Request, res: Response) => {
     assertBoard(req);
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
@@ -364,7 +431,7 @@ export function costRoutes(
     res.json(company);
   });
 
-  router.patch("/agents/:agentId/budgets", validate(updateBudgetSchema), async (req, res) => {
+  router.patch("/agents/:agentId/budgets", validate(updateBudgetSchema), async (req: Request, res: Response) => {
     const agentId = req.params.agentId as string;
     const agent = await getAccessibleResource(req, res, agents.getById(agentId), "Agent not found");
     if (!agent) return;
