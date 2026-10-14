@@ -343,7 +343,7 @@ export function buildCreateContainerRequestBody(
   const devbuild: DevbuildSettings = isDevBuildImage(spec.image)
     ? config.devbuild
     : { host: null, user: "", base: "" };
-  const env = devbuildContainerEnv(devbuild);
+  const env = devbuildContainerEnv(devbuild, spec.botKey);
   const keyMount = devbuildKeyMount(devbuild, config.mountSources);
   // A legacy image never runs as a shared member: the scope layout needs the
   // image's start-time links (BOT_RUNTIME_SCOPE_LABEL), which only single-

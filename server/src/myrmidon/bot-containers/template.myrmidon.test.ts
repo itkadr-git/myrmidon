@@ -278,6 +278,16 @@ describe("devbuildContainerEnv / devbuildKeyMount", () => {
     expect(devbuildContainerEnv(settings({ host: null }))).toBeNull();
   });
 
+  it("keys the build host copy by the bot: DEVBUILD_BOT_NAME is the bot key (all containers run as user bot)", () => {
+    expect(devbuildContainerEnv(settings(), "d35df9f1-85dc-42b0-94c8-22b84a5c4ab5")).toEqual({
+      DEVBUILD_HOST: "build-host.internal",
+      DEVBUILD_USER: "builder",
+      DEVBUILD_BASE: "/builds",
+      DEVBUILD_BOT_NAME: "d35df9f1-85dc-42b0-94c8-22b84a5c4ab5",
+    });
+    expect(devbuildContainerEnv(settings({ host: null }), "d35df9f1-85dc-42b0-94c8-22b84a5c4ab5")).toBeNull();
+  });
+
   it("mounts the first allowlisted source ending in devbuild-ssh, read-only, at the reserved path", () => {
     expect(devbuildKeyMount(settings(), ["/srv/shared/sources", "/srv/keys/devbuild-ssh"])).toEqual({
       source: "/srv/keys/devbuild-ssh",
