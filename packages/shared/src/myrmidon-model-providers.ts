@@ -26,6 +26,7 @@ export const MODEL_PROVIDER_TYPES = [
   "dashscope",
   "google",
   "openai-compatible",
+  "chatgpt-pool",
 ] as const;
 export type ModelProviderType = (typeof MODEL_PROVIDER_TYPES)[number];
 
@@ -37,10 +38,94 @@ export const MODEL_PROVIDER_DEFAULT_BASE_URLS: Readonly<
   dashscope: "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
   google: "https://generativelanguage.googleapis.com/v1beta-openai",
   "openai-compatible": null,
+  "chatgpt-pool": "http://localhost:8895",
 };
+
+/** Models supported by default on the chatgpt-pool connector. */
+export const DEFAULT_CHATGPT_POOL_MODELS = [
+  "gpt-6.1-sol",
+  "gpt-6-sol",
+  "gpt-6-luna",
+  "gpt-5.6-sol",
+  "gpt-5.6-terra",
+  "gpt-5.6-luna",
+] as const;
 
 /** The models-list path every supported provider speaks (OpenAI-compatible). */
 export const MODEL_PROVIDER_MODELS_PATH = "/models";
+
+/** Account state in the Codex / ChatGPT subscription pool. */
+export type PoolAccountState =
+  | "active"
+  | "rate_limited"
+  | "token_expired"
+  | "banned"
+  | "login_pending"
+  | "login_expired"
+  | "not_logged_in";
+
+/** A quota window on a subscription account (e.g. 5-hour rolling or weekly). */
+export interface PoolAccountLimitWindow {
+  usedPct: number | null;
+  windowMin: number | null;
+  resetsAt: number | null;
+}
+
+/** Usage metrics observed on a subscription account. */
+export interface PoolAccountUsage {
+  primary: PoolAccountLimitWindow | null;
+  secondary: PoolAccountLimitWindow | null;
+  plan?: string | null;
+  limitReached?: boolean;
+  requests24h?: number;
+  requests7d?: number;
+  tokens24h?: { input: number; output: number };
+  tokens7d?: { input: number; output: number };
+  lastLimitAt?: number | null;
+  recentErrors?: Array<{ at: number; status: number; message: string }>;
+}
+
+/** One account in the provider's channel registry (OPE-7189 ч.A). */
+export interface PoolAccountChannelView {
+  n: number;
+  label: string;
+  email?: string | null;
+  state: PoolAccountState | string;
+  stateRu?: string;
+  plan?: string | null;
+  limitedUntil: number | null;
+  lastOk: number | null;
+  windows: {
+    primary: PoolAccountLimitWindow | null;
+    secondary: PoolAccountLimitWindow | null;
+  };
+  usage?: PoolAccountUsage;
+  isBanned: boolean;
+  isExhausted: boolean;
+  error?: string | null;
+}
+
+/** Role notification signal when an account is banned or limit-exhausted. */
+export interface PoolAccountRoleSignal {
+  dedupKey: string;
+  accountNumber: number;
+  label: string;
+  kind: "banned" | "exhausted";
+  severity: "critical" | "high" | "medium";
+  title: string;
+  whyNow: string;
+  summaryExcerpt: string;
+  resetsAt: number | null;
+  activityAt: string;
+}
+
+/** Channels and active signals of a model provider. */
+export interface ModelProviderChannelsView {
+  providerId: string;
+  providerType: ModelProviderType;
+  channels: PoolAccountChannelView[];
+  signals: PoolAccountRoleSignal[];
+}
 
 /**
  * The secret-store name that carries one provider's credential.

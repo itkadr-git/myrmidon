@@ -16,6 +16,7 @@ import { useCompany } from "@/context/CompanyContext";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { ApiError } from "@/api/client";
 import {
+  modelProviderChannelsQueryKey,
   modelProviderModelsQueryKey,
   modelProvidersApi,
   modelProvidersQueryKey,
@@ -127,6 +128,7 @@ export function ModelProvidersScreen() {
       view={view}
       companyId={companyId}
       modelsQuery={(providerId: string) => modelProviderModelsQueryKey(companyId, providerId)}
+      channelsQuery={(providerId: string) => modelProviderChannelsQueryKey(companyId, providerId)}
       onAdd={(input) => addMutation.mutate(input)}
       adding={addMutation.isPending}
       addError={addMutation.isError ? readable(addMutation.error) : null}

@@ -32,6 +32,7 @@ vi.mock("./modelProvidersApi", async (importOriginal) => ({
     remove: vi.fn(),
     models: vi.fn(),
     updateModels: vi.fn(),
+    channels: vi.fn(),
   },
 }));
 
@@ -291,5 +292,87 @@ describe("sortModels (owner rule: free first, free DashScope before other free)"
       { modelName: "qwen-turbo", litellmModelName: "dashscope/qwen-turbo", enabled: false, free: false },
     ]);
     expect(sorted.map((m) => m.modelName)).toEqual(["qwen-max", "llama-free", "gpt-4o", "qwen-turbo"]);
+  });
+});
+
+describe("myrmidon(1.6.6 OPE-7198) chatgpt-pool provider card with channels and signals", () => {
+  it("renders accounts table with limit windows and active role signals alert", async () => {
+    vi.mocked(modelProvidersApi.channels).mockResolvedValue({
+      providerId: "prov-pool",
+      providerType: "chatgpt-pool",
+      channels: [
+        {
+          n: 1,
+          label: "ChatGPT Team Account #1",
+          email: "team1@example.com",
+          state: "active",
+          stateRu: "Активен",
+          limitedUntil: null,
+          lastOk: 1700000000,
+          windows: {
+            primary: { usedPct: 75, windowMin: 300, resetsAt: 1700018000 },
+            secondary: { usedPct: 40, windowMin: 10080, resetsAt: 1700600000 },
+          },
+          isBanned: false,
+          isExhausted: false,
+        },
+        {
+          n: 2,
+          label: "ChatGPT Plus Account #2",
+          email: "plus2@example.com",
+          state: "banned",
+          stateRu: "Заблокирован",
+          limitedUntil: null,
+          lastOk: 1699990000,
+          windows: {
+            primary: null,
+            secondary: null,
+          },
+          isBanned: true,
+          isExhausted: false,
+        },
+      ],
+      signals: [
+        {
+          dedupKey: "codex_pool:ban:company-1:2",
+          accountNumber: 2,
+          label: "ChatGPT Plus Account #2",
+          kind: "banned",
+          severity: "high",
+          title: "Codex/ChatGPT account #2 (ChatGPT Plus Account #2) banned / token expired",
+          whyNow: "Account #2 token has expired or access was revoked.",
+          summaryExcerpt: "Account #2 banned",
+          resetsAt: null,
+          activityAt: "2026-10-14T10:00:00Z",
+        },
+      ],
+    });
+
+    const poolView: ModelProvidersView = {
+      providers: [
+        {
+          id: "prov-pool",
+          type: "chatgpt-pool",
+          name: "ChatGPT Codex Pool",
+          baseUrl: "http://localhost:8895",
+          hasKey: true,
+          free: false,
+          createdAt: "2026-10-14T00:00:00.000Z",
+          updatedAt: "2026-10-14T00:00:00.000Z",
+        },
+      ],
+      changeLog: [],
+    };
+
+    const { root: r } = render({ view: poolView });
+    root = r;
+    await flushReact();
+
+    expect(modelProvidersApi.channels).toHaveBeenCalledWith(COMPANY_ID, "prov-pool");
+    expect(container.querySelector('[data-testid="myrmidon-pool-signals-prov-pool"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="myrmidon-pool-signal-2"]')).toBeTruthy();
+    expect(container.textContent).toContain("ChatGPT Plus Account #2");
+    expect(container.textContent).toContain("75%");
+    expect(container.textContent).toContain("Заблокирован");
   });
 });

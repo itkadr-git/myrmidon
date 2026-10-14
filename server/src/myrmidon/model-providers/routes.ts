@@ -139,5 +139,13 @@ export function modelProviderRoutes(deps: ModelProviderRoutesDeps): Router {
     res.json({ models });
   });
 
+  router.get("/myrmidon/companies/:companyId/model-providers/:id/channels", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    const providerId = req.params.id as string;
+    assertCompanyAccess(req, companyId);
+    const result = await deps.service.listChannels(companyId, providerId);
+    res.json(result);
+  });
+
   return router;
 }

@@ -68,6 +68,14 @@ function fakeService() {
         { id: "m2", modelName: "model-b", litellmModelName: "openai/model-b", enabled: true, free: false },
       ];
     },
+    async listChannels(companyId, providerId) {
+      return {
+        providerId,
+        providerType: "chatgpt-pool",
+        channels: [],
+        signals: [],
+      };
+    },
   };
   return service;
 }

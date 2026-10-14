@@ -94,6 +94,32 @@ function fakeService() {
         { id: "m1", modelName: "model-a", litellmModelName: "openai/model-a", enabled: false, free: true },
       ];
     },
+    async listChannels(companyId, providerId) {
+      calls.push({ op: "listChannels", companyId, providerId });
+      return {
+        providerId,
+        providerType: "chatgpt-pool",
+        channels: [
+          {
+            n: 1,
+            label: "account-1",
+            email: "acc1@example.com",
+            state: "active",
+            stateRu: "Активен",
+            plan: "plus",
+            limitedUntil: null,
+            lastOk: 1700000000,
+            windows: {
+              primary: { usedPct: 20, windowMin: 300, resetsAt: 1700018000 },
+              secondary: { usedPct: 15, windowMin: 10080, resetsAt: 1700600000 },
+            },
+            isBanned: false,
+            isExhausted: false,
+          },
+        ],
+        signals: [],
+      };
+    },
   };
   return { service, calls };
 }
@@ -132,18 +158,20 @@ describe("myrmidon(1.6.1 MODEL-PROVIDERS) routes: access", () => {
     await request(server).delete(`${base}/provider-1`).expect(403);
     await request(server).get(`${base}/provider-1/models`).expect(403);
     await request(server).post(`${base}/provider-1/models`).send({ models: [] }).expect(403);
+    await request(server).get(`${base}/provider-1/channels`).expect(403);
     expect(calls).toHaveLength(0);
   });
 
-  it("lets an agent of the company read providers and models but not mutate", async () => {
+  it("lets an agent of the company read providers, models and channels but not mutate", async () => {
     const { server, calls } = app(agentActor);
     await request(server).get(base).expect(200);
     await request(server).get(`${base}/provider-1/models`).expect(200);
+    await request(server).get(`${base}/provider-1/channels`).expect(200);
     await request(server).post(base).send({ type: "openai", name: "p", key: KEY_VALUE }).expect(403);
     await request(server).patch(`${base}/provider-1`).send({ key: KEY_VALUE }).expect(403);
     await request(server).delete(`${base}/provider-1`).expect(403);
     await request(server).post(`${base}/provider-1/models`).send({ models: [] }).expect(403);
-    expect(calls.map((c) => c.op)).toEqual(["list", "listModels"]);
+    expect(calls.map((c) => c.op)).toEqual(["list", "listModels", "listChannels"]);
   });
 
   it("lets a board member of the company do everything", async () => {
@@ -225,6 +253,9 @@ describe("myrmidon(1.6.1 MODEL-PROVIDERS) routes: the key is write-only", () => 
       .send({ models: [{ modelName: "model-a" }] })
       .expect(200);
     expect(JSON.stringify(set.body)).not.toContain(KEY_VALUE);
+
+    const channels = await request(server).get(`${base}/provider-1/channels`).expect(200);
+    expect(JSON.stringify(channels.body)).not.toContain(KEY_VALUE);
   });
 
   it("never echoes the key value in an error body either", async () => {
@@ -235,6 +266,18 @@ describe("myrmidon(1.6.1 MODEL-PROVIDERS) routes: the key is write-only", () => 
       .send({ type: "openai", name: KEY_VALUE, key: 12345 })
       .expect(400);
     expect(JSON.stringify(response.body)).not.toContain(KEY_VALUE);
+  });
+});
+
+describe("myrmidon(1.6.1 MODEL-PROVIDERS) routes: channels and chatgpt-pool", () => {
+  it("answers channels and active role signals for chatgpt-pool", async () => {
+    const { server, calls } = app(member);
+    const res = await request(server).get(`${base}/provider-1/channels`).expect(200);
+    expect(calls.some((c) => c.op === "listChannels")).toBe(true);
+    expect(res.body.channels).toHaveLength(1);
+    expect(res.body.channels[0].n).toBe(1);
+    expect(res.body.channels[0].windows.primary.usedPct).toBe(20);
+    expect(res.body.channels[0].stateRu).toBe("Активен");
   });
 });
 
