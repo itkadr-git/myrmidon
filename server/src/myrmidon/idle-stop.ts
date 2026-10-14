@@ -362,7 +362,7 @@ export class IdleStopService {
       }
     } catch (error) {
       const elapsed = Date.now() - startTime;
-      if (elapsed >= timeoutMs) {
+      if (elapsed >= timeoutMs || (error instanceof Error && error.message.includes('timed out after'))) {
         this.logger.error(`Timeout waiting for bot ${botKey} to become healthy after ${elapsed}ms`);
         throw new Error(`Timeout waiting for container health: bot ${botKey} did not become healthy within ${timeoutMs}ms`);
       }
