@@ -163,6 +163,7 @@ describeEmbeddedPostgres(
         provider: "telegram" as ChatProvider,
         publicId: randomUUID(),
         assignedAgentId: agentId,
+        publicationMode: "automatic",
         status: "active",
         capabilities: {
           threads: true,

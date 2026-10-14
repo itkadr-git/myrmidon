@@ -40,7 +40,7 @@ export function telegramOwnerQuestionText(
     if ("helpText" in question && question.helpText?.trim()) {
       lines.push(question.helpText.trim());
     }
-    for (const [index, option] of question.options.entries()) {
+    for (const [index, option] of (question.options ?? []).entries()) {
       const recommendation = "recommended" in option && option.recommended
         ? " (рекомендуется)"
         : "";
@@ -65,9 +65,9 @@ export function telegramOwnerConfirmationText(
   nativeTelegramConfirmationAvailable: boolean,
 ): string | null {
   const payload = interaction.payload;
+  if (payload.secretProposal !== undefined) return null;
   if (
     payload.toolAction !== undefined ||
-    payload.secretProposal !== undefined ||
     payload.connectionAuthorization !== undefined
   ) return null;
 
