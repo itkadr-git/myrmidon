@@ -30,8 +30,9 @@ import {
   type ChatProvider,
 } from "@paperclipai/shared";
 import { issueThreadInteractionService } from "../services/issue-thread-interactions.js";
-import { enqueueIssueInteractionChatPublications } from "../services/chat-interaction-publications.js";
+import { readOwnerDeliveryMode } from "../myrmidon/owner-delivery/telegram-owner-bindings.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
+import { enqueueIssueInteractionChatPublications } from "../services/chat-interaction-publications.js";
 import { telegramConversationUserId } from "../myrmidon/agent-chat-bridge/identity.js";
 import {
   getEmbeddedPostgresTestSupport,
@@ -287,6 +288,8 @@ describeEmbeddedPostgres(
       expect(beforeEnable).toEqual([]);
       const settings = instanceSettingsService(db);
       await settings.updateGeneral({ [OWNER_DELIVERY_SETTINGS_KEY]: { mode: "owner_decisions_only" } });
+      const mode = await readOwnerDeliveryMode(db);
+      expect(mode).toBe("owner_decisions_only");
       const publications = await publicationsForInteraction(
         fixture.companyId,
         interaction.id,
@@ -349,6 +352,8 @@ describeEmbeddedPostgres(
       expect(beforeEnable).toEqual([]);
       const settings = instanceSettingsService(db);
       await settings.updateGeneral({ [OWNER_DELIVERY_SETTINGS_KEY]: { mode: "owner_decisions_only" } });
+      const mode = await readOwnerDeliveryMode(db);
+      expect(mode).toBe("owner_decisions_only");
       const publications = await publicationsForInteraction(
         fixture.companyId,
         interaction.id,
