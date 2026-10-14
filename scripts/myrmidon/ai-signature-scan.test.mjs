@@ -59,6 +59,14 @@ describe("parseGitLog / main", () => {
     assert.equal(main(["--commits", "a..b"], io(clean, "title\nbody")), 0);
     assert.equal(main(["--commits", "a..b"], io(clean, banner())), 1);
   });
+  it("skips only the shas of the allow list (frozen tag history)", () => {
+    const out = [];
+    const sha = "e".repeat(40);
+    const commits = [{ sha, authorName: "ItKadr", committerName: "ItKadr", message: `x\n\n${trailer(assistant, botMail)}` }];
+    const io = (allowedShas) => ({ log: (m) => out.push(m), error: (m) => out.push(m), readCommits: () => commits, stdin: "", allowedShas });
+    assert.equal(main(["--commits", "a..b"], io(new Set([sha]))), 0);
+    assert.equal(main(["--commits", "a..b"], io(new Set(["f".repeat(40)]))), 1);
+  });
   it("fails closed on an unreadable range and on bad arguments", () => {
     const quiet = { log() {}, error() {}, readCommits: () => { throw new Error("git log failed"); }, stdin: "" };
     assert.equal(main(["--commits", "nope..nope"], quiet), 2);

@@ -42,6 +42,23 @@ export const TEXT_RULES = [
   },
 ];
 
+// Commits of a published tag that cannot be rewritten (see ai-signature-allow.txt).
+const ALLOW_FILE = new URL("./ai-signature-allow.txt", import.meta.url);
+
+export function readAllowedShas(file = ALLOW_FILE) {
+  try {
+    return new Set(
+      fs
+        .readFileSync(file, "utf8")
+        .split("\n")
+        .map((line) => line.trim())
+        .filter((line) => /^[0-9a-f]{40}$/.test(line)),
+    );
+  } catch {
+    return new Set();
+  }
+}
+
 const BOT_IDENTITY = new Set(["openclaw adm"]);
 
 function normalizeName(value) {
@@ -120,7 +137,9 @@ export function main(argv, io = {}) {
       return 2;
     }
     commitCount = commits.length;
+    const allowed = io.allowedShas ?? readAllowedShas();
     for (const commit of commits) {
+      if (allowed.has(commit.sha)) continue;
       for (const rule of scanCommit(commit)) problems.push({ where: `commit ${commit.sha.slice(0, 10)}`, rule });
     }
   }
