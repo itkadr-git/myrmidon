@@ -33,6 +33,12 @@ export interface SwarmIdleWakeTarget {
  */
 export interface SwarmIdleQueueCandidate extends SwarmQueueCandidate {
   assigneeAgentId?: string | null;
+  /**
+   * myrmidon(1.6.6 PROJECT-SCOPED-CLAIM): the task's project, when it has
+   * one. The wake policy offers an unassigned project task only to a member
+   * of that project.
+   */
+  projectId?: string | null;
 }
 
 /** The idle read of one role, as the queue reads assemble it. */
@@ -52,6 +58,12 @@ export interface SwarmRoleIdleInput {
     /** True when a live heartbeat run (queued/running/scheduled_retry) covers the agent. */
     hasLiveRun: boolean;
   }[];
+  /**
+   * myrmidon(1.6.6 PROJECT-SCOPED-CLAIM): project → member agent ids, the
+   * same rule the claim gate enforces. Optional so pure tests can omit it;
+   * a project task without this map is offered to no one (fail-closed).
+   */
+  projectMembers?: ReadonlyMap<string, ReadonlySet<string>>;
 }
 
 export interface SwarmIdleWakeOptions {
@@ -81,6 +93,21 @@ export function freeAgentsOfRole(input: SwarmRoleIdleInput): SwarmRoleIdleInput[
       !agent.hasLiveRun &&
       !swarmActiveTaskLimitReached(agent.activeClaims, { maxActiveTasks: agent.maxActiveTasks }),
   );
+}
+
+/**
+ * myrmidon(1.6.6 PROJECT-SCOPED-CLAIM): an unassigned task that belongs to a
+ * project is offerable only to a member of that project (the same rule the
+ * claim gate enforces in SQL). Fail-closed: a project task with no membership
+ * map is offered to no one.
+ */
+function projectAllowsCandidate(
+  input: SwarmRoleIdleInput,
+  candidate: SwarmIdleQueueCandidate,
+  agentId: string,
+): boolean {
+  if (!candidate.projectId) return true;
+  return input.projectMembers?.get(candidate.projectId)?.has(agentId) === true;
 }
 
 /**
@@ -117,7 +144,12 @@ export function idleWakeTargetsForRole(
     );
     const top =
       own ??
-      ordered.find((candidate) => !taken.has(candidate.issueId) && !candidate.assigneeAgentId);
+      ordered.find(
+        (candidate) =>
+          !taken.has(candidate.issueId) &&
+          !candidate.assigneeAgentId &&
+          projectAllowsCandidate(input, candidate, agent.id),
+      );
     if (!top) continue;
     taken.add(top.issueId);
     targets.push({

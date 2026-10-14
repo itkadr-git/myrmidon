@@ -9,7 +9,7 @@
 // both paths, with the extra columns the idle pass needs (agents.id,
 // agents.status, the live-run set of heartbeat_runs).
 
-import { and, asc, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import { agents, companies, heartbeatRuns, issues, type Db } from "@paperclipai/db";
 import {
   SWARM_CLAIM_QUEUE_ISSUE_STATUSES,
@@ -17,6 +17,7 @@ import {
 } from "@paperclipai/shared";
 import type { SwarmIdleQueueCandidate } from "./idle-wake.js";
 import { issueHasNoExecutionHold } from "../settled-holds/ready-predicate.js";
+import { projectScopedClaimGateForAgentSql } from "../project-membership.js";
 
 /** The read-ready role pairs of one company: queue + its agents' idle state. */
 export interface SwarmIdleRolePair {
@@ -130,6 +131,7 @@ async function listReadyQueueCandidates(db: Db, companyId: string) {
       identifier: issues.identifier,
       priority: issues.priority,
       queuedAt: issues.createdAt,
+      projectId: issues.projectId,
       assigneeAgentId: issues.assigneeAgentId,
       assigneeRole: agents.role,
       labels: sql<string[]>`coalesce((
@@ -144,6 +146,10 @@ async function listReadyQueueCandidates(db: Db, companyId: string) {
     .where(
       and(
         eq(issues.companyId, companyId),
+        or(
+          isNull(issues.assigneeAgentId),
+          projectScopedClaimGateForAgentSql(issues.assigneeAgentId),
+        ),
         isNull(issues.assigneeUserId),
         isNull(issues.hiddenAt),
         isNull(issues.conversationAgentId),
@@ -204,6 +210,7 @@ async function listReadyQueueCandidates(db: Db, companyId: string) {
       identifier: row.identifier,
       priority: row.priority,
       queuedAt: row.queuedAt,
+      projectId: row.projectId,
       assigneeAgentId: row.assigneeAgentId,
     },
     assigneeAgentId: row.assigneeAgentId,

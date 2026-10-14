@@ -57,6 +57,7 @@ import { wakeNextAgentForIssueRole, type SwarmClaimServicePorts } from "./servic
 import { listClaimsOnNonQueueIssues, listExpiredClaims, releaseClaim } from "./store.js";
 import { listIdleRolePairs, liveClaimCountsByAgent } from "./idle-queue.js";
 import { idleWakeTargetsForRole, idleWakeIdempotencyKey, type SwarmRoleIdleInput } from "./idle-wake.js";
+import { projectMembershipByProject } from "../project-membership.js";
 
 /** The sweep inspects at most this many claims per pass. */
 export const SWARM_CLAIM_SWEEP_PAGE_SIZE = 50;
@@ -445,6 +446,13 @@ async function sweepIdleWakes(
     const casteByRole = deps.castes
       ? new Map((await deps.castes(companyId)).map((entry) => [entry.key, entry]))
       : new Map<string, CompanyCaste>();
+    // myrmidon(1.6.6 PROJECT-SCOPED-CLAIM): project → member agent ids, the
+    // same rule the claim gate enforces in SQL (lead or joined membership).
+    // One read per company per pass; only when a pilot role can be woken.
+    const projectMembers =
+      pilotPairs.length > 0
+        ? await projectMembershipByProject(deps.db, companyId)
+        : undefined;
     for (const pair of pilotPairs) {
       if (pair.agents.length === 0) {
         // The attention signal: ready work routed to a role no agent holds.
@@ -467,6 +475,10 @@ async function sweepIdleWakes(
         role: pair.role,
         queue: pair.queue,
         liveClaims: [], // claim coverage of the queue is checked per target below
+        // myrmidon(1.6.6 PROJECT-SCOPED-CLAIM): the membership map the wake
+        // policy uses to keep a project's unassigned tasks inside its
+        // membership — the same rule the claim gate enforces in SQL.
+        projectMembers: projectMembers,
         agents: pair.agents.map((agent) => ({
           id: agent.id,
           activeClaims: claimCounts.get(agent.id) ?? 0,
