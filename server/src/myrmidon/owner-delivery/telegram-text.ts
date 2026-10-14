@@ -81,6 +81,7 @@ export function telegramOwnerConfirmationText(
   if (payload.target != null) {
     lines.push("", "Цель согласования:", JSON.stringify(payload.target));
   }
+  if (payload.consequences?.trim()) lines.push("", "Последствия:", payload.consequences.trim());
   const replyCanResolve =
     nativeTelegramConfirmationAvailable &&
     !payload.rejectRequiresReason &&
