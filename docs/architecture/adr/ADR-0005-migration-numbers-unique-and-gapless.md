@@ -14,16 +14,18 @@ silently skip a migration on fresh installs; gaps hide skipped or reverted migra
 
 ## Decision
 
-Migration numbers start at `0001`, are unique, and consecutive. `check:migrations`
-(`packages/db/src/check-migration-numbering.ts`) already validates the rule; this ADR makes
-it a blocking invariant.
+Migration numbers are unique; the repository's historical gaps are recorded in the baseline and
+remain grandfathered. Every number not recorded as a historical gap must be present, including
+newly added numbers. The gate checks SQL files, the migration journal, duplicates, removed baseline
+numbers, and any newly introduced gap. The package helper `check:migrations` is not the source of
+this invariant: it checks numbering format and duplicates but does not enforce gaplessness.
 
 ## Enforcement
 
-INV-13, checked by `scripts/myrmidon/ci/arch-invariants-gate.mjs` (`checkMigrations`)
-via the package's own numbering check. Historic gaps that existed when this ADR was accepted
-are recorded in `scripts/myrmidon/ci/arch-invariants-migration-baseline.json` and grandfathered:
-no new gaps or duplicates are accepted.
+INV-13, checked by `scripts/myrmidon/ci/arch-invariants-gate.mjs` (`checkMigrations`): SQL files,
+the Drizzle journal, unique numbering, baseline preservation, and newly introduced gaps are checked.
+The historical baseline is `scripts/myrmidon/ci/arch-invariants-migration-baseline.json`; the
+gate does not delegate gap checking to the package helper.
 
 ## Alternatives considered
 

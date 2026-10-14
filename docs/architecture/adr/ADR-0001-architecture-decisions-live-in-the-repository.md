@@ -17,8 +17,8 @@ numbers were duplicated across three PRs; documentation referenced code that did
 ## Decision
 
 1. The architecture catalog lives in `docs/architecture/`: `README.md` is the invariant index
-   (section 0 of the target architecture), `adr/` holds decision records, `invariants/` holds
-   fitness-function tests.
+   (section 0 of the target architecture), `adr/` holds decision records, and
+   `scripts/myrmidon/ci/` contains the gate and its self-tests.
 2. Every binding product decision gets an ADR (`docs/architecture/adr/ADR-NNNN-<slug>.md`):
    status, date, decision, alternatives, consequences, and pointers to the real modules it
    touches. ADRs may not reference code that does not exist.

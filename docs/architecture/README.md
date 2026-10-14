@@ -19,10 +19,10 @@
 | INV-6 | Life — приватный контур: `<private>`-теги, данные не попадают в общие коллекции | операционный, не код — проверяется ревью ADR | — |
 | INV-7 | Бэкапы: PBS на внешний таргет + периодическая репетиция restore; БД Paperclip в бэкап-контуре с первого дня | операционный, не код — проверяется ревью ADR | — |
 | INV-8 | После Волны 4 доска одна — тикеты Paperclip | операционный, не код — проверяется ревью ADR | — |
-| INV-10 | Нет автоматической побудки агента без задачи (wakeup пишется только с taskKey/issueId источника — комментарий, интеракция, монитор, cron с задачей) | `docs/architecture/invariants/*.test.mjs` | ADR-0002 |
-| INV-11 | Порядок очереди роя — одна реализация (вес кандидата = приоритет × ожидание; феромон задаёт выбор задач, а не порядок агентов) | `docs/architecture/invariants/*.test.mjs` | ADR-0003 |
-| INV-12 | Нет пилотных полей и слова `pilot` в настройках и коде роя — пилоты живут как флаги релиза с ADR, а не как скрытые настройки | `docs/architecture/invariants/*.test.mjs` | ADR-0004 |
-| INV-13 | Номера миграций БД уникальны и идут подряд от 0001 без дыр и дублей (прецедент #1047/#1003/#1096) | `docs/architecture/invariants/*.test.mjs` (вызывает `check:migrations` пакета db) | ADR-0005 |
+| INV-10 | Нет автоматической побудки агента без задачи (wakeup несёт taskKey/issueId источника — комментарий, интеракция, монитор, cron с задачей) | `scripts/myrmidon/ci/arch-invariants-gate.test.mjs` (`checkWakeTaskBinding`) | ADR-0002 |
+| INV-11 | Порядок очереди роя — одна реализация: при `p0Preemption=true` сначала priority rank, затем `queuedAt`; при `false` — только `queuedAt` | `scripts/myrmidon/ci/arch-invariants-gate.test.mjs` (`checkSingleQueueOrder`) | ADR-0003 |
+| INV-12 | Нет пилотных полей и слова `pilot` в настройках и коде роя — пилоты живут как флаги релиза с ADR, а не как скрытые настройки | `scripts/myrmidon/ci/arch-invariants-gate.test.mjs` (`checkNoPilot`) | ADR-0004 |
+| INV-13 | Номера миграций БД уникальны; исторические пробелы зафиксированы baseline, новые пробелы запрещены | `scripts/myrmidon/ci/arch-invariants-gate.test.mjs` (`checkMigrations`) | ADR-0005 |
 
 ## Прецеденты разъездов 09.10 (финал 1.6.5), закрываемые инвариантами
 

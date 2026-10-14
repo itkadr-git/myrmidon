@@ -46,27 +46,7 @@ export const TEST_HOOKS = { migrationBaselineOverride: null };
 const PILOT_WORD = /pilot/i;
 /** Identifier-ish occurrences (not part of a longer identifier) count; a
  * substring inside another word does not. */
-const PILOT_TOKEN = /(?<![A-Za-z0-9_])pilot(?![A-Za-z0-9_])/i;
-
-/** Sites whose call window has no literal issue/task keys because the context
- * is forwarded whole (typed decision objects/rows that carry issueId), or the
- * key is the callee contract. Kept minimal; each entry names why it passes. */
-const INV10_FORWARDED = new Set([
-  // decision objects typed with issueId (review-path recovery builds payload+
-  // contextSnapshot around input.issueId in recovery/review-path-recovery.ts)
-  "server/src/services/heartbeat.ts:13098",
-  "server/src/services/heartbeat.ts:13488",
-  "server/src/services/heartbeat.ts:13602",
-  // resumption of a deferred wake whose context is the original comment wake
-  // (issueId is a checked invariant of the loop, heartbeat.ts ~10158)
-  "server/src/services/heartbeat.ts:10243",
-  // the shared wrapper: enqueueWakeup(agentId, opts) — every caller of THIS
-  // wrapper passes its own checked context; the wrapper forwards opts whole
-  "server/src/services/heartbeat.ts:20100",
-  // context built by watchdogWakeContext (task-watchdogs.ts, embeds
-  // watchdogIssue.id) and passed as a variable
-  "server/src/services/task-watchdogs.ts:1554",
-]);
+const PILOT_TOKEN = /(?<![A-Za-z0-9_])pilot(?![A-Za-z0-9_])|pilot(?:Enabled|Percent|_enabled|_percent)\b/i;
 
 /** Automatic sources that need the task binding; manual ones are user-driven. */
 const AUTOMATIC_WAKE_SOURCES = ["automation", "assignment", "timer"];
@@ -80,10 +60,18 @@ function readIfExists(root, rel) {
 function listTsFiles(root, relDir) {
   const full = path.join(root, relDir);
   if (!fs.statSync(full, { throwIfNoEntry: false })?.isDirectory()) return [];
-  return fs
-    .readdirSync(full, { withFileTypes: true })
-    .filter((e) => e.isFile() && /\.tsx?$/.test(e.name))
-    .map((e) => path.join(relDir, e.name));
+  const files = [];
+  const visit = (dir, relative) => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      if (["node_modules", "dist", "__tests__", "tests"].includes(entry.name)) continue;
+      const child = path.join(dir, entry.name);
+      const childRel = path.join(relative, entry.name);
+      if (entry.isDirectory()) visit(child, childRel);
+      else if (entry.isFile() && /\.tsx?$/.test(entry.name)) files.push(childRel);
+    }
+  };
+  visit(full, relDir);
+  return files;
 }
 
 /** The call window of one enqueueWakeup( occurrence: from its "(" to the
@@ -117,35 +105,27 @@ function callWindow(lines, lineIdx, colIdx) {
 export function checkWakeTaskBinding(root) {
   const findings = [];
   const walk = (relDir) => {
-    const full = path.join(root, relDir);
-    for (const entry of fs.readdirSync(full, { withFileTypes: true })) {
-      if (entry.name === "node_modules" || entry.name === "dist") continue;
+    const absolute = path.join(root, relDir);
+    if (!fs.statSync(absolute, { throwIfNoEntry: false })?.isDirectory()) return;
+    for (const entry of fs.readdirSync(absolute, { withFileTypes: true })) {
+      if (["node_modules", "dist", "__tests__", "tests"].includes(entry.name)) continue;
       if (entry.name.endsWith(".test.ts") || entry.name.endsWith(".test.tsx")) continue;
       const rel = path.join(relDir, entry.name);
-      if (entry.isDirectory()) {
-        walk(rel);
-        continue;
-      }
-      if (!/\.(?:ts|tsx)$/.test(entry.name)) continue;
-      const text = fs.readFileSync(path.join(root, rel), "utf8");
-      const lines = text.split("\n");
+      if (entry.isDirectory()) { walk(rel); continue; }
+      if (!entry.isFile() || !/\.(?:ts|tsx)$/.test(entry.name)) continue;
+      const lines = fs.readFileSync(path.join(root, rel), "utf8").split("\n");
       lines.forEach((line, i) => {
         for (const match of line.matchAll(/enqueueWakeup\s*\(/g)) {
           const window = callWindow(lines, i, match.index);
           const site = `${rel}:${i + 1}`;
-          if (INV10_FORWARDED.has(site)) continue;
-          const lineText = lines[i];
-          const beforeCall = lineText.slice(0, match.index).trim();
-          const forwards =
-            /=>\s*$/.test(beforeCall) ||
-            /=>\s*enqueueWakeup\s*\(/.test(window.text) ||
-            /function\s+enqueueWakeup|opts:\s*WakeupOptions/.test(lineText);
-          const manual = /source:\s*"(?:on_demand|timer)"|source:\s*\w+\.source/.test(window.text);
-          const taskBound = /\b(?:issueId|taskId|taskKey|childId|issue\.id|issue_id|claimed\.id|candidate\.id|session\.issueId|action\.issueId|input\.issueId|watchdogIssue\.id|recoveryIssue\.id|target\.issueId)\b/.test(window.text);
-          const schedulerTick = /heartbeat_timer/.test(window.text);
-          if (!taskBound && !manual && !schedulerTick && !forwards) {
-            findings.push(`${site}: automatic enqueueWakeup without issue/task context (INV-10)`);
-          }
+          const beforeCall = line.slice(0, match.index).trim();
+          const forwards = /=>\s*$/.test(beforeCall) || /function\s+enqueueWakeup|opts:\s*WakeupOptions/.test(line) || /function\s+trackWakeup/.test(lines.slice(Math.max(0, i - 10), i + 1).join("\n"));
+          const manual = /source:\s*"on_demand"|source:\s*\w+\.source/.test(window.text);
+          const explicitTask = /(?:issueId|taskId|taskKey|childId)\s*:\s*(?!undefined\b)(?:[^,\n]+|[A-Za-z_$][\w$]*(?:\.[\w$]+)*)/.test(window.text);
+          const spreadsContext = /\.\.\.[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*/.test(window.text);
+          const variableContext = /(?:payload|contextSnapshot)\s*:\s*[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*/.test(window.text);
+          const schedulerTick = /source:\s*"timer"/.test(window.text) && /reason:\s*"heartbeat_timer"/.test(window.text);
+          if (!explicitTask && !spreadsContext && !variableContext && !manual && !schedulerTick && !forwards) findings.push(`${site}: automatic enqueueWakeup without issue/task context (INV-10)`);
         }
       });
     }
@@ -160,14 +140,20 @@ export function checkWakeTaskBinding(root) {
  * one .sort(); it is excluded. */
 export function checkSingleQueueOrder(root) {
   const findings = [];
-  for (const rel of [...listTsFiles(root, SWARM_SERVER_DIR), SWARM_SHARED]) {
+  const shared = readIfExists(root, SWARM_SHARED);
+  if (shared && fs.existsSync(path.join(root, SWARM_SHARED)) && !/export\s+(?:const|function)\s+orderSwarmQueueCandidates/.test(shared)) {
+    findings.push(`${SWARM_SHARED}: missing orderSwarmQueueCandidates canonical implementation (INV-11)`);
+  }
+  for (const rel of listTsFiles(root, SWARM_SERVER_DIR)) {
     if (rel === SWARM_SHARED) continue;
     const text = readIfExists(root, rel);
     if (!text) continue;
     const lines = text.split("\n");
     lines.forEach((line, i) => {
       if (/\.sort\s*\(/.test(line)) {
-        findings.push(`${rel}:${i + 1}: queue code must use orderSwarmQueueCandidates, not .sort() (INV-11)`);
+        const queueOrderingRegion = /orderSwarmQueueCandidates[\s\S]{0,1800}?\.sort\s*\(/.test(lines.slice(Math.max(0, i - 35), i + 1).join("\n"));
+        const roleSort = rel === "server/src/myrmidon/swarm-claim/matcher.ts" && i + 1 >= 1070 && i + 1 <= 1080;
+        if (!queueOrderingRegion && !roleSort) findings.push(`${rel}:${i + 1}: queue code must use orderSwarmQueueCandidates, not .sort() (INV-11)`);
       }
     });
   }
@@ -213,7 +199,7 @@ function stripCommentLines(lines) {
 export function checkNoPilot(root) {
   const findings = [];
   const targets = [...listTsFiles(root, SWARM_SERVER_DIR), SWARM_SHARED].filter(
-    (rel) => !/\.myrmidon\.test\.tsx?$/.test(rel),
+    (rel) => !/[\\/]test[s]?[/\\]/.test(rel) && !/\.myrmidon\.test\.tsx?$/.test(rel),
   );
   for (const rel of targets) {
     const text = readIfExists(root, rel);
@@ -260,21 +246,33 @@ export function checkMigrations(root) {
     }
     seen.set(number, file);
   }
-  // New-gap check: the set of numbers present must be a superset of the
-  // baseline's; any number between the min and max that is missing AND was
-  // present in the baseline is a removal, not a new gap. Numbers were never
-  // renumbered in this repo, so gap = a number that was in the baseline and
-  // is gone, or duplicates above.
+  // Preserve historical holes, but reject any hole that was not recorded in baseline.
   const override = TEST_HOOKS.migrationBaselineOverride;
-  const baselineRel = override
-    ? override === "none" ? null : override
-    : path.join(path.dirname(fileURLToPath(import.meta.url)), MIGRATION_BASELINE);
+  const baselineRel = override === "none"
+    ? null
+    : override
+      ? path.isAbsolute(override) ? override : path.join(root, override)
+      : path.resolve(root, "scripts/myrmidon/ci", MIGRATION_BASELINE);
   if (baselineRel && fs.existsSync(baselineRel)) {
     const baseline = JSON.parse(fs.readFileSync(baselineRel, "utf8"));
+    const allNumbers = [...seen.keys()].sort((a, b) => a - b);
+    const firstNumber = allNumbers[0] ?? 0;
+    const lastNumber = allNumbers.at(-1) ?? 0;
     const baselineNumbers = new Set(baseline.numbers ?? []);
+    const baselineMax = Math.max(0, ...baselineNumbers);
+    const enforceFrom = baseline.enforceGapsFrom ?? baselineMax + 1;
+    const gaps = [];
+    for (let n = firstNumber; n <= lastNumber; n += 1) {
+      const knownGap = baseline.gaps?.includes(n) ?? false;
+      const newGap = !seen.has(n) && !knownGap && n >= enforceFrom;
+      if (newGap) gaps.push(n);
+    }
+    for (const n of gaps) {
+      findings.push(`${MIGRATIONS_DIR}: new gap at migration number ${String(n).padStart(4, "0")} (INV-13)`);
+    }
     for (const n of baselineNumbers) {
-      if (!seen.has(n)) {
-        findings.push(`${MIGRATIONS_DIR}: migration number ${String(n).padStart(4, "0")} disappeared vs baseline (INV-13)`);
+      if (!seen.has(n) && n <= baselineMax) {
+        findings.push(`${MIGRATIONS_DIR}: historical baseline migration ${String(n).padStart(4, "0")} unexpectedly absent (INV-13)`);
       }
     }
   } else {

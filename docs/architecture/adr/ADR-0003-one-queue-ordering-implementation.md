@@ -16,10 +16,12 @@ same way (two different cooldown rules collided at merge).
 ## Decision
 
 There is exactly one implementation of swarm-queue ordering: `orderSwarmQueueCandidates` in
-`packages/shared/src/myrmidon-swarm-claim.ts`. Its rule: candidate weight = priority × wait.
-Any other module that needs ordering calls this function; ad-hoc `.sort()` on queue candidates
-anywhere in swarm code is a violation. Affinity signals may influence which task is *chosen*
-(per-task pheromone), not the order agents are *assigned* in.
+`packages/shared/src/myrmidon-swarm-claim.ts`. With `p0Preemption=true` (the default), candidates
+are ordered by priority rank first, then by ascending `queuedAt`; with `p0Preemption=false`,
+priority is ignored and candidates are ordered oldest-first by `queuedAt`. There is no
+priority-times-wait score. Any other module that needs ordering calls this function; ad-hoc
+`.sort()` on queue candidates anywhere in swarm code is a violation. Affinity signals may
+influence which task is chosen, not the order agents are assigned in.
 
 ## Enforcement
 

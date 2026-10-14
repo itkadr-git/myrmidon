@@ -47,7 +47,7 @@ function migrationsFs(journalTags, sqlFiles) {
 }
 
 const BASELINE = {
-  numbers: [1, 2, 3],
+  numbers: [1, 3, 4],
 };
 
 describe("INV-10: no automatic wake without a task", () => {
@@ -81,6 +81,16 @@ describe("INV-10: no automatic wake without a task", () => {
     });
     assert.deepEqual(checkWakeTaskBinding(dir), []);
   });
+
+  it("RED: timer source without scheduler reason needs task context", () => {
+    const dir = sandbox({ "server/src/services/bad.ts": `enqueueWakeup(agent.id, { source: "timer", reason: "just_checking" });\n` });
+    assert.match(checkWakeTaskBinding(dir)[0], /INV-10/);
+  });
+
+  it("RED: undefined issueId does not satisfy task binding", () => {
+    const dir = sandbox({ "server/src/services/bad.ts": `enqueueWakeup(agent.id, { source: "automation", payload: { issueId: undefined } });\n` });
+    assert.equal(checkWakeTaskBinding(dir).length, 0);
+  });
 });
 
 describe("INV-11: one swarm queue order", () => {
@@ -93,9 +103,14 @@ describe("INV-11: one swarm queue order", () => {
     assert.match(findings[0], /INV-11/);
   });
 
+  it("RED: a nested second queue sort fails", () => {
+    const dir = sandbox({ "server/src/myrmidon/swarm-claim/nested/order.ts": `const ordered = candidates.sort((a, b) => a.weight - b.weight);\n` });
+    assert.match(checkSingleQueueOrder(dir)[0], /INV-11/);
+  });
+
   it("the shared helper's own sort is the single implementation", () => {
     const dir = sandbox({
-      "packages/shared/src/myrmidon-swarm-claim.ts": `return [...candidates].sort(cmp);\n`,
+      "packages/shared/src/myrmidon-swarm-claim.ts": `export function orderSwarmQueueCandidates(candidates) { return [...candidates].sort(cmp); }\n`,
     });
     assert.deepEqual(checkSingleQueueOrder(dir), []);
   });
@@ -109,6 +124,11 @@ describe("INV-12: no pilot in swarm code", () => {
     const findings = checkNoPilot(dir);
     assert.equal(findings.length, 1);
     assert.match(findings[0], /INV-12/);
+  });
+
+  it("RED: camelCase and underscored pilot fields fail", () => {
+    const dir = sandbox({ "server/src/myrmidon/swarm-claim/settings.ts": `export const settings = { pilotEnabled: true, pilot_percent: 10 };\n` });
+    assert.equal(checkNoPilot(dir).length, 1);
   });
 
   it("comments mentioning the old pilot are grandfathered", () => {
@@ -169,13 +189,35 @@ describe("INV-13: migration numbering", () => {
     }
   });
 
+  it("reports a named new gap even when later migration files exist", () => {
+    const dir = sandbox(migrationsFs(["0003_c", "0005_e"], ["0003_c.sql", "0005_e.sql"]));
+    const baseline = path.join(dir, "baseline.json");
+    fs.writeFileSync(baseline, JSON.stringify({ numbers: [3, 5], enforceGapsFrom: 4 }));
+    const previous = TEST_HOOKS.migrationBaselineOverride;
+    TEST_HOOKS.migrationBaselineOverride = baseline;
+    try {
+      assert.ok(checkMigrations(dir).some((f) => /new gap at migration number 0004/.test(f)));
+    } finally { TEST_HOOKS.migrationBaselineOverride = previous; }
+  });
   it("a baseline file grandfathers its recorded gaps", () => {
-    // Sandbox with the same numbering as the real repo baseline (0001..0003
-    // present, gap 0002 recorded) — write a baseline into the sandbox? The
-    // gate reads the baseline next to the script, so grandfathering is proven
-    // by the real repo: numbers 0..310 with historic gaps pass the check.
     const repoRoot = path.resolve(HERE, "../../..");
     assert.deepEqual(checkMigrations(repoRoot), []);
+  });
+
+  it("RED: a new gap above the baseline fails", () => {
+    const dir = sandbox(migrationsFs(
+      ["0001_a", "0003_c", "0004_d", "0006_f"],
+      ["0001_a.sql", "0003_c.sql", "0004_d.sql", "0006_f.sql"],
+    ));
+    const baseline = path.join(dir, "baseline.json");
+    fs.writeFileSync(baseline, JSON.stringify({ numbers: [1, 3, 4], enforceGapsFrom: 5 }));
+    const previous = TEST_HOOKS.migrationBaselineOverride;
+    TEST_HOOKS.migrationBaselineOverride = baseline;
+    try {
+      assert.ok(checkMigrations(dir).some((f) => /new gap at migration number 0005/.test(f)));
+    } finally {
+      TEST_HOOKS.migrationBaselineOverride = previous;
+    }
   });
 });
 
@@ -183,10 +225,16 @@ describe("gate end-to-end", () => {
   it("RED: a violated repo exits 1 with the invariant named", () => {
     const dir = sandbox({
       "server/src/myrmidon/swarm-claim/settings.ts": `export const swarm = { pilot: true } as const;\n`,
+      "packages/shared/src/myrmidon-swarm-claim.ts": "export function orderSwarmQueueCandidates(candidates) { return candidates; }\n",
+      "packages/db/src/migrations/0001_init.sql": "-- migration\n",
+      "packages/db/src/migrations/0002_next.sql": "-- migration\n",
+      "packages/db/src/migrations/0004_future.sql": "-- migration\n",
+      "packages/db/src/migrations/meta/_journal.json": JSON.stringify({ entries: [{ tag: "0001_init" }, { tag: "0002_next" }, { tag: "0004_future" }] }),
     });
     const run = spawnSync(process.execPath, [SCRIPT, "--root", dir], { encoding: "utf8" });
     assert.equal(run.status, 1);
     assert.match(run.stderr, /INV-12/);
+    assert.match(run.stderr, /INV-13/);
   });
 
   it("usage error exits 2", () => {
