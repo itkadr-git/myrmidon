@@ -338,4 +338,3 @@ func TestQuarantine(t *testing.T) {
 		t.Fatal("quarantined directory not found in volume root")
 	}
 }
-
