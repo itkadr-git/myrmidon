@@ -320,6 +320,7 @@ export async function enqueueIssueInteractionChatPublications(
       and(
         eq(chatEndpoints.companyId, chatConversations.companyId),
         eq(chatEndpoints.id, chatConversations.endpointId),
+        eq(chatEndpoints.publicationMode, "automatic"),
       ),
     )
     .where(
