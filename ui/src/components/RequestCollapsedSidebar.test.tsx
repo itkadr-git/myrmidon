@@ -1,3 +1,4 @@
+// myrmidon(DEBRAND-c): persist browser state under the Myrmidon namespace.
 // @vitest-environment jsdom
 
 import { act } from "react";
@@ -102,7 +103,7 @@ describe("RequestCollapsedSidebar", () => {
   it("clears the request without persisting a retired collapsed pin", async () => {
     active = await render(true);
     flushSync(() => capturedValue?.setCollapsed(true));
-    expect(localStorage.getItem("paperclip.sidebar.collapsed")).toBeNull();
+    expect(localStorage.getItem("myrmidon.sidebar.collapsed")).toBeNull();
 
     await act(async () => active!.root.render(<Harness onRoute={false} />));
     expect(capturedValue?.routeRequestsCollapsed).toBe(false);

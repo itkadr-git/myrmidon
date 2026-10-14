@@ -1,3 +1,4 @@
+// myrmidon(DEBRAND-c): persist browser state under the Myrmidon namespace.
 import { normalizeLegacyRunnerProvider } from "@paperclipai/adapter-utils";
 import { memo, useState, useEffect, useRef, useCallback, useMemo, type ChangeEvent, type CSSProperties, type DragEvent, type RefObject } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
@@ -84,7 +85,7 @@ import { getTrustPreset } from "../lib/trust-policy-ui";
 import { ReusableExecutionWorkspaceSelect } from "./ReusableExecutionWorkspaceSelect";
 import { codexReasoningEffortOptions } from "../lib/codex-reasoning-effort";
 
-const DRAFT_KEY = "paperclip:issue-draft";
+const DRAFT_KEY = "myrmidon:issue-draft";
 const DEBOUNCE_MS = 800;
 
 type VisualViewportLayout = {
