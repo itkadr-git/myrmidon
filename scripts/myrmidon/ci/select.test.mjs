@@ -69,6 +69,22 @@ describe("importSpecifiers", () => {
 });
 
 describe("selectTests", () => {
+  it("keeps embedded and DB tests affected-only while full mode runs all test lanes", () => {
+    const dbTest = "server/src/__tests__/storage.embedded.test.ts";
+    const fixtures = [
+      { file: dbTest, source: 'import { storage } from "../services/storage.js";' },
+      { file: "server/src/__tests__/other.test.ts", source: 'import { other } from "../services/other.js";' },
+    ];
+    const affected = selectTests(["server/src/services/storage.ts"], packages, fixtures);
+    assert.deepEqual(affected.files, [{ package: "@paperclipai/server", files: [dbTest] }]);
+    const unrelated = selectTests(["server/src/services/other.ts"], packages, fixtures);
+    assert.deepEqual(unrelated.files, [{ package: "@paperclipai/server", files: ["server/src/__tests__/other.test.ts"] }]);
+    const fullChanges = ["packages/shared/src/constants.ts", "server/src/services/storage.ts", "server/src/services/other.ts"];
+    assert.equal(classifyChanges(fullChanges).tier, "full");
+    const fullSelection = selectTests(fullChanges, packages, fixtures);
+    assert.deepEqual(fullSelection.files, [{ package: "@paperclipai/server", files: [dbTest, "server/src/__tests__/other.test.ts"].sort() }]);
+  });
+
   it("tests a changed adapter whole plus direct importers elsewhere", () => {
     const result = selectTests(["packages/adapters/a-local/src/server/execute.ts"], packages, testFiles);
     assert.deepEqual(result.wholePackages, ["@paperclipai/adapter-a-local"]);

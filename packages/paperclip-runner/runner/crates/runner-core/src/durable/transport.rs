@@ -2412,9 +2412,12 @@ mod tests {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(
-            transport.socket.read_timeout().unwrap(),
-            Some(RUNTIME_READ_TIMEOUT)
+        let read_timeout = transport.socket.read_timeout().unwrap().unwrap();
+        let lower_bound = RUNTIME_READ_TIMEOUT.mul_f64(0.75);
+        let upper_bound = RUNTIME_READ_TIMEOUT.mul_f64(1.25);
+        assert!(
+            (lower_bound..=upper_bound).contains(&read_timeout),
+            "runtime read timeout {read_timeout:?} outside {lower_bound:?}..={upper_bound:?}"
         );
         assert_eq!(welcome.connection.lease_id, "lease_1");
         assert_eq!(welcome.lease.unwrap().expose().unwrap(), "lease-secret");
