@@ -15,6 +15,7 @@ import {
 import { eq, inArray } from "drizzle-orm";
 import { loadPaperclipEnvFile } from "../config/env.js";
 import { readConfig, resolveConfigPath } from "../config/store.js";
+import { readProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
 
 type RoutinesDisableAllOptions = {
   config?: string;
@@ -239,7 +240,7 @@ export async function disableAllRoutinesInConfig(
   loadPaperclipEnvFile(configPath);
   const companyId =
     nonEmpty(options.companyId)
-    ?? nonEmpty(process.env.PAPERCLIP_COMPANY_ID)
+    ?? nonEmpty(readProductEnv("COMPANY_ID"))
     ?? null;
   if (!companyId) {
     throw new Error("Company ID is required. Pass --company-id or set PAPERCLIP_COMPANY_ID.");

@@ -25,6 +25,7 @@ import { Label } from "@/components/ui/label";
 import { getAgentIcon } from "@/lib/agent-icons";
 import { AGENT_ICON_NAMES } from "@paperclipai/shared";
 import type { AddCasteInput, CasteView, UpdateCasteInput } from "./castesApi";
+import type { CasteCounts } from "./casteCounts";
 
 /**
  * The color palette a caste may carry. Values are the token-layer color
@@ -78,6 +79,9 @@ export function CastesScreenView({
   removing,
   error,
   removeNeedsTarget = false,
+  onSetDefault,
+  defaulting = false,
+  counts,
 }: {
   castes: CasteView[];
   onAdd: (input: AddCasteInput) => void;
@@ -94,6 +98,19 @@ export function CastesScreenView({
    * before the next attempt.
    */
   removeNeedsTarget?: boolean;
+  /**
+   * myrmidon(1.6.5 F-26 T3 CASTES-AND-NESTS): the "по умолчанию" radio —
+   * moves the company default onto this caste. The matcher reads the flag
+   * fresh on its next pass, so the move needs no restart.
+   */
+  onSetDefault?: (key: string) => void;
+  /** True while the default move is in flight. */
+  defaulting?: boolean;
+  /**
+   * myrmidon(1.6.5 F-26 T3): per-caste "agents / queue / free now" — see
+   * casteCounts.ts. Absent before the company lists load, shown as "—".
+   */
+  counts?: Record<string, CasteCounts>;
 }) {
   const { t } = useTranslation();
   const [form, setForm] = useState<AddCasteInput>(EMPTY_FORM);
@@ -311,6 +328,13 @@ export function CastesScreenView({
       {/* 2. Caste table */}
       <section className="space-y-3" data-testid="myrmidon-castes-list">
         <h2 className="text-sm font-semibold">{t("castes.list.title")}</h2>
+        {/* myrmidon(1.6.5 F-26 T3 CASTES-AND-NESTS): the vendor rows are a
+            template — the company may rename or delete them. */}
+        {castes.some((caste) => caste.builtIn) ? (
+          <p className="text-xs text-muted-foreground" data-testid="myrmidon-castes-template-note">
+            {t("castes.list.templateNote")}
+          </p>
+        ) : null}
         {castes.length === 0 ? (
           <p className="text-sm text-muted-foreground" data-testid="myrmidon-castes-empty">
             {t("castes.list.empty")}
@@ -319,6 +343,7 @@ export function CastesScreenView({
           <table className="w-full text-sm" data-testid="myrmidon-castes-table">
             <thead>
               <tr className="border-b border-border text-left text-xs text-muted-foreground">
+                <th className="py-1 pr-2">{t("castes.list.defaultCaste")}</th>
                 <th className="py-1 pr-2">{t("castes.list.key")}</th>
                 <th className="py-1 pr-2">{t("castes.list.names")}</th>
                 <th className="py-1 pr-2">{t("castes.list.color")}</th>
@@ -326,6 +351,9 @@ export function CastesScreenView({
                 <th className="py-1 pr-2">{t("castes.list.defaultModel")}</th>
                 <th className="py-1 pr-2">{t("castes.list.swarm")}</th>
                 <th className="py-1 pr-2">{t("castes.list.maxActiveTasks")}</th>
+                <th className="py-1 pr-2" title={t("castes.list.countersHint")}>
+                  {t("castes.list.counters")}
+                </th>
                 <th className="py-1">{t("castes.list.actions")}</th>
               </tr>
             </thead>
@@ -333,12 +361,28 @@ export function CastesScreenView({
               {castes.map((caste) => {
                 const Icon = getAgentIcon(caste.icon);
                 const editing = editKey === caste.key;
+                const counter = counts?.[caste.key];
                 return (
                   <tr
                     key={caste.key}
                     className="border-b border-border align-top"
                     data-testid={`myrmidon-castes-row-${caste.key}`}
                   >
+                    <td className="py-2 pr-2">
+                      {/* myrmidon(1.6.5 F-26 T3): the company default — one radio
+                          per company; the server clears the old flag. */}
+                      <input
+                        type="radio"
+                        name="myrmidon-caste-default"
+                        className="h-4 w-4"
+                        checked={caste.isDefault === true}
+                        disabled={defaulting || caste.isDefault === true}
+                        aria-label={`${t("castes.default.hint")}: ${casteDisplayName(caste)}`}
+                        title={t("castes.default.hint")}
+                        onChange={() => onSetDefault?.(caste.key)}
+                        data-testid={`myrmidon-castes-default-${caste.key}`}
+                      />
+                    </td>
                     <td className="py-2 pr-2">
                       <span className="font-mono text-xs" data-testid={`myrmidon-castes-key-${caste.key}`}>
                         {caste.key}
@@ -378,6 +422,9 @@ export function CastesScreenView({
                     </td>
                     <td className="py-2 pr-2 text-xs" data-testid={`myrmidon-castes-limit-${caste.key}`}>
                       {caste.maxActiveTasks === null ? t("castes.list.globalLimit") : caste.maxActiveTasks}
+                    </td>
+                    <td className="py-2 pr-2 font-mono text-xs" data-testid={`myrmidon-castes-counts-${caste.key}`}>
+                      {counter ? `${counter.agents} / ${counter.queued} / ${counter.free}` : "—"}
                     </td>
                     <td className="py-2">
                       <div className="flex flex-wrap items-center gap-2">

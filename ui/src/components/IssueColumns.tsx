@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { useState } from "react";
 import { deriveOriginatingActor, type Issue } from "@paperclipai/shared";
 import { Columns3 } from "lucide-react";
 import { pickTextColorForPillBg } from "@/lib/color-contrast";
@@ -24,7 +25,7 @@ import { StatusIcon } from "./StatusIcon";
 import { Badge } from "@/components/ui/badge";
 // myrmidon(UI-RU): column labels run through the fork i18n catalog.
 
-export const issueTrailingColumns: InboxIssueColumn[] = ["assignee", "kickedOffBy", "project", "workspace", "parent", "labels", "updated"];
+export const issueTrailingColumns: InboxIssueColumn[] = ["assignee", "kickedOffBy", "project", "workspace", "parent", "labels", "pheromone", "updated"];
 
 // myrmidon(UI-RU): i18n keys per column; labels/descriptions resolve through t().
 const issueColumnLabelKeys: Record<InboxIssueColumn, string> = {
@@ -36,6 +37,8 @@ const issueColumnLabelKeys: Record<InboxIssueColumn, string> = {
   workspace: "columns.workspace",
   parent: "columns.parent",
   labels: "columns.labels",
+  // 1.6.5 (F-27 PHEROMONE): the strength column in the list.
+  pheromone: "columns.pheromone",
   updated: "columns.updated",
 };
 
@@ -48,6 +51,7 @@ const issueColumnDescriptionKeys: Record<InboxIssueColumn, string> = {
   workspace: "columns.workspaceDesc",
   parent: "columns.parentDesc",
   labels: "columns.labelsDesc",
+  pheromone: "columns.pheromoneDesc",
   updated: "columns.updatedDesc",
 };
 
@@ -93,6 +97,8 @@ function issueTrailingGridTemplate(columns: InboxIssueColumn[]): string {
       if (column === "workspace") return "minmax(6rem, 9rem)";
       if (column === "parent") return "minmax(3.5rem, 5.5rem)";
       if (column === "labels") return "minmax(3rem, 6rem)";
+      // 1.6.5 (F-27 PHEROMONE): a compact editable strength cell.
+      if (column === "pheromone") return "minmax(3rem, 4rem)";
       return "minmax(3.5rem, 4.5rem)";
     })
     .join(" ");
@@ -299,6 +305,7 @@ export function InboxIssueTrailingColumns({
   parentTitle,
   assigneeContent,
   onFilterWorkspace,
+  onUpdateIssue,
 }: {
   issue: Issue;
   columns: InboxIssueColumn[];
@@ -318,6 +325,8 @@ export function InboxIssueTrailingColumns({
   parentTitle: string | null;
   assigneeContent?: ReactNode;
   onFilterWorkspace?: (workspaceId: string) => void;
+  // 1.6.5 (F-27 PHEROMONE): needed for the editable strength cell.
+  onUpdateIssue?: (id: string, data: Record<string, unknown>) => void;
 }) {
   const { t } = useTranslation();
   const activityText = issueActivityTimestamp(issue);
@@ -520,6 +529,23 @@ export function InboxIssueTrailingColumns({
           );
         }
 
+        if (column === "pheromone") {
+          // 1.6.5 (F-27 PHEROMONE): the strength is editable right in the list —
+          // a change reorders the swarm queue without opening the card.
+          return (
+            <span
+              key={column}
+              className="min-w-0"
+              onClick={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+              }}
+            >
+              <IssuePheromoneCell issue={issue} onUpdateIssue={onUpdateIssue} />
+            </span>
+          );
+        }
+
         if (column === "updated") {
           return (
             <span key={column} className="min-w-0 truncate text-right text-(length:--text-micro) font-medium text-muted-foreground">
@@ -531,5 +557,58 @@ export function InboxIssueTrailingColumns({
         return null;
       })}
     </span>
+  );
+}
+
+/**
+ * 1.6.5 (F-27 PHEROMONE): the strength cell in the list. Local draft until
+ * blur/Enter commits it via the list's onUpdateIssue; an empty or invalid
+ * draft snaps back. Read-only when the caller passes no onUpdateIssue.
+ */
+function IssuePheromoneCell({
+  issue,
+  onUpdateIssue,
+}: {
+  issue: Issue;
+  onUpdateIssue?: (id: string, data: Record<string, unknown>) => void;
+}) {
+  const { t } = useTranslation();
+  const stored = issue.pheromoneStrength ?? 0;
+  const [draft, setDraft] = useState<string | null>(null);
+  if (!onUpdateIssue) {
+    return (
+      <span className="min-w-0 text-right text-(length:--text-micro) font-medium text-muted-foreground">
+        {stored}
+      </span>
+    );
+  }
+  const shown = draft ?? String(stored);
+  const commit = () => {
+    if (draft === null) return;
+    const trimmed = draft.trim();
+    const parsed = trimmed ? Number(trimmed) : Number.NaN;
+    setDraft(null);
+    if (Number.isInteger(parsed) && parsed >= 0 && parsed <= 1_000_000 && parsed !== stored) {
+      onUpdateIssue(issue.id, { pheromoneStrength: parsed });
+    }
+  };
+  return (
+    <input
+      inputMode="numeric"
+      aria-label={t("columns.pheromoneAria")}
+      className="h-6 w-14 rounded-sm border border-transparent bg-transparent text-right text-(length:--text-micro) font-medium text-muted-foreground hover:border-border focus:border-border focus:outline-none"
+      value={shown}
+      onChange={(event) => setDraft(event.target.value)}
+      onBlur={commit}
+      onKeyDown={(event) => {
+        if (event.key === "Enter") {
+          event.preventDefault();
+          commit();
+        } else if (event.key === "Escape") {
+          setDraft(null);
+        }
+      }}
+      data-testid="issue-pheromone-cell"
+    />
   );
 }

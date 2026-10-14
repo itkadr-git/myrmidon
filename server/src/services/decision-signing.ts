@@ -4,6 +4,7 @@ import path from "node:path";
 import { resolveDefaultSecretsKeyFilePath } from "../home-paths.js";
 // myrmidon(B1c): product name in user-facing texts; see product.ts.
 import { PRODUCT_NAME as PN } from "../myrmidon/product.js";
+import { readProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
 
 const VERSION = "decision-spec-v1";
 const MIN_SECRET_LENGTH = 32;
@@ -123,7 +124,7 @@ function loadOrCreateGeneratedSecret(): string {
 }
 
 export function resolveDecisionSigningSecret(): string {
-  const fromEnv = process.env.PAPERCLIP_DECISION_SIGNING_SECRET?.trim();
+  const fromEnv = readProductEnv("DECISION_SIGNING_SECRET")?.trim();
   if (fromEnv) {
     if (fromEnv.length < MIN_SECRET_LENGTH) {
       throw new Error(

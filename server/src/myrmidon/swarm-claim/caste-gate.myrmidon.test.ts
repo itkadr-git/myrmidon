@@ -52,6 +52,11 @@ const mockListRoleQueue = vi.hoisted(() => vi.fn());
 const mockListAgentLiveClaims = vi.hoisted(() => vi.fn());
 const mockListCompanyClaims = vi.hoisted(() => vi.fn());
 const mockInsertClaim = vi.hoisted(() => vi.fn());
+// 1.6.5 (OPE-6608): the pull takes the task through the matcher, not through
+// its own insert; the matcher and the lease read-back are faked at the seam.
+const mockForAgent = vi.hoisted(() => vi.fn());
+const mockBuildMatcher = vi.hoisted(() => vi.fn());
+const mockFindLiveClaim = vi.hoisted(() => vi.fn());
 
 let serviceModules: typeof import("./service.js") | null = null;
 
@@ -65,13 +70,14 @@ beforeAll(async () => {
   vi.doMock("./store.js", () => ({
     listAgentLiveClaims: mockListAgentLiveClaims,
     listCompanyClaims: mockListCompanyClaims,
-    findLiveClaimForIssue: vi.fn(async () => null),
+    findLiveClaimForIssue: mockFindLiveClaim,
     heartbeatClaim: vi.fn(async () => true),
     insertClaim: mockInsertClaim,
     releaseClaim: vi.fn(async () => null),
     releaseClaimsForIssue: vi.fn(async () => []),
     listRoleQueueCompanyClaims: vi.fn(async () => []),
   }));
+  vi.doMock("./matcher-factory.js", () => ({ buildSwarmMatcher: mockBuildMatcher }));
   serviceModules = await vi.importActual<typeof import("./service.js")>("./service.js");
 });
 
@@ -120,6 +126,12 @@ function armStore(input: { held: number }) {
   mockListAgentLiveClaims.mockResolvedValue(held);
   mockListCompanyClaims.mockClear();
   mockListCompanyClaims.mockResolvedValue([]);
+  mockForAgent.mockReset();
+  mockForAgent.mockResolvedValue({ issueId: QUEUE_ISSUE_ID, agentId: AGENT_ID, role: "x", identifier: "ISSUE-A" });
+  mockBuildMatcher.mockReset();
+  mockBuildMatcher.mockResolvedValue({ forAgent: mockForAgent });
+  mockFindLiveClaim.mockReset();
+  mockFindLiveClaim.mockResolvedValue(insertedClaim);
 }
 
 const insertedClaim = {
@@ -169,6 +181,7 @@ describe("myrmidon(1.6.1 CUSTOM-CASTES B) swarm caste gate", () => {
     // The excluded caste never even looks at the queue.
     expect(mockListRoleQueue).not.toHaveBeenCalled();
     expect(mockInsertClaim).not.toHaveBeenCalled();
+    expect(mockForAgent).not.toHaveBeenCalled();
   });
 
   it("an eligible caste proceeds: the queue read is the agent's own role queue", async () => {
@@ -179,7 +192,14 @@ describe("myrmidon(1.6.1 CUSTOM-CASTES B) swarm caste gate", () => {
     );
     // The queue read was made for the reviewer role — an agent of the
     // reviewer caste is offered the reviewer queue, never another role's.
-    expect(mockListRoleQueue).toHaveBeenCalledWith(expect.anything(), COMPANY_ID, "reviewer", AGENT_ID);
+    expect(mockListRoleQueue).toHaveBeenCalledWith(
+      expect.anything(),
+      COMPANY_ID,
+      "reviewer",
+      AGENT_ID,
+      // 1.6.5 (F-27): the cut is ordered by the settings' dynamics and P0 rule.
+      expect.objectContaining({ p0Preemption: expect.any(Boolean), dynamics: expect.any(Object) }),
+    );
     expect(outcome.reason).not.toBe("caste_excluded");
   });
 
@@ -194,6 +214,7 @@ describe("myrmidon(1.6.1 CUSTOM-CASTES B) swarm caste gate", () => {
     );
     expect(casteOutcome).toEqual({ claim: null, reason: "limit_reached" });
     expect(mockInsertClaim).not.toHaveBeenCalled();
+    expect(mockForAgent).not.toHaveBeenCalled();
 
     // The same one-held-task state against the global ceiling (3) claims.
     const globalOutcome = await serviceModules!.claimNextTaskForAgent(
@@ -202,6 +223,43 @@ describe("myrmidon(1.6.1 CUSTOM-CASTES B) swarm caste gate", () => {
     );
     expect(globalOutcome.reason).toBe("claimed");
     expect(globalOutcome.claim).toMatchObject({ issueId: QUEUE_ISSUE_ID, agentId: AGENT_ID });
+  });
+
+  it("the pull goes through matcher.forAgent as an explicit pull, with no wake and no insert of its own", async () => {
+    armStore({ held: 0 });
+    mockInsertClaim.mockClear();
+    const outcome = await serviceModules!.claimNextTaskForAgent(
+      portsFor({ role: "engineer", directory: castes }),
+      { companyId: COMPANY_ID, agentId: AGENT_ID, now: NOW },
+    );
+    expect(mockForAgent).toHaveBeenCalledWith(AGENT_ID, { explicit: true });
+    // The asking agent is awake: the matcher gets no wake port.
+    // The wake port accepts and queues nothing: the matcher rolls a pairing back
+    // when its wake was "not queued", so a missing port would undo every pull.
+    const builtWith = mockBuildMatcher.mock.calls[0]?.[0] as { enqueueWakeup: () => Promise<unknown> };
+    await expect(builtWith.enqueueWakeup()).resolves.toBeTruthy();
+    expect(mockInsertClaim).not.toHaveBeenCalled();
+    expect(outcome).toEqual({ claim: insertedClaim, reason: "claimed" });
+  });
+
+  it("a matcher that pairs nobody (the task went to another agent) answers queue_empty", async () => {
+    armStore({ held: 0 });
+    mockForAgent.mockResolvedValue(null);
+    const outcome = await serviceModules!.claimNextTaskForAgent(
+      portsFor({ role: "engineer", directory: castes }),
+      { companyId: COMPANY_ID, agentId: AGENT_ID, now: NOW },
+    );
+    expect(outcome).toEqual({ claim: null, reason: "queue_empty" });
+  });
+
+  it("the swarm switched off between the gate and the matcher answers disabled", async () => {
+    armStore({ held: 0 });
+    mockBuildMatcher.mockResolvedValue(null);
+    const outcome = await serviceModules!.claimNextTaskForAgent(
+      portsFor({ role: "engineer", directory: castes }),
+      { companyId: COMPANY_ID, agentId: AGENT_ID, now: NOW },
+    );
+    expect(outcome).toEqual({ claim: null, reason: "disabled" });
   });
 
   it("a role with no caste entry stays eligible (the directory is additive)", async () => {

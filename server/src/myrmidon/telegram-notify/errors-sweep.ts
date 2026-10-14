@@ -18,6 +18,7 @@ import { attentionService } from "../../services/attention.js";
 import {
   HourlyRateLimiter,
   sweepErrorChannel,
+  type AttentionFeedSource,
   type ErrorChannelSettingsSource,
   type ErrorChannelSweepResult,
 } from "./errors.js";
@@ -42,6 +43,15 @@ export interface TgNotifySweepDeps {
   /** Settings source: part A's store in production, memory in tests. */
   settings: ErrorChannelSettingsSource;
   now?(): Date;
+  /**
+   * The hourly limiter. It MUST outlive a pass — a limiter created per pass
+   * resets every 300 s and the "N per hour" limit never holds. The runner
+   * below owns one for the process; a direct tgNotifySweepAll call without
+   * one gets a single-use limiter (tests, one-off calls).
+   */
+  limiter?: HourlyRateLimiter;
+  /** Feed seam for tests; production reads the attention feed. */
+  feed?: AttentionFeedSource;
 }
 
 /**
@@ -58,7 +68,7 @@ export async function tgNotifySweepAll(deps: TgNotifySweepDeps): Promise<{
     .select({ id: companies.id })
     .from(companies)
     .where(eq(companies.status, "active"));
-  const limiter = new HourlyRateLimiter(deps.now);
+  const limiter = deps.limiter ?? new HourlyRateLimiter(deps.now);
   let sent = 0;
   let dropped = 0;
   let visited = 0;
@@ -67,7 +77,7 @@ export async function tgNotifySweepAll(deps: TgNotifySweepDeps): Promise<{
       const result: ErrorChannelSweepResult = await sweepErrorChannel(row.id, {
         db: deps.db,
         settings: deps.settings,
-        feed: {
+        feed: deps.feed ?? {
           list: (companyId: string) =>
             attentionService(deps.db).list(companyId, {
               includeDismissed: false,
@@ -88,6 +98,15 @@ export async function tgNotifySweepAll(deps: TgNotifySweepDeps): Promise<{
   return { companies: visited, sent, droppedRateLimited: dropped };
 }
 
+/**
+ * One runner per process: it owns the long-lived hourly limiter, so the quota
+ * survives from one tick to the next.
+ */
+export function createTgNotifySweepRunner(deps: TgNotifySweepDeps) {
+  const limiter = deps.limiter ?? new HourlyRateLimiter(deps.now);
+  return { limiter, tick: () => tgNotifySweepAll({ ...deps, limiter }) };
+}
+
 let stopRunning: (() => void) | null = null;
 
 /**
@@ -99,8 +118,9 @@ let stopRunning: (() => void) | null = null;
 export function startTgNotifySweep(deps: TgNotifySweepDeps & { env?: NodeJS.ProcessEnv }): () => void {
   const env = deps.env ?? process.env;
   const intervalMs = readTgNotifySweepIntervalMs(env);
+  const runner = createTgNotifySweepRunner(deps);
   const timer = setInterval(() => {
-    void tgNotifySweepAll(deps).catch((err) => {
+    void runner.tick().catch((err) => {
       logger.error({ err }, "telegram-notify errors sweep tick failed");
     });
   }, intervalMs);

@@ -5,6 +5,7 @@ import type {
   IssueCommentPresentation,
   SourceTrustMetadata,
 } from "@paperclipai/shared";
+import { sql } from "drizzle-orm";
 import { pgTable, uuid, text, timestamp, index, jsonb, unique, integer } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
 import { issues } from "./issues.js";
@@ -61,5 +62,13 @@ export const issueComments = pgTable(
       table.createdAt,
     ),
     bodySearchIdx: index("issue_comments_body_search_idx").using("gin", table.body.op("gin_trgm_ops")),
+    // myrmidon(DB-CARE): comment search matches on lower(body) with the trigram
+    // operator class, and the deleted rows are filtered out; the plain GIN above
+    // indexes the raw body and cannot serve `lower(body) LIKE '%...%'`. Persisted
+    // from the production database, see migration
+    // 0308_db_care_audit_indexes.
+    bodyLowerTrgmIdx: index("issue_comments_body_lower_trgm_idx")
+      .using("gin", sql`lower(${table.body}) gin_trgm_ops`)
+      .where(sql`${table.deletedAt} is null`),
   }),
 );

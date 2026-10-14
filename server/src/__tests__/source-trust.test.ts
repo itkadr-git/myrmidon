@@ -8,6 +8,7 @@ import {
   buildPromotedSourceTrust,
   isLowTrustQuarantined,
   redactQuarantinedBodyForHigherTrust,
+  isProvenInternalRunProvenance,
   resolveActorSourceTrustForIssue,
   sanitizeQuarantinedCommentForHigherTrust,
 } from "../services/source-trust.js";
@@ -88,6 +89,34 @@ describe("source trust quarantine helpers", () => {
       promotedAt: "2026-06-03T12:00:00.000Z",
     });
     expect(isLowTrustQuarantined(promoted)).toBe(false);
+  });
+});
+
+describe("isProvenInternalRunProvenance (allowlist)", () => {
+  it("accepts server-side scheduling provenance", () => {
+    expect(
+      isProvenInternalRunProvenance({
+        invocationSource: "automation",
+        contextSnapshot: { wakeReason: "execution_hold_cleared", wakeSource: "automation" },
+      }),
+    ).toBe(true);
+    expect(
+      isProvenInternalRunProvenance({ invocationSource: "assignment", contextSnapshot: null }),
+    ).toBe(true);
+  });
+
+  it.each([
+    ["interaction respond", "automation", { source: "issue.interaction.respond" }],
+    ["comment wake", "automation", { source: "issue.comment" }],
+    ["unknown future source", "automation", { source: "something.new" }],
+    ["chat source", "automation", { source: "chat:telegram" }],
+    ["bound flag", "automation", { paperclipExternalChatExecutionBound: true }],
+    ["webhook key", "automation", { webhookSource: "github" }],
+    ["on_demand invocation", "on_demand", {}],
+    ["manual invocation", "manual", {}],
+    ["missing invocation", null, {}],
+  ] as const)("rejects %s", (_name, invocationSource, contextSnapshot) => {
+    expect(isProvenInternalRunProvenance({ invocationSource, contextSnapshot })).toBe(false);
   });
 });
 
@@ -204,7 +233,10 @@ describeEmbeddedPostgres("resolveActorSourceTrustForIssue", () => {
     });
   });
 
-  it("fails closed when the supplied run id does not belong to the acting agent", async () => {
+  it("does not quarantine a same-company internal run owned by another agent", async () => {
+    // OPE-6671: agent-to-agent delegation is normal board behaviour (a lead's
+    // automation run creates subtasks attributed to a different agent key).
+    // Such a run proves no external input, so it must not trigger quarantine.
     const company = await createCompany();
     const actorAgent = await createAgent(company.id);
     const runOwnerAgent = await createAgent(company.id);
@@ -224,7 +256,12 @@ describeEmbeddedPostgres("resolveActorSourceTrustForIssue", () => {
         companyId: company.id,
         agentId: runOwnerAgent.id,
         status: "running",
-        contextSnapshot: { issueId: issue!.id },
+        invocationSource: "automation",
+        triggerDetail: "system",
+        contextSnapshot: {
+          issueId: issue!.id,
+          wakeReason: "execution_hold_cleared",
+        },
       })
       .returning();
 
@@ -241,6 +278,90 @@ describeEmbeddedPostgres("resolveActorSourceTrustForIssue", () => {
         actorId: actorAgent.id,
         agentId: actorAgent.id,
         runId: run!.id,
+        actorSource: "agent_jwt",
+      },
+    });
+
+    expect(sourceTrust).toBeNull();
+  });
+
+  it.each([["agent_key"], [undefined]] as const)(
+    "quarantines a foreign clean run when the run id is not signed (actorSource=%s)",
+    async (actorSource) => {
+      // Review 443fbb009 p.1: with an agent API key the run id is the unsigned
+      // X-Paperclip-Run-Id header, so naming another agent's clean run must
+      // never shed the quarantine. Red side: the signed twin above is released.
+      const company = await createCompany();
+      const actorAgent = await createAgent(company.id);
+      const runOwnerAgent = await createAgent(company.id);
+      const [issue] = await db
+        .insert(issues)
+        .values({
+          companyId: company.id,
+          title: "Standard issue",
+          status: "in_progress",
+          priority: "high",
+          assigneeAgentId: actorAgent.id,
+        })
+        .returning();
+      const [run] = await db
+        .insert(heartbeatRuns)
+        .values({
+          companyId: company.id,
+          agentId: runOwnerAgent.id,
+          status: "running",
+          invocationSource: "automation",
+          contextSnapshot: { issueId: issue!.id, wakeReason: "execution_hold_cleared" },
+        })
+        .returning();
+
+      const sourceTrust = await resolveActorSourceTrustForIssue({
+        db,
+        issue: { id: issue!.id, companyId: company.id, projectId: null, executionPolicy: null },
+        actor: {
+          actorType: "agent",
+          actorId: actorAgent.id,
+          agentId: actorAgent.id,
+          runId: run!.id,
+          actorSource,
+        },
+      });
+
+      expect(sourceTrust).toMatchObject({
+        preset: LOW_TRUST_REVIEW_PRESET,
+        disposition: "quarantined",
+        sourceRunId: run!.id,
+      });
+    },
+  );
+
+  it("still fails closed when the supplied run id is unknown", async () => {
+    const company = await createCompany();
+    const actorAgent = await createAgent(company.id);
+    const [issue] = await db
+      .insert(issues)
+      .values({
+        companyId: company.id,
+        title: "Standard issue",
+        status: "in_progress",
+        priority: "high",
+        assigneeAgentId: actorAgent.id,
+      })
+      .returning();
+
+    const sourceTrust = await resolveActorSourceTrustForIssue({
+      db,
+      issue: {
+        id: issue!.id,
+        companyId: company.id,
+        projectId: null,
+        executionPolicy: null,
+      },
+      actor: {
+        actorType: "agent",
+        actorId: actorAgent.id,
+        agentId: actorAgent.id,
+        runId: randomUUID(),
       },
     });
 
@@ -248,10 +369,81 @@ describeEmbeddedPostgres("resolveActorSourceTrustForIssue", () => {
       preset: LOW_TRUST_REVIEW_PRESET,
       disposition: "quarantined",
       sourceIssueId: issue!.id,
-      sourceRunId: run!.id,
       sourceAgentId: actorAgent.id,
     });
   });
+
+  it.each([
+    "external-chat-bound",
+    "chat-source",
+    "webhook-wake-source",
+    "interaction-respond",
+    "issue-comment",
+    "unlisted-invocation-source",
+    "webhook-source-key",
+  ] as const)(
+    "keeps quarantining same-company runs that ingested external input (%s)",
+    async (marker) => {
+      const company = await createCompany();
+      const actorAgent = await createAgent(company.id);
+      const runOwnerAgent = await createAgent(company.id);
+      const [issue] = await db
+        .insert(issues)
+        .values({
+          companyId: company.id,
+          title: "Standard issue",
+          status: "in_progress",
+          priority: "high",
+          assigneeAgentId: actorAgent.id,
+        })
+        .returning();
+      const contextSnapshot: Record<string, unknown> = { issueId: issue!.id };
+      if (marker === "external-chat-bound")
+        contextSnapshot.paperclipExternalChatExecutionBound = true;
+      if (marker === "chat-source") contextSnapshot.source = "chat:telegram";
+      if (marker === "webhook-wake-source") contextSnapshot.wakeSource = "webhook";
+      // Review 443fbb009 p.2: an answer to a question asked in an external chat
+      // is delivered with this source and no chat marker in the snapshot.
+      if (marker === "interaction-respond") contextSnapshot.source = "issue.interaction.respond";
+      if (marker === "issue-comment") contextSnapshot.source = "issue.comment";
+      if (marker === "webhook-source-key") contextSnapshot.webhookSource = "github";
+      const [run] = await db
+        .insert(heartbeatRuns)
+        .values({
+          companyId: company.id,
+          agentId: runOwnerAgent.id,
+          status: "running",
+          invocationSource: marker === "unlisted-invocation-source" ? "on_demand" : "automation",
+          contextSnapshot,
+        })
+        .returning();
+
+      const sourceTrust = await resolveActorSourceTrustForIssue({
+        db,
+        issue: {
+          id: issue!.id,
+          companyId: company.id,
+          projectId: null,
+          executionPolicy: null,
+        },
+        actor: {
+          actorType: "agent",
+          actorId: actorAgent.id,
+          agentId: actorAgent.id,
+          runId: run!.id,
+          actorSource: "agent_jwt",
+        },
+      });
+
+      expect(sourceTrust).toMatchObject({
+        preset: LOW_TRUST_REVIEW_PRESET,
+        disposition: "quarantined",
+        sourceIssueId: issue!.id,
+        sourceRunId: run!.id,
+        sourceAgentId: actorAgent.id,
+      });
+    },
+  );
 
   it("surfaces denied trust policy resolution instead of treating it as higher trust", async () => {
     const company = await createCompany();
