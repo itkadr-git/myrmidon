@@ -1,3 +1,4 @@
+// myrmidon(DEBRAND-c): persist browser state under the Myrmidon namespace.
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -779,7 +780,7 @@ type RunOutcome = {
 };
 
 function testOutcomeStorageKey(connectionId: string, entry: ToolCatalogEntry, agentId: string): string {
-  return `paperclip:test-call:${connectionId}:${agentId}:${entry.id}:${entry.toolName}`;
+  return `myrmidon:test-call:${connectionId}:${agentId}:${entry.id}:${entry.toolName}`;
 }
 
 function loadStoredAskFirstOutcome(connectionId: string, entry: ToolCatalogEntry, agent: ToolConnectionTestAgent): RunOutcome | null {

@@ -1,12 +1,13 @@
+// myrmidon(DEBRAND-c): persist browser state under the Myrmidon namespace.
 import type { ToolOAuthStartResult } from "@paperclipai/shared";
 import { resolveAuthorizationTarget } from "./authorizationUrl";
 
 // myrmidon(DB1): DEBRAND 1.6.6-a — the user-facing OAuthHandoffError messages below
 // name the vendor cloud; they now say "Myrmidon Cloud". The wire/storage identifiers
-// (paperclip.cloud-oauth-handoff.v1 etc.) stay untouched until DEBRAND part c/stage 4.
+// (myrmidon.cloud-oauth-handoff.v1 etc.) use the Myrmidon namespace after DEBRAND-c.
 const CLOUD_HANDOFF_PATH = "/cloud/connections/handoff";
 const CLOUD_REAUTH_PATH = "/cloud/connections/reauth";
-const PENDING_HANDOFF_KEY = "paperclip.cloud-oauth-handoff.v1";
+const PENDING_HANDOFF_KEY = "myrmidon.cloud-oauth-handoff.v1";
 
 export type PreparedOAuthNavigation = {
   kind: "authorization" | "reauthentication";
