@@ -24,6 +24,7 @@
 //    limits the local driver's tar path uses.
 
 import http from "node:http";
+import https from "node:https";
 
 import { logger } from "../../middleware/logger.js";
 
@@ -42,8 +43,12 @@ const START_TIMEOUT_MS = 180_000;
 
 export interface FleetdDriverConfig {
   baseUrl: string;
-  token: string;
+  token?: string;
   timeoutMs?: number;
+  caCert?: string;
+  clientCert?: string;
+  clientKey?: string;
+  httpsAgent?: https.Agent;
 }
 
 export class FleetdDriverError extends Error {
@@ -99,16 +104,19 @@ export const FLEETD_PACKAGE_CACHE_NOTICE =
 export interface FleetdEndpoint {
   host: string;
   port: number;
+  protocol: "http:" | "https:";
 }
 
-/** Parses `http://host[:port]` into what node:http wants. No TLS: the fleetd
- *  host is reachable only over the internal network (see the module comment). */
+/** Parses `http://host[:port]` or `https://host[:port]` into what node:http / node:https wants. */
 export function parseFleetdEndpoint(baseUrl: string): FleetdEndpoint {
   const url = new URL(baseUrl);
-  if (url.protocol !== "http:") throw new Error(`fleetd baseUrl must be http:// (got ${url.protocol}//)`);
-  const port = url.port === "" ? 80 : Number(url.port);
+  if (url.protocol !== "http:" && url.protocol !== "https:") {
+    throw new Error(`fleetd baseUrl must be http:// or https:// (got ${url.protocol}//)`);
+  }
+  const defaultPort = url.protocol === "https:" ? 443 : 80;
+  const port = url.port === "" ? defaultPort : Number(url.port);
   if (!Number.isInteger(port) || port <= 0 || port > 65535) throw new Error(`fleetd baseUrl port is invalid: ${url.port}`);
-  return { host: url.hostname, port };
+  return { host: url.hostname, port, protocol: url.protocol as "http:" | "https:" };
 }
 
 function fleetdRequest(
@@ -122,33 +130,42 @@ function fleetdRequest(
   },
 ): Promise<RawResponse> {
   const endpoint = parseFleetdEndpoint(config.baseUrl);
+  const isHttps = endpoint.protocol === "https:";
+  const transport = isHttps ? https : http;
   return new Promise((resolve, reject) => {
     const headers = { ...(opts.headers ?? {}) };
     if (opts.body) headers["Content-Length"] = String(opts.body.length);
-    const req = http.request(
-      {
-        host: endpoint.host,
-        port: endpoint.port,
-        path: `/v1${opts.path}`,
-        method: opts.method,
-        headers,
-        timeout: opts.timeoutMs ?? config.timeoutMs ?? DEFAULT_TIMEOUT_MS,
-      },
-      (res) => {
-        const chunks: Buffer[] = [];
-        let size = 0;
-        res.on("data", (chunk: Buffer) => {
-          size += chunk.length;
-          if (size > BODY_LIMIT_BYTES) {
-            req.destroy(new Error(`fleetd ${opts.method} ${opts.path}: response body over ${BODY_LIMIT_BYTES} bytes`));
-            return;
+    const requestOptions: http.RequestOptions = {
+      host: endpoint.host,
+      port: endpoint.port,
+      path: `/v1${opts.path}`,
+      method: opts.method,
+      headers,
+      timeout: opts.timeoutMs ?? config.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+      ...(isHttps
+        ? {
+            agent: config.httpsAgent,
+            ca: config.caCert,
+            cert: config.clientCert,
+            key: config.clientKey,
+            rejectUnauthorized: true,
           }
-          chunks.push(chunk);
-        });
-        res.on("error", reject);
-        res.on("end", () => resolve({ status: res.statusCode ?? 0, body: Buffer.concat(chunks) }));
-      },
-    );
+        : {}),
+    };
+    const req = transport.request(requestOptions, (res) => {
+      const chunks: Buffer[] = [];
+      let size = 0;
+      res.on("data", (chunk: Buffer) => {
+        size += chunk.length;
+        if (size > BODY_LIMIT_BYTES) {
+          req.destroy(new Error(`fleetd ${opts.method} ${opts.path}: response body over ${BODY_LIMIT_BYTES} bytes`));
+          return;
+        }
+        chunks.push(chunk);
+      });
+      res.on("error", reject);
+      res.on("end", () => resolve({ status: res.statusCode ?? 0, body: Buffer.concat(chunks) }));
+    });
     req.on("timeout", () => {
       req.destroy(new Error(`fleetd ${opts.method} ${opts.path}: timed out`));
     });
@@ -191,8 +208,8 @@ export function fleetdBotContainerDriver(
       path: opts.path,
       ...(opts.body === undefined ? {} : { body: Buffer.from(JSON.stringify(opts.body), "utf8") }),
       headers: {
-        [AUTHORIZATION]: `Bearer ${config.token}`,
         Accept: "application/json",
+        ...(config.token ? { [AUTHORIZATION]: `Bearer ${config.token}` } : {}),
         ...(opts.body === undefined ? {} : { "Content-Type": "application/json" }),
       },
       ...(opts.timeoutMs ? { timeoutMs: opts.timeoutMs } : {}),
