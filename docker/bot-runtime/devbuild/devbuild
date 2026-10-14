@@ -304,6 +304,9 @@ if res="$(resolve_git_dir "$WORKSPACE_SRC")"; then
 fi
 if [ "$git_kind" = "worktree" ] && [ "$git_root" = "$(cd "$WORKSPACE_SRC" && pwd -P)" ]; then
   wt_base_root="${MYRMIDON_GIT_BASE_DIR:-${hermes_home:-${HERMES_HOME:-/data/hermes}}/.myrmidon/git-base}"
+  # /data/hermes is a link to the bot volume (/bot/hermes): git reports the physical
+  # path of the base, so compare against the resolved root (14.10, PR #57 evidence).
+  wt_base_root="$(cd "$wt_base_root" 2>/dev/null && pwd -P || printf '%s' "$wt_base_root")"
   wt_name="$(basename "$git_dir")"
   case "$git_common" in "${wt_base_root%/}"/*) ;; *) echo "devbuild: worktree base $git_common is outside $wt_base_root - not shipped" >&2; exit 1 ;; esac
   case "$git_common$wt_name$bot_name" in *[!A-Za-z0-9._/-]*) echo "devbuild: unsupported characters in the worktree git paths" >&2; exit 1 ;; esac
