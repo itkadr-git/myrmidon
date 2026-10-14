@@ -17,6 +17,7 @@ export const projects = pgTable(
     targetDate: date("target_date"),
     color: text("color"),
     icon: text("icon"),
+    defaultCasteKey: text("default_caste_key"), // myrmidon(PROJECT-DEFAULT-CASTE)
     env: jsonb("env").$type<AgentEnvConfig>(),
     pauseReason: text("pause_reason"),
     pausedAt: timestamp("paused_at", { withTimezone: true }),

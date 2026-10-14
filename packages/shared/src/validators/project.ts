@@ -3,6 +3,7 @@ import { PROJECT_STATUSES, PROJECT_ICON_NAMES } from "../constants.js";
 import { envConfigSchema } from "./secret.js";
 import { trustAuthorizationPolicySchema } from "./trust-policy.js";
 import { objectWithoutDefaults } from "./partial.js";
+import { CASTE_KEY_PATTERN } from "../myrmidon-castes.js"; // myrmidon(PROJECT-DEFAULT-CASTE)
 
 const executionWorkspaceStrategySchema = z
   .object({
@@ -111,6 +112,7 @@ const projectFields = {
   targetDate: z.string().optional().nullable(),
   color: z.string().optional().nullable(),
   icon: z.enum(PROJECT_ICON_NAMES).optional().nullable(),
+  defaultCasteKey: z.string().regex(CASTE_KEY_PATTERN).optional().nullable(), // myrmidon(PROJECT-DEFAULT-CASTE)
   env: envConfigSchema.optional().nullable(),
   executionWorkspacePolicy: projectExecutionWorkspacePolicySchema.optional().nullable(),
   archivedAt: z.string().datetime().optional().nullable(),
