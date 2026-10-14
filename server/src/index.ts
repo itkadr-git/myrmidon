@@ -130,8 +130,15 @@ import { startDeployJobs } from "./myrmidon/deploy-jobs/index.js"; // myrmidon(R
 import { startRuntimeLimits } from "./myrmidon/runtime-limits/index.js"; // myrmidon(C0)
 import { startBehaviorSettings } from "./myrmidon/behavior-settings/index.js"; // myrmidon(SETTINGS-CORE)
 import { startBotContainers, stopBotContainers } from "./myrmidon/bot-containers/startup.js"; // myrmidon(W2a)
+import { getBotContainerRuntime } from "./myrmidon/bot-containers/routes-wiring.js";
+import { initializeIdleStopService, shutdownIdleStopService } from "./myrmidon/idle-stop-startup.js";
 import { startLitellmCostSweep, stopLitellmCostSweep } from "./myrmidon/litellm-costs/startup.js"; // myrmidon(M2-A)
 import { startBoardProcessRegistry, stopBoardProcessRegistry } from "./myrmidon/process-registry/index.js"; // myrmidon(1.6.6 PROCS-0.1)
+import {
+  assertBoardProcessesStartable,
+  formatBoardProcessesComposition,
+} from "@paperclipai/shared"; // myrmidon(1.6.6 PROCS-J): the board's process composition
+import { readResolvedBoardProcesses } from "./myrmidon/board-processes/settings.js"; // myrmidon(1.6.6 PROCS-J)
 import { startLitellmBudgetSync } from "./myrmidon/litellm-budget-sync/index.js"; // myrmidon(1.7-BUDGET-CONFIG-C)
 import { startLitellmModelReconciliation } from "./myrmidon/litellm-sync/startup-reconciler.js"; // myrmidon(1.6.1 MODEL-PROVIDERS B)
 import { startModelFallbackSignalSweep } from "./myrmidon/litellm-fallback-signal/sweep.js"; // myrmidon(BOT-RUNTIME-TUNING D)
@@ -853,6 +860,31 @@ async function startServerWithDatabaseTeardown(
     shareClient: createFeedbackTraceShareClientFromConfig(config),
   });
   const backupSettingsSvc = instanceSettingsService(db);
+  // myrmidon(1.6.6 PROCS-J): the board's process composition — how many HTTP
+  // processes (`api`) and scheduler processes (`worker`) this deployment runs —
+  // is read once here, from the same stored settings row everything else reads,
+  // before anything is created. A row that cannot be read (counts that are not
+  // whole numbers >= 0, or a composition with no process at all) refuses startup
+  // with the fix in the message instead of running a topology nobody asked for.
+  // An absent key — the usual case — resolves to { api: 1, worker: 0 }: today's
+  // single process, byte for byte.
+  const boardProcesses = await readResolvedBoardProcesses(instanceSettingsService(db));
+  try {
+    assertBoardProcessesStartable(boardProcesses);
+  } catch (err) {
+    logger.error(
+      { err, problems: boardProcesses.problems },
+      "board processes setting is unusable; refusing to start (fail closed)",
+    );
+    throw err;
+  }
+  logger.info(
+    {
+      boardProcesses: formatBoardProcessesComposition(boardProcesses.settings),
+      boardProcessesSources: boardProcesses.sources,
+    },
+    "board process composition", // myrmidon(1.6.6 PROCS-J)
+  );
   const databaseBackupMaxAgeHours = Math.max(
     1,
     Number(process.env.PAPERCLIP_DB_BACKUP_MAX_AGE_HOURS) ||
@@ -1748,6 +1780,11 @@ async function startServerWithDatabaseTeardown(
     await startMaintenanceMode(db as any); // myrmidon(R3): load open maintenance windows before startup recovery starts runs
     startDeployJobs(db as any); // myrmidon(R5-A): resume an interface deploy job; no-op unless MYRMIDON_DEPLOY_ENABLED
     startBotContainers(db as any); // myrmidon(W2a): bot container sweep and the card's "Apply now" runtime; a no-op unless MYRMIDON_BOT_CONTAINERS is on
+    // Initialize IDLE-STOP service after bot containers (needs the driver from runtime)
+    const botContainerRuntime = getBotContainerRuntime();
+    if (botContainerRuntime) {
+      initializeIdleStopService(botContainerRuntime.driver, db as any);
+    }
     startLitellmCostSweep(db as any); // myrmidon(M2-A): gateway spend sweep; a no-op unless MYRMIDON_LITELLM_* is set
     startLitellmBudgetSync(db as any); // myrmidon(1.7-BUDGET-CONFIG-C): LiteLLM budget projection; a no-op unless the gateway contour is set and the document enables it
     startLitellmModelReconciliation(db as any); // myrmidon(1.6.1 MODEL-PROVIDERS B): reconcile LiteLLM models with DB state
@@ -2392,6 +2429,7 @@ async function startServerWithDatabaseTeardown(
     heartbeatSchedulerStopped = true;
     clearInterval(executionControlInterval);
     stopBotContainers(); // myrmidon(W2a)
+    shutdownIdleStopService(); // myrmidon(IDLE-STOP)
     stopLitellmCostSweep(); // myrmidon(M2-A)
     stopBoardProcessRegistry(); // myrmidon(1.6.6 PROCS-0.1)
     stopBaselineSnapshots(); // myrmidon(1.6-BASELINE)
