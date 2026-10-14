@@ -21,10 +21,14 @@ import {
   companyMemberships,
   createDb,
   issues,
+  instanceSettings,
   toolApplications,
   toolConnections,
 } from "@paperclipai/db";
-import type { ChatProvider } from "@paperclipai/shared";
+import {
+  OWNER_DELIVERY_SETTINGS_KEY,
+  type ChatProvider,
+} from "@paperclipai/shared";
 import { issueThreadInteractionService } from "../services/issue-thread-interactions.js";
 import { telegramConversationUserId } from "../myrmidon/agent-chat-bridge/identity.js";
 import {
@@ -270,12 +274,19 @@ describeEmbeddedPostgres(
         { agentId: fixture.agentId },
       );
 
+      const beforeEnable = await publicationsForInteraction(
+        fixture.companyId,
+        interaction.id,
+      );
+      expect(beforeEnable).toEqual([]);
+      await db.insert(instanceSettings).values({
+        general: { [OWNER_DELIVERY_SETTINGS_KEY]: { mode: "all" } },
+      });
       const publications = await publicationsForInteraction(
         fixture.companyId,
         interaction.id,
       );
       expect(publications).toHaveLength(1);
-      expect(publications[0]!.endpointId).toBe(fixture.endpointId);
       expect(publications[0]!.conversationId).not.toBeNull();
       const payload = publications[0]!.payload as {
         text?: string;
@@ -326,6 +337,14 @@ describeEmbeddedPostgres(
         { agentId: fixture.agentId },
       );
 
+      const beforeEnable = await publicationsForInteraction(
+        fixture.companyId,
+        interaction.id,
+      );
+      expect(beforeEnable).toEqual([]);
+      await db.insert(instanceSettings).values({
+        general: { [OWNER_DELIVERY_SETTINGS_KEY]: { mode: "all" } },
+      });
       const publications = await publicationsForInteraction(
         fixture.companyId,
         interaction.id,
