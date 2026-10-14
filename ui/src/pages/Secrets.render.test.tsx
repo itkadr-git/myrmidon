@@ -66,6 +66,7 @@ const mockAgentsApi = vi.hoisted(() => ({
 
 const mockSetBreadcrumbs = vi.hoisted(() => vi.fn());
 const mockPushToast = vi.hoisted(() => vi.fn());
+const mockCostsApi = vi.hoisted(() => ({ providerUsage: vi.fn() }));
 
 vi.mock("../api/secrets", () => ({
   secretsApi: mockSecretsApi,
@@ -74,6 +75,12 @@ vi.mock("../api/secrets", () => ({
 vi.mock("../api/agents", () => ({
   agentsApi: mockAgentsApi,
 }));
+
+vi.mock("../api/costs", () => ({ costsApi: mockCostsApi }));
+
+beforeEach(() => {
+  mockCostsApi.providerUsage.mockResolvedValue({ usage: [], thresholdPercent: 80 });
+});
 
 vi.mock("../context/CompanyContext", () => ({
   useCompany: () => ({
@@ -371,6 +378,8 @@ describe("Secrets page layout", () => {
     document.body.appendChild(container);
 
     mockSecretsApi.list.mockResolvedValue([]);
+    mockCostsApi.providerUsage.mockResolvedValue({ usage: [], thresholdPercent: 80 });
+
     mockSecretsApi.providers.mockResolvedValue(providers);
     mockSecretsApi.providerHealth.mockResolvedValue({
       providers: [
