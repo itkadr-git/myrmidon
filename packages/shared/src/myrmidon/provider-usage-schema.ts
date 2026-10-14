@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import { validateProviderUsageWarningThresholdSchema } from "./provider-usage-settings.js";
+
 const usageValuesSchema = z.object({
   requests: z.number().finite().nonnegative().optional(),
   tokens: z.number().finite().nonnegative().optional(),
