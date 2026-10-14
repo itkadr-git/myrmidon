@@ -670,7 +670,7 @@ func parseBot(root *jsonx.Value, r *route.Route, env *Env) (*Create, *deny.Error
 
 	// Env is present only for a shared member (ScopeSubdirEnv, detected above) or a
 	// dev-variant bot (the DEVBUILD_* triple); parseBotEnv accepts exactly those forms.
-	envList, err := parseBotEnv(top["Env"], "Env")
+	envList, err := parseBotEnv(top["Env"], "Env", r.BotKey)
 	if err != nil {
 		return nil, err
 	}
@@ -799,13 +799,18 @@ const (
 // paths of the build server, not secrets.
 var botEnvNames = []string{"DEVBUILD_HOST", "DEVBUILD_USER", "DEVBUILD_BASE"}
 
+// botEnvBotName is the optional fourth devbuild entry (1.6.6 DEVBUILD-ISOLATION): the
+// driver keys the build-host copy by the bot, since every bot container runs as the same
+// user. Its value must be exactly the route's bot key — a body cannot name another bot.
+const botEnvBotName = "DEVBUILD_BOT_NAME"
+
 // parseBotEnv checks the Env list of a bot body: empty (no devbuild wiring, not a shared
 // member), exactly the driver's three DEVBUILD_* entries in order (BUILD-OFFLOAD C — the
 // driver's builder writes all of them or none, so a prefix or a suffix is a body the driver
 // never produced), or the single shared-scope entry (MYRMIDON_BOT_SCOPE_SUBDIR=<botKey>).
 // Each entry is a single NAME=VALUE line without a NUL or a newline; the caller reproduces
 // the list byte for byte. A nil *jsonx.Value (no Env key) is the empty list.
-func parseBotEnv(v *jsonx.Value, path string) ([]string, *deny.Error) {
+func parseBotEnv(v *jsonx.Value, path string, botKey string) ([]string, *deny.Error) {
 	if v == nil {
 		return nil, nil
 	}
@@ -816,6 +821,20 @@ func parseBotEnv(v *jsonx.Value, path string) ([]string, *deny.Error) {
 	if len(got) == 1 && strings.HasPrefix(got[0], ScopeSubdirEnv+"=") {
 		return got, nil
 	}
+	if len(got) == len(botEnvNames)+1 {
+		if got[len(botEnvNames)] != botEnvBotName+"="+botKey || botKey == "" {
+			return nil, deny.FieldOnly(deny.JSONValue, path)
+		}
+		if _, err := parseBotEnv3(got[:len(botEnvNames)], path); err != nil {
+			return nil, err
+		}
+		return got, nil
+	}
+	return parseBotEnv3(got, path)
+}
+
+// parseBotEnv3 checks the empty list or the three DEVBUILD_HOST/USER/BASE entries in order.
+func parseBotEnv3(got []string, path string) ([]string, *deny.Error) {
 	if len(got) != 0 && len(got) != len(botEnvNames) {
 		return nil, deny.FieldOnly(deny.JSONValue, path)
 	}
