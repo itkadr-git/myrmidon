@@ -30,6 +30,7 @@ import {
   type ChatProvider,
 } from "@paperclipai/shared";
 import { issueThreadInteractionService } from "../services/issue-thread-interactions.js";
+import { instanceSettingsService } from "../services/instance-settings.js";
 import { telegramConversationUserId } from "../myrmidon/agent-chat-bridge/identity.js";
 import {
   getEmbeddedPostgresTestSupport,
@@ -279,9 +280,8 @@ describeEmbeddedPostgres(
         interaction.id,
       );
       expect(beforeEnable).toEqual([]);
-      await db.insert(instanceSettings).values({
-        general: { [OWNER_DELIVERY_SETTINGS_KEY]: { mode: "all" } },
-      });
+      const settings = instanceSettingsService(db);
+      await settings.updateGeneral({ [OWNER_DELIVERY_SETTINGS_KEY]: { mode: "owner_decisions_only" } });
       const publications = await publicationsForInteraction(
         fixture.companyId,
         interaction.id,
@@ -342,9 +342,8 @@ describeEmbeddedPostgres(
         interaction.id,
       );
       expect(beforeEnable).toEqual([]);
-      await db.insert(instanceSettings).values({
-        general: { [OWNER_DELIVERY_SETTINGS_KEY]: { mode: "all" } },
-      });
+      const settings = instanceSettingsService(db);
+      await settings.updateGeneral({ [OWNER_DELIVERY_SETTINGS_KEY]: { mode: "owner_decisions_only" } });
       const publications = await publicationsForInteraction(
         fixture.companyId,
         interaction.id,
@@ -395,10 +394,7 @@ describeEmbeddedPostgres(
         { agentId: fixture.agentId },
       );
 
-      const publications = await publicationsForInteraction(
-        fixture.companyId,
-        interaction.id,
-      );
+      const publications = await enqueueIssueInteractionChatPublications(db, interaction);
       expect(publications).toEqual([]);
     });
 
