@@ -2,7 +2,6 @@ import { and, eq, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { instanceSettings, providerUsageEventReceipts, providerUsageSnapshots } from "@paperclipai/db";
 import { invalidateAttentionFeedCache } from "./attention.js";
-import { issueService } from "./issues.js";
 import {
   aggregateProviderUsageReports,
   evaluateProviderUsageWarning,
@@ -62,12 +61,6 @@ export function providerUsageService(db: Db) {
         eq(providerUsageSnapshots.windowStartedAt, startedAt),
       ));
       const snapshot = rows[0];
-      if (warning && event.ownerIssueId) {
-        const ownerIssue = await issueService(db).getById(event.ownerIssueId);
-        if (ownerIssue && ownerIssue.companyId === companyId) {
-          await issueService(db).addComment(ownerIssue.id, `Provider usage warning: ${warning.provider} ${warning.metric} reached ${Math.round(warning.used / warning.limit * 100)}% before reset at ${warning.resetsAt}.`, { agentId: "provider-usage", runId: null }, { authorType: "system", clientRequestId: `provider-usage-warning:${warning.key}` });
-        }
-      }
       invalidateAttentionFeedCache(db, companyId);
       return { accepted: true, duplicate: false, aggregate: snapshot ? aggregateProviderUsageReports([{ schemaVersion: 1, companyId, eventId: snapshot.sourceEventId, provider: snapshot.provider, credentialRef: snapshot.credentialRef, observedAt: snapshot.observedAt.toISOString(), window: { kind: snapshot.windowKind as ProviderUsageReportedEventV1["window"]["kind"], startedAt: snapshot.windowStartedAt.toISOString(), resetsAt: snapshot.resetsAt.toISOString(), used: snapshot.used, limit: snapshot.limits } }], thresholdPercent)[0] ?? null : null, warning };
     });
