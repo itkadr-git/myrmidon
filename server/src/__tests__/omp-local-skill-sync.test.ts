@@ -14,7 +14,7 @@ async function makeTempDir(prefix: string): Promise<string> {
 }
 
 describe("omp local skill sync", () => {
-  const paperclipKey = "paperclipai/paperclip/paperclip";
+  const paperclipKey = "paperclipai/paperclip/myrmidon";
   const cleanupDirs = new Set<string>();
 
   afterEach(async () => {
@@ -44,6 +44,6 @@ describe("omp local skill sync", () => {
 
     const after = await syncOmpSkills(ctx, [paperclipKey]);
     expect(after.entries.find((entry) => entry.key === paperclipKey)?.state).toBe("installed");
-    expect((await fs.lstat(path.join(home, ".omp", "agent", "skills", "paperclip"))).isSymbolicLink()).toBe(true);
+    expect((await fs.lstat(path.join(home, ".omp", "agent", "skills", "myrmidon"))).isSymbolicLink()).toBe(true);
   });
 });

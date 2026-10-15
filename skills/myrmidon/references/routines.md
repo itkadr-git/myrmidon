@@ -162,7 +162,7 @@ POST /api/routines/{routineId}/triggers
 - Response includes the webhook URL (`publicId`-based) and the signing secret
 - Fire externally: `POST /api/routine-triggers/public/{publicId}/fire`
   - Bearer: `Authorization: Bearer <secret>`
-  - HMAC: `X-Myrmidon-Signature` + `X-Myrmidon-Timestamp` headers
+  - HMAC: `X-Paperclip-Signature` + `X-Paperclip-Timestamp` headers
 
 ### API (manual only)
 
