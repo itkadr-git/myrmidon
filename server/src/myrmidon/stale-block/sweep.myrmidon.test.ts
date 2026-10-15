@@ -326,16 +326,64 @@ describeEmbeddedPostgres("stale block sweep", () => {
     expect(issue!.status).toBe("blocked");
   });
 
-  it("skips a blocked task with no recognizable reason at all", async () => {
+  it("T4: unblocks a blocked task with no reasons (reasons.length === 0) to todo without assignee", async () => {
     const seeded = await seed({
       blockerStatus: undefined,
       unblockDescriptor: { owner: "board", action: "waiting" },
     });
     const { sweep } = sweepWith();
+
     const result = await sweep.sweep();
-    expect(result).toMatchObject({ scanned: 1, unblocked: 0, skippedLive: 0, skippedUnknown: 1 });
+
+    expect(result).toMatchObject({ scanned: 1, unblocked: 1, skippedLive: 0, skippedUnknown: 0, failed: 0 });
+    const [issue] = await db.select().from(issues).where(eq(issues.id, seeded.issueId));
+    expect(issue!.status).toBe("todo");
+    expect(issue!.assigneeAgentId).toBeNull();
+    expect(issue!.unblockDescriptor).toBeNull();
+
+    const comments = await db
+      .select()
+      .from(issueComments)
+      .where(eq(issueComments.issueId, seeded.issueId));
+    expect(comments).toHaveLength(1);
+    expect(comments[0]!.authorType).toBe("system");
+    expect(comments[0]!.body).toContain("todo");
+    expect(comments[0]!.body).toContain("without assignee");
+
+    const signals = readStaleBlockSignals(seeded.companyId, NOW);
+    expect(signals).toHaveLength(1);
+    expect(signals[0]).toMatchObject({
+      issueId: seeded.issueId,
+      targetStatus: "todo",
+      reasonTexts: ["blocked without a reason"],
+      liftedAt: NOW.toISOString(),
+    });
+  });
+
+  it("T6: leaves a blocked task with a valid live reasonRef alone in blocked", async () => {
+    const seeded = await seed({
+      blockerStatus: undefined,
+      unblockDescriptor: {
+        owner: "board",
+        action: "wait until future date",
+        reasonRef: { kind: "date", dueAt: "2026-10-10T00:00:00.000Z" },
+      },
+    });
+    const { sweep } = sweepWith();
+
+    const result = await sweep.sweep();
+
+    expect(result).toMatchObject({ scanned: 1, unblocked: 0, skippedLive: 1, failed: 0 });
     const [issue] = await db.select().from(issues).where(eq(issues.id, seeded.issueId));
     expect(issue!.status).toBe("blocked");
+    expect(issue!.assigneeAgentId).toBe(seeded.agentId);
+    expect(issue!.unblockDescriptor).not.toBeNull();
+
+    const comments = await db
+      .select()
+      .from(issueComments)
+      .where(eq(issueComments.issueId, seeded.issueId));
+    expect(comments).toHaveLength(0);
   });
 
   it("writes the activity log row for an unblock", async () => {

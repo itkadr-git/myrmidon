@@ -44,11 +44,15 @@ export function buildStaleBlockComment(input: {
   identifier: string | null;
   reasons: Array<{ label: string | null; why: StaleBlockReasonDeadWhy }>;
   at: Date;
+  targetStatus?: "in_progress" | "todo";
 }): string {
+  if (input.targetStatus === "todo" || input.reasons.length === 0) {
+    return `Blocked status without reason removed; task returned to todo without assignee by the periodic stale-block sweep at ${input.at.toISOString()}.`;
+  }
   const described = input.reasons
     .map((reason) => `${reason.label ?? "the reason"}: ${describeStaleBlockReason(reason.why)}`)
     .join("; ");
-  return `Stale block removed (${described}); task returned to in_progress by the periodic stale-block sweep at ${input.at.toISOString()}.`;
+  return `Stale block removed (${described}); task returned to ${input.targetStatus ?? "in_progress"} by the periodic stale-block sweep at ${input.at.toISOString()}.`;
 }
 
 /**
@@ -231,16 +235,17 @@ export function createStaleBlockSweep(deps: StaleBlockSweepDeps) {
   let lastSweepAtMs = 0;
   let inFlight: Promise<StaleBlockSweepResult> | null = null;
 
-  async function unblock(row: BlockedRow, dead: DeadReason[], at: Date): Promise<boolean> {
+  async function unblock(
+    row: BlockedRow,
+    dead: DeadReason[],
+    at: Date,
+    isBareBlock: boolean = false,
+  ): Promise<boolean> {
     const services = await loadStaleBlockServices();
     const publications: ActivityPublication[] = [];
     const actions: IssuePostCommitAction[] = [];
     const svc = services.issueService(deps.db);
-    const body = buildStaleBlockComment({
-      identifier: row.identifier,
-      reasons: dead.map((reason) => ({ label: reason.label, why: reason.why })),
-      at,
-    });
+    let effectiveTargetStatus: "in_progress" | "todo" = isBareBlock ? "todo" : "in_progress";
 
     const done = await deps.db.transaction(async (tx) => {
       const locked = await tx
@@ -263,7 +268,11 @@ export function createStaleBlockSweep(deps: StaleBlockSweepDeps) {
       // Re-judge under the lock on fresh reads, so a blocker that closed and
       // re-opened, or a due date that got moved, is respected.
       const rejudged = await judgeReasons({ db: tx as unknown as Db, deps, row: locked, now: at });
-      if (rejudged.liveCount > 0 || rejudged.dead.length === 0) return false;
+      if (rejudged.liveCount > 0) return false;
+      const lockedIsBareBlock = rejudged.reasons.length === 0;
+      if (!lockedIsBareBlock && rejudged.dead.length === 0) return false;
+
+      effectiveTargetStatus = lockedIsBareBlock ? "todo" : "in_progress";
 
       const txSvc = services.issueService(tx as unknown as Db);
       const remaining = await blockedByEdgesFor(tx as unknown as Db, locked.companyId, locked.id);
@@ -276,13 +285,25 @@ export function createStaleBlockSweep(deps: StaleBlockSweepDeps) {
       // re-judging) keeps the task blocked and this pass steps away.
       const kept = remaining.filter((blockerIssueId) => !deadIds.has(blockerIssueId));
       if (kept.length > 0 && rejudged.liveCount > 0) return false;
+
+      const body = buildStaleBlockComment({
+        identifier: locked.identifier,
+        reasons: rejudged.dead.map((reason) => ({ label: reason.label, why: reason.why })),
+        at,
+        targetStatus: effectiveTargetStatus,
+      });
       const comment = await txSvc.addComment(locked.id, body, { runId: null }, { authorType: "system" }, tx);
+      const updatePayload: Partial<typeof issues.$inferInsert> & { blockedByIssueIds?: string[] } = {
+        status: effectiveTargetStatus,
+        blockedByIssueIds: kept,
+      };
+      if (lockedIsBareBlock) {
+        updatePayload.assigneeAgentId = null;
+        updatePayload.assigneeUserId = null;
+      }
       const updated = await txSvc.update(
         locked.id,
-        {
-          status: "in_progress",
-          blockedByIssueIds: kept,
-        },
+        updatePayload,
         tx,
         publications,
         actions,
@@ -299,6 +320,7 @@ export function createStaleBlockSweep(deps: StaleBlockSweepDeps) {
         details: {
           identifier: locked.identifier ?? null,
           previousStatus: "blocked",
+          targetStatus: effectiveTargetStatus,
           deadReasons: rejudged.dead.map((reason) => ({
             kind: reason.reason.kind,
             ref: reason.reason.issueId ?? reason.reason.eventKey ?? reason.reason.dueAt ?? null,
@@ -320,8 +342,11 @@ export function createStaleBlockSweep(deps: StaleBlockSweepDeps) {
       companyId: row.companyId,
       identifier: row.identifier,
       title: row.title,
-      reasonTexts: dead.map((reason) => describeStaleBlockReason(reason.why)),
+      reasonTexts: effectiveTargetStatus === "todo"
+        ? ["blocked without a reason"]
+        : dead.map((reason) => describeStaleBlockReason(reason.why)),
       liftedAt: at.toISOString(),
+      targetStatus: effectiveTargetStatus,
     };
     recordStaleBlockSignal(signal, at);
     return true;
@@ -339,23 +364,29 @@ export function createStaleBlockSweep(deps: StaleBlockSweepDeps) {
           continue;
         }
         const judged = await judgeReasons({ db: deps.db, deps, row, now: at });
-        if (judged.reasons.length === 0) {
-          // No recognizable reason at all: part A will make one mandatory;
-          // until then this sweep does not guess.
-          result.skippedUnknown += 1;
-          continue;
-        }
         if (judged.liveCount > 0) {
           result.skippedLive += 1;
           continue;
         }
-        const done = await unblock(row, judged.dead, at);
+        const isBareBlock = judged.reasons.length === 0;
+        if (!isBareBlock && judged.dead.length === 0) {
+          result.skippedUnknown += 1;
+          continue;
+        }
+        const done = await unblock(row, judged.dead, at, isBareBlock);
         if (done) {
           result.unblocked += 1;
-          logger.warn(
-            { issueId: row.id, identifier: row.identifier, dead: judged.dead.length },
-            "stale block sweep removed a dead block and returned the task to in_progress",
-          );
+          if (isBareBlock) {
+            logger.warn(
+              { issueId: row.id, identifier: row.identifier },
+              "stale block sweep removed a bare block without reason and returned the task to todo without assignee",
+            );
+          } else {
+            logger.warn(
+              { issueId: row.id, identifier: row.identifier, dead: judged.dead.length },
+              "stale block sweep removed a dead block and returned the task to in_progress",
+            );
+          }
         } else {
           result.skippedLive += 1;
         }
