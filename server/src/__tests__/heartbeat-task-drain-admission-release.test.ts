@@ -17,7 +17,7 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
-import { heartbeatService, getTaskDrainStatus, startTaskDrain, stopTaskDrain, subscribeHeartbeatTaskDrain } from "../services/heartbeat.ts";
+import { heartbeatService, getTaskDrainStatus, startTaskDrain, stopTaskDrain } from "../services/heartbeat.ts";
 import { subscribeCompanyLiveEvents } from "../services/live-events.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -178,26 +178,8 @@ describeEmbeddedPostgres("heartbeat task-drain admission release", () => {
   it("keeps an active adapter run in flight until graceful shutdown records its retry", async () => {
     const { companyId, agentId, issueId, runId, wakeupRequestId } = await seedQueuedRun();
     const heartbeat = heartbeatService(db);
-    const activeExecution = new Promise<void>((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        unsubscribe();
-        reject(new Error(`run ${runId} did not register active execution in 5_000ms`));
-      }, 5_000);
-      const unsubscribe = subscribeHeartbeatTaskDrain((state) => {
-        if (state.activeRuns === 1) {
-          clearTimeout(timeout);
-          unsubscribe();
-          resolve();
-        }
-      });
-    });
-
-    const resume = heartbeat.invoke(agentId, "assignment", { issueId }, "system");
-    try {
-      await activeExecution;
-    } finally {
-      await resume;
-    }
+    const activePromise = heartbeat.invoke(agentId, "assignment", { issueId }, "system");
+    await waitForActiveRun(runId);
 
     const activeState = getTaskDrainStatus();
     expect(activeState.activeRuns).toBe(1);
@@ -229,6 +211,7 @@ describeEmbeddedPostgres("heartbeat task-drain admission release", () => {
       activeRuns: 0,
       quiescent: true,
     });
+    await activePromise;
   }, 20_000);
 
   it("releases the run, wakeup, and issue lock when a task drain trips right after the run is claimed", async () => {
