@@ -45,6 +45,7 @@ import {
 } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import type { ChatChannelService } from "../services/chat-channels.js";
+import type { WakeupOptions } from "../services/heartbeat.js";
 import {
   activityLog,
   agentWakeupRequests,
@@ -3588,6 +3589,8 @@ export function issueRoutes(
   const heartbeat = heartbeatService(db, {
     pluginWorkerManager: opts.pluginWorkerManager,
   });
+  const insertReviewAdmissionWakeup = heartbeat.insertReviewAdmissionWakeup;
+
   const commentWasCreatedByAssigneeRun = async (
     comment: { companyId: string; createdByRunId?: string | null },
     assigneeAgentId: string | null | undefined,
@@ -14195,7 +14198,10 @@ export function issueRoutes(
         Boolean(commentAttachmentIds?.length) ||
         Boolean(decision) ||
         shouldRelayStop ||
+        enteringReviewRequested || // myrmidon(REVIEW-ADMISSION): require one transaction for issue state and reviewer receipt.
         persistReviewActivityTransactionally ||
+        ((updateFields.status === "in_review" || existing.status === "in_review") &&
+          assigneeWillChange) ||
         reviewPolicySensitiveMutationRequested ||
         humanUnblockPossible;
       try {
@@ -14208,6 +14214,61 @@ export function issueRoutes(
               return null;
             const updated = await updateIssue(tx);
             if (!updated) return null;
+            if (
+              updated.status === "in_review" &&
+              updated.assigneeAgentId &&
+              (enteringReviewRequested || assigneeWillChange)
+            ) {
+              const stageWake = buildExecutionStageWakeup({
+                issueId: updated.id,
+                previousState: parseIssueExecutionState(existing.executionState),
+                nextState: parseIssueExecutionState(updated.executionState),
+                interruptedRunId,
+                requestedByActorType: actor.actorType === "user" ? "user" : "agent",
+                requestedByActorId: actor.actorId,
+              });
+              const wakeup: WakeupOptions = stageWake?.wakeup ?? {
+                source: "assignment",
+                triggerDetail: "system",
+                reason: enteringReviewRequested ? "issue_entered_review" : "issue_review_reassigned",
+                payload: { issueId: updated.id, mutation: "review_admission" },
+                idempotencyKey: `issue-review-admission:${updated.id}:${updated.assigneeAgentId}`,
+                requestedByActorType: actor.actorType,
+                requestedByActorId: actor.actorId,
+                contextSnapshot: { issueId: updated.id, taskId: updated.id },
+              };
+              let reviewWakePersisted = false;
+              if (
+                stageWake?.agentId &&
+                stageWake.agentId === updated.assigneeAgentId
+              ) {
+                await insertReviewAdmissionWakeup(
+                  stageWake.agentId,
+                  stageWake.wakeup,
+                  tx as unknown as Db,
+                );
+                reviewWakePersisted = true;
+              }
+              if (!reviewWakePersisted) {
+                if (stageWake?.agentId) {
+                  await insertReviewAdmissionWakeup(
+                    stageWake.agentId,
+                    stageWake.wakeup,
+                    tx as unknown as Db,
+                  );
+                }
+                if (
+                  !stageWake ||
+                  stageWake.agentId !== updated.assigneeAgentId
+                ) {
+                  await insertReviewAdmissionWakeup(
+                    updated.assigneeAgentId,
+                    wakeup,
+                    tx as unknown as Db,
+                  );
+                }
+              }
+            }
             // myrmidon(HOLD-READY): an explicit human unblock is an operator
             // resolve of the settled "do not replay" hold.
             if (
@@ -15143,13 +15204,22 @@ export function issueRoutes(
           });
         };
 
-        if (executionStageWakeup && deferWakeForGoal !== true) {
+        const reviewAdmissionWakePersisted =
+          issue.status === "in_review" &&
+          Boolean(issue.assigneeAgentId) &&
+          (enteringReviewRequested || assigneeWillChange);
+        if (
+          executionStageWakeup &&
+          deferWakeForGoal !== true &&
+          !reviewAdmissionWakePersisted
+        ) {
           addWakeup(executionStageWakeup.agentId, executionStageWakeup.wakeup);
         } else if (
           assigneeChanged &&
           issue.assigneeAgentId &&
           issue.status !== "backlog" &&
-          deferWakeForGoal !== true
+          deferWakeForGoal !== true &&
+          !reviewAdmissionWakePersisted
         ) {
           addWakeup(issue.assigneeAgentId, {
             source: "assignment",
