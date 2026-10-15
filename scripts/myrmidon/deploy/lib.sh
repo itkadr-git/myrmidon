@@ -1687,7 +1687,8 @@ docker_free_gb() {
 deploy_disk_precheck() {
   local where="$1" min_gb="${MYRMIDON_DEPLOY_MIN_FREE_GB:-15}" free_kb required_kb image_ref image_size local_ref
   local -a image_refs=()
-  if declare -p MYRMIDON_DEPLOY_IMAGE_REFS >/dev/null 2>&1; then image_refs=("${MYRMIDON_DEPLOY_IMAGE_REFS[@]}"); fi # shellcheck disable=SC2153
+  # shellcheck disable=SC2153  # Set by deploy.sh before the precheck.
+  if declare -p MYRMIDON_DEPLOY_IMAGE_REFS >/dev/null 2>&1; then image_refs=("${MYRMIDON_DEPLOY_IMAGE_REFS[@]}"); fi
   [[ "$min_gb" =~ ^[0-9]+$ ]] || die "MYRMIDON_DEPLOY_MIN_FREE_GB must be a non-negative integer (got '$min_gb')"
   [[ "${MYRMIDON_DEPLOY_DB_DUMP_RESERVE_GB:-5}" =~ ^[0-9]+$ ]] || die "MYRMIDON_DEPLOY_DB_DUMP_RESERVE_GB must be a non-negative integer"
   free_kb="$(df -Pk /var/lib/docker 2>/dev/null | awk 'NR==2 {print $4}')" || free_kb=""
