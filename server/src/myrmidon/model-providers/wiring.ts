@@ -77,7 +77,7 @@ export function createDefaultModelProviderService(db: Db): ReturnType<typeof cre
         await secrets.rotate(secretId, { value }, { userId: null, agentId: null });
       },
       deleteSecret: async (secretId) => {
-        await secrets.update(secretId, { status: "deleted" });
+        await secrets.remove(secretId);
       },
     },
     catalog: createModelProviderCatalogPort(),

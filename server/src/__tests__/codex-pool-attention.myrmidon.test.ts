@@ -19,6 +19,8 @@ import {
   activityLog,
   agents,
   companies,
+  companySecrets,
+  companySecretVersions,
   createDb,
   modelProviders,
 } from "@paperclipai/db";
@@ -99,6 +101,8 @@ describeEmbeddedPostgres("codex pool attention feed cards (OPE-7198)", () => {
     clearModelProviderConnectors();
     await db.delete(modelProviders);
     await db.delete(activityLog);
+    await db.delete(companySecretVersions);
+    await db.delete(companySecrets);
     await db.delete(agents);
     await db.delete(companies);
   });
@@ -143,7 +147,7 @@ describeEmbeddedPostgres("codex pool attention feed cards (OPE-7198)", () => {
           await secrets.rotate(id, { value }, { userId: null, agentId: null });
         },
         deleteSecret: async (id) => {
-          await secrets.update(id, { status: "deleted" });
+          await secrets.remove(id);
         },
       },
       catalog,
