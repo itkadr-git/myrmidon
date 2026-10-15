@@ -197,7 +197,7 @@ func TestValidateConfigRequiresMutualTLSMaterial(t *testing.T) {
 		case "serverKey":
 			cfg.ServerKey = ""
 		}
-		if err := validate(cfg, true); err == nil || !strings.Contains(err.Error(), field) {
+		if err := validate(cfg, false); err == nil || !strings.Contains(err.Error(), field) {
 			t.Errorf("missing %s accepted: %v", field, err)
 		}
 	}
