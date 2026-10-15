@@ -18,6 +18,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { heartbeatService, getTaskDrainStatus, startTaskDrain, stopTaskDrain } from "../services/heartbeat.ts";
+import * as runTrustPreset from "../services/run-trust-preset.ts";
 import { subscribeCompanyLiveEvents } from "../services/live-events.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -141,6 +142,82 @@ describeEmbeddedPostgres("heartbeat task-drain admission release", () => {
 
     return { companyId, agentId, issueId, runId, wakeupRequestId };
   }
+
+  async function waitForRunStatus(runId: string, status: "running", timeoutMs = 5_000) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const run = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0] ?? null);
+      if (run?.status === status) return;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    throw new Error(`run ${runId} did not reach ${status} within ${timeoutMs}ms`);
+  }
+
+  async function waitForActiveRun(runId: string, timeoutMs = 5_000) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const run = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0] ?? null);
+      if (run?.status === "running" && getTaskDrainStatus().activeRuns === 1) return;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    throw new Error(`run ${runId} did not become active within ${timeoutMs}ms`);
+  }
+
+  it("keeps an active adapter run in flight until graceful shutdown records its retry", async () => {
+    const { companyId, agentId, issueId, runId, wakeupRequestId } = await seedQueuedRun();
+    const heartbeat = heartbeatService(db);
+    const retainTrust = vi.spyOn(runTrustPreset, "resolveAndRetainRunTrustPreset").mockImplementation(async (_db, input) => {
+      const runDb = _db as typeof db;
+      await runDb
+        .update(heartbeatRuns)
+        .set({ status: "running", startedAt: new Date() })
+        .where(eq(heartbeatRuns.id, input.runId));
+      return { trustPreset: { kind: "standard" }, executionPolicy: null } as never;
+    });
+    let activePromise: Promise<unknown> | undefined;
+    try {
+      activePromise = heartbeat.invoke(agentId, "assignment", { issueId }, "system");
+      await waitForActiveRun(runId);
+
+      const activeState = getTaskDrainStatus();
+      expect(activeState.activeRuns).toBe(1);
+      expect(activeState.quiescent).toBe(false);
+
+      startTaskDrain({});
+      const shutdown = await heartbeat.drainRunningRunsForShutdown("SIGTERM", new Date(), [runId]);
+      expect(shutdown.interruptedRunIds).toEqual([runId]);
+      expect(shutdown.retryRunIds).toHaveLength(1);
+      await heartbeat.drainActiveRunExecutions();
+      await activePromise;
+
+      const interrupted = await db
+        .select({ status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0] ?? null);
+      expect(interrupted).toEqual({ status: "interrupted", errorCode: "server_shutdown_interrupted" });
+
+      const wakeup = await db
+        .select({ status: agentWakeupRequests.status })
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.id, wakeupRequestId))
+        .then((rows) => rows[0] ?? null);
+      expect(wakeup?.status).toBe("cancelled");
+      expect(getTaskDrainStatus()).toMatchObject({ draining: true, activeRuns: 0, quiescent: true });
+    } finally {
+      stopTaskDrain();
+      retainTrust.mockRestore();
+      await activePromise?.catch(() => undefined);
+    }
+  }, 20_000);
 
   it("releases the run, wakeup, and issue lock when a task drain trips right after the run is claimed", async () => {
     const { companyId, issueId, runId, wakeupRequestId } = await seedQueuedRun();
