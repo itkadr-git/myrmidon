@@ -86,6 +86,10 @@ case "$1" in
         echo 'psql: error: connection to server: FATAL: role "myrmidon" does not exist' >&2
         exit 2
       fi
+      case "$*" in *"SELECT name FROM pg_available_extensions"*)
+        if [ -f "$SANDBOX/copy-available.txt" ]; then cat "$SANDBOX/copy-available.txt"; fi
+        exit 0 ;;
+      esac
       if [ -f "$SANDBOX/copy-available.txt" ]; then cat "$SANDBOX/copy-available.txt"; fi
       exit 0 ;;
     esac
