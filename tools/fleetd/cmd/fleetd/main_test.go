@@ -204,11 +204,11 @@ func TestValidateConfigRequiresMutualTLSMaterial(t *testing.T) {
 }
 
 func TestValidateConfig(t *testing.T) {
-	cfg := testConfig()
+	cfg := testConfig(t)
 	if err := validate(cfg); err != nil {
 		t.Fatalf("valid config rejected: %v", err)
 	}
-	bad := testConfig()
+	bad := testConfig(t)
 	bad.Token = "short"
 	if err := validate(bad); err == nil || !strings.Contains(err.Error(), "token") {
 		t.Fatalf("short token accepted: %v", err)
