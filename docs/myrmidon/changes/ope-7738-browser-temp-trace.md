@@ -1,8 +1,8 @@
-# OPE-7738 browser and runtime temporary paths
+## summary
 
 Trace performed against the product repository at `origin/main` (2026-10-15). The literal `chr-p*` prefix and Chromium config names supplied in the task do not occur in tracked product files or reachable git history. The deployment repository/configuration that creates those paths was not available in this checkout, so ownership, root, TTL, and trap cleanup for `chr-p*` remain unverified. Do not remove matching host paths based on name alone.
 
-## Confirmed product-owned writers
+### Confirmed product-owned writers
 
 | Writer | Root / name | Cleanup and lifecycle |
 | --- | --- | --- |
