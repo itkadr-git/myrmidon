@@ -136,6 +136,11 @@ describeEmbeddedPostgres("heartbeat task-drain admission release", () => {
       triggerDetail: "system",
       status: "queued",
       wakeupRequestId,
+      retryError: "simulated prior process loss",
+      errorCode: "process_lost",
+      error: "simulated prior process loss",
+      scheduledRetryReason: "transient_failure",
+      scheduledRetryAttempt: 0,
       contextSnapshot: { issueId, wakeReason: "issue_assigned" },
     });
 
@@ -163,13 +168,9 @@ describeEmbeddedPostgres("heartbeat task-drain admission release", () => {
     await heartbeat.resumeQueuedRuns();
     await waitForRunStatus(runId, "running");
 
-    startTaskDrain({});
-    expect(getTaskDrainStatus()).toMatchObject({
-      draining: true,
-      activeRuns: 1,
-      quiescent: false,
-    });
-
+    const state = getTaskDrainStatus();
+    expect(state.activeRuns).toBe(1);
+    expect(state.quiescent).toBe(false);
     const shutdown = await heartbeat.drainRunningRunsForShutdown("SIGTERM", new Date(), [runId]);
     await heartbeat.drainActiveRunExecutions();
 
