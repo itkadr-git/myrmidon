@@ -329,8 +329,7 @@ export async function enqueueIssueInteractionChatPublications(
         eq(chatConversations.issueId, interaction.issueId),
         inArray(chatConversations.state, ["active", "waiting"]),
         inArray(chatEndpoints.status, ["active", "verifying"]),
-        eq(chatEndpoints.provider, "telegram"),
-        eq(chatEndpoints.publicationMode, "automatic"),
+        inArray(chatEndpoints.provider, ["slack", "discord", "microsoft-teams", "imessage-photon"]),
       ),
     );
   const ownerBindings = await telegramOwnerDeliveryBindings(db, {
