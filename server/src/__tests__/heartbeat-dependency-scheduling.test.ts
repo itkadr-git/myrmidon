@@ -475,6 +475,12 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
       payload: { issueId: readyIssueId },
       contextSnapshot: { issueId: readyIssueId, wakeReason: "issue_assigned" },
     });
+    if (readyWake === null) {
+      const dbgRuns = await db.select({ id: heartbeatRuns.id, status: heartbeatRuns.status, createdAt: heartbeatRuns.createdAt, finishedAt: heartbeatRuns.finishedAt, ctx: heartbeatRuns.contextSnapshot, wid: heartbeatRuns.wakeupRequestId }).from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId));
+      const dbgWakes = await db.select({ id: agentWakeupRequests.id, status: agentWakeupRequests.status, reason: agentWakeupRequests.reason, source: agentWakeupRequests.source, actor: agentWakeupRequests.requestedByActorId, requestedAt: agentWakeupRequests.requestedAt, payload: agentWakeupRequests.payload, runId: agentWakeupRequests.runId }).from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, companyId));
+      const names: Record<string, string> = { [readyIssueId]: "READY", [blockedIssueId]: "BLOCKED", [blockerId]: "BLOCKER" };
+      console.log("RC3DIAG " + JSON.stringify({ runs: dbgRuns.map((r) => ({ id: r.id.slice(0, 6), st: r.status, c: r.createdAt?.toISOString().slice(17), f: r.finishedAt?.toISOString().slice(17), issue: names[String((r.ctx as any)?.issueId)], src: (r.ctx as any)?.source, wr: (r.ctx as any)?.wakeReason, wid: r.wid?.slice(0, 6) })), wakes: dbgWakes.map((w) => ({ id: w.id.slice(0, 6), st: w.status, rs: w.reason, src: w.source, by: w.actor, t: w.requestedAt?.toISOString().slice(17), issue: names[String((w.payload as any)?.issueId)], run: w.runId?.slice(0, 6) })) }, null, 1));
+    }
     expect(readyWake).not.toBeNull();
     await db.insert(issueComments).values({
       companyId,
