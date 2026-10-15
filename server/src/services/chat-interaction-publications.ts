@@ -329,17 +329,19 @@ export async function enqueueIssueInteractionChatPublications(
         eq(chatConversations.issueId, interaction.issueId),
         inArray(chatConversations.state, ["active", "waiting"]),
         inArray(chatEndpoints.status, ["active", "verifying"]),
+        eq(chatEndpoints.provider, "telegram"),
+        eq(chatEndpoints.publicationMode, "automatic"),
       ),
     );
-  const ownerBindings = vendorBindings.length === 0
-    ? await telegramOwnerDeliveryBindings(db, {
-        companyId: interaction.companyId,
-        issueId: interaction.issueId,
-        createdByAgentId: interaction.createdByAgentId,
-      })
-    : [];
-  const ownerOnly = vendorBindings.length === 0 && ownerBindings.length > 0;
-  const bindings = vendorBindings.length > 0 ? vendorBindings : ownerBindings;
+  const ownerBindings = await telegramOwnerDeliveryBindings(db, {
+    companyId: interaction.companyId,
+    issueId: interaction.issueId,
+    createdByAgentId: interaction.createdByAgentId,
+  });
+  const ownerOnly = ownerBindings.length > 0;
+  const bindings = ownerOnly
+    ? ownerBindings
+    : vendorBindings.filter(({ endpoint }) => endpoint.provider !== "telegram");
   if (bindings.length === 0) return [];
 
   const taskUrl = publicChatInteractionTaskUrl(interaction.issueId);

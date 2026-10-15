@@ -245,10 +245,8 @@ describeEmbeddedPostgres(
         })
         .returning();
 
-      await instanceSettingsService(db).updateGeneral({
-        [OWNER_DELIVERY_SETTINGS_KEY]: { mode: "via_bot" },
-      });
-      await db.delete(instanceSettings).where(eq(instanceSettings.singletonKey, "default"));
+      const fixtureSettings = instanceSettingsService(db);
+      await fixtureSettings.updateGeneral({ [OWNER_DELIVERY_SETTINGS_KEY]: { mode: "via_bot" } });
       return { companyId, agentId, boardUserId, endpointId, dmIssue, workIssue };
     }
 
