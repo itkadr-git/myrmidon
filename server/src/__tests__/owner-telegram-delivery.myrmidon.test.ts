@@ -23,6 +23,9 @@ import {
   issues,
   toolApplications,
   toolConnections,
+  documents,
+  issueDocuments,
+  documentRevisions,
 } from "@paperclipai/db";
 import type { ChatProvider } from "@paperclipai/shared";
 // myrmidon(1.6.5-OWNER-DM-FILTER)
@@ -262,6 +265,7 @@ describeEmbeddedPostgres(
           questions: [
             {
               id: "deploy-window",
+              header: "Choose a deploy window",
               prompt: "Which deploy window?",
               helpText: "Choose one and include any timing constraints.",
               selectionMode: "single" as const,
@@ -320,6 +324,30 @@ describeEmbeddedPostgres(
 
     it("delivers confirmation details as plain text with no executable actions", async () => {
       const fixture = await seedFixture();
+      const [document] = await db.insert(documents).values({
+        companyId: fixture.companyId,
+        title: "Plan",
+        format: "markdown",
+        latestBody: "Deploy plan",
+        latestRevisionNumber: 1,
+        createdByAgentId: fixture.agentId,
+      }).returning();
+      const [revision] = await db.insert(documentRevisions).values({
+        companyId: fixture.companyId,
+        documentId: document!.id,
+        revisionNumber: 1,
+        title: "Plan",
+        format: "markdown",
+        body: "Deploy plan",
+        createdByAgentId: fixture.agentId,
+      }).returning();
+      await db.update(documents).set({ latestRevisionId: revision!.id }).where(eq(documents.id, document!.id));
+      await db.insert(issueDocuments).values({
+        companyId: fixture.companyId,
+        issueId: fixture.workIssue.id,
+        documentId: document!.id,
+        key: "plan",
+      });
       const interaction = await issueThreadInteractionService(db).create(
         { id: fixture.workIssue.id, companyId: fixture.companyId },
         {
@@ -332,7 +360,7 @@ describeEmbeddedPostgres(
             version: 1 as const,
             prompt: "Proceed with the deploy?",
             detailsMarkdown: "Deploy build to production.",
-            target: { type: "issue_document" as const, key: "plan", revisionId: randomUUID() },
+            target: { type: "issue_document" as const, key: "plan", revisionId: revision!.id },
             acceptLabel: "Accept",
             rejectLabel: "Reject",
             allowDeclineReason: true,
@@ -687,7 +715,7 @@ describeEmbeddedPostgres(
         });
         const text = await publicationText(fixture.companyId, interaction.id);
         expect(text).not.toBeNull();
-        expect(text!.startsWith("Нужно ваше решение")).toBe(true);
+        expect(text!.startsWith("Proceed with the deploy?")).toBe(true);
         expect(text).toContain("Proceed with the deploy?");
         // Guard: no uuids, run ids or commit-sha-like tokens in the owner text.
         expect(text).not.toMatch(
