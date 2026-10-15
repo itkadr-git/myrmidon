@@ -446,6 +446,7 @@ load_config() {
   # releases are removed (deploy_image_retention; the running and the
   # just-deployed images are always kept).
   : "${MYRMIDON_DEPLOY_MIN_FREE_GB:=15}"
+  : "${MYRMIDON_DEPLOY_DB_DUMP_RESERVE_GB:=5}"
   : "${MYRMIDON_DEPLOY_IMAGE_KEEP:=1}"
   : "${MYRMIDON_DEPLOY_IMAGE_REPOS:=$MYRMIDON_IMAGE,ghcr.io/itkadr-git/myrmidon-dockergate,ghcr.io/itkadr-git/myrmidon-fleetd,ghcr.io/itkadr-git/myrmidon-hermes,ghcr.io/itkadr-git/myrmidon-hermes-dev,ghcr.io/itkadr-git/myrmidon-hermes-node}"
   # DB-TUNING (OPE-5009): the PostgreSQL settings from the database audit
@@ -1680,34 +1681,45 @@ docker_free_gb() {
   printf '%s\n' $((kb / 1024 / 1024))
 }
 
-# Refuses the deploy BEFORE the first image pull and the dump when the
-# filesystem of /var/lib/docker has less than MYRMIDON_DEPLOY_MIN_FREE_GB
-# gibibytes free (default 15; the board image alone is about 7 GB, the bot
-# images several more). The refusal names the requirement, the current value
-# and the candidates for cleanup, and runs before anything was changed.
-# A threshold of 0 switches the check off. In a dry run the check is reported
-# with the current value and the plan continues.
+# Refuses before the first image pull, database dump, or maintenance window.
+# Image references are immutable digests; Buildx reads registry layer sizes
+# without downloading image layers. The configured DB reserve covers the dump.
 deploy_disk_precheck() {
-  local where="$1" min_gb="${MYRMIDON_DEPLOY_MIN_FREE_GB:-15}" free
+  local where="$1" min_gb="${MYRMIDON_DEPLOY_MIN_FREE_GB:-15}" free_kb required_kb image_ref image_size local_ref
+  local -a image_refs=()
+  if declare -p MYRMIDON_DEPLOY_IMAGE_REFS >/dev/null 2>&1; then image_refs=("${MYRMIDON_DEPLOY_IMAGE_REFS[@]}"); fi
   [[ "$min_gb" =~ ^[0-9]+$ ]] || die "MYRMIDON_DEPLOY_MIN_FREE_GB must be a non-negative integer (got '$min_gb')"
-  free="$(docker_free_gb)" || free=""
+  [[ "${MYRMIDON_DEPLOY_DB_DUMP_RESERVE_GB:-5}" =~ ^[0-9]+$ ]] || die "MYRMIDON_DEPLOY_DB_DUMP_RESERVE_GB must be a non-negative integer"
+  free_kb="$(df -Pk /var/lib/docker 2>/dev/null | awk 'NR==2 {print $4}')" || free_kb=""
   if ((min_gb == 0)); then
-    log "disk precheck ($where): MYRMIDON_DEPLOY_MIN_FREE_GB=0, the check is off (free: ${free:-unknown} GiB)"
+    log "disk precheck ($where): MYRMIDON_DEPLOY_MIN_FREE_GB=0, the check is off"
     return 0
   fi
+  [[ "$free_kb" =~ ^[0-9]+$ ]] || die "cannot determine free space on /var/lib/docker; refusing deploy before pull, dump, or maintenance"
+  required_kb=$(( (min_gb + MYRMIDON_DEPLOY_DB_DUMP_RESERVE_GB) * 1024 * 1024 ))
+  for image_ref in "${image_refs[@]}"; do
+    [[ -n "$image_ref" ]] || continue
+    [[ "$image_ref" == *@sha256:* ]] || die "disk precheck requires immutable image digest: $image_ref"
+    local_ref="${image_ref##*/}"
+    if docker image inspect "$image_ref" >/dev/null 2>&1 || docker image inspect "${image_ref#*@}" >/dev/null 2>&1; then
+      log "disk precheck: image already local, no additional layer space: $image_ref"
+      continue
+    fi
+    image_size="$(with_timeout docker buildx imagetools inspect "$image_ref" --format '{{json .Manifest.Layers}}' 2>/dev/null)" || die "cannot determine registry layer sizes for $image_ref; refusing deploy before pull, dump, or maintenance"
+    image_size="$(jq -er '[.[] | .size] | if all(.[]; type == "number") then add else error("invalid sizes") end' <<<"$image_size")" || die "invalid registry layer sizes for $image_ref; refusing deploy before pull, dump, or maintenance"
+    required_kb=$((required_kb + (image_size + 1023) / 1024))
+  done
   if [[ "$DRY_RUN" == "1" ]]; then
-    log "disk precheck ($where): dry run, nothing refused; the real run needs ${min_gb} GiB free on the filesystem of /var/lib/docker (now: ${free:-unknown} GiB)"
+    log "disk precheck ($where): dry run; requires $(( (required_kb + 1048575) / 1048576 )) GiB including image layers and DB dump reserve (free: $((free_kb / 1048576)) GiB)"
     return 0
   fi
-  [[ -n "$free" ]] || { log "disk precheck ($where): cannot read the free space of /var/lib/docker; continuing (df gave no answer)"; return 0; }
-  if ((free < min_gb)); then
-    log "disk precheck ($where): ${free} GiB free on the filesystem of /var/lib/docker, less than the required ${min_gb} GiB (MYRMIDON_DEPLOY_MIN_FREE_GB)"
-    log "disk precheck: the deploy is NOT started: no image was pulled, no dump was taken, nothing was changed"
-    log "disk precheck: candidates for cleanup (docker system df): the component images of past releases (docker image ls ghcr.io/itkadr-git/myrmidon), orphaned volumes of past predeploy checks (docker volume ls -f name=myr-predeploy-dbvol-), build cache"
+  if ((free_kb < required_kb)); then
+    log "disk precheck ($where): $((free_kb / 1048576)) GiB free; requires $(( (required_kb + 1048575) / 1048576 )) GiB including image layers and DB dump reserve"
+    log "disk precheck: refusing before pull, DB dump, or maintenance; cleanup candidates: obsolete release images (docker image ls ghcr.io/itkadr-git/myrmidon*), build cache, orphaned predeploy DB volumes"
     docker system df 2>/dev/null >&2 || true
-    die "not enough free disk space for the deploy: ${free} GiB < ${min_gb} GiB; free space (see the candidates above) or lower MYRMIDON_DEPLOY_MIN_FREE_GB"
+    die "not enough disk space for deploy: free $((free_kb / 1048576)) GiB, required $(( (required_kb + 1048575) / 1048576 )) GiB"
   fi
-  log "disk precheck ($where): ${free} GiB free on the filesystem of /var/lib/docker (>= ${min_gb} GiB required)"
+  log "disk precheck ($where): $((free_kb / 1048576)) GiB free; requires $(( (required_kb + 1048575) / 1048576 )) GiB including image layers and DB dump reserve"
 }
 
 # Removes the local images of the deploy's component repositories that are
