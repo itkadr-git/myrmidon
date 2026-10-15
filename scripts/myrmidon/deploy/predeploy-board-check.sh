@@ -66,7 +66,7 @@ while (($#)); do
   esac
 done
 load_config "$config"
-require_cmd docker curl jq
+require_cmd curl jq
 
 valid_digest "$board_digest" || die "predeploy check needs --digest sha256:<64 hex> (got: '${board_digest:-<none>}')"
 if [[ -n "$dockergate_digest" ]]; then
