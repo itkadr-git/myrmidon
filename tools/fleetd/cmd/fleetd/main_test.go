@@ -38,7 +38,7 @@ func testConfig(t *testing.T) *config {
 
 func newServer(t *testing.T) (*server, *httptest.Server) {
 	t.Helper()
-	srv := &server{cfg: testConfig()}
+	srv := &server{cfg: testConfig(t)}
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/v1/bots") {
 			srv.requireAuth(func(w http.ResponseWriter, r *http.Request) {
