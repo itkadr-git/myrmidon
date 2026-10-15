@@ -395,7 +395,7 @@ else
   fi
   if [[ -n "$dump_exts" ]]; then
     available_exts=""
-    if copy_probe 'SELECT extname FROM pg_available_extensions'; then
+    if copy_probe 'SELECT name FROM pg_available_extensions'; then
       available_exts="$(cat "$pg_probe_out")"
     else
       copy_exts_reason="$(probe_reason)"
