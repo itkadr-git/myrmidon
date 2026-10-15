@@ -1,4 +1,4 @@
-// myrmidon(1.6.5-OWNER-DM-FILTER): the two delivery modes the settings screen
+// myrmidon(1.6.5-OWNER-DM-FILTER): the delivery modes the settings screen
 // offers, with the wording shown next to each radio card. Kept apart from the
 // screen so the copy and the values live in one place; the wire contract itself
 // is in ownerDeliveryApi.ts.
@@ -12,10 +12,16 @@ export interface OwnerDeliveryModeOption {
 
 export const OWNER_DELIVERY_MODE_OPTIONS: OwnerDeliveryModeOption[] = [
   {
+    value: "via_bot",
+    title: "Message from the bot",
+    description:
+      "No cards with buttons. The agent that raised the question writes the owner a plain message that explains what to decide and why; the owner answers in the chat and the agent records the decision. The default.",
+  },
+  {
     value: "owner_decisions_only",
     title: "Owner decisions only",
     description:
-      "Only cards that wait for the owner — a question or an approval an agent raised to unblock its task. The default.",
+      "Only cards that wait for the owner — a question or an approval an agent raised to unblock its task.",
   },
   {
     value: "all",

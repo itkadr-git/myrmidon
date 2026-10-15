@@ -1,3 +1,4 @@
+// myrmidon(DEBRAND-c): persist browser state under the Myrmidon namespace.
 import { useEffect, useMemo, useRef, useState, type SVGProps } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "@/lib/router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -5573,7 +5574,7 @@ export function CompanySkills() {
           onMoveSelected={showInstalledBulkSelection ? (folderId) => void moveSelectedSkills(folderId) : undefined}
           onCreateFolderAndMoveSelected={showInstalledBulkSelection ? () => openCreateFolder(selectedSkillIds) : undefined}
           onClearSelected={showInstalledBulkSelection ? () => setSelectedSkillIds([]) : undefined}
-          folderNudgeStorageKey={showInstalledFolders ? `paperclip:skills-folder-nudge:${selectedCompanyId ?? "none"}` : undefined}
+          folderNudgeStorageKey={showInstalledFolders ? `myrmidon:skills-folder-nudge:${selectedCompanyId ?? "none"}` : undefined}
           showBrowseRails={browseRailsEnabled}
         />
         </>

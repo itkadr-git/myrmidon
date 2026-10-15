@@ -26,7 +26,7 @@ it imports nothing RAGFlow-related and builds without any external service.
 
 ## Database
 
-Tables (all additive, migration `0309_corpus_module` in `@paperclipai/db`):
+Tables (all additive, migration `0390_corpus_module` in `@paperclipai/db`):
 
 | Table | Purpose |
 | --- | --- |

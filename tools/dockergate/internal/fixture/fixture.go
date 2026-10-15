@@ -66,15 +66,19 @@ type ScopeFixture struct {
 
 // Manifest is manifest.json.
 type Manifest struct {
-	Scope      *ScopeFixture `json:"scope"`
-	BotKey     string        `json:"botKey"`
-	Image      string        `json:"image"`
-	ImageID    string        `json:"imageId"`
-	VolumeRoot string        `json:"volumeRoot"`
-	Network    string        `json:"network"`
-	Nonces     []string      `json:"nonces"`
-	Bodies     []Body        `json:"bodies"`
-	Archives   []Archive     `json:"archives"`
+	Scope *ScopeFixture `json:"scope"`
+	// PackageCacheRoot is the host directory of the shared package cache the
+	// prepare helper also binds (BOT-DISK-UV-B); empty when the fixture set
+	// predates the cache handoff.
+	PackageCacheRoot string    `json:"packageCacheRoot"`
+	BotKey           string    `json:"botKey"`
+	Image            string    `json:"image"`
+	ImageID          string    `json:"imageId"`
+	VolumeRoot       string    `json:"volumeRoot"`
+	Network          string    `json:"network"`
+	Nonces           []string  `json:"nonces"`
+	Bodies           []Body    `json:"bodies"`
+	Archives         []Archive `json:"archives"`
 }
 
 // Record is one request of traffic.json.

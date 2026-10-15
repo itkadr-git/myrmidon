@@ -14,6 +14,7 @@ import type { Db } from "@paperclipai/db";
 import { HttpError, badRequest, conflict, notFound } from "../../errors.js";
 import { validate } from "../../middleware/validate.js";
 import { assertBoardOrgAccess, assertInstanceAdmin, getActorInfo } from "../../routes/authz.js";
+import { assertDeployClassAllowed } from "../autonomy/deploy-class.js";
 import { digestProblem } from "./domain.js";
 import { DeployJobError, type DeployJobsService } from "./service.js";
 
@@ -57,6 +58,8 @@ export function deployJobsRoutes(_db: Db, service: DeployJobsService) {
   });
 
   router.post("/myrmidon/deploy-jobs", validate(deployJobCreateSchema), async (req, res) => {
+    // myrmidon(1.6-AUTONOMY): the deploy class is answered before the admin check.
+    await assertDeployClassAllowed(_db, req);
     assertInstanceAdmin(req);
     const actor = getActorInfo(req);
     const body = req.body as z.infer<typeof deployJobCreateSchema>;

@@ -32,6 +32,15 @@ Extra read-only bot mounts (shared directories) are described in
    static refusal or a silent close; it does not occupy a connection slot. The
    `caller.mode: uid` mode (uid and gid only) exists for CI and is refused by the
    configuration check with a production `volumeRoot`.
+
+   In the multi-process mode (`split`, see
+   [deploy.md](deploy.md#multi-process-mode-board-processes)) the worker stays the
+   first child of the board container's main process with the same `argv` — the role
+   reaches it through the environment, not the command line — so the caller check pins
+   it unchanged. The api children are forks of the worker: they fail the
+   first-child-plus-argv check by construction and never create a docker driver, so the
+   expected count of `caller_not_board_main` rejections from api children in the log is
+   zero.
 2. **Routes.** The raw request-target is matched without decoding percent-escapes; only the
    template literals are allowed. Method, API version (`v1.45` only) and headers are checked
    strictly.
