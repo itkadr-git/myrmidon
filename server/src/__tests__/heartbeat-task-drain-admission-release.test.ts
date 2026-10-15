@@ -18,6 +18,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { heartbeatService, getTaskDrainStatus, startTaskDrain, stopTaskDrain } from "../services/heartbeat.ts";
+import * as runTrustPreset from "../services/run-trust-preset.ts";
 import { subscribeCompanyLiveEvents } from "../services/live-events.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -178,43 +179,45 @@ describeEmbeddedPostgres("heartbeat task-drain admission release", () => {
   it("keeps an active adapter run in flight until graceful shutdown records its retry", async () => {
     const { companyId, agentId, issueId, runId, wakeupRequestId } = await seedQueuedRun();
     const heartbeat = heartbeatService(db);
-    const activePromise = heartbeat.invoke(agentId, "assignment", { issueId }, "system");
-    await waitForActiveRun(runId);
+    const retainTrust = vi.spyOn(runTrustPreset, "resolveAndRetainRunTrustPreset").mockResolvedValue({
+      trustPreset: { kind: "standard" },
+      executionPolicy: null,
+    } as never);
+    let activePromise: Promise<unknown> | undefined;
+    try {
+      activePromise = heartbeat.invoke(agentId, "assignment", { issueId }, "system");
+      await waitForActiveRun(runId);
 
-    const activeState = getTaskDrainStatus();
-    expect(activeState.activeRuns).toBe(1);
-    expect(activeState.quiescent).toBe(false);
+      const activeState = getTaskDrainStatus();
+      expect(activeState.activeRuns).toBe(1);
+      expect(activeState.quiescent).toBe(false);
 
-    // A test run can be marked `running` before `executeRun` registers its
-    // promise; wait for the live execution counter rather than sleeping.
-    startTaskDrain({});
-    const shutdown = await heartbeat.drainRunningRunsForShutdown("SIGTERM", new Date(), [runId]);
-    expect(shutdown.interruptedRunIds).toEqual([runId]);
-    expect(shutdown.retryRunIds).toHaveLength(1);
-    await heartbeat.drainActiveRunExecutions();
+      startTaskDrain({});
+      const shutdown = await heartbeat.drainRunningRunsForShutdown("SIGTERM", new Date(), [runId]);
+      expect(shutdown.interruptedRunIds).toEqual([runId]);
+      expect(shutdown.retryRunIds).toHaveLength(1);
+      await heartbeat.drainActiveRunExecutions();
+      await activePromise;
 
-    // reconcileRunExecutionCompletion finalizes its transaction without an
-    // execution promise being present in the drain set for this direct call.
-    await activePromise;
+      const interrupted = await db
+        .select({ status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0] ?? null);
+      expect(interrupted).toEqual({ status: "interrupted", errorCode: "server_shutdown_interrupted" });
 
-    const interrupted = await db
-      .select({ status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode })
-      .from(heartbeatRuns)
-      .where(eq(heartbeatRuns.id, runId))
-      .then((rows) => rows[0] ?? null);
-    expect(interrupted).toEqual({ status: "interrupted", errorCode: "server_shutdown_interrupted" });
-
-    const wakeup = await db
-      .select({ status: agentWakeupRequests.status })
-      .from(agentWakeupRequests)
-      .where(eq(agentWakeupRequests.id, wakeupRequestId))
-      .then((rows) => rows[0] ?? null);
-    expect(wakeup?.status).toBe("cancelled");
-    expect(getTaskDrainStatus()).toMatchObject({
-      draining: true,
-      activeRuns: 0,
-      quiescent: true,
-    });
+      const wakeup = await db
+        .select({ status: agentWakeupRequests.status })
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.id, wakeupRequestId))
+        .then((rows) => rows[0] ?? null);
+      expect(wakeup?.status).toBe("cancelled");
+      expect(getTaskDrainStatus()).toMatchObject({ draining: true, activeRuns: 0, quiescent: true });
+    } finally {
+      stopTaskDrain();
+      retainTrust.mockRestore();
+      await activePromise?.catch(() => undefined);
+    }
   }, 20_000);
 
   it("releases the run, wakeup, and issue lock when a task drain trips right after the run is claimed", async () => {
