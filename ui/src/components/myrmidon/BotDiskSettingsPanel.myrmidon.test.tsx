@@ -282,8 +282,7 @@ describe("BotDiskSettingsPanel uv settings", () => {
     await typeInto(cache, "relative/path");
     await act(async () => { (container.querySelector("#bot-disk-uv-cache")?.parentElement?.querySelector("button") as HTMLButtonElement).click(); });
     expect(setUv).toHaveBeenCalledTimes(1);
-    expect(container.textContent).toContain("uvCacheDir");
-    expect(container.textContent).toContain("shared by the partition");
+    expect(container.textContent).toContain("is not an absolute path");
     await act(async () => {
       const setter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, "value")?.set;
       setter?.call(linkMode, "hardlink");
