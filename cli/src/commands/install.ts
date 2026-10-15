@@ -378,7 +378,7 @@ export async function installCommand(
       writeManagedShim(paths); pruneInstallPayloads(nextManifest, paths); return payload;
     }, paths);
     await ensureShimOnPath(options);
-    console.log(pc.green(`${installed.reused ? "Activated cached" : "Installed"} paperclipai git payload ${sha.slice(0, 12)}.`));
+    console.log(pc.green(`${installed.reused ? "Activated cached" : "Installed"} myrmidon git payload ${sha.slice(0, 12)}.`));
     return;
   }
   const request = resolveNpmInstallRequest(options);
@@ -414,7 +414,7 @@ export async function installCommand(
   }, paths);
   await ensureShimOnPath(options);
 
-  console.log(pc.green(`${installed.reused ? "Activated cached" : "Installed"} paperclipai ${version} (${request.channel}).`));
+  console.log(pc.green(`${installed.reused ? "Activated cached" : "Installed"} myrmidon ${version} (${request.channel}).`));
   console.log(pc.dim(`Payload: ${installed.payloadPath}`));
-  console.log(`Run ${pc.cyan("paperclipai --version")} to verify the managed install.`);
+  console.log(`Run ${pc.cyan("myrmidon --version")} to verify the managed install.`);
 }
