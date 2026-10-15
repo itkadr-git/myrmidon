@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { and, asc, desc, eq, gt, inArray, ne, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
+import { emitToolPolicyChanged } from "./tool-policy-cache-events.js";
 import {
   agents,
   heartbeatRuns,
@@ -45,6 +46,18 @@ import { toolPolicyConditionsSchema } from "@paperclipai/shared";
 // myrmidon(B1c): product name in user-facing policy texts; see product.ts.
 import { PRODUCT_NAME as PN } from "../myrmidon/product.js";
 import { badRequest, conflict, notFound, unprocessable } from "../errors.js";
+// myrmidon(DB-PERF-C-P4): the policy, profile, binding and profile-entry reads of the
+// access decision go through the TTL cache below; the same module invalidates a
+// company's snapshot after every commit that changes one of those tables.
+import {
+  invalidateToolPolicyCache,
+  readToolPolicySnapshot,
+} from "../myrmidon/tool-policy-cache/runtime.js";
+import {
+  selectEntriesForProfiles,
+  selectProfilesByIds,
+  type ToolPolicySnapshot,
+} from "../myrmidon/tool-policy-cache/snapshot.js";
 import {
   effectiveToolProfileBindings,
   profileIdsInBindingOrder,
@@ -696,7 +709,7 @@ export function toolAccessPolicyService(db: Db) {
       throw badRequest("policyIds must not contain duplicates");
     }
 
-    return db.transaction(async (tx) => {
+    const ordered = await db.transaction(async (tx) => {
       const rows = await tx
         .update(toolPolicies)
         .set({ updatedAt: sql`${toolPolicies.updatedAt}` })
@@ -724,12 +737,19 @@ export function toolAccessPolicyService(db: Db) {
           .set({ priority: (index + 1) * 100, updatedAt: now })
           .where(eq(toolPolicies.id, policyId));
       }
-      return tx
+      const result = await tx
         .select()
         .from(toolPolicies)
         .where(and(eq(toolPolicies.companyId, companyId), ne(toolPolicies.policyType, "trust_rule")))
         .orderBy(asc(toolPolicies.priority), desc(toolPolicies.updatedAt));
+      // OPE-4129: invalidate the tool-gateway policy snapshot cache after a
+      // successful reorder so the next tools/list sees the new priorities.
+      emitToolPolicyChanged();
+      return result;
     });
+    // myrmidon(DB-PERF-C-P4): the priorities changed; drop the company snapshot after the commit.
+    invalidateToolPolicyCache(db, companyId);
+    return ordered;
   }
 
   async function duplicatePolicy(input: {
@@ -771,6 +791,10 @@ export function toolAccessPolicyService(db: Db) {
         updatedAt: now,
       })
       .returning();
+    emitToolPolicyChanged();
+    // myrmidon(DB-PERF-C-P4): the company gained a policy row (disabled, but the snapshot
+    // must not keep serving the previous set); drop it after the commit.
+    invalidateToolPolicyCache(db, input.companyId);
     return policy;
   }
 
@@ -799,6 +823,9 @@ export function toolAccessPolicyService(db: Db) {
         updatedAt: now,
       })
       .returning();
+    emitToolPolicyChanged();
+    // myrmidon(DB-PERF-C-P4): a new policy changes the decision set; drop the company snapshot.
+    invalidateToolPolicyCache(db, companyId);
     return policy;
   }
 
@@ -828,6 +855,9 @@ export function toolAccessPolicyService(db: Db) {
       })
       .where(eq(toolPolicies.id, existing.id))
       .returning();
+    emitToolPolicyChanged();
+    // myrmidon(DB-PERF-C-P4): the stored policy changed; drop the company snapshot.
+    invalidateToolPolicyCache(db, input.companyId);
     return policy;
   }
 
@@ -837,6 +867,9 @@ export function toolAccessPolicyService(db: Db) {
       .delete(toolPolicies)
       .where(eq(toolPolicies.id, existing.id))
       .returning();
+    emitToolPolicyChanged();
+    // myrmidon(DB-PERF-C-P4): the policy is gone; drop the company snapshot.
+    invalidateToolPolicyCache(db, input.companyId);
     return deleted;
   }
 
@@ -1006,15 +1039,23 @@ export function toolAccessPolicyService(db: Db) {
     };
   }
 
-  async function effectiveProfiles(ctx: ToolAccessContext) {
-    const bindings = await db.select().from(toolProfileBindings).where(eq(toolProfileBindings.companyId, ctx.companyId));
+  async function effectiveProfiles(ctx: ToolAccessContext, snapshot: ToolPolicySnapshot | null) {
+    // myrmidon(DB-PERF-C-P4): bindings, profiles and entries come from the company
+    // snapshot of the TTL cache. `null` means the cache is switched off
+    // (`ttlMs: 0`): the original queries run unchanged, statement for statement,
+    // and the in-memory selections below are skipped.
+    const bindings = snapshot
+      ? snapshot.bindings
+      : await db.select().from(toolProfileBindings).where(eq(toolProfileBindings.companyId, ctx.companyId));
     const matchingBindings = bindings.filter((binding) => targetMatches(binding, ctx));
     if (matchingBindings.length === 0) return { profiles: [], entries: [] as Array<typeof toolProfileEntries.$inferSelect> };
     const candidateProfileIds = profileIdsInBindingOrder(matchingBindings);
-    const candidateProfiles = await db.select().from(toolProfiles).where(and(
-      eq(toolProfiles.companyId, ctx.companyId),
-      inArray(toolProfiles.id, candidateProfileIds),
-    ));
+    const candidateProfiles = snapshot
+      ? selectProfilesByIds(snapshot.profiles, candidateProfileIds)
+      : await db.select().from(toolProfiles).where(and(
+        eq(toolProfiles.companyId, ctx.companyId),
+        inArray(toolProfiles.id, candidateProfileIds),
+      ));
     const [gateway] = ctx.gatewayId
       ? await db
           .select({ defaultProfileMode: toolMcpGateways.defaultProfileMode })
@@ -1037,9 +1078,11 @@ export function toolAccessPolicyService(db: Db) {
       .map((profileId) => profilesById.get(profileId) ?? null)
       .filter((profile): profile is typeof toolProfiles.$inferSelect => Boolean(profile && profile.status === "active"));
     const activeProfileIds = activeProfiles.map((profile) => profile.id);
-    const entries = activeProfileIds.length > 0
-      ? await db.select().from(toolProfileEntries).where(and(eq(toolProfileEntries.companyId, ctx.companyId), inArray(toolProfileEntries.profileId, activeProfileIds)))
-      : [];
+    const entries = snapshot
+      ? selectEntriesForProfiles(snapshot.entries, activeProfileIds)
+      : activeProfileIds.length > 0
+        ? await db.select().from(toolProfileEntries).where(and(eq(toolProfileEntries.companyId, ctx.companyId), inArray(toolProfileEntries.profileId, activeProfileIds)))
+        : [];
     return { profiles: activeProfiles, entries };
   }
 
@@ -1136,6 +1179,10 @@ export function toolAccessPolicyService(db: Db) {
       .update(toolPolicies)
       .set({ config: { ...config, trustRule: nextRule }, updatedAt: now })
       .where(eq(toolPolicies.id, policy.id));
+    // myrmidon(DB-PERF-C-P4): the hit counter lives in the policy row, so the company
+    // snapshot holds a stale config from here on; drop it after the commit. The
+    // counters, audit events and grants below stay direct reads and writes.
+    invalidateToolPolicyCache(db, ctx.companyId);
     await db.insert(toolAccessAuditEvents).values({
       companyId: ctx.companyId,
       connectionId: ctx.connectionId,
@@ -1183,9 +1230,13 @@ export function toolAccessPolicyService(db: Db) {
     const loaded = await loadContext(input);
     if (!loaded.ok) return loaded.decision;
     const { ctx, redaction } = loaded;
-    const profileState = await effectiveProfiles(ctx);
+    // myrmidon(DB-PERF-C-P4): one cache read per decision serves both the profile
+    // state and the enabled policies; a null snapshot means the cache is off and
+    // both fall back to the statements they used before the cache existed.
+    const policySnapshot = await readToolPolicySnapshot(db, ctx.companyId);
+    const profileState = await effectiveProfiles(ctx, policySnapshot);
     const effectiveProfileIds = profileState.profiles.map((profile) => profile.id);
-    const policies = await db.select().from(toolPolicies).where(and(eq(toolPolicies.companyId, ctx.companyId), eq(toolPolicies.enabled, true))).orderBy(asc(toolPolicies.priority), asc(toolPolicies.createdAt));
+    const policies = policySnapshot?.policies ?? (await db.select().from(toolPolicies).where(and(eq(toolPolicies.companyId, ctx.companyId), eq(toolPolicies.enabled, true))).orderBy(asc(toolPolicies.priority), asc(toolPolicies.createdAt)));
     for (const policy of policies) {
       const conditions = policyConditions(policy);
       if (conditions && selectorMatches(policy.selectors, ctx)) {
@@ -1736,6 +1787,9 @@ export function toolAccessPolicyService(db: Db) {
       updatedAt: now,
     }).returning();
 
+    // myrmidon(DB-PERF-C-P4): a new trust rule is an enabled policy; drop the company snapshot.
+    invalidateToolPolicyCache(db, input.companyId);
+
     await db.insert(toolAccessAuditEvents).values({
       companyId: input.companyId,
       connectionId: invocation.connectionId,
@@ -1823,6 +1877,9 @@ export function toolAccessPolicyService(db: Db) {
       })
       .where(eq(toolPolicies.id, existing.id))
       .returning();
+    // myrmidon(DB-PERF-C-P4): the rule is revoked (disabled) and its config changed;
+    // drop the company snapshot after the commit.
+    invalidateToolPolicyCache(db, input.companyId);
     await db.insert(toolAccessAuditEvents).values({
       companyId: input.companyId,
       actorType: input.actor?.agentId ? "agent" : input.actor?.userId ? "user" : "system",
@@ -1846,8 +1903,184 @@ export function toolAccessPolicyService(db: Db) {
     return updated;
   }
 
+  // Enhanced version of decide that accepts pre-loaded data to avoid repeated DB queries
+  async function decideWithCachedData(
+    input: ToolAccessDecisionInput,
+    policies: typeof toolPolicies.$inferSelect[],
+    bindings: typeof toolProfileBindings.$inferSelect[],
+    profiles: typeof toolProfiles.$inferSelect[]
+  ): Promise<ToolAccessDecision> {
+    const loaded = await loadContext(input);
+    if (!loaded.ok) return loaded.decision;
+    const { ctx, redaction } = loaded;
+    const profileState = await effectiveProfilesWithCachedData(ctx, bindings, profiles);
+    const effectiveProfileIds = profileState.profiles.map((profile) => profile.id);
+
+    // Pre-pass identical to decide(): a matching policy with unsupported
+    // conditions must deny before any policy is evaluated (OPE-4129 review fix).
+    for (const policy of policies) {
+      const conditions = policyConditions(policy);
+      if (conditions && selectorMatches(policy.selectors, ctx)) {
+        const parsed = toolPolicyConditionsSchema.safeParse(conditions);
+        if (!parsed.success) {
+          return decision(
+            "deny",
+            "deny_policy_block",
+            "Tool access denied because a matching policy uses unsupported runtime conditions.",
+            effectiveProfileIds,
+            [policy.id],
+            {
+              redactionPlan: redaction.redactionPlan,
+              policyExplanation: {
+                policyId: policy.id,
+                policyType: policy.policyType,
+                selectorMatched: true,
+                conditionsError: parsed.error.issues.map((issue) => ({
+                  path: issue.path.join("."),
+                  message: issue.message,
+                })),
+              },
+            },
+          );
+        }
+      }
+    }
+
+    const matchingPolicies = policies
+      .map((policy) => ({ policy, conditionEvaluation: evaluatePolicyConditions(policyConditions(policy), ctx) }))
+      .filter(({ policy, conditionEvaluation }) => selectorMatches(policy.selectors, ctx) && conditionEvaluation.matched);
+
+    const explicitBlock = matchingPolicies.find(({ policy }) => policy.policyType === "block");
+    for (const { policy, conditionEvaluation } of matchingPolicies) {
+      const policyExplanation = {
+        policyId: policy.id,
+        policyType: policy.policyType,
+        selectorMatched: true,
+        conditionsMatched: conditionEvaluation.matchedGroups,
+      };
+      if (unsupportedRuntimePolicyType(policy.policyType)) {
+        return decision(
+          "deny",
+          "deny_policy_block",
+          "Tool access denied because a matching policy uses unsupported runtime semantics.",
+          effectiveProfileIds,
+          [policy.id],
+          { redactionPlan: redaction.redactionPlan, policyExplanation },
+        );
+      }
+      if (policy.policyType === "block") {
+        return decision("deny", "deny_policy_block", policy.description ?? "Tool access is blocked by policy.", effectiveProfileIds, [policy.id], { redactionPlan: redaction.redactionPlan, policyExplanation });
+      }
+      if (policy.policyType === "rate_limit") {
+        if (!rateLimitRule(policy)) {
+          return decision(
+            "deny",
+            "deny_policy_block",
+            "Tool access denied because a matching rate-limit policy has invalid runtime config.",
+            effectiveProfileIds,
+            [policy.id],
+            { redactionPlan: redaction.redactionPlan, policyExplanation },
+          );
+        }
+        const state = await enforceRateLimit(policy, ctx, input.consumeRateLimit === true);
+        if (state?.limited) {
+          return decision("rate_limited", "rate_limited", "Tool access rate limit exceeded.", effectiveProfileIds, [policy.id], { rateLimitState: state, redactionPlan: redaction.redactionPlan, policyExplanation });
+        }
+        continue;
+      }
+      if (policy.policyType === "trust_rule") {
+        const rule = trustRuleConfig(policy);
+        if (!rule || !trustRuleIsActive(policy)) continue;
+        if (!argumentFiltersMatch(rule.argumentFilters, ctx)) continue;
+        // Remembered permissions cannot override an explicit block. Preserve
+        // priority semantics for ordinary allow/require-approval policies.
+        if (explicitBlock) return decision("deny", "deny_policy_block", explicitBlock.policy.description ?? "Tool access is blocked by policy.", effectiveProfileIds, [explicitBlock.policy.id], { redactionPlan: redaction.redactionPlan });
+
+        if (trustRuleNeedsReview(policy, ctx)) {
+          return decision(
+            "require_approval",
+            "requires_review_changed_tool",
+            "Tool definition changed or was quarantined after this trust rule was created; review is required.",
+            effectiveProfileIds,
+            [policy.id],
+            { redactionPlan: redaction.redactionPlan, policyExplanation },
+          );
+        }
+        if (input.consumeRateLimit === true) {
+          await recordTrustRuleHit(policy, ctx, redaction);
+        }
+        return decision("allow", "allow_trust_rule", policy.description ?? "Tool access allowed by trust rule.", effectiveProfileIds, [policy.id], { redactionPlan: redaction.redactionPlan, policyExplanation });
+      }
+      if (policy.policyType === "require_approval") {
+        return decision("require_approval", "requires_approval_policy", policy.description ?? "Tool access requires approval.", effectiveProfileIds, [policy.id], { redactionPlan: redaction.redactionPlan, policyExplanation });
+      }
+      if (policy.policyType === "allow") {
+        return decision("allow", "allow_policy", "Tool access allowed by policy.", effectiveProfileIds, [policy.id], { redactionPlan: redaction.redactionPlan, policyExplanation });
+      }
+    }
+    if (await explicitGrant(ctx)) {
+      return decision("allow", "allow_explicit_grant", "Tool access allowed by explicit grant.", effectiveProfileIds, [], { redactionPlan: redaction.redactionPlan });
+    }
+
+    const entriesByProfile = new Map<string, Array<typeof toolProfileEntries.$inferSelect>>();
+    for (const entry of profileState.entries) {
+      const list = entriesByProfile.get(entry.profileId) ?? [];
+      list.push(entry);
+      entriesByProfile.set(entry.profileId, list);
+    }
+    for (const profile of profileState.profiles) {
+      const entries = entriesByProfile.get(profile.id) ?? [];
+      const matchingEntries = entries.filter((entry) => profileEntryMatches(entry, ctx));
+      if (matchingEntries.some((entry) => entry.effect === "exclude")) continue;
+      if (profile.defaultAction === "allow" || matchingEntries.some((entry) => entry.effect === "include")) {
+        return decision("allow", "allow_profile", "Tool access allowed by effective profile.", effectiveProfileIds, [], { redactionPlan: redaction.redactionPlan });
+      }
+    }
+
+    return decision("deny", "deny_default", "No effective tool profile, grant, or allow policy permits this call.", effectiveProfileIds, [], { redactionPlan: redaction.redactionPlan });
+  }
+
+  async function effectiveProfilesWithCachedData(
+    ctx: ToolAccessContext,
+    bindings: typeof toolProfileBindings.$inferSelect[],
+    profiles: typeof toolProfiles.$inferSelect[]
+  ) {
+    const matchingBindings = bindings.filter((binding) => targetMatches(binding, ctx));
+    if (matchingBindings.length === 0) return { profiles: [], entries: [] as Array<typeof toolProfileEntries.$inferSelect> };
+    const candidateProfileIds = profileIdsInBindingOrder(matchingBindings);
+    const candidateProfiles = profiles.filter(profile => candidateProfileIds.includes(profile.id));
+    
+    const [gateway] = ctx.gatewayId
+      ? await db
+          .select({ defaultProfileMode: toolMcpGateways.defaultProfileMode })
+          .from(toolMcpGateways)
+          .where(and(
+            eq(toolMcpGateways.companyId, ctx.companyId),
+            eq(toolMcpGateways.id, ctx.gatewayId),
+          ))
+          .limit(1)
+      : [];
+    const activeBindings = effectiveToolProfileBindings(
+      matchingBindings,
+      candidateProfiles,
+      ctx.connectionId,
+      { includeAdditiveAppProfiles: gateway?.defaultProfileMode !== "gateway_only" },
+    );
+    const profileIds = profileIdsInBindingOrder(activeBindings);
+    const profilesById = new Map(candidateProfiles.map((profile) => [profile.id, profile]));
+    const activeProfiles = profileIds
+      .map((profileId) => profilesById.get(profileId) ?? null)
+      .filter((profile): profile is typeof toolProfiles.$inferSelect => Boolean(profile && profile.status === "active"));
+    const activeProfileIds = activeProfiles.map((profile) => profile.id);
+    const entries = activeProfileIds.length > 0
+      ? await db.select().from(toolProfileEntries).where(and(eq(toolProfileEntries.companyId, ctx.companyId), inArray(toolProfileEntries.profileId, activeProfileIds)))
+      : [];
+    return { profiles: activeProfiles, entries };
+  }
+
   return {
     decide,
+    decideWithCachedData,
     writeAudit,
     recordInvocation,
     summarizeAndRedact,

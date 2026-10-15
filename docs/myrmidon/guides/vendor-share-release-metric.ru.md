@@ -15,7 +15,7 @@ Vendor-derived files: 6123 of 6812 (89.89%), Δ to myr-v1.6.4: +0.10 pp (+7 file
 ## Vendor-derived files
 ```
 
-Саму долю считает `scripts/myrmidon/vendor-share.mjs` (слит в #563 / OPE-4151)
+Саму долю считает `scripts/myrmidon/vendor-share.mjs` (слит в #563)
 по базе вендора из `scripts/myrmidon/vendor-base.txt`. Δ считается к **строке
 прошлого релиза**: тело предыдущего тега читается через
 `gh release view <прошлый тег> --json body`, и старые числа разбираются из него.

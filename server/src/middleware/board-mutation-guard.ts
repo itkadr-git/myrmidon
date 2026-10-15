@@ -1,4 +1,5 @@
 import type { Request, RequestHandler } from "express";
+import { readProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
 
 const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
 const DEFAULT_DEV_ORIGINS = [
@@ -51,7 +52,7 @@ function trustedOriginsForRequest(req: Request) {
   // not match the public URL (for example when TLS terminates at the
   // edge and the inbound Host is an internal service name). Trust the
   // explicitly-configured PAPERCLIP_PUBLIC_URL when it's set.
-  const publicUrl = parseOrigin(process.env.PAPERCLIP_PUBLIC_URL?.trim());
+  const publicUrl = parseOrigin(readProductEnv("PUBLIC_URL")?.trim());
   if (publicUrl) origins.add(publicUrl);
   return origins;
 }

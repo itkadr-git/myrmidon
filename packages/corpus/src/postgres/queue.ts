@@ -81,6 +81,9 @@ export class PostgresWorkQueue implements WorkQueue {
     // Atomic claim: pick the oldest due pending job and mark it running in one
     // statement; FOR UPDATE SKIP LOCKED makes concurrent workers take
     // different jobs.
+    // Allow up to 1 second of clock skew between the application runtime and
+    // the PostgreSQL server so a freshly enqueued job is immediately claimable.
+    const cutoff = new Date(now.getTime() + 1000);
     const result = await this.db.execute(sql`
       update corpus_parse_jobs
       set status = 'running',
@@ -90,7 +93,7 @@ export class PostgresWorkQueue implements WorkQueue {
         select id from corpus_parse_jobs
         where company_id = ${companyId}
           and status = 'pending'
-          and next_attempt_at <= ${now.toISOString()}
+          and next_attempt_at <= ${cutoff.toISOString()}
         order by next_attempt_at asc, created_at asc
         limit 1
         for update skip locked

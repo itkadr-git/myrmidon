@@ -9,7 +9,7 @@
 import { Router } from "express";
 import type { Db } from "@paperclipai/db";
 import { wsDesiredStateSchema } from "@paperclipai/shared";
-import { forbidden, unauthorized } from "../../errors.js";
+import { HttpError, forbidden, unauthorized } from "../../errors.js";
 import {
   botWorkspacesService,
   botWorkspacesStore,
@@ -25,6 +25,8 @@ export function botWorkspacesRoutes(service: BotWorkspacesService) {
     if (req.actor.type !== "agent" || !req.actor.agentId || !req.actor.companyId) {
       throw forbidden("Only a bot's own agent key can read its workspaces");
     }
+    // The switch of the whole mechanism: botd reads a 503 as "no desired state" and deletes nothing.
+    if (!(await service.isEnabled())) throw new HttpError(503, "bot disk lifecycle disabled");
     const state = await service.desiredState({ companyId: req.actor.companyId, agentId: req.actor.agentId });
     // Serialize exactly the contract: an off-contract answer is a server bug, not a client one.
     res.json(wsDesiredStateSchema.parse(state));

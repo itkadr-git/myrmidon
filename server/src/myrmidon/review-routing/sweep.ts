@@ -21,7 +21,10 @@
 //     repo poll of the configured/known repositories) whose CURRENT head is
 //     green with no review verdict get a `Review PR …` task with the
 //     least-loaded reviewer (both load gates, never the PR author's linked
-//     agent); an approved green head gets a `Merge PR …` steward task;
+//     agent); an approved green head gets a `Merge PR …` steward task that
+//     lands the PR through update-branch: refresh the head onto the base,
+//     wait for green CI on the refreshed head, then merge (1.6.5
+//     UPDATE-BRANCH-STEWARD);
 //  5. a routed task whose recorded head no longer matches the PR's current
 //     head is superseded: cancelled with one system comment naming the new
 //     head;

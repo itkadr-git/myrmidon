@@ -202,7 +202,15 @@ Done
 MD
 ```
 
-Status values: `backlog`, `todo`, `in_progress`, `in_review`, `done`, `blocked`, `cancelled`. Priority values: `critical`, `high`, `medium`, `low`. Other updatable fields: `title`, `description`, `priority`, `assigneeAgentId`, `projectId`, `goalId`, `parentId`, `billingCode`, `blockedByIssueIds`.
+Status values: `backlog`, `todo`, `in_progress`, `in_review`, `done`, `blocked`, `cancelled`. Priority values: `critical`, `high`, `medium`, `low`. Other updatable fields: `title`, `description`, `priority`, `pheromoneStrength`, `casteKey`, `assigneeAgentId`, `projectId`, `goalId`, `parentId`, `billingCode`, `blockedByIssueIds`, `labelIds`.
+
+### Pheromone Strength and Task Caste (1.6.5 F-27)
+
+The swarm queue ranks tasks by a numeric **pheromone strength** (`pheromoneStrength`, integer ≥ 0, default 0) — not only by the `priority` enum. A free agent of a caste takes the task with the **highest effective strength**: the stored strength plus aging (+1 per 24 h waiting, capped at +5) minus 10 per failed run since the last task change (never below 0; design §2.3). A critical (P0) task still preempts the whole queue regardless of strength. A strength change reorders the queue without a restart; updating the task resets the failure penalty.
+
+- **Create with explicit strength**: include `"pheromoneStrength": <int>` in the `POST /api/companies/{companyId}/issues` body (the field is optional; a new task with no strength gets the value the swarm settings map from its `priority` — see the swarm-claim settings page).
+- **Change strength**: `PATCH /api/issues/{issueId}` with `{ "pheromoneStrength": <int> }`. The field accepts `null` on patch — that resets the strength to the default of the task's `priority`.
+- **Task caste (1.6.5 rework)**: the caste is the `casteKey` field — a key of the company's caste directory (`GET /api/companies/{companyId}/myrmidon/castes`). Set it via `PATCH /api/issues/{issueId}` with `{ "casteKey": "<key>" }` or `null` to clear (the task then takes its project's `defaultCasteKey`, then the company default). An unknown key fails with 422 `issue_caste_unknown`. The legacy carrier — the `role:<key>` label — is migrated to `casteKey` by migration 0383 for castes that exist in the directory.
 
 ### Status Quick Guide
 
@@ -294,7 +302,7 @@ POST /api/companies/{companyId}/approvals
 
 ## Issue-Thread Interactions
 
-Issue-thread interactions are first-class cards that render in the issue thread and capture a typed response from whoever picks them up — the board or another agent. Use them instead of asking for a yes/no or a checklist in markdown prose — interactions create audit trails, drive idempotency, and wake the assignee through a structured continuation path.
+Issue-thread interactions are first-class cards that render in the issue thread and capture a typed response from whoever picks them up — the board or another agent. Use them instead of asking for a yes/no or a checklist in markdown prose — interactions create audit trails, drive idempotency, and wake the assignee through a structured continuation path. When the question or confirmation is a human-only decision for the task owner, the owner gets a plain message from the bot instead of a card: you explain it with `myrmidonMessageOwner` and close it from the owner's text answer with `myrmidonResolveInteractionByOwnerReply` — read `references/owner-dialogue.md`.
 
 A card is a coordination record, not a grant of authority. Getting an interaction accepted never authorizes the underlying action: task creation, tool/provider calls, deployments, spend, hiring, secret access, and formal approvals each re-run their own authorization when you attempt them.
 
@@ -547,7 +555,7 @@ Exact response fields are documented in `skills/paperclip/references/api-referen
 ## Critical Rules
 
 - **Never retry a 409.** The task belongs to someone else.
-- **Never look for unassigned work.** No assignments = exit. Exception: when the swarm claim pilot is enabled, a free agent may take the top task of its role's queue itself — `POST /api/myrmidon/companies/{companyId}/swarm-claim/claim` with its own agent JWT (`runId` optional). When woken with reason `swarm_claim_queue` and a `contextSnapshot.issueId`, treat that issue as assigned work and checkout normally.
+- **Never look for unassigned work.** No assignments = exit. Exception: when the swarm is enabled, the board itself assigns a task of your role's queue to a free agent of the caste and wakes that agent on it (wake reason `swarm_matched`, with `contextSnapshot.issueId`). That task is already yours — treat it as assigned work and checkout normally. Do not go looking for work on your own; a free agent may also ask the board for one with `POST /api/myrmidon/companies/{companyId}/swarm-claim/claim` using its own agent JWT (`runId` optional).
 - **Self-assign only for explicit @-mention handoff.** Requires a mention-triggered wake with `PAPERCLIP_WAKE_COMMENT_ID` and a comment that clearly directs you to do the task. Use checkout (never direct assignee patch).
 - **Honor "send it back to me" requests from board users.** If a board/user asks for review handoff (e.g. "let me review it", "assign it back to me"), reassign to them with `assigneeAgentId: null` and `assigneeUserId: "<requesting-user-id>"`, typically setting status to `in_review` instead of `done`. Resolve the user id from the triggering comment's `authorUserId` when available, else the issue's `createdByUserId` if it matches the requester context.
 - **Start actionable work before planning-only closure.** Do concrete work in the same heartbeat unless the task asks for a plan or review only.

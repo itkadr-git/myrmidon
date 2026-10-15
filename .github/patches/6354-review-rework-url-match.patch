@@ -1,0 +1,788 @@
+From fe50f8c96fb547656a26ebde0c48fa942ad701ee Mon Sep 17 00:00:00 2001
+From: adm-dev-eng-5 <adm-dev-eng-5@agents.myrmidon.invalid>
+Date: Thu, 8 Oct 2026 15:37:38 +0000
+Subject: [PATCH] fix(review-rework): exact PR url match in
+ deliveringTaskAssignee + sql-template lint
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+myrmidon(1.6.5 REVIEW-REWORK-F02): the url branch of the delivering-task
+lookup built `like ${"..."}%` — the wildcard sat outside the bound
+parameter, so every call reached Postgres as `like $n%` and died with a
+syntax error; the review-return loop was dead for tasks whose PR is
+reachable only through a pull_request work-product url. The branch now
+strips query/fragment parts and anchors on
+/github.com/<repo>/pull/<number>(/|$), so /pull/12 and /pull/12/files
+match PR 12 while /pull/123 no longer matches a search for 12. The
+metadata repo/number branch is unchanged.
+
+Adds:
+- embedded-Postgres regression test
+  server/src/myrmidon/review-rework/store.db.myrmidon.test.ts
+- CI gate scripts/myrmidon/ci/sql-template-lint.mjs (+ node:test suite)
+  flagging '%' glued to a sql-template interpolation edge across
+  server/src, wired as a step in the checks job
+- change fragment docs/myrmidon/changes/myr-1-6-5-review-rework-url-match.md
+
+Co-Authored-By: Paperclip <noreply@paperclip.ing>
+---
+ .github/workflows/myrmidon-ci.yml             |   4 +
+ .../myr-1-6-5-review-rework-url-match.md      |  42 +++
+ scripts/myrmidon/ci/sql-template-lint.mjs     | 309 ++++++++++++++++++
+ .../myrmidon/ci/sql-template-lint.test.mjs    | 136 ++++++++
+ .../review-rework/store.db.myrmidon.test.ts   | 197 +++++++++++
+ server/src/myrmidon/review-rework/store.ts    |  10 +-
+ 6 files changed, 697 insertions(+), 1 deletion(-)
+ create mode 100644 docs/myrmidon/changes/myr-1-6-5-review-rework-url-match.md
+ create mode 100644 scripts/myrmidon/ci/sql-template-lint.mjs
+ create mode 100644 scripts/myrmidon/ci/sql-template-lint.test.mjs
+ create mode 100644 server/src/myrmidon/review-rework/store.db.myrmidon.test.ts
+
+diff --git a/.github/workflows/myrmidon-ci.yml b/.github/workflows/myrmidon-ci.yml
+index 4818164cf..efa0a363d 100644
+--- a/.github/workflows/myrmidon-ci.yml
++++ b/.github/workflows/myrmidon-ci.yml
+@@ -558,6 +558,10 @@ jobs:
+           printf 'Running %s\n' "${files[@]}"
+           node --test "${files[@]}"
+ 
++      - name: SQL template lint (myrmidon)
++        if: ${{ !cancelled() }}
++        run: node scripts/myrmidon/ci/sql-template-lint.mjs --root server/src
++
+       - name: Secrets (gitleaks, new commits)
+         if: ${{ !cancelled() }}
+         env:
+diff --git a/docs/myrmidon/changes/myr-1-6-5-review-rework-url-match.md b/docs/myrmidon/changes/myr-1-6-5-review-rework-url-match.md
+new file mode 100644
+index 000000000..3c3457d79
+--- /dev/null
++++ b/docs/myrmidon/changes/myr-1-6-5-review-rework-url-match.md
+@@ -0,0 +1,42 @@
++---
++divergence-section: Трек 5 — эксплуатация
++---
++
++## changelog-en
++
++### Review-return loop finds the delivering task by PR url again (REVIEW-REWORK F-02)
++
++- The url branch of the delivering-task lookup built `like $n%` — the wildcard
++  sat outside the bound parameter, so Postgres answered every call with a
++  syntax error and the review-return loop was dead for tasks whose PR is
++  reachable only through a pull_request work-product url. The branch now
++  matches the PR exactly: query/fragment parts are stripped and the url is
++  anchored on `/github.com/<repo>/pull/<number>(/|$)`, so `/pull/12` and
++  `/pull/12/files` match PR 12 while `/pull/123` no longer matches a search
++  for 12. The metadata repo/number branch is unchanged.
++- New guard: `scripts/myrmidon/ci/sql-template-lint.mjs` (CI step in the
++  `checks` job) flags a `%` wildcard glued to a `sql` template interpolation
++  edge — the exact bug class — across `server/src`; its node:test suite runs
++  with the other script tests. Embedded-Postgres regression test:
++  `server/src/myrmidon/review-rework/store.db.myrmidon.test.ts`.
++
++## changelog-ru
++
++### Петля возврата ревью снова находит задачу по url PR (REVIEW-REWORK F-02)
++
++- Ветка поиска по url строила `like $n%`: wildcard оставался за пределами
++  параметра, Postgres отвечал синтаксической ошибкой на каждый вызов, и петля
++  возврата ревью была мертва для задач, чей PR виден только через url
++  work-product типа pull_request. Ветка теперь совпадает точно: хвосты `#`/`?`
++  отбрасываются, url привязан к `/github.com/<repo>/pull/<number>(/|$)` —
++  `/pull/12` и `/pull/12/files` соответствуют PR 12, а `/pull/123` больше не
++  подходит на поиск 12. Ветка по metadata repo/number не тронута.
++- Новый сторож: `scripts/myrmidon/ci/sql-template-lint.mjs` (шаг в job
++  `checks`) флагует `%`, приклеенный к краю интерполяции шаблона `sql`, — ровно
++  этот класс ошибки — по всему `server/src`; сюита node:test идёт вместе с
++  остальными тестами скриптов. Регрессия на embedded-Postgres:
++  `server/src/myrmidon/review-rework/store.db.myrmidon.test.ts`.
++
++## divergence
++
++| REVIEW-REWORK | Ветка matching по url PR в `deliveringTaskAssignee` заменена на точную: `regexp_replace` отрезает `#`/`?`-хвост, url привязан к `/github.com/<repo>/pull/<n>(/\|$)`; поверх — CI-линт `scripts/myrmidon/ci/sql-template-lint.mjs` против `%` на краю `sql`-шаблонов | — (правка в fork-owned `server/src/myrmidon/review-rework/store.ts`) | шаблон `like ${"..."}%` оставлял wildcard вне параметра — Postgres отвечал `like $n%` синтаксической ошибкой на каждый вызов, петля возврата ревью была мертва | `server/src/myrmidon/review-rework/store.db.myrmidon.test.ts` (embedded PG) + `scripts/myrmidon/ci/sql-template-lint.test.mjs` (checks) | Никогда — наше поведение. Снятие: вернуть прежний like в `store.ts`, линт-шаг оставить как сторож класса ошибки | (этот PR) |
+diff --git a/scripts/myrmidon/ci/sql-template-lint.mjs b/scripts/myrmidon/ci/sql-template-lint.mjs
+new file mode 100644
+index 000000000..40454bc74
+--- /dev/null
++++ b/scripts/myrmidon/ci/sql-template-lint.mjs
+@@ -0,0 +1,309 @@
++#!/usr/bin/env node
++// myrmidon(1.6.5 SQL-TEMPLATE-LINT): a CI gate against the bug class that killed
++// the review-rework loop (`like $6%` — Postgres syntax error, 23 failures per
++// 15 minutes on the live board). In a drizzle `sql` template every `${...}`
++// becomes a positional parameter ($1, $2, ...). A `%` wildcard left in the
++// literal text right AFTER a closing interpolation (`... ${pat}%`) or right
++// BEFORE an opening one (`like %${pat}`) is no longer part of a string value —
++// the wire sees bare SQL (`like $6%`) and Postgres refuses it with a syntax
++// error that only surfaces at runtime. Wildcards belong INSIDE the interpolated
++// value (`` like ${`${term}%`} ``), which this scan ignores by construction:
++// it inspects only the literal text between interpolations.
++//
++//   node scripts/myrmidon/ci/sql-template-lint.mjs [--root <dir>] [--files f1.ts ...]
++//
++// Default root: server/src. Every *.ts file with a `sql\`` template is scanned
++// (`sql.raw\`` is a plain string construct and is not flagged). Output: one
++// line per violation. Exit 0 clean, exit 1 violations found, exit 2 usage
++// errors. Node built-ins only (same contract as change-fragments-gate.mjs).
++
++import fs from "node:fs";
++import path from "node:path";
++
++const DEFAULT_ROOT = "server/src";
++
++/**
++ * Skip a JS string literal: `i` is the index of the opening quote. Returns the
++ * index after the closing quote (or end of source).
++ */
++export function skipString(source, i, quote) {
++  i += 1;
++  while (i < source.length) {
++    if (source[i] === "\\") {
++      i += 2;
++      continue;
++    }
++    if (source[i] === quote) return i + 1;
++    i += 1;
++  }
++  return i;
++}
++
++/**
++ * Skip a template literal: `i` is the index of the opening backtick. Handles
++ * escaped characters and nested `${ ... }` expressions. Returns the index
++ * after the closing backtick.
++ */
++export function skipTemplate(source, i) {
++  i += 1;
++  while (i < source.length) {
++    const ch = source[i];
++    if (ch === "\\") {
++      i += 2;
++      continue;
++    }
++    if (ch === "`") return i + 1;
++    if (ch === "$" && source[i + 1] === "{") {
++      i = skipExpression(source, i + 1);
++      continue;
++    }
++    i += 1;
++  }
++  return i;
++}
++
++/**
++ * Skip a `${ ... }` expression body: `i` is the index of the opening brace.
++ * Strings, template literals (recursively) and comments are consumed as
++ * units so their braces never confuse the depth counter. Returns the index
++ * after the matching closing brace.
++ */
++export function skipExpression(source, i) {
++  let depth = 0;
++  while (i < source.length) {
++    const ch = source[i];
++    if (ch === "'" || ch === '"') {
++      i = skipString(source, i, ch);
++      continue;
++    }
++    if (ch === "`") {
++      i = skipTemplate(source, i);
++      continue;
++    }
++    if (ch === "/" && source[i + 1] === "/") {
++      while (i < source.length && source[i] !== "\n") i += 1;
++      continue;
++    }
++    if (ch === "/" && source[i + 1] === "*") {
++      const end = source.indexOf("*/", i + 2);
++      i = end === -1 ? source.length : end + 2;
++      continue;
++    }
++    if (ch === "{") {
++      depth += 1;
++      i += 1;
++      continue;
++    }
++    if (ch === "}") {
++      depth -= 1;
++      i += 1;
++      if (depth === 0) return i;
++      continue;
++    }
++    i += 1;
++  }
++  return i;
++}
++
++/**
++ * Collect the literal text parts of one template opened at the backtick
++ * `open`: each entry is { start, end } (absolute offsets, half-open). Parts
++ * between interpolations end where the `${` begins; the part after an
++ * interpolation starts right after its `}`.
++ */
++export function templateTextParts(source, open) {
++  const parts = [];
++  let i = open + 1;
++  let segStart = i;
++  while (i < source.length) {
++    const ch = source[i];
++    if (ch === "\\") {
++      i += 2;
++      continue;
++    }
++    if (ch === "`") {
++      parts.push({ start: segStart, end: i });
++      return { parts, close: i };
++    }
++    if (ch === "$" && source[i + 1] === "{") {
++      parts.push({ start: segStart, end: i });
++      i = skipExpression(source, i + 1);
++      segStart = i;
++      // an interpolation may close the template right after `}` is impossible;
++      // resume scanning template text
++      continue;
++    }
++    i += 1;
++  }
++  parts.push({ start: segStart, end: source.length });
++  return { parts, close: source.length };
++}
++
++/**
++ * Lint one source text. Finds every `sql` template (the identifier `sql`
++ * directly followed by a backtick; `sql.raw(...)` and plain template literals
++ * are not scanned) and flags a literal `%` glued to an interpolation edge:
++ *   - `after-interpolation`: part of text starting (whitespace ignored) with
++ *     `%` that does NOT begin the template (so it follows a `}`);
++ *   - `before-interpolation`: part of text ending with `%` (whitespace
++ *     ignored) that is followed by a `${` inside the same template.
++ * Returns an array of { file, line, column, kind, snippet }.
++ */
++export function lintSqlTemplates(source, fileName = "<source>") {
++  const violations = [];
++  const lineStarts = computeLineStarts(source);
++  const push = (offset, kind, partText) => {
++    const pos = locate(lineStarts, offset);
++    const lineStart = lineStarts[pos.line - 1];
++    const lineEnd = lineStarts[pos.line] ?? source.length;
++    const snippet = source.slice(lineStart, lineEnd).trim().slice(0, 120);
++    violations.push({ file: fileName, line: pos.line, column: pos.column, kind, snippet });
++    void partText;
++  };
++  const re = /\bsql`/g;
++  let match;
++  while ((match = re.exec(source)) !== null) {
++    const open = match.index + match[0].length - 1;
++    const { parts, close } = templateTextParts(source, open);
++    for (let idx = 0; idx < parts.length; idx += 1) {
++      const part = parts[idx];
++      const text = source.slice(part.start, part.end);
++      if (text.length === 0) continue;
++      // `} %` — the part is not the leading text, so it follows an interpolation.
++      if (idx > 0 && /^\s*%/.test(text)) {
++        push(part.start + text.search(/%/), "after-interpolation", text);
++      }
++      // `% ${` — this part is followed by an interpolation inside the template.
++      const hasNextInterpolation = idx + 1 < parts.length;
++      if (hasNextInterpolation && /%\s*$/.test(text)) {
++        // the last `%` in the part is the one glued to the opening `${`
++        const pctInPart = text.lastIndexOf("%");
++        push(part.start + pctInPart, "before-interpolation", text);
++      }
++    }
++    re.lastIndex = skipTemplate(source, open);
++    void close;
++  }
++  return violations;
++}
++
++function computeLineStarts(source) {
++  const starts = [0];
++  for (let i = 0; i < source.length; i += 1) {
++    if (source[i] === "\n") starts.push(i + 1);
++  }
++  return starts;
++}
++
++function locate(lineStarts, offset) {
++  let lo = 0;
++  let hi = lineStarts.length - 1;
++  while (lo < hi) {
++    const mid = (lo + hi + 1) >> 1;
++    if (lineStarts[mid] <= offset) lo = mid;
++    else hi = mid - 1;
++  }
++  return { line: lo + 1, column: offset - lineStarts[lo] + 1 };
++}
++
++/** Every *.ts file under `root` (skips node_modules and dot-directories). */
++export function collectTsFiles(root) {
++  const out = [];
++  const walk = (dir) => {
++    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
++      const full = path.join(dir, entry.name);
++      if (entry.isDirectory()) {
++        if (entry.name === "node_modules" || entry.name.startsWith(".")) continue;
++        walk(full);
++      } else if (entry.isFile() && full.endsWith(".ts")) {
++        out.push(full);
++      }
++    }
++  };
++  if (fs.statSync(root).isDirectory()) walk(root);
++  else out.push(root);
++  return out.sort();
++}
++
++/** Lint a list of file paths; violations carry paths relative to `cwdRoot`. */
++export function lintPaths(files, cwdRoot = process.cwd()) {
++  const violations = [];
++  for (const file of files) {
++    const source = fs.readFileSync(file, "utf8");
++    if (!/(?<![A-Za-z0-9_.])sql`/.test(source)) continue;
++    const rel = path.relative(cwdRoot, file) || file;
++    for (const v of lintSqlTemplates(source, rel)) violations.push(v);
++  }
++  return violations;
++}
++
++export function formatViolations(violations) {
++  return violations.map(
++    (v) =>
++      `${v.file}:${v.line}:${v.column}: ${v.kind}: '%' glued to a sql-template interpolation edge ` +
++      `(the wildcard leaves the parameter and reaches the wire as bare SQL, e.g. 'like $6%'): ${v.snippet}`,
++  );
++}
++
++function parseArgs(argv) {
++  const opts = { root: DEFAULT_ROOT, files: null };
++  for (let i = 0; i < argv.length; i += 1) {
++    if (argv[i] === "--root") {
++      opts.root = argv[++i];
++    } else if (argv[i] === "--files") {
++      opts.files = argv.slice(i + 1);
++      break;
++    } else if (argv[i] === "--help" || argv[i] === "-h") {
++      opts.help = true;
++    } else {
++      return { bad: true };
++    }
++  }
++  return opts;
++}
++
++const invokedDirectly =
++  typeof process !== "undefined" &&
++  process.argv[1] &&
++  import.meta.url === pathToFileUrl(path.resolve(process.argv[1]));
++
++function pathToFileUrl(absPath) {
++  return "file://" + (absPath.startsWith("/") ? absPath : "/" + absPath);
++}
++
++export { invokedDirectly, parseArgs, pathToFileUrl };
++
++if (invokedDirectly) {
++  const opts = parseArgs(process.argv.slice(2));
++  if (opts.help) {
++    process.stdout.write(
++      "usage: node scripts/myrmidon/ci/sql-template-lint.mjs [--root <dir>] [--files f1.ts f2.ts]\n",
++    );
++    process.exit(0);
++  }
++  if (opts.bad) {
++    process.stderr.write("sql-template-lint: unrecognized arguments\n");
++    process.exit(2);
++  }
++  const targets = opts.files ?? [opts.root];
++  const existing = targets.filter((p) => fs.existsSync(p));
++  if (existing.length === 0) {
++    process.stderr.write(`sql-template-lint: none of the paths exist: ${targets.join(", ")}\n`);
++    process.exit(2);
++  }
++  const files = existing.flatMap((p) => (fs.statSync(p).isDirectory() ? collectTsFiles(p) : [p]));
++  const violations = lintPaths(files, process.cwd());
++  if (violations.length > 0) {
++    process.stderr.write(`${formatViolations(violations).join("\n")}\n`);
++    process.stderr.write(
++      "\nsql-template-lint: " +
++        violations.length +
++        " violation(s). Put the wildcard INSIDE the interpolated value" +
++        " (a sql template turns every ${...} into a $n parameter; a '%' left in the\n" +
++        "template text next to an edge reaches Postgres as bare SQL: 'like $6%').\n",
++    );
++    process.exit(1);
++  }
++  process.stdout.write(`sql-template-lint: clean (${files.length} file(s) scanned)\n`);
++  process.exit(0);
++}
+diff --git a/scripts/myrmidon/ci/sql-template-lint.test.mjs b/scripts/myrmidon/ci/sql-template-lint.test.mjs
+new file mode 100644
+index 000000000..f75b32c35
+--- /dev/null
++++ b/scripts/myrmidon/ci/sql-template-lint.test.mjs
+@@ -0,0 +1,136 @@
++// myrmidon(1.6.5 SQL-TEMPLATE-LINT): node:test suite of the sql-template lint
++// (see sql-template-lint.mjs). Pinned: the `like $6%` bug class that killed the
++// review-rework loop is flagged in both edge positions; wildcards correctly
++// interpolated INSIDE a value are not flagged; `sql.raw` strings and non-sql
++// templates are out of scope; the shipped review-rework fix stays clean.
++
++import { test } from "node:test";
++import assert from "node:assert/strict";
++import fs from "node:fs";
++import os from "node:os";
++import nodePath from "node:path";
++import {
++  lintSqlTemplates,
++  collectTsFiles,
++  formatViolations,
++  parseArgs,
++  skipTemplate,
++  templateTextParts,
++} from "./sql-template-lint.mjs";
++
++const kinds = (violations) => violations.map((v) => v.kind);
++
++test("flags a wildcard left after a closing interpolation (the review-rework bug)", () => {
++  const source =
++    "const q = sql`${issueWorkProducts.url} like ${\"%/x/\" + n}%`;\n";
++  const v = lintSqlTemplates(source, "a.ts");
++  assert.equal(v.length, 1);
++  assert.equal(v[0].kind, "after-interpolation");
++  assert.equal(v[0].line, 1);
++});
++
++test("flags a wildcard sitting before an opening interpolation", () => {
++  const source = "const q = sql`select 1 where body like %${pattern}`;\n";
++  const v = lintSqlTemplates(source, "a.ts");
++  assert.equal(v.length, 1);
++  assert.equal(v[0].kind, "before-interpolation");
++});
++
++test("accepts a wildcard inside the interpolated value", () => {
++  const source = "const q = sql`${chatActions.payload}::text like ${`%${marker}%`}`;\n";
++  assert.deepEqual(lintSqlTemplates(source, "a.ts"), []);
++});
++
++test("accepts a wildcard inside its own interpolation on both ends", () => {
++  const source = "const q = sql`where body like ${`${term}%`}`;\n";
++  assert.deepEqual(lintSqlTemplates(source, "a.ts"), []);
++});
++
++test("ignores percent arithmetic in sql.raw strings (not a parameterized template)", () => {
++  const source = "await db.execute(sql.raw(`SELECT (s % ${agentCount}) FROM t`));\n";
++  assert.deepEqual(lintSqlTemplates(source, "a.ts"), []);
++});
++
++test("ignores sql.raw with interpolation too — only sql` templates are scanned", () => {
++  const source = "const q = sql`select 1`; const r = sql.raw(`select ${n}`);\n";
++  assert.deepEqual(lintSqlTemplates(source, "a.ts"), []);
++});
++
++test("multi-line flag: the after-interpolation edge on its own line", () => {
++  const source = [
++    "const q = sql`",
++    "  select id from t",
++    `  where col like \${"%" + pat}%`,
++    "`;",
++  ].join("\n");
++  const v = lintSqlTemplates(source, "a.ts");
++  assert.equal(v.length, 1);
++  assert.equal(v[0].kind, "after-interpolation");
++  assert.equal(v[0].line, 3);
++});
++
++test("a trailing % at the very start of a template is literal text, not an edge", () => {
++  const source = "const q = sql`select '%' from t where x = ${v}`;\n";
++  assert.deepEqual(lintSqlTemplates(source, "a.ts"), []);
++});
++
++test("percent in a quoted string inside an interpolation is not template text", () => {
++  const source = "const q = sql`select 1 where fmt = ${'%' + n}`;\n";
++  assert.deepEqual(lintSqlTemplates(source, "a.ts"), []);
++});
++
++test("templateTextParts splits interpolations out of the literal text", () => {
++  const source = "const q = sql`a${b}c`;\n";
++  const open = source.indexOf("sql`") + 3; // index of the backtick
++  const { parts } = templateTextParts(source, open);
++  assert.deepEqual(
++    parts.map((p) => source.slice(p.start, p.end)),
++    ["a", "c"],
++  );
++});
++
++test("skipTemplate walks past nested braces, strings and quoted backticks", () => {
++  // braces hide inside quoted strings; a backtick hides inside a quoted string —
++  // the scanner must find the real closing backtick only.
++  const source = "sql`x${ a + '{' }y${ '`' }z`tail";
++  const after = skipTemplate(source, source.indexOf("`"));
++  assert.equal(source.slice(0, after), "sql`x${ a + '{' }y${ '`' }z`");
++  assert.equal(after, source.length - "tail".length);
++});
++
++test("the fixed review-rework predicate is clean", () => {
++  const source =
++    "sql`regexp_replace(${issueWorkProducts.url}, '[#?].*$', '') ~ ('/github.com/' || ${pr.repo} || '/pull/' || ${String(pr.number)} || '(/|$)')`;\n";
++  assert.deepEqual(lintSqlTemplates(source, "a.ts"), []);
++});
++
++test("formatViolations names file, line and kind", () => {
++  const source = "const q = sql`x like ${p}%`;\n";
++  const [v] = lintSqlTemplates(source, "pkg/store.ts");
++  const line = formatViolations([v])[0];
++  assert.match(line, /^pkg\/store\.ts:1:\d+: after-interpolation/);
++});
++
++test("collectTsFiles walks a tree, skips node_modules and dot-dirs", (t) => {
++  const dir = fs.mkdtempSync(nodePath.join(os.tmpdir(), "sql-lint-"));
++  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
++  fs.writeFileSync(nodePath.join(dir, "a.ts"), "1");
++  fs.mkdirSync(nodePath.join(dir, "sub"));
++  fs.writeFileSync(nodePath.join(dir, "sub", "b.ts"), "2");
++  fs.mkdirSync(nodePath.join(dir, "node_modules"));
++  fs.writeFileSync(nodePath.join(dir, "node_modules", "c.ts"), "3");
++  fs.mkdirSync(nodePath.join(dir, ".cache"));
++  fs.writeFileSync(nodePath.join(dir, ".cache", "d.ts"), "4");
++  fs.writeFileSync(nodePath.join(dir, "e.js"), "5");
++  const files = collectTsFiles(dir);
++  assert.deepEqual(
++    files.map((f) => nodePath.relative(dir, f).split(nodePath.sep).join("/")).sort(),
++    ["a.ts", "sub/b.ts"],
++  );
++});
++
++test("parseArgs accepts --root/--files/--help and rejects unknown flags", () => {
++  assert.deepEqual(parseArgs(["--root", "x"]), { root: "x", files: null });
++  assert.deepEqual(parseArgs(["--files", "a.ts", "b.ts"]), { root: "server/src", files: ["a.ts", "b.ts"] });
++  assert.equal(parseArgs(["--wat"]).bad, true);
++});
+diff --git a/server/src/myrmidon/review-rework/store.db.myrmidon.test.ts b/server/src/myrmidon/review-rework/store.db.myrmidon.test.ts
+new file mode 100644
+index 000000000..ab2b0e0b2
+--- /dev/null
++++ b/server/src/myrmidon/review-rework/store.db.myrmidon.test.ts
+@@ -0,0 +1,197 @@
++// myrmidon(1.6.5 REVIEW-REWORK-F02): the database half of `deliveringTaskAssignee`'s
++// url branch. On the live board the branch died with `like $n%` — a SQL syntax
++// error, because the wildcard sat outside the parameter — which killed the whole
++// review-return loop for tasks whose PR is only reachable through a work-product
++// url. This test pins the fixed behaviour against a real Postgres: an exact PR
++// number match (a trailing path segment like /files is allowed, /pull/123 must
++// not answer to a search for 12) and the metadata branch left untouched.
++//
++// Neutral data only: agent-a, example/repo.
++
++import { randomUUID } from "node:crypto";
++import { afterAll, beforeAll, describe, expect, it } from "vitest";
++import { agents, companies, createDb, issueWorkProducts, issues } from "@paperclipai/db";
++import {
++  getEmbeddedPostgresTestSupport,
++  startEmbeddedPostgresTestDatabase,
++} from "../../__tests__/helpers/embedded-postgres.js";
++import { createPgReviewReworkStore } from "./store.js";
++
++const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
++const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
++
++type Db = ReturnType<typeof createDb>;
++
++describeEmbeddedPostgres("myrmidon(1.6.5 REVIEW-REWORK-F02) deliveringTaskAssignee url match", () => {
++  let db!: Db;
++  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
++  let store!: ReturnType<typeof createPgReviewReworkStore>;
++  let companyId!: string;
++  let delivererAgentId!: string;
++
++  /** A task that carries no work product — used as the excluded review issue. */
++  let excludeIssueId!: string;
++
++  async function seedTaskWithTitle(title: string): Promise<string> {
++    const row = await db
++      .insert(issues)
++      .values({ companyId, title, status: "in_progress", assigneeAgentId: delivererAgentId })
++      .returning()
++      .then((rows) => rows[0]!);
++    return row.id;
++  }
++
++  async function attachPullRequestWorkProduct(
++    issueId: string,
++    url: string,
++    metadata: Record<string, unknown> | null,
++  ): Promise<void> {
++    await db.insert(issueWorkProducts).values({
++      companyId,
++      issueId,
++      type: "pull_request",
++      provider: "github",
++      title: `PR ${url}`,
++      url,
++      status: "active",
++      metadata,
++    });
++  }
++
++  beforeAll(async () => {
++    tempDb = await startEmbeddedPostgresTestDatabase("myrmidon-review-rework-store-");
++    db = createDb(tempDb.connectionString);
++    store = createPgReviewReworkStore(db);
++
++    const company = await db
++      .insert(companies)
++      .values({ name: `company-a ${randomUUID()}`, issuePrefix: `RR${randomUUID().slice(0, 6).toUpperCase()}` })
++      .returning()
++      .then((rows) => rows[0]!);
++    companyId = company.id;
++
++    const deliverer = await db
++      .insert(agents)
++      .values({
++        companyId,
++        name: "agent-a",
++        role: "engineer",
++        permissions: {},
++        adapterType: "process",
++        adapterConfig: {},
++        runtimeConfig: {},
++      })
++      .returning()
++      .then((rows) => rows[0]!);
++    delivererAgentId = deliverer.id;
++
++    excludeIssueId = await seedTaskWithTitle("review-task");
++
++    // Canonical work-product url (the format the review-rework resolver writes).
++    const canonicalTaskId = await seedTaskWithTitle("delivering-task-canonical");
++    await attachPullRequestWorkProduct(
++      canonicalTaskId,
++      "https://github.com/example/repo/pull/12",
++      null,
++    );
++
++    // A trailing path segment (PR files view) still identifies the same PR.
++    const filesViewTaskId = await seedTaskWithTitle("delivering-task-files-view");
++    await attachPullRequestWorkProduct(
++      filesViewTaskId,
++      "https://github.com/example/repo/pull/77/files",
++      null,
++    );
++
++    // A neighbouring, longer PR number must never answer to a shorter search.
++    const neighbourTaskId = await seedTaskWithTitle("delivering-task-neighbour-number");
++    await attachPullRequestWorkProduct(
++      neighbourTaskId,
++      "https://github.com/example/repo/pull/123",
++      null,
++    );
++  });
++
++  afterAll(async () => {
++    await tempDb?.cleanup();
++  });
++
++  it("finds the delivering task's assignee through the canonical url", async () => {
++    const assignee = await store.deliveringTaskAssignee(
++      companyId,
++      { repo: "example/repo", number: 12 },
++      excludeIssueId,
++    );
++    expect(assignee).toBe(delivererAgentId);
++  });
++
++  it("does not match a different PR number (12 is not 1)", async () => {
++    const assignee = await store.deliveringTaskAssignee(
++      companyId,
++      { repo: "example/repo", number: 1 },
++      excludeIssueId,
++    );
++    expect(assignee).toBeNull();
++  });
++
++  it("matches a url with a trailing path segment (/pull/77/files for PR 77)", async () => {
++    const assignee = await store.deliveringTaskAssignee(
++      companyId,
++      { repo: "example/repo", number: 77 },
++      excludeIssueId,
++    );
++    expect(assignee).toBe(delivererAgentId);
++  });
++
++  it("does not match a longer neighbour number (/pull/123 for a search of 12)", async () => {
++    // `example/repo` PR 12 has its own canonical row, so isolate the neighbour
++    // case with a repo that only owns /pull/123.
++    const neighbourTaskId = await seedTaskWithTitle("delivering-task-only-neighbour");
++    await attachPullRequestWorkProduct(
++      neighbourTaskId,
++      "https://github.com/example/other/pull/123",
++      null,
++    );
++    const assignee = await store.deliveringTaskAssignee(
++      companyId,
++      { repo: "example/other", number: 12 },
++      excludeIssueId,
++    );
++    expect(assignee).toBeNull();
++  });
++
++  it("ignores archived work products", async () => {
++    const archivedTaskId = await seedTaskWithTitle("delivering-task-archived");
++    await db.insert(issueWorkProducts).values({
++      companyId,
++      issueId: archivedTaskId,
++      type: "pull_request",
++      provider: "github",
++      title: "archived PR",
++      url: "https://github.com/example/archived/pull/9",
++      status: "archived",
++      metadata: null,
++    });
++    const assignee = await store.deliveringTaskAssignee(
++      companyId,
++      { repo: "example/archived", number: 9 },
++      excludeIssueId,
++    );
++    expect(assignee).toBeNull();
++  });
++
++  it("strips query and fragment parts before matching", async () => {
++    const fragTaskId = await seedTaskWithTitle("delivering-task-fragment");
++    await attachPullRequestWorkProduct(
++      fragTaskId,
++      "https://github.com/example/frag/pull/5#discussion_r1",
++      null,
++    );
++    const assignee = await store.deliveringTaskAssignee(
++      companyId,
++      { repo: "example/frag", number: 5 },
++      excludeIssueId,
++    );
++    expect(assignee).toBe(delivererAgentId);
++  });
++});
+diff --git a/server/src/myrmidon/review-rework/store.ts b/server/src/myrmidon/review-rework/store.ts
+index 7a0026db3..a51550ac0 100644
+--- a/server/src/myrmidon/review-rework/store.ts
++++ b/server/src/myrmidon/review-rework/store.ts
+@@ -315,7 +315,15 @@ export function createPgReviewReworkStore(db: Db): ReviewReworkStore {
+             or(
+               sql`lower(${issueWorkProducts.metadata} ->> 'repo') = ${pr.repo}
+                   and cast(${issueWorkProducts.metadata} ->> 'number' as text) = ${String(pr.number)}`,
+-              sql`${issueWorkProducts.url} like ${"%/github.com/" + pr.repo + "/pull/" + pr.number}%`,
++              // myrmidon(1.6.5 REVIEW-REWORK-F02): the url branch matched the PR exactly
++              // (whole number, optional trailing path segments such as /files; query and
++              // fragment parts are stripped). The previous `like ${"..."}%` left the
++              // wildcard outside the parameter — `like $n%` — a syntax error at runtime,
++              // and a trailing-wildcard like also matched /pull/1234 when searching for
++              // PR 123. Work-product urls are written canonical (`https://github.com/
++              // <owner>/<repo>/pull/<n>`, review-rework/resolver.ts), so a regex anchored
++              // on `/github.com/<repo>/pull/<n>(/|$)` also covers scheme-less variants.
++              sql`regexp_replace(${issueWorkProducts.url}, '[#?].*$', '') ~ ('/github.com/' || ${pr.repo} || '/pull/' || ${String(pr.number)} || '(/|$)')`,
+             ),
+           ),
+         )
+-- 
+2.47.3
+

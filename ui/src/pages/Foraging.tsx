@@ -18,6 +18,7 @@ import { useTranslation } from "@/i18n";
 import { useCompany } from "@/context/CompanyContext";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { formatCents } from "@/lib/utils";
 import {
   diffLine,
@@ -25,7 +26,11 @@ import {
   foragingApi,
   foragingBudgetKey,
   foragingFindingsKey,
+  foragingIdleGateKey,
+  foragingPassesKey,
   foragingSourcesKey,
+  type ForagingIdleGateSource,
+  type ForagingSkipReason,
   type ForagingSourceKind,
 } from "@/api/foraging";
 
@@ -45,6 +50,21 @@ const FINDING_STATUS_KEYS: Record<string, string> = {
   candidate: "foraging.findings.states.candidate",
   rejected: "foraging.findings.states.rejected",
   unverified: "foraging.findings.states.unverified",
+};
+
+// myrmidon(1.6.3-FORAGING-IDLE-GATE, UI half): where the effective value of the
+// idle-gate toggle came from — the interface, the environment override or the
+// built-in default (contract: packages/shared/src/myrmidon-foraging-idle-gate.ts).
+const IDLE_GATE_SOURCE_KEYS: Record<ForagingIdleGateSource, string> = {
+  settings: "foraging.idleGate.sources.settings",
+  env: "foraging.idleGate.sources.env",
+  default: "foraging.idleGate.sources.default",
+};
+
+// myrmidon(1.6.3-FORAGING-IDLE-GATE, UI half): why a pass left a role alone.
+const SKIP_REASON_KEYS: Record<ForagingSkipReason, string> = {
+  queue_not_empty: "foraging.idleGate.reasons.queue_not_empty",
+  no_idle_agent: "foraging.idleGate.reasons.no_idle_agent",
 };
 
 function formatWhen(value: string | null, language: string = "en"): string {
@@ -101,6 +121,21 @@ export function Foraging({ embedded = false }: ForagingProps = {}) {
     staleTime: 30_000,
   });
 
+  // myrmidon(1.6.3-FORAGING-IDLE-GATE, UI half): the idle-gate toggle (an
+  // instance-wide setting) and the pass history of the selected company.
+  const idleGateQuery = useQuery({
+    queryKey: foragingIdleGateKey(),
+    queryFn: () => foragingApi.idleGate(),
+    staleTime: 30_000,
+  });
+
+  const passesQuery = useQuery({
+    queryKey: foragingPassesKey(companyId),
+    queryFn: () => foragingApi.passes(companyId),
+    enabled: !!selectedCompanyId,
+    staleTime: 30_000,
+  });
+
   const saveSource = useMutation({
     mutationFn: () => foragingApi.saveSource(companyId, { role: role.trim(), url: url.trim(), kind }),
     onSuccess: () => {
@@ -123,6 +158,17 @@ export function Foraging({ embedded = false }: ForagingProps = {}) {
       void queryClient.invalidateQueries({ queryKey: foragingFindingsKey(companyId) });
       void queryClient.invalidateQueries({ queryKey: foragingSourcesKey(companyId) });
       void queryClient.invalidateQueries({ queryKey: foragingBudgetKey(companyId) });
+      // A manual pass lands in the history right away.
+      void queryClient.invalidateQueries({ queryKey: foragingPassesKey(companyId) });
+    },
+  });
+
+  // The toggle is instance-admin only on the server; a 403 stays visible in the
+  // card rather than being swallowed.
+  const setIdleGate = useMutation({
+    mutationFn: (next: boolean) => foragingApi.setIdleGate(next),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: foragingIdleGateKey() });
     },
   });
 
@@ -134,6 +180,8 @@ export function Foraging({ embedded = false }: ForagingProps = {}) {
   const sources = sourcesQuery.data?.sources ?? [];
   const findings = findingsQuery.data?.findings ?? [];
   const budget = budgetQuery.data;
+  const idleGate = idleGateQuery.data;
+  const passes = passesQuery.data?.passes ?? [];
 
   return (
     <div className="space-y-6">
@@ -181,6 +229,103 @@ export function Foraging({ embedded = false }: ForagingProps = {}) {
           </div>
         ) : null}
       </div>
+
+      <Card>
+        <CardHeader className="px-5 pt-5 pb-2">
+          <CardTitle className="text-base">{t("foraging.idleGate.title")}</CardTitle>
+          <CardDescription>{t("foraging.idleGate.description")}</CardDescription>
+        </CardHeader>
+        <CardContent className="px-5 pb-5 pt-2 space-y-3">
+          <div className="flex flex-wrap items-center gap-3">
+            <ToggleSwitch
+              checked={idleGate?.enabled ?? false}
+              disabled={!idleGate || setIdleGate.isPending}
+              onCheckedChange={(next) => setIdleGate.mutate(next)}
+              aria-label={t("foraging.idleGate.label")}
+              data-testid="foraging-idle-gate-toggle"
+            />
+            <span className="text-sm text-foreground" data-testid="foraging-idle-gate-value">
+              {idleGate
+                ? t("foraging.idleGate.value", {
+                    value: t(idleGate.enabled ? "foraging.idleGate.on" : "foraging.idleGate.off"),
+                  })
+                : t("foraging.idleGate.unknown")}
+            </span>
+            {idleGate ? (
+              <span className="text-xs text-muted-foreground" data-testid="foraging-idle-gate-source">
+                {t("foraging.idleGate.source", { source: t(IDLE_GATE_SOURCE_KEYS[idleGate.source]) })}
+              </span>
+            ) : null}
+          </div>
+          <p className="text-xs text-muted-foreground">{t("foraging.idleGate.nextPass")}</p>
+          {setIdleGate.error ? (
+            <p className="text-sm text-destructive" data-testid="foraging-idle-gate-error">
+              {t("foraging.idleGate.saveFailed", { message: (setIdleGate.error as Error).message })}
+            </p>
+          ) : null}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader className="px-5 pt-5 pb-2">
+          <CardTitle className="text-base">{t("foraging.passes.title")}</CardTitle>
+          <CardDescription>{t("foraging.passes.description")}</CardDescription>
+        </CardHeader>
+        <CardContent className="px-5 pb-5 pt-2">
+          {passesQuery.isLoading ? (
+            <PageSkeleton variant="costs" />
+          ) : passes.length === 0 ? (
+            <p className="text-sm text-muted-foreground" data-testid="foraging-passes-empty">
+              {t("foraging.passes.empty")}
+            </p>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs" data-testid="foraging-passes-table">
+                <thead>
+                  <tr className="border-b border-border bg-accent/20">
+                    <th scope="col" className="px-3 py-2 text-left font-medium text-muted-foreground">{t("foraging.passes.when")}</th>
+                    <th scope="col" className="px-3 py-2 text-left font-medium text-muted-foreground">{t("foraging.passes.read")}</th>
+                    <th scope="col" className="px-3 py-2 text-left font-medium text-muted-foreground">{t("foraging.passes.findings")}</th>
+                    <th scope="col" className="px-3 py-2 text-left font-medium text-muted-foreground">{t("foraging.passes.skipped")}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {passes.map((pass, index) => (
+                    <tr
+                      key={`${pass.at}-${index}`}
+                      className="border-b border-border last:border-b-0"
+                      data-testid="foraging-pass-row"
+                    >
+                      <td className="px-3 py-2">{formatWhen(pass.at, language)}</td>
+                      <td className="px-3 py-2 tabular-nums">
+                        {pass.sourcesRead}
+                        {pass.stoppedByBudget ? (
+                          <span className="ml-2 text-muted-foreground">{t("foraging.passes.stoppedByBudget")}</span>
+                        ) : null}
+                      </td>
+                      <td className="px-3 py-2 tabular-nums">{pass.findings}</td>
+                      <td className="px-3 py-2">
+                        {pass.skipped.length === 0 ? (
+                          <span className="text-muted-foreground">{t("foraging.passes.notSkipped")}</span>
+                        ) : (
+                          pass.skipped.map((skip) => (
+                            <span key={skip.role} className="mr-2 inline-block" data-testid="foraging-pass-skip">
+                              {t("foraging.passes.skip", {
+                                role: skip.role,
+                                reason: t(SKIP_REASON_KEYS[skip.reason]),
+                              })}
+                            </span>
+                          ))
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </CardContent>
+      </Card>
 
       <Card>
         <CardHeader className="px-5 pt-5 pb-2">

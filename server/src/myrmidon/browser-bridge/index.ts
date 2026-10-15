@@ -21,6 +21,7 @@ import { logger } from "../../middleware/logger.js";
 import { logActivity } from "../../services/activity-log.js";
 import { instanceSettingsService } from "../../services/instance-settings.js";
 import { secretService } from "../../services/secrets.js";
+import { createBridgeExtensionRegistry, type BridgeExtensionRegistry } from "./extensions.js";
 import { IdempotencyCache } from "./jsonrpc.js";
 import { bridgeJournalService } from "./journal-view.js";
 import { browserBridgePanelRoutes, browserBridgePublicRoutes } from "./routes.js";
@@ -39,6 +40,8 @@ export interface BrowserBridgeRuntime {
   service: BrowserBridgeService;
   sessions: InMemoryBridgeSessionRegistry;
   idempotency: IdempotencyCache;
+  /** Request types a private connector registers over the bridge sessions. */
+  extensions: BridgeExtensionRegistry;
 }
 
 /** The board's secret service behind the narrow port the device store needs. */
@@ -129,7 +132,7 @@ export function createBrowserBridgeRuntime(
         ...(input.idempotencyKey ? { idempotencyKey: input.idempotencyKey } : {}),
       }),
   });
-  return { service, sessions, idempotency };
+  return { service, sessions, idempotency, extensions: createBridgeExtensionRegistry(sessions) };
 }
 
 let sharedRuntime: BrowserBridgeRuntime | null = null;
@@ -155,11 +158,14 @@ export function startBrowserBridge(db: Db, server: HttpServer): void {
   const runtime = browserBridgeRuntime(db);
   setupBrowserBridgeWebSocketServer(server, runtime.service, {
     sessions: runtime.sessions,
+    extensions: runtime.extensions,
     logActivity: (entry) => logActivity(db, entry),
   });
 }
 
 export { InMemoryBridgeDeviceStore, InMemoryPairingCodeStore, SecretBackedBridgeDeviceStore };
+export { createBridgeExtensionRegistry, BRIDGE_EXTENSION_PREFIX, isBridgeExtensionType } from "./extensions.js";
+export type { BridgeExtensionRegistry, BridgeExtensionDefinition, BridgeExtensionSendInput, BridgeExtensionCaller } from "./extensions.js";
 export { browserBridgeService, dispatchBridgeAction, setupBrowserBridgeWebSocketServer };
 export { bridgeJournalService, isBridgeJournalRow, isSignatureRow } from "./journal-view.js";
 export type { BridgeJournalQuery, BridgeJournalRow, BridgeJournalService } from "./journal-view.js";

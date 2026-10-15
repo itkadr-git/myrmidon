@@ -34,8 +34,11 @@ import {
   readBotContainerAgentConfig,
 } from "./agent-config.js";
 import type { BotContainerAgentConfig } from "./agent-config.js";
+import type { SharedMountSettings } from "@paperclipai/shared";
 import { botKeyLock, type BotKeyLock } from "./bot-key-lock.js";
 import type { BotContainerDriver } from "./driver.js";
+import { isBotSkillBackimportEnabled } from "./skill-backimport.js";
+import { createDbBotSkillBackimportPorts } from "./skill-backimport-ports.js";
 import {
   reconcileBot,
   type BotContainerActivitySink,
@@ -157,6 +160,11 @@ export interface BotContainerRuntimeDeps {
   maintenance: BotMaintenancePort;
   activity?: BotContainerActivitySink;
   network: string;
+  /** myrmidon(1.6.1-BOT-DISK-D): the instance's `general.sharedMount`, read on
+   *  EVERY pass so a settings change reaches the next pass without a restart.
+   *  Absent = the shared mount is off. A read that throws fails the pass: a
+   *  guess of "off" would recreate the container without its `/shared` bind. */
+  readSharedMountSettings?: () => Promise<SharedMountSettings | undefined>;
   /** Defaults to the process-wide lock; tests pass their own. */
   lock?: BotKeyLock;
   /** myrmidon(BOT-ROLLOUT): the database the deferred-rollout records live in
@@ -176,6 +184,20 @@ export interface BotContainerRuntimeDeps {
   }) => Promise<void>;
   /** myrmidon(BOT-ROLLOUT): companyId lookup for that audit row. */
   rolloutCompanyIdOf?: (agentId: string) => Promise<string | null>;
+  /** myrmidon(MEDIA-PROVISION): one pass of the media ACL registry exporter
+   *  (media-acl-export.ts): rewrites bots.json for the facade when a card's
+   *  MEDIA_TOOLS_TOKEN changed. Runs per sweep tick, after the stray-gateway
+   *  release. Returns null while its own flag checks exclude it. A throw is
+   *  recorded in the activity log and does not fail the sweep: the facade keeps
+   *  serving the previous registry. */
+  exportMediaAcl?: () => Promise<{ bots: number; failedResolves: number; changed: boolean } | null>;
+  /**
+   * myrmidon(1.6.5-BOT-SKILL-BACKIMPORT, OPE-6401): the company of an agent,
+   * for the back-import of the bot's own skills into the company catalog.
+   * Present with `db` at startup; the per-bot pass builds the catalog ports
+   * from the pair (db, companyId). Absent = no back-import, exactly as before.
+   */
+  backimportCompanyIdOf?: (agentId: string) => Promise<string | null>;
 }
 
 export type ApplyBotContainerOutcome = ReconcileOutcome | { kind: "not_applicable"; reason: string };
@@ -274,6 +296,25 @@ export async function applyBotContainerNow(
       driver: deps.driver,
       maintenance: deps.maintenance,
       activity: deps.activity,
+      // myrmidon(1.6.5-BOT-SKILL-BACKIMPORT, OPE-6401): the catalog ports are
+      // built per pass, bound to the agent's company; the flag itself is read
+      // inside the reconciler (off = nothing here is touched). An agent whose
+      // company is unreadable gets no back-import this pass rather than a
+      // wrong-scope import.
+      ...(deps.db && deps.backimportCompanyIdOf && isBotSkillBackimportEnabled()
+        ? await (async () => {
+            const companyId = await deps.backimportCompanyIdOf!(agent.agentId);
+            return companyId
+              ? {
+                  backimport: {
+                    companyId,
+                    agentId: agent.agentId,
+                    ports: createDbBotSkillBackimportPorts(deps.db!),
+                  },
+                }
+              : {};
+          })()
+        : {}),
     });
     if (passCountsForFreshness(outcome)) lastPassStartedAtMs.set(botKey, passStartedAt);
     else lastPassStartedAtMs.delete(botKey);
@@ -330,7 +371,14 @@ async function readAgentForPass(
     if (!fresh) return { ok: false, outcome: { kind: "not_applicable", reason: `agent ${agent.agentId} no longer exists` } };
     current = fresh;
   }
-  const parsed = readBotContainerAgentConfig(current.adapterType, current.adapterConfig);
+  let sharedMountSettings: SharedMountSettings | undefined;
+  try {
+    sharedMountSettings = await deps.readSharedMountSettings?.();
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { ok: false, outcome: { kind: "error", message: `the shared mount settings could not be read: ${message}` } };
+  }
+  const parsed = readBotContainerAgentConfig(current.adapterType, current.adapterConfig, sharedMountSettings, current.agentId);
   if (!parsed.ok) return { ok: false, outcome: { kind: "not_applicable", reason: parsed.reason } };
   return { ok: true, config: parsed.config };
 }
@@ -455,6 +503,39 @@ async function releaseStrayGatewaysOfSweep(
   }
 }
 
+/** Never throws: a failed export must not fail the sweep, and the facade keeps
+ *  serving the previous registry until the next tick retries. Reports to the
+ *  activity log only when the pass is not a clean no-op, so a steady fleet does
+ *  not write an entry every interval. */
+async function exportMediaAclOfSweep(deps: BotContainerRuntimeDeps): Promise<void> {
+  if (!deps.exportMediaAcl) return;
+  try {
+    const result = await deps.exportMediaAcl();
+    if (!result) return;
+    if (!result.changed && result.failedResolves === 0) return;
+    await deps.activity?.record({
+      level: result.failedResolves > 0 ? "error" : "info",
+      agentId: "*",
+      botKey: "*",
+      message: "media ACL registry export pass",
+      // Only counts: the registry carries token hashes, the log never sees a raw token.
+      details: { bots: result.bots, failedResolves: result.failedResolves, changed: result.changed },
+    });
+  } catch (err) {
+    try {
+      await deps.activity?.record({
+        level: "error",
+        agentId: "*",
+        botKey: "*",
+        message: "media ACL registry export failed; the facade keeps the previous registry",
+        details: { error: err instanceof Error ? err.message : String(err) },
+      });
+    } catch {
+      // nothing left to report to
+    }
+  }
+}
+
 export const DEFAULT_RECONCILE_INTERVAL_MS = 60_000;
 
 /**
@@ -539,6 +620,10 @@ export function startBotContainerReconciliation(
       }
       // Only after a successful listing: a failed one must not read as "no agents", which would release every gateway.
       await releaseStrayGatewaysOfSweep(agents, deps);
+      // myrmidon(MEDIA-PROVISION): the same tick that saw the cards exports the
+      // media ACL registry, so a token issued or revoked on a card reaches the
+      // facade within one interval without a restart.
+      await exportMediaAclOfSweep(deps);
       // myrmidon(PERF-DIET-G): one pass for the whole sweep. The company- and
       // instance-scoped reads behind the profiles (the skill catalogue, the
       // instance settings) were paid once per bot; inside one tick they are paid

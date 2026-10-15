@@ -61,7 +61,7 @@ describe("myrmidon(BOT-DISK E): a sweep through the real wiring", () => {
       resolveSettings: () => resolveSweepSettings(settings, {}),
       logActivity,
       lastSignalAt: async () => null,
-      logger: { error: vi.fn(), info: vi.fn() },
+      logger: { error: vi.fn(), info: vi.fn(), debug: vi.fn() },
       measureUsage: async () => ({
         path: "/srv/data",
         usedBytes: 91 * GB,
@@ -113,7 +113,7 @@ describe("myrmidon(BOT-DISK E): a sweep through the real wiring", () => {
       resolveSettings: () => resolveSweepSettings(settings, {}),
       logActivity: vi.fn(async () => ({})),
       lastSignalAt: async () => null,
-      logger: { error: vi.fn(), info: vi.fn() },
+      logger: { error: vi.fn(), info: vi.fn(), debug: vi.fn() },
       measureUsage: async () => ({
         path: "/srv/data",
         usedBytes: 60 * GB,
@@ -142,5 +142,47 @@ describe("myrmidon(BOT-DISK E): paths from the environment", () => {
     expect(
       hostDiskConsumerPaths({ MYRMIDON_HOST_DISK_CONSUMER_PATHS: "/srv/a, /srv/b" }),
     ).toEqual(["/srv/a", "/srv/b"]);
+  });
+
+  // myrmidon(1.6.5 F-03): every path from MYRMIDON_HOST_DISK_CONSUMER_PATHS
+  // is measured on its own filesystem through the real wiring — a consumer
+  // mounted beside the data root (the bot partition) shows its own fill
+  // level instead of hiding behind the data root's number.
+  it("a consumer list produces one measurement per path through the real env helpers", async () => {
+    const env = {
+      MYRMIDON_HOST_DISK_DATA_ROOT: "/paperclip",
+      MYRMIDON_HOST_DISK_CONSUMER_PATHS: "/paperclip, /mnt/bots",
+    };
+    const dataRootPath = hostDiskDataRoot(env);
+    const consumerPaths = hostDiskConsumerPaths(env);
+    expect(dataRootPath).toBe("/paperclip");
+    expect(consumerPaths).toEqual(["/paperclip", "/mnt/bots"]);
+
+    const usageByPath: Record<string, number> = { "/paperclip": 40, "/mnt/bots": 70 };
+    const measureUsage = vi.fn(async (path: string) => {
+      const percent = usageByPath[path];
+      if (percent === undefined) return null;
+      return { path, usedBytes: percent * GB, totalBytes: 100 * GB, freeBytes: (100 - percent) * GB, usedPercent: percent };
+    });
+    const sweep = createHostDiskSweep({
+      dataRootPath,
+      consumerPaths,
+      resolveSettings: async () => ({ usageThresholdPercent: 85 }),
+      logActivity: vi.fn(async () => ({})),
+      lastSignalAt: async () => null,
+      logger: { error: vi.fn(), info: vi.fn(), debug: vi.fn() },
+      measureUsage,
+      now: () => new Date("2026-10-08T12:00:00.000Z"),
+    });
+
+    const result = await sweep.sweep();
+    expect(result.state).toBe("measured");
+    expect(result.measuredPath).toBe("/paperclip");
+    expect(result.usedPercent).toBe(40);
+    expect(measureUsage).toHaveBeenCalledTimes(2);
+    expect(result.measurements.map((m) => [m.path, m.usedPercent])).toEqual([
+      ["/paperclip", 40],
+      ["/mnt/bots", 70],
+    ]);
   });
 });

@@ -310,6 +310,55 @@ describe("myrmidon(MEMORY-CENTRAL-A) compileHermesProfile — local memory off",
   });
 });
 
+// myrmidon(TOOL-DIET): agent.disabled_tools — single tools kept out of the model's schema.
+describe("myrmidon(TOOL-DIET) compileHermesProfile — disabled tools", () => {
+  const yamlOf = (input: HermesProfileInput) => fileByPath(compileHermesProfile(input).files, "hermes/config.yaml").content;
+
+  it("writes the instance list under agent.disabled_tools", () => {
+    const yaml = yamlOf(baseInput({ instanceDefaults: { disabledTools: ["browser_vault_fill", "vision_analyze"] } }));
+    expect(yaml).toContain('agent:\n  disabled_tools:\n  - "browser_vault_fill"\n  - "vision_analyze"');
+  });
+
+  it("writes no key at all when the list is unset, empty or all blank", () => {
+    const plain = yamlOf(baseInput());
+    for (const disabledTools of [undefined, [], ["", "  "]]) {
+      expect(yamlOf(baseInput({ instanceDefaults: { disabledTools } }))).toBe(plain);
+    }
+    expect(plain).not.toMatch(/disabled_tools:/);
+  });
+
+  it("the card list wins over the instance list and may be empty", () => {
+    const own = yamlOf(
+      baseInput({ adapterConfig: { disabledTools: ["web_extract"] }, instanceDefaults: { disabledTools: ["vision_analyze"] } }),
+    );
+    expect(own).toContain('- "web_extract"');
+    expect(own).not.toContain("vision_analyze");
+    const none = yamlOf(baseInput({ adapterConfig: { disabledTools: [] }, instanceDefaults: { disabledTools: ["vision_analyze"] } }));
+    expect(none).not.toMatch(/disabled_tools:/);
+  });
+
+  it("keeps vision_analyze for a card with its own vision model, but not when the card lists it itself", () => {
+    const instance = { disabledTools: ["vision_analyze", "browser_vault_fill"] };
+    const kept = yamlOf(baseInput({ adapterConfig: { models: { vision: "fleet-vision" } }, instanceDefaults: instance }));
+    expect(kept).not.toContain("vision_analyze");
+    expect(kept).toContain("browser_vault_fill");
+    const listed = yamlOf(
+      baseInput({ adapterConfig: { models: { vision: "fleet-vision" }, disabledTools: ["vision_analyze"] }, instanceDefaults: instance }),
+    );
+    expect(listed).toContain('- "vision_analyze"');
+  });
+
+  it("drops a name that is not a tool name with a warning, and deduplicates", () => {
+    const detailed = compileHermesProfileDetailed(
+      baseInput({ instanceDefaults: { disabledTools: ["web_extract", "web_extract", "a b", "x;y"] } }),
+    );
+    const yaml = fileByPath(detailed.profile.files, "hermes/config.yaml").content;
+    expect(yaml.match(/web_extract/g)).toHaveLength(1);
+    expect(yaml).not.toContain("a b");
+    expect(detailed.warnings.filter((w) => w.includes("agent.disabled_tools"))).toHaveLength(2);
+  });
+});
+
 describe("myrmidon(G2) compileHermesProfile — model mapping (repeats the M1 mapping)", () => {
   it("maps model, provider and a valid reasoning effort", () => {
     const profile = compileHermesProfile(

@@ -4,6 +4,7 @@ import path from "node:path";
 import pc from "picocolors";
 import { buildCliCommandLabel } from "./command-label.js";
 import { resolveDefaultCliAuthPath } from "../config/home.js";
+import { readProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
 
 type RequestedAccess = "board" | "instance_admin_required";
 
@@ -67,7 +68,7 @@ function isTruthyEnv(value: string | undefined): boolean {
 
 export function resolveBoardAuthStorePath(overridePath?: string): string {
   if (overridePath?.trim()) return path.resolve(overridePath.trim());
-  if (process.env.PAPERCLIP_AUTH_STORE?.trim()) return path.resolve(process.env.PAPERCLIP_AUTH_STORE.trim());
+  if (readProductEnv("AUTH_STORE")?.trim()) return path.resolve(readProductEnv("AUTH_STORE")!.trim());
   return resolveDefaultCliAuthPath();
 }
 
@@ -223,7 +224,7 @@ export async function loginBoardCli(params: {
     }),
   });
 
-  const publicBase = params.publicBaseUrl?.trim() || process.env.PAPERCLIP_PUBLIC_URL?.trim();
+  const publicBase = params.publicBaseUrl?.trim() || readProductEnv("PUBLIC_URL")?.trim();
   const approvalUrl = publicBase
     ? `${normalizeApiBase(publicBase)}${challenge.approvalPath}`
     : challenge.approvalUrl ?? `${apiBase}${challenge.approvalPath}`;
@@ -233,7 +234,7 @@ export async function loginBoardCli(params: {
     console.error(`Open this URL in your browser to approve CLI access:\n${approvalUrl}`);
   }
 
-  const wantBrowser = params.openBrowser !== false && !isTruthyEnv(process.env.PAPERCLIP_NO_BROWSER);
+  const wantBrowser = params.openBrowser !== false && !isTruthyEnv(readProductEnv("NO_BROWSER"));
   const opened = wantBrowser ? await openUrl(approvalUrl) : false;
   if (params.print !== false) {
     const browserMessage = !wantBrowser
