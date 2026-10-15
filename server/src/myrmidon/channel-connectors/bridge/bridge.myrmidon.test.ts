@@ -111,6 +111,7 @@ const CONVERTED: {
     seam: "channel-connectors/bridge/agent-bridge.js",
     symbols: [
       "resolveBridgedAddressee",
+      "editedBridgedCommandText",
       "afterTelegramDmMessage",
       "decideTelegramDmBinding",
       "ensureTelegramDmBinding",

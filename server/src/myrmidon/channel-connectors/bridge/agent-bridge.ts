@@ -12,6 +12,9 @@ export type { TelegramDmBridgeDeps };
 
 const theme = () => channelBridgeTheme("agent-chat-bridge/bridge", legacy);
 
+export const editedBridgedCommandText: typeof legacy.editedBridgedCommandText =
+  (...args) => theme().editedBridgedCommandText(...args);
+
 export const resolveBridgedAddressee: typeof legacy.resolveBridgedAddressee =
   (...args) => theme().resolveBridgedAddressee(...args);
 
