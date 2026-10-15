@@ -33,9 +33,9 @@ jobs:
           pnpm --filter @paperclipai/plugin-sdk ensure-build-deps
           fails=0
           for i in $(seq 1 12); do
-            echo "=== iteration $i"
             if ! pnpm exec vitest run --project @paperclipai/server --no-file-parallelism --maxWorkers=1 server/src/__tests__/heartbeat-dependency-scheduling.test.ts > /tmp/out.$i.log 2>&1; then
-              fails=$((fails+1)); echo "FAILED iteration $i"; grep -A40 "RC3DIAG" /tmp/out.$i.log | head -120; grep -n "AssertionError" -A4 /tmp/out.$i.log | head -20
+              fails=$((fails+1)); echo "FAILED iteration $i"; grep -n "AssertionError" -B2 -A6 /tmp/out.$i.log | head -30
             fi
           done
           echo "total failures: $fails"
+          test "$fails" = 0
