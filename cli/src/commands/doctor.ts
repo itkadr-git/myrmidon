@@ -18,7 +18,7 @@ import {
   type CheckResult,
 } from "../checks/index.js";
 import { loadPaperclipEnvFile } from "../config/env.js";
-import { printPaperclipCliBanner } from "../utils/banner.js";
+import { printMyrmidonCliBanner } from "../utils/banner.js";
 import { printUpdateNotice } from "../update-notice.js";
 
 const STATUS_ICON = {
@@ -33,8 +33,8 @@ export async function doctor(opts: {
   yes?: boolean;
 }): Promise<{ passed: number; warned: number; failed: number }> {
   await printUpdateNotice(opts.config);
-  printPaperclipCliBanner();
-  p.intro(pc.bgCyan(pc.black(" paperclip doctor ")));
+  printMyrmidonCliBanner();
+  p.intro(pc.bgCyan(pc.black(" myrmidon doctor ")));
 
   const configPath = resolveConfigPath(opts.config);
   loadPaperclipEnvFile(configPath);
@@ -58,7 +58,7 @@ export async function doctor(opts: {
       status: "fail",
       message: `Could not read config: ${err instanceof Error ? err.message : String(err)}`,
       canRepair: false,
-      repairHint: "Run `paperclipai configure --section database` or `paperclipai onboard`",
+      repairHint: "Run `myrmidon configure --section database` or `myrmidon onboard`",
     };
     results.push(readResult);
     printResult(readResult);
