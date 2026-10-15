@@ -144,7 +144,7 @@ describe("startBotContainers with the flag off", () => {
 });
 
 describe("startBotContainers with the flag on", () => {
-  it("builds the runtime and starts the sweep with the agents query", () => {
+  it("builds the runtime and starts the sweep with the agents query", async () => {
     const h = harness();
     startBotContainers(DB, { env: ENABLED, ports: h.ports });
     try {

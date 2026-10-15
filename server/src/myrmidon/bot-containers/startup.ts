@@ -45,6 +45,12 @@ import { botContainerAgentReader, getBotContainerRuntime, setBotContainerRuntime
 import { readBotCacheLayoutForBot, readSharedBotRuntimePath, startCloneReportCollection } from "./bot-disk-service.js"; // myrmidon(1.6.1-BOT-DISK-B, 1.6.2-BOT-DISK-C, 1.6.5-BOT-DISK-H11, 1.6.5-DOCKERGATE-A2A3-STORM)
 import { scopeMigrator } from "./scope-migration.js"; // myrmidon(BOT-DISK-F)
 import { readAppliedScopeLayout } from "./scope-wiring.js"; // myrmidon(BOT-DISK-F)
+import {
+  createFleetClientManager,
+  bootstrapFleetSitesFromEnv,
+  type FleetClientManager,
+} from "./site-registry.js";
+import { fleetRoutingDriver } from "./fleetd-routing.js";
 
 export const BOT_RECONCILE_INTERVAL_ENV = "MYRMIDON_BOT_RECONCILE_INTERVAL_SEC";
 const MIN_RECONCILE_INTERVAL_SEC = 5;
@@ -114,6 +120,12 @@ export interface BotContainersStartupPorts {
    * real one. Its stop is folded into the stop of this run.
    */
   startCloneReportCollection?: typeof startCloneReportCollection;
+  createFleetClientManager?: (opts: { db: Db; log?: BotContainersLog }) => FleetClientManager;
+  bootstrapFleetSitesFromEnv?: (
+    db: Db,
+    env: NodeJS.ProcessEnv,
+    log?: BotContainersLog,
+  ) => Promise<{ inserted: number; updated: number }>;
   log: BotContainersLog;
 }
 
@@ -142,6 +154,8 @@ const defaultPorts: BotContainersStartupPorts = {
   currentRuntime: getBotContainerRuntime,
   startReconciliation: startBotContainerReconciliation,
   startCloneReportCollection,
+  createFleetClientManager,
+  bootstrapFleetSitesFromEnv,
   log: logger,
 };
 

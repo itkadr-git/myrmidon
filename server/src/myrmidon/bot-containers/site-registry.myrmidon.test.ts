@@ -45,7 +45,7 @@ describe("site-registry — createFleetClientManager", () => {
         id: "site-1",
         companyId: "company-1",
         name: "myr-vm1",
-        url: "https://10.10.0.110:9443",
+        url: "https://myr-vm1.example.test:9443",
         tokenSecret: "myr-vm1-token",
         caCert: "-----BEGIN CERTIFICATE-----\nFAKE CA\n-----END CERTIFICATE-----",
         clientCertSecretKey: "myr-vm1-client-key",
@@ -110,7 +110,7 @@ describe("site-registry — createFleetClientManager", () => {
     expect(clients.has("local-fleet")).toBe(true);
     expect(clients.has("inactive-site")).toBe(false);
 
-    const httpsConfig = createdConfigs.find((c) => c.baseUrl === "https://10.10.0.110:9443");
+    const httpsConfig = createdConfigs.find((c) => c.baseUrl === "https://myr-vm1.example.test:9443");
     expect(httpsConfig).toBeDefined();
     expect(httpsConfig!.token).toBe("secret-token-val-123");
     expect(httpsConfig!.caCert).toContain("FAKE CA");

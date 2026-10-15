@@ -247,7 +247,7 @@ export async function bootstrapFleetSitesFromEnv(
         if (host.boardExtraHost) profile.boardExtraHost = host.boardExtraHost;
         if (host.volumeRoot) profile.volumeRoot = host.volumeRoot;
         if (host.network) profile.network = host.network;
-        if (host.imageAllowlist) profile.imageAllowlist = host.imageAllowlist;
+        if (host.imageAllowlist) profile.imageAllowlist = [...host.imageAllowlist];
 
         if (existing) {
           await updateFleetSite(db, company.id, host.name, {
