@@ -207,6 +207,21 @@ describeEmbeddedPostgres("heartbeat issue rewake throttle", () => {
       .then((rows) => rows[0] ?? null);
   }
 
+  it("does not throttle direct issue_assigned wakes after no-progress handoff runs", async () => {
+    const { companyId, agentId, issueId } = await seedCompanyAgentIssue();
+
+    // Models idle_pickup followed by the successful-run-handoff run: both
+    // succeeded without issue-visible progress, but a new assignment is still
+    // an explicit request to act and must reach the agent.
+    await seedTerminalRun({ companyId, agentId, issueId, finishedSecondsAgo: 40 });
+    await seedTerminalRun({ companyId, agentId, issueId, finishedSecondsAgo: 10 });
+
+    const wake = await assignmentWake(agentId, issueId);
+
+    expect(wake).not.toBeNull();
+    expect((await latestWakeRequest(agentId))?.reason).toBe("issue_assigned");
+  });
+
   it("skips event-free re-wakes after consecutive no-progress runs and admits them again on new input", async () => {
     const { companyId, agentId, issueId } = await seedCompanyAgentIssue();
 
