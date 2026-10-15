@@ -1246,8 +1246,8 @@ describe.sequential("agent skill routes", () => {
   });
 
   it.each([
-    ["agents", "paperclipai/paperclip/paperclip-create-agent"],
-    ["agent-hires", "paperclipai/paperclip/paperclip-create-agent"],
+    ["agents", "paperclipai/paperclip/myrmidon-create-agent"],
+    ["agent-hires", "paperclipai/paperclip/myrmidon-create-agent"],
     ["agents", "paperclip"],
     ["agent-hires", "paperclip"],
   ])("gives a general onboarding chief core skills and preserves %s version pins for %s", async (route, skill) => {
@@ -1263,8 +1263,8 @@ describe.sequential("agent skill routes", () => {
     expect(res.status, JSON.stringify(res.body)).toBe(201);
     const input = mockAgentService.create.mock.calls[0][1];
     expect(input.role).toBe("general");
-    const canonicalKey = skill === "paperclip" ? "paperclipai/paperclip/paperclip" : skill;
-    const expected = ["paperclip", "paperclip-board", "paperclip-converting-plans-to-tasks", "paperclip-create-agent", "para-memory-files"]
+    const canonicalKey = skill === "paperclip" ? "paperclipai/paperclip/myrmidon" : skill;
+    const expected = ["myrmidon", "myrmidon-board", "myrmidon-converting-plans-to-tasks", "myrmidon-create-agent", "para-memory-files"]
       .map((name) => ({ key: `paperclipai/paperclip/${name}`, versionId: `paperclipai/paperclip/${name}` === canonicalKey ? versionId : null }));
     expect(input.adapterConfig.paperclipSkillSync.desiredSkills).toEqual(expect.arrayContaining(expected));
     expect(input.adapterConfig.paperclipSkillSync.desiredSkills).toHaveLength(5);
@@ -1356,10 +1356,10 @@ describe.sequential("agent skill routes", () => {
         adapterConfig: expect.objectContaining({
           paperclipSkillSync: expect.objectContaining({
             desiredSkills: expect.arrayContaining([
-              "paperclipai/paperclip/paperclip",
-              "paperclipai/paperclip/paperclip-board",
-              "paperclipai/paperclip/paperclip-converting-plans-to-tasks",
-              "paperclipai/paperclip/paperclip-create-agent",
+              "paperclipai/paperclip/myrmidon",
+              "paperclipai/paperclip/myrmidon-board",
+              "paperclipai/paperclip/myrmidon-converting-plans-to-tasks",
+              "paperclipai/paperclip/myrmidon-create-agent",
               "paperclipai/paperclip/para-memory-files",
             ]),
           }),
@@ -1389,10 +1389,10 @@ describe.sequential("agent skill routes", () => {
       adapterConfig: { paperclipSkillSync: { desiredSkills: string[] } };
     };
     expect(createInput.adapterConfig.paperclipSkillSync.desiredSkills).not.toContain(
-      "paperclipai/paperclip/paperclip",
+      "paperclipai/paperclip/myrmidon",
     );
     expect(createInput.adapterConfig.paperclipSkillSync.desiredSkills).toContain(
-      "paperclipai/paperclip/paperclip-board",
+      "paperclipai/paperclip/myrmidon-board",
     );
   });
 
@@ -1414,7 +1414,7 @@ describe.sequential("agent skill routes", () => {
     const desired = createInput.adapterConfig.paperclipSkillSync.desiredSkills;
     // "paperclip" resolves to its canonical key and dedupes with the default.
     expect(desired).toHaveLength(5);
-    expect(desired).toContain("paperclipai/paperclip/paperclip");
+    expect(desired).toContain("paperclipai/paperclip/myrmidon");
   });
 
   it("does not add default skills to non-CEO hires", async () => {

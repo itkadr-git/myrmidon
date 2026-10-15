@@ -253,12 +253,12 @@ describe("paperclip skill utils", () => {
     const entries = await listPaperclipSkillEntries(moduleDir);
 
     expect(entries.map((entry) => entry.key)).toEqual([
-      "paperclipai/paperclip/paperclip",
-      "paperclipai/paperclip/paperclip-create-agent",
+      "paperclipai/paperclip/myrmidon",
+      "paperclipai/paperclip/myrmidon-create-agent",
     ]);
     expect(entries.map((entry) => entry.runtimeName)).toEqual([
-      "paperclip",
-      "paperclip-create-agent",
+      "myrmidon",
+      "myrmidon-create-agent",
     ]);
     expect(entries[0]?.source).toBe(path.join(root, "skills", "paperclip"));
     expect(entries[1]?.source).toBe(path.join(root, "skills", "paperclip-create-agent"));

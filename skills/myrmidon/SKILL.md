@@ -1,5 +1,5 @@
 ---
-name: paperclip
+name: myrmidon
 description: >
   Interact with the Myrmidon control plane API for task coordination and
   governance. Use when checking assignments, updating issue status, posting
@@ -21,11 +21,11 @@ Env vars auto-injected: `PAPERCLIP_AGENT_ID`, `PAPERCLIP_COMPANY_ID`, `PAPERCLIP
 
 Adapters deliver the wake payload in the run prompt. It contains the compact issue summary and the ordered batch of new comment payloads for this wake. Read that prompt section first. For comment wakes, treat that batch as the highest-priority new context in the heartbeat: in your first task update or response, acknowledge the latest comment and say how it changes your next action before broad repo exploration or generic wake boilerplate. Only fetch the thread/comments API immediately when `fallbackFetchNeeded` is true or you need broader context than the inline batch provides.
 
-Manual local CLI mode (outside heartbeat runs): use `paperclipai agent local-cli <agent-id-or-shortname> --company-id <company-id>` to install Myrmidon skills for Claude/Codex and print/export the required `PAPERCLIP_*` environment variables for that agent identity.
+Manual local CLI mode (outside heartbeat runs): use `myrmidonai agent local-cli <agent-id-or-shortname> --company-id <company-id>` to install Myrmidon skills for Claude/Codex and print/export the required `PAPERCLIP_*` environment variables for that agent identity.
 
-**CLI safety — use `npx paperclipai` for content-bearing arguments.** When you run the Myrmidon CLI, use `npx paperclipai` for any argument that can hold untrusted content. Untrusted content includes issue text, comment bodies, Markdown, pasted snippets, and model output. `npx paperclipai` runs the CLI binary directly and passes the argument as an inert `argv` value; it does not run a shell over the value. Do not use `pnpm paperclipai` for such an argument. `pnpm paperclipai` is a `package.json` script; `pnpm` appends the argument to a `/bin/sh` command string, so the shell reads it first and interprets a backtick pair, `$( )`, or `$NAME` before the CLI starts. A crafted value can run an arbitrary command as the invoking user, or expand an environment variable into the stored argument. This risk stays even when the argument comes from a quoted shell variable, because `pnpm` re-evaluates the value in its own shell. Do not use `pnpm exec paperclipai` either; the root workspace does not link that binary, so the command fails with `Command "paperclipai" not found`. To run local `cli/src` changes with a content-bearing argument, use `node cli/node_modules/tsx/dist/cli.mjs cli/src/index.ts <command> <args>`. See `doc/CLI.md` for the full safe/unsafe matrix.
+**CLI safety — use `npx myrmidonai` for content-bearing arguments.** When you run the Myrmidon CLI, use `npx myrmidonai` for any argument that can hold untrusted content. Untrusted content includes issue text, comment bodies, Markdown, pasted snippets, and model output. `npx myrmidonai` runs the CLI binary directly and passes the argument as an inert `argv` value; it does not run a shell over the value. Do not use `pnpm myrmidonai` for such an argument. `pnpm myrmidonai` is a `package.json` script; `pnpm` appends the argument to a `/bin/sh` command string, so the shell reads it first and interprets a backtick pair, `$( )`, or `$NAME` before the CLI starts. A crafted value can run an arbitrary command as the invoking user, or expand an environment variable into the stored argument. This risk stays even when the argument comes from a quoted shell variable, because `pnpm` re-evaluates the value in its own shell. Do not use `pnpm exec myrmidonai` either; the root workspace does not link that binary, so the command fails with `Command "myrmidonai" not found`. To run local `cli/src` changes with a content-bearing argument, use `node cli/node_modules/tsx/dist/cli.mjs cli/src/index.ts <command> <args>`. See `doc/CLI.md` for the full safe/unsafe matrix.
 
-**Run audit trail:** You MUST include `-H 'X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID'` on ALL API requests that modify issues (checkout, update, comment, create subtask, release). This links your actions to the current heartbeat run for traceability.
+**Run audit trail:** You MUST include `-H 'X-Myrmidon-Run-Id: $PAPERCLIP_RUN_ID'` on ALL API requests that modify issues (checkout, update, comment, create subtask, release). This links your actions to the current heartbeat run for traceability.
 
 ## Conversation tasks
 
@@ -73,7 +73,7 @@ because a request arrived through chat.
 For an ordinary requested file handoff in a verified chat turn, follow the
 injected external-chat contract. When it names the native `register_deliverable`
 tool, use that tool; native runs do not have the legacy API key or upload helper.
-For non-native adapters, invoke `bash scripts/paperclip-upload-artifact.sh`.
+For non-native adapters, invoke `bash scripts/myrmidon-upload-artifact.sh`.
 Read `references/artifacts.md` when that helper is missing, advanced artifact
 options are needed, or its upload fails or has an ambiguous result; do not spend
 a separate tool call rereading it before a routine handoff.
@@ -119,7 +119,7 @@ Overrides and special cases:
 
 ```
 POST /api/issues/{issueId}/checkout
-Headers: Authorization: Bearer $PAPERCLIP_API_KEY, X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID
+Headers: Authorization: Bearer $PAPERCLIP_API_KEY, X-Myrmidon-Run-Id: $PAPERCLIP_RUN_ID
 { "agentId": "{your-agent-id}", "expectedStatuses": ["todo", "backlog", "blocked", "in_review"] }
 ```
 
@@ -171,7 +171,7 @@ the routine server-verified external-chat handoff described above.
 
 **Bounded write retry.** If the same control-plane write fails twice consecutively, stop retrying that write for the rest of the heartbeat. Continue any useful work that does not depend on it, report the failed write in your final response, and rely on the adapter/runtime status channel as the sanctioned fallback. Do not burn additional tool calls repeatedly attempting the same comment or status mutation in a degraded environment.
 
-**Verify writes — never infer them.** A successful `PATCH /api/issues/{id}` always returns the updated issue JSON. An empty response body means the write FAILED, even if the command exited 0. Never pipe a disposition write through `head`/`tail` and never rely on `curl -f` inside a pipeline — the pipe swallows curl's exit status, and a lost connection then looks identical to success. Use `scripts/paperclip-issue-update.sh` (it checks the HTTP status, retries connection-level failures, and confirms the echoed `status`); if you must hand-roll curl, capture `-w '%{http_code}'` and check the response echoes your update. When a status write cannot be confirmed, your final report must say the write FAILED — not that it "was sent" — so the recovery path gets accurate context.
+**Verify writes — never infer them.** A successful `PATCH /api/issues/{id}` always returns the updated issue JSON. An empty response body means the write FAILED, even if the command exited 0. Never pipe a disposition write through `head`/`tail` and never rely on `curl -f` inside a pipeline — the pipe swallows curl's exit status, and a lost connection then looks identical to success. Use `scripts/myrmidon-issue-update.sh` (it checks the HTTP status, retries connection-level failures, and confirms the echoed `status`); if you must hand-roll curl, capture `-w '%{http_code}'` and check the response echoes your update. When a status write cannot be confirmed, your final report must say the write FAILED — not that it "was sent" — so the recovery path gets accurate context.
 
 Before exiting, persist the appropriate waiting path: a saved pending interaction plus `in_review` for human input, or `blocked` with first-class blockers or an agent-permitted unblock descriptor for a real dependency. A comment naming someone does not create that path.
 
@@ -187,14 +187,14 @@ When writing issue descriptions or comments, follow the ticket-linking rule in *
 
 ```json
 PATCH /api/issues/{issueId}
-Headers: X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID
+Headers: X-Myrmidon-Run-Id: $PAPERCLIP_RUN_ID
 { "status": "done", "comment": "What was done and why." }
 ```
 
 For multiline markdown comments, do **not** hand-inline the markdown into a one-line JSON string — that is how comments get "smooshed" together. Use the helper below (or an equivalent `jq --arg` pattern reading from a heredoc/file) so literal newlines survive JSON encoding:
 
 ```bash
-scripts/paperclip-issue-update.sh --issue-id "$PAPERCLIP_TASK_ID" --status done <<'MD'
+scripts/myrmidon-issue-update.sh --issue-id "$PAPERCLIP_TASK_ID" --status done <<'MD'
 Done
 
 - Fixed the newline-preserving issue update path
@@ -252,7 +252,7 @@ Agents may archive an issue from a user's Mine inbox with `POST /api/issues/{iss
 
 Archive only when the issue is truly resolved for that user, such as after a pull request is confirmed merged at its current head and the result is verified. Never archive an issue while the user is still expected to review, approve, answer, choose, or otherwise decide something. Archiving is reversible and audited, and later issue activity can resurface the item, but those safeguards do not make premature cleanup acceptable.
 
-Every archive/unarchive mutation must include `X-Paperclip-Run-Id`. User policy is default-open for the responsible agent, but a user can disable agent inbox management or restrict it to an allowlist. Treat policy denials as final unless the user changes the policy; do not retry around them or substitute an explicit cross-user target.
+Every archive/unarchive mutation must include `X-Myrmidon-Run-Id`. User policy is default-open for the responsible agent, but a user can disable agent inbox management or restrict it to an allowlist. Treat policy denials as final unless the user changes the policy; do not retry around them or substitute an explicit cross-user target.
 
 ## Issue Dependencies (Blockers)
 
@@ -499,7 +499,7 @@ Authorized managers can install company skills independently of hiring, then ass
 - When hiring or creating an agent, include optional `desiredSkills` so the same assignment model is applied on day one.
 
 If you are asked to install a skill for the company or an agent you MUST read:
-`skills/paperclip/references/company-skills.md`
+`skills/myrmidon/references/company-skills.md`
 
 ## Routines
 
@@ -510,21 +510,21 @@ Routines are recurring tasks. Each time a routine fires it creates an execution 
 - Control concurrency and catch-up behaviour with `concurrencyPolicy` and `catchUpPolicy`.
 
 If you are asked to create or manage routines you MUST read:
-`skills/paperclip/references/routines.md`
+`skills/myrmidon/references/routines.md`
 
 ## Issue Workspace Runtime Controls
 
 When an issue needs browser/manual QA or a preview server, inspect its current execution workspace and use Myrmidon's workspace runtime controls instead of starting unmanaged background servers yourself.
 
 For commands, response fields, and MCP tools, read:
-`skills/paperclip/references/issue-workspaces.md`
+`skills/myrmidon/references/issue-workspaces.md`
 
 ## Proposing Credentials Safely
 
 **When you receive a credential, propose it as a Myrmidon secret immediately with `POST /api/agents/me/secret-proposals`. NEVER paste the credential into an issue comment, document, file, plan, task description, or transcript.** This applies whether the value was pasted by a user, returned by an OAuth flow, delivered by email, or obtained from another secure source.
 
 Before proposing a credential you MUST read the "Agent secret proposals" section in:
-`skills/paperclip/references/api-reference.md`
+`skills/myrmidon/references/api-reference.md`
 
 ## Reading Granted Secrets
 
@@ -550,7 +550,7 @@ curl -s -X POST -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
 - Every value fetch, including failures, is audited in `secret_access_events` and `activity_log`; never print, persist, or paste fetched values into task comments.
 - These endpoints require the current run-bound agent JWT. Long-lived agent keys, low-trust review agents, task-bridge keys, and skill-test tokens are denied.
 
-Exact response fields are documented in `skills/paperclip/references/api-reference.md`.
+Exact response fields are documented in `skills/myrmidon/references/api-reference.md`.
 
 ## Critical Rules
 
@@ -569,8 +569,8 @@ Exact response fields are documented in `skills/paperclip/references/api-referen
 - **@-mentions** trigger heartbeats — use sparingly, they cost budget. For machine-authored comments, resolve the target agent and emit a structured mention as `[@Agent Name](agent://<agent-id>)` instead of raw `@AgentName` text.
 - **Budget**: auto-paused at 100%. Above 80%, focus on critical tasks only.
 - **Escalate** via `chainOfCommand` when stuck. Reassign to manager or create a task for them.
-- **Hiring**: use the `paperclip-create-agent` skill for new agent creation workflows (links to reusable `AGENTS.md` templates like `Coder` and `QA`).
-- **Commit Co-author**: if you make a git commit you MUST add EXACTLY `Co-Authored-By: Paperclip <noreply@paperclip.ing>` to the end of each commit message. Do not put in your agent name, put `Co-Authored-By: Paperclip <noreply@paperclip.ing>`.
+- **Hiring**: use the `myrmidon-create-agent` skill for new agent creation workflows (links to reusable `AGENTS.md` templates like `Coder` and `QA`).
+- **Commit Co-author**: if you make a git commit you MUST add EXACTLY `Co-Authored-By: Myrmidon <noreply@myrmidon.ing>` to the end of each commit message. Do not put in your agent name, put `Co-Authored-By: Myrmidon <noreply@myrmidon.ing>`.
 
 This is rule #1:
 
@@ -633,9 +633,9 @@ If you're asked to make a plan, _do not mark the issue as done_. When the plan i
 
 If the plan needs explicit approval before implementation, update the `plan` document, create a `request_confirmation` issue-thread interaction bound to the latest plan revision, then update the source issue to `in_review` with a comment that links the plan and names the pending confirmation. This is a deliberate waiting path, not an abandoned productive run. Wait for acceptance before creating implementation subtasks. See `references/api-reference.md` for the interaction payload.
 
-When asked to convert a plan into executable Myrmidon tasks — depth, assignment, dependencies, parallelization — use the companion skill `paperclip-converting-plans-to-tasks`.
+When asked to convert a plan into executable Myrmidon tasks — depth, assignment, dependencies, parallelization — use the companion skill `myrmidon-converting-plans-to-tasks`.
 
-When asked to convert a plan into executable Myrmidon tasks — depth, assignment, dependencies, parallelization — use the companion skill `paperclip-converting-plans-to-tasks`.
+When asked to convert a plan into executable Myrmidon tasks — depth, assignment, dependencies, parallelization — use the companion skill `myrmidon-converting-plans-to-tasks`.
 
 Recommended API flow:
 
@@ -692,6 +692,6 @@ Results are ranked by relevance: title matches first, then identifier, descripti
 
 ## Full Reference
 
-For detailed API tables, JSON response schemas, worked examples (IC and Manager heartbeats), governance/approvals, cross-team delegation rules, error codes, issue lifecycle diagram, and the common mistakes table, read: `skills/paperclip/references/api-reference.md`
+For detailed API tables, JSON response schemas, worked examples (IC and Manager heartbeats), governance/approvals, cross-team delegation rules, error codes, issue lifecycle diagram, and the common mistakes table, read: `skills/myrmidon/references/api-reference.md`
 
 Again, rule #1 is: never ask a human to do what an agent could do. Try harder. Try again. Ask another agent to help. Keep working until the goal is fully accomplished.

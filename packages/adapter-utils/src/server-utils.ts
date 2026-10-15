@@ -3667,7 +3667,9 @@ export async function listPaperclipSkillEntries(
 
   try {
     const entries = await fs.readdir(root, { withFileTypes: true });
-    const dirs = entries.filter((entry) => entry.isDirectory());
+    const dirs = entries.filter(
+      (entry) => entry.isDirectory() && !LEGACY_BUNDLED_SKILL_NAMES[entry.name],
+    );
     return dirs.map((entry) => ({
       key: `paperclipai/paperclip/${entry.name}`,
       runtimeName: entry.name,
@@ -4075,21 +4077,29 @@ function canonicalizeDesiredPaperclipSkillReference(
   const normalizedReference = reference.trim().toLowerCase();
   if (!normalizedReference) return "";
 
-  const exactKey = availableEntries.find(
-    (entry) => entry.key.trim().toLowerCase() === normalizedReference,
-  );
+  const requestedSlug = normalizedReference.split("/").pop() ?? "";
+  const aliasedSlug = LEGACY_BUNDLED_SKILL_NAMES[requestedSlug];
+  const exactKey = availableEntries.find((entry) => {
+    const entryKey = entry.key.trim().toLowerCase();
+    const entrySlug = entryKey.split("/").pop() ?? "";
+    return entryKey === normalizedReference ||
+      entrySlug === normalizedReference ||
+      (Boolean(aliasedSlug) && entrySlug === aliasedSlug);
+  });
   if (exactKey) return exactKey.key;
 
   const byRuntimeName = availableEntries.filter(
     (entry) =>
       typeof entry.runtimeName === "string" &&
-      entry.runtimeName.trim().toLowerCase() === normalizedReference,
+      entry.runtimeName.trim().toLowerCase() === (aliasedSlug ?? normalizedReference),
   );
   if (byRuntimeName.length === 1) return byRuntimeName[0]!.key;
 
+  const legacyAlias = LEGACY_BUNDLED_SKILL_NAMES[normalizedReference];
   const slugMatches = availableEntries.filter(
     (entry) =>
-      entry.key.trim().toLowerCase().split("/").pop() === normalizedReference,
+      entry.key.trim().toLowerCase().split("/").pop() === normalizedReference ||
+      entry.runtimeName?.trim().toLowerCase() === legacyAlias,
   );
   if (slugMatches.length === 1) return slugMatches[0]!.key;
 
@@ -4118,7 +4128,14 @@ export function resolvePaperclipDesiredSkillNames(
  * resolver above.
  */
 export const PAPERCLIP_OPERATIONAL_SKILL_KEY =
-  "paperclipai/paperclip/paperclip";
+  "paperclipai/paperclip/myrmidon";
+
+const LEGACY_BUNDLED_SKILL_NAMES: Record<string, string> = {
+  paperclip: "myrmidon",
+  "paperclip-board": "myrmidon-board",
+  "paperclip-converting-plans-to-tasks": "myrmidon-converting-plans-to-tasks",
+  "paperclip-create-agent": "myrmidon-create-agent",
+};
 
 /**
  * Native Paperclip Runner sessions receive the control-plane contract through
@@ -4176,7 +4193,8 @@ export function resolveLegacyPaperclipDesiredSkillNames(
   );
   const operationalEntry = availableEntries.find(
     (entry) =>
-      entry.key.trim().toLowerCase() === PAPERCLIP_OPERATIONAL_SKILL_KEY,
+      entry.key.trim().toLowerCase() === PAPERCLIP_OPERATIONAL_SKILL_KEY ||
+      entry.runtimeName?.trim().toLowerCase() === "myrmidon",
   );
   if (!operationalEntry) return desiredSkills;
 
