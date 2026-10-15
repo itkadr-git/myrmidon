@@ -22,8 +22,6 @@ import { readConfigFile } from "../config-file.js";
 import { PRODUCT_NAME } from "../myrmidon/product.js";
 // myrmidon(U2): owner-delivery bindings for tasks without their own chat thread.
 import { telegramOwnerDeliveryBindings } from "../myrmidon/owner-delivery/telegram-owner-bindings.js";
-// myrmidon(1.6.5-OWNER-DM-FILTER): human-readable owner-DM card text (U2 branch only).
-import { ownerDeliveryCardText } from "../myrmidon/owner-delivery/owner-card-text.js";
 // myrmidon(U2): owner Telegram questions and confirmations are delivered as text only.
 import { telegramOwnerInteractionText } from "../myrmidon/owner-delivery/telegram-text.js";
 import { projectSafeChatPublication } from "./chat-publication-projection.js";
@@ -465,10 +463,6 @@ export async function enqueueIssueInteractionChatPublications(
                 },
               ]
             : [];
-    const vendorText =
-      interaction.kind === "ask_user_questions"
-        ? textForQuestionInteraction(interaction, taskUrl)
-        : genericInteractionText(taskUrl);
     const text = ownerTelegramText ??
       (interaction.kind === "ask_user_questions"
         ? textForQuestionInteraction(interaction, taskUrl)
