@@ -1,0 +1,32 @@
+diff --git a/model_tools.py b/model_tools.py
+index 9a068d5..e20ee16 100644
+--- a/model_tools.py
++++ b/model_tools.py
+@@ -337,9 +337,27 @@ def _select_tool_names(enabled_toolsets: Optional[List[str]], disabled_toolsets:
+     # disabled toolset are strictly stripped out. See issue #17309.
+     if disabled_toolsets:
+         _apply_toolset_selection(tools, disabled_toolsets, quiet_mode, disable=True)
++    # myrmidon(G1): single tools named in ``agent.disabled_tools`` are subtracted after the
++    # toolsets, for tools that share a toolset with ones the role uses (the browser credential vault
++    # rides with the browser, vision_analyze with nothing else).
++    tools.difference_update(_config_disabled_tool_names())
+     return tools
+ 
+ 
++def _config_disabled_tool_names() -> set:
++    """Tool names listed under ``agent.disabled_tools`` in config.yaml (empty when unset or unreadable)."""
++    try:
++        from agent.skill_utils import parse_config_string_list
++        from hermes_cli.config import load_config_readonly
++        agent_cfg = (load_config_readonly() or {}).get("agent")
++        if not isinstance(agent_cfg, dict):
++            return set()
++        return set(parse_config_string_list(agent_cfg.get("disabled_tools")))
++    except Exception:
++        logger.debug("agent.disabled_tools could not be read", exc_info=True)
++        return set()
++
++
+ # --- Dynamic schema rewrites -------------------------------------------------
+ # Each rewriter gets (tool definition, set of tool names that passed check_fn)
+ # and returns the (possibly replaced) definition, or None to drop the tool.
