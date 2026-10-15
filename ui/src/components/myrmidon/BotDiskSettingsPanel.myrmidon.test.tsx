@@ -278,7 +278,7 @@ describe("BotDiskSettingsPanel uv settings", () => {
     expect(linkMode.value).toBe("clone");
     await typeInto(cache, "/data/uv-cache");
     await act(async () => { (container.querySelector("#bot-disk-uv-cache")?.parentElement?.querySelector("button") as HTMLButtonElement).click(); });
-    expect(setUv).toHaveBeenCalledWith({ uvCacheDir: "/data/uv-cache" });
+    expect(setUv.mock.calls[0]?.[0]).toEqual({ uvCacheDir: "/data/uv-cache" });
     await typeInto(cache, "relative/path");
     await act(async () => { (container.querySelector("#bot-disk-uv-cache")?.parentElement?.querySelector("button") as HTMLButtonElement).click(); });
     expect(setUv).toHaveBeenCalledTimes(1);
