@@ -1,4 +1,4 @@
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 
@@ -44,8 +44,8 @@ export function createLiveConsoleBrowserMiddleware(options = {}) {
     bootstrap = (async () => {
       const runner = await load();
       runner.assertLiveConsoleLoopbackBindHost(bindHost);
-      const workingDirectory =
-        options.workingDirectory ?? (await createWorkingDirectory());
+      const ownsWorkingDirectory = options.workingDirectory === undefined;
+      const workingDirectory = options.workingDirectory ?? (await createWorkingDirectory());
       const server = new runner.LiveConsoleDemoServer({
         host: bindHost,
         workingDirectory,
@@ -63,7 +63,7 @@ export function createLiveConsoleBrowserMiddleware(options = {}) {
                 chunkDelayMs: Number.isInteger(chunkDelayMs) ? chunkDelayMs : 45,
               }),
       });
-      return { handle: server.middleware(), server, workingDirectory };
+      return { handle: server.middleware(), server, workingDirectory, ownsWorkingDirectory };
     })();
     return bootstrap;
   }
@@ -88,8 +88,12 @@ export function createLiveConsoleBrowserMiddleware(options = {}) {
   };
   middleware.close = async () => {
     if (bootstrap === null) return;
-    const { server } = await bootstrap;
-    await server.close();
+    const { server, workingDirectory, ownsWorkingDirectory } = await bootstrap;
+    try {
+      await server.close();
+    } finally {
+      if (ownsWorkingDirectory) await rm(workingDirectory, { recursive: true, force: true });
+    }
   };
   middleware.prepare = ready;
   return middleware;
