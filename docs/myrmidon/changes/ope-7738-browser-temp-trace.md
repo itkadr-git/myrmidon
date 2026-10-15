@@ -1,4 +1,15 @@
-## summary
+## changelog-en
+
+### Browser/runtime temporary-path trace (OPE-7738)
+
+- Document the product-owned browser/runtime temporary-path writers and cleanup behavior; deployment-specific `chr-p*` and `native-*` ownership remains unverified.
+
+## changelog-ru
+
+### Трассировка временных путей браузера и runtime (OPE-7738)
+
+- Документированы владельцы и очистка временных путей браузера/runtime в продукте; владельцы deployment-путей `chr-p*` и `native-*` пока не установлены.
+
 
 Trace performed against the product repository at `origin/main` (2026-10-15). The literal `chr-p*` prefix and Chromium config names supplied in the task do not occur in tracked product files or reachable git history. The deployment repository/configuration that creates those paths was not available in this checkout, so ownership, root, TTL, and trap cleanup for `chr-p*` remain unverified. Do not remove matching host paths based on name alone.
 
@@ -12,6 +23,6 @@ Trace performed against the product repository at `origin/main` (2026-10-15). Th
 
 These roots inherit `os.tmpdir()` and thus do not guarantee non-tmpfs storage. The deployment-specific `chr-p*`, Chromium cache/config, and `native-*` roots cannot be attributed from this repository search; no cleanup policy or TTL for them is established here.
 
-## Scope and conclusion
+### Scope and conclusion
 
 No product-owned writer for the task's exact Chromium/`chr-p*` names was confirmed, so no speculative product fix was made. Product-owned writers above already have normal-path teardown; all have crash/abnormal-exit residual risk and no TTL scavenger. A follow-up deployment trace needs the repository/host configuration that creates `chr-p*` and `native-*`, including service unit/container mounts and cleanup scripts. This report does not authorize deleting unowned host paths.
