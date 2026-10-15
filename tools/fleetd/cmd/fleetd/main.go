@@ -158,6 +158,22 @@ func validate(cfg *config, checkConfig bool) error {
 	return validateBots(cfg.Bots)
 }
 
+func validateBots(bots []bot) error {
+	if len(bots) == 0 {
+		return fmt.Errorf("at least one bots[] entry is required")
+	}
+	for i := range bots {
+		b := &bots[i]
+		if b.BotKey == "" || !validBotKey(b.BotKey) {
+			return fmt.Errorf("bots[%d].botKey %q is invalid", i, b.BotKey)
+		}
+		if b.MaxMemoryMb <= 0 || b.MaxCpus <= 0 || b.MaxPids <= 0 {
+			return fmt.Errorf("bots[%d] limits must be positive", i)
+		}
+	}
+	return nil
+}
+
 func tlsListener(cfg *config) (net.Listener, error) {
 	pair, err := tls.LoadX509KeyPair(cfg.ServerCert, cfg.ServerKey)
 	if err != nil {
