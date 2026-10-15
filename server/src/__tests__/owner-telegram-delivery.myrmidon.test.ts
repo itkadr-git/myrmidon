@@ -249,7 +249,7 @@ describeEmbeddedPostgres(
       return { companyId, agentId, boardUserId, endpointId, dmIssue, workIssue };
     }
 
-    it("delivers an agent question card on an unbound task to the owner's Telegram conversation", async () => {
+    it("delivers owner questions as complete plain text without actions", async () => {
       const fixture = await seedFixture();
       const question = {
         kind: "ask_user_questions" as const,
@@ -263,11 +263,12 @@ describeEmbeddedPostgres(
             {
               id: "deploy-window",
               prompt: "Which deploy window?",
+              helpText: "Choose one and include any timing constraints.",
               selectionMode: "single" as const,
               allowOther: false,
               options: [
-                { id: "morning", label: "Morning" },
-                { id: "evening", label: "Evening" },
+                { id: "morning", label: "Morning", description: "Before noon" },
+                { id: "evening", label: "Evening", description: "After work" },
               ],
             },
           ],
@@ -287,6 +288,20 @@ describeEmbeddedPostgres(
       expect(publications).toHaveLength(1);
       expect(publications[0]!.endpointId).toBe(fixture.endpointId);
       expect(publications[0]!.conversationId).not.toBeNull();
+      const payload = publications[0]!.payload as {
+        text?: string;
+        interaction?: { id?: string; card?: { actions?: unknown[] } };
+      };
+      expect(payload.text).toContain("Choose a deploy window");
+      expect(payload.text).toContain("Which deploy window?");
+      expect(payload.text).toContain("Choose one and include any timing constraints.");
+      expect(payload.text).toContain("1. Morning — Before noon");
+      expect(payload.text).toContain("2. Evening — After work");
+      expect(payload.text).toContain("Ответьте сообщением: номером варианта или своими словами.");
+      expect(payload.text).toContain("https://paperclip.local");
+      expect(payload.interaction?.id).toBe(interaction.id);
+      expect(payload.interaction?.card?.actions).toEqual([]);
+      expect(payload.text).not.toContain("chat_action");
       const [boundConversation] = await db
         .select()
         .from(chatConversations)
@@ -303,7 +318,7 @@ describeEmbeddedPostgres(
       expect(boundConversation?.isDirectMessage).toBe(true);
     });
 
-    it("delivers a native telegram confirmation card on an unbound task to the owner's Telegram conversation", async () => {
+    it("delivers confirmation details as plain text with no executable actions", async () => {
       const fixture = await seedFixture();
       const interaction = await issueThreadInteractionService(db).create(
         { id: fixture.workIssue.id, companyId: fixture.companyId },
@@ -317,6 +332,7 @@ describeEmbeddedPostgres(
             version: 1 as const,
             prompt: "Proceed with the deploy?",
             detailsMarkdown: "Deploy build to production.",
+            target: { type: "issue_document" as const, key: "plan", revisionId: randomUUID() },
             acceptLabel: "Accept",
             rejectLabel: "Reject",
             allowDeclineReason: true,
@@ -332,12 +348,13 @@ describeEmbeddedPostgres(
       expect(publications).toHaveLength(1);
       expect(publications[0]!.endpointId).toBe(fixture.endpointId);
       const payload = publications[0]!.payload as {
-        card?: { kind?: string; actions?: Array<{ label?: string }> };
+        text?: string;
+        interaction?: { card?: { actions?: unknown[] } };
       };
-      expect(payload.card?.kind).toBe("confirmation");
-      expect(
-        payload.card?.actions?.map((action) => action.label),
-      ).toEqual(["Accept", "Reject"]);
+      expect(payload.text).toContain("Proceed with the deploy?");
+      expect(payload.text).toContain("Deploy build to production.");
+      expect(payload.text).toContain("Ответить можно только на доске.");
+      expect(payload.interaction?.card?.actions).toEqual([]);
     });
 
     it("keeps the card board-only when the owner has no standing Telegram conversation", async () => {

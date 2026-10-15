@@ -24,6 +24,8 @@ import { PRODUCT_NAME } from "../myrmidon/product.js";
 import { telegramOwnerDeliveryBindings } from "../myrmidon/owner-delivery/telegram-owner-bindings.js";
 // myrmidon(1.6.5-OWNER-DM-FILTER): human-readable owner-DM card text (U2 branch only).
 import { ownerDeliveryCardText } from "../myrmidon/owner-delivery/owner-card-text.js";
+// myrmidon(U2): owner Telegram questions and confirmations are delivered as text only.
+import { telegramOwnerInteractionText } from "../myrmidon/owner-delivery/telegram-text.js";
 import { projectSafeChatPublication } from "./chat-publication-projection.js";
 import { safeChatTaskUrl } from "./chat-task-url.js";
 import {
@@ -351,7 +353,7 @@ export async function enqueueIssueInteractionChatPublications(
       addresseeUserId: interaction.addresseeUserId,
     });
   }
-  const ownerDeliveryBranch = vendorBindings.length === 0 && bindings.length > 0; // myrmidon(1.6.5-OWNER-DM-FILTER): the card reached the owner DM through the U2 fallback, so its text gets the human-readable prefix below.
+  const ownerOnly = vendorBindings.length === 0 && bindings.length > 0;
   if (bindings.length === 0) return [];
 
   const taskUrl = publicChatInteractionTaskUrl(interaction.issueId);
@@ -362,6 +364,8 @@ export async function enqueueIssueInteractionChatPublications(
   const inserted: Array<typeof chatPublications.$inferSelect> = [];
   for (const { conversation, endpoint } of bindings) {
     if (endpoint.assignedAgentId !== interaction.createdByAgentId) continue;
+    const isOwnerTelegramBinding =
+      ownerOnly && endpoint.provider === "telegram";
     const formDraft =
       interaction.kind === "ask_user_questions" &&
       (endpoint.provider === "slack" ||
@@ -377,26 +381,41 @@ export async function enqueueIssueInteractionChatPublications(
           )
         : null;
     const supportsCallbacks =
+      !isOwnerTelegramBinding &&
       endpoint.provider !== "imessage-photon" &&
       formDraft === null &&
       question !== null &&
       endpoint.capabilities.actions === true;
-    const questionActionTokens = supportsCallbacks
-      ? question.options.map((option) => ({
-          actionId: createChatQuestionOptionActionToken(),
-          option,
-        }))
-      : [];
     const confirmation =
       endpoint.provider === "telegram" && endpoint.capabilities.actions === true
         ? nativeTelegramConfirmation(interaction)
         : null;
-    const confirmationActionTokens = confirmation
-      ? (["accept", "reject"] as const).map((decision) => ({
-          actionId: createChatConfirmationActionToken(),
-          decision,
-        }))
-      : [];
+    const ownerTelegramText =
+      endpoint.provider === "telegram"
+        ? telegramOwnerInteractionText(
+            interaction,
+            taskUrl,
+            isOwnerTelegramBinding,
+            confirmation !== null,
+          )
+        : null;
+    const isTextOnlyOwnerTelegram =
+      isOwnerTelegramBinding &&
+      ownerTelegramText !== null;
+    const questionActionTokens =
+      supportsCallbacks && question && !isTextOnlyOwnerTelegram
+        ? question.options.map((option) => ({
+            actionId: createChatQuestionOptionActionToken(),
+            option,
+          }))
+        : [];
+    const confirmationActionTokens =
+      !isTextOnlyOwnerTelegram && confirmation
+        ? (["accept", "reject"] as const).map((decision) => ({
+            actionId: createChatConfirmationActionToken(),
+            decision,
+          }))
+        : [];
     if (
       endpoint.provider === "telegram" &&
       [...questionActionTokens, ...confirmationActionTokens].some(
@@ -407,7 +426,9 @@ export async function enqueueIssueInteractionChatPublications(
     ) {
       throw new Error("Generated Telegram question action exceeds 64 bytes");
     }
-    const actions: SafeExternalChatCardAction[] = formDraft
+    const actions: SafeExternalChatCardAction[] = isTextOnlyOwnerTelegram
+      ? []
+      : formDraft
       ? [
           {
             type: "callback" as const,
@@ -444,17 +465,14 @@ export async function enqueueIssueInteractionChatPublications(
                 },
               ]
             : [];
-    // myrmidon(1.6.5-OWNER-DM-FILTER): on the owner-DM branch (U2) the card
-    // speaks to a human owner, so the text gets a short human-readable prefix
-    // built from the interaction's own fields. The vendor text functions stay
-    // untouched — vendor bindings keep the vendor text byte-for-byte.
     const vendorText =
       interaction.kind === "ask_user_questions"
         ? textForQuestionInteraction(interaction, taskUrl)
         : genericInteractionText(taskUrl);
-    const text = ownerDeliveryBranch
-      ? ownerDeliveryCardText(interaction, vendorText)
-      : vendorText;
+    const text = ownerTelegramText ??
+      (interaction.kind === "ask_user_questions"
+        ? textForQuestionInteraction(interaction, taskUrl)
+        : genericInteractionText(taskUrl));
     const payload = projectSafeChatPublication({
       classification: "external",
       source: "issue_interaction",
