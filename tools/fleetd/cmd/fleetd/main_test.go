@@ -123,8 +123,8 @@ func TestHealthRouteRequiresAuthAndReportsResources(t *testing.T) {
 	if rec := routeRequest(s, http.MethodGet, "/v1/health", "", ""); rec.Code != http.StatusUnauthorized {
 		t.Fatalf("unauthenticated health: got %d", rec.Code)
 	}
-	if rec := routeRequest(s, http.MethodGet, "/v1/health", token, ""); rec.Code != http.StatusOK {
-		t.Fatalf("authenticated health: got %d: %s", rec.Code, rec.Body.String())
+	if rec := routeRequest(s, http.MethodGet, "/v1/bots/bot-example-one/status", token, ""); rec.Code != http.StatusOK {
+		t.Fatalf("authenticated status: got %d: %s", rec.Code, rec.Body.String())
 	}
 }
 
