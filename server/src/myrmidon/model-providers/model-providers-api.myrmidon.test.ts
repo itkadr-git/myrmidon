@@ -9,7 +9,16 @@
 
 import express from "express";
 import request from "supertest";
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import {
+  clearModelProviderConnectors,
+  DEFAULT_CHATGPT_POOL_MODELS,
+  isModelProviderTypeAvailable,
+  listAvailableModelProviderTypes,
+  registerModelProviderConnector,
+  unregisterModelProviderConnector,
+} from "@paperclipai/shared";
+import { badRequest } from "../../errors.js";
 import { errorHandler } from "../../middleware/index.js";
 import { modelProviderRoutes } from "./routes.js";
 import type { ModelProviderService, ModelProviderView } from "./service.js";
@@ -41,6 +50,12 @@ function fakeService() {
   const calls: Array<{ op: string; companyId: string; providerId?: string; body?: unknown }> = [];
   const service: ModelProviderService = {
     async createProvider(input) {
+      if (!isModelProviderTypeAvailable(input.body.type)) {
+        throw badRequest(
+          `provider type "${input.body.type}" is not available; connector plugin is not registered`,
+          { code: "model_provider_type_unsupported" },
+        );
+      }
       calls.push({ op: "create", companyId: input.companyId, body: input.body });
       await input.activity?.({
         companyId: input.companyId,
@@ -48,7 +63,7 @@ function fakeService() {
         providerId: "provider-1",
         details: {},
       });
-      return providerView("provider-1");
+      return { ...providerView("provider-1"), type: input.body.type, name: input.body.name };
     },
     async rotateProviderKey(input) {
       calls.push({ op: "rotate", companyId: input.companyId, providerId: input.providerId, body: input.key });
@@ -94,6 +109,34 @@ function fakeService() {
         { id: "m1", modelName: "model-a", litellmModelName: "openai/model-a", enabled: false, free: true },
       ];
     },
+    async listChannels(companyId, providerId) {
+      calls.push({ op: "listChannels", companyId, providerId });
+      return {
+        providerId,
+        providerType: "chatgpt-pool",
+        channels: [
+          {
+            n: 1,
+            label: "account-1",
+            email: "acc1@example.com",
+            state: "active",
+            stateRu: "Активен",
+            plan: "plus",
+            limitedUntil: null,
+            lastOk: 1700000000,
+            windows: {
+              primary: { usedPct: 20, windowMin: 300, resetsAt: 1700018000 },
+              secondary: { usedPct: 15, windowMin: 10080, resetsAt: 1700600000 },
+            },
+            isBanned: false,
+            isExhausted: false,
+          },
+        ],
+        signals: [],
+      };
+    },
+    listAvailableTypes: () => listAvailableModelProviderTypes(),
+    syncPoolSignals: async () => [],
   };
   return { service, calls };
 }
@@ -132,18 +175,20 @@ describe("myrmidon(1.6.1 MODEL-PROVIDERS) routes: access", () => {
     await request(server).delete(`${base}/provider-1`).expect(403);
     await request(server).get(`${base}/provider-1/models`).expect(403);
     await request(server).post(`${base}/provider-1/models`).send({ models: [] }).expect(403);
+    await request(server).get(`${base}/provider-1/channels`).expect(403);
     expect(calls).toHaveLength(0);
   });
 
-  it("lets an agent of the company read providers and models but not mutate", async () => {
+  it("lets an agent of the company read providers, models and channels but not mutate", async () => {
     const { server, calls } = app(agentActor);
     await request(server).get(base).expect(200);
     await request(server).get(`${base}/provider-1/models`).expect(200);
+    await request(server).get(`${base}/provider-1/channels`).expect(200);
     await request(server).post(base).send({ type: "openai", name: "p", key: KEY_VALUE }).expect(403);
     await request(server).patch(`${base}/provider-1`).send({ key: KEY_VALUE }).expect(403);
     await request(server).delete(`${base}/provider-1`).expect(403);
     await request(server).post(`${base}/provider-1/models`).send({ models: [] }).expect(403);
-    expect(calls.map((c) => c.op)).toEqual(["list", "listModels"]);
+    expect(calls.map((c) => c.op)).toEqual(["list", "listModels", "listChannels"]);
   });
 
   it("lets a board member of the company do everything", async () => {
@@ -225,6 +270,9 @@ describe("myrmidon(1.6.1 MODEL-PROVIDERS) routes: the key is write-only", () => 
       .send({ models: [{ modelName: "model-a" }] })
       .expect(200);
     expect(JSON.stringify(set.body)).not.toContain(KEY_VALUE);
+
+    const channels = await request(server).get(`${base}/provider-1/channels`).expect(200);
+    expect(JSON.stringify(channels.body)).not.toContain(KEY_VALUE);
   });
 
   it("never echoes the key value in an error body either", async () => {
@@ -235,6 +283,37 @@ describe("myrmidon(1.6.1 MODEL-PROVIDERS) routes: the key is write-only", () => 
       .send({ type: "openai", name: KEY_VALUE, key: 12345 })
       .expect(400);
     expect(JSON.stringify(response.body)).not.toContain(KEY_VALUE);
+  });
+});
+
+describe("myrmidon(1.6.1 MODEL-PROVIDERS) routes: channels and chatgpt-pool", () => {
+  it("answers channels and active role signals for chatgpt-pool", async () => {
+    const { server, calls } = app(member);
+    const res = await request(server).get(`${base}/provider-1/channels`).expect(200);
+    expect(calls.some((c) => c.op === "listChannels")).toBe(true);
+    expect(res.body.channels).toHaveLength(1);
+    expect(res.body.channels[0].n).toBe(1);
+    expect(res.body.channels[0].windows.primary.usedPct).toBe(20);
+    expect(res.body.channels[0].stateRu).toBe("Активен");
+  });
+
+  it("accepts pool account status event via POST /account-status and records signal", async () => {
+    const { server } = app(member);
+    const res = await request(server)
+      .post(`${base}/provider-1/account-status`)
+      .send({
+        accountNumber: 3,
+        label: "Account #3",
+        state: "banned",
+        isBanned: true,
+      })
+      .expect(200);
+
+    expect(res.body.ok).toBe(true);
+    expect(res.body.signal).toBeDefined();
+    expect(res.body.signal.accountNumber).toBe(3);
+    expect(res.body.signal.kind).toBe("banned");
+    expect(res.body.signal.severity).toBe("high");
   });
 });
 
@@ -251,3 +330,61 @@ describe("myrmidon(1.6.1 MODEL-PROVIDERS) routes: activity", () => {
     ]);
   });
 });
+
+describe("myrmidon(1.6.1 MODEL-PROVIDERS) connector boundary & availableTypes", () => {
+  afterEach(() => {
+    clearModelProviderConnectors();
+  });
+
+  it("omits unregistered connectors from availableTypes and rejects provider creation", async () => {
+    clearModelProviderConnectors();
+    const { server, calls } = app(member);
+
+    // GET lists available types without chatgpt-pool
+    const getRes = await request(server).get(base).expect(200);
+    expect(getRes.body.availableTypes).toBeDefined();
+    expect(getRes.body.availableTypes).not.toContain("chatgpt-pool");
+    expect(getRes.body.availableTypes).toContain("openai");
+    expect(getRes.body.availableTypes).toContain("dashscope");
+
+    // POST with unregistered type is rejected with 400 bad request
+    const postRes = await request(server)
+      .post(base)
+      .send({ type: "chatgpt-pool", name: "Codex Pool", key: KEY_VALUE })
+      .expect(400);
+
+    expect(postRes.body.error).toContain("connector plugin is not registered");
+    expect(calls.filter((c) => c.op === "create")).toHaveLength(0);
+  });
+
+  it("includes registered connector in availableTypes and allows creation", async () => {
+    registerModelProviderConnector({
+      type: "chatgpt-pool",
+      name: "ChatGPT / Codex Subscription Pool",
+      pluginKey: "myrmidon.chatgpt-pool",
+      defaultModels: DEFAULT_CHATGPT_POOL_MODELS,
+      supportsChannels: true,
+    });
+
+    const { server, calls } = app(member);
+
+    // GET now includes chatgpt-pool
+    const getRes = await request(server).get(base).expect(200);
+    expect(getRes.body.availableTypes).toContain("chatgpt-pool");
+
+    // POST succeeds
+    const postRes = await request(server)
+      .post(base)
+      .send({ type: "chatgpt-pool", name: "Codex Pool", key: KEY_VALUE })
+      .expect(201);
+
+    expect(postRes.body.type).toBe("chatgpt-pool");
+    expect(calls.filter((c) => c.op === "create")).toHaveLength(1);
+
+    // Unregistering removes it again
+    unregisterModelProviderConnector("chatgpt-pool");
+    const getRes2 = await request(server).get(base).expect(200);
+    expect(getRes2.body.availableTypes).not.toContain("chatgpt-pool");
+  });
+});
+

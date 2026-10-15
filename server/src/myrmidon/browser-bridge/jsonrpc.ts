@@ -108,6 +108,10 @@ export function parseJsonRpcResponse(raw: string): ParseJsonRpcResponseResult | 
   const candidate = parsed as Record<string, unknown> | null;
   if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return null;
   if (candidate.jsonrpc !== JSON_RPC_VERSION) return null;
+  // A frame that names a method is a request (or a notification), never an answer: without
+  // this check a client request `{id, method}` parses as a success response with an undefined
+  // result and is dropped as a "late answer", so extension request types are never served.
+  if (candidate.method !== undefined) return null;
   const id = isJsonRpcId(candidate.id) ? (candidate.id as string | number) : null;
   if (candidate.error !== undefined) {
     const error = candidate.error as JsonRpcErrorFrame["error"];

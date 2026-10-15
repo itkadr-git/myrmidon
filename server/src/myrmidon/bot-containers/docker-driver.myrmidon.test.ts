@@ -92,8 +92,10 @@ describe("buildCreateContainerRequestBody", () => {
   it("adds the read-only git mirror bind after the writable cache binds (1.6.2-BOT-DISK-C)", () => {
     const withMirror = buildCreateContainerRequestBody(spec(), CONFIG, "/srv/package-cache", true);
     const binds = withMirror.HostConfig.Binds;
-    expect(binds.slice(-5)).toEqual([
+    expect(binds.slice(-7)).toEqual([
       "/srv/package-cache/pnpm:/cache/pnpm:rw",
+      "/srv/package-cache/pnpm-store:/cache/pnpm-store:rw",
+      "/srv/package-cache/uv:/cache/uv:rw", // myrmidon(1.6.5-BOT-DISK-UV-A)
       "/srv/package-cache/go-mod:/cache/go-mod:rw",
       "/srv/package-cache/go-build:/cache/go-build:rw",
       "/srv/package-cache/gradle:/cache/gradle:rw",
@@ -202,6 +204,7 @@ describe("buildCreateContainerRequestBody — BUILD-OFFLOAD C devbuild wiring", 
       "DEVBUILD_HOST=build-host.internal",
       "DEVBUILD_USER=devbuild",
       "DEVBUILD_BASE=/srv/devbuild",
+      "DEVBUILD_BOT_NAME=agent-a",
     ]);
     expect(body.HostConfig.Binds).toEqual([
       "/srv/myrmidon/bots/agent-a:/bot",
@@ -221,6 +224,7 @@ describe("buildCreateContainerRequestBody — BUILD-OFFLOAD C devbuild wiring", 
       "DEVBUILD_HOST=build-host.internal",
       "DEVBUILD_USER=devbuild",
       "DEVBUILD_BASE=/srv/devbuild",
+      "DEVBUILD_BOT_NAME=agent-a",
     ]);
     expect(body.HostConfig.Binds).toEqual([
       "/srv/myrmidon/bots/agent-a:/bot",

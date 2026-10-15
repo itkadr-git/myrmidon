@@ -25,6 +25,8 @@ export interface BotDiskView {
     pnpmStoreDir?: string;
     /** Absent: hardlink. */
     pnpmImportMethod?: "hardlink" | "clone-or-copy" | "copy";
+    uvCacheDir?: string;
+    uvLinkMode?: "clone" | "hardlink" | "copy";
     /**
      * The host directory of the shared bot runtime (1.6.5-BOT-DISK-H11):
      * every bot on the default host mounts its bin, lazy-packages and lsp
@@ -62,6 +64,8 @@ export const botDiskApi = {
     api.patch<BotDiskView>("/myrmidon/bot-disk", { gitMirrorRepos: repos }),
   /** null returns either value to its default. */
   setPnpm: (change: { pnpmStoreDir?: string | null; pnpmImportMethod?: "hardlink" | "clone-or-copy" | "copy" | null }) =>
+    api.patch<BotDiskView>("/myrmidon/bot-disk", change),
+  setUv: (change: { uvCacheDir?: string | null; uvLinkMode?: "clone" | "hardlink" | "copy" | null }) =>
     api.patch<BotDiskView>("/myrmidon/bot-disk", change),
   // myrmidon(1.6.6-SETTINGS-UI-B): the fields the lifecycle screen edits.
   /**

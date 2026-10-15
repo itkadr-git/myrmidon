@@ -20,7 +20,14 @@
 #   4. nginx, LiteLLM, RAGFlow and Hindsight are up (nginx: the unit passed
 #      After=docker and a port answers; the others: their health endpoints);
 #   5. the DNS names other services use resolve inside the docker networks:
-#      mysql, es01, paperclip-server-1 (the RAGFlow lesson of 01.10).
+#      mysql, es01, paperclip-server-1 (the RAGFlow lesson of 01.10);
+#   6. the host-disk sweep measures a real path: GET /api/myrmidon/host-disk
+#      must report status.usage.measuredPath non-null (1.6.5 F-03: in the
+#      board container `/data` is absent, so without an explicit
+#      MYRMIDON_HOST_DISK_DATA_ROOT the sweep is blind and every tick used to
+#      log "host disk usage could not be read"). Disabled with
+#      POST_BOOT_CHECK_HOST_DISK=off when the installation does not run the
+#      sweep.
 #
 # On any failure the script exits 1, prints each failed check, and (when
 # --json-out is given, and by the systemd unit to $STATE_DIR/post-boot-check.json)
@@ -139,6 +146,21 @@ dns_names_ok() {
   return $rc
 }
 
+# --- 6. the host-disk sweep measures a real path (1.6.5 F-03) -----------------
+# In the board container `/data` is absent; unless MYRMIDON_HOST_DISK_DATA_ROOT
+# points at a mounted path the sweep stays `unmeasured` and the BOT-DISK E
+# threshold never fires. The check is red when measuredPath is null.
+host_disk_measured_ok() {
+  [[ "${POST_BOOT_CHECK_HOST_DISK:-on}" != "off" ]] || { log "post-boot: host-disk: POST_BOOT_CHECK_HOST_DISK=off, check off"; return 0; }
+  local url body measured
+  url="${HOST_DISK_STATUS_URL:-${HEALTH_URL%/api/health}/api/myrmidon/host-disk}"
+  body="$(http_get "$url" "$HEALTH_TOKEN_FILE" 2>/dev/null || true)"
+  [[ -n "$body" ]] || { log "post-boot: host-disk: no answer from $url"; return 1; }
+  measured="$(jq -r '.status.usage.measuredPath // empty' <<<"$body" 2>/dev/null || true)"
+  [[ -n "$measured" ]] || { log "post-boot: host-disk: measuredPath is null — set MYRMIDON_HOST_DISK_DATA_ROOT to a path mounted into the board container"; return 1; }
+  return 0
+}
+
 # --- systemd-failed check (part of the acceptance: systemctl --failed empty) --
 systemd_failed_ok() {
   command -v systemctl >/dev/null 2>&1 || return 0
@@ -159,6 +181,7 @@ check "litellm up" litellm_ok
 check "ragflow up" ragflow_ok
 check "hindsight up" hindsight_ok
 check "dns names resolve (mysql es01 paperclip-server-1)" dns_names_ok
+check "host disk sweep measures a real path" host_disk_measured_ok
 check "systemctl --failed is empty" systemd_failed_ok
 
 json_out="${json_out:-$STATE_DIR/post-boot-check.json}"

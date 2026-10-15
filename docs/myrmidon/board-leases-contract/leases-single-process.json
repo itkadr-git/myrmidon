@@ -1,0 +1,24 @@
+{
+  "leases": [
+    {
+      "name": "scheduler",
+      "holderBootId": "boot-solo01",
+      "epoch": 1,
+      "acquiredAt": "2026-10-08T21:00:00.000Z",
+      "expiresAt": "2026-10-08T21:00:30.000Z",
+      "expired": false,
+      "isSelf": true,
+      "holder": {
+        "bootId": "boot-solo01",
+        "role": "worker",
+        "pid": 808,
+        "hostname": "board-solo",
+        "container": "myrmidon-api",
+        "version": "1.6.5",
+        "lastSeenAt": "2026-10-08T21:00:29.000Z"
+      }
+    }
+  ],
+  "selfBootId": "boot-solo01",
+  "serverTime": "2026-10-08T21:00:30.000Z"
+}

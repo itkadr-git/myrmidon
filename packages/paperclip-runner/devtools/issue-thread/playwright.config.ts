@@ -1,4 +1,5 @@
 import { defineConfig } from "@playwright/test";
+import { readProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
 
 /**
  * Focused browser suite for the Capability issue thread.
@@ -19,9 +20,10 @@ export default defineConfig({
     launchOptions: {
       // Hosts without the Playwright chromium system libraries can point at a
       // preinstalled Chromium instead of running `pnpm verify:rootless`.
-      ...(process.env.PAPERCLIP_RUNNER_CHROMIUM_PATH === undefined
+      // myrmidon(REBRAND-C): MYRMIDON_* name with the PAPERCLIP_* alias.
+      ...(readProductEnv("RUNNER_CHROMIUM_PATH") === undefined
         ? {}
-        : { executablePath: process.env.PAPERCLIP_RUNNER_CHROMIUM_PATH }),
+        : { executablePath: readProductEnv("RUNNER_CHROMIUM_PATH") }),
     },
   },
   webServer: [

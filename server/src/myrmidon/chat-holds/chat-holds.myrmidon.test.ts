@@ -50,7 +50,14 @@ import { heartbeatService } from "../../services/heartbeat.js";
 import { queueIssueAssignmentWakeup } from "../../services/issue-assignment-wakeup.js";
 import { instanceSettingsService } from "../../services/instance-settings.js";
 import { LEGACY_RECOVERY_CAUSE } from "../../services/legacy-execution-recovery.js";
-import { isChatOwnerMessageWake } from "./chat-backed.js";
+import {
+  compareOwnerChatTurnFirst,
+  countLeadingOwnerChatTurns,
+  isChatOwnerMessageWake,
+  isFailedChatRunRetry,
+  isOwnerChatTurnWake,
+  listOwnerChatTurnRunIds,
+} from "./chat-backed.js";
 import {
   chatNoticeLanguage,
   chatWaitNoticeApplies,
@@ -88,6 +95,51 @@ describe("isChatOwnerMessageWake", () => {
   });
 });
 
+// myrmidon(1.6.5 OWNER-CHAT-ADMISSION): the queue order the sweep applies.
+describe("owner chat turn queue order", () => {
+  type QueueRun = { id: string; rank: 0 | 1 | 2 | 3; owner: boolean };
+  /** The sweep's comparator shape: owner turn first, then the readiness rank. */
+  const sortQueue = (runs: QueueRun[]) =>
+    [...runs].sort((left, right) => {
+      const leftOwner = left.owner && left.rank !== 3;
+      const rightOwner = right.owner && right.rank !== 3;
+      const ownerOrder = compareOwnerChatTurnFirst(leftOwner, rightOwner);
+      if (ownerOrder !== 0) return ownerOrder;
+      if (!leftOwner && left.rank !== right.rank) return left.rank - right.rank;
+      return 0;
+    });
+
+  it("a todo owner turn goes ahead of an in_progress automatic run of the same agent", () => {
+    const sorted = sortQueue([
+      { id: "auto-in-progress", rank: 0, owner: false },
+      { id: "owner-todo", rank: 1, owner: true },
+    ]);
+    expect(sorted.map((run) => run.id)).toEqual(["owner-todo", "auto-in-progress"]);
+  });
+
+  it("an owner turn whose task waits for dependencies stays behind the ready runs", () => {
+    const sorted = sortQueue([
+      { id: "owner-blocked", rank: 3, owner: true },
+      { id: "auto-todo", rank: 1, owner: false },
+    ]);
+    expect(sorted.map((run) => run.id)).toEqual(["auto-todo", "owner-blocked"]);
+  });
+
+  it("compareOwnerChatTurnFirst is neutral when both or neither are owner turns", () => {
+    expect(compareOwnerChatTurnFirst(true, true)).toBe(0);
+    expect(compareOwnerChatTurnFirst(false, false)).toBe(0);
+    expect(compareOwnerChatTurnFirst(true, false)).toBe(-1);
+    expect(compareOwnerChatTurnFirst(false, true)).toBe(1);
+  });
+
+  it("counts only the owner turns at the front of the sorted queue", () => {
+    const owners = new Set(["a", "b", "d"]);
+    expect(countLeadingOwnerChatTurns([{ id: "a" }, { id: "b" }, { id: "c" }, { id: "d" }], owners)).toBe(2);
+    expect(countLeadingOwnerChatTurns([{ id: "c" }, { id: "a" }], owners)).toBe(0);
+    expect(countLeadingOwnerChatTurns([], owners)).toBe(0);
+  });
+});
+
 describe("wait notices", () => {
   it("names the recovery wait, a paused agent and a closed memory gate in plain Russian", () => {
     const recovery = classifyChatWait({
@@ -99,7 +151,10 @@ describe("wait notices", () => {
     expect(chatWaitNoticeText("recovery", "ru")).toContain("прервался");
     expect(chatWaitNoticeText("agent_paused", "ru")).toContain("на паузе");
     expect(chatWaitNoticeText("host_memory", "ru")).toContain("памяти");
-    expect(chatWaitNoticeText("host_memory", "ru")).toContain("15 секунд");
+    expect(chatWaitNoticeText("host_memory", "ru")).toContain("каждые 15 секунд");
+    // The wait has no promised start time.
+    expect(chatWaitNoticeText("host_memory", "ru")).not.toContain("~15");
+    expect(chatWaitNoticeText("host_memory", "en")).not.toContain("~15");
   });
 
   it("the same reason in English, and a not-started message asks to send it again", () => {
@@ -123,6 +178,31 @@ describe("wait notices", () => {
 
   it("an unnamed wait keeps the vendor wording (no reason)", () => {
     expect(classifyChatWait({ status: "queued", reason: null, payload: null })).toBeNull();
+  });
+
+  // myrmidon(1.6.5 OWNER-CHAT-ADMISSION): the queue ranks and admits the
+  // owner's own turn in a chat differently, so it has to name it the same way
+  // the wake does.
+  it("names the owner's own turn by its durable inbound receipt", () => {
+    const receipt = {
+      idempotencyKey: "chat-inbound:abc",
+      requestedByActorType: "user",
+      requestedByActorId: OWNER,
+    };
+    expect(isOwnerChatTurnWake(receipt)).toBe(true);
+    // A chat wake a system actor opened is not the owner's turn.
+    expect(isOwnerChatTurnWake({ ...receipt, requestedByActorType: "system" })).toBe(false);
+    expect(isOwnerChatTurnWake({ ...receipt, requestedByActorId: null })).toBe(false);
+    // Nor is a comment or monitor wake, which carries another key.
+    expect(isOwnerChatTurnWake({ ...receipt, idempotencyKey: "comment:abc" })).toBe(false);
+    expect(isOwnerChatTurnWake({ ...receipt, idempotencyKey: null })).toBe(false);
+  });
+
+  it("keeps the chat's retry button out of the owner's own turns", () => {
+    expect(isFailedChatRunRetry({ chatFailedRunRetry: { runId: "run-1" } })).toBe(true);
+    expect(isFailedChatRunRetry({ issueId: "issue-1" })).toBe(false);
+    expect(isFailedChatRunRetry(null)).toBe(false);
+    expect(isFailedChatRunRetry("chatFailedRunRetry")).toBe(false);
   });
 });
 
@@ -392,5 +472,70 @@ describeEmbeddedPostgres("a chat is never held and an owner message wakes (CHAT-
     // Only a chat's hold is lifted by a message; an ordinary issue's stays.
     expect(still!.evidence.automaticRecovery).toMatchObject({ replay: "blocked" });
     expect((still!.evidence.automaticRecovery as Record<string, unknown>).replayClearedBy).toBeUndefined();
+  }, TEST_TIMEOUT_MS);
+
+  it("tells the owner's own turn from the automatic runs, the system sender and the retry", async () => {
+    const fixture = await seed({ chat: true, status: "in_progress" });
+    const ownerReceiptId = randomUUID();
+    const systemReceiptId = randomUUID();
+    const agentReceiptId = randomUUID();
+    await db.insert(agentWakeupRequests).values([
+      {
+        id: ownerReceiptId,
+        companyId: fixture.companyId,
+        agentId: fixture.agentId,
+        source: "automation",
+        reason: "chat_message",
+        status: "processed",
+        requestedByActorType: "user",
+        requestedByActorId: OWNER,
+        idempotencyKey: `chat-inbound:${randomUUID()}`,
+        payload: {},
+      },
+      {
+        id: systemReceiptId,
+        companyId: fixture.companyId,
+        agentId: fixture.agentId,
+        source: "automation",
+        reason: "chat_message",
+        status: "processed",
+        requestedByActorType: "system",
+        requestedByActorId: null,
+        idempotencyKey: `chat-inbound:${randomUUID()}`,
+        payload: {},
+      },
+      {
+        id: agentReceiptId,
+        companyId: fixture.companyId,
+        agentId: fixture.agentId,
+        source: "automation",
+        reason: "issue_commented",
+        status: "queued",
+        requestedByActorType: "agent",
+        requestedByActorId: fixture.agentId,
+        idempotencyKey: `comment:${randomUUID()}`,
+        payload: {},
+      },
+    ]);
+
+    const queued = [
+      {
+        id: "owner-turn",
+        wakeupRequestId: ownerReceiptId,
+        contextSnapshot: { issueId: fixture.issueId },
+      },
+      {
+        id: "owner-retry",
+        wakeupRequestId: ownerReceiptId,
+        contextSnapshot: { issueId: fixture.issueId, chatFailedRunRetry: { runId: randomUUID() } },
+      },
+      { id: "system-turn", wakeupRequestId: systemReceiptId, contextSnapshot: {} },
+      { id: "automatic-run", wakeupRequestId: agentReceiptId, contextSnapshot: {} },
+      { id: "receiptless-run", wakeupRequestId: null, contextSnapshot: {} },
+    ];
+    const ownerTurnRunIds = await listOwnerChatTurnRunIds(db, fixture.companyId, queued);
+    expect([...ownerTurnRunIds]).toEqual(["owner-turn"]);
+    // The same receipt under another company is not this company's turn.
+    expect([...(await listOwnerChatTurnRunIds(db, randomUUID(), queued))]).toEqual([]);
   }, TEST_TIMEOUT_MS);
 });

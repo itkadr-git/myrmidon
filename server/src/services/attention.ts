@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, notInArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, lt, lte, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -24,8 +24,10 @@ import {
   issues,
   joinRequests,
   documents,
+  principalPermissionGrants,
   projects,
   projectWorkspaces,
+  secretAccessEvents,
 } from "@paperclipai/db";
 import { deriveProjectUrlKey, botDiskQuotaWhyNow } from "@paperclipai/shared";
 import type {
@@ -50,12 +52,6 @@ import type {
 } from "@paperclipai/shared";
 import { badRequest } from "../errors.js";
 import { listAttentionExhaustedRuns } from "./attention-exhausted-runs.js";
-import { buildPromptBudgetAttentionCards } from "../myrmidon/prompt-budget/attention.js";
-import { buildPromptBudgetStatus } from "../myrmidon/prompt-budget/status.js";
-import {
-  PROMPT_BUDGET_SETTINGS_KEY,
-  normalizePromptBudgetSettings,
-} from "@paperclipai/shared";
 import { budgetService } from "./budgets.js";
 import { hostDiskRuntime } from "../myrmidon/host-disk/index.js"; // myrmidon(BOT-DISK E)
 import { cloneHygieneSignals, lifecycleNotEffective } from "../myrmidon/bot-containers/clone-hygiene.js"; // myrmidon(1.6.2-BOT-DISK-C)
@@ -77,11 +73,29 @@ import { buildStackAttentionCards } from "../myrmidon/stack-registry/attention.j
 import { readStackDocument } from "../myrmidon/stack-registry/store.js";
 // myrmidon(TRACING-HEALTH): the "LLM tracing" red state raises one operator card (part D)
 import { readTracingHealthAttentionSignal } from "../myrmidon/tracing-health/attention.js";
+// myrmidon(PAUSE-GUARD): the pass that stopped at its ceiling leaves one card
+// per company while forgotten operator pauses are still waiting.
+import {
+  pauseGuardSignalDedupKey,
+  pauseGuardSignalSeverity,
+  pauseGuardSignalTitle,
+  pauseGuardSignalWhyNow,
+  pauseGuardSubjectId,
+  readPauseGuardSignal,
+} from "../myrmidon/pause-guard/attention.js";
 import { hostCpuHoldSignal, hostMemoryHoldSignal } from "../myrmidon/run-admission.js"; // myrmidon(1.6.2/1.6.5 RUN-ADMISSION)
 // myrmidon(BOT-RUNTIME-TUNING D): the model fallback share raises one card per agent
 import { readModelFallbackSignals } from "../myrmidon/litellm-fallback-signal/attention.js";
+// myrmidon(1.6.6 OPE-7198): Codex/ChatGPT pool banned/exhausted role signals
+import { readPoolAccountSignals } from "../myrmidon/model-providers/signals.js";
+// myrmidon(1.6.5-F-18): an empty gateway model catalog raises one card per
+// company — the accounting key is misconfigured, not a quiet window.
+import { readEmptyCatalogSignal } from "../myrmidon/litellm-costs/attention.js";
+// myrmidon(1.6.5-F11-A): the «media not connected» signals the profile compile records.
+import { readMediaMcpSignals } from "../myrmidon/bot-containers/media-mcp.js";
 // myrmidon(1.6.1-BOT-DISK-C): the disk quota sweep records one signal per bot
 // volume at/over its quota; the feed turns the registry into cards.
+import { buildBotDiskCards, readBotDiskReports } from "../myrmidon/bot-containers/bot-disk-cards.js"; // myrmidon(1.6.5 BOT-DISK-H4c)
 import { readBotDiskQuotaSignals } from "../myrmidon/bot-containers/bot-quota.js";
 
 // myrmidon(STALE-BLOCK): the lifted-block operator signal registry.
@@ -100,6 +114,15 @@ import {
   executionHoldSignalSeverity,
   executionHoldSignalWhyNow,
 } from "../myrmidon/execution-hold/attention.js";
+// myrmidon(1.6.5 F-09): the queued-run-without-reason card.
+import {
+  queueStallSignalDedupKey,
+  queueStallSignalDetail,
+  queueStallSignalSeverity,
+  queueStallSignalTitle,
+  queueStallSignalWhyNow,
+  type QueueStallSignal,
+} from "../myrmidon/stuck-queued/attention.js";
 // myrmidon(REVIEW-ROUTING): the cards of a task in review with no reviewer, or
 // a review without a verdict for too long.
 import {
@@ -109,6 +132,13 @@ import {
   reviewRoutingSignalTitle,
   reviewRoutingSignalWhyNow,
 } from "../myrmidon/review-routing/attention.js";
+// myrmidon(1.6.5-F21-B): the owner decision cards waiting on the owner.
+import {
+  summarizeOwnerPendingCards,
+  ownerCardsAttentionDedupKey,
+  ownerCardsAttentionTitle,
+  ownerCardsAttentionWhyNow,
+} from "../myrmidon/owner-reply/attention.js";
 // myrmidon(1.6.1-WIP-LIMIT-A): the WIP limit cards and the settings read.
 import { buildWipLimitAttentionCards } from "../myrmidon/wip-limit/attention.js";
 import { buildWipLimitStatus } from "../myrmidon/wip-limit/status.js";
@@ -116,6 +146,8 @@ import {
   WIP_LIMIT_SETTINGS_KEY,
   normalizeWipLimitSettings,
 } from "@paperclipai/shared";
+// myrmidon(1.6.5 PROMPT-BUDGET-SIGNAL): the recorded prompt-budget signals.
+import { readPromptBudgetSignals } from "../myrmidon/prompt-budget/signal.js";
 // myrmidon(1.6.1-FORAGING-LIMITS-UI): the learning-spend operator signals.
 import {
   readForagingAutoOffSignal,
@@ -140,6 +172,10 @@ import {
   decisionRetentionService,
   DEFAULT_DECISION_SHELF_DAYS,
 } from "./decision-retention.js";
+import {
+  decisionRetentionSyncScheduler,
+  type DecisionRetentionSyncSink,
+} from "./decision-retention-sync.js";
 
 const ATTENTION_SOURCE_KINDS: AttentionSourceKind[] = [
   "approval",
@@ -155,15 +191,30 @@ const ATTENTION_SOURCE_KINDS: AttentionSourceKind[] = [
   "agent_error_alert",
   "stack_update",
   "model_fallback_alert",
+  // myrmidon(1.6.5-F11-A): one card per bot without an issued media token.
+  "bot_media_mcp",
   // myrmidon(STALE-BLOCK): one card per block the watchdog lifted.
   "stale_block",
   "host_disk_alert",
+  // myrmidon(1.6.5-F-18): the gateway model catalog is empty — the accounting
+  // key is misconfigured; one card per company.
+  "empty_model_catalog",
   // myrmidon(1.6.1-WIP-LIMIT-A): the per-agent work-in-progress over-limit signal.
   "wip_limit",
   // myrmidon(REVIEW-ROUTING): no reviewer available, or a review overdue.
   "review_routing",
+  // myrmidon(1.6.5 BOT-DISK-H4c): bot disk archive and stale image cards.
+  "bot_disk_archive",
+  "bot_image_stale",
+  // myrmidon(PAUSE-GUARD): the guard hit its per-pass ceiling and operator
+  // pauses are still waiting for the following passes.
+  "pause_guard",
   // myrmidon(OPE-6011): a held task's silent-wake notice.
   "execution_hold",
+  // myrmidon(1.6.5-F21-B): owner decision cards waiting on the owner.
+  "owner_pending_card",
+  // myrmidon(1.6.6 OPE-7198): banned or exhausted Codex / ChatGPT subscription accounts.
+  "codex_pool_alert",
 ];
 
 const SEVERITY_RANK: Record<AttentionSeverity, number> = {
@@ -189,6 +240,12 @@ const SOURCE_RANK: Record<AttentionSourceKind, number> = {
   stale_block: 12,
   host_disk_alert: 0,
   model_fallback_alert: 13,
+  // myrmidon(1.6.5-F-18): an empty catalog blocks the gateway spend limits and
+  // the model picker — a stop, ranked with the other gateway-ops alerts.
+  empty_model_catalog: 0,
+  // myrmidon(1.6.5-F11-A): «media not connected» is configuration advice, not
+  // an error — ranked with the other advisory sources.
+  bot_media_mcp: 13,
   // myrmidon(1.6.1-WIP-LIMIT-A): a workload-oversignal sits below every
   // blocking kind but above nothing else — it is advice, not a stop.
   wip_limit: 14,
@@ -204,10 +261,29 @@ const SOURCE_RANK: Record<AttentionSourceKind, number> = {
   // myrmidon(1.6.3 PROMPT-BUDGET B): an over-threshold prompt is a capacity
   // warning on one agent — advice, ranked with the other workload notices.
   prompt_budget_alert: 18,
+  // myrmidon(1.6.5 BOT-DISK-H4c): both are advice, ranked last.
+  bot_disk_archive: 19,
+  bot_image_stale: 20,
+  // myrmidon(PAUSE-GUARD): a queue of forgotten pauses the guard is working
+  // through — advice, like the WIP limit, never a stop.
+  pause_guard: 18,
   foraging_limit: 13,
   // myrmidon(OPE-6011): a held task blocks all of its wakes — ranked with the
   // other machine-recovery stops, just below a recovery action itself.
   execution_hold: 1,
+  // myrmidon(1.6.5-F21-B): unanswered owner cards stall delivery; a card with
+  // some stale ones ranks with the stalled-review notices.
+  owner_pending_card: 16,
+  // myrmidon(1.6.5 F-09): a queue stall is a workload notice — advice, ranked
+  // with the other capacity signals.
+  queue_stall: 14,
+  // myrmidon(1.6.5-F-23): off-run secret reads are a deliberate surface
+  // extension — visible as advice, never a stop; ranked with the other
+  // advisory notices.
+  secret_off_run_reads: 18,
+  secret_off_run_grant_expiring: 18,
+  // myrmidon(1.6.6 OPE-7198): pool account alerts are high/medium operational notices.
+  codex_pool_alert: 4,
 };
 
 const PENDING_INTERACTION_STATUSES = ["pending"] as const;
@@ -281,7 +357,8 @@ type AttentionServiceOptions = {
   /**
    * override for the feed cache TTL in milliseconds; when unset
    * the value comes from instance_settings.general.attentionFeedCacheTtlSeconds
-   * (default 45 s). 0 disables the cache for this service instance.
+   * (default 60 s, the UI poll interval). 0 disables the cache for this
+   * service instance.
    */
   feedCacheTtlMs?: number;
   /**
@@ -289,6 +366,18 @@ type AttentionServiceOptions = {
    * memoised per Db. 0 forces every list() to re-read instance_settings.
    */
   settingsCacheTtlMs?: number;
+  /**
+   * myrmidon(1.6.5-F-15-C): sink for the debounced decision-retention sync.
+   * The read path only parks the snapshot here; the sink owns the writes.
+   * Tests inject a scheduler they drain by hand, production takes the shared
+   * per-Db default (`decisionRetentionSyncScheduler`).
+   */
+  decisionRetentionSync?: DecisionRetentionSyncSink;
+  /**
+   * myrmidon(1.6.6 OPE-7198): optional server-side hook to synchronize pool account
+   * signals before taking an attention feed snapshot.
+   */
+  poolSignalsSync?: (companyId: string) => Promise<unknown>;
 };
 
 function emptyCounts(): Record<AttentionSourceKind, number> {
@@ -683,7 +772,13 @@ function parseActivityBoundary(value: string | undefined, field: "activitySince"
   return parsed;
 }
 
-async function enrichAttentionItems(db: Db, companyId: string, items: AttentionItem[], now: number) {
+async function enrichAttentionItems(
+  db: Db,
+  companyId: string,
+  items: AttentionItem[],
+  now: number,
+  retentionSync: DecisionRetentionSyncSink,
+) {
   if (items.length === 0) return items;
   const sourceIds = [...new Set(items.map((item) => item.subject.id))];
   const queueRows = await db
@@ -762,8 +857,12 @@ async function enrichAttentionItems(db: Db, companyId: string, items: AttentionI
       snoozedUntil: triage?.snoozedUntil ? toIso(triage.snoozedUntil) : null,
     };
   });
-  const retentionBySource = await decisionRetentionService(db).syncItems(companyId, enriched);
-  return enriched.map((item) => {
+  // myrmidon(1.6.5-F-15-C): read-only. The retention state the feed renders
+  // comes from what the background pass already stored — this GET inserts
+  // nothing. The snapshot that pass needs is parked below and written by the
+  // retention sweep (debounced per company); the read never awaits it.
+  const retentionBySource = await decisionRetentionService(db).getStates(companyId, enriched);
+  const withRetention = enriched.map((item) => {
     const key = itemSourceKey(item);
     const retention = retentionBySource.get(key);
     const overrides = retentionDaysBySource.get(key) ?? [];
@@ -777,6 +876,8 @@ async function enrichAttentionItems(db: Db, companyId: string, items: AttentionI
       retentionVersion: retention?.version ?? 0,
     };
   });
+  retentionSync.schedule(companyId, withRetention);
+  return withRetention;
 }
 
 function betterDuplicate(left: AttentionItem, right: AttentionItem) {
@@ -1211,12 +1312,24 @@ function readRunIssueId(contextSnapshot: Record<string, unknown> | null) {
 // ---------------------------------------------------------------------------
 
 const ATTENTION_FAILED_RUN_HORIZON_DEFAULT_DAYS = 7;
-const ATTENTION_FEED_CACHE_TTL_DEFAULT_MS = 45_000;
+const ATTENTION_FEED_CACHE_TTL_DEFAULT_MS = 60_000;
+/**
+ * Stale-while-revalidate bound. A snapshot older than the TTL is still served
+ * (while one background rebuild refreshes it); past this multiple of the TTL a
+ * request waits for the rebuild instead, so a reader never sees data older
+ * than TTL * multiplier.
+ */
+const ATTENTION_FEED_CACHE_STALE_TTL_MULTIPLIER = 2;
+/** Per-Db ceiling on cached feed snapshots, pruned past the stale window. */
+const ATTENTION_FEED_CACHE_MAX_ENTRIES = 32;
 const ATTENTION_SETTINGS_READ_TTL_MS = 5_000;
 
 type AttentionRuntimeSettings = {
   failedRunHorizonDays: number;
   feedCacheTtlMs: number;
+  // myrmidon(1.6.5 F-09): a queued run without waitReason older than this
+  // threshold raises a queue_stall card.
+  queueStallAfterSec: number;
 };
 
 type AttentionBuildOptions = {
@@ -1267,22 +1380,54 @@ async function readAttentionRuntimeSettings(
     feedCacheTtlMs:
       (clampNumber(general.attentionFeedCacheTtlSeconds, 0, 300)
         ?? ATTENTION_FEED_CACHE_TTL_DEFAULT_MS / 1000) * 1000,
+    // myrmidon(1.6.5 F-09): env MYRMIDON_QUEUED_RUN_STALE_AFTER_SEC as the
+    // default; instance_settings.general.queuedRunStaleAfterSec overrides.
+    queueStallAfterSec:
+      clampNumber(general.queuedRunStaleAfterSec, 60, 604800)
+      ?? clampNumber(process.env.MYRMIDON_QUEUED_RUN_STALE_AFTER_SEC, 60, 604800)
+      ?? 3600,
   };
   attentionSettingsCache.set(db, { readAtMs: readAt, settings });
   return settings;
 }
 
-type AttentionFeedCacheEntry = { expiresAtMs: number; snapshot: AttentionFeedSnapshot };
+type AttentionFeedCacheEntry = { builtAtMs: number; snapshot: AttentionFeedSnapshot };
 
-const attentionFeedCaches = new WeakMap<Db, Map<string, AttentionFeedCacheEntry>>();
+/** The single rebuild currently in flight for one cache key. */
+type AttentionFeedCacheRebuild = { token: string; task: Promise<AttentionFeedCacheEntry> };
 
-function attentionFeedCacheFor(db: Db): Map<string, AttentionFeedCacheEntry> {
-  let cache = attentionFeedCaches.get(db);
-  if (!cache) {
-    cache = new Map<string, AttentionFeedCacheEntry>();
-    attentionFeedCaches.set(db, cache);
+type AttentionFeedCacheState = {
+  entries: Map<string, AttentionFeedCacheEntry>;
+  /**
+   * In-flight rebuilds by cache key: a snapshot older than the TTL is served
+   * while exactly one rebuild refreshes it, and parallel requests share that
+   * rebuild instead of stacking builds on the same company.
+   */
+  rebuilds: Map<string, AttentionFeedCacheRebuild>;
+  /** Invalidation counters ("*" covers every company) — see cacheToken below. */
+  invalidations: Map<string, number>;
+};
+
+const attentionFeedCaches = new WeakMap<Db, AttentionFeedCacheState>();
+
+function attentionFeedCacheFor(db: Db): AttentionFeedCacheState {
+  let state = attentionFeedCaches.get(db);
+  if (!state) {
+    state = { entries: new Map(), rebuilds: new Map(), invalidations: new Map() };
+    attentionFeedCaches.set(db, state);
   }
-  return cache;
+  return state;
+}
+
+/**
+ * An invalidation must be visible on the very next read, but a rebuild that
+ * already started (or a background rebuild launched from the stale window)
+ * reads the pre-invalidation state. Such a snapshot must not repopulate the
+ * cache, so every rebuild carries the token it started under and only stores
+ * its result while the token still matches.
+ */
+function attentionFeedCacheToken(state: AttentionFeedCacheState, companyId: string) {
+  return `${state.invalidations.get("*") ?? 0}:${state.invalidations.get(companyId) ?? 0}`;
 }
 
 /**
@@ -1292,15 +1437,70 @@ function attentionFeedCacheFor(db: Db): Map<string, AttentionFeedCacheEntry> {
  * which reads before/after states inside one TTL window) can force a rebuild.
  */
 export function invalidateAttentionFeedCache(db: Db, companyId?: string) {
-  const cache = attentionFeedCaches.get(db);
-  if (!cache) return;
+  const state = attentionFeedCaches.get(db);
+  if (!state) return;
+  const counterKey = companyId ?? "*";
+  state.invalidations.set(counterKey, (state.invalidations.get(counterKey) ?? 0) + 1);
   if (!companyId) {
-    cache.clear();
+    state.entries.clear();
     return;
   }
-  for (const key of cache.keys()) {
-    if (key.startsWith(`${companyId}|`)) cache.delete(key);
+  for (const key of state.entries.keys()) {
+    if (key.startsWith(`${companyId}|`)) state.entries.delete(key);
   }
+}
+
+/**
+ * Rebuild one cache key, at most once at a time.
+ *
+ * Every caller that needs a fresh snapshot goes through here, so a burst of
+ * parallel requests (the UI polls the feed for every open tab) produces one
+ * build and one set of queries: the first caller starts it, the rest await the
+ * same promise. Storing the result is skipped when an invalidation landed
+ * while the build was running (see attentionFeedCacheToken).
+ */
+function rebuildAttentionFeedSnapshot(
+  db: Db,
+  companyId: string,
+  cacheKey: string,
+  buildOptions: AttentionBuildOptions,
+  serviceOptions: AttentionServiceOptions,
+  feedCacheTtlMs: number,
+): Promise<AttentionFeedCacheEntry> {
+  const state = attentionFeedCacheFor(db);
+  const token = attentionFeedCacheToken(state, companyId);
+  const inFlight = state.rebuilds.get(cacheKey);
+  if (inFlight && inFlight.token === token) return inFlight.task;
+
+  const rebuild: AttentionFeedCacheRebuild = {
+    token,
+    task: (async () => {
+      const snapshot = await buildAttentionFeedSnapshot(db, companyId, buildOptions, serviceOptions);
+      const entry: AttentionFeedCacheEntry = { builtAtMs: snapshot.builtAtMs, snapshot };
+      if (attentionFeedCacheToken(state, companyId) === token) {
+        // Bound the per-Db map: entries past the stale window would force a
+        // synchronous rebuild on the next read anyway, so keeping them buys
+        // nothing and costs memory on a multi-company instance.
+        if (state.entries.size > ATTENTION_FEED_CACHE_MAX_ENTRIES) {
+          const staleBefore = Date.now() - feedCacheTtlMs * ATTENTION_FEED_CACHE_STALE_TTL_MULTIPLIER;
+          for (const [key, cached] of state.entries) {
+            if (cached.builtAtMs <= staleBefore) state.entries.delete(key);
+          }
+        }
+        state.entries.set(cacheKey, entry);
+      }
+      return entry;
+    })(),
+  };
+  const forget = () => {
+    if (state.rebuilds.get(cacheKey) === rebuild) state.rebuilds.delete(cacheKey);
+  };
+  // Attaching both outcomes also keeps a failed background rebuild from
+  // surfacing as an unhandled rejection: the stale snapshot stays in place and
+  // the next request retries.
+  rebuild.task.then(forget, forget);
+  state.rebuilds.set(cacheKey, rebuild);
+  return rebuild.task;
 }
 
 async function buildAttentionFeedSnapshot(
@@ -1899,68 +2099,74 @@ async function buildAttentionFeedSnapshot(
         }));
       }
 
-  // the failed-run window is clamped to a fixed horizon
-  // (instance_settings.general.attentionFailedRunHorizonDays, default 7 days)
-  // so a month-old unresolved failure no longer drags a months-wide scan of
-  // heartbeat_runs into every feed build.
-  const failedRunCreatedAtAfter = new Date(now - options.failedRunHorizonDays * 24 * 60 * 60 * 1000);
-  const failedRows = await listAttentionExhaustedRuns(db, companyId, {
-    createdAtAfter: failedRunCreatedAtAfter,
-  });
-      const failedIssueIds = failedRows.map((row) => readRunIssueId(row.contextSnapshot));
-      const failedAgentIds = [...new Set(failedRows.map((row) => row.agentId))];
-      const oldestFailedRunCreatedAt = failedRows.reduce<Date | null>((oldest, row) => {
-        if (!oldest || row.createdAt < oldest) return row.createdAt;
-        return oldest;
-      }, null);
-      const [failedIssueMap, failedImageMap, newerRuns] = await Promise.all([
+      // the failed-run window is clamped to a fixed horizon
+      // (instance_settings.general.attentionFailedRunHorizonDays, default 7 days)
+      // so a month-old unresolved failure no longer drags a months-wide scan of
+      // heartbeat_runs into every feed build.
+      const failedRunCreatedAtAfter = new Date(now - options.failedRunHorizonDays * 24 * 60 * 60 * 1000);
+      const failedRows = await listAttentionExhaustedRuns(db, companyId, {
+        createdAtAfter: failedRunCreatedAtAfter,
+      });
+      const failedIssueIds = failedRows.map((row) =>
+        readRunIssueId({ issueId: row.runIssueId, taskId: row.runTaskId }),
+      );
+      const [failedIssueMap, failedImageMap, newerRunKeys] = await Promise.all([
         issueSummaryMap(
           db,
           companyId,
           failedIssueIds,
         ),
         issueImageMap(db, companyId, failedIssueIds),
-        oldestFailedRunCreatedAt && failedAgentIds.length > 0
-          ? db
-            .select({
-              agentId: heartbeatRuns.agentId,
-              createdAt: heartbeatRuns.createdAt,
-              // Project just the ids readRunIssueId needs; pulling the whole
-              // context_snapshot detoasts megabytes per feed build.
-              runIssueId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'issueId'`,
-              runTaskId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'taskId'`,
-            })
-            .from(heartbeatRuns)
-            .where(and(
-              eq(heartbeatRuns.companyId, companyId),
-              inArray(heartbeatRuns.agentId, failedAgentIds),
-          // created_at > greatest(oldestFailedRunCreatedAt,
-          // now - horizon): the JS-side max mirrors greatest() and keeps the
-          // scan window from growing with the oldest unresolved failure.
-          gt(
-            heartbeatRuns.createdAt,
-            failedRunCreatedAtAfter > oldestFailedRunCreatedAt
-              ? failedRunCreatedAtAfter
-              : oldestFailedRunCreatedAt,
-          ),
-            ))
-          : Promise.resolve([]),
+        // Suppression check: for each exhausted run ask "is there ANY newer run
+        // of the same agent on the same task key" via the
+        // heartbeat_runs_company_ctx_{issue,task}_created_idx expression
+        // indexes, instead of detoasting every newer run's context_snapshot
+        // (thousands of rows per feed build). One lateral EXISTS per key, one
+        // round trip for the whole set.
+        failedRows.length > 0
+          ? db.execute(sql<{ run_id: string }>`
+              select k.run_id from (values ${sql.join(
+                failedRows.map((row) => {
+                  const issueId = row.runIssueId;
+                  const taskId = row.runTaskId;
+                  return sql`(${row.id}::uuid, ${row.agentId}::uuid, ${typeof issueId === "string" && issueId.length > 0 ? issueId : null}::text, ${typeof taskId === "string" && taskId.length > 0 ? taskId : null}::text, ${row.createdAt.toISOString()}::timestamptz)`;
+                }),
+                sql`, `,
+              )}) as k(run_id, agent_id, issue_id, task_id, created_at)
+              where (
+                k.issue_id is not null and exists (
+                  select 1 from ${heartbeatRuns} nr
+                  where nr.company_id = ${companyId}
+                    and nr.agent_id = k.agent_id
+                    and nr.context_snapshot ->> 'issueId' = k.issue_id
+                    and nr.created_at > k.created_at
+                )
+              ) or (
+                k.issue_id is null and k.task_id is not null and exists (
+                  select 1 from ${heartbeatRuns} nr
+                  where nr.company_id = ${companyId}
+                    and nr.agent_id = k.agent_id
+                    and nr.context_snapshot ->> 'issueId' is null
+                    and nr.context_snapshot ->> 'taskId' = k.task_id
+                    and nr.created_at > k.created_at
+                )
+              ) or (
+                k.issue_id is null and k.task_id is null and exists (
+                  select 1 from ${heartbeatRuns} nr
+                  where nr.company_id = ${companyId}
+                    and nr.agent_id = k.agent_id
+                    and nr.context_snapshot ->> 'issueId' is null
+                    and nr.context_snapshot ->> 'taskId' is null
+                    and nr.created_at > k.created_at
+                )
+              )`)
+          : Promise.resolve([] as Array<{ run_id: string }>),
       ]);
-      const latestRunCreatedAtByKey = new Map<string, Date>();
-      for (const newerRun of newerRuns) {
-        const newerRunIssueId = readRunIssueId({ issueId: newerRun.runIssueId, taskId: newerRun.runTaskId });
-        const newerRunKey = `${newerRun.agentId}:${newerRunIssueId ?? ""}`;
-        const latestCreatedAt = latestRunCreatedAtByKey.get(newerRunKey);
-        if (!latestCreatedAt || newerRun.createdAt > latestCreatedAt) {
-          latestRunCreatedAtByKey.set(newerRunKey, newerRun.createdAt);
-        }
-      }
+      const suppressedRunIds = new Set(newerRunKeys.map((row) => row.run_id));
       for (const run of failedRows) {
-        const issueId = readRunIssueId(run.contextSnapshot);
-        const runKey = `${run.agentId}:${issueId ?? ""}`;
-        const hasNewerRun = (latestRunCreatedAtByKey.get(runKey)?.getTime() ?? 0) > run.createdAt.getTime();
-        if (hasNewerRun) continue;
+        if (suppressedRunIds.has(run.id)) continue;
 
+        const issueId = readRunIssueId({ issueId: run.runIssueId, taskId: run.runTaskId });
         const issue = issueId ? failedIssueMap.get(issueId) ?? null : null;
         const dedupKey = `run:${run.id}`;
         add(createItem({
@@ -2088,8 +2294,66 @@ async function buildAttentionFeedSnapshot(
       // (fill level, free space, growth per hour, biggest consumers) travel
       // in the detail, and the dedup key stays constant while the threshold
       // stays crossed, so a fresh measurement refreshes the row.
+      //
+      // myrmidon(1.6.5-BOT-DISK-H10): when the dockergate measurement of the
+      // bot partition is available it takes precedence over the statfs card:
+      // the thresholds come from `general.botDisk` (85/90/95 by contract C7),
+      // the card counts against the partition physics, and >= the critical
+      // threshold is severity critical. Without dockergate data the statfs
+      // block below runs unchanged ("not measured" — no partition card).
+      const partitionState = hostDiskRuntime(db).partition.current();
+      if (partitionState.alertLevel === "warn" || partitionState.alertLevel === "critical") {
+        const partition = partitionState.partition!;
+        const thresholds = partitionState.settings!;
+        const critical = partitionState.alertLevel === "critical";
+        const dedupKey = `host_disk:partition:${partition.mount}`;
+        add(createItem({
+          companyId,
+          sourceKind: "host_disk_alert",
+          subject: {
+            kind: "agent",
+            id: "host-disk",
+            companyId,
+            title: "Bot partition",
+            identifier: null,
+            status: "alert",
+            href: `/${prefix}/instance`,
+            metadata: { measuredPath: partition.mount, source: "dockergate" },
+          },
+          whyNow: critical
+            ? `Bot partition is ${Math.round(partition.usedPercent)}% full (critical threshold ${thresholds.partitionCriticalPercent}%). myr-ws open refuses new copies.`
+            : `Bot partition is ${Math.round(partition.usedPercent)}% full (threshold ${thresholds.partitionThresholdPercent}%).`,
+          decisionVerbs: decisionVerbs(
+            { id: "inspect", label: "Inspect", description: "Open the host disk panel and free space on the bot partition." },
+            { id: "dismiss", label: "Dismiss", description: "Dismiss this alert until usage drops and crosses again." },
+          ),
+          inlineResolvable: false,
+          entryRule: "the bot partition fill level crossed the saved threshold",
+          exitRule: "usage drops below the threshold or the row is dismissed",
+          dedupKey,
+          severity: critical ? "critical" : "high",
+          activityAt: toIso(partitionState.evaluatedAt ?? partition.at),
+          createdAt: toIso(partition.at),
+          updatedAt: toIso(partitionState.evaluatedAt ?? partition.at),
+          relatedIssue: null,
+          detail: {
+            kind: "host_disk",
+            usedPercent: Math.round(partition.usedPercent),
+            thresholdPercent: critical
+              ? thresholds.partitionCriticalPercent
+              : thresholds.partitionThresholdPercent,
+            usedGb: Math.round(partition.usedBytes / (1024 * 1024 * 1024)),
+            totalGb: Math.round(partition.totalBytes / (1024 * 1024 * 1024)),
+            freeGb: Math.round(partition.freeBytes / (1024 * 1024 * 1024)),
+            growthBytesPerHour: null,
+            mountPoint: partition.mount,
+            consumers: [],
+            images: [],
+          },
+        }));
+      }
       const hostDisk = hostDiskRuntime(db).sweep.lastResult();
-      if (hostDisk?.overThreshold) {
+      if (hostDisk?.overThreshold && partitionState.alertLevel !== "warn" && partitionState.alertLevel !== "critical") {
         const dedupKey = `host_disk:${hostDisk.measuredPath ?? "unknown"}`;
         add(createItem({
           companyId,
@@ -2189,12 +2453,100 @@ async function buildAttentionFeedSnapshot(
           .from(agents)
           .where(and(eq(agents.companyId, companyId), inArray(agents.id, botIds)));
         const byId = new Map(botAgents.map((agent) => [agent.id, agent]));
+
+        // myrmidon(1.6.5-BOT-DISK-UV-B board side): the start-time self-check
+        // failures (reflink / shared git objects / uv cache) are host-level —
+        // one card on the fleet per kind of failure instead of one per bot per
+        // check. Unpushed-work clone cards stay per-bot.
+        const SELF_CHECK_KINDS = ["reflink", "gitref", "uvcache"] as const;
+        type SelfCheckKind = (typeof SELF_CHECK_KINDS)[number];
+        const isSelfCheck = (signal: (typeof cloneSignals)[number]): signal is typeof signal & { kind: SelfCheckKind } =>
+          signal.kind === "reflink" || signal.kind === "gitref" || signal.kind === "uvcache";
+        const selfCheckTitle: Record<SelfCheckKind, string> = {
+          reflink: "Reflinks do not work",
+          gitref: "Shared git objects check failed",
+          uvcache: "uv cache self-check failed",
+        };
+        const selfCheckAdvice: Record<SelfCheckKind, string> = {
+          reflink:
+            "pnpm installs on these bots copy every package instead of cloning, so bot disks fill quickly. The store and the clone roots must sit on one copy-on-write filesystem.",
+          gitref:
+            "New task clones on these bots copy the whole git history again (~0.4 GB each). Check that the git wrapper shadows git and the shared store is writable for the bot user.",
+          uvcache:
+            "uv installs on these bots fetch into a per-run cache instead of the shared one. Check that the shared package cache is mounted read-write and its directories belong to the bot user.",
+        };
+        const selfCheckExit: Record<SelfCheckKind, string> = {
+          reflink: "every affected bot restarts and its self-check passes",
+          gitref: "every affected bot restarts and its self-check passes",
+          uvcache: "every affected bot restarts and its self-check passes (the shared cache is writable for the bot user and files in it link into the clone roots)",
+        };
+        // Group by kind, then by the failing check/root so a fleet split into
+        // two failure modes still gets one card per mode.
+        const groups = new Map<string, { kind: SelfCheckKind; check: string; bots: Map<string, string> }>();
         for (const signal of cloneSignals) {
+          if (!isSelfCheck(signal)) continue;
+          const agent = byId.get(signal.botKey);
+          if (!agent) continue;
+          const check = signal.kind === "gitref"
+            ? (signal.reason.match(/check (\S+) failed/)?.[1] ?? "unknown")
+            : signal.kind === "uvcache"
+              ? "uvcache"
+              : signal.path;
+          const groupKey = `${signal.kind}:${check}`;
+          let group = groups.get(groupKey);
+          if (!group) {
+            group = { kind: signal.kind, check, bots: new Map() };
+            groups.set(groupKey, group);
+          }
+          if (!group.bots.has(agent.id)) group.bots.set(agent.id, `${agent.name}: ${signal.reason}`);
+        }
+        for (const group of [...groups.values()].sort((a, b) => (a.kind + ":" + a.check < b.kind + ":" + b.check ? -1 : 1))) {
+          const at = new Date().toISOString();
+          const botList = [...group.bots.values()];
+          const total = botList.length;
+          const names = botList.slice(0, 5).map((entry) => entry.split(": ")[0]).join(", ");
+          const more = total > 5 ? ` and ${total - 5} more` : "";
+          add(createItem({
+            companyId,
+            sourceKind: "bot_disk_lifecycle",
+            subject: {
+              kind: "agent",
+              id: "bot-disk-lifecycle",
+              companyId,
+              title: "Bot disk lifecycle",
+              identifier: null,
+              status: "alert",
+              href: `/${prefix}/instance`,
+              metadata: { failureKind: group.kind, check: group.check, affectedBots: total },
+            },
+            whyNow:
+              `${selfCheckTitle[group.kind]} on ${total} bot${total === 1 ? "" : "s"} (${names}${more}): ${botList[0].split(": ").slice(1).join(": ")}. ${selfCheckAdvice[group.kind]}`,
+            decisionVerbs: decisionVerbs(
+              { id: "inspect", label: "Inspect", description: "Recreate the affected bots so the prepare step and the self-check run again." },
+              { id: "dismiss", label: "Dismiss", description: "Dismiss this signal." },
+            ),
+            inlineResolvable: false,
+            entryRule: `the start-time ${group.kind} self-check failed on at least one bot`,
+            exitRule: selfCheckExit[group.kind],
+            dedupKey: `bot_disk_${group.kind}:fleet:${group.check}`,
+            severity: "high",
+            activityAt: at,
+            createdAt: at,
+            updatedAt: at,
+            relatedIssue: null,
+            detail: {
+              kind: "generic",
+              summaryExcerpt: `${total} bot${total === 1 ? "" : "s"}: ${names}${more}`,
+              images: [],
+            },
+          }));
+        }
+
+        for (const signal of cloneSignals) {
+          if (isSelfCheck(signal)) continue;
           const agent = byId.get(signal.botKey);
           if (!agent) continue;
           const at = new Date(signal.observedAtMs).toISOString();
-          // myrmidon(1.6.5 BOT-DISK-G): the signal kind names its own dedup family.
-          const signalKind = signal.kind === "hardlink" || signal.kind === "gitref" ? signal.kind : "clone";
           add(createItem({
             companyId,
             sourceKind: "bot_disk_lifecycle",
@@ -2209,29 +2561,17 @@ async function buildAttentionFeedSnapshot(
               metadata: { clonePath: signal.path, branch: signal.branch },
             },
             whyNow:
-              signal.kind === "hardlink"
-                ? `Hard links do not work in ${signal.path}: ${signal.reason}. pnpm installs there copy every package instead of linking, so the bot's disk fills quickly.`
-                : signal.kind === "gitref"
-                  ? `Shared git objects do not work on this bot: ${signal.reason}. New task clones there copy the whole git history again (~0.4 GB each).`
-                  : `Clone ${signal.path} has been idle past the lifecycle TTL with ${signal.reason}; it is kept, not removed.`,
+              `Clone ${signal.path} has been idle past the lifecycle TTL with ${signal.reason}; it is kept, not removed.`,
             decisionVerbs: decisionVerbs(
               { id: "inspect", label: "Inspect", description: "Push or discard the work in the bot's clone." },
               { id: "dismiss", label: "Dismiss", description: "Dismiss this signal." },
             ),
             inlineResolvable: false,
             entryRule:
-              signal.kind === "hardlink"
-                ? "the bot's start-time hard-link self-check failed for a clone root"
-                : signal.kind === "gitref"
-                  ? "the bot's start-time shared-git-objects self-check failed"
-                  : "a bot clone holds unpushed work and is idle longer than general.botDisk.idleTtlMs",
+              "a bot clone holds unpushed work and is idle longer than general.botDisk.idleTtlMs",
             exitRule:
-              signal.kind === "hardlink"
-                ? "the bot restarts and the self-check passes (the store is inside the bot's single mount)"
-                : signal.kind === "gitref"
-                  ? "the bot restarts and the self-check passes (the wrapper shadows git and a test reference-clone borrows objects)"
-                  : "the work is pushed or discarded, the clone changes again, or it is removed",
-            dedupKey: `bot_disk_${signalKind}:${agent.id}:${signal.path}`,
+              "the work is pushed or discarded, the clone changes again, or it is removed",
+            dedupKey: `bot_disk_clone:${agent.id}:${signal.path}`,
             severity: "medium",
             activityAt: at,
             createdAt: at,
@@ -2243,6 +2583,89 @@ async function buildAttentionFeedSnapshot(
               images: [],
             },
           }));
+        }
+      }
+
+      // myrmidon(1.6.5 BOT-DISK-H4c): lifecycle cards from the bots' disk reports
+      // (agent-silent, drift, foreign, archive, stale image). The cards are pure
+      // functions of the report snapshot (bot-disk-cards.ts); one card per
+      // dedupKey, recomputed on every list, gone when the condition stops.
+      {
+        const reading = await readBotDiskReports(companyId);
+        const diskCards = buildBotDiskCards({
+          nowMs: Date.now(),
+          bots: reading.bots,
+          graceClosingMinutes: reading.graceClosingMinutes,
+          currentImage: reading.currentImage ?? null,
+        });
+        if (diskCards.length > 0) {
+          const cardBotIds = [...new Set(diskCards.map((card) => card.botKey))].filter(isAgentIdLike);
+          const cardAgents = cardBotIds.length === 0 ? [] : await db
+            .select({ id: agents.id, name: agents.name, status: agents.status })
+            .from(agents)
+            .where(and(eq(agents.companyId, companyId), inArray(agents.id, cardBotIds)));
+          const cardAgentById = new Map(cardAgents.map((agent) => [agent.id, agent]));
+          const archiveKeys = [...new Set(diskCards.filter((card) => card.issueKey && card.sourceKind === "bot_disk_archive").map((card) => card.issueKey!))];
+          const archiveIssues = archiveKeys.length === 0 ? [] : await db
+            .select({ id: issues.id, identifier: issues.identifier, title: issues.title, status: issues.status })
+            .from(issues)
+            .where(and(eq(issues.companyId, companyId), inArray(issues.identifier, archiveKeys), isNull(issues.hiddenAt)));
+          const issueByKey = new Map(archiveIssues.map((issue) => [issue.identifier, issue]));
+          for (const card of diskCards) {
+            const agent = cardAgentById.get(card.botKey);
+            if (!agent) continue;
+            const agentSubject: AttentionSubject = {
+              kind: "agent",
+              id: agent.id,
+              companyId,
+              title: agent.name,
+              identifier: null,
+              status: agent.status,
+              href: `/${prefix}/agents/${agent.id}`,
+              metadata: { cardKey: card.cardKey, ...card.payload },
+            };
+            let subject = agentSubject;
+            if (card.sourceKind === "bot_disk_archive") {
+              const issue = card.issueKey ? issueByKey.get(card.issueKey) : undefined;
+              // The archive card sits on the task; with no such task it stays on the bot.
+              if (issue) {
+                subject = {
+                  kind: "issue",
+                  id: issue.id,
+                  companyId,
+                  title: issue.title,
+                  identifier: issue.identifier,
+                  status: issue.status,
+                  href: `/${prefix}/issues/${issue.identifier ?? issue.id}`,
+                  metadata: { cardKey: card.cardKey, ...card.payload },
+                };
+              }
+            }
+            add(createItem({
+              companyId,
+              sourceKind: card.sourceKind,
+              subject,
+              whyNow: card.whyNow,
+              decisionVerbs: decisionVerbs(
+                { id: "inspect", label: "Inspect", description: "Open the bot card and its disk panel." },
+                { id: "dismiss", label: "Dismiss", description: "Dismiss this signal." },
+              ),
+              inlineResolvable: false,
+              entryRule: card.entryRule,
+              exitRule: card.exitRule,
+              dedupKey: card.dedupKey,
+              severity: card.severity,
+              activityAt: card.at,
+              createdAt: card.at,
+              updatedAt: card.at,
+              relatedIssue: null,
+              detail: {
+                kind: "generic",
+                summaryExcerpt: excerpt(card.title),
+                images: [],
+              },
+            }));
+          }
         }
       }
 
@@ -2562,6 +2985,140 @@ async function buildAttentionFeedSnapshot(
         }));
       }
 
+      // myrmidon(1.6.5-F21-B): ONE company-level card while owner decision
+      // cards wait on the owner — «карточек владельца pending: N (старше
+      // 3 дней: M)». Computed live from issue_thread_interactions (the same
+      // population the TTL sweep closes), so the card exists exactly while at
+      // least one owner card is pending and disappears when the last one is
+      // answered, resolved by silence, or expired.
+      const ownerCardsSummary = await summarizeOwnerPendingCards(db, companyId);
+      if (ownerCardsSummary) {
+        const ownerCardsTitle = ownerCardsAttentionTitle(ownerCardsSummary);
+        add(createItem({
+          companyId,
+          sourceKind: "owner_pending_card",
+          subject: {
+            kind: "interaction",
+            id: `owner_pending_cards:${companyId}`,
+            companyId,
+            title: ownerCardsTitle,
+            identifier: null,
+            status: "pending",
+            href: `/${prefix}/inbox`,
+            metadata: {
+              pending: ownerCardsSummary.pending,
+              stale: ownerCardsSummary.stale,
+            },
+          },
+          whyNow: ownerCardsAttentionWhyNow(ownerCardsSummary),
+          decisionVerbs: decisionVerbs(
+            { id: "inspect", label: "Inspect", description: "Open the decision inbox and answer the owner cards." },
+            { id: "dismiss", label: "Dismiss", description: "Dismiss this notice (the cards stay pending)." },
+          ),
+          inlineResolvable: true,
+          entryRule: "at least one owner request_confirmation card is pending.",
+          exitRule: "the last pending owner card is answered, resolved by silence, or expired by the TTL sweep.",
+          dedupKey: ownerCardsAttentionDedupKey(companyId),
+          severity: ownerCardsSummary.stale > 0 ? "high" : "medium",
+          activityAt: ownerCardsSummary.oldestCreatedAt,
+          createdAt: ownerCardsSummary.oldestCreatedAt,
+          updatedAt: ownerCardsSummary.oldestCreatedAt,
+          relatedIssue: null,
+          detail: {
+            kind: "generic",
+            summaryExcerpt: excerpt(ownerCardsTitle),
+            images: [],
+          },
+        }));
+      }
+
+      // myrmidon(1.6.5 F-09): a queued run older than the stall threshold
+      // without a waitReason — the sweep should have explained it, so the
+      // card asks a person to look.
+      {
+        const staleAfterMs = (await readAttentionRuntimeSettings(db)).queueStallAfterSec * 1000;
+        const stallCutoff = new Date(Date.now() - staleAfterMs);
+        const stallRows = await db
+          .select({
+            runId: heartbeatRuns.id,
+            agentId: heartbeatRuns.agentId,
+            agentName: agents.name,
+            companyId: heartbeatRuns.companyId,
+            nativeIssueId: heartbeatRuns.nativeIssueId,
+            contextIssueId: heartbeatRuns.contextIssueId,
+            issueIdentifier: issues.identifier,
+            issueTitle: issues.title,
+            createdAt: heartbeatRuns.createdAt,
+            contextSnapshot: heartbeatRuns.contextSnapshot,
+          })
+          .from(heartbeatRuns)
+          .leftJoin(agents, eq(agents.id, heartbeatRuns.agentId))
+          .leftJoin(issues, eq(issues.id, heartbeatRuns.nativeIssueId))
+          .where(
+            and(
+              eq(heartbeatRuns.companyId, companyId),
+              eq(heartbeatRuns.status, "queued"),
+              lte(heartbeatRuns.createdAt, stallCutoff),
+              sql`(${heartbeatRuns.contextSnapshot} ->> 'waitReason') IS NULL`,
+            ),
+          );
+        for (const row of stallRows) {
+          const issueId = row.nativeIssueId ?? row.contextIssueId ?? null;
+          const signal: QueueStallSignal = {
+            runId: row.runId,
+            companyId: row.companyId,
+            agentId: row.agentId,
+            agentName: row.agentName ?? null,
+            issueId,
+            issueIdentifier: row.issueIdentifier ?? null,
+            issueTitle: row.issueTitle ?? null,
+            since: row.createdAt.toISOString(),
+            queuedSec: Math.max(0, Math.round((Date.now() - row.createdAt.getTime()) / 1000)),
+          };
+          add(createItem({
+            companyId,
+            sourceKind: "queue_stall",
+            subject: {
+              kind: "run",
+              id: signal.runId,
+              companyId,
+              title: `${signal.agentName ?? "Agent"} run queued`,
+              identifier: signal.issueIdentifier,
+              status: "queued",
+              href: `/${prefix}/agents/${signal.agentId}/runs/${signal.runId}`,
+              metadata: {
+                runId: signal.runId,
+                agentId: signal.agentId,
+                agentName: signal.agentName,
+                issueId: signal.issueId,
+                issueIdentifier: signal.issueIdentifier,
+                issueTitle: signal.issueTitle,
+                queuedSec: signal.queuedSec,
+              },
+            },
+            whyNow: queueStallSignalWhyNow(signal),
+            decisionVerbs: decisionVerbs(
+              { id: "inspect", label: "Inspect", description: "Open the run and check why it has no waitReason." },
+              { id: "dismiss", label: "Dismiss", description: "Dismiss this notice (the run stays queued)." },
+            ),
+            inlineResolvable: false,
+            entryRule: `a queued run is older than ${Math.round(staleAfterMs / 1000)} s and its contextSnapshot carries no waitReason`,
+            exitRule: "the run is claimed, cancelled, or gets a waitReason written by the sweep.",
+            dedupKey: queueStallSignalDedupKey(signal),
+            severity: queueStallSignalSeverity(),
+            activityAt: row.createdAt.toISOString(),
+            createdAt: row.createdAt.toISOString(),
+            updatedAt: row.createdAt.toISOString(),
+            relatedIssue: null,
+            detail: {
+              kind: "generic",
+              summaryExcerpt: excerpt(queueStallSignalDetail(signal)),
+              images: [],
+            },
+          }));
+        }
+      }
+
       // myrmidon(TRACING-HEALTH): the "LLM tracing" non-ok state raises ONE
       // card on the operator desk, deduped by state — the parent ticket's
       // rule is "signal to the operator role, never the owner", and the
@@ -2605,6 +3162,54 @@ async function buildAttentionFeedSnapshot(
           detail: {
             kind: "generic",
             summaryExcerpt: excerpt(tracingSignal.whyNow),
+            images: [],
+          },
+        }));
+      }
+
+      // myrmidon(PAUSE-GUARD): the forgotten-pause guard resumed its ceiling's
+      // worth of operator pauses and left the rest for the following passes.
+      // ONE card per company, from the process-level registry the sweep
+      // records into (myrmidon/pause-guard/attention.ts); it disappears in the
+      // pass that finds nothing left over, so no dismissal bookkeeping is
+      // needed. The per-resume audit trail is the activity log either way.
+      const pauseGuardSignal = readPauseGuardSignal(companyId);
+      if (pauseGuardSignal) {
+        add(createItem({
+          companyId,
+          sourceKind: "pause_guard",
+          subject: {
+            kind: "agent",
+            id: pauseGuardSubjectId(companyId),
+            companyId,
+            title: pauseGuardSignalTitle(pauseGuardSignal),
+            identifier: null,
+            status: "notice",
+            href: `/${prefix}/settings`,
+            metadata: {
+              pauseGuard: true,
+              deferredCount: pauseGuardSignal.deferredCount,
+              resumedCount: pauseGuardSignal.resumedCount,
+              thresholdMinutes: pauseGuardSignal.thresholdMinutes,
+            },
+          },
+          whyNow: pauseGuardSignalWhyNow(pauseGuardSignal),
+          decisionVerbs: decisionVerbs(
+            { id: "inspect", label: "Inspect", description: "Open the settings and raise the per-pass ceiling." },
+            { id: "dismiss", label: "Dismiss", description: "Dismiss this notice." },
+          ),
+          inlineResolvable: true,
+          entryRule: "the pause guard hit its per-pass ceiling with operator pauses still older than the threshold",
+          exitRule: "a pass finds no forgotten operator pause left over (the signal registry clears) or the row is dismissed.",
+          dedupKey: pauseGuardSignalDedupKey(companyId),
+          severity: pauseGuardSignalSeverity(),
+          activityAt: pauseGuardSignal.activityAt,
+          createdAt: pauseGuardSignal.activityAt,
+          updatedAt: pauseGuardSignal.activityAt,
+          relatedIssue: null,
+          detail: {
+            kind: "generic",
+            summaryExcerpt: excerpt(pauseGuardSignalWhyNow(pauseGuardSignal)),
             images: [],
           },
         }));
@@ -2770,57 +3375,57 @@ async function buildAttentionFeedSnapshot(
           },
         }));
       }
-      // myrmidon(1.6.3 PROMPT-BUDGET B): an agent whose last run's prompt
-      // crossed the warn/crit threshold (percent of the model window) raises
-      // one card. The feed recomputes on every list, so the card lives exactly
-      // as long as the last run is over the threshold — a newer run under the
-      // threshold removes it, a re-grade warn ↔ crit updates it in place (one
-      // dedup key per agent). The detail carries the top-3 prompt parts, the
-      // window and the crossed threshold. A disabled feature emits nothing.
-      const promptBudgetSettings = normalizePromptBudgetSettings(
-        wipSettingsRow?.general?.[PROMPT_BUDGET_SETTINGS_KEY],
-      );
-      if (promptBudgetSettings.enabled) {
-        const promptBudgetStatuses = await buildPromptBudgetStatus(
-          db,
+      // myrmidon(1.6.5 PROMPT-BUDGET-SIGNAL): an agent whose last run's prompt
+      // crossed the warn/crit threshold raises one card, and this card is the
+      // signal's only surface. The sweep records one signal per agent per UTC
+      // day — dedup key `prompt-budget:<agentId>:<utc day>`, stored and found
+      // in the registry this loop reads — so the owner and the operator get the
+      // overrun while the agent's own task stays clean: this signal writes no
+      // comment into a task any more, and nothing about it wakes the agent
+      // whose prompt is already over budget.
+      //
+      // The record carries the numbers of the latest pass plus the `recordedAt`
+      // of the day's first crossing; an agent back under the threshold loses
+      // its record on the next pass and the card leaves the feed (a re-grade
+      // warn ↔ crit updates the one record in place). The row opens the agent's
+      // settings — where the thresholds that produced this signal live — and
+      // its detail carries the top-3 prompt parts, the window and the crossed
+      // threshold. A disabled feature records nothing.
+      for (const signal of readPromptBudgetSignals(companyId)) {
+        const card = signal.card;
+        add(createItem({
           companyId,
-          promptBudgetSettings,
-        );
-        for (const card of buildPromptBudgetAttentionCards(promptBudgetStatuses, wipAgentNameById)) {
-          add(createItem({
+          sourceKind: "prompt_budget_alert",
+          subject: {
+            kind: "agent",
+            id: card.agentId,
             companyId,
-            sourceKind: "prompt_budget_alert",
-            subject: {
-              kind: "agent",
-              id: card.agentId,
-              companyId,
-              title: card.title,
-              identifier: null,
-              status: null,
-              href: `/${prefix}/agents/${card.agentId}`,
-              metadata: card.metadata,
-            },
-            whyNow: card.whyNow,
-            decisionVerbs: decisionVerbs(
-              { id: "inspect", label: "Inspect", description: "Open the agent card and check the prompt breakdown of the last run." },
-              { id: "dismiss", label: "Dismiss", description: "Dismiss this signal until a newer run crosses a threshold again." },
-            ),
-            inlineResolvable: false,
-            entryRule: "the agent's last run prompt share of the model window is over the warn or crit threshold.",
-            exitRule: "a newer run is back under the warn threshold, or the row is dismissed.",
-            dedupKey: card.dedupKey,
-            severity: card.severity,
-            activityAt: toIso(new Date(now)),
-            createdAt: toIso(new Date(now)),
-            updatedAt: toIso(new Date(now)),
-            relatedIssue: null,
-            detail: {
-              kind: "generic",
-              summaryExcerpt: card.summaryExcerpt,
-              images: [],
-            },
-          }));
-        }
+            title: card.title,
+            identifier: null,
+            status: null,
+            href: `/${prefix}/agents/${card.agentId}/runtime`,
+            metadata: card.metadata,
+          },
+          whyNow: card.whyNow,
+          decisionVerbs: decisionVerbs(
+            { id: "open_settings", label: "Open settings", description: "Open the agent's settings to trim the prompt or raise the thresholds." },
+            { id: "dismiss", label: "Dismiss", description: "Dismiss this signal until a newer run crosses a threshold again on a new day." },
+          ),
+          inlineResolvable: false,
+          entryRule: "the agent's last run prompt share of the model window is over the warn or crit threshold.",
+          exitRule: "a newer run is back under the warn threshold, or the signal's day is over, or the row is dismissed.",
+          dedupKey: card.dedupKey,
+          severity: card.severity,
+          activityAt: signal.recordedAt,
+          createdAt: signal.recordedAt,
+          updatedAt: signal.recordedAt,
+          relatedIssue: null,
+          detail: {
+            kind: "generic",
+            summaryExcerpt: card.summaryExcerpt,
+            images: [],
+          },
+        }));
       }
       // myrmidon(BOT-RUNTIME-TUNING D): the periodic fallback sweep records
       // one signal per agent whose gateway calls were served by a model
@@ -2865,6 +3470,140 @@ async function buildAttentionFeedSnapshot(
           detail: {
             kind: "generic",
             summaryExcerpt: excerpt(fallback.summaryExcerpt),
+            images: [],
+          },
+        }));
+      }
+
+      // myrmidon(1.6.6 OPE-7198): attention cards for banned or exhausted Codex / ChatGPT pool accounts.
+      if (serviceOptions.poolSignalsSync) {
+        await serviceOptions.poolSignalsSync(companyId).catch(() => {
+          // background sync errors do not abort feed snapshot
+        });
+      }
+      for (const poolSignal of readPoolAccountSignals(companyId)) {
+        add(createItem({
+          companyId,
+          sourceKind: "codex_pool_alert",
+          subject: {
+            kind: "agent",
+            id: poolSignal.dedupKey,
+            companyId,
+            title: poolSignal.title,
+            identifier: `ACC-${poolSignal.accountNumber}`,
+            status: poolSignal.kind,
+            href: `/${prefix}/company/settings/models`,
+            metadata: {
+              accountNumber: poolSignal.accountNumber,
+              providerId: poolSignal.providerId,
+              label: poolSignal.label,
+              kind: poolSignal.kind,
+              resetsAt: poolSignal.resetsAt,
+            },
+          },
+          whyNow: poolSignal.whyNow,
+          decisionVerbs: decisionVerbs(
+            { id: "inspect", label: "Inspect", description: "Open the provider settings and account list." },
+            { id: "dismiss", label: "Dismiss", description: "Dismiss this account alert." },
+          ),
+          inlineResolvable: true,
+          entryRule: "a Codex/ChatGPT subscription pool account is banned, token expired, or exhausted its quota window.",
+          exitRule: "the account completes relogin, limit resets, or the row is dismissed.",
+          dedupKey: poolSignal.dedupKey,
+          severity: poolSignal.severity,
+          activityAt: poolSignal.activityAt,
+          createdAt: poolSignal.activityAt,
+          updatedAt: poolSignal.activityAt,
+          relatedIssue: null,
+          detail: {
+            kind: "generic",
+            summaryExcerpt: excerpt(poolSignal.summaryExcerpt),
+            images: [],
+          },
+        }));
+      }
+
+      // myrmidon(1.6.5-F11-A): one card per bot whose profile carries no media
+      // MCP block because no media token is issued. The compile pass records the
+      // signals (bot-containers/media-mcp.ts); the card clears when the pass
+      // after a token issue compiles the block in.
+      for (const media of readMediaMcpSignals(companyId)) {
+        add(createItem({
+          companyId,
+          sourceKind: "bot_media_mcp",
+          subject: {
+            kind: "agent",
+            id: media.agentId,
+            companyId,
+            title: media.title,
+            identifier: null,
+            status: null,
+            href: `/${prefix}/agents/${media.agentId}`,
+            metadata: {
+              botKey: media.botKey,
+            },
+          },
+          whyNow: media.whyNow,
+          decisionVerbs: decisionVerbs(
+            { id: "inspect", label: "Inspect", description: "Open the agent card and the media connection." },
+            { id: "dismiss", label: "Dismiss", description: "Dismiss this media notice." },
+          ),
+          inlineResolvable: true,
+          entryRule: "the bot's profile compile found no issued media token.",
+          exitRule: "a token is issued and the next compile pass includes the media block, or the row is dismissed.",
+          dedupKey: media.dedupKey,
+          severity: media.severity,
+          activityAt: media.activityAt,
+          createdAt: media.activityAt,
+          updatedAt: media.activityAt,
+          relatedIssue: null,
+          detail: {
+            kind: "generic",
+            summaryExcerpt: excerpt(media.summaryExcerpt),
+            images: [],
+          },
+        }));
+      }
+
+      // myrmidon(1.6.5-F-18): the spend sweep completed but the gateway's
+      // model catalog answered 0 models — the accounting key is almost
+      // certainly restricted (no default models), and every feature reading
+      // the catalog silently does nothing. ONE card per company from the
+      // process-level registry the sweep records on every pass; the card
+      // disappears on the first sweep that sees a non-empty catalog — no
+      // dismissal bookkeeping, the same registry pattern tracing-health uses.
+      const emptyCatalogSignal = readEmptyCatalogSignal(companyId);
+      if (emptyCatalogSignal) {
+        add(createItem({
+          companyId,
+          sourceKind: "empty_model_catalog",
+          subject: {
+            kind: "agent",
+            id: `litellm:${companyId}`,
+            companyId,
+            title: emptyCatalogSignal.title,
+            identifier: null,
+            status: null,
+            href: `/${prefix}/settings`,
+            metadata: { litellmEmptyCatalog: true },
+          },
+          whyNow: emptyCatalogSignal.whyNow,
+          decisionVerbs: decisionVerbs(
+            { id: "inspect", label: "Inspect", description: "Open the instance settings and the gateway key." },
+            { id: "dismiss", label: "Dismiss", description: "Dismiss this alert." },
+          ),
+          inlineResolvable: true,
+          entryRule: "the cost sweep completed a pass whose /v1/model/info refresh returned 0 models.",
+          exitRule: "the next sweep sees a non-empty catalog, collection is switched off, or the row is dismissed.",
+          dedupKey: emptyCatalogSignal.dedupKey,
+          severity: emptyCatalogSignal.severity,
+          activityAt: emptyCatalogSignal.activityAt,
+          createdAt: emptyCatalogSignal.activityAt,
+          updatedAt: emptyCatalogSignal.activityAt,
+          relatedIssue: null,
+          detail: {
+            kind: "generic",
+            summaryExcerpt: excerpt(emptyCatalogSignal.summary),
             images: [],
           },
         }));
@@ -2916,6 +3655,119 @@ async function buildAttentionFeedSnapshot(
         }));
       }
 
+      // myrmidon(1.6.5-F-23): off-run secret reads and soon-expiring
+      // secrets:read_off_run grants surface as advisory items. The reads item
+      // counts the last 24h of secret_access_events with details.offRun=true;
+      // the per-agent expiry item appears three days before a grant expires.
+      // Both are computed at feed read time, so no extra periodic sweep runs.
+      {
+        const offRunReadRows = await db
+          .select({ count: sql<number>`count(*)` })
+          .from(secretAccessEvents)
+          .where(and(
+            eq(secretAccessEvents.companyId, companyId),
+            sql`${secretAccessEvents.createdAt} >= ${new Date(now - 24 * 60 * 60 * 1000).toISOString()}::timestamptz`,
+            sql`${secretAccessEvents.details} ->> 'offRun' = 'true'`,
+          ));
+        const offRunReadCount = Number(offRunReadRows[0]?.count ?? 0);
+        if (offRunReadCount > 0) {
+          add(createItem({
+            companyId,
+            sourceKind: "secret_off_run_reads",
+            subject: {
+              kind: "company",
+              id: companyId,
+              companyId,
+              title: "Off-run secret reads",
+              identifier: null,
+              status: null,
+              href: `/${prefix}/settings/secrets`,
+              metadata: { reads24h: offRunReadCount },
+            },
+            whyNow: `${offRunReadCount} secret read${offRunReadCount === 1 ? "" : "s"} outside an active run in the last 24h.`,
+            decisionVerbs: decisionVerbs(
+              { id: "inspect", label: "Inspect", description: "Open the company secrets page and review the audit trail." },
+              { id: "dismiss", label: "Dismiss", description: "Dismiss this signal for today." },
+            ),
+            inlineResolvable: true,
+            entryRule: "at least one secret read with details.offRun=true in the last 24h.",
+            exitRule: "no off-run reads in the trailing 24h, or the row is dismissed.",
+            dedupKey: `secret-off-run-reads:${companyId}:${new Date(now).toISOString().slice(0, 10)}`,
+            severity: "medium",
+            activityAt: toIso(new Date(now)),
+            createdAt: toIso(new Date(now)),
+            updatedAt: toIso(new Date(now)),
+            relatedIssue: null,
+            detail: {
+              kind: "generic",
+              summaryExcerpt: "Agents with the secrets:read_off_run grant read their own secret metadata outside an active run.",
+              images: [],
+            },
+          }));
+        }
+      }
+
+      {
+        const expiringGrants = await db
+          .select({
+            principalId: principalPermissionGrants.principalId,
+            expiresAt: principalPermissionGrants.expiresAt,
+          })
+          .from(principalPermissionGrants)
+          .where(and(
+            eq(principalPermissionGrants.companyId, companyId),
+            eq(principalPermissionGrants.principalType, "agent"),
+            eq(principalPermissionGrants.permissionKey, "secrets:read_off_run"),
+            gt(principalPermissionGrants.expiresAt, new Date(now)),
+            lt(principalPermissionGrants.expiresAt, new Date(now + 3 * 24 * 60 * 60 * 1000)),
+          ));
+        if (expiringGrants.length > 0) {
+          const expiringAgentIds = expiringGrants.map((grant) => grant.principalId);
+          const expiringAgents = await db
+            .select({ id: agents.id, name: agents.name })
+            .from(agents)
+            .where(inArray(agents.id, expiringAgentIds));
+          const expiringNameById = new Map(expiringAgents.map((agent) => [agent.id, agent.name]));
+          for (const grant of expiringGrants) {
+            if (!grant.expiresAt) continue;
+            const agentName = expiringNameById.get(grant.principalId) ?? grant.principalId;
+            add(createItem({
+              companyId,
+              sourceKind: "secret_off_run_grant_expiring",
+              subject: {
+                kind: "agent",
+                id: grant.principalId,
+                companyId,
+                title: `Off-run secret grant expiring: ${agentName}`,
+                identifier: null,
+                status: null,
+                href: `/${prefix}/agents/${grant.principalId}`,
+                metadata: { expiresAt: grant.expiresAt.toISOString() },
+              },
+              whyNow: `The secrets:read_off_run grant for ${agentName} expires ${grant.expiresAt.toISOString().slice(0, 10)}.`,
+              decisionVerbs: decisionVerbs(
+                { id: "inspect", label: "Inspect", description: "Open the agent card and renew or revoke the grant." },
+                { id: "dismiss", label: "Dismiss", description: "Dismiss this expiry warning." },
+              ),
+              inlineResolvable: true,
+              entryRule: "a secrets:read_off_run grant expires within three days.",
+              exitRule: "the grant is renewed, revoked, or expired; or the row is dismissed.",
+              dedupKey: `secret-off-run-grant-expiring:${grant.principalId}:${grant.expiresAt.toISOString().slice(0, 10)}`,
+              severity: "medium",
+              activityAt: toIso(new Date(now)),
+              createdAt: toIso(new Date(now)),
+              updatedAt: toIso(new Date(now)),
+              relatedIssue: null,
+              detail: {
+                kind: "generic",
+                summaryExcerpt: "The off-run self-secret read grant is about to expire; renew it from the agent card if the role still needs it.",
+                images: [],
+              },
+            }));
+          }
+        }
+      }
+
       const deduped = new Map<string, AttentionItem>();
       for (const item of collected) {
         const current = deduped.get(item.dedupKey);
@@ -2924,7 +3776,13 @@ async function buildAttentionFeedSnapshot(
 
       const collectedItems = [...deduped.values()].sort(compareAttentionItems);
       await decisionQueueService(db).materializeSeededQueues(companyId, collectedItems);
-      const enrichedItems = await enrichAttentionItems(db, companyId, collectedItems, now);
+      const enrichedItems = await enrichAttentionItems(
+        db,
+        companyId,
+        collectedItems,
+        now,
+        serviceOptions.decisionRetentionSync ?? decisionRetentionSyncScheduler(db),
+      );
   return { items: enrichedItems, builtAtMs: snapshotBuiltAt };
 }
 
@@ -2959,16 +3817,28 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
       const includeDismissed = options.includeDismissed === true;
 
       let enrichedItems: AttentionItem[];
+      // generatedAt describes the snapshot, not the request: a served snapshot
+      // can be up to the stale window old, so a request-time stamp would
+      // misreport the feed's age (the UI measures item ages against it). A
+      // rebuild stamps a fresh value; a cache hit keeps the build time.
+      let snapshotBuiltAtMs = now;
       if (cacheEnabled) {
         // cache key = company + everything that changes the
-        // unpaginated snapshot (userId and includeDismissed feed the add()
-        // dismissal filter, all changes the open-decision slice). queue,
+        // unpaginated snapshot. userId stays in the key: besides feeding the
+        // add() dismissal filter it also scopes addressee-addressed
+        // interaction cards and human-owned unblockDescriptor cards, so one
+        // user's snapshot would leak into another's; includeDismissed feeds
+        // the same add() filter, all changes the open-decision slice. queue,
         // archived, sort, activity window and cursor/limit are applied to the
         // snapshot per request and need no separate entry.
         // Staleness contract: dismiss, snooze, archive and other writes made
-        // during the TTL window surface on the feed with up to feedCacheTtlMs
-        // delay; the snapshot itself is read-only downstream (every step maps
-        // to fresh item objects), so shared references are safe here.
+        // during the caching windows surface on the feed with up to
+        // feedCacheTtlMs delay while the snapshot is fresh, and up to
+        // STALE_TTL_MULTIPLIER * feedCacheTtlMs when it is served stale;
+        // dismissal writes invalidate the company's entries on top of that, so
+        // they still show up on the very next read. The snapshot itself is
+        // read-only downstream (every step maps to fresh item objects), so
+        // shared references are safe here.
         const cacheKey = [
           companyId,
           buildOptions.userId ?? "",
@@ -2979,23 +3849,43 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
           // never share a snapshot
           buildOptions.failedRunHorizonDays,
         ].join("|");
-        const cache = attentionFeedCacheFor(db);
-        const cachedEntry = cache.get(cacheKey);
-        if (cachedEntry && cachedEntry.expiresAtMs > now) {
+        const state = attentionFeedCacheFor(db);
+        const cachedEntry = state.entries.get(cacheKey);
+        const ageMs = cachedEntry ? now - cachedEntry.builtAtMs : Number.POSITIVE_INFINITY;
+        if (cachedEntry && ageMs <= feedCacheTtlMs) {
+          // fresh snapshot: the read path issues no build query at all
           enrichedItems = cachedEntry.snapshot.items;
+          snapshotBuiltAtMs = cachedEntry.builtAtMs;
+        } else if (cachedEntry && ageMs <= feedCacheTtlMs * ATTENTION_FEED_CACHE_STALE_TTL_MULTIPLIER) {
+          // stale-while-revalidate: hand the snapshot to this reader straight
+          // away and let exactly one background rebuild refresh it for the next
+          // poll — the reader never waits for the rebuild.
+          enrichedItems = cachedEntry.snapshot.items;
+          snapshotBuiltAtMs = cachedEntry.builtAtMs;
+          void rebuildAttentionFeedSnapshot(db, companyId, cacheKey, buildOptions, serviceOptions, feedCacheTtlMs)
+            .catch(() => {
+              // a failed background rebuild leaves the stale snapshot in place
+              // and the next read retries; it never reaches this caller.
+            });
         } else {
-          const snapshot = await buildAttentionFeedSnapshot(db, companyId, buildOptions, serviceOptions);
-          if (cache.size > 32) {
-            for (const [key, entry] of cache) {
-              if (entry.expiresAtMs <= now) cache.delete(key);
-            }
-          }
-          cache.set(cacheKey, { expiresAtMs: snapshot.builtAtMs + feedCacheTtlMs, snapshot });
-          enrichedItems = snapshot.items;
+          // no snapshot, or one past the stale window: wait for the rebuild,
+          // shared with parallel readers and with a background rebuild that is
+          // already running for this key.
+          const rebuilt = await rebuildAttentionFeedSnapshot(
+            db,
+            companyId,
+            cacheKey,
+            buildOptions,
+            serviceOptions,
+            feedCacheTtlMs,
+          );
+          enrichedItems = rebuilt.snapshot.items;
+          snapshotBuiltAtMs = rebuilt.builtAtMs;
         }
       } else {
         const snapshot = await buildAttentionFeedSnapshot(db, companyId, buildOptions, serviceOptions);
         enrichedItems = snapshot.items;
+        snapshotBuiltAtMs = snapshot.builtAtMs;
       }
 
       const activitySince = parseActivityBoundary(options.activitySince, "activitySince");
@@ -3090,7 +3980,7 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
 
       return {
         companyId,
-        generatedAt: new Date().toISOString(),
+        generatedAt: new Date(snapshotBuiltAtMs).toISOString(),
         totalCount: rankedItems.length,
         // Desk badge: distinct items that surfaced
         // today OR carry an explicit decide-by deadline due today/past. Counted

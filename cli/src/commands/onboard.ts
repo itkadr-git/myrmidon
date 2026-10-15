@@ -58,6 +58,7 @@ import {
   shouldOfferForegroundStart,
 } from "../onboard-service.js";
 import { readInstallManifest, isManagedExecutable } from "../install-store.js";
+import { deleteProductEnv, readProductEnv, writeProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
 
 type SetupMode = "quickstart" | "advanced";
 
@@ -116,8 +117,8 @@ function parseBooleanFromEnv(rawValue: string | undefined): boolean | null {
 }
 
 async function runOnboardedForeground(configPath: string): Promise<void> {
-  const previousOpenOnListen = process.env.PAPERCLIP_OPEN_ON_LISTEN;
-  const browserDisabled = parseBooleanFromEnv(process.env.PAPERCLIP_NO_BROWSER) === true;
+  const previousOpenOnListen = readProductEnv("OPEN_ON_LISTEN");
+  const browserDisabled = parseBooleanFromEnv(readProductEnv("NO_BROWSER")) === true;
   const interactive = Boolean(process.stdin.isTTY && process.stdout.isTTY);
 
   // The server consumes this flag in its listen callback. Keep it scoped to
@@ -125,9 +126,9 @@ async function runOnboardedForeground(configPath: string): Promise<void> {
   // tab. Explicit configuration wins over the interactive default, while the
   // broad no-browser switch wins over an earlier explicit opt-in.
   if (browserDisabled) {
-    process.env.PAPERCLIP_OPEN_ON_LISTEN = "false";
+    writeProductEnv(process.env, "OPEN_ON_LISTEN", "false"); // myrmidon(REBRAND-C)
   } else if (interactive && previousOpenOnListen === undefined) {
-    process.env.PAPERCLIP_OPEN_ON_LISTEN = "true";
+    writeProductEnv(process.env, "OPEN_ON_LISTEN", "true"); // myrmidon(REBRAND-C)
   }
 
   try {
@@ -135,9 +136,9 @@ async function runOnboardedForeground(configPath: string): Promise<void> {
     await runCommand({ config: configPath, repair: true, yes: true });
   } finally {
     if (previousOpenOnListen === undefined) {
-      delete process.env.PAPERCLIP_OPEN_ON_LISTEN;
+      deleteProductEnv(process.env, "OPEN_ON_LISTEN");
     } else {
-      process.env.PAPERCLIP_OPEN_ON_LISTEN = previousOpenOnListen;
+      writeProductEnv(process.env, "OPEN_ON_LISTEN", previousOpenOnListen); // myrmidon(REBRAND-C)
     }
   }
 }
@@ -183,23 +184,23 @@ function quickstartDefaultsFromEnv(opts?: { preferTrustedLocal?: boolean }): {
   const publicUrl = preferTrustedLocal
     ? undefined
     : (
-      process.env.PAPERCLIP_PUBLIC_URL?.trim() ||
-      process.env.PAPERCLIP_AUTH_PUBLIC_BASE_URL?.trim() ||
+      readProductEnv("PUBLIC_URL")?.trim() ||
+      readProductEnv("AUTH_PUBLIC_BASE_URL")?.trim() ||
       process.env.BETTER_AUTH_URL?.trim() ||
       process.env.BETTER_AUTH_BASE_URL?.trim() ||
       undefined
     );
   const deploymentMode = preferTrustedLocal
     ? "local_trusted"
-    : (parseEnumFromEnv<DeploymentMode>(process.env.PAPERCLIP_DEPLOYMENT_MODE, DEPLOYMENT_MODES) ?? "local_trusted");
+    : (parseEnumFromEnv<DeploymentMode>(readProductEnv("DEPLOYMENT_MODE"), DEPLOYMENT_MODES) ?? "local_trusted");
   const deploymentExposureFromEnv = parseEnumFromEnv<DeploymentExposure>(
-    process.env.PAPERCLIP_DEPLOYMENT_EXPOSURE,
+    readProductEnv("DEPLOYMENT_EXPOSURE"),
     DEPLOYMENT_EXPOSURES,
   );
   const deploymentExposure =
     deploymentMode === "local_trusted" ? "private" : (deploymentExposureFromEnv ?? "private");
-  const bindFromEnv = parseEnumFromEnv<BindMode>(process.env.PAPERCLIP_BIND, BIND_MODES);
-  const customBindHostFromEnv = process.env.PAPERCLIP_BIND_HOST?.trim() || undefined;
+  const bindFromEnv = parseEnumFromEnv<BindMode>(readProductEnv("BIND"), BIND_MODES);
+  const customBindHostFromEnv = readProductEnv("BIND_HOST")?.trim() || undefined;
   const hostFromEnv = process.env.HOST?.trim() || undefined;
   const configuredBindHost = customBindHostFromEnv ?? hostFromEnv;
   const bind = preferTrustedLocal
@@ -213,16 +214,16 @@ function quickstartDefaultsFromEnv(opts?: { preferTrustedLocal?: boolean }): {
     bind,
     host: hostFromEnv ?? (bind === "loopback" ? "127.0.0.1" : "0.0.0.0"),
     customBindHost: customBindHostFromEnv,
-    tailnetBindHost: process.env.PAPERCLIP_TAILNET_BIND_HOST?.trim(),
+    tailnetBindHost: readProductEnv("TAILNET_BIND_HOST")?.trim(),
   });
   const authPublicBaseUrl = publicUrl;
   const authBaseUrlModeFromEnv = parseEnumFromEnv<AuthBaseUrlMode>(
-    process.env.PAPERCLIP_AUTH_BASE_URL_MODE,
+    readProductEnv("AUTH_BASE_URL_MODE"),
     AUTH_BASE_URL_MODES,
   );
   const authBaseUrlMode = authBaseUrlModeFromEnv ?? (authPublicBaseUrl ? "explicit" : "auto");
-  const allowedHostnamesFromEnv = process.env.PAPERCLIP_ALLOWED_HOSTNAMES
-    ? process.env.PAPERCLIP_ALLOWED_HOSTNAMES
+  const allowedHostnamesFromEnv = readProductEnv("ALLOWED_HOSTNAMES")
+    ? readProductEnv("ALLOWED_HOSTNAMES")!
       .split(",")
       .map((value) => value.trim().toLowerCase())
       .filter((value) => value.length > 0)
@@ -237,19 +238,19 @@ function quickstartDefaultsFromEnv(opts?: { preferTrustedLocal?: boolean }): {
     })()
     : null;
   const storageProvider =
-    parseEnumFromEnv<StorageProvider>(process.env.PAPERCLIP_STORAGE_PROVIDER, STORAGE_PROVIDERS) ??
+    parseEnumFromEnv<StorageProvider>(readProductEnv("STORAGE_PROVIDER"), STORAGE_PROVIDERS) ??
     defaultStorage.provider;
   const secretsProvider =
-    parseEnumFromEnv<SecretProvider>(process.env.PAPERCLIP_SECRETS_PROVIDER, SECRET_PROVIDERS) ??
+    parseEnumFromEnv<SecretProvider>(readProductEnv("SECRETS_PROVIDER"), SECRET_PROVIDERS) ??
     defaultSecrets.provider;
-  const databaseBackupEnabled = parseBooleanFromEnv(process.env.PAPERCLIP_DB_BACKUP_ENABLED) ?? true;
+  const databaseBackupEnabled = parseBooleanFromEnv(readProductEnv("DB_BACKUP_ENABLED")) ?? true;
   const databaseBackupIntervalMinutes = Math.max(
     1,
-    parseNumberFromEnv(process.env.PAPERCLIP_DB_BACKUP_INTERVAL_MINUTES) ?? 60,
+    parseNumberFromEnv(readProductEnv("DB_BACKUP_INTERVAL_MINUTES")) ?? 60,
   );
   const databaseBackupRetentionDays = Math.max(
     1,
-    parseNumberFromEnv(process.env.PAPERCLIP_DB_BACKUP_RETENTION_DAYS) ?? 30,
+    parseNumberFromEnv(readProductEnv("DB_BACKUP_RETENTION_DAYS")) ?? 30,
   );
   const defaults: OnboardDefaults = {
     database: {
@@ -261,7 +262,7 @@ function quickstartDefaultsFromEnv(opts?: { preferTrustedLocal?: boolean }): {
         enabled: databaseBackupEnabled,
         intervalMinutes: databaseBackupIntervalMinutes,
         retentionDays: databaseBackupRetentionDays,
-        dir: resolvePathFromEnv(process.env.PAPERCLIP_DB_BACKUP_DIR) ?? resolveDefaultBackupDir(instanceId),
+        dir: resolvePathFromEnv(readProductEnv("DB_BACKUP_DIR")) ?? resolveDefaultBackupDir(instanceId),
       },
     },
     logging: {
@@ -287,24 +288,24 @@ function quickstartDefaultsFromEnv(opts?: { preferTrustedLocal?: boolean }): {
       provider: storageProvider,
       localDisk: {
         baseDir:
-          resolvePathFromEnv(process.env.PAPERCLIP_STORAGE_LOCAL_DIR) ?? defaultStorage.localDisk.baseDir,
+          resolvePathFromEnv(readProductEnv("STORAGE_LOCAL_DIR")) ?? defaultStorage.localDisk.baseDir,
       },
       s3: {
-        bucket: process.env.PAPERCLIP_STORAGE_S3_BUCKET ?? defaultStorage.s3.bucket,
-        region: process.env.PAPERCLIP_STORAGE_S3_REGION ?? defaultStorage.s3.region,
-        endpoint: process.env.PAPERCLIP_STORAGE_S3_ENDPOINT ?? defaultStorage.s3.endpoint,
-        prefix: process.env.PAPERCLIP_STORAGE_S3_PREFIX ?? defaultStorage.s3.prefix,
+        bucket: readProductEnv("STORAGE_S3_BUCKET") ?? defaultStorage.s3.bucket,
+        region: readProductEnv("STORAGE_S3_REGION") ?? defaultStorage.s3.region,
+        endpoint: readProductEnv("STORAGE_S3_ENDPOINT") ?? defaultStorage.s3.endpoint,
+        prefix: readProductEnv("STORAGE_S3_PREFIX") ?? defaultStorage.s3.prefix,
         forcePathStyle:
-          parseBooleanFromEnv(process.env.PAPERCLIP_STORAGE_S3_FORCE_PATH_STYLE) ??
+          parseBooleanFromEnv(readProductEnv("STORAGE_S3_FORCE_PATH_STYLE")) ??
           defaultStorage.s3.forcePathStyle,
       },
     },
     secrets: {
       provider: secretsProvider,
-      strictMode: parseBooleanFromEnv(process.env.PAPERCLIP_SECRETS_STRICT_MODE) ?? defaultSecrets.strictMode,
+      strictMode: parseBooleanFromEnv(readProductEnv("SECRETS_STRICT_MODE")) ?? defaultSecrets.strictMode,
       localEncrypted: {
         keyFilePath:
-          resolvePathFromEnv(process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE) ??
+          resolvePathFromEnv(readProductEnv("SECRETS_MASTER_KEY_FILE")) ??
           defaultSecrets.localEncrypted.keyFilePath,
       },
     },
@@ -329,19 +330,19 @@ function quickstartDefaultsFromEnv(opts?: { preferTrustedLocal?: boolean }): {
       }
     }
   }
-  if (deploymentMode === "local_trusted" && process.env.PAPERCLIP_DEPLOYMENT_EXPOSURE !== undefined) {
+  if (deploymentMode === "local_trusted" && readProductEnv("DEPLOYMENT_EXPOSURE") !== undefined) {
     ignoredEnvKeys.push({
       key: "PAPERCLIP_DEPLOYMENT_EXPOSURE",
       reason: "Ignored because deployment mode local_trusted always forces private exposure",
     });
   }
-  if (deploymentMode === "local_trusted" && process.env.PAPERCLIP_BIND !== undefined) {
+  if (deploymentMode === "local_trusted" && readProductEnv("BIND") !== undefined) {
     ignoredEnvKeys.push({
       key: "PAPERCLIP_BIND",
       reason: "Ignored because deployment mode local_trusted always uses loopback reachability",
     });
   }
-  if (deploymentMode === "local_trusted" && process.env.PAPERCLIP_BIND_HOST !== undefined) {
+  if (deploymentMode === "local_trusted" && readProductEnv("BIND_HOST") !== undefined) {
     ignoredEnvKeys.push({
       key: "PAPERCLIP_BIND_HOST",
       reason: "Ignored because deployment mode local_trusted always uses loopback reachability",
@@ -448,7 +449,7 @@ export async function onboard(opts: OnboardOptions): Promise<void> {
     const envFilePath = resolveAgentJwtEnvFile(configPath);
     if (jwtSecret.created) {
       p.log.success(`Created ${pc.cyan("PAPERCLIP_AGENT_JWT_SECRET")} in ${pc.dim(envFilePath)}`);
-    } else if (process.env.PAPERCLIP_AGENT_JWT_SECRET?.trim()) {
+    } else if (readProductEnv("AGENT_JWT_SECRET")?.trim()) {
       p.log.info(`Using existing ${pc.cyan("PAPERCLIP_AGENT_JWT_SECRET")} from environment`);
     } else {
       p.log.info(`Using existing ${pc.cyan("PAPERCLIP_AGENT_JWT_SECRET")} in ${pc.dim(envFilePath)}`);
@@ -688,7 +689,7 @@ export async function onboard(opts: OnboardOptions): Promise<void> {
   const envFilePath = resolveAgentJwtEnvFile(configPath);
   if (jwtSecret.created) {
     p.log.success(`Created ${pc.cyan("PAPERCLIP_AGENT_JWT_SECRET")} in ${pc.dim(envFilePath)}`);
-  } else if (process.env.PAPERCLIP_AGENT_JWT_SECRET?.trim()) {
+  } else if (readProductEnv("AGENT_JWT_SECRET")?.trim()) {
     p.log.info(`Using existing ${pc.cyan("PAPERCLIP_AGENT_JWT_SECRET")} from environment`);
   } else {
     p.log.info(`Using existing ${pc.cyan("PAPERCLIP_AGENT_JWT_SECRET")} in ${pc.dim(envFilePath)}`);

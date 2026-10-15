@@ -10,6 +10,7 @@ import {
 import { conflict, forbidden, notFound } from "../errors.js";
 import { assertIssueThreadInteractionResolverAudience } from "./issue-thread-interaction-resolution.js";
 import { toolAccessPolicyService } from "./tool-access-policy.js";
+import { invalidateToolPolicyCache } from "../myrmidon/tool-policy-cache/runtime.js"; // myrmidon(DB-PERF-C-P4)
 import {
   logActivity,
   publishActivity,
@@ -237,6 +238,10 @@ export async function commitToolActionReview(
     }
     return updated;
   });
+  // myrmidon(DB-PERF-C-P4): a remembered action created its trust rule on the
+  // transaction handle; drop the company snapshot only after the commit, or a
+  // decision made in between would cache the rows without the rule.
+  if (input.rememberAction) invalidateToolPolicyCache(db, input.companyId);
   for (const publication of publications) publishActivity(publication);
   return result;
 }

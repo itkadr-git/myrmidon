@@ -223,6 +223,81 @@
         "path": "tools/delegation_live_log.py",
         "upstreamMarker": "mkstemp|0o600"
       }
+    },
+    {
+      "id": "14-run-scoped-paperclip-skills",
+      "kind": "patch",
+      "patch": "docker/bot-runtime/patches/14-run-scoped-paperclip-skills.patch",
+      "files": [
+        "gateway/platforms/api_server_runs.py",
+        "tools/environments/local.py",
+        "tools/run_skills.py"
+      ],
+      "reason": "The hermes_gateway adapter has no filesystem access to the gateway and the API surface has no profile-skills write endpoint, so Paperclip-managed skills could not reach gateway agents at all. /v1/runs now accepts a paperclip_skills body field ([{path, name, content}]); _run_agent_sync materializes the entries into the run profile's skills/paperclip-managed/ segment (inside _profile_scope, before the model starts), verifies every desired entry landed and fails the run with 'Cannot start without the required Paperclip-managed skills' otherwise, and binds MYRMIDON_RUN_SKILLS_DIR for that run's child processes only. Removal touches only the profile's own managed segment (1.6.6-HERMES-SKILLS-A).",
+      "dropCondition": "Upstream ships a per-run skill-delivery field on /v1/runs with equivalent profile-scoped materialization and verification.",
+      "offer": null,
+      "offerNote": "Not offered yet: see the note on delta 02 (publisher-scan wrapper pending).",
+      "probe": {
+        "source": "hermes",
+        "path": "gateway/platforms/api_server_runs.py",
+        "upstreamMarker": "paperclip_skills|run_skills|MYRMIDON_RUN_SKILLS_DIR"
+      }
+    },
+    {
+      "id": "15-stranded-run-turn-replace",
+      "kind": "patch",
+      "patch": "docker/bot-runtime/patches/15-stranded-run-turn-replace.patch",
+      "files": [
+        "agent/session_persistence.py",
+        "gateway/platforms/api_server_runs.py"
+      ],
+      "reason": "A turn persists its user row before the first model call, so a failed run leaves its prompt as the unanswered tail of the session. The board re-dispatches a fresh, not byte-identical prompt for the same session and every retry added another user row; the live-replay merge then sent them all as one user message (43 rows of about 220 KB became a single 9.6 MB message) that the provider rejected again and again. A /v1/runs run now supersedes the stranded tail prompts that share its prompt's head (soft-delete through SessionDB.rewind_user_turn, dropped from the history in place).",
+      "dropCondition": "Upstream replaces or adopts an unanswered tail prompt on /v1/runs retries whose text is not identical.",
+      "offer": null,
+      "offerNote": "Not offered yet: see the note on delta 02 (publisher-scan wrapper pending).",
+      "probe": {
+        "source": "hermes",
+        "path": "gateway/platforms/api_server_runs.py",
+        "upstreamMarker": "stranded|supersed|replace_unanswered"
+      }
+    },
+    {
+      "id": "16-context-economy",
+      "kind": "patch",
+      "patch": "docker/bot-runtime/patches/16-context-economy.patch",
+      "files": [
+        "agent/context_economy.py",
+        "tools/stale_result_tool.py",
+        "agent/turn_request_assembly.py",
+        "agent/tool_result_classification.py",
+        "toolsets.py"
+      ],
+      "reason": "Every model call re-sends the whole session, and its two largest parts are one wake package per run (up to 78 piled up in one session) and tool results older than eight messages. The per-call request copy now carries every wake message but the newest as a short note (run, issue, wake reason) and every stale heavy tool result as a note with a ref; the new read_stale_tool_result tool returns the original for the ref. The transcript, state.db and compaction input are untouched; HERMES_KEEP_STALE_WAKES=1 and HERMES_KEEP_STALE_TOOL_RESULTS=1 switch the two parts off, each restoring the old request byte for byte.",
+      "dropCondition": "Upstream trims superseded task prompts and stale tool results of the replayed history on the send path, with a way to read the original back.",
+      "offer": null,
+      "offerNote": "Not offered yet: see the note on delta 02 (publisher-scan wrapper pending).",
+      "probe": {
+        "source": "hermes",
+        "path": "agent/turn_request_assembly.py",
+        "upstreamMarker": "stale_tool_result|stale_wake|superseded_wake"
+      }
+    },
+    {
+      "id": "17-disabled-tools-by-name",
+      "kind": "patch",
+      "patch": "docker/bot-runtime/patches/17-disabled-tools-by-name.patch",
+      "files": [
+        "model_tools.py"
+      ],
+      "reason": "agent.disabled_toolsets works on whole toolsets, but the browser credential vault rides with the browser and vision_analyze has a toolset of its own next to tools the role uses, so their schemas (about 1.2k tokens) were sent on every call by roles that never call them. model_tools._select_tool_names now also subtracts the tools listed under agent.disabled_tools in config.yaml.",
+      "dropCondition": "Upstream offers a per-tool disable list next to agent.disabled_toolsets.",
+      "offer": null,
+      "offerNote": "Not offered yet: see the note on delta 02 (publisher-scan wrapper pending).",
+      "probe": {
+        "source": "hermes",
+        "path": "model_tools.py",
+        "upstreamMarker": "disabled_tools\\b"
+      }
     }
   ]
 }
