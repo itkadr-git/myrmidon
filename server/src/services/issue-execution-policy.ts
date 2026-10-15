@@ -1193,6 +1193,9 @@ function applyMonitorTransition(input: TransitionInput, stagePatch: Record<strin
 
   if (stagePatch.executionState !== undefined || !monitorStatesEqual(currentMonitorState, targetMonitorState)) {
     patch.executionState = executionStateWithMonitor(stageState, targetMonitorState);
+    if (targetMonitorState) {
+      patch.monitorAttemptCount = targetMonitorState.attemptCount;
+    }
   }
 
   return patch;
