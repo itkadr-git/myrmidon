@@ -277,10 +277,10 @@ describe("BotDiskSettingsPanel uv settings", () => {
     expect(cache.value).toBe("/cache/uv");
     expect(linkMode.value).toBe("clone");
     await typeInto(cache, "/data/uv-cache");
-    await act(async () => { (Array.from(container.querySelectorAll("button")).find((b) => b.textContent?.includes("Save")) as HTMLButtonElement).click(); });
+    await act(async () => { (container.querySelector("#bot-disk-uv-cache")?.parentElement?.querySelector("button") as HTMLButtonElement).click(); });
     expect(setUv).toHaveBeenCalledWith({ uvCacheDir: "/data/uv-cache" });
     await typeInto(cache, "relative/path");
-    await act(async () => { (Array.from(container.querySelectorAll("button")).find((b) => b.textContent?.includes("Save")) as HTMLButtonElement).click(); });
+    await act(async () => { (container.querySelector("#bot-disk-uv-cache")?.parentElement?.querySelector("button") as HTMLButtonElement).click(); });
     expect(setUv).toHaveBeenCalledTimes(1);
     expect(container.textContent).toContain("Enter an absolute directory");
     await act(async () => {
