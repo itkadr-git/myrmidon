@@ -1,28 +1,24 @@
-# OPE-6419 LiteLLM worker-resize smoke test
+# OPE-6419 LiteLLM worker-resize load test
 
-This directory contains a repeatable load driver and a local OpenAI-compatible mock. The test sends `POST /chat/completions` requests while it signals a Gunicorn master to add and remove workers.
+The driver sends aggregate constant-rate `POST /chat/completions` traffic while changing the worker target through the Myrmidon workers API. It calls `PUT /api/myrmidon/companies/:companyId/litellm/workers` for 2 -> 4 -> 2, checks that each response reports `applied: true` and the requested target, and records codes, latency, and errors per request. No direct Gunicorn signals are sent.
 
 ## Run
 
-Requirements: Docker with permission to create containers and networks, and access to the configured LiteLLM image.
+Run from this directory with Python 3.10+ and a test LiteLLM instance already configured to serve the `mock-gpt` model. The Myrmidon API credentials must be an authorized instance-admin token; the endpoint requires instance administration.
 
 ```sh
-cd tests/litellm-workers
+BASE_URL=http://127.0.0.1:4000 \
+COMPANY_ID=<test-company-id> \
+BOARD_API_URL=http://127.0.0.1:3100 \
+BOARD_API_TOKEN="$MYRMIDON_TEST_ADMIN_TOKEN" \
+DURATION=150 RPS=8 \
 ./run_load_test.sh
 ```
 
-The runner uses one CPU and 3 GiB for LiteLLM, a mock backend with a 200 ms response delay, a 150 second duration, and a target of 8 requests per second. Override `LITELLM_IMAGE`, `DURATION`, and `RPS` as needed. It prints a JSON summary and stores request rows in `ope6419-results.jsonl`. Containers and the temporary network are removed on exit.
+The test requests 2 workers at start, waits 30 seconds, requests 4, waits 40 seconds, then requests 2 again for the remainder. Every response must report the expected target, `applied: true`, and `currentSource: "gateway"` with the expected current count; otherwise the run fails. `DURATION` must be at least 70 seconds; requests use one shared schedule at aggregate configured `RPS`, not per-thread rates. All requests are launched at scheduled slots; the summary distinguishes planned attempts from completed requests and requires both counts to match. By default, detailed JSONL rows are written to `ope6419-results.jsonl` in the current working directory. Set `OUTPUT` to choose another writable path. Summary JSON goes to stdout. The command exits nonzero on any transport error, HTTP 5xx, missing successful requests, missing phase medians, or an unconfirmed resize. Results are saved before that validation exit.
 
-The Python driver can also run against an existing instance:
+Use only disposable test instances and credentials. Do not pass production credentials or endpoints.
 
-```sh
-python3 load_test.py http://127.0.0.1:4000 <gunicorn-master-pid> [duration_s] [rps]
-```
+## Historical stand measurement
 
-## Recorded stand result
-
-The reported prior stand run used 8 RPS for 150 seconds and recorded 2,456 requests: 2,456 HTTP 200, zero 5xx, zero timeouts, and zero connection resets. Median latency was 224 ms with two workers and 225 ms with four workers. The run reported the TTIN/TTOU worker sequence 2 -> 4 -> 2. These are historical measurements supplied in the OPE-6419 task thread; this commit does not rerun or independently validate that stand test.
-
-## Limitations
-
-The container runner's process signal path and compatibility with the selected LiteLLM image must be confirmed in the target Docker environment. This script is a smoke-test aid, not proof of production behavior. Do not use production credentials or endpoints.
+The prior task-thread run (before this API-based driver) reported 8 RPS for 150 seconds, 2,456 HTTP 200 responses, zero 5xx/timeouts/connection resets, and medians of 224 ms at two workers and 225 ms at four workers. That measurement used direct Gunicorn signals and is historical evidence only; it is not a result from this API-based driver.
