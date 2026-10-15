@@ -304,7 +304,7 @@ describeEmbeddedPostgres(
       expect(payload.text).toContain("Ответьте сообщением: номером варианта или своими словами.");
       expect(payload.text).toContain("https://paperclip.local");
       expect(payload.interaction?.id).toBe(interaction.id);
-      expect(payload.interaction?.card?.actions).toEqual([]);
+      expect(payload.interaction).toBeUndefined();
       expect(payload.text).not.toContain("chat_action");
       const [boundConversation] = await db
         .select()
@@ -382,7 +382,7 @@ describeEmbeddedPostgres(
       expect(payload.text).toContain("Proceed with the deploy?");
       expect(payload.text).toContain("Deploy build to production.");
       expect(payload.text).toContain("Ответить можно только на доске.");
-      expect(payload.interaction?.card?.actions).toEqual([]);
+      expect(payload.interaction).toBeUndefined();
     });
 
     it("keeps the card board-only when the owner has no standing Telegram conversation", async () => {
