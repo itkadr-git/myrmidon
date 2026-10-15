@@ -500,9 +500,9 @@ describeEmbeddedPostgres("companySkillService.list", () => {
 
     const initialList = await svc.list(companyId);
     await svc.list(companyId);
-    const paperclipSkill = initialList.find((skill) => skill.key === "paperclipai/paperclip/paperclip");
+    const paperclipSkill = initialList.find((skill) => skill.key === "paperclipai/paperclip/myrmidon");
     expect(paperclipSkill).toBeDefined();
-    if (!paperclipSkill) throw new Error("Expected bundled Paperclip skill");
+    if (!paperclipSkill) throw new Error("Expected bundled Myrmidon skill");
 
     const versions = await svc.listVersions(companyId, paperclipSkill.id);
     expect(versions.map((version) => version.releaseId).sort()).toEqual(["v0", "v7-roster"]);

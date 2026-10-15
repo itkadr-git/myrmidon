@@ -7,7 +7,7 @@ usage() {
 Usage:
   paperclip-upload-artifact.sh FILE [options]
 
-Uploads a generated file from the current workspace to the current Paperclip
+Uploads a generated file from the current workspace to the current Myrmidon
 issue, then creates an attachment-backed artifact work product by default.
 
 Required environment for live uploads:
@@ -126,7 +126,7 @@ request_json() {
       curl -sS -X "$method" -w '%{http_code}' -o "$response_file" \
         "$url" \
         -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
-        -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID" \
+        -H "X-Myrmidon-Run-Id: $PAPERCLIP_RUN_ID" \
         -H 'Content-Type: application/json' \
         --data-binary "$body"
     )"
@@ -135,7 +135,7 @@ request_json() {
       curl -sS -X "$method" -w '%{http_code}' -o "$response_file" \
         "$url" \
         -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
-        -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID"
+        -H "X-Myrmidon-Run-Id: $PAPERCLIP_RUN_ID"
     )"
   fi
 
@@ -168,7 +168,7 @@ upload_file() {
     curl -sS -X POST -w '%{http_code}' -o "$response_file" \
       "$url" \
       -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
-      -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID" \
+      -H "X-Myrmidon-Run-Id: $PAPERCLIP_RUN_ID" \
       -F "file=@\"${escaped_path}\";type=${content_type}"
   )" || curl_status=$?
 
@@ -458,7 +458,7 @@ for ((lookup_attempt = 1; lookup_attempt <= lookup_attempts; lookup_attempt++));
 done
 
 if [[ -z "$attachment" && -f "$unknown_upload_marker" && "$retry_unknown_upload" != "1" ]]; then
-  printf '%s\n' 'A previous matching upload ended without a definitive response, and Paperclip has not exposed its durable attachment yet.' >&2
+  printf '%s\n' 'A previous matching upload ended without a definitive response, and Myrmidon has not exposed its durable attachment yet.' >&2
   printf '%s\n' 'Retry this command later. If the upload definitely did not commit, pass --retry-unknown-upload to accept the duplicate-file risk.' >&2
   exit 1
 fi
@@ -586,7 +586,7 @@ if [[ -n "$work_product_id" ]]; then
   printf -- '- Work product ID: `%s`\n' "$work_product_id"
 fi
 if [[ -n "$chat_comment" ]]; then
-  printf -- '- Paperclip comment binding: saved. External publication requires an authorized active chat origin; this helper does not confirm provider delivery.\n'
+  printf -- '- Myrmidon comment binding: saved. External publication requires an authorized active chat origin; this helper does not confirm provider delivery.\n'
 fi
 printf '\nFinal comment snippet:\n\n'
 printf -- '- Artifact: [%s](%s)\n' "$title" "$content_path"
