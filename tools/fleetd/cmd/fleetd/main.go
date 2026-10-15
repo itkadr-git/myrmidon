@@ -89,7 +89,7 @@ func strictDecode(data []byte, out any) error {
 }
 
 func main() {
-	configPath := flag.String("config", "", "path to the JSON configuration")
+	configPath := flag.String("config", "/etc/myrmidon/fleetd.json", "path to the fleetd JSON configuration")
 	check := flag.Bool("check-config", false, "validate the configuration and exit")
 	flag.Parse()
 	if *configPath == "" {
@@ -103,7 +103,7 @@ func main() {
 	if err := strictDecode(raw, &cfg); err != nil {
 		log.Fatalf("config is invalid: %v", err)
 	}
-	if err := validate(&cfg); err != nil {
+	if err := validate(&cfg, *check); err != nil {
 		log.Fatalf("config is invalid: %v", err)
 	}
 	if *check {
@@ -125,35 +125,37 @@ func main() {
 	}).ServeTLS(listener, "", ""))
 }
 
-func validate(cfg *config) error {
+func validate(cfg *config, checkConfig bool) error {
 	if cfg.Listen == "" {
 		return fmt.Errorf("listen is required (host:port)")
+	}
+	if checkConfig {
+		if len(cfg.Token) < 32 {
+			return fmt.Errorf("token must be at least 32 characters")
+		}
+		if cfg.Upstream != "" && !strings.HasPrefix(cfg.Upstream, "http://") && !strings.HasPrefix(cfg.Upstream, "https://") {
+			return fmt.Errorf("upstream must be an http(s) URL")
+		}
+		return validateBots(cfg.Bots)
 	}
 	if cfg.SiteCA == "" || cfg.ServerCert == "" || cfg.ServerKey == "" {
 		return fmt.Errorf("siteCA, serverCert and serverKey are required")
 	}
-	if !filepath.IsAbs(cfg.SiteCA) || !filepath.IsAbs(cfg.ServerCert) || !filepath.IsAbs(cfg.ServerKey) {
-		return fmt.Errorf("siteCA, serverCert and serverKey must be absolute paths")
+	for name, path := range map[string]string{"siteCA": cfg.SiteCA, "serverCert": cfg.ServerCert, "serverKey": cfg.ServerKey} {
+		if !filepath.IsAbs(path) {
+			return fmt.Errorf("%s path must be absolute", name)
+		}
+		if _, err := os.Stat(path); err != nil {
+			return fmt.Errorf("%s: %w", name, err)
+		}
 	}
 	if len(cfg.Token) < 32 {
 		return fmt.Errorf("token must be at least 32 characters")
 	}
-	if cfg.Upstream == "" {
-		cfg.Upstream = "/var/run/docker.sock"
+	if cfg.Upstream != "" && !strings.HasPrefix(cfg.Upstream, "http://") && !strings.HasPrefix(cfg.Upstream, "https://") {
+		return fmt.Errorf("upstream must be an http(s) URL")
 	}
-	if len(cfg.Bots) == 0 {
-		return fmt.Errorf("at least one bots[] entry is required")
-	}
-	for i := range cfg.Bots {
-		b := &cfg.Bots[i]
-		if b.BotKey == "" || !validBotKey(b.BotKey) {
-			return fmt.Errorf("bots[%d].botKey %q is invalid", i, b.BotKey)
-		}
-		if b.MaxMemoryMb <= 0 || b.MaxCpus <= 0 || b.MaxPids <= 0 {
-			return fmt.Errorf("bots[%d] limits must be positive", i)
-		}
-	}
-	return nil
+	return validateBots(cfg.Bots)
 }
 
 func tlsListener(cfg *config) (net.Listener, error) {
