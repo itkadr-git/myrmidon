@@ -161,23 +161,39 @@ describeEmbeddedPostgres("heartbeat task-drain admission release", () => {
     throw new Error(`run ${runId} did not reach ${status} within ${timeoutMs}ms`);
   }
 
+  async function waitForActiveRun(runId: string, timeoutMs = 5_000) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const run = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0] ?? null);
+      if (run?.status === "running" && getTaskDrainStatus().activeRuns === 1) return;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    throw new Error(`run ${runId} did not become active within ${timeoutMs}ms`);
+  }
+
   it("keeps an active adapter run in flight until graceful shutdown records its retry", async () => {
     const { runId, wakeupRequestId } = await seedQueuedRun();
     const heartbeat = heartbeatService(db);
 
     await heartbeat.resumeQueuedRuns();
-    await waitForRunStatus(runId, "running");
-    await new Promise((resolve) => setTimeout(resolve, 25));
-    const admissionState = getTaskDrainStatus();
-    expect(admissionState.activeRuns).toBe(1);
-    expect(admissionState.quiescent).toBe(false);
+    await waitForActiveRun(runId);
 
+    const activeState = getTaskDrainStatus();
+    expect(activeState.activeRuns).toBe(1);
+    expect(activeState.quiescent).toBe(false);
+
+    // A test run can be marked `running` before `executeRun` registers its
+    // promise; wait for the live execution counter rather than sleeping.
     startTaskDrain({});
     const shutdown = await heartbeat.drainRunningRunsForShutdown("SIGTERM", new Date(), [runId]);
-    await heartbeat.drainActiveRunExecutions();
-
     expect(shutdown.interruptedRunIds).toEqual([runId]);
     expect(shutdown.retryRunIds).toHaveLength(1);
+    await heartbeat.drainActiveRunExecutions();
+
     const interrupted = await db
       .select({ status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode })
       .from(heartbeatRuns)
