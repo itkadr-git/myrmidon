@@ -626,6 +626,15 @@ export interface PluginObjectReferenceRefreshPolicy {
   staleAfterSeconds?: number;
 }
 
+export interface PluginProviderModelDeclaration {
+  /** Stable provider identifier used to derive gateway model names. */
+  provider: string;
+  /** OpenAI-compatible API base URL. */
+  baseUrl: string;
+  /** Public model identifier exposed by the provider. */
+  models: Array<{ id: string; label?: string }>;
+}
+
 export interface PluginObjectReferenceProviderDeclaration {
   /** Stable provider key such as "github", "linear", or "mocktracker". */
   providerKey: string;
@@ -712,6 +721,8 @@ export interface PaperclipPluginManifestV1 {
   localFolders?: PluginLocalFolderDeclaration[];
   /** External object reference providers this plugin contributes. */
   objectReferences?: PluginObjectReferenceProviderDeclaration[];
+  /** Optional provider models exposed through the dynamic adapter model catalog. */
+  providerModels?: PluginProviderModelDeclaration;
   /**
    * Legacy top-level launcher declarations.
    * Prefer `ui.launchers` for new manifests.

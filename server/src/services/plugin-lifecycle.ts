@@ -43,6 +43,11 @@ import type {
   PaperclipPluginManifestV1,
 } from "@paperclipai/shared";
 import { pluginRegistryService } from "./plugin-registry.js";
+import {
+  listPluginProviderModels,
+  removePluginProviderModels,
+  replacePluginProviderModels,
+} from "../myrmidon/plugin-provider-models.js";
 import { pluginLoader, type PluginLoader } from "./plugin-loader.js";
 import type { PluginWorkerManager, WorkerStartOptions } from "./plugin-worker-manager.js";
 import { badRequest, notFound } from "../errors.js";
@@ -362,6 +367,13 @@ export function pluginLifecycleManager(
 
     if (!updated) throw notFound(`Plugin not found after status update: ${pluginId}`);
     const result = updated as PluginRecord;
+    if (to === "ready") {
+      const models = listPluginProviderModels([result]);
+      if (models.length) replacePluginProviderModels(pluginId, models);
+      else removePluginProviderModels(pluginId);
+    } else {
+      removePluginProviderModels(pluginId);
+    }
 
     log.info(
       { pluginId, pluginKey: result.pluginKey, from: previousStatus, to },
@@ -423,6 +435,12 @@ export function pluginLifecycleManager(
     }
 
     const loadResult = await pluginLoaderInstance.loadSingle(pluginId);
+    if (loadResult.success) {
+      const loadedPlugin = loadResult.plugin as PluginRecord;
+      const models = listPluginProviderModels([loadedPlugin]);
+      if (models.length > 0) replacePluginProviderModels(pluginId, models);
+      else removePluginProviderModels(pluginId);
+    }
     if (!loadResult.success) {
       throw new Error(
         loadResult.error

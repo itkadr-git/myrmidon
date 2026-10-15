@@ -686,6 +686,17 @@ export const pluginObjectReferenceRefreshPolicySchema = z.object({
   }
 });
 
+export const pluginProviderModelDeclarationSchema = z.object({
+  provider: z.string().min(1).max(100).regex(/^[a-z0-9][a-z0-9._-]*$/),
+  baseUrl: z.string().url(),
+  models: z.array(z.object({ id: z.string().min(1).max(200), label: z.string().min(1).max(200).optional() }).strict()).min(1),
+}).strict().superRefine((value, ctx) => {
+  const ids = value.models.map((model) => model.id);
+  if (new Set(ids).size !== ids.length) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Provider model ids must be unique", path: ["models"] });
+  }
+});
+
 export const pluginObjectReferenceProviderDeclarationSchema = z.object({
   providerKey: externalObjectProviderKeySchema,
   displayName: z.string().min(1).max(100),
@@ -798,6 +809,7 @@ export const pluginManifestV1Schema = z.object({
   skills: z.array(pluginManagedSkillDeclarationSchema).optional(),
   localFolders: z.array(pluginLocalFolderDeclarationSchema).optional(),
   objectReferences: z.array(pluginObjectReferenceProviderDeclarationSchema).optional(),
+  providerModels: pluginProviderModelDeclarationSchema.optional(),
   launchers: z.array(pluginLauncherDeclarationSchema).optional(),
   ui: z.object({
     slots: z.array(pluginUiSlotDeclarationSchema).min(1).optional(),
