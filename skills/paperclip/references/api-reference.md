@@ -1146,7 +1146,7 @@ Resolved result (`RequestCheckboxConfirmationResult`):
 
 Other outcomes match `request_confirmation`:
 
-- `withdrawn` — `{ outcome: "withdrawn", reason }`. Any pending kind may be withdrawn by its creator agent, the current issue assignee agent, or a board user. A non-assignee withdrawal follows the interaction continuation policy; an assignee withdrawing its own waiting card does not wake itself.
+- `withdrawn` — `{ outcome: "withdrawn", reason }`. Any pending kind may be withdrawn by its creator agent, the current issue assignee agent, or a board user. An agent withdrawal only needs a valid run of that same agent (the run exists and matches the acting agent and company); for the card's creator or the current issue assignee the run's `responsible_user_id` is NOT compared, so an automation-attributed run may withdraw its own card too. That match still applies when resolving (`accept`/`reject`/`respond`) another actor's or a `human_only` card, and when anyone other than the creator or the current assignee attempts the withdrawal. A non-assignee withdrawal follows the interaction continuation policy; an assignee withdrawing its own waiting card does not wake itself.
 - `issue_closed` — `{ outcome: "issue_closed" }`. Transitioning the issue to `done` or `cancelled` expires all pending interactions without continuation wakes; listing a terminal issue also performs a catch-up sweep for historical residue.
 
 - `rejected` — `{ outcome: "rejected", reason, commentId }`. `selectedOptionIds` is absent.
