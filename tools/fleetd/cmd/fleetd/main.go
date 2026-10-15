@@ -15,6 +15,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -130,6 +131,9 @@ func validate(cfg *config) error {
 	}
 	if cfg.SiteCA == "" || cfg.ServerCert == "" || cfg.ServerKey == "" {
 		return fmt.Errorf("siteCA, serverCert and serverKey are required")
+	}
+	if !filepath.IsAbs(cfg.SiteCA) || !filepath.IsAbs(cfg.ServerCert) || !filepath.IsAbs(cfg.ServerKey) {
+		return fmt.Errorf("siteCA, serverCert and serverKey must be absolute paths")
 	}
 	if len(cfg.Token) < 32 {
 		return fmt.Errorf("token must be at least 32 characters")

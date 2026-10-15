@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -19,13 +20,14 @@ func fakeBearer() string {
 	}, "")
 }
 
-func testConfig() *config {
+func testConfig(t *testing.T) *config {
+	t.Helper()
 	cfg := &config{
 		Listen:     "127.0.0.1:0",
 		Token:      fakeBearer(),
-		SiteCA:     "site-ca.pem",
-		ServerCert: "server.pem",
-		ServerKey:  "server-key.pem",
+		SiteCA:     filepath.Join(t.TempDir(), "site-ca.pem"),
+		ServerCert: filepath.Join(t.TempDir(), "server.pem"),
+		ServerKey:  filepath.Join(t.TempDir(), "server-key.pem"),
 		Bots: []bot{
 			{BotKey: "bot-example-one", MaxMemoryMb: 1536, MaxCpus: 1, MaxPids: 256},
 		},
@@ -186,7 +188,7 @@ func TestBadBotKeyIsRejected(t *testing.T) {
 
 func TestValidateConfigRequiresMutualTLSMaterial(t *testing.T) {
 	for _, field := range []string{"siteCA", "serverCert", "serverKey"} {
-		cfg := testConfig()
+		cfg := testConfig(t)
 		switch field {
 		case "siteCA":
 			cfg.SiteCA = ""
