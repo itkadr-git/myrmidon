@@ -85,6 +85,23 @@ case "$sub" in
         # the publish WAIT while the tag's image run is still building, then
         # succeed when it completes. GH_RUNS_SWITCH_AFTER is always exported
         # by the test harness (0 = switch on the first read).
+        # TAG-CI-RETRY (the 1.6.5 rc.13 incident): $SANDBOX/runs-fault.json
+        # holds a number of LEADING failed reads (transient gh api failure —
+        # 5xx / secondary rate limit: exit 1, empty stdout). The gate must
+        # retry and keep waiting instead of dying with an empty conclusion.
+        fault_left=0
+        if [ -f "$SANDBOX/runs-fault.json" ]; then
+          fault_left="$(cat "$SANDBOX/runs-fault.json")"
+        fi
+        fault_seen=0
+        if [ -f "$SANDBOX/runs-fault.count" ]; then
+          fault_seen="$(cat "$SANDBOX/runs-fault.count")"
+        fi
+        if [ "$fault_seen" -lt "$fault_left" ]; then
+          echo $(( fault_seen + 1 )) > "$SANDBOX/runs-fault.count"
+          # A transient API failure: nothing on stdout, failure exit.
+          exit 1
+        fi
         if [ -f "$SANDBOX/runs-after.json" ]; then
           count_file="$SANDBOX/runs-reads.count"
           reads=$(( $(cat "$count_file" 2>/dev/null || echo 0) + 1 ))
@@ -407,6 +424,45 @@ describe("publish-github-release.sh: the CI gate", () => {
     const { code, out } = runScript(sb, rcTag);
     assert.match(out, /gate: Myrmidon CI \(tag\) success/);
     assert.match(out, /gate: Myrmidon image \(board\) success/);
+  });
+
+  // ---- TAG-CI-RETRY (the 1.6.5 rc.13 incident): a transient gh api failure must not kill the gate ----
+
+  it("survives a transient gh api failure while waiting for the tag CI run (the rc.13 incident)", () => {
+    // The exact shape of 2026-10-08: the tag's CI run was still running when
+    // one gh api read failed transiently (5xx / secondary rate limit). The
+    // old gate read an EMPTY verdict, treated "" != "missing" as a completed
+    // run and died with "(conclusion: )" while the CI finished success 11
+    // minutes later. The gate must retry the read and keep waiting.
+    const sb = sandbox({ runs: GREEN_RUNS });
+    // 2 leading failed reads (fewer than MYRMIDON_RELEASE_GH_RETRIES=3):
+    // the gate retries and then reads the real green runs.
+    fs.writeFileSync(path.join(sb.dir, "runs-fault.json"), "2");
+    const { code, out } = runScript(sb, "myr-v1.6.0", { extraEnv: {
+      MYRMIDON_RELEASE_GH_RETRIES: "3",
+      MYRMIDON_RELEASE_GH_RETRY_SLEEP: "0",
+    } });
+    assert.equal(code, 0, out);
+    assert.match(out, /gate: gh api runs read failed/);
+    assert.match(out, /gate: Myrmidon CI \(tag\) success/);
+    assert.match(mutations(sb), /create tag=myr-v1\.6\.0/);
+  });
+
+  it("keeps waiting (missing) when the gh api failure persists beyond the retries", () => {
+    // All 3 reads fail: runs_of answers "[]" -> verdict "missing" -> the
+    // gate keeps WAITING instead of dying with an empty conclusion, and
+    // eventually times out with the poll budget exhausted.
+    const sb = sandbox({ runs: GREEN_RUNS });
+    fs.writeFileSync(path.join(sb.dir, "runs-fault.json"), "99");
+    const { code, out } = runScript(sb, "myr-v1.6.0", { extraEnv: {
+      MYRMIDON_RELEASE_GH_RETRIES: "3",
+      MYRMIDON_RELEASE_GH_RETRY_SLEEP: "0",
+      MYRMIDON_RELEASE_POLL_MAX: "2",
+    } });
+    assert.notEqual(code, 0, out);
+    assert.match(out, /gate: gh api runs read failed/);
+    assert.match(out, /no run of Myrmidon CI \(tag\) found|timed out waiting for Myrmidon CI \(tag\)/);
+    assert.equal(mutations(sb), "");
   });
 
   it("still refuses a tag that does not look like myr-vX.Y.Z[-rc.N]", () => {
