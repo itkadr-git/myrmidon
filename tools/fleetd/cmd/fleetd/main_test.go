@@ -34,10 +34,6 @@ func newServer(t *testing.T) (*server, *httptest.Server) {
 	t.Helper()
 	srv := &server{cfg: testConfig()}
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/v1/health" && r.Method == http.MethodGet {
-			srv.requireAuth(srv.health)(w, r)
-			return
-		}
 		if strings.HasPrefix(r.URL.Path, "/v1/bots") {
 			srv.requireAuth(func(w http.ResponseWriter, r *http.Request) {
 				if r.URL.Path == "/v1/bots" {
