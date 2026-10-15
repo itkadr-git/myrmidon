@@ -45,6 +45,9 @@ import { BotLspSettingsPanel } from "@/components/myrmidon/BotLspSettingsPanel";
 import { SwarmClaimSettingsPanel } from "@/components/myrmidon/SwarmClaimSettingsPanel"; // myrmidon(1.6.1 SWARM-SETTINGS-UI)
 import { ReviewReworkSettingsPanel } from "@/components/myrmidon/ReviewReworkSettingsPanel"; // myrmidon(REVIEW-REWORK)
 import { ForagingSettingsPanel } from "@/components/myrmidon/ForagingSettingsPanel"; // myrmidon(1.6.1-FORAGING-LIMITS-UI)
+import { WorkspaceHygieneSettingsPanel } from "@/components/myrmidon/WorkspaceHygieneSettingsPanel"; // myrmidon(SETTINGS-UI A)
+import { ChannelSettingsPanel } from "@/components/myrmidon/ChannelSettingsPanel"; // myrmidon(SETTINGS-UI A)
+import { ModelFallbackSignalSettingsPanel } from "@/components/myrmidon/ModelFallbackSignalSettingsPanel"; // myrmidon(SETTINGS-UI A)
 import { AboutSettingsPanel } from "@/components/myrmidon/AboutSettingsPanel"; // myrmidon(ABOUT)
 import { DeployJobsPanel } from "@/components/myrmidon/DeployJobsPanel"; // myrmidon(R5-A)
 import { BoardProcessesSettingsPanel } from "@/components/myrmidon/BoardProcessesSettingsPanel"; // myrmidon(1.6.6 PROCS-0.1)
@@ -196,6 +199,9 @@ export function InstanceGeneralSettings({ embedded = false }: { embedded?: boole
       <SwarmClaimSettingsPanel /> {/* myrmidon(1.6.1 SWARM-SETTINGS-UI) */}
       <ReviewReworkSettingsPanel /> {/* myrmidon(REVIEW-REWORK) */}
       <ForagingSettingsPanel /> {/* myrmidon(1.6.1-FORAGING-LIMITS-UI) */}
+      <WorkspaceHygieneSettingsPanel /> {/* myrmidon(SETTINGS-UI A, WORKSPACE-HYGIENE) */}
+      <ChannelSettingsPanel /> {/* myrmidon(SETTINGS-UI A, 1.7-SETTINGS-TO-UI) */}
+      <ModelFallbackSignalSettingsPanel /> {/* myrmidon(SETTINGS-UI A, BOT-RUNTIME-TUNING D2) */}
       <DeployJobsPanel /> {/* myrmidon(R5-A) */}
       <BoardProcessesSettingsPanel /> {/* myrmidon(1.6.6 PROCS-0.1) */}
       <BoardLeasesPanel /> {/* myrmidon(1.6.5 BOARD-PROCESSES) */}
