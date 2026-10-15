@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { access } from "node:fs/promises";
+import { access, mkdtemp, readdir, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 
 import { createLiveConsoleBrowserMiddleware } from "./live-console-browser-server.mjs";
 
@@ -51,6 +53,30 @@ describe("Live console Vite transport bootstrap", () => {
       host: "127.0.0.1",
       workingDirectory: "/server-owned-workspace",
     });
+  });
+
+  it("removes the owned working directory when bootstrap fails", async () => {
+    const scratchRoot = await mkdtemp(path.join(tmpdir(), "live-console-browser-test-"));
+    const middleware = createLiveConsoleBrowserMiddleware({
+      scratchRoot,
+      loadRunner: async () => ({
+        assertLiveConsoleLoopbackBindHost() {},
+        liveConsoleDemoManifestCatalogue: () => [],
+        LiveConsoleScriptedDriver: class {},
+        LiveConsoleDemoServer: class {
+          constructor() {
+            throw new Error("server bootstrap failed");
+          }
+        },
+      }),
+    });
+
+    await expect(middleware.prepare("127.0.0.1")).rejects.toThrow("server bootstrap failed");
+    await expect(access(path.join(scratchRoot, "live-console-browser-"))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+    expect(await readdir(scratchRoot)).toEqual([]);
+    await rm(scratchRoot, { recursive: true, force: true });
   });
 
   it("removes the owned working directory when the middleware closes", async () => {
