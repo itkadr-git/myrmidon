@@ -168,7 +168,7 @@ describe("a real directory where a managed skill belongs", () => {
 
     const backups = await fs.readdir(path.join(profileA, "skills.pre-myrmidon"));
     expect(backups).toHaveLength(1);
-    expect(backups[0]).toMatch(/^paperclip\.pre-myrmidon-\d{8}$/);
+    expect(backups[0]).toMatch(/^myrmidon\.pre-myrmidon-\d{8}$/);
     const backup = path.join(profileA, "skills.pre-myrmidon", backups[0]!);
     expect(await fs.readFile(path.join(backup, "notes.txt"), "utf8")).toBe("keep me\n");
     // Hermes finds skills by SKILL.md anywhere under skills/, so the backup must
