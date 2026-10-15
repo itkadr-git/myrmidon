@@ -1,3 +1,4 @@
+import { basename } from "node:path";
 import { registerEmailCommands } from "./commands/client/email.js";
 import { Command } from "commander";
 import { warnIfUnsupportedNodeVersion } from "@paperclipai/shared/node-version";
@@ -61,19 +62,22 @@ import {
 } from "./commands/test-drive.js";
 
 const program = new Command();
-const DATA_DIR_OPTION_HELP =
-  "Paperclip data directory root (isolates state from ~/.paperclip)";
+const DATA_DIR_OPTION_HELP = "Myrmidon data directory root (isolates state from ~/.paperclip)";
 
 program.enablePositionalOptions();
 
+if (basename(process.argv[1] ?? "").replace(/\.(cmd|exe)$/i, "") === "paperclipai") {
+  console.error("paperclipai is deprecated, use myrmidon");
+}
+
 program
-  .name("paperclipai")
-  .description("Paperclip CLI — setup, diagnose, and configure your instance")
+  .name("myrmidon")
+  .description("Myrmidon CLI — setup, diagnose, and configure your instance")
   .version(cliVersion);
 
 program
   .command("install")
-  .description("Install Paperclip into a managed per-user CLI store")
+  .description("Install Myrmidon into a managed per-user CLI store")
   .option("--canary", "Install the npm canary channel")
   .option("--version <version>", "Install an exact published npm version")
   .option("--ref <ref>", "Install a GitHub branch, tag, or commit SHA")
@@ -89,7 +93,7 @@ program
 program
   .command("update")
   .alias("upgrade")
-  .description("Check, update, or roll back the Paperclip CLI")
+  .description("Check, update, or roll back the Myrmidon CLI")
   .option("--latest", "Switch to the latest stable channel")
   .option("--canary", "Switch to the canary channel")
   .option("--version <version>", "Install an exact published version")
