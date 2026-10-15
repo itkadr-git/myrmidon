@@ -533,6 +533,8 @@ export const issueExecutionMonitorStateSchema = z.object({
     .default(null),
   clearedAt: z.string().datetime().nullable(),
   clearReason: z.enum(ISSUE_EXECUTION_MONITOR_CLEAR_REASONS).nullable(),
+  // myrmidon(MON-RESTORE): distinct from nextCheckAt, which is null when cleared.
+  nextScheduledAt: z.string().datetime().nullable().optional(),
 });
 
 export const issueReviewRequestSchema = z

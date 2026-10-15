@@ -736,6 +736,8 @@ export interface IssueExecutionMonitorState {
   recoveryPolicy?: IssueExecutionMonitorRecoveryPolicy | null;
   clearedAt: string | null;
   clearReason: IssueExecutionMonitorClearReason | null;
+  // myrmidon(MON-RESTORE): preserve the scheduled time after a recovery clear.
+  nextScheduledAt?: string | null;
 }
 
 export interface IssueReviewRequest {

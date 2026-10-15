@@ -14330,6 +14330,11 @@ export function issueRoutes(
         generation: reopenedGeneration,
         finalIssueStatus: () => issue?.status,
       });
+      // myrmidon(MON-RESTORE): capture transient notice before persistence.
+      const monitorClearNotice = transition.patch.monitorClearNotice as
+        | { reason?: string | null; notes?: string | null }
+        | undefined;
+      delete transition.patch.monitorClearNotice;
       const decision =
         transition.decision && decisionId ? transition.decision : null;
       let attachmentComment: Awaited<ReturnType<typeof svc.addComment>> | null =
@@ -15014,6 +15019,15 @@ export function issueRoutes(
             notes: previousMonitor.notes,
           },
         });
+        // myrmidon(MON-RESTORE): post one best-effort notice on the activity-log clear edge.
+        if (issue.status !== "done" && issue.status !== "cancelled" && monitorClearNotice) {
+          await svc.addComment(
+            issue.id,
+            `Monitor cleared (${monitorClearNotice.reason ?? "manual"}).${monitorClearNotice.notes ? ` ${monitorClearNotice.notes}` : ""}`,
+            {},
+            { authorType: "system", presentation: { kind: "system_notice", tone: "warning", title: "Issue monitor cleared", detailsDefaultOpen: false, density: "compact" } },
+          ).catch((err) => logger.warn({ err, issueId: issue.id }, "failed to post monitor clear notice"));
+        }
       }
 
       if (issue.status === "done" && existing.status !== "done") {
