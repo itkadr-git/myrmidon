@@ -118,8 +118,8 @@ func TestListShape(t *testing.T) {
 
 func TestHealthRouteRequiresAuthAndReportsResources(t *testing.T) {
 	s, _ := newServer(t)
-	token := s.cfg.Token
 	s.cfg.Bots = []bot{{BotKey: "bot-example-one", MaxMemoryMb: 1024, MaxCpus: 1, MaxPids: 128}}
+	token := s.cfg.Token
 	if rec := routeRequest(s, http.MethodGet, "/v1/health", "", ""); rec.Code != http.StatusUnauthorized {
 		t.Fatalf("unauthenticated health: got %d", rec.Code)
 	}
