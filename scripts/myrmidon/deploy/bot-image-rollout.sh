@@ -240,6 +240,24 @@ board_post_json_status() {
   printf '%s\n%s' "${out##*$'\n'}" "${out%$'\n'*}"
 }
 
+# Retry only the board's explicit transient response while a maintenance scope
+# is leaving; other 409 responses remain normal deferrals.
+apply_bot_container() {
+  local id="$1" out status body attempt=1
+  while :; do
+    out="$(board_post_json_status "/myrmidon/agents/$id/bot-container/apply" '{}')" || return 1
+    status="${out%%$'\n'*}"
+    body="${out#*$'\n'}"
+    if [[ "$status" != "409" || "$body" != *"Maintenance for this scope is still leaving; retry shortly"* || "$attempt" -ge 6 ]]; then
+      printf '%s' "$out"
+      return 0
+    fi
+    bot_log "bot $id: maintenance is still leaving; retrying apply in 5s ($((attempt + 1))/6)"
+    sleep 5
+    ((attempt += 1))
+  done
+}
+
 # The company's agent configurations: the card config (adapterConfig, the
 # container block included) of every agent of the company.
 # myrmidon(PERF-DIET-G): the company agents list (GET /companies/:id/agents)
@@ -758,7 +776,7 @@ switch_one_bot() {
   if is_release_ref "$current"; then
     # The card already names the release image (a previous rollout switched
     # it or the apply stayed deferred): only re-apply, never re-PATCH.
-    out="$(board_post_json_status "/myrmidon/agents/$id/bot-container/apply" '{}')" || {
+    out="$(apply_bot_container "$id")" || {
       bot_log "apply of bot $id failed (card already on the release image); the periodic sweep retries"
       journal "agent $id apply failed (card already on $target; the sweep retries)"
       return 1
@@ -778,7 +796,7 @@ switch_one_bot() {
     fi
     # Apply now: the board's own reconciler drains this agent alone and
     # recreates the container with the new image.
-    out="$(board_post_json_status "/myrmidon/agents/$id/bot-container/apply" '{}')" || {
+    out="$(apply_bot_container "$id")" || {
       bot_log "apply of bot $id failed after the card switch"
       journal "agent $id card switched to $target, apply failed"
       revert_card "$id" "$prev_block" "$target"
@@ -795,6 +813,12 @@ switch_one_bot() {
     202) ;;
     409)
       local conflict_code
+      if [[ "$out" == *"Maintenance for this scope is still leaving; retry shortly"* ]]; then
+        bot_log "bot $id apply remained blocked while maintenance was leaving; retry budget exhausted"
+        journal "agent $id apply remained in maintenance-leaving state after retries"
+        revert_card "$id" "$prev_block" "$target"
+        return 1
+      fi
       conflict_code="$(jq -r '.code // "bot_container_not_applicable"' <<<"$out" 2>/dev/null || true)"
       bot_log "bot $id deferred (apply refused: $conflict_code)"
       journal "agent $id apply refused (409 $conflict_code; card unchanged)"
