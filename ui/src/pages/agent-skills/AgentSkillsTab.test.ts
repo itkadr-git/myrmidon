@@ -15,7 +15,7 @@ vi.mock("./AgentSkillRow", () => ({ AgentSkillRow: ({ variant, data }: { variant
 import { toDesiredSkillPayload } from "./AgentSkillsTab";
 
 describe("toDesiredSkillPayload", () => {
-  const skillKey = "paperclipai/paperclip/paperclip";
+  const skillKey = "paperclipai/paperclip/myrmidon";
   const versionId = "22222222-2222-4222-8222-222222222222";
 
   it("includes saved version pins while beta skills are enabled", () => {
