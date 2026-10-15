@@ -363,6 +363,45 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
     });
     expect(blockedWakeRequest).toBe(true);
 
+    const readyWakeRequest = await waitForCondition(async () => {
+      const rows = await db
+        .select({ status: agentWakeupRequests.status, reason: agentWakeupRequests.reason })
+        .from(agentWakeupRequests)
+        .where(
+          and(
+            eq(agentWakeupRequests.agentId, agentId),
+            sql`${agentWakeupRequests.payload} ->> 'issueId' = ${readyIssueId}`,
+          ),
+        )
+        .orderBy(agentWakeupRequests.requestedAt);
+      return rows.some((row) => row.status !== "skipped" && row.reason === "idle_pickup");
+    });
+    expect(readyWakeRequest).toBe(true);
+
+    const readyRunsStarted = await waitForCondition(async () => {
+      const rows = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${readyIssueId}`);
+      return rows.some((run) => run.status === "succeeded");
+    });
+    expect(readyRunsStarted).toBe(true);
+
+    await heartbeat.wakeup(agentId, {
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_assigned",
+      payload: { issueId: blockedIssueId },
+      contextSnapshot: { issueId: blockedIssueId, wakeReason: "issue_assigned" },
+    });
+
+    const idlePickupRunCount = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(heartbeatRuns)
+      .where(sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${readyIssueId}`)
+      .then((rows) => rows[0]?.count ?? 0);
+    expect(idlePickupRunCount).toBe(1);
+
     const blockedRunsBeforeResolution = await db
       .select({ count: sql<number>`count(*)::int` })
       .from(heartbeatRuns)
