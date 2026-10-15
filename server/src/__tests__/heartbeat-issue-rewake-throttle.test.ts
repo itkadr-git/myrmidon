@@ -222,13 +222,21 @@ describeEmbeddedPostgres("heartbeat issue rewake throttle", () => {
     expect((await latestWakeRequest(agentId))?.reason).toBe("issue_assigned");
   });
 
-  it("skips event-free re-wakes after consecutive no-progress runs and admits them again on new input", async () => {
+  it("throttles event-free re-wakes after consecutive no-progress runs and admits them again on new input", async () => {
     const { companyId, agentId, issueId } = await seedCompanyAgentIssue();
 
     await seedTerminalRun({ companyId, agentId, issueId, finishedSecondsAgo: 40 });
     await seedTerminalRun({ companyId, agentId, issueId, finishedSecondsAgo: 10 });
 
-    const throttledWake = await assignmentWake(agentId, issueId);
+    const throttledWake = await heartbeat.wakeup(agentId, {
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_continuation_needed",
+      payload: { issueId },
+      contextSnapshot: { issueId, wakeReason: "issue_continuation_needed" },
+      requestedByActorType: "system",
+      requestedByActorId: "test",
+    });
     expect(throttledWake).toBeNull();
 
     const skipped = await latestWakeRequest(agentId);
@@ -427,7 +435,15 @@ describeEmbeddedPostgres("heartbeat issue rewake throttle", () => {
       createdAt: new Date(Date.now() - 11_000),
     });
 
-    const wake = await assignmentWake(agentId, issueId);
+    const wake = await heartbeat.wakeup(agentId, {
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_continuation_needed",
+      payload: { issueId },
+      contextSnapshot: { issueId, wakeReason: "issue_continuation_needed" },
+      requestedByActorType: "system",
+      requestedByActorId: "test",
+    });
     expect(wake).toBeNull();
     expect((await latestWakeRequest(agentId))?.reason).toBe("issue_rewake_throttled");
   });
@@ -444,7 +460,15 @@ describeEmbeddedPostgres("heartbeat issue rewake throttle", () => {
     });
     await seedTerminalRun({ companyId, agentId, issueId, finishedSecondsAgo: 10 });
 
-    const wake = await assignmentWake(agentId, issueId);
+    const wake = await heartbeat.wakeup(agentId, {
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_continuation_needed",
+      payload: { issueId },
+      contextSnapshot: { issueId, wakeReason: "issue_continuation_needed" },
+      requestedByActorType: "system",
+      requestedByActorId: "test",
+    });
     expect(wake).toBeNull();
     expect((await latestWakeRequest(agentId))?.reason).toBe("issue_rewake_throttled");
   });
