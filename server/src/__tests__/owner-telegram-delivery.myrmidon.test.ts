@@ -258,19 +258,6 @@ describeEmbeddedPostgres(
         state: "active",
         lastActivityAt: new Date(),
       });
-      await db.insert(chatConversations).values({
-        companyId,
-        endpointId,
-        resourceId: dmResourceId,
-        issueId: workIssue.id,
-        externalConversationId: `telegram-dm-${companyId.slice(0, 8)}`,
-        externalThreadId: `telegram-dm-${companyId.slice(0, 8)}:thread`,
-        sessionGeneration: 1,
-        externalLabel: "Telegram DM",
-        isDirectMessage: true,
-        state: "active",
-        lastActivityAt: new Date(),
-      });
     }
 
     it("delivers owner questions as complete plain text without actions", async () => {
