@@ -197,7 +197,7 @@ func TestValidateConfigRequiresMutualTLSMaterial(t *testing.T) {
 		case "serverKey":
 			cfg.ServerKey = ""
 		}
-		if err := validate(cfg); err == nil || !strings.Contains(err.Error(), field) {
+		if err := validate(cfg, true); err == nil || !strings.Contains(err.Error(), field) {
 			t.Errorf("missing %s accepted: %v", field, err)
 		}
 	}
@@ -205,22 +205,22 @@ func TestValidateConfigRequiresMutualTLSMaterial(t *testing.T) {
 
 func TestValidateConfig(t *testing.T) {
 	cfg := testConfig(t)
-	if err := validate(cfg); err != nil {
+	if err := validate(cfg, true); err != nil {
 		t.Fatalf("valid config rejected: %v", err)
 	}
 	bad := testConfig(t)
 	bad.Token = "short"
-	if err := validate(bad); err == nil || !strings.Contains(err.Error(), "token") {
+	if err := validate(bad, true); err == nil || !strings.Contains(err.Error(), "token") {
 		t.Fatalf("short token accepted: %v", err)
 	}
 	bad = testConfig(t)
 	bad.Bots = nil
-	if err := validate(bad); err == nil || !strings.Contains(err.Error(), "bots[]") {
+	if err := validate(bad, true); err == nil || !strings.Contains(err.Error(), "bots[]") {
 		t.Fatalf("no bots accepted: %v", err)
 	}
 	bad = testConfig(t)
 	bad.Bots[0].BotKey = "-leading-dash-"
-	if err := validate(bad); err == nil || !strings.Contains(err.Error(), "botKey") {
+	if err := validate(bad, true); err == nil || !strings.Contains(err.Error(), "botKey") {
 		t.Fatalf("bad key accepted: %v", err)
 	}
 }
