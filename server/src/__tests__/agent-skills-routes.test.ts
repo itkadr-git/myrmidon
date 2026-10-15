@@ -295,23 +295,23 @@ describe.sequential("agent skill routes", () => {
     mockSecretService.syncEnvBindingsForTarget.mockResolvedValue(undefined);
     mockCompanySkillService.listRuntimeSkillEntries.mockResolvedValue([
       {
-        key: "paperclipai/paperclip/paperclip",
-        runtimeName: "paperclip",
-        source: "/tmp/paperclip",
+        key: "paperclipai/paperclip/myrmidon",
+        runtimeName: "myrmidon",
+        source: "/tmp/myrmidon",
       },
     ]);
     mockCompanySkillService.resolveRequestedSkillKeys.mockImplementation(
       async (_companyId: string, requested: string[]) =>
         requested.map((value) =>
           value === "paperclip"
-            ? "paperclipai/paperclip/paperclip"
+            ? "paperclipai/paperclip/myrmidon"
             : value,
         ),
     );
     mockCompanySkillService.resolveRequestedSkillEntries.mockImplementation(
       async (_companyId: string, requested: Array<{ key: string; versionId?: string | null }>) => ({
         resolved: requested.map((entry) => ({
-          key: entry.key === "paperclip" ? "paperclipai/paperclip/paperclip" : entry.key,
+          key: entry.key === "paperclip" ? "paperclipai/paperclip/myrmidon" : entry.key,
           versionId: entry.versionId ?? null,
         })),
         unresolved: [],
