@@ -63,7 +63,7 @@ export function createLiveConsoleBrowserMiddleware(options = {}) {
               ? new runner.CodexAppServerDriver({
                   taskEnvelope,
                   conversationMode: manifestId === "chat" ? "direct" : "task",
-                onDiagnostic: (message) => process.stderr.write(`[liveConsole] ${message}\n`),
+                  onDiagnostic: (message) => process.stderr.write(`[liveConsole] ${message}\n`),
                 })
               : new runner.LiveConsoleScriptedDriver({
                   manifestId: manifestId ?? "completion",

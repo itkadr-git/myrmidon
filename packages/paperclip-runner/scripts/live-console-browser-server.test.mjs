@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { access, mkdtemp, readdir, rm } from "node:fs/promises";
+import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -72,9 +72,6 @@ describe("Live console Vite transport bootstrap", () => {
     });
 
     await expect(middleware.prepare("127.0.0.1")).rejects.toThrow("server bootstrap failed");
-    await expect(access(path.join(scratchRoot, "live-console-browser-"))).rejects.toMatchObject({
-      code: "ENOENT",
-    });
     expect(await readdir(scratchRoot)).toEqual([]);
     await rm(scratchRoot, { recursive: true, force: true });
   });
