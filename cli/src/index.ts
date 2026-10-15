@@ -1,3 +1,4 @@
+import { basename } from "node:path";
 import { registerEmailCommands } from "./commands/client/email.js";
 import { Command } from "commander";
 import { warnIfUnsupportedNodeVersion } from "@paperclipai/shared/node-version";
@@ -65,9 +66,13 @@ const DATA_DIR_OPTION_HELP =
 
 program.enablePositionalOptions();
 
+if (["paperclipai", "paperclipai.cmd", "index.js"].includes(basename(process.argv[1] ?? ""))) {
+  console.error("paperclipai is deprecated, use myrmidon");
+}
+
 program
-  .name("paperclipai")
-  .description("Paperclip CLI — setup, diagnose, and configure your instance")
+  .name("myrmidon")
+  .description("Myrmidon CLI — setup, diagnose, and configure your instance")
   .version(cliVersion);
 
 program
