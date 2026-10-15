@@ -213,12 +213,12 @@ func TestValidateConfig(t *testing.T) {
 	if err := validate(bad); err == nil || !strings.Contains(err.Error(), "token") {
 		t.Fatalf("short token accepted: %v", err)
 	}
-	bad = testConfig()
+	bad = testConfig(t)
 	bad.Bots = nil
 	if err := validate(bad); err == nil || !strings.Contains(err.Error(), "bots[]") {
 		t.Fatalf("no bots accepted: %v", err)
 	}
-	bad = testConfig()
+	bad = testConfig(t)
 	bad.Bots[0].BotKey = "-leading-dash-"
 	if err := validate(bad); err == nil || !strings.Contains(err.Error(), "botKey") {
 		t.Fatalf("bad key accepted: %v", err)
