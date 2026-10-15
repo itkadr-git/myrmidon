@@ -66,6 +66,14 @@ export function unregisterModelProviderConnector(type: string): void {
   registeredModelProviderConnectors.delete(type);
 }
 
+export function unregisterModelProviderConnectorsByPlugin(pluginKey: string): void {
+  for (const [type, reg] of registeredModelProviderConnectors.entries()) {
+    if (reg.pluginKey === pluginKey) {
+      registeredModelProviderConnectors.delete(type);
+    }
+  }
+}
+
 export function getModelProviderConnector(type: string): ModelProviderConnectorRegistration | null {
   return registeredModelProviderConnectors.get(type) ?? null;
 }

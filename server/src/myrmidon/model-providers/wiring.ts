@@ -67,6 +67,7 @@ export function createDefaultModelProviderService(db: Db): ReturnType<typeof cre
             key: input.name,
             value: input.value,
             description: input.description,
+            provider: "local_encrypted",
           } as never,
           { userId: null, agentId: null },
         )) as { id: string };

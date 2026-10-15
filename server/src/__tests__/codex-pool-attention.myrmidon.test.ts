@@ -128,7 +128,13 @@ describeEmbeddedPostgres("codex pool attention feed cards (OPE-7198)", () => {
         createSecret: async (input) => {
           const created = (await secrets.create(
             input.companyId,
-            { name: input.name, key: input.name, value: input.value, description: input.description } as never,
+            {
+              name: input.name,
+              key: input.name,
+              value: input.value,
+              description: input.description,
+              provider: "local_encrypted",
+            } as never,
             { userId: null, agentId: null },
           )) as { id: string };
           return { id: created.id };
@@ -149,7 +155,12 @@ describeEmbeddedPostgres("codex pool attention feed cards (OPE-7198)", () => {
     const secrets = secretService(db);
     await secrets.create(
       companyId,
-      { name: secretName, key: secretName, value: "test-pool-key" } as never,
+      {
+        name: secretName,
+        key: secretName,
+        value: "test-pool-key",
+        provider: "local_encrypted",
+      } as never,
       { userId: null, agentId: null },
     );
     await db.insert(modelProviders).values({

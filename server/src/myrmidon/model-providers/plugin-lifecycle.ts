@@ -16,6 +16,7 @@ import {
   DEFAULT_CHATGPT_POOL_MODELS,
   registerModelProviderConnector,
   unregisterModelProviderConnector,
+  unregisterModelProviderConnectorsByPlugin,
   type PaperclipPluginManifestV1,
   type PluginRecord,
 } from "@paperclipai/shared";
@@ -81,6 +82,7 @@ export function unregisterConnectorsForPlugin(
   pluginKey: string,
   manifestJson?: PaperclipPluginManifestV1 | null,
 ): void {
+  unregisterModelProviderConnectorsByPlugin(pluginKey);
   const decls = manifestJson?.modelProviders;
   if (Array.isArray(decls) && decls.length > 0) {
     for (const d of decls) {
@@ -132,6 +134,11 @@ export function bindModelProviderPluginLifecycle(
   }
 
   const handlePluginReady = (payload: { pluginId: string; pluginKey: string }) => {
+    if (isChatGptPoolKey(payload.pluginKey)) {
+      log.info({ pluginKey: payload.pluginKey }, "registering model provider connector for ready plugin");
+      registerConnectorsForPlugin({ pluginKey: payload.pluginKey });
+      return;
+    }
     void resolvePluginRecord(payload.pluginId, payload.pluginKey)
       .then((plugin) => {
         if (isModelProviderPlugin(plugin)) {
@@ -145,10 +152,8 @@ export function bindModelProviderPluginLifecycle(
   };
 
   const handlePluginDeactivated = (payload: { pluginId: string; pluginKey: string }) => {
-    if (isChatGptPoolKey(payload.pluginKey)) {
-      log.info({ pluginKey: payload.pluginKey }, "unregistering model provider connector for deactivated plugin");
-      unregisterConnectorsForPlugin(payload.pluginKey);
-    }
+    log.info({ pluginKey: payload.pluginKey }, "unregistering model provider connector for deactivated plugin");
+    unregisterConnectorsForPlugin(payload.pluginKey);
   };
 
   const handleStatusChanged = (payload: {
@@ -159,7 +164,7 @@ export function bindModelProviderPluginLifecycle(
   }) => {
     if (payload.newStatus === "ready") {
       handlePluginReady(payload);
-    } else if (payload.previousStatus === "ready") {
+    } else if (payload.previousStatus === "ready" || payload.newStatus === "disabled" || payload.newStatus === "uninstalled") {
       handlePluginDeactivated(payload);
     }
   };
