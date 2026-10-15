@@ -34,6 +34,10 @@ func newServer(t *testing.T) (*server, *httptest.Server) {
 	t.Helper()
 	srv := &server{cfg: testConfig()}
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/health" && r.Method == http.MethodGet {
+			srv.requireAuth(srv.health)(w, r)
+			return
+		}
 		if strings.HasPrefix(r.URL.Path, "/v1/bots") {
 			srv.requireAuth(func(w http.ResponseWriter, r *http.Request) {
 				if r.URL.Path == "/v1/bots" {
@@ -113,6 +117,16 @@ func TestListShape(t *testing.T) {
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatalf("body is not {bots: []}: %v", err)
+	}
+}
+
+func TestHealthRouteRequiresAuthAndReportsResources(t *testing.T) {
+	s, _ := newServer(t)
+	if rec := routeRequest(s, http.MethodGet, "/v1/health", "", ""); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated health: got %d", rec.Code)
+	}
+	if rec := routeRequest(s, http.MethodGet, "/v1/health", s.cfg.Token, ""); rec.Code != http.StatusOK {
+		t.Fatalf("authenticated health: got %d: %s", rec.Code, rec.Body.String())
 	}
 }
 
