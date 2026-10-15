@@ -189,7 +189,11 @@ export function costRoutes(
     if (actor.actorType === "agent" && !actor.runId) return;
     const metricUsed = warning.limit > 0 ? warning.used / warning.limit * 100 : 0;
     const description = `${warning.provider} usage reached ${metricUsed.toFixed(1)}% for ${warning.metric}; ${warning.remaining} remaining before ${warning.resetsAt}. Credential reference: ${warning.credentialRef}.`;
-    await issues.addComment(ownerIssue.id, `Provider usage warning: ${description}`, { agentId: actor.agentId, runId: actor.runId }, { authorType: actor.actorType, clientRequestId: `provider-usage-warning:${warning.key}` });
+    const commentContext = {
+      ...(actor.agentId ? { agentId: actor.agentId } : {}),
+      ...(actor.runId ? { runId: actor.runId } : {}),
+    };
+    await issues.addComment(ownerIssue.id, `Provider usage warning: ${description}`, commentContext, { authorType: actor.actorType, clientRequestId: `provider-usage-warning:${warning.key}` });
   };
   router.post("/companies/:companyId/provider-usage-reports", validate(createProviderUsageReportedEventSchema), async (req: Request, res: Response) => {
     const companyId = req.params.companyId as string;
