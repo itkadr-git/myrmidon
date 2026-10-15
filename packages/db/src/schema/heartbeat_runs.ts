@@ -94,6 +94,19 @@ export const heartbeatRuns = pgTable(
     lastUsefulActionAt: timestamp("last_useful_action_at", { withTimezone: true }),
     nextAction: text("next_action"),
     contextSnapshot: jsonb("context_snapshot").$type<Record<string, unknown>>(),
+    // Thin projections of context_snapshot for hot list/feed queries; see
+    // run-context-columns.ts. New writes fill them; readers coalesce back to
+    // the snapshot for historical rows so the jsonb never gets detoasted for
+    // a row that already carries the column.
+    contextIssueId: text("context_issue_id"),
+    contextTaskId: text("context_task_id"),
+    contextTaskKey: text("context_task_key"),
+    contextCommentId: text("context_comment_id"),
+    contextWakeCommentId: text("context_wake_comment_id"),
+    contextWakeReason: text("context_wake_reason"),
+    contextWakeSource: text("context_wake_source"),
+    contextWakeTriggerDetail: text("context_wake_trigger_detail"),
+    contextRunSummary: text("context_run_summary"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -201,5 +214,31 @@ export const heartbeatRuns = pgTable(
       sql`(${table.contextSnapshot} ->> 'issueId')`,
       table.status,
     ),
+    // myrmidon(DB-CARE): the attention feed lists the runs of one agent inside a
+    // created_at window and projects the issue and task ids out of the snapshot.
+    // The agent-keyed index above orders by created_at but keeps neither
+    // projection, so the feed fell back to a wider scan. Persisted from the
+    // production database, see migration 0308_db_care_audit_indexes.
+    attentionFeedIdx: index("heartbeat_runs_attention_feed_idx").on(
+      table.companyId,
+      table.agentId,
+      table.createdAt,
+      sql`(${table.contextSnapshot} ->> 'issueId')`,
+      sql`(${table.contextSnapshot} ->> 'taskId')`,
+    ),
+    // myrmidon(DB-CARE): wake admission resolves the runs bound to one board
+    // issue straight from context_snapshot->'paperclipIssue'->>'id', and the
+    // index is partial on the rows that carry the key. Persisted from the
+    // production database, see migration 0308_db_care_audit_indexes.
+    ctxPaperclipIssueIdIdx: index("heartbeat_runs_ctx_paperclip_issue_id_idx")
+      .on(
+        table.companyId,
+        sql`((${table.contextSnapshot} -> 'paperclipIssue') ->> 'id')`,
+      )
+      .where(sql`${table.contextSnapshot} ? 'paperclipIssue'`),
+    // myrmidon(DB-CARE): the stuck-run sweeper scans the runs by updated_at,
+    // which no other index serves. Persisted from the production database, see
+    // migration 0308_db_care_audit_indexes.
+    updatedAtIdx: index("heartbeat_runs_updated_at_idx").on(table.updatedAt),
   }),
 );

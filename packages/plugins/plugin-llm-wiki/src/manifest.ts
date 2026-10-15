@@ -10,6 +10,7 @@ export const WIKI_INGEST_SKILL_KEY = "wiki-ingest";
 export const WIKI_QUERY_SKILL_KEY = "wiki-query";
 export const WIKI_LINT_SKILL_KEY = "wiki-lint";
 export const PAPERCLIP_DISTILL_SKILL_KEY = "paperclip-distill";
+export const FOLDER_HEALTH_CHECK_JOB_KEY = "folder-health-check";
 export const INDEX_REFRESH_SKILL_KEY = "index-refresh";
 export const WIKI_PROJECT_KEY = "llm-wiki";
 export const CURSOR_WINDOW_ROUTINE_KEY = "cursor-window-processing";
@@ -113,6 +114,7 @@ const manifest: PaperclipPluginManifestV1 = {
     "agent.sessions.send",
     "agent.sessions.close",
     "routines.managed",
+    "jobs.schedule",
     "local.folders",
     "agent.tools.register",
     "metrics.write",
@@ -315,6 +317,15 @@ const manifest: PaperclipPluginManifestV1 = {
         billingCode: "plugin-llm-wiki:maintenance"
       }
     }
+  ],
+  jobs: [
+    {
+      jobKey: FOLDER_HEALTH_CHECK_JOB_KEY,
+      displayName: "Wiki folder health check",
+      description:
+        "Hourly: reports the wiki-root folder health of every company as a log line and metric point.",
+      schedule: "0 * * * *",
+    },
   ],
   tools: [
     {

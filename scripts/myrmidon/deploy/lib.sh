@@ -8,6 +8,25 @@ MYR_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 log() { printf '[myrmidon-deploy] %s\n' "$*" >&2; }
 die() { printf '[myrmidon-deploy] ERROR: %s\n' "$*" >&2; exit 1; }
 
+# myrmidon(F-05): the deploy journal opens with the exact version of these
+# scripts, so a journal line is always attributable to the scripts that
+# produced it. The value is `git describe --tags --always` of the clone that
+# holds the scripts, "unknown" when git or the clone is unavailable (the
+# version stamp never aborts a deploy). deploy.sh and deploy-from-job.sh call
+# this right after sourcing lib.sh, before any other output.
+log_script_version() {
+  local describe clone
+  # myrmidon(F-05-review): the stamp must be the journal's first line, and the
+  # deploy journal is stderr (log/die/plan, deploy-from-job.sh's
+  # `deploy.sh ... 2>job-<id>.log`) — so the stamp goes to stderr too.
+  # GIT_CONFIG_NOSYSTEM is a stamp-only, one-off env: later git calls in the
+  # same process must keep reading /etc/gitconfig (safe.directory, proxies).
+  clone="$(git -C "$MYR_SCRIPT_DIR" rev-parse --show-toplevel 2>/dev/null)" || clone=""
+  describe="$(GIT_CONFIG_NOSYSTEM=1 git -C "${clone:-$MYR_SCRIPT_DIR}" describe --tags --always 2>/dev/null)" \
+    || describe=""
+  printf 'deploy scripts at %s\n' "${describe:-unknown}" >&2
+}
+
 # Runs a command, or prints it in dry-run mode.
 run() {
   if [[ "${DRY_RUN:-0}" == "1" ]]; then
@@ -401,6 +420,11 @@ load_config() {
   # silently deploying an image nothing proved is the incident.
   : "${MYRMIDON_PREDEPLOY_CHECK:=1}"
   : "${MYRMIDON_PREDEPLOY_POSTGRES_IMAGE:=}"
+  # PREDEPLOY-PG-COMPAT: how the throwaway copy is compared with the production
+  # dump (server major + extensions). 'check' is the default; 'off' skips the
+  # comparison for a deliberate mismatch. The board database may live on a
+  # shared PostgreSQL 18 server, so the copy image must match it.
+  : "${MYRMIDON_PREDEPLOY_PG_COMPAT:=check}"
   : "${MYRMIDON_PREDEPLOY_DB_NAME:=myrmidon}"
   : "${MYRMIDON_PREDEPLOY_DB_USER:=myrmidon}"
   : "${MYRMIDON_PREDEPLOY_DB_READY_COMMAND:=}"
@@ -794,7 +818,12 @@ take_dump() {
   local file
   file="$DUMP_DIR/myrmidon-$(date -u +%Y%m%dT%H%M%SZ)-$label.dump"
   log "dump: $file"
-  DUMP_FILE="$file" bash -c "$DUMP_COMMAND" || die "dump command failed; image not changed"
+  # PREDEPLOY-PG-COMPAT: DATABASE_URL is passed to the command explicitly, so a
+  # shared-server DUMP_COMMAND (`pg_dump "$DATABASE_URL" ...`) sees it: `bash -c`
+  # inherits exported variables only, and load_config sources the config without
+  # exporting. Unset config value -> empty, which changes nothing for commands
+  # that build their own connection flags.
+  DUMP_FILE="$file" DATABASE_URL="${DATABASE_URL:-}" bash -c "$DUMP_COMMAND" || die "dump command failed; image not changed"
   [[ -f "$file" ]] || die "dump command did not create $file; image not changed"
   local size
   size="$(wc -c <"$file" | tr -d ' ')"

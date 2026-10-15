@@ -8,7 +8,7 @@ import { z } from "zod";
  * and how long the built feed snapshot may be reused per company. Both live in
  * `instance_settings.general` as two flat keys —
  * `attentionFailedRunHorizonDays` (1–365 days, default 7) and
- * `attentionFeedCacheTtlSeconds` (0–300 s, default 45; `0` turns the cache
+ * `attentionFeedCacheTtlSeconds` (0–300 s, default 60; `0` turns the cache
  * off). `server/src/services/attention.ts` reads them and applies them on the
  * next feed build; nothing is read at startup, so a PATCH needs no restart.
  *
@@ -38,8 +38,8 @@ export const ATTENTION_FAILED_RUN_HORIZON_DEFAULT_DAYS = 7;
 export const ATTENTION_FAILED_RUN_HORIZON_MIN_DAYS = 1;
 export const ATTENTION_FAILED_RUN_HORIZON_MAX_DAYS = 365;
 
-/** Default TTL of the per-company feed snapshot: 45 s. */
-export const ATTENTION_FEED_CACHE_TTL_DEFAULT_SECONDS = 45;
+/** Default TTL of the per-company feed snapshot: 60 s (the UI poll interval; 1.6.5 SWR cache). */
+export const ATTENTION_FEED_CACHE_TTL_DEFAULT_SECONDS = 60;
 export const ATTENTION_FEED_CACHE_TTL_MIN_SECONDS = 0;
 export const ATTENTION_FEED_CACHE_TTL_MAX_SECONDS = 300;
 

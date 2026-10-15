@@ -11,6 +11,7 @@ import { projectService } from "./projects.js";
 import { issueService } from "./issues.js";
 import { readBuiltInAgentMarker } from "./built-in-agent-metadata.js";
 import { logActivity, publishActivity, type ActivityPublication } from "./activity-log.js";
+import { readProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
 
 /**
  * The project the seeded first task lands in, matching the name the tenant's
@@ -34,8 +35,8 @@ const SEEDED_AGENT_ROLE = "ceo";
 const FALLBACK_SEEDED_AGENT_ADAPTER_TYPE = "claude_local";
 
 function seededAgentAdapterType() {
-  const configured = process.env.PAPERCLIP_ONBOARDING_SEED_ADAPTER_TYPE?.trim()
-    || process.env.PAPERCLIP_TEAMS_CATALOG_DEFAULT_ADAPTER_TYPE?.trim()
+  const configured = readProductEnv("ONBOARDING_SEED_ADAPTER_TYPE")?.trim()
+    || readProductEnv("TEAMS_CATALOG_DEFAULT_ADAPTER_TYPE")?.trim()
     || FALLBACK_SEEDED_AGENT_ADAPTER_TYPE;
   // Server-seeded onboarding deliberately stays on a direct adapter. Native
   // runner rollout is an explicit post-onboarding configuration choice.
