@@ -21,7 +21,11 @@ func fakeBearer() string {
 
 func testConfig() *config {
 	cfg := &config{
-		Listen: "127.0.0.1:0",
+		Listen:     "127.0.0.1:0",
+		Token:      fakeBearer(),
+		SiteCA:     "site-ca.pem",
+		ServerCert: "server.pem",
+		ServerKey:  "server-key.pem",
 		Bots: []bot{
 			{BotKey: "bot-example-one", MaxMemoryMb: 1536, MaxCpus: 1, MaxPids: 256},
 		},
@@ -177,6 +181,23 @@ func TestBadBotKeyIsRejected(t *testing.T) {
 	s, _ := newServer(t)
 	if rec := routeRequest(s, http.MethodGet, "/v1/bots/BAD_KEY/status", s.cfg.Token, ""); rec.Code != http.StatusBadRequest {
 		t.Fatalf("got %d", rec.Code)
+	}
+}
+
+func TestValidateConfigRequiresMutualTLSMaterial(t *testing.T) {
+	for _, field := range []string{"siteCA", "serverCert", "serverKey"} {
+		cfg := testConfig()
+		switch field {
+		case "siteCA":
+			cfg.SiteCA = ""
+		case "serverCert":
+			cfg.ServerCert = ""
+		case "serverKey":
+			cfg.ServerKey = ""
+		}
+		if err := validate(cfg); err == nil || !strings.Contains(err.Error(), field) {
+			t.Errorf("missing %s accepted: %v", field, err)
+		}
 	}
 }
 

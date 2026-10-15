@@ -6,13 +6,17 @@
 package main
 
 import (
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"strings"
+	"time"
 )
 
 // botStatus is the driver contract's BotContainerStatus.
@@ -54,10 +58,13 @@ type profile struct {
 // config is the JSON configuration (see docs/myrmidon/fleetd-vmexec.md).
 // Unknown keys are rejected at load time, the same discipline as dockergate.
 type config struct {
-	Listen   string `json:"listen"`
-	Token    string `json:"token"`
-	Upstream string `json:"upstream"`
-	Bots     []bot  `json:"bots"`
+	Listen     string `json:"listen"`
+	Token      string `json:"token"`
+	Upstream   string `json:"upstream"`
+	SiteCA     string `json:"siteCA"`
+	ServerCert string `json:"serverCert"`
+	ServerKey  string `json:"serverKey"`
+	Bots       []bot  `json:"bots"`
 }
 
 type bot struct {
@@ -102,16 +109,27 @@ func main() {
 		fmt.Println("configuration is valid")
 		return
 	}
+	listener, err := tlsListener(&cfg)
+	if err != nil {
+		log.Fatalf("TLS setup failed: %v", err)
+	}
 	srv := &server{cfg: &cfg}
-	http.HandleFunc("/v1/bots", srv.requireAuth(srv.list))
-	http.HandleFunc("/v1/bots/", srv.requireAuth(srv.route))
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/bots", srv.requireAuth(srv.list))
+	mux.HandleFunc("/v1/bots/", srv.requireAuth(srv.route))
 	log.Printf("fleetd listening on %s", cfg.Listen)
-	log.Fatal(http.ListenAndServe(cfg.Listen, nil))
+	log.Fatal((&http.Server{
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+	}).ServeTLS(listener, "", ""))
 }
 
 func validate(cfg *config) error {
 	if cfg.Listen == "" {
 		return fmt.Errorf("listen is required (host:port)")
+	}
+	if cfg.SiteCA == "" || cfg.ServerCert == "" || cfg.ServerKey == "" {
+		return fmt.Errorf("siteCA, serverCert and serverKey are required")
 	}
 	if len(cfg.Token) < 32 {
 		return fmt.Errorf("token must be at least 32 characters")
@@ -132,6 +150,31 @@ func validate(cfg *config) error {
 		}
 	}
 	return nil
+}
+
+func tlsListener(cfg *config) (net.Listener, error) {
+	pair, err := tls.LoadX509KeyPair(cfg.ServerCert, cfg.ServerKey)
+	if err != nil {
+		return nil, fmt.Errorf("load server certificate")
+	}
+	caPEM, err := os.ReadFile(cfg.SiteCA)
+	if err != nil {
+		return nil, fmt.Errorf("read site CA")
+	}
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(caPEM) {
+		return nil, fmt.Errorf("site CA contains no certificates")
+	}
+	base, err := net.Listen("tcp", cfg.Listen)
+	if err != nil {
+		return nil, err
+	}
+	return tls.NewListener(base, &tls.Config{
+		MinVersion:   tls.VersionTLS12,
+		Certificates: []tls.Certificate{pair},
+		ClientCAs:    pool,
+		ClientAuth:   tls.RequireAndVerifyClientCert,
+	}), nil
 }
 
 func validBotKey(key string) bool {
