@@ -22,13 +22,10 @@ RPS = float(os.environ.get("RPS", "8"))
 OUTPUT = os.environ.get("OUTPUT", "ope6419-results.jsonl")
 if DURATION < 70 or RPS <= 0:
     raise SystemExit("DURATION must be >=70 seconds and RPS must be positive")
-START = time.monotonic()
-STOP = START + DURATION
 BODY = json.dumps({"model": "mock-gpt", "messages": [{"role": "user", "content": "ping"}], "max_tokens": 1}).encode()
 HEADERS = {"Content-Type": "application/json", "Authorization": f"Bearer {os.environ.get('LITELLM_API_TOKEN', 'local-test-key')}"}
 results = []
 lock = threading.Lock()
-next_slot = START
 slot_lock = threading.Lock()
 thread_errors = []
 
@@ -44,7 +41,7 @@ def resize(target):
         payload = json.loads(response.read())
     view = payload.get("view")
     if not isinstance(view, dict):
-        raise RuntimeError("resize response omitted view")
+        raise RuntimeError("resize response omitted worker view")
     if view.get("target") != target or payload.get("applied") is not True:
         raise RuntimeError(f"resize to {target} not applied")
     if view.get("current") != target or view.get("currentSource") != "gateway":
@@ -91,6 +88,9 @@ def pump():
 
 
 events = [{"phase": "start", "target": 2, "at_s": 0, "result": resize(2)}]
+START = time.monotonic()
+STOP = START + DURATION
+next_slot = START
 threads = [threading.Thread(target=pump, daemon=True) for _ in range(16)]
 for thread in threads:
     thread.start()
