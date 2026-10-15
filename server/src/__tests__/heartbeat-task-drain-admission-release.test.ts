@@ -193,6 +193,10 @@ describeEmbeddedPostgres("heartbeat task-drain admission release", () => {
     expect(shutdown.retryRunIds).toHaveLength(1);
     await heartbeat.drainActiveRunExecutions();
 
+    // reconcileRunExecutionCompletion finalizes its transaction without an
+    // execution promise being present in the drain set for this direct call.
+    await activePromise;
+
     const interrupted = await db
       .select({ status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode })
       .from(heartbeatRuns)
@@ -211,7 +215,6 @@ describeEmbeddedPostgres("heartbeat task-drain admission release", () => {
       activeRuns: 0,
       quiescent: true,
     });
-    await activePromise;
   }, 20_000);
 
   it("releases the run, wakeup, and issue lock when a task drain trips right after the run is claimed", async () => {
