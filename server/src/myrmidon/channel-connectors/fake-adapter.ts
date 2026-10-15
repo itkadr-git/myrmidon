@@ -281,7 +281,7 @@ export function createFakeChannelAdapter(options: FakeChannelAdapterOptions = {}
       keys: [
         {
           key: "fakeGreeting",
-          envVar: "MYRMIDON_FAKE_GREETING",
+          envVar: "FAKE_CHANNEL_GREETING",
           summary: "Greeting the fake adapter would send on connect.",
           defaultValue: "hello",
         },

@@ -415,6 +415,7 @@ import {
 // task whose delivering PRs are all merged and settles it instead.
 import {
   createTaskPrSyncWakeGuard,
+  isTaskPrSyncWakeGuardCandidate,
   readTaskPrSyncWakeGuardEnabled,
   TASK_PR_SYNC_WAKE_SKIP_REASON,
 } from "../myrmidon/task-pr-sync/wake-guard.js";
@@ -29460,12 +29461,13 @@ export function heartbeatService(
           // would only race the settle sweep (TASK-PR-SYNC part C). Skip it
           // with the vendor's skipped-wakeup-request mechanism and let the
           // sweep close the task; human comment and interaction wakes carry
-          // events and are never suppressed. Guarded by the same event-free
-          // predicate the vendor's rewake throttle applies, so a wake that
-          // bypasses the throttle can never be skipped here.
+          // events and are never suppressed. Guarded by the vendor rewake
+          // throttle's event-free predicate, plus `issue_assigned` (which the
+          // throttle lets through since #1267 but which would still race the
+          // settle sweep).
           if (
             readTaskPrSyncWakeGuardEnabled() &&
-            isThrottleCandidateIssueRewake({
+            isTaskPrSyncWakeGuardCandidate({
               reason,
               wakeCommentId: wakeCommentId ?? null,
               requestedByActorType: opts.requestedByActorType ?? null,

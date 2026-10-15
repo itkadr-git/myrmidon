@@ -1,5 +1,6 @@
 ---
 divergence-section: KNOWLEDGE-2.0 — единый модуль знаний
+settings-section: Track 5 — operations
 ---
 
 ## changelog-en
@@ -68,6 +69,14 @@ divergence-section: KNOWLEDGE-2.0 — единый модуль знаний
   уроки двух агентов дают одно помеченное pending-предложение и строку журнала;
   одно упоминание не даёт ничего; повтор вне окна не считается; второй проход
   обновляет, а не дублирует.
+
+## settings-en
+
+| `MYRMIDON_LESSON_DISTILL_ENABLED` | KNOWLEDGE-2.0 L-4 | off | Enables the hindsight lesson distillation sweep of the knowledge module (hourly; lessons repeated at least twice in the window become pending knowledge suggestions). Tuned by `MYRMIDON_LESSON_DISTILL_PERIOD_MINUTES` (60), `MYRMIDON_LESSON_DISTILL_WINDOW_HOURS` (24) and `MYRMIDON_LESSON_DISTILL_REPEAT_THRESHOLD` (2) | Unset or anything other than `1` — the sweep is a no-op |
+
+## settings-ru
+
+| `MYRMIDON_LESSON_DISTILL_ENABLED` | KNOWLEDGE-2.0 L-4 | выкл | Включает обход дистилляции уроков hindsight модуля знаний (раз в час; урок, повторённый не менее двух раз в окне, становится pending-предложением знаний). Настраивается `MYRMIDON_LESSON_DISTILL_PERIOD_MINUTES` (60), `MYRMIDON_LESSON_DISTILL_WINDOW_HOURS` (24) и `MYRMIDON_LESSON_DISTILL_REPEAT_THRESHOLD` (2) | Не задана или не `1` — обход ничего не делает |
 
 ## settings-en-new
 
