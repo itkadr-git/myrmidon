@@ -15,10 +15,13 @@ async function loadRunner() {
   return import(new URL("../dist/index.js", import.meta.url).href);
 }
 
-async function createWorkingDirectory() {
-  const scratchRoot =
-    process.env.PAPERCLIP_RUN_SCRATCH_DIR ?? process.env.PAPERCLIP_SCRATCH_DIR ?? tmpdir();
-  return mkdtemp(resolve(scratchRoot, "live-console-browser-"));
+async function createWorkingDirectory(scratchRoot = undefined) {
+  const root =
+    scratchRoot ??
+    process.env.PAPERCLIP_RUN_SCRATCH_DIR ??
+    process.env.PAPERCLIP_SCRATCH_DIR ??
+    tmpdir();
+  return mkdtemp(resolve(root, "live-console-browser-"));
 }
 
 export function createLiveConsoleBrowserMiddleware(options = {}) {
@@ -45,25 +48,35 @@ export function createLiveConsoleBrowserMiddleware(options = {}) {
       const runner = await load();
       runner.assertLiveConsoleLoopbackBindHost(bindHost);
       const ownsWorkingDirectory = options.workingDirectory === undefined;
-      const workingDirectory = options.workingDirectory ?? (await createWorkingDirectory());
-      const server = new runner.LiveConsoleDemoServer({
-        host: bindHost,
-        workingDirectory,
-        manifests: runner.liveConsoleDemoManifestCatalogue(),
-        ...(Number.isInteger(maxActiveSessions) ? { maxActiveSessions } : {}),
-        driverFactory: (taskEnvelope, manifestId) =>
-          driverMode === "codex"
-            ? new runner.CodexAppServerDriver({
-                taskEnvelope,
-                conversationMode: manifestId === "chat" ? "direct" : "task",
+      let workingDirectory;
+      try {
+        workingDirectory = ownsWorkingDirectory
+          ? await createWorkingDirectory(options.scratchRoot)
+          : options.workingDirectory;
+        const server = new runner.LiveConsoleDemoServer({
+          host: bindHost,
+          workingDirectory,
+          manifests: runner.liveConsoleDemoManifestCatalogue(),
+          ...(Number.isInteger(maxActiveSessions) ? { maxActiveSessions } : {}),
+          driverFactory: (taskEnvelope, manifestId) =>
+            driverMode === "codex"
+              ? new runner.CodexAppServerDriver({
+                  taskEnvelope,
+                  conversationMode: manifestId === "chat" ? "direct" : "task",
                 onDiagnostic: (message) => process.stderr.write(`[liveConsole] ${message}\n`),
-              })
-            : new runner.LiveConsoleScriptedDriver({
-                manifestId: manifestId ?? "completion",
-                chunkDelayMs: Number.isInteger(chunkDelayMs) ? chunkDelayMs : 45,
-              }),
-      });
-      return { handle: server.middleware(), server, workingDirectory, ownsWorkingDirectory };
+                })
+              : new runner.LiveConsoleScriptedDriver({
+                  manifestId: manifestId ?? "completion",
+                  chunkDelayMs: Number.isInteger(chunkDelayMs) ? chunkDelayMs : 45,
+                }),
+        });
+        return { handle: server.middleware(), server, workingDirectory, ownsWorkingDirectory };
+      } catch (error) {
+        if (ownsWorkingDirectory && workingDirectory !== undefined) {
+          await rm(workingDirectory, { recursive: true, force: true });
+        }
+        throw error;
+      }
     })();
     return bootstrap;
   }
