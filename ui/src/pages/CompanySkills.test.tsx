@@ -981,46 +981,49 @@ describe("SkillDetailPage settings", () => {
     await inputValue(categoryInput, "memory");
     await click(buttonsNamed(node.querySelector('[role="dialog"]') as HTMLElement, "Save settings")[0] as HTMLButtonElement);
 
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     await act(async () => {
       root?.render(
-        <SkillDetailPage
-          detail={detail}
-          loading={false}
-          activeTab="overview"
-          onTabChange={vi.fn()}
-          selectedPath="SKILL.md"
-          file={null}
-          fileLoading={false}
-          viewMode="preview"
-          editMode={false}
-          draft=""
-          setViewMode={vi.fn()}
-          setEditMode={vi.fn()}
-          setDraft={vi.fn()}
-          onSave={vi.fn()}
-          savePending={false}
-          versions={[v1]}
-          versionsLoading={false}
-          attachAgents={[]}
-          onSubmitAttach={vi.fn()}
-          attachPending={false}
-          expandedDirs={new Set()}
-          onToggleDir={vi.fn()}
-          onSelectPath={vi.fn()}
-          updateStatus={null}
-          updateStatusLoading={false}
-          onCheckUpdates={vi.fn()}
-          checkUpdatesPending={false}
-          onInstallUpdate={vi.fn()}
-          installUpdatePending={false}
-          onToggleStar={vi.fn()}
-          starPending={false}
-          onFork={vi.fn()}
-          onUpdateSettings={onUpdateSettings}
-          updateSettingsPending={false}
-          onDelete={vi.fn()}
-          deletePending={false}
-        />,
+        <QueryClientProvider client={queryClient}>
+          <SkillDetailPage
+            detail={detail}
+            loading={false}
+            activeTab="overview"
+            onTabChange={vi.fn()}
+            selectedPath="SKILL.md"
+            file={null}
+            fileLoading={false}
+            viewMode="preview"
+            editMode={false}
+            draft=""
+            setViewMode={vi.fn()}
+            setEditMode={vi.fn()}
+            setDraft={vi.fn()}
+            onSave={vi.fn()}
+            savePending={false}
+            versions={[v1]}
+            versionsLoading={false}
+            attachAgents={[]}
+            onSubmitAttach={vi.fn()}
+            attachPending={false}
+            expandedDirs={new Set()}
+            onToggleDir={vi.fn()}
+            onSelectPath={vi.fn()}
+            updateStatus={null}
+            updateStatusLoading={false}
+            onCheckUpdates={vi.fn()}
+            checkUpdatesPending={false}
+            onInstallUpdate={vi.fn()}
+            installUpdatePending={false}
+            onToggleStar={vi.fn()}
+            starPending={false}
+            onFork={vi.fn()}
+            onUpdateSettings={onUpdateSettings}
+            updateSettingsPending={false}
+            onDelete={vi.fn()}
+            deletePending={false}
+          />
+        </QueryClientProvider>,
       );
     });
 
