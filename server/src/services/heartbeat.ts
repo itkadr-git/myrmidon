@@ -29921,7 +29921,7 @@ export function heartbeatService(
             const pickupAllowed =
               releaseLiveness.settings.idlePickupEnabled &&
               resolveAgentTeamLiveness(
-                readAgentCard(releasedAgent?.adapterConfig),
+                readAgentCard(outcome.dependencyBlockedAgent.adapterConfig),
                 releaseLiveness.settings,
               ).idlePickupEnabled;
             if (pickupAllowed) {
