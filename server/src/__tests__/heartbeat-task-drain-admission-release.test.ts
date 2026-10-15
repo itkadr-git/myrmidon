@@ -167,10 +167,11 @@ describeEmbeddedPostgres("heartbeat task-drain admission release", () => {
 
     await heartbeat.resumeQueuedRuns();
     await waitForRunStatus(runId, "running");
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    const admissionState = getTaskDrainStatus();
+    expect(admissionState.activeRuns).toBe(1);
+    expect(admissionState.quiescent).toBe(false);
 
-    const state = getTaskDrainStatus();
-    expect(state.activeRuns).toBe(1);
-    expect(state.quiescent).toBe(false);
     startTaskDrain({});
     const shutdown = await heartbeat.drainRunningRunsForShutdown("SIGTERM", new Date(), [runId]);
     await heartbeat.drainActiveRunExecutions();
