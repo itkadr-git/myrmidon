@@ -378,6 +378,19 @@
     "changeLog": {
       "title": "Change log",
       "empty": "No provider changes recorded yet."
+    },
+    "channels": {
+      "title": "Pool Accounts & Limit Windows",
+      "signalsTitle": "Role Attention Signals",
+      "refreshing": "Updating...",
+      "loading": "Loading accounts...",
+      "error": "Failed to load pool accounts.",
+      "empty": "No accounts found in pool.",
+      "account": "Account",
+      "state": "State",
+      "window5h": "5h Limit Window",
+      "window7d": "7d Limit Window",
+      "lastOk": "Last OK"
     }
   },
   "castes": {

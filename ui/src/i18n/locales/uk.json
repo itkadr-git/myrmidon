@@ -378,6 +378,19 @@
     "changeLog": {
       "title": "Change log",
       "empty": "No provider changes recorded yet."
+    },
+    "channels": {
+      "title": "Облікові записи пулу та ліміти",
+      "signalsTitle": "Сигнали уваги для ролі",
+      "refreshing": "Оновлення...",
+      "loading": "Завантаження облікових записів...",
+      "error": "Не вдалося завантажити облікові записи пулу.",
+      "empty": "Облікових записів не знайдено.",
+      "account": "Обліковий запис",
+      "state": "Стан",
+      "window5h": "Вікно 5г",
+      "window7d": "Вікно 7д",
+      "lastOk": "Останній OK"
     }
   },
   "castes": {
