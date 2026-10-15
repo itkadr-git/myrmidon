@@ -90,8 +90,8 @@ case "$1" in
         if [ -f "$SANDBOX/copy-available.txt" ]; then cat "$SANDBOX/copy-available.txt"; fi
         exit 0 ;;
       esac
-      if [ -f "$SANDBOX/copy-available.txt" ]; then cat "$SANDBOX/copy-available.txt"; fi
-      exit 0 ;;
+      echo 'psql: error: unexpected pg_available_extensions query' >&2
+      exit 2 ;;
     esac
     case "$*" in *pg_extension*)
       if [ -f "$SANDBOX/copy-installed.txt" ]; then cat "$SANDBOX/copy-installed.txt"; fi
