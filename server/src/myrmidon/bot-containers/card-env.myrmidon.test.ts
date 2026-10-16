@@ -220,6 +220,22 @@ describe("myrmidon(W2a) card env — resolved under a binding context", () => {
     }
   });
 
+  it("invalidates cached profiles when the live allowlist changes", async () => {
+    const previous = liveBehaviorSettingsView();
+    applyLiveBehaviorSettings({ settings: { bot_container_github_env_allowlist: [] }, sources: {} as never });
+    try {
+      const { ports, state } = fakePorts();
+      const resolve = createCardEnvResolver(ports);
+      const agent = { ...DEV_AGENT, adapterConfig: { env: { GITHUB_TOKEN: plain("managed-value") } } };
+      expect((await resolve(agent)).env.GITHUB_TOKEN).toBeUndefined();
+      applyLiveBehaviorSettings({ settings: { bot_container_github_env_allowlist: ["dev-vmexec"] }, sources: {} as never });
+      expect((await resolve(agent)).env.GITHUB_TOKEN).toEqual({ value: "managed-value", secret: false });
+      expect(state.resolveCalls).toHaveLength(1);
+    } finally {
+      applyLiveBehaviorSettings(previous);
+    }
+  });
+
   it("asks for the values as the agent's own consumer, with a system actor, so the binding is checked", async () => {
     const { ports, state } = fakePorts({ s1: { stamp: "1:active", value: "fake-value-0001" } });
     await createCardEnvResolver(ports)(card({ TOKEN: ref("s1") }));
