@@ -126,7 +126,7 @@ request_json() {
       curl -sS -X "$method" -w '%{http_code}' -o "$response_file" \
         "$url" \
         -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
-        -H "X-Myrmidon-Run-Id: $PAPERCLIP_RUN_ID" \
+        -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID" \
         -H 'Content-Type: application/json' \
         --data-binary "$body"
     )"
@@ -135,7 +135,7 @@ request_json() {
       curl -sS -X "$method" -w '%{http_code}' -o "$response_file" \
         "$url" \
         -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
-        -H "X-Myrmidon-Run-Id: $PAPERCLIP_RUN_ID"
+        -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID"
     )"
   fi
 
@@ -168,7 +168,7 @@ upload_file() {
     curl -sS -X POST -w '%{http_code}' -o "$response_file" \
       "$url" \
       -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
-      -H "X-Myrmidon-Run-Id: $PAPERCLIP_RUN_ID" \
+      -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID" \
       -F "file=@\"${escaped_path}\";type=${content_type}"
   )" || curl_status=$?
 
