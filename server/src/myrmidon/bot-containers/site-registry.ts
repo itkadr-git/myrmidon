@@ -211,16 +211,26 @@ export async function deleteFleetAffinity(db: Db, id: string): Promise<boolean> 
 export async function bootstrapFleetSitesFromEnv(
   db: Db,
   env: NodeJS.ProcessEnv = process.env,
-  log: { warn: (f: object, m: string) => void; info: (f: object, m: string) => void } = logger,
+  log?: {
+    warn?(f: object, m: string): void;
+    info?(f: object, m: string): void;
+    error?(f: object, m: string): void;
+  },
 ): Promise<{ inserted: number; updated: number }> {
   const raw = env.MYRMIDON_FLEET_HOSTS;
   if (!raw || !raw.trim()) return { inserted: 0, updated: 0 };
+
+  const logWarn = (f: object, m: string) => {
+    if (log && typeof log.warn === "function") log.warn(f, m);
+    else if (log && typeof log.info === "function") log.info(f, m);
+    else logger.warn(f, m);
+  };
 
   let hostConfigs: Map<string, FleetHostConfig>;
   try {
     hostConfigs = parseFleetHosts(raw);
   } catch (err) {
-    log.warn({ err }, "failed to parse MYRMIDON_FLEET_HOSTS for site bootstrap; skipping");
+    logWarn({ err }, "failed to parse MYRMIDON_FLEET_HOSTS for site bootstrap; skipping");
     return { inserted: 0, updated: 0 };
   }
 
@@ -230,7 +240,7 @@ export async function bootstrapFleetSitesFromEnv(
   try {
     companyRows = await db.select({ id: companies.id }).from(companies);
   } catch (err) {
-    log.warn({ err }, "failed to read companies for fleet site bootstrap; skipping");
+    logWarn({ err }, "failed to read companies for fleet site bootstrap; skipping");
     return { inserted: 0, updated: 0 };
   }
 
@@ -268,7 +278,7 @@ export async function bootstrapFleetSitesFromEnv(
           inserted++;
         }
       } catch (err) {
-        log.warn({ err, companyId: company.id, host: host.name }, "failed to bootstrap fleet site");
+        logWarn({ err, companyId: company.id, host: host.name }, "failed to bootstrap fleet site");
       }
     }
   }
@@ -281,9 +291,9 @@ export interface FleetClientManagerDeps {
   readCompanySecret?: (companyId: string, name: string) => Promise<string | null>;
   createDriver?: (config: FleetdDriverConfig) => BotContainerDriver;
   log?: {
-    info(fields: Record<string, unknown>, message: string): void;
-    warn(fields: Record<string, unknown>, message: string): void;
-    error(fields: Record<string, unknown>, message: string): void;
+    info?(fields: Record<string, unknown>, message: string): void;
+    warn?(fields: Record<string, unknown>, message: string): void;
+    error?(fields: Record<string, unknown>, message: string): void;
   };
 }
 
@@ -296,6 +306,11 @@ export interface FleetClientManager {
 
 export function createFleetClientManager(deps: FleetClientManagerDeps): FleetClientManager {
   const log = deps.log ?? logger;
+  const logWarn = (fields: Record<string, unknown>, message: string) => {
+    if (deps.log && typeof deps.log.warn === "function") deps.log.warn(fields, message);
+    else if (deps.log && typeof deps.log.info === "function") deps.log.info(fields, message);
+    else logger.warn(fields, message);
+  };
   const clients = new Map<string, BotContainerDriver>();
   const clientFingerprints = new Map<string, string>();
   const agentsToClose: https.Agent[] = [];
@@ -309,7 +324,7 @@ export function createFleetClientManager(deps: FleetClientManagerDeps): FleetCli
         if (!secret) return null;
         return secrets.resolveSecretValue(companyId, secret.id, "latest");
       } catch (err) {
-        log.warn({ err, companyId, name }, "failed to resolve company secret for fleet site");
+        logWarn({ err, companyId, name }, "failed to resolve company secret for fleet site");
         return null;
       }
     });
@@ -373,7 +388,11 @@ export function createFleetClientManager(deps: FleetClientManagerDeps): FleetCli
         }
       }
     } catch (err) {
-      log.error({ err }, "failed to refresh fleet sites from registry; keeping existing clients");
+      if (deps.log && typeof deps.log.error === "function") {
+        deps.log.error({ err }, "failed to refresh fleet sites from registry; keeping existing clients");
+      } else {
+        logger.error({ err }, "failed to refresh fleet sites from registry; keeping existing clients");
+      }
     }
     return clients;
   }

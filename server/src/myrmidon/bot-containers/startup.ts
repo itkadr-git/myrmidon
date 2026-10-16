@@ -49,6 +49,7 @@ import {
   createFleetClientManager,
   bootstrapFleetSitesFromEnv,
   type FleetClientManager,
+  type FleetClientManagerDeps,
 } from "./site-registry.js";
 import { fleetRoutingDriver } from "./fleetd-routing.js";
 
@@ -68,9 +69,10 @@ export function readBotReconcileIntervalMs(env: NodeJS.ProcessEnv = process.env)
   return value * 1000;
 }
 
-/** The two server-log calls this module makes (the pino logger satisfies it). */
+/** The server-log calls this module makes (the pino logger satisfies it). */
 export interface BotContainersLog {
   info(fields: object, message: string): void;
+  warn?(fields: object, message: string): void;
   error(fields: object, message: string): void;
 }
 
@@ -120,12 +122,8 @@ export interface BotContainersStartupPorts {
    * real one. Its stop is folded into the stop of this run.
    */
   startCloneReportCollection?: typeof startCloneReportCollection;
-  createFleetClientManager?: (opts: { db: Db; log?: BotContainersLog }) => FleetClientManager;
-  bootstrapFleetSitesFromEnv?: (
-    db: Db,
-    env: NodeJS.ProcessEnv,
-    log?: BotContainersLog,
-  ) => Promise<{ inserted: number; updated: number }>;
+  createFleetClientManager?: (deps: FleetClientManagerDeps) => FleetClientManager;
+  bootstrapFleetSitesFromEnv?: typeof bootstrapFleetSitesFromEnv;
   log: BotContainersLog;
 }
 
