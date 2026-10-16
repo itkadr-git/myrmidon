@@ -4762,6 +4762,7 @@ export function recoveryService(
 
   async function reconcileStrandedAssignedIssues(opts?: {
     issueCreatedAtGte?: Date | null;
+    issueIds?: string[];
   }) {
     const candidates = await db
       .select()
@@ -4777,6 +4778,7 @@ export function recoveryService(
           opts?.issueCreatedAtGte
             ? gte(issues.createdAt, opts.issueCreatedAtGte)
             : undefined,
+          opts?.issueIds ? inArray(issues.id, opts.issueIds) : undefined,
           isNull(issues.hiddenAt),
           not(unadmittedChatWakeupCondition(issues.id, issues.companyId)),
         ),
