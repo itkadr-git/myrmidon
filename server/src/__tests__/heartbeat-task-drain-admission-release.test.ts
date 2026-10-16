@@ -232,6 +232,7 @@ describeEmbeddedPostgres("heartbeat task-drain admission release", () => {
       expect(retryRunId).toEqual(expect.any(String));
       expect(gateAdapter).toBeDefined();
       await heartbeat.drainActiveRunExecutions();
+      gateAdapter?.();
       await activePromise;
 
       const interrupted = await db
