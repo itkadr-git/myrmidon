@@ -276,7 +276,7 @@ describeEmbeddedPostgres("users-admin-a: admin-managed users", () => {
       userId: created.id,
       actorUserId: "00000000-0000-0000-0000-000000000001",
     });
-    expect(reset.passwordSetLink).toMatch(/^\/api\/myrmidon\/users-admin-a\/password-set\?token=/);
+    expect(reset.passwordSetLink).toMatch(/^\/myrmidon\/password-set\?token=/);
 
     const token = reset.passwordSetLink.split("token=")[1] ?? "";
 
@@ -321,7 +321,7 @@ describeEmbeddedPostgres("users-admin-a: admin-managed users", () => {
       role: "member",
       actorUserId: "00000000-0000-0000-0000-000000000001",
     });
-    expect(created.passwordSetLink).toMatch(/^\/api\/myrmidon\/users-admin-a\/password-set\?token=/);
+    expect(created.passwordSetLink).toMatch(/^\/myrmidon\/password-set\?token=/);
 
     const token = created.passwordSetLink!.split("token=")[1] ?? "";
     await usersAdminConsumePasswordSetToken(db, { token, newPassword: USER_PASSWORD_2 });
