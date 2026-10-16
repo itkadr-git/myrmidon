@@ -2561,6 +2561,8 @@ export function recoveryService(
     recoveryCause?: StrandedRecoveryCause;
     successfulRunHandoffEvidence?: SuccessfulRunHandoffRecoveryEvidence | null;
   }) {
+    const latestRun = await getLatestIssueRun(input.issue.companyId, input.issue.id);
+    if (latestRun?.status !== "failed" && latestRun?.status !== "timed_out" && latestRun?.status !== "cancelled" && latestRun?.status !== "interrupted") return false;
     const assignee = input.issue.assigneeAgentId
       ? await getAgent(input.issue.assigneeAgentId)
       : null;
