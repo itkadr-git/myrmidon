@@ -12,13 +12,19 @@
 // response types carry only key-free fields.
 import { api } from "@/api/client";
 
-export const MODEL_PROVIDER_TYPES = [
+export const BUILTIN_MODEL_PROVIDER_TYPES = [
   "dashscope",
   "openai",
   "google",
   "openai-compatible",
 ] as const;
 
+export const MODEL_PROVIDER_TYPES = [
+  ...BUILTIN_MODEL_PROVIDER_TYPES,
+  "chatgpt-pool",
+] as const;
+
+export type BuiltinModelProviderType = (typeof BUILTIN_MODEL_PROVIDER_TYPES)[number];
 export type ModelProviderType = (typeof MODEL_PROVIDER_TYPES)[number];
 
 export interface ModelProviderView {
@@ -53,8 +59,77 @@ export interface ModelProviderChangeLogEntry {
   summary: string;
 }
 
+export type PoolAccountState =
+  | "active"
+  | "rate_limited"
+  | "token_expired"
+  | "banned"
+  | "login_pending"
+  | "login_expired"
+  | "not_logged_in";
+
+export interface PoolAccountLimitWindow {
+  usedPct: number | null;
+  windowMin: number | null;
+  resetsAt: number | null;
+}
+
+export interface PoolAccountUsage {
+  primary: PoolAccountLimitWindow | null;
+  secondary: PoolAccountLimitWindow | null;
+  plan?: string | null;
+  limitReached?: boolean;
+  requests24h?: number;
+  requests7d?: number;
+  tokens24h?: { input: number; output: number };
+  tokens7d?: { input: number; output: number };
+  lastLimitAt?: number | null;
+  recentErrors?: Array<{ at: number; status: number; message: string }>;
+}
+
+export interface PoolAccountChannelView {
+  n: number;
+  label: string;
+  email?: string | null;
+  state: PoolAccountState | string;
+  stateRu?: string;
+  plan?: string | null;
+  limitedUntil: number | null;
+  lastOk: number | null;
+  windows: {
+    primary: PoolAccountLimitWindow | null;
+    secondary: PoolAccountLimitWindow | null;
+  };
+  usage?: PoolAccountUsage;
+  isBanned: boolean;
+  isExhausted: boolean;
+  error?: string | null;
+}
+
+export interface PoolAccountRoleSignal {
+  dedupKey: string;
+  providerId?: string;
+  accountNumber: number;
+  label: string;
+  kind: "banned" | "exhausted";
+  severity: "critical" | "high" | "medium";
+  title: string;
+  whyNow: string;
+  summaryExcerpt: string;
+  resetsAt: number | null;
+  activityAt: string;
+}
+
+export interface ModelProviderChannelsView {
+  providerId: string;
+  providerType: ModelProviderType;
+  channels: PoolAccountChannelView[];
+  signals: PoolAccountRoleSignal[];
+}
+
 export interface ModelProvidersView {
   providers: ModelProviderView[];
+  availableTypes?: ModelProviderType[] | string[];
   changeLog: ModelProviderChangeLogEntry[];
 }
 
@@ -84,6 +159,9 @@ export const modelProvidersQueryKey = (companyId: string) =>
 
 export const modelProviderModelsQueryKey = (companyId: string, providerId: string) =>
   ["myrmidon", "model-providers", companyId, "models", providerId] as const;
+
+export const modelProviderChannelsQueryKey = (companyId: string, providerId: string) =>
+  ["myrmidon", "model-providers", companyId, "channels", providerId] as const;
 
 export const modelProvidersApi = {
   /** GET /providers → { providers, changeLog } (no key values ever). */
@@ -119,6 +197,12 @@ export const modelProvidersApi = {
     api.post<{ models: ModelProviderModelView[] }>(
       `${base(companyId)}/providers/${encodeURIComponent(providerId)}/models`,
       input,
+    ),
+
+  /** GET /providers/:pid/channels — accounts and signals for a chatgpt-pool provider. */
+  channels: (companyId: string, providerId: string) =>
+    api.get<ModelProviderChannelsView>(
+      `${base(companyId)}/providers/${encodeURIComponent(providerId)}/channels`,
     ),
 };
 

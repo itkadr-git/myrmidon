@@ -1,0 +1,541 @@
+diff --git a/agent/context_economy.py b/agent/context_economy.py
+new file mode 100644
+index 0000000..09aea12
+--- /dev/null
++++ b/agent/context_economy.py
+@@ -0,0 +1,403 @@
++"""myrmidon(G1): request-only trimming of the replayed history.
++
++Every model call re-sends the whole session, so what a long run piled up early keeps being paid for
++on each later call. Two kinds of rows dominate that bill and are rarely needed in full again:
++
++A. wake messages. The board opens every run with a task package (identity, execution contract,
++   task markdown, "Structured wake payload JSON"). A session that lives for many runs carries one such
++   package per run, though only the newest describes the task as it is now. Every wake message except
++   the last one is replaced, in the request copy only, by a short deterministic note naming its run,
++   issue and wake reason.
++B. stale tool results. A heavy tool result (command output, file or skill text) that is older than
++   a protected tail of the transcript is replaced, in the request copy only, by a note carrying the
++   tool, its argument summary, the size, a short head and tail and a reference. The tool
++   ``read_stale_tool_result`` (tools/stale_result_tool.py) returns the full text for that reference.
++
++Both rewrite ONLY the per-call API copy built by ``build_api_messages``: the persisted transcript,
++``state.db`` and compaction input stay byte-for-byte what they were, so a switch back to the old
++behaviour needs nothing but the environment variable.
++
++Prompt-cache note: a replaced row changes the request bytes from that row on. Wake notes are fixed
++once written (they depend on the wake text only). Tool results are replaced in steps: the boundary
++below which results count as stale only moves once per ``HERMES_STALE_TOOL_STEP`` messages, so the
++prefix stays stable between two moves instead of changing on every call.
++
++Switches (environment of the gateway process, read on every call, so no rebuild is needed):
++
++* ``HERMES_KEEP_STALE_WAKES=1``         - keep every wake message in full (turns A off).
++* ``HERMES_KEEP_STALE_TOOL_RESULTS=1``  - keep every tool result in full (turns B off; the
++                                          ``read_stale_tool_result`` tool disappears from the schema).
++* ``HERMES_STALE_TOOL_MIN_CHARS``       - smallest result that is replaced (default 8000, about 2000 tokens).
++* ``HERMES_STALE_TOOL_KEEP_MESSAGES``   - messages at the end of the transcript that are never touched (default 8).
++* ``HERMES_STALE_TOOL_STEP``            - boundary granularity in messages (default 8; 1 = move on every call).
++* ``HERMES_STALE_TOOL_EXEMPT``          - comma separated tool names whose results are never replaced.
++"""
++
++from __future__ import annotations
++
++import hashlib
++import json
++import logging
++import os
++import re
++import threading
++from collections import OrderedDict
++from typing import Any, Dict, List, Optional, Tuple
++
++logger = logging.getLogger(__name__)
++
++ENV_KEEP_WAKES = "HERMES_KEEP_STALE_WAKES"
++ENV_KEEP_TOOL_RESULTS = "HERMES_KEEP_STALE_TOOL_RESULTS"
++ENV_TOOL_MIN_CHARS = "HERMES_STALE_TOOL_MIN_CHARS"
++ENV_TOOL_KEEP_MESSAGES = "HERMES_STALE_TOOL_KEEP_MESSAGES"
++ENV_TOOL_STEP = "HERMES_STALE_TOOL_STEP"
++ENV_TOOL_EXEMPT = "HERMES_STALE_TOOL_EXEMPT"
++
++DEFAULT_TOOL_MIN_CHARS = 8000
++DEFAULT_TOOL_KEEP_MESSAGES = 8
++DEFAULT_TOOL_STEP = 8
++READ_TOOL_NAME = "read_stale_tool_result"
++
++# Characters of the original shown at each end of a tool-result note.
++_EXCERPT_CHARS = 240
++_ARGS_PREVIEW_CHARS = 160
++# Never replace the result of the reader itself with a note that points back at the reader's own text.
++_NEVER_STUB_TOOLS = frozenset({READ_TOOL_NAME})
++_UNTRUSTED_PREFIX = "<untrusted_tool_result"
++
++_TRUTHY = frozenset({"1", "true", "yes", "on"})
++
++
++def _env_on(name: str) -> bool:
++    return (os.environ.get(name) or "").strip().lower() in _TRUTHY
++
++
++def stale_wakes_enabled() -> bool:
++    return not _env_on(ENV_KEEP_WAKES)
++
++
++def stale_tool_results_enabled() -> bool:
++    return not _env_on(ENV_KEEP_TOOL_RESULTS)
++
++
++def _env_int(name: str, default: int, minimum: int) -> int:
++    raw = (os.environ.get(name) or "").strip()
++    if not raw:
++        return default
++    try:
++        return max(minimum, int(raw))
++    except ValueError:
++        return default
++
++
++def _exempt_tools() -> frozenset:
++    raw = os.environ.get(ENV_TOOL_EXEMPT) or ""
++    return frozenset(part.strip() for part in raw.split(",") if part.strip())
++
++
++# ---------------------------------------------------------------------------
++# Full-text store behind the stub references
++# ---------------------------------------------------------------------------
++
++# The strings kept here are the very objects the live transcript holds, so a session that is still
++# running adds nothing; the character budget only bounds what stays reachable for sessions whose agent
++# object is gone. Sessions are rebuilt on every request, so an evicted live session refills at its next call.
++_STORE_MAX_CHARS = 48_000_000
++_STORE_LOCK = threading.Lock()
++_STORE: "OrderedDict[str, Dict[str, str]]" = OrderedDict()
++
++
++def _session_key(session_id: Any) -> str:
++    return str(session_id) if session_id else "default"
++
++
++def _store_replace(session_id: Any, entries: Dict[str, str]) -> None:
++    key = _session_key(session_id)
++    with _STORE_LOCK:
++        if entries:
++            _STORE[key] = entries
++            _STORE.move_to_end(key)
++        else:
++            _STORE.pop(key, None)
++        total = sum(len(v) for bucket in _STORE.values() for v in bucket.values())
++        while total > _STORE_MAX_CHARS and len(_STORE) > 1:
++            _, dropped = _STORE.popitem(last=False)
++            total -= sum(len(v) for v in dropped.values())
++
++
++def lookup_stale_result(session_id: Any, ref: str) -> Optional[str]:
++    """Full text behind ``ref`` for ``session_id`` (None when it is not held)."""
++    key = _session_key(session_id)
++    with _STORE_LOCK:
++        bucket = _STORE.get(key)
++        if bucket is not None:
++            _STORE.move_to_end(key)
++            return bucket.get(ref)
++    return None
++
++
++def _clear_store_for_tests() -> None:
++    with _STORE_LOCK:
++        _STORE.clear()
++
++
++def result_ref(content: str) -> str:
++    return hashlib.sha256(content.encode("utf-8", "surrogatepass")).hexdigest()[:12]
++
++
++# ---------------------------------------------------------------------------
++# A: wake messages
++# ---------------------------------------------------------------------------
++
++_WAKE_IDENTITY = "Paperclip runtime identity:"
++_WAKE_MARKERS = ("Structured wake payload JSON:", "Execution contract:")
++_WAKE_JSON_RE = re.compile(r"Structured wake payload JSON:\s*```json\s*(\{.*?\})\s*```", re.DOTALL)
++_RUN_ID_RE = re.compile(r"^- Run ID:\s*(\S+)", re.MULTILINE)
++
++
++def _message_text(msg: Dict[str, Any]) -> Optional[str]:
++    content = msg.get("content")
++    return content if isinstance(content, str) else None
++
++
++def is_wake_message(msg: Any) -> bool:
++    """A user row that is a board wake package (identity head plus a contract or payload section)."""
++    if not isinstance(msg, dict) or msg.get("role") != "user":
++        return False
++    text = _message_text(msg)
++    if not text or _WAKE_IDENTITY not in text:
++        return False
++    return any(marker in text for marker in _WAKE_MARKERS)
++
++
++def _clip(value: Any, limit: int) -> str:
++    text = " ".join(str(value).split())
++    return text if len(text) <= limit else text[: limit - 3] + "..."
++
++
++def _clip_tail(value: Any, limit: int) -> str:
++    text = " ".join(str(value).split())
++    return text if len(text) <= limit else "..." + text[-(limit - 3):]
++
++
++def _wake_facts(text: str) -> Dict[str, str]:
++    facts: Dict[str, str] = {}
++    run = _RUN_ID_RE.search(text)
++    if run:
++        facts["run"] = run.group(1)
++    match = _WAKE_JSON_RE.search(text)
++    if match:
++        try:
++            payload = json.loads(match.group(1))
++        except ValueError:
++            payload = None
++        if isinstance(payload, dict):
++            issue = payload.get("issue")
++            if isinstance(issue, dict):
++                if issue.get("identifier"):
++                    facts["issue"] = _clip(issue["identifier"], 40)
++                if issue.get("id"):
++                    facts["issue_id"] = _clip(issue["id"], 64)
++                if issue.get("title"):
++                    facts["title"] = _clip(issue["title"], 120)
++            reason = payload.get("reason")
++            if isinstance(reason, str) and reason:
++                facts["reason"] = _clip(reason, 80)
++    return facts
++
++
++def build_wake_stub(text: str, ordinal: int) -> str:
++    """Deterministic note for a superseded wake message (same input, same bytes, on every call)."""
++    facts = _wake_facts(text)
++    parts = [f"[Earlier wake message #{ordinal} of this session, superseded and left out to save context."]
++    detail = []
++    if "run" in facts:
++        detail.append(f"run {facts['run']}")
++    if "issue" in facts:
++        title = f' "{facts["title"]}"' if "title" in facts else ""
++        detail.append(f"issue {facts['issue']}{title}")
++    elif "issue_id" in facts:
++        detail.append(f"issue id {facts['issue_id']}")
++    if "reason" in facts:
++        detail.append(f"wake reason: {facts['reason']}")
++    if detail:
++        parts.append("It was " + "; ".join(detail) + ".")
++    parts.append(
++        "The newest wake message below carries the task context as it stands now; read the issue and "
++        "its comments through the Paperclip API when you need the older history.]"
++    )
++    return " ".join(parts)
++
++
++def _stub_stale_wakes(api_messages: List[Dict[str, Any]]) -> Tuple[int, int]:
++    wake_idx = [i for i, m in enumerate(api_messages) if is_wake_message(m)]
++    if len(wake_idx) < 2:
++        return 0, 0
++    replaced = 0
++    saved = 0
++    for ordinal, idx in enumerate(wake_idx[:-1], start=1):
++        msg = api_messages[idx]
++        text = msg["content"]
++        stub = build_wake_stub(text, ordinal)
++        if len(stub) >= len(text):
++            continue
++        msg["content"] = stub
++        replaced += 1
++        saved += len(text) - len(stub)
++    return replaced, saved
++
++
++# ---------------------------------------------------------------------------
++# B: stale tool results
++# ---------------------------------------------------------------------------
++
++_ARG_KEYS = ("command", "path", "file_path", "name", "query", "url", "pattern", "code", "action")
++
++
++def _call_index(api_messages: List[Dict[str, Any]]) -> Dict[str, Tuple[str, str]]:
++    """tool_call_id -> (tool name, argument summary) from the assistant rows."""
++    index: Dict[str, Tuple[str, str]] = {}
++    for msg in api_messages:
++        if not isinstance(msg, dict) or msg.get("role") != "assistant":
++            continue
++        for call in msg.get("tool_calls") or []:
++            if not isinstance(call, dict):
++                continue
++            call_id = call.get("id") or call.get("call_id")
++            fn = call.get("function") if isinstance(call.get("function"), dict) else {}
++            name = fn.get("name") or call.get("name") or ""
++            if call_id:
++                index[str(call_id)] = (str(name), _args_summary(fn.get("arguments")))
++    return index
++
++
++def _args_summary(raw: Any) -> str:
++    args = raw
++    if isinstance(raw, str):
++        try:
++            args = json.loads(raw)
++        except ValueError:
++            return _clip(raw, _ARGS_PREVIEW_CHARS)
++    if not isinstance(args, dict):
++        return ""
++    for key in _ARG_KEYS:
++        value = args.get(key)
++        if isinstance(value, str) and value.strip():
++            return f"{key}={_clip(value, _ARGS_PREVIEW_CHARS)}"
++    for key, value in args.items():
++        if isinstance(value, str) and value.strip():
++            return f"{key}={_clip(value, _ARGS_PREVIEW_CHARS)}"
++    return ""
++
++
++def build_tool_stub(name: str, args: str, content: str, ref: str, reader_available: bool) -> str:
++    """Deterministic note for a stale tool result (same input, same bytes, on every call)."""
++    label = name or "tool"
++    head = f"[Stale tool result left out to save context: {label}"
++    if args:
++        head += f" ({args})"
++    head += f", {len(content)} chars, ref {ref}."
++    lines = [head]
++    if not content.lstrip().startswith(_UNTRUSTED_PREFIX):
++        # Untrusted external text is never quoted into a note that sits outside its trust boundary.
++        lines.append("Start: " + _clip(content[:_EXCERPT_CHARS * 2], _EXCERPT_CHARS))
++        lines.append("End: " + _clip_tail(content[-_EXCERPT_CHARS * 2:], _EXCERPT_CHARS))
++    if reader_available:
++        lines.append(f'Full text: call {READ_TOOL_NAME} with ref "{ref}", or repeat the original call.]')
++    else:
++        lines.append("Full text: repeat the original call.]")
++    return "\n".join(lines)
++
++
++def _stale_boundary(total: int, keep: int, step: int) -> int:
++    """Rows with an index below this value are old enough to be replaced.
++
++    ``total - keep`` rows qualify at most; rounding down to a multiple of ``step`` keeps the boundary,
++    and with it the request prefix, unchanged between two moves."""
++    return ((max(0, total - keep)) // step) * step
++
++
++def _stub_stale_tool_results(agent: Any, api_messages: List[Dict[str, Any]]) -> Tuple[int, int]:
++    min_chars = _env_int(ENV_TOOL_MIN_CHARS, DEFAULT_TOOL_MIN_CHARS, 200)
++    keep = _env_int(ENV_TOOL_KEEP_MESSAGES, DEFAULT_TOOL_KEEP_MESSAGES, 1)
++    step = _env_int(ENV_TOOL_STEP, DEFAULT_TOOL_STEP, 1)
++    exempt = _exempt_tools()
++    boundary = _stale_boundary(len(api_messages), keep, step)
++    session_id = getattr(agent, "session_id", None)
++    if boundary <= 0:
++        _store_replace(session_id, {})
++        return 0, 0
++    names = getattr(agent, "valid_tool_names", None)
++    reader_available = bool(names) and READ_TOOL_NAME in names
++    calls = _call_index(api_messages)
++    held: Dict[str, str] = {}
++    replaced = 0
++    saved = 0
++    for idx in range(boundary):
++        msg = api_messages[idx]
++        if not isinstance(msg, dict) or msg.get("role") != "tool":
++            continue
++        content = msg.get("content")
++        if not isinstance(content, str) or len(content) < min_chars:
++            continue
++        call_name, call_args = calls.get(str(msg.get("tool_call_id") or ""), ("", ""))
++        name = str(msg.get("tool_name") or msg.get("name") or call_name or "")
++        if name in _NEVER_STUB_TOOLS or name in exempt:
++            continue
++        ref = result_ref(content)
++        stub = build_tool_stub(name, call_args, content, ref, reader_available)
++        if len(stub) >= len(content):
++            continue
++        held[ref] = content
++        msg["content"] = stub
++        replaced += 1
++        saved += len(content) - len(stub)
++    _store_replace(session_id, held)
++    return replaced, saved
++
++
++# ---------------------------------------------------------------------------
++# Entry point
++# ---------------------------------------------------------------------------
++
++def apply_context_economy(agent: Any, api_messages: List[Dict[str, Any]]) -> Dict[str, int]:
++    """Rewrite the per-call API copy in place; returns what was replaced.
++
++    Fail-open: any error leaves the rows as they were. With both switches off nothing is read or
++    touched, so the request is byte-identical to the one built without this module."""
++    stats = {"wakes": 0, "tool_results": 0, "saved_chars": 0}
++    wakes_on = stale_wakes_enabled()
++    tools_on = stale_tool_results_enabled()
++    if not (wakes_on or tools_on) or not api_messages:
++        return stats
++    try:
++        if wakes_on:
++            count, saved = _stub_stale_wakes(api_messages)
++            stats["wakes"] = count
++            stats["saved_chars"] += saved
++        if tools_on:
++            count, saved = _stub_stale_tool_results(agent, api_messages)
++            stats["tool_results"] = count
++            stats["saved_chars"] += saved
++    except Exception:
++        logger.warning("context economy skipped (request left unchanged for the rows not yet rewritten)",
++                       exc_info=True)
++        return stats
++    _log_stats(agent, stats)
++    return stats
++
++
++def _log_stats(agent: Any, stats: Dict[str, int]) -> None:
++    key = (stats["wakes"], stats["tool_results"])
++    if getattr(agent, "_context_economy_logged", None) == key:
++        return
++    try:
++        agent._context_economy_logged = key
++    except Exception:
++        pass
++    if stats["wakes"] or stats["tool_results"]:
++        logger.info(
++            "context-economy: session=%s stale_wakes=%d stale_tool_results=%d saved_chars=%d",
++            getattr(agent, "session_id", None) or "none", stats["wakes"], stats["tool_results"],
++            stats["saved_chars"],
++        )
+diff --git a/agent/tool_result_classification.py b/agent/tool_result_classification.py
+index 1e11b47..25ee8ae 100644
+--- a/agent/tool_result_classification.py
++++ b/agent/tool_result_classification.py
+@@ -15,7 +15,7 @@ FILE_MUTATING_TOOL_NAMES = frozenset({"write_file", "patch"})
+ NO_EFFECT_TOOL_NAMES = frozenset({
+     "read_file", "search_files", "session_search", "skill_view", "skills_list",
+     "web_extract", "web_search", "vision_analyze", "browser_snapshot",
+-    "browser_get_images", "browser_console", "read_terminal",
++    "browser_get_images", "browser_console", "read_terminal", "read_stale_tool_result",
+ })
+ 
+ 
+diff --git a/agent/turn_request_assembly.py b/agent/turn_request_assembly.py
+index 79a56c6..4695309 100644
+--- a/agent/turn_request_assembly.py
++++ b/agent/turn_request_assembly.py
+@@ -154,6 +154,12 @@ def assemble_api_request(
+ 
+     evict_stale_outbound_tool_images(api_messages)
+ 
++    # myrmidon(G1): superseded wake messages and stale heavy tool results become short
++    # notes in this request copy only (agent/context_economy.py); the transcript is untouched.
++    from agent.context_economy import apply_context_economy
++
++    apply_context_economy(agent, api_messages)
++
+     # One-time repeated-heal notice goes out via the status/warning callback, NEVER
+     # appended to messages: the cached prompt prefix stays byte-identical.
+     try:
+diff --git a/tools/stale_result_tool.py b/tools/stale_result_tool.py
+new file mode 100644
+index 0000000..3c3750b
+--- /dev/null
++++ b/tools/stale_result_tool.py
+@@ -0,0 +1,84 @@
++"""myrmidon(G1): ``read_stale_tool_result`` - the way back to a tool result that the
++request copy replaced with a note (see agent/context_economy.py).
++
++The note names a reference; this tool returns the original text behind it. The text comes from the
++store that the request build refills on every model call from the live transcript, so a reference that
++is in the request is always readable, also after a gateway restart and a session resume."""
++
++from __future__ import annotations
++
++from typing import Any, Dict
++
++from agent.context_economy import READ_TOOL_NAME, lookup_stale_result, stale_tool_results_enabled
++from tools.registry import no_cache_check_fn
++
++# One call returns at most this many characters; a longer result is read in windows (offset/limit).
++_MAX_WINDOW_CHARS = 60_000
++
++READ_STALE_TOOL_RESULT_SCHEMA: Dict[str, Any] = {
++    "name": READ_TOOL_NAME,
++    "description": (
++        "Return the full text of an earlier tool result that was left out of the conversation to save "
++        "context. Use the ref shown in the note that replaced it. Long results are returned in windows: "
++        "pass offset to continue where the previous window ended."
++    ),
++    "parameters": {
++        "type": "object",
++        "properties": {
++            "ref": {"type": "string", "description": "The ref from the 'Stale tool result left out' note."},
++            "offset": {"type": "integer", "description": "First character to return (default 0).", "default": 0},
++            "limit": {
++                "type": "integer",
++                "description": f"Characters to return, at most {_MAX_WINDOW_CHARS} (default {_MAX_WINDOW_CHARS}).",
++            },
++        },
++        "required": ["ref"],
++    },
++}
++
++
++@no_cache_check_fn
++def check_stale_result_requirements() -> bool:
++    """Offered only while the replacement itself is on, so switching it off restores the old tool schema."""
++    return stale_tool_results_enabled()
++
++
++def read_stale_tool_result(ref: Any, offset: Any = 0, limit: Any = None, session_id: Any = None) -> str:
++    from tools.registry import tool_error
++
++    ref = str(ref or "").strip()
++    if not ref:
++        return tool_error("ref is required")
++    text = lookup_stale_result(session_id, ref)
++    if text is None:
++        return tool_error(
++            f"No stale result with ref {ref} is held for this session (it may be from before a compaction "
++            "or a restart); repeat the original call instead.")
++    try:
++        start = max(0, int(offset or 0))
++    except (TypeError, ValueError):
++        start = 0
++    try:
++        size = _MAX_WINDOW_CHARS if limit in (None, "") else max(1, min(int(limit), _MAX_WINDOW_CHARS))
++    except (TypeError, ValueError):
++        size = _MAX_WINDOW_CHARS
++    if start == 0 and len(text) <= size:
++        return text  # whole result, byte for byte
++    window = text[start:start + size]
++    end = start + len(window)
++    if end >= len(text):
++        return window + f"\n[end of result: {len(text)} chars in total]"
++    return window + f"\n[window {start}-{end} of {len(text)} chars; call {READ_TOOL_NAME} again with offset={end}]"
++
++
++from tools.registry import registry  # noqa: E402  (registration at import time)
++
++registry.register(
++    name=READ_TOOL_NAME,
++    toolset="file",
++    schema=READ_STALE_TOOL_RESULT_SCHEMA,
++    handler=lambda args, **kw: read_stale_tool_result(
++        args.get("ref"), args.get("offset", 0), args.get("limit"), session_id=kw.get("session_id")),
++    check_fn=check_stale_result_requirements,
++    emoji="📎",
++)
+diff --git a/toolsets.py b/toolsets.py
+index 8938633..13114b3 100644
+--- a/toolsets.py
++++ b/toolsets.py
+@@ -13,6 +13,7 @@ _HERMES_CORE_TOOLS = [
+     "web_search", "web_extract",
+     "terminal", "process_manage",
+     "read_file", "write_file", "patch", "search_files",
++    "read_stale_tool_result",  # myrmidon(G1): core, so tool_search never defers it
+     "vision_analyze", "image_generate",
+     "skills_list", "skill_view", "skill_manage",
+     "browser_navigate", "browser_snapshot", "browser_click",

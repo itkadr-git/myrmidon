@@ -129,6 +129,7 @@ import { myrmidonLitellmCostsRoutes } from "./myrmidon/litellm-costs/routes.js";
 import { myrmidonLitellmKeysRoutes } from "./myrmidon/litellm-keys/routes.js"; // myrmidon(M2-B)
 // myrmidon(1.6.1 MODEL-PROVIDERS A): company model-provider registry, secrets, settings API
 import { myrmidonModelProviderRoutes } from "./myrmidon/model-providers/wiring.js";
+import { bindModelProviderPluginLifecycle } from "./myrmidon/model-providers/plugin-lifecycle.js"; // myrmidon(1.6.6 OPE-7198)
 import { myrmidonAgentExchangeRoutes } from "./myrmidon/agent-exchange/wiring.js"; // myrmidon(1.7-AGENT-EXCHANGE-A)
 import { myrmidonBaselineRoutes } from "./myrmidon/baseline/routes.js"; // myrmidon(1.6-BASELINE)
 import { myrmidonBotEgressRoutes } from "./myrmidon/bot-containers/egress-wiring.js"; // myrmidon(EGRESS-B)
@@ -1195,6 +1196,14 @@ export async function createApp(
     lifecycleManager: lifecycle,
     db,
   });
+  const modelProviderPluginBridge = bindModelProviderPluginLifecycle({
+    lifecycle,
+    registry: pluginRegistry,
+    db,
+  });
+  void modelProviderPluginBridge.syncFromRegistry().catch((err) => {
+    logger.warn({ err }, "failed to sync model provider connectors from registry");
+  });
   const gatewayOAuthAccess = toolAccessService(db, {
     deploymentMode: opts.deploymentMode,
     deploymentExposure: opts.deploymentExposure,
@@ -1746,6 +1755,7 @@ export async function createApp(
       // awaited teardown, so no tick runs after the caller ends the pool.
       scheduler.stop();
       jobCoordinator.stop();
+      modelProviderPluginBridge.teardown();
       disableFeedbackExportFlushes();
       unsubscribeChatPublicationSignals();
       chatReconciliation.stop();

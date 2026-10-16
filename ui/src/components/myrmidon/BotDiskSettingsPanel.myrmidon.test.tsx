@@ -20,6 +20,13 @@ import { botDiskLifecycleApi } from "./botDiskLifecycleApi";
 
 const reportAt = Date.parse(diskReportFixture.at);
 const settingsView = { settings: { enabled: true, idleTtlMs: 1 }, sources: { enabled: "default", idleTtlMs: "default" } } as never;
+async function typeInto(input: HTMLInputElement, value: string) {
+  await act(async () => {
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")?.set;
+    setter?.call(input, value);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+}
 
 function renderPanel(now: number, taskStatuses?: Record<string, string>): HTMLDivElement {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -243,5 +250,44 @@ describe("BotDiskSettingsPanel lifecycle edit section", () => {
       findSave(section).click();
     });
     expect(patched({ mock: setFields.mock as never })).toEqual({ enabled: false, idleTtlMs: 120 * 60_000 });
+  });
+});
+
+describe("BotDiskSettingsPanel uv settings", () => {
+  const uvView = {
+    settings: { enabled: true, idleTtlMs: 3_600_000, uvCacheDir: "/cache/uv", uvLinkMode: "clone" },
+    sources: { enabled: "settings", idleTtlMs: "settings" },
+  } as never;
+
+  beforeEach(async () => {
+    vi.restoreAllMocks();
+    document.body.innerHTML = "";
+    await i18n.changeLanguage("en");
+  });
+
+  it("shows and saves both uv settings and rejects malformed cache paths", async () => {
+    vi.spyOn(botDiskApi, "get").mockResolvedValue(uvView);
+    vi.spyOn(botDiskLifecycleApi, "getPhysical").mockResolvedValue({ projects: [], gateReached: false } as never);
+    vi.spyOn(botDiskLifecycleApi, "getReports").mockResolvedValue({ reports: [] } as never);
+    const container = renderPanel(reportAt);
+    await settle();
+    const setUv = vi.spyOn(botDiskApi, "setUv").mockResolvedValue(uvView as never);
+    const cache = container.querySelector('[data-testid="bot-disk-uv-cache-input"]') as HTMLInputElement;
+    const linkMode = container.querySelector('[data-testid="bot-disk-uv-link-mode-select"]') as HTMLSelectElement;
+    expect(cache.value).toBe("/cache/uv");
+    expect(linkMode.value).toBe("clone");
+    await typeInto(cache, "/data/uv-cache");
+    await act(async () => { (container.querySelector("#bot-disk-uv-cache")?.parentElement?.querySelector("button") as HTMLButtonElement).click(); });
+    expect(setUv.mock.calls[0]?.[0]).toEqual({ uvCacheDir: "/data/uv-cache" });
+    await typeInto(cache, "relative/path");
+    await act(async () => { (container.querySelector("#bot-disk-uv-cache")?.parentElement?.querySelector("button") as HTMLButtonElement).click(); });
+    expect(setUv).toHaveBeenCalledTimes(1);
+    expect(container.textContent).toContain("is not an absolute path");
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, "value")?.set;
+      setter?.call(linkMode, "hardlink");
+      linkMode.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    expect(setUv.mock.calls.at(-1)?.[0]).toEqual({ uvLinkMode: "hardlink" });
   });
 });

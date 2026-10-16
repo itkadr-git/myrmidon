@@ -96,12 +96,20 @@ describe("runtime connection tool delivery", () => {
 describe("legacy adapter skill selection", () => {
   const operationalEntry = {
     key: PAPERCLIP_OPERATIONAL_SKILL_KEY,
-    runtimeName: "paperclip",
+    runtimeName: "myrmidon",
   };
   const optionalEntry = {
     key: "company/example/reviewer",
     runtimeName: "reviewer",
   };
+
+  it("maps old canonical keys after installed entries adopt Myrmidon names", () => {
+    const entries = [{ key: "paperclipai/paperclip/myrmidon-board", runtimeName: "myrmidon-board" }];
+    expect(resolvePaperclipDesiredSkillNames(
+      { paperclipSkillSync: { desiredSkills: ["paperclipai/paperclip/paperclip-board"] } },
+      entries,
+    )).toEqual(["paperclipai/paperclip/myrmidon-board"]);
+  });
 
   it("keeps the operational skill selected without a stored preference", () => {
     expect(
@@ -110,6 +118,25 @@ describe("legacy adapter skill selection", () => {
         optionalEntry,
       ]),
     ).toEqual([PAPERCLIP_OPERATIONAL_SKILL_KEY]);
+  });
+
+  it("maps saved Paperclip skill keys to their Myrmidon runtime aliases", () => {
+    const legacyEntry = {
+      key: "paperclipai/paperclip/myrmidon-board",
+      runtimeName: "myrmidon-board",
+    };
+    expect(
+      resolvePaperclipDesiredSkillNames(
+        { paperclipSkillSync: { desiredSkills: ["paperclipai/paperclip/paperclip-board"] } },
+        [legacyEntry],
+      ),
+    ).toEqual([legacyEntry.key]);
+    expect(
+      resolvePaperclipDesiredSkillNames(
+        { paperclipSkillSync: { desiredSkills: ["paperclip-board"] } },
+        [legacyEntry],
+      ),
+    ).toEqual([legacyEntry.key]);
   });
 
   it("keeps the operational skill selected after an explicit empty replacement", () => {
@@ -3807,8 +3834,11 @@ describe("runtime skill assignment boundaries", () => {
     try {
       await fs.mkdir(path.join(root, "agentmail"));
       await fs.writeFile(path.join(root, "agentmail", "SKILL.md"), "---\nname: agentmail\ndescription: Email connector\n---\n");
+      await fs.mkdir(path.join(root, "myrmidon"));
+      await fs.writeFile(path.join(root, "myrmidon", "SKILL.md"), "---\nname: myrmidon\ndescription: Company guide\n---\n");
       const discovered = await readPaperclipRuntimeSkillEntries({}, root, [root]);
       expect(discovered.some((entry) => entry.runtimeName === "agentmail")).toBe(true);
+      expect(discovered).toContainEqual({ key: PAPERCLIP_OPERATIONAL_SKILL_KEY, runtimeName: "myrmidon", source: path.join(root, "myrmidon") });
       expect(await readPaperclipRuntimeSkillEntries({ paperclipRuntimeSkills: [] }, root, [root])).toEqual([]);
     } finally {
       await fs.rm(root, { recursive: true, force: true });

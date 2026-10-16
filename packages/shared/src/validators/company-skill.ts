@@ -1,9 +1,9 @@
 import { z } from "zod";
 
-export const companySkillSourceTypeSchema = z.enum(["local_path", "github", "url", "catalog", "skills_sh"]);
+export const companySkillSourceTypeSchema = z.enum(["local_path", "github", "url", "catalog", "skills_sh", "well_known"]);
 export const companySkillTrustLevelSchema = z.enum(["markdown_only", "assets", "scripts_executables"]);
 export const companySkillCompatibilitySchema = z.enum(["compatible", "unknown", "invalid"]);
-export const companySkillSourceBadgeSchema = z.enum(["paperclip", "github", "local", "url", "catalog", "skills_sh"]);
+export const companySkillSourceBadgeSchema = z.enum(["paperclip", "github", "local", "url", "catalog", "skills_sh", "well_known"]);
 export const companySkillSharingScopeSchema = z.enum(["private", "company", "public_link"]);
 export const companySkillListSortSchema = z.enum(["alphabetical", "recent", "installs", "stars", "agents", "forks"]);
 export const companySkillListIncludeSchema = z.enum(["lastEditor"]);
@@ -130,6 +130,7 @@ export const companySkillVersionSchema = z.object({
 });
 
 export const companySkillDetailSchema = companySkillSchema.extend({
+  requiredEnv: z.array(z.string()).default([]),
   attachedAgentCount: z.number().int().nonnegative(),
   usedByAgents: z.array(companySkillUsageAgentSchema).default([]),
   existingForks: z.array(companySkillForkSummarySchema).default([]),
@@ -273,6 +274,24 @@ export const companySkillResetSchema = z.object({
 
 export const companySkillImportSchema = z.object({
   source: z.string().min(1),
+  // Only used for agentskills.io well-known sources: selects one skill from
+  // the discovered index by name. Ignored for other source kinds.
+  skillName: z.string().trim().min(1).max(200).optional(),
+});
+
+export const companySkillDiscoverSchema = z.object({
+  source: z.string().trim().min(1).max(2000),
+});
+
+export const companySkillDiscoveredSkillSchema = z.object({
+  name: z.string().min(1),
+  description: z.string().nullable(),
+  url: z.string().min(1),
+  digest: z.string().min(1),
+});
+
+export const companySkillDiscoverResultSchema = z.object({
+  skills: z.array(companySkillDiscoveredSkillSchema),
 });
 
 export const companySkillProjectScanRequestSchema = z.object({
@@ -612,3 +631,4 @@ export type CatalogSkillListQuery = z.infer<typeof catalogSkillListQuerySchema>;
 export type CompanySkillInstallCatalog = z.infer<typeof companySkillInstallCatalogSchema>;
 export type CompanySkillInstallUpdate = z.infer<typeof companySkillInstallUpdateSchema>;
 export type CompanySkillReset = z.infer<typeof companySkillResetSchema>;
+export type CompanySkillDiscover = z.infer<typeof companySkillDiscoverSchema>;

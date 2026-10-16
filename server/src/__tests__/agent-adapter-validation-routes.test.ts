@@ -725,7 +725,7 @@ describe("agent routes adapter validation", () => {
           adapterConfig: {
             provider: "codex",
             paperclipSkillSync: {
-              desiredSkills: ["paperclipai/paperclip/paperclip", "company-1/reviewer"],
+              desiredSkills: ["paperclipai/paperclip/myrmidon", "company-1/reviewer"],
             },
           },
         }),
@@ -761,7 +761,7 @@ describe("agent routes adapter validation", () => {
       adapterConfig: {
         model: "gpt-5.5",
         paperclipSkillSync: {
-          desiredSkills: ["paperclipai/paperclip/paperclip", "company-1/reviewer"],
+          desiredSkills: ["paperclipai/paperclip/myrmidon", "company-1/reviewer"],
         },
       },
     });
