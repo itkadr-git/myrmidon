@@ -148,6 +148,13 @@ describe("myrmidon(1.6.1 SWARM-IDLE-WAKE) sweep pass", () => {
           }]),
         }),
       }),
+      update: () => ({
+        set: () => ({
+          where: () => ({
+            returning: () => Promise.resolve([{ id: "released-issue" }]),
+          }),
+        }),
+      }),
       transaction: async (fn: (tx: unknown) => Promise<unknown>) => fn(db),
     };
     const settings: SwarmClaimSettings = {
