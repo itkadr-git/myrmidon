@@ -233,8 +233,8 @@ describe("telegram notify jobs (DB-backed)", () => {
 
     const ports = telegramNotifyJobPorts(db);
     expect(await ports.readSettings(fixture.companyId)).toEqual({
-      ...settings,
-      errors: { ...settings.errors, topicId: null },
+      ...defaultTelegramNotifySettings(),
+      digest: { ...settings.digest, topicId: null },
     });
     expect(await ports.readSettings(randomUUID())).toEqual(defaultTelegramNotifySettings());
   });

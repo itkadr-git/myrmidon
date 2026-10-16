@@ -49,7 +49,7 @@ function toJobSettings(settings: import("@paperclipai/shared").TelegramNotifySet
   return {
     ...settings,
     digest: { ...settings.digest, topicId: topicId(settings.digest.topicId) },
-    errors: { ...settings.errors, minSeverity: settings.errors.minSeverity === "warning" ? "warning" : "error", topicId: topicId(settings.errors.topicId) },
+    errors: { ...settings.errors, minSeverity: settings.errors.minSeverity === "warn" ? "warning" : "error", topicId: topicId(settings.errors.topicId) },
     escalations: { ...settings.escalations, topicId: topicId(settings.escalations.topicId) },
   };
 }
