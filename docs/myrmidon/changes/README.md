@@ -67,18 +67,23 @@ Rules:
   starting with `|`). The collector appends them to the section named by the
   front-matter key: `divergence-section` is the `## …` heading of
   DIVERGENCE.md (e.g. `Трек 5 — эксплуатация`), `settings-section` is the
-  `## …` heading of SETTINGS.md. SETTINGS.ru.md carries Russian variants of
-  the same headings (`Track 5 — operations` → `Трек 5 — эксплуатация`,
-  `1.6.1 — BOT-DISK B: shared package cache …` → `1.6.1 — BOT-DISK B: общий
-  кэш пакетов …`); the collector first looks for the exact heading, then
-  resolves the section by its key — the release version plus the all-caps
-  feature-id tokens. Write the EN heading in `settings-section`; the RU fold
-  follows it automatically when the RU file has a section with the same key.
-  A section present without its
-  front-matter key is an error; an unknown heading name fails the release
-  collect loudly, listing the available sections. A key that matches several
-  RU sections is not guessed — the fold fails; disambiguate by adding the
-  missing RU heading or by pointing the fragment at another section.
+  `settings-section` is the `## …` heading of SETTINGS.md. SETTINGS.ru.md
+  carries translated variants of the same headings (`Track 5 — operations`
+  → `Трек 5 — эксплуатация`, `1.6.1 — BOT-DISK B: shared package cache …` →
+  `1.6.1 — BOT-DISK B: общий кэш пакетов …`). The collector first looks for an
+  exact heading in each document; for SETTINGS.ru.md only, if it is absent,
+  it resolves the EN key to the unique RU heading with the same release version
+  and all-caps feature-id tokens. Write the EN heading in `settings-section`;
+  the RU fold follows it automatically. Ambiguous or missing matches fail the
+  collect rather than guessing; disambiguate by adding a matching RU heading or
+  by pointing the fragment at another section. A section present without its
+  front-matter key is also an error.
+- **Current heading-resolution behavior (OPE-4841 / PR #623):** one
+  `settings-section` key must name a `##` heading in SETTINGS.md and resolves
+  the corresponding translated heading in SETTINGS.ru.md by its release
+  version and feature-ID tokens. Keep the English heading in front matter and
+  keep each language's rows under its corresponding settings section; do not
+  use a `settings-en-append` workaround for translation differences.
 - Table rows follow the same pipe-escaping rule as the shared documents:
   `a \|\| b` inside a cell.
 - The collector validates the fragment; the PR author can run it any time:
@@ -196,7 +201,13 @@ documents; the CI gate recognizes it by the fragment deletions it carries.
 таблицы DIVERGENCE.md и требует ключа `divergence-section` (название раздела,
 например `Трек 5 — эксплуатация`); разделы `settings-en`/`settings-ru` — строки
 таблиц SETTINGS.md / SETTINGS.ru.md и ключ `settings-section` (например,
-`Track 5 — operations`). При нарезке релиза
+`Track 5 — operations`). Заголовки SETTINGS.ru.md
+переведены (`Трек 5 — эксплуатация`); если точного EN-заголовка нет,
+сборщик находит RU-вариант по номеру версии и токенам ID функции. Пишите в
+`settings-section` английский заголовок из SETTINGS.md. Неоднозначный или
+отсутствующий RU-вариант приводит к ошибке, а не к выбору наугад. Эта логика
+разрешения EN→RU-заголовка добавлена в OPE-4841 / PR #623; не переносите EN-строки
+в `settings-en-append` только из-за перевода заголовка. При нарезке релиза
 `node scripts/myrmidon/release/collect-fragments.mjs --version X.Y.Z` складывает
 фрагменты в общие документы (под новый заголовок `## X.Y.Z`; пустой
 `## Unreleased` / `## Без выпуска` остаётся наверху для следующего цикла) и
