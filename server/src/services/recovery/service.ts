@@ -4392,6 +4392,17 @@ export function recoveryService(
       successfulRunHandoffEvidence: input.successfulRunHandoffEvidence,
       rerouteToSharedQueue: input.rerouteToSharedQueue,
     });
+    if (!recoveryAction && input.issue.originKind === "stranded_issue_recovery") {
+      if (input.rerouteToSharedQueue) return false;
+      const blockerIds = await existingUnresolvedBlockerIssueIds(
+        input.issue.companyId,
+        input.issue.id,
+      );
+      return issuesSvc.update(input.issue.id, {
+        status: "blocked",
+        blockedByIssueIds: blockerIds,
+      });
+    }
     if (!recoveryAction) return input.issue;
     const isProviderQuotaWait =
       recoveryCause === "provider_quota" &&
