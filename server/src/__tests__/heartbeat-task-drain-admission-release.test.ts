@@ -191,6 +191,10 @@ describeEmbeddedPostgres("heartbeat task-drain admission release", () => {
         target: heartbeatRuns.id,
         set: { status: "running", startedAt: new Date() },
       });
+      await runDb
+        .update(issues)
+        .set({ status: "in_progress", executionRunId: input.runId })
+        .where(eq(issues.id, issueId));
       return { trustPreset: { kind: "standard" }, executionPolicy: null } as never;
     });
     let activePromise: Promise<unknown> | undefined;
