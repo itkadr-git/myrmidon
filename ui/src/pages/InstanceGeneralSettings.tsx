@@ -46,6 +46,7 @@ import { SwarmClaimSettingsPanel } from "@/components/myrmidon/SwarmClaimSetting
 import { ReviewReworkSettingsPanel } from "@/components/myrmidon/ReviewReworkSettingsPanel"; // myrmidon(REVIEW-REWORK)
 import { ForagingSettingsPanel } from "@/components/myrmidon/ForagingSettingsPanel"; // myrmidon(1.6.1-FORAGING-LIMITS-UI)
 import { WorkspaceHygieneSettingsPanel } from "@/components/myrmidon/WorkspaceHygieneSettingsPanel"; // myrmidon(SETTINGS-UI A)
+import { RunsQueueSettingsPanel } from "@/components/myrmidon/RunsQueueSettingsPanel"; // myrmidon(1.7, OPE-4096, SETTINGS-TO-UI B)
 import { ChannelSettingsPanel } from "@/components/myrmidon/ChannelSettingsPanel"; // myrmidon(SETTINGS-UI A)
 import { ModelFallbackSignalSettingsPanel } from "@/components/myrmidon/ModelFallbackSignalSettingsPanel"; // myrmidon(SETTINGS-UI A)
 import { AboutSettingsPanel } from "@/components/myrmidon/AboutSettingsPanel"; // myrmidon(ABOUT)
@@ -200,6 +201,7 @@ export function InstanceGeneralSettings({ embedded = false }: { embedded?: boole
       <ReviewReworkSettingsPanel /> {/* myrmidon(REVIEW-REWORK) */}
       <ForagingSettingsPanel /> {/* myrmidon(1.6.1-FORAGING-LIMITS-UI) */}
       <WorkspaceHygieneSettingsPanel /> {/* myrmidon(SETTINGS-UI A, WORKSPACE-HYGIENE) */}
+      <RunsQueueSettingsPanel /> {/* myrmidon(1.7, OPE-4096, SETTINGS-TO-UI B) */}
       <ChannelSettingsPanel /> {/* myrmidon(SETTINGS-UI A, 1.7-SETTINGS-TO-UI) */}
       <ModelFallbackSignalSettingsPanel /> {/* myrmidon(SETTINGS-UI A, BOT-RUNTIME-TUNING D2) */}
       <DeployJobsPanel /> {/* myrmidon(R5-A) */}

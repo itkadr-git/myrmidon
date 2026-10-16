@@ -1,5 +1,6 @@
 import { existsSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
+import { liveDbBackupCatchupWindow } from "./runs-queue-settings/live.js";
 
 /**
  * Database backup catch-up (P11).
@@ -59,7 +60,11 @@ function minuteOfDay(hours: string, minutes: string): number | null {
 }
 
 export function readBackupCatchUpSettings(env: NodeJS.ProcessEnv = process.env): BackupCatchUpSettings {
-  const raw = env[BACKUP_CATCHUP_WINDOW_ENV]?.trim();
+  // OPE-4096: the window value resolves live (UI value → env forced override →
+  // default unset); an explicit env value always wins. The parse contract is
+  // unchanged: unset → disabled, "none" → enabled without a window, otherwise
+  // "<IANA zone> HH:MM-HH:MM".
+  const raw = liveDbBackupCatchupWindow(env);
   if (!raw) return { enabled: false };
   if (raw.toLowerCase() === "none") return { enabled: true, window: null };
   const match = WINDOW_PATTERN.exec(raw);

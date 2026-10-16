@@ -8,6 +8,8 @@
 // The style follows the rest of the 1.6 modules: a numeric setting falls back
 // to its default on anything that is not a positive integer.
 
+import { liveSwarmSettings } from "../runs-queue-settings/live.js";
+
 /** How many queue candidates one role may report; a ceiling, not a page size. */
 export const SWARM_SUPERVISOR_TASK_MAX_ENV = "MYRMIDON_SWARM_SUPERVISOR_TASK_MAX";
 export const DEFAULT_SWARM_SUPERVISOR_TASK_MAX = 500;
@@ -28,7 +30,7 @@ export function readSwarmSupervisorSettings(
   env: NodeJS.ProcessEnv = process.env,
 ): SwarmSupervisorSettings {
   return {
-    taskMax: readTaskMax(env),
+    taskMax: liveSwarmSettings(env).supervisorTaskMax,
   };
 }
 
