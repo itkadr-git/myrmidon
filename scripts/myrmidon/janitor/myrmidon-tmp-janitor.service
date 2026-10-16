@@ -1,0 +1,11 @@
+[Unit]
+Description=Myrmidon /tmp Janitor
+Documentation=https://github.com/itkadr-git/myrmidon
+After=local-fs.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/myrmidon/scripts/myrmidon/janitor/myrmidon-tmp-janitor.sh --target /tmp --ttl-minutes 60
+User=root
+StandardOutput=journal
+StandardError=journal

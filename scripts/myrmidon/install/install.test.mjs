@@ -3,7 +3,7 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { describe, it } from "node:test";
+import { afterEach, describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 import { composeEnvVars, composeInterpolation } from "./compose-check.mjs";
 
@@ -16,6 +16,27 @@ const INSTALL = path.join(HERE, "install.sh");
 const A = `sha256:${"a".repeat(64)}`;
 const B = `sha256:${"b".repeat(64)}`;
 const C = `sha256:${"c".repeat(64)}`;
+
+const cleanups = new Set();
+
+export function cleanupSandbox(sb) {
+  const dir = typeof sb === "string" ? sb : sb?.dir;
+  if (dir && fs.existsSync(dir)) {
+    fs.rmSync(dir, { recursive: true, force: true });
+    cleanups.delete(dir);
+  }
+}
+
+afterEach(() => {
+  for (const dir of cleanups) {
+    try {
+      if (fs.existsSync(dir)) {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    } catch {}
+  }
+  cleanups.clear();
+});
 
 const FAKE_DOCKER = `#!/usr/bin/env bash
 printf 'docker %s\\n' "$*" >> "$SANDBOX/calls.log"
@@ -74,7 +95,9 @@ exit 0
 const FAKE_NOOP = "#!/usr/bin/env bash\nexit 0\n";
 
 function sandbox({ tag = "myr-v1.6.6", board = A, up = false, osRelease = null } = {}) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "myrmidon-install-test-"));
+  const scratchRoot = process.env.PAPERCLIP_SCRATCH_DIR || process.env.TMPDIR || os.tmpdir();
+  const dir = fs.mkdtempSync(path.join(scratchRoot, "myrmidon-install-test-"));
+  cleanups.add(dir);
   const bin = path.join(dir, "bin");
   fs.mkdirSync(bin);
   for (const [name, body] of [
@@ -93,11 +116,14 @@ function sandbox({ tag = "myr-v1.6.6", board = A, up = false, osRelease = null }
 }
 
 function run(sb, args = [], env = {}) {
+  const cleanEnv = { ...process.env };
+  delete cleanEnv.BASH_ENV;
+  delete cleanEnv.ENV;
   return spawnSync("bash", [INSTALL, "--dir", sb.opt, ...args], {
     cwd: sb.dir,
     encoding: "utf8",
     env: {
-      ...process.env,
+      ...cleanEnv,
       PATH: `${sb.bin}:${process.env.PATH}`,
       SANDBOX: sb.dir,
       MYRMIDON_INSTALL_SKIP_ROOT_CHECK: "1",
@@ -457,5 +483,23 @@ describe("install.sh", () => {
     });
     assert.equal(piped.status, 0, piped.stderr);
     assert.match(piped.stdout, /--database-url/);
+  });
+
+  it("sandbox cleanup removes created temporary directories", () => {
+    const sb = sandbox();
+    assert.ok(fs.existsSync(sb.dir), "sandbox directory exists before cleanup");
+    cleanupSandbox(sb);
+    assert.ok(!fs.existsSync(sb.dir), "sandbox directory is removed after cleanup");
+  });
+
+  it("install.sh cleans up temporary manifest file on completion", () => {
+    const sb = sandbox();
+    const tmpRoot = process.env.PAPERCLIP_SCRATCH_DIR || process.env.TMPDIR || os.tmpdir();
+    const tmpBefore = fs.readdirSync(tmpRoot).filter((f) => f.startsWith("tmp."));
+    const r = run(sb);
+    assert.equal(r.status, 0, r.stderr);
+    const tmpAfter = fs.readdirSync(tmpRoot).filter((f) => f.startsWith("tmp."));
+    const leaked = tmpAfter.filter((f) => !tmpBefore.includes(f));
+    assert.deepEqual(leaked, [], "install.sh must not leave temporary manifest files behind");
   });
 });
