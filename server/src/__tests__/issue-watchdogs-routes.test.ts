@@ -664,4 +664,106 @@ describeEmbeddedPostgres("issue watchdog routes", () => {
       expect(res.body.error).toBe("Cannot assign watchdog to an agent that is not invokable");
     },
   );
+
+  it("excludes task_watchdog child from follow-up serialization to avoid self-blocking and partial writes", async () => {
+    const companyId = await seedCompany();
+    const watchdogAgentId = await seedAgent(companyId, { name: "Serialization Watchdog" });
+    const watchedRootId = await seedIssue(companyId, { title: "Watched root" });
+    const watchdogIssueId = await seedIssue(companyId, {
+      title: "Watchdog child issue",
+      parentId: watchedRootId,
+      status: "in_progress",
+      originKind: "task_watchdog",
+      originId: watchedRootId,
+      assigneeAgentId: watchdogAgentId,
+    });
+    const runId = await seedWatchdogRun({
+      companyId,
+      watchdogAgentId,
+      watchedIssueId: watchedRootId,
+      watchdogIssueId,
+    });
+    const app = createApp(companyId, {
+      type: "agent",
+      agentId: watchdogAgentId,
+      companyId,
+      runId,
+      source: "agent_jwt",
+    });
+
+    // 1. Create first follow-up child from the watchdog run.
+    const firstChildRes = await request(app)
+      .post(`/api/issues/${watchedRootId}/children`)
+      .send({ title: "First follow-up child" });
+
+    expect(firstChildRes.status, JSON.stringify(firstChildRes.body)).toBe(201);
+    expect(firstChildRes.body).toMatchObject({
+      title: "First follow-up child",
+      parentId: watchedRootId,
+      status: "todo",
+    });
+
+    // Verify first child is not blocked by the watchdog issue.
+    const [firstChild] = await db
+      .select({ id: issues.id, status: issues.status })
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.id, firstChildRes.body.id)));
+    expect(firstChild?.status).toBe("todo");
+
+    const firstChildBlockers = await db
+      .select({ blockerId: issueRelations.issueId })
+      .from(issueRelations)
+      .where(
+        and(
+          eq(issueRelations.companyId, companyId),
+          eq(issueRelations.relatedIssueId, firstChildRes.body.id),
+          eq(issueRelations.type, "blocks"),
+        ),
+      );
+    expect(firstChildBlockers.map((r) => r.blockerId)).not.toContain(watchdogIssueId);
+
+    // Verify the watchdog issue is now blocked by the first child (not by itself).
+    const [updatedWatchdog] = await db
+      .select({ id: issues.id, status: issues.status })
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.id, watchdogIssueId)));
+    expect(updatedWatchdog?.status).toBe("blocked");
+
+    const watchdogBlockers = await db
+      .select({ blockerId: issueRelations.issueId })
+      .from(issueRelations)
+      .where(
+        and(
+          eq(issueRelations.companyId, companyId),
+          eq(issueRelations.relatedIssueId, watchdogIssueId),
+          eq(issueRelations.type, "blocks"),
+        ),
+      );
+    expect(watchdogBlockers.map((r) => r.blockerId)).toEqual([firstChildRes.body.id]);
+
+    // 2. Create second follow-up child from the watchdog run (verifying ordinary child serialization).
+    const secondChildRes = await request(app)
+      .post(`/api/issues/${watchedRootId}/children`)
+      .send({ title: "Second follow-up child" });
+
+    expect(secondChildRes.status, JSON.stringify(secondChildRes.body)).toBe(201);
+    expect(secondChildRes.body).toMatchObject({
+      title: "Second follow-up child",
+      parentId: watchedRootId,
+      status: "blocked",
+    });
+
+    // Second child should be serialized behind first child, not the watchdog.
+    const secondChildBlockers = await db
+      .select({ blockerId: issueRelations.issueId })
+      .from(issueRelations)
+      .where(
+        and(
+          eq(issueRelations.companyId, companyId),
+          eq(issueRelations.relatedIssueId, secondChildRes.body.id),
+          eq(issueRelations.type, "blocks"),
+        ),
+      );
+    expect(secondChildBlockers.map((r) => r.blockerId)).toEqual([firstChildRes.body.id]);
+  });
 });
