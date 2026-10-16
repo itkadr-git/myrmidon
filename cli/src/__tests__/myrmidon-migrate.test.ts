@@ -54,6 +54,12 @@ describe("myrmidon:migrate pure guards", () => {
     }
   });
 
+  let chain: Awaited<ReturnType<typeof loadVendorChain>>;
+  beforeAll(async () => {
+    chain = await loadVendorChain();
+  });
+  const chainRows = () => chain.map((e) => ({ hash: e[1] }));
+
   it("accepts exactly the vendor chain and nothing else", () => {
     expect(checkVendorChain(chainRows(), chain).supported).toBe(true);
     expect(chainStartsWithVendor([...chainRows(), { hash: "x" }], chain)).toBe(true);
