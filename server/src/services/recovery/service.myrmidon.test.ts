@@ -22,14 +22,18 @@ const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : 
 describeEmbeddedPostgres("reconcileStrandedAssignedIssues: infrastructure interruptions (L1)", () => {
   let db!: ReturnType<typeof createDb>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+  const originalAutoPolicyEnabled = process.env.MYRMIDON_STRANDED_AUTOPOLICY_ENABLED;
 
   beforeAll(async () => {
+    process.env.MYRMIDON_STRANDED_AUTOPOLICY_ENABLED = "false";
     tempDb = await startEmbeddedPostgresTestDatabase("myrmidon-infra-interrupts-stranded-");
     db = createDb(tempDb.connectionString);
   }, 60_000);
 
   afterAll(async () => {
     await tempDb?.cleanup();
+    if (originalAutoPolicyEnabled === undefined) delete process.env.MYRMIDON_STRANDED_AUTOPOLICY_ENABLED;
+    else process.env.MYRMIDON_STRANDED_AUTOPOLICY_ENABLED = originalAutoPolicyEnabled;
   });
 
   async function seedStrandedIssue(input: {
