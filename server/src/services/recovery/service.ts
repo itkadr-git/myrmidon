@@ -2967,19 +2967,19 @@ export function recoveryService(
     issueId: string,
   ) {
     return db
-      .select({ id: issueRelations.relatedIssueId, identifier: issues.identifier })
+      .select({ id: issueRelations.issueId, identifier: issues.identifier })
       .from(issueRelations)
       .innerJoin(
         issues,
         and(
           eq(issues.companyId, issueRelations.companyId),
-          eq(issues.id, issueRelations.relatedIssueId),
+          eq(issues.id, issueRelations.issueId),
         ),
       )
       .where(
         and(
           eq(issueRelations.companyId, companyId),
-          eq(issueRelations.issueId, issueId),
+          eq(issueRelations.relatedIssueId, issueId),
           eq(issueRelations.type, "blocks"),
           notInArray(issues.status, ["done", "cancelled"]),
         ),
