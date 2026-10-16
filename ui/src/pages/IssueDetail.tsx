@@ -1201,7 +1201,7 @@ type IssueDetailChatTabProps = {
   issueStatus: Issue["status"];
   /** Marks cross-issue agent comments in the thread (the open cross-task write design (attribution)). */
   issueAssigneeAgentId: Issue["assigneeAgentId"];
-  issueIdentifier: string;
+  issueIdentifier: string | null;
   issueAgentModel: string | null;
   issueWorkMode: IssueWorkMode;
   executionRunId: string | null;
