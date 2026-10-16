@@ -175,7 +175,7 @@ describeEmbeddedPostgres("heartbeat task-drain admission release", () => {
   }
 
   it("keeps an active adapter run in flight until graceful shutdown records its retry", async () => {
-    expect.assertions(12);
+    expect.assertions(13);
     const { companyId, agentId, issueId, runId, wakeupRequestId } = await seedQueuedRun();
     const heartbeat = heartbeatService(db);
     let activePromise: Promise<unknown> | undefined;
