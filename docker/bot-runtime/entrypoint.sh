@@ -822,10 +822,10 @@ fi
 # These checks may touch mounts, probe reflink/shared-object support, or wait
 # on remote SSH/rsync. Run them after the gateway is live and cap each probe.
 run_startup_diagnostics() {
-  if [ "${MYRMIDON_REFLINK_CHECK:-1}" != "0" ]; then timeout 120 reflink_self_check || log "WARNING: reflink self-check timed out or failed"; fi
-  if [ "${MYRMIDON_UV_CHECK:-1}" != "0" ]; then timeout 120 uv_cache_self_check || log "WARNING: uv cache self-check timed out or failed"; fi
-  if [ "${MYRMIDON_GIT_OBJECTS_CHECK:-1}" != "0" ]; then timeout 120 git_objects_self_check || log "WARNING: shared-objects self-check timed out or failed"; fi
-  if [ "${MYRMIDON_DEVBUILD_CHECK:-1}" != "0" ] && [ -n "${DEVBUILD_BOT_NAME:-}" ] && [ -n "${DEVBUILD_HOST:-}" ]; then
+  if [ "${MYRMIDON_REFLINK_CHECK:-1}" != "0" ] && command -v reflink_self_check >/dev/null 2>&1; then timeout 120 reflink_self_check || log "WARNING: reflink self-check timed out or failed"; fi
+  if [ "${MYRMIDON_UV_CHECK:-1}" != "0" ] && command -v uv_cache_self_check >/dev/null 2>&1; then timeout 120 uv_cache_self_check || log "WARNING: uv cache self-check timed out or failed"; fi
+  if [ "${MYRMIDON_GIT_OBJECTS_CHECK:-1}" != "0" ] && command -v git_objects_self_check >/dev/null 2>&1; then timeout 120 git_objects_self_check || log "WARNING: shared-objects self-check timed out or failed"; fi
+  if [ "${MYRMIDON_DEVBUILD_CHECK:-1}" != "0" ] && command -v devbuild_self_check >/dev/null 2>&1 && [ -n "${DEVBUILD_BOT_NAME:-}" ] && [ -n "${DEVBUILD_HOST:-}" ]; then
     timeout 120 devbuild_self_check || log "WARNING: devbuild self-check timed out or failed"
   fi
 }
