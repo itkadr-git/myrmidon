@@ -3973,37 +3973,6 @@ export function recoveryService(
     successfulRunHandoffEvidence?: SuccessfulRunHandoffRecoveryEvidence | null;
     rerouteToSharedQueue?: boolean;
   }) {
-    const comment = input.comment?.trim();
-    if (input.rerouteToSharedQueue && !comment) {
-      await issuesSvc.addComment(
-        input.issue.id,
-        `Recovery returned this issue to the shared engineer queue (${input.latestRun?.errorCode ?? input.recoveryCause ?? "stranded_assigned_issue"}).`,
-        {},
-        { authorType: "system" },
-      );
-    }
-    if (comment) {
-      await issuesSvc.addComment(input.issue.id, comment, {}, { authorType: "system" });
-    }
-    if (input.rerouteToSharedQueue) {
-      const rerouted = await rerouteStrandedIssueToSharedQueue({
-        issue: input.issue,
-        reason: input.latestRun?.errorCode ?? input.recoveryCause ?? "stranded_assigned_issue",
-        latestRun: input.latestRun,
-        previousStatus: input.previousStatus,
-        recoveryCause: input.recoveryCause,
-        successfulRunHandoffEvidence: input.successfulRunHandoffEvidence,
-      });
-      if (rerouted) {
-        await issuesSvc.addComment(
-          input.issue.id,
-          `Recovery returned this stranded issue to the ${input.issue.assigneeAgentId ? "original assignment" : "shared unassigned queue"}.`,
-          {},
-          { authorType: "system" },
-        );
-        return input.issue;
-      }
-    }
     if (isStrandedIssueRecoveryIssue(input.issue)) {
       const activeActions = await db
         .select({ id: issueRecoveryActions.id })
