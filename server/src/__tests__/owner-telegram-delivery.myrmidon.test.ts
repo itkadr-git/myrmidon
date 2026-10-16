@@ -275,7 +275,7 @@ describeEmbeddedPostgres(
           questions: [
             {
               id: "deploy-window",
-              header: "Choose a deploy window",
+              header: "Deploy window",
               prompt: "Which deploy window?",
               helpText: "Choose one and include any timing constraints.",
               selectionMode: "single" as const,
@@ -306,7 +306,7 @@ describeEmbeddedPostgres(
         text?: string;
         interaction?: { id?: string; card?: { actions?: unknown[] } };
       };
-      expect(payload.text).toContain("Owner question about the release");
+      expect(payload.text).toContain("Deploy window");
       expect(payload.text).toContain("Which deploy window?");
       expect(payload.text).toContain("Choose one and include any timing constraints.");
       expect(payload.text).toContain("1. Morning — Before noon");

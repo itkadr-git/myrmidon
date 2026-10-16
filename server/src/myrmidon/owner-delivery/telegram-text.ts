@@ -36,7 +36,10 @@ export function telegramOwnerQuestionText(
   if (questionSet?.description?.trim()) lines.push(questionSet.description.trim(), "");
   if (questionSet) {
     for (const question of questionSet.questions) {
-      lines.push(question.header?.trim() || question.prompt.trim());
+      const header = question.header?.trim();
+      const prompt = question.prompt.trim();
+      if (header) lines.push(header);
+      if (!header || header !== prompt) lines.push(prompt);
       if (question.helpText?.trim()) lines.push(question.helpText.trim());
       for (const [index, option] of (question.options ?? []).entries()) {
         const recommendation = option.recommended ? " (рекомендуется)" : "";
