@@ -145,11 +145,11 @@ describeEmbeddedPostgres("run-dispatch: pending interaction addressee wake (P2)"
   });
 
   it("keeps a productive continuation recovery queued after the issue is reassigned", async () => {
-    const { companyId, reviewerId, issueId } = await seed();
+    const { companyId, assigneeId, reviewerId, issueId } = await seed();
     await db.update(issues).set({ assigneeAgentId: reviewerId }).where(eq(issues.id, issueId));
     const runId = await seedRun({
       companyId,
-      agentId: randomUUID(),
+      agentId: assigneeId,
       contextSnapshot: {
         issueId,
         wakeReason: "issue_continuation_needed",
