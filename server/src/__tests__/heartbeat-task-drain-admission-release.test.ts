@@ -11,6 +11,7 @@ import {
   createDb,
   heartbeatRunEvents,
   heartbeatRuns,
+  heartbeatRunContinuations,
   issues,
 } from "@paperclipai/db";
 import {
@@ -49,6 +50,7 @@ describeEmbeddedPostgres("heartbeat task-drain admission release", () => {
 
   async function deleteHeartbeatRunsWithDependents() {
     for (let attempt = 0; attempt < 5; attempt += 1) {
+      await db.delete(heartbeatRunContinuations);
       await db.delete(heartbeatRunEvents);
       await db.delete(activityLog);
       try {
@@ -176,10 +178,19 @@ describeEmbeddedPostgres("heartbeat task-drain admission release", () => {
     const heartbeat = heartbeatService(db);
     const retainTrust = vi.spyOn(runTrustPreset, "resolveAndRetainRunTrustPreset").mockImplementation(async (_db, input) => {
       const runDb = _db as typeof db;
-      await runDb
-        .update(heartbeatRuns)
-        .set({ status: "running", startedAt: new Date() })
-        .where(eq(heartbeatRuns.id, input.runId));
+      await runDb.insert(heartbeatRuns).values({
+        id: input.runId,
+        companyId,
+        agentId,
+        invocationSource: "assignment",
+        triggerDetail: "system",
+        status: "running",
+        startedAt: new Date(),
+        contextSnapshot: { issueId, wakeReason: "issue_assigned" },
+      }).onConflictDoUpdate({
+        target: heartbeatRuns.id,
+        set: { status: "running", startedAt: new Date() },
+      });
       return { trustPreset: { kind: "standard" }, executionPolicy: null } as never;
     });
     let activePromise: Promise<unknown> | undefined;
