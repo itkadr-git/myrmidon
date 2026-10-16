@@ -1,6 +1,6 @@
 # Open issue project backfill
 
-This tool is a snapshot-based, read-only planner. It never connects to Paperclip or changes issue records; production application remains an operator/release action after review and CI.
+This tool is a snapshot-based, read-only planner. It never connects to Myrmidon or changes issue records; production application remains an operator/release action after review and CI.
 
 ## Input
 
