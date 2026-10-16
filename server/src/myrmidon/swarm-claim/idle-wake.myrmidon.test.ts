@@ -76,10 +76,14 @@ describe("myrmidon(1.6.1 SWARM-IDLE-WAKE) sweep pass", () => {
       [{ id: "released-issue", status: "todo", assigneeAgentId: null }], // claim lock/read
     ];
     let releasedQueryIndex = 0;
-    const queryResult = <T>() => {
-      const result = fakeQueryResults[releasedQueryIndex++] ?? [];
-      return Promise.resolve(result as T[]);
-    };
+    const queryResult = <T>() => ({
+      limit: (limit: number) => {
+        const result = fakeQueryResults[releasedQueryIndex++] ?? [];
+        return Promise.resolve(result.slice(0, limit) as T[]);
+      },
+      then: (resolve: (rows: T[]) => unknown, reject?: (reason: unknown) => unknown) =>
+        Promise.resolve((fakeQueryResults[releasedQueryIndex++] ?? []) as T[]).then(resolve, reject),
+    });
     const db = {
       query: { issues: issueTable },
       select: () => ({
