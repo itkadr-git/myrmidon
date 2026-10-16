@@ -2579,10 +2579,11 @@ export function recoveryService(
       .limit(1);
     if (!existingIssue || existingIssue.status === "done" || existingIssue.status === "cancelled") return false;
     const blockers = await existingUnresolvedBlockerIssues(input.issue.companyId, input.issue.id);
-    if (blockers.length > 0) {
+    const blockedByIssueIds = blockers.map((blocker) => blocker.id);
+    if (blockedByIssueIds.length > 0) {
       await issuesSvc.update(existingIssue.id, {
         status: "blocked",
-        blockedByIssueIds: blockers.map((blocker) => blocker.id),
+        blockedByIssueIds,
       });
       return false;
     }
