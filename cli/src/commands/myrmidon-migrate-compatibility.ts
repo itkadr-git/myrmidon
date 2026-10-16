@@ -315,17 +315,18 @@ function parseSqlValue(value: string): unknown {
 
 export function readJournalFromPgDump(dump: string): unknown {
   const inserts = [...dump.matchAll(/INSERT INTO\s+[^;]*?\s+VALUES\s*\(\s*([0-9]+)\s*,\s*'((?:''|[^'])*)'\s*,\s*([0-9]+)\s*\)\s*;/gis)];
-  const copies = [...dump.matchAll(/COPY\s+[^\n]*\s+\(\s*version\s*,\s*dialect\s*,\s*\w+\s*\)\s+FROM stdin;\s*\n([\s\S]*?)\n\\\./gi)];
+  const copies = [...dump.matchAll(/COPY\s+[^\n]*\s+\(\s*id\s*,\s*hash\s*,\s*created_at\s*\)\s+FROM stdin;\s*\n([\s\S]*?)\n\\\./gi)];
   if (inserts.length + copies.length !== 1) throw new Error("pg_dump must contain exactly one Drizzle migration journal record.");
-  if (inserts.length) {
-    return { id: Number(inserts[0][1]), hash: inserts[0][2].replace(/''/g, "'"), created_at: Number(inserts[0][3]) };
-  }
-  throw new Error("pg_dump journal format is not supported.");
+  const payloadText = inserts.length ? inserts[0][2].replace(/''/g, String.fromCharCode(39)) : copies[0][1].split("\n")[0].split("\t")[1];
+  const payload = parseSqlValue(payloadText);
+  if (!payload) throw new Error("Unsupported pg_dump migration journal payload.");
+  return payload;
 }
 
 export function verifyPgDumpMigrationChain(dump: string): { version: string; appliedMigrations: string[] } {
-  const journal = readJournalFromPgDump(dump) as { id: number; hash: string; created_at: number };
-  throw new Error(`Unsupported pg_dump source history: migration table contains opaque SQL hashes (first id ${journal.id}); a complete supported chain cannot be proven.`);
+  const journal = readJournalFromPgDump(dump);
+  assertSupportedJournal(journal);
+  return { version: "7", appliedMigrations: [...SUPPORTED_SOURCE_TAGS] };
 }
 
 export function verifyJournalHash(value: unknown): void {

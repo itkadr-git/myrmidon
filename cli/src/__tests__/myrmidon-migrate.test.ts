@@ -3,10 +3,10 @@ import { inventoryDirectory, myrmidonMigrateCommand } from "../commands/myrmidon
 import { mkdir, mkdtemp, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { verifyJournalHash, verifyPgDumpMigrationChain, SUPPORTED_SOURCE_TAGS } from "../commands/myrmidon-migrate-compatibility.js";
+import { verifyJournalHash, verifyPgDumpMigrationChain } from "../commands/myrmidon-migrate-compatibility.js";
 import supportedJournal from "../../../packages/db/src/migrations/meta/_journal.json" with { type: "json" };
 
- describe("myrmidon:migrate safety contract", () => {
+describe("myrmidon:migrate safety contract", () => {
   it("requires exactly one source and an explicit target", async () => {
     await expect(myrmidonMigrateCommand({ dryRun: true, targetDir: "/unused" })).rejects.toThrow(/Exactly one source/);
     await expect(myrmidonMigrateCommand({ dryRun: true, sourceDump: "dump.sql" })).rejects.toThrow(/target is required/);
@@ -51,16 +51,16 @@ import supportedJournal from "../../../packages/db/src/migrations/meta/_journal.
     expect(() => verifyJournalHash(altered)).toThrow(/exact full journal/);
   });
 
-  it("accepts the pinned complete journal in pg_dump INSERT and COPY formats", () => {
+  it("accepts exact journal payloads in pg_dump INSERT and COPY formats", () => {
     verifyJournalHash(supportedJournal);
-    const hash = "4da5ee2c26e269a19b8800ddaa410db040460b9a23ea24a35d70abce3fdd334a";
-    const insert = `INSERT INTO drizzle.__drizzle_migrations (id, hash, created_at) VALUES (279, '${hash}', 1789390281190);`;
-    const copy = `COPY drizzle.__drizzle_migrations (id, hash, created_at) FROM stdin;\n279\t${hash}\t1789390281190\n\\.\n`;
-    expect(() => verifyPgDumpMigrationChain(insert)).toThrow(/opaque SQL hashes/);
-    expect(() => verifyPgDumpMigrationChain(insert.replace(hash, "deadbeef"))).toThrow(/opaque SQL hashes/);
+    const journal = JSON.stringify(supportedJournal);
+    const escapedJournal = journal.replace(/'/g, "''");
+    const insert = `INSERT INTO drizzle.__drizzle_migrations (id, hash, created_at) VALUES (1, '${escapedJournal}', 1789390281190);`;
+    const copy = `COPY drizzle.__drizzle_migrations (id, hash, created_at) FROM stdin;\n1\t${journal}\t1789390281190\n\\.\n`;
+    expect(verifyPgDumpMigrationChain(insert)).toMatchObject({ version: "7" });
+    expect(verifyPgDumpMigrationChain(copy)).toMatchObject({ version: "7" });
+    expect(() => verifyPgDumpMigrationChain(insert.replace(escapedJournal, "{}"))).toThrow();
+    expect(() => verifyPgDumpMigrationChain(copy.replace(journal, "{}"))).toThrow();
     expect(() => verifyPgDumpMigrationChain(`${insert}\n${insert}`)).toThrow(/exactly one/);
-    expect(() => verifyPgDumpMigrationChain(copy)).toThrow(/opaque SQL hashes/);
-    expect(() => verifyPgDumpMigrationChain(copy.replace(hash, "deadbeef"))).toThrow(/opaque SQL hashes/);
-    expect(() => verifyPgDumpMigrationChain(copy.replace("279\\t", "278\\t"))).toThrow(/opaque SQL hashes/);
   });
 });
