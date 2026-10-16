@@ -12,12 +12,14 @@ export function ExternalSessionsPanel({
   issueIdentifier,
   agentId,
   agentModel,
+  canLaunch = false,
 }: {
   companyId: string;
   issueId: string;
   issueIdentifier: string;
   agentId: string;
   agentModel: string | null;
+  canLaunch?: boolean;
 }) {
   const queryClient = useQueryClient();
   const [connectionId, setConnectionId] = useState("");
@@ -26,7 +28,7 @@ export function ExternalSessionsPanel({
   const connectionsQuery = useQuery({
     queryKey: ["ai-connections", companyId, agentId],
     queryFn: () => aiConnectionsApi.list(companyId, agentId),
-    enabled: Boolean(agentId),
+    enabled: Boolean(agentId && canLaunch),
   });
   const sessionsQuery = useQuery({
     queryKey: ["external-sessions", companyId, issueId],
@@ -62,22 +64,26 @@ export function ExternalSessionsPanel({
   return (
     <section className="space-y-3 rounded-lg border border-border p-3" aria-label="External sessions">
       {!agentId && <p className="text-sm text-muted-foreground">Assign this task to an agent before starting an external session.</p>}
-      <div className="flex flex-wrap items-end gap-2">
-        <label className="grid min-w-48 gap-1 text-sm">
-          Managed connection
-          <select className="rounded border border-border bg-background px-2 py-1" value={connectionId} onChange={(event) => setConnectionId(event.target.value)}>
-            <option value="">Select connection</option>
-            {connections.map((connection) => <option key={connection.id} value={connection.id}>{connection.name}</option>)}
-          </select>
-        </label>
-        <label className="grid min-w-40 gap-1 text-sm">
-          Model
-          <input className="rounded border border-border bg-background px-2 py-1" value={model} onChange={(event) => setModel(event.target.value)} />
-        </label>
-        <button type="button" className="rounded bg-primary px-3 py-1.5 text-primary-foreground disabled:opacity-50" disabled={!connectionId || !model.trim() || launch.isPending || !connections.length} onClick={() => launch.mutate()}>
-          {launch.isPending ? "Starting…" : "Start external session"}
-        </button>
-      </div>
+      {canLaunch ? (
+        <div className="flex flex-wrap items-end gap-2">
+          <label className="grid min-w-48 gap-1 text-sm">
+            Managed connection
+            <select className="rounded border border-border bg-background px-2 py-1" value={connectionId} onChange={(event) => setConnectionId(event.target.value)}>
+              <option value="">Select connection</option>
+              {connections.map((connection) => <option key={connection.id} value={connection.id}>{connection.name}</option>)}
+            </select>
+          </label>
+          <label className="grid min-w-40 gap-1 text-sm">
+            Model
+            <input className="rounded border border-border bg-background px-2 py-1" value={model} onChange={(event) => setModel(event.target.value)} />
+          </label>
+          <button type="button" className="rounded bg-primary px-3 py-1.5 text-primary-foreground disabled:opacity-50" disabled={!connectionId || !model.trim() || launch.isPending || !connections.length} onClick={() => launch.mutate()}>
+            {launch.isPending ? "Starting…" : "Start external session"}
+          </button>
+        </div>
+      ) : (
+        <p className="text-sm text-muted-foreground">Starting external sessions is unavailable until the durable session runner is enabled.</p>
+      )}
       {connectionsQuery.isError && <p role="alert" className="text-sm text-destructive">Could not load managed connections.</p>}
       {launch.isError && <p role="alert" className="text-sm text-destructive">{launch.error.message}</p>}
       {sessionsQuery.isError && <p role="alert" className="text-sm text-destructive">Could not load external sessions.</p>}
