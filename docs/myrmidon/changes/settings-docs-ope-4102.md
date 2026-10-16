@@ -2,7 +2,6 @@
 settings-section: Track 5 — operations
 ---
 ## settings-en-replace
-<!-- section: 1.6.1 — BOT-DISK B: shared package cache for bot containers -->
 
 | `MYRMIDON_MCP_TOKEN_*` | MCP-* | Generated per profile from company secrets | The variable name is generated from each `MYRMIDON_BOT_MCP_SERVERS` entry (`MYRMIDON_MCP_TOKEN_<NAME>`, normalized to uppercase letters, digits and underscores); its value is the corresponding company-secret token, placed only in the bot profile's `hermes/.env` (0600) and referenced by `config.yaml`. Names currently include `BOARD`, `DOCS`, `RAGFLOW`, and `PAPERCLIP_BOARD` when those servers are configured | Not set directly by the operator. Configure the server name and `tokenSecret` in `MYRMIDON_BOT_MCP_SERVERS`; the company secret must exist and be non-empty or profile assembly fails. `noAuth` entries have no token variable |
 
@@ -12,7 +11,6 @@ settings-section: Track 5 — operations
 | `PAPERCLIP_TEST_CAPTURE_PATH` | TEST | unset | Test-only path used by cursor local execution tests to capture the child process environment | Development/testing only; test harness input, not an operator setting and not shown in UI |
 
 ## settings-ru-replace
-<!-- section: 1.6.5 — Самоорганизация (рой) -->
 | `MYRMIDON_BOT_CANARY_STEP_TIMEOUT_SEC` | R5-B | нет | Ключ бота-канарейки (agentId): новый образ применяется сначала к этому одному боту, с проверкой состояния здоровья и проверочным прогоном, прежде чем волны | Не задан — задача не может быть создана (503 с подсказкой): канарейка выбирается явно, не угадывается. Канарейка должна быть контейнерным ботом, которого собирает сверка (иначе задача отменяется с причиной). Читается при создании задачи |
 | `MYRMIDON_BOT_CANARY_WAVE_SIZE` | R5-B | `4` | Сколько ботов в одной волне после успеха канарейки (по одному боту за раз внутри волны, каждый через свое окно обслуживания агента) | От 1 до 32; значение по умолчанию 4 такое же, как и лимит параллели сверки (`RECONCILE_CONCURRENCY`), поэтому волна не занимает больше памяти, чем обычный проход |
 | `MYRMIDON_BOT_CANARY_STEP_TIMEOUT_SEC` | R5-B | `1800` | Сколько секунд задача может стоять в одном статусе, прежде чем отменяется сама | От 60 до 86400 |
