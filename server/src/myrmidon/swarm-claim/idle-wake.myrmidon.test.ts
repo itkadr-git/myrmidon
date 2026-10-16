@@ -11,6 +11,7 @@ import {
   type SwarmClaimSettings,
   type SwarmQueueCandidate,
 } from "@paperclipai/shared";
+import { companies } from "@paperclipai/db";
 import { claimCovers, selectQueueForAgent } from "./domain.js";
 import { createSwarmClaimSweeper } from "./sweep.js";
 import type { SwarmClaimEnqueueWakeup } from "./service.js";
@@ -72,68 +73,52 @@ describe("myrmidon(1.6.1 SWARM-IDLE-WAKE) sweep pass", () => {
       }]),
       update: vi.fn(async () => [{ id: "released-issue" }]),
     };
-    let whereLimitCalls = 0;
-    let whereCalls = 0;
-    const queryResult = <T>(rows: T[] = []) => ({
-      limit: (limit: number) => Promise.resolve(rows.slice(0, limit)),
-      then: (resolve: (value: T[]) => unknown, reject?: (reason: unknown) => unknown) =>
-        Promise.resolve(rows).then(resolve, reject),
-    });
     const db = {
       query: { issues: issueTable },
-      select: () => ({
-        from: () => ({
+      select: (projection: Record<string, unknown>) => ({
+        from: (table: unknown) => ({
           innerJoin: () => ({
             where: () => ({
-              orderBy: () => ({
-                limit: (limit: number) => Promise.resolve([
-                  { id: "idle-agent", companyId: "company-1", name: "Idle agent", reportsTo: null, role: "engineer", status: "idle", metadata: {} },
-                ].slice(0, limit)),
-              }),
-              groupBy: empty,
-              limit: empty,
-              then: (resolve: (rows: unknown[]) => unknown) => Promise.resolve([
-                { claim: { id: "claim-old", issueId: "released-issue", agentId: "former-agent", heartbeatAt: NOW, expiresAt: new Date(NOW.getTime() - 60_000), releasedAt: null } },
-              ]).then(resolve),
+              orderBy: () => Promise.resolve([
+                { id: "idle-agent", companyId: "company-1", name: "Idle agent", reportsTo: null, role: "engineer", status: "idle", metadata: {} },
+              ]),
             }),
           }),
           leftJoin: () => ({
             leftJoin: () => ({
               where: () => ({
-                orderBy: () => Promise.resolve([
-                  {
-                    issueId: "released-issue",
-                    identifier: "ENG-42",
-                    priority: "medium",
-                    pheromoneStrength: 0,
-                    failedRunsSinceLastChange: 0,
-                    queuedAt: NOW,
-                    assigneeAgentId: null,
-                    projectId: null,
-                  },
-                ]),
+                orderBy: () => Promise.resolve([{
+                  issueId: "released-issue",
+                  identifier: "ENG-42",
+                  priority: "medium",
+                  pheromoneStrength: 0,
+                  failedRunsSinceLastChange: 0,
+                  queuedAt: NOW,
+                  assigneeAgentId: null,
+                  projectId: null,
+                }]),
               }),
             }),
           }),
           where: () => {
-            whereCalls += 1;
-            const queryNumber = whereCalls;
+            if (table === companies) return { limit: (limit: number) => Promise.resolve([{ id: "company-1" }].slice(0, limit)) };
+            if (projection && "agentId" in projection) return Promise.resolve([]);
+            if (projection && "activeClaims" in projection) return Promise.resolve([]);
             return {
-              orderBy: () => ({ limit: empty }),
+              limit: (limit: number) => Promise.resolve([
+                { id: "released-issue", status: "todo", assigneeAgentId: null },
+              ].slice(0, limit)),
               groupBy: empty,
-              limit: (limit: number) => {
-                whereLimitCalls += 1;
-                // Readiness re-checks and active-lease counts are both bounded
-                // reads; distinguish them by the originating query, not call order.
-                const rows = queryNumber === 1
-                  ? [{ id: "released-issue", status: "todo", assigneeAgentId: null }]
-                  : [];
-                return Promise.resolve(rows.slice(0, limit));
-              },
-              then: (resolve: (rows: unknown[]) => unknown) => Promise.resolve([]).then(resolve),
+              then: (resolve: (rows: unknown[]) => unknown) => Promise.resolve([
+                { claim: { id: "claim-old", issueId: "released-issue", agentId: "former-agent", heartbeatAt: NOW, expiresAt: new Date(NOW.getTime() - 60_000), releasedAt: null } },
+              ]).then(resolve),
             };
           },
-          for: () => queryResult([{ status: "todo", assigneeAgentId: null }]),
+          for: () => ({
+            then: (resolve: (rows: unknown[]) => unknown) => Promise.resolve([
+              { status: "todo", assigneeAgentId: null },
+            ]).then(resolve),
+          }),
         }),
       }),
       insert: () => ({
