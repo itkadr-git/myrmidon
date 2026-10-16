@@ -14,6 +14,7 @@ import { Router } from "express";
 import type { Db } from "@paperclipai/db";
 import { companies } from "@paperclipai/db";
 import { z } from "zod";
+import type { HumanCompanyMembershipRole } from "@paperclipai/shared";
 import {
   patchAuthSelfSignUpSettingsSchema,
   normalizeAuthSelfSignUpSettings,
@@ -43,7 +44,18 @@ const createUserSchema = z
     companyId: z.string().uuid().optional(),
     companyRole: z.enum(["owner", "admin", "operator", "viewer"]).optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((input, ctx) => {
+    if (input.role === "member" && !input.companyId) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["companyId"], message: "companyId is required for company members" });
+    }
+    if (input.role === "member" && !input.companyRole) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["companyRole"], message: "companyRole is required for company members" });
+    }
+    if (input.role === "instance_admin" && (input.companyId || input.companyRole)) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["companyId"], message: "Company access cannot be combined with instance_admin" });
+    }
+  });
 
 const patchUserSchema = z
   .object({
@@ -109,6 +121,7 @@ export function usersAdminRoutes(db: Db) {
       try {
         const created = await createUser(db, {
           ...(req.body as z.infer<typeof createUserSchema>),
+          companyRole: req.body.companyRole as HumanCompanyMembershipRole | undefined,
           actorUserId: actor.actorId,
         });
         for (const companyId of await auditCompanyIds(db)) {
@@ -211,7 +224,8 @@ export function usersAdminRoutes(db: Db) {
       res.status(400).send("Password setup token is required");
       return;
     }
-    res.type("html").send(`<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Set password</title></head><body><main><h1>Set your password</h1><form id="password-form"><label>New password <input name="password" type="password" minlength="8" required autocomplete="new-password"></label><button>Save password</button><p id="result" role="status"></p></form></main><script>const token=${JSON.stringify(token)};document.getElementById('password-form').addEventListener('submit',async e=>{e.preventDefault();const p=e.currentTarget.elements.password.value;const r=await fetch('/api/myrmidon/users-admin-a/password-set',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({token,newPassword:p})});document.getElementById('result').textContent=r.ok?'Password saved. You can now sign in.':'This password link is invalid or expired.';});</script></body></html>`);
+    const escapedToken = JSON.stringify(token).replace(/</g, "\\u003c");
+    res.type("html").send(`<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Set password</title></head><body><main><h1>Set your password</h1><form id="password-form"><label>New password <input name="password" type="password" minlength="8" required autocomplete="new-password"></label><button>Save password</button><p id="result" role="status"></p></form></main><script>const token=${escapedToken};document.getElementById('password-form').addEventListener('submit',async e=>{e.preventDefault();const p=e.currentTarget.elements.password.value;const r=await fetch('/api/myrmidon/users-admin-a/password-set',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({token,newPassword:p})});document.getElementById('result').textContent=r.ok?'Password saved. You can now sign in.':'This password link is invalid or expired.';});</script></body></html>`);
   });
 
   router.get("/myrmidon/users-admin-a/self-sign-up", async (req, res) => {
