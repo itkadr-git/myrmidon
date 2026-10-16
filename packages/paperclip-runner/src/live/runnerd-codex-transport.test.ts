@@ -4508,16 +4508,22 @@ it.each([
     let firstCloseCompletedState: Awaited<
       ReturnType<typeof readCloseDiagnostic>
     > | null = null;
-    const withinCloseDeadline = async <T>(label: string, promise: Promise<T>) =>
-      await Promise.race([
-        promise,
-        new Promise<never>((_resolve, reject) =>
-          setTimeout(
-            () => reject(new Error(`${label} did not settle within 30s`)),
-            30_000,
-          ),
-        ),
-      ]);
+    const withinCloseDeadline = async <T>(label: string, promise: Promise<T>) => {
+      let timer: NodeJS.Timeout | undefined;
+      try {
+        return await Promise.race([
+          promise,
+          new Promise<never>((_resolve, reject) => {
+            timer = setTimeout(
+              () => reject(new Error(`${label} did not settle within 30s`)),
+              30_000,
+            );
+          }),
+        ]);
+      } finally {
+        if (timer) clearTimeout(timer);
+      }
+    };
     const identity = {
       runnerInstanceId: "runner-close-backlog",
       environmentLeaseId: "lease-close-backlog",
