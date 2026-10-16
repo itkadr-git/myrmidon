@@ -93,13 +93,13 @@ describeEmbeddedPostgres("run-dispatch: pending interaction addressee wake (P2)"
     return { companyId, assigneeId, reviewerId, issueId, interactionId };
   }
 
-  async function seedRun(input: { companyId: string; agentId: string; contextSnapshot: Record<string, unknown> }) {
+  async function seedRun(input: { companyId: string; agentId: string; contextSnapshot: Record<string, unknown>; invocationSource?: "automation" | "on_demand" }) {
     const runId = randomUUID();
     await db.insert(heartbeatRuns).values({
       id: runId,
       companyId: input.companyId,
       agentId: input.agentId,
-      invocationSource: "automation",
+      invocationSource: input.invocationSource ?? "automation",
       status: "queued",
       contextSnapshot: input.contextSnapshot,
     });
@@ -173,10 +173,16 @@ describeEmbeddedPostgres("run-dispatch: pending interaction addressee wake (P2)"
 
   it("does not let a non-automation invocation use productive recovery ownership", async () => {
     const { companyId, reviewerId, issueId } = await seed();
-    const runId = randomUUID();
-    await db.insert(heartbeatRuns).values({
-      id: runId, companyId, agentId: reviewerId, invocationSource: "on_demand", status: "queued",
-      contextSnapshot: { issueId, wakeReason: "issue_continuation_needed", retryReason: "issue_continuation_needed", source: "issue.productive_terminal_continuation_recovery" },
+    const runId = await seedRun({
+      companyId,
+      agentId: reviewerId,
+      invocationSource: "on_demand",
+      contextSnapshot: {
+        issueId,
+        wakeReason: "issue_continuation_needed",
+        retryReason: "issue_continuation_needed",
+        source: "issue.productive_terminal_continuation_recovery",
+      },
     });
 
     const outcome = await createPostgresRunDispatchAdapter(db).cancelStaleQueuedRun({

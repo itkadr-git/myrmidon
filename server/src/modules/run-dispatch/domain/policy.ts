@@ -183,6 +183,7 @@ type OwnershipFacts = {
   isPendingInteractionAddresseeWake?: boolean;
   isCurrentReviewParticipant?: boolean;
   isAuthorizedSourceScopedRecovery?: boolean;
+  isProductiveContinuationRecovery?: boolean;
 };
 
 type OwnershipOutcome = "current_owner" | "reassigned";
@@ -587,6 +588,7 @@ export function decideQueuedRunStaleness(
       facts.reviewParticipant.participantIsAgent &&
       facts.reviewParticipant.participantAgentId === facts.runAgentId,
     isAuthorizedSourceScopedRecovery: facts.isAuthorizedSourceScopedRecovery,
+    isProductiveContinuationRecovery: facts.isProductiveContinuationRecovery,
   });
   if (ownership === "reassigned") {
     return {
