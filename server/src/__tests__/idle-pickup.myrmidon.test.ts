@@ -8,6 +8,7 @@ import {
   documentRevisions,
   documents,
   heartbeatRuns,
+  issueComments,
   issuePlanDecompositions,
   issueRelations,
   issues,
@@ -31,13 +32,16 @@ vi.mock("../middleware/logger.js", () => ({
 
 import {
   createIdlePickupSweeper,
+  DEFAULT_IDLE_PICKUP_RECENT_SUCCESS_WINDOW_MS,
   findTopReadyIssueForAgent,
   idlePickupForAgent,
   IDLE_PICKUP_ENABLED_ENV,
   IDLE_PICKUP_INTERVAL_SEC_ENV,
+  IDLE_PICKUP_RECENT_SUCCESS_WINDOW_MS_ENV,
   IDLE_WAKE_REASON,
   readIdlePickupEnabled,
   readIdlePickupIntervalSec,
+  readIdlePickupRecentSuccessWindowMs,
 } from "../myrmidon/idle-pickup.ts";
 
 // IDLE-PICKUP (1.3): the board wakes an agent with a free queue on its
@@ -70,6 +74,18 @@ describe("settings readers", () => {
     expect(readIdlePickupIntervalSec({ [IDLE_PICKUP_INTERVAL_SEC_ENV]: "300" })).toBe(300);
   });
 
+  it("the quiet window after a successful run is two hours by default", () => {
+    expect(DEFAULT_IDLE_PICKUP_RECENT_SUCCESS_WINDOW_MS).toBe(2 * 60 * 60 * 1000);
+    expect(readIdlePickupRecentSuccessWindowMs({})).toBe(2 * 60 * 60 * 1000);
+    for (const raw of ["", "  ", "abc", "-5", "1.5"]) {
+      const env: Record<string, string | undefined> = {};
+      if (raw !== undefined) env[IDLE_PICKUP_RECENT_SUCCESS_WINDOW_MS_ENV] = raw;
+      expect(readIdlePickupRecentSuccessWindowMs(env), `raw=${JSON.stringify(raw)}`).toBe(2 * 60 * 60 * 1000);
+    }
+    expect(readIdlePickupRecentSuccessWindowMs({ [IDLE_PICKUP_RECENT_SUCCESS_WINDOW_MS_ENV]: "3600000" })).toBe(3_600_000);
+    expect(readIdlePickupRecentSuccessWindowMs({ [IDLE_PICKUP_RECENT_SUCCESS_WINDOW_MS_ENV]: "0" })).toBe(0);
+  });
+
   it("the feature is on unless an explicit off value is set (a typo must not disable the fix)", () => {
     expect(readIdlePickupEnabled({})).toBe(true);
     expect(readIdlePickupEnabled({ [IDLE_PICKUP_ENABLED_ENV]: "garbage" })).toBe(true);
@@ -95,6 +111,7 @@ describeEmbeddedPostgres("idlePickupForAgent (IDLE-PICKUP)", () => {
     await db.delete(agentWakeupRequests);
     await db.delete(documentRevisions);
     await db.delete(documents);
+    await db.delete(issueComments);
     await db.delete(issues);
     await db.delete(heartbeatRuns);
     await db.delete(agents);
@@ -217,8 +234,9 @@ describeEmbeddedPostgres("idlePickupForAgent (IDLE-PICKUP)", () => {
     issueId: string;
     finishedAt: Date;
   }) {
+    const id = randomUUID();
     await db.insert(heartbeatRuns).values({
-      id: randomUUID(),
+      id,
       companyId: input.companyId,
       agentId: input.agentId,
       status: "succeeded",
@@ -227,6 +245,29 @@ describeEmbeddedPostgres("idlePickupForAgent (IDLE-PICKUP)", () => {
       startedAt: input.finishedAt,
       finishedAt: input.finishedAt,
     });
+    return id;
+  }
+
+  /** A comment on the issue, optionally attributed to the run that wrote it. */
+  async function seedComment(input: {
+    companyId: string;
+    issueId: string;
+    createdAt: Date;
+    createdByRunId?: string;
+    deletedAt?: Date;
+  }) {
+    const id = randomUUID();
+    await db.insert(issueComments).values({
+      id,
+      companyId: input.companyId,
+      issueId: input.issueId,
+      body: "Any news?",
+      createdAt: input.createdAt,
+      updatedAt: input.createdAt,
+      ...(input.createdByRunId ? { createdByRunId: input.createdByRunId } : {}),
+      ...(input.deletedAt ? { deletedAt: input.deletedAt } : {}),
+    });
+    return id;
   }
 
   function fakeDeps(
@@ -603,6 +644,27 @@ describeEmbeddedPostgres("idlePickupForAgent (IDLE-PICKUP)", () => {
     expect(deps.enqueueWakeup).not.toHaveBeenCalled();
   });
 
+  it("keeps a silent success quiet long past the old 15-minute window (no wake storm)", async () => {
+    const { companyId, agentId } = await seedAgent();
+    const issueId = await seedIssue({ companyId, agentId, status: "in_progress" });
+    await seedSucceededRun({
+      companyId,
+      agentId,
+      issueId,
+      // 40 minutes: inside the 2-hour quiet window, outside the 15-minute one
+      // the board used before — there the sweep woke the same issue again 15
+      // minutes after its run ended, and the next run ended the same way.
+      finishedAt: new Date(Date.now() - 40 * 60 * 1000),
+    });
+    const deps = fakeDeps();
+
+    const result = await idlePickupForAgent(deps, { id: agentId, companyId });
+
+    expect(result.woken).toBe(0);
+    expect(result.alreadyActive).toBe(1);
+    expect(deps.enqueueWakeup).not.toHaveBeenCalled();
+  });
+
   it("wakes an issue whose only succeeded run is older than the recent-success window", async () => {
     const { companyId, agentId } = await seedAgent();
     const issueId = await seedIssue({ companyId, agentId, status: "in_progress" });
@@ -610,8 +672,8 @@ describeEmbeddedPostgres("idlePickupForAgent (IDLE-PICKUP)", () => {
       companyId,
       agentId,
       issueId,
-      // 20 minutes ago: past the 15-minute default window.
-      finishedAt: new Date(Date.now() - 20 * 60 * 1000),
+      // 3 hours ago: past the 2-hour default window.
+      finishedAt: new Date(Date.now() - 3 * 60 * 60 * 1000),
     });
     const deps = fakeDeps();
 
@@ -619,6 +681,106 @@ describeEmbeddedPostgres("idlePickupForAgent (IDLE-PICKUP)", () => {
 
     expect(result.woken).toBe(1);
     expect(result.issueIds).toEqual([issueId]);
+  });
+
+  it("a comment posted after a recent success reopens the issue (the wake still comes)", async () => {
+    const { companyId, agentId } = await seedAgent();
+    const issueId = await seedIssue({ companyId, agentId, status: "in_progress" });
+    await seedSucceededRun({
+      companyId,
+      agentId,
+      issueId,
+      finishedAt: new Date(Date.now() - 40 * 60 * 1000),
+    });
+    // Somebody asked something after the run ended: the issue is not idle work
+    // any more, it is an unanswered question.
+    await seedComment({
+      companyId,
+      issueId,
+      createdAt: new Date(Date.now() - 10 * 60 * 1000),
+    });
+    const deps = fakeDeps();
+
+    const result = await idlePickupForAgent(deps, { id: agentId, companyId });
+
+    expect(result.woken).toBe(1);
+    expect(result.issueIds).toEqual([issueId]);
+  });
+
+  it("a comment the recent run wrote itself does not reopen the issue", async () => {
+    const { companyId, agentId } = await seedAgent();
+    const issueId = await seedIssue({ companyId, agentId, status: "in_progress" });
+    const runId = await seedSucceededRun({
+      companyId,
+      agentId,
+      issueId,
+      finishedAt: new Date(Date.now() - 40 * 60 * 1000),
+    });
+    // The run's own closing report: written by that run, so it is not new input.
+    await seedComment({
+      companyId,
+      issueId,
+      createdAt: new Date(Date.now() - 39 * 60 * 1000),
+      createdByRunId: runId,
+    });
+    const deps = fakeDeps();
+
+    const result = await idlePickupForAgent(deps, { id: agentId, companyId });
+
+    expect(result.woken).toBe(0);
+    expect(result.alreadyActive).toBe(1);
+    expect(deps.enqueueWakeup).not.toHaveBeenCalled();
+  });
+
+  it("a deleted comment does not reopen the issue", async () => {
+    const { companyId, agentId } = await seedAgent();
+    const issueId = await seedIssue({ companyId, agentId, status: "in_progress" });
+    await seedSucceededRun({
+      companyId,
+      agentId,
+      issueId,
+      finishedAt: new Date(Date.now() - 40 * 60 * 1000),
+    });
+    const deletedAt = new Date(Date.now() - 5 * 60 * 1000);
+    await seedComment({
+      companyId,
+      issueId,
+      createdAt: new Date(Date.now() - 10 * 60 * 1000),
+      deletedAt,
+    });
+    const deps = fakeDeps();
+
+    const result = await idlePickupForAgent(deps, { id: agentId, companyId });
+
+    expect(result.woken).toBe(0);
+    expect(result.alreadyActive).toBe(1);
+    expect(deps.enqueueWakeup).not.toHaveBeenCalled();
+  });
+
+  it("the quiet window follows the latest success per issue", async () => {
+    const { companyId, agentId } = await seedAgent();
+    const issueId = await seedIssue({ companyId, agentId, status: "in_progress" });
+    // One old success (3 h ago, past the window) and one recent no-op run whose
+    // comment-less silence is the one that must hold.
+    await seedSucceededRun({
+      companyId,
+      agentId,
+      issueId,
+      finishedAt: new Date(Date.now() - 3 * 60 * 60 * 1000),
+    });
+    await seedSucceededRun({
+      companyId,
+      agentId,
+      issueId,
+      finishedAt: new Date(Date.now() - 30 * 60 * 1000),
+    });
+    const deps = fakeDeps();
+
+    const result = await idlePickupForAgent(deps, { id: agentId, companyId });
+
+    expect(result.woken).toBe(0);
+    expect(result.alreadyActive).toBe(1);
+    expect(deps.enqueueWakeup).not.toHaveBeenCalled();
   });
 
   it("recent-success suppression does not block a different, never-run issue of the same agent", async () => {
