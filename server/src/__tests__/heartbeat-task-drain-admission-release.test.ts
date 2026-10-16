@@ -19,6 +19,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { heartbeatService, getTaskDrainStatus, startTaskDrain, stopTaskDrain } from "../services/heartbeat.ts";
+import { AgentAdapterRegistry } from "../adapters/registry.ts";
 import * as runTrustPreset from "../services/run-trust-preset.ts";
 import { subscribeCompanyLiveEvents } from "../services/live-events.ts";
 
@@ -176,6 +177,11 @@ describeEmbeddedPostgres("heartbeat task-drain admission release", () => {
   it("keeps an active adapter run in flight until graceful shutdown records its retry", async () => {
     const { companyId, agentId, issueId, runId, wakeupRequestId } = await seedQueuedRun();
     const heartbeat = heartbeatService(db);
+    let activePromise: Promise<unknown> | undefined;
+    let gateAdapter: (() => void) | undefined;
+    const adapterGate = new Promise<void>((resolve) => {
+      gateAdapter = resolve;
+    });
     const retainTrust = vi.spyOn(runTrustPreset, "resolveAndRetainRunTrustPreset").mockImplementation(async (_db, input) => {
       const runDb = _db as typeof db;
       await runDb.insert(heartbeatRuns).values({
@@ -199,10 +205,19 @@ describeEmbeddedPostgres("heartbeat task-drain admission release", () => {
         .where(eq(issues.id, issueId));
       return { trustPreset: { kind: "standard" }, executionPolicy: null } as never;
     });
-    let activePromise: Promise<unknown> | undefined;
+    const adapter = vi.spyOn(AgentAdapterRegistry.prototype, "create").mockReturnValue({
+      execute: async () => {
+        await adapterGate;
+        return { status: "success" } as never;
+      },
+    } as never);
     try {
       activePromise = heartbeat.invoke(agentId, "assignment", { issueId }, "system");
       await waitForActiveRun(runId);
+      await db
+        .update(heartbeatRuns)
+        .set({ runnerProfileJson: { adapterDispatch: { adapterType: "hermes_gateway" } } })
+        .where(eq(heartbeatRuns.id, runId));
 
       const activeState = getTaskDrainStatus();
       expect(activeState.activeRuns).toBe(1);
@@ -212,6 +227,7 @@ describeEmbeddedPostgres("heartbeat task-drain admission release", () => {
       const shutdown = await heartbeat.drainRunningRunsForShutdown("SIGTERM", new Date(), [runId]);
       expect(shutdown.interruptedRunIds).toEqual([runId]);
       expect(shutdown.retryRunIds).toEqual([runId]);
+      gateAdapter?.();
       await heartbeat.drainActiveRunExecutions();
       await activePromise;
 
@@ -231,6 +247,7 @@ describeEmbeddedPostgres("heartbeat task-drain admission release", () => {
       expect(getTaskDrainStatus()).toMatchObject({ draining: true, activeRuns: 0, quiescent: true });
     } finally {
       stopTaskDrain();
+      adapter.mockRestore();
       retainTrust.mockRestore();
       await activePromise?.catch(() => undefined);
     }
