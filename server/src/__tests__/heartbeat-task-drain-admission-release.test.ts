@@ -217,6 +217,7 @@ describeEmbeddedPostgres("heartbeat task-drain admission release", () => {
         .update(heartbeatRuns)
         .set({ runnerProfileJson: { adapterDispatch: { adapterType: "hermes_gateway" } } })
         .where(eq(heartbeatRuns.id, runId));
+      gateAdapter?.();
 
       const activeState = getTaskDrainStatus();
       expect(activeState.activeRuns).toBe(1);
@@ -225,8 +226,11 @@ describeEmbeddedPostgres("heartbeat task-drain admission release", () => {
       startTaskDrain({});
       const shutdown = await heartbeat.drainRunningRunsForShutdown("SIGTERM", new Date(), [runId]);
       expect(shutdown.interruptedRunIds).toEqual([runId]);
-      expect(shutdown.retryRunIds).toEqual([runId]);
-      gateAdapter?.();
+      expect(shutdown.retryRunIds).toHaveLength(1);
+      const retryRunId = shutdown.retryRunIds[0]!;
+      expect(retryRunId).not.toBe(runId);
+      expect(retryRunId).toEqual(expect.any(String));
+      expect(gateAdapter).toBeDefined();
       await heartbeat.drainActiveRunExecutions();
       await activePromise;
 
@@ -243,6 +247,13 @@ describeEmbeddedPostgres("heartbeat task-drain admission release", () => {
         .where(eq(agentWakeupRequests.id, wakeupRequestId))
         .then((rows) => rows[0] ?? null);
       expect(wakeup?.status).toBe("cancelled");
+      const retryWakeup = await db
+        .select({ status: agentWakeupRequests.status, reason: agentWakeupRequests.reason })
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.id, retryRunId))
+        .then((rows) => rows[0] ?? null);
+      expect(retryWakeup?.status).toBe("queued");
+      expect(retryWakeup?.reason).toBe("process_lost");
       expect(getTaskDrainStatus()).toMatchObject({ draining: true, activeRuns: 0, quiescent: true });
     } finally {
       stopTaskDrain();
