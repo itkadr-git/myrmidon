@@ -85,6 +85,13 @@ describe("myrmidon(1.6.1 SWARM-IDLE-WAKE) sweep pass", () => {
                 ]),
               }),
             }),
+            innerJoin: () => ({
+              where: () => ({
+                orderBy: () => ({
+                  limit: () => Promise.resolve([]),
+                }),
+              }),
+            }),
             leftJoin: () => ({
               leftJoin: () => ({
                 where: () => ({
