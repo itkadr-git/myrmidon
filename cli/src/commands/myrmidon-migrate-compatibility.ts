@@ -290,6 +290,14 @@ export const SUPPORTED_SOURCE_TAGS = [
 
 type Journal = { version: string; dialect: string; entries: Array<{ idx: number; version: string; when: number; tag: string; breakpoints: boolean }> };
 
+function serializeJournal(journal: { version: string; entries: Array<{ idx: number; version: string; when: number; tag: string; breakpoints: boolean }> }): string {
+  return JSON.stringify({
+    version: journal.version,
+    dialect: "postgresql",
+    entries: journal.entries.map(({ idx, version, when, tag, breakpoints }) => ({ idx, version, when, tag, breakpoints })),
+  });
+}
+
 function assertSupportedJournal(value: unknown): Journal {
   if (!value || typeof value !== "object") throw new Error("Unsupported source migration journal.");
   const journal = value as { version?: unknown; dialect?: unknown; entries?: unknown };
@@ -303,8 +311,8 @@ function assertSupportedJournal(value: unknown): Journal {
   )) {
     throw new Error("Unsupported source migration history; exact full journal hash-chain compatibility is required.");
   }
-  const canonicalEntries = entries.map((entry) => ({ idx: entry.idx, version: entry.version, when: entry.when, tag: entry.tag, breakpoints: entry.breakpoints }));
-  const sha256 = createHash("sha256").update(new TextEncoder().encode(JSON.stringify({ version: journal.version, dialect: "postgresql", entries: canonicalEntries }))).digest("hex");
+  const canonicalEntries = entries.map((entry) => ({ idx: entry.idx as number, version: entry.version as string, when: entry.when as number, tag: entry.tag as string, breakpoints: entry.breakpoints as boolean }));
+  const sha256 = createHash("sha256").update(new TextEncoder().encode(serializeJournal({ version: "7", entries: canonicalEntries }))).digest("hex");
   if (sha256 !== SUPPORTED_SOURCE_JOURNAL.sha256) throw new Error("Unsupported source migration journal dialect or exact metadata hash.");
   return { version: "7", dialect: "postgresql", entries: canonicalEntries as Journal["entries"] };
 }
