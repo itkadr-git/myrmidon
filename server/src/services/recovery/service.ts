@@ -3994,7 +3994,15 @@ export function recoveryService(
         recoveryCause: input.recoveryCause,
         successfulRunHandoffEvidence: input.successfulRunHandoffEvidence,
       });
-      if (rerouted) return input.issue;
+      if (rerouted) {
+        await issuesSvc.addComment(
+          input.issue.id,
+          `Recovery returned this stranded issue to the ${input.issue.assigneeAgentId ? "original assignment" : "shared unassigned queue"}.`,
+          {},
+          { authorType: "system" },
+        );
+        return input.issue;
+      }
     }
     if (isStrandedIssueRecoveryIssue(input.issue)) {
       const activeActions = await db
