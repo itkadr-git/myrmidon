@@ -17294,6 +17294,9 @@ export function heartbeatService(
     companyAgents?: AgentOrgRow[],
   ) {
     if (run.status !== "queued") return run;
+    // Recheck at the last centralized queue boundary so sources that bypass
+    // maintenance-aware sweeps cannot start a run after a window opens.
+    if (await isAgentUnderMaintenance(db, run.agentId)) return null;
     const agent = await getAgent(run.agentId);
     if (!agent) {
       await cancelRunInternal(
