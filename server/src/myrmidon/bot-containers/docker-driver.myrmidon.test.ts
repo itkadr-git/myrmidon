@@ -1345,6 +1345,56 @@ describe("dockerBotContainerDriver against a fake Docker daemon", () => {
       expect(APPLIED_MARKER_CONTAINER_PATH).toBe("/bot/hermes/.myrmidon/applied.json");
     });
 
+    it("keeps a developer image during its initial unhealthy startup window", async () => {
+      const waits: number[] = [];
+      let clock = 0;
+      const devbuild = { host: "devbuild.internal", user: "worker", base: "/build" };
+      const devDriver = dockerBotContainerDriver(
+        {
+          socketPath: daemon.socketPath,
+          volumeRoot: path.join(tmp, "bots"),
+          network: "myrmidon-bots",
+          allowlist: ["myrmidon-hermes-dev:*"],
+          mountSources: [],
+          devbuild,
+        },
+        {
+          healthPollIntervalMs: 5_000,
+          startHealthTimeoutMs: 180_000,
+          sleep: async (ms) => {
+            waits.push(ms);
+            clock += ms;
+            if (clock >= 60_000) bot()!.health = "healthy";
+          },
+          clock: () => clock,
+        },
+      );
+      const devSpec = spec({ image: "myrmidon-hermes-dev:latest" });
+      const devBody = buildCreateContainerRequestBody(devSpec, {
+        volumeRoot: path.join(tmp, "bots"),
+        network: "myrmidon-bots",
+        allowlist: ["myrmidon-hermes-dev:*"],
+        mountSources: [],
+        devbuild,
+      });
+      expect(devBody.Env).toContain("DEVBUILD_BOT_NAME=agent-a");
+      expect(devBody.Env).toContain("DEVBUILD_HOST=devbuild.internal");
+      await devDriver.create(devSpec);
+      await devDriver.writeProfile("agent-a", testProfile());
+      daemon.options.healthOnStart = "unhealthy";
+
+      await devDriver.start("agent-a");
+      expect(waits).toContain(5_000);
+      expect(bot()?.state).toBe("running");
+    });
+
+    it("fails an unhealthy non-developer container without startup grace", async () => {
+      await driver.create(spec());
+      await driver.writeProfile("agent-a", testProfile());
+      daemon.options.healthOnStart = "unhealthy";
+      await expect(driver.start("agent-a")).rejects.toThrow(/reports unhealthy/);
+    });
+
     it("reports Docker's health verdict", async () => {
       await driver.create(spec());
       await driver.writeProfile("agent-a", testProfile());

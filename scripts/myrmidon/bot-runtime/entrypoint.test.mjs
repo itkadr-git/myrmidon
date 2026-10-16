@@ -32,6 +32,18 @@ function hermesHome(envLine) {
 }
 
 describe("docker/bot-runtime/entrypoint.sh", () => {
+  it("declares the gateway before launching slow startup diagnostics", () => {
+    const source = fs.readFileSync(ENTRYPOINT, "utf8");
+    const launch = source.indexOf('hermes gateway run --replace --accept-hooks "$@" &');
+    const diagnostics = source.indexOf("run_startup_diagnostics &", launch);
+    assert.ok(launch >= 0, "gateway must launch as a background child");
+    assert.ok(diagnostics > launch, "diagnostics must start after the gateway launch");
+    assert.match(source, /timeout 120 reflink_self_check/);
+    assert.match(source, /timeout 120 uv_cache_self_check/);
+    assert.match(source, /timeout 120 git_objects_self_check/);
+    assert.match(source, /DEVBUILD_BOT_NAME:-.*DEVBUILD_HOST:-.*devbuild/s);
+  });
+
   it("fails when HERMES_HOME is unset, before even looking at API_SERVER_KEY", () => {
     const result = run({});
     assert.notEqual(result.status, 0);
