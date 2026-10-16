@@ -125,6 +125,15 @@ export function initialForkLanguage(): ForkLanguage {
 export async function setAppLanguage(language: ForkLanguage): Promise<void> {
   storeLanguage(language);
   document.documentElement.lang = language;
+  // myrmidon(1.7-TG-LOCALE): persist the choice to the board user's profile
+  // (the same row the 2.0 Settings → Language screen writes). The bridged
+  // Telegram DM reads that row per message, so picking a language here
+  // changes the bot's answers immediately — no restart, and the choice
+  // follows the person across browsers. Best-effort: offline or a non-board
+  // session keeps the local switch working (the fork UI itself is local).
+  void import("@/api/client")
+    .then((m) => m.api.put("/myrmidon/ui2/language/me", { language }))
+    .catch(() => {});
   const { i18n } = await import("./index");
   if (i18n.language !== language) {
     await i18n.changeLanguage(language);

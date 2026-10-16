@@ -30,6 +30,10 @@ import type {
 } from "@paperclipai/shared";
 import { badRequest, conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import { instanceSettingsService } from "./instance-settings.js";
+// myrmidon(B1c): product name in user-facing texts; see product.ts.
+import { PRODUCT_NAME as PN } from "../myrmidon/product.js";
+// myrmidon(DB-PERF-C-P4): the smoke lab writes profiles, entries and bindings directly.
+import { invalidateToolPolicyCache } from "../myrmidon/tool-policy-cache/runtime.js";
 
 export const SMOKE_LAB_DEMO_EMAIL = "smoke@paperclip.test";
 export const SMOKE_LAB_DEMO_PASSWORD = "smoke-password";
@@ -954,6 +958,8 @@ export function smokeLabService(db: Db, options: {
         createdAt: now,
       }).returning())[0];
 
+    // myrmidon(DB-PERF-C-P4): the lab rewrote a profile, its entries and its binding.
+    invalidateToolPolicyCache(db, input.companyId);
     return { profile, profileEntries, profileBinding };
   }
 
@@ -1098,14 +1104,14 @@ export function smokeLabService(db: Db, options: {
         companyId,
         applicationKey: HTTP_APP_KEY,
         name: "Smoke Lab HTTP MCP fixture",
-        description: "Deterministic loopback HTTP MCP fixture for Paperclip smoke scenarios.",
+        description: `Deterministic loopback HTTP MCP fixture for ${PN} smoke scenarios.`,
         type: "mcp_http",
       });
       const stdioApp = await ensureApplication({
         companyId,
         applicationKey: STDIO_APP_KEY,
         name: "Smoke Lab stdio MCP fixture",
-        description: "Deterministic stdio MCP fixture for Paperclip smoke scenarios.",
+        description: `Deterministic stdio MCP fixture for ${PN} smoke scenarios.`,
         type: "mcp_stdio",
       });
       const httpConnection = await ensureConnection({
@@ -1249,6 +1255,8 @@ export function smokeLabService(db: Db, options: {
         inArray(toolApplications.applicationKey, [HTTP_APP_KEY, STDIO_APP_KEY]),
       ));
       await db.delete(toolProfiles).where(and(eq(toolProfiles.companyId, companyId), eq(toolProfiles.profileKey, PROFILE_KEY)));
+      // myrmidon(DB-PERF-C-P4): the lab removed its own profile rows.
+      invalidateToolPolicyCache(db, companyId);
       return { reset: true };
     },
   };

@@ -26,9 +26,9 @@ Docker socket, no host mounts, and no media tools. (The optional Node.js variant
   and imports `hermes_state`.
 - `hermes-agent`, pinned to a git tag (`HERMES_VERSION`/`HERMES_GIT_REF`
   build args, default `0.21.5` / `v2026.9.24`), installed **editable** from
-  a clean clone of our fork `https://github.com/BastionPrime/hermes-agent`
-  (the fork mirrors upstream tags byte-for-byte; our own hermes changes and
-  pin bumps land there as reviewed commits) — see
+  a clean clone of the author's repository `https://github.com/NousResearch/hermes-agent`
+  at the pinned commit (`HERMES_GIT_SHA`); our own hermes changes live in
+  `docker/bot-runtime/patches/` in this repository — see
   "Why editable, not pip install" below. hermes tags releases by date
   (`vYYYY.M.D`); `v2026.9.24` is the tag we confirmed (via the GitHub API
   and `git ls-remote --tags`, checking `pyproject.toml` on every recent
@@ -193,13 +193,17 @@ Every downloaded toolchain is pinned by exact version and verified by sha256 bef
 mismatch fails the build, the same rule the Node.js variant states above.
 
 **Where things write.** The root filesystem is read-only at run time and the bot's writable
-directories are exactly its three volumes, so:
+directories are exactly its single `/bot` mount (BOT-DISK-D), so:
 
-- the pnpm store defaults to `/workspace/.pnpm-store` via `npm_config_store_dir` — the same
-  mount as the clones, because pnpm hard-links `node_modules` into its store and a hard link
-  cannot cross a mount (a store on `/data` or `/cache` made pnpm copy every package into every
-  clone; 1.6.2 BOT-DISK-C). `pnpm-hardlink-check.sh` proves it at build time. The instance's
-  shared package cache can host the store instead (`pnpmStore: "shared"`, reflink or copy), see
+- the pnpm store defaults to `/workspace/.pnpm-store` via `npm_config_store_dir`, inside that
+  mount like every clone root, because pnpm hard-links `node_modules` into its store and a hard
+  link cannot cross a mount (a store on a separate bind made pnpm copy every package into every
+  clone). `npm_config_package_import_method=hardlink` is set too; pnpm 9 still copies silently
+  when the kernel refuses a link, so `pnpm-hardlink-check.sh` proves the link from `/data/hermes`,
+  `/workspace` and `/scratch` at build time and `entrypoint.sh` repeats the check at every start
+  (`/data/hermes/.myrmidon/hardlink-check.json`, shown on the board). `/cache/pnpm` is a download
+  cache only, never the store; the paths and the method are the `pnpmStoreDir` and
+  `pnpmImportMethod` settings, see
   [docs/myrmidon/bot-disk-cache.md](../../docs/myrmidon/bot-disk-cache.md);
 - `RUSTUP_HOME`/`CARGO_HOME` stay sealed under `/opt` and `cargo` writes its target dir into
   the checked-out workspace;
@@ -214,11 +218,28 @@ Node.js variant documents above: the dockergate image check
 `BASH_ENV` variable name — the dev variant introduces neither.
 
 Checks: the last build step runs `node`, `pnpm`, `go`, `cargo`, `rustc`, `gh`, `jq`, `zstd`,
-`git` and `docker` as uid `10001` in the finished stage and asserts no `PATH` element is under
-a writable root. On pull requests the workflow repeats the toolchain run on the finished image
-with `--read-only`, `--user 10001:10001` and `tmpfs` in place of the volumes, checks the
-contract label and the image user before that, and fails if `dockerd` is present — the image
+`git`, `docker` and `devbuild --help` as uid `10001` in the finished stage and asserts no `PATH`
+element is under a writable root. On pull requests the workflow repeats the toolchain run on the
+finished image with `--read-only`, `--user 10001:10001` and `tmpfs` in place of the volumes, checks
+the contract label and the image user before that, and fails if `dockerd` is present — the image
 carries the client only.
+
+### `devbuild`: builds and tests on the build VPS (1.6.1 BUILD-OFFLOAD B)
+
+The dev variant carries `/opt/paperclip/bin/devbuild` (root-owned, first on `PATH`; deliberately not `/usr/local/bin/devbuild`, whose presence is the gate that opens the local build wrappers; from
+`docker/bot-runtime/devbuild/devbuild`): it rsyncs the `/workspace` repo copy (`.git` included,
+`node_modules`/`dist`/`target`/caches excluded) to `$DEVBUILD_BASE/<bot>/<repo>/` on the shared
+build VPS over ssh, then runs the given command there with the shared caches exported
+(`npm_config_store_dir=/srv/devcache/pnpm`, `GOMODCACHE`, `GOCACHE`, `GRADLE_USER_HOME` — created
+on first run, shared by all bots) and passes the exit code through. Heavy jobs
+(`pnpm -r typecheck`, full test suites, `cargo test`) run there instead of inside the 1 CPU / 3 GB
+bot container; editing, git and pushing stay local.
+
+Connection settings come only from the bot profile env (`DEVBUILD_HOST`, `DEVBUILD_USER`,
+`DEVBUILD_BASE` — never baked into the image or tests). Without them the script prints a pointer
+to the `devbuild` skill and exits 1. The ssh key is read from `/opt/devbuild-ssh/id_ed25519`,
+mounted by the runtime template (part C); key authorization and the remote resource limits are
+the fleet operator's part (D). The image adds `rsync` to the apt set for the transport.
 
 ### Shared git objects and the clone report (1.6.2 BOT-DISK-C)
 
@@ -226,9 +247,12 @@ carries the client only.
   `/usr/bin/git`. For `git clone https://github.com/<owner>/<repo>` it adds
   `--reference-if-able /cache/git/<owner>/<repo>.git` when that directory exists (the board's
   read-only mirror, mounted only when the instance lists mirrored repositories); everything else
-  runs the real git unchanged, so `git-credential-paperclip` keeps working. Clones that choose
-  their own storage (`--reference`, `--dissociate`, `--shared`, `--local`, `--mirror`, `--depth`,
-  `--filter`) are left alone.
+  runs the real git unchanged, so `git-credential-paperclip` keeps working. Clones that pick the
+  storage of their own objects (`--dissociate`, `--shared`, `--local`, `--mirror`, `--filter`) are
+  left alone; a bounded clone (`--depth` and the shallow options), a clone that names
+  `--reference`/`--reference-if-able`/`--no-local` and a non-GitHub clone take the mirror as one
+  more alternate, and one that the store does not serve prints a `[myrmidon-git]` line and writes
+  `$HERMES_HOME/.myrmidon/git-objects-last-error.json`.
 - `/opt/paperclip/bin/bot-clone-hygiene` (`git-reference/bot-clone-hygiene`, Python standard
   library) is started by the entrypoint (every `MYRMIDON_CLONE_HYGIENE_INTERVAL_SEC`, default
   900) and writes `$HERMES_HOME/.myrmidon/clone-hygiene.json`: per repository under `/workspace`
@@ -396,6 +420,17 @@ image (`true`, `0.0.0.0`, `8642`, `/data/hermes`, `1`,
 `/data/hermes/lazy-packages`, `/data:/workspace:/scratch`) — override only
 if the container topology needs something else.
 
+The entrypoint sets `umask 077` before its first file write, so every file a
+run creates — scratch dumps, cache, tmp helpers — is born `0600` (directories
+`0700`). Every bot on a host shares uid `10001`, and the mode bits are the
+only barrier between one run's scratch/cache and another bot's processes;
+the umask is inherited by every child of the entrypoint (gateway → session →
+terminal/tool), so no cooperation from the workload is needed. Files that
+are legitimately shared between processes of the same container (the
+`${HERMES_HOME}/.myrmidon/*.json` start report read by the container's own
+reporter, ipc sockets, logs collected by the host's root-side janitor) keep
+working: their readers are the same uid or root.
+
 ## Bot-runtime contract
 
 The image declares `myrmidon.bot-runtime.contract="1"` (an OCI label,
@@ -416,6 +451,25 @@ POSIX shell with `find`, `mv -T`, `mkdir -p`, `rm`, `chmod`, `chown`,
 `dirname`.
 
 ## Volumes
+
+The container has ONE writable bind, the bot's whole tree, at `/bot` (with `hermes/`,
+`workspace/` and `scratch/` inside it); link(2) cannot cross mounts, so the three paths below
+are links the image makes into it (`/data/hermes` → `/bot/hermes`, `/workspace` →
+`/data/workspace` → `/bot/workspace`, `/scratch` → `/data/scratch` → `/bot/scratch`), not
+mounts. The ownership requirement applies to the three directories inside `/bot`.
+The `/bot` root itself must also let uid `10001` enter it: the driver's prepare
+helper normalizes the host directory's mode to `0711` (owner `root` kept,
+non-recursive, the content untouched) at every apply, and when a bot still starts
+on a root it cannot enter, `entrypoint.sh` fails with a line naming the traversal
+problem and the fix (recreate the bot) instead of the misleading
+`API_SERVER_KEY is required`.
+
+A member of a **shared isolation scope** (BOT-DISK-F, label `myrmidon.bot-runtime.scope=1`) has no
+`/bot`: its one mount is the scope instance's directory at `/bot-scope`, a tmpfs over `/data`
+holds the three links, and the entrypoint points them into `/bot-scope/$MYRMIDON_BOT_SCOPE_SUBDIR/`
+(the one non-secret variable the driver sets) before anything reads `HERMES_HOME`. The image's
+`WORKDIR` is `/` for that reason (`/workspace` only resolves after the links); the entrypoint enters
+`/workspace` itself. See [docs/myrmidon/bot-disk-cache.md](../../docs/myrmidon/bot-disk-cache.md).
 
 - `/data` — `HERMES_HOME=/data/hermes`: config, `.env`, `sessions/`,
   `state.db`. Must be owned by uid `10001` before the container starts
@@ -473,10 +527,58 @@ It checks, over the live gateway HTTP API:
 The check needs no secrets: the API server key is generated per run and
 used only in headers/env of that run; the mock provider never leaves
 loopback and streams one chunk per second so the run is stoppable. The
-script binds `/data/hermes` from a throwaway directory (key through
-`${HERMES_HOME}/.env`, per the bot-runtime contract) and mounts
-`/workspace`/`/scratch` as uid-10001 tmpfs, mirroring the container
-driver's volume layout.
+script binds `/bot` from a throwaway directory whose `hermes/` carries the key through
+`${HERMES_HOME}/.env`, per the bot-runtime contract, mirroring the container
+driver's single-mount layout.
+
+### Task workspaces: `myr-ws`, `git clone` interception, quota refusals (1.6.5 BOT-DISK-H, contract H0)
+
+How a bot gets its task copy now, per the interface contract
+(`docs/myrmidon/bot-disk-contract/README.md`):
+
+- A run arrives with `workspace: {key, repo, baseRef?}`. The gateway opens the
+  copy itself with `myr-ws open <key> <repo> [--base <baseRef>] --json` and
+  starts the run with `MYRMIDON_TASK_WORKSPACE=/workspace/<key>` as cwd. If
+  `open` fails with exit 3/4/5 (quota, base limit, network), the run still
+  starts — in `/scratch`, with a warning event.
+- The copy is a **worktree** of a per-bot bare base at
+  `$HERMES_HOME/.myrmidon/git-base/<owner>/<repo>.git` on branch
+  `bot/<KEY>`: no per-copy objects, no promisor packs, no token in
+  `.git/config` (auth stays with `git-credential-paperclip`).
+- `git clone https://github.com/<owner>/<repo>` inside the container is
+  intercepted into `myr-ws open`: with `MYRMIDON_TASK_WORKSPACE` set it opens
+  the task copy, otherwise it becomes a scratch copy at `/scratch/<name>`.
+  `--filter`, `--depth`, `--mirror` and `--bare` are ignored with a message —
+  the objects are already in the base. The real git lives at
+  `/opt/paperclip/libexec/git` outside PATH.
+- `myr-ws` commands: `open <KEY> [owner/repo] [--base <ref>] [--scratch]`,
+  `list`, `close <KEY> [--force]`, `restore <KEY>`, `migrate`; global
+  `--json`. Exit codes: `0` ok, `2` invalid arguments, `3` quota/disk
+  refusal — the message starts with `BOT_DISK_QUOTA_EXCEEDED:` — `4`
+  repository over the base limit (8), `5` network/fetch, `6` no such
+  copy/archive, `7` unpushed work without `--force`.
+- On `BOT_DISK_QUOTA_EXCEEDED:` the bot partition is over its quota or past
+  the refuse-open fill level: stop cloning, commit and push what you have,
+  report to the board, do not retry in a loop.
+- The in-container agent `botd` follows the board's desired state
+  (`GET /api/myrmidon/bots/me/workspaces`): a copy whose task went terminal,
+  was reassigned or had its PR merged turns `closing`, survives a grace
+  (`general.botDisk.graceClosingMinutes`, default 30 min), and is removed;
+  unpushed work is archived first (`$HERMES_HOME/.myrmidon/archive/`, cap 2
+  GiB / 30 days) and is restorable with `myr-ws restore <KEY>`. Scratch
+  copies expire by idle TTL (`general.botDisk.scratchTtlHours`, default 24 h;
+  under disk pressure the TTL of clean or non-git copies drops to 1 h).
+  A git directory with unsaved work (dirty or not pushed) in `/scratch` or
+  `/workspace` is different: pressure never shortens its term, and botd keeps
+  it while the bot has a live run or the run state is unknown (reported as
+  held, `unsafe-git-live-run` / `unsafe-git-run-unknown`). It is archived and
+  removed only with no run and after the full `scratchTtlHours` of idle time.
+  A run is live when the board lists an active task for the bot, a process of
+  the container works under `/workspace` or `/scratch`, or a run woke botd
+  (SIGUSR1) in the last 30 minutes; for 30 minutes after botd starts the state
+  is unknown.
+  When the board is unreachable botd deletes nothing. Botd reports disk state
+  back with `POST /api/myrmidon/bots/me/disk-report`.
 
 ## What's not verified yet
 

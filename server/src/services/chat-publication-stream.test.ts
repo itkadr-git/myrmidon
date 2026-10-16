@@ -126,6 +126,23 @@ describe("safe chat publication streaming", () => {
     expect(parts.slice(0, -1).every((part) => /\s$/.test(part))).toBe(true);
   });
 
+  // myrmidon(1.6.4-HERMES-LONG-RESPONSE): the acceptance case — a whole 9,000+
+  // character agent answer reaches Telegram as several messages whose
+  // concatenation is the exact original text, each below the provider ceiling.
+  it("delivers a 9,000 character agent answer as lossless Telegram messages", () => {
+    const converter = new TelegramFormatConverter();
+    const answer = "The agent answer sentence is here. ".repeat(300);
+    expect(Array.from(answer).length).toBeGreaterThanOrEqual(9_000);
+
+    const parts = splitTelegramPublicationText(answer);
+
+    expect(parts.length).toBeGreaterThan(1);
+    expect(parts.join("")).toBe(answer);
+    expect(
+      parts.every((part) => converter.fromMarkdown(part).length <= 4_096),
+    ).toBe(true);
+  });
+
   it.each([
     { label: "maximum MarkdownV2 escaping", source: "!".repeat(5_003) },
     { label: "astral Unicode", source: "🙂".repeat(5_003) },
@@ -221,5 +238,18 @@ describe("safe chat publication streaming", () => {
       converter.fromMarkdown(source),
     );
     expect(telegramMarkdownRequiresAttachment(source)).toBe(false);
+  });
+
+  it("delivers a 9000-character answer completely and in order, each part within the Telegram limit", () => {
+    const paragraph = (n: number) => `Абзац ${n}: ${"слово ".repeat(60)}`.trim();
+    const source = Array.from({ length: 30 }, (_, n) => paragraph(n)).join("\n\n");
+    expect(source.length).toBeGreaterThan(9000);
+    const parts = splitTelegramPublicationText(source);
+    expect(parts.length).toBeGreaterThan(1);
+    expect(parts.join("")).toBe(source);
+    for (const part of parts) expect(part.length).toBeLessThanOrEqual(4_096);
+    const numbers = parts.join("").match(/Абзац (\d+):/g)!.map((m) => Number(m.replace(/\D/g, "")));
+    expect(numbers).toEqual([...numbers].sort((a, b) => a - b));
+    expect(numbers).toHaveLength(30);
   });
 });

@@ -48,6 +48,9 @@ export function Ui2Costs() {
   const { selectedCompanyId } = useCompany();
   const queryClient = useQueryClient();
   const [incidentError, setIncidentError] = useState<string | null>(null);
+  // myrmidon(1.6.3 PROMPT-BUDGET D): the by-agent table can be ordered by spend
+  // (the historical default) or by the average prompt size of a run.
+  const [agentSort, setAgentSort] = useState<"cost" | "prompt">("cost");
   const companyId = selectedCompanyId ?? "";
 
   const summaryQuery = useQuery({
@@ -85,8 +88,15 @@ export function Ui2Costs() {
   });
 
   const topAgents = useMemo(
-    () => [...(byAgentQuery.data ?? [])].sort((left, right) => right.costCents - left.costCents).slice(0, 12),
-    [byAgentQuery.data],
+    () =>
+      [...(byAgentQuery.data ?? [])]
+        .sort((left, right) =>
+          agentSort === "prompt"
+            ? (right.avgPromptTokens ?? -1) - (left.avgPromptTokens ?? -1)
+            : right.costCents - left.costCents,
+        )
+        .slice(0, 12),
+    [byAgentQuery.data, agentSort],
   );
 
   if (summaryQuery.isLoading || budgetsQuery.isLoading) {
@@ -250,6 +260,22 @@ export function Ui2Costs() {
                 <th className="ui2-costs-agents-agent py-1 font-medium">{t("ui2.costs.agents.agent")}</th>
                 <th className="ui2-costs-agents-cost py-1 text-right font-medium">{t("ui2.costs.agents.cost")}</th>
                 <th className="ui2-costs-agents-tokens py-1 text-right font-medium">{t("ui2.costs.agents.tokens")}</th>
+                <th className="ui2-costs-agents-prompt py-1 text-right font-medium">
+                  {/* myrmidon(1.6.3 PROMPT-BUDGET D): the average prompt size is a
+                      sort key of the table — the header toggles the order. */}
+                  <button
+                    type="button"
+                    className="ui2-costs-agents-sort-prompt font-medium hover:underline"
+                    aria-pressed={agentSort === "prompt"}
+                    onClick={() => setAgentSort((current) => (current === "prompt" ? "cost" : "prompt"))}
+                  >
+                    {t("ui2.costs.agents.avgPrompt")}
+                    {agentSort === "prompt" ? " \u2193" : ""}
+                  </button>
+                </th>
+                <th className="ui2-costs-agents-over-budget py-1 text-right font-medium">
+                  {t("ui2.costs.agents.aboveThreshold")}
+                </th>
                 <th className="ui2-costs-agents-runs py-1 text-right font-medium">{t("ui2.costs.agents.runs")}</th>
               </tr>
             </thead>
@@ -262,6 +288,16 @@ export function Ui2Costs() {
                   </td>
                   <td className="ui2-costs-agents-agent-tokens py-1.5 text-right font-mono tabular-nums">
                     {row.inputTokens.toLocaleString()} / {row.outputTokens.toLocaleString()}
+                  </td>
+                  <td className="ui2-costs-agents-agent-prompt py-1.5 text-right font-mono tabular-nums">
+                    {row.avgPromptTokens == null
+                      ? t("ui2.common.unknown")
+                      : row.avgPromptTokens.toLocaleString()}
+                  </td>
+                  <td className="ui2-costs-agents-agent-over-budget py-1.5 text-right font-mono tabular-nums">
+                    {row.runsAboveThresholdPct == null
+                      ? t("ui2.common.unknown")
+                      : `${row.runsAboveThresholdPct}%`}
                   </td>
                   <td className="ui2-costs-agents-agent-runs py-1.5 text-right font-mono tabular-nums">
                     {row.apiRunCount + row.subscriptionRunCount}

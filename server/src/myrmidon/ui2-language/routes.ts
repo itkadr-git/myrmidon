@@ -16,6 +16,11 @@ import type { Db } from "@paperclipai/db";
 import { upsertUi2LanguageSchema, type Ui2Language } from "@paperclipai/shared";
 import { validate } from "../../middleware/validate.js";
 import { getActorInfo } from "../../routes/authz.js";
+// myrmidon(1.7-TG-LOCALE): the Settings → Language screen shows the source of
+// the effective value, including the instance-wide env force on the Telegram
+// bridge's language (null when unset).
+// myrmidon(1.6.5-TG-LOCALE-C): the same read now also reports the instance
+// setting and resolves the full order env → user → instance → default.
 import {
   createUi2LanguageService,
   ui2LanguageAuditEntries,
@@ -42,7 +47,26 @@ export function ui2LanguageRoutes(db: Db, deps?: Ui2LanguageServiceDeps) {
     const userId = requireBoardUserId(req, res);
     if (!userId) return;
     const language = await service.getLanguage(userId);
-    res.json({ language: language ?? "en", updatedAt: null });
+    // myrmidon(1.7-TG-LOCALE): the Settings → Language screen must show the
+    // SOURCE of the effective value. `telegramBridge.source` is
+    // "environment" while MYRMIDON_TELEGRAM_DM_LANGUAGE forces all bridged DM
+    // texts instance-wide; "user" when the person's own preference decides.
+    // myrmidon(1.6.5-TG-LOCALE-C): "instance" when the stored instance
+    // language decides (a board user who never chose one), "default" when the
+    // English fallback is all that is left. Recomputed per read: the env var
+    // and the settings row are read on every request, so a screen refresh
+    // shows the truth without a server restart.
+    const bridge = await service.resolveBridgeLanguage(userId);
+    res.json({
+      language: language ?? "en",
+      updatedAt: null,
+      telegramBridge: {
+        source: bridge.source,
+        language: bridge.language,
+        ...(bridge.forcedLanguage ? { forcedLanguage: bridge.forcedLanguage } : {}),
+        ...(bridge.instanceLanguage ? { instanceLanguage: bridge.instanceLanguage } : {}),
+      },
+    });
   });
 
   router.put("/myrmidon/ui2/language/me", validate(upsertUi2LanguageSchema), async (req, res) => {

@@ -15,16 +15,35 @@
 // open children, tasks mid-decomposition — copied from `idle-pickup.ts` rather
 // than re-derived, so "ready" means one thing on both paths.
 
-import { and, asc, eq, inArray, isNull, or, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import { agents, issues, type Db } from "@paperclipai/db";
-import { SWARM_CLAIM_QUEUE_ISSUE_STATUSES, type SwarmQueueCandidate } from "@paperclipai/shared";
+import {
+  SWARM_CLAIM_QUEUE_ISSUE_STATUSES,
+  SWARM_DEFAULT_UNASSIGNED_ROLE,
+  type SwarmQueueCandidate,
+} from "@paperclipai/shared";
 import { issueHasNoExecutionHold } from "../settled-holds/ready-predicate.js";
+import {
+  failedRunsDerivedSql,
+  failedRunsJoinOnSql,
+  failedRunsSinceLastChangeSql,
+  swarmQueueOrderBy,
+  type SwarmQueueOrderOptions,
+} from "./effective-pheromone.js";
 
 /** One row of a role queue as the SQL reads it, before the claim join. */
 export interface RoleQueueRow {
   issueId: string;
   identifier: string | null;
   priority: string | null;
+  /** 1.6.5 (F-27): the pheromone strength the queue orders by. */
+  pheromoneStrength: number | null;
+  /**
+   * 1.6.5 (F-27 rework 09.10): runs that evaporated pheromone with no task
+   * change after them — the effective strength subtracts `failPenalty` per
+   * run (design §2.3, SQL twin in `effective-pheromone.ts`).
+   */
+  failedRunsSinceLastChange: number | null;
   status: string;
   assigneeAgentId: string | null;
   role: string | null;
@@ -32,15 +51,67 @@ export interface RoleQueueRow {
 }
 
 /**
- * The candidate rows of one role's queue. The status filter is the queue
+ * myrmidon(1.6.2 SWARM-UNASSIGNED-ROUTE): the routing of an unassigned task
+ * over the outer `issues` row — true when it is queued for `role`. The one
+ * routing rule: the role queues here and the board matcher's pool read
+ * (`listIdleRolePairs`, matcher.ts) both filter by it.
+ *
+ * 1.6.5 (F-27 rework 09.10, design §2.1) + review #1047 п.4: the task's caste
+ * is the first non-blank of `issues.caste_key`, then the project's
+ * `projects.default_caste_key`. When the task has a caste, THAT caste alone
+ * decides — the legacy `role:<key>` label is consulted only for a task that
+ * names no caste anywhere (rows written before the migration), exactly as the
+ * JS twin does. Without a caste and without a role label the task belongs to
+ * the company default role.
+ */
+export function unassignedTaskRoutedToRole(role: string) {
+  const wantedKey = role.trim().toLowerCase();
+  const wanted = `role:${wantedKey}`;
+  const hasLabel = sql`exists (
+    select 1
+    from issue_labels il
+      join labels l on l.id = il.label_id
+    where il.issue_id = ${issues.id}
+      and regexp_replace(lower(btrim(l.name)), '^role:[[:space:]]*', 'role:') = ${wanted}
+  )`;
+  const hasAnyRoleLabel = sql`exists (
+    select 1
+    from issue_labels il
+      join labels l on l.id = il.label_id
+    where il.issue_id = ${issues.id}
+      and lower(btrim(l.name)) ~ '^role:[[:space:]]*[^[:space:]]'
+  )`;
+  const effectiveCaste = sql`coalesce(
+    nullif(lower(btrim(${issues.casteKey})), ''),
+    (select nullif(lower(btrim(p.default_caste_key)), '') from projects p where p.id = ${issues.projectId})
+  )`;
+  const labelRoute =
+    wantedKey === SWARM_DEFAULT_UNASSIGNED_ROLE
+      ? sql`(${hasLabel} or not ${hasAnyRoleLabel})`
+      : hasLabel;
+  return sql`(case when ${effectiveCaste} is not null then ${effectiveCaste} = ${wantedKey} else ${labelRoute} end)`;
+}
+
+/**
+ * The candidate rows of one role's queue. With `agentId` the assigned part is
+ * that agent's own todo only (a task assigned to a peer is the peer's, not
+ * this agent's); the unassigned part is the tasks routed to the role. The status filter is the queue
  * statuses (`todo`); the readiness filters mirror `idlePickupCandidateRows`.
  */
-export function roleQueueRows(db: Db, companyId: string, role: string) {
+export function roleQueueRows(
+  db: Db,
+  companyId: string,
+  role: string,
+  agentId?: string,
+  order?: SwarmQueueOrderOptions,
+) {
   return db
     .select({
       issueId: issues.id,
       identifier: issues.identifier,
       priority: issues.priority,
+      pheromoneStrength: issues.pheromoneStrength,
+      failedRunsSinceLastChange: failedRunsSinceLastChangeSql(),
       status: issues.status,
       assigneeAgentId: issues.assigneeAgentId,
       role: agents.role,
@@ -48,6 +119,9 @@ export function roleQueueRows(db: Db, companyId: string, role: string) {
     })
     .from(issues)
     .leftJoin(agents, eq(agents.id, issues.assigneeAgentId))
+    // One bounded pass over the recent evaporating runs, joined once — not a
+    // correlated subquery per candidate (review #1047).
+    .leftJoin(failedRunsDerivedSql(companyId, order?.now), failedRunsJoinOnSql())
     .where(
       and(
         eq(issues.companyId, companyId),
@@ -55,9 +129,13 @@ export function roleQueueRows(db: Db, companyId: string, role: string) {
         isNull(issues.hiddenAt),
         isNull(issues.conversationAgentId),
         inArray(issues.status, [...SWARM_CLAIM_QUEUE_ISSUE_STATUSES]),
-        // The task belongs to this role: assigned to an agent of the role, or
-        // unassigned and waiting for the role.
-        or(isNull(issues.assigneeAgentId), eq(agents.role, role)),
+        // The task belongs to this agent/role: assigned to the agent (or, with
+        // no agent given, to an agent of the role), or unassigned and routed
+        // to the role by its label (default: the engineer).
+        or(
+          agentId ? eq(issues.assigneeAgentId, agentId) : eq(agents.role, role),
+          and(isNull(issues.assigneeAgentId), unassignedTaskRoutedToRole(role)),
+        ),
         // Not blocked by an unresolved blocker (the same rule idle-pickup uses).
         sql`not exists (
           select 1
@@ -88,7 +166,7 @@ export function roleQueueRows(db: Db, companyId: string, role: string) {
         issueHasNoExecutionHold(db),
       ),
     )
-    .orderBy(asc(issues.createdAt))
+    .orderBy(...swarmQueueOrderBy(order))
     .limit(200);
 }
 
@@ -97,12 +175,16 @@ export async function listRoleQueue(
   db: Db,
   companyId: string,
   role: string,
+  agentId?: string,
+  order?: SwarmQueueOrderOptions,
 ): Promise<SwarmQueueCandidate[]> {
-  const rows = await roleQueueRows(db, companyId, role);
+  const rows = await roleQueueRows(db, companyId, role, agentId, order);
   return rows.map((row) => ({
     issueId: row.issueId,
     identifier: row.identifier,
     priority: row.priority,
+    pheromoneStrength: row.pheromoneStrength,
+    failedRunsSinceLastChange: row.failedRunsSinceLastChange,
     queuedAt: row.queuedAt,
   }));
 }
@@ -153,15 +235,21 @@ export async function listQueuedRoles(db: Db, companyId: string): Promise<string
 export async function listUnassignedQueue(
   db: Db,
   companyId: string,
+  order?: SwarmQueueOrderOptions,
 ): Promise<SwarmQueueCandidate[]> {
   const rows = await db
     .select({
       issueId: issues.id,
       identifier: issues.identifier,
       priority: issues.priority,
+      pheromoneStrength: issues.pheromoneStrength,
+      failedRunsSinceLastChange: failedRunsSinceLastChangeSql(),
       queuedAt: issues.createdAt,
     })
     .from(issues)
+    // One bounded pass over the recent evaporating runs, joined once — not a
+    // correlated subquery per candidate (review #1047).
+    .leftJoin(failedRunsDerivedSql(companyId, order?.now), failedRunsJoinOnSql())
     .where(
       and(
         eq(issues.companyId, companyId),
@@ -190,12 +278,14 @@ export async function listUnassignedQueue(
         issueHasNoExecutionHold(db),
       ),
     )
-    .orderBy(asc(issues.createdAt))
+    .orderBy(...swarmQueueOrderBy(order))
     .limit(200);
   return rows.map((row) => ({
     issueId: row.issueId,
     identifier: row.identifier,
     priority: row.priority,
+    pheromoneStrength: row.pheromoneStrength,
+    failedRunsSinceLastChange: row.failedRunsSinceLastChange,
     queuedAt: row.queuedAt,
   }));
 }

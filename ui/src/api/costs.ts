@@ -25,6 +25,9 @@ function dateParams(from?: string, to?: string): string {
 export const costsApi = {
   summary: (companyId: string, from?: string, to?: string) =>
     api.get<CostSummary>(`/companies/${companyId}/costs/summary${dateParams(from, to)}`),
+  // myrmidon(1.6.3 PROMPT-BUDGET D): the by-agent rows also carry the fleet
+  // prompt columns `avgPromptTokens` and `runsAboveThresholdPct` (both nullable)
+  // — same endpoint, no new request.
   byAgent: (companyId: string, from?: string, to?: string) =>
     api.get<CostByAgent[]>(`/companies/${companyId}/costs/by-agent${dateParams(from, to)}`),
   byAgentModel: (companyId: string, from?: string, to?: string) =>

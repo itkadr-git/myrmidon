@@ -21,6 +21,7 @@ import (
 
 	"github.com/itkadr-git/myrmidon/tools/dockergate/internal/config"
 	"github.com/itkadr-git/myrmidon/tools/dockergate/internal/deny"
+	"github.com/itkadr-git/myrmidon/tools/dockergate/internal/disk"
 	"github.com/itkadr-git/myrmidon/tools/dockergate/internal/limit"
 	"github.com/itkadr-git/myrmidon/tools/dockergate/internal/peer"
 	"github.com/itkadr-git/myrmidon/tools/dockergate/internal/policy"
@@ -30,12 +31,14 @@ import (
 
 // Limits of the answers (spec 6.3 and 11.1).
 const (
-	maxErrBody   = 64 << 10
-	maxInspectA  = 1 << 20
-	maxMarker    = 1 << 20
-	maxLogsBody  = 256 << 10
-	maxCreateRes = 64 << 10
-	maxWaitBody  = 64 << 10
+	maxErrBody  = 64 << 10
+	maxInspectA = 1 << 20
+	maxMarker   = 1 << 20
+	// maxCloneReport: the report is capped at 4 MiB by the board, plus the tar framing.
+	maxCloneReport = 5 << 20
+	maxLogsBody    = 256 << 10
+	maxCreateRes   = 64 << 10
+	maxWaitBody    = 64 << 10
 
 	statsEvery   = 15 * time.Second
 	callersEvery = 60 * time.Second
@@ -77,6 +80,17 @@ type Options struct {
 	// Lstat is how the volume root is looked at; tests replace it.
 	Lstat policy.LstatFunc
 	Now   func() time.Time
+	// Disk sets the project quotas of the disk routes (A15). Nil is the real
+	// xfs_quota on the volume root of the configuration.
+	Disk DiskQuota
+	// DiskHost is how GET /myrmidon/disk (A14) looks at the host: statfs, the
+	// quota command and the project table. Zero fields mean the real host.
+	DiskHost disk.Deps
+}
+
+// DiskQuota is what the disk routes need of the quota code (disk.Quota).
+type DiskQuota interface {
+	Put(ctx context.Context, botKey string, hard int64) (disk.Result, error)
 }
 
 // Gate is the dockergate server.
@@ -88,6 +102,7 @@ type Gate struct {
 	stats   *Stats
 	now     func() time.Time
 	lstat   policy.LstatFunc
+	disk    disk.Deps
 	started time.Time
 
 	st atomic.Pointer[runtime]
@@ -131,11 +146,15 @@ func New(opt Options) (*Gate, error) {
 		opt.Lstat = policy.OSLstat
 	}
 	cfg := opt.Cfg
+	if opt.Disk == nil {
+		opt.Disk = disk.NewQuota(cfg.VolumeRoot, nil)
+	}
 	lim := cfg.Limits
 	g := &Gate{
 		opt:      opt,
 		now:      opt.Now,
 		lstat:    opt.Lstat,
+		disk:     opt.DiskHost,
 		started:  opt.Now(),
 		log:      NewLogger(opt.Log, opt.Now),
 		stats:    newStats(),
@@ -200,7 +219,7 @@ func (g *Gate) SelfCheck(ctx context.Context) error {
 	}
 	_ = g.auth.Resolve(ctx)
 	pinned := g.auth.Pinned() != nil
-	g.log.Write(Line{Event: "self-check ok", Version: g.opt.Version, API: v.APIVersion, Images: found, Pinned: &pinned})
+	g.log.Write(Line{Event: "self-check ok", Version: g.opt.Version, API: v.APIVersion, Images: found, Pinned: &pinned, ConfigHash: st.hash})
 	return nil
 }
 
@@ -261,7 +280,7 @@ func (g *Gate) Reload() {
 	g.imgMu.Lock()
 	g.imgs = nil
 	g.imgMu.Unlock()
-	g.log.Write(Line{Event: "config_reloaded"})
+	g.log.Write(Line{Event: "config_reloaded", Version: g.opt.Version, Images: len(cfg.Images), ConfigHash: hash})
 }
 
 // Listen creates the socket of dockergate: an old socket file is removed, the

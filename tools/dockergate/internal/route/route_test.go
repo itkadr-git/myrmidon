@@ -37,7 +37,9 @@ func TestAllow(t *testing.T) {
 		{"A1 first image", "GET", v + "images/" + NameSegment(ref1) + "/json", Route{ID: A1, ImageRef: ref1}},
 		{"A1 second image", "GET", v + "images/" + NameSegment(ref2) + "/json", Route{ID: A1, ImageRef: ref2}},
 		{"A2", "GET", v + "containers/" + nameA + "/json", Route{ID: A2, BotKey: keyA, Name: nameA}},
-		{"A3", "GET", v + "containers/" + nameA + "/archive?path=%2Fdata%2Fhermes%2F.myrmidon%2Fapplied.json", Route{ID: A3, BotKey: keyA, Name: nameA}},
+		{"A3", "GET", v + "containers/" + nameA + "/archive?path=%2Fbot%2Fhermes%2F.myrmidon%2Fapplied.json", Route{ID: A3, BotKey: keyA, Name: nameA}},
+		{"A3 shared member", "GET", v + "containers/" + nameA + "/archive?path=%2Fbot-scope%2F" + keyA + "%2Fhermes%2F.myrmidon%2Fapplied.json", Route{ID: A3, BotKey: keyA, Name: nameA, ScopeMarker: true}},
+		{"A13 shared member", "GET", v + "containers/" + nameA + "/archive?path=%2Fbot-scope%2F" + keyA + "%2Fhermes%2F.myrmidon%2Fclone-hygiene.json", Route{ID: A13, BotKey: keyA, Name: nameA, ScopeMarker: true}},
 		{"A4 main", "POST", v + "containers/create?name=" + nameA, Route{ID: A4, BotKey: keyA, Name: nameA}},
 		{"A4 next", "POST", v + "containers/create?name=" + nameANext, Route{ID: A4, BotKey: keyA, Suffix: SuffixNext, Name: nameANext}},
 		{"A4 helper", "POST", v + "containers/create?name=" + nameAHelp, Route{ID: A4, BotKey: keyA, Suffix: SuffixHelper, Name: nameAHelp}},
@@ -53,7 +55,14 @@ func TestAllow(t *testing.T) {
 		{"A9 helper", "DELETE", v + "containers/" + nameAHelp + "?force=true&v=true", Route{ID: A9, BotKey: keyA, Suffix: SuffixHelper, Name: nameAHelp}},
 		{"A10", "POST", v + "containers/" + nameA + "/stop?t=30", Route{ID: A10, BotKey: keyA, Name: nameA}},
 		{"A11", "POST", v + "containers/" + nameA + "/restart?t=30", Route{ID: A11, BotKey: keyA, Name: nameA}},
+		{"A13", "GET", v + "containers/" + nameA + "/archive?path=%2Fbot%2Fhermes%2F.myrmidon%2Fclone-hygiene.json", Route{ID: A13, BotKey: keyA, Name: nameA}},
+		{"A16", "GET", v + "containers/" + nameA + "/archive?path=%2Fbot%2Fhermes%2Fskills", Route{ID: A16, BotKey: keyA, Name: nameA}},
+		{"A16 LEGACY", "GET", v + "containers/" + nameA + "/archive?path=%2Fdata%2Fhermes%2Fskills", Route{ID: A16, BotKey: keyA, Name: nameA}},
+		{"A16 shared member", "GET", v + "containers/" + nameA + "/archive?path=%2Fbot-scope%2F" + keyA + "%2Fhermes%2Fskills", Route{ID: A16, BotKey: keyA, Name: nameA}},
 		{"A12", "POST", v + "containers/" + nameANext + "/rename?name=" + nameA, Route{ID: A12, BotKey: keyA, Suffix: SuffixNext, Name: nameANext}},
+		{"A15", "PUT", "/myrmidon/disk/" + keyA + "/quota", Route{ID: A15, BotKey: keyA}},
+		// A14 is outside the Docker API prefix and has no bot.
+		{"A14", "GET", "/myrmidon/disk", Route{ID: A14}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -85,7 +94,7 @@ func TestDenyTable(t *testing.T) {
 		{"empty target", "GET", "", deny.TargetForm},
 		// methods
 		{"HEAD", "HEAD", c + nameA + "/json", deny.MethodNotAllowed},
-		{"HEAD archive", "HEAD", c + nameA + "/archive?path=%2Fdata%2Fhermes%2F.myrmidon%2Fapplied.json", deny.MethodNotAllowed},
+		{"HEAD archive", "HEAD", c + nameA + "/archive?path=%2Fbot%2Fhermes%2F.myrmidon%2Fapplied.json", deny.MethodNotAllowed},
 		{"PATCH", "PATCH", c + nameA + "/json", deny.MethodNotAllowed},
 		{"OPTIONS", "OPTIONS", c + nameA + "/json", deny.MethodNotAllowed},
 		{"CONNECT", "CONNECT", c + nameA + "/json", deny.MethodNotAllowed},
@@ -123,12 +132,25 @@ func TestDenyTable(t *testing.T) {
 		{"A2 empty query", "GET", c + nameA + "/json?", deny.RouteNotAllowed},
 		{"A3 other file", "GET", c + nameA + "/archive?path=%2Fdata%2Fhermes%2F.myrmidon%2Fother.json", deny.RouteNotAllowed},
 		{"A3 traversal", "GET", c + nameA + "/archive?path=%2Fdata%2Fhermes%2F..%2F..%2Fetc%2Fpasswd", deny.RouteNotAllowed},
-		{"A3 decoded path", "GET", c + nameA + "/archive?path=/data/hermes/.myrmidon/applied.json", deny.RouteNotAllowed},
+		{"A3 decoded path", "GET", c + nameA + "/archive?path=/bot/hermes/.myrmidon/applied.json", deny.RouteNotAllowed},
 		{"A3 lowercase escape", "GET", c + nameA + "/archive?path=%2fdata%2fhermes%2f.myrmidon%2fapplied.json", deny.RouteNotAllowed},
-		{"A3 extra query", "GET", c + nameA + "/archive?path=%2Fdata%2Fhermes%2F.myrmidon%2Fapplied.json&x=1", deny.RouteNotAllowed},
+		{"A3 shared marker of another bot", "GET", c + nameA + "/archive?path=%2Fbot-scope%2F" + keyB + "%2Fhermes%2F.myrmidon%2Fapplied.json", deny.RouteNotAllowed},
+		{"A3 shared marker, helper", "GET", c + nameAHelp + "/archive?path=%2Fbot-scope%2F" + keyA + "%2Fhermes%2F.myrmidon%2Fapplied.json", deny.RouteNotAllowed},
+		{"A3 extra query", "GET", c + nameA + "/archive?path=%2Fbot%2Fhermes%2F.myrmidon%2Fapplied.json&x=1", deny.RouteNotAllowed},
+		{"A13 other file", "GET", c + nameA + "/archive?path=%2Fbot%2Fhermes%2F.myrmidon%2Fclone-hygiene.jsom", deny.RouteNotAllowed},
+		{"A13 traversal", "GET", c + nameA + "/archive?path=%2Fbot%2Fhermes%2F.myrmidon%2F..%2Fclone-hygiene.json", deny.RouteNotAllowed},
+		{"A13 extra query", "GET", c + nameA + "/archive?path=%2Fbot%2Fhermes%2F.myrmidon%2Fclone-hygiene.json&x=1", deny.RouteNotAllowed},
+		{"A13 helper", "GET", c + nameAHelp + "/archive?path=%2Fbot%2Fhermes%2F.myrmidon%2Fclone-hygiene.json", deny.RouteNotAllowed},
+		{"A13 PUT", "PUT", c + nameA + "/archive?path=%2Fbot%2Fhermes%2F.myrmidon%2Fclone-hygiene.json", deny.RouteNotAllowed},
+		{"A16 other dir", "GET", c + nameA + "/archive?path=%2Fbot%2Fhermes%2Fskills-board", deny.RouteNotAllowed},
+		{"A16 traversal", "GET", c + nameA + "/archive?path=%2Fbot%2Fhermes%2Fskills%2F..%2Fskills", deny.RouteNotAllowed},
+		{"A16 extra query", "GET", c + nameA + "/archive?path=%2Fbot%2Fhermes%2Fskills&x=1", deny.RouteNotAllowed},
+		{"A16 helper", "GET", c + nameAHelp + "/archive?path=%2Fbot%2Fhermes%2Fskills", deny.RouteNotAllowed},
+		{"A16 PUT", "PUT", c + nameA + "/archive?path=%2Fbot%2Fhermes%2Fskills", deny.RouteNotAllowed},
+		{"A16 shared member, helper", "GET", c + nameAHelp + "/archive?path=%2Fbot-scope%2F" + keyA + "%2Fhermes%2Fskills", deny.RouteNotAllowed},
 		{"A3 no query", "GET", c + nameA + "/archive", deny.RouteNotAllowed},
-		{"A3 helper", "GET", c + nameAHelp + "/archive?path=%2Fdata%2Fhermes%2F.myrmidon%2Fapplied.json", deny.RouteNotAllowed},
-		{"A3 PUT", "PUT", c + nameA + "/archive?path=%2Fdata%2Fhermes%2F.myrmidon%2Fapplied.json", deny.RouteNotAllowed},
+		{"A3 helper", "GET", c + nameAHelp + "/archive?path=%2Fbot%2Fhermes%2F.myrmidon%2Fapplied.json", deny.RouteNotAllowed},
+		{"A3 PUT", "PUT", c + nameA + "/archive?path=%2Fbot%2Fhermes%2F.myrmidon%2Fapplied.json", deny.RouteNotAllowed},
 
 		// A4
 		{"A4 GET", "GET", c + "create?name=" + nameA, deny.RouteNotAllowed},
@@ -378,5 +400,100 @@ func TestEmptyImagesAllowsNoA1(t *testing.T) {
 	_, err := Parse("GET", "/v1.45/images/"+NameSegment(ref1)+"/json", NewImages(nil))
 	if err == nil || err.Code != deny.RouteNotAllowed {
 		t.Fatalf("A1 with no images: %v", err)
+	}
+}
+
+// A15 is the only route outside the Docker API prefix: PUT of exactly
+// /myrmidon/disk/<botKey>/quota. A key that is not a lowercase UUID, another
+// method, an extra segment or a query is not a route.
+func TestDiskQuotaRoute(t *testing.T) {
+	const p = "/myrmidon/disk/"
+	cases := []struct {
+		name, method, target, code string
+	}{
+		{"GET", "GET", p + keyA + "/quota", deny.RouteNotAllowed},
+		{"POST", "POST", p + keyA + "/quota", deny.RouteNotAllowed},
+		{"DELETE", "DELETE", p + keyA + "/quota", deny.RouteNotAllowed},
+		{"dot dot key", "PUT", p + "../quota", deny.RouteNotAllowed},
+		{"dot dot after key", "PUT", p + keyA + "/../quota", deny.RouteNotAllowed},
+		{"dot dot before key", "PUT", p + "../" + keyA + "/quota", deny.RouteNotAllowed},
+		{"escaped dot dot", "PUT", p + "%2e%2e/quota", deny.RouteNotAllowed},
+		{"escaped slash", "PUT", p + "..%2f" + keyA + "/quota", deny.RouteNotAllowed},
+		{"empty key", "PUT", p + "/quota", deny.RouteNotAllowed},
+		{"no key", "PUT", p + "quota", deny.RouteNotAllowed},
+		{"short key", "PUT", p + "bot-001/quota", deny.RouteNotAllowed},
+		{"uppercase key", "PUT", p + strings.ToUpper(keyA) + "/quota", deny.RouteNotAllowed},
+		{"escaped key", "PUT", p + strings.Replace(keyA, "a", "%61", 1) + "/quota", deny.RouteNotAllowed},
+		{"container name instead of key", "PUT", p + nameA + "/quota", deny.RouteNotAllowed},
+		{"trailing slash", "PUT", p + keyA + "/quota/", deny.RouteNotAllowed},
+		{"query", "PUT", p + keyA + "/quota?x=1", deny.RouteNotAllowed},
+		{"fragment", "PUT", p + keyA + "/quota#x", deny.RouteNotAllowed},
+		{"other tail", "PUT", p + keyA + "/limit", deny.RouteNotAllowed},
+		{"no tail", "PUT", p + keyA, deny.RouteNotAllowed},
+		{"two keys", "PUT", p + keyA + "/" + keyB + "/quota", deny.RouteNotAllowed},
+		{"api prefix before", "PUT", "/v1.45" + p + keyA + "/quota", deny.RouteNotAllowed},
+		{"absolute form", "PUT", "http://docker" + p + keyA + "/quota", deny.TargetForm},
+		{"unknown method", "PATCH", p + keyA + "/quota", deny.MethodNotAllowed},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := Parse(tc.method, tc.target, images())
+			if err == nil {
+				t.Fatalf("%s %s accepted as %+v", tc.method, tc.target, *got)
+			}
+			if err.Code != tc.code {
+				t.Fatalf("%s %s: %s, want %s", tc.method, tc.target, err.Code, tc.code)
+			}
+		})
+	}
+}
+
+// A14 is one exact target and GET only: every other method, a query, a trailing
+// slash, a case change, an encoded or dotted path, a longer path and the
+// Docker-prefixed spelling are refused as route_not_allowed.
+func TestDiskRouteClosed(t *testing.T) {
+	notAllowed := []struct{ method, target string }{
+		{"POST", "/myrmidon/disk"},
+		{"PUT", "/myrmidon/disk"},
+		{"DELETE", "/myrmidon/disk"},
+		{"GET", "/myrmidon/disk?x=1"},
+		{"GET", "/myrmidon/disk?"},
+		{"GET", "/myrmidon/disk/"},
+		{"GET", "/myrmidon/Disk"},
+		{"GET", "/myrmidon/DISK"},
+		{"GET", "/myrmidon//disk"},
+		{"GET", "/myrmidon/disk/."},
+		{"GET", "/myrmidon/../myrmidon/disk"},
+		{"GET", "/myrmidon/%64isk"},
+		{"GET", "/myrmidon/disk%2F"},
+		{"GET", "/myrmidon/disk#x"},
+		{"GET", "/myrmidon/disk/" + keyA + "/quota"},
+		{"GET", "/myrmidon/"},
+		{"GET", "/myrmidon/disks"},
+		{"GET", "/myrmidon/anything"},
+	}
+	for _, tc := range notAllowed {
+		got, err := Parse(tc.method, tc.target, images())
+		if err == nil {
+			t.Errorf("%s %s accepted as %+v", tc.method, tc.target, *got)
+			continue
+		}
+		if err.Code != deny.RouteNotAllowed {
+			t.Errorf("%s %s: %s", tc.method, tc.target, err.Code)
+		}
+	}
+	// Under the Docker prefix the disk path is not a route either.
+	for _, target := range []string{"/v1.45/myrmidon/disk", "/v1.45/disk"} {
+		if _, err := Parse("GET", target, images()); err == nil || err.Code != deny.RouteNotAllowed {
+			t.Errorf("GET %s: %v", target, err)
+		}
+	}
+	// Methods outside the four stay method_not_allowed, as for every route.
+	if _, err := Parse("HEAD", "/myrmidon/disk", images()); err == nil || err.Code != deny.MethodNotAllowed {
+		t.Errorf("HEAD: %v", err)
+	}
+	// Close neighbours of the prefix keep their old answer.
+	if _, err := Parse("GET", "/myrmidon", images()); err == nil || err.Code != deny.APIVersion {
+		t.Errorf("/myrmidon: %v", err)
 	}
 }

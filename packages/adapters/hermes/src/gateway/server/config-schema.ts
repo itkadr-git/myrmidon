@@ -1,6 +1,5 @@
 import type { AdapterConfigSchema } from "@paperclipai/adapter-utils";
 import { DEFAULT_EVENT_RECONNECT_MS, DEFAULT_TIMEOUT_SEC } from "../shared/constants.js";
-import { INSECURE_REMOTE_HTTP_ESCAPE_HATCH } from "./transport-security.js";
 
 export function getConfigSchema(): AdapterConfigSchema {
   return {
@@ -21,13 +20,13 @@ export function getConfigSchema(): AdapterConfigSchema {
         meta: { secret: true },
       },
       {
-        key: INSECURE_REMOTE_HTTP_ESCAPE_HATCH,
-        label: "Dangerously allow remote HTTP",
-        type: "toggle",
-        default: false,
-        hint: "Unsafe dev-only escape hatch. Remote Hermes gateways should use HTTPS; loopback HTTP remains allowed.",
-      },
-      {
+        // myrmidon(H3), release 1.1.2: the unsafe remote-HTTP toggle was
+        // removed from the card schema. Plain http now requires a fleet
+        // bot-container host name (myrmidon-bot-*, trusted by the adapter
+        // itself); the dev-only escape hatch stays readable from raw
+        // adapter config JSON (transport-security.ts) for local
+        // development, but the card no longer advertises it and the bot
+        // container sync (W2a) no longer writes it.
         key: "sessionKeyStrategy",
         label: "Session key strategy",
         type: "select",
@@ -45,6 +44,15 @@ export function getConfigSchema(): AdapterConfigSchema {
         label: "Timeout seconds",
         type: "number",
         default: DEFAULT_TIMEOUT_SEC,
+      },
+      {
+        // myrmidon(N4-RUN-LIVENESS): per-agent opt-in for event-based
+        // liveness; the instance-wide switch is MYRMIDON_RUN_LIVENESS_EVENTS.
+        key: "livenessEvents",
+        label: "Liveness by gateway events",
+        type: "toggle",
+        default: false,
+        hint: "On: a run that keeps emitting gateway events past its timeout is left alive; only a run silent for the whole timeout budget is cut. Off (default): the fixed wall-clock timeout. The instance env MYRMIDON_RUN_LIVENESS_EVENTS enables it for every card.",
       },
       {
         // myrmidon(G5): per-agent run-create timeout

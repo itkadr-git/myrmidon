@@ -2,6 +2,9 @@
 // chat: agent, model/reasoning source, session state, whether a reply is
 // running, last reply's usage, and whether the web conversation is shared
 // into this chat's context (X8d).
+// myrmidon(1.7-TG-LOCALE): every label renders from the locale catalogs in
+// the chat owner's language; values (model names, levels, URLs, numbers)
+// keep whatever the server stores.
 
 import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -9,11 +12,13 @@ import { agentTaskSessions, heartbeatRuns } from "@paperclipai/db";
 import { safeChatTaskUrl } from "../../../services/chat-task-url.js";
 import { issueService } from "../../../services/issues.js";
 import { readCrossChannelSettings } from "../settings.js";
+import { t, type BridgeLocale } from "../locales/index.js";
 import type { BridgedCommandContext } from "./context.js";
 import {
   THINK_OVERRIDE_ALLOWED_ADAPTER_TYPES,
   describeEffectiveChatValue,
   readOverrideAdapterConfig,
+  sourceLabelFor,
 } from "./models.js";
 
 export interface BuildChatStatusReplyInput {
@@ -23,44 +28,60 @@ export interface BuildChatStatusReplyInput {
   boardUserId: string;
   publicBaseUrl: string | null;
   context: BridgedCommandContext;
+  /** myrmidon(1.7-TG-LOCALE): the chat owner's resolved locale. */
+  locale: BridgeLocale;
 }
 
 export async function buildChatStatusReply(input: BuildChatStatusReplyInput): Promise<string> {
-  const { db, companyId, agentId, boardUserId, publicBaseUrl, context } = input;
-  // myrmidon(X8-texts): every line below is read by the chat owner in Telegram,
-  // so the labels are Russian; values (model names, levels, URLs, numbers)
-  // keep whatever the server stores.
-  const lines: string[] = [`${context.agent.name} · чат в Telegram`];
+  const { db, companyId, agentId, boardUserId, publicBaseUrl, context, locale } = input;
+  const lines: string[] = [t(locale, "status.header", { agent: context.agent.name })];
 
   const boardUrl = safeChatTaskUrl(publicBaseUrl, context.issue.id);
-  if (boardUrl) lines.push(`Доска: ${boardUrl}`);
+  if (boardUrl) lines.push(t(locale, "status.board", { url: boardUrl }));
 
   const overrideAdapterConfig = readOverrideAdapterConfig(context.issue.assigneeAdapterOverrides);
   const model = describeEffectiveChatValue(overrideAdapterConfig, context.agent.adapterConfig, "model");
-  lines.push(`Модель: ${model.value} (${model.source})`);
+  const modelSource = sourceLabelFor(model.source, locale);
+  lines.push(t(locale, "status.model", { value: model.value ?? modelSource, source: modelSource }));
   if (THINK_OVERRIDE_ALLOWED_ADAPTER_TYPES.includes(context.agent.adapterType)) {
     const reasoning = describeEffectiveChatValue(overrideAdapterConfig, context.agent.adapterConfig, "effort");
-    lines.push(`Рассуждения: ${reasoning.value} (${reasoning.source})`);
+    const reasoningSource = sourceLabelFor(reasoning.source, locale);
+    lines.push(
+      t(locale, "status.reasoning", {
+        value: reasoning.value ?? reasoningSource,
+        source: reasoningSource,
+      }),
+    );
   }
 
   const hasModelSession = await hasAgentTaskSession(db, companyId, agentId, context.issue.id);
   lines.push(
-    `Сессия: #${context.issue.conversationSessionGeneration + 1}, сессия модели ${
-      hasModelSession ? "активна" : "начнётся заново со следующим ответом"
-    }`,
+    t(locale, "status.session", {
+      number: context.issue.conversationSessionGeneration + 1,
+      state: hasModelSession ? t(locale, "status.sessionActive") : t(locale, "status.sessionPending"),
+    }),
   );
 
-  lines.push(await describeCurrentTurn(db, companyId, agentId, context.issue.id));
+  lines.push(await describeCurrentTurn(db, companyId, agentId, context.issue.id, locale));
 
-  const usageLine = formatUsageLine(await findLastSucceededRunUsage(db, companyId, agentId, context.issue.id));
+  const usageLine = formatUsageLine(
+    await findLastSucceededRunUsage(db, companyId, agentId, context.issue.id),
+    locale,
+  );
   if (usageLine) lines.push(usageLine);
 
   const crossChannel = readCrossChannelSettings();
   if (crossChannel.messages > 0) {
     const webConversation = await issueService(db).getConversation(companyId, agentId, boardUserId);
-    lines.push(`Веб-чат: ${webConversation ? `общий (последние ${crossChannel.messages} сообщений)` : "нет"}`);
+    lines.push(
+      t(locale, "status.webChat", {
+        state: webConversation
+          ? t(locale, "status.webChat.shared", { number: crossChannel.messages })
+          : t(locale, "status.webChat.none"),
+      }),
+    );
   } else {
-    lines.push("Веб-чат: не общий");
+    lines.push(t(locale, "status.webChat", { state: t(locale, "status.webChat.off") }));
   }
 
   return lines.join("\n");
@@ -91,6 +112,7 @@ async function describeCurrentTurn(
   companyId: string,
   agentId: string,
   issueId: string,
+  locale: BridgeLocale,
 ): Promise<string> {
   const [run] = await db
     .select({
@@ -109,9 +131,9 @@ async function describeCurrentTurn(
     )
     .orderBy(desc(heartbeatRuns.createdAt))
     .limit(1);
-  if (!run) return "Сейчас: простаивает";
-  if (run.status === "queued") return "Сейчас: в очереди";
-  return `Сейчас: отвечает с ${formatUtcTime(run.startedAt ?? run.createdAt)}`;
+  if (!run) return t(locale, "status.nowIdle");
+  if (run.status === "queued") return t(locale, "status.nowQueued");
+  return t(locale, "status.nowReplying", { time: formatUtcTime(run.startedAt ?? run.createdAt) });
 }
 
 function formatUtcTime(value: Date | string | null): string {
@@ -151,12 +173,19 @@ function firstFiniteNumber(...values: unknown[]): number | null {
 }
 
 /** Mirrors heartbeat.ts:5337 (readRawUsageTotals) for the two fields /status needs, plus cost. */
-function formatUsageLine(usageJson: Record<string, unknown> | null): string | null {
+function formatUsageLine(
+  usageJson: Record<string, unknown> | null,
+  locale: BridgeLocale,
+): string | null {
   if (!usageJson) return null;
   const inputTokens = firstFiniteNumber(usageJson.rawInputTokens, usageJson.inputTokens);
   const outputTokens = firstFiniteNumber(usageJson.rawOutputTokens, usageJson.outputTokens);
   if (inputTokens === null && outputTokens === null) return null;
   const cost = firstFiniteNumber(usageJson.costUsd, usageJson.cacheAdjustedCostUsd);
   const costText = cost !== null && cost > 0 ? `, $${cost.toFixed(2)}` : "";
-  return `Последний ответ: ${inputTokens ?? 0} вх. / ${outputTokens ?? 0} исх. токенов${costText}`;
+  return t(locale, "status.usage", {
+    input: inputTokens ?? 0,
+    output: outputTokens ?? 0,
+    cost: costText,
+  });
 }

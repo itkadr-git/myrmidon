@@ -38,16 +38,11 @@ ARG HERMES_GIT_REF=v2026.9.24
 # check is only meaningful pinned here, not as a comment. Update both together when
 # HERMES_GIT_REF moves to a new tag.
 ARG HERMES_GIT_SHA=f97608f178d1ffeca59860195ab7da295f7c8e5f
-# myrmidon(HERMES-FORK-CI): clone the pinned tag from our fork of hermes-agent
-# instead of the author's repository. The fork is an unmodified mirror (its tag
-# objects are byte-identical to upstream's, and HERMES_GIT_SHA below still pins
-# the exact tree, so a moved or tampered ref cannot ship anything different),
-# and it is the place our own patches and pin bumps of hermes land as commits:
-# the image build then reviews those changes the same way it reviews this
-# repository, instead of pinning against a remote we do not control. Upstream
-# stays the source of new tags — a new pin is still looked up upstream first,
-# then the fork is fast-forwarded to it.
-ARG HERMES_REPO=https://github.com/BastionPrime/hermes-agent.git
+# myrmidon(HERMES-UPSTREAM): clone the pinned tag from the author's repository.
+# Our hermes changes live in this repository (docker/bot-runtime/patches/*.patch)
+# and HERMES_GIT_SHA below pins the exact tree, so a moved or tampered upstream
+# ref cannot ship anything different. No separate fork is kept.
+ARG HERMES_REPO=https://github.com/NousResearch/hermes-agent.git
 # gateway/platforms/api_server.py uses aiohttp.web, but aiohttp is not a core
 # dependency of hermes-agent — it only ships inside optional extras, most of
 # which also pull in Telegram/Discord/Slack client libraries we do not need
@@ -215,13 +210,16 @@ RUN /opt/hermes-src/.venv/bin/python -c 'import aiohttp, mcp, hindsight_client'
 
 # myrmidon(G1): import smoke for every module a patch in patches/ changes
 # (hermes_state: 04, 06; tools.environments.base and base_session_env: 02; gateway.run: 05;
-# gateway.platforms.api_server_runs, tools.environments.local and tools.github_broker_context: 09)
+# gateway.platforms.api_server_runs, tools.environments.local and tools.github_broker_context: 09;
+# tools.run_workspace (also api_server_runs/local): 10; tools.github_launcher_context: 11;
+# tools.run_skills (also api_server_runs/local): 14; agent.session_persistence (also
+# api_server_runs): 15; agent.redact: 12; tools.delegation_live_log: 13)
 # plus the vendored memory provider (a relative-import package, so a broken plugin tree
 # fails the build here, not at the first bot start). `git apply` only proves the hunks
 # land; a patch that applies cleanly but breaks a module's imports or top-level code
 # would otherwise surface only when a bot starts. No bytecode is written, so the sealed
 # tree stays as the build left it.
-RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python -c 'import hermes_state, tools.environments.base, tools.environments.base_session_env, gateway.run, gateway.platforms.api_server_runs, tools.environments.local, tools.github_broker_context'
+RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python -c 'import hermes_state, tools.environments.base, tools.environments.base_session_env, gateway.run, gateway.platforms.api_server_runs, tools.environments.local, tools.github_broker_context, tools.run_workspace, tools.github_launcher_context, agent.session_persistence, agent.redact, tools.delegation_live_log, agent.context_economy, tools.stale_result_tool, agent.turn_request_assembly, agent.tool_result_classification, toolsets, model_tools'
 
 # myrmidon(G1): behaviour check for patch 06 — the state-DB generation probe must not
 # walk /proc/self/fd once per write while the gateway holds hundreds of descriptors
@@ -236,10 +234,47 @@ RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/
 # (contextvars), bridge into terminal child envs, and never touch the process
 # env shared by concurrent runs.
 RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/github_broker_run_scope.py /opt/hermes-src
+# myrmidon(BOT-DISK-H5b): behaviour regression for 10-run-workspace-open.patch
+# (bot-disk contract C6): the workspace body field must run `myr-ws open`
+# (fake CLI via MYRMIDON_WS_BIN) with the contract argv, bind the opened path as
+# cwd + MYRMIDON_TASK_WORKSPACE per run, fall back to /scratch with a warning on
+# exit codes 3/4/5, and be a no-op — never an inherited stale value — without
+# the field.
+RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/run_workspace_open.py /opt/hermes-src
+# myrmidon(G1): behaviour regression for 11-run-scoped-github-launcher.patch
+# (NONCONTAINER-GITHUB-LAUNCHER): the github_launcher body field stages the
+# managed git/gh wrappers and the credential helper under the run's own
+# directory, puts it first on that run's PATH (login profiles included), and a
+# run without a capability or with a malformed payload stages nothing at all.
+RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/github_launcher_run_scope.py /opt/hermes-src
+# myrmidon(G1): behaviour regression for 12-redact-pcp-patterns.patch and
+# 13-delegation-live-log-mode-0600.patch (LIVE-TRANSCRIPT-PCP): the pcp_ board-key
+# family must be masked by the prefix pass (no leak into a delegation live transcript),
+# the transcript file must be created 0o600 from the first byte, and control prose must
+# not mask accidentally (the pass, not the file, is what closes the leak).
+RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/delegation_live_log_redact.py /opt/hermes-src
+# myrmidon(1.6.6-HERMES-SKILLS-A): behaviour regression for 14-run-scoped-paperclip-skills.patch —
+# the run body's paperclip_skills entries land in the profile's managed segment (hashed
+# `slug--hash` names and the ~60 KB operational skill included), stale entries go, and a
+# skipped entry fails the run WITH its reason (1.6.6-rc.1: Buffer content, bare message).
+RUN PYTHONDONTWRITEBYTECODE=1 HERMES_HOME=/tmp/run-skills-test /opt/hermes-src/.venv/bin/python /tmp/patch-tests/run_skills_materialize.py /opt/hermes-src
+# myrmidon(G1): behaviour regression for 15-stranded-run-turn-replace.patch: a run's
+# stranded unanswered tail prompts (left by failed attempts) are superseded by the new
+# prompt instead of piling up as user rows, against a real SessionDB.
+RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/stranded_run_turn.py /opt/hermes-src
+# myrmidon(G1): behaviour regression for 16-context-economy.patch (input-token measures A and B):
+# every wake message but the newest and every stale heavy tool result become short notes in the
+# per-call request copy, read_stale_tool_result returns the original for a note's ref, and each
+# switch (HERMES_KEEP_STALE_WAKES / HERMES_KEEP_STALE_TOOL_RESULTS) gives the old request back byte
+# for byte. Runs against the same synced venv and patched tree as the checks above.
+RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/context_economy.py /opt/hermes-src
+# myrmidon(G1): behaviour regression for 17-disabled-tools-by-name.patch (input-token measure D):
+# agent.disabled_tools removes single tools from the model's schema, and leaves it alone when unset.
+RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/disabled_tools.py /opt/hermes-src
 # myrmidon(G1): names imported inside functions of the patched modules resolve too
 # (the import smoke above runs only top-level imports; a missing lazily imported name
 # broke every run of the 1.6.0 dev image while the build passed).
-RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/lazy_imports_resolve.py /opt/hermes-src hermes_state tools.environments.base tools.environments.base_session_env gateway.run gateway.platforms.api_server_runs tools.environments.local tools.github_broker_context
+RUN PYTHONDONTWRITEBYTECODE=1 /opt/hermes-src/.venv/bin/python /tmp/patch-tests/lazy_imports_resolve.py /opt/hermes-src hermes_state tools.environments.base tools.environments.base_session_env gateway.run gateway.platforms.api_server_runs tools.environments.local tools.github_broker_context tools.run_workspace tools.github_launcher_context tools.run_skills agent.session_persistence agent.context_economy tools.stale_result_tool agent.turn_request_assembly model_tools
 
 # The provider itself, through hermes' OWN discovery path (the same one the gateway uses at
 # start): a staging home gets the same symlink the entrypoint will make at run time, and
@@ -273,6 +308,28 @@ RUN rm -rf /opt/hermes-src/.git \
     /opt/hermes-src/flake.lock \
     /opt/hermes-src/flake.nix
 
+# myrmidon(1.6.5 BOT-DISK-H): Node.js 24 for the workspace mechanism (myr-ws, botd and the
+# git wrapper) that every bot image variant now carries; the dev variant reuses it.
+FROM python:3.13-slim AS node24_dist
+ARG NODE24_VERSION=24.21.0
+ARG NODE24_SHA256=fd8e59d5a511510f6a298afb548f18c7d2b1be404d8b4a27d94fbe49f56cb2d6
+
+# The slim base carries neither curl nor xz, and the Node.js tarball is .tar.xz.
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    curl \
+    xz-utils \
+  && rm -rf /var/lib/apt/lists/*
+
+RUN set -eu; \
+    curl -fsSL -o /tmp/node.tar.xz "https://nodejs.org/dist/v${NODE24_VERSION}/node-v${NODE24_VERSION}-linux-x64.tar.xz"; \
+    echo "${NODE24_SHA256}  /tmp/node.tar.xz" | sha256sum -c -; \
+    mkdir /opt/node24; \
+    tar -xJf /tmp/node.tar.xz -C /opt/node24 --strip-components=1; \
+    rm -rf /tmp/node.tar.xz /opt/node24/include /opt/node24/share /opt/node24/CHANGELOG.md /opt/node24/README.md; \
+    /opt/node24/bin/node --version | grep -x "v${NODE24_VERSION}"
+
 FROM python:3.13-slim AS runtime
 ARG HERMES_VERSION
 
@@ -287,7 +344,8 @@ LABEL org.opencontainers.image.title="myrmidon-hermes" \
       org.opencontainers.image.source="https://github.com/itkadr-git/myrmidon" \
       org.opencontainers.image.licenses="MIT" \
       io.github.itkadr-git.myrmidon.base.hermes-version="${HERMES_VERSION}" \
-      myrmidon.bot-runtime.contract="1"
+      myrmidon.bot-runtime.contract="1" \
+      myrmidon.bot-runtime.scope="1"
 
 # ripgrep: hermes' file-search tool shells out to `rg`. git: workspace tools
 # (status/diff/commit) for coding-agent bots. curl: HEALTHCHECK only. openssh-client:
@@ -311,11 +369,12 @@ RUN apt-get update \
 # image with ReadonlyRootfs: true (docker-driver.ts buildCreateContainerRequestBody),
 # so anything under $HOME on the image's own filesystem (dotfiles a library writes on
 # first use — pip/uv cache dirs, .gitconfig, …) would fail to write instead of no-op.
-# /data/hermes is the one mount that is both writable and always present (it is
-# HERMES_HOME); mirrors hermes' own upstream Dockerfile, which points its `hermes`
-# user's home at its data volume for the identical reason (`useradd -m -d /opt/data`).
+# /data/hermes is always present and writable (it is HERMES_HOME; since BOT-DISK-D a
+# link into the bot's single /bot mount, made below, so no --create-home here);
+# mirrors hermes' own upstream Dockerfile, which points its `hermes` user's home at
+# its data volume for the identical reason (`useradd -m -d /opt/data`).
 RUN groupadd --gid 10001 bot \
-  && useradd --uid 10001 --gid 10001 --create-home --home-dir /data/hermes --shell /usr/sbin/nologin bot
+  && useradd --uid 10001 --gid 10001 --no-create-home --home-dir /data/hermes --shell /usr/sbin/nologin bot
 
 COPY --from=builder --chown=root:root /opt/hermes-src /opt/hermes-src
 # myrmidon(G1): the catalog memory provider vendored in the builder stage, sealed like the
@@ -352,13 +411,22 @@ COPY --chmod=0755 entrypoint.sh /usr/local/bin/bot-runtime-entrypoint
 # way and redirects lazy installs and safe writes to its data volume for
 # the identical reason.
 #
-# myrmidon(G1): /scratch is the third of the three mounts the bot-runtime contract
-# fixes (template.ts BOT_VOLUME_MOUNTS: hermes -> /data/hermes, workspace ->
-# /workspace, scratch -> /scratch) — created and chowned here so a manual `docker
-# run` (no fleet driver) still gets a writable /scratch; the G3 driver's own
-# prepare-volumes helper re-chowns all three from the host side regardless.
-RUN mkdir -p /data /workspace /scratch \
-  && chown bot:bot /data /workspace /scratch
+# myrmidon(BOT-DISK-D): a bot container has ONE bind mount, its whole writable tree,
+# at /bot (template.ts BOT_ROOT_MOUNT). hard links work only within one mount, which
+# is what lets pnpm link node_modules into its store, so the three paths the
+# bot-runtime contract names are not mounts but links into that one: /data/hermes ->
+# /bot/hermes, /workspace -> /data/workspace -> /bot/workspace, /scratch ->
+# /data/scratch -> /bot/scratch. The directories are created and chowned here so a
+# manual `docker run` without a mount still gets a writable tree; the G3 driver's
+# prepare-volumes helper re-chowns the three from the host side regardless.
+RUN mkdir -p /bot/hermes /bot/workspace /bot/scratch /data \
+  && ln -s /bot/hermes /data/hermes \
+  && ln -s /bot/workspace /data/workspace \
+  && ln -s /bot/scratch /data/scratch \
+  && ln -s /data/workspace /workspace \
+  && ln -s /data/scratch /scratch \
+  && chown bot:bot /bot /bot/hermes /bot/workspace /bot/scratch /data \
+  && chown -h bot:bot /data/hermes /data/workspace /data/scratch /workspace /scratch
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -366,7 +434,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     HERMES_HOME=/data/hermes \
     HERMES_BUNDLED_SKILLS=/opt/hermes-src/skills \
     HERMES_CATALOG_PLUGINS_DIR=/opt/hermes-plugins \
-    HERMES_WRITE_SAFE_ROOT=/data:/workspace:/scratch \
+    HERMES_WRITE_SAFE_ROOT=/data:/workspace:/scratch:/bot:/bot-scope \
     HERMES_DISABLE_LAZY_INSTALLS=1 \
     HERMES_LAZY_INSTALL_TARGET=/data/hermes/lazy-packages \
     NO_COLOR=1 \
@@ -379,9 +447,105 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 # instruction reliably across BuildKit versions, so the literal is repeated here.
 ENV HOME=/data/hermes
 
+# myrmidon(1.6.5 BOT-DISK-H, defect D9): the workspace mechanism — the git wrapper,
+# myr-ws and botd — is part of the BASE runtime stage, so every variant
+# (runtime, runtime-node, runtime-dev) inherits it; it used to live only in
+# runtime-dev. Installing needs root; the stage returns to the contract user below.
+# The wrapper and myr-ws name /opt/node24/bin/node in their shebang; botd's
+# `#!/usr/bin/env node` is pinned to the same interpreter at build time (below), so
+# no `node` appears on the PATH of a variant that did not have one before.
+USER root
+COPY --from=node24_dist --chown=root:root /opt/node24 /opt/node24
+
+# myrmidon(1.6.2 BOT-DISK-C): shared git objects. /opt/paperclip/bin/git shadows
+# /usr/bin/git and adds `--reference-if-able /cache/git/<owner>/<repo>.git` to a
+# `git clone` of a GitHub repository the board mirrors (the read-only /cache/git
+# mount, absent unless the instance setting lists mirrored repositories); every
+# other git invocation runs the real git unchanged, credential helper included.
+# bot-clone-hygiene reports which clones hold unpushed work (the entrypoint
+# runs it in the background); the board's draft-directory lifecycle reads that
+# report before it removes an idle clone. Node/Python scripts under /opt only.
+#
+# myrmidon(1.6.5 BOT-DISK-G): the same wrapper also answers for a bare `git`
+# when a bot terminal rebuilds PATH without /opt/paperclip/bin (the hermes
+# adapter appends only its own directories and the sane /usr and /usr/local
+# elements to the PATH the gateway captured). A /usr/local/bin symlink shadows
+# /usr/bin/git through the *reordered* PATH, and the wrapper's shebang names
+# /opt/node24/bin/node absolutely, so both facts hold in that terminal — which
+# is exactly where the clones happen. The build-time check below asserts both:
+# without the symlink a bare `git` is the real binary; with a broken shebang it
+# dies with 127 in a PATH the wrapper cannot inject itself into.
+COPY --chown=root:root git-reference/git git-reference/bot-clone-hygiene git-reference/clone-args.js /opt/paperclip/bin/
+RUN chmod 0755 /opt/paperclip/bin/git /opt/paperclip/bin/bot-clone-hygiene \
+  && ln -s /opt/paperclip/bin/git /usr/local/bin/git \
+  && /opt/node24/bin/node --check /opt/paperclip/bin/git \
+  && head -1 /opt/paperclip/bin/git | grep -qx "#!/opt/node24/bin/node" \
+  && python3 -m py_compile /opt/paperclip/bin/bot-clone-hygiene \
+  && rm -rf /opt/paperclip/bin/__pycache__
+
+# myrmidon(1.6.5 BOT-DISK-H1c): the real git moves out of PATH. The Debian binary
+# goes to /opt/paperclip/libexec/git (dpkg-divert keeps a later `apt` upgrade of
+# the git package from putting it back), and /usr/bin/git becomes a symlink to the
+# wrapper, so EVERY bare `git` — whatever PATH a bot terminal rebuilds — answers
+# through the wrapper; there is no regular way to reach the real binary but its
+# absolute libexec path (which the ownership and quota layers catch). The wrapper's
+# default REAL_GIT is that libexec path (MYRMIDON_GIT_REAL still overrides it) —
+# without that, the wrapper would exec itself. git finds its helpers
+# (git-upload-pack, git-remote-https, ...) through the compiled-in
+# /usr/lib/git-core, not through the binary's own path, so moving it is safe; the
+# build asserts that with a real `git ls-remote` of a local repository (the
+# git-upload-pack helper) through the wrapper.
+#
+# myr-ws (CLI, H2) and botd (lifecycle agent, H3) are installed whole, as
+# directories (lib/*.js and package.json go with the entry point): myr-ws/ to
+# /opt/paperclip/myr-ws, botd/ to /opt/paperclip/botd. /opt/paperclip/bin/myr-ws
+# and /usr/local/bin/myr-ws (a terminal PATH without /opt/paperclip/bin) are
+# symlinks to /opt/paperclip/myr-ws/myr-ws; /opt/paperclip/bin/botd links to the
+# botd entry point /opt/paperclip/botd/botd. Until that entry point exists in the
+# tree (H3 ships lib/ first) there is no botd link, the image still builds and the
+# entrypoint falls back to bot-clone-hygiene (see entrypoint.sh). The two
+# directories must be in the tree: this change merges after BOT-DISK-H2/H3a.
+COPY --chown=root:root myr-ws/ /opt/paperclip/myr-ws/
+COPY --chown=root:root botd/ /opt/paperclip/botd/
+RUN set -eu; \
+    mkdir -p /opt/paperclip/libexec; \
+    dpkg-divert --local --rename --divert /opt/paperclip/libexec/git --add /usr/bin/git; \
+    ln -s /opt/paperclip/bin/git /usr/bin/git; \
+    chmod 0755 /opt/paperclip/libexec/git; \
+    chmod 0755 /opt/paperclip/myr-ws/myr-ws; \
+    ln -s /opt/paperclip/myr-ws/myr-ws /opt/paperclip/bin/myr-ws; \
+    ln -s /opt/paperclip/myr-ws/myr-ws /usr/local/bin/myr-ws; \
+    [ -x /usr/local/bin/myr-ws ] && [ -x /opt/paperclip/bin/myr-ws ] || { echo "myr-ws is not executable" >&2; exit 1; }; \
+    if [ -f /opt/paperclip/botd/botd ]; then \
+      chmod 0755 /opt/paperclip/botd/botd; \
+      sed -i '1s|.*|#!/opt/node24/bin/node|' /opt/paperclip/botd/botd; \
+      head -1 /opt/paperclip/botd/botd | grep -qx "#!/opt/node24/bin/node" || { echo "botd shebang pin failed" >&2; exit 1; }; \
+      ln -s /opt/paperclip/botd/botd /opt/paperclip/bin/botd; \
+      [ -x /opt/paperclip/bin/botd ] || { echo "botd is not executable" >&2; exit 1; }; \
+    fi; \
+    [ "$(readlink /usr/bin/git)" = "/opt/paperclip/bin/git" ] || { echo "/usr/bin/git must be the wrapper symlink" >&2; exit 1; }; \
+    [ -x /opt/paperclip/libexec/git ] && [ ! -L /opt/paperclip/libexec/git ] || { echo "the real git must sit in libexec as a regular file" >&2; exit 1; }; \
+    for el in $(echo "$PATH" | tr ':' ' '); do \
+      [ "$el" = /opt/paperclip/libexec ] && { echo "libexec must not be on PATH" >&2; exit 1; }; \
+      if [ -e "$el/git" ] && [ "$(readlink -f "$el/git")" != "$(readlink -f /opt/paperclip/bin/git)" ]; then \
+        echo "$el/git is a real git outside libexec" >&2; exit 1; \
+      fi; \
+    done; \
+    out="$(env -i PATH=/usr/bin:/bin git --version)"; \
+    case "$out" in "git version "*) ;; *) echo "git --version through the wrapper failed: $out" >&2; exit 1 ;; esac; \
+    d="$(mktemp -d)"; /opt/paperclip/libexec/git init -q "$d/r"; \
+    env -i PATH=/usr/bin:/bin git ls-remote "$d/r" >/dev/null; \
+    rm -rf "$d"
+
+# /opt/paperclip/bin first on PATH: the entrypoint starts botd by `command -v botd`.
+ENV PATH=/opt/paperclip/bin:$PATH
+
 USER 10001:10001
-WORKDIR /workspace
-VOLUME ["/data", "/workspace", "/scratch"]
+# myrmidon(BOT-DISK-F): "/" and not /workspace: for a member of a shared isolation scope /workspace
+# is a link that only exists after the entrypoint makes it, and a container whose working
+# directory does not resolve at start does not start. The entrypoint enters /workspace itself.
+WORKDIR /
+VOLUME ["/bot"]
 EXPOSE 8642
 
 # myrmidon(G1): build-time guard for the venv interpreter, run as the runtime user in the
@@ -517,26 +681,6 @@ RUN node /opt/node-tools/smoke.cjs && npm --version
 # devbuild gateway (/usr/local/bin/devbuild, mounted by part B) is present —
 # installs, typechecks, test runs and compiler builds belong on the build VPS.
 # ---------------------------------------------------------------------------
-FROM python:3.13-slim AS node24_dist
-ARG NODE24_VERSION=24.21.0
-ARG NODE24_SHA256=fd8e59d5a511510f6a298afb548f18c7d2b1be404d8b4a27d94fbe49f56cb2d6
-
-# The slim base carries neither curl nor xz, and the Node.js tarball is .tar.xz.
-RUN apt-get update \
-  && apt-get install -y --no-install-recommends \
-    ca-certificates \
-    curl \
-    xz-utils \
-  && rm -rf /var/lib/apt/lists/*
-
-RUN set -eu; \
-    curl -fsSL -o /tmp/node.tar.xz "https://nodejs.org/dist/v${NODE24_VERSION}/node-v${NODE24_VERSION}-linux-x64.tar.xz"; \
-    echo "${NODE24_SHA256}  /tmp/node.tar.xz" | sha256sum -c -; \
-    mkdir /opt/node24; \
-    tar -xJf /tmp/node.tar.xz -C /opt/node24 --strip-components=1; \
-    rm -rf /tmp/node.tar.xz /opt/node24/include /opt/node24/share /opt/node24/CHANGELOG.md /opt/node24/README.md; \
-    /opt/node24/bin/node --version | grep -x "v${NODE24_VERSION}"
-
 # Go: the repository's dockergate and fleetd tools are Go modules (go 1.25,
 # stdlib only), and CI runs gofmt/go vet/go test over them in their own lanes.
 # The official tarball is pinned by exact version and sha256, like Node.js.
@@ -653,7 +797,6 @@ RUN set -eux; \
     rustup default "${RUST_CHANNEL}"; \
     cargo --version; rustc --version; rustfmt --version
 
-COPY --from=node24_dist --chown=root:root /opt/node24 /opt/node24
 COPY --from=go_dist --chown=root:root /opt/go /opt/go
 COPY --from=docker_cli_dist --chown=root:root /opt/docker-cli /opt/docker-cli
 
@@ -662,7 +805,7 @@ COPY --from=docker_cli_dist --chown=root:root /opt/docker-cli /opt/docker-cli
 # variant keeps its global prefix off PATH: an element under a writable volume
 # is refused by dockergate, so the package manager may not live in /scratch.
 # corepack is deliberately not used (it fails on this base).
-ARG PNPM_VERSION=9.15.4
+ARG PNPM_VERSION=10.18.1
 RUN PATH=/opt/node24/bin:$PATH npm install --global --prefix /opt/pnpm "pnpm@${PNPM_VERSION}" \
   && PATH=/opt/node24/bin:$PATH /opt/pnpm/bin/pnpm --version | grep -x "${PNPM_VERSION}" \
   && rm -rf /root/.npm
@@ -690,20 +833,6 @@ RUN chmod 0755 /opt/paperclip/bin/git-credential-paperclip /opt/paperclip/bin/gh
   && /opt/node24/bin/node --check /opt/paperclip/bin/gh \
   && git config --system --list >/dev/null
 
-# myrmidon(1.6.2 BOT-DISK-C): shared git objects. /opt/paperclip/bin/git shadows
-# /usr/bin/git and adds `--reference-if-able /cache/git/<owner>/<repo>.git` to a
-# `git clone` of a GitHub repository the board mirrors (the read-only /cache/git
-# mount, absent unless the instance setting lists mirrored repositories); every
-# other git invocation runs the real git unchanged, credential helper included.
-# bot-clone-hygiene reports which clones hold unpushed work (the entrypoint
-# runs it in the background); the board's draft-directory lifecycle reads that
-# report before it removes an idle clone. Node/Python scripts under /opt only.
-COPY --chown=root:root git-reference/git git-reference/bot-clone-hygiene /opt/paperclip/bin/
-RUN chmod 0755 /opt/paperclip/bin/git /opt/paperclip/bin/bot-clone-hygiene \
-  && /opt/node24/bin/node --check /opt/paperclip/bin/git \
-  && python3 -m py_compile /opt/paperclip/bin/bot-clone-hygiene \
-  && rm -rf /opt/paperclip/bin/__pycache__
-
 # myrmidon(1.6.1 BUILD-OFFLOAD A): the build-offload wrappers. Heavy
 # repository operations (pnpm install, monorepo tsc, vitest, gradle,
 # go build/test) must run on the build VPS through the `devbuild` CLI
@@ -725,22 +854,28 @@ RUN chmod 0755 /opt/paperclip/bin/git /opt/paperclip/bin/bot-clone-hygiene \
 # github-broker wrappers above: Node scripts, node --check at build
 # time, /opt only.
 COPY --chown=root:root build-wrappers/devbuild-gate.js build-wrappers/blocked-tool.js \
+     build-wrappers/heavy-fallback.js \
      build-wrappers/pnpm build-wrappers/tsc build-wrappers/vitest \
      build-wrappers/gradle build-wrappers/go /opt/paperclip/bin/
 RUN chmod 0755 /opt/paperclip/bin/pnpm /opt/paperclip/bin/tsc /opt/paperclip/bin/vitest \
      /opt/paperclip/bin/gradle /opt/paperclip/bin/go \
   && chmod 0644 /opt/paperclip/bin/devbuild-gate.js /opt/paperclip/bin/blocked-tool.js \
-  && for f in devbuild-gate.js blocked-tool.js pnpm tsc vitest gradle go; do \
+     /opt/paperclip/bin/heavy-fallback.js \
+  && for f in devbuild-gate.js blocked-tool.js heavy-fallback.js pnpm tsc vitest gradle go; do \
        /opt/node24/bin/node --check /opt/paperclip/bin/$f; \
      done
 
 # The root filesystem is read-only at run time and the bot's writable
-# directories are exactly its three volumes, so every path pnpm or the
-# toolchains write to must live under one of them:
-#   - the pnpm store defaults to /workspace/.pnpm-store: the SAME mount as the
-#     clones, because pnpm hard-links node_modules into its store and link(2)
-#     cannot cross a mount (EXDEV) — a store on /data or /cache would make pnpm
-#     copy every package into every clone (1.6.2 BOT-DISK-C; see README.md);
+# directories are exactly its single /bot mount, so every path pnpm or the
+# toolchains write to must live under it:
+#   - the pnpm store defaults to /workspace/.pnpm-store, INSIDE the /bot mount like
+#     every clone root (/data/hermes, /workspace, /scratch), because pnpm imports
+#     node_modules from its store with package-import-method=clone (cp
+#     --reflink, FICLONE) and reflinks cannot cross a superblock (EXDEV) — a
+#     store on /cache would make pnpm copy every package into every clone
+#     (see README.md). pnpm 10 itself still COPIES when the kernel refuses the
+#     clone, so the guards are the build-time check below and the start-time
+#     reflink self-check in entrypoint.sh (BOT-DISK-D, BOT-DISK-H8b);
 #   - Rust's RUSTUP_HOME/CARGO_HOME stay sealed under /opt and cargo writes its
 #     target dir into the checked-out workspace, never into the image;
 #   - Go's build cache defaults under $HOME (/data/hermes) — the durable volume.
@@ -749,11 +884,25 @@ RUN chmod 0755 /opt/paperclip/bin/pnpm /opt/paperclip/bin/tsc /opt/paperclip/bin
 # gh wrapper (which resolves run-scoped credentials before exec'ing the real
 # gh) is found first; git needs no PATH entry — it reaches the credential
 # helper through /etc/gitconfig's absolute path.
+# myrmidon 1.6.1 BUILD-OFFLOAD B: the `devbuild` entry point (rsync + ssh to
+# the shared build VPS with the shared /srv/devcache caches). Root-owned,
+# outside the writable volumes, so a bot cannot rewrite its own transport.
+# It lives in /opt/paperclip/bin, NOT /usr/local/bin: the part-A wrappers open
+# only when an executable /usr/local/bin/devbuild exists, and this transport
+# must not open the local barrier — the heavy command runs on the build VPS;
+# the key it reads is mounted separately by the runtime template (part C).
+# rsync is part of the transport contract and lives in /usr/bin.
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends rsync \
+  && rm -rf /var/lib/apt/lists/*
+COPY --chown=root:root devbuild/devbuild /opt/paperclip/bin/devbuild
+RUN chmod 0755 /opt/paperclip/bin/devbuild
 # myrmidon(1.6.1 BUILD-OFFLOAD A): the same first position is what makes the
 # build wrappers (pnpm/tsc/vitest/gradle/go) shadow the real binaries in
 # /opt/pnpm/bin, /opt/node24/bin and /opt/go/bin — see the COPY block above.
 ENV PATH=/opt/paperclip/bin:/opt/node24/bin:/opt/pnpm/bin:/opt/go/bin:/opt/cargo/bin:/opt/docker-cli/bin:/opt/hermes-src/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
     npm_config_store_dir=/workspace/.pnpm-store \
+    npm_config_package_import_method=clone \
     GOTOOLCHAIN=local \
     GOFLAGS=-mod=mod
 
@@ -763,6 +912,8 @@ USER 10001:10001
 # answers, and no PATH element is under a writable root the dockergate image
 # policy rejects. Running it here (not in a builder stage) is what makes the
 # check meaningful — it sees exactly what a bot container would.
+# The devbuild entry point answers --help as uid 10001 (it must: bots invoke
+# it; the image build fails if its mode or interpreter ever break).
 # myrmidon(1.6.1 BUILD-OFFLOAD A): the check also proves the build-offload
 # barrier behaves from the contract user's own eyes — with no
 # /usr/local/bin/devbuild in this image, `pnpm install` MUST fail with the
@@ -781,9 +932,10 @@ RUN set -eu; \
     zstd --version; \
     git --version; \
     docker --version; \
+    devbuild --help >/dev/null; \
     for el in $(echo "$PATH" | tr ':' ' '); do \
       case "$el" in \
-        /data|/data/*|/workspace|/workspace/*|/scratch|/scratch/*|/tmp|/tmp/*) \
+        /bot|/bot/*|/data|/data/*|/workspace|/workspace/*|/scratch|/scratch/*|/tmp|/tmp/*) \
           echo "PATH element $el is under a writable root" >&2; exit 1 ;; \
       esac; \
     done; \
@@ -832,22 +984,38 @@ RUN set -eu; \
     esac; \
     echo "build-offload barrier verified: heavy tools refuse, light probes pass"
 
-# myrmidon(1.6.2 BOT-DISK-C): the image's pnpm really hard-links into a store on
-# the clones' mount (same script the repository's bot-runtime test runs), and
-# the git wrapper is the git on PATH. A copy here would mean every clone's
-# node_modules duplicates the store, which is the problem this stage exists to
-# prevent; the real pnpm binary is called directly, the devbuild gate only
+# myrmidon(BOT-DISK-D): the image's pnpm really hard-links into the store from EVERY
+# clone root of the single /bot mount (same script the repository's bot-runtime test
+# runs), and the git wrapper is the git on PATH. A copy, or a failed link, would mean
+# every clone's node_modules duplicates the store, which is the problem this stage
+# exists to prevent; the real pnpm binary is called directly, the devbuild gate only
 # fronts the bare name.
 COPY --chown=root:root --chmod=0755 pnpm-hardlink-check.sh /opt/paperclip/pnpm-hardlink-check.sh
+COPY --chown=root:root --chmod=0755 pnpm-reflink-check.sh /opt/paperclip/pnpm-reflink-check.sh
+# myrmidon(BOT-DISK-H8b): the image's pnpm really reflink-imports into the
+# store from EVERY clone root of the single /bot mount — the import method the
+# fleet now runs (template.ts DEFAULT_PNPM_IMPORT_METHOD). pnpm copies silently
+# when FICLONE is refused (another superblock, a filesystem without reflinks),
+# and a copy means every clone's node_modules duplicates the store, the problem
+# this stage exists to prevent. shared=yes needs filefrag's extent comparison;
+# on a build filesystem without reflink support this stage fails the build,
+# which is the point of the CI gate.
+# The reflink check runs at container start (entrypoint reflink_self_check) on the
+# real bot volume; a build filesystem (overlayfs on the CI runner) has no reflinks,
+# so a build-time gate here could never pass.
 RUN set -eu; \
-    out="$(PNPM=/opt/pnpm/bin/pnpm /opt/paperclip/pnpm-hardlink-check.sh)"; \
+    out="$(PNPM=/opt/pnpm/bin/pnpm ROOTS="/data/hermes /workspace /scratch" STORE_DIR=/workspace/.pnpm-store /opt/paperclip/pnpm-hardlink-check.sh)"; \
     echo "pnpm hardlink check: $out"; \
-    case "$out" in \
-      *"samefile=yes"*) ;; \
-      *) echo "pnpm must hard-link into a store beside the project, got: $out" >&2; exit 1 ;; \
-    esac; \
-    case "$out" in \
-      "nlink=1 "*) echo "pnpm copied instead of hard-linking: $out" >&2; exit 1 ;; \
-    esac; \
+    [ "$(echo "$out" | wc -l)" -eq 3 ] || { echo "expected one result per clone root, got: $out" >&2; exit 1; }; \
+    echo "$out" | while read -r line; do \
+      case "$line" in \
+        *"samefile=yes"*) ;; \
+        *) echo "pnpm must hard-link into the store from every clone root, got: $line" >&2; exit 1 ;; \
+      esac; \
+      case "$line" in \
+        *"nlink=1 "*) echo "pnpm copied instead of hard-linking: $line" >&2; exit 1 ;; \
+      esac; \
+    done; \
+    rm -rf /workspace/.pnpm-store; \
     [ "$(command -v git)" = "/opt/paperclip/bin/git" ] || { echo "git on PATH must be the reference wrapper" >&2; exit 1; }; \
     git --version

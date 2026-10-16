@@ -25,6 +25,8 @@ export type AgentCardModels = {
   fallbacks?: string[];
   /** myrmidon(BOT-TUNING-C): explicit context window (tokens) for the card's model. */
   contextLength?: number;
+  /** myrmidon(BOT-RUNTIME-TUNING-A): absolute compression threshold in tokens. */
+  compressionThresholdTokens?: number;
   /** myrmidon(BOT-TUNING-C): model for auxiliary title generation. */
   titleGeneration?: string;
   /** myrmidon(BOT-TUNING-C): model for auxiliary compression summaries. */
@@ -72,6 +74,8 @@ const SUPPORTED_FIELDS_BY_ADAPTER: Record<
     "tts",
     "fallbacks",
     "contextLength",
+    // myrmidon(BOT-RUNTIME-TUNING-A): the compression token cap.
+    "compressionThresholdTokens",
     "titleGeneration",
     "compressionSummary",
   ]),
@@ -81,6 +85,7 @@ export type CardModelFieldKey =
   | SingleModelKey
   | "fallbacks"
   | "contextLength"
+  | "compressionThresholdTokens"
   | "titleGeneration"
   | "compressionSummary";
 
@@ -107,6 +112,11 @@ export function compactCardModels(models: AgentCardModels): AgentCardModels | un
   // the context window only when a finite number, model names only when non-empty.
   if (typeof models.contextLength === "number" && Number.isFinite(models.contextLength)) {
     next.contextLength = models.contextLength;
+  }
+  // myrmidon(BOT-RUNTIME-TUNING-A): the compression cap compacts like the
+  // context window (a finite number is kept; an empty field stores nothing).
+  if (typeof models.compressionThresholdTokens === "number" && Number.isFinite(models.compressionThresholdTokens)) {
+    next.compressionThresholdTokens = models.compressionThresholdTokens;
   }
   const title = models.titleGeneration?.trim();
   if (title) next.titleGeneration = title;
@@ -186,18 +196,90 @@ export function CardEffortPicker({
 const CONTEXT_LENGTH_MIN = 8_000;
 const CONTEXT_LENGTH_MAX = 10_000_000;
 
-function parseTokens(draft: string): { ok: true; value: number | undefined } | { ok: false; message: string } {
+/**
+ * myrmidon(BOT-RUNTIME-TUNING-A): the card's compression token cap. Same
+ * range the compiler enforces on `compression.threshold_tokens`, and the same
+ * default the company applies when the card is empty (profile-input.ts
+ * `BOT_DEFAULT_COMPRESSION_THRESHOLD_TOKENS`) — the field shows it as its
+ * placeholder, so an empty field and an explicit 100000 compile the same.
+ */
+const COMPRESSION_THRESHOLD_MIN = 10_000;
+const COMPRESSION_THRESHOLD_MAX = 2_000_000;
+export const CARD_COMPRESSION_THRESHOLD_DEFAULT = 100_000;
+
+function parseTokenCount(
+  draft: string,
+  min: number,
+  max: number,
+  label: string,
+): { ok: true; value: number | undefined } | { ok: false; message: string } {
   const n = Number(draft);
   if (!Number.isFinite(n) || !Number.isInteger(n)) {
-    return { ok: false, message: "Context length must be a whole number of tokens." };
+    return { ok: false, message: `${label} must be a whole number of tokens.` };
   }
-  if (n < CONTEXT_LENGTH_MIN || n > CONTEXT_LENGTH_MAX) {
-    return {
-      ok: false,
-      message: `Context length must be between ${CONTEXT_LENGTH_MIN} and ${CONTEXT_LENGTH_MAX}.`,
-    };
+  if (n < min || n > max) {
+    return { ok: false, message: `${label} must be between ${min} and ${max}.` };
   }
   return { ok: true, value: n };
+}
+
+/**
+ * The shared body of the card's numeric token fields (context window,
+ * compression cap): a controlled text input that only reports whole numbers
+ * inside the compiler's own range, and shows the range error in place.
+ */
+function TokenInputField({
+  label,
+  hint,
+  placeholder,
+  testId,
+  value,
+  min,
+  max,
+  labelForErrors,
+  onChange,
+}: {
+  label: string;
+  hint: string;
+  placeholder: string;
+  testId: string;
+  value: number | undefined;
+  min: number;
+  max: number;
+  labelForErrors: string;
+  onChange: (tokens: number | undefined) => void;
+}) {
+  const shown = value === undefined ? "" : String(value);
+  const [draft, setDraft] = useState(shown);
+  useEffect(() => setDraft(shown), [shown]);
+  const parsed = draft.trim() === "" ? ({ ok: true, value: undefined } as const) : parseTokenCount(draft, min, max, labelForErrors);
+  return (
+    <Field label={label} hint={hint}>
+      <input
+        type="text"
+        inputMode="numeric"
+        aria-label={label}
+        aria-invalid={!parsed.ok}
+        data-testid={testId}
+        className="w-full rounded-md border border-border px-2.5 py-1.5 bg-transparent outline-none text-sm font-mono placeholder:text-muted-foreground/40"
+        placeholder={placeholder}
+        value={draft}
+        onChange={(event) => {
+          setDraft(event.target.value);
+          const next =
+            event.target.value.trim() === ""
+              ? ({ ok: true, value: undefined } as const)
+              : parseTokenCount(event.target.value, min, max, labelForErrors);
+          if (next.ok) onChange(next.value);
+        }}
+      />
+      {!parsed.ok && (
+        <p className="mt-1 text-xs text-amber-400" data-testid={`${testId}-error`}>
+          {parsed.message}
+        </p>
+      )}
+    </Field>
+  );
 }
 
 export function CardContextLengthField({
@@ -207,33 +289,45 @@ export function CardContextLengthField({
   value: number | undefined;
   onChange: (tokens: number | undefined) => void;
 }) {
-  const shown = value === undefined ? "" : String(value);
-  const [draft, setDraft] = useState(shown);
-  useEffect(() => setDraft(shown), [shown]);
-  const parsed = draft.trim() === "" ? ({ ok: true, value: undefined } as const) : parseTokens(draft);
   return (
-    <Field label="Context length (tokens)" hint="Explicit context window for the model. Empty keeps the profile setting.">
-      <input
-        type="text"
-        inputMode="numeric"
-        aria-label="Context length"
-        aria-invalid={!parsed.ok}
-        data-testid="myrmidon-card-context-length"
-        className="w-full rounded-md border border-border px-2.5 py-1.5 bg-transparent outline-none text-sm font-mono placeholder:text-muted-foreground/40"
-        placeholder="auto"
-        value={draft}
-        onChange={(event) => {
-          setDraft(event.target.value);
-          const next = event.target.value.trim() === "" ? ({ ok: true, value: undefined } as const) : parseTokens(event.target.value);
-          if (next.ok) onChange(next.value);
-        }}
-      />
-      {!parsed.ok && (
-        <p className="mt-1 text-xs text-amber-400" data-testid="myrmidon-card-context-length-error">
-          {parsed.message}
-        </p>
-      )}
-    </Field>
+    <TokenInputField
+      label="Context length (tokens)"
+      hint="Explicit context window for the model. Empty keeps the profile setting."
+      placeholder="auto"
+      testId="myrmidon-card-context-length"
+      value={value}
+      min={CONTEXT_LENGTH_MIN}
+      max={CONTEXT_LENGTH_MAX}
+      labelForErrors="Context length"
+      onChange={onChange}
+    />
+  );
+}
+
+/**
+ * myrmidon(BOT-RUNTIME-TUNING-A): the compression token cap. Hermes compresses
+ * at the lower of the ratio threshold and this count, so a large-window model
+ * no longer grows a session to half its window before compacting.
+ */
+export function CardCompressionThresholdField({
+  value,
+  onChange,
+}: {
+  value: number | undefined;
+  onChange: (tokens: number | undefined) => void;
+}) {
+  return (
+    <TokenInputField
+      label="Compression threshold (tokens)"
+      hint={`Absolute token cap for context compression. Empty uses the company default (${CARD_COMPRESSION_THRESHOLD_DEFAULT}).`}
+      placeholder={String(CARD_COMPRESSION_THRESHOLD_DEFAULT)}
+      testId="myrmidon-card-compression-threshold"
+      value={value}
+      min={COMPRESSION_THRESHOLD_MIN}
+      max={COMPRESSION_THRESHOLD_MAX}
+      labelForErrors="Compression threshold"
+      onChange={onChange}
+    />
   );
 }
 
@@ -292,6 +386,20 @@ export function AgentCardModelsFields({
           <CardContextLengthField
             value={models.contextLength}
             onChange={(tokens) => update({ contextLength: tokens })}
+          />
+        ) : (
+          <UnsupportedNote />
+        )}
+      </Field>
+      {/* myrmidon(BOT-RUNTIME-TUNING-A): absolute compression token cap for this agent. */}
+      <Field
+        label="Compression threshold (tokens)"
+        hint={`Absolute token cap for context compression. Empty uses the company default (${CARD_COMPRESSION_THRESHOLD_DEFAULT}).`}
+      >
+        {isCardModelFieldSupported(adapterType, "compressionThresholdTokens") ? (
+          <CardCompressionThresholdField
+            value={models.compressionThresholdTokens}
+            onChange={(tokens) => update({ compressionThresholdTokens: tokens })}
           />
         ) : (
           <UnsupportedNote />

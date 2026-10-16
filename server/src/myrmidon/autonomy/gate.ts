@@ -29,6 +29,13 @@ import { dbAutonomyStore, agentRoleFromDb, type AutonomyStore } from "./store.js
 
 /** Stable error code the UI and tests match on. */
 export const AUTONOMY_FORBIDDEN_CODE = "autonomy_forbidden";
+/**
+ * Stable code a route answers when the verdict is `approval_required` and the
+ * calling seam has no held-action primitive yet. 1.6.2 treats the verdict as a
+ * denial at the pause/wake route seam; the held-action half is a documented
+ * follow-up (see gate.ts header).
+ */
+export const AUTONOMY_APPROVAL_REQUIRED_CODE = "autonomy_approval_required";
 
 export interface AutonomyGateDeps {
   store: AutonomyStore;
@@ -75,6 +82,13 @@ export function autonomyGate(deps: AutonomyGateDeps) {
         role: decision.role,
       });
     }
+    if (decision.verdict === "approval_required") {
+      throw forbidden("This action requires approval for this role by the autonomy matrix", {
+        code: AUTONOMY_APPROVAL_REQUIRED_CODE,
+        actionClass,
+        role: decision.role,
+      });
+    }
     return decision;
   }
 
@@ -82,6 +96,32 @@ export function autonomyGate(deps: AutonomyGateDeps) {
 }
 
 export type AutonomyGate = ReturnType<typeof autonomyGate>;
+
+/**
+ * myrmidon(1.6-AUTONOMY-GW): resolve the matrix verdict for a caller the
+ * gateway already authenticated — an agent id, not an express request. Same
+ * resolution order as `decide` (agent override > role rule > class default);
+ * a null agent id (non-agent caller) is not subject to the matrix, so it
+ * reads as `allowed`, matching `decide`.
+ */
+export async function dbAutonomyVerdictForAgent(
+  db: Db,
+  agentId: string | null,
+  actionClass: AutonomyActionClass,
+): Promise<AutonomyDecision> {
+  if (!agentId) return { verdict: "allowed", role: null, actionClass };
+  const store = dbAutonomyStore(db);
+  const roleOf = agentRoleFromDb(db);
+  const [role, matrix] = await Promise.all([
+    roleOf(agentId),
+    store.read().then((doc) => doc.matrix),
+  ]);
+  return {
+    verdict: resolveAutonomy(role, actionClass, matrix, agentId),
+    role,
+    actionClass,
+  };
+}
 
 /** The production gate: matrix from instance_settings, role from agents.role. */
 export function dbAutonomyGate(db: Db): AutonomyGate {

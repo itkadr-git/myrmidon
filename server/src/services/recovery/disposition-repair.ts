@@ -25,6 +25,9 @@ type DispositionRepairIssue = Pick<
   | "status"
   | "assigneeAgentId"
   | "assigneeUserId"
+  // myrmidon(HUMAN-REVIEW-WAIT): a declared human-only review is itself a
+  // durable waiting path — the next verdict belongs to a person.
+  | "reviewPolicy"
   | "executionPolicy"
   | "executionState"
   | "monitorNextCheckAt"
@@ -205,7 +208,10 @@ export async function collectDispositionRepairSourceState(
             ? "interaction"
             : pendingApproval
               ? "approval"
-              : null;
+              // myrmidon(HUMAN-REVIEW-WAIT): see the type comment above.
+              : issue.reviewPolicy === "human_only"
+                ? "human_only_review"
+                : null;
 
   const durableState = {
     source: {

@@ -19,8 +19,8 @@ async function createSkillDir(root: string, name: string) {
 }
 
 describe("claude local skill sync", () => {
-  const paperclipKey = "paperclipai/paperclip/paperclip";
-  const createAgentKey = "paperclipai/paperclip/paperclip-create-agent";
+  const paperclipKey = "paperclipai/paperclip/myrmidon";
+  const createAgentKey = "paperclipai/paperclip/myrmidon-create-agent";
   const cleanupDirs = new Set<string>();
 
   afterEach(async () => {
@@ -104,7 +104,7 @@ describe("claude local skill sync", () => {
       originLabel: "User-installed",
       locationLabel: "~/.claude/skills",
       readOnly: true,
-      detail: "Installed outside Paperclip management in the Claude skills home.",
+      detail: "Installed outside Myrmidon management in the Claude skills home.",
     }));
   });
 });

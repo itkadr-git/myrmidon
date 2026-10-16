@@ -130,6 +130,13 @@ export interface VoiceSttIntakeInput {
   env?: NodeJS.ProcessEnv;
   transcriber: TelegramVoiceTranscriber | null;
   fetchTimeoutMs?: number;
+  /**
+   * myrmidon(1.6.5 VOICE-STT A): the company's own switch, resolved by the
+   * caller from the stored settings (null/undefined — not resolved). It
+   * decides only when the environment master switch is unset, so a board
+   * change takes effect without a restart.
+   */
+  companyEnabled?: boolean | null;
 }
 
 function toBuffer(fetched: Uint8Array | ArrayBuffer | Buffer): Buffer {
@@ -158,14 +165,17 @@ function toBuffer(fetched: Uint8Array | ArrayBuffer | Buffer): Buffer {
 export async function transcribeTelegramVoiceIntake(
   input: VoiceSttIntakeInput,
 ): Promise<VoiceSttOutcome> {
-  if (!telegramVoiceSttEnabled(input.env)) {
+  if (!telegramVoiceSttEnabled(input.env, input.companyEnabled)) {
     // myrmidon(1.6.1 VOICE-STT B): the guard — zero transcriber calls and
-    // zero byte downloads when the setting is off.
+    // zero byte downloads when the setting is off. myrmidon(1.6.5 VOICE-STT
+    // A): the switch is the environment master switch, or the company's own
+    // stored setting when the environment does not name one.
     return { body: null, skip: "stt_disabled" };
   }
   if (!input.transcriber) {
-    // myrmidon(1.6.1 VOICE-STT B): the shared core is not wired yet; until
-    // part A1 lands the hook stays null and the vendor body is used.
+    // myrmidon(1.6.5 VOICE-STT A): production wires the shared core in
+    // `server/src/app.ts`; a caller without the hook (tests, another
+    // provider) keeps the vendor body unchanged.
     return { body: null, skip: "stt_unconfigured" };
   }
   const first = input.voiceAttachments[0];
@@ -274,10 +284,22 @@ function normalizeVoiceMimeType(
   }
 }
 
-export { telegramVoiceSttEnabled, TELEGRAM_VOICE_STT_ENV } from "./settings.js";
+export { telegramVoiceSttEnabled, readTelegramVoiceSttSwitch, TELEGRAM_VOICE_STT_ENV } from "./settings.js";
+// myrmidon(1.6.5 VOICE-STT A): the production wiring — the shared STT core
+// behind this seam, plus the per-company switch. Wired in `server/src/app.ts`.
+export {
+  createTelegramVoiceSttWiring,
+  createTelegramVoiceSttWiringFromRuntime,
+} from "./wiring.js";
+export type {
+  TelegramVoiceSttCompanyGate,
+  TelegramVoiceSttWiring,
+  TelegramVoiceSttWiringDeps,
+} from "./wiring.js";
 export {
   MAX_TRANSCRIPT_BLOCK_CHARS,
   composeVoiceCommentBody,
+  diarizationMarker,
   renderVoiceTranscript,
 } from "./transcript.js";
-export type { VoiceTranscript } from "./transcript.js";
+export type { VoiceTranscript, VoiceDiarizationReport } from "./transcript.js";

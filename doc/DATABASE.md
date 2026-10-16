@@ -51,7 +51,7 @@ For a full PostgreSQL server locally, use the included Docker Compose setup:
 docker compose up -d
 ```
 
-This starts PostgreSQL 17 on `localhost:5432`. Then set the connection string:
+This starts PostgreSQL 18 + pgvector (the SHARED-PG image) on `localhost:5432`. Then set the connection string:
 
 ```sh
 cp .env.example .env
@@ -143,6 +143,21 @@ DATABASE_URL=postgres://postgres.[PROJECT-REF]:[PASSWORD]@...5432/postgres \
 - Projects pause after 1 week of inactivity
 
 See [Supabase pricing](https://supabase.com/pricing) for current details.
+
+## Connection loss during a transaction
+
+When a database connection closes, its transaction fails. Paperclip does not
+replay that transaction. New requests can use a fresh connection from the pool.
+Queries from the failed transaction must keep failing, even after the pool
+reconnects.
+
+Source builds carry `patches/postgres@3.4.9.patch` for this behavior. It rejects
+queued and later queries from a disconnected transaction or reserved connection,
+and prevents a released, closed connection from returning to the open pool.
+The patch covers both ESM and CommonJS. The regression suite terminates real
+PostgreSQL backends and checks rejection, pool recovery, and transaction isolation.
+Remove the patch when an upstream release passes these tests. Installs of the
+unmodified `postgres` package outside this workspace do not include the patch.
 
 ## Switching between modes
 

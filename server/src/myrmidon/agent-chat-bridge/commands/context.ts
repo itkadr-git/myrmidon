@@ -1,20 +1,14 @@
 // myrmidon(X8c): loads and authorizes the bridged Telegram conversation a
 // command is running against: it must be the caller's own Telegram
 // conversation with the agent it claims to run for.
+// myrmidon(1.7-TG-LOCALE): the "chat unavailable" refusal prose moved to the
+// locale catalogs (`chat.notAvailable`); this module keeps only the
+// authorization logic and the (locale-free) context shapes.
 
 import { and, eq, inArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agents, heartbeatRuns, issues } from "@paperclipai/db";
 import { conversationChannel, conversationOwnerUserId } from "../identity.js";
-
-/**
- * Reply text for a command that cannot be attributed to the caller's own
- * bridged conversation.
- *
- * myrmidon(X8-texts): the bridged Telegram DM answers in Russian — this is the
- * language of the pilot chat (see the merge note at the top of commands/index.ts).
- */
-export const CHAT_NOT_AVAILABLE_TEXT = "Этот чат недоступен.";
 
 export interface BridgedCommandIssueContext {
   id: string;
@@ -44,8 +38,9 @@ export interface BridgedCommandContext {
  * Loads the bridged conversation and its agent, and checks that the command
  * is running against the caller's own Telegram conversation with the agent
  * it claims to run for. Returns null when any of that does not hold; callers
- * must answer with CHAT_NOT_AVAILABLE_TEXT and make no other record (design
- * doc section 2.9: commands act only on the owner's own Telegram chat).
+ * must answer with the `chat.notAvailable` catalog text and make no other
+ * record (design doc section 2.9: commands act only on the owner's own
+ * Telegram chat).
  */
 export async function loadBridgedCommandContext(
   db: Db,

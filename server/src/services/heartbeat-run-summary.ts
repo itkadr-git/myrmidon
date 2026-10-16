@@ -442,9 +442,13 @@ export function resolveHeartbeatRunResponse(input: {
       } satisfies ResolvedHeartbeatRunResponse;
     }
 
+    // myrmidon(1.6.4-HERMES-LONG-RESPONSE): prefer the full adapter answer
+    // (`result`) over the bounded `summary` copy so a long agent response
+    // reaches the issue comment — and the Telegram splitter — without being
+    // cut at the summary's truncation length.
     const legacyText =
-      readCommentText(resultJson.summary) ??
       readCommentText(resultJson.result) ??
+      readCommentText(resultJson.summary) ??
       readCommentText(resultJson.message);
     if (legacyText && !NARRATION_OPENERS.test(legacyText.trimStart())) {
       return {
@@ -539,9 +543,10 @@ export function resolveHeartbeatRunResponse(input: {
   const upstream = resolveCompletedUpstreamResponse();
   if (upstream) return upstream;
 
+  // myrmidon(1.6.4-HERMES-LONG-RESPONSE): same full-answer preference as above.
   const legacyText =
-    readCommentText(resultJson.summary) ??
     readCommentText(resultJson.result) ??
+    readCommentText(resultJson.summary) ??
     readCommentText(resultJson.message);
 
   return {

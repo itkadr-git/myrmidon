@@ -1,0 +1,23 @@
+{
+  "partition": {
+    "mount": "/srv/myrmidon-xfs",
+    "totalBytes": 536870912000,
+    "usedBytes": 295547944960,
+    "freeBytes": 241322967040,
+    "usedPercent": 55.1
+  },
+  "projects": [
+    {
+      "botKey": "bot-001",
+      "projectId": 1041,
+      "usedBytes": 6442450944,
+      "softBytes": 5368709120,
+      "hardBytes": 6442450944
+    }
+  ],
+  "other": {
+    "usedBytes": 104857600
+  },
+  "quotaEnabled": true,
+  "at": "2026-10-06T14:08:00Z"
+}

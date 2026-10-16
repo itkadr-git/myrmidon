@@ -9,17 +9,29 @@
 //   apiBaseUrl = http://myrmidon-bot-<botKey>:8642   (the container's name on the bot network)
 //   apiKey     = secret_ref -> the company secret that holds the bot's API_SERVER_KEY
 //                (the same secret profile-compile.ts writes into the bot's .env)
-//   dangerouslyAllowInsecureRemoteHttp = true
 //
-// The third field is required, not optional: the adapter refuses a plain-http
-// base URL to a non-loopback host unless that escape hatch is set (see
-// transport-security.ts), and a bot container is exactly that. Without it every
-// run against a container card fails at the transport check. The traffic never
-// leaves the docker network of the bots (MYRMIDON_BOT_NETWORK): it is the board
-// server talking to its own container on the same host, so plain http there is
-// the intended transport.
-// The narrower alternative, teaching the adapter to trust the bot-network host
-// names, is a change in the adapter, not in this wiring; see DIVERGENCE.md.
+// myrmidon(BOT-KEY-401): the secret_ref is pinned to the exact numeric VERSION
+// whose value the applied profile's .env carries (the compiled profile's
+// `apiServerKeyVersion`), never "latest". A version bump of the secret (a
+// rotation) only reaches the card after a pass whose container switch SUCCEEDED:
+// a compile whose apply then fails (e.g. dockergate refusing the recreate) can
+// no longer leave the old container running with the old key while the card
+// already resolves the new one — the board's 401 "API server rejected invalid
+// API key" of that incident came from exactly that gap. The pin also travels in
+// the profile hashes: an unpinned bump changes the restart hash, so the
+// container itself is recreated onto the new key on the next pass, and this sync
+// re-pins the card right after.
+//
+// myrmidon(H3), release 1.1.2: the adapter now trusts the fleet's own
+// bot-container host names (`myrmidon-bot-<botKey>`) for plain http by itself
+// (transport-security.ts `isBotContainerHostname`), so the sync no longer
+// writes the `dangerouslyAllowInsecureRemoteHttp` escape hatch into the card.
+// A leftover `true` from the previous wiring is removed on the next pass: the
+// field belongs to the system in container mode, and a stale unsafe flag would
+// outlive its purpose (it widened trust to ANY remote plain-http host while
+// present). The traffic never leaves the docker network of the bots
+// (MYRMIDON_BOT_NETWORK): it is the board server talking to its own container
+// on the same host, so plain http there is the intended transport.
 //
 // The key is a secret_ref, never plaintext: the adapter's `apiKey` is a schema
 // secret field, resolved when a run starts, and the agent update path binds the
@@ -35,7 +47,8 @@ import { containerNameFor } from "./template.js";
 /**
  * The adapter's config key that allows plain http to a non-loopback host
  * (transport-security.ts `allowsInsecureRemoteHttp`). Kept as a literal here so
- * this module does not import the adapter package.
+ * this module does not import the adapter package. myrmidon(H3): only read to
+ * strip a leftover from the pre-H3 wiring; never written anymore.
  */
 const INSECURE_REMOTE_HTTP_KEY = "dangerouslyAllowInsecureRemoteHttp";
 
@@ -50,29 +63,38 @@ export interface GatewayCardPlan {
   changed: boolean;
   /** The card to store: the input with the changed fields replaced, all others untouched. */
   adapterConfig: Record<string, unknown>;
-  /** Which of `apiBaseUrl` / `apiKey` / the insecure-http flag differ from what the container needs. */
+  /** Which of `apiBaseUrl` / `apiKey` / the stripped insecure-http flag differ from what the container needs. */
   changedKeys: string[];
 }
 
-function isMatchingSecretRef(value: unknown, secretId: string): boolean {
+function isMatchingSecretRef(value: unknown, secretId: string, version: number): boolean {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
   const ref = value as Record<string, unknown>;
-  return ref.type === "secret_ref" && ref.secretId === secretId && ref.version === "latest";
+  return ref.type === "secret_ref" && ref.secretId === secretId && ref.version === version;
 }
 
 /**
  * Pure: what the card's gateway connection fields must become. A stored
  * secret_ref keeps its extra fields (projectionClass and the like) when it
- * already points at the right secret with version "latest"; anything else —
- * a plain string typed by a person, a ref to another secret, a pinned version —
- * is replaced, because in container mode the key is the container's. The
- * insecure-http flag is normalized to the boolean `true`: the adapter would also
- * accept a string such as "yes", but one canonical value keeps the card stable
- * and makes the tick's "already matches" comparison exact.
+ * already points at the right secret with the right pinned version; anything
+ * else — a plain string typed by a person, a ref to another secret, a ref
+ * pinned at a version the container does not run — is replaced, because in
+ * container mode the key is the container's.
+ *
+ * myrmidon(BOT-KEY-401): `target.apiKeyVersion` is the secret version of the
+ * profile that was just applied (or verified applied) to the container. A
+ * card still pointing at "latest" (written before this pin existed) is
+ * re-pinned to the version the RUNNING container carries — the card is only
+ * rewritten after a pass whose outcome proves the container has that key
+ * (index.ts syncs the card only on created/applied/unchanged).
+ *
+ * myrmidon(H3): a leftover insecure-http flag from the pre-H3 wiring is
+ * deleted (the adapter's own bot-container trust replaced it); nothing is
+ * written in its place.
  */
 export function planGatewayCardSync(
   adapterConfig: Record<string, unknown>,
-  target: { botKey: string; apiKeySecretId: string },
+  target: { botKey: string; apiKeySecretId: string; apiKeyVersion: number },
 ): GatewayCardPlan {
   const next: Record<string, unknown> = { ...adapterConfig };
   const changedKeys: string[] = [];
@@ -82,12 +104,14 @@ export function planGatewayCardSync(
     next.apiBaseUrl = apiBaseUrl;
     changedKeys.push("apiBaseUrl");
   }
-  if (!isMatchingSecretRef(adapterConfig.apiKey, target.apiKeySecretId)) {
-    next.apiKey = { type: "secret_ref", secretId: target.apiKeySecretId, version: "latest" };
+  if (!isMatchingSecretRef(adapterConfig.apiKey, target.apiKeySecretId, target.apiKeyVersion)) {
+    next.apiKey = { type: "secret_ref", secretId: target.apiKeySecretId, version: target.apiKeyVersion };
     changedKeys.push("apiKey");
   }
-  if (adapterConfig[INSECURE_REMOTE_HTTP_KEY] !== true) {
-    next[INSECURE_REMOTE_HTTP_KEY] = true;
+  // myrmidon(H3): strip the escape hatch the pre-H3 sync used to write; the
+  // adapter trusts myrmidon-bot-* host names on its own now.
+  if (INSECURE_REMOTE_HTTP_KEY in adapterConfig) {
+    delete next[INSECURE_REMOTE_HTTP_KEY];
     changedKeys.push(INSECURE_REMOTE_HTTP_KEY);
   }
   return { changed: changedKeys.length > 0, adapterConfig: next, changedKeys };
@@ -110,15 +134,20 @@ export interface BotCardSyncResult {
  * Returns the function to put into `BotContainerRuntimeDeps.syncCard`. Throws on
  * a failed read/write; the caller (index.ts) records that and keeps the
  * reconcile outcome, since the container itself is fine.
+ *
+ * myrmidon(BOT-KEY-401): `appliedApiServerKeyVersion` is the version of the
+ * API-server-key secret the container NOW runs (the applied profile's
+ * `apiServerKeyVersion`). The card is pinned to it, so a secret rotation whose
+ * container switch never happened never reaches the card.
  */
 export function createBotCardSync(
   ports: BotCardSyncPorts,
-): (agentId: string, botKey: string) => Promise<BotCardSyncResult> {
-  return async function syncCard(agentId: string, botKey: string): Promise<BotCardSyncResult> {
+): (agentId: string, botKey: string, appliedApiServerKeyVersion: number) => Promise<BotCardSyncResult> {
+  return async function syncCard(agentId: string, botKey: string, appliedApiServerKeyVersion: number): Promise<BotCardSyncResult> {
     const agent = await ports.loadAgent(agentId);
     if (!agent) return { changedKeys: [] };
     const key = await ports.ensureApiServerKey(agent);
-    const plan = planGatewayCardSync(agent.adapterConfig, { botKey, apiKeySecretId: key.secretId });
+    const plan = planGatewayCardSync(agent.adapterConfig ?? {}, { botKey, apiKeySecretId: key.secretId, apiKeyVersion: appliedApiServerKeyVersion });
     if (!plan.changed) return { changedKeys: [] };
     await ports.saveAdapterConfig(agent, plan.adapterConfig);
     return { changedKeys: plan.changedKeys };

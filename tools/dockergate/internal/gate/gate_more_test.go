@@ -15,7 +15,7 @@ import (
 
 // The contract (spec 12.3): every request that the real driver sent to a fake
 // daemon, replayed in order through the gate against a daemon that keeps the
-// state, passes, and every one of them is a route of A1..A12.
+// state, passes, and every one of them is a route of A1..A13.
 func TestContract_RecordedTrafficPasses(t *testing.T) {
 	r := newRig(t)
 	recs := fixture.Traffic(t)
@@ -43,7 +43,7 @@ func TestContract_RecordedTrafficPasses(t *testing.T) {
 			t.Errorf("decision %s on %s: %s", l.Decision, l.Route, l.Reason)
 		}
 		if l.Route == "none" || l.Route == "" {
-			t.Errorf("a request outside A1..A12: %+v", l)
+			t.Errorf("a request outside A1..A13: %+v", l)
 		}
 	}
 }
@@ -177,7 +177,7 @@ func TestRedTeam_RT1_10_ForeignContainer(t *testing.T) {
 		name, method, tail string
 	}{
 		{"inspect", "GET", "/json"},
-		{"marker", "GET", "/archive?path=%2Fdata%2Fhermes%2F.myrmidon%2Fapplied.json"},
+		{"marker", "GET", "/archive?path=%2Fbot%2Fhermes%2F.myrmidon%2Fapplied.json"},
 		{"start", "POST", "/start"},
 		{"restart", "POST", "/restart?t=30"},
 		{"delete", "DELETE", "?force=true&v=true"},
@@ -246,7 +246,7 @@ func TestResources_MarkerTooLargeIsAbsent(t *testing.T) {
 	r := newRig(t)
 	r.seedMain("running")
 	r.d.Modify(r.name(""), func(c *fakedocker.Container) { c.Marker = bytes.Repeat([]byte{'m'}, 1<<20+1) })
-	res := r.send("GET", r.target("", "/archive?path=%2Fdata%2Fhermes%2F.myrmidon%2Fapplied.json"), nil, nil)
+	res := r.send("GET", r.target("", "/archive?path=%2Fbot%2Fhermes%2F.myrmidon%2Fapplied.json"), nil, nil)
 	wantDeny(t, res, deny.MarkerTooLarge)
 	if res.Status != http.StatusNotFound {
 		t.Errorf("status %d, want 404", res.Status)
@@ -257,7 +257,7 @@ func TestResources_MarkerWithinLimitPasses(t *testing.T) {
 	r := newRig(t)
 	r.seedMain("running")
 	r.d.Modify(r.name(""), func(c *fakedocker.Container) { c.Marker = bytes.Repeat([]byte{'m'}, 1<<20-64) })
-	res := r.send("GET", r.target("", "/archive?path=%2Fdata%2Fhermes%2F.myrmidon%2Fapplied.json"), nil, nil)
+	res := r.send("GET", r.target("", "/archive?path=%2Fbot%2Fhermes%2F.myrmidon%2Fapplied.json"), nil, nil)
 	if res.Status != http.StatusOK || len(res.Body) != 1<<20-64 {
 		t.Fatalf("status %d, %d bytes", res.Status, len(res.Body))
 	}

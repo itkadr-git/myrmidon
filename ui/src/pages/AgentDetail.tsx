@@ -37,6 +37,7 @@ import {
   boardAdminDeniedExplanation,
   canManageBoardAdmins,
 } from "../components/myrmidon/AgentBoardAdminSection"; // myrmidon(ADMIN-AGENT)
+import { AgentOffRunSecretsSection } from "../components/myrmidon/AgentOffRunSecretsSection"; // myrmidon(1.6.5-F-23)
 import { useAdapterCapabilities } from "@/adapters/use-adapter-capabilities";
 import { redactCommandText as redactCommandSecretText } from "@paperclipai/adapter-utils";
 import { MarkdownEditor } from "../components/MarkdownEditor";
@@ -101,6 +102,7 @@ import { AgentToolsTab } from "./AgentToolsTab";
 import { AgentChannelsPanel } from "../components/chat/AgentChannelsPanel";
 import { AgentMemoryTab } from "../components/myrmidon/agent-memory/AgentMemoryTab"; // myrmidon(MEMORY-UI)
 import { PromptBudgetAdvicePanel } from "../components/myrmidon/prompt-budget-advice/PromptBudgetAdvicePanel"; // myrmidon(1.6.3 PROMPT-BUDGET C)
+import { PromptBudgetStatusSection } from "../components/myrmidon/PromptBudgetStatusSection"; // myrmidon(1.6.3 PROMPT-BUDGET B)
 import { useChatConnectorsEnabled } from "@/hooks/useChatConnectorsEnabled";
 import {
   appendCapped,
@@ -1760,6 +1762,9 @@ export function AgentOverview({
       {/* myrmidon(1.6.3 PROMPT-BUDGET C): optimization advice and the deep-analysis button */}
       <PromptBudgetAdvicePanel companyId={agent.companyId} agentId={agent.id} />
 
+      {/* myrmidon(1.6.3 PROMPT-BUDGET B): last run's share of the model window + breakdown */}
+      <PromptBudgetStatusSection companyId={agent.companyId} agentId={agent.id} />
+
       <div className="grid gap-4 md:grid-cols-2">
         <section className="rounded-lg border border-border p-4" aria-labelledby="agent-identity-heading">
           <div className="mb-4 flex items-center justify-between gap-3">
@@ -2216,6 +2221,16 @@ export function ConfigurationTab({
                 onError: (error: unknown) => setBoardAdminError(boardAdminDeniedExplanation(error)),
               });
             }}
+          />
+          {/* myrmidon(1.6.5-F-23): off-run self-secret read grant toggle, gated
+              by the same operator permission as the board admin toggle */}
+          <AgentOffRunSecretsSection
+            granted={Boolean(agent.access?.grants?.some((grant) => grant.permissionKey === "secrets:read_off_run" && (!grant.expiresAt || new Date(grant.expiresAt) > new Date())))}
+            expiresAt={(() => { const grant = agent.access?.grants?.find((g) => g.permissionKey === "secrets:read_off_run"); const raw = grant?.expiresAt; return raw ? new Date(raw).toISOString() : null; })()}
+            pending={updatePermissions.isPending}
+            canManage={operatorCanManageBoardAdmins}
+            base={{ canCreateAgents, canCreateSkills, canAssignTasks }}
+            onSave={(update) => updatePermissions.mutate(update)}
           />
           {/* myrmidon(S6): per-agent tool and connection permission */}
           <AgentToolAccessSection

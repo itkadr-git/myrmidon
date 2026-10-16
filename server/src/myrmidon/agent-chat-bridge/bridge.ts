@@ -28,10 +28,19 @@ import { projectSafeChatPublication } from "../../services/chat-publication-proj
 import { safeChatTaskUrl } from "../../services/chat-task-url.js";
 import { instanceSettingsService } from "../../services/instance-settings.js";
 import type { issueService } from "../../services/issues.js";
+import { stageAgentsScreenPublication } from "./commands/agents-buttons.js";
 import {
   parseBridgedCommand,
+  runBridgedChooserReply,
   runBridgedDirectMessageCommand,
 } from "./commands/index.js";
+// myrmidon(F06-D): the buttons under a `/model` or `/think` list, and the
+// reply-pick from it.
+import {
+  buildChooserMenuPayload,
+  findChooserListForReply,
+  recordChooserMenu,
+} from "./chooser-actions.js";
 import {
   conversationChannel,
   conversationOwnerUserId,
@@ -39,6 +48,15 @@ import {
   type ConversationKey,
 } from "./identity.js";
 import { telegramDmConversationsEnabled } from "./settings.js";
+// myrmidon(1.7-TG-LOCALE): bridge-owned prose (migration notice, unlinked
+// refusal) renders from the locale catalogs in the linked user's language.
+import {
+  resolveBridgeLocale,
+  forcedBridgeLocale,
+  instanceBridgeLocale,
+  DEFAULT_BRIDGE_LOCALE,
+  t,
+} from "./locales/index.js";
 // myrmidon(X9b): @<alias> addressing — alias resolution plus the reply prefix
 // and the first-contact context quote for an addressed agent's turn.
 import { resolveBridgeAddressee, type TelegramAddressee } from "./addressing.js";
@@ -187,6 +205,9 @@ async function buildMigrationNoticeText(
     agentId: string;
     publicBaseUrl: string | null;
     migratedFromIssueId: string;
+    /** myrmidon(1.7-TG-LOCALE): the linked board user whose language decides the notice. */
+    boardUserId: string;
+    env?: NodeJS.ProcessEnv;
   },
 ): Promise<string> {
   const [agent] = await db
@@ -194,9 +215,13 @@ async function buildMigrationNoticeText(
     .from(agents)
     .where(and(eq(agents.companyId, input.companyId), eq(agents.id, input.agentId)));
   const link = safeChatTaskUrl(input.publicBaseUrl, input.migratedFromIssueId);
-  // myrmidon(X8-texts): this notice is read in the bridged Telegram DM, so it
-  // is Russian like the rest of the command surface.
-  return `Теперь это постоянный чат с ${agent?.name ?? "этим агентом"}. Прежние задачи остаются на доске${link ? `: ${link}` : "."}`;
+  // myrmidon(1.7-TG-LOCALE): this notice is read in the bridged Telegram DM,
+  // so it renders in the linked user's locale like the command surface.
+  const locale = await resolveBridgeLocale(db as unknown as Db, input.boardUserId, input.env);
+  return t(locale, "bridge.migrated", {
+    agent: agent?.name ?? t(locale, "bridge.thisAgent"),
+    linkSuffix: link ? t(locale, "bridge.linkWith", { url: link }) : t(locale, "bridge.linkNone"),
+  });
 }
 
 const MAX_LOGGED_ERROR_TEXT = 2_000;
@@ -371,6 +396,40 @@ export async function ensureTelegramDmBinding(
 }
 
 /**
+ * myrmidon(F06-D): the commands an EDITED message may still run. A person who
+ * fixes a typo in `/modle` (or turns `/model` into `/model 3`) expects the
+ * command to run, not a silent nothing. Only commands that answer with a reply
+ * and leave the standing conversation's task untouched qualify: `/new` (which
+ * becomes a task comment), `/plan` and `/accept`/`/reject` (which create or
+ * close work) are never re-run from an edit.
+ */
+const EDITABLE_BRIDGED_COMMANDS: ReadonlySet<string> = new Set([
+  "model",
+  "think",
+  "status",
+  "help",
+  "start",
+  "commands",
+  "stop",
+  "agents",
+  "who",
+]);
+
+const EDITED_MESSAGE_PREFIX = "An external message was edited:\n\n";
+
+/**
+ * The command text of a Telegram message-edit lifecycle event (its text is
+ * wrapped as «An external message was edited: …»), or null when the edited
+ * message is not a command that may be re-run.
+ */
+export function editedBridgedCommandText(lifecycleText: string): string | null {
+  if (!lifecycleText.startsWith(EDITED_MESSAGE_PREFIX)) return null;
+  const body = lifecycleText.slice(EDITED_MESSAGE_PREFIX.length).trim();
+  const parsed = parseBridgedCommand(body);
+  return parsed && EDITABLE_BRIDGED_COMMANDS.has(parsed.name) ? body : null;
+}
+
+/**
  * Handles a bridged-DM message that may be an OpenClaw-style command.
  * Returns `done: true` when the whole inbound turn is finished (a `reply`
  * command already published its own answer); otherwise the caller continues
@@ -398,9 +457,25 @@ export async function handleTelegramDmCommand(input: {
   // whose first message happens to be a recognized command.
   releaseConversationId?: string;
   migratedFromIssueId?: string;
+  /**
+   * myrmidon(F06-D): the provider message this message replies to, in the form
+   * `chat_message_links` stores (Telegram: `<chat id>:<message id>`). A plain
+   * reply to a `/model` or `/think` list picks from it.
+   */
+  replyToProviderMessageId?: string | null;
 }): Promise<{ done: true } | { done: false; body?: string; notice?: string }> {
   const parsed = parseBridgedCommand(input.text);
-  if (!parsed) return { done: false };
+  // myrmidon(F06-D): not a command — but a reply to one of our choice lists may
+  // still be a pick ("2", "glm-5.3"). One cheap lookup, only for replies.
+  const chooserList =
+    !parsed && input.replyToProviderMessageId
+      ? await findChooserListForReply(input.db, {
+          companyId: input.endpoint.companyId,
+          endpointId: input.endpoint.id,
+          replyToProviderMessageId: input.replyToProviderMessageId,
+        })
+      : null;
+  if (!parsed && !chooserList) return { done: false };
   const commandPublications: ActivityPublication[] = [];
   const bound = await input.db.transaction(async (tx) => {
     if (input.releaseConversationId) {
@@ -430,22 +505,35 @@ export async function handleTelegramDmCommand(input: {
     );
   });
   for (const publication of commandPublications) publishActivity(publication);
-  const result = await runBridgedDirectMessageCommand({
-    db: input.db,
-    companyId: input.endpoint.companyId,
-    agentId: input.endpoint.assignedAgentId,
-    endpointId: input.endpoint.id,
-    deliveryId: input.deliveryId,
-    boardUserId: input.boardUserId,
-    conversationIssueId: bound.issue.id,
-    text: input.text,
-    publicBaseUrl: input.deps.publicBaseUrl,
-    cancelRun:
-      input.deps.cancelRun ??
-      (async () => {
-        throw new Error("chat_cancel_unavailable");
-      }),
-  });
+  const result = chooserList
+    ? // The list belongs to one conversation; a reply from another is plain text.
+      chooserList.conversationId === bound.conversation.id
+      ? await runBridgedChooserReply({
+          db: input.db,
+          companyId: input.endpoint.companyId,
+          agentId: input.endpoint.assignedAgentId,
+          conversationIssueId: bound.issue.id,
+          boardUserId: input.boardUserId,
+          commandName: chooserList.commandName,
+          text: input.text,
+        })
+      : null
+    : await runBridgedDirectMessageCommand({
+        db: input.db,
+        companyId: input.endpoint.companyId,
+        agentId: input.endpoint.assignedAgentId,
+        endpointId: input.endpoint.id,
+        deliveryId: input.deliveryId,
+        boardUserId: input.boardUserId,
+        conversationIssueId: bound.issue.id,
+        text: input.text,
+        publicBaseUrl: input.deps.publicBaseUrl,
+        cancelRun:
+          input.deps.cancelRun ??
+          (async () => {
+            throw new Error("chat_cancel_unavailable");
+          }),
+      });
   if (result === null) return { done: false };
   if (result.kind === "message") {
     return { done: false, body: result.body, notice: result.notice };
@@ -465,25 +553,66 @@ export async function handleTelegramDmCommand(input: {
         updatedAt: new Date(),
       })
       .where(eq(chatDeliveries.id, input.deliveryId));
-    await input.deps.stageTaskControlPublication(tx as unknown as Db, {
-      companyId: input.endpoint.companyId,
-      endpointId: input.endpoint.id,
-      conversationId: bound.conversation.id,
-      issueId: bound.issue.id,
-      idempotencyKey: `control:x8-${result.command}:${input.deliveryId}`,
-      payload: projectSafeChatPublication({
-        classification: "external",
-        source: "task_control",
-        text: result.text,
-      }),
-      principalId: input.principalId,
-    });
+    if (result.screen) {
+      // myrmidon(1.6.5 OPE-6318 part B): /agents as a card with buttons; the
+      // button tokens are issued in this same transaction.
+      await stageAgentsScreenPublication({
+        tx: tx as unknown as Db,
+        stage: input.deps.stageTaskControlPublication,
+        companyId: input.endpoint.companyId,
+        endpointId: input.endpoint.id,
+        conversationId: bound.conversation.id,
+        issueId: bound.issue.id,
+        principalId: input.principalId,
+        idempotencyKey: `control:x8-${result.command}:${input.deliveryId}`,
+        screen: result.screen,
+      });
+    } else {
+      // myrmidon(F06-D): a `/model` or `/think` list goes out as a menu — buttons
+      // where the endpoint takes actions, and always a record a reply can pick
+      // from.
+      const menu = result.choices ?? null;
+      const menuPayload = menu
+        ? buildChooserMenuPayload({
+            text: result.text,
+            menu,
+            withButtons: input.endpoint.capabilities?.actions === true,
+          })
+        : null;
+      const staged = await input.deps.stageTaskControlPublication(tx as unknown as Db, {
+        companyId: input.endpoint.companyId,
+        endpointId: input.endpoint.id,
+        conversationId: bound.conversation.id,
+        issueId: bound.issue.id,
+        idempotencyKey: `control:x8-${result.command}:${input.deliveryId}`,
+        payload:
+          menuPayload?.payload ??
+          projectSafeChatPublication({
+            classification: "external",
+            source: "task_control",
+            text: result.text,
+          }),
+        principalId: input.principalId,
+      });
+      if (menu && menuPayload) {
+        await recordChooserMenu(tx, {
+          companyId: input.endpoint.companyId,
+          endpointId: input.endpoint.id,
+          conversationId: bound.conversation.id,
+          principalId: input.principalId,
+          publicationId: staged.id,
+          menu,
+          tokens: menuPayload.tokens,
+        });
+      }
+    }
     if (input.migratedFromIssueId) {
       const text = await buildMigrationNoticeText(tx as unknown as Db, {
         companyId: input.endpoint.companyId,
         agentId: input.endpoint.assignedAgentId,
         publicBaseUrl: input.deps.publicBaseUrl,
         migratedFromIssueId: input.migratedFromIssueId,
+        boardUserId: input.boardUserId,
       });
       await input.deps.stageTaskControlPublication(tx as unknown as Db, {
         companyId: input.endpoint.companyId,
@@ -519,9 +648,19 @@ export async function refuseUnlinkedTelegramDm(
     deliveryId: string | null;
     resourceId: string;
     runtimeContext: { credentialFingerprint: string; generation: number };
+    /** myrmidon(1.7-TG-LOCALE): test seam for the forced-locale env. */
+    env?: NodeJS.ProcessEnv;
   },
 ): Promise<void> {
   const day = new Date().toISOString().slice(0, 10);
+  // myrmidon(1.7-TG-LOCALE): an unlinked account has no board user, so the
+  // refusal has no personal step; myrmidon(1.6.5-TG-LOCALE-C) adds the instance
+  // language between the env force and the English default, so the refusal
+  // speaks the default language of the company that runs the bot.
+  const locale =
+    forcedBridgeLocale(input.env ?? process.env) ??
+    (await instanceBridgeLocale(db)) ??
+    DEFAULT_BRIDGE_LOCALE;
   try {
     const effect = await deps.stageProviderEffect(db, {
       endpoint: input.endpoint,
@@ -533,7 +672,7 @@ export async function refuseUnlinkedTelegramDm(
         authorizationMode: "safe_notice",
         effect: "thread_message",
         threadId: input.thread.id,
-        text: "Этот бот доступен только участникам рабочего пространства. Попросите администратора привязать ваш аккаунт Telegram.",
+        text: t(locale, "bridge.refusalUnlinked"),
         settleDelivery: false,
         resourceId: input.resourceId,
       },
@@ -571,6 +710,8 @@ export async function afterTelegramDmMessage(input: {
   issueId: string;
   deliveryId: string;
   principalId: string;
+  /** myrmidon(1.7-TG-LOCALE): linked board user; decides the notice's language. */
+  boardUserId?: string;
   notice?: string;
   migratedFromIssueId?: string;
 }): Promise<void> {
@@ -613,6 +754,10 @@ export async function afterTelegramDmMessage(input: {
       agentId: input.agentId,
       publicBaseUrl: input.deps.publicBaseUrl,
       migratedFromIssueId: input.migratedFromIssueId,
+      // myrmidon(1.7-TG-LOCALE): the migration only runs for a linked person
+      // (x8Dm.applies requires a board user); an unlinked thread's old
+      // binding never reaches this path.
+      boardUserId: input.boardUserId ?? "",
     });
     await input.db.transaction((tx) =>
       input.deps.stageTaskControlPublication(tx as unknown as Db, {

@@ -15,6 +15,9 @@ func TestScriptsEqualTheDriversScripts(t *testing.T) {
 	if policy.PrepareScript != fixture.Script(t, "prepare") {
 		t.Fatal("PrepareScript differs from the driver's script")
 	}
+	if policy.PrepareScriptShared != fixture.Script(t, "prepare-shared") {
+		t.Fatal("PrepareScriptShared differs from the driver's script")
+	}
 	if len(m.Nonces) < 5 {
 		t.Fatalf("only %d nonces recorded", len(m.Nonces))
 	}
@@ -45,13 +48,33 @@ func TestRedTeam_RT1_2_PrepareScriptStatic(t *testing.T) {
 			t.Errorf("the prepare script contains %q", bad)
 		}
 	}
-	if strings.Count(s, "chmod") != 1 || strings.Count(s, "chown") != 1 {
-		t.Errorf("want exactly one chmod and one chown")
+	if strings.Count(s, "chmod") != 2 || strings.Count(s, "chown") != 1 {
+		t.Errorf("want two chmods (the three mount points, the bot root) and one chown")
 	}
 	if !strings.Contains(s, "for d in data/hermes workspace scratch; do") {
 		t.Errorf("the three mount points are not the fixed list")
 	}
-	if strings.Count(s, "\n") != 5 {
+	// myrmidon(BOT-ROOT-TRAVERSE): the fixed traversal fix on the bot's root bind,
+	// one non-recursive chmod on the /bot mount point, owner untouched.
+	if !strings.Contains(s, "\nchmod 0711 bot\n") {
+		t.Errorf("the bot root traversal line is missing or different")
+	}
+	// myrmidon(1.6.5-BOT-DISK-UV-B board side): the trailing block hands every
+	// package-cache subdirectory to the bot's uid, behind a test(1) guard (the
+	// red-team list forbids "[" in the constant script), so a bot without the
+	// cache bind skips it.
+	for _, sub := range []string{"pnpm", "pnpm-store", "uv", "go-mod", "go-build", "gradle"} {
+		if !strings.Contains(s, "install -d -o 10001 -g 10001 \"package-cache/"+sub+"\"") {
+			t.Errorf("package-cache subdirectory %q is not handed to the bot's uid", sub)
+		}
+	}
+	if strings.Count(s, "install -d") != 6 {
+		t.Errorf("want the six package-cache subdirectories of the fixed list")
+	}
+	if !strings.HasSuffix(s, "\nfi") {
+		t.Errorf("the package-cache block does not close the script")
+	}
+	if strings.Count(s, "\n") != 14 {
 		t.Errorf("unexpected shape: %d lines", strings.Count(s, "\n")+1)
 	}
 	// It does not depend on the nonce or on anything the board sends.

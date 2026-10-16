@@ -87,7 +87,7 @@ describeEmbeddedPostgres("tracing health attention feed card (TRACING-HEALTH par
   it("a degraded tracing signal is one operator card on the desk", async () => {
     await seedCompany();
     recordTracingHealthSignal(companyId, report());
-    const feed = await attentionService(db).list(companyId);
+    const feed = await attentionService(db, { feedCacheTtlMs: 0 }).list(companyId);
     const cards = feed.items.filter((item) => item.dedupKey === TRACING_ATTENTION_DEDUP_KEY);
     expect(cards).toHaveLength(1);
     const card = cards[0]!;
@@ -104,7 +104,7 @@ describeEmbeddedPostgres("tracing health attention feed card (TRACING-HEALTH par
       companyId,
       report({ state: "unknown", reason: "the ClickHouse events probe failed" }),
     );
-    const feed = await attentionService(db).list(companyId);
+    const feed = await attentionService(db, { feedCacheTtlMs: 0 }).list(companyId);
     const cards = feed.items.filter((item) => item.dedupKey === TRACING_ATTENTION_DEDUP_KEY);
     expect(cards).toHaveLength(1);
     expect(cards[0]!.severity).toBe("medium");
@@ -113,22 +113,22 @@ describeEmbeddedPostgres("tracing health attention feed card (TRACING-HEALTH par
   it("a healthy (ok) and a quiet (idle) report raise no card at all", async () => {
     await seedCompany();
     recordTracingHealthSignal(companyId, report({ state: "ok" }));
-    const feed = await attentionService(db).list(companyId);
+    const feed = await attentionService(db, { feedCacheTtlMs: 0 }).list(companyId);
     expect(feed.items.filter((item) => item.dedupKey === TRACING_ATTENTION_DEDUP_KEY)).toHaveLength(0);
 
     recordTracingHealthSignal(companyId, report({ state: "idle", reason: "the gateway served no traffic in the window" }));
-    const feed2 = await attentionService(db).list(companyId);
+    const feed2 = await attentionService(db, { feedCacheTtlMs: 0 }).list(companyId);
     expect(feed2.items.filter((item) => item.dedupKey === TRACING_ATTENTION_DEDUP_KEY)).toHaveLength(0);
   });
 
   it("recovery clears the card on the next feed read (state dedup, no dismissal)", async () => {
     await seedCompany();
     recordTracingHealthSignal(companyId, report());
-    const redFeed = await attentionService(db).list(companyId);
+    const redFeed = await attentionService(db, { feedCacheTtlMs: 0 }).list(companyId);
     expect(redFeed.items.filter((item) => item.dedupKey === TRACING_ATTENTION_DEDUP_KEY)).toHaveLength(1);
 
     recordTracingHealthSignal(companyId, report({ state: "ok" }));
-    const greenFeed = await attentionService(db).list(companyId);
+    const greenFeed = await attentionService(db, { feedCacheTtlMs: 0 }).list(companyId);
     expect(greenFeed.items.filter((item) => item.dedupKey === TRACING_ATTENTION_DEDUP_KEY)).toHaveLength(0);
   });
 });

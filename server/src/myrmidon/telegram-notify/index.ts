@@ -37,3 +37,11 @@ export {
   type TelegramNotifyDigestSettings,
   type TelegramNotifyEscalationsSettings,
 } from "./settings.js";
+// myrmidon(1.6-TG-NOTIFY-C): the board errors channel (severity filter + rate limit,
+// delivery through the existing chat publication path).
+export * from "./errors.js";
+export * from "./errors-settings.js";
+export * from "./errors-sweep.js";
+// myrmidon(TG-NOTIFY-A): the owner settings routes (GET/PATCH + changelog).
+export { myrmidonTelegramNotifyRoutes, telegramNotifyRoutes, type TelegramNotifyRoutesDeps } from "./routes.js";
+export { preserveTelegramNotifySettingsGeneralKey } from "./settings-store.js";

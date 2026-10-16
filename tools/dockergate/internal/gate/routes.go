@@ -2,6 +2,7 @@ package gate
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/itkadr-git/myrmidon/tools/dockergate/internal/config"
 	"github.com/itkadr-git/myrmidon/tools/dockergate/internal/deny"
+	"github.com/itkadr-git/myrmidon/tools/dockergate/internal/disk"
 	"github.com/itkadr-git/myrmidon/tools/dockergate/internal/policy"
 	"github.com/itkadr-git/myrmidon/tools/dockergate/internal/route"
 	"github.com/itkadr-git/myrmidon/tools/dockergate/internal/upstream"
@@ -61,11 +63,44 @@ func (rs *reqState) a2(ctx context.Context, st *runtime, rt *route.Route, bs *bo
 	return nil
 }
 
-// markerPath is the query of the archive GET of the applied marker.
-const markerPath = "/archive?path=%2Fdata%2Fhermes%2F.myrmidon%2Fapplied.json"
+// markerPath is the query of the archive GET of the applied marker of an
+// isolated bot.
+const markerPath = "/archive?" + route.MarkerQuery
+
+// legacyMarkerPath is the applied marker of a LEGACY-layout bot (contract "1"),
+// read through its /data/hermes bind.
+const legacyMarkerPath = "/archive?" + route.LegacyMarkerQuery
 
 // a3: the applied marker. A marker of more than 1 MiB is reported as absent.
 func (rs *reqState) a3(ctx context.Context, st *runtime, rt *route.Route, bs *botState) *deny.Error {
+	target := markerPath
+	if rt.LegacyMarker {
+		target = legacyMarkerPath
+	} else if rt.ScopeMarker {
+		target = "/archive?" + route.ScopeMarkerQuery(rt.BotKey)
+	}
+	return rs.archiveRead(ctx, rt, bs, target, maxMarker)
+}
+
+// cloneReportPath is the query of the archive GET of the clone-hygiene report.
+const cloneReportPath = "/archive?" + route.CloneReportQuery
+
+// legacyCloneReportPath is the clone-hygiene report of a LEGACY-layout bot.
+const legacyCloneReportPath = "/archive?" + route.LegacyCloneReportQuery
+
+// a13: the clone-hygiene report of the bot, one fixed file, read-only.
+func (rs *reqState) a13(ctx context.Context, st *runtime, rt *route.Route, bs *botState) *deny.Error {
+	target := cloneReportPath
+	if rt.LegacyMarker {
+		target = legacyCloneReportPath
+	} else if rt.ScopeMarker {
+		target = "/archive?" + route.ScopeCloneReportQuery(rt.BotKey)
+	}
+	return rs.archiveRead(ctx, rt, bs, target, maxCloneReport)
+}
+
+// archiveRead reads one fixed file of the main container as a tar.
+func (rs *reqState) archiveRead(ctx context.Context, rt *route.Route, bs *botState, query string, limit int) *deny.Error {
 	if derr := rs.g.allow(bs, rateInspect); derr != nil {
 		return derr
 	}
@@ -77,8 +112,8 @@ func (rs *reqState) a3(ctx context.Context, st *runtime, rt *route.Route, bs *bo
 		return rs.notFound()
 	}
 	def, _, _ := rs.timeouts()
-	ans, derr := rs.call(ctx, upstream.Request{Method: "GET", Target: containerPath(ct.ID, markerPath)},
-		def, maxMarker, deny.MarkerTooLarge)
+	ans, derr := rs.call(ctx, upstream.Request{Method: "GET", Target: containerPath(ct.ID, query)},
+		def, limit, deny.MarkerTooLarge)
 	if derr != nil {
 		return derr
 	}
@@ -99,6 +134,9 @@ func (rs *reqState) a4(ctx context.Context, st *runtime, rt *route.Route, bot co
 		Images:           st.set,
 		MountSources:     st.cfg.MountSources,
 		PackageCacheRoot: st.cfg.PackageCacheRoot,
+		BotRuntimeRoot:   st.cfg.BotRuntimeRoot,
+		ScopeRoot:        st.cfg.EffectiveScopeRoot(),
+		ScopeInstances:   bot.ScopeInstances,
 		MaxMemoryMB:      bot.MaxMemoryMB,
 		MaxCPUs:          bot.MaxCPUs,
 		MaxPids:          bot.MaxPids,
@@ -132,6 +170,11 @@ func (rs *reqState) a4(ctx context.Context, st *runtime, rt *route.Route, bot co
 	}
 	if derr := policy.CheckVolumeRoot(rs.g.lstat, st.cfg.VolumeRoot, rt.BotKey); derr != nil {
 		return derr
+	}
+	if cr.ScopeInstance != "" {
+		if derr := policy.CheckScopeDir(rs.g.lstat, st.cfg.EffectiveScopeRoot(), cr.ScopeInstance, rt.BotKey); derr != nil {
+			return derr
+		}
 	}
 
 	unlock, derr := rs.g.lockBot(ctx, bs)
@@ -495,5 +538,34 @@ func (rs *reqState) a12(ctx context.Context, st *runtime, rt *route.Route, bs *b
 		return derr
 	}
 	rs.respond(ans)
+	return nil
+}
+
+// a14: GET /myrmidon/disk. The partition (statfs of the volume root) and the
+// project quotas (`xfs_quota report`), never a call to the daemon. A partition
+// without prjquota is a normal answer (quotaEnabled=false), not an error; what
+// is an error is a volume root that cannot be read or a report that cannot be
+// understood, and a command that does not finish in time.
+func (rs *reqState) a14(ctx context.Context, st *runtime) *deny.Error {
+	def, _, _ := rs.timeouts()
+	cctx, cancel := context.WithTimeout(ctx, def)
+	defer cancel()
+	resp, err := disk.Collect(cctx, st.cfg.VolumeRoot, rs.g.disk)
+	switch {
+	case err == nil:
+	case errors.Is(err, context.DeadlineExceeded):
+		return deny.New(deny.UpstreamTimeout).WithDetail("xfs_quota")
+	case errors.Is(err, disk.ErrStatfs):
+		return deny.New(deny.UpstreamError).WithDetail("statfs")
+	case errors.Is(err, disk.ErrReport):
+		return deny.New(deny.UpstreamError).WithDetail("xfs_report")
+	default:
+		return deny.New(deny.UpstreamError).WithDetail("disk")
+	}
+	body, err := json.Marshal(resp)
+	if err != nil {
+		return deny.New(deny.UpstreamError).WithDetail("disk_json")
+	}
+	rs.respond(&answer{status: http.StatusOK, ctype: jsonType, body: body})
 	return nil
 }

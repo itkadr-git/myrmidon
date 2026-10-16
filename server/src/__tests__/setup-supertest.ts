@@ -50,6 +50,24 @@ if (process.env.MYRMIDON_MIN_FREE_HOST_MEMORY_MB === undefined) {
 if (process.env.MYRMIDON_MAX_RUN_STARTS_PER_MINUTE === undefined) {
   process.env.MYRMIDON_MAX_RUN_STARTS_PER_MINUTE = "off";
 }
+// myrmidon(1.6.5 RUN-ADMISSION): likewise the host CPU ceiling depends on the
+// machine's load average, not on the code under test: a loaded CI runner would
+// hold every run in the queue.
+if (process.env.MYRMIDON_MAX_HOST_LOAD_PERCENT_PER_CORE === undefined) {
+  process.env.MYRMIDON_MAX_HOST_LOAD_PERCENT_PER_CORE = "off";
+}
+// myrmidon(1.6.5 RUN-ADMISSION rc.3): likewise the CPU busy ceiling — a
+// loaded CI runner would hold every run in the queue. The suites that
+// exercise it build their own admission with explicit limit objects.
+if (process.env.MYRMIDON_MAX_HOST_CPU_BUSY_PERCENT === undefined) {
+  process.env.MYRMIDON_MAX_HOST_CPU_BUSY_PERCENT = "off";
+}
+// myrmidon(GITHUB-SHARED-IDENTITY): the vendor cloud GitHub connector is off by
+// default in our builds; the vendor suites exercise it, so they run with it on.
+// Our suites that pin the default stub the variable themselves.
+if (process.env.MYRMIDON_GITHUB_VENDOR_CONNECTOR === undefined) {
+  process.env.MYRMIDON_GITHUB_VENDOR_CONNECTOR = "1";
+}
 
 if (!SupertestTest.prototype.__paperclipLoopbackPatched) {
   SupertestTest.prototype.serverAddress = function serverAddress(app, path) {

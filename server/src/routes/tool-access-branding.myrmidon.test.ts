@@ -17,8 +17,8 @@ describe("connection authorization return page (B1b)", () => {
     expect(html).not.toContain("Returning to Paperclip");
   });
 
-  it("leaves the Cloud enrollment page as shipped", () => {
+  it("names the product on the Cloud enrollment page too (B1c)", () => {
     const html = cloudConnectorEnrollmentOutcomeHtml("PRE", "/apps/connect");
-    expect(html).toContain("Paperclip connected");
+    expect(html).toContain("Myrmidon connected");
   });
 });

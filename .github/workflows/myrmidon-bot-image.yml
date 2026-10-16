@@ -57,8 +57,8 @@ jobs:
           set -euo pipefail
           if [[ "$GITHUB_REF" == refs/tags/myr-v* ]]; then
             tag="${GITHUB_REF#refs/tags/myr-}"
-            if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-              echo "::error::release tag must look like myr-vX.Y.Z, got ${GITHUB_REF#refs/tags/}"
+            if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]]; then
+              echo "::error::release tag must look like myr-vX.Y.Z or myr-vX.Y.Z-rc.N, got ${GITHUB_REF#refs/tags/}"
               exit 1
             fi
             echo "image_tag=${tag#v}" >> "$GITHUB_OUTPUT"
@@ -128,7 +128,7 @@ jobs:
           echo "PATH=$img_path"
           for el in ${img_path//:/ }; do
             case "$el" in
-              /data|/data/*|/workspace|/workspace/*|/scratch|/scratch/*|/tmp|/tmp/*)
+              /bot|/bot/*|/data|/data/*|/workspace|/workspace/*|/scratch|/scratch/*|/tmp|/tmp/*)
                 echo "::error::image PATH element $el is under a writable root"; exit 1 ;;
             esac
           done
@@ -196,8 +196,8 @@ jobs:
           set -euo pipefail
           if [[ "$GITHUB_REF" == refs/tags/myr-v* ]]; then
             tag="${GITHUB_REF#refs/tags/myr-}"
-            if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-              echo "::error::release tag must look like myr-vX.Y.Z, got ${GITHUB_REF#refs/tags/}"
+            if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]]; then
+              echo "::error::release tag must look like myr-vX.Y.Z or myr-vX.Y.Z-rc.N, got ${GITHUB_REF#refs/tags/}"
               exit 1
             fi
             echo "image_tag=${tag#v}" >> "$GITHUB_OUTPUT"
@@ -267,7 +267,7 @@ jobs:
           echo "PATH=$img_path"
           for el in ${img_path//:/ }; do
             case "$el" in
-              /data|/data/*|/workspace|/workspace/*|/scratch|/scratch/*|/tmp|/tmp/*)
+              /bot|/bot/*|/data|/data/*|/workspace|/workspace/*|/scratch|/scratch/*|/tmp|/tmp/*)
                 echo "::error::image PATH element $el is under a writable root"; exit 1 ;;
             esac
           done
@@ -282,7 +282,7 @@ jobs:
           img=myrmidon-hermes-node:pr-check
           [ "$(docker image inspect --format '{{ .Config.User }}' "$img")" = "10001:10001" ]
           [ "$(docker image inspect --format '{{ index .Config.Labels "io.github.itkadr-git.myrmidon.variant" }}' "$img")" = "node" ]
-          run() { docker run --rm --read-only --user 10001:10001 --tmpfs /data:uid=10001,gid=10001 --tmpfs /workspace:uid=10001,gid=10001 --tmpfs /scratch:uid=10001,gid=10001 --tmpfs /tmp --entrypoint "$1" "$img" "${@:2}"; }
+          run() { docker run --rm --read-only --user 10001:10001 --tmpfs /bot:uid=10001,gid=10001 --tmpfs /tmp -w / --entrypoint sh "$img" -c 'mkdir -p /bot/hermes /bot/workspace /bot/scratch && cd /workspace && exec "$@"' sh "$@"; }
           [ "$(run id -u)" = "10001" ]
           run node -e "for (const m of ['pptxgenjs','@napi-rs/canvas','sharp','image-size','pdf-lib']) require(m); console.log('require ok')"
           run node /opt/node-tools/smoke.cjs
@@ -351,8 +351,8 @@ jobs:
           set -euo pipefail
           if [[ "$GITHUB_REF" == refs/tags/myr-v* ]]; then
             tag="${GITHUB_REF#refs/tags/myr-}"
-            if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-              echo "::error::release tag must look like myr-vX.Y.Z, got ${GITHUB_REF#refs/tags/}"
+            if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]]; then
+              echo "::error::release tag must look like myr-vX.Y.Z or myr-vX.Y.Z-rc.N, got ${GITHUB_REF#refs/tags/}"
               exit 1
             fi
             echo "image_tag=${tag#v}" >> "$GITHUB_OUTPUT"
@@ -426,13 +426,13 @@ jobs:
           echo "PATH=$img_path"
           for el in ${img_path//:/ }; do
             case "$el" in
-              /data|/data/*|/workspace|/workspace/*|/scratch|/scratch/*|/tmp|/tmp/*)
+              /bot|/bot/*|/data|/data/*|/workspace|/workspace/*|/scratch|/scratch/*|/tmp|/tmp/*)
                 echo "::error::image PATH element $el is under a writable root"; exit 1 ;;
             esac
           done
           # Run the toolchain as the contract user on a read-only root, with tmpfs in
           # place of the three volumes — the environment the G3 driver creates.
-          run() { docker run --rm --read-only --user 10001:10001 --tmpfs /data:uid=10001,gid=10001 --tmpfs /workspace:uid=10001,gid=10001 --tmpfs /scratch:uid=10001,gid=10001 --tmpfs /tmp --entrypoint "$1" "$img" "${@:2}"; }
+          run() { docker run --rm --read-only --user 10001:10001 --tmpfs /bot:uid=10001,gid=10001 --tmpfs /tmp -w / --entrypoint sh "$img" -c 'mkdir -p /bot/hermes /bot/workspace /bot/scratch && cd /workspace && exec "$@"' sh "$@"; }
           run node --version
           run pnpm --version
           run go version

@@ -20,6 +20,7 @@ import { fileURLToPath } from "node:url";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const GATE = path.join(HERE, "change-fragments-gate.mjs");
+const COLLECTOR = path.join(HERE, "..", "release", "collect-fragments.mjs");
 const ROOT = path.resolve(HERE, "../../..");
 
 const eventPath = process.env.GITHUB_EVENT_PATH;
@@ -51,4 +52,27 @@ it("the gate exits 2 on a bogus event file path", () => {
     encoding: "utf8",
   });
   assert.equal(res.status, 2);
+});
+
+// A fragment that the release collector cannot fold (a settings or
+// divergence section named by a heading the target document does not have)
+// must not reach main — it silently breaks every later release cut. The
+// dry-run of the real collector over the checked-out tree catches exactly
+// that: it parses and folds every fragment in docs/myrmidon/changes/ against
+// the shared documents, writes nothing, and exits non-zero on the first
+// broken fragment. Runs on PRs (the PR's own fragment is judged together with
+// the pending ones) and on pushes to main (a broken fragment already in main
+// turns the push red). A release-cut PR has deleted the fragments by then, so
+// the dry-run is green.
+it("collect-fragments --dry-run folds every pending fragment", () => {
+  const res = spawnSync(
+    "node",
+    [COLLECTOR, "--version", "0.0.0", "--root", ROOT, "--dry-run"],
+    { encoding: "utf8" },
+  );
+  assert.equal(
+    res.status,
+    0,
+    `collect-fragments --dry-run failed:\n${res.stdout}\n${res.stderr}`,
+  );
 });

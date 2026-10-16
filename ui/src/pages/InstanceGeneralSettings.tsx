@@ -19,20 +19,48 @@ import { cn } from "../lib/utils";
 import { useSignOut } from "@/hooks/useSignOut";
 import { MaintenanceSettingsPanel } from "@/components/myrmidon/MaintenanceSettingsPanel"; // myrmidon(R3)
 import { RuntimeLimitsSettingsPanel } from "@/components/myrmidon/RuntimeLimitsSettingsPanel"; // myrmidon(C0)
+import { ProcessesSettingsPanel } from "@/components/myrmidon/ProcessesSettingsPanel"; // myrmidon(PROCS-1.1)
+// myrmidon(PAUSE-GUARD): the forgotten-pause guard, next to the run limits
+import { PauseGuardSettingsPanel } from "@/components/myrmidon/PauseGuardSettingsPanel";
+import { RunQueuePrioritySettingsPanel } from "@/components/myrmidon/RunQueuePrioritySettingsPanel"; // myrmidon(1.6.5 RUN-PRIORITY B)
+import { RunStallSettingsPanel } from "@/components/myrmidon/RunStallSettingsPanel"; // myrmidon(RUN-STALL-SETTINGS)
 import { BudgetEnforcementSettingsPanel } from "@/components/myrmidon/BudgetEnforcementSettingsPanel"; // myrmidon(1.7-BUDGET-CONFIG-B)
+import { AgentExchangeSettingsPanel } from "@/components/myrmidon/AgentExchangeSettingsPanel"; // myrmidon(1.7-AGENT-EXCHANGE-A)
 import { TelegramDmProgressSettingsPanel } from "@/components/myrmidon/TelegramDmProgressSettingsPanel"; // myrmidon(DM-PROGRESS)
+import { DebateSettingsPanel } from "@/components/myrmidon/DebateSettingsPanel"; // myrmidon(1.7-DEBATE-ASYM-A)
 import { HostDiskSettingsPanel } from "@/components/myrmidon/HostDiskSettingsPanel"; // myrmidon(BOT-DISK E)
+import { PromptBudgetSettingsPanel } from "@/components/myrmidon/PromptBudgetSettingsPanel"; // myrmidon(1.6.3 PROMPT-BUDGET B)
+import { AttentionFeedSettingsPanel } from "@/components/myrmidon/AttentionFeedSettingsPanel"; // myrmidon(1.6.6 SETTINGS-UI C-4)
+import { DataRetentionSettingsPanel } from "@/components/myrmidon/DataRetentionSettingsPanel"; // myrmidon(1.6.5-DB-RETENTION)
 import { BotDiskSettingsPanel } from "@/components/myrmidon/BotDiskSettingsPanel"; // myrmidon(1.6.1-BOT-DISK-B)
+import { BotScopePanel } from "@/components/myrmidon/BotScopePanel"; // myrmidon(BOT-DISK-F)
 import { BotDiskQuotaSettingsPanel } from "@/components/myrmidon/BotDiskQuotaSettingsPanel"; // myrmidon(1.6.1-BOT-DISK-C)
+import { BotImageRolloutSettingsPanel } from "@/components/myrmidon/BotImageRolloutSettingsPanel"; // myrmidon(BOT-ROLLOUT)
+import { SessionGenerationsSettingsPanel } from "@/components/myrmidon/SessionGenerationsSettingsPanel"; // myrmidon(PERF-DIET-K)
 import { AgentMemorySettingsPanel } from "@/components/myrmidon/AgentMemorySettingsPanel"; // myrmidon(MEMORY-UI)
 import { ParallelHelpersSettingsPanel } from "@/components/myrmidon/ParallelHelpersSettingsPanel"; // myrmidon(PARALLEL-HELPERS)
+import { TeamLivenessSettingsPanel } from "@/components/myrmidon/TeamLivenessSettingsPanel"; // myrmidon(TEAM-LIVENESS-SETTINGS)
+import { ToolPolicyCacheSettingsPanel } from "@/components/myrmidon/ToolPolicyCacheSettingsPanel"; // myrmidon(DB-PERF-C-P4)
 import { BotLspSettingsPanel } from "@/components/myrmidon/BotLspSettingsPanel"; // myrmidon(BOT-LSP-DEFAULTS)
 import { SwarmClaimSettingsPanel } from "@/components/myrmidon/SwarmClaimSettingsPanel"; // myrmidon(1.6.1 SWARM-SETTINGS-UI)
+import { ReviewReworkSettingsPanel } from "@/components/myrmidon/ReviewReworkSettingsPanel"; // myrmidon(REVIEW-REWORK)
+import { ForagingSettingsPanel } from "@/components/myrmidon/ForagingSettingsPanel"; // myrmidon(1.6.1-FORAGING-LIMITS-UI)
+import { WorkspaceHygieneSettingsPanel } from "@/components/myrmidon/WorkspaceHygieneSettingsPanel"; // myrmidon(SETTINGS-UI A)
+import { ChannelSettingsPanel } from "@/components/myrmidon/ChannelSettingsPanel"; // myrmidon(SETTINGS-UI A)
+import { ModelFallbackSignalSettingsPanel } from "@/components/myrmidon/ModelFallbackSignalSettingsPanel"; // myrmidon(SETTINGS-UI A)
 import { AboutSettingsPanel } from "@/components/myrmidon/AboutSettingsPanel"; // myrmidon(ABOUT)
 import { DeployJobsPanel } from "@/components/myrmidon/DeployJobsPanel"; // myrmidon(R5-A)
+import { BoardProcessesSettingsPanel } from "@/components/myrmidon/BoardProcessesSettingsPanel"; // myrmidon(1.6.6 PROCS-0.1)
+import { BoardLeasesPanel } from "@/components/myrmidon/BoardLeasesPanel"; // myrmidon(1.6.5 BOARD-PROCESSES)
 import { PluginEntitlementSettings } from "@/components/myrmidon/PluginEntitlementSettingsPanel"; // myrmidon(PLUGIN-ENTITLEMENT C)
 import { PRODUCT_NAME, UPSTREAM_ATTRIBUTION } from "@/lib/myrmidon-product"; // myrmidon(B1a)
 import { useTranslation } from "@/i18n"; // myrmidon(UI-RU)
+
+// myrmidon(BACKUP-KEEP-LAST): the shared `BackupRetentionPolicy` gains
+// `keepLastOnly?: boolean` together with the server side of this feature. This local
+// widening keeps the page typechecking before that merge too; it is purely additive
+// and has no runtime effect.
+type BackupRetentionSettings = BackupRetentionPolicy & { keepLastOnly?: boolean };
 
 const FEEDBACK_TERMS_URL = import.meta.env.VITE_FEEDBACK_TERMS_URL?.trim() || "https://paperclip.ing/tos";
 
@@ -95,7 +123,12 @@ export function InstanceGeneralSettings({ embedded = false }: { embedded?: boole
   const censorUsernameInLogs = generalQuery.data?.censorUsernameInLogs === true;
   const keyboardShortcuts = generalQuery.data?.keyboardShortcuts === true;
   const feedbackDataSharingPreference = generalQuery.data?.feedbackDataSharingPreference ?? "prompt";
-  const backupRetention: BackupRetentionPolicy = generalQuery.data?.backupRetention ?? DEFAULT_BACKUP_RETENTION;
+  const backupRetention = (generalQuery.data?.backupRetention ??
+    DEFAULT_BACKUP_RETENTION) as BackupRetentionSettings; // myrmidon(BACKUP-KEEP-LAST)
+  // myrmidon(BACKUP-KEEP-LAST): retention patch payload carrying the additive
+  // `keepLastOnly` flag; the widening is temporary until the shared type has it.
+  const retentionPatch = (updates: Partial<BackupRetentionSettings>): BackupRetentionPolicy =>
+    ({ ...backupRetention, ...updates }) as BackupRetentionPolicy;
   const hiddenSettings = new Set(healthQuery.data?.hiddenSettings ?? []);
   const showDeploymentStatus = !hiddenSettings.has("instance.general.deploymentStatus");
   const showCensorUsernameInLogs = !hiddenSettings.has("instance.general.censorUsernameInLogs");
@@ -141,17 +174,39 @@ export function InstanceGeneralSettings({ embedded = false }: { embedded?: boole
 
       <MaintenanceSettingsPanel /> {/* myrmidon(R3) */}
       <RuntimeLimitsSettingsPanel /> {/* myrmidon(C0) */}
+      <ProcessesSettingsPanel /> {/* myrmidon(PROCS-1.1): the processes of the board, applied without a restart */}
+      <PauseGuardSettingsPanel /> {/* myrmidon(PAUSE-GUARD) */}
+      <RunQueuePrioritySettingsPanel /> {/* myrmidon(1.6.5 RUN-PRIORITY B) */}
+      <RunStallSettingsPanel /> {/* myrmidon(RUN-STALL-SETTINGS) */}
       <BudgetEnforcementSettingsPanel /> {/* myrmidon(1.7-BUDGET-CONFIG-B) */}
+      <AgentExchangeSettingsPanel /> {/* myrmidon(1.7-AGENT-EXCHANGE-A) */}
       <TelegramDmProgressSettingsPanel /> {/* myrmidon(DM-PROGRESS) */}
+      <DebateSettingsPanel /> {/* myrmidon(1.7-DEBATE-ASYM-A) */}
       <HostDiskSettingsPanel /> {/* myrmidon(BOT-DISK E) */}
+      <PromptBudgetSettingsPanel /> {/* myrmidon(1.6.3 PROMPT-BUDGET B) */}
+      <AttentionFeedSettingsPanel /> {/* myrmidon(1.6.6 SETTINGS-UI C-4) */}
+      <DataRetentionSettingsPanel /> {/* myrmidon(1.6.5-DB-RETENTION) */}
       <BotDiskSettingsPanel /> {/* myrmidon(1.6.1-BOT-DISK-B) */}
+      <BotScopePanel /> {/* myrmidon(BOT-DISK-F) */}
       <BotDiskQuotaSettingsPanel /> {/* myrmidon(1.6.1-BOT-DISK-C) */}
+      <BotImageRolloutSettingsPanel /> {/* myrmidon(BOT-ROLLOUT) */}
+      <SessionGenerationsSettingsPanel /> {/* myrmidon(PERF-DIET-K) */}
       <ParallelHelpersSettingsPanel /> {/* myrmidon(PARALLEL-HELPERS) */}
+      <TeamLivenessSettingsPanel /> {/* myrmidon(TEAM-LIVENESS-SETTINGS) */}
+      <ToolPolicyCacheSettingsPanel /> {/* myrmidon(DB-PERF-C-P4) */}
       <AgentMemorySettingsPanel /> {/* myrmidon(MEMORY-UI) */}
       <BotLspSettingsPanel /> {/* myrmidon(BOT-LSP-DEFAULTS) */}
       <SwarmClaimSettingsPanel /> {/* myrmidon(1.6.1 SWARM-SETTINGS-UI) */}
+      <ReviewReworkSettingsPanel /> {/* myrmidon(REVIEW-REWORK) */}
+      <ForagingSettingsPanel /> {/* myrmidon(1.6.1-FORAGING-LIMITS-UI) */}
+      <WorkspaceHygieneSettingsPanel /> {/* myrmidon(SETTINGS-UI A, WORKSPACE-HYGIENE) */}
+      <ChannelSettingsPanel /> {/* myrmidon(SETTINGS-UI A, 1.7-SETTINGS-TO-UI) */}
+      <ModelFallbackSignalSettingsPanel /> {/* myrmidon(SETTINGS-UI A, BOT-RUNTIME-TUNING D2) */}
       <DeployJobsPanel /> {/* myrmidon(R5-A) */}
+      <BoardProcessesSettingsPanel /> {/* myrmidon(1.6.6 PROCS-0.1) */}
+      <BoardLeasesPanel /> {/* myrmidon(1.6.5 BOARD-PROCESSES) */}
       <PluginEntitlementSettings /> {/* myrmidon(PLUGIN-ENTITLEMENT C) */}
+      <AttentionFeedSettingsPanel /> {/* myrmidon(1.6.5 F-15) */}
 
       {showDeploymentStatus && (
       <section>
@@ -236,6 +291,36 @@ export function InstanceGeneralSettings({ embedded = false }: { embedded?: boole
             </p>
           </div>
 
+          {/* myrmidon(BACKUP-KEEP-LAST): "keep only the latest backup" mode; presets are ignored while it is on. */}
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              disabled={updateGeneralMutation.isPending || signOutMutation.isPending}
+              className={cn(
+                "rounded-lg border px-3 py-2 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-60",
+                backupRetention.keepLastOnly === true
+                  ? "border-foreground bg-accent text-foreground"
+                  : "border-border bg-background hover:bg-accent/50",
+              )}
+              onClick={() =>
+                updateGeneralMutation.mutate({
+                  backupRetention: retentionPatch({ keepLastOnly: true }),
+                })
+              }
+            >
+              <div className="text-sm font-medium">{t("settings.keepLastBackupOnly")}</div>
+            </button>
+          </div>
+          {/* myrmidon(BACKUP-KEEP-LAST): server risk note — a broken new dump leaves the older backups in place. */}
+          <p className="max-w-2xl text-xs text-muted-foreground">
+            {t("settings.keepLastBackupOnlyRisk")}
+          </p>
+          {backupRetention.keepLastOnly === true ? (
+            <p className="text-xs text-muted-foreground">
+              {t("settings.keepLastBackupOnlyHint")}
+            </p>
+          ) : null}
+
           <div className="space-y-1.5">
             <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wide">{t("settings.daily")}</h3>
             <div className="flex flex-wrap gap-2">
@@ -254,7 +339,7 @@ export function InstanceGeneralSettings({ embedded = false }: { embedded?: boole
                     )}
                     onClick={() =>
                       updateGeneralMutation.mutate({
-                        backupRetention: { ...backupRetention, dailyDays: days },
+                        backupRetention: retentionPatch({ dailyDays: days, keepLastOnly: false }), // myrmidon(BACKUP-KEEP-LAST): picking a preset turns the keep-last-only mode off
                       })
                     }
                   >
@@ -284,7 +369,7 @@ export function InstanceGeneralSettings({ embedded = false }: { embedded?: boole
                     )}
                     onClick={() =>
                       updateGeneralMutation.mutate({
-                        backupRetention: { ...backupRetention, weeklyWeeks: weeks },
+                        backupRetention: retentionPatch({ weeklyWeeks: weeks, keepLastOnly: false }), // myrmidon(BACKUP-KEEP-LAST): picking a preset turns the keep-last-only mode off
                       })
                     }
                   >
@@ -314,7 +399,7 @@ export function InstanceGeneralSettings({ embedded = false }: { embedded?: boole
                     )}
                     onClick={() =>
                       updateGeneralMutation.mutate({
-                        backupRetention: { ...backupRetention, monthlyMonths: months },
+                        backupRetention: retentionPatch({ monthlyMonths: months, keepLastOnly: false }), // myrmidon(BACKUP-KEEP-LAST): picking a preset turns the keep-last-only mode off
                       })
                     }
                   >

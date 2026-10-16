@@ -17,6 +17,8 @@ const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 function asString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
+// myrmidon(B1c): product name in user-facing texts; see shared myrmidon-product.
+import { PRODUCT_NAME } from "@paperclipai/adapter-utils";
 
 function resolveClaudeSkillsHome(config: Record<string, unknown>) {
   const env =
@@ -37,10 +39,10 @@ async function buildClaudeSkillSnapshot(config: Record<string, unknown>): Promis
     adapterType: "claude_local",
     availableEntries,
     desiredSkills,
-    configuredDetail: "Will be materialized into the stable Paperclip-managed Claude prompt bundle on the next run.",
+    configuredDetail: `Will be materialized into the stable ${PRODUCT_NAME}-managed Claude prompt bundle on the next run.`,
     externalInstalled: installed,
     externalLocationLabel: "~/.claude/skills",
-    externalDetail: "Installed outside Paperclip management in the Claude skills home.",
+    externalDetail: `Installed outside ${PRODUCT_NAME} management in the Claude skills home.`,
     skillsHome,
   });
 }

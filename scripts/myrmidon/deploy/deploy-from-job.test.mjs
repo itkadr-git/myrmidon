@@ -40,6 +40,12 @@ case "$1" in
         if [ -e "$SANDBOX/registry-missing" ]; then echo "ERROR: $4: not found" >&2; exit 1; fi
         cat "$SANDBOX/imagetools.json" ;;
     esac ;;
+  ps) echo "cid-x"; exit 0 ;;
+  inspect)
+    # a container exists for every service and runs; its image is not recorded
+    # here (the previous image then falls back to the override file)
+    case "$*" in *"{{.State.Status}} {{.State.Restarting}}"*) echo "running false" ;; esac
+    exit 0 ;;
   compose)
     case "$*" in
       *--services)
@@ -62,6 +68,8 @@ case "$1" in
   fetch) ;;
   merge-base) exit 0 ;;
   ls-remote) cat "$SANDBOX/git-tags" ;;
+  # F-05: the version stamp of the deploy journal (log_script_version).
+  describe) echo "myr-v1.6.5-rc.7-3-gdeadbee" ;;
 esac
 `;
 
@@ -73,12 +81,15 @@ echo "curl $*" >> "$SANDBOX/calls.log"
 case "$*" in
   *myrmidon/deploy-jobs*) cat "$SANDBOX/board-jobs.json" ;;
   *myrmidon/maintenance*) cat "$SANDBOX/board-maintenance.json" ;;
+  # PREDEPLOY-DB-CHECK: the throwaway copy answers from its own file.
+  *":13110"*)
+    if [ -e "$SANDBOX/predeploy-health.json" ]; then cat "$SANDBOX/predeploy-health.json"; else cat "$SANDBOX/health.json"; fi ;;
   *api/health*) cat "$SANDBOX/health.json" ;;
   *) echo "{}" ;;
 esac
 `;
 
-function sandbox({ job = null, windowState = "on", health } = {}) {
+function sandbox({ job = null, windowState = "on", health, predeployHealth } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "myrmidon-from-job-"));
   const bin = path.join(dir, "bin");
   const composeDir = path.join(dir, "compose");
@@ -121,6 +132,18 @@ function sandbox({ job = null, windowState = "on", health } = {}) {
   fs.writeFileSync(path.join(dir, "label-version"), `${VERSION}\n`);
   fs.writeFileSync(path.join(dir, "label-revision"), `${COMMIT}\n`);
   fs.writeFileSync(path.join(dir, "health.json"), JSON.stringify(health ?? { status: "ok", version: VERSION, commit: COMMIT }));
+  // PREDEPLOY-DB-CHECK: the copy of the production database answers from its
+  // own file — green by default, so the board's own health check is what a test
+  // makes fail. (Without this the pre-window check would fail first: the copy
+  // must be able to come up, even when the test wants the running board's health
+  // check to fail.)
+  fs.writeFileSync(
+    path.join(dir, "predeploy-health.json"),
+    JSON.stringify(predeployHealth ?? { status: "ok", version: VERSION, commit: COMMIT }),
+  );
+  // The board's own environment for the throwaway board container.
+  const predeployEnv = path.join(dir, "predeploy-board.env");
+  fs.writeFileSync(predeployEnv, "JWT_SECRET=test-secret\n");
   const override = path.join(composeDir, "docker-compose.myrmidon-image.yml");
   fs.writeFileSync(override, `services:\n  server:\n    image: ${CI_IMAGE}@${OLD}\n`);
   // myrmidon(BOOT-PATH): deploy.sh verifies the boot unit; give the sandbox the canonical
@@ -129,7 +152,7 @@ function sandbox({ job = null, windowState = "on", health } = {}) {
   fs.mkdirSync(unitDir, { recursive: true });
   const unit = fs.readFileSync(path.join(HERE, "paperclip.service.template"), "utf8")
     .replaceAll("__COMPOSE_DIR__", composeDir)
-    .replaceAll("__COMPOSE_FILE_ARGS__", `-f ${composeDir}/docker-compose.yml -f ${composeDir}/docker-compose.myrmidon-image.yml`)
+    .replaceAll("__COMPOSE_FILE_ARGS__", `-f ${composeDir}/docker-compose.yml -f ${composeDir}/docker-compose.myrmidon-image.yml -f ${composeDir}/docker-compose.myrmidon-dockergate.yml -f ${composeDir}/docker-compose.myrmidon-fleetd.yml`)
     .replaceAll("__COMPOSE_SERVICE__", "server");
   fs.writeFileSync(path.join(unitDir, "paperclip.service"), unit);
   const config = path.join(dir, "deploy.env");
@@ -154,6 +177,13 @@ function sandbox({ job = null, windowState = "on", health } = {}) {
       "MYR_DOCKERGATE_HEALTH_URL=http://127.0.0.1:3100/dockergate/health",
       "MYR_FLEETD_HEALTH_URL=http://127.0.0.1:3100/fleetd/health",
       "MYRMIDON_BOT_IMAGE_ROLLOUT=0",
+      // PREDEPLOY-DB-CHECK (the 05.10 incident): the pre-window check is ON by
+      // default and refuses without its inputs. The path list is company-free
+      // here (this harness has no BOARD_COMPANY_ID).
+      "MYRMIDON_PREDEPLOY_POSTGRES_IMAGE=postgres:16-alpine",
+      `MYRMIDON_PREDEPLOY_BOARD_ENV_FILE=${predeployEnv}`,
+      "MYRMIDON_PREDEPLOY_BOARD_PORT=13110",
+      "MYRMIDON_PREDEPLOY_API_PATHS=/api/health,/api/companies",
       "",
     ].join("\n"),
   );
@@ -349,5 +379,26 @@ esac
     assert.equal(r.phase, "rollback-failed");
     // deploy.sh refused before the pull; nothing was switched.
     assert.doesNotMatch(calls(sb), /docker pull --quiet/);
+  });
+
+  it("the deploy journal (job-<id>.log) opens with the scripts' version line (F-05)", () => {
+    // deploy-from-job.sh runs `deploy.sh ... 2>job-<id>.log`: the version stamp
+    // is the deploy journal's first line only when it goes to stderr, and
+    // stderr of that very run is what this file captures. A stdout stamp would
+    // escape into the executor's own output and never reach the journal.
+    const sb = sandbox({ job: { id: JOB_ID, status: "maintenance_on", digest: NEW } });
+    const { code, out } = run(sb, ["--once"]);
+    assert.equal(code, 0, out);
+    const journalFile = path.join(sb.dir, "state", `job-${JOB_ID}.log`);
+    const journal = read(journalFile);
+    assert.equal(journal.split("\n")[0], "deploy scripts at myr-v1.6.5-rc.7-3-gdeadbee");
+    // The executor's own stdout must not carry the stamp (its stderr is this
+    // test's harness output, and it legitimately starts with the stamp).
+    const result = spawnSync(
+      process.env.PATH.split(":").map((d) => path.join(d, "bash")).find((f) => fs.existsSync(f)),
+      [path.join(HERE, "deploy-from-job.sh"), "--config", sb.config, "--once"],
+      { env: { ...process.env, PATH: `${sb.bin}:${process.env.PATH}`, SANDBOX: sb.dir }, encoding: "utf8" },
+    );
+    assert.ok(!(result.stdout || "").includes("deploy scripts at"), result.stdout);
   });
 });

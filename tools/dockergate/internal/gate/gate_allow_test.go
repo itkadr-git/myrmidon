@@ -10,12 +10,13 @@ import (
 	"time"
 
 	"github.com/itkadr-git/myrmidon/tools/dockergate/internal/config"
+	"github.com/itkadr-git/myrmidon/tools/dockergate/internal/deny"
 	"github.com/itkadr-git/myrmidon/tools/dockergate/internal/fakedocker"
 	"github.com/itkadr-git/myrmidon/tools/dockergate/internal/fixture"
 	"github.com/itkadr-git/myrmidon/tools/dockergate/internal/policy"
 )
 
-// The allow side: every route of the allowlist (A1 to A12) with the request as
+// The allow side: every route of the allowlist (A1 to A13) with the request as
 // the driver sends it, the exact request that reaches the daemon, and the exact
 // answer that the client gets.
 
@@ -231,7 +232,7 @@ func TestAllow_A3_AppliedMarker(t *testing.T) {
 	marker := []byte("marker-tar-bytes\x00\x01\x02")
 	r.d.Modify(r.name(""), func(c *fakedocker.Container) { c.Marker = marker })
 	id := r.id("")
-	target := r.target("", "/archive?path=%2Fdata%2Fhermes%2F.myrmidon%2Fapplied.json")
+	target := r.target("", "/archive?path=%2Fbot%2Fhermes%2F.myrmidon%2Fapplied.json")
 	res := r.send("GET", target, nil, nil)
 	wantStatus(t, res, 200)
 	if !bytes.Equal(res.Body, marker) {
@@ -244,18 +245,74 @@ func TestAllow_A3_AppliedMarker(t *testing.T) {
 		t.Errorf("the stat header of the daemon was passed on: %q", v)
 	}
 	r.wantURIs("GET "+r.target("", "/json"),
-		"GET /v1.45/containers/"+id+"/archive?path=%2Fdata%2Fhermes%2F.myrmidon%2Fapplied.json")
+		"GET /v1.45/containers/"+id+"/archive?path=%2Fbot%2Fhermes%2F.myrmidon%2Fapplied.json")
 	r.wantDaemonHeaders()
 }
 
 func TestAllow_A3_NoMarkerIsThe404OfTheDaemon(t *testing.T) {
 	r := newRig(t)
 	r.seedMain("running")
-	res := r.send("GET", r.target("", "/archive?path=%2Fdata%2Fhermes%2F.myrmidon%2Fapplied.json"), nil, nil)
+	res := r.send("GET", r.target("", "/archive?path=%2Fbot%2Fhermes%2F.myrmidon%2Fapplied.json"), nil, nil)
 	wantStatus(t, res, 404)
 	if denyCode(res) != "" || !strings.Contains(res.str(), "Could not find") {
 		t.Errorf("body %q", res.str())
 	}
+}
+
+// TestAllow_A3_LegacyMarkerReadsTheLegacyPath (myrmidon(1.6.5-BOT-LAYOUT-V)):
+// the board reads the applied marker of a LEGACY-layout bot (a contract "1"
+// image: its hermes volume is bound at /data/hermes) at that path — the route
+// is allowed and the gate forwards the request to the daemon unchanged.
+func TestAllow_A3_LegacyMarkerReadsTheLegacyPath(t *testing.T) {
+	r := newRig(t)
+	r.seedMain("running")
+	marker := []byte("legacy-marker-tar-bytes")
+	r.d.Modify(r.name(""), func(c *fakedocker.Container) { c.Marker = marker })
+	target := r.target("", "/archive?path=%2Fdata%2Fhermes%2F.myrmidon%2Fapplied.json")
+	res := r.send("GET", target, nil, nil)
+	wantStatus(t, res, 200)
+	if !bytes.Equal(res.Body, marker) {
+		t.Errorf("body %q", res.Body)
+	}
+	r.wantURIs("GET "+r.target("", "/json"), "GET /v1.45/containers/"+r.id("")+"/archive?path=%2Fdata%2Fhermes%2F.myrmidon%2Fapplied.json")
+}
+
+// The legacy path is exact: only the marker file, not anything else under
+// /data/hermes.
+func TestDeny_A3_LegacyPathMutations(t *testing.T) {
+	r := newRig(t)
+	r.seedMain("running")
+	for _, q := range []string{
+		"/archive?path=%2Fdata%2Fhermes",
+		"/archive?path=%2Fdata%2Fhermes%2F.myrmidon%2Fapplied.json%2F..",
+		"/archive?path=%2Fdata%2Fhermes%2F.myrmidon%2Fapplied.json2",
+		"/archive?path=%2Fdata%2Fworkspace%2F.myrmidon%2Fapplied.json",
+		"/archive?path=%2Fdata%2Fhermes%2F.myrmidon%2Fapplied.json&x=1",
+	} {
+		wantDeny(t, r.send("GET", r.target("", q), nil, nil), deny.RouteNotAllowed)
+	}
+}
+
+func TestAllow_A13_CloneHygieneReport(t *testing.T) {
+	r := newRig(t)
+	r.seedMain("running")
+	report := []byte("report-tar-bytes\x00\x01")
+	r.d.Modify(r.name(""), func(c *fakedocker.Container) { c.CloneReport = report })
+	id := r.id("")
+	res := r.send("GET", r.target("", "/archive?path=%2Fbot%2Fhermes%2F.myrmidon%2Fclone-hygiene.json"), nil, nil)
+	wantStatus(t, res, 200)
+	if !bytes.Equal(res.Body, report) {
+		t.Errorf("body %q", res.Body)
+	}
+	r.wantURIs("GET "+r.target("", "/json"),
+		"GET /v1.45/containers/"+id+"/archive?path=%2Fbot%2Fhermes%2F.myrmidon%2Fclone-hygiene.json")
+}
+
+func TestAllow_A13_NoReportIsThe404OfTheDaemon(t *testing.T) {
+	r := newRig(t)
+	r.seedMain("running")
+	res := r.send("GET", r.target("", "/archive?path=%2Fbot%2Fhermes%2F.myrmidon%2Fclone-hygiene.json"), nil, nil)
+	wantStatus(t, res, 404)
 }
 
 // --- A4 ---------------------------------------------------------------------------
@@ -331,11 +388,11 @@ func TestAllow_A4_ExtraMounts(t *testing.T) {
 	addExtra := func(t *testing.T, r *rig) []byte {
 		t.Helper()
 		_, body := r.m.FindBody(t, "bot-plain", "")
-		last := `"` + r.m.VolumeRoot + "/" + r.m.BotKey + `/scratch:/scratch"]`
+		last := `"` + r.m.VolumeRoot + "/" + r.m.BotKey + `:/bot"]`
 		if !bytes.Contains(body, []byte(last)) {
 			t.Fatalf("the recorded body has no %q", last)
 		}
-		return bytes.Replace(body, []byte(last), []byte(`"`+r.m.VolumeRoot+"/"+r.m.BotKey+`/scratch:/scratch","`+shared+`:`+shared+`:ro"]`), 1)
+		return bytes.Replace(body, []byte(last), []byte(`"`+r.m.VolumeRoot+"/"+r.m.BotKey+`:/bot","`+shared+`:`+shared+`:ro"]`), 1)
 	}
 
 	t.Run("an allowlisted source is forwarded to the daemon", func(t *testing.T) {

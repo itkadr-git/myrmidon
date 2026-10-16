@@ -1,5 +1,5 @@
 {
-  "$comment": "Per-suite wall-clock durations (ms) for serialized route/authz verification, used by scripts/run-vitest-stable.mjs in PR and release shards. Refreshed from successful Cloud readiness run 34705914878 (2026-09-12), jobs 103585803684, 103585803688, 103585803716, 103585803734, and 103585803754. Each weight spans consecutive [test:run] suite-start timestamps; the last suite ends at the first post-job cleanup timestamp. This includes each isolated Vitest process startup, import, collection, tests, and shutdown. All 145 suites are sampled exactly once. New or renamed suites use the median weight. Refresh from a successful complete run when observed shard times drift.",
+  "$comment": "Per-suite wall-clock durations (ms) for serialized route/authz verification, used by scripts/run-vitest-stable.mjs in PR and release shards. Refreshed from successful Cloud readiness run 34705914878 (2026-09-12), jobs 103585803684, 103585803688, 103585803716, 103585803734, and 103585803754. Each weight spans consecutive [test:run] suite-start timestamps; the last suite ends at the first post-job cleanup timestamp. This includes each isolated Vitest process startup, import, collection, tests, and shutdown. All 145 suites are sampled exactly once. New or renamed suites use the median weight; the 23 route/authz suites outside src/__tests__ added for OPE-4472 carry the previous manifest median as a placeholder until the next refresh from a measured run. Refresh from a successful complete run when observed shard times drift.",
   "unit": "ms",
   "durations": {
     "server/src/__tests__/access-routes-hidden-floor.test.ts": 11187,
@@ -146,6 +146,29 @@
     "server/src/__tests__/user-profile-routes.test.ts": 9198,
     "server/src/__tests__/workspace-command-authz.test.ts": 1044,
     "server/src/__tests__/workspace-runtime-routes-authz.test.ts": 6915,
-    "server/src/__tests__/workspace-runtime-service-authz.test.ts": 10428
+    "server/src/__tests__/workspace-runtime-service-authz.test.ts": 10428,
+    "server/src/myrmidon/access-hub/routes.myrmidon.test.ts": 10428,
+    "server/src/myrmidon/agent-memory/routes.myrmidon.test.ts": 10428,
+    "server/src/myrmidon/agent-memory/settings-routes.myrmidon.test.ts": 10428,
+    "server/src/myrmidon/autonomy/routes.myrmidon.test.ts": 10428,
+    "server/src/myrmidon/bot-containers/canary-routes.myrmidon.test.ts": 10428,
+    "server/src/myrmidon/bot-containers/egress-routes.myrmidon.test.ts": 10428,
+    "server/src/myrmidon/bot-containers/routes.myrmidon.test.ts": 10428,
+    "server/src/myrmidon/browser-bridge/panel-journal-route.myrmidon.test.ts": 10428,
+    "server/src/myrmidon/browser-console/routes.myrmidon.test.ts": 10428,
+    "server/src/myrmidon/cloud-connector/routes.myrmidon.test.ts": 10428,
+    "server/src/myrmidon/deploy-jobs/routes.myrmidon.test.ts": 10428,
+    "server/src/myrmidon/evals/routes.myrmidon.test.ts": 10428,
+    "server/src/myrmidon/fleet-console/routes.myrmidon.test.ts": 10428,
+    "server/src/myrmidon/foraging/routes.myrmidon.test.ts": 10428,
+    "server/src/myrmidon/monitoring/metrics/routes.myrmidon.test.ts": 10428,
+    "server/src/myrmidon/ocr/routes.myrmidon.test.ts": 10428,
+    "server/src/myrmidon/skill-lifecycle/routes.myrmidon.test.ts": 10428,
+    "server/src/myrmidon/stt/routes.myrmidon.test.ts": 10428,
+    "server/src/myrmidon/tracing-health/routes.myrmidon.test.ts": 10428,
+    "server/src/myrmidon/ui2-language/routes.myrmidon.test.ts": 10428,
+    "server/src/myrmidon/workspace-hygiene/routes.myrmidon.test.ts": 10428,
+    "server/src/routes/setup-token-route.test.ts": 10428,
+    "server/src/services/openrouter-models.test.ts": 10428
   }
 }

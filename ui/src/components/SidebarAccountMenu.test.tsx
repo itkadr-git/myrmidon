@@ -1,5 +1,7 @@
 // @vitest-environment jsdom
 
+import { PRODUCT_NAME } from "@paperclipai/shared";
+import { i18n } from "@/i18n";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -106,6 +108,11 @@ describe("SidebarAccountMenu", () => {
     container.remove();
     document.body.innerHTML = "";
     vi.clearAllMocks();
+  });
+
+  it("keeps the localized product name in the About label for English and Russian", () => {
+    expect(i18n.getFixedT("en")("about.title")).toContain(PRODUCT_NAME);
+    expect(i18n.getFixedT("ru")("about.title")).toContain(PRODUCT_NAME);
   });
 
   it("shares the nav background without separator borders", async () => {
@@ -384,9 +391,9 @@ describe("SidebarAccountMenu", () => {
         '[data-testid="myrmidon-sidebar-version"]',
       );
       expect(versionLink).not.toBeNull();
-      expect(versionLink?.textContent).toContain("Myrmidon 1.2.1");
+      expect(versionLink?.textContent).toContain(`${PRODUCT_NAME} 1.2.1`);
       expect(versionLink?.getAttribute("href")).toBe("/company/settings");
-      expect(versionLink?.getAttribute("aria-label")).toBe("About Myrmidon");
+      expect(versionLink?.getAttribute("aria-label")).toBe(`About ${PRODUCT_NAME}`);
 
       await act(async () => {
         root.unmount();

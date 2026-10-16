@@ -194,6 +194,9 @@ export function costRoutes(
     assertCompanyAccess(req, companyId);
     if (!(await assertCompanyCostReadAllowed(req, res, companyId))) return;
     const range = parseCostDateRange(req.query);
+    // myrmidon(1.6.3 PROMPT-BUDGET D): the rows carry two additive fleet prompt
+    // columns (avgPromptTokens, runsAboveThresholdPct) beside the spend columns;
+    // the handler passes them through unchanged.
     const rows = await costs.byAgent(companyId, range);
     res.json(rows);
   });

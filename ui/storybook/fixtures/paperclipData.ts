@@ -116,7 +116,9 @@ export const storybookAuthSession: AuthSession = {
   sentryDsn: null,
 };
 
-export const storybookAgents: Agent[] = [
+// myrmidon(PERF-DIET-G): every fixture is a full agent record, so the map can
+// stand in for a detail read (which always carries the configuration).
+export const storybookAgents: (Agent & { adapterConfig: Record<string, unknown> })[] = [
   {
     id: "agent-codex",
     companyId: "company-storybook",

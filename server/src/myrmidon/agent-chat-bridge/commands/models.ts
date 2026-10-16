@@ -1,8 +1,16 @@
 // myrmidon(X8c): the "which value can this chat pick" toolkit shared by
 // /model and /think — candidate lists, argument resolution and formatting.
+// myrmidon(1.7-TG-LOCALE): prose lives only in the ../locales catalogs
+// (keyed text, rendered in the chat owner's locale); command names, model
+// ids and reasoning levels stay here as data.
 
 import { listAdapterModels } from "../../../adapters/registry.js";
 import { ADAPTER_SPECIAL_MODEL_VALUES } from "../../agent-model-validation.js";
+// myrmidon(F06-A): the reasoning-effort policy of a model — /think must not
+// write an effort the model refuses (see effortPolicyRefusal below).
+import { effortsForModel } from "../../effort-policy/effort-policy.js";
+import { t, type BridgeLocale } from "../locales/index.js";
+import type { BridgeTextKey } from "../locales/en.js";
 import type { BridgedCommandAgentContext } from "./context.js";
 
 /**
@@ -18,18 +26,35 @@ function isSpecialModelValue(value: string): boolean {
 export interface ChatModelCandidate {
   id: string;
   label: string;
+  /**
+   * myrmidon(F06-A): the provider family of a gateway model id
+   * (`dashscope-qwen3-max` → `dashscope`), used to group the rendered list.
+   * Absent for the card's own values and for ids without a known prefix.
+   */
+  provider?: string;
 }
 
-export const MAX_LISTED_CHAT_MODEL_CANDIDATES = 30;
+/**
+ * myrmidon(F06-D): owner 09.10 — `/model` shows EVERY chat model the agent's key
+ * may run, of every family, with no ceiling on the count: choosing is the
+ * owner's, not ours. The numbered text list is therefore complete. Only the
+ * keyboard has a hard platform limit (Telegram: 100 buttons per message), so
+ * the buttons cover the first MAX_CHOICE_BUTTONS candidates (the owner-ranked
+ * families lead the order) and the rest stay choosable by name or number.
+ */
+export const MAX_CHOICE_BUTTONS = 98;
 
 /**
  * Adapter types whose `config.model` is read on a run (design doc fact F13).
  * Kept here, not imported from each adapter, so a change to any adapter's
  * execute.ts cannot silently widen or narrow what /model claims to control.
- * `hermes_gateway` is deliberately absent until gap G4 lands (it does not
- * pass a model to the run yet).
+ * myrmidon(F06-A): `hermes_gateway` is in the list now that gap G4 has landed
+ * — the gateway adapter passes `model`/`model_options` to the run, and a chat
+ * override reaches its container through the agent profile (see the apply path
+ * in overrides.ts). It used to be absent precisely because it did not.
  */
 export const MODEL_OVERRIDE_ALLOWED_ADAPTER_TYPES: readonly string[] = [
+  "hermes_gateway",
   "hermes_local",
   "claude_local",
   "codex_local",
@@ -42,8 +67,160 @@ export const MODEL_OVERRIDE_ALLOWED_ADAPTER_TYPES: readonly string[] = [
   "pi_local",
 ];
 
-/** Adapter types whose `config.effort` is honored today. */
-export const THINK_OVERRIDE_ALLOWED_ADAPTER_TYPES: readonly string[] = ["hermes_local"];
+/** Adapter types whose `config.effort` is honored today. myrmidon(F06-A): the
+ *  gateway adapter compiles the same hermes profile, so it honors it too. */
+export const THINK_OVERRIDE_ALLOWED_ADAPTER_TYPES: readonly string[] = ["hermes_local", "hermes_gateway"];
+
+/**
+ * myrmidon(F06-A): the adapters that run a bot container — their written value
+ * has to be applied to the agent profile to take effect (overrides.ts), and
+ * their `/model` list comes from the gateway catalog (below).
+ */
+export const GATEWAY_ADAPTER_TYPES: readonly string[] = ["hermes_gateway"];
+
+/**
+ * myrmidon(F06-A): adapters whose reasoning-effort choices are checked against
+ * effort-policy.ts (incident 02.10: an effort a model does not accept makes the
+ * gateway answer from another model, so `/think` must refuse it rather than
+ * write it). Both hermes adapters compile the same hermes profile.
+ */
+export const EFFORT_POLICY_ADAPTER_TYPES: readonly string[] = ["hermes_local", "hermes_gateway"];
+
+/** myrmidon(F06-A): the provider families grouped in a `/model` list; any other
+ *  model id is listed without a family header. */
+const GATEWAY_MODEL_PROVIDER_PREFIXES: readonly string[] = ["dashscope", "zai", "nous"];
+
+/**
+ * myrmidon(F06-D): the owner's channel policy for a `/model` candidate order —
+ * the families an owner chat should reach first. Anything else keeps its
+ * alphabetical order at the tail.
+ */
+const GATEWAY_PROVIDER_RANK: readonly string[] = ["dashscope", "zai"];
+
+/** myrmidon(F06-D): family rank of a provider name (0 first). Tolerates the
+ *  collected catalog's spellings of the same family (`z.ai`, `z-ai`, `zai`). */
+function gatewayProviderRank(provider: string | null): number {
+  if (!provider) return GATEWAY_PROVIDER_RANK.length + 1;
+  const normalized = provider.trim().toLowerCase().replace(/[.\s_-]+/g, "");
+  const index = GATEWAY_PROVIDER_RANK.findIndex(
+    (family) => family.replace(/[.\s_-]+/g, "") === normalized,
+  );
+  return index >= 0 ? index : GATEWAY_PROVIDER_RANK.length;
+}
+
+/**
+ * myrmidon(F06-D): what the gateway itself declares a chat model to be
+ * (`model_info.mode`). LiteLLM's modes for text generation are `chat`,
+ * `responses` and the legacy `completion`; everything else it names
+ * (`embedding`, `rerank`, `ocr`, `image_generation`, `video_generation`,
+ * `audio_transcription`, `audio_speech`, `moderation`, ...) is not a chat model.
+ */
+const CHAT_MODEL_MODES: ReadonlySet<string> = new Set(["chat", "responses", "completion"]);
+
+/**
+ * myrmidon(F06-D): the fallback rule for an id whose mode the gateway did not
+ * declare (a model the board's collected catalog has not seen yet, or a row
+ * collected before the mode was stored): embeddings, OCR, rerank, moderation,
+ * image / video / speech generation and recognition. The declared mode wins
+ * whenever there is one; this list is only for the gap.
+ */
+const NON_CHAT_MODEL_ID_PATTERNS: readonly RegExp[] = [
+  /embed/,
+  // Short tokens only count as whole id segments: `tts` must not match inside
+  // `...-matts-...`, nor `asr` inside `...-casrl`.
+  /(?:^|[-_./])ocr(?:[-_./]|$)/,
+  /(?:^|[-_./])tts(?:[-_./]|$)/,
+  /(?:^|[-_./])asr(?:[-_./]|$)/,
+  /rerank/,
+  /moderation/,
+  /transcri/,
+  /classifier/,
+  // Generation of pictures, video and speech; speech recognition.
+  /(?:^|[-_./])(?:image|images|video|t2i|t2v|i2v|text2image|text2video|img2img)(?:[-_./]|$)/,
+  /(?:^|[-_./])wan\d/,
+  /cogview|cogvideo|dall-?e|stable-?diffusion|(?:^|[-_./])flux(?:[-_./]|$)|(?:^|[-_./])sora(?:[-_./]|$)/,
+  /cosyvoice|paraformer|sensevoice|whisper|(?:^|[-_./])speech(?:[-_./]|$)/,
+];
+
+/** myrmidon(F06-D): the board's own maintenance models, by suffix and by family. */
+const BOARD_SERVICE_MODEL_ID_PATTERNS: readonly RegExp[] = [
+  /-mem(?:[-_./]|$)/,
+  /-consolidation(?:[-_./]|$)/,
+  /-summary(?:[-_./]|$)/,
+  /-summarizer(?:[-_./]|$)/,
+  /^hindsight(?:[-_./]|$)/,
+];
+
+/**
+ * myrmidon(F06-D): whether a gateway catalog id is a chat model `/model` may
+ * offer. The gateway's declared `mode` decides when there is one; the board's
+ * own service models (`hindsight-*`, `*-mem`, ...) are dropped either way,
+ * since the gateway calls them chat models too.
+ */
+export function isChatGatewayModelId(modelId: string, mode?: string | null): boolean {
+  const lowered = modelId.trim().toLowerCase();
+  if (!lowered) return false;
+  if (BOARD_SERVICE_MODEL_ID_PATTERNS.some((pattern) => pattern.test(lowered))) return false;
+  const declared = mode?.trim().toLowerCase();
+  if (declared) return CHAT_MODEL_MODES.has(declared);
+  return !NON_CHAT_MODEL_ID_PATTERNS.some((pattern) => pattern.test(lowered));
+}
+
+/** myrmidon(F06-A): the family of a gateway model id, by its prefix. */
+export function providerPrefixOfModelId(modelId: string): string | null {
+  const lowered = modelId.trim().toLowerCase();
+  for (const prefix of GATEWAY_MODEL_PROVIDER_PREFIXES) {
+    if (lowered.startsWith(`${prefix}-`)) return prefix;
+  }
+  return null;
+}
+
+/**
+ * myrmidon(F06-D): why this agent's own model list was not used. `no_gateway_url`
+ * — the board has no gateway address; `no_key` — no gateway key for the agent
+ * (its card binds none and there is no shared company secret); `secret_error` —
+ * the secret store could not be read; `gateway_error` — the gateway refused the
+ * key or did not answer a model list; `empty_list` — the key allows no models.
+ */
+export type GatewayCatalogKeyFailure =
+  | "no_gateway_url"
+  | "no_key"
+  | "secret_error"
+  | "gateway_error"
+  | "empty_list";
+
+/**
+ * myrmidon(F06-A): the gateway catalog for one agent, as the `/model` list
+ * needs it — read through the caller's bound reader (see
+ * gateway-model-catalog.ts for the real read; tests pass a stub).
+ */
+export interface ChatModelCatalog {
+  models: string[];
+  /** Set with `scope: "catalog"`: why the agent's own list was not read. */
+  keyFailure?: GatewayCatalogKeyFailure;
+  /** Provider family by model id, when the board's collected catalog knows it. */
+  providers?: Record<string, string>;
+  /** myrmidon(F06-D): the gateway-declared mode (`chat`, `embedding`, ...) by model id, when known. */
+  modes?: Record<string, string>;
+  /**
+   * `agentKey` — this agent's own gateway key allowlist (the models it may
+   * run); `catalog` — the whole gateway catalog, used when that per-key read
+   * was not available, and the reply says so.
+   */
+  scope: "agentKey" | "catalog";
+}
+
+/** myrmidon(F06-A): reads the catalog for one agent. Null = nothing readable. */
+export type ChatModelCatalogReader = () => Promise<ChatModelCatalog | null>;
+
+/** myrmidon(F06-A): the candidates of a chooser, plus where a gateway list came
+ *  from (the whole catalog instead of this agent's own key allowlist). */
+export interface ChatModelList {
+  candidates: ChatModelCandidate[];
+  wholeCatalog: boolean;
+  /** myrmidon(F06-D): with `wholeCatalog`, the reason the agent's own list was not used. */
+  keyFailure?: GatewayCatalogKeyFailure;
+}
 
 /**
  * packages/adapters/hermes/src/server/myrmidon-profile-config.ts:232
@@ -85,35 +262,42 @@ function readSpecificModelField(config: Record<string, unknown>, key: string): s
 }
 
 /**
- * myrmidon(X8-texts): the bridged Telegram DM answers in Russian. The three
- * source labels below are shown to the chat owner, so they read as Russian
- * prose; the value beside them (a model name, a reasoning level) stays as the
- * adapter spells it.
+ * myrmidon(1.7-TG-LOCALE): which decision produced a chat's effective value.
+ * These are catalog keys (../locales), not prose — `sourceLabelFor()` renders
+ * the label shown to the chat owner; the value beside it (a model name, a
+ * reasoning level) stays exactly as the adapter spells it.
  */
-export type ChatValueSource = "этот чат" | "по умолчанию у агента" | "по умолчанию у адаптера";
+export type ChatValueSource = "thisChat" | "agentDefault" | "adapterDefault";
 
-const ADAPTER_DEFAULT_LABEL = "по умолчанию у адаптера";
+const SOURCE_TEXT_KEYS: Record<ChatValueSource, BridgeTextKey> = {
+  thisChat: "source.thisChat",
+  agentDefault: "source.agentDefault",
+  adapterDefault: "source.adapterDefault",
+};
 
-/** The card's own value for this key, or the literal "adapter default" when the card sets none. */
+export function sourceLabelFor(source: ChatValueSource, locale: BridgeLocale): string {
+  return t(locale, SOURCE_TEXT_KEYS[source]);
+}
+
+/** The card's own value for this key, or null when the card sets none (the callers render the "adapter default" label then). */
 export function describeCardValue(
   cardAdapterConfig: Record<string, unknown>,
   key: "model" | "effort",
-): string {
-  return readSpecificModelField(cardAdapterConfig, key) ?? ADAPTER_DEFAULT_LABEL;
+): string | null {
+  return readSpecificModelField(cardAdapterConfig, key);
 }
 
-/** The value this chat actually uses right now, and who decided it. */
+/** The value this chat actually uses right now, and who decided it. A null value means the adapter decides. */
 export function describeEffectiveChatValue(
   overrideAdapterConfig: Record<string, unknown>,
   cardAdapterConfig: Record<string, unknown>,
   key: "model" | "effort",
-): { value: string; source: ChatValueSource } {
+): { value: string | null; source: ChatValueSource } {
   const override = readSpecificModelField(overrideAdapterConfig, key);
-  if (override) return { value: override, source: "этот чат" };
+  if (override) return { value: override, source: "thisChat" };
   const card = readSpecificModelField(cardAdapterConfig, key);
-  return card
-    ? { value: card, source: "по умолчанию у агента" }
-    : { value: ADAPTER_DEFAULT_LABEL, source: "по умолчанию у адаптера" };
+  if (card) return { value: card, source: "agentDefault" };
+  return { value: null, source: "adapterDefault" };
 }
 
 function readModelFallbacks(cardAdapterConfig: Record<string, unknown>): string[] {
@@ -127,23 +311,77 @@ function readModelFallbacks(cardAdapterConfig: Record<string, unknown>): string[
   );
 }
 
-/** Model names this chat can choose from: card model, its fallbacks, then the adapter's list — deduplicated, in that order. */
+/**
+ * Model names this chat can choose from: the card model, its fallbacks, the
+ * gateway catalog (gateway adapters, myrmidon(F06-A)), then the adapter's own
+ * list — deduplicated, in that order. The catalog is read through the caller's
+ * reader, and its models are ordered by provider family so the rendered list
+ * groups instead of interleaving.
+ */
 export async function listModelCandidates(
   adapterType: string,
   cardAdapterConfig: Record<string, unknown>,
-): Promise<ChatModelCandidate[]> {
+  catalog: ChatModelCatalogReader | null = null,
+): Promise<ChatModelList> {
   const seen = new Set<string>();
   const candidates: ChatModelCandidate[] = [];
-  const push = (id: string, label: string) => {
+  const push = (id: string, label: string, provider: string | null = null) => {
     const trimmedId = id.trim();
     if (!trimmedId || seen.has(trimmedId)) return;
     seen.add(trimmedId);
-    candidates.push({ id: trimmedId, label: label.trim() || trimmedId });
+    const candidate: ChatModelCandidate = { id: trimmedId, label: label.trim() || trimmedId };
+    if (provider) candidate.provider = provider;
+    candidates.push(candidate);
   };
 
+  const cardIds: string[] = [];
   const cardModel = readSpecificModelField(cardAdapterConfig, "model");
-  if (cardModel) push(cardModel, cardModel);
-  for (const fallback of readModelFallbacks(cardAdapterConfig)) push(fallback, fallback);
+  if (cardModel) cardIds.push(cardModel);
+  for (const fallback of readModelFallbacks(cardAdapterConfig)) cardIds.push(fallback);
+
+  let wholeCatalog = false;
+  let keyFailure: GatewayCatalogKeyFailure | undefined;
+  let gatewayOrdered: ChatModelCandidate[] | null = null;
+  if (GATEWAY_ADAPTER_TYPES.includes(adapterType) && catalog) {
+    let read: ChatModelCatalog | null = null;
+    try {
+      read = await catalog();
+    } catch {
+      // A gateway read failing must not make /model unusable: the card's own
+      // values still answer, and an empty result reads as "unavailable".
+      read = null;
+    }
+    if (read) {
+      wholeCatalog = read.scope === "catalog";
+      keyFailure = wholeCatalog ? read.keyFailure : undefined;
+      const providerOf = (id: string) => read?.providers?.[id] ?? providerPrefixOfModelId(id) ?? null;
+      // myrmidon(F06-D): a gateway catalog is every model any key may run —
+      // embeddings, OCR and service models included. `/model` may only offer
+      // chat models (owner 09.10), so non-chat ids are dropped here, never
+      // shown — the card's own models too. The whole list, the card's models
+      // among it, is ordered by the owner's channel policy: DashScope first,
+      // then z.ai, then the remaining families alphabetically; inside a
+      // family, by id (numbers in ids compare as numbers).
+      const ids: string[] = [];
+      const listedIds = new Set<string>();
+      for (const raw of [...cardIds, ...read.models]) {
+        const id = raw.trim();
+        if (!id || listedIds.has(id) || !isChatGatewayModelId(id, read.modes?.[id])) continue;
+        listedIds.add(id);
+        ids.push(id);
+      }
+      ids.sort((left, right) => compareGatewayModelIds(left, providerOf(left), right, providerOf(right)));
+      gatewayOrdered = ids.map((id) => {
+        const provider = providerOf(id);
+        return provider ? { id, label: id, provider } : { id, label: id };
+      });
+    }
+  }
+  if (gatewayOrdered) {
+    for (const candidate of gatewayOrdered) push(candidate.id, candidate.label, candidate.provider ?? null);
+  } else {
+    for (const id of cardIds) push(id, id);
+  }
 
   let discovered: { id: string; label: string }[] = [];
   try {
@@ -158,7 +396,32 @@ export async function listModelCandidates(
     push(id, entry.label ?? id);
   }
 
-  return candidates;
+  return keyFailure ? { candidates, wholeCatalog, keyFailure } : { candidates, wholeCatalog };
+}
+
+/**
+ * myrmidon(F06-D): the gateway candidate order — owner-ranked families first
+ * (DashScope, then z.ai), then the other families alphabetically (ids with no
+ * known family last), then by id, numbers inside an id compared as numbers
+ * (`glm-4.6` before `glm-5.3`, `glm-5.3` before `glm-5.10`).
+ */
+function compareGatewayModelIds(
+  leftId: string,
+  leftProvider: string | null,
+  rightId: string,
+  rightProvider: string | null,
+): number {
+  const leftRank = gatewayProviderRank(leftProvider);
+  const rightRank = gatewayProviderRank(rightProvider);
+  if (leftRank !== rightRank) return leftRank - rightRank;
+  const leftFamily = (leftProvider ?? "").trim().toLowerCase();
+  const rightFamily = (rightProvider ?? "").trim().toLowerCase();
+  if (leftFamily !== rightFamily) {
+    if (!leftFamily) return 1;
+    if (!rightFamily) return -1;
+    return leftFamily.localeCompare(rightFamily);
+  }
+  return leftId.localeCompare(rightId, "en", { numeric: true });
 }
 
 /** Reasoning levels this chat can choose from — a fixed list, independent of the card. */
@@ -185,72 +448,145 @@ export function resolveChatChoiceArgument(
   return bySuffix.length === 1 ? bySuffix[0]! : null;
 }
 
-export function formatChatChoiceList(candidates: ChatModelCandidate[]): string {
-  return candidates
-    .slice(0, MAX_LISTED_CHAT_MODEL_CANDIDATES)
-    .map((candidate, index) => `${index + 1}) ${candidate.id}`)
-    .join("\n");
+/**
+ * The numbered list shown after a chooser command: one continuous numbering,
+ * one id per line, every candidate (no ceiling, owner 09.10) and no family
+ * headers (owner 09.10: «без заголовков»; the order already groups the
+ * families).
+ */
+export function formatChatChoiceList(candidates: ChatModelCandidate[], _locale?: BridgeLocale): string {
+  return candidates.map((candidate, index) => `${index + 1}) ${candidate.id}`).join("\n");
 }
+
+/** myrmidon(F06-D): the candidates the keyboard has a button for (see MAX_CHOICE_BUTTONS). */
+export function listedChatChoices(candidates: ChatModelCandidate[]): ChatModelCandidate[] {
+  return candidates.slice(0, MAX_CHOICE_BUTTONS);
+}
+
+/**
+ * myrmidon(F06-D): the sentence under a whole-catalog list — that it is the
+ * whole catalog, and why this agent's own list was not used.
+ */
+export function wholeCatalogText(locale: BridgeLocale, keyFailure: GatewayCatalogKeyFailure | undefined): string {
+  const base = t(locale, "chooser.catalogWhole");
+  if (!keyFailure) return base;
+  return `${base} ${t(locale, "chooser.keyFailure", { reason: t(locale, KEY_FAILURE_TEXT_KEYS[keyFailure]) })}`;
+}
+
+const KEY_FAILURE_TEXT_KEYS: Record<GatewayCatalogKeyFailure, BridgeTextKey> = {
+  no_gateway_url: "chooser.keyFailure.noGatewayUrl",
+  no_key: "chooser.keyFailure.noKey",
+  secret_error: "chooser.keyFailure.secretError",
+  gateway_error: "chooser.keyFailure.gatewayError",
+  empty_list: "chooser.keyFailure.emptyList",
+};
 
 /** One of /model or /think: what it is called, which adapterConfig key it edits, and how it lists candidates. */
 export interface ChatModelChooser {
-  /** Label for status-style lines: "Модель" / "Рассуждения". */
-  statusLabel: string;
+  /** Catalog key of the status-style label (Model / Reasoning per locale). */
+  statusLabelKey: BridgeTextKey;
   /** Command name, used in "/model"/"/think" usage hints. */
   commandName: "model" | "think";
   adapterConfigKey: "model" | "effort";
-  /** Sentence shown when this chooser cannot be used for the agent's adapter. */
-  unavailableText: string;
-  /** Prose that names the value a rejected argument would have set. */
-  unknownValueLabel: string;
+  /** Catalog key of the sentence shown when this chooser cannot be used for the agent's adapter. */
+  unavailableTextKey: BridgeTextKey;
+  /** Catalog key naming the kind of value a rejected argument would have set. */
+  unknownNounKey: BridgeTextKey;
   isAllowedAdapterType: (adapterType: string) => boolean;
+  /** myrmidon(F06-A): the third argument is the caller's gateway catalog
+   *  reader, bound to this chat's agent (null when the caller has none). */
   listCandidates: (
     adapterType: string,
     cardAdapterConfig: Record<string, unknown>,
-  ) => Promise<ChatModelCandidate[]>;
+    catalog: ChatModelCatalogReader | null,
+  ) => Promise<ChatModelList>;
 }
 
 export const MODEL_CHOOSER: ChatModelChooser = {
-  statusLabel: "Модель",
+  statusLabelKey: "model.statusLabel",
   commandName: "model",
   adapterConfigKey: "model",
-  unavailableText: "Смена модели недоступна для этого агента.",
-  unknownValueLabel: "Неизвестная модель",
+  unavailableTextKey: "model.unavailable",
+  unknownNounKey: "model.unknownNoun",
   isAllowedAdapterType: (adapterType) => MODEL_OVERRIDE_ALLOWED_ADAPTER_TYPES.includes(adapterType),
   listCandidates: listModelCandidates,
 };
 
 export const THINK_CHOOSER: ChatModelChooser = {
-  statusLabel: "Рассуждения",
+  statusLabelKey: "reasoning.statusLabel",
   commandName: "think",
   adapterConfigKey: "effort",
-  unavailableText: "Смена глубины рассуждений недоступна для этого агента.",
-  unknownValueLabel: "Неизвестная глубина рассуждений",
+  unavailableTextKey: "reasoning.unavailable",
+  unknownNounKey: "reasoning.unknownNoun",
   isAllowedAdapterType: (adapterType) => THINK_OVERRIDE_ALLOWED_ADAPTER_TYPES.includes(adapterType),
-  listCandidates: async () => listThinkCandidates(),
+  listCandidates: async () => ({ candidates: listThinkCandidates(), wholeCatalog: false }),
 };
 
 export interface ChooserAvailability {
   available: boolean;
   candidates: ChatModelCandidate[];
+  /** myrmidon(F06-A): why it is unavailable — a catalog key rendered with the
+   *  adapter type and the reason by `unavailableChoiceText` below. */
+  reasonKey?: BridgeTextKey;
+  /** myrmidon(F06-A): the candidates are the whole gateway catalog, not this
+   *  agent's own key allowlist (the reply says so). */
+  wholeCatalog?: boolean;
+  /** myrmidon(F06-D): with `wholeCatalog`, why the agent's own list was not used. */
+  keyFailure?: GatewayCatalogKeyFailure;
+}
+
+/**
+ * myrmidon(F06-A): the refusal text of a chooser — its own key with the adapter
+ * type and the reason (a second catalog key) filled in, in the chat's locale.
+ */
+export function unavailableChoiceText(
+  chooser: ChatModelChooser,
+  agent: BridgedCommandAgentContext,
+  locale: BridgeLocale,
+  reasonKey: BridgeTextKey,
+): string {
+  return t(locale, chooser.unavailableTextKey, {
+    adapterType: agent.adapterType,
+    reason: t(locale, reasonKey),
+  });
 }
 
 export async function checkChooserAvailability(
   chooser: ChatModelChooser,
   agent: BridgedCommandAgentContext,
+  catalog: ChatModelCatalogReader | null = null,
 ): Promise<ChooserAvailability> {
-  if (!chooser.isAllowedAdapterType(agent.adapterType)) return { available: false, candidates: [] };
-  const candidates = await chooser.listCandidates(agent.adapterType, agent.adapterConfig);
-  return { available: candidates.length > 0, candidates };
+  if (!chooser.isAllowedAdapterType(agent.adapterType)) {
+    return { available: false, candidates: [], reasonKey: "chooser.reason.unsupportedAdapter" };
+  }
+  const list = await chooser.listCandidates(agent.adapterType, agent.adapterConfig, catalog);
+  if (list.candidates.length === 0) {
+    return {
+      available: false,
+      candidates: [],
+      reasonKey: "chooser.reason.noCandidates",
+      wholeCatalog: list.wholeCatalog,
+      ...(list.keyFailure ? { keyFailure: list.keyFailure } : {}),
+    };
+  }
+  return {
+    available: true,
+    candidates: list.candidates,
+    wholeCatalog: list.wholeCatalog,
+    ...(list.keyFailure ? { keyFailure: list.keyFailure } : {}),
+  };
 }
 
 /**
- * Shared with the caller's post-resolution re-check in overrides.ts
- * (applyChatAdapterOverride's `refuseIfTurnInProgress`), so both the early
- * read here and the later, authoritative check right before the write
- * report the same refusal in the same words.
+ * myrmidon(1.7-TG-LOCALE): the turn-in-progress refusal used by the early
+ * read here and by the caller's authoritative re-check in overrides.ts
+ * (applyChatAdapterOverride's `refuseIfTurnInProgress`); both sides render
+ * the same `turn.inProgress` catalog key, so the early refusal and the later
+ * write-time refusal report the same thing in the same words.
  */
-export const TURN_IN_PROGRESS_TEXT = "Сейчас идёт ответ. Попробуйте после него или отправьте /stop.";
+export function turnInProgressText(locale: BridgeLocale): string {
+  return t(locale, "turn.inProgress");
+}
 
 export type ChooserSelectionResult =
   | { kind: "set"; candidate: ChatModelCandidate }
@@ -258,9 +594,36 @@ export type ChooserSelectionResult =
   | { kind: "error"; text: string };
 
 /**
+ * myrmidon(F06-A): refuses an effort level the chat's model does not accept
+ * (effort-policy.ts: a glm-class model takes low/high/max only — the incident
+ * 02.10 rule: an unsupported effort makes the gateway answer from another
+ * model). Returns the refusal text, or null when the choice is fine. An
+ * adapter outside the policy, or a chat without a known model, is unrestricted.
+ */
+export function effortPolicyRefusal(input: {
+  adapterType: string;
+  model: string | null;
+  effort: string;
+  locale: BridgeLocale;
+}): string | null {
+  if (!EFFORT_POLICY_ADAPTER_TYPES.includes(input.adapterType)) return null;
+  const allowed = effortsForModel(input.model);
+  if (allowed.includes(input.effort)) return null;
+  return t(input.locale, "chooser.effortNotAllowed", {
+    value: input.effort,
+    model: input.model ?? "",
+    list: allowed.join(", "),
+  });
+}
+
+/**
  * Resolves a /model or /think argument against this chat's agent: not
  * available, a reply in progress, an unknown value, "default", or a
  * resolved candidate. Does not write anything; callers apply the result.
+ * myrmidon(1.7-TG-LOCALE): every error prose renders in the chat owner's
+ * locale passed by the caller.
+ * myrmidon(F06-A): a gateway agent's candidate list comes from `catalog`, and
+ * an effort choice is checked against the chat's model (effortPolicyRefusal).
  */
 export async function resolveChooserSelection(input: {
   chooser: ChatModelChooser;
@@ -268,13 +631,27 @@ export async function resolveChooserSelection(input: {
   arg: string;
   turnInProgress: boolean;
   checkTurnInProgress: boolean;
+  locale: BridgeLocale;
+  /** myrmidon(F06-A): the caller's gateway catalog reader, if it has one. */
+  catalog?: ChatModelCatalogReader | null;
+  /** myrmidon(F06-A): the model this chat's effort applies to (chat override →
+   *  card), needed for the effort policy check. */
+  effectiveModel?: string | null;
 }): Promise<ChooserSelectionResult> {
-  const availability = await checkChooserAvailability(input.chooser, input.agent);
+  const availability = await checkChooserAvailability(input.chooser, input.agent, input.catalog ?? null);
   if (!availability.available) {
-    return { kind: "error", text: input.chooser.unavailableText };
+    return {
+      kind: "error",
+      text: unavailableChoiceText(
+        input.chooser,
+        input.agent,
+        input.locale,
+        availability.reasonKey ?? "chooser.reason.unsupportedAdapter",
+      ),
+    };
   }
   if (input.checkTurnInProgress && input.turnInProgress) {
-    return { kind: "error", text: TURN_IN_PROGRESS_TEXT };
+    return { kind: "error", text: turnInProgressText(input.locale) };
   }
   const trimmed = input.arg.trim();
   if (trimmed.toLowerCase() === "default") {
@@ -284,8 +661,21 @@ export async function resolveChooserSelection(input: {
   if (!candidate) {
     return {
       kind: "error",
-      text: `${input.chooser.unknownValueLabel} «${trimmed}».\n${formatChatChoiceList(availability.candidates)}`,
+      text: t(input.locale, "chooser.unknownError", {
+        noun: t(input.locale, input.chooser.unknownNounKey),
+        value: trimmed,
+        list: formatChatChoiceList(availability.candidates, input.locale),
+      }),
     };
+  }
+  if (input.chooser.adapterConfigKey === "effort") {
+    const refusal = effortPolicyRefusal({
+      adapterType: input.agent.adapterType,
+      model: input.effectiveModel ?? null,
+      effort: candidate.id,
+      locale: input.locale,
+    });
+    if (refusal) return { kind: "error", text: refusal };
   }
   return { kind: "set", candidate };
 }

@@ -57,6 +57,11 @@ export interface CostByAgent {
   subscriptionCachedInputTokens: number;
   subscriptionInputTokens: number;
   subscriptionOutputTokens: number;
+  // myrmidon(1.6.3 PROMPT-BUDGET D): fleet prompt-report columns. Both are null
+  // when the window holds no prompt data, or when the run cannot be judged
+  // against the configured budget threshold.
+  avgPromptTokens?: number | null;
+  runsAboveThresholdPct?: number | null;
 }
 
 export interface CostByProviderModel {

@@ -1,10 +1,18 @@
 services:
   db:
-    image: postgres:17-alpine
+    # SHARED-PG: one PostgreSQL 18 with pgvector serves the board and the
+    # shared services (litellm, langfuse, hindsight). The extra databases and
+    # roles are created on first start by an init script in
+    # docker-entrypoint-initdb.d (the installer generates it); a manual
+    # `docker compose up` without those MYRMIDON_<SERVICE>_PASSWORD values
+    # gets only the board database. For a local dev stack keep the trivial
+    # paperclip/paperclip credentials of the server block below.
+    image: docker.io/pgvector/pgvector:pg18
     environment:
       POSTGRES_USER: paperclip
-      POSTGRES_PASSWORD: paperclip
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-paperclip}
       POSTGRES_DB: paperclip
+      MYRMIDON_SHARED_SERVICES: ${MYRMIDON_SHARED_SERVICES:-litellm langfuse hindsight}
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U paperclip -d paperclip"]
       interval: 2s
@@ -13,7 +21,11 @@ services:
     ports:
       - "5432:5432"
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      # PostgreSQL 18 keeps the cluster one level deeper
+      # (/var/lib/postgresql/18/docker), so the volume is mounted at the
+      # image's declared VOLUME path, not .../data.
+      - pgdata:/var/lib/postgresql
+      - ./db-init:/docker-entrypoint-initdb.d:ro
 
   server:
     build:
@@ -31,7 +43,7 @@ services:
     ports:
       - "3100:3100"
     environment:
-      DATABASE_URL: postgres://paperclip:paperclip@db:5432/paperclip
+      DATABASE_URL: "postgres://paperclip:${POSTGRES_PASSWORD:-paperclip}@db:5432/paperclip"
       PORT: "3100"
       SERVE_UI: "true"
       PAPERCLIP_DEPLOYMENT_MODE: "authenticated"

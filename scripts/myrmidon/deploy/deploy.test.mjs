@@ -67,6 +67,12 @@ case "$1" in
         cat "$SANDBOX/imagetools.json" ;;
     esac ;;
   run) echo "1.4.0+0123456789ab" ;;
+  ps) echo "cid-x"; exit 0 ;;
+  inspect)
+    # a container exists for every service and runs; its image is not recorded
+    # here (the previous image then falls back to the override file)
+    case "$*" in *"{{.State.Status}} {{.State.Restarting}}"*) echo "running false" ;; esac
+    exit 0 ;;
   compose)
     case "$*" in
       *--services)
@@ -103,7 +109,19 @@ esac
 
 const FAKE_CURL = `#!/usr/bin/env bash
 echo "curl $*" >> "$SANDBOX/calls.log"
-cat "$SANDBOX/health.json"
+case "$*" in
+  *"-X POST"*)
+    # ROLLBACK-WITHOUT-BOARD: the rollback may run exactly because the board API
+    # is down; curl-post-fails makes the maintenance POST unreachable.
+    if [ -e "$SANDBOX/curl-post-fails" ]; then echo "curl: (7) Failed to connect" >&2; exit 7; fi ;;
+esac
+case "$*" in
+  # PREDEPLOY-DB-CHECK: the throwaway copy of the production database answers
+  # from its own health file (port 13110, never the board's HEALTH_URL port).
+  *":13110"*)
+    if [ -e "$SANDBOX/predeploy-health.json" ]; then cat "$SANDBOX/predeploy-health.json"; else cat "$SANDBOX/health.json"; fi ;;
+  *) cat "$SANDBOX/health.json" ;;
+esac
 `;
 
 // The real boot-unit template, read from the deploy directory, so the tests
@@ -114,6 +132,10 @@ const VENDOR = "ghcr.io/paperclipai/paperclip:2026.916.1";
 
 function sandbox({
   health,
+  // PREDEPLOY-DB-CHECK: what the throwaway COPY of the production database
+  // answers on /api/health. Green by default, so only the tests about the
+  // pre-window check have to think about it.
+  predeployHealth,
   dumpBytes = 2048,
   labelVersion = VERSION,
   labelRevision = COMMIT,
@@ -200,6 +222,15 @@ function sandbox({
     path.join(dir, "health.json"),
     JSON.stringify(health ?? { status: "ok", version: VERSION, commit: COMMIT }),
   );
+  // PREDEPLOY-DB-CHECK: the copy of the production database answers from its
+  // own file; green unless the test says otherwise.
+  fs.writeFileSync(
+    path.join(dir, "predeploy-health.json"),
+    JSON.stringify(predeployHealth ?? { status: "ok", version: labelVersion, commit: COMMIT }),
+  );
+  // The board's own environment for the throwaway board container.
+  const predeployEnv = path.join(dir, "predeploy-board.env");
+  fs.writeFileSync(predeployEnv, "JWT_SECRET=test-secret\n");
   const override = path.join(composeDir, "docker-compose.myrmidon-image.yml");
   if (currentImage) {
     fs.writeFileSync(override, `services:\n  server:\n    image: ${currentImage}\n`);
@@ -237,10 +268,20 @@ function sandbox({
       "MYR_FLEETD_HEALTH_URL=http://127.0.0.1:3100/fleetd/health",
       // The bot image rollout has its own tests (bot-image-rollout.test.mjs).
       "MYRMIDON_BOT_IMAGE_ROLLOUT=0",
+      // PREDEPLOY-DB-CHECK (the 05.10 incident): the pre-window check is ON by
+      // default and refuses without its inputs. This sandbox walks a company-free
+      // path list (the attention list has its own tests in
+      // predeploy-board-check.test.mjs and in the release-gate sandbox, which
+      // knows BOARD_COMPANY_ID).
+      "MYRMIDON_PREDEPLOY_POSTGRES_IMAGE=postgres:16-alpine",
+      `MYRMIDON_PREDEPLOY_BOARD_ENV_FILE=${predeployEnv}`,
+      "MYRMIDON_PREDEPLOY_BOARD_PORT=13110",
+      `MYRMIDON_PREDEPLOY_HEALTH_TIMEOUT_SEC=2`,
+      "MYRMIDON_PREDEPLOY_API_PATHS=/api/health,/api/companies",
       "",
     ].join("\n"),
   );
-  return { dir, bin, config, override, unitDir, noGit };
+  return { dir, bin, config, override, unitDir, noGit, predeployEnv };
 }
 
 // The canonical unit rendered for a sandbox compose dir: exactly what
@@ -248,7 +289,7 @@ function sandbox({
 function sbPaths(composeDir) {
   return (template) => template
     .replaceAll("__COMPOSE_DIR__", composeDir)
-    .replaceAll("__COMPOSE_FILE_ARGS__", `-f ${composeDir}/docker-compose.yml -f ${composeDir}/docker-compose.myrmidon-image.yml`)
+    .replaceAll("__COMPOSE_FILE_ARGS__", `-f ${composeDir}/docker-compose.yml -f ${composeDir}/docker-compose.myrmidon-image.yml -f ${composeDir}/docker-compose.myrmidon-dockergate.yml -f ${composeDir}/docker-compose.myrmidon-fleetd.yml`)
     .replaceAll("__COMPOSE_SERVICE__", "server");
 }
 
@@ -286,6 +327,15 @@ function bashPath() {
 
 const read = (file) => (fs.existsSync(file) ? fs.readFileSync(file, "utf8") : "");
 const calls = (sb) => read(path.join(sb.dir, "calls.log"));
+// myrmidon(F-05): the deploy journal opens with `git describe` of the scripts'
+// clone — read-only, local, never a network call. The "refuses before any
+// docker or git call" checks below ignore exactly these two stamp calls and
+// still require that no OTHER docker or git call happened.
+const callsWithoutVersionStamp = (sb) =>
+  calls(sb)
+    .split("\n")
+    .filter((line) => line && !/^git -C \S+ (rev-parse --show-toplevel|describe --tags --always)$/.test(line))
+    .join("\n");
 const maintenance = (sb) => read(path.join(sb.dir, "maintenance.log"));
 
 describe("deploy.sh", () => {
@@ -298,6 +348,43 @@ describe("deploy.sh", () => {
     assert.equal(fs.readdirSync(path.join(sb.dir, "dumps")).length, 1);
     assert.match(calls(sb), new RegExp(`docker pull --quiet ghcr.io/itkadr-git/myrmidon@${NEW}`));
     assert.match(calls(sb), /docker compose .* up -d --no-deps server/);
+    assert.equal(maintenance(sb), "enter\nexit\n");
+  });
+
+  // PREDEPLOY-DB-CHECK (the 05.10 incident): release 1.6.3's board started on
+  // the CI database (empty) and crashed on production data. An image that does
+  // not come up on a copy of the production database must stop the deploy
+  // BEFORE the maintenance window, with nothing on production changed.
+  it("stops before the window when the image does not come up on a copy of the production database", () => {
+    const sb = sandbox({ predeployHealth: { status: "degraded", version: VERSION, commit: COMMIT } });
+    const before = read(sb.override);
+    const { code, out } = run(sb, "deploy.sh", ["--digest", NEW]);
+    assert.notEqual(code, 0, out);
+    assert.match(out, /PREDEPLOY-DB-CHECK/);
+    assert.match(out, /did not come up on the copy/);
+    assert.match(out, /DEPLOY STOPPED BEFORE THE WINDOW/);
+    // Nothing on production changed: no window opened, no image switch.
+    assert.equal(maintenance(sb), "");
+    assert.equal(read(sb.override), before);
+    assert.doesNotMatch(calls(sb), /up -d/);
+    // The copy was built for the check and torn down again.
+    assert.match(calls(sb), /docker network create myr-predeploy-/);
+    assert.match(calls(sb), /docker rm -f myr-predeploy-board-/);
+  });
+
+  // PREDEPLOY-DB-CHECK: the check is a step of its own with its own tests
+  // (predeploy-board-check.test.mjs); here we only pin that deploy.sh runs it
+  // BEFORE the window and only for a board that actually changes.
+  it("proves the changing image on the copy before the window opens", () => {
+    const sb = sandbox();
+    const { code, out } = run(sb, "deploy.sh", ["--digest", NEW]);
+    assert.equal(code, 0, out);
+    const log = calls(sb);
+    const copyCheck = log.indexOf("docker network create myr-predeploy-");
+    assert.ok(copyCheck >= 0, "the copy of the production database was not built");
+    // The window opened only after the copy answered: the board was recreated
+    // after the throwaway stack was torn down.
+    assert.ok(log.indexOf("docker rm -f myr-predeploy-board-") < log.indexOf("up -d --no-deps server"), "the board was switched before the copy was checked");
     assert.equal(maintenance(sb), "enter\nexit\n");
   });
 
@@ -540,7 +627,7 @@ describe("deploy.sh: only CI images from the registry", () => {
       it(`refuses ${name} before any docker or git call`, () => {
         const sb = sandbox();
         assertRefused(sb, ["--digest", arg], pattern);
-        assert.equal(calls(sb), "");
+        assert.equal(callsWithoutVersionStamp(sb), "");
       });
     }
 
@@ -549,7 +636,7 @@ describe("deploy.sh: only CI images from the registry", () => {
       const { code, out } = run(sb, "deploy.sh", []);
       assert.notEqual(code, 0);
       assert.match(out, /give --digest or --release|no image given/);
-      assert.equal(calls(sb), "");
+      assert.equal(callsWithoutVersionStamp(sb), "");
     });
 
     it("accepts the full reference of the CI image", () => {
@@ -564,7 +651,7 @@ describe("deploy.sh: only CI images from the registry", () => {
       const sb = sandbox();
       fs.appendFileSync(sb.config, "MYRMIDON_IMAGE=ghcr.io/example/other\n");
       assertRefused(sb, ["--digest", NEW], /MYRMIDON_IMAGE is 'ghcr\.io\/example\/other'/);
-      assert.equal(calls(sb), "");
+      assert.equal(callsWithoutVersionStamp(sb), "");
     });
   });
 
@@ -646,12 +733,22 @@ describe("deploy.sh: only CI images from the registry", () => {
       assert.equal(code, 0, out);
     });
 
+    // RC-VERSIONS: a release candidate tag is a release tag — the deploy of
+    // an rc IS the trial run of the release flow.
+    it("accepts a commit that carries a release candidate tag myr-vX.Y.Z-rc.N", () => {
+      const tags = `${"9".repeat(40)}\trefs/tags/myr-v1.2.3-rc.1\n${COMMIT}\trefs/tags/myr-v1.2.3-rc.1^{}\n`;
+      const sb = sandbox({ onMain: false, tags });
+      const { code, out } = run(sb, "deploy.sh", ["--digest", NEW]);
+      assert.equal(code, 0, out);
+      assert.match(calls(sb), /git -C \S+ ls-remote --tags origin refs\/tags\/myr-v\*/);
+    });
+
     it("refuses when the myr-v tags point at other commits", () => {
       const sb = sandbox({ onMain: false, tags: `${"9".repeat(40)}\trefs/tags/myr-v1.0.0\n${"8".repeat(40)}\trefs/tags/myr-v1.0.0^{}\n` });
       assertRefused(sb, ["--digest", NEW], /neither on origin\/main nor tagged myr-v/);
     });
 
-    it("refuses a tag that CI would not build (not myr-v<x>.<y>.<z>)", () => {
+    it("refuses a tag that CI would not build (not myr-v<x>.<y>.<z> or an rc)", () => {
       const sb = sandbox({ onMain: false, tags: `${COMMIT}\trefs/tags/myr-v1.0.2-rc1\n${COMMIT}\trefs/tags/myr-vnext\n` });
       assertRefused(sb, ["--digest", NEW], /neither on origin\/main nor tagged myr-v/);
     });
@@ -705,7 +802,7 @@ describe("deploy.sh: only CI images from the registry", () => {
         assert.notEqual(code, 0);
         assert.match(out, /unknown argument/);
       }
-      assert.equal(calls(sb), "");
+      assert.equal(callsWithoutVersionStamp(sb), "");
     });
 
     it("--expect-version and --expect-commit do not skip it", () => {
@@ -970,6 +1067,26 @@ esac
 });
 
 describe("rollback.sh", () => {
+  // ROLLBACK-WITHOUT-BOARD (the 05.10 lesson): a rollback usually runs BECAUSE
+  // the board is down. Entering (and leaving) the maintenance window must not
+  // require the board API to answer: the image switch and the health check
+  // decide the outcome, not an admission gate nobody can serve.
+  it("rolls back when the board API is down (ROLLBACK-WITHOUT-BOARD)", () => {
+    const sb = sandbox();
+    assert.equal(run(sb, "deploy.sh", ["--digest", NEW]).code, 0);
+    // The board is down: its maintenance API does not answer at all.
+    fs.appendFileSync(sb.config, `MAINTENANCE_MODE=api\nMAINTENANCE_API_URL=http://127.0.0.1:3100/api/myrmidon/maintenance\n`);
+    fs.writeFileSync(path.join(sb.dir, "curl-post-fails"), "");
+    const { code, out } = run(sb, "rollback.sh", []);
+    assert.equal(code, 0, out);
+    assert.match(out, /WARNING: could not enter maintenance/);
+    assert.match(out, /continuing WITHOUT a maintenance window/);
+    // The rollback itself went through: the previous image is running and passed
+    // its health check.
+    assert.match(read(sb.override), new RegExp(`@${OLD}`));
+    assert.match(out, /rolled back to/);
+  });
+
   it("returns to the previous digest without restoring the database", () => {
     const sb = sandbox();
     assert.equal(run(sb, "deploy.sh", ["--digest", NEW]).code, 0);
@@ -1365,5 +1482,214 @@ describe("verify-health.sh", () => {
     );
     assert.notEqual(result.status, 0);
     assert.match(result.stderr, /token-file/);
+  });
+});
+
+// DB-TUNING (OPE-5009): the PostgreSQL settings of the audit (OPE-4270) reach
+// the server ONLY through the deploy — the declarative source is
+// scripts/myrmidon/deploy/db-tuning.sql, applied by deploy.sh (step 7d) via
+// DB_TUNE_COMMAND and verified pair-by-pair through DB_TUNE_SHOW_COMMAND;
+// rollback.sh returns the settings via DB_TUNE_ROLLBACK_COMMAND and checks
+// SHOW against the values recorded before the first managed deploy. A fake
+// `psql` in the sandbox plays the database: it logs every call, applies the
+// SQL to an "auto.conf" file, and answers SHOW from what is applied.
+describe("DB-TUNING: deploy applies and verifies the settings (OPE-5009)", () => {
+  // The fake psql: -f - reads the SQL on stdin (apply/reset), -tAc "SHOW x"
+  // answers the current value of x. Values land in $SANDBOX/pg-settings:
+  // a line per GUC, written by the apply and cleared by the reset.
+  const FAKE_PSQL = `#!/usr/bin/env bash
+echo "psql $*" >> "$SANDBOX/calls.log"
+SET_FILE="$SANDBOX/pg-settings"
+args=("$@")
+mode="" sql=""
+for ((i = 0; i < $#; i++)); do
+  case "\${args[i]}" in
+    -tAc|-c) mode="show"; sql="\${args[i+1]}"; break ;;
+    -f) mode="apply"
+      if [ "\${args[i+1]}" = "-" ]; then sql="$(cat)"; else sql="$(cat "\${args[i+1]}")"; fi
+      break ;;
+  esac
+done
+case "$mode" in
+  show)
+    name="\${sql#SHOW }"
+    grep -m1 "^$name=" "$SET_FILE" 2>/dev/null | sed "s/^$name=//" ;;
+  apply)
+    while read -r n v; do
+      [ -n "$n" ] || continue
+      grep -v "^$n=" "$SET_FILE" > "$SET_FILE.tmp" 2>/dev/null || true
+      printf '%s=%s\\n' "$n" "$v" >> "$SET_FILE.tmp"
+      mv "$SET_FILE.tmp" "$SET_FILE"
+    done < <(grep -E '^ALTER SYSTEM SET' <<<"$sql" | sed -E "s/^ALTER SYSTEM SET ([a-z_]+) = '?([^';]+)'?;\\$/\\1 \\2/")
+    # a RESET restores the compiled default: jit=on, work_mem=4MB,
+    # wal_compression=off, autovacuum_vacuum_scale_factor=0.2
+    while read -r n; do
+      [ -n "$n" ] || continue
+      grep -v "^$n=" "$SET_FILE" > "$SET_FILE.tmp" 2>/dev/null || true
+      case "$n" in
+        jit) echo "jit=on" ;;
+        work_mem) echo "work_mem=4MB" ;;
+        wal_compression) echo "wal_compression=off" ;;
+        autovacuum_vacuum_scale_factor) echo "autovacuum_vacuum_scale_factor=0.2" ;;
+      esac >> "$SET_FILE.tmp"
+      mv "$SET_FILE.tmp" "$SET_FILE"
+    done < <(grep -E '^ALTER SYSTEM RESET' <<<"$sql" | sed -E "s/^ALTER SYSTEM RESET ([a-z_]+);\\$/\\1/") ;;
+esac
+exit 0
+`;
+
+  // The psql form of the four DB_TUNE_* settings, pointing at the fake. The
+  // real production example uses `docker compose exec db psql` — the fake
+  // binary stands for both psql and the container.
+  function tuneConfig(expected) {
+    return [
+      `DB_TUNE_COMMAND='psql -U example -d example -v ON_ERROR_STOP=1 -f - < "$DB_TUNING_SQL"'`,
+      `DB_TUNE_SHOW_COMMAND='psql -U example -d example -tAc "SHOW $DB_TUNE_PARAM"'`,
+      `DB_TUNE_ROLLBACK_COMMAND='psql -U example -d example -v ON_ERROR_STOP=1 -f - < "$DB_TUNING_ROLLBACK_SQL"'`,
+      `DB_TUNE_EXPECTED='${expected}'`,
+      "",
+    ].join("\n");
+  }
+
+  function tuneSandbox(expected, { initialSettings = "jit=on\nwork_mem=4MB\nwal_compression=off\nautovacuum_vacuum_scale_factor=0.2\n" } = {}) {
+    const sb = sandbox();
+    fs.writeFileSync(path.join(sb.bin, "psql"), FAKE_PSQL, { mode: 0o755 });
+    fs.writeFileSync(path.join(sb.dir, "pg-settings"), initialSettings);
+    fs.appendFileSync(sb.config, tuneConfig(expected));
+    return sb;
+  }
+
+  it("step is skipped when DB_TUNE_COMMAND is empty (plain sandbox config)", () => {
+    const sb = sandbox();
+    const { code, out } = run(sb, "deploy.sh", ["--digest", NEW]);
+    assert.equal(code, 0, out);
+    assert.match(out, /7d\/8 apply\+verify DB settings/);
+    assert.match(out, /DB-TUNING: apply skipped \(DB_TUNE_COMMAND is empty/);
+    assert.doesNotMatch(calls(sb), /psql -U example -d example -v ON_ERROR_STOP=1 -f -/);
+  });
+
+  it("applies db-tuning.sql and a matching SHOW passes the deploy", () => {
+    // The SHOW spellings of the four GUC settings from the audit.
+    const sb = tuneSandbox("jit=off\nwork_mem=16MB\nwal_compression=lz4\nautovacuum_vacuum_scale_factor=0.05");
+    const { code, out } = run(sb, "deploy.sh", ["--digest", NEW]);
+    assert.equal(code, 0, out);
+    // the declarative source was piped to psql (DB_TUNING_SQL resolved to the
+    // repo file), and every parameter was verified through SHOW
+    assert.match(calls(sb), /psql .* -f -/);
+    assert.match(out, /DB-TUNING: deploy jit = off \(as expected\)/);
+    assert.match(out, /DB-TUNING: deploy work_mem = 16MB \(as expected\)/);
+    assert.match(out, /DB-TUNING: deploy wal_compression = lz4 \(as expected\)/);
+    assert.match(out, /DB-TUNING: deploy autovacuum_vacuum_scale_factor = 0\.05 \(as expected\)/);
+    // the previous values were recorded BEFORE the first apply
+    assert.equal(
+      read(path.join(sb.dir, "state/db-tuning-previous")),
+      "jit=on\nwork_mem=4MB\nwal_compression=off\nautovacuum_vacuum_scale_factor=0.2\n",
+    );
+  });
+
+  it("a SHOW mismatch fails the deploy, maintenance stays, settings roll back", () => {
+    const sb = tuneSandbox("jit=off\nwork_mem=16MB\nwal_compression=lz4\nautovacuum_vacuum_scale_factor=0.05");
+    // A SHOW command that lies about ONE parameter (wal_compression answers
+    // the old default although the apply really set lz4) — the mismatch case.
+    fs.appendFileSync(
+      sb.config,
+      'DB_TUNE_SHOW_COMMAND=\'if [ "$DB_TUNE_PARAM" = wal_compression ]; then echo off; else psql -U example -d example -tAc "SHOW $DB_TUNE_PARAM"; fi\'\n',
+    );
+    const { code, out } = run(sb, "deploy.sh", ["--digest", NEW]);
+    assert.notEqual(code, 0);
+    assert.match(out, /DEPLOY FAILED.*DB-TUNING SHOW check does not match/);
+    assert.match(out, /wal_compression = 'off', expected 'lz4' — MISMATCH/);
+    // the failure shape of the health step: maintenance stays on, the rollback
+    // command is printed, and the half-applied settings were returned
+    assert.match(out, /Maintenance stays on\./);
+    assert.match(out, /rollback\.sh --config/);
+    assert.match(out, /returning the database to the previous settings \(DB_TUNE_ROLLBACK_COMMAND\)/);
+    assert.match(calls(sb), /psql .* -f -/); // the rollback reset ran (DB_TUNE_ROLLBACK_COMMAND)
+    // the last maintenance line is an ENTER (maintenance on), not an exit
+    const m = read(sb.dir + "/maintenance.log").trim().split("\n");
+    assert.equal(m[m.length - 1], "enter");
+  });
+
+  it("rollback.sh applies DB_TUNE_ROLLBACK_COMMAND and verifies the previous values", () => {
+    const sb = tuneSandbox("jit=off\nwork_mem=16MB\nwal_compression=lz4\nautovacuum_vacuum_scale_factor=0.05");
+    // A managed deploy first: the settings go in and the previous values are
+    // recorded.
+    assert.equal(run(sb, "deploy.sh", ["--digest", NEW]).code, 0);
+    assert.match(read(path.join(sb.dir, "pg-settings")), /^jit=off$/m);
+    // The emergency rollback: image back + settings back, verified against
+    // what the server had before the first managed deploy.
+    const { code, out } = run(sb, "rollback.sh", []);
+    assert.equal(code, 0, out);
+    assert.match(out, /6\/7 rollback DB settings/);
+    assert.match(out, /DB-TUNING: rolling the settings back/);
+    assert.match(out, /DB-TUNING: rollback jit = on \(as expected\)/);
+    assert.match(out, /DB-TUNING: rollback work_mem = 4MB \(as expected\)/);
+    assert.match(out, /DB-TUNING: rollback wal_compression = off \(as expected\)/);
+    assert.match(out, /DB-TUNING: rollback autovacuum_vacuum_scale_factor = 0\.2 \(as expected\)/);
+    // the settings really returned
+    assert.match(read(path.join(sb.dir, "pg-settings")), /^jit=on$/m);
+    assert.match(read(path.join(sb.dir, "pg-settings")), /^wal_compression=off$/m);
+  });
+
+  it("empty DB_TUNE_ROLLBACK_COMMAND: the rollback logs a warning and keeps the settings", () => {
+    const sb = tuneSandbox("jit=off\nwork_mem=16MB\nwal_compression=lz4\nautovacuum_vacuum_scale_factor=0.05");
+    assert.equal(run(sb, "deploy.sh", ["--digest", NEW]).code, 0);
+    fs.appendFileSync(sb.config, "DB_TUNE_ROLLBACK_COMMAND=\n");
+    const { code, out } = run(sb, "rollback.sh", []);
+    assert.equal(code, 0, out);
+    assert.match(out, /WARNING: DB-TUNING: rollback skipped \(DB_TUNE_ROLLBACK_COMMAND is empty/);
+    // the database keeps the tuned settings
+    assert.match(read(path.join(sb.dir, "pg-settings")), /^jit=off$/m);
+  });
+
+  it("dry-run describes the DB-TUNING step both ways", () => {
+    const on = tuneSandbox("jit=off\nwork_mem=16MB");
+    const planned = run(on, "deploy.sh", ["--digest", NEW, "--dry-run"]);
+    assert.equal(planned.code, 0, planned.out);
+    assert.match(planned.out, /7d\. DB-TUNING: apply the PostgreSQL settings/);
+    const off = sandbox();
+    const skipped = run(off, "deploy.sh", ["--digest", NEW, "--dry-run"]);
+    assert.equal(skipped.code, 0, skipped.out);
+    assert.match(skipped.out, /7d\. DB-TUNING: skipped \(DB_TUNE_COMMAND is empty\)/);
+  });
+
+  it("the declarative source carries the settings of the audit and the table names of the schema", () => {
+    // A contract on the SQL itself: the values the audit asked for, the
+    // per-table options with the real drizzle table names, and a rollback that
+    // resets exactly what the apply sets.
+    const apply = fs.readFileSync(path.join(HERE, "db-tuning.sql"), "utf8");
+    const reset = fs.readFileSync(path.join(HERE, "db-tuning-rollback.sql"), "utf8");
+    for (const stmt of [
+      "ALTER SYSTEM SET jit = off;",
+      "ALTER SYSTEM SET work_mem = '16MB';",
+      "ALTER SYSTEM SET wal_compression = 'lz4';",
+      "ALTER SYSTEM SET autovacuum_vacuum_scale_factor = 0.05;",
+      "ALTER TABLE heartbeat_runs SET (autovacuum_vacuum_scale_factor = 0.02);",
+      "ALTER TABLE agent_wakeup_requests SET (autovacuum_vacuum_scale_factor = 0.02);",
+      "ALTER TABLE company_secrets SET (autovacuum_vacuum_scale_factor = 0.02);",
+      "ALTER TABLE issues SET (autovacuum_analyze_scale_factor = 0.02);",
+      "SELECT pg_reload_conf();",
+    ]) {
+      assert.ok(apply.includes(stmt), `db-tuning.sql must carry: ${stmt}`);
+    }
+    for (const stmt of [
+      "ALTER SYSTEM RESET jit;",
+      "ALTER SYSTEM RESET work_mem;",
+      "ALTER SYSTEM RESET wal_compression;",
+      "ALTER SYSTEM RESET autovacuum_vacuum_scale_factor;",
+      "ALTER TABLE heartbeat_runs RESET (autovacuum_vacuum_scale_factor);",
+      "ALTER TABLE agent_wakeup_requests RESET (autovacuum_vacuum_scale_factor);",
+      "ALTER TABLE company_secrets RESET (autovacuum_vacuum_scale_factor);",
+      "ALTER TABLE issues RESET (autovacuum_analyze_scale_factor);",
+      "SELECT pg_reload_conf();",
+    ]) {
+      assert.ok(reset.includes(stmt), `db-tuning-rollback.sql must carry: ${stmt}`);
+    }
+    // the table names must match the drizzle schema
+    const schemaDir = path.join(HERE, "..", "..", "..", "packages", "db", "src", "schema");
+    for (const table of ["heartbeat_runs", "agent_wakeup_requests", "company_secrets", "issues"]) {
+      assert.match(apply, new RegExp(`ALTER TABLE ${table} `));
+      assert.match(fs.readFileSync(path.join(schemaDir, `${table}.ts`), "utf8"), new RegExp(`pgTable\\(\\s*\\n?\\s*"${table}"`));
+    }
   });
 });

@@ -32,7 +32,9 @@ export const runIdentityContexts = pgTable(
     github: jsonb("github").$type<{
       status: "available" | "absent" | "unavailable";
       login?: string;
-      source?: "personal" | "dedicated";
+      // myrmidon(GITHUB-SHARED-IDENTITY): "app" — a self-hosted GitHub App token, issued per `repository`
+      source?: "personal" | "dedicated" | "app";
+      repository?: string;
       reason?: string;
       connectionId?: string;
       grantId?: string;

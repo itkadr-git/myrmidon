@@ -52,6 +52,7 @@ import {
   nativeRunResults,
   statusDecisions,
   workAssessments,
+  runContextPersistenceFields,
 } from "@paperclipai/db";
 import { parseObject, asBoolean, asNumber } from "../../adapters/utils.js";
 import { runningProcesses } from "../../adapters/index.js";
@@ -649,6 +650,25 @@ export function classifyAdapterFailureForRecovery(
   // An engine prerequisite cannot be repaired by asking the same unavailable
   // engine to retry. Use the existing configuration-blocker path.
   if (latestRun.errorCode === "adapter_engine_unavailable") {
+    return { kind: "configuration_incomplete" };
+  }
+  // myrmidon(PERF-DIET-I): a 403 "key not allowed to access model" from the
+  // LiteLLM gateway is a permanent key/model configuration problem, never a
+  // transient condition — retrying re-issues the same 403. The new adapter
+  // family marks it explicitly; the text match catches historical runs and
+  // other adapters whose 403 arrived without the field. This branch runs
+  // before the error-code gate because gateway failures persist the
+  // "hermes_gateway_run_failed" code, which the gate below excludes.
+  const permanentConfigResultJson = parseObject(latestRun.resultJson);
+  const permanentConfigErrorText = [
+    latestRun.error ?? "",
+    JSON.stringify(permanentConfigResultJson),
+  ].join("\n");
+  if (
+    readNonEmptyString(permanentConfigResultJson.errorFamily) ===
+      "permanent_config_error" ||
+    /key not allowed to access model/i.test(permanentConfigErrorText)
+  ) {
     return { kind: "configuration_incomplete" };
   }
   if (
@@ -2717,7 +2737,7 @@ export function recoveryService(
           scheduledRetryAt: retryAt,
           scheduledRetryAttempt: 1,
           scheduledRetryReason: "provider_quota_recovery",
-          contextSnapshot: withRecoveryContext(
+          ...runContextPersistenceFields(withRecoveryContext(
             {
               issueId: input.issue.id,
               taskId: input.issue.id,
@@ -2726,7 +2746,7 @@ export function recoveryService(
               providerQuotaRetryNotBefore: retryAt.toISOString(),
             },
             "normal_model",
-          ),
+          )),
           updatedAt: now,
         })
         .returning()
@@ -3292,7 +3312,7 @@ export function recoveryService(
                 scheduledRetryAt: retryAt,
                 scheduledRetryAttempt: input.attempt,
                 scheduledRetryReason: ISSUE_DISPOSITION_REPAIR_RETRY_REASON,
-                contextSnapshot: context,
+                ...runContextPersistenceFields(context),
                 updatedAt: now,
               })
               .returning()
@@ -5807,7 +5827,7 @@ export function recoveryService(
 
     const queryCandidates = (afterIssueId: string | null) => {
       const filters = [
-        eq(issues.status, "blocked"),
+        inArray(issues.status, ["blocked", "in_progress", "in_review"]),
         isNull(issues.conversationAgentId),
         visibleIssueCondition(),
         sql`${issues.assigneeAgentId} is not null`,
