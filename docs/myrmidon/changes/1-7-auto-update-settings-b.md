@@ -1,6 +1,6 @@
 ---
 divergence-section: Трек 6 — безопасность и модели
-settings-section: 1.7 — AUTO-UPDATE-SETTINGS part B: maintenance window, update mode, fleet canary
+settings-section: Track 6 — security and models
 ---
 
 ## changelog-en
@@ -58,6 +58,22 @@ instance admin) и `POST`/`DELETE /api/myrmidon/auto-update/approvals[/:tag]` �
 ## divergence
 
 | 1.7-AUTO-UPDATE-B | Окно обслуживания, режим обновления и канарейка парка как настройки экземпляра: политика `myrmidonAutoUpdate` (окно — дни/часы UTC, `waiting_window` вне окна вместо открытия окна; режим `manual`/`auto_release`, автостарт только по одобренному релизу; канарейка `canary.{enabled,sharePercent,minBots,maxBots,healthSettleSec}` — доля ботов первой, остальные по её здоровью, провал — терминальный `canary_failed`). Ключ переносится через вендорскую запись `general` тем же приёмом, что R5-A/R3, и читается на каждом тике — настройка меняется без перезапуска, источник значения виден | Вендор: `server/src/services/instance-settings.ts` (перенос ключа `myrmidonAutoUpdate` через `updateGeneral` — метка `myrmidon(1.7-AUTO-UPDATE-B)`). Наши файлы: `server/src/myrmidon/deploy-jobs/auto-update.ts` (чистая политика: окно, режим, канарейка, одобрения), `auto-update-store.ts` (чтение/запись ключа и перенос его через вендорскую запись), правки `deploy-jobs/{domain,settings,service}.ts` (статусы `waiting_window`/`fleet_canary`/`canary_failed`, поля работы, гейт окна и фаза канарейки в тике) | Пункт 1.7 AUTO-UPDATE-SETTINGS B: окно/режим/канарейка задаются в интерфейсе и исполняются планировщиком выката; выкат на бой по-прежнему только с одобрения человека, зависимость — UPD1 (автооткат) | `server/src/myrmidon/deploy-jobs/auto-update.myrmidon.test.ts` (окно: закрытое — откладывает, открытое — продолжает; канарейка: провал доли не пускает остальных, здоровье пускает, время наблюдения, отсутствие порта парка), `service.myrmidon.test.ts` | Никогда, наше поведение. Уходит вместе с политикой обновления: убрать статусы `waiting_window`/`fleet_canary`/`canary_failed`, модуль `auto-update*.ts` и метку в `instance-settings.ts` | (этот PR) |
+
+## settings-en-new
+
+<!-- after: Track 6 — security and models -->
+
+### 1.7 — AUTO-UPDATE-SETTINGS B (update window, mode, fleet canary)
+
+The instance update policy is configured in Instance → General and read on each deploy tick: maintenance window, manual or approved-release automation, and fleet canary thresholds. Values show their source (stored settings, forced environment override, or default); changes apply without a restart. See [the operator guide](guides/auto-update-window-canary.md).
+
+## settings-ru-new
+
+<!-- after: Трек 6 — безопасность и модели -->
+
+### 1.7 — AUTO-UPDATE-SETTINGS B (окно обновления, режим, канарейка парка)
+
+Политика обновления экземпляра настраивается в Instance → General и читается при каждом тике выката: окно обслуживания, ручной режим или автостарт одобренного релиза, параметры канарейки парка. У каждого значения показан источник (сохранённая настройка, принудительное переопределение окружением или умолчание); изменения действуют без перезапуска. См. [руководство оператора](guides/auto-update-window-canary.ru.md).
 
 ## settings-en
 
