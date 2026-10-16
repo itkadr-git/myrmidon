@@ -129,6 +129,7 @@ export function buildLowTrustSourceTrust(input: {
   issueId: string;
   runId?: string | null;
   agentId?: string | null;
+  promotionOwnerUserId?: string | null;
 }): SourceTrustMetadata {
   return {
     preset: LOW_TRUST_REVIEW_PRESET,
@@ -136,6 +137,7 @@ export function buildLowTrustSourceTrust(input: {
     sourceIssueId: input.issueId,
     sourceRunId: input.runId ?? null,
     sourceAgentId: input.agentId ?? null,
+    promotionOwnerUserId: input.promotionOwnerUserId ?? null,
   };
 }
 
@@ -145,6 +147,7 @@ export function buildPromotedSourceTrust(input: {
   sourceArtifactId: string;
   promotedByActorType: "agent" | "user" | "system";
   promotedByActorId: string;
+  promotionOwnerUserId?: string | null;
   promotedAt?: Date;
 }): SourceTrustMetadata {
   return {
@@ -158,8 +161,18 @@ export function buildPromotedSourceTrust(input: {
     },
     promotedByActorType: input.promotedByActorType,
     promotedByActorId: input.promotedByActorId,
+    promotionOwnerUserId: input.promotionOwnerUserId ?? null,
     promotedAt: (input.promotedAt ?? new Date()).toISOString(),
   };
+}
+
+export function buildLowTrustQuarantineNotice(input: {
+  promotionOwnerUserId: string | null;
+}): string {
+  if (!input.promotionOwnerUserId) {
+    throw new Error("Low-trust quarantine notice requires a promotion owner");
+  }
+  return `${LOW_TRUST_QUARANTINED_BODY}\n\nPromotion owner: ${input.promotionOwnerUserId}. An operator must review and promote quarantined output before it is trusted.`;
 }
 
 export async function resolveActorSourceTrustForIssue(input: {

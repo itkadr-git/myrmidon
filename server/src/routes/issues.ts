@@ -46,6 +46,7 @@ import {
 import type { Db } from "@paperclipai/db";
 import type { ChatChannelService } from "../services/chat-channels.js";
 import {
+  companies,
   activityLog,
   agentWakeupRequests,
   agents,
@@ -331,6 +332,7 @@ import { parseIssueExecutionWorkspaceSettings } from "../services/execution-work
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import {
   buildPromotedSourceTrust,
+  buildLowTrustQuarantineNotice,
   isLowTrustQuarantined,
   redactQuarantinedBodyForHigherTrust,
   resolveActorSourceTrustForIssue,
@@ -3948,10 +3950,23 @@ export function issueRoutes(
       companyId: string;
       projectId?: string | null;
       executionPolicy?: unknown;
+      responsibleUserId?: string | null;
     },
     actor: ReturnType<typeof getActorInfo>,
   ) {
-    return resolveActorSourceTrustForIssue({ db, issue, actor });
+    const sourceTrust = await resolveActorSourceTrustForIssue({ db, issue, actor });
+    if (!sourceTrust) return null;
+    if (sourceTrust.disposition !== "quarantined") return sourceTrust;
+    const [company] = await db
+      .select({ defaultResponsibleUserId: companies.defaultResponsibleUserId })
+      .from(companies)
+      .where(eq(companies.id, issue.companyId));
+    const promotionOwnerUserId =
+      issue.responsibleUserId ?? company?.defaultResponsibleUserId ?? null;
+    if (!promotionOwnerUserId) {
+      throw unprocessable("Low-trust output cannot be quarantined without a promotion owner");
+    }
+    return { ...sourceTrust, promotionOwnerUserId };
   }
 
   async function assertCrossIssueInfluenceWithinRunCap(
@@ -11382,7 +11397,6 @@ export function issueRoutes(
         });
         return;
       }
-
       const promotedAt = new Date();
       const promotionTrust = buildPromotedSourceTrust({
         sourceIssueId: issue.id,
@@ -11391,6 +11405,7 @@ export function issueRoutes(
         promotedByActorType: actor.actorType,
         promotedByActorId: actor.actorId,
         promotedAt,
+        promotionOwnerUserId: sourceTrust.promotionOwnerUserId,
       });
       const product = await db.transaction(async (tx) => {
         const markPromoted = {

@@ -2177,6 +2177,7 @@ describeEmbeddedPostgres(
         preset: LOW_TRUST_REVIEW_PRESET,
         disposition: "promoted",
         sourceIssueId: fixture.issues.assignedReview.id,
+        promotionOwnerUserId: "board-user",
         promotedFrom: {
           artifactKind: "work_product",
           artifactId: rawProduct!.id,
@@ -2205,6 +2206,7 @@ describeEmbeddedPostgres(
       expect(promotedSource?.sourceTrust).toMatchObject({
         preset: LOW_TRUST_REVIEW_PRESET,
         disposition: "promoted",
+        promotionOwnerUserId: "board-user",
         promotedFrom: {
           artifactKind: "work_product",
           artifactId: rawProduct!.id,

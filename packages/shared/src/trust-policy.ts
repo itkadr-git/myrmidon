@@ -82,4 +82,5 @@ export interface SourceTrustMetadata {
   promotedByActorType?: "agent" | "user" | "system" | null;
   promotedByActorId?: string | null;
   promotedAt?: string | null;
+  promotionOwnerUserId?: string | null;
 }
