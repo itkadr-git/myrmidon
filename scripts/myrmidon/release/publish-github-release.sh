@@ -112,6 +112,21 @@ else
 fi
 log "tag $tag -> commit $sha"
 
+# -------------------------------------- 1b. DB audit gate (final tags only) --
+# DB-AUDIT-GATE (the 08.10.2026 entry of the OPE-401 decision registry): a
+# final tag publishes only with the database audit report of its version in
+# the tagged commit. Runs before any CI wait: a missing report fails the
+# publish immediately, whatever the CI state is.
+db_audit_report="docs/myrmidon/releases/${base_version}-db-audit.md"
+if ((prerelease == 0)); then
+  if [[ ! -f "$db_audit_report" ]]; then
+    die "the database audit report $db_audit_report is missing in the tagged commit — NOT publishing the final tag $tag. The mandatory pre-release database audit (OPE-401 decision registry, entry of 08.10.2026) must be committed as $db_audit_report before the final tag is pushed; rc tags (myr-vX.Y.Z-rc.N) are not gated."
+  fi
+  log "gate: database audit report $db_audit_report present"
+else
+  log "gate: rc tag — the database audit report is required only for the final tag (checked: $db_audit_report)"
+fi
+
 # ------------------------------------------------------------- 2. CI gate ----
 # Completed-run verdict of one workflow for THIS tag: prints "missing"
 # when no completed run exists, else the unique conclusion, else "mixed"
