@@ -2551,6 +2551,10 @@ export function recoveryService(
   async function rerouteStrandedIssueToSharedQueue(input: {
     issue: typeof issues.$inferSelect;
     reason: string;
+    latestRun: LatestIssueRun;
+    previousStatus: StrandedPreviousStatus;
+    recoveryCause?: StrandedRecoveryCause;
+    successfulRunHandoffEvidence?: SuccessfulRunHandoffRecoveryEvidence | null;
   }) {
     const assignee = input.issue.assigneeAgentId
       ? await getAgent(input.issue.assigneeAgentId)
@@ -2579,6 +2583,15 @@ export function recoveryService(
       });
       return false;
     }
+    const action = await ensureSourceScopedStrandedRecoveryAction({
+      issue: input.issue,
+      latestRun: input.latestRun,
+      previousStatus: input.previousStatus,
+      recoveryCause: input.recoveryCause,
+      successfulRunHandoffEvidence: input.successfulRunHandoffEvidence,
+      rerouteToSharedQueue: true,
+    });
+    if (!action) return false;
     const issue = await issuesSvc.update(existingIssue.id, {
       status: "todo",
       assigneeAgentId: targetAssigneeId,
@@ -3901,6 +3914,10 @@ export function recoveryService(
       const rerouted = await rerouteStrandedIssueToSharedQueue({
         issue: input.issue,
         reason: input.latestRun?.errorCode ?? input.recoveryCause ?? "stranded_assigned_issue",
+        latestRun: input.latestRun,
+        previousStatus: input.previousStatus,
+        recoveryCause: input.recoveryCause,
+        successfulRunHandoffEvidence: input.successfulRunHandoffEvidence,
       });
       if (rerouted) return input.issue;
     }
