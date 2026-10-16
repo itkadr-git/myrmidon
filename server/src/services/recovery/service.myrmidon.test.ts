@@ -143,13 +143,11 @@ describeEmbeddedPostgres("reconcileStrandedAssignedIssues: infrastructure interr
   }, 30_000);
 
   it("returns terminal stranded work to the shared unassigned engineer queue", async () => {
-    const blockerId = randomUUID();
     const { companyId, agentId: managerId, issueId } = await seedStrandedIssue({
       errorCode: "adapter_failed",
       scheduledRetryAttempt: 0,
       createdAtOffsetMs: 0,
       scheduledRetryReason: "Recovery retry budget was exhausted",
-      blockerIssueId: blockerId,
     });
     const [manager] = await db.select().from(agents).where(eq(agents.id, managerId));
     expect(manager).toBeDefined();
