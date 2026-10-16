@@ -2551,12 +2551,53 @@ export function recoveryService(
     };
   }
 
+  async function rerouteStrandedIssueToSharedQueue(input: {
+    issue: typeof issues.$inferSelect;
+    reason: string;
+  }) {
+    const candidate = input.issue.assigneeAgentId
+      ? await evaluateAgentInvokabilityFromDb(db, input.issue.assigneeAgentId)
+      : null;
+    const targetAssigneeId = candidate?.invokable ? input.issue.assigneeAgentId : null;
+    const stillAssigned = targetAssigneeId !== null;
+    const [existingIssue] = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.id, input.issue.id), eq(issues.companyId, input.issue.companyId)))
+      .limit(1);
+    if (!existingIssue || existingIssue.status === "done" || existingIssue.status === "cancelled") return false;
+    if (existingIssue.blockedByIssueIds.length > 0) {
+      const blockers = await existingUnresolvedBlockerIssues(input.issue.companyId, input.issue.id);
+      if (blockers.length > 0) {
+        await issuesSvc.update(existingIssue.id, {
+          status: "blocked",
+          blockedByIssueIds: blockers.map((blocker) => blocker.id),
+        });
+        return false;
+      }
+    }
+    const issue = await issuesSvc.update(existingIssue.id, {
+      status: "todo",
+      assigneeAgentId: targetAssigneeId,
+      blockedByIssueIds: [],
+    });
+    if (!issue) return false;
+    await issuesSvc.addComment(
+      input.issue.id,
+      `Recovery rerouted this stranded issue ${stillAssigned ? "back to its available assignee" : "to the shared engineer queue"} (${input.reason}).`,
+      {},
+      { authorType: "system" },
+    );
+    return true;
+  }
+
   async function ensureSourceScopedStrandedRecoveryAction(input: {
     issue: typeof issues.$inferSelect;
     latestRun: LatestIssueRun;
     previousStatus: StrandedPreviousStatus;
     recoveryCause?: StrandedRecoveryCause;
     successfulRunHandoffEvidence?: SuccessfulRunHandoffRecoveryEvidence | null;
+    rerouteToSharedQueue?: boolean;
   }) {
     const recoveryCause = resolveStrandedRecoveryCause(
       input.latestRun,
@@ -3896,15 +3937,31 @@ export function recoveryService(
     notice?: StrandedRecoveryNoticeSeed | null;
     recoveryCause?: StrandedRecoveryCause;
     successfulRunHandoffEvidence?: SuccessfulRunHandoffRecoveryEvidence | null;
+    rerouteToSharedQueue?: boolean;
   }) {
-    if (isStrandedIssueRecoveryIssue(input.issue)) {
-      return escalateStrandedRecoveryIssueInPlace({
+    if (input.rerouteToSharedQueue) {
+      const rerouted = await rerouteStrandedIssueToSharedQueue({
         issue: input.issue,
-        previousStatus: input.previousStatus,
-        latestRun: input.latestRun,
+        reason: input.latestRun?.errorCode ?? input.recoveryCause ?? "stranded_assigned_issue",
       });
+      return rerouted ? input.issue : null;
     }
-
+    if (isStrandedIssueRecoveryIssue(input.issue)) {
+      const activeActions = await db
+        .select({ id: issueRecoveryActions.id })
+        .from(issueRecoveryActions)
+        .where(
+          and(
+            eq(issueRecoveryActions.issueId, input.issue.id),
+            eq(issueRecoveryActions.companyId, input.issue.companyId),
+            inArray(issueRecoveryActions.status, ["active", "escalated"]),
+            eq(issueRecoveryActions.sourceKind, "assigned_issue"),
+            eq(issueRecoveryActions.sourceId, input.issue.id),
+          ),
+        )
+        .limit(1);
+      if (activeActions.length > 0) return null;
+    }
     const recoveryCause = resolveStrandedRecoveryCause(
       input.latestRun,
       input.recoveryCause,
@@ -4306,7 +4363,9 @@ export function recoveryService(
       latestRun: input.latestRun,
       recoveryCause,
       successfulRunHandoffEvidence: input.successfulRunHandoffEvidence,
+      rerouteToSharedQueue: input.rerouteToSharedQueue,
     });
+    if (!recoveryAction) return input.issue;
     const isProviderQuotaWait =
       recoveryCause === "provider_quota" &&
       !recoveryAction.ownerAgentId &&
@@ -5561,10 +5620,11 @@ export function recoveryService(
               body:
                 productSaid("automatically retried dispatch for this assigned `todo` issue after a lost wake/run, ") +
                 "but it still has no live execution path. " +
-                "Moving it to `blocked` so it is visible for intervention.",
+                "Returning it to the shared engineer queue for intervention.",
               title: "No live execution path",
               tone: "danger",
             },
+            rerouteToSharedQueue: true,
           });
           if (updated) {
             result.escalated += 1;
@@ -5632,6 +5692,7 @@ export function recoveryService(
           latestRun,
           recoveryCause: SUCCESSFUL_RUN_MISSING_STATE_REASON,
           successfulRunHandoffEvidence: handoffEvidence,
+          rerouteToSharedQueue: true,
         });
         if (updated) {
           result.successfulRunHandoffEscalated += 1;
@@ -5679,7 +5740,8 @@ export function recoveryService(
               latestRun: successfulRun,
               comment:
                 productSaid("automatically retried continuation for this assigned `in_progress` issue and the retry ") +
-                "made progress, but it still has no live execution path. Moving it to `blocked` so it is visible for intervention.",
+                "made progress, but it still has no live execution path. Returning it to the shared engineer queue for intervention.",
+              rerouteToSharedQueue: true,
             });
             if (updated) {
               result.escalated += 1;
@@ -5781,11 +5843,11 @@ export function recoveryService(
               notice: {
                 body:
                   productSaid("automatically retried continuation for this assigned `in_progress` issue after its live ") +
-                  `execution disappeared, but it still has no live execution path${attemptCopy}. ` +
-                  "Moving it to `blocked` so it is visible for intervention.",
+                  `execution disappeared, but it still has no live execution path${attemptCopy}. Returning it to the shared engineer queue for intervention.`,
                 title: "No live execution path",
                 tone: "danger",
               },
+              rerouteToSharedQueue: true,
             });
             if (updated) {
               result.escalated += 1;
