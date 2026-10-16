@@ -16,7 +16,7 @@ export function ExternalSessionsPanel({
 }: {
   companyId: string;
   issueId: string;
-  issueIdentifier: string;
+  issueIdentifier: string | null;
   agentId: string;
   agentModel: string | null;
   canLaunch?: boolean;
@@ -101,7 +101,7 @@ export function ExternalSessionsPanel({
         </ul>
       ) : <p className="text-sm text-muted-foreground">No external sessions for this task yet.</p>}
       {logRun && <ExternalSessionLog companyId={companyId} run={logRun} onClose={() => setLogRun(null)} />}
-      <span className="sr-only">Sessions are attached to {issueIdentifier}.</span>
+      {issueIdentifier && <span className="sr-only">Sessions are attached to {issueIdentifier}.</span>}
     </section>
   );
 }
