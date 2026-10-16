@@ -36,6 +36,7 @@ describe("bypassesSettledHold", () => {
 
   it("only the exact value \"1\" turns the setting on", () => {
     process.env[ENV_KEY] = "true";
-    expect(bypassesSettledHold({ source: "on_demand", triggerDetail: "manual", requestedByActorType: "user" })).toBe(true);
+    // Unrecognized truthy strings do not enable the emergency override.
+    expect(bypassesSettledHold({ source: "on_demand", reason: "issue_commented", requestedByActorType: "user" })).toBe(true);
   });
 });
