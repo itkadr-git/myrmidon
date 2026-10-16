@@ -58,7 +58,7 @@ import supportedJournal from "../../../packages/db/src/migrations/meta/_journal.
     const copy = `COPY drizzle.__drizzle_migrations (id, hash, created_at) FROM stdin;\n279\t${hash}\t1789390281190\n\\.\n`;
     expect(() => verifyPgDumpMigrationChain(insert)).toThrow(/opaque SQL hashes/);
     expect(() => verifyPgDumpMigrationChain(insert.replace(hash, "deadbeef"))).toThrow(/opaque SQL hashes/);
-    expect(() => verifyPgDumpMigrationChain(`${insert}\\n${insert}`)).toThrow(/exactly one/);
+    expect(() => verifyPgDumpMigrationChain(`${insert}\n${insert}`)).toThrow(/exactly one/);
     expect(() => verifyPgDumpMigrationChain(copy)).toThrow(/opaque SQL hashes/);
     expect(() => verifyPgDumpMigrationChain(copy.replace(hash, "deadbeef"))).toThrow(/opaque SQL hashes/);
     expect(() => verifyPgDumpMigrationChain(copy.replace("279\\t", "278\\t"))).toThrow(/opaque SQL hashes/);
