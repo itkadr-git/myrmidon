@@ -38,6 +38,21 @@ import { projectSafeChatPublication } from "../../services/chat-publication-proj
 import { readTelegramNotifyDocument, mutateTelegramNotifyDocument } from "./store.js";
 import type { TelegramNotifySettings } from "./settings.js";
 
+/** Convert the route contract's opaque topic identifiers to Telegram numeric IDs. */
+function toJobSettings(settings: import("@paperclipai/shared").TelegramNotifySettings): TelegramNotifySettings {
+  const topicId = (value: string | null): number | null => {
+    if (value === null) return null;
+    const parsed = Number(value);
+    return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : null;
+  };
+  return {
+    ...settings,
+    digest: { ...settings.digest, topicId: topicId(settings.digest.topicId) },
+    errors: { ...settings.errors, topicId: topicId(settings.errors.topicId) },
+    escalations: { ...settings.escalations, topicId: topicId(settings.escalations.topicId) },
+  };
+}
+
 /** The sweep period: how often the job checks whether the digest time or the
  *  escalation threshold has arrived. One shared interval for both jobs. */
 export const TELEGRAM_NOTIFY_TICK_SEC_ENV = "MYRMIDON_TELEGRAM_NOTIFY_TICK_SEC";
@@ -474,7 +489,7 @@ export function telegramNotifyJobPorts(db: Db): TelegramNotifyJobPorts {
     async readSettings(companyId) {
       const { readTelegramNotifySettingsDocument } = await import("./settings-store.js");
       const document = await readTelegramNotifySettingsDocument(db, companyId);
-      return document.settings;
+      return toJobSettings(document.settings);
     },
     now: () => new Date(),
     log: logger,
