@@ -175,6 +175,18 @@ case "$*" in
       echo '202'
       exit 0
     fi
+    # maintenance-leaving retry mode: answer one transient 409, then apply.
+    if [ -e "$SANDBOX/apply-still-leaving-$id" ] && [ ! -e "$SANDBOX/apply-left-$id" ]; then
+      touch "$SANDBOX/apply-left-$id"
+      echo '{"error":"Maintenance for this scope is still leaving; retry shortly","code":"maintenance_scope_leaving"}'
+      echo '409'
+      exit 0
+    fi
+    if [ -e "$SANDBOX/apply-still-leaving-$id" ]; then
+      echo '{"outcome":{"kind":"applied_restart"}}'
+      echo '202'
+      exit 0
+    fi
     # busy-apply mode: the POST of a marked bot is refused with 409, the other
     # bots answer 202 + applyId and succeed (the agent went running between the
     # status read and the apply; the rollout must defer it, not fail it).
@@ -263,6 +275,7 @@ function sandbox({
   dockergateConfig,
   applyFails = false,
   applyDeferFirst = false,
+  applyStillLeaving = [],
   // 1.6.5 async apply: "succeeded" | "failed" | "running" (never finishes);
   // asyncStaleImage: the container keeps a stale image after "succeeded".
   applyAsync = null,
@@ -288,6 +301,7 @@ function sandbox({
   if (sshFails) fs.writeFileSync(path.join(dir, "ssh-fails"), "");
   if (applyFails) fs.writeFileSync(path.join(dir, "apply-fails"), "");
   if (applyDeferFirst) fs.writeFileSync(path.join(dir, "apply-defer-first"), "");
+  for (const id of applyStillLeaving) fs.writeFileSync(path.join(dir, `apply-still-leaving-${id}`), "");
   if (applyAsync) fs.writeFileSync(path.join(dir, "apply-async"), applyAsync);
   if (asyncStaleImage) fs.writeFileSync(path.join(dir, "apply-stale-image"), "");
   if (containerFacts) fs.writeFileSync(path.join(dir, "container-facts.json"), JSON.stringify(containerFacts));
@@ -449,6 +463,20 @@ const rolloutSummary = (sb) =>
 const dockergateConfig = (sb) => JSON.parse(read(sb.dgConfig));
 
 describe("bot-image-rollout.sh", () => {
+  it("retries the explicit maintenance-leaving 409 and switches the bot", () => {
+    const id = "77777777-7777-4777-8777-777777777777";
+    const sb = sandbox({
+      agents: [{ id, image: `${BOT}@${OLD_DEV}`, status: "idle" }],
+      applyStillLeaving: [id],
+    });
+    const { code, out } = run(sb, "bot-image-rollout.sh", ["--resolution", "tag", "--ref", VERSION]);
+    assert.equal(code, 0, out);
+    assert.match(out, /maintenance is still leaving; retrying apply/);
+    assert.equal((calls(sb).match(new RegExp(`agents/${id}/bot-container/apply`, "g")) ?? []).length, 2);
+    assert.equal(JSON.parse(read(path.join(sb.dir, "agents.json"))).find((a) => a.id === id).adapterConfig.container.image, `${BOT}@${HERMES}`);
+    assert.match(out, /1 switched, 0 failed/);
+  });
+
   it("resolves the three bot images of the release and allows them in dockergate", () => {
     const sb = sandbox();
     const { code, out } = run(sb, "bot-image-rollout.sh", ["--resolution", "tag", "--ref", VERSION]);

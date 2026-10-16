@@ -64,7 +64,21 @@ Myrmidon выполняет работу как команда агентов. �
   заново — доска не ждёт жёсткого таймаута, чтобы заметить зависший
   запуск.
 
-## Подробнее
+## Образ среды OMP
+
+Самостоятельный образ `agent-runtime-omp` запускает `omp` непосредственно на
+Bun 1.4.3 с закреплённой версией `@oh-my-pi/pi-coding-agent` 18.9.2. Он
+работает с uid/gid 1000, использует собственные `HOME` и каталоги
+XDG/сессий и не использует shim базового образа. При сборке выполняются
+smoke-check: точные версии Bun и OMP, наличие `omp` в `PATH`, команды
+`omp --help` и `omp models ls`; обращений к провайдеру модели нет.
+
+Цель bake `omp` рассчитана на `linux/amd64`. CI настроен на сборку,
+публикацию и подпись digest через cosign keyless OIDC. Перед использованием
+тега проверьте запуск workflow и digest в registry: конфигурация не
+подтверждает успешную публикацию. Инструкции сборки/запуска и scope CI — в
+[семействе образов среды агента](../../docker/agent-runtime/README.ru.md).
+
 
 - [Контейнер бота: раздел Container](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/bot-container-card.md)
 - [Память агента в карточке](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/agent-memory-card.md)

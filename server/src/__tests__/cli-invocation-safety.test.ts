@@ -866,7 +866,7 @@ describe("paperclipai CLI invocation safety", () => {
   });
 
   it("emits the setup form from the board skill", () => {
-    const source = read("skills/paperclip-board/SKILL.md");
+    const source = read("skills/myrmidon-board/SKILL.md");
     expect(source).toContain("npx paperclipai board setup");
     expect(source).not.toContain("pnpm paperclipai board setup");
     expect(source).not.toContain("pnpm exec paperclipai board setup");
@@ -901,7 +901,7 @@ describe("paperclipai CLI invocation safety", () => {
   });
 
   it("documents the safe form in the agent-facing skill", () => {
-    const skill = read("skills/paperclip/SKILL.md");
+    const skill = read("skills/myrmidon/SKILL.md");
     expect(skill).toContain("CLI safety");
     expect(skill).toContain("npx paperclipai");
     expect(skill).toContain("Do not use `pnpm paperclipai`");
