@@ -4407,6 +4407,22 @@ export function recoveryService(
       input.issue.companyId,
       input.issue.id,
     );
+    if (input.rerouteToSharedQueue && blockerIds.length === 0) {
+      const rerouted = await rerouteStrandedIssueToSharedQueue({
+        issue: input.issue,
+        reason: input.notice?.title ?? recoveryCause,
+        latestRun: input.latestRun,
+        previousStatus: input.previousStatus,
+        recoveryCause,
+        successfulRunHandoffEvidence: input.successfulRunHandoffEvidence,
+      });
+      if (rerouted) {
+        return (await db.query.issues.findFirst({
+          where: and(eq(issues.id, input.issue.id), eq(issues.companyId, input.issue.companyId)),
+        })) ?? null;
+      }
+      return input.issue;
+    }
     const updated = await issuesSvc.update(input.issue.id, {
       status: "blocked",
       blockedByIssueIds: blockerIds,
