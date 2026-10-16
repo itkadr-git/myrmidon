@@ -14,6 +14,10 @@ const FIELDS = [
   { key: "tool_timeout_slow_ms", label: "Slow tool timeout (ms)", kind: "number" },
 ] as const;
 
+const LIST_FIELDS = [
+  { key: "run_env_allow", label: "Allowed inherited environment names" },
+] as const;
+
 export function GuardrailsSettingsPanel() {
   const queryClient = useQueryClient();
   const query = useQuery({ queryKey: behaviorSettingsQueryKey, queryFn: behaviorSettingsApi.get });
@@ -40,12 +44,25 @@ export function GuardrailsSettingsPanel() {
           <p className="text-xs text-muted-foreground">Source: {source === "env" ? "server environment (override)" : source === "ui" ? "saved setting" : "default"}</p>
         </div>;
       })}
+      {LIST_FIELDS.map((field) => {
+        const value = settings[field.key];
+        const source = sources[field.key];
+        const current = drafts[field.key] ?? (Array.isArray(value) ? value.join(", ") : String(value ?? ""));
+        return <div key={field.key} className="space-y-1.5 md:col-span-2">
+          <Label htmlFor={`guardrail-${field.key}`}>{field.label}</Label>
+          <Input id={`guardrail-${field.key}`} value={current} placeholder="PATH, HOME, LANG" onChange={(event) => setDrafts((state) => ({ ...state, [field.key]: event.target.value }))} />
+          <p className="text-xs text-muted-foreground">Comma-separated names. Source: {source === "env" ? "server environment (override)" : source === "ui" ? "saved setting" : "default"}</p>
+        </div>;
+      })}
     </div>
     <Button disabled={mutation.isPending || Object.keys(drafts).length === 0} onClick={() => {
       const patch: Record<string, BehaviorSettingValue> = {};
       for (const field of FIELDS) {
         if (!(field.key in drafts)) continue;
         patch[field.key] = field.kind === "number" ? Number(drafts[field.key]) : drafts[field.key];
+      }
+      for (const field of LIST_FIELDS) {
+        if (field.key in drafts) patch[field.key] = drafts[field.key].split(",").map((item) => item.trim()).filter(Boolean);
       }
       mutation.mutate(patch);
     }}>{mutation.isPending ? "Saving..." : "Save guardrails"}</Button>
