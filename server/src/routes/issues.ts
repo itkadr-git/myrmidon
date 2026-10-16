@@ -3953,8 +3953,9 @@ export function issueRoutes(
       responsibleUserId?: string | null;
     },
     actor: ReturnType<typeof getActorInfo>,
+    requirePromotionOwner = false,
   ) {
-    const sourceTrust = await resolveActorSourceTrustForIssue({ db, issue, actor });
+    const sourceTrust = await resolveActorSourceTrustForIssue({ db, issue, actor, requirePromotionOwner });
     if (!sourceTrust || sourceTrust.disposition !== "quarantined") {
       return sourceTrust;
     }
@@ -3964,7 +3965,7 @@ export function issueRoutes(
       (actor.actorType === "user" ? actor.actorId : null) ??
       company?.defaultResponsibleUserId ??
       null;
-    if (!promotionOwnerUserId) {
+    if (requirePromotionOwner && !promotionOwnerUserId) {
       throw unprocessable("Low-trust output cannot be quarantined without a promotion owner");
     }
     return { ...sourceTrust, promotionOwnerUserId };
@@ -10567,7 +10568,7 @@ export function issueRoutes(
       }
 
       const actor = getActorInfo(req);
-      const sourceTrust = await sourceTrustForActorWrite(issue, actor);
+      const sourceTrust = await sourceTrustForActorWrite(issue, actor, true);
       const referenceSummaryBefore =
         await issueReferencesSvc.listIssueReferenceSummary(issue.id);
       const result = await documentsSvc.upsertIssueDocument({
@@ -11377,8 +11378,8 @@ export function issueRoutes(
       )
         return;
       const actor = getActorInfo(req);
-      const sourceTrust = await resolveActorSourceTrustForIssue({ db, issue, actor });
-      if (sourceTrust) {
+      const issueSourceTrust = await resolveActorSourceTrustForIssue({ db, issue, actor });
+      if (issueSourceTrust) {
         res.status(403).json({
           error: "Low-trust actors cannot promote quarantined output",
         });
@@ -11582,7 +11583,7 @@ export function issueRoutes(
           return;
         }
       }
-      const sourceTrust = await sourceTrustForActorWrite(issue, actor);
+      const sourceTrust = await sourceTrustForActorWrite(issue, actor, true);
       const product = await workProductsSvc.update(id, {
         ...patch,
         ...(sourceTrust ? { sourceTrust } : {}),

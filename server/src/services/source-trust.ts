@@ -5,7 +5,7 @@ import {
   LOW_TRUST_REVIEW_PRESET,
   type SourceTrustMetadata,
 } from "@paperclipai/shared";
-import { forbidden } from "../errors.js";
+import { forbidden, unprocessable } from "../errors.js";
 import { readObject } from "../lib/objects.js";
 import { resolveCoreTrustPreset } from "./trust-preset-resolver.js";
 
@@ -162,7 +162,7 @@ export function buildPromotedSourceTrust(input: {
     },
     promotedByActorType: input.promotedByActorType,
     promotedByActorId: input.promotedByActorId,
-    promotionOwnerUserId: input.promotionOwnerUserId ?? null,
+    promotionOwnerUserId: input.promotionOwnerUserId,
     promotedAt: (input.promotedAt ?? new Date()).toISOString(),
   };
 }
@@ -180,6 +180,7 @@ export async function resolveActorSourceTrustForIssue(input: {
   db: Db;
   issue: SourceTrustIssueContext;
   actor: SourceTrustActor;
+  requirePromotionOwner?: boolean;
 }): Promise<SourceTrustMetadata | null> {
   if (input.actor.actorType !== "agent" || !input.actor.agentId) return null;
 
@@ -258,6 +259,9 @@ export async function resolveActorSourceTrustForIssue(input: {
     throw forbidden(resolution.detail);
   }
   if (resolution.kind !== "low_trust_review") return null;
+  if (input.requirePromotionOwner && !input.issue.responsibleUserId) {
+    throw unprocessable("Low-trust output cannot be quarantined without a promotion owner");
+  }
   return buildLowTrustSourceTrust({
     issueId: input.issue.id,
     runId: input.actor.runId,

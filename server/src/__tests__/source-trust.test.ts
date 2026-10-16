@@ -86,6 +86,7 @@ describe("source trust quarantine helpers", () => {
       },
       promotedByActorType: "user",
       promotedByActorId: "board-user",
+      promotionOwnerUserId: null,
       promotedAt: "2026-06-03T12:00:00.000Z",
     });
     expect(isLowTrustQuarantined(promoted)).toBe(false);
