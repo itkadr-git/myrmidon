@@ -1,6 +1,6 @@
 ---
-divergence-section: 1.7 — AUTO-UPDATE-SETTINGS, часть B (окно обслуживания, режим, канарейка)
-settings-section: 1.7 — AUTO-UPDATE-SETTINGS part B: maintenance window, update mode, fleet canary
+divergence-section: Трек 6 — безопасность и модели
+settings-section: Track 6 — security and models
 ---
 
 ## changelog-en
