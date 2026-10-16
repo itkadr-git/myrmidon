@@ -7,11 +7,12 @@ import {
   DEFAULT_SWARM_CLAIM_SWEEP_INTERVAL_SEC,
   SWARM_CLAIM_QUEUE_ISSUE_STATUSES,
   SWARM_CLAIM_WAKE_REASON,
+  SWARM_MATCHED_WAKE_REASON,
   type SwarmClaimLease,
   type SwarmClaimSettings,
   type SwarmQueueCandidate,
 } from "@paperclipai/shared";
-import { agentWakeupRequests, agents, chatConversations, companies, heartbeatRuns, instanceSettings, issueClaims, issueLabels, issueWatchdogs, issues } from "@paperclipai/db";
+import { agentWakeupRequests, agents, chatConversations, companies, goals, heartbeatRuns, instanceSettings, issueClaims, issueLabels, issueThreadInteractions, issueWatchdogs, issues } from "@paperclipai/db";
 import { claimCovers, selectQueueForAgent } from "./domain.js";
 import { createSwarmClaimSweeper } from "./sweep.js";
 import type { SwarmClaimEnqueueWakeup } from "./service.js";
@@ -153,6 +154,9 @@ describe("myrmidon(1.6.1 SWARM-IDLE-WAKE) sweep pass", () => {
               if (table === instanceSettings) {
                 return { then: (resolve: (rows: unknown[]) => unknown) => Promise.resolve([{ id: "settings-1", general: {}, experimental: {}, createdAt: NOW, updatedAt: NOW }]).then(resolve) };
               }
+              if (table === goals) {
+                return { orderBy: () => ({ then: (resolve: (rows: unknown[]) => unknown) => Promise.resolve([]).then(resolve) }) };
+              }
               if (table === issueLabels) {
                 return { orderBy: () => Promise.resolve([]) };
               }
@@ -194,6 +198,9 @@ describe("myrmidon(1.6.1 SWARM-IDLE-WAKE) sweep pass", () => {
                 limit: (limit: number) => Promise.resolve([issue].slice(0, limit)),
                 groupBy: empty,
                 then: (resolve: (rows: unknown[]) => unknown) => Promise.resolve([issue]).then(resolve),
+                for: () => ({
+                  then: (resolve: (rows: unknown[]) => unknown) => Promise.resolve([issue]).then(resolve),
+                }),
               };
             },
             for: () => ({
@@ -217,12 +224,18 @@ describe("myrmidon(1.6.1 SWARM-IDLE-WAKE) sweep pass", () => {
           }]),
         }),
       }),
-      update: () => ({
+      update: (table?: unknown) => ({
         set: () => ({
           where: () => ({
-            returning: () => Promise.resolve([{ id: "released-issue" }]),
+            // Ownership changes expire pending connection intents; an empty
+            // expiry skips the follow-up delete (production: only when expired
+            // rows exist).
+            returning: () => Promise.resolve(table === issueThreadInteractions ? [] : [{ id: "released-issue" }]),
           }),
         }),
+      }),
+      delete: () => ({
+        where: () => Promise.resolve([]),
       }),
       transaction: async (fn: (tx: unknown) => Promise<unknown>) => fn(db),
     };
@@ -264,7 +277,9 @@ describe("myrmidon(1.6.1 SWARM-IDLE-WAKE) sweep pass", () => {
     expect(wakes).toHaveLength(1);
     expect(wakes[0]!.agentId).toBe("idle-agent");
     expect(wakes[0]!.opts).toMatchObject({
-      reason: SWARM_CLAIM_WAKE_REASON,
+      // The matcher's own wake (production: SWARM_MATCHED_*), relayed through
+      // the sweeper's enqueueWakeup port unchanged.
+      reason: SWARM_MATCHED_WAKE_REASON,
       payload: expect.objectContaining({ issueId: "released-issue" }),
       contextSnapshot: expect.objectContaining({ issueId: "released-issue" }),
     });
