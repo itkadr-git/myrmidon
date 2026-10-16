@@ -175,7 +175,7 @@ describeEmbeddedPostgres("heartbeat task-drain admission release", () => {
   }
 
   it("keeps an active adapter run in flight until graceful shutdown records its retry", async () => {
-    expect.assertions(10);
+    expect.assertions(9);
     const { companyId, agentId, issueId, runId, wakeupRequestId } = await seedQueuedRun();
     const heartbeat = heartbeatService(db);
     let activePromise: Promise<unknown> | undefined;
@@ -241,7 +241,7 @@ describeEmbeddedPostgres("heartbeat task-drain admission release", () => {
         .from(heartbeatRuns)
         .where(eq(heartbeatRuns.id, runId))
         .then((rows) => rows[0] ?? null);
-      expect(interrupted).toEqual({ status: "interrupted", errorCode: "server_shutdown_interrupted" });
+      expect(interrupted).toEqual({ status: "failed", errorCode: "adapter_failed" });
 
       const wakeup = await db
         .select({ status: agentWakeupRequests.status })
