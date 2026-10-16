@@ -15,7 +15,7 @@ cut over, not after.
 
 | Item | Supported |
 |---|---|
-| Source | Paperclip release `v2026.916.1` exactly. Compatibility is decided by the **hashes** of the applied migrations (278 entries, pinned in the CLI), not by version strings or the last migration number. |
+| Source | Paperclip release `v2026.916.1` exactly. Compatibility is decided by the **hashes** of the applied migrations (278 entries, derived from the migration files of the build), not by version strings or the last migration number. |
 | Older or newer source | Rejected before any target write, with the reason (`older-than-supported-release`, `newer-than-supported-release`, `hash-mismatch`). Upgrade or downgrade the source to the release first. No adapter exists. |
 | Source access | A PostgreSQL URL (read-only snapshot), or a **plain-format** `pg_dump` file. |
 | Secrets | `local_encrypted` secrets (`local_encrypted_v1` envelopes), in any JSON column. |
