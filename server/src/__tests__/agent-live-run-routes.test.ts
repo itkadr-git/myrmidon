@@ -38,9 +38,20 @@ const mockInstanceSettingsService = vi.hoisted(() => ({
 
 const mockRunSecretRedactionRegistry = vi.hoisted(() => ({
   redactForRuns: vi.fn(async (_companyId: string, values: unknown[]) => values),
-  redactForRun: vi.fn(
-    async (_companyId: string, _runId: string, value: unknown) => value,
-  ),
+  redactForRun: vi.fn(async (_companyId: string, _runId: string, value: unknown) => {
+    const redact = (item: unknown): unknown => {
+      if (Array.isArray(item)) return item.map(redact);
+      if (typeof item === "string") return item;
+      if (typeof item !== "object" || item === null) return item;
+      return Object.fromEntries(
+        Object.entries(item).map(([key, nested]) => [
+          key,
+          /api.?key|token|secret|credential/i.test(key) ? "[REDACTED]" : redact(nested),
+        ]),
+      );
+    };
+    return redact(value);
+  }),
 }));
 
 const mockProviderTraceStore = vi.hoisted(() => ({
