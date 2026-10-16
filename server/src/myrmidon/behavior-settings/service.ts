@@ -70,7 +70,7 @@ export interface BehaviorSettingsServiceDeps {
   /** Put the settings in force on the live system. */
   apply(settings: Record<string, unknown>): void;
   /** Ask for any necessary resweeps after settings change. */
-  scheduleResweep(): void;
+  scheduleResweep(changedKeys: readonly string[]): void;
   env?: Record<string, string | undefined>;
 }
 
@@ -173,7 +173,7 @@ export function behaviorSettingsService(
         // Only after the row and audit records are committed, apply only the
         // instance-scoped effective values to the process-wide consumer.
         deps.apply(resolveBehaviorSettings({ stored: next, env }).settings);
-        deps.scheduleResweep();
+        deps.scheduleResweep(changedKeys);
         logger.info(
           { settings: next, changedKeys, actorType: actor.actorType },
           "behavior settings updated without a restart",

@@ -6,18 +6,33 @@ import { logger } from "../../middleware/logger.js";
 import { behaviorSettingsRoutes } from "./routes.js";
 import { behaviorSettingsService, type BehaviorSettingsServiceDeps } from "./service.js";
 import { applyMyrmidonRunEnvAllow } from "@paperclipai/adapter-utils/myrmidon-run-env";
-import { applyLiveBehaviorSettings } from "./live.js";
 import { startBotContainers, stopBotContainers } from "../bot-containers/startup.js";
 import { startStackCheckSweep, stopStackCheckSweep } from "../stack-registry/index.js";
+import { applyLiveBehaviorSettings } from "./live.js";
 
 let runtimeDb: Db | null = null;
 
-function scheduleBehaviorSettingsResweep(): void {
+function scheduleBehaviorSettingsResweep(changedKeys: readonly string[]): void {
   if (!runtimeDb) return;
-  stopBotContainers();
-  startBotContainers(runtimeDb);
-  stopStackCheckSweep();
-  startStackCheckSweep(runtimeDb);
+  const needsBotResweep = changedKeys.some((key) =>
+    key === "bot_containers" ||
+    key === "bot_reconcile_interval_sec" ||
+    key === "bot_image_allowlist" ||
+    key === "bot_mount_sources" ||
+    key === "bot_container_github_env_allowlist" ||
+    key === "bot_yolo" ||
+    key === "bot_hindsight_allowed_banks" ||
+    key === "bot_mcp_servers",
+  );
+  const needsStackResweep = changedKeys.includes("stack_check_interval_sec");
+  if (needsBotResweep) {
+    stopBotContainers();
+    startBotContainers(runtimeDb);
+  }
+  if (needsStackResweep) {
+    stopStackCheckSweep();
+    startStackCheckSweep(runtimeDb);
+  }
 }
 
 export {

@@ -81,7 +81,7 @@ function harness(options: HarnessOptions = {}) {
       calls.push("audit");
     },
     apply: (settings) => calls.push(`apply:${JSON.stringify(settings)}`),
-    scheduleResweep: () => calls.push("resweep"),
+    scheduleResweep: (changedKeys) => calls.push(`resweep:${changedKeys.join(",")}`),
     env: options.env ?? ENV_ONLY,
   };
 
@@ -261,7 +261,7 @@ describe("myrmidon(1.7) behavior settings: a change reaches the live system", ()
     // never run ahead of what the log says it is.
     expect(h.calls).toContain("write");
     expect(h.calls).toContain(`apply:${JSON.stringify({ debug_mode: true })}`);
-    expect(h.calls).toContain("resweep");
+    expect(h.calls).toContain("resweep:debug_mode");
   });
 
   it("applies env override to the live consumer after PATCH", async () => {
