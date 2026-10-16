@@ -3,7 +3,7 @@ import path from "node:path";
 import { and, count, eq, sql as drizzleSql } from "drizzle-orm";
 import { companySecrets, corpusChunks, corpusDatasets, corpusDocuments, corpusParseJobs, type Db } from "@paperclipai/db";
 import { createHttpDocumentParser, createPostgresSearchIndex, LocalBlobStore, PostgresCorpusStore, PostgresWorkQueue } from "@paperclipai/corpus";
-import type { SqlExecutor } from "../../../packages/corpus/src/search/hybrid-search-index.js";
+import type { SqlExecutor } from "@paperclipai/corpus";
 import type { CorpusSettings } from "@paperclipai/shared";
 import type { CorpusPortContext } from "./ports.js";
 import type { CorpusMcpPortProvider } from "./contract.js";
