@@ -25,9 +25,10 @@ Blanket pruning (such as `systemd-tmpfiles -d /tmp`) is **prohibited** because l
 
 `myrmidon-tmp-janitor.sh` runs periodically on the host to prune orphaned temporary entries:
 - **Strict Whitelist**: Only matches items matching `chr-*`, `native-*`, `mdep-*`, and `myrmidon-install-test-*`. All other files and directories are ignored.
-- **TTL Enforcement**: Only deletes items whose modification time (`mtime`) is older than the configured TTL (default: 60 minutes).
+- **TTL Enforcement**: Only deletes items whose modification time (`mtime`) is older than the configured TTL (positive integer in minutes, default: 60). Invalid or non-numeric/zero TTL values fail validation immediately.
 - **Live Profile Protection**: Specifically excludes `claude-*` (such as `claude-1002`).
-- **Process Activity Check**: Uses `fuser` or `lsof` (if installed) to ensure that no active processes hold open file descriptors inside a candidate entry before removal.
+- **Recursive Process Activity Check**: Uses `lsof` with recursive inspection (`lsof -w +D <path>`) as the guaranteed tool, with fallback to Linux `/proc` filesystem traversal (`/proc/[0-9]*/fd/*`, `/proc/[0-9]*/cwd`, `/proc/[0-9]*/exe`).
+- **Fail-Closed Safety**: If process activity cannot be verified safely or no inspection tool is available, the janitor safely fails closed (preserves candidate entries and logs a warning instead of deleting).
 
 ### Usage
 
@@ -35,7 +36,7 @@ Blanket pruning (such as `systemd-tmpfiles -d /tmp`) is **prohibited** because l
 # Clean /tmp with default 60-minute TTL
 /opt/myrmidon/scripts/myrmidon/janitor/myrmidon-tmp-janitor.sh
 
-# Custom target and TTL
+# Custom target and TTL (must be positive integer)
 /opt/myrmidon/scripts/myrmidon/janitor/myrmidon-tmp-janitor.sh --target /tmp --ttl-minutes 120
 
 # Dry-run mode (inspect candidates without deleting)

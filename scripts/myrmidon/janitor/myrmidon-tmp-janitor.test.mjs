@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -154,5 +154,95 @@ describe("tmp-janitor", () => {
 
     assert.ok(fs.existsSync(oldChr), "dry-run must not delete candidate");
     assert.match(res.stdout, /\[DRY-RUN\] Would remove: .*chr-dry-profile/);
+  });
+
+  it("rejects non-numeric, zero, or negative --ttl-minutes", () => {
+    const sandbox = makeTestSandbox();
+    for (const invalidTtl of ["0", "-10", "abc", "00"]) {
+      const res = runJanitor(["--target", sandbox, "--ttl-minutes", invalidTtl]);
+      assert.notEqual(res.status, 0, `Expected error status for TTL ${invalidTtl}`);
+      assert.match(res.stderr || res.stdout, /Invalid TTL_MINUTES/);
+    }
+  });
+
+  it("recursively detects open files in subdirectories and preserves active candidate", async () => {
+    const sandbox = makeTestSandbox();
+    const activeDir = path.join(sandbox, "chr-active-profile");
+    const subDir = path.join(activeDir, "Default", "Storage");
+    fs.mkdirSync(subDir, { recursive: true });
+    const lockFile = path.join(subDir, "session.lock");
+    fs.writeFileSync(lockFile, "lock");
+    setOldMtime(activeDir, 120);
+
+    // Keep lockFile open in a child process
+    const holder = spawn(
+      process.execPath,
+      ["-e", "const fs = require('fs'); const fd = fs.openSync(process.argv[1], 'r'); setInterval(() => {}, 1000);", lockFile],
+      { stdio: "ignore" }
+    );
+
+    try {
+      // Give child process time to open file
+      await new Promise((resolve) => setTimeout(resolve, 300));
+
+      const resActive = runJanitor(["--target", sandbox, "--ttl-minutes", "60"]);
+      assert.equal(resActive.status, 0, resActive.stderr);
+      assert.ok(fs.existsSync(activeDir), "active profile with open file in subfolder must not be deleted");
+      assert.match(resActive.stdout, /skipped active: 1/);
+    } finally {
+      holder.kill();
+      // Wait for process to exit and release file
+      await new Promise((resolve) => setTimeout(resolve, 300));
+    }
+
+    const resClean = runJanitor(["--target", sandbox, "--ttl-minutes", "60"]);
+    assert.equal(resClean.status, 0, resClean.stderr);
+    assert.ok(!fs.existsSync(activeDir), "profile should be cleaned up after process terminates");
+    assert.match(resClean.stdout, /cleaned: 1/);
+  });
+
+  it("detects active process with cwd inside candidate directory and preserves it", async () => {
+    const sandbox = makeTestSandbox();
+    const activeDir = path.join(sandbox, "native-active-session");
+    const subDir = path.join(activeDir, "workspace");
+    fs.mkdirSync(subDir, { recursive: true });
+    setOldMtime(activeDir, 120);
+
+    const holder = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000);"], {
+      cwd: subDir,
+      stdio: "ignore",
+    });
+
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 300));
+
+      const resActive = runJanitor(["--target", sandbox, "--ttl-minutes", "60"]);
+      assert.equal(resActive.status, 0, resActive.stderr);
+      assert.ok(fs.existsSync(activeDir), "session directory with active process cwd must not be deleted");
+      assert.match(resActive.stdout, /skipped active: 1/);
+    } finally {
+      holder.kill();
+      await new Promise((resolve) => setTimeout(resolve, 300));
+    }
+
+    const resClean = runJanitor(["--target", sandbox, "--ttl-minutes", "60"]);
+    assert.equal(resClean.status, 0, resClean.stderr);
+    assert.ok(!fs.existsSync(activeDir), "session directory should be cleaned up after process terminates");
+    assert.match(resClean.stdout, /cleaned: 1/);
+  });
+
+  it("fails closed when process inspection is unavailable or fails", () => {
+    const sandbox = makeTestSandbox();
+    const candidate = path.join(sandbox, "chr-failclosed-profile");
+    fs.mkdirSync(candidate);
+    setOldMtime(candidate, 120);
+
+    const res = runJanitor(["--target", sandbox, "--ttl-minutes", "60"], {
+      MYRMIDON_JANITOR_FORCE_INSPECTION_UNAVAILABLE: "1",
+    });
+    assert.equal(res.status, 0, res.stderr);
+    assert.ok(fs.existsSync(candidate), "candidate must be preserved when process inspection is unavailable (fail-closed)");
+    assert.match(res.stdout, /skipped active: 1/);
+    assert.match(res.stdout, /cleaned: 0/);
   });
 });

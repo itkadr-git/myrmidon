@@ -11,7 +11,8 @@
 #
 # Protected:
 #   - claude-* (Live profiles such as claude-1002)
-#   - Any directory/file with active open file descriptors (checked via fuser/lsof)
+#   - Any directory/file with active open file descriptors (checked recursively via lsof /proc)
+#   - Fail-closed: If process activity cannot be verified, candidates are preserved.
 #   - Non-whitelisted items are never touched.
 
 set -euo pipefail
@@ -33,7 +34,7 @@ Usage: myrmidon-tmp-janitor.sh [OPTIONS]
 
 Options:
   --target DIR          Directory to clean (default: /tmp)
-  --ttl-minutes MIN     TTL in minutes; older entries are pruned (default: 60)
+  --ttl-minutes MIN     TTL in minutes; older entries are pruned (must be positive integer, default: 60)
   --dry-run             Log candidate actions without deleting
   -h, --help            Show this help message
 EOF
@@ -65,6 +66,11 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+if [[ ! "$TTL_MINUTES" =~ ^[1-9][0-9]*$ ]]; then
+  log "ERROR" "Invalid TTL_MINUTES: '$TTL_MINUTES'. Must be a positive non-zero integer."
+  exit 1
+fi
+
 if [[ ! -d "$TARGET_DIR" ]]; then
   log "ERROR" "Target directory does not exist: $TARGET_DIR"
   exit 1
@@ -91,16 +97,83 @@ is_whitelisted() {
 
 is_in_use() {
   local path="$1"
-  if command -v fuser >/dev/null 2>&1; then
-    if fuser -s "$path" >/dev/null 2>&1; then
-      return 0
+
+  # Testing hook to simulate missing inspection capability
+  if [[ "${MYRMIDON_JANITOR_FORCE_INSPECTION_UNAVAILABLE:-0}" == "1" ]]; then
+    log "WARN" "Process inspection unavailable (forced); failing closed on $path"
+    return 0
+  fi
+
+  # Primary guaranteed tool: lsof with recursive directory inspection (+D)
+  if command -v lsof >/dev/null 2>&1; then
+    local lsof_code=0
+    if [[ -d "$path" ]]; then
+      lsof -w +D "$path" >/dev/null 2>&1 || lsof_code=$?
+    else
+      lsof -w "$path" >/dev/null 2>&1 || lsof_code=$?
     fi
-  elif command -v lsof >/dev/null 2>&1; then
-    if lsof +D "$path" >/dev/null 2>&1; then
+    if [[ $lsof_code -eq 0 ]]; then
+      return 0 # Open file found: in use
+    elif [[ $lsof_code -eq 1 ]]; then
+      return 1 # Verified not in use
+    else
+      # Unexpected error from lsof (e.g. status > 1): fail closed
+      log "WARN" "lsof returned code $lsof_code on $path; failing closed"
       return 0
     fi
   fi
-  return 1
+
+  # Native Linux fallback: inspect /proc for open file descriptors, cwd, and exe
+  if [[ -d /proc && -d "/proc/$$" ]]; then
+    local canon_target
+    canon_target="$(readlink -f "$path" 2>/dev/null || echo "$path")"
+
+    local pids_inspected=0
+    for proc_dir in /proc/[0-9]*; do
+      [[ -d "$proc_dir" ]] || continue
+      pids_inspected=1
+
+      # Check process current working directory
+      local cwd_link
+      cwd_link="$(readlink "$proc_dir/cwd" 2>/dev/null || true)"
+      if [[ -n "$cwd_link" ]]; then
+        if [[ "$cwd_link" == "$canon_target" || "$cwd_link" == "$canon_target"/* ]]; then
+          return 0
+        fi
+      fi
+
+      # Check process executable
+      local exe_link
+      exe_link="$(readlink "$proc_dir/exe" 2>/dev/null || true)"
+      if [[ -n "$exe_link" ]]; then
+        if [[ "$exe_link" == "$canon_target" || "$exe_link" == "$canon_target"/* ]]; then
+          return 0
+        fi
+      fi
+
+      # Check process open file descriptors
+      if [[ -d "$proc_dir/fd" ]]; then
+        for fd in "$proc_dir"/fd/*; do
+          [[ -e "$fd" || -L "$fd" ]] || continue
+          local fd_link
+          fd_link="$(readlink "$fd" 2>/dev/null || true)"
+          if [[ -n "$fd_link" ]]; then
+            if [[ "$fd_link" == "$canon_target" || "$fd_link" == "$canon_target"/* ]]; then
+              return 0
+            fi
+          fi
+        done
+      fi
+    done
+
+    if [[ $pids_inspected -eq 1 ]]; then
+      return 1 # Verified no active process holds files open
+    fi
+  fi
+
+  # Fail-closed: No reliable inspection tool available
+  log "WARN" "No reliable process inspection tool (lsof or /proc) available; failing closed on $path"
+  return 0
 }
 
 is_older_than_ttl() {
