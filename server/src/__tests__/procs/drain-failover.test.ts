@@ -39,7 +39,7 @@ import net from "node:net";
 import { fork } from "node:child_process";
 import { pathToFileURL } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { createDb, boardProcesses } from "@paperclipai/db";
+import { createDb, boardProcesses, authUsers, instanceUserRoles } from "@paperclipai/db";
 import { eq } from "drizzle-orm";
 import { DEFAULT_PROCESSES_SETTINGS, type ProcessesSettings } from "@paperclipai/shared";
 import {
@@ -231,6 +231,30 @@ describeProcs("drain and failover e2e: supervisor in-process, two api children (
     }
     db = createDb(connectionString);
 
+    // Pre-seed the local trusted principal so multiple api children starting
+    // concurrently at split=2 do not race on ensureLocalTrustedBoardPrincipal
+    // (duplicate key on "user_pkey").
+    const now = new Date();
+    await db
+      .insert(authUsers)
+      .values({
+        id: "local-board",
+        name: "Board",
+        email: "local@paperclip.local",
+        emailVerified: true,
+        image: null,
+        createdAt: now,
+        updatedAt: now,
+      })
+      .onConflictDoNothing();
+    await db
+      .insert(instanceUserRoles)
+      .values({
+        userId: "local-board",
+        role: "instance_admin",
+      })
+      .onConflictDoNothing();
+
     // The api children bind 0.0.0.0:3100 with reusePort — the constant is not
     // configurable (PROCS-1.1), so a host that already serves something on
     // 3100 (a developer's own board) cannot run this suite; fail fast with a
@@ -341,6 +365,13 @@ describeProcs("drain and failover e2e: supervisor in-process, two api children (
     );
     expect(supervisor!.state()).toBe("split");
 
+    const initialSlots = supervisor!.children();
+    expect(initialSlots.length, "two initial slots").toBe(2);
+    const initialPids = initialSlots
+      .map((s) => s.pid)
+      .filter((pid): pid is number => typeof pid === "number" && pid > 0);
+    expect(initialPids.length, "two initial running child pids").toBe(2);
+
     // Heartbeat load over the shared port; mid-load, shrink the split to one
     // api child. The supervisor sends the IPC drain (30 s grace, §7.2) to one
     // child; the other keeps serving.
@@ -377,8 +408,8 @@ describeProcs("drain and failover e2e: supervisor in-process, two api children (
     expect(liveAfterDrain.length, "one live api child after the drain").toBe(1);
     expect(liveAfterDrain[0]!.pid, "the surviving child is still its own process").toBeGreaterThan(0);
     survivorPid = liveAfterDrain[0]!.pid!;
-    drainedPid = forkedPids.find((pid) => pid !== survivorPid)!;
-    expect(drainedPid, "the drained child's pid is known from the fork log").toBeGreaterThan(0);
+    drainedPid = initialPids.find((pid) => pid !== survivorPid)!;
+    expect(drainedPid, "the drained child's pid is known from initial slots").toBeGreaterThan(0);
 
     // Now the port belongs to the survivor alone: a fresh drain window with
     // zero loss — the surviving child serves every heartbeat.
@@ -456,7 +487,12 @@ describeProcs("drain and failover e2e: supervisor in-process, two api children (
       { timeoutMs: SPLIT_READY_TIMEOUT_MS, label: "killed slot restarted with backoff and ready (attempt >= 1)" },
     );
     expect(forkedPids.length, "a fresh child was forked for the restart").toBe(forkedBeforeKill + 1);
-    const freshPid = forkedPids[forkedPids.length - 1]!;
+    const slotsAfter = supervisor!.children();
+    const restartedSlot = slotsAfter.find(
+      (slot) => slot.pid !== victimPid && slot.pid !== survivorPid,
+    )!;
+    expect(restartedSlot?.pid, "restarted child pid is known").toBeGreaterThan(0);
+    const freshPid = restartedSlot.pid!;
     expect(freshPid).not.toBe(victimPid);
     expect(freshPid).not.toBe(survivorPid);
 
