@@ -51,7 +51,7 @@ describeEmbeddedPostgres(
       ReturnType<typeof startEmbeddedPostgresTestDatabase>
     > | null = null;
     const previousKeyFile = process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE;
-    const previousPublicUrl = process.env.MYRMIDON_AUTH_PUBLIC_BASE_URL;
+    const previousPublicUrl = process.env.PAPERCLIP_AUTH_PUBLIC_BASE_URL;
     const secretsTmpDir = path.join(
       os.tmpdir(),
       `paperclip-myrmidon-u2-owner-delivery-${randomUUID()}`,
@@ -59,7 +59,7 @@ describeEmbeddedPostgres(
 
     beforeAll(async () => {
       mkdirSync(secretsTmpDir, { recursive: true });
-      process.env.MYRMIDON_AUTH_PUBLIC_BASE_URL = "https://paperclip.local";
+      process.env.PAPERCLIP_AUTH_PUBLIC_BASE_URL = "https://paperclip.local";
       process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE = path.join(
         secretsTmpDir,
         "master.key",
@@ -79,8 +79,8 @@ describeEmbeddedPostgres(
     afterAll(async () => {
       await tempDb?.cleanup();
       if (previousPublicUrl === undefined)
-        delete process.env.MYRMIDON_AUTH_PUBLIC_BASE_URL;
-      else process.env.MYRMIDON_AUTH_PUBLIC_BASE_URL = previousPublicUrl;
+        delete process.env.PAPERCLIP_AUTH_PUBLIC_BASE_URL;
+      else process.env.PAPERCLIP_AUTH_PUBLIC_BASE_URL = previousPublicUrl;
       if (previousKeyFile === undefined)
         delete process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE;
       else process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE = previousKeyFile;
