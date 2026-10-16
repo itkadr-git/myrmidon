@@ -821,12 +821,24 @@ fi
 
 # These checks may touch mounts, probe reflink/shared-object support, or wait
 # on remote SSH/rsync. Run them after the gateway is live and cap each probe.
+run_bounded_diagnostic() {
+  local check="$1" pid watchdog rc=0
+  ( "$check" ) &
+  pid=$!
+  ( sleep 120; kill "$pid" 2>/dev/null || true ) &
+  watchdog=$!
+  wait "$pid" || rc=$?
+  kill "$watchdog" 2>/dev/null || true
+  wait "$watchdog" 2>/dev/null || true
+  return "$rc"
+}
+
 run_startup_diagnostics() {
-  if [ "${MYRMIDON_REFLINK_CHECK:-1}" != "0" ] && type -t reflink_self_check 2>/dev/null | grep -q '^function$'; then timeout 120 reflink_self_check || log "WARNING: reflink self-check timed out or failed"; fi
-  if [ "${MYRMIDON_UV_CHECK:-1}" != "0" ] && type -t uv_cache_self_check 2>/dev/null | grep -q '^function$'; then timeout 120 uv_cache_self_check || log "WARNING: uv cache self-check timed out or failed"; fi
-  if [ "${MYRMIDON_GIT_OBJECTS_CHECK:-1}" != "0" ] && type -t git_objects_self_check 2>/dev/null | grep -q '^function$'; then timeout 120 git_objects_self_check || log "WARNING: shared-objects self-check timed out or failed"; fi
-  if [ "${MYRMIDON_DEVBUILD_CHECK:-1}" != "0" ] && command -v devbuild_self_check >/dev/null 2>&1 && [ -n "${DEVBUILD_BOT_NAME:-}" ] && [ -n "${DEVBUILD_HOST:-}" ]; then
-    timeout 120 devbuild_self_check || log "WARNING: devbuild self-check timed out or failed"
+  if [ "${MYRMIDON_REFLINK_CHECK:-1}" != "0" ]; then run_bounded_diagnostic reflink_self_check || log "WARNING: reflink self-check timed out or failed"; fi
+  if [ "${MYRMIDON_UV_CHECK:-1}" != "0" ]; then run_bounded_diagnostic uv_cache_self_check || log "WARNING: uv cache self-check timed out or failed"; fi
+  if [ "${MYRMIDON_GIT_OBJECTS_CHECK:-1}" != "0" ]; then run_bounded_diagnostic git_objects_self_check || log "WARNING: shared-objects self-check timed out or failed"; fi
+  if [ "${MYRMIDON_DEVBUILD_CHECK:-1}" != "0" ] && [ -n "${DEVBUILD_BOT_NAME:-}" ] && [ -n "${DEVBUILD_HOST:-}" ]; then
+    run_bounded_diagnostic devbuild_self_check || log "WARNING: devbuild self-check timed out or failed"
   fi
 }
 

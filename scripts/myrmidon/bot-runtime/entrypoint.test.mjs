@@ -43,12 +43,9 @@ describe("docker/bot-runtime/entrypoint.sh", () => {
     const diagnostics = source.indexOf("run_startup_diagnostics &", launch);
     assert.ok(launch >= 0, "gateway must launch as a background child");
     assert.ok(diagnostics > launch, "diagnostics must start after the gateway launch");
-    assert.match(source, /timeout 120 reflink_self_check/);
-    assert.match(source, /timeout 120 uv_cache_self_check/);
-    assert.match(source, /timeout 120 git_objects_self_check/);
-    assert.match(source, /type -t reflink_self_check/);
-    assert.match(source, /type -t uv_cache_self_check/);
-    assert.match(source, /type -t git_objects_self_check/);
+    assert.match(source, /run_bounded_diagnostic reflink_self_check/);
+    assert.match(source, /run_bounded_diagnostic uv_cache_self_check/);
+    assert.match(source, /run_bounded_diagnostic git_objects_self_check/);
     assert.match(source, /DEVBUILD_BOT_NAME:-.*DEVBUILD_HOST:-.*devbuild/s);
   });
 
