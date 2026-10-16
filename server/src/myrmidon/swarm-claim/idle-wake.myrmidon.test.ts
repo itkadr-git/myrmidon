@@ -83,17 +83,16 @@ describe("myrmidon(1.6.1 SWARM-IDLE-WAKE) sweep pass", () => {
         from: () => ({
           innerJoin: () => ({
             where: () => ({
-              orderBy: () => Promise.resolve([{
-                id: "idle-agent",
-                companyId: "company-1",
-                name: "Idle agent",
-                reportsTo: null,
-                role: "engineer",
-                status: "idle",
-                metadata: {},
-              }]),
+              orderBy: () => ({
+                limit: (limit: number) => Promise.resolve([
+                  { id: "idle-agent", companyId: "company-1", name: "Idle agent", reportsTo: null, role: "engineer", status: "idle", metadata: {} },
+                ].slice(0, limit)),
+              }),
               groupBy: empty,
               limit: empty,
+              then: (resolve: (rows: unknown[]) => unknown) => Promise.resolve([
+                { claim: { id: "claim-old", issueId: "released-issue", agentId: "former-agent", heartbeatAt: NOW, expiresAt: new Date(NOW.getTime() - 60_000), releasedAt: null } },
+              ]).then(resolve),
             }),
           }),
           leftJoin: () => ({
