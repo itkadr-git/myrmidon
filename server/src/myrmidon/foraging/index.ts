@@ -28,6 +28,8 @@ import { createForagingService, type ForagingService } from "./service.js";
 import { createDbForagingStore, type ForagingStore } from "./store.js";
 import { createDbForagingSkillStore, createForagingCandidatePort } from "./candidate-port.js";
 import { skillLifecycleService } from "../skill-lifecycle/index.js";
+import { createKnowledgeModule } from "../knowledge/service.js";
+import { createForagingKnowledgePort, createDbForagingQuarantineStore } from "./knowledge-port.js";
 import { foragingRoutes } from "./routes.js";
 import {
   foragingIdleGateService,
@@ -75,6 +77,16 @@ export { createForagingReader } from "./reader.js";
 export * from "./limits.js";
 export { createForagingCandidatePort, createDbForagingSkillStore, buildCandidateMarkdown } from "./candidate-port.js";
 export type { ForagingSkillStore, ForagedSkillRef } from "./candidate-port.js";
+// myrmidon(1.7-KNOWLEDGE-L5): the knowledge port and its quarantine store.
+export {
+  createForagingKnowledgePort,
+  createDbForagingQuarantineStore,
+  buildProposalBody,
+  buildQuarantineMarkdown,
+  FORAGING_INBOX_DATASET,
+  type ForagingKnowledgePortDeps,
+  type ForagingQuarantineStore,
+} from "./knowledge-port.js";
 
 /**
  * The candidate port of the running instance.
@@ -87,6 +99,21 @@ export type { ForagingSkillStore, ForagedSkillRef } from "./candidate-port.js";
  * `unverified` instead of failing the pass.
  */
 export function foragingCandidatePort(db: Db): ForagingCandidatePort {
+  // myrmidon(1.7-KNOWLEDGE-L5): findings route to KNOWLEDGE first — the
+  // proposal (quarantined text in the `foraging-inbox` corpus dataset,
+  // trust=external) is the candidate_ref. If the knowledge module cannot be
+  // constructed the skill port below stays the fallback, and the null port is
+  // still the last resort.
+  try {
+    const knowledgePort = createForagingKnowledgePort({
+      knowledge: (companyId: string) => createKnowledgeModule(db, companyId),
+      quarantine: createDbForagingQuarantineStore(db),
+      log: logger,
+    });
+    return knowledgePort;
+  } catch (knowledgeError) {
+    logger.warn({ error: knowledgeError }, "foraging: knowledge port could not be constructed, falling back to skill candidates");
+  }
   try {
     return createForagingCandidatePort({
       skillStore: createDbForagingSkillStore(db),
