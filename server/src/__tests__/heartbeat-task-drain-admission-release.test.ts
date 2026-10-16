@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, eq, sql } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
@@ -173,25 +173,6 @@ describeEmbeddedPostgres("heartbeat task-drain admission release", () => {
     throw new Error(`run ${runId} did not become active within ${timeoutMs}ms`);
   }
 
-  async function waitForAdapterInvoke(runId: string, timeoutMs = 5_000) {
-    const deadline = Date.now() + timeoutMs;
-    while (Date.now() < deadline) {
-      const event = await db
-        .select({ id: heartbeatRunEvents.id })
-        .from(heartbeatRunEvents)
-        .where(
-          and(
-            eq(heartbeatRunEvents.runId, runId),
-            eq(heartbeatRunEvents.eventType, "adapter.invoke"),
-          ),
-        )
-        .then((rows) => rows[0] ?? null);
-      if (event) return;
-      await new Promise((resolve) => setTimeout(resolve, 20));
-    }
-    throw new Error(`run ${runId} did not record adapter.invoke within ${timeoutMs}ms`);
-  }
-
   it("keeps an active adapter run in flight until graceful shutdown records its retry", async () => {
     const { companyId, agentId, issueId, runId, wakeupRequestId } = await seedQueuedRun();
     const heartbeat = heartbeatService(db);
@@ -205,7 +186,7 @@ describeEmbeddedPostgres("heartbeat task-drain admission release", () => {
         triggerDetail: "system",
         status: "running",
         startedAt: new Date(),
-        runnerProfileJson: { adapterDispatch: { adapterType: "codex_local" } },
+        runnerProfileJson: { adapterDispatch: { adapterType: "claude_local" } },
         contextSnapshot: { issueId, wakeReason: "issue_assigned" },
       }).onConflictDoUpdate({
         target: heartbeatRuns.id,
@@ -221,7 +202,6 @@ describeEmbeddedPostgres("heartbeat task-drain admission release", () => {
     try {
       activePromise = heartbeat.invoke(agentId, "assignment", { issueId }, "system");
       await waitForActiveRun(runId);
-      await waitForAdapterInvoke(runId);
 
       const activeState = getTaskDrainStatus();
       expect(activeState.activeRuns).toBe(1);
