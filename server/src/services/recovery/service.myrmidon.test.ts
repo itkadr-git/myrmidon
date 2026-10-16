@@ -36,6 +36,7 @@ describeEmbeddedPostgres("reconcileStrandedAssignedIssues: infrastructure interr
     errorCode: string | null;
     blockerIssueId?: string;
     scheduledRetryAttempt?: number;
+    createdAtOffsetMs?: number;
     scheduledRetryReason?: string | null;
     contextSnapshotExtra?: Record<string, unknown>;
     // myrmidon(L1): the run's claimed adapter (runnerProfileJson.adapterDispatch).
@@ -80,7 +81,7 @@ describeEmbeddedPostgres("reconcileStrandedAssignedIssues: infrastructure interr
       priority: "medium",
       assigneeAgentId: agentId,
       responsibleUserId: "user-a",
-      createdAt: new Date(now.getTime() - 60 * 60 * 1000),
+      createdAt: new Date(now.getTime() - (input.createdAtOffsetMs ?? 60 * 60 * 1000)),
     });
     if (input.blockerIssueId) {
       await db.insert(issueRelations).values({
@@ -142,7 +143,12 @@ describeEmbeddedPostgres("reconcileStrandedAssignedIssues: infrastructure interr
   }, 30_000);
 
   it("returns terminal stranded work to the shared unassigned engineer queue", async () => {
-    const { issueId } = await seedStrandedIssue({ errorCode: "agent_paused", scheduledRetryAttempt: 0 });
+    const { issueId } = await seedStrandedIssue({
+      errorCode: "adapter_failed",
+      scheduledRetryAttempt: 0,
+      createdAtOffsetMs: 0,
+      scheduledRetryReason: "Recovery retry budget was exhausted",
+    });
 
     await heartbeatService(db).reconcileStrandedAssignedIssues();
 
@@ -161,6 +167,7 @@ describeEmbeddedPostgres("reconcileStrandedAssignedIssues: infrastructure interr
     const { companyId, issueId } = await seedStrandedIssue({
       errorCode: "agent_paused",
       scheduledRetryAttempt: 0,
+      createdAtOffsetMs: 0,
     });
     const blockerId = randomUUID();
     const now = new Date();
