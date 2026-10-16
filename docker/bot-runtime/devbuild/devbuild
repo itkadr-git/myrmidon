@@ -129,7 +129,35 @@ if [ -z "${DEVBUILD_HOST:-}" ] || [ -z "${DEVBUILD_USER:-}" ] || [ -z "${DEVBUIL
 fi
 
 SSH_KEY="${DEVBUILD_SSH_KEY:-$DEVBUILD_SSH_KEY_PATH}"
-WORKSPACE_SRC="${DEVBUILD_WORKSPACE:-/workspace}"
+# myrmidon(1.6.6 DEVBUILD-ISOLATION): a stale DEVBUILD_SSH_KEY that names a
+# missing file must not hide the mounted key (14.10: runs reported "key is
+# missing" while /opt/devbuild-ssh/id_ed25519 was readable).
+if [ ! -r "$SSH_KEY" ] && [ -r "$DEVBUILD_SSH_KEY_PATH" ]; then
+  SSH_KEY="$DEVBUILD_SSH_KEY_PATH"
+fi
+# myrmidon(1.6.6 DEVBUILD-ISOLATION): by default sync only the git repository
+# the command is run from (a task clone under /workspace), not the whole
+# /workspace: with --delete below, syncing every clone on each call shipped
+# gigabytes and mirrored unrelated checkouts.
+if [ -z "${DEVBUILD_WORKSPACE:-}" ]; then
+  # The nearest directory with a .git entry (a directory, or the one-line file of a
+  # worktree whose base lives on another volume — `git rev-parse` stops at that
+  # filesystem boundary, 14.10), walking up from $PWD but not past /workspace.
+  # /workspace is a link to the bot volume (/bot/workspace): use the logical path,
+  # and map a physical one back.
+  top=""; d="$PWD"
+  case "$d" in /bot/workspace/*) d="/workspace/${d#/bot/workspace/}" ;; esac
+  while [ -n "$d" ] && [ "$d" != "/" ] && [ "$d" != "/workspace" ]; do
+    if [ -e "$d/.git" ]; then top="$d"; break; fi
+    d="$(dirname "$d")"
+  done
+  case "$top" in
+    /workspace/?*) WORKSPACE_SRC="$top" ;;
+    *) WORKSPACE_SRC="/workspace" ;;
+  esac
+else
+  WORKSPACE_SRC="$DEVBUILD_WORKSPACE"
+fi
 
 if [ ! -d "$WORKSPACE_SRC" ]; then
   echo "devbuild: workspace directory $WORKSPACE_SRC does not exist" >&2
@@ -168,10 +196,18 @@ command -v rsync >/dev/null 2>&1 || {
   exit 1
 }
 
-# Per-bot, per-repo destination: <base>/<bot>/<repo>/
+# Per-bot, per-copy destination: <base>/<bot>/<copy>/. The board passes the
+# bot's own key as DEVBUILD_BOT_NAME; every container runs as the same "bot"
+# user, so `id -un` alone made all bots share one copy and wipe each other
+# (14.10). The copy name is the path under /workspace (OPE-1-x/repo ->
+# OPE-1-x-repo), so two task clones of the same repo never collide either.
 bot_name="${DEVBUILD_BOT_NAME:-$(id -un)}"
-repo_name="$(basename "$WORKSPACE_SRC")"
+case "$WORKSPACE_SRC" in
+  /workspace/?*) repo_name="$(printf '%s' "${WORKSPACE_SRC#/workspace/}" | tr '/' '-')" ;;
+  *) repo_name="$(basename "$WORKSPACE_SRC")" ;;
+esac
 [ -n "$repo_name" ] || repo_name="workspace"
+case "$bot_name$repo_name" in *[!A-Za-z0-9._-]*) echo "devbuild: unsupported characters in the bot or copy name ($bot_name/$repo_name)" >&2; exit 1 ;; esac
 dest_root="${DEVBUILD_BASE%/}/$bot_name/$repo_name"
 
 SSH_OPTS=(-o BatchMode=yes -o StrictHostKeyChecking=accept-new
@@ -268,6 +304,9 @@ if res="$(resolve_git_dir "$WORKSPACE_SRC")"; then
 fi
 if [ "$git_kind" = "worktree" ] && [ "$git_root" = "$(cd "$WORKSPACE_SRC" && pwd -P)" ]; then
   wt_base_root="${MYRMIDON_GIT_BASE_DIR:-${hermes_home:-${HERMES_HOME:-/data/hermes}}/.myrmidon/git-base}"
+  # /data/hermes is a link to the bot volume (/bot/hermes): git reports the physical
+  # path of the base, so compare against the resolved root (14.10, PR #57 evidence).
+  wt_base_root="$(cd "$wt_base_root" 2>/dev/null && pwd -P || printf '%s' "$wt_base_root")"
   wt_name="$(basename "$git_dir")"
   case "$git_common" in "${wt_base_root%/}"/*) ;; *) echo "devbuild: worktree base $git_common is outside $wt_base_root - not shipped" >&2; exit 1 ;; esac
   case "$git_common$wt_name$bot_name" in *[!A-Za-z0-9._/-]*) echo "devbuild: unsupported characters in the worktree git paths" >&2; exit 1 ;; esac

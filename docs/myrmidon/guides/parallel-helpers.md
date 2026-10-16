@@ -17,7 +17,7 @@ agent is being created) there is a collapsible **Parallel helpers** section:
 | Field | What it sets |
 |---|---|
 | **Allow parallel helper subagents** | The master switch. On — the agent may call `delegate_task` and run helper children. Off — the `delegation` toolset is removed from the agent's compiled toolset, so the tool does not exist for it. A card that never touched the section behaves exactly as before the feature. |
-| **Max concurrent helpers** | How many helpers may run at once. Accepted whole numbers: 1–50; the value is clamped server-side to the company ceiling when the bot profile compiles. Turning the switch on with no limit writes the company default (or `2` when the instance has none). |
+| **Max concurrent helpers** | How many helpers may run at once. Accepted whole numbers: 1 or greater — there is no built-in upper bound (HELPERS-NO-CAP); the value is clamped server-side to the company ceiling when the bot profile compiles. Turning the switch on with no limit writes the company default (or `2` when the instance has none). |
 | **Helper model** | The model the helper children run on, picked from the same model list as the agent's main model. A `provider/model` id pins the child's provider; a bare model name leaves the provider empty and the child inherits the parent's provider and credentials. Empty — the helpers run on the parent agent's model (the instance-level fallback chain is below). |
 | **Per-helper turn budget** | The turn cap per helper subagent (`delegation.max_iterations`), accepted whole numbers 1–500. Empty keeps Hermes' own default (250). |
 
@@ -46,7 +46,7 @@ with the previous and next values.
 
 | Field | What it bounds | Default |
 |---|---|---|
-| **Helpers per agent (ceiling)** | The highest value any agent card may set; cards above it are clamped at compile time. The ceiling itself is capped at 50, so a mistyped row cannot authorize an unbounded fan-out. | `10` |
+| **Helpers per agent (ceiling)** | The highest value any agent card may set; cards above it are clamped at compile time. The ceiling itself has no built-in upper bound (HELPERS-NO-CAP): the saved number is the limit, and a saved ceiling above 50 only shows a host-load warning on the settings page — it is never clamped or rejected. | `10` |
 | **Default helpers per agent** | What an agent gets when its card names no limit. New agents inherit it. Never resolved above the ceiling. | `2` |
 | **Shared build slots** | Concurrent build slots on the shared dev host — an input to the capacity hint only, it never clamps a card. Empty = unknown. | unset |
 | **Dev host memory, MB** | Memory of the host running the bots — also only an input to the capacity hint. Empty = unknown. | unset |

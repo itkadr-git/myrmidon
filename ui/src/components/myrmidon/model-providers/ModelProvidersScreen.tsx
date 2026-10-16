@@ -20,13 +20,14 @@
 // API's key-free fields; the raw key never enters props, cache or DOM.
 import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Boxes, KeyRound, Trash2 } from "lucide-react";
+import { AlertTriangle, Boxes, KeyRound, Trash2 } from "lucide-react";
 import { useTranslation } from "@/i18n";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
   modelProvidersApi,
+  BUILTIN_MODEL_PROVIDER_TYPES,
   MODEL_PROVIDER_TYPES,
   sortModels,
   type AddModelProviderInput,
@@ -57,6 +58,7 @@ export function ModelProvidersScreenView({
   view,
   companyId,
   modelsQuery,
+  channelsQuery,
   onAdd,
   adding,
   addError,
@@ -72,6 +74,8 @@ export function ModelProvidersScreenView({
   companyId: string;
   /** Query key factory for the per-provider model list (container owns it). */
   modelsQuery: (providerId: string) => readonly unknown[];
+  /** Query key factory for the per-provider channels list. */
+  channelsQuery?: (providerId: string) => readonly unknown[];
   onAdd: (input: AddModelProviderInput) => void;
   adding: boolean;
   addError: string | null;
@@ -122,6 +126,12 @@ export function ModelProvidersScreenView({
   const providerFreeLabel = (provider: ModelProviderView) =>
     provider.free ? t("modelProviders.free") : t("modelProviders.paid");
 
+  const availableTypes: ModelProviderType[] = (
+    view.availableTypes
+      ? view.availableTypes.filter((t) => (MODEL_PROVIDER_TYPES as readonly string[]).includes(t))
+      : (BUILTIN_MODEL_PROVIDER_TYPES as readonly ModelProviderType[])
+  ) as ModelProviderType[];
+
   return (
     <div className="max-w-5xl space-y-6" data-testid="myrmidon-model-providers-screen">
       <div className="space-y-1">
@@ -165,7 +175,7 @@ export function ModelProvidersScreenView({
                 onChange={(e) => setForm({ ...form, type: e.target.value as ModelProviderType })}
                 data-testid="myrmidon-model-providers-add-type"
               >
-                {MODEL_PROVIDER_TYPES.map((type) => (
+                {availableTypes.map((type) => (
                   <option key={type} value={type}>
                     {providerTypeLabel(type)}
                   </option>
@@ -244,6 +254,7 @@ export function ModelProvidersScreenView({
               provider={provider}
               companyId={companyId}
               modelsQuery={modelsQuery}
+              channelsQuery={channelsQuery}
               freeLabel={providerFreeLabel(provider)}
               confirmRemove={confirmRemoveId === provider.id}
               onAskRemove={() => setConfirmRemoveId(provider.id)}
@@ -303,6 +314,7 @@ function ProviderCard({
   provider,
   companyId,
   modelsQuery,
+  channelsQuery,
   freeLabel,
   confirmRemove,
   onAskRemove,
@@ -323,6 +335,7 @@ function ProviderCard({
   provider: ModelProviderView;
   companyId: string;
   modelsQuery: (providerId: string) => readonly unknown[];
+  channelsQuery?: (providerId: string) => readonly unknown[];
   freeLabel: string;
   confirmRemove: boolean;
   onAskRemove: () => void;
@@ -349,6 +362,13 @@ function ProviderCard({
     staleTime: 60_000,
   });
   const models = sortModels(modelsQueryResult.data?.models ?? []);
+
+  const channelsQueryResult = useQuery({
+    queryKey: channelsQuery ? channelsQuery(provider.id) : ["channels", provider.id],
+    queryFn: () => modelProvidersApi.channels(companyId, provider.id),
+    enabled: provider.type === "chatgpt-pool",
+    staleTime: 30_000,
+  });
 
   const toggle = (modelName: string) => {
     const next = models.map((model) =>
@@ -388,6 +408,185 @@ function ProviderCard({
           </span>
         </div>
       </div>
+
+      {/* ChatGPT Pool: Channels & Limit Windows */}
+      {provider.type === "chatgpt-pool" && (
+        <div className="space-y-3" data-testid={`myrmidon-model-provider-channels-${provider.id}`}>
+          {/* Active Role Signals Alert Banner */}
+          {channelsQueryResult.data?.signals && channelsQueryResult.data.signals.length > 0 && (
+            <div
+              className="space-y-2 rounded-md border border-destructive/40 bg-destructive/10 p-3"
+              data-testid={`myrmidon-pool-signals-${provider.id}`}
+            >
+              <div className="flex items-center gap-2 text-xs font-semibold text-destructive">
+                <AlertTriangle className="h-4 w-4" />
+                <span>{t("modelProviders.channels.signalsTitle") || "Role Attention Signals"}</span>
+              </div>
+              <div className="space-y-1">
+                {channelsQueryResult.data.signals.map((sig) => (
+                  <div
+                    key={sig.dedupKey}
+                    className="text-xs text-destructive/90"
+                    data-testid={`myrmidon-pool-signal-${sig.accountNumber}`}
+                  >
+                    <span className="font-semibold">{sig.title}: </span>
+                    <span>{sig.whyNow}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Accounts & Limit Windows Table */}
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-semibold text-foreground">
+                {t("modelProviders.channels.title") || "Pool Accounts & Limit Windows"}
+              </span>
+              {channelsQueryResult.isFetching && (
+                <span className="text-[11px] text-muted-foreground">
+                  {t("modelProviders.channels.refreshing") || "Updating..."}
+                </span>
+              )}
+            </div>
+            {channelsQueryResult.isLoading ? (
+              <p className="text-xs text-muted-foreground">
+                {t("modelProviders.channels.loading") || "Loading accounts..."}
+              </p>
+            ) : channelsQueryResult.isError ? (
+              <p className="text-xs text-destructive">
+                {t("modelProviders.channels.error") || "Failed to load pool accounts."}
+              </p>
+            ) : !channelsQueryResult.data?.channels || channelsQueryResult.data.channels.length === 0 ? (
+              <p className="text-xs text-muted-foreground">
+                {t("modelProviders.channels.empty") || "No accounts found in pool."}
+              </p>
+            ) : (
+              <div className="overflow-x-auto rounded-md border border-border">
+                <table className="w-full text-left text-xs">
+                  <thead className="border-b border-border bg-muted/40 font-medium text-muted-foreground">
+                    <tr>
+                      <th className="p-2">#</th>
+                      <th className="p-2">{t("modelProviders.channels.account") || "Account"}</th>
+                      <th className="p-2">{t("modelProviders.channels.state") || "State"}</th>
+                      <th className="p-2">{t("modelProviders.channels.window5h") || "5h Limit Window"}</th>
+                      <th className="p-2">{t("modelProviders.channels.window7d") || "7d Limit Window"}</th>
+                      <th className="p-2">{t("modelProviders.channels.lastOk") || "Last OK"}</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-border">
+                    {channelsQueryResult.data.channels.map((ch) => {
+                      const pWin = ch.windows?.primary;
+                      const sWin = ch.windows?.secondary;
+                      const isBanned = ch.isBanned;
+                      const isExhausted = ch.isExhausted;
+
+                      const stateBadgeClass = isBanned
+                        ? "bg-destructive/15 text-destructive border-destructive/30"
+                        : isExhausted
+                          ? "bg-amber-500/15 text-amber-600 dark:text-amber-400 border-amber-500/30"
+                          : "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border-emerald-500/30";
+
+                      return (
+                        <tr
+                          key={ch.n}
+                          data-testid={`myrmidon-pool-channel-${ch.n}`}
+                          className="hover:bg-muted/20"
+                        >
+                          <td className="p-2 font-mono font-medium">{ch.n}</td>
+                          <td className="p-2">
+                            <div className="font-medium">{ch.label}</div>
+                            {ch.email && (
+                              <div className="text-[10px] text-muted-foreground">{ch.email}</div>
+                            )}
+                          </td>
+                          <td className="p-2">
+                            <span
+                              className={`inline-block rounded border px-1.5 py-0.5 text-[11px] font-medium ${stateBadgeClass}`}
+                            >
+                              {ch.stateRu || ch.state}
+                            </span>
+                          </td>
+                          <td className="p-2">
+                            {pWin && pWin.usedPct !== null ? (
+                              <div className="space-y-1">
+                                <div className="flex justify-between text-[11px]">
+                                  <span>{pWin.usedPct}%</span>
+                                  {pWin.resetsAt && (
+                                    <span className="text-muted-foreground">
+                                      {new Date(pWin.resetsAt * 1000).toLocaleTimeString([], {
+                                        hour: "2-digit",
+                                        minute: "2-digit",
+                                      })}
+                                    </span>
+                                  )}
+                                </div>
+                                <div className="h-1.5 w-24 overflow-hidden rounded-full bg-muted">
+                                  <div
+                                    className={`h-full ${
+                                      pWin.usedPct >= 100
+                                        ? "bg-destructive"
+                                        : pWin.usedPct >= 80
+                                          ? "bg-amber-500"
+                                          : "bg-primary"
+                                    }`}
+                                    style={{ width: `${Math.min(pWin.usedPct, 100)}%` }}
+                                  />
+                                </div>
+                              </div>
+                            ) : (
+                              <span className="text-muted-foreground">—</span>
+                            )}
+                          </td>
+                          <td className="p-2">
+                            {sWin && sWin.usedPct !== null ? (
+                              <div className="space-y-1">
+                                <div className="flex justify-between text-[11px]">
+                                  <span>{sWin.usedPct}%</span>
+                                  {sWin.resetsAt && (
+                                    <span className="text-muted-foreground">
+                                      {new Date(sWin.resetsAt * 1000).toLocaleTimeString([], {
+                                        hour: "2-digit",
+                                        minute: "2-digit",
+                                      })}
+                                    </span>
+                                  )}
+                                </div>
+                                <div className="h-1.5 w-24 overflow-hidden rounded-full bg-muted">
+                                  <div
+                                    className={`h-full ${
+                                      sWin.usedPct >= 100
+                                        ? "bg-destructive"
+                                        : sWin.usedPct >= 80
+                                          ? "bg-amber-500"
+                                          : "bg-primary"
+                                    }`}
+                                    style={{ width: `${Math.min(sWin.usedPct, 100)}%` }}
+                                  />
+                                </div>
+                              </div>
+                            ) : (
+                              <span className="text-muted-foreground">—</span>
+                            )}
+                          </td>
+                          <td className="p-2 text-muted-foreground">
+                            {ch.lastOk
+                              ? new Date(ch.lastOk * 1000).toLocaleTimeString([], {
+                                  hour: "2-digit",
+                                  minute: "2-digit",
+                                })
+                              : "—"}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Models */}
       <div className="space-y-2" data-testid={`myrmidon-model-provider-models-${provider.id}`}>

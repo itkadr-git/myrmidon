@@ -63,16 +63,59 @@ skipped due to the idle gate:
 - `no_idle_agent`: that role has no free agent
 - Absent: every enabled source's role was idle (or the gate is off)
 
+## The settings screen (UI half, OPE-4149)
+
+The "Foraging" page carries the toggle and the history:
+
+- **Idle only** card: the switch writes the setting through
+  `PATCH /api/myrmidon/foraging/idle-gate` (instance admin) and shows the
+  effective value **with where that value came from** — `the interface`,
+  `the environment` or `the default`. The rule is read on every pass, so a
+  switch applies to the next pass; no restart. A refused write (a board
+  member without instance-admin rights, a transient error) stays visible in
+  the card instead of being swallowed.
+- **Pass history** card: the last passes of the selected company — when each
+  ran, how many sources it read, how many findings it produced, and which
+  roles it left alone with the reason (`queue_not_empty` /
+  `no_idle_agent`). A pass that stopped by the budget says so.
+
+```
+GET /api/myrmidon/companies/:id/foraging/passes?limit=   (company access)
+```
+
+The journal lives under `instance_settings.general.foragingPassJournal`
+(newest first, capped at 50 entries PER COMPANY; a pass of one company never
+drops the history of another). Every pass appends itself — including a
+pass that could not list its sources — and a failed journal write never
+fails a pass. The read-modify-write of the row is serialized, so two passes
+recording at the same time both land. The reader is defensive: an unreadable
+entry loses that entry, not the history. The journal is a view; the audit
+trail of a change stays in the activity log.
+
 ## Where the code lives
 
 - `packages/shared/src/myrmidon-foraging-idle-gate.ts` — the resolver
   contract (key, precedence, sources), shared with the server;
+- `packages/shared/src/myrmidon-foraging-pass-journal.ts` — the journal
+  contract (entry shape, reader, capped append), shared with the screen;
 - `server/src/myrmidon/foraging/idle-gate-settings.ts` — the settings
   service (read/update/audit) and the per-pass read;
 - `server/src/myrmidon/foraging/idle-gate-routes.ts` — GET/PATCH routes;
+- `server/src/myrmidon/foraging/pass-journal.ts` — the journal service
+  (read/record against the general row);
+- `server/src/myrmidon/foraging/pass-routes.ts` — GET passes route;
 - `server/src/myrmidon/foraging/service.ts` — the gate in `runPass`
-  (`createDbForagingIdleCheck`: the queue + idle-agent SQL);
+  (`createDbForagingIdleCheck`: the queue + idle-agent SQL) and the pass
+  recording itself in the journal;
+- `ui/src/pages/Foraging.tsx`, `ui/src/api/foraging.ts` — the toggle with the
+  source of the value and the pass history;
 - tests: `service.myrmidon.test.ts` (the three acceptance rules, the
   per-role filtering, the re-read without recreating the service),
   `idle-gate-settings.myrmidon.test.ts` (the settings service),
-  `packages/shared/src/myrmidon-foraging-idle-gate.test.ts` (the resolver).
+  `pass-journal.myrmidon.test.ts` (the journal service, and a pass that
+  records itself on every exit), `pass-routes.myrmidon.test.ts` (access, the
+  limit), `packages/shared/src/myrmidon-foraging-idle-gate.test.ts` (the
+  resolver), `packages/shared/src/myrmidon-foraging-pass-journal.myrmidon.test.ts`
+  (the reader and the capped append),
+  `ui/src/pages/Foraging.test.tsx` (the toggle, the source of the value, the
+  reasons in the history).

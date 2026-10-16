@@ -35,7 +35,7 @@ import {
 import { parseIssueExecutionState } from "../../../services/issue-execution-policy.js";
 import { decideQueuedRunStaleness, decideScheduledRetryGate } from "../domain/policy.js";
 // myrmidon(P2): pending interaction addressee wake
-import { isPendingInteractionAddresseeWake } from "../myrmidon-pending-interaction-wake.js";
+import { isOwnerExplainWake, isPendingInteractionAddresseeWake } from "../myrmidon-pending-interaction-wake.js";
 import type {
   QueuedRunFacts,
   ReviewParticipantFacts,
@@ -88,6 +88,7 @@ type LoadStalenessFactsInput = {
   issueId: string;
   contextSnapshot: Record<string, unknown>;
   scheduledRetryReason: string | null;
+  invocationSource: string;
 };
 type CancelSuppressedRetryInput = {
   runId: string;
@@ -332,6 +333,7 @@ export function createPostgresRunDispatchAdapter(
         monitorNextCheckAt: issues.monitorNextCheckAt,
         // myrmidon(HUMAN-REVIEW-WAIT): read for collectDispositionRepairSourceState below.
         reviewPolicy: issues.reviewPolicy,
+        hiddenAt: issues.hiddenAt,
       })
       .from(issues)
       .where(and(eq(issues.id, issueId), eq(issues.companyId, input.companyId)));
@@ -350,6 +352,8 @@ export function createPostgresRunDispatchAdapter(
     facts.issueAssigneeAgentId = issue.assigneeAgentId;
     facts.issueExecutionRunId = issue.executionRunId;
     facts.issueCheckoutRunId = issue.checkoutRunId;
+    // myrmidon(1.6.5 F-09): a hidden issue is not startable.
+    facts.issueHiddenAt = issue.hiddenAt;
     if (input.conversationContinuation) {
       const [interactions, linkedApprovals] = await Promise.all([
         dbOrTx.select({ id: issueThreadInteractions.id }).from(issueThreadInteractions).where(and(
@@ -490,6 +494,7 @@ export function createPostgresRunDispatchAdapter(
         executionRunId: issues.executionRunId,
         checkoutRunId: issues.checkoutRunId,
         executionState: issues.executionState,
+        hiddenAt: issues.hiddenAt,
       })
       .from(issues)
       .where(and(eq(issues.id, issueId), eq(issues.companyId, input.companyId)));
@@ -503,12 +508,17 @@ export function createPostgresRunDispatchAdapter(
       ISSUE_TREE_CONTROL_INTERACTION_WAKE_REASONS,
     );
     // myrmidon(P2): a pending interaction wakes its addressee, who may not be the assignee
-    const pendingInteractionAddresseeWake = await isPendingInteractionAddresseeWake(dbOrTx, {
+    // myrmidon(1.6.5-OWNER-VIA-BOT): the wake that asks the AUTHOR of an owner decision to explain it
+    // to the owner gets the same bypass: the author is not the addressee and not always the assignee
+    const ownerWakeFacts = {
       companyId: input.companyId,
       issueId,
       agentId: input.agentId,
       contextSnapshot: context,
-    });
+    };
+    const pendingInteractionAddresseeWake =
+      (await isPendingInteractionAddresseeWake(dbOrTx, ownerWakeFacts)) ||
+      (await isOwnerExplainWake(dbOrTx, ownerWakeFacts));
     const resumeIntent = context.resumeIntent === true || context.followUpRequested === true;
     const wakeReason = readNonEmptyString(context.wakeReason);
     const retryReason =
@@ -557,6 +567,15 @@ export function createPostgresRunDispatchAdapter(
             .limit(1)
             .then((rows) => Boolean(rows[0]))
         : false;
+    // Recovery-created continuation runs may legitimately execute for a prior assignee.
+    // Bind this bypass to the exact automation source and continuation reason.
+    const isProductiveContinuationRecovery = Boolean(
+      issue &&
+        input.invocationSource === "automation" &&
+        context.source === "issue.productive_terminal_continuation_recovery" &&
+        wakeReason === "issue_continuation_needed" &&
+        retryReason === "issue_continuation_needed",
+    );
 
     const retryReasonKind = classifyRetryReasonKind(retryReason);
     // Dependency edges can change after scheduled promotion without changing
@@ -578,6 +597,7 @@ export function createPostgresRunDispatchAdapter(
       issueAssigneeAgentId: issue?.assigneeAgentId ?? null,
       issueExecutionRunId: issue?.executionRunId ?? null,
       issueCheckoutRunId: issue?.checkoutRunId ?? null,
+      issueHiddenAt: issue?.hiddenAt ?? null,
       isResolvedInteractionContinuation,
       isConnectionContinuation: (isResolvedInteractionContinuation && context.interactionKind === "connection_intent")
         || context.source === "connection_tools.refreshed",
@@ -585,6 +605,7 @@ export function createPostgresRunDispatchAdapter(
       // myrmidon(P2): pending interaction addressee wake
       isPendingInteractionAddresseeWake: pendingInteractionAddresseeWake,
       isAuthorizedSourceScopedRecovery,
+      isProductiveContinuationRecovery,
       isNonAssigneeWorkspaceBusyRetry: isNonAssigneeWorkspaceBusyRetry(retryReason, context),
       resumeIntent,
       wakeCommentIdPresent: Boolean(wakeCommentId),
@@ -986,6 +1007,7 @@ export function createPostgresRunDispatchAdapter(
         issueId,
         contextSnapshot,
         scheduledRetryReason: run.scheduledRetryReason,
+        invocationSource: run.invocationSource,
       },
       now,
       tx,

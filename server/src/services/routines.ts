@@ -82,6 +82,7 @@ import { runtimePublicOrigin } from "./cloud-runtime-identity.js";
 import { findOpenRoutineExecutionIssue } from "../myrmidon/routine-execution-lock.js";
 // myrmidon(R3): maintenance mode skips scheduled routine ticks
 import { isRoutineUnderMaintenance } from "../myrmidon/maintenance/gate.js";
+import { readProductEnv, readProductEnvFrom } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
 
 const OPEN_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked"];
 const LIVE_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"];
@@ -108,7 +109,7 @@ const WEEKDAY_INDEX: Record<string, number> = {
 };
 
 export function routineWebhookUrl(publicId: string): string {
-  const baseUrl = runtimePublicOrigin() ?? process.env.PAPERCLIP_API_URL?.trim();
+  const baseUrl = runtimePublicOrigin() ?? readProductEnv("API_URL")?.trim();
   if (!baseUrl) throw new Error("PAPERCLIP_API_URL is required to create a routine webhook");
   return `${baseUrl.replace(/\/+$/, "")}/api/routine-triggers/public/${publicId}/fire`;
 }
@@ -1270,7 +1271,7 @@ export function routineService(
     routine: typeof routines.$inferSelect,
     activation?: WorktreeRunExecutionActivationState,
   ) {
-    if (!isTruthyRuntimeEnvValue(runtimeEnv.PAPERCLIP_IN_WORKTREE)) return { eligible: true };
+    if (!isTruthyRuntimeEnvValue(readProductEnvFrom(runtimeEnv, "IN_WORKTREE"))) return { eligible: true };
 
     const resolvedActivation = activation ?? await resolveWorktreeRunExecutionActivationState({
       getExperimental: instanceSettings.getExperimental,
@@ -2206,7 +2207,7 @@ export function routineService(
       const env = input.env === undefined || input.env === null
         ? null
         : await secretsSvc.normalizeEnvBindingsForPersistence(companyId, input.env, {
-            strictMode: process.env.PAPERCLIP_SECRETS_STRICT_MODE === "true",
+            strictMode: readProductEnv("SECRETS_STRICT_MODE") === "true",
             fieldPath: "env",
           });
       const variables = syncRoutineVariablesWithTemplate(
@@ -2276,7 +2277,7 @@ export function routineService(
         : patch.env === null
           ? null
           : await secretsSvc.normalizeEnvBindingsForPersistence(existing.companyId, patch.env, {
-              strictMode: process.env.PAPERCLIP_SECRETS_STRICT_MODE === "true",
+              strictMode: readProductEnv("SECRETS_STRICT_MODE") === "true",
               fieldPath: "env",
             });
       const requestedStatus = patch.status ?? existing.status;
@@ -3080,7 +3081,7 @@ export function routineService(
     },
 
     tickScheduledTriggers: async (now: Date = new Date()) => {
-      const worktreeActivation = isTruthyRuntimeEnvValue(runtimeEnv.PAPERCLIP_IN_WORKTREE)
+      const worktreeActivation = isTruthyRuntimeEnvValue(readProductEnvFrom(runtimeEnv, "IN_WORKTREE"))
         ? await resolveWorktreeRunExecutionActivationState({
           getExperimental: instanceSettings.getExperimental,
           runtimeEnv,

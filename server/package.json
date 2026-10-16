@@ -13,7 +13,8 @@
   },
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./secrets/local-encrypted-provider": "./src/secrets/local-encrypted-provider.ts"
   },
   "publishConfig": {
     "access": "public",
@@ -21,6 +22,10 @@
       ".": {
         "types": "./dist/index.d.ts",
         "import": "./dist/index.js"
+      },
+      "./secrets/local-encrypted-provider": {
+        "types": "./dist/secrets/local-encrypted-provider.d.ts",
+        "import": "./dist/secrets/local-encrypted-provider.js"
       }
     },
     "main": "./dist/index.js",
@@ -62,6 +67,7 @@
     "@paperclipai/adapter-kimi-local": "workspace:*",
     "@paperclipai/adapter-openclaw-gateway": "workspace:*",
     "@paperclipai/adapter-opencode-local": "workspace:*",
+    "@paperclipai/adapter-omp-local": "workspace:*",
     "@paperclipai/adapter-pi-local": "workspace:*",
     "@paperclipai/adapter-utils": "workspace:*",
     "@paperclipai/db": "workspace:*",

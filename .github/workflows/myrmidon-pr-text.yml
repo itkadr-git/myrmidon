@@ -10,6 +10,9 @@ name: Myrmidon PR text
 # job, not the whole Myrmidon CI (myrmidon-ci.yml does not listen to it).
 # Title and body reach the shell through the environment only; they are never
 # interpolated into the script text, so they cannot inject commands.
+# The same job refuses an AI signature (assistant co-author trailer, "generated
+# with" banner) in the title or description; the commits of the PR are checked by
+# the `checks` job of myrmidon-ci.yml (scripts/myrmidon/ai-signature-scan.mjs).
 # See docs/myrmidon/publish-scan.md.
 
 on:
@@ -48,3 +51,11 @@ jobs:
         run: |
           set -euo pipefail
           printf '%s\n%s\n' "$PR_TITLE" "$PR_BODY" | node scripts/myrmidon/publish-scan.mjs
+
+      - name: AI signatures in title and description
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          set -euo pipefail
+          printf '%s\n%s\n' "$PR_TITLE" "$PR_BODY" | node scripts/myrmidon/ai-signature-scan.mjs

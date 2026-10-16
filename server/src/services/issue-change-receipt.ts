@@ -24,6 +24,12 @@ export function buildIssueChanges(
   const changes: IssueChanges = {};
   const keys = new Set([...Object.keys(existing), ...Object.keys(updated)]);
   keys.delete("updatedAt");
+  // myrmidon(DB-PERF-P7): lastActivityAt is maintained by the migration-0307
+  // triggers (it moves with updated_at and with every comment/activity row),
+  // so it always differs between the locked baseline and the post-update row
+  // even when the request changed nothing about it. It is a derived stamp, not
+  // a request-owned field: exclude it from the receipt like updatedAt.
+  keys.delete("lastActivityAt");
 
   for (const key of keys) {
     const from = existing[key];

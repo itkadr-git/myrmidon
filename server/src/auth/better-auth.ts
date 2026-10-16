@@ -22,6 +22,7 @@ import {
   resolveWorkspaceHandoffLocalKey,
   resolveWorkspaceHandoffLocalWorkspaceId,
 } from "./workspace-login-handoff.js";
+import { readProductEnv, readProductEnvFrom } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
 
 export type BetterAuthSessionUser = {
   id: string;
@@ -225,7 +226,7 @@ export function resolveWorkspaceHandoffIdentity(
   const key = resolveWorkspaceHandoffLocalKey(env);
   if (!key) return null;
   const configuredOrigin =
-    normalizeWorkspaceHandoffOrigin(env.PAPERCLIP_PUBLIC_URL)
+    normalizeWorkspaceHandoffOrigin(readProductEnvFrom(env, "PUBLIC_URL"))
     ?? (config.authBaseUrlMode === "explicit"
       ? normalizeWorkspaceHandoffOrigin(config.authPublicBaseUrl)
       : null);
@@ -240,9 +241,9 @@ export function resolveWorkspaceHandoffIdentity(
 
 export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins: string[]): BetterAuthInstance {
   const baseUrl = config.authBaseUrlMode === "explicit" ? config.authPublicBaseUrl : undefined;
-  const publicUrl = process.env.PAPERCLIP_PUBLIC_URL?.trim() || baseUrl;
-  const managedRuntimePublicUrl = process.env.PAPERCLIP_MANAGED_RUNTIME_PUBLIC_URL?.trim() || undefined;
-  const secret = process.env.BETTER_AUTH_SECRET ?? process.env.PAPERCLIP_AGENT_JWT_SECRET;
+  const publicUrl = readProductEnv("PUBLIC_URL")?.trim() || baseUrl;
+  const managedRuntimePublicUrl = readProductEnv("MANAGED_RUNTIME_PUBLIC_URL")?.trim() || undefined;
+  const secret = process.env.BETTER_AUTH_SECRET ?? readProductEnv("AGENT_JWT_SECRET");
   if (!secret) {
     throw new Error(
       "BETTER_AUTH_SECRET (or PAPERCLIP_AGENT_JWT_SECRET) must be set. " +
@@ -278,7 +279,7 @@ export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins:
     rateLimit: buildBetterAuthRateLimitOptions({
       deploymentMode: config.deploymentMode,
       deploymentExposure: config.deploymentExposure,
-      override: process.env.PAPERCLIP_AUTH_RATE_LIMIT_ENABLED,
+      override: readProductEnv("AUTH_RATE_LIMIT_ENABLED"),
     }),
     advanced: buildBetterAuthAdvancedOptions({ disableSecureCookies }),
     // Registered only for a managed workspace instance: the plugin is what makes

@@ -102,6 +102,7 @@ import {
 } from "../services/index.js";
 import type { AgentCasteDirectoryPort } from "../services/agents.js";
 import { badRequest, conflict, forbidden, HttpError, notFound, unprocessable } from "../errors.js";
+import { CHAT_INBOUND_WAKE_KEY_PREFIX } from "../myrmidon/chat-holds/chat-backed.js"; // myrmidon(1.6.5 OWNER-CHAT-ADMISSION)
 import { PAPERCLIP_CORE_SKILL_KEYS } from "../services/company-skills.js";
 import { createRunSecretRedactionRegistry } from "../services/run-secret-redaction.js";
 import { assertAuthenticated, assertBoard, assertCompanyAccess, assertInstanceAdmin, buildActorSecretContext, getAccessibleResource, getActorInfo, hasCompanyAccess } from "./authz.js";
@@ -211,6 +212,7 @@ import type {
   SetupTokenTransportAdvisory,
 } from "@paperclipai/shared";
 import { SETUP_TOKEN_TRANSPORT_ADVISORY_CODE } from "@paperclipai/shared";
+import { readProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
 import {
   DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX,
   DEFAULT_CODEX_LOCAL_MODEL,
@@ -545,6 +547,8 @@ export function agentRoutes(
     opencode_local: "instructionsFilePath",
     cursor: "instructionsFilePath",
     pi_local: "instructionsFilePath",
+    // myrmidon(OMP-LOCAL): OMP instructions file path key
+    omp_local: "instructionsFilePath",
   };
   const DEFAULT_MANAGED_INSTRUCTIONS_ADAPTER_TYPES = new Set(Object.keys(DEFAULT_INSTRUCTIONS_PATH_KEYS));
 
@@ -775,7 +779,7 @@ export function agentRoutes(
   const companySkills = companySkillService(db);
   const workspaceOperations = workspaceOperationService(db);
   const instanceSettings = instanceSettingsService(db);
-  const strictSecretsMode = process.env.PAPERCLIP_SECRETS_STRICT_MODE === "true";
+  const strictSecretsMode = readProductEnv("SECRETS_STRICT_MODE") === "true";
 
   // The company-scoped adapter login-session service. It runs the device-login
   // flow in a fresh trusted sandbox and holds the one-time prompt in memory. The
@@ -2232,6 +2236,7 @@ export function agentRoutes(
       }
     }
     const disabled = new Set(getDisabledAdapterTypes());
+    if (process.env.MYRMIDON_DISABLE_HERMES_LOCAL === "1") disabled.add("hermes_local");
     if (!disabled.has(adapterType)) return adapterType;
     const available = listServerAdapters()
       .map((a) => a.type)
@@ -2545,8 +2550,8 @@ export function agentRoutes(
 
   function codexLocalAgentHome(companyId: string, agentId: string): string {
     const instanceRoot = resolvePaperclipInstanceRootForAdapter({
-      homeDir: asNonEmptyString(process.env.PAPERCLIP_HOME) ?? undefined,
-      instanceId: asNonEmptyString(process.env.PAPERCLIP_INSTANCE_ID) ?? undefined,
+      homeDir: asNonEmptyString(readProductEnv("HOME")) ?? undefined,
+      instanceId: asNonEmptyString(readProductEnv("INSTANCE_ID")) ?? undefined,
       env: process.env,
     });
     return path.resolve(instanceRoot, "companies", companyId, "agents", agentId, "codex-home");
@@ -3091,6 +3096,8 @@ export function agentRoutes(
     "gemini_local",
     "opencode_local",
     "pi_local",
+    // myrmidon(OMP-LOCAL): OMP materialized runtime skills fallback
+    "omp_local",
   ]);
 
   function shouldMaterializeRuntimeSkillsForAdapter(adapterType: string) {
@@ -4295,7 +4302,7 @@ export function agentRoutes(
     const worktreeActivation = await resolveWorktreeRunExecutionActivationState({
       getExperimental: () => instanceSettingsService(db).getExperimental(),
     });
-    const isWorktreeRuntime = isTruthyRuntimeEnvValue(process.env.PAPERCLIP_IN_WORKTREE);
+    const isWorktreeRuntime = isTruthyRuntimeEnvValue(readProductEnv("IN_WORKTREE"));
     const eligibleRows = !isWorktreeRuntime
       ? rows
       : worktreeActivation.armed
@@ -5016,6 +5023,11 @@ export function agentRoutes(
     // check below. The gate applies only when the request carries `boardAdmin`,
     // so ordinary permission updates keep their existing behavior.
     const requestedBoardAdmin = req.body.boardAdmin as boolean | undefined;
+    // myrmidon(1.6.5-F-23): the off-run self-secret toggle is board-only.
+    if (req.body.offRunSecretRead !== undefined && req.actor.type !== "board") {
+      res.status(403).json({ error: "Only board actors can manage off-run secret read grants" });
+      return;
+    }
     if (requestedBoardAdmin !== undefined) {
       if (req.actor.type === "agent") {
         if (!req.actor.agentId) {
@@ -5174,6 +5186,21 @@ export function agentRoutes(
       effectiveCanAssignTasks,
       req.actor.type === "board" ? (req.actor.userId ?? null) : null,
     );
+
+    // myrmidon(1.6.5-F-23): grant or revoke the off-run self-secret read
+    // grant. Revocation removes the row; issuance gets the default +30 days
+    // expiry from setPrincipalPermission.
+    if (req.body.offRunSecretRead !== undefined) {
+      await access.ensureMembership(agent.companyId, "agent", agent.id, "member", "active");
+      await access.setPrincipalPermission(
+        agent.companyId,
+        "agent",
+        agent.id,
+        "secrets:read_off_run",
+        req.body.offRunSecretRead,
+        req.actor.type === "board" ? (req.actor.userId ?? null) : null,
+      );
+    }
 
     const actor = getActorInfo(req);
     await logActivity(db, {
@@ -6260,6 +6287,12 @@ export function agentRoutes(
       }
       wakePayload = { ...(wakePayload ?? {}), issueId: topReadyTask.id }; // myrmidon(WAKE-BIND)
     }
+    // myrmidon(1.6.5 OWNER-CHAT-ADMISSION): `chat-inbound:` marks the durable
+    // receipt of a person's chat message, and the queue admits such a run by the
+    // container floor alone. A public wake must not claim it.
+    if (typeof req.body.idempotencyKey === "string" && req.body.idempotencyKey.startsWith(CHAT_INBOUND_WAKE_KEY_PREFIX)) {
+      throw unprocessable(`idempotencyKey must not start with "${CHAT_INBOUND_WAKE_KEY_PREFIX}"`);
+    }
     const run = await heartbeat.wakeup(id, {
       failedRunId: req.body.failedRunId ?? null,
       ...(req.actor.type === "board" && !req.body.failedRunId ? { manualUserWake: true } : {}),
@@ -6408,6 +6441,9 @@ export function agentRoutes(
       wakeOpts.payload = req.actor.type === "agent"
         ? { ...body.payload, commentId: undefined, wakeCommentId: undefined, wakeCommentIds: undefined }
         : body.payload as Record<string, unknown>;
+    }
+    if (typeof body.idempotencyKey === "string" && body.idempotencyKey.startsWith(CHAT_INBOUND_WAKE_KEY_PREFIX)) {
+      throw unprocessable(`idempotencyKey must not start with "${CHAT_INBOUND_WAKE_KEY_PREFIX}"`); // myrmidon(1.6.5 OWNER-CHAT-ADMISSION)
     }
     if (typeof body.idempotencyKey === "string" && body.idempotencyKey.length > 0) {
       wakeOpts.idempotencyKey = body.idempotencyKey;

@@ -380,7 +380,7 @@ export function createSkillLifecycleService(deps: SkillLifecycleServiceDeps): Sk
       for (const skill of skills) {
         const record = byId.get(skill.id) ?? null;
         const state: SkillDeliveryState | null = record
-          ? { state: record.state, verifiedVersionId: record.verifiedVersionId }
+          ? { state: record.state, verifiedVersionId: record.verifiedVersionId, authorAgentId: skill.originAgentId ?? null }
           : null;
         const decision = decideSkillDelivery({ skillKey: skill.key, agentId, lifecycle: state, pilotAgentIds });
         if (decision.blocked) {

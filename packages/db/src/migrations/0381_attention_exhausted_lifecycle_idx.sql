@@ -1,0 +1,30 @@
+-- myrmidon(1.6.5-F-15): the attention screen's exhausted-runs query scans
+-- heartbeat_run_events. server/src/services/attention-exhausted-runs.ts filters
+-- company_id + event_type = 'lifecycle' + message like 'Bounded retry exhausted%'
+-- before it joins the run rows. The two existing non-unique indexes on the table
+-- — heartbeat_run_events_company_run_idx (company_id, run_id) and
+-- heartbeat_run_events_company_created_idx (company_id, created_at) — do not
+-- carry event_type, so the planner read every event row of the company: a
+-- sequential scan (measured on the production board database during the F-15
+-- trace: the exhausted-runs leg of the attention feed re-read the whole events
+-- slice on every poll, feed p50 2.3 s / p95 4.7 s).
+--
+-- The partial index below carries the filter columns in the emitted order and
+-- is restricted to the lifecycle rows the query can ever return, so the scan
+-- shrinks to the lifecycle slice of one company. Verified on embedded
+-- PostgreSQL with 83 200 seeded events across 20 companies: a sequential scan
+-- of the whole table (Rows Removed by Filter: 83 095, 20.2 ms) before, a
+-- bitmap index scan on this index (0.87 ms) after (see
+-- packages/db/src/attention-exhausted-lifecycle-index.myrmidon.test.ts).
+--
+-- CREATE INDEX IF NOT EXISTS, not CONCURRENTLY: drizzle migrations run
+-- transactionally. heartbeat_run_events is bucketed "large" by
+-- check-migration-safety.ts (localRows 10 833 × factor 250 ≈ 2.7 M estimated
+-- rows), so a plain CREATE INDEX is reported as a warning; following the 0307
+-- precedent the statement carries an explicit ignore. The index is created
+-- once, forward-only, and the partial predicate keeps the build cost at the
+-- lifecycle slice. On a live board an operator can pre-build it with CREATE
+-- INDEX CONCURRENTLY IF NOT EXISTS using this definition — the statement below
+-- then skips the finished work.
+-- paperclip:migration-safety-ignore large-create-index-not-concurrently: Drizzle migrations run transactionally so CONCURRENTLY is unavailable; this forward-only partial index is required for the attention screen's exhausted-runs leg and is a no-op where the operator pre-built it concurrently.
+CREATE INDEX IF NOT EXISTS "heartbeat_run_events_company_lifecycle_run_idx" ON "heartbeat_run_events" USING btree ("company_id","event_type","run_id") WHERE "event_type" = 'lifecycle';
