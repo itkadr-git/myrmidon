@@ -7090,7 +7090,7 @@ export function agentRoutes(
       ...(issueId ? [sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`] : []),
     )).orderBy(desc(heartbeatRuns.createdAt)).limit(limit);
     res.set("Cache-Control", "no-cache, no-store");
-    res.json(await Promise.all(await runRedactions.redactForRuns(companyId, await Promise.all(rows.map(async (row) => {
+    const decoratedRows = await Promise.all(rows.map(async (row) => {
       const decorated = await heartbeat.decorateActiveRunStatus(row);
       const { externalSession: _externalSession, ...publicRow } = row;
       const safeExternalSession = await runRedactions.redactForRun(companyId, row.id, row.externalSession);
@@ -7101,7 +7101,12 @@ export function agentRoutes(
         cancelUrl: ["queued", "running"].includes(decorated.status) ? `/api/heartbeat-runs/${row.id}/cancel` : null,
         _safeExternalSession: safeExternalSession,
       };
-    })))).map(({ _safeExternalSession, ...run }) => ({ ...run, externalSession: _safeExternalSession })));
+    }));
+    const redactedRuns = await runRedactions.redactForRuns(companyId, decoratedRows);
+    res.json(redactedRuns.map(({ _safeExternalSession, ...run }) => ({
+      ...run,
+      externalSession: _safeExternalSession,
+    })));
   });
 
   router.get("/companies/:companyId/provider-traces", async (req, res) => {
