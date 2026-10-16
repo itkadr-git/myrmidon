@@ -23,6 +23,7 @@ export const FULL_TRIGGERS = [
   { pattern: /^scripts\/__tests__\//, reason: "root build and test scripts" },
   { pattern: /^\.github\/workflows\/myrmidon-ci\.yml$/, reason: "CI workflow" },
   { pattern: /^scripts\/myrmidon\/ci\//, reason: "CI test selection" },
+  { pattern: /^scripts\/myrmidon\/deploy\/predeploy-board-check\.(sh|test\.mjs)$/, reason: "predeploy compatibility gate" },
   { pattern: /^packages\/db\//, reason: "database package" },
   { pattern: /^packages\/shared\//, reason: "shared package" },
   { pattern: /^packages\/plugins\/sdk\//, reason: "plugin SDK" },
