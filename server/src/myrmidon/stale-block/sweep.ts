@@ -148,7 +148,7 @@ async function blockedCandidates(db: Db, pageSize: number): Promise<BlockedRow[]
     .where(
       and(
         eq(issues.status, "blocked"),
-        sql`${issues.unblockDescriptor} is null or (${issues.unblockDescriptor} -> 'reasonRef') is null`,
+        sql`(${issues.unblockDescriptor} is null or (${issues.unblockDescriptor} -> 'reasonRef') is null)`,
         notExists(
           db
             .select({ one: sql`1` })
