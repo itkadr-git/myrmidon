@@ -16,7 +16,7 @@
 
 import { randomUUID } from "node:crypto";
 import { parseBrowserFleet, type BrowserFleetEntry } from "@paperclipai/shared/myrmidon-browser-console";
-import { liveBehaviorSetting } from "../behavior-settings/live.js";
+import { liveBehaviorSetting, liveBehaviorSettingsView } from "../behavior-settings/live.js";
 import type { Db } from "@paperclipai/db";
 import { logger } from "../../middleware/logger.js";
 import { autoCloseReason, readBrowserConsoleTimers, sessionDeadlines, type BrowserConsoleTimers } from "./timers.js";
@@ -80,7 +80,9 @@ export function browserConsoleService(deps: BrowserSessionServiceDeps) {
   }
 
   function fleet(): BrowserFleetEntry[] {
-    const raw = useLiveSettings ? JSON.stringify(liveBehaviorSetting("browser_fleet")) : env.MYRMIDON_BROWSER_FLEET;
+    const raw = useLiveSettings
+      ? JSON.stringify(liveBehaviorSettingsView().settings.browser_fleet)
+      : env.MYRMIDON_BROWSER_FLEET;
     const parsed = parseBrowserFleet(raw);
     if (!parsed.ok) {
       log.warn(`browser console: ${parsed.error}; the registry is empty until it is fixed`);

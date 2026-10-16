@@ -53,16 +53,10 @@ function productionDeps(): Partial<BehaviorSettingsServiceDeps> {
   return {
     apply: (settings) => {
       const instanceSettings = Object.fromEntries(
-        Object.entries(settings).filter(([key]) => {
-          const definition = behaviorSettingRegistry.get(key);
-          return definition?.scope === "instance";
-        }),
+        Object.entries(settings).filter(([key]) => behaviorSettingRegistry.get(key)?.scope === "instance"),
       );
       const view = resolveBehaviorSettings({ stored: instanceSettings, env: process.env });
-      applyLiveBehaviorSettings({
-        settings: Object.fromEntries(Object.entries(view.settings).filter(([key]) => behaviorSettingRegistry.get(key)?.scope === "instance")),
-        sources: Object.fromEntries(Object.entries(view.sources).filter(([key]) => behaviorSettingRegistry.get(key)?.scope === "instance")),
-      });
+      applyLiveBehaviorSettings(view);
       applyMyrmidonRunEnvAllow((view.settings.run_env_allow as string[] | undefined) ?? []);
     },
     scheduleResweep: scheduleBehaviorSettingsResweep,

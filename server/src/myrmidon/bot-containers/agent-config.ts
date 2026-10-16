@@ -14,10 +14,8 @@ export const BOT_CONTAINERS_ENV = "MYRMIDON_BOT_CONTAINERS";
 
 export function isBotContainersEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
   const raw = env[BOT_CONTAINERS_ENV]?.trim().toLowerCase();
-  const enabled = raw
-    ? ["1", "true", "yes", "on"].includes(raw)
-    : env === process.env && liveBehaviorSetting<boolean>("bot_containers");
-  return enabled;
+  if (raw) return ["1", "true", "yes", "on"].includes(raw);
+  return env === process.env && liveBehaviorSetting<boolean>("bot_containers");
 }
 
 const HERMES_GATEWAY_ADAPTER_TYPE = "hermes_gateway";
