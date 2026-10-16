@@ -230,6 +230,7 @@ describeEmbeddedPostgres("resolveActorSourceTrustForIssue", () => {
       sourceIssueId: issue!.id,
       sourceRunId: run!.id,
       sourceAgentId: agent.id,
+      promotionOwnerUserId: null,
     });
   });
 

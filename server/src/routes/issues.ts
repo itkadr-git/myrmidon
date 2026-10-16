@@ -3954,15 +3954,29 @@ export function issueRoutes(
     },
     actor: ReturnType<typeof getActorInfo>,
   ) {
-    const sourceTrust = await resolveActorSourceTrustForIssue({ db, issue, actor });
-    if (!sourceTrust) return null;
-    if (sourceTrust.disposition !== "quarantined") return sourceTrust;
     const [company] = await db
       .select({ defaultResponsibleUserId: companies.defaultResponsibleUserId })
       .from(companies)
       .where(eq(companies.id, issue.companyId));
+    const sourceTrust = await resolveActorSourceTrustForIssue({
+      db,
+      issue: {
+        ...issue,
+        responsibleUserId:
+          issue.responsibleUserId ??
+          actor.onBehalfOfUserId ??
+          company?.defaultResponsibleUserId ??
+          null,
+      },
+      actor,
+    });
+    if (!sourceTrust) return null;
+    if (sourceTrust.disposition !== "quarantined") return sourceTrust;
     const promotionOwnerUserId =
-      issue.responsibleUserId ?? company?.defaultResponsibleUserId ?? null;
+      issue.responsibleUserId ??
+      actor.onBehalfOfUserId ??
+      company?.defaultResponsibleUserId ??
+      null;
     if (!promotionOwnerUserId) {
       throw unprocessable("Low-trust output cannot be quarantined without a promotion owner");
     }
