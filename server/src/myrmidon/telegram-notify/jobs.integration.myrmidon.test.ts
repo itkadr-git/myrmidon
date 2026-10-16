@@ -25,7 +25,7 @@ import {
   toolConnections,
 } from "@myrmidon/db";
 import type { Db } from "@myrmidon/db";
-import { emptyTelegramNotifyDocument } from "@myrmidon/shared";
+import { emptyTelegramNotifyDocument, type TelegramNotifySettings as SharedTelegramNotifySettings } from "@myrmidon/shared";
 import {
   runDigestForCompany,
   runEscalationsForCompany,
@@ -228,7 +228,7 @@ describe("telegram notify jobs (DB-backed)", () => {
     settings.digest.enabled = true;
     settings.digest.time = "08:45";
     await mutateTelegramNotifySettingsDocument(db, fixture.companyId, () => ({
-      next: { ...emptyTelegramNotifyDocument(), settings },
+      next: { ...emptyTelegramNotifyDocument(), settings: settings as SharedTelegramNotifySettings },
       result: undefined,
     }));
 
