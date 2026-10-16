@@ -197,11 +197,11 @@ export async function checkStackReleases(db: Db, options: StackCheckOptions = {}
  * Mount the periodic release check. Off by default (no interval configured):
  * the board touches the network only when an operator sets the interval.
  */
-let stopCurrentSweep: (() => void) | null = null;
+let currentSweepStop: (() => void) | null = null;
 
 export function stopStackCheckSweep(): void {
-  stopCurrentSweep?.();
-  stopCurrentSweep = null;
+  currentSweepStop?.();
+  currentSweepStop = null;
 }
 
 export function startStackCheckSweep(db: Db, options: StackCheckOptions = {}): () => void {
@@ -220,10 +220,11 @@ export function startStackCheckSweep(db: Db, options: StackCheckOptions = {}): (
   };
   const timer = setInterval(run, intervalSec * 1000);
   timer.unref?.();
-  stopCurrentSweep = () => clearInterval(timer);
+  const stopCurrentSweep = () => clearInterval(timer);
+  currentSweepStop = stopCurrentSweep;
   run();
   return () => {
-    if (stopCurrentSweep) stopCurrentSweep();
-    stopCurrentSweep = null;
+    stopCurrentSweep();
+    if (currentSweepStop === stopCurrentSweep) currentSweepStop = null;
   };
 }
