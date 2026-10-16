@@ -11,7 +11,7 @@ import {
   type SwarmClaimSettings,
   type SwarmQueueCandidate,
 } from "@paperclipai/shared";
-import { companies, issues } from "@paperclipai/db";
+import { agentWakeupRequests, agents, chatConversations, companies, heartbeatRuns, instanceSettings, issueClaims, issueLabels, issueWatchdogs, issues } from "@paperclipai/db";
 import { claimCovers, selectQueueForAgent } from "./domain.js";
 import { createSwarmClaimSweeper } from "./sweep.js";
 import type { SwarmClaimEnqueueWakeup } from "./service.js";
@@ -109,22 +109,91 @@ describe("myrmidon(1.6.1 SWARM-IDLE-WAKE) sweep pass", () => {
               }),
             }),
             where: () => {
-              if (table === companies) return { limit: (limit: number) => Promise.resolve([{ id: "company-1" }].slice(0, limit)) };
+              const expiredClaim = {
+                id: "claim-old",
+                issueId: "released-issue",
+                agentId: "former-agent",
+                heartbeatAt: NOW,
+                expiresAt: new Date(NOW.getTime() - 60_000),
+                releasedAt: null,
+              };
+              const idleAgent = {
+                id: "idle-agent",
+                companyId: "company-1",
+                name: "Idle agent",
+                reportsTo: null,
+                role: "engineer",
+                status: "idle",
+                metadata: {},
+              };
+              const issue = {
+                id: "released-issue",
+                companyId: "company-1",
+                identifier: "ENG-42",
+                priority: "medium",
+                createdAt: NOW,
+                status: "todo",
+                assigneeAgentId: null,
+                assigneeUserId: null,
+                hiddenAt: null,
+                conversationAgentId: null,
+                conversationUserId: null,
+                parentId: null,
+                projectId: null,
+                casteKey: null,
+                executionWorkspaceId: null,
+                executionWorkspacePreference: null,
+                executionWorkspaceSettings: null,
+                responsibleUserId: null,
+                createdByUserId: null,
+              };
+              if (table === companies) {
+                return { limit: (limit: number) => Promise.resolve([{ id: "company-1" }].slice(0, limit)) };
+              }
+              if (table === instanceSettings) {
+                return { then: (resolve: (rows: unknown[]) => unknown) => Promise.resolve([{ id: "settings-1", general: {}, experimental: {}, createdAt: NOW, updatedAt: NOW }]).then(resolve) };
+              }
+              if (table === issueLabels) {
+                return { orderBy: () => Promise.resolve([]) };
+              }
+              if (table === issueWatchdogs) {
+                return Promise.resolve([]);
+              }
+              if (table === agentWakeupRequests) {
+                return Promise.resolve([]);
+              }
+              if (table === heartbeatRuns) {
+                return {
+                  limit: () => Promise.resolve([]),
+                  groupBy: empty,
+                  then: (resolve: (rows: unknown[]) => unknown) => Promise.resolve([]).then(resolve),
+                };
+              }
+              if (table === chatConversations) {
+                return { limit: () => Promise.resolve([]) };
+              }
+              if (table === issueClaims) {
+                if (projection && "agentId" in projection) return Promise.resolve([]);
+                if (projection && "id" in projection) return { limit: () => Promise.resolve([]) };
+                return {
+                  orderBy: () => ({ limit: (limit: number) => Promise.resolve([expiredClaim].slice(0, limit)) }),
+                };
+              }
+              if (table === agents && projection && "reportsTo" in projection) {
+                return { then: (resolve: (rows: unknown[]) => unknown) => Promise.resolve([idleAgent]).then(resolve) };
+              }
+              if (table === issues && projection && "companyId" in projection && "assigneeAgentId" in projection) {
+                return { limit: (limit: number) => Promise.resolve([{ id: issue.id, companyId: issue.companyId, status: issue.status, assigneeAgentId: issue.assigneeAgentId }].slice(0, limit)) };
+              }
               if (projection && "agentId" in projection) return Promise.resolve([]);
               if (projection && "activeClaims" in projection) return Promise.resolve([]);
               return {
                 orderBy: () => ({
-                  limit: (limit: number) => Promise.resolve([
-                    { id: "claim-old", issueId: "released-issue", agentId: "former-agent", heartbeatAt: NOW, expiresAt: new Date(NOW.getTime() - 60_000), releasedAt: null },
-                  ].slice(0, limit)),
+                  limit: (limit: number) => Promise.resolve([issue].slice(0, limit)),
                 }),
-                limit: (limit: number) => Promise.resolve([
-                  { id: "released-issue", status: "todo", assigneeAgentId: null },
-                ].slice(0, limit)),
+                limit: (limit: number) => Promise.resolve([issue].slice(0, limit)),
                 groupBy: empty,
-                then: (resolve: (rows: unknown[]) => unknown) => Promise.resolve([
-                  { claim: { id: "claim-old", issueId: "released-issue", agentId: "former-agent", heartbeatAt: NOW, expiresAt: new Date(NOW.getTime() - 60_000), releasedAt: null } },
-                ]).then(resolve),
+                then: (resolve: (rows: unknown[]) => unknown) => Promise.resolve([issue]).then(resolve),
               };
             },
             for: () => ({
@@ -193,7 +262,12 @@ describe("myrmidon(1.6.1 SWARM-IDLE-WAKE) sweep pass", () => {
       set: expect.objectContaining({ assigneeAgentId: expect.any(String) }),
     }));
     expect(wakes).toHaveLength(1);
-    expect(wakes[0]!.opts).toMatchObject({ issueId: "released-issue", taskKey: "released-issue" });
+    expect(wakes[0]!.agentId).toBe("idle-agent");
+    expect(wakes[0]!.opts).toMatchObject({
+      reason: SWARM_CLAIM_WAKE_REASON,
+      payload: expect.objectContaining({ issueId: "released-issue" }),
+      contextSnapshot: expect.objectContaining({ issueId: "released-issue" }),
+    });
     expect(SWARM_CLAIM_WAKE_REASON).toBe("swarm_claim_queue");
     expect(SWARM_CLAIM_QUEUE_ISSUE_STATUSES).toContain("todo");
   });
