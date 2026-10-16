@@ -72,42 +72,39 @@ describe("myrmidon(1.6.1 SWARM-IDLE-WAKE) sweep pass", () => {
       }]),
       update: vi.fn(async () => [{ id: "released-issue" }]),
     };
-    const activeCompanyId = "company-1";
     const fakeQueryResults: unknown[][] = [
-      [{ id: activeCompanyId }], // active companies for the periodic matcher pass
-      [{ id: "agent-1", companyId: activeCompanyId, role: "engineer", status: "idle", metadata: {} }],
-      [], // live runs
-      [], // last runs
-      [], // active leases
-      [{ issueId: "released-issue", identifier: "ENG-42", priority: "medium", queuedAt: NOW, assigneeAgentId: null, projectId: null }],
       [{ id: "released-issue", status: "todo", assigneeAgentId: null }], // claim lock/read
     ];
-    const queryResult = <T>() => Promise.resolve((fakeQueryResults.shift() ?? []) as T[]);
+    let releasedQueryIndex = 0;
+    const queryResult = <T>() => {
+      const result = fakeQueryResults[releasedQueryIndex++] ?? [];
+      return Promise.resolve(result as T[]);
+    };
     const db = {
       query: { issues: issueTable },
       select: () => ({
         from: () => ({
           innerJoin: () => ({
             where: () => ({
-              orderBy: queryResult,
-              groupBy: queryResult,
-              limit: queryResult,
+              orderBy: empty,
+              groupBy: empty,
+              limit: empty,
             }),
           }),
           leftJoin: () => ({
             leftJoin: () => ({
-              where: () => ({ orderBy: queryResult }),
+              where: () => ({ orderBy: empty }),
             }),
           }),
           where: () => ({
-            orderBy: queryResult,
-            groupBy: queryResult,
-            limit: queryResult,
+            orderBy: empty,
+            groupBy: empty,
+            limit: empty,
           }),
           for: () => queryResult(),
         }),
       }),
-      insert: () => ({ values: () => ({ returning: queryResult }) }),
+      insert: () => ({ values: () => ({ returning: empty }) }),
       transaction: async (fn: (tx: unknown) => Promise<unknown>) => fn(db),
     };
     const settings: SwarmClaimSettings = {
