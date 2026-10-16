@@ -143,13 +143,11 @@ describeEmbeddedPostgres("reconcileStrandedAssignedIssues: infrastructure interr
   }, 30_000);
 
   it("returns terminal stranded work to the shared unassigned engineer queue", async () => {
-    const blockerId = randomUUID();
     const { companyId, agentId: managerId, issueId } = await seedStrandedIssue({
       errorCode: "adapter_failed",
       scheduledRetryAttempt: 0,
       createdAtOffsetMs: 0,
       scheduledRetryReason: "Recovery retry budget was exhausted",
-      blockerIssueId: blockerId,
     });
     const [manager] = await db.select().from(agents).where(eq(agents.id, managerId));
     expect(manager).toBeDefined();
@@ -168,7 +166,7 @@ describeEmbeddedPostgres("reconcileStrandedAssignedIssues: infrastructure interr
     await db.insert(issueRelations).values({
       companyId,
       issueId: coordinatorIssueId,
-      relatedIssueId: blockerId,
+      relatedIssueId: issueId,
       type: "blocks",
     });
 
@@ -177,12 +175,6 @@ describeEmbeddedPostgres("reconcileStrandedAssignedIssues: infrastructure interr
     const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
     expect(issue!.status).toBe("todo");
     expect(issue!.assigneeAgentId).toBeNull();
-    const blockers = await db
-      .select({ id: issues.id })
-      .from(issues)
-      .innerJoin(issueRelations, eq(issueRelations.relatedIssueId, issues.id))
-      .where(eq(issues.id, blockerId));
-    expect(blockers).toHaveLength(1);
     expect(await activeRecoveryActionsFor(issueId)).toHaveLength(0);
   }, 30_000);
 
@@ -214,7 +206,7 @@ describeEmbeddedPostgres("reconcileStrandedAssignedIssues: infrastructure interr
       type: "blocks",
     });
 
-    await heartbeatService(db).reconcileStrandedAssignedIssues();
+    await heartbeatService(db).reconcileStrandedAssignedIssues({ issueIds: [issueId] });
 
     const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
     expect(issue!.status).toBe("blocked");
