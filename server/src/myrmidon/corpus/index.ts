@@ -58,7 +58,6 @@ export type {
 
 import type { CorpusPortsResolver } from "./ports.js";
 import { createCorpusPorts, createCorpusMcpProvider } from "./adapters.js";
-import type { Db } from "@paperclipai/db";
 import type { Config } from "../../config.js";
 import { corpusService } from "./service.js";
 

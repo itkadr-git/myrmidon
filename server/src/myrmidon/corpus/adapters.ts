@@ -124,10 +124,7 @@ export function createCorpusPorts(db: Db, context: CorpusPortContext, config: Co
       async deleteDocument(companyId, id) { const d = await getDocument(companyId, id); if (!d) return false; await store.deleteDocument(companyId, id); await blobs.delete(d.blobRef); return true; },
       async countDocuments(companyId, datasetId) { return (await store.listDocuments({ companyId, datasetId })).length; },
       async getJob(companyId, jobId) { return jobRecord(companyId, await queue.getJob(companyId, jobId)); },
-      async counters(companyId) {
-        const datasets = await store.listDatasets(companyId); const docs = await store.listDocuments({ companyId });
-        return { datasets: datasets.length, documents: docs.length, readyDocuments: docs.filter((d) => d.status === "ready").length, failedDocuments: docs.filter((d) => d.status === "failed").length, chunks: countValue((await db.select({ value: count() }).from(corpusChunks).where(eq(corpusChunks.companyId, companyId)))[0]) };
-      },
+      async counters(companyId: string) { const datasets = await store.listDatasets(companyId); const docs: Array<{ byteSize: number; status: string }> = await store.listDocuments({ companyId }); const bytes = docs.reduce((sum: number, doc) => sum + doc.byteSize, 0); return { datasets: datasets.length, documents: docs.length, ready: docs.filter((d) => d.status === "ready").length, pending: docs.filter((d) => d.status === "queued" || d.status === "parsing").length, failed: docs.filter((d) => d.status === "failed").length, chunks: countValue((await db.select({ value: count() }).from(corpusChunks).where(eq(corpusChunks.companyId, companyId)))[0]), bytes }; },
     },
     blobs: {
       async put(input) { const ref = `${input.companyId}/${input.documentId}/${randomUUID()}`; const result = await blobs.put(ref, input.bytes); return { ref: result.key, byteSize: result.byteSize }; },
