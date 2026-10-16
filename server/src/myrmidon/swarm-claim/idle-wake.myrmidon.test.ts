@@ -148,7 +148,11 @@ describe("myrmidon(1.6.1 SWARM-IDLE-WAKE) sweep pass", () => {
         wakes.push({ agentId, opts: opts as unknown as Record<string, unknown> });
         return { id: "wake-next" } as never;
       },
-      castes: async () => [],
+      castes: async () => [{
+        role: "engineer",
+        maxActiveTasks: null,
+        swarmEligible: true,
+      }],
       isIssueCoolingDown: async () => false,
       isAgentAvailable: async () => true,
       isTaskBudgetBlocked: async () => false,
