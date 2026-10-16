@@ -1,0 +1,11 @@
+[Unit]
+Description=Hourly Myrmidon /tmp Janitor Timer
+Documentation=https://github.com/itkadr-git/myrmidon
+
+[Timer]
+OnCalendar=hourly
+Persistent=true
+RandomizedDelaySec=120
+
+[Install]
+WantedBy=timers.target
