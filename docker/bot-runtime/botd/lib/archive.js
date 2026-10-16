@@ -27,6 +27,16 @@
 // silent pass.
 //
 // Plain Node (no dependencies), synchronous: one botd process, one copy at a time.
+//
+// myrmidon(ARCHIVE-MODE): archive files are the only copy of unpushed work
+// (source, patches, stashes) and every bot on a host shares uid 10001, so the
+// mode bits are the only barrier between one bot's archive and another's
+// processes. Everything this module writes is born 0600/0640: an umask 0027
+// window is held for the duration of an archive pass (git bundle create and
+// tar -cf create 0666 & umask, so their files land 0640), and the files
+// written directly (patch, manifest.json, tmp files) are created with an
+// explicit 0600. The window is process-global, but botd is synchronous —
+// nothing else writes while an archive pass runs.
 
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
@@ -38,6 +48,12 @@ export const UNTRACKED_CAP_BYTES = 200 * 1024 * 1024;
 export const RETENTION_DAYS = 30;
 export const RETENTION_CAP_BYTES = 2 * 1024 * 1024 * 1024;
 export const MANIFEST_NAME = "manifest.json";
+// The umask window of an archive pass: files created by child tools (git bundle
+// create, tar -cf) land 0640, directories 0750. Direct writes use an explicit
+// 0600 below — umask only masks new modes, it never restricts an explicit one.
+export const ARCHIVE_UMASK = 0o027;
+// Mode of everything the module writes itself (patch, manifest.json, its tmp files).
+export const ARCHIVE_FILE_MODE = 0o600;
 
 const ISSUE_KEY_RE = /^[A-Z][A-Z0-9]*-[0-9]+$/;
 // Legacy (non-registry) directories keep their own name as the archive key; it only has to be
@@ -162,6 +178,24 @@ function tarRefusal(dirBytes, cap, archiveRoot, minFree) {
   return undefined;
 }
 
+/**
+ * Holds an umask window for the duration of `fn`: child tools (git bundle
+ * create, tar -cf) create their files 0666 & ~umask, so 0o027 lands them at
+ * 0640 — group-readable, never world-readable. Returns fn's value; the
+ * previous umask is always restored, including on a throw.
+ * @template T
+ * @param {() => T} fn
+ * @returns {T}
+ */
+export function withArchiveUmask(fn) {
+  const previous = process.umask(ARCHIVE_UMASK);
+  try {
+    return fn();
+  } finally {
+    process.umask(previous);
+  }
+}
+
 export function compactTs(date) {
   return date.toISOString().replace(/\.\d+Z$/, "Z").replace(/[-:]/g, "");
 }
@@ -203,7 +237,8 @@ export function readManifest(archiveRoot, now = new Date()) {
 function writeManifest(archiveRoot, manifest) {
   const p = manifestPath(archiveRoot);
   const tmp = `${p}.tmp-${process.pid}`;
-  fs.writeFileSync(tmp, `${JSON.stringify(manifest, null, 2)}\n`);
+  // ARCHIVE-MODE: the manifest lists every archive file of this bot; 0600.
+  fs.writeFileSync(tmp, `${JSON.stringify(manifest, null, 2)}\n`, { mode: ARCHIVE_FILE_MODE });
   fs.renameSync(tmp, p);
 }
 
@@ -299,6 +334,11 @@ export function archive(copyPath, key, opts = {}) {
   if (typeof copyPath !== "string" || !fs.existsSync(path.join(copyPath, ".git"))) {
     return { ok: false, reason: `${copyPath} is not a git working copy` };
   }
+  // ARCHIVE-MODE: the whole pass (bundle/patch/tar of child tools + direct writes) 0600/0640.
+  return withArchiveUmask(() => archiveUnsafe(copyPath, key, { archiveRoot, cap, fullTarCap, now, keyRe, opts }));
+}
+
+function archiveUnsafe(copyPath, key, { archiveRoot, cap, fullTarCap, now, keyRe, opts }) {
   const written = [];
   try {
     fs.mkdirSync(archiveRoot, { recursive: true });
@@ -378,7 +418,9 @@ export function archive(copyPath, key, opts = {}) {
     // 2. patch: tracked changes, staged and unstaged, against HEAD.
     written.push(patch);
     const diff = run(git, ["-C", copyPath, "diff", "HEAD", "--binary"]).stdout;
-    fs.writeFileSync(patch, diff);
+    // ARCHIVE-MODE: the patch carries tracked source edits; 0600 (explicit —
+    // it must not depend on the process umask).
+    fs.writeFileSync(patch, diff, { mode: ARCHIVE_FILE_MODE });
 
     // 3. untracked files without ignored ones; over the cap only bundle+patch.
     const untracked = listUntracked(copyPath, opts);
@@ -439,6 +481,12 @@ export function archiveTree(dirPath, key, opts = {}) {
   const archiveRoot = opts.archiveRoot || DEFAULT_ARCHIVE_ROOT;
   const now = opts.now || new Date();
   if (typeof key !== "string" || !SAFE_KEY_RE.test(key)) return { ok: false, reason: `invalid archive key ${JSON.stringify(key)}` };
+  let tar;
+  // ARCHIVE-MODE: the child tar's .dir.tar lands 0640 inside the window.
+  return withArchiveUmask(() => archiveTreeUnsafe(dirPath, key, { fullTarCap, archiveRoot, now, opts }));
+}
+
+function archiveTreeUnsafe(dirPath, key, { fullTarCap, archiveRoot, now, opts }) {
   let tar;
   try {
     if (!fs.statSync(dirPath).isDirectory()) return { ok: false, reason: `${dirPath} is not a directory` };
