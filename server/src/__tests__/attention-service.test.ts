@@ -540,6 +540,15 @@ describeEmbeddedPostgres("attention service", () => {
       updatedAt: new Date("2026-07-09T12:04:00.000Z"),
     });
 
+    const replayHoldIssueId = await insertIssue({
+      companyId, identifier: "ATN-REPLAY", title: "Replay held task", status: "in_progress", assigneeAgentId: workerId, updatedAt: baseTime,
+    });
+    const replayHoldActionId = randomUUID();
+    await db.insert(issueRecoveryActions).values({
+      id: replayHoldActionId, companyId, sourceIssueId: replayHoldIssueId, kind: "active_run_watchdog", status: "resolved",
+      cause: "uncertain_provider_action", fingerprint: "attention-replay-hold",
+      evidence: { automaticRecovery: { replay: "blocked" } }, nextAction: "Inspect failed execution", updatedAt: baseTime,
+    });
     await db.insert(issueRecoveryActions).values([
       {
         id: randomUUID(),
@@ -743,11 +752,19 @@ describeEmbeddedPostgres("attention service", () => {
       budget_alert: 2,
       agent_error_alert: 1,
     });
+    const replayCard = feed.items.find((item) => item.sourceKind === "replay_blocked");
+    expect(replayCard).toMatchObject({
+      sourceKind: "replay_blocked",
+      subject: { id: replayHoldIssueId, metadata: { responsibleAgentId: null, responsibleUserId: "board-user", dueAt: expect.any(String) } },
+      decideBy: expect.any(String),
+      whyNow: expect.stringContaining("board operator"),
+    });
     expect(feed.items.map((item) => item.sourceKind)).toEqual(expect.arrayContaining([
       "approval",
       "issue_thread_interaction",
       "join_request",
       "recovery_action",
+      "replay_blocked",
       "blocker_attention",
       "review",
       "failed_run",

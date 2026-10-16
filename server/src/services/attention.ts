@@ -272,6 +272,7 @@ const SOURCE_RANK: Record<AttentionSourceKind, number> = {
   // myrmidon(OPE-6011): a held task blocks all of its wakes — ranked with the
   // other machine-recovery stops, just below a recovery action itself.
   execution_hold: 1,
+  replay_blocked: 1,
   // myrmidon(1.6.5-F21-B): unanswered owner cards stall delivery; a card with
   // some stale ones ranks with the stalled-review notices.
   owner_pending_card: 16,
@@ -2994,7 +2995,7 @@ async function buildAttentionFeedSnapshot(
       for (const card of await listExecutionHoldCards(db, companyId)) {
         add(createItem({
           companyId,
-          sourceKind: "execution_hold",
+          sourceKind: "replay_blocked",
           subject: {
             kind: "issue",
             id: card.issueId,
@@ -3005,11 +3006,15 @@ async function buildAttentionFeedSnapshot(
             href: card.issueIdentifier ? `/${prefix}/issues/${card.issueIdentifier}` : null,
             metadata: {
               recoveryActionId: card.actionId,
+              responsibleAgentId: card.responsibleAgentId,
+              responsibleAgentName: card.responsibleAgentName,
+              responsibleUserId: card.responsibleUserId,
+              dueAt: card.decideByAt,
               cause: card.cause,
               failedRunId: card.failedRunId,
             },
           },
-          whyNow: executionHoldSignalWhyNow(card),
+          whyNow: `Replay blocked: ${card.responsibleAgentName ? `responsible lead ${card.responsibleAgentName}` : `board operator${card.responsibleUserId ? ` (${card.responsibleUserId})` : ""}`} must triage this issue.`,
           decisionVerbs: decisionVerbs(
             {
               id: "confirm_continue",
@@ -3022,11 +3027,13 @@ async function buildAttentionFeedSnapshot(
           ),
           inlineResolvable: false,
           entryRule:
-            "a settled execution-reconciliation hold (replay=blocked) is the issue's newest effective blocker and the issue has an assignee",
+            "a settled replay block is the issue's newest effective blocker, the issue has an assignee, and it needs daily triage by its responsible lead or board operator",
           exitRule:
-            "the hold is superseded (explicit wake, recovery resolution, or the Confirm verb), or the issue loses its assignee.",
+            "the replay block is cleared or superseded, or the issue loses its assignee.",
           dedupKey: executionHoldSignalDedupKey(card),
           severity: executionHoldSignalSeverity(),
+          decideBy: card.decideByAt,
+          decideByAttribution: { type: card.responsibleAgentId ? "agent" : "user", agentId: card.responsibleAgentId, agentName: card.responsibleAgentName, userId: null, runId: null, responsibleUserId: card.responsibleUserId, updatedAt: card.activityAt },
           activityAt: card.activityAt,
           createdAt: card.activityAt,
           updatedAt: card.activityAt,
