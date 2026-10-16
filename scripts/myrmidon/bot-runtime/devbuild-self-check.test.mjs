@@ -28,9 +28,11 @@ const ENTRYPOINT = path.resolve("docker/bot-runtime/entrypoint.sh");
 function extractSelfCheck() {
   const src = readFileSync(ENTRYPOINT, "utf8");
   const start = src.indexOf("devbuild_self_check() {");
-  const end = src.indexOf("fi", src.indexOf('MYRMIDON_DEVBUILD_CHECK', start));
-  assert.ok(start > 0 && end > start, "devbuild_self_check block found in the entrypoint");
-  return src.slice(start, end + 2);
+  const marker = "run_bounded_diagnostic() {";
+  const endMarker = "\n# --replace:";
+  const end = src.indexOf(endMarker, src.indexOf(marker));
+  assert.ok(start > 0 && end > start, "devbuild self-check and bounded runner block found in the entrypoint");
+  return src.slice(start, end);
 }
 
 function makeSandbox({ devbuildExit = 0, withDevbuild = true } = {}) {
