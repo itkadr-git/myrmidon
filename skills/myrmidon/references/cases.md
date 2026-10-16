@@ -169,7 +169,7 @@ Roles:
 - `reference`: related issue context
 
 Agent run writes auto-link the run's issue when Myrmidon can resolve it from
-the run JWT or `X-Myrmidon-Run-Id`. Creation/upsert writes use `origin`; later
+the run JWT or `X-Paperclip-Run-Id`. Creation/upsert writes use `origin`; later
 document, patch, and attachment writes use `work` when no link already exists.
 You do not need to manually link the current issue before writing the case.
 

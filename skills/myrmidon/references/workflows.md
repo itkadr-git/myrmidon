@@ -138,4 +138,4 @@ npx paperclipai issue update <issue-id> --assignee-agent-id <other-agent-id> --s
 
 5. Cleanup: mark temporary issues done/cancelled with a clear note.
 
-If you use direct `curl` during these tests, include `X-Myrmidon-Run-Id` on all mutating issue requests whenever running inside a heartbeat.
+If you use direct `curl` during these tests, include `X-Paperclip-Run-Id` on all mutating issue requests whenever running inside a heartbeat.

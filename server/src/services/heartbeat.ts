@@ -860,7 +860,7 @@ const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
 const EXTERNAL_ATTACHMENT_OMISSIONS_KEY = "externalAttachmentOmissions";
 const PAPERCLIP_WAKE_PAYLOAD_KEY = "paperclipWake";
 const ACCEPTED_PLAN_CONVERSION_SKILL_KEY =
-  "paperclipai/paperclip/paperclip-converting-plans-to-tasks";
+  "paperclipai/paperclip/myrmidon-converting-plans-to-tasks";
 const PAPERCLIP_AGENT_MESSAGE_KEY = "paperclipAgentMessage";
 const PAPERCLIP_HARNESS_CHECKOUT_KEY = "paperclipHarnessCheckedOut";
 const PAPERCLIP_EXTERNAL_CHAT_EXECUTION_BOUND_KEY =
