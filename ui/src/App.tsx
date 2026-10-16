@@ -436,6 +436,10 @@ function boardRoutes(streamlinedUiEnabled: boolean) {
       <Route path="approvals/all" element={<Approvals />} />
       <Route path="approvals/:approvalId" element={<ApprovalDetail />} />
       <Route path="activity" element={streamlinedUiEnabled ? <CompanyActivity /> : <ProductionSurface><ProductionCompanyActivity /></ProductionSurface>} />
+      {/* Registered in both UI modes: the sidebar links to them in the
+          streamlined menu too (OPE-7948). */}
+      <Route path="swarm-claim" element={<ProductionSurface><ProductionSwarmSupervisor /></ProductionSurface>} /> {/* myrmidon(1.6-SWARM-CLAIM-B) */}
+      <Route path="foraging" element={<ProductionSurface><ProductionForaging /></ProductionSurface>} /> {/* myrmidon(1.6-FORAGE) */}
       {streamlinedUiEnabled ? (
         <>
           <Route path="activity/runs" element={<AuditHub section="runs" />} />
@@ -456,8 +460,6 @@ function boardRoutes(streamlinedUiEnabled: boolean) {
         <>
           <Route path="costs" element={<ProductionSurface><ProductionCosts /></ProductionSurface>} />
           <Route path="quality" element={<ProductionSurface><ProductionQuality /></ProductionSurface>} /> {/* myrmidon(1.6-BASELINE) */}
-          <Route path="swarm-claim" element={<ProductionSurface><ProductionSwarmSupervisor /></ProductionSurface>} /> {/* myrmidon(1.6-SWARM-CLAIM-B) */}
-          <Route path="foraging" element={<ProductionSurface><ProductionForaging /></ProductionSurface>} /> {/* myrmidon(1.6-FORAGE) */}
           <Route path="audit" element={<Navigate to="/activity?mode=agents" replace />} />
         </>
       )}
