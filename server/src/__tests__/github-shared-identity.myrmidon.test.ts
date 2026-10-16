@@ -455,6 +455,30 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(github.calls).toEqual([]);
   });
 
+  it("routes Well repositories to an explicitly scoped PAT while Myrmidon remains on the App", async () => {
+    const input = await seed();
+    const appSecret = await registerApp(input, { appId: "101", key: KEY_A, installationId: "5001", tokenPrefix: "tok-app", repos: ["itkadr-git/myrmidon"] });
+    const patSecret = randomUUID();
+    const patToken = "test-well-pat-token";
+    await db.insert(companySecrets).values({ id: patSecret, companyId: input.companyId, key: patSecret, name: "Well PAT", scope: "company" });
+    vaultState.values.set(patSecret, patToken);
+    const app = entry(appSecret, { allowedRepos: ["itkadr-git/myrmidon"] });
+    const pat = { id: randomUUID(), name: "Well", tokenSecretId: patSecret, agentIds: [input.agentId], allowedRepos: ["BastionPrime/well*"] };
+    await writeGitHubSharedIdentitySettings(db, input.companyId, rules([app], { pats: [pat] }));
+
+    const well = await resolveGitHubOperationCredentials(db, { ...input, repository: "BastionPrime/wellboard" });
+    expect(well).toMatchObject({ status: "available", source: "pat", login: "Well", env: { GH_TOKEN: patToken } });
+    expect(github.calls).toEqual([]);
+    const myrmidon = await resolveGitHubOperationCredentials(db, { ...input, repository: "itkadr-git/myrmidon" });
+    expect(myrmidon).toMatchObject({ status: "available", source: "app" });
+    expect(myrmidon.env.GH_TOKEN).toBe("tok-app-myrmidon");
+    const stranger = await resolveGitHubOperationCredentials(db, { ...input, repository: "other-owner/private" });
+    expect(stranger).toMatchObject({ status: "absent", env: {} });
+    expect(vault.resolveSecretValue).toHaveBeenCalledTimes(2);
+    expect(vault.resolveSecretValue.mock.calls.map(([ , id]) => id)).not.toContain(patSecret);
+    expect(JSON.stringify(await db.select().from(runIdentityContexts).where(eq(runIdentityContexts.runId, input.runId)))).not.toContain(patToken);
+  });
+
   it("fails closed when GitHub refuses, and stays absent outside the rules or without a repository", async () => {
     const input = await seed("designer");
     const secretId = await registerApp(input, { appId: "101", key: KEY_A, installationId: "5001", tokenPrefix: "tok-a", repos: ["owner-a/repo-a"] });
