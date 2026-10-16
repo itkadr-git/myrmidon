@@ -194,9 +194,7 @@ export function createDbBotProfilePorts(db: Db): BotProfilePorts {
         return `${secret.latestVersion}:${secret.status}`;
       },
     },
-    // Re-read the effective allowlist for every profile pass so an instance
-    // settings PATCH takes effect without rebuilding the process.
-    { env: process.env, githubEnvAllowlist: undefined },
+    { env: process.env },
   );
   // myrmidon(PERF-DIET-G): the skills port, bound to the company services. The
   // pass it receives (a sweep's, profile-pass.ts) shares the catalogue reads and
