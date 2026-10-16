@@ -2937,6 +2937,22 @@ registry.registerPath({
 });
 
 registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/external-sessions",
+  tags: ["agents"],
+  summary: "List external sessions for a company",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    query: z.object({
+      agentId: z.string().optional(),
+      issueId: z.string().optional(),
+      limit: z.coerce.number().int().min(1).max(200).optional(),
+    }),
+  },
+  responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
   method: "post",
   path: "/api/companies/{companyId}/agents",
   tags: ["agents"],
