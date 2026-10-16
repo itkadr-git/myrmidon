@@ -17,7 +17,7 @@ function readMachineId(): string {
   throw new Error("Machine ID is unavailable");
 }
 
-export function licensingInstallIdRoutes() {
+export function licensingInstallIdRoutes(readInstallMachineId = readMachineId) {
   const router = Router();
   router.get("/licensing/install-id", (req, res, next) => {
     try {
@@ -27,7 +27,7 @@ export function licensingInstallIdRoutes() {
         res.json({ install_id: override, source: "MYR_LICENSE_INSTANCE_ID" });
         return;
       }
-      const machineId = readMachineId();
+      const machineId = readInstallMachineId();
       const installId = `myr-${createHash("sha256").update(machineId, "utf8").digest("hex").slice(0, 20)}`;
       res.json({ install_id: installId, source: "machine-id" });
     } catch (error) {

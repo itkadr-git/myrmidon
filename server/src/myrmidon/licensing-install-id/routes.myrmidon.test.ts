@@ -37,9 +37,18 @@ describe("GET /api/licensing/install-id", () => {
   });
 
   it("derives the A1 ID from the primary machine-id file", async () => {
-
+    vi.stubEnv("MYR_LICENSE_INSTANCE_ID", "");
     const expected = `myr-${createHash("sha256").update(MACHINE_ID, "utf8").digest("hex").slice(0, 20)}`;
-    const response = await request(app(true)).get("/api/licensing/install-id").expect(200);
+    const server = express();
+    server.use((req, _res, next) => {
+      (req as unknown as { actor: unknown }).actor = {
+        type: "board", source: "session", userId: "user-1", isInstanceAdmin: true, companyIds: [],
+      };
+      next();
+    });
+    server.use("/api", licensingInstallIdRoutes(() => MACHINE_ID));
+    server.use(errorHandler);
+    const response = await request(server).get("/api/licensing/install-id").expect(200);
     expect(response.body).toEqual({ install_id: expected, source: "machine-id" });
   });
 
