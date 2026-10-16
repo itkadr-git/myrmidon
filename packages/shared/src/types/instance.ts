@@ -181,6 +181,8 @@ export interface InstanceGeneralSettings {
    * field (packages/shared/src/validators/instance.ts).
    */
   botDisk?: StoredBotDiskSettings;
+  /** Live idle container lifecycle configuration. */
+  idleStop?: { enabled: boolean; afterSec: number; healthTimeoutMs: number };
   /**
    * myrmidon(1.6.1-BOT-DISK-C): per-bot disk quota (company default, per-caste
    * and per-agent overrides), changed from `GET`/`PATCH /api/myrmidon/bot-disk-quota`.

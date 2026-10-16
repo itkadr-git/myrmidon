@@ -2,6 +2,7 @@ import { BotContainerDriver } from './bot-containers/driver.js';
 import { IdleStopService } from './idle-stop.js';
 import { Db } from '@paperclipai/db';
 import { logger } from '../middleware/logger.js';
+import { instanceSettingsService } from '../services/instance-settings.js';
 
 let idleStopService: IdleStopService | undefined;
 
@@ -9,7 +10,7 @@ let idleStopService: IdleStopService | undefined;
  * Initializes IDLE-STOP at startup. An explicit environment setting wins;
  * otherwise the product default is enabled.
  */
-export function initializeIdleStopService(driver: BotContainerDriver, db: Db): void {
+export async function initializeIdleStopService(driver: BotContainerDriver, db: Db): Promise<void> {
   const rawEnabled = process.env.MYRMIDON_IDLE_STOP_ENABLED?.trim().toLowerCase();
   const enabled = rawEnabled === undefined
     ? true
@@ -17,19 +18,19 @@ export function initializeIdleStopService(driver: BotContainerDriver, db: Db): v
   const afterSec = parseInt(process.env.MYRMIDON_IDLE_STOP_AFTER_SEC || '1800', 10);
   const healthTimeoutMs = parseInt(process.env.MYRMIDON_IDLE_START_HEALTH_TIMEOUT_MS || '30000', 10);
 
-  if (!enabled) {
-    logger.info('IDLE-STOP service is disabled (MYRMIDON_IDLE_STOP_ENABLED=false)');
-    return;
-  }
-
+  const stored = await instanceSettingsService(db).getGeneral();
+  const settings = stored.idleStop;
+  const effectiveEnabled = typeof settings?.enabled === 'boolean' ? settings.enabled : enabled;
+  const effectiveAfterSec = typeof settings?.afterSec === 'number' ? settings.afterSec : afterSec;
+  const effectiveHealthTimeoutMs = typeof settings?.healthTimeoutMs === 'number' ? settings.healthTimeoutMs : healthTimeoutMs;
   idleStopService = new IdleStopService(driver, db, {
-    enabled,
-    afterSec,
-    healthTimeoutMs,
+    enabled: effectiveEnabled,
+    afterSec: effectiveAfterSec,
+    healthTimeoutMs: effectiveHealthTimeoutMs,
   }, logger);
   idleStopService.start();
 
-  logger.info(`IDLE-STOP service initialized: afterSec=${afterSec}, healthTimeoutMs=${healthTimeoutMs}`);
+  logger.info(`IDLE-STOP service initialized: afterSec=${effectiveAfterSec}, healthTimeoutMs=${effectiveHealthTimeoutMs}`);
 }
 
 export function getIdleStopService(): IdleStopService | undefined {
