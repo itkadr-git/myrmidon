@@ -668,6 +668,7 @@ describeEmbeddedPostgres("issue watchdog routes", () => {
   it("excludes task_watchdog child from follow-up serialization to avoid self-blocking and partial writes", async () => {
     const companyId = await seedCompany();
     const watchdogAgentId = await seedAgent(companyId, { name: "Serialization Watchdog" });
+    const childAssigneeAgentId = await seedAgent(companyId, { name: "Child Assignee" });
     const watchedRootId = await seedIssue(companyId, { title: "Watched root" });
     const watchdogIssueId = await seedIssue(companyId, {
       title: "Watchdog child issue",
@@ -694,7 +695,7 @@ describeEmbeddedPostgres("issue watchdog routes", () => {
     // 1. Create first follow-up child from the watchdog run.
     const firstChildRes = await request(app)
       .post(`/api/issues/${watchedRootId}/children`)
-      .send({ title: "First follow-up child" });
+      .send({ title: "First follow-up child", assigneeAgentId: childAssigneeAgentId });
 
     expect(firstChildRes.status, JSON.stringify(firstChildRes.body)).toBe(201);
     expect(firstChildRes.body).toMatchObject({
@@ -744,7 +745,7 @@ describeEmbeddedPostgres("issue watchdog routes", () => {
     // 2. Create second follow-up child from the watchdog run (verifying ordinary child serialization).
     const secondChildRes = await request(app)
       .post(`/api/issues/${watchedRootId}/children`)
-      .send({ title: "Second follow-up child" });
+      .send({ title: "Second follow-up child", assigneeAgentId: childAssigneeAgentId });
 
     expect(secondChildRes.status, JSON.stringify(secondChildRes.body)).toBe(201);
     expect(secondChildRes.body).toMatchObject({
