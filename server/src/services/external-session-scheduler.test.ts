@@ -1,9 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 import { ExternalSessionScheduler } from "./external-session-scheduler.js";
 
-function deferred<T = void>() {
-  let resolve!: (value: T | PromiseLike<T>) => void;
-  const promise = new Promise<T>((resolvePromise) => { resolve = resolvePromise; });
+function deferred() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((resolvePromise) => {
+    resolve = () => resolvePromise();
+  });
   return { promise, resolve };
 }
 
