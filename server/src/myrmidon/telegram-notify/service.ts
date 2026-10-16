@@ -46,7 +46,7 @@ export interface TelegramNotifyServiceDeps {
 }
 
 type SectionKey = keyof TelegramNotifySettingsPatch;
-const SECTION_KEYS = ["digest", "errors", "inbound", "escalations", "proactivity"] as const;
+const SECTION_KEYS = ["digest", "errors", "inbound", "escalations", "proactivity", "deploys"] as const;
 
 /**
  * The merge rule: an explicit value in the patch replaces the stored value,

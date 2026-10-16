@@ -33,6 +33,7 @@ const FULL_DEFAULTS = {
   inbound: { enabled: false, requireMention: true },
   escalations: { enabled: false, hours: 24, channel: "none", chatId: null, topicId: null },
   proactivity: { mode: "only_on_owner_request", rarelyMaxPerDay: 3 },
+  deploys: { enabled: false, chatId: null, topicId: null },
 };
 
 describe("myrmidon(OPE-3789): telegramNotify defaults", () => {
