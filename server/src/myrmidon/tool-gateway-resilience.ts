@@ -26,6 +26,7 @@ import type { Db } from "@paperclipai/db";
 import { toolApplications, toolCatalogEntries, toolConnections } from "@paperclipai/db";
 import { logger } from "../middleware/logger.js";
 import { validateToolContent } from "../services/tool-content-guards.js";
+import { liveBehaviorSetting } from "./behavior-settings/live.js";
 
 // ---------------------------------------------------------------------------
 // Settings
@@ -70,12 +71,16 @@ function readPositiveInt(env: NodeJS.ProcessEnv, key: string, fallback: number):
 
 /** Read at call time, so a changed environment applies without a code change. */
 export function toolGatewayResilienceSettings(env: NodeJS.ProcessEnv = process.env): ToolGatewayResilienceSettings {
+  const live = (key: string, envValue: number) =>
+    env === process.env ? liveBehaviorSetting<number>(key) : envValue;
+  const fromEnv = (key: string, envKey: string, fallback: number, read: (env: NodeJS.ProcessEnv, key: string, fallback: number) => number) =>
+    live(key, read(env, envKey, fallback));
   return {
-    breakerFailures: readNonNegativeInt(env, TOOL_BREAKER_FAILURES_ENV, DEFAULT_BREAKER_FAILURES),
-    breakerCooldownMs: readPositiveInt(env, TOOL_BREAKER_COOLDOWN_MS_ENV, DEFAULT_BREAKER_COOLDOWN_MS),
-    breakerWindowMs: readPositiveInt(env, TOOL_BREAKER_WINDOW_MS_ENV, DEFAULT_BREAKER_WINDOW_MS),
-    timeoutMaxMs: readPositiveInt(env, TOOL_TIMEOUT_MAX_MS_ENV, DEFAULT_TIMEOUT_MAX_MS),
-    timeoutSlowMs: readPositiveInt(env, TOOL_TIMEOUT_SLOW_MS_ENV, DEFAULT_TIMEOUT_SLOW_MS),
+    breakerFailures: fromEnv("tool_breaker_failures", TOOL_BREAKER_FAILURES_ENV, DEFAULT_BREAKER_FAILURES, readNonNegativeInt),
+    breakerCooldownMs: fromEnv("tool_breaker_cooldown_ms", TOOL_BREAKER_COOLDOWN_MS_ENV, DEFAULT_BREAKER_COOLDOWN_MS, readPositiveInt),
+    breakerWindowMs: fromEnv("tool_breaker_window_ms", TOOL_BREAKER_WINDOW_MS_ENV, DEFAULT_BREAKER_WINDOW_MS, readPositiveInt),
+    timeoutMaxMs: fromEnv("tool_timeout_max_ms", TOOL_TIMEOUT_MAX_MS_ENV, DEFAULT_TIMEOUT_MAX_MS, readPositiveInt),
+    timeoutSlowMs: fromEnv("tool_timeout_slow_ms", TOOL_TIMEOUT_SLOW_MS_ENV, DEFAULT_TIMEOUT_SLOW_MS, readPositiveInt),
   };
 }
 

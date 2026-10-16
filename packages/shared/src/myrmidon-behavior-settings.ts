@@ -79,7 +79,46 @@ export class BehaviorSettingRegistry {
 /** Global registry instance */
 export const behaviorSettingRegistry = new BehaviorSettingRegistry();
 
-// Example settings for self-validation - these will be removed in production
+behaviorSettingRegistry.register({
+  key: "bot_egress_mode",
+  envName: "MYRMIDON_BOT_EGRESS_MODE",
+  default: "off",
+  scope: "instance",
+  section: "guardrails",
+  valueType: "string",
+  validate: (value: unknown): "off" | "log" | null =>
+    typeof value === "string" && ["off", "log"].includes(value.trim().toLowerCase())
+      ? (value.trim().toLowerCase() as "off" | "log")
+      : null,
+});
+
+const nonNegativeInteger = (value: unknown): number | null => {
+  const parsed = typeof value === "number" ? value : Number(value);
+  return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : null;
+};
+const positiveInteger = (value: unknown): number | null => {
+  const parsed = typeof value === "number" ? value : Number(value);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
+};
+
+for (const [key, envName, fallback, validate] of [
+  ["tool_breaker_failures", "MYRMIDON_TOOL_BREAKER_FAILURES", 3, nonNegativeInteger],
+  ["tool_breaker_cooldown_ms", "MYRMIDON_TOOL_BREAKER_COOLDOWN_MS", 60_000, positiveInteger],
+  ["tool_breaker_window_ms", "MYRMIDON_TOOL_BREAKER_WINDOW_MS", 600_000, positiveInteger],
+  ["tool_timeout_max_ms", "MYRMIDON_TOOL_TIMEOUT_MAX_MS", 180_000, positiveInteger],
+  ["tool_timeout_slow_ms", "MYRMIDON_TOOL_TIMEOUT_SLOW_MS", 45_000, positiveInteger],
+] as const) {
+  behaviorSettingRegistry.register({
+    key,
+    envName,
+    default: fallback,
+    scope: "instance",
+    section: "guardrails",
+    valueType: "number",
+    validate,
+  });
+}
+
 behaviorSettingRegistry.register({
   key: "debug_mode",
   envName: "MYRMIDON_DEBUG_MODE",

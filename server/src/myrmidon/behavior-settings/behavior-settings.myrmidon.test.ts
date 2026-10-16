@@ -110,6 +110,20 @@ describe("myrmidon(1.7) behavior settings: reading the effective values", () => 
     expect(res.body.sources.debug_mode).toBe("env");
   });
 
+  it("resolves guardrail settings and reports their environment source", async () => {
+    const { app } = harness({ env: {
+      MYRMIDON_BOT_EGRESS_MODE: "log",
+      MYRMIDON_TOOL_BREAKER_FAILURES: "0",
+      MYRMIDON_TOOL_TIMEOUT_MAX_MS: "120000",
+    } });
+    const res = await request(app).get(INSTANCE_URL).expect(200);
+    expect(res.body.settings.bot_egress_mode).toBe("log");
+    expect(res.body.settings.tool_breaker_failures).toBe(0);
+    expect(res.body.settings.tool_timeout_max_ms).toBe(120000);
+    expect(res.body.sources.bot_egress_mode).toBe("env");
+    expect(res.body.sources.tool_breaker_failures).toBe("env");
+  });
+
   it("keeps the environment as the source when its value equals the default", async () => {
     // Review blocker 1 (OPE-4094): MYRMIDON_DEBUG_MODE=false is an explicit
     // env declaration equal to the default; resolveRunLimits' envDeclares
