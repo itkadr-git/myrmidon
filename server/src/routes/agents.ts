@@ -7092,9 +7092,11 @@ export function agentRoutes(
     res.set("Cache-Control", "no-cache, no-store");
     res.json(await runRedactions.redactForRuns(companyId, await Promise.all(rows.map(async (row) => {
       const decorated = await heartbeat.decorateActiveRunStatus(row);
+      const { externalSession: _externalSession, ...publicRow } = row;
+      const safeExternalSession = await runRedactions.redactForRun(companyId, row.id, row.externalSession);
       return {
-        ...row,
-        externalSession: await runRedactions.redactForRun(companyId, row.id, row.externalSession),
+        ...publicRow,
+        externalSession: safeExternalSession,
         status: decorated.status,
         logUrl: `/api/heartbeat-runs/${row.id}/log`,
         cancelUrl: ["queued", "running"].includes(decorated.status) ? `/api/heartbeat-runs/${row.id}/cancel` : null,
