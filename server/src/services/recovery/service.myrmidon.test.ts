@@ -144,7 +144,7 @@ describeEmbeddedPostgres("reconcileStrandedAssignedIssues: infrastructure interr
 
   it("returns terminal stranded work to the shared unassigned engineer queue", async () => {
     const blockerId = randomUUID();
-    const { companyId, issueId } = await seedStrandedIssue({
+    const { companyId, agentId: managerId, issueId } = await seedStrandedIssue({
       errorCode: "adapter_failed",
       scheduledRetryAttempt: 0,
       createdAtOffsetMs: 0,
