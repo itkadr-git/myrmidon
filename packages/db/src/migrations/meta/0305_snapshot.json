@@ -50863,7 +50863,11 @@
   "_meta": {
     "schemas": {},
     "tables": {},
-    "columns": {}
+    "columns": {},
+    "version": "7",
+    "dialect": "postgresql",
+    "id": "8e2c4a88-99b0-4a4e-a890-3c86711985a3",
+    "prevId": "95aa876a-3470-5183-a3d1-42b260ec6674"
   },
   "id": "8e2c4a88-99b0-4a4e-a890-3c86711985a3",
   "prevId": "95aa876a-3470-5183-a3d1-42b260ec6674"
