@@ -20,6 +20,7 @@ describe("knowledge deterministic lint", () => {
     expect(report.findings).toEqual([
       { kind: "unresolved_link", slug: "a", target: "missing", suggestion: "Create a published page for [[missing]] or remove the link." },
       { kind: "missing_source", slug: "orphan", suggestion: "Attach at least one source reference before relying on this page." },
+      { kind: "orphan", slug: "a", suggestion: "Add an inbound [[link]] from a related page or mark this page archived." },
       { kind: "orphan", slug: "orphan", suggestion: "Add an inbound [[link]] from a related page or mark this page archived." },
     ]);
   });
