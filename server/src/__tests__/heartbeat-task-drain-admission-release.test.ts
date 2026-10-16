@@ -19,7 +19,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { heartbeatService, getTaskDrainStatus, startTaskDrain, stopTaskDrain } from "../services/heartbeat.ts";
-import { AgentAdapterRegistry } from "../adapters/registry.ts";
+import * as adapterModule from "../adapters/index.ts";
 import * as runTrustPreset from "../services/run-trust-preset.ts";
 import { subscribeCompanyLiveEvents } from "../services/live-events.ts";
 
@@ -205,10 +205,11 @@ describeEmbeddedPostgres("heartbeat task-drain admission release", () => {
         .where(eq(issues.id, issueId));
       return { trustPreset: { kind: "standard" }, executionPolicy: null } as never;
     });
-    const adapter = vi.spyOn(AgentAdapterRegistry.prototype, "create").mockReturnValue({
+    const adapter = vi.spyOn(adapterModule, "getServerAdapter").mockReturnValue({
+      supportsLocalAgentJwt: false,
       execute: async () => {
         await adapterGate;
-        return { status: "success" } as never;
+        return { exitCode: 0, signal: null, timedOut: false, errorMessage: null } as never;
       },
     } as never);
     try {
