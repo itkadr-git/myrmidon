@@ -83,6 +83,15 @@ describeEmbeddedPostgres("reconcileStrandedAssignedIssues: infrastructure interr
       createdAt: new Date(now.getTime() - 60 * 60 * 1000),
     });
     if (input.blockerIssueId) {
+      await db.insert(issues).values({
+        id: input.blockerIssueId,
+        companyId,
+        title: "Unresolved prerequisite",
+        status: "in_progress",
+        priority: "medium",
+        createdAt: now,
+        updatedAt: now,
+      });
       await db.insert(issueRelations).values({
         companyId,
         issueId: input.blockerIssueId,
