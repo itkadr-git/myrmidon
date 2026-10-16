@@ -64,6 +64,7 @@ import {
   agentCommitIdentity,
   defaultGitHubSharedIdentitySettings,
   githubAppsFor,
+  githubPatsFor,
   isRepositoryAllowed,
   normalizeGitHubAppPermissions,
   normalizeGitHubRepository,
@@ -141,6 +142,16 @@ describe("GitHub App identity: pure policy", () => {
     expect(normalizeGitHubRepository("https://example.com/owner-a/repo-a")).toBeNull();
     expect(normalizeGitHubRepository("../../etc/passwd")).toBeNull();
     expect(normalizeGitHubRepository(42)).toBeNull();
+  });
+
+  it("selects PAT identities only for explicit agents and repositories", () => {
+    const agentId = "11111111-1111-4111-8111-111111111111";
+    const settings = { ...defaultGitHubSharedIdentitySettings(), enabled: true, pats: [
+      { id: randomUUID(), name: "Well", tokenSecretId: randomUUID(), agentIds: [agentId], allowedRepos: ["BastionPrime/well*"] },
+    ] };
+    expect(githubPatsFor(settings, agentId, "bastionprime/wellboard")).toHaveLength(1);
+    expect(githubPatsFor(settings, agentId, "itkadr-git/myrmidon")).toHaveLength(0);
+    expect(githubPatsFor(settings, randomUUID(), "BastionPrime/wellboard")).toHaveLength(0);
   });
 
   it("matches owner/repo patterns with a literal owner", () => {

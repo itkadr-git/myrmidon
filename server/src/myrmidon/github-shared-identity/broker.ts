@@ -65,7 +65,7 @@ export async function applyGitHubAppIdentity(
       return {
         summary: {
           status: "available",
-          source: "app",
+          source: resolution.credential.source === "company_secret" ? "dedicated" : "app",
           login: resolution.name,
           repository: resolution.repository,
           authenticationMode: "managed",
