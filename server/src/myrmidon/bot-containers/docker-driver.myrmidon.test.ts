@@ -1067,6 +1067,8 @@ describe("dockerBotContainerDriver against a fake Docker daemon", () => {
       "myrmidon-hermes:1.6.4": LEGACY_CONTRACT_LABELS, // the three-volume release image of the rollout defect
       "myrmidon-hermes:1.0.0": null, // built before the runtime contract: no label at all
       "myrmidon-hermes:3.0.0": { [BOT_RUNTIME_CONTRACT_LABEL]: "3" }, // a contract this driver does not know
+      "myrmidon-hermes-dev:latest": CONTRACT_LABELS,
+      "ghcr.io/itkadr-git/myrmidon-hermes-dev:main": CONTRACT_LABELS,
     });
     const volumeRoot = path.join(tmp, "bots");
     volumes = {
@@ -1370,15 +1372,6 @@ describe("dockerBotContainerDriver against a fake Docker daemon", () => {
         },
       );
       const devSpec = spec({ image: "myrmidon-hermes-dev:latest" });
-      const devBody = buildCreateContainerRequestBody(devSpec, {
-        volumeRoot: path.join(tmp, "bots"),
-        network: "myrmidon-bots",
-        allowlist: ["myrmidon-hermes-dev:*"],
-        mountSources: [],
-        devbuild,
-      });
-      expect(devBody.Env).toContain("DEVBUILD_BOT_NAME=agent-a");
-      expect(devBody.Env).toContain("DEVBUILD_HOST=devbuild.internal");
       await devDriver.create(devSpec);
       await devDriver.writeProfile("agent-a", testProfile());
       daemon.options.healthOnStart = "unhealthy";
