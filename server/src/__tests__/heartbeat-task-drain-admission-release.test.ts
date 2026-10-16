@@ -208,7 +208,7 @@ describeEmbeddedPostgres("heartbeat task-drain admission release", () => {
       supportsLocalAgentJwt: false,
       execute: async () => {
         await adapterGate;
-        return { exitCode: 143, signal: "SIGTERM", timedOut: false, errorMessage: "interrupted by SIGTERM" } as never;
+        throw Object.assign(new Error("interrupted by SIGTERM"), { code: "ABORT_ERR" });
       },
     } as never);
     try {
