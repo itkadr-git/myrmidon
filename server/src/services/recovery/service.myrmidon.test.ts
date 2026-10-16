@@ -148,7 +148,7 @@ describeEmbeddedPostgres("reconcileStrandedAssignedIssues: infrastructure interr
       scheduledRetryAttempt: 0,
       createdAtOffsetMs: 0,
       scheduledRetryReason: "Recovery retry budget was exhausted",
-      contextSnapshotExtra: { retryReason: "issue_continuation_needed" },
+      contextSnapshotExtra: { retryReason: "assignment_recovery" },
     });
 
     await heartbeatService(db).reconcileStrandedAssignedIssues();
