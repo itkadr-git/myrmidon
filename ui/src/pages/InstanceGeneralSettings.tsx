@@ -52,6 +52,7 @@ import { AboutSettingsPanel } from "@/components/myrmidon/AboutSettingsPanel"; /
 import { DeployJobsPanel } from "@/components/myrmidon/DeployJobsPanel"; // myrmidon(R5-A)
 import { BoardProcessesSettingsPanel } from "@/components/myrmidon/BoardProcessesSettingsPanel"; // myrmidon(1.6.6 PROCS-0.1)
 import { BoardLeasesPanel } from "@/components/myrmidon/BoardLeasesPanel"; // myrmidon(1.6.5 BOARD-PROCESSES)
+import { SystemSettingsPanel } from "@/components/myrmidon/SystemSettingsPanel"; // myrmidon(1.7, OPE-4101)
 import { PluginEntitlementSettings } from "@/components/myrmidon/PluginEntitlementSettingsPanel"; // myrmidon(PLUGIN-ENTITLEMENT C)
 import { PRODUCT_NAME, UPSTREAM_ATTRIBUTION } from "@/lib/myrmidon-product"; // myrmidon(B1a)
 import { useTranslation } from "@/i18n"; // myrmidon(UI-RU)
@@ -205,6 +206,7 @@ export function InstanceGeneralSettings({ embedded = false }: { embedded?: boole
       <DeployJobsPanel /> {/* myrmidon(R5-A) */}
       <BoardProcessesSettingsPanel /> {/* myrmidon(1.6.6 PROCS-0.1) */}
       <BoardLeasesPanel /> {/* myrmidon(1.6.5 BOARD-PROCESSES) */}
+      <SystemSettingsPanel /> {/* myrmidon(1.7, OPE-4101) */}
       <PluginEntitlementSettings /> {/* myrmidon(PLUGIN-ENTITLEMENT C) */}
       <AttentionFeedSettingsPanel /> {/* myrmidon(1.6.5 F-15) */}
 
