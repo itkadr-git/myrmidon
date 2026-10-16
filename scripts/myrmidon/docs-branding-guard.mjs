@@ -56,7 +56,7 @@ const ALLOWLIST = [
   "Based on Paperclip",
   "Paperclip AI", // vendor company name (license/provenance sections)
   "PaperclipLockup", "PaperclipLoading", "AnimatedPaperclipIcon",
-  "Paperclip-managed skills",
+  "Paperclip-managed skills", "Paperclip skill", "Навык Paperclip",
   "Paperclip needs a disposition", // legacy notification body, still recognized
   "Close the current Paperclip task", // frozen legacy Discord command digest
   "«Paperclip ", "Paperclip connections", "Paperclip projects",
