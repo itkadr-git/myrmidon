@@ -2699,7 +2699,9 @@ export function recoveryService(
                     : recoveryCause === "execution_review_participant_recovery"
                       ? "Board operator: repair the failed review participant path, restore a live reviewer, explicitly reassign, or record an intentional resolution."
                       : "Board operator: inspect the evidence, repair the runtime if appropriate, then explicitly retry the original owner, reassign, or intentionally resolve the task.",
-      wakePolicy: isProviderQuotaWait
+      wakePolicy: input.rerouteToSharedQueue
+        ? { type: "system_retry", reason: "stranded_recovery" }
+        : isProviderQuotaWait
         ? {
             type: "monitor_only",
             reason: recoveryCause,
