@@ -1,5 +1,6 @@
-import { AGENT_DEFAULT_MAX_CONCURRENT_RUNS } from "@paperclipai/shared";
 import { describe, expect, it } from "vitest";
+import { AGENT_DEFAULT_MAX_CONCURRENT_RUNS } from "@paperclipai/shared";
+import { applyLiveBehaviorSettings, liveBehaviorSettingsView } from "../behavior-settings/live.js";
 
 import { compileHermesProfile } from "./profile-compiler.js";
 import {
@@ -85,6 +86,31 @@ function fileContent(profile: ReturnType<typeof compileHermesProfile>, path: str
 }
 
 describe("myrmidon(W2a) readBotProfileSettings", () => {
+  it("uses live instance allowlists when the process environment has no override", () => {
+    const previous = liveBehaviorSettingsView();
+    const priorBanks = process.env[BOT_HINDSIGHT_ALLOWED_BANKS_ENV];
+    const priorServers = process.env[BOT_MCP_SERVERS_ENV];
+    try {
+      applyLiveBehaviorSettings({
+        settings: { bot_hindsight_allowed_banks: ["managed"], bot_mcp_servers: [{ name: "managed" }] },
+        sources: { bot_hindsight_allowed_banks: "ui", bot_mcp_servers: "ui" },
+      } as ReturnType<typeof liveBehaviorSettingsView>);
+      const read = readBotProfileSettings();
+      expect(read.hindsightAllowedBanks).toEqual(["managed"]);
+      expect(read.mcpServers).toEqual([{ name: "managed" }]);
+      process.env[BOT_HINDSIGHT_ALLOWED_BANKS_ENV] = "env-override";
+      process.env[BOT_MCP_SERVERS_ENV] = JSON.stringify([{ name: "env" }]);
+      const overridden = readBotProfileSettings();
+      expect(overridden.hindsightAllowedBanks).toEqual(["env-override"]);
+      expect(overridden.mcpServers).toEqual([{ name: "env" }]);
+    } finally {
+      if (priorBanks === undefined) delete process.env[BOT_HINDSIGHT_ALLOWED_BANKS_ENV];
+      else process.env[BOT_HINDSIGHT_ALLOWED_BANKS_ENV] = priorBanks;
+      if (priorServers === undefined) delete process.env[BOT_MCP_SERVERS_ENV];
+      else process.env[BOT_MCP_SERVERS_ENV] = priorServers;
+      applyLiveBehaviorSettings(previous);
+    }
+  });
   it("reads the MYRMIDON_BOT_* variables, trimming them and treating blanks as unset", () => {
     expect(
       readBotProfileSettings({

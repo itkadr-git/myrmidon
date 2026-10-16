@@ -14,6 +14,7 @@
 // missing key value). They name the setting or variable, never a value, so a
 // message is safe to show in the reconcile activity log.
 
+import { liveBehaviorSetting } from "../behavior-settings/live.js";
 import { AGENT_DEFAULT_MAX_CONCURRENT_RUNS } from "@paperclipai/shared";
 // myrmidon(PARALLEL-HELPERS): card + company ceiling -> the values the compiler writes
 // into config.yaml's `delegation` section (and the toolset switch).
@@ -413,8 +414,22 @@ export function parseBotAuxFallbackModels(raw: string | null): string[] | null {
 }
 
 export function readBotProfileSettings(env: NodeJS.ProcessEnv = process.env): BotProfileSettings {
+  const hindsightEnvValue = readSetting(env, BOT_HINDSIGHT_ALLOWED_BANKS_ENV);
+  let hindsightAllowedBanksValue = hindsightEnvValue;
+  if (hindsightEnvValue === null && env === process.env) {
+    const banks = liveBehaviorSetting<string[]>("bot_hindsight_allowed_banks");
+    if (Array.isArray(banks) && banks.length) hindsightAllowedBanksValue = JSON.stringify(banks);
+  }
+  const hindsightAllowedBanks = parseBotHindsightAllowedBanks(hindsightAllowedBanksValue);
   const llmApiKeyEnv = readSetting(env, BOT_LLM_API_KEY_ENV_ENV);
-  const mcp = parseBotMcpServers(readSetting(env, BOT_MCP_SERVERS_ENV));
+  const envValue = readSetting(env, BOT_MCP_SERVERS_ENV);
+  let mcpValue = envValue;
+  if (envValue === null && env === process.env) {
+    const servers = liveBehaviorSetting<unknown[]>("bot_mcp_servers");
+    if (Array.isArray(servers) && servers.length) mcpValue = JSON.stringify(servers);
+  }
+  const mcp = parseBotMcpServers(mcpValue);
+
   // myrmidon(BOT-RUNTIME-TUNING-B): the instance defaults the profile compiler
   // writes into config.yaml — read here so a corrected variable takes effect
   // on the next compile tick, like the rest of this settings object.
@@ -438,7 +453,7 @@ export function readBotProfileSettings(env: NodeJS.ProcessEnv = process.env): Bo
   return {
     hindsightApiUrl: readSetting(env, BOT_HINDSIGHT_API_URL_ENV),
     hindsightBank: readSetting(env, BOT_HINDSIGHT_BANK_ENV),
-    hindsightAllowedBanks: parseBotHindsightAllowedBanks(readSetting(env, BOT_HINDSIGHT_ALLOWED_BANKS_ENV)),
+    hindsightAllowedBanks,
     llmBaseUrl: readSetting(env, BOT_LLM_BASE_URL_ENV),
     llmApiKeyEnv,
     llmApiKeySecret: readSetting(env, BOT_LLM_API_KEY_SECRET_ENV) ?? llmApiKeyEnv,
