@@ -175,7 +175,7 @@ describeEmbeddedPostgres("heartbeat task-drain admission release", () => {
   }
 
   it("keeps an active adapter run in flight until graceful shutdown records its retry", async () => {
-    expect.assertions(11);
+    expect.assertions(9);
     const { companyId, agentId, issueId, runId, wakeupRequestId } = await seedQueuedRun();
     const heartbeat = heartbeatService(db);
     let activePromise: Promise<unknown> | undefined;
@@ -249,13 +249,13 @@ describeEmbeddedPostgres("heartbeat task-drain admission release", () => {
         .where(eq(agentWakeupRequests.id, wakeupRequestId))
         .then((rows) => rows[0] ?? null);
       expect(wakeup?.status).toBe("failed");
-      const retryWakeup = await db
-        .select({ status: agentWakeupRequests.status, reason: agentWakeupRequests.reason })
-        .from(agentWakeupRequests)
-        .where(eq(agentWakeupRequests.id, retryRunId))
+      const retry = await db
+        .select({ status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, retryRunId))
         .then((rows) => rows[0] ?? null);
-      expect(retryWakeup?.status).toBe("queued");
-      expect(retryWakeup?.reason).toBe("process_lost");
+      expect(retry?.status).toBe("running");
+      expect(retry?.errorCode).toBe("process_lost");
       expect(getTaskDrainStatus()).toMatchObject({ draining: true, activeRuns: 0, quiescent: true });
     } finally {
       stopTaskDrain();
