@@ -3,6 +3,7 @@ import path from "node:path";
 import { and, count, eq, sql as drizzleSql } from "drizzle-orm";
 import { companySecrets, corpusChunks, corpusDatasets, corpusDocuments, corpusParseJobs, type Db } from "@paperclipai/db";
 import { createHttpDocumentParser, createPostgresSearchIndex, LocalBlobStore, PostgresCorpusStore, PostgresWorkQueue } from "@paperclipai/corpus";
+import type { SqlExecutor as CorpusSqlExecutor } from "@paperclipai/corpus/search/hybrid-search-index";
 import type { CorpusSettings } from "@paperclipai/shared";
 import type { CorpusPortContext } from "./ports.js";
 import type { CorpusMcpPortProvider } from "./contract.js";
@@ -38,7 +39,7 @@ export function createCorpusPorts(db: Db, context: CorpusPortContext, config: Co
       }
       return db.execute(query) as unknown as Promise<Row[]>;
     },
-    async withTransaction<T>(run: (tx: import("@paperclipai/corpus").SqlExecutor) => Promise<T>): Promise<T> {
+    async withTransaction<T>(run: (transaction: CorpusSqlExecutor) => Promise<T>): Promise<T> {
       return db.transaction(async (tx) => run({
         async query<Row extends Record<string, unknown>>(text: string, values: readonly unknown[] = []): Promise<Row[]> {
           const params = [...values]; const parts = text.split(/\$(\d+)/g);
@@ -49,7 +50,7 @@ export function createCorpusPorts(db: Db, context: CorpusPortContext, config: Co
           }
           return tx.execute(query) as unknown as Promise<Row[]>;
         },
-        async withTransaction<Tx>(nested: (tx: import("@paperclipai/corpus").SqlExecutor) => Promise<Tx>) { return nested(this); },
+        async withTransaction<Tx>(nested: (tx: CorpusSqlExecutor) => Promise<Tx>) { return nested(this); },
       }));
     },
   } });
@@ -66,7 +67,7 @@ export function createCorpusPorts(db: Db, context: CorpusPortContext, config: Co
       return hits.map((hit) => ({ chunkId: hit.chunkId, documentId: hit.documentId, datasetId: hit.datasetId, score: hit.score, text: hit.content, metadata: hit.metadata }));
     },
     async countChunks(companyId: string, datasetId?: string) {
-      const rows = await db.select({ value: count() }).from(corpusChunks).where(datasetId ? and(eq(corpusChunks.companyId, companyId), eq(corpusChunks.datasetId, datasetId)) : eq(corpusChunks.companyId, companyId));
+      const rows = await db.select({ value: count() }).from(corpusChunks).innerJoin(corpusDocuments, eq(corpusChunks.documentId, corpusDocuments.id)).where(datasetId ? and(eq(corpusChunks.companyId, companyId), eq(corpusDocuments.companyId, companyId), eq(corpusDocuments.datasetId, datasetId)) : and(eq(corpusChunks.companyId, companyId), eq(corpusDocuments.companyId, companyId)));
       return countValue(rows[0]);
     },
   };
@@ -82,7 +83,7 @@ export function createCorpusPorts(db: Db, context: CorpusPortContext, config: Co
     const [docs, stats, chunks] = await Promise.all([
       store.listDocuments({ companyId, datasetId: row.id }),
       db.select({ status: corpusDocuments.status, value: count() }).from(corpusDocuments).where(and(eq(corpusDocuments.companyId, companyId), eq(corpusDocuments.datasetId, row.id))).groupBy(corpusDocuments.status),
-      db.select({ value: count() }).from(corpusChunks).where(and(eq(corpusChunks.companyId, companyId), eq(corpusChunks.datasetId, row.id))),
+      db.select({ value: count() }).from(corpusChunks).innerJoin(corpusDocuments, eq(corpusChunks.documentId, corpusDocuments.id)).where(and(eq(corpusChunks.companyId, companyId), eq(corpusDocuments.companyId, companyId), eq(corpusDocuments.datasetId, row.id))),
     ]);
     return { id: row.id, companyId, name: row.name, description: row.description, createdAt: row.createdAt.toISOString(), updatedAt: row.updatedAt.toISOString(), documentCount: docs.length, readyCount: countValue(stats.find((x) => x.status === "ready")), failedCount: countValue(stats.find((x) => x.status === "failed")), chunkCount: countValue(chunks[0]) };
   };
@@ -91,7 +92,7 @@ export function createCorpusPorts(db: Db, context: CorpusPortContext, config: Co
   const jobRecord = async (companyId: string, row: Awaited<ReturnType<typeof queue.getJob>>): Promise<CorpusJobRecord | null> => {
     if (!row) return null;
     const doc = await getDocument(companyId, row.documentId);
-    return { id: row.id, companyId, datasetId: doc?.datasetId ?? "", documentId: row.documentId, state: row.status === "pending" ? "queued" : row.status, attempts: row.attempts, maxAttempts: row.maxAttempts, lastError: row.lastError, createdAt: row.createdAt.toISOString(), updatedAt: row.updatedAt.toISOString() };
+    return { id: row.id, companyId, datasetId: doc?.datasetId ?? "", documentId: row.documentId, state: row.status === "pending" ? "queued" : row.status, attempts: row.attempts, maxAttempts: row.maxAttempts, lastError: row.lastError, createdAt: row.createdAt.toISOString(), updatedAt: row.createdAt.toISOString() };
   };
   return {
     store: {
@@ -124,7 +125,7 @@ export function createCorpusPorts(db: Db, context: CorpusPortContext, config: Co
       async deleteDocument(companyId, id) { const d = await getDocument(companyId, id); if (!d) return false; await store.deleteDocument(companyId, id); await blobs.delete(d.blobRef); return true; },
       async countDocuments(companyId, datasetId) { return (await store.listDocuments({ companyId, datasetId })).length; },
       async getJob(companyId, jobId) { return jobRecord(companyId, await queue.getJob(companyId, jobId)); },
-      async counters(companyId: string) { const datasets = await store.listDatasets(companyId); const docs: Array<{ byteSize: number; status: string }> = await store.listDocuments({ companyId }); const bytes = docs.reduce((sum: number, doc) => sum + doc.byteSize, 0); return { datasets: datasets.length, documents: docs.length, ready: docs.filter((d) => d.status === "ready").length, pending: docs.filter((d) => d.status === "queued" || d.status === "parsing").length, failed: docs.filter((d) => d.status === "failed").length, chunks: countValue((await db.select({ value: count() }).from(corpusChunks).where(eq(corpusChunks.companyId, companyId)))[0]), bytes }; },
+      async counters(companyId: string) { const datasets = await store.listDatasets(companyId); const docs = await store.listDocuments({ companyId }); const bytes = docs.reduce((sum, doc) => sum + (doc.byteSize ?? 0), 0); return { datasets: datasets.length, documents: docs.length, ready: docs.filter((d) => d.status === "ready").length, pending: docs.filter((d) => d.status === "queued" || d.status === "parsing").length, failed: docs.filter((d) => d.status === "failed").length, chunks: countValue((await db.select({ value: count() }).from(corpusChunks).where(eq(corpusChunks.companyId, companyId)))[0]), bytes }; },
     },
     blobs: {
       async put(input) { const ref = `${input.companyId}/${input.documentId}/${randomUUID()}`; const result = await blobs.put(ref, input.bytes); return { ref: result.key, byteSize: result.byteSize }; },
