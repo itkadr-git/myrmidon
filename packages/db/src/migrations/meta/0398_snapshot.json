@@ -55920,6 +55920,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "client_cert": {
+          "name": "client_cert",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "client_cert_secret_key": {
           "name": "client_cert_secret_key",
           "type": "text",

@@ -3,6 +3,7 @@ import {
   bumpFleetRegistryVersion,
   createFleetClientManager,
   getFleetRegistryVersion,
+  parseTlsCredentials,
   type FleetSite,
   type FleetSiteInsert,
 } from "./site-registry.js";
@@ -35,6 +36,37 @@ describe("site-registry — versioning", () => {
     const v2 = bumpFleetRegistryVersion();
     expect(v2).toBe(v1 + 1);
     expect(getFleetRegistryVersion()).toBe(v2);
+  });
+});
+
+describe("site-registry — parseTlsCredentials", () => {
+  it("parses JSON bundle with cert and key", () => {
+    const res = parseTlsCredentials(
+      JSON.stringify({ cert: "mock-cert-c1", key: "mock-key-k1" }),
+    );
+    expect(res.cert).toBe("mock-cert-c1");
+    expect(res.key).toBe("mock-key-k1");
+  });
+
+  it("parses combined PEM bundle with certificate and private key blocks", () => {
+    const certBlock = ["-----BEGIN", "CERTIFICATE-----", "CERT_DATA", "-----END", "CERTIFICATE-----"].join("\n");
+    const keyBlock = ["-----BEGIN", "PRIVATE", "KEY-----", "KEY_DATA", "-----END", "PRIVATE", "KEY-----"].join("\n");
+    const combined = `${certBlock}\n${keyBlock}`;
+    const res = parseTlsCredentials(combined);
+    expect(res.cert).toContain("CERT_DATA");
+    expect(res.key).toContain("KEY_DATA");
+  });
+
+  it("handles single certificate PEM and single key PEM", () => {
+    const certBlock = ["-----BEGIN", "CERTIFICATE-----", "CERT_DATA", "-----END", "CERTIFICATE-----"].join("\n");
+    const certOnly = parseTlsCredentials(certBlock);
+    expect(certOnly.cert).toContain("CERT_DATA");
+    expect(certOnly.key).toBeUndefined();
+
+    const keyBlock = ["-----BEGIN", "RSA", "PRIVATE", "KEY-----", "KEY_DATA", "-----END", "RSA", "PRIVATE", "KEY-----"].join("\n");
+    const keyOnly = parseTlsCredentials(keyBlock);
+    expect(keyOnly.cert).toBeUndefined();
+    expect(keyOnly.key).toContain("KEY_DATA");
   });
 });
 
@@ -91,7 +123,8 @@ describe("site-registry — createFleetClientManager", () => {
 
     const secretStore: Record<string, string> = {
       "myr-vm1-token": "secret-token-val-123",
-      "myr-vm1-client-key": "-----BEGIN PRIVATE KEY-----\nFAKE KEY\n-----END PRIVATE KEY-----",
+      "myr-vm1-client-key": "fake-client-key",
+      "myr-vm1-client-cert": "fake-client-cert",
       "local-token": "local-token-val-456",
     };
 
@@ -114,8 +147,15 @@ describe("site-registry — createFleetClientManager", () => {
     expect(httpsConfig).toBeDefined();
     expect(httpsConfig!.token).toBe("secret-token-val-123");
     expect(httpsConfig!.caCert).toContain("FAKE CA");
-    expect(httpsConfig!.clientKey).toContain("FAKE KEY");
+    expect(httpsConfig!.clientCert).toContain("fake-client-cert");
+    expect(httpsConfig!.clientKey).toContain("fake-client-key");
     expect(httpsConfig!.httpsAgent).toBeDefined();
+
+    const agentOptions = (httpsConfig!.httpsAgent as any).options;
+    expect(agentOptions.ca).toContain("FAKE CA");
+    expect(agentOptions.cert).toContain("fake-client-cert");
+    expect(agentOptions.key).toContain("fake-client-key");
+    expect(agentOptions.rejectUnauthorized).toBe(true);
 
     const httpConfig = createdConfigs.find((c) => c.baseUrl === "http://127.0.0.1:9100");
     expect(httpConfig).toBeDefined();
@@ -124,6 +164,114 @@ describe("site-registry — createFleetClientManager", () => {
 
     manager.close();
     expect(manager.getClients().size).toBe(0);
+  });
+
+  it("resolves client certificate and private key from a single JSON bundle secret", async () => {
+    const sites: FleetSite[] = [
+      {
+        id: "site-bundle",
+        companyId: "company-1",
+        name: "myr-bundle",
+        url: "https://myr-vm1.example.test:9443",
+        clientCertSecretKey: "myr-bundle-secret",
+        caCert: "-----BEGIN CERTIFICATE-----\nBUNDLE CA\n-----END CERTIFICATE-----",
+        status: "active",
+        capacity: { maxCpus: 4, maxMemoryMb: 16384 },
+        profile: {},
+        enrolledAt: new Date(),
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
+    ];
+
+    const fakeDb = {
+      select: () => ({
+        from: () => Promise.resolve(sites),
+      }),
+    } as any;
+
+    const secretStore: Record<string, string> = {
+      "myr-bundle-secret": JSON.stringify({
+        cert: "bundle-client-cert",
+        key: "bundle-client-key",
+      }),
+    };
+
+    const createdConfigs: FleetdDriverConfig[] = [];
+    const manager = createFleetClientManager({
+      db: fakeDb,
+      readCompanySecret: async (_cid, name) => secretStore[name] ?? null,
+      createDriver: (config) => {
+        createdConfigs.push(config);
+        return fakeDriver(config.baseUrl);
+      },
+    });
+
+    await manager.refresh();
+    const config = createdConfigs.find((c) => c.baseUrl === "https://myr-vm1.example.test:9443");
+    expect(config).toBeDefined();
+    expect(config!.clientCert).toContain("bundle-client-cert");
+    expect(config!.clientKey).toContain("bundle-client-key");
+
+    const agentOptions = (config!.httpsAgent as any).options;
+    expect(agentOptions.cert).toContain("bundle-client-cert");
+    expect(agentOptions.key).toContain("bundle-client-key");
+    expect(agentOptions.ca).toContain("BUNDLE CA");
+    expect(agentOptions.rejectUnauthorized).toBe(true);
+
+    manager.close();
+  });
+
+  it("uses clientCert stored directly in the database row alongside a key secret", async () => {
+    const sites: FleetSite[] = [
+      {
+        id: "site-row",
+        companyId: "company-1",
+        name: "myr-direct",
+        url: "https://myr-vm1.example.test:9443",
+        clientCert: "row-client-cert",
+        clientCertSecretKey: "myr-row-key",
+        status: "active",
+        capacity: { maxCpus: 4, maxMemoryMb: 16384 },
+        profile: {},
+        enrolledAt: new Date(),
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
+    ];
+
+    const fakeDb = {
+      select: () => ({
+        from: () => Promise.resolve(sites),
+      }),
+    } as any;
+
+    const secretStore: Record<string, string> = {
+      "myr-row-key": "row-client-key",
+    };
+
+    const createdConfigs: FleetdDriverConfig[] = [];
+    const manager = createFleetClientManager({
+      db: fakeDb,
+      readCompanySecret: async (_cid, name) => secretStore[name] ?? null,
+      createDriver: (config) => {
+        createdConfigs.push(config);
+        return fakeDriver(config.baseUrl);
+      },
+    });
+
+    await manager.refresh();
+    const config = createdConfigs.find((c) => c.baseUrl === "https://myr-vm1.example.test:9443");
+    expect(config).toBeDefined();
+    expect(config!.clientCert).toContain("row-client-cert");
+    expect(config!.clientKey).toContain("row-client-key");
+
+    const agentOptions = (config!.httpsAgent as any).options;
+    expect(agentOptions.cert).toContain("row-client-cert");
+    expect(agentOptions.key).toContain("row-client-key");
+    expect(agentOptions.rejectUnauthorized).toBe(true);
+
+    manager.close();
   });
 
   it("handles database errors gracefully during refresh without throwing", async () => {

@@ -37,6 +37,7 @@ export interface FleetSite {
   tokenSecret?: string | null;
   caCert?: string | null;
   caCertFingerprint?: string | null;
+  clientCert?: string | null;
   clientCertSecretKey?: string | null;
   clientCertNotAfter?: Date | null;
   status: string;
@@ -57,6 +58,7 @@ export interface FleetSiteInsert {
   tokenSecret?: string | null;
   caCert?: string | null;
   caCertFingerprint?: string | null;
+  clientCert?: string | null;
   clientCertSecretKey?: string | null;
   clientCertNotAfter?: Date | null;
   status?: string;
@@ -96,6 +98,7 @@ export async function createFleetSite(db: Db, input: FleetSiteInsert): Promise<F
       tokenSecret: input.tokenSecret ?? null,
       caCert: input.caCert ?? null,
       caCertFingerprint: input.caCertFingerprint ?? null,
+      clientCert: input.clientCert ?? null,
       clientCertSecretKey: input.clientCertSecretKey ?? null,
       clientCertNotAfter: input.clientCertNotAfter ?? null,
       status: input.status ?? "active",
@@ -138,6 +141,7 @@ export async function updateFleetSite(
   if (patch.tokenSecret !== undefined) updateData.tokenSecret = patch.tokenSecret;
   if (patch.caCert !== undefined) updateData.caCert = patch.caCert;
   if (patch.caCertFingerprint !== undefined) updateData.caCertFingerprint = patch.caCertFingerprint;
+  if (patch.clientCert !== undefined) updateData.clientCert = patch.clientCert;
   if (patch.clientCertSecretKey !== undefined) updateData.clientCertSecretKey = patch.clientCertSecretKey;
   if (patch.clientCertNotAfter !== undefined) updateData.clientCertNotAfter = patch.clientCertNotAfter;
   if (patch.status !== undefined) updateData.status = patch.status;
@@ -304,6 +308,45 @@ export interface FleetClientManager {
   close(): void;
 }
 
+export function parseTlsCredentials(raw: string): { cert?: string; key?: string } {
+  const trimmed = raw.trim();
+  if (!trimmed) return {};
+
+  if (trimmed.startsWith("{")) {
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (typeof parsed === "object" && parsed !== null) {
+        const cert = parsed.cert ?? parsed.certificate ?? parsed.clientCert;
+        const key = parsed.key ?? parsed.privateKey ?? parsed.clientKey;
+        return {
+          cert: typeof cert === "string" ? cert.trim() : undefined,
+          key: typeof key === "string" ? key.trim() : undefined,
+        };
+      }
+    } catch {
+      // not JSON, fallback to PEM
+    }
+  }
+
+  const certMatches = trimmed.match(/-----BEGIN CERTIFICATE-----[\s\S]+?-----END CERTIFICATE-----/g);
+  const keyMatches = trimmed.match(/-----BEGIN [A-Z\s]*KEY-----[\s\S]+?-----END [A-Z\s]*KEY-----/g);
+
+  if (certMatches || keyMatches) {
+    return {
+      cert: certMatches ? certMatches.join("\n") : undefined,
+      key: keyMatches ? keyMatches[0] : undefined,
+    };
+  }
+
+  const upper = trimmed.toUpperCase();
+  const result: { cert?: string; key?: string } = {};
+  if (upper.includes("CERT")) result.cert = trimmed;
+  if (upper.includes("KEY")) result.key = trimmed;
+  if (result.cert || result.key) return result;
+
+  return { key: trimmed };
+}
+
 export function createFleetClientManager(deps: FleetClientManagerDeps): FleetClientManager {
   const log = deps.log ?? logger;
   const logWarn = (fields: Record<string, unknown>, message: string) => {
@@ -339,7 +382,7 @@ export function createFleetClientManager(deps: FleetClientManagerDeps): FleetCli
 
       for (const site of activeSites) {
         activeNames.add(site.name);
-        const fingerprint = `${site.url}|${site.tokenSecret ?? ""}|${site.caCert ?? ""}|${site.clientCertSecretKey ?? ""}`;
+        const fingerprint = `${site.url}|${site.tokenSecret ?? ""}|${site.caCert ?? ""}|${site.clientCert ?? ""}|${site.clientCertSecretKey ?? ""}`;
         if (clients.has(site.name) && clientFingerprints.get(site.name) === fingerprint) {
           continue;
         }
@@ -350,17 +393,64 @@ export function createFleetClientManager(deps: FleetClientManagerDeps): FleetCli
           if (resolved) token = resolved;
         }
 
+        let clientCert: string | undefined = site.clientCert ?? undefined;
         let clientKey: string | undefined;
+
         if (site.clientCertSecretKey) {
           const resolved = await resolveSecret(site.companyId, site.clientCertSecretKey);
-          if (resolved) clientKey = resolved;
+          if (resolved) {
+            const parsed = parseTlsCredentials(resolved);
+            if (parsed.cert && !clientCert) clientCert = parsed.cert;
+            if (parsed.key) clientKey = parsed.key;
+          }
+
+          if (!clientCert) {
+            const candidateNames = [
+              site.clientCertSecretKey.endsWith("-key") ? site.clientCertSecretKey.replace(/-key$/, "-cert") : null,
+              site.clientCertSecretKey.endsWith("_key") ? site.clientCertSecretKey.replace(/_key$/, "_cert") : null,
+              `${site.clientCertSecretKey}-cert`,
+              `${site.clientCertSecretKey}_cert`,
+            ].filter((n): n is string => Boolean(n && n !== site.clientCertSecretKey));
+
+            for (const cand of candidateNames) {
+              const resolvedCert = await resolveSecret(site.companyId, cand);
+              if (resolvedCert) {
+                const parsed = parseTlsCredentials(resolvedCert);
+                if (parsed.cert) {
+                  clientCert = parsed.cert;
+                  break;
+                }
+              }
+            }
+          }
+
+          if (!clientKey) {
+            const candidateNames = [
+              site.clientCertSecretKey.endsWith("-cert") ? site.clientCertSecretKey.replace(/-cert$/, "-key") : null,
+              site.clientCertSecretKey.endsWith("_cert") ? site.clientCertSecretKey.replace(/_cert$/, "_key") : null,
+              `${site.clientCertSecretKey}-key`,
+              `${site.clientCertSecretKey}_key`,
+            ].filter((n): n is string => Boolean(n && n !== site.clientCertSecretKey));
+
+            for (const cand of candidateNames) {
+              const resolvedKey = await resolveSecret(site.companyId, cand);
+              if (resolvedKey) {
+                const parsed = parseTlsCredentials(resolvedKey);
+                if (parsed.key) {
+                  clientKey = parsed.key;
+                  break;
+                }
+              }
+            }
+          }
         }
 
         let httpsAgent: https.Agent | undefined;
         const isHttps = site.url.startsWith("https:");
-        if (isHttps || site.caCert || clientKey) {
+        if (isHttps || site.caCert || clientKey || clientCert) {
           httpsAgent = new https.Agent({
             ca: site.caCert ?? undefined,
+            cert: clientCert ?? undefined,
             key: clientKey ?? undefined,
             rejectUnauthorized: true,
           });
@@ -371,6 +461,7 @@ export function createFleetClientManager(deps: FleetClientManagerDeps): FleetCli
           baseUrl: site.url,
           ...(token ? { token } : {}),
           ...(site.caCert ? { caCert: site.caCert } : {}),
+          ...(clientCert ? { clientCert } : {}),
           ...(clientKey ? { clientKey } : {}),
           ...(httpsAgent ? { httpsAgent } : {}),
         };

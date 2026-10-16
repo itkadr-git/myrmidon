@@ -1,5 +1,5 @@
 import http from "node:http";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   FleetdDriverError,
@@ -267,6 +267,47 @@ describe("myrmidon(FLEETD-VMEXEC) fleetd driver — request injection hooks", ()
     expect(parseFleetdEndpoint("https://fleetd.example.com:9443")).toEqual({ host: "fleetd.example.com", port: 9443, protocol: "https:" });
     expect(() => parseFleetdEndpoint("ftp://fleetd.example.com")).toThrow(/must be http:\/\/ or https:\/\//);
     expect(() => parseFleetdEndpoint("http://fleetd.example.com:notaport")).toThrow();
+  });
+
+  it("passes mTLS options (ca, cert, key, agent) to https transport on https baseUrl", async () => {
+    const https = await import("node:https");
+    const fakeAgent = new https.Agent();
+    let capturedOptions: any = null;
+    const spy = vi.spyOn(https, "request").mockImplementation((options: any) => {
+      capturedOptions = options;
+      const fakeReq: any = {
+        on: vi.fn(),
+        write: vi.fn(),
+        end: vi.fn(),
+        destroy: vi.fn(),
+      };
+      return fakeReq;
+    });
+
+    try {
+      const driver = fleetdBotContainerDriver({
+        baseUrl: "https://fleetd.example.com:9443",
+        token: "test-token",
+        caCert: "test-ca-cert",
+        clientCert: "test-client-cert",
+        clientKey: "test-client-key",
+        httpsAgent: fakeAgent,
+      });
+
+      driver.status("bot-test").catch(() => {});
+
+      expect(capturedOptions).toBeDefined();
+      expect(capturedOptions.host).toBe("fleetd.example.com");
+      expect(capturedOptions.port).toBe(9443);
+      expect(capturedOptions.ca).toBe("test-ca-cert");
+      expect(capturedOptions.cert).toBe("test-client-cert");
+      expect(capturedOptions.key).toBe("test-client-key");
+      expect(capturedOptions.agent).toBe(fakeAgent);
+      expect(capturedOptions.rejectUnauthorized).toBe(true);
+    } finally {
+      spy.mockRestore();
+      fakeAgent.destroy();
+    }
   });
 });
 
