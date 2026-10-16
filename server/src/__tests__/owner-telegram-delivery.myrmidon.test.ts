@@ -726,12 +726,14 @@ describeEmbeddedPostgres(
         expect(text).not.toBeNull();
         expect(text!.startsWith("Proceed with the deploy?")).toBe(true);
         expect(text).toContain("Proceed with the deploy?");
-        // Guard: no uuids, run ids or commit-sha-like tokens in the owner text.
-        expect(text).not.toMatch(
+        // The task URL is intentionally UUID-shaped; inspect human text only.
+        const humanText = text!.replace(/\nhttps:\/\/[^\s]+$/, "");
+        // Guard: no internal UUIDs, run ids or commit-sha-like tokens.
+        expect(humanText).not.toMatch(
           /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i,
         );
-        expect(text).not.toMatch(/\b[0-9a-f]{7,40}\b/);
-        expect(text).not.toMatch(/run[_ -]?id/i);
+        expect(humanText).not.toMatch(/\b[0-9a-f]{7,40}\b/i);
+        expect(humanText).not.toMatch(/run[_ -]?id/i);
       });
     });
   },
