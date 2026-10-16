@@ -13,11 +13,12 @@ export const storedIdleStopSettingsSchema = idleStopSettingsSchema.partial().opt
 
 export function normalizeIdleStopSettings(raw: unknown, env: Record<string, string | undefined> = process.env): IdleStopSettings {
   const parsed = storedIdleStopSettingsSchema.safeParse(raw);
+  const stored = parsed.success ? parsed.data : undefined;
   const enabledEnv = env.MYRMIDON_IDLE_STOP_ENABLED?.trim().toLowerCase();
   return {
-    enabled: parsed.success && parsed.data.enabled !== undefined ? parsed.data.enabled : enabledEnv === undefined || !["false", "0", "no", "off"].includes(enabledEnv),
-    afterSec: parsed.success && parsed.data.afterSec !== undefined ? parsed.data.afterSec : Number.parseInt(env.MYRMIDON_IDLE_STOP_AFTER_SEC || "1800", 10),
-    healthTimeoutMs: parsed.success && parsed.data.healthTimeoutMs !== undefined ? parsed.data.healthTimeoutMs : Number.parseInt(env.MYRMIDON_IDLE_START_HEALTH_TIMEOUT_MS || "30000", 10),
+    enabled: stored?.enabled ?? (enabledEnv === undefined || !["false", "0", "no", "off"].includes(enabledEnv)),
+    afterSec: stored?.afterSec ?? Number.parseInt(env.MYRMIDON_IDLE_STOP_AFTER_SEC || "1800", 10),
+    healthTimeoutMs: stored?.healthTimeoutMs ?? Number.parseInt(env.MYRMIDON_IDLE_START_HEALTH_TIMEOUT_MS || "30000", 10),
   };
 }
 

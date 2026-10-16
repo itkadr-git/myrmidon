@@ -192,7 +192,7 @@ export const instanceGeneralSettingsSchema = z.object({
   // keys or with an invalid value still parses (see myrmidon-bot-disk.ts).
   botDisk: storedBotDiskSettingsSchema,
   // myrmidon(OPE-7898): live idle-container stop policy.
-  idleStop: z.object({ enabled: z.boolean(), afterSec: z.number().int().min(60).max(31_536_000), healthTimeoutMs: z.number().int().min(1_000).max(600_000) }).strict().partial().optional().catch(undefined),
+  idleStop: z.object({ enabled: z.boolean(), afterSec: z.number().int().min(60).max(31_536_000), healthTimeoutMs: z.number().int().min(1_000).max(600_000) }).strict().optional(),
   // myrmidon(1.6.1-BOT-DISK-C): the per-bot disk quota, changed from
   // /api/myrmidon/bot-disk-quota; absent means "no quota" (enforcement off).
   // Lenient: an invalid value reads as absent (see myrmidon-bot-disk-quota.ts).

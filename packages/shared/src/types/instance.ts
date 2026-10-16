@@ -67,6 +67,7 @@ import type { BudgetLimitsSettings } from "../myrmidon-budget-limits.js";
 // same general settings row.
 import type { ToolPolicyCacheSettings } from "../myrmidon-tool-policy-cache.js";
 import type { ForagingIdleGateSettings } from "../myrmidon-foraging-idle-gate.js";
+import type { IdleStopSettings } from "../myrmidon-idle-stop.js";
 
 // myrmidon(1.6.1-FORAGING-LIMITS-UI)
 import type { ForagingSettings } from "../myrmidon-foraging.js";
@@ -182,7 +183,7 @@ export interface InstanceGeneralSettings {
    */
   botDisk?: StoredBotDiskSettings;
   /** Live idle container lifecycle configuration. */
-  idleStop?: { enabled: boolean; afterSec: number; healthTimeoutMs: number };
+  idleStop?: IdleStopSettings;
   /**
    * myrmidon(1.6.1-BOT-DISK-C): per-bot disk quota (company default, per-caste
    * and per-agent overrides), changed from `GET`/`PATCH /api/myrmidon/bot-disk-quota`.
