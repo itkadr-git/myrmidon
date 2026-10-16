@@ -15,7 +15,6 @@ export const ATTENTION_SOURCE_KINDS = [
   "productivity_review",
   "blocker_attention",
   "review",
-  "issue_monitor_overdue",
   "failed_run",
   "budget_alert",
   "agent_error_alert",

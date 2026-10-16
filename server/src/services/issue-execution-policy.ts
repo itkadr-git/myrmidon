@@ -273,6 +273,7 @@ function monitorClearReasonForIssue(
 ): IssueExecutionMonitorClearReason | null {
   if (status === "done") return "done";
   if (status === "cancelled") return "cancelled";
+  if (status === "blocked") return null;
   if (!issueAllowsMonitor(status, assigneeAgentId, assigneeUserId)) {
     if (assigneeUserId || !assigneeAgentId) return "invalid_assignee";
     return "invalid_status";
