@@ -2,10 +2,8 @@
 // read, change and apply behavior settings without restarting the server.
 //
 // Contract: `instance_settings.general.behaviorSettings` is the source of truth
-// for instance-scoped settings once an operator saves them; the environment
-// stays the default for an instance that never did (see
-// packages/shared/src/myrmidon-behavior-settings.ts for the precedence and the
-// value rules). Company-scoped settings live under the
+// when no valid environment override is set. Environment values take precedence
+// over saved values; company-scoped settings live under the
 // `behaviorSettingsByCompany` key of the same row, keyed by companyId, the
 // same shape telegram-notify uses for per-company state. A change writes the
 // row, records it in the activity log, then applies it to the process-wide
@@ -19,6 +17,7 @@
 
 import type { Db } from "@paperclipai/db";
 import {
+  behaviorSettingRegistry,
   resolveBehaviorSettings,
   mergeBehaviorSettings,
   type BehaviorSettingsPatch,
@@ -71,7 +70,7 @@ export interface BehaviorSettingsServiceDeps {
   /** Put the settings in force on the live system. */
   apply(settings: Record<string, unknown>): void;
   /** Ask for any necessary resweeps after settings change. */
-  scheduleResweep(): void;
+  scheduleResweep(changedKeys: readonly string[]): void;
   env?: Record<string, string | undefined>;
 }
 
@@ -171,10 +170,10 @@ export function behaviorSettingsService(
           ),
         );
 
-        // Only after the row and the audit records are committed: the settings in
-        // force must never run ahead of what the log says they are.
-        deps.apply(next);
-        deps.scheduleResweep();
+        // Only after the row and audit records are committed, apply only the
+        // instance-scoped effective values to the process-wide consumer.
+        deps.apply(resolveBehaviorSettings({ stored: next, env }).settings);
+        deps.scheduleResweep(changedKeys);
         logger.info(
           { settings: next, changedKeys, actorType: actor.actorType },
           "behavior settings updated without a restart",
@@ -206,13 +205,10 @@ export function behaviorSettingsService(
           details: { previous: previous.settings, next, changedKeys },
         });
 
-        // Only after the row and the audit records are committed: the settings in
-        // force must never run ahead of what the log says they are.
-        deps.apply(next);
-        deps.scheduleResweep();
+        // Company-scoped settings stay tenant-local and never mutate process state.
         logger.info(
           { settings: next, changedKeys, actorType: actor.actorType, companyId },
-          "company behavior settings updated without a restart",
+          "company behavior settings updated",
         );
         return resolveBehaviorSettings({ stored: next, env });
       }),
@@ -233,6 +229,4 @@ function changedSettingKeys(
   return changedKeys;
 }
 
-// Re-export so route/app wiring can preserve our keys across vendor general
-// writes without importing the store module separately.
 export { preserveBehaviorSettingsGeneralKeys } from "./store.js";

@@ -24,6 +24,7 @@ import { ProcessesSettingsPanel } from "@/components/myrmidon/ProcessesSettingsP
 import { PauseGuardSettingsPanel } from "@/components/myrmidon/PauseGuardSettingsPanel";
 import { RunQueuePrioritySettingsPanel } from "@/components/myrmidon/RunQueuePrioritySettingsPanel"; // myrmidon(1.6.5 RUN-PRIORITY B)
 import { RunStallSettingsPanel } from "@/components/myrmidon/RunStallSettingsPanel"; // myrmidon(RUN-STALL-SETTINGS)
+import { GuardrailsSettingsPanel } from "@/components/myrmidon/GuardrailsSettingsPanel"; // myrmidon(1.7-SETTINGS-C)
 import { BudgetEnforcementSettingsPanel } from "@/components/myrmidon/BudgetEnforcementSettingsPanel"; // myrmidon(1.7-BUDGET-CONFIG-B)
 import { AgentExchangeSettingsPanel } from "@/components/myrmidon/AgentExchangeSettingsPanel"; // myrmidon(1.7-AGENT-EXCHANGE-A)
 import { AgentExchangeFeedSettingsPanel } from "@/components/myrmidon/AgentExchangeFeedSettingsPanel"; // myrmidon(1.7-AGENT-EXCHANGE-B)
@@ -180,6 +181,7 @@ export function InstanceGeneralSettings({ embedded = false }: { embedded?: boole
       <PauseGuardSettingsPanel /> {/* myrmidon(PAUSE-GUARD) */}
       <RunQueuePrioritySettingsPanel /> {/* myrmidon(1.6.5 RUN-PRIORITY B) */}
       <RunStallSettingsPanel /> {/* myrmidon(RUN-STALL-SETTINGS) */}
+      <GuardrailsSettingsPanel /> {/* myrmidon(1.7-SETTINGS-C) */}
       <BudgetEnforcementSettingsPanel /> {/* myrmidon(1.7-BUDGET-CONFIG-B) */}
       <AgentExchangeSettingsPanel /> {/* myrmidon(1.7-AGENT-EXCHANGE-A) */}
       <AgentExchangeFeedSettingsPanel /> {/* myrmidon(1.7-AGENT-EXCHANGE-B) */}

@@ -1,11 +1,39 @@
 // Behavior settings module entry point (myrmidon 1.7, SETTINGS-TO-UI A)
 
 import type { Db } from "@paperclipai/db";
-import { resolveBehaviorSettings } from "@paperclipai/shared";
+import { behaviorSettingRegistry, resolveBehaviorSettings } from "@paperclipai/shared";
 import { logger } from "../../middleware/logger.js";
 import { behaviorSettingsRoutes } from "./routes.js";
 import { behaviorSettingsService, type BehaviorSettingsServiceDeps } from "./service.js";
+import { applyMyrmidonRunEnvAllow } from "@paperclipai/adapter-utils/myrmidon-run-env";
+import { startBotContainers, stopBotContainers } from "../bot-containers/startup.js";
+import { startStackCheckSweep, stopStackCheckSweep } from "../stack-registry/index.js";
 import { applyLiveBehaviorSettings } from "./live.js";
+
+let runtimeDb: Db | null = null;
+
+function scheduleBehaviorSettingsResweep(changedKeys: readonly string[]): void {
+  if (!runtimeDb) return;
+  const needsBotResweep = changedKeys.some((key) =>
+    key === "bot_containers" ||
+    key === "bot_reconcile_interval_sec" ||
+    key === "bot_image_allowlist" ||
+    key === "bot_mount_sources" ||
+    key === "bot_container_github_env_allowlist" ||
+    key === "bot_yolo" ||
+    key === "bot_hindsight_allowed_banks" ||
+    key === "bot_mcp_servers",
+  );
+  const needsStackResweep = changedKeys.includes("stack_check_interval_sec");
+  if (needsBotResweep) {
+    stopBotContainers();
+    startBotContainers(runtimeDb);
+  }
+  if (needsStackResweep) {
+    stopStackCheckSweep();
+    startStackCheckSweep(runtimeDb);
+  }
+}
 
 export {
   behaviorSettingsService,
@@ -38,9 +66,15 @@ export {
  */
 function productionDeps(): Partial<BehaviorSettingsServiceDeps> {
   return {
-    apply: (settings) =>
-      applyLiveBehaviorSettings(resolveBehaviorSettings({ stored: settings, env: process.env })),
-    scheduleResweep: () => undefined,
+    apply: (settings) => {
+      const instanceSettings = Object.fromEntries(
+        Object.entries(settings).filter(([key]) => behaviorSettingRegistry.get(key)?.scope === "instance"),
+      );
+      const view = resolveBehaviorSettings({ stored: instanceSettings, env: process.env });
+      applyLiveBehaviorSettings(view);
+      applyMyrmidonRunEnvAllow((view.settings.run_env_allow as string[] | undefined) ?? []);
+    },
+    scheduleResweep: scheduleBehaviorSettingsResweep,
   };
 }
 
@@ -56,9 +90,11 @@ export function myrmidonBehaviorSettingsRoutes(db: Db) {
  * keeps the registry defaults, which is exactly the pre-feature behaviour.
  */
 export async function startBehaviorSettings(db: Db): Promise<void> {
+  runtimeDb = db;
   try {
     const view = await behaviorSettingsService(db, productionDeps()).read();
     applyLiveBehaviorSettings(view);
+    applyMyrmidonRunEnvAllow((view.settings.run_env_allow as string[] | undefined) ?? []);
     logger.info(
       { settings: view.settings, sources: view.sources },
       "behavior settings at startup",

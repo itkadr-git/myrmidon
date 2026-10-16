@@ -147,6 +147,19 @@ function readExtraAllowFromSetting(): string[] {
   return parseRunEnvAllowList(process.env[MYRMIDON_RUN_ENV_ALLOW_SETTING]);
 }
 
+let liveExtraAllow: string[] | undefined;
+
+/** Replaces the UI-controlled extra env names without weakening other allow checks. */
+export function applyMyrmidonRunEnvAllow(names: readonly string[]): void {
+  liveExtraAllow = parseRunEnvAllowList(names.join(","));
+}
+
+function currentExtraAllow(): string[] {
+  // A non-empty infrastructure variable remains a forced override.
+  const forced = readExtraAllowFromSetting();
+  return forced.length > 0 ? forced : liveExtraAllow ?? forced;
+}
+
 function buildAllowSet(extraAllow: readonly string[]): Set<string> {
   const allowed = new Set<string>();
   for (const name of MYRMIDON_RUN_ENV_BASE_ALLOW) {
@@ -161,7 +174,7 @@ function buildAllowSet(extraAllow: readonly string[]): Set<string> {
 
 export function isMyrmidonRunEnvAllowedKey(
   key: string,
-  extraAllow: readonly string[] = readExtraAllowFromSetting(),
+  extraAllow: readonly string[] = currentExtraAllow(),
 ): boolean {
   return makeAllowCheck(extraAllow)(key);
 }
@@ -227,7 +240,7 @@ export function filterMyrmidonInheritedEnv(
   }
 
   const isAllowed = makeAllowCheck([
-    ...(options.extraAllow ?? readExtraAllowFromSetting()),
+    ...(options.extraAllow ?? currentExtraAllow()),
     ...providerEnvAllow(options.adapterType),
   ]);
   const env: NodeJS.ProcessEnv = {};
