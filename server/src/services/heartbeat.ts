@@ -468,6 +468,8 @@ import {
   settleLiveRunnerGoalBeforeInterrupt,
 } from "./runner-goals.js";
 import { resolveChatRunPresentationAuthorizationReason } from "./chat-run-publications.js";
+import { requiresEngineer } from "../myrmidon/swarm-claim/requires-engineer.js";
+import { resolveTaskCaste } from "../myrmidon/castes/index.js";
 import { projectService } from "./projects.js";
 import {
   getProjectTokenQuotaBlock,
@@ -28996,6 +28998,10 @@ export function heartbeatService(
               status: issues.status,
               statusVersion: issues.statusVersion,
               projectId: issues.projectId,
+              casteKey: issues.casteKey,
+              projectDefaultCasteKey: sql<string | null>`(select p.default_caste_key from projects p where p.id = ${issues.projectId})`,
+              harnessKind: issues.harnessKind,
+              labels: sql<string[]>`coalesce((select json_agg(l.name) from issue_labels il inner join labels l on l.id = il.label_id where il.issue_id = ${issues.id}), '[]'::json)`,
               projectWorkspaceId: issues.projectWorkspaceId,
               executionWorkspaceId: issues.executionWorkspaceId,
               executionWorkspacePreference: issues.executionWorkspacePreference,
@@ -29824,6 +29830,40 @@ export function heartbeatService(
                 hasResolvablePriorSessionWorkspace,
               })
             ) {
+              const resolvedCaste = await resolveTaskCaste(db, {
+                companyId: issue.companyId,
+                issueId: issue.id,
+              }).catch(() => issue.casteKey ?? null);
+              if (requiresEngineer({
+                labels: issue.labels ?? [],
+                casteKey: resolvedCaste,
+                projectDefaultCasteKey: issue.projectDefaultCasteKey,
+                harnessKind: issue.harnessKind,
+                executionWorkspacePreference: issue.executionWorkspacePreference,
+              })) {
+                const now = new Date();
+                await tx.update(issues).set({
+                  status: "todo",
+                  assigneeAgentId: null,
+                  checkoutRunId: null,
+                  executionRunId: null,
+                  executionAgentNameKey: null,
+                  executionLockedAt: null,
+                  updatedAt: now,
+                }).where(eq(issues.id, issue.id));
+                await logActivity(tx as unknown as Db, {
+                  companyId: issue.companyId,
+                  actorType: "system",
+                  actorId: "system",
+                  agentId,
+                  runId: null,
+                  action: "issue.engineer_workspace_requeued",
+                  entityType: "issue",
+                  entityId: issue.id,
+                  details: { reason: WORKSPACE_WORKTREE_REQUIRES_PROJECT_CODE },
+                });
+                return { kind: "skipped" as const };
+              }
               const now = new Date();
               const issueLabel = formatIssueIdentifierLink(
                 issue.identifier,

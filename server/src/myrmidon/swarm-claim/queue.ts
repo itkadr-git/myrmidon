@@ -18,6 +18,7 @@
 import { and, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import { agents, issues, type Db } from "@paperclipai/db";
 import {
+  swarmRoleForUnassignedTask,
   SWARM_CLAIM_QUEUE_ISSUE_STATUSES,
   SWARM_DEFAULT_UNASSIGNED_ROLE,
   type SwarmQueueCandidate,
@@ -91,6 +92,25 @@ export function unassignedTaskRoutedToRole(role: string) {
       ? sql`(${hasLabel} or not ${hasAnyRoleLabel})`
       : hasLabel;
   return sql`(case when ${effectiveCaste} is not null then ${effectiveCaste} = ${wantedKey} else ${labelRoute} end)`;
+}
+
+/** JS twin of the SQL routing rule above, for issue mutation validation. */
+export function unassignedTaskRoutedToRoleByLabels(role: string, labels: readonly string[]): boolean {
+  return swarmRoleForUnassignedTask(labels) === role.trim().toLowerCase();
+}
+
+export function engineerCasteRequired(
+  taskCasteKey: string | null | undefined,
+  projectDefaultCasteKey: string | null | undefined,
+  roleLabels: readonly string[],
+): boolean {
+  const casteKey = taskCasteKey?.trim() || projectDefaultCasteKey?.trim();
+  if (casteKey) return casteKey.toLowerCase() === "engineer";
+  return unassignedTaskRoutedToRoleByLabels("engineer", roleLabels);
+}
+
+export function engineerRoutedByLabels(labels: readonly string[]): boolean {
+  return labels.some((label) => /^role:[\s]*engineer$/i.test(label.trim()));
 }
 
 /**
