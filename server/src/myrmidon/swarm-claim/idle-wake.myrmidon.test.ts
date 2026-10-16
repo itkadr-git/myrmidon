@@ -72,30 +72,42 @@ describe("myrmidon(1.6.1 SWARM-IDLE-WAKE) sweep pass", () => {
       }]),
       update: vi.fn(async () => [{ id: "released-issue" }]),
     };
+    const activeCompanyId = "company-1";
+    const fakeQueryResults: unknown[][] = [
+      [{ id: activeCompanyId }], // active companies for the periodic matcher pass
+      [{ id: "agent-1", companyId: activeCompanyId, role: "engineer", status: "idle", metadata: {} }],
+      [], // live runs
+      [], // last runs
+      [], // active leases
+      [{ issueId: "released-issue", identifier: "ENG-42", priority: "medium", queuedAt: NOW, assigneeAgentId: null, projectId: null }],
+      [{ id: "released-issue", status: "todo", assigneeAgentId: null }], // claim lock/read
+    ];
+    const queryResult = <T>() => Promise.resolve((fakeQueryResults.shift() ?? []) as T[]);
     const db = {
       query: { issues: issueTable },
       select: () => ({
         from: () => ({
           innerJoin: () => ({
             where: () => ({
-              orderBy: () => ({ limit: empty }),
-              groupBy: empty,
-              limit: empty,
+              orderBy: queryResult,
+              groupBy: queryResult,
+              limit: queryResult,
             }),
           }),
           leftJoin: () => ({
             leftJoin: () => ({
-              where: () => ({ orderBy: () => ({ limit: empty }) }),
+              where: () => ({ orderBy: queryResult }),
             }),
           }),
           where: () => ({
-            orderBy: () => ({ limit: empty }),
-            groupBy: empty,
-            limit: empty,
+            orderBy: queryResult,
+            groupBy: queryResult,
+            limit: queryResult,
           }),
+          for: () => queryResult(),
         }),
       }),
-      insert: () => ({ values: () => ({ returning: empty }) }),
+      insert: () => ({ values: () => ({ returning: queryResult }) }),
       transaction: async (fn: (tx: unknown) => Promise<unknown>) => fn(db),
     };
     const settings: SwarmClaimSettings = {
