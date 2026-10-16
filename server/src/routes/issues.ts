@@ -177,7 +177,6 @@ import {
   agentService,
   budgetService,
   companySkillService,
-  companyService,
   companySearchService,
   executionWorkspaceService,
   enrichWorkProductMetadataWithDiff,
@@ -3959,7 +3958,7 @@ export function issueRoutes(
     if (!sourceTrust || sourceTrust.disposition !== "quarantined") {
       return sourceTrust;
     }
-    const company = await companyService().getById(issue.companyId);
+    const company = await companiesSvc.getById(issue.companyId);
     const promotionOwnerUserId =
       issue.responsibleUserId ??
       (actor.actorType === "user" ? actor.actorId : null) ??
@@ -18310,7 +18309,7 @@ export function issueRoutes(
 
         const sourceTrust =
           actor.actorType === "agent"
-            ? await sourceTrustForActorWrite(currentIssue, actor)
+            ? await sourceTrustForActorWrite(currentIssue, actor, true)
             : null;
         const commentOptions = {
           authorType:
@@ -18433,12 +18432,16 @@ export function issueRoutes(
           attachmentIds: req.body.attachmentIds,
           clientRequestId: actor.actorType === "user" ? req.body.clientRequestId : undefined,
           authorizationReason: commentAuthorizationReason,
-          sourceTrust: await sourceTrustForActorWrite(currentIssue, actor),
+          sourceTrust: await sourceTrustForActorWrite(currentIssue, actor, true),
         };
         const add = (dbOrTx: Db = db) =>
           svc.addComment(
             id,
-            req.body.body,
+            sourceTrust?.disposition === "quarantined"
+              ? buildLowTrustQuarantineNotice({
+                  promotionOwnerUserId: sourceTrust.promotionOwnerUserId ?? null,
+                })
+              : req.body.body,
             {
               agentId: actor.agentId ?? undefined,
               userId: actor.actorType === "user" ? actor.actorId : undefined,
