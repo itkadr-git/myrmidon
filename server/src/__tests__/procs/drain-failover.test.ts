@@ -497,7 +497,6 @@ describeProcs("drain and failover e2e: supervisor in-process, two api children (
     expect(freshPid).not.toBe(survivorPid);
 
     // The survivor never left its slot.
-    const slotsAfter = supervisor!.children();
     expect(slotsAfter.map((slot) => slot.pid)).toContain(survivorPid);
 
     // Failover proof on the data path: every row the suite wrote is still
