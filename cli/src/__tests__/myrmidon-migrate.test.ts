@@ -36,7 +36,7 @@ import supportedJournal from "../../../packages/db/src/migrations/meta/_journal.
       await writeFile(path.join(root, "dump.sql"), "-- fixture");
       await expect(myrmidonMigrateCommand({
         sourceDump: path.join(root, "dump.sql"), targetDir: target,
-      })).rejects.toThrow(/intentionally unavailable/);
+      })).rejects.toThrow(/exactly one Drizzle migration journal record/);
       expect(await readdir(target)).toEqual([]);
     } finally {
       await rm(root, { recursive: true, force: true });
@@ -55,9 +55,12 @@ import supportedJournal from "../../../packages/db/src/migrations/meta/_journal.
     verifyJournalHash(supportedJournal);
     const hash = "4da5ee2c26e269a19b8800ddaa410db040460b9a23ea24a35d70abce3fdd334a";
     const insert = `INSERT INTO drizzle.__drizzle_migrations (id, hash, created_at) VALUES (279, '${hash}', 1789390281190);`;
+    const copy = `COPY drizzle.__drizzle_migrations (id, hash, created_at) FROM stdin;\n279\t${hash}\t1789390281190\n\\.\n`;
     expect(() => verifyPgDumpMigrationChain(insert)).toThrow(/opaque SQL hashes/);
     expect(() => verifyPgDumpMigrationChain(insert.replace(hash, "deadbeef"))).toThrow(/opaque SQL hashes/);
-    expect(() => verifyPgDumpMigrationChain(`${insert}\n${insert}`)).toThrow(/exactly one/);
-    expect(() => verifyPgDumpMigrationChain("COPY drizzle.__drizzle_migrations (id, hash, created_at) FROM stdin;\n279\\t" + hash + "\\t1789390281190\\n\\\\.\\n")).toThrow(/not supported/);
+    expect(() => verifyPgDumpMigrationChain(`${insert}\\n${insert}`)).toThrow(/exactly one/);
+    expect(() => verifyPgDumpMigrationChain(copy)).toThrow(/opaque SQL hashes/);
+    expect(() => verifyPgDumpMigrationChain(copy.replace(hash, "deadbeef"))).toThrow(/opaque SQL hashes/);
+    expect(() => verifyPgDumpMigrationChain(copy.replace("279\\t", "278\\t"))).toThrow(/opaque SQL hashes/);
   });
 });
