@@ -219,6 +219,22 @@ describe("App Activity routing (PAP-16302)", () => {
     flushSync(() => root.unmount());
   });
 
+  it.each([
+    [true, "/PAP/swarm-claim", "SWARM_SUPERVISOR@/PAP/swarm-claim"],
+    [false, "/PAP/swarm-claim", "SWARM_SUPERVISOR@/PAP/swarm-claim"],
+    [true, "/PAP/foraging", "FORAGING@/PAP/foraging"],
+    [false, "/PAP/foraging", "FORAGING@/PAP/foraging"],
+  ])(
+    "serves the prefixed Myrmidon page with Streamlined UI enabled=%s at %s (OPE-7948)",
+    async (enabled: boolean, path: string, expected: string) => {
+      streamlinedUiState.enabled = enabled;
+      const root = renderAppAt(container, path);
+      await waitForRoute(container, expected);
+      expect(container.textContent).not.toContain("NOT_FOUND");
+      flushSync(() => root.unmount());
+    },
+  );
+
   it("serves organization and entity-scoped run history beneath Activity", async () => {
     const root = renderAppAt(
       container,
