@@ -52,6 +52,45 @@ describe("readBotContainerAgentConfig", () => {
     });
   });
 
+  it("parses valid host and hostPinned for a hermes_gateway agent", () => {
+    const result = readBotContainerAgentConfig("hermes_gateway", {
+      container: { ...VALID_CONTAINER_CONFIG, host: "myr-vm1", hostPinned: true },
+    });
+    expect(result).toEqual({
+      ok: true,
+      config: {
+        image: "myrmidon-hermes:1.1.0",
+        memoryMb: 1536,
+        cpus: 1,
+        pidsLimit: 256,
+        extraMounts: [],
+        host: "myr-vm1",
+        hostPinned: true,
+      },
+    });
+  });
+
+  it("refuses malformed host or reserved local host name", () => {
+    expect(
+      readBotContainerAgentConfig("hermes_gateway", {
+        container: { ...VALID_CONTAINER_CONFIG, host: "INVALID HOST!" },
+      }).ok,
+    ).toBe(false);
+    expect(
+      readBotContainerAgentConfig("hermes_gateway", {
+        container: { ...VALID_CONTAINER_CONFIG, host: "local" },
+      }).ok,
+    ).toBe(false);
+  });
+
+  it("refuses non-boolean hostPinned", () => {
+    expect(
+      readBotContainerAgentConfig("hermes_gateway", {
+        container: { ...VALID_CONTAINER_CONFIG, hostPinned: "true" },
+      }).ok,
+    ).toBe(false);
+  });
+
   it.each(["team-b", "Not-Lowercase", "", 42])(
     "refuses a shared container.group (%j) as not applicable instead of reconciling it per agent",
     (group) => {
@@ -213,6 +252,32 @@ describe("botContainerCardSaveProblem (1.6.4-BOT-CONTAINER-CARD)", () => {
     expect(
       botContainerCardSaveProblem("hermes_gateway", { container: { ...VALID_CONTAINER_CONFIG, pidsLimit: 1.5 } }),
     ).toContain("pidsLimit");
+  });
+
+  it("validates host and hostPinned when provided", () => {
+    expect(
+      botContainerCardSaveProblem("hermes_gateway", {
+        container: { ...VALID_CONTAINER_CONFIG, host: "myr-vm1", hostPinned: true },
+      }),
+    ).toBeNull();
+
+    expect(
+      botContainerCardSaveProblem("hermes_gateway", {
+        container: { ...VALID_CONTAINER_CONFIG, host: "Bad Host Name" },
+      }),
+    ).toContain("host must be a host name");
+
+    expect(
+      botContainerCardSaveProblem("hermes_gateway", {
+        container: { ...VALID_CONTAINER_CONFIG, host: "local" },
+      }),
+    ).toContain('"local" is not a host');
+
+    expect(
+      botContainerCardSaveProblem("hermes_gateway", {
+        container: { ...VALID_CONTAINER_CONFIG, hostPinned: "yes" as unknown as boolean },
+      }),
+    ).toContain("hostPinned must be a boolean");
   });
 });
 

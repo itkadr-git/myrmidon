@@ -100,6 +100,8 @@ export interface BotContainerStatus {
    * Never set by a driver that answers without inspecting (fleetd).
    */
   inspect?: unknown;
+  /** Port the bot gateway listens on (optional, reported by remote/local drivers). */
+  gatewayPort?: number;
 }
 
 /** One template field whose live value (the container's inspect) no longer
