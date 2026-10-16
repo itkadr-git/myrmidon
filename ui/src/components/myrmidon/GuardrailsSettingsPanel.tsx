@@ -37,7 +37,7 @@ export function GuardrailsSettingsPanel() {
           {field.kind === "select" ? <select id={`guardrail-${field.key}`} className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm" value={drafts[field.key] ?? String(value)} onChange={(event) => setDrafts((current) => ({ ...current, [field.key]: event.target.value }))}>
             {field.options.map((option) => <option key={option} value={option}>{option}</option>)}
           </select> : <Input id={`guardrail-${field.key}`} type="number" min="0" step="1" value={drafts[field.key] ?? String(value)} onChange={(event) => setDrafts((current) => ({ ...current, [field.key]: event.target.value }))} />}
-          <p className="text-xs text-muted-foreground">Source: {source === "env" ? "server environment (override)" : source === "settings" ? "saved setting" : "default"}</p>
+          <p className="text-xs text-muted-foreground">Source: {source === "env" ? "server environment (override)" : source === "ui" ? "saved setting" : "default"}</p>
         </div>;
       })}
     </div>

@@ -124,34 +124,54 @@ describe("myrmidon(1.7) behavior settings: reading the effective values", () => 
     expect(res.body.sources.tool_breaker_failures).toBe("env");
   });
 
+  it("keeps env as the forced override over a stored guardrail value", async () => {
+    const { app } = harness({
+      stored: { tool_breaker_failures: 0, tool_timeout_max_ms: 90000 },
+      env: { MYRMIDON_TOOL_BREAKER_FAILURES: "3" },
+    });
+    const res = await request(app).get(INSTANCE_URL).expect(200);
+    expect(res.body.settings.tool_breaker_failures).toBe(3);
+    expect(res.body.sources.tool_breaker_failures).toBe("env");
+    expect(res.body.settings.tool_timeout_max_ms).toBe(90000);
+    expect(res.body.sources.tool_timeout_max_ms).toBe("ui");
+  });
+
+  it("applies an instance patch to the live consumer without restarting", async () => {
+    const h = harness({ env: { MYRMIDON_TOOL_BREAKER_FAILURES: "3" } });
+    const res = await request(h.withActor(admin))
+      .patch(INSTANCE_URL)
+      .send({ tool_breaker_failures: 1 })
+      .expect(200);
+    expect(res.body.settings.tool_breaker_failures).toBe(3);
+    expect(h.calls).toContain(expect.stringContaining('"tool_breaker_failures":3'));
+  });
+
+  it("reports defaults as the source", async () => {
+    const { app } = harness({ env: {} });
+    const res = await request(app).get(INSTANCE_URL).expect(200);
+    expect(res.body.sources.bot_egress_mode).toBe("default");
+  });
+
   it("keeps the environment as the source when its value equals the default", async () => {
-    // Review blocker 1 (OPE-4094): MYRMIDON_DEBUG_MODE=false is an explicit
-    // env declaration equal to the default; resolveRunLimits' envDeclares
-    // semantics report it as "env", not "default".
     const { app } = harness({ env: { MYRMIDON_DEBUG_MODE: "false" } });
     const res = await request(app).get(INSTANCE_URL).expect(200);
-
     expect(res.body.settings.debug_mode).toBe(false);
     expect(res.body.sources.debug_mode).toBe("env");
   });
 
   it("reports the stored settings as the source once they exist", async () => {
-    const { app } = harness({
-      stored: { debug_mode: true, max_concurrent_agents: 10 },
-    });
+    const { app } = harness({ stored: { debug_mode: true, max_concurrent_agents: 10 } });
     const res = await request(app).get(INSTANCE_URL).expect(200);
-    
     expect(res.body.settings.debug_mode).toBe(true);
     expect(res.body.sources.debug_mode).toBe("ui");
   });
 
-  it("falls back to the environment when the stored row is not canonical", async () => {
+  it("falls back when the stored value is invalid", async () => {
     const { app } = harness({ stored: { debug_mode: "invalid_value" } });
     const res = await request(app).get(INSTANCE_URL).expect(200);
-    
-    // Should fall back to environment or default
     expect(res.body.settings.debug_mode).toBeDefined();
   });
+
 });
 
 describe("myrmidon(1.7) behavior settings: access", () => {
@@ -187,6 +207,15 @@ describe("myrmidon(1.7) behavior settings: access", () => {
     expect(h.updated.length).toBeGreaterThan(0);
   });
 
+  it("rejects instance-only guardrails on the company endpoint", async () => {
+    const h = harness();
+    await request(h.withActor(member))
+      .patch(COMPANY_URL(COMPANY_ID))
+      .send({ tool_breaker_failures: 0 })
+      .expect(400);
+    expect(h.updated).toEqual([]);
+  });
+
   it("refuses access to company settings for users without company access", async () => {
     const h = harness();
     await request(h.withActor(outsider)).get(COMPANY_URL(COMPANY_ID)).expect(403);
@@ -214,6 +243,23 @@ describe("myrmidon(1.7) behavior settings: a change reaches the live system", ()
     expect(h.calls).toContain("write");
     expect(h.calls).toContain(`apply:${JSON.stringify({ debug_mode: true })}`);
     expect(h.calls).toContain("resweep");
+  });
+
+  it("applies env override to the live consumer after PATCH", async () => {
+    const h = harness({ env: { MYRMIDON_TOOL_BREAKER_FAILURES: "3" } });
+    const res = await request(h.withActor(admin))
+      .patch(INSTANCE_URL)
+      .send({ tool_breaker_failures: 0 })
+      .expect(200);
+
+    expect(res.body.settings.tool_breaker_failures).toBe(3);
+    expect(h.calls).toContain(`apply:${JSON.stringify({ tool_breaker_failures: 3 })}`);
+  });
+
+  it("rejects company-scoped writes from changing the process holder", async () => {
+    const h = harness();
+    await request(h.withActor(member)).patch(COMPANY_URL(COMPANY_ID)).send({ debug_mode: true }).expect(200);
+    expect(h.calls.some((call) => call.startsWith("apply:"))).toBe(false);
   });
 
   it("handles concurrent updates without race conditions", async () => {

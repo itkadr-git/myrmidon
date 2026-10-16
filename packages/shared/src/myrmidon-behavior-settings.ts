@@ -11,9 +11,9 @@ import { z } from "zod";
  * The precedence, per value, is decided here once and read from both the server
  * and the settings page:
  *
- * - the stored settings value, when the key is present in the appropriate location;
- * - otherwise the environment variable, which stays the default for the first
- *   start on an instance that has never saved these settings;
+ * - the environment variable, when it declares a valid value;
+ * - otherwise the stored setting, when the key is present in the appropriate
+ *   location;
  * - otherwise the built-in default.
  *
  * Settings can be scoped to instance or company level. Instance-level settings 
@@ -40,7 +40,7 @@ export interface BehaviorSettingDef<T = unknown> {
   key: string;
   /** Environment variable name for the setting */
   envName: string;
-  /** Default value when neither UI nor environment is set */
+  /** Default value when neither environment nor UI is set */
   default: T;
   /** Scope of the setting: instance-wide or company-specific */
   scope: SettingScope;
@@ -73,6 +73,10 @@ export class BehaviorSettingRegistry {
 
   getKeys(): string[] {
     return Array.from(this.settings.keys());
+  }
+
+  getInstanceKeys(): string[] {
+    return this.getAll().filter((setting) => setting.scope === "instance").map((setting) => setting.key);
   }
 }
 
@@ -209,20 +213,21 @@ export function resolveSetting<T>(options: {
 
   const env = options.env;
   
-  // Try stored value first
-  if (options.stored !== undefined) {
-    const normalized = normalizeSetting<T>(options.stored, def);
-    if (normalized !== null) {
-      return { value: normalized, source: "ui" };
-    }
-  }
-  
-  // Then try environment: the source is "env" whenever the environment
+  // Environment variables remain the operator's forced override, even when a
+  // UI value has been persisted.
+  // The source is "env" whenever the environment
   // declares a valid value, even when that value equals the default
   // (mirrors resolveRunLimits' envDeclares semantics).
   const envValue = readSettingFromEnv(env, def);
   if (envValue !== null) {
     return { value: envValue, source: "env" };
+  }
+
+  if (options.stored !== undefined) {
+    const normalized = normalizeSetting<T>(options.stored, def);
+    if (normalized !== null) {
+      return { value: normalized, source: "ui" };
+    }
   }
   
   // Finally return default
@@ -269,9 +274,15 @@ export function resolveBehaviorSettings(options: {
  * Schema for validating a behavior settings patch
  */
 export function createBehaviorSettingsPatchSchema() {
+  return createBehaviorSettingsScopePatchSchema("all");
+}
+
+/** Build a patch schema restricted to one persistence scope. */
+export function createBehaviorSettingsScopePatchSchema(scope: SettingScope | "all") {
   const shape: Record<string, z.ZodTypeAny> = {};
   
   for (const def of behaviorSettingRegistry.getAll()) {
+    if (scope !== "all" && def.scope !== scope) continue;
     switch (def.valueType) {
       case "boolean":
         shape[def.key] = z.boolean().optional();

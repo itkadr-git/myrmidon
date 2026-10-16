@@ -1,7 +1,7 @@
 // Behavior settings module entry point (myrmidon 1.7, SETTINGS-TO-UI A)
 
 import type { Db } from "@paperclipai/db";
-import { resolveBehaviorSettings } from "@paperclipai/shared";
+import { behaviorSettingRegistry, resolveBehaviorSettings } from "@paperclipai/shared";
 import { logger } from "../../middleware/logger.js";
 import { behaviorSettingsRoutes } from "./routes.js";
 import { behaviorSettingsService, type BehaviorSettingsServiceDeps } from "./service.js";
@@ -38,8 +38,19 @@ export {
  */
 function productionDeps(): Partial<BehaviorSettingsServiceDeps> {
   return {
-    apply: (settings) =>
-      applyLiveBehaviorSettings(resolveBehaviorSettings({ stored: settings, env: process.env })),
+    apply: (settings) => {
+      const instanceSettings = Object.fromEntries(
+        Object.entries(settings).filter(([key]) => {
+          const definition = behaviorSettingRegistry.get(key);
+          return definition?.scope === "instance";
+        }),
+      );
+      const view = resolveBehaviorSettings({ stored: instanceSettings, env: process.env });
+      applyLiveBehaviorSettings({
+        settings: Object.fromEntries(Object.entries(view.settings).filter(([key]) => behaviorSettingRegistry.get(key)?.scope === "instance")),
+        sources: Object.fromEntries(Object.entries(view.sources).filter(([key]) => behaviorSettingRegistry.get(key)?.scope === "instance")),
+      });
+    },
     scheduleResweep: () => undefined,
   };
 }
