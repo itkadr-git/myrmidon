@@ -63,6 +63,8 @@ const RUNS_QUEUE_KEYS = [
 ] as const;
 
 const LABELS: Record<(typeof RUNS_QUEUE_KEYS)[number], string> = {
+  "runsQueue.idlePickup.wakeBudgetPerMin": "Idle pickup wake budget per minute",
+  "runsQueue.idlePickup.wakeBatch": "Idle pickup wake batch size",
   "runsQueue.idlePickup.enabled": "Idle pickup enabled",
   "runsQueue.idlePickup.intervalSec": "Idle pickup interval, sec",
   "runsQueue.idlePickup.recentSuccessWindowMs": "Recent success window, ms",
