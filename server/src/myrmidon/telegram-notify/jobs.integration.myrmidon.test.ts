@@ -25,6 +25,7 @@ import {
   toolConnections,
 } from "@paperclipai/db";
 import type { Db } from "@paperclipai/db";
+import { emptyTelegramNotifyDocument } from "@paperclipai/shared";
 import {
   runDigestForCompany,
   runEscalationsForCompany,
@@ -227,7 +228,7 @@ describe("telegram notify jobs (DB-backed)", () => {
     settings.digest.enabled = true;
     settings.digest.time = "08:45";
     await mutateTelegramNotifySettingsDocument(db, fixture.companyId, () => ({
-      next: { version: 1, settings, changelog: [] },
+      next: { ...emptyTelegramNotifyDocument(), settings },
       result: undefined,
     }));
 
