@@ -13,6 +13,7 @@ import {
 } from "@paperclipai/shared";
 import { claimCovers, selectQueueForAgent } from "./domain.js";
 import { createSwarmClaimSweeper } from "./sweep.js";
+import type { SwarmClaimEnqueueWakeup } from "./service.js";
 
 const NOW = new Date("2026-10-03T12:00:00Z");
 
@@ -73,7 +74,14 @@ describe("myrmidon(1.6.1 SWARM-IDLE-WAKE) sweep pass", () => {
     };
     const db = {
       query: { issues: issueTable },
-      select: () => ({ from: () => ({ where: () => ({ limit: empty }) }) }),
+      select: () => ({
+        from: () => ({
+          where: () => ({
+            orderBy: () => ({ limit: empty }),
+            limit: empty,
+          }),
+        }),
+      }),
       insert: () => ({ values: () => ({ returning: empty }) }),
       transaction: async (fn: (tx: unknown) => Promise<unknown>) => fn(db),
     };
@@ -92,7 +100,7 @@ describe("myrmidon(1.6.1 SWARM-IDLE-WAKE) sweep pass", () => {
       intervalMs: 0,
       hostMemoryGate: () => ({ state: "open" } as never),
       hostCpuGate: () => ({ state: "open" } as never),
-      enqueueWakeup: async (agentId, opts) => {
+      enqueueWakeup: async (agentId: string, opts: Parameters<SwarmClaimEnqueueWakeup>[1]) => {
         wakes.push({ agentId, opts: opts as unknown as Record<string, unknown> });
         return { id: "wake-next" } as never;
       },
