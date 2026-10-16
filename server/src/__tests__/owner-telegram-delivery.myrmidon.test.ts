@@ -275,7 +275,6 @@ describeEmbeddedPostgres(
           questions: [
             {
               id: "deploy-window",
-              header: "Deploy window",
               prompt: "Which deploy window?",
               helpText: "Choose one and include any timing constraints.",
               selectionMode: "single" as const,
@@ -286,6 +285,23 @@ describeEmbeddedPostgres(
               ],
             },
           ],
+          questionSet: {
+            schema: "paperclip.question_set.v1" as const,
+            questions: [
+              {
+                id: "deploy-window",
+                header: "Deploy window",
+                prompt: "Which deploy window?",
+                helpText: "Choose one and include any timing constraints.",
+                required: true,
+                answerMode: "single_select" as const,
+                options: [
+                  { id: "morning", label: "Morning", description: "Before noon" },
+                  { id: "evening", label: "Evening", description: "After work" },
+                ],
+              },
+            ],
+          },
         },
       };
 
