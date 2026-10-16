@@ -11,7 +11,9 @@ export const patchIdleStopSettingsSchema = idleStopSettingsSchema.partial();
 export type IdleStopSettingsPatch = z.infer<typeof patchIdleStopSettingsSchema>;
 export const storedIdleStopSettingsSchema = idleStopSettingsSchema.partial().optional().catch(undefined);
 
-export function normalizeIdleStopSettings(raw: unknown, env: Record<string, string | undefined> = process.env): IdleStopSettings {
+const defaultIdleStopEnv: Record<string, string | undefined> = {};
+
+export function normalizeIdleStopSettings(raw: unknown, env: Record<string, string | undefined> = defaultIdleStopEnv): IdleStopSettings {
   const parsed = storedIdleStopSettingsSchema.safeParse(raw);
   const stored = parsed.success ? parsed.data : undefined;
   const enabledEnv = env.MYRMIDON_IDLE_STOP_ENABLED?.trim().toLowerCase();
@@ -22,6 +24,6 @@ export function normalizeIdleStopSettings(raw: unknown, env: Record<string, stri
   };
 }
 
-export function mergeIdleStopSettings(raw: unknown, patch: IdleStopSettingsPatch, env: Record<string, string | undefined> = process.env): IdleStopSettings {
+export function mergeIdleStopSettings(raw: unknown, patch: IdleStopSettingsPatch, env: Record<string, string | undefined> = defaultIdleStopEnv): IdleStopSettings {
   return idleStopSettingsSchema.parse({ ...normalizeIdleStopSettings(raw, env), ...patch });
 }
