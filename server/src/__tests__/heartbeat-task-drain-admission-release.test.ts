@@ -192,9 +192,7 @@ describeEmbeddedPostgres("heartbeat task-drain admission release", () => {
         triggerDetail: "system",
         status: "running",
         startedAt: new Date(),
-          runnerProfileJson: { adapterDispatch: { adapterType: "claude_local" } },
-          contextSnapshot: { issueId, wakeReason: "issue_assigned" },
-          resultJson: { conversationContinuation: "fresh_turn" },
+        contextSnapshot: { issueId, wakeReason: "issue_assigned" },
       }).onConflictDoUpdate({
         target: heartbeatRuns.id,
         set: { status: "running", startedAt: new Date() },
