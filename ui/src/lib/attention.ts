@@ -89,6 +89,8 @@ const SOURCE_META: Record<AttentionSourceKind, SourceMeta> = {
   foraging_limit: { label: "Learning limit" },
   // myrmidon(OPE-6011): label for the execution hold source.
   execution_hold: { label: "Execution hold" },
+  // myrmidon(OPE-6799): operator triage for blocked replays.
+  replay_blocked: { label: "Replay blocked" },
   // myrmidon(1.6.5-F21-B): label for the owner pending-card source.
   owner_pending_card: { label: "Owner card" },
   // myrmidon(1.6.5-F-23): labels for the off-run secret read sources.
@@ -167,6 +169,8 @@ export function attentionKind(item: AttentionItem): AttentionKind {
     case "agent_error_alert":
     case "blocker_attention":
     case "recovery_action":
+    case "execution_hold":
+    case "replay_blocked":
     case "budget_alert":
     case "host_disk_alert":
     case "foraging_limit":

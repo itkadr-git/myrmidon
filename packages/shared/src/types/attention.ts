@@ -63,6 +63,8 @@ export const ATTENTION_SOURCE_KINDS = [
   // execution-reconciliation hold ("execution_reconciliation_required") until
   // a person confirms the failed run left no external action.
   "execution_hold",
+  // myrmidon(OPE-6799): replay-blocked issues handed to an operator/lead until triaged.
+  "replay_blocked",
   // myrmidon(1.6.5-F21-B): owner decision cards are waiting on the owner;
   // the TTL sweep closes the ones that stay unanswered.
   "owner_pending_card",
