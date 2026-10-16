@@ -20,7 +20,7 @@ export const myrmidonFleetMoves = pgTable(
   "myrmidon_fleet_moves",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    companyId: uuid("company_id").notNull().references(() => companies.id),
+    companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
     botKey: text("bot_key").notNull(),
     srcSite: text("src_site").notNull(),
     dstSite: text("dst_site").notNull(),
