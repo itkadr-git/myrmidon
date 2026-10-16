@@ -3,7 +3,7 @@ import type { Agent } from "@paperclipai/shared";
 export interface AgentProjectScope {
   id: string;
   leadAgentId: string | null;
-  agentIds: string[];
+  agentIds?: string[];
 }
 
 export type AgentScope = { type: "company" } | { type: "project"; projectId: string };
@@ -19,7 +19,7 @@ export function parseAgentScope(search: string): AgentScope {
 export function agentBelongsToProject(agent: Agent, project: AgentProjectScope): boolean {
   const explicitMembership = (agent as Agent & { projectIds?: string[] }).projectIds;
   if (Array.isArray(explicitMembership)) return explicitMembership.includes(project.id);
-  return project.agentIds.includes(agent.id) || project.leadAgentId === agent.id;
+  return project.agentIds?.includes(agent.id) === true || project.leadAgentId === agent.id;
 }
 
 export function filterAgentsByScope(agents: Agent[], scope: AgentScope, projects: AgentProjectScope[]): Agent[] {
