@@ -31,6 +31,7 @@
 
 import { createHash } from "node:crypto";
 
+import { liveBehaviorSetting } from "../behavior-settings/live.js";
 import type { HermesProfileEnvEntry } from "./profile-compiler.js";
 
 /**
@@ -166,7 +167,9 @@ export function createCardEnvResolver(
         // myrmidon(FLEETD-VMEXEC): a named dev bot keeps the binding; the secret
         // must still be bound to this agent, and the value lands in hermes/.env
         // (0600, secret) exactly like any other card env entry.
-        const allowlist = options.githubEnvAllowlist ?? parseGithubEnvAllowlist((options.env ?? process.env)[GITHUB_ENV_ALLOWLIST_ENV]);
+        const allowlist = options.githubEnvAllowlist ?? (options.env === undefined
+          ? new Set(liveBehaviorSetting<string[]>("bot_container_github_env_allowlist") ?? [])
+          : parseGithubEnvAllowlist(options.env[GITHUB_ENV_ALLOWLIST_ENV]));
         if (typeof agent.name === "string" && allowlist.has(agent.name)) {
           bindings[name] = binding;
           continue;
