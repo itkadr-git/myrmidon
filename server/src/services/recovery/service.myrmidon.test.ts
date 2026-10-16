@@ -143,11 +143,13 @@ describeEmbeddedPostgres("reconcileStrandedAssignedIssues: infrastructure interr
   }, 30_000);
 
   it("returns terminal stranded work to the shared unassigned engineer queue", async () => {
+    const blockerId = randomUUID();
     const { companyId, agentId: managerId, issueId } = await seedStrandedIssue({
       errorCode: "adapter_failed",
       scheduledRetryAttempt: 0,
       createdAtOffsetMs: 0,
       scheduledRetryReason: "Recovery retry budget was exhausted",
+      blockerIssueId: blockerId,
     });
     const [manager] = await db.select().from(agents).where(eq(agents.id, managerId));
     expect(manager).toBeDefined();
@@ -170,7 +172,7 @@ describeEmbeddedPostgres("reconcileStrandedAssignedIssues: infrastructure interr
       type: "blocks",
     });
 
-    await heartbeatService(db).reconcileStrandedAssignedIssues({ issueIds: [issueId] });
+    await heartbeatService(db).reconcileStrandedAssignedIssues();
 
     const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
     expect(issue!.status).toBe("todo");
@@ -180,7 +182,7 @@ describeEmbeddedPostgres("reconcileStrandedAssignedIssues: infrastructure interr
 
   it("keeps real unresolved blockers on blocked issues during reroute", async () => {
     const blockerId = randomUUID();
-    const terminalRetryIssue = await seedStrandedIssue({
+    const { companyId, issueId } = await seedStrandedIssue({
       errorCode: "adapter_failed",
       scheduledRetryAttempt: 0,
       createdAtOffsetMs: 0,
