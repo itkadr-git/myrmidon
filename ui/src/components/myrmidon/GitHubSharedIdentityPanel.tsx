@@ -85,7 +85,13 @@ export function bodyFromDraft(draft: Draft): GitHubSharedIdentityPut {
   return {
     enabled: draft.enabled,
     commitEmailDomain: draft.commitEmailDomain.trim() || null,
-    pats: draft.pats.map((pat) => ({ ...pat, allowedRepos: splitList(pat.allowedRepos) })),
+    pats: draft.pats.map((pat) => ({
+      id: pat.id,
+      name: pat.name.trim(),
+      tokenSecretId: pat.tokenSecretId.trim(),
+      allowedRepos: splitList(pat.allowedRepos),
+      agentIds: pat.agentIds.map((agentId) => agentId.trim()),
+    })),
     apps: draft.apps.map((app) => ({
       id: app.id,
       name: app.name.trim(),
