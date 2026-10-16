@@ -38,7 +38,7 @@ after(() => {
 });
 
 const git = (cwd, ...args) => {
-  const r = spawnSync("git", args, {
+  const r = spawnSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...args], {
     cwd,
     encoding: "utf8",
     env: { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" },
@@ -496,6 +496,26 @@ describe("archiveTree: bounded like the fallback tar", () => {
     assert.match(r.reason, /only \d+ bytes free in .* for a \d+-byte directory/);
     assert.deepEqual(fs.readdirSync(archiveRoot), []);
     assert.ok(fs.existsSync(dir));
+  });
+
+  it("archiveThenRemove reuses a verified unchanged archive, but re-archives after edits", () => {
+    const dir = path.join(tmp, "archive-reuse");
+    const { copy } = makeRepo(dir);
+    const archiveRoot = path.join(dir, "archive");
+    const calls = [];
+    const archiveMod = {
+      archive: (...args) => { calls.push("repo"); return archive(...args); },
+      archiveTree: (...args) => { calls.push("tree"); return archiveTree(...args); },
+    };
+    const deps = { archiveMod, archiveRoot, isGit: (p) => fs.existsSync(path.join(p, ".git")), remove: () => "removed" };
+    const item = { path: copy, key: KEY };
+    assert.equal(archiveThenRemove(item, deps), "archived, removed");
+    assert.equal(calls.length, 1);
+    assert.equal(archiveThenRemove(item, deps), "previous archive verified unchanged; removed");
+    assert.equal(calls.length, 1, "unchanged source does not produce duplicate archives");
+    fs.writeFileSync(path.join(copy, "new-work.txt"), "new\\n");
+    assert.equal(archiveThenRemove(item, deps), "archived, removed");
+    assert.equal(calls.length, 2, "changed source gets a fresh archive");
   });
 
   it("legacy.archiveThenRemove keeps the directory when archiveTree refuses it", () => {
