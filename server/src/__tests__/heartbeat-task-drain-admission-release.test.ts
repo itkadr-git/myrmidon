@@ -179,6 +179,11 @@ describeEmbeddedPostgres("heartbeat task-drain admission release", () => {
     const { companyId, agentId, issueId, runId, wakeupRequestId } = await seedQueuedRun();
     const heartbeat = heartbeatService(db);
     let activePromise: Promise<unknown> | undefined;
+    let adapterStarted = false;
+    let markAdapterStarted: (() => void) | undefined;
+    const adapterStartedSignal = new Promise<void>((resolve) => {
+      markAdapterStarted = resolve;
+    });
     let gateAdapter: (() => void) | undefined;
     const adapterGate = new Promise<void>((resolve) => {
       gateAdapter = resolve;
@@ -207,6 +212,8 @@ describeEmbeddedPostgres("heartbeat task-drain admission release", () => {
     const adapter = vi.spyOn(adapterModule, "getServerAdapter").mockReturnValue({
       supportsLocalAgentJwt: false,
       execute: async () => {
+        adapterStarted = true;
+        markAdapterStarted?.();
         await adapterGate;
         throw Object.assign(new Error("interrupted by SIGTERM"), { code: "ABORT_ERR" });
       },
@@ -214,11 +221,12 @@ describeEmbeddedPostgres("heartbeat task-drain admission release", () => {
     try {
       activePromise = heartbeat.invoke(agentId, "assignment", { issueId }, "system");
       await waitForActiveRun(runId);
+      await adapterStartedSignal;
+      expect(adapterStarted).toBe(true);
       await db
         .update(heartbeatRuns)
         .set({ runnerProfileJson: { adapterDispatch: { adapterType: "hermes_gateway" } } })
         .where(eq(heartbeatRuns.id, runId));
-      gateAdapter?.();
 
       const activeState = getTaskDrainStatus();
       expect(activeState.activeRuns).toBe(1);
@@ -231,7 +239,9 @@ describeEmbeddedPostgres("heartbeat task-drain admission release", () => {
       const retryRunId = shutdown.retryRunIds[0]!;
       expect(retryRunId).not.toBe(runId);
       expect(retryRunId).toEqual(expect.any(String));
-      expect(gateAdapter).toBeDefined();
+      expect(getTaskDrainStatus()).toMatchObject({ draining: true, activeRuns: 1, quiescent: false });
+
+      // Keep the adapter blocked until shutdown has durably created the retry.
       gateAdapter?.();
       await heartbeat.drainActiveRunExecutions();
       await activePromise;
@@ -258,10 +268,17 @@ describeEmbeddedPostgres("heartbeat task-drain admission release", () => {
       expect(retry?.errorCode).toBeNull();
       expect(getTaskDrainStatus()).toMatchObject({ draining: true, activeRuns: 0, quiescent: true });
     } finally {
+      // Always unblock execute before awaiting it; otherwise an earlier DB or
+      // handshake failure would leave the suite hanging on the adapter gate.
+      gateAdapter?.();
       stopTaskDrain();
-      adapter.mockRestore();
-      retainTrust.mockRestore();
-      await activePromise?.catch(() => undefined);
+      try {
+        await heartbeat.drainActiveRunExecutions();
+        await activePromise?.catch(() => undefined);
+      } finally {
+        adapter.mockRestore();
+        retainTrust.mockRestore();
+      }
     }
   }, 20_000);
 
