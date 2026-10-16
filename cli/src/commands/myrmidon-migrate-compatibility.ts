@@ -301,7 +301,7 @@ function serializeJournal(journal: { version: string; entries: Array<{ idx: numb
 function assertSupportedJournal(value: unknown): Journal {
   if (!value || typeof value !== "object") throw new Error("Unsupported source migration journal.");
   const journal = value as { version?: unknown; dialect?: unknown; entries?: unknown };
-  if (journal.version !== "7" || !Array.isArray(journal.entries)) {
+  if (journal.version !== "7" || !Array.isArray(journal.entries) || journal.dialect !== undefined && journal.dialect !== "postgresql") {
     throw new Error("Unsupported source migration journal version or dialect.");
   }
   const entries = journal.entries as Array<{ idx?: unknown; version?: unknown; when?: unknown; tag?: unknown; breakpoints?: unknown }>;
