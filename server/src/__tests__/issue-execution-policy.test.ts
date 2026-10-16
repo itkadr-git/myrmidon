@@ -967,6 +967,35 @@ describe("issue execution policy transitions", () => {
     const policy = twoStagePolicy();
     const reviewStageId = policy.stages[0].id;
 
+    it("preserves a scheduled monitor when an issue becomes blocked", () => {
+      const monitor = {
+        status: "scheduled",
+        nextCheckAt: "2026-10-16T20:00:00.000Z",
+        attemptCount: 2,
+        notes: "Await CI",
+        scheduledBy: "assignee",
+      };
+      const result = applyIssueExecutionPolicyTransition({
+        issue: {
+          status: "in_progress",
+          assigneeAgentId: coderAgentId,
+          assigneeUserId: null,
+          executionPolicy: { ...policy, monitor },
+          executionState: null,
+          monitorNextCheckAt: new Date(monitor.nextCheckAt),
+          monitorAttemptCount: 2,
+        },
+        policy: { ...policy, monitor },
+        requestedStatus: "blocked",
+        requestedAssigneePatch: {},
+        actor: { agentId: coderAgentId },
+      });
+
+      expect(result.patch).toMatchObject({ status: "blocked" });
+      expect(result.patch.monitorNextCheckAt).toEqual(new Date(monitor.nextCheckAt));
+      expect(result.patch.executionPolicy).toMatchObject({ monitor: { nextCheckAt: monitor.nextCheckAt } });
+    });
+
     it("non-done status change without review context is a no-op", () => {
       const result = applyIssueExecutionPolicyTransition({
         issue: {
