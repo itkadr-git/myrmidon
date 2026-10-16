@@ -4028,7 +4028,6 @@ export function recoveryService(
       readStrandedAutoPolicyEnabled() &&
       strandedAutoPolicyLatestRun?.status === "succeeded" &&
       !input.rerouteToSharedQueue &&
-      input.issue.originKind !== "stranded_issue_recovery" &&
       isStrandedAutoPolicyCause(recoveryCause) &&
       (input.previousStatus === "in_progress" || input.issue.status === "in_progress") &&
       input.issue.assigneeAgentId &&
