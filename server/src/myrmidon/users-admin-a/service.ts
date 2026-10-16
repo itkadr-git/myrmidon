@@ -406,5 +406,3 @@ export function readSelfSignUp(general: unknown, env: Record<string, string | un
   });
   return { enabled: resolved.enabled, source: resolved.source };
 }
-
-
