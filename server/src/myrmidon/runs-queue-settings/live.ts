@@ -19,10 +19,6 @@ function parseBoolean(raw: string): boolean | null {
   return null;
 }
 
-function parseStrictOn(raw: string): boolean | null {
-  return raw === "1" ? true : raw === "0" ? false : null;
-}
-
 function parseIntInRange(min: number, max: number) {
   return (raw: string): number | null => {
     const value = Number(raw);
@@ -37,6 +33,20 @@ function parseClampedInt(min: number, max: number) {
     if (!Number.isInteger(value) || value < 0 || value > max) return null;
     return Math.max(min, value);
   };
+}
+
+function parseIdlePickupInterval(raw: string): number | null {
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value <= 0 || value > Number.MAX_SAFE_INTEGER) return null;
+  return Math.max(5, value);
+}
+
+function parseExactOne(raw: string): boolean | null {
+  return raw === "1" ? true : null;
+}
+
+function parseDisabledUnlessExplicitlyOff(raw: string): boolean {
+  return !["0", "false"].includes(raw.toLowerCase());
 }
 
 function parseIntList(raw: string): number[] | null {
@@ -70,7 +80,7 @@ function resolve<T>(
 export function liveIdlePickupSettings(env: NodeJS.ProcessEnv = process.env) {
   return {
     enabled: resolve(env, "MYRMIDON_IDLE_PICKUP_ENABLED", "runsQueue.idlePickup.enabled", parseBoolean, true),
-    intervalSec: resolve(env, "MYRMIDON_IDLE_PICKUP_INTERVAL_SEC", "runsQueue.idlePickup.intervalSec", parseClampedInt(5, Number.MAX_SAFE_INTEGER), 30),
+    intervalSec: resolve(env, "MYRMIDON_IDLE_PICKUP_INTERVAL_SEC", "runsQueue.idlePickup.intervalSec", parseIdlePickupInterval, 30),
     recentSuccessWindowMs: resolve(env, "MYRMIDON_IDLE_PICKUP_RECENT_SUCCESS_WINDOW_MS", "runsQueue.idlePickup.recentSuccessWindowMs", parseIntInRange(0, Number.MAX_SAFE_INTEGER), 15 * 60 * 1000),
   };
 }
@@ -124,7 +134,7 @@ export function liveStrandedSettings(env: NodeJS.ProcessEnv = process.env) {
   return {
     enabled: resolve(env, "MYRMIDON_STRANDED_AUTOPOLICY_ENABLED", "runsQueue.strandedAutopolicy.enabled", parseBoolean, true),
     autoRetriesPerDay: resolve(env, "MYRMIDON_STRANDED_AUTO_RETRIES_PER_DAY", "runsQueue.strandedAutopolicy.autoRetriesPerDay", parseIntInRange(0, Number.MAX_SAFE_INTEGER), 2),
-    settledHoldsBlockExplicitWakes: resolve(env, "MYRMIDON_SETTLED_HOLDS_BLOCK_EXPLICIT_WAKES", "runsQueue.settledHolds.blockExplicitWakes", parseStrictOn, false),
+    settledHoldsBlockExplicitWakes: resolve(env, "MYRMIDON_SETTLED_HOLDS_BLOCK_EXPLICIT_WAKES", "runsQueue.settledHolds.blockExplicitWakes", parseExactOne, false),
   };
 }
 
@@ -132,7 +142,7 @@ export function liveStrandedSettings(env: NodeJS.ProcessEnv = process.env) {
 export function liveRunPipelineSettings(env: NodeJS.ProcessEnv = process.env) {
   return {
     infraInterruptCodes: resolve(env, "MYRMIDON_INFRA_INTERRUPT_CODES", "runsQueue.infraInterrupt.codes", parseStringList, ["agent_paused", "process_lost", "server_shutdown_interrupted", "issue_reassigned"]),
-    writeLockRequiresLiveRun: resolve(env, "MYRMIDON_WRITE_LOCK_REQUIRES_LIVE_RUN", "runsQueue.writeLock.requiresLiveRun", parseStrictOn, true),
+    writeLockRequiresLiveRun: resolve(env, "MYRMIDON_WRITE_LOCK_REQUIRES_LIVE_RUN", "runsQueue.writeLock.requiresLiveRun", parseDisabledUnlessExplicitlyOff, true),
     crossIssueInfluenceLimit: resolve(env, "MYRMIDON_CROSS_ISSUE_INFLUENCE_LIMIT", "runsQueue.crossIssueInfluence.limit", parseIntInRange(1, Number.MAX_SAFE_INTEGER), 20),
     continuationHistoryLimit: resolve(env, "MYRMIDON_CONTINUATION_HISTORY_LIMIT", "runsQueue.continuationHistory.limit", parseIntInRange(0, Number.MAX_SAFE_INTEGER), 30),
     staleLeaseGraceMs: resolve(env, "MYRMIDON_STALE_LEASE_GRACE_MS", "runsQueue.staleLease.graceMs", parseIntInRange(0, Number.MAX_SAFE_INTEGER), 10 * 60 * 1000),
