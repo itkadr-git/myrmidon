@@ -5,6 +5,8 @@ import { behaviorSettingRegistry, resolveBehaviorSettings } from "@paperclipai/s
 import { logger } from "../../middleware/logger.js";
 import { behaviorSettingsRoutes } from "./routes.js";
 import { behaviorSettingsService, type BehaviorSettingsServiceDeps } from "./service.js";
+import { applyMyrmidonRunEnvAllow } from "@paperclipai/adapter-utils/myrmidon-run-env";
+import { liveBehaviorSettingsView } from "./live.js";
 import { applyLiveBehaviorSettings } from "./live.js";
 
 export {
@@ -50,6 +52,7 @@ function productionDeps(): Partial<BehaviorSettingsServiceDeps> {
         settings: Object.fromEntries(Object.entries(view.settings).filter(([key]) => behaviorSettingRegistry.get(key)?.scope === "instance")),
         sources: Object.fromEntries(Object.entries(view.sources).filter(([key]) => behaviorSettingRegistry.get(key)?.scope === "instance")),
       });
+      applyMyrmidonRunEnvAllow((view.settings.run_env_allow as string[] | undefined) ?? []);
     },
     scheduleResweep: () => undefined,
   };
@@ -70,6 +73,7 @@ export async function startBehaviorSettings(db: Db): Promise<void> {
   try {
     const view = await behaviorSettingsService(db, productionDeps()).read();
     applyLiveBehaviorSettings(view);
+    applyMyrmidonRunEnvAllow((view.settings.run_env_allow as string[] | undefined) ?? []);
     logger.info(
       { settings: view.settings, sources: view.sources },
       "behavior settings at startup",

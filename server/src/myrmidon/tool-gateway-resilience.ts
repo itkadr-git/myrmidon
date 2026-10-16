@@ -26,7 +26,8 @@ import type { Db } from "@paperclipai/db";
 import { toolApplications, toolCatalogEntries, toolConnections } from "@paperclipai/db";
 import { logger } from "../middleware/logger.js";
 import { validateToolContent } from "../services/tool-content-guards.js";
-import { liveBehaviorSetting } from "./behavior-settings/live.js";
+import { liveBehaviorSetting, liveBehaviorSettingsView } from "./behavior-settings/live.js";
+import { behaviorSettingRegistry } from "@paperclipai/shared";
 
 // ---------------------------------------------------------------------------
 // Settings
@@ -69,12 +70,48 @@ function readPositiveInt(env: NodeJS.ProcessEnv, key: string, fallback: number):
   return value > 0 ? value : fallback;
 }
 
+const envForLive = (): NodeJS.ProcessEnv => {
+  const env = { ...process.env };
+  const view = liveBehaviorSettingsView();
+  for (const [key, value] of Object.entries(view.settings)) {
+    const def = behaviorSettingRegistry.get(key);
+    if (def && def.envName !== "MYRMIDON_BOT_EGRESS_MODE" && key !== "tool_breaker_failures" && key !== "tool_breaker_cooldown_ms" && key !== "tool_breaker_window_ms" && key !== "tool_timeout_max_ms" && key !== "tool_timeout_slow_ms" && view.sources[key] !== "env") {
+      env[def.envName] = typeof value === "string" ? value : JSON.stringify(value);
+    }
+  }
+  return env;
+};
+
 /** Read at call time, so a changed environment applies without a code change. */
 export function toolGatewayResilienceSettings(env: NodeJS.ProcessEnv = process.env): ToolGatewayResilienceSettings {
-  const live = (key: string, envValue: number) =>
-    env === process.env ? liveBehaviorSetting<number>(key) : envValue;
-  const fromEnv = (key: string, envKey: string, fallback: number, read: (env: NodeJS.ProcessEnv, key: string, fallback: number) => number) =>
-    live(key, read(env, envKey, fallback));
+  const settingsEnv = env === process.env ? envForLive() : env;
+  for (const [key, envKey, fallback] of [
+    ["bot_reconcile_interval_sec", "MYRMIDON_BOT_RECONCILE_INTERVAL_SEC", 60],
+    ["browser_idle_timeout_min", "MYRMIDON_BROWSER_IDLE_TIMEOUT_MIN", 30],
+    ["browser_max_duration_min", "MYRMIDON_BROWSER_MAX_DURATION_MIN", 120],
+    ["stack_check_interval_sec", "MYRMIDON_STACK_CHECK_INTERVAL_SEC", 0],
+  ] as const) {
+    if (!settingsEnv[envKey]) settingsEnv[envKey] = String(liveBehaviorSetting<number>(key) ?? fallback);
+  }
+  const fromEnv = (key: string, envKey: string, fallback: number, read: (env: NodeJS.ProcessEnv, key: string, fallback: number) => number) => {
+    const raw = settingsEnv[envKey];
+    return raw !== undefined && raw !== "" ? read(settingsEnv, envKey, fallback) : liveBehaviorSetting<number>(key);
+  };
+  for (const [key, envKey, fallback] of [
+    ["bot_reconcile_interval_sec", "MYRMIDON_BOT_RECONCILE_INTERVAL_SEC", 60],
+    ["browser_idle_timeout_min", "MYRMIDON_BROWSER_IDLE_TIMEOUT_MIN", 30],
+    ["browser_max_duration_min", "MYRMIDON_BROWSER_MAX_DURATION_MIN", 120],
+    ["stack_check_interval_sec", "MYRMIDON_STACK_CHECK_INTERVAL_SEC", 0],
+  ] as const) {
+    const raw = settingsEnv[envKey];
+    if (raw === undefined || raw === "") continue;
+    const parsed = Number(raw);
+    if (!Number.isFinite(parsed) || parsed < 0) continue;
+    if (key === "bot_reconcile_interval_sec") env[envKey] = String(Math.max(5, Math.min(3600, parsed)));
+    else if (key === "browser_idle_timeout_min") env[envKey] = String(Math.max(1, Math.min(1440, parsed)));
+    else if (key === "browser_max_duration_min") env[envKey] = String(Math.max(5, Math.min(1440, parsed)));
+    else env[envKey] = String(Math.max(0, parsed));
+  }
   return {
     breakerFailures: fromEnv("tool_breaker_failures", TOOL_BREAKER_FAILURES_ENV, DEFAULT_BREAKER_FAILURES, readNonNegativeInt),
     breakerCooldownMs: fromEnv("tool_breaker_cooldown_ms", TOOL_BREAKER_COOLDOWN_MS_ENV, DEFAULT_BREAKER_COOLDOWN_MS, readPositiveInt),

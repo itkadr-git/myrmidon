@@ -104,6 +104,31 @@ const positiveInteger = (value: unknown): number | null => {
   const parsed = typeof value === "number" ? value : Number(value);
   return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
 };
+const textList = (value: unknown): string[] | null => {
+  const items = Array.isArray(value) ? value : typeof value === "string" ? value.split(",") : null;
+  if (!items || !items.every((item) => typeof item === "string" && item.trim().length > 0)) return null;
+  return [...new Set(items.map((item) => item.trim()))];
+};
+const environmentNameList = (value: unknown): string[] | null => {
+  const names = textList(value);
+  return names && names.every((name) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) ? names : null;
+};
+const booleanValue = (value: unknown): boolean | null => {
+  if (typeof value === "boolean") return value;
+  if (typeof value !== "string") return null;
+  const normalized = value.toLowerCase();
+  if (["true", "1", "yes", "on"].includes(normalized)) return true;
+  if (["false", "0", "no", "off"].includes(normalized)) return false;
+  return null;
+};
+const objectArray = (value: unknown): Record<string, unknown>[] | null => {
+  let parsed = value;
+  if (typeof value === "string") {
+    try { parsed = JSON.parse(value); } catch { return null; }
+  }
+  return Array.isArray(parsed) && parsed.every((item) => item !== null && typeof item === "object" && !Array.isArray(item))
+    ? parsed as Record<string, unknown>[] : null;
+};
 
 for (const [key, envName, fallback, validate] of [
   ["tool_breaker_failures", "MYRMIDON_TOOL_BREAKER_FAILURES", 3, nonNegativeInteger],
@@ -123,6 +148,34 @@ for (const [key, envName, fallback, validate] of [
   });
 }
 
+for (const [key, envName, fallback, validate] of [
+  ["run_env_allow", "MYRMIDON_RUN_ENV_ALLOW", [] as string[], environmentNameList],
+  ["bot_docker_image_allowlist", "MYRMIDON_BOT_IMAGE_ALLOWLIST", [] as string[], textList],
+  ["bot_docker_mount_sources", "MYRMIDON_BOT_DOCKER_MOUNT_SOURCES", [] as string[], textList],
+  ["bot_container_github_env_allowlist", "MYRMIDON_BOT_CONTAINER_GITHUB_ENV_ALLOWLIST", [] as string[], environmentNameList],
+  ["bot_hindsight_allowed_banks", "MYRMIDON_BOT_HINDSIGHT_ALLOWED_BANKS", [] as string[], textList],
+  ["bot_mcp_servers", "MYRMIDON_BOT_MCP_SERVERS", [] as string[], textList],
+] as const) {
+  behaviorSettingRegistry.register({ key, envName, default: fallback, scope: "instance", section: key === "run_env_allow" ? "guardrails" : "fleet", valueType: "json", validate });
+}
+for (const [key, envName, fallback, validate] of [
+  ["bot_reconcile_interval_sec", "MYRMIDON_BOT_RECONCILE_INTERVAL_SEC", 60, positiveInteger],
+  ["browser_idle_timeout_min", "MYRMIDON_BROWSER_IDLE_TIMEOUT_MIN", 30, positiveInteger],
+  ["browser_max_duration_min", "MYRMIDON_BROWSER_MAX_DURATION_MIN", 240, positiveInteger],
+  ["stack_check_interval_sec", "MYRMIDON_STACK_CHECK_INTERVAL_SEC", 0, nonNegativeInteger],
+] as const) {
+  behaviorSettingRegistry.register({ key, envName, default: fallback, scope: "instance", section: "fleet", valueType: "number", validate });
+}
+behaviorSettingRegistry.register({
+  key: "browser_fleet", envName: "MYRMIDON_BROWSER_FLEET", default: [] as Record<string, unknown>[],
+  scope: "instance", section: "fleet", valueType: "json", validate: objectArray,
+});
+for (const [key, envName] of [
+  ["bot_containers", "MYRMIDON_BOT_CONTAINERS"],
+  ["bot_yolo", "MYRMIDON_BOT_YOLO"],
+] as const) {
+  behaviorSettingRegistry.register({ key, envName, default: false, scope: "instance", section: "fleet", valueType: "boolean", validate: booleanValue });
+}
 behaviorSettingRegistry.register({
   key: "debug_mode",
   envName: "MYRMIDON_DEBUG_MODE",
@@ -179,6 +232,9 @@ behaviorSettingRegistry.register({
  */
 export function parseSettingFromEnv<T>(raw: string | undefined, def: BehaviorSettingDef<T>): T | null {
   if (raw === undefined || raw === "") return null;
+  if (def.valueType === "json" && typeof raw === "string") {
+    try { return def.validate(JSON.parse(raw)); } catch { return null; }
+  }
   return def.validate(raw);
 }
 
