@@ -2,12 +2,10 @@ import { listOpenRouterModels } from "../services/openrouter-models.js";
 // myrmidon(B1c): product name in user-facing runner errors; see product.ts.
 import { PRODUCT_NAME } from "../myrmidon/product.js";
 import { prepareManagedAiRuntime, assertManagedAiProjectAuth, stripAiAuthBindings } from "../services/ai-connection-runtime.js";
-import { ADAPTER_AUTH_MISSING_CHECK_CODE, AI_CONNECTION_CAPABILITIES, aiConnectionBindingSchema, type AiConnectionBinding } from "@paperclipai/shared";
-import { toolConnections } from "@paperclipai/db";
+import { ADAPTER_AUTH_MISSING_CHECK_CODE, AI_CONNECTION_CAPABILITIES, aiConnectionBindingSchema, isAiConnectionCompatible, type AiConnectionBinding } from "@paperclipai/shared";
 import { aiConnectionService } from "../services/ai-connections.js";
 import { defaultAiConnectionForHire } from "../services/agent-ai-connection-default.js";
 import { assertAiConnectionCreateAccess, canInstallSharedAiConnectionForNewAgent, responsibleUserForAiRequest, validateAiApiKey } from "./ai-connections.js";
-import { isAiConnectionCompatible } from "@paperclipai/shared";
 import { applyConnectorSkills, resolveConnectorAssignments, annotateConnectorSkills, isConnectorSkill } from "../services/connector-runtime.js";
 import { getExecutionBlocker } from "../services/execution-blocker.js";
 import { paperclipRunnerTransitionConfig, normalizeLegacyRunnerProvider, isPaperclipRunnerProvider } from "@paperclipai/adapter-utils";
@@ -106,6 +104,7 @@ import { CHAT_INBOUND_WAKE_KEY_PREFIX } from "../myrmidon/chat-holds/chat-backed
 import { PAPERCLIP_CORE_SKILL_KEYS } from "../services/company-skills.js";
 import { createRunSecretRedactionRegistry } from "../services/run-secret-redaction.js";
 import { assertAuthenticated, assertBoard, assertCompanyAccess, assertInstanceAdmin, buildActorSecretContext, getAccessibleResource, getActorInfo, hasCompanyAccess } from "./authz.js";
+import { issueService } from "../services/issues.js";
 import { runAdapterLoginStartSpine } from "./adapter-login-route-spine.js";
 import { isLoginCommandSupportedAdapterType } from "../services/login-command.js";
 import {
@@ -6141,6 +6140,48 @@ export function agentRoutes(
     if (req.actor.type === "agent" && req.actor.agentId !== id) {
       await dbAutonomyGate(db).assertAllowed(req, "pause_wake_agents");
     }
+    if (req.body.externalSession) {
+      assertBoard(req);
+      if (!req.body.issueId || req.body.failedRunId || agent.runtimeConfig?.aiConnection == null || !req.actor.userId) {
+        throw unprocessable("External session requires a task, a user actor and a managed AI agent");
+      }
+      const task = await getAccessibleResource(req, res, issueService(db).getById(req.body.issueId), "Task not found");
+      if (!task || task.companyId !== agent.companyId) return;
+      if (!(await assertAgentReadAllowed(req, res, agent))) return;
+      const commentAccess = await access.decide({
+        actor: req.actor,
+        action: "issue:comment",
+        resource: { type: "issue", companyId: agent.companyId, issueId: task.id, projectId: task.projectId, parentIssueId: task.parentId, assigneeAgentId: task.assigneeAgentId, assigneeUserId: task.assigneeUserId, status: task.status },
+      });
+      if (!commentAccess.allowed) throw forbidden(commentAccess.explanation, authorizationDeniedDetails(commentAccess));
+      if (task.assigneeAgentId !== agent.id) throw conflict("The task must be assigned to this agent");
+      if (task.status !== "todo" && task.status !== "in_progress") throw conflict("The task must be open to start an external session");
+      const configured = aiConnectionBindingSchema.safeParse(agent.runtimeConfig.aiConnection);
+      if (!configured.success || configured.data.mode === "responsible_user") {
+        throw unprocessable("Agent must have an explicit managed AI connection for external session runs");
+      }
+      const { connectionId, grantId, model } = req.body.externalSession;
+      const selected = await aiConnectionService(db).select({
+        companyId: agent.companyId,
+        agentId: agent.id,
+        userId: req.actor.userId,
+        adapterType: agent.adapterType,
+        model,
+        runnerProvider: parseObject(agent.adapterConfig).provider,
+        acpxAgent: parseObject(agent.adapterConfig).acpxAgent,
+        binding: configured.data,
+        allowUninstalledPersonal: false,
+        allowUninstalledShared: false,
+        allowLegacyValidation: false,
+      });
+      if (selected.connection.id !== connectionId || selected.grant.id !== grantId || selected.attribution.mode !== "shared") {
+        throw forbidden("External sessions may only use the agent's configured shared AI connection");
+      }
+      const selectedMetadata = selected.connection.config.ai;
+      if (!selectedMetadata || !isAiConnectionCompatible(selectedMetadata, agent.adapterType, model, parseObject(agent.adapterConfig).provider, parseObject(agent.adapterConfig).acpxAgent)) {
+        throw unprocessable("Selected model is incompatible with the agent adapter");
+      }
+    }
     if (req.body.debug?.providerTrace === "raw") {
       assertInstanceAdmin(req);
     }
@@ -6303,6 +6344,7 @@ export function agentRoutes(
       idempotencyKey: req.body.idempotencyKey ?? null,
       requestedByActorType: req.actor.type === "agent" ? "agent" : "user",
       requestedByActorId: req.actor.type === "agent" ? req.actor.agentId ?? null : req.actor.userId ?? null,
+      externalSession: req.body.externalSession,
       contextSnapshot: {
         triggeredBy: req.actor.type,
         originIdentityContextId: req.actor.identityContextId ?? null,
