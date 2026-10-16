@@ -2604,7 +2604,6 @@ export function recoveryService(
       .set({
         status: "todo",
         assigneeAgentId: targetAssigneeId,
-        blockedByIssueIds: [],
         updatedAt: new Date(),
       })
       .where(and(eq(issues.id, existingIssue.id), eq(issues.companyId, input.issue.companyId)))
