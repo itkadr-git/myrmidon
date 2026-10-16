@@ -110,6 +110,7 @@ import { buildUstarArchive, parseUstarArchive, type UstarEntry } from "./ustar.j
 export const BOT_DOCKER_SOCKET_ENV = "MYRMIDON_BOT_DOCKER_SOCKET";
 export const DEFAULT_BOT_DOCKER_SOCKET = "/var/run/docker.sock";
 export const BOT_IMAGE_ALLOWLIST_ENV = "MYRMIDON_BOT_IMAGE_ALLOWLIST";
+export const BOT_YOLO_ENV = "MYRMIDON_BOT_YOLO";
 export const BOT_VOLUME_ROOT_ENV = "MYRMIDON_BOT_VOLUME_ROOT";
 export const BOT_NETWORK_ENV = "MYRMIDON_BOT_NETWORK";
 /** myrmidon(BOT-DISK-F): host directory of shared isolation-scope instances; default `<volumeRoot>/.scopes`. */
@@ -156,6 +157,8 @@ export interface DockerDriverConfig {
    *  devbuild wiring is off; no DEVBUILD_* env and no key mount is added to any
    *  container. Only a dev-variant image (isDevBuildImage) ever gets them. */
   devbuild: DevbuildSettings;
+  /** Whether to bypass dangerous-command approvals in unattended bots. */
+  yolo?: boolean;
   /** myrmidon(1.6.5-DOCKERGATE-A2A3-STORM): MYRMIDON_DOCKERGATE_MAX_RPS — the
    *  ceiling of board→gate requests per second across every loop (sweep, health
    *  wait, clone-report collection, "apply now"). The gate's own global bucket is
@@ -186,6 +189,14 @@ export function readDockerDriverConfig(env?: NodeJS.ProcessEnv): DockerDriverCon
   }
   const imageAllowlist = runtimeEnv ? liveBehaviorSetting<unknown>("bot_image_allowlist") : undefined;
   const mountAllowlist = runtimeEnv ? liveBehaviorSetting<unknown>("bot_mount_sources") : undefined;
+  const rawYolo = runtimeEnv && source[BOT_YOLO_ENV] === undefined
+    ? liveBehaviorSetting<boolean>("bot_yolo")
+    : source[BOT_YOLO_ENV];
+  const yolo = rawYolo === undefined
+    ? undefined
+    : typeof rawYolo === "boolean"
+      ? rawYolo
+      : /^(1|true|yes|on)$/i.test(rawYolo.trim());
   return {
     socketPath: source[BOT_DOCKER_SOCKET_ENV]?.trim() || DEFAULT_BOT_DOCKER_SOCKET,
     volumeRoot,
@@ -199,6 +210,7 @@ export function readDockerDriverConfig(env?: NodeJS.ProcessEnv): DockerDriverCon
       Array.isArray(mountAllowlist) ? mountAllowlist.join(",") : source[BOT_MOUNT_SOURCES_ENV],
     ),
     devbuild: parseDevbuildSettings(source),
+    ...(yolo === undefined ? {} : { yolo }),
     maxRps,
   };
 }
@@ -348,7 +360,9 @@ export function buildCreateContainerRequestBody(
   const devbuild: DevbuildSettings = isDevBuildImage(spec.image)
     ? config.devbuild
     : { host: null, user: "", base: "" };
-  const env = devbuildContainerEnv(devbuild);
+  const env = devbuildContainerEnv(devbuild) ?? {};
+  if (config.yolo !== undefined) env[BOT_YOLO_ENV] = config.yolo ? "1" : "0";
+  const envEntries = Object.entries(env);
   const keyMount = devbuildKeyMount(devbuild, config.mountSources);
   // A legacy image never runs as a shared member: the scope layout needs the
   // image's start-time links (BOT_RUNTIME_SCOPE_LABEL), which only single-
@@ -362,8 +376,8 @@ export function buildCreateContainerRequestBody(
   return {
     Image: spec.image,
     Labels: buildLabels(spec),
-    ...(env
-      ? { Env: Object.entries(env).map(([name, value]) => `${name}=${value}`) }
+    ...(envEntries.length > 0
+      ? { Env: envEntries.map(([name, value]) => `${name}=${value}`) }
       : scope
         ? { Env: [`${BOT_SCOPE_SUBDIR_ENV}=${spec.botKey}`] }
         : {}),
