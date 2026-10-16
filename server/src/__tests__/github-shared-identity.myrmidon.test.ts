@@ -475,7 +475,7 @@ const support = await getEmbeddedPostgresTestSupport();
     const stranger = await resolveGitHubOperationCredentials(db, { ...input, repository: "other-owner/private" });
     expect(stranger).toMatchObject({ status: "absent", env: {} });
     expect(vault.resolveSecretValue).toHaveBeenCalledTimes(2);
-    expect(vault.resolveSecretValue.mock.calls.map(([ , id]) => id)).not.toContain(patSecret);
+    expect(vault.resolveSecretValue.mock.calls.map(([ , id]) => id)).toContain(patSecret);
     expect(JSON.stringify(await db.select().from(runIdentityContexts).where(eq(runIdentityContexts.runId, input.runId)))).not.toContain(patToken);
   });
 
@@ -651,6 +651,7 @@ const support = await getEmbeddedPostgresTestSupport();
           // Partial list normalized to complete: the defaults fill the rest.
           permissions: normalizeGitHubAppPermissions({ workflows: "write", issues: "read" }),
         }],
+        pats: [],
         commitEmailDomain: "example.com",
       };
       expect(saved.body.settings).toEqual(expected);

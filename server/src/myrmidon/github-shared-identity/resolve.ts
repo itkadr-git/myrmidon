@@ -114,6 +114,8 @@ export async function resolveGitHubAppCredential(
   if (!agent) return { kind: "not_applicable" };
   const patMatches = githubPatsFor(settings, agent.id, repository);
   const appMatches = githubAppsFor(settings, agent, repository);
+  // PATs and Apps are separate account boundaries: an overlap must fail closed
+  // before resolving either credential, even when one side is the PAT.
   if (patMatches.length + appMatches.length > 1) {
     await journal(db, { companyId: input.companyId, agentId: agent.id, runId: input.runId, action: "myrmidon.github_app.denied", details: { repository, reason: "ambiguous", entries: [...patMatches.map((item) => item.id), ...appMatches.map((item) => item.id)] } });
     return { kind: "ambiguous", repository, entries: [...patMatches.map((item) => item.name), ...appMatches.map((item) => item.name)] };
