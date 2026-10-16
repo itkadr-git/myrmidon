@@ -1978,10 +1978,12 @@ export function recoveryService(
     reason:
       | "issue_assignment_recovery"
       | "issue_continuation_needed"
+      | "stranded_recovery_reroute"
       | typeof EXECUTION_REVIEW_PARTICIPANT_RECOVERY_REASON;
     retryReason:
       | "assignment_recovery"
       | "issue_continuation_needed"
+      | "stranded_recovery_reroute"
       | typeof EXECUTION_REVIEW_PARTICIPANT_RECOVERY_REASON;
     source: string;
     retryOfRunId?: string | null;
@@ -2571,7 +2573,6 @@ export function recoveryService(
       .select({
         id: issues.id,
         companyId: issues.companyId,
-        assigneeAgentId: issues.assigneeAgentId,
         status: issues.status,
       })
       .from(issues)
@@ -2596,20 +2597,24 @@ export function recoveryService(
       rerouteToSharedQueue: true,
     });
     if (!action) return false;
-    if (targetAssigneeId && existingIssue.assigneeAgentId === targetAssigneeId) {
-      const updatedIssue = await issuesSvc.update(existingIssue.id, {
-        status: "todo",
-        assigneeAgentId: null,
-        blockedByIssueIds: [],
-      });
-      await issuesSvc.update(updatedIssue.id, { assigneeAgentId: targetAssigneeId });
-    } else {
-      await issuesSvc.update(existingIssue.id, {
+    const [updatedIssue] = await db
+      .update(issues)
+      .set({
         status: "todo",
         assigneeAgentId: targetAssigneeId,
         blockedByIssueIds: [],
-      });
-    }
+        updatedAt: new Date(),
+      })
+      .where(and(eq(issues.id, existingIssue.id), eq(issues.companyId, input.issue.companyId)))
+      .returning();
+    if (!updatedIssue) return false;
+    await issuesSvc.addComment(
+      updatedIssue.id,
+      `Recovery returned this stranded issue to the ${stillAssigned ? "original available engineer assignment" : "unassigned engineer queue"} (${input.reason}).`,
+      {},
+      { authorType: "system" },
+    );
+    await issuesSvc.update(updatedIssue.id, { status: "todo", assigneeAgentId: targetAssigneeId });
     return true;
   }
 
