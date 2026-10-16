@@ -67,6 +67,7 @@ describe('IdleStopService', () => {
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     vi.clearAllMocks();
   });
 
@@ -97,6 +98,8 @@ describe('IdleStopService', () => {
 
   describe('sweeper functionality', () => {
     it('should not stop container with active runs', async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2026-10-16T20:00:00.000Z'));
       const botKey = '550e8400-e29b-41d4-a716-446655440000';
 
       mockListBotKeys(mockDb, [botKey]);
@@ -132,6 +135,8 @@ describe('IdleStopService', () => {
     });
 
     it('should stop container without active runs for longer than threshold', async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2026-10-16T20:00:00.000Z'));
       const botKey = '550e8400-e29b-41d4-a716-446655440000';
 
       mockListBotKeys(mockDb, [botKey]);
@@ -202,6 +207,8 @@ describe('IdleStopService', () => {
     });
 
     it('should not stop container that was recently active', async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2026-10-16T20:00:00.000Z'));
       const botKey = '550e8400-e29b-41d4-a716-446655440000';
 
       mockListBotKeys(mockDb, [botKey]);
@@ -272,6 +279,8 @@ describe('IdleStopService', () => {
     });
 
     it('should skip non-running containers', async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2026-10-16T20:00:00.000Z'));
       const botKey = '550e8400-e29b-41d4-a716-446655440000';
 
       mockListBotKeys(mockDb, [botKey]);
