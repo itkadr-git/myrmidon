@@ -97,7 +97,7 @@ describe("myrmidon(1.6.1 SWARM-IDLE-WAKE) sweep pass", () => {
             }),
           }),
           where: () => ({
-            orderBy: empty,
+            orderBy: () => ({ limit: empty }),
             groupBy: empty,
             limit: empty,
           }),
