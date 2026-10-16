@@ -53,6 +53,33 @@ export function findNestedGit(root, maxDepth = NESTED_MAX_DEPTH, isRepo = isUsab
 
 const safeStem = (s) => String(s).replace(/[^A-Za-z0-9._-]+/g, "_").replace(/^[^A-Za-z0-9]+/, "x").slice(0, 80);
 
+// Snapshot is recorded only after all archive parts verified successfully.
+export function legacySnapshot(a, deps, key, nested) {
+  const manifestPath = path.join(deps.archiveRoot || "/data/hermes/.myrmidon/archive", "manifest.json");
+  let entries;
+  try { entries = JSON.parse(fs.readFileSync(manifestPath, "utf8")).archives; } catch { return null; }
+  if (!Array.isArray(entries)) return null;
+  const expected = [...nested.map((n) => ({ path: n, key: safeStem(`${key}--${path.relative(a.path, n) || "."}`) }))];
+  const own = typeof a.isGit === "function" ? a.isGit(a.path) && (deps.isRepo ?? isUsableRepo)(a.path) : isUsableRepo(a.path);
+  if (own) expected.push({ path: a.path, key });
+  if (!own || nested.length > 0) expected.push({ path: a.path, key, tree: true });
+  if (expected.length === 0) expected.push({ path: a.path, key, tree: true });
+  const signature = (p) => {
+    const st = fs.statSync(p);
+    if (st.isDirectory()) {
+      const children = fs.readdirSync(p).filter((name) => ![".git", "myrmidon.full.tar.zst"].includes(name)).sort().map((name) => `${name}:${signature(path.join(p, name))}`);
+      return `d:${st.mode}:${children.join("|")}`;
+    }
+    return `f:${st.mode}:${st.size}:${st.mtimeMs}:${st.ctimeMs}`;
+  };
+  try {
+    const current = expected.map((part) => `${part.key}:${part.tree ? "tree" : "repo"}:${signature(part.path)}`).sort();
+    const matching = entries.filter((entry) => entry.key === key && entry.sourceSnapshot === JSON.stringify(current));
+    if (!matching.length) return null;
+    const fileFields = ["bundle", "patch", "untrackedTar", "fullTar", "dirTar"];
+    return matching.some((entry) => fileFields.some((field) => entry[field] && !fs.existsSync(entry[field]))) ? null : current;
+  } catch { return null; }
+}
 /**
  * Scratch part of the rules inventory: registry class-G copies plus every
  * class-G and class-X directory the classifier saw that the registry does not
@@ -115,6 +142,12 @@ export function archiveThenRemove(a, deps) {
   const key = a.key || path.basename(a.path);
   const opts = { looseKey: true, ...(archiveRoot ? { archiveRoot } : {}) };
   const nested = (deps.nestedGit ?? findNestedGit)(a.path);
+  const previousSnapshot = legacySnapshot(a, { ...deps, archiveRoot }, key, nested);
+  if (previousSnapshot) {
+    const removed = remove(a.path);
+    if (removed && removed.deferred) return { deferred: removed.deferred, detail: removed.detail };
+    return "previous archive verified unchanged; removed";
+  }
   const own = isGit(a.path) && (deps.isRepo ?? isUsableRepo)(a.path);
   const check = (what, r) => {
     if (!r || r.ok !== true) throw new Error(`archive-incomplete: ${what}: ${String((r && r.reason) || "unknown").slice(0, 300)}, not removed`);
@@ -131,6 +164,33 @@ export function archiveThenRemove(a, deps) {
     if (typeof archiveMod.archiveTree !== "function") throw new Error("archive-incomplete: archive module cannot archive a directory tree: not removed");
     check("directory tree", archiveMod.archiveTree(a.path, key, opts));
   }
+  const snapshot = (() => {
+    const signature = (p) => {
+      const st = fs.statSync(p);
+      if (st.isDirectory()) {
+        const children = fs.readdirSync(p).filter((name) => ![".git", "myrmidon.full.tar.zst"].includes(name)).sort().map((name) => `${name}:${signature(path.join(p, name))}`);
+        return `d:${st.mode}:${children.join("|")}`;
+      }
+      return `f:${st.mode}:${st.size}:${st.mtimeMs}:${st.ctimeMs}`;
+    };
+    try {
+      const parts = [...nested.map((n) => `${safeStem(`${key}--${path.relative(a.path, n) || "."}`)}:repo:${signature(n)}`)];
+      if (own) parts.push(`${key}:repo:${signature(a.path)}`);
+      if (!own || nested.length > 0) parts.push(`${key}:tree:${signature(a.path)}`);
+      return parts.sort();
+    } catch { return null; }
+  })();
+  const writeSnapshot = () => {
+    if (!snapshot) return;
+    const file = path.join(archiveRoot || "/data/hermes/.myrmidon/archive", "manifest.json");
+    try {
+      const manifest = JSON.parse(fs.readFileSync(file, "utf8"));
+      const encoded = JSON.stringify(snapshot);
+      for (const entry of manifest.archives || []) if (entry.key === key && !entry.sourceSnapshot) entry.sourceSnapshot = encoded;
+      fs.writeFileSync(file, `${JSON.stringify(manifest, null, 2)}\n`);
+    } catch { /* no snapshot means a future pass conservatively re-archives */ }
+  };
+  writeSnapshot();
   const res = remove(a.path);
   if (res && res.deferred) return { deferred: res.deferred, detail: res.detail };
   return nested.length > 0 ? `archived (${nested.length} nested repositories), removed` : "archived, removed";
