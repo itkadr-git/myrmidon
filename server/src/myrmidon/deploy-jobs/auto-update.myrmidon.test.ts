@@ -409,6 +409,8 @@ describe("auto-update: the fleet canary (B-2)", () => {
 
     const after = (await h.service.current()).job;
     expect(after?.status).toBe("canary_failed");
-    expect(after?.steps[after.steps.length - 1]?.detail).toContain("no fleet canary on this instance");
+    expect(after?.steps[after.steps.length - 1]?.detail).toContain(
+      "fleet canary is enabled but no fleet canary runtime is wired; refusing to report a healthy rollout",
+    );
   });
 });
