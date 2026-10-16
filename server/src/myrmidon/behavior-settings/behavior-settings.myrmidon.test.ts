@@ -283,16 +283,16 @@ describe("myrmidon(1.7) behavior settings: a change reaches the live system", ()
 
   it("handles concurrent updates without race conditions", async () => {
     const h = harness();
-    
+
     // Make multiple simultaneous requests
     const promises = [
       request(h.withActor(admin)).patch(INSTANCE_URL).send({ debug_mode: true }).expect(200),
       request(h.withActor(admin)).patch(INSTANCE_URL).send({ max_concurrent_agents: 8 }).expect(200),
       request(h.withActor(admin)).patch(INSTANCE_URL).send({ default_timeout_seconds: 600 }).expect(200),
     ];
-    
+
     await Promise.all(promises);
-    
+
     // All updates should have been processed sequentially
     expect(h.updated.length).toBe(3);
   });

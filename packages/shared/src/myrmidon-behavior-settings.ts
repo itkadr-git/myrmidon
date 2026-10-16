@@ -16,7 +16,7 @@ import { z } from "zod";
  *   location;
  * - otherwise the built-in default.
  *
- * Settings can be scoped to instance or company level. Instance-level settings 
+ * Settings can be scoped to instance or company level. Instance-level settings
  * are stored in `instance_settings.general` (like runLimits), while company-level
  * settings use company settings as already implemented by existing company-scoped
  * settings.
@@ -268,7 +268,7 @@ export function resolveSetting<T>(options: {
   }
 
   const env = options.env;
-  
+
   // Environment variables remain the operator's forced override, even when a
   // UI value has been persisted.
   // The source is "env" whenever the environment
@@ -285,7 +285,7 @@ export function resolveSetting<T>(options: {
       return { value: normalized, source: "ui" };
     }
   }
-  
+
   // Finally return default
   return { value: def.default, source: "default" };
 }
@@ -307,10 +307,10 @@ export function resolveBehaviorSettings(options: {
 }): ResolvedBehaviorSettings {
   const env = options.env;
   const stored = options.stored ?? {};
-  
+
   const settings: Record<string, unknown> = {};
   const sources: Record<string, SettingSource> = {};
-  
+
   for (const def of behaviorSettingRegistry.getAll()) {
     const storedValue = stored[def.key];
     const result = resolveSetting({
@@ -318,11 +318,11 @@ export function resolveBehaviorSettings(options: {
       stored: storedValue,
       env
     });
-    
+
     settings[def.key] = result.value;
     sources[def.key] = result.source;
   }
-  
+
   return { settings, sources };
 }
 
@@ -336,7 +336,7 @@ export function createBehaviorSettingsPatchSchema() {
 /** Build a patch schema restricted to one persistence scope. */
 export function createBehaviorSettingsScopePatchSchema(scope: SettingScope | "all") {
   const shape: Record<string, z.ZodTypeAny> = {};
-  
+
   for (const def of behaviorSettingRegistry.getAll()) {
     if (scope !== "all" && def.scope !== scope) continue;
     switch (def.valueType) {
@@ -354,7 +354,7 @@ export function createBehaviorSettingsScopePatchSchema(scope: SettingScope | "al
         break;
     }
   }
-  
+
   return z.object(shape).strict();
 }
 
@@ -368,12 +368,12 @@ export type BehaviorSettingsPatch = z.infer<ReturnType<typeof createBehaviorSett
  */
 export function mergeBehaviorSettings(base: Record<string, unknown>, patch: BehaviorSettingsPatch): Record<string, unknown> {
   const result = { ...base };
-  
+
   for (const [key, value] of Object.entries(patch)) {
     if (value !== undefined) {
       result[key] = value;
     }
   }
-  
+
   return result;
 }
