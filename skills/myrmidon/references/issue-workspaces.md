@@ -28,7 +28,7 @@ Prefer Myrmidon-managed runtime service controls over manual `pnpm dev &` or ad-
 # Start all configured services; waits for configured readiness checks.
 curl -sS -X POST \
   -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
-  -H "X-Myrmidon-Run-Id: $PAPERCLIP_RUN_ID" \
+  -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID" \
   -H "Content-Type: application/json" \
   "$PAPERCLIP_API_URL/api/execution-workspaces/<workspace-id>/runtime-services/start" \
   -d '{}'
@@ -36,7 +36,7 @@ curl -sS -X POST \
 # Restart all configured services.
 curl -sS -X POST \
   -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
-  -H "X-Myrmidon-Run-Id: $PAPERCLIP_RUN_ID" \
+  -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID" \
   -H "Content-Type: application/json" \
   "$PAPERCLIP_API_URL/api/execution-workspaces/<workspace-id>/runtime-services/restart" \
   -d '{}'
@@ -44,7 +44,7 @@ curl -sS -X POST \
 # Stop all running services.
 curl -sS -X POST \
   -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
-  -H "X-Myrmidon-Run-Id: $PAPERCLIP_RUN_ID" \
+  -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID" \
   -H "Content-Type: application/json" \
   "$PAPERCLIP_API_URL/api/execution-workspaces/<workspace-id>/runtime-services/stop" \
   -d '{}'

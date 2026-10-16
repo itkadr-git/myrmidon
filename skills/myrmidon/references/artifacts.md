@@ -55,7 +55,7 @@ Create the work product with:
 curl -sS -X POST \
   "$PAPERCLIP_API_URL/api/issues/$PAPERCLIP_TASK_ID/work-products" \
   -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
-  -H "X-Myrmidon-Run-Id: $PAPERCLIP_RUN_ID" \
+  -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID" \
   -H "Content-Type: application/json" \
   --data-binary @workspace-file-work-product.json
 ```
@@ -66,7 +66,7 @@ If the helper is unavailable, use the Myrmidon API directly:
 curl -sS -X POST \
   "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/issues/$PAPERCLIP_TASK_ID/attachments" \
   -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
-  -H "X-Myrmidon-Run-Id: $PAPERCLIP_RUN_ID" \
+  -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID" \
   -F 'file=@"path/to/output.webm";type=video/webm'
 ```
 
@@ -76,7 +76,7 @@ Then create a work product when the file is the deliverable. The server canonica
 curl -sS -X POST \
   "$PAPERCLIP_API_URL/api/issues/$PAPERCLIP_TASK_ID/work-products" \
   -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
-  -H "X-Myrmidon-Run-Id: $PAPERCLIP_RUN_ID" \
+  -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID" \
   -H "Content-Type: application/json" \
   --data-binary '{
     "type": "artifact",
