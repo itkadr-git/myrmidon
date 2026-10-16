@@ -32,7 +32,7 @@ function extractSelfCheck() {
   const endMarker = "\n# --replace:";
   const end = src.indexOf(endMarker, src.indexOf(marker));
   assert.ok(start > 0 && end > start, "devbuild self-check and bounded runner block found in the entrypoint");
-  return src.slice(start, end);
+  return src.slice(start, end); // include the helper definitions used by startup diagnostics.
 }
 
 function makeSandbox({ devbuildExit = 0, withDevbuild = true } = {}) {

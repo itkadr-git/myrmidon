@@ -825,7 +825,7 @@ run_bounded_diagnostic() {
   local check="$1" pid watchdog rc=0
   ( "$check" ) &
   pid=$!
-  ( sleep 120; kill "$pid" 2>/dev/null || true ) &
+  ( sleep "${MYRMIDON_DIAGNOSTIC_TIMEOUT_SEC:-120}"; kill "$pid" 2>/dev/null || true ) &
   watchdog=$!
   wait "$pid" || rc=$?
   kill "$watchdog" 2>/dev/null || true

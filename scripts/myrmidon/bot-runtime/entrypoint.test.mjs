@@ -1307,7 +1307,7 @@ describe("docker/bot-runtime/entrypoint.sh umask 077", () => {
         `#!/bin/sh\numask > "${probe}/umask-value"\n: > "${probe}/probe-file"\nmkdir "${probe}/probe-dir"\n`,
         { mode: 0o755 },
       );
-      const result = runWithStub({ HERMES_HOME: hermesHomeDir }, probe);
+      const result = runWithStub({ HERMES_HOME: hermesHomeDir, MYRMIDON_DIAGNOSTIC_TIMEOUT_SEC: "0.05" }, probe);
       assert.equal(result.error, undefined);
       assert.equal(result.status, 0, result.stderr);
       assert.equal(
