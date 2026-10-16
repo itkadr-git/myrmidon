@@ -2920,11 +2920,11 @@ export * from "./myrmidon-data-retention.js";
 // myrmidon(1.7-BUDGET-CONFIG-B): the shared contract of budget enforcement —
 // the global mode (signal_only / soft / hard), its storage key and resolver.
 export * from "./myrmidon-budget-enforcement.js";
-
-// myrmidon(1.7, SETTINGS-TO-UI A): the generic behavior-settings registry and
-// precedence resolver shared by the server core, the settings validator and the
-// UI panels of parts B–E.
-export * from "./myrmidon-behavior-settings.js";
+// myrmidon(1.7 USERS-ADMIN-UI A): the self-registration switch, the
+// username/password bounds and the synthetic-address namespace shared by the
+// server routes, the Better Auth plugin and the settings screen.
+export * from "./myrmidon-auth-self-signup.js";
+export * from "./myrmidon-auth-noemail.js";
 // myrmidon(MEMORY-UI): the agent memory instance setting (address, optional key secret, switch).
 export * from "./myrmidon-agent-memory.js";
 // myrmidon(1.7-DEBATE-ASYM-A): the shared contract of asymmetric debates —

@@ -64,10 +64,9 @@ import { reviewReworkSettingsSchema } from "../myrmidon-review-rework.js";
 // myrmidon(1.7-BUDGET-CONFIG-B): the budget enforcement mode stored in the
 // same general settings row.
 import { budgetEnforcementSettingsSchema } from "../myrmidon-budget-enforcement.js";
-// myrmidon(1.7-AGENT-EXCHANGE-A): the discussion-room settings of the same row.
-import { agentExchangeSettingsSchema } from "../myrmidon-agent-exchange.js";
-// myrmidon(1.7-AGENT-EXCHANGE-B): the feed of discussion rooms of the same row.
-import { agentExchangeFeedSettingsSchema } from "../myrmidon-agent-exchange-feed.js";
+// myrmidon(1.7 USERS-ADMIN-UI A): the self-registration switch stored in the
+// same general settings row.
+import { authSelfSignUpSettingsSchema } from "../myrmidon-auth-self-signup.js";
 // myrmidon(MEMORY-UI): the agent memory settings stored in the same row.
 import { agentMemorySettingsSchema } from "../myrmidon-agent-memory.js";
 // myrmidon(PAUSE-GUARD): the forgotten-pause guard settings stored in the same
@@ -293,19 +292,17 @@ export const instanceGeneralSettingsSchema = z.object({
   // or refuse new runs with the budget reason (hard); changed from
   // /api/myrmidon/budget-enforcement; absent means the default (signal only).
   budgetEnforcement: budgetEnforcementSettingsSchema.optional(),
-  // myrmidon(1.7-DEBATE-ASYM-A): the asymmetric-debates engine settings,
-  // changed from /api/myrmidon/debate. Stored passthrough like the
-  // swarm-claim journal: the debate service re-reads and validates the shape
-  // (cross-family rule included) defensively on every run and PATCH.
-  debate: z.unknown().optional(),
-  // myrmidon(1.7-AGENT-EXCHANGE-A): the discussion-room settings (enabled,
-  // room size, round cap, per-room token budget, response timeout), changed
-  // from /api/myrmidon/agent-exchange/settings; absent means the defaults
-  // (the room feature is off).
-  agentExchange: agentExchangeSettingsSchema.optional(),
-  // myrmidon(1.7-AGENT-EXCHANGE-B): the feed of discussion rooms of the same
-  // general settings row.
-  agentExchangeFeed: agentExchangeFeedSettingsSchema.optional(),
+  // myrmidon(1.7 USERS-ADMIN-UI A): the self-registration switch — absent means
+  // self-registration is OFF (the built-in default; see
+  // packages/shared/src/myrmidon-auth-self-signup.ts).
+  authSelfSignUp: authSelfSignUpSettingsSchema.optional(),
+  // myrmidon(1.7 USERS-ADMIN-UI A): the blocked-user list (map of user id to
+  // { blockedAt, blockedBy, reason }). Written only by the users-admin routes
+  // (a transactional jsonb_set, never a whole-general write), and carried over
+  // by normalizeGeneralSettings so a vendor general write cannot drop it.
+  // Stored passthrough; the authoritative parser is
+  // server/src/myrmidon/users-admin-a/store.ts.
+  myrmidonAuthBlockedUsers: z.record(z.string(), z.unknown()).optional(),
   // myrmidon(PLUGIN-ENTITLEMENT C): accepted plugin entitlement keys, managed
   // from the instance settings page and PATCH /api/myrmidon/plugin-entitlement/keys;
   // absent means "no keys are registered" (no plugin is unlocked).
