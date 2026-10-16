@@ -254,14 +254,14 @@ describe("myrmidon(G2) compileHermesProfile — file modes and secrecy", () => {
 });
 
 describe("myrmidon(G2) compileHermesProfile — always-set config.yaml fields", () => {
-  it("always sets approvals.mode off, platforms.api_server.enabled true, terminal.cwd /workspace, memory.provider hindsight and skills.external_dirs", () => {
+  it("always sets approvals.mode off, platforms.api_server.enabled true, terminal.cwd /workspace, memory.provider hindsight and empty skills.external_dirs", () => {
     const profile = compileHermesProfile(baseInput());
     const yaml = fileByPath(profile.files, "hermes/config.yaml").content;
     expect(yaml).toContain('approvals:\n  mode: "off"');
     expect(yaml).toContain("platforms:\n  api_server:\n    enabled: true");
     expect(yaml).toContain('terminal:\n  cwd: "/workspace"');
     expect(yaml).toContain('memory:\n  provider: "hindsight"');
-    expect(yaml).toContain('skills:\n  external_dirs:\n  - "/data/hermes/skills-board"');
+    expect(yaml).toContain('skills:\n  external_dirs: []');
   });
 
   it("sets gateway.api_server.max_concurrent_runs from maxConcurrentRuns", () => {
