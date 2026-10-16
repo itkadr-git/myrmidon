@@ -38,8 +38,8 @@ export function telegramOwnerQuestionText(
     for (const question of questionSet.questions) {
       const header = question.header?.trim();
       const prompt = question.prompt.trim();
-      if (header) lines.push(header);
-      if (!header || header !== prompt) lines.push(prompt);
+      if (header && header !== prompt) lines.push(header);
+      lines.push(prompt);
       if (question.helpText?.trim()) lines.push(question.helpText.trim());
       for (const [index, option] of (question.options ?? []).entries()) {
         const recommendation = option.recommended ? " (рекомендуется)" : "";
