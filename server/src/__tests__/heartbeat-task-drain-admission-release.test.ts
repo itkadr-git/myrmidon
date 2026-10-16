@@ -175,6 +175,7 @@ describeEmbeddedPostgres("heartbeat task-drain admission release", () => {
   }
 
   it("keeps an active adapter run in flight until graceful shutdown records its retry", async () => {
+    expect.assertions(10);
     const { companyId, agentId, issueId, runId, wakeupRequestId } = await seedQueuedRun();
     const heartbeat = heartbeatService(db);
     let activePromise: Promise<unknown> | undefined;
@@ -207,7 +208,7 @@ describeEmbeddedPostgres("heartbeat task-drain admission release", () => {
       supportsLocalAgentJwt: false,
       execute: async () => {
         await adapterGate;
-        return { exitCode: 0, signal: null, timedOut: false, errorMessage: null } as never;
+        return { exitCode: 143, signal: "SIGTERM", timedOut: false, errorMessage: "interrupted by SIGTERM" } as never;
       },
     } as never);
     try {
@@ -231,8 +232,8 @@ describeEmbeddedPostgres("heartbeat task-drain admission release", () => {
       expect(retryRunId).not.toBe(runId);
       expect(retryRunId).toEqual(expect.any(String));
       expect(gateAdapter).toBeDefined();
-      await heartbeat.drainActiveRunExecutions();
       gateAdapter?.();
+      await heartbeat.drainActiveRunExecutions();
       await activePromise;
 
       const interrupted = await db
