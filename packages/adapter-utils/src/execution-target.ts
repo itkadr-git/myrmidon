@@ -1619,11 +1619,7 @@ try {
   const top = cp.execFileSync('git', ['rev-parse', '--show-toplevel'], {encoding:'utf8',stdio:['ignore','pipe','ignore']}).trim();
   if (fs.realpathSync(top) === fs.realpathSync(process.cwd())) {
     env.PAPERCLIP_GIT_METADATA_ROOTS = JSON.stringify(cp.execFileSync('git', ['rev-parse','--path-format=absolute','--git-common-dir','--git-dir'], {encoding:'utf8',stdio:['ignore','pipe','ignore']}).trim().split('\n').map(p => fs.realpathSync(p)));
-<<<<<<< HEAD
-=======
-    writeProductEnv(env, "GIT_METADATA_ROOTS", JSON.stringify(cp.execFileSync('git', ['rev-parse','--path-format=absolute','--git-common-dir','--git-dir'], {encoding:'utf8',stdio:['ignore','pipe','ignore']}).trim().split('\n').map(p => fs.realpathSync(p)));
-=======
->>>>>>> 5c7ac1c7c (fix(env): restore the host-side github-environment probe script, regenerate capability contract (REBRAND-C))
+
   }
 } catch {}
 process.stdout.write("\0" + JSON.stringify(env) + "\0");
