@@ -103,6 +103,7 @@ export interface AgentWakeRequest {
   idempotencyKey?: string | null;
   forceFreshSession?: boolean;
   debug?: { providerTrace: "raw" };
+  externalSession?: { connectionId: string; grantId: string; model: string };
 }
 
 function withCompanyScope(path: string, companyId?: string) {
