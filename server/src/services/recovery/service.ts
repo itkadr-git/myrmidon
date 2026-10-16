@@ -2584,10 +2584,13 @@ export function recoveryService(
     const blockers = await existingUnresolvedBlockerIssues(input.issue.companyId, existingIssue.id);
     const blockedByIssueIds = blockers.map((blocker) => blocker.id);
     if (blockedByIssueIds.length > 0) {
-      await issuesSvc.update(existingIssue.id, {
-        status: "blocked",
-        blockedByIssueIds,
-      });
+      const [reblockedIssue] = await db
+        .update(issues)
+        .set({ status: "blocked", updatedAt: new Date() })
+        .where(and(eq(issues.id, existingIssue.id), eq(issues.companyId, input.issue.companyId)))
+        .returning();
+      if (!reblockedIssue) return false;
+      await issuesSvc.update(reblockedIssue.id, { status: "blocked", blockedByIssueIds });
       return false;
     }
     const action = await ensureSourceScopedStrandedRecoveryAction({
