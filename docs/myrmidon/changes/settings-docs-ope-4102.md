@@ -13,7 +13,7 @@ settings-section: Track 5 — operations
 | `PAPERCLIP_TEST_CAPTURE_PATH` | TEST | unset | Test-only path used by cursor local execution tests to capture the child process environment | Development/testing only; test harness input, not an operator setting and not shown in UI |
 
 ## settings-ru-replace
-<!-- section: 1.6.1 — BOT-DISK B: общий кэш пакетов для контейнеров ботов -->
+<!-- section: 1.6.5 — Самоорганизация (рой) -->
 <!-- occurrence: 2 -->
 | `MYRMIDON_BOT_CANARY_STEP_TIMEOUT_SEC` | R5-B | нет | Ключ бота-канарейки (agentId): новый образ применяется сначала к этому одному боту, с проверкой состояния здоровья и проверочным прогоном, прежде чем волны | Не задан — задача не может быть создана (503 с подсказкой): канарейка выбирается явно, не угадывается. Канарейка должна быть контейнерным ботом, которого собирает сверка (иначе задача отменяется с причиной). Читается при создании задачи |
 | `MYRMIDON_BOT_CANARY_WAVE_SIZE` | R5-B | `4` | Сколько ботов в одной волне после успеха канарейки (по одному боту за раз внутри волны, каждый через свое окно обслуживания агента) | От 1 до 32; значение по умолчанию 4 такое же, как и лимит параллели сверки (`RECONCILE_CONCURRENCY`), поэтому волна не занимает больше памяти, чем обычный проход |
