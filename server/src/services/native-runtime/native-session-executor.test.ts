@@ -2104,8 +2104,6 @@ describe("native provider bootstrap environment", () => {
         "/Users/runner/.paperclip/instances/default/workspaces/agent-1",
       PAPERCLIP_WORKSPACE_CWD:
         "/Users/runner/.paperclip/instances/default/workspaces/agent-1",
-      MYRMIDON_WORKSPACE_CWD:
-        "/Users/runner/.paperclip/instances/default/workspaces/agent-1",
     });
   });
 });
