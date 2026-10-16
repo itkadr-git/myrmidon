@@ -16,7 +16,8 @@
 import express from "express";
 import request from "supertest";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { authAccounts, createDb } from "@paperclipai/db";
+import { authAccounts, createDb, instanceSettings } from "@paperclipai/db";
+import { eq } from "drizzle-orm";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -74,6 +75,14 @@ describeEmbeddedPostgres("Better Auth credential sign-up against the real schema
 
     database = await startEmbeddedPostgresTestDatabase("paperclip-better-auth-signup-");
     db = createDb(database.connectionString);
+
+    // myrmidon(1.7 USERS-ADMIN-UI A): self-registration is off by default now;
+    // this suite exercises the vendor credential sign-up itself, so it flips
+    // the instance switch on first (the same write the settings route makes).
+    await db
+      .update(instanceSettings)
+      .set({ general: { authSelfSignUp: { enabled: true } } })
+      .where(eq(instanceSettings.singletonKey, "default"));
 
     const auth = createBetterAuthInstance(db, testConfig(), [ORIGIN]);
     app = express();
