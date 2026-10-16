@@ -55,6 +55,7 @@ const mockAgentService = vi.hoisted(() => ({
   list: vi.fn(),
   // myrmidon(PERF-DIET-G): the slim reader the company list route uses
   listSummaries: vi.fn(),
+  listSummariesVersionKey: vi.fn(),
   create: vi.fn(),
   activatePendingApproval: vi.fn(),
   terminate: vi.fn(),
@@ -92,6 +93,7 @@ const mockBudgetService = vi.hoisted(() => ({
 }));
 
 const mockHeartbeatService = vi.hoisted(() => ({
+  listVersionKey: vi.fn(),
   listTaskSessions: vi.fn(),
   resetRuntimeSession: vi.fn(),
   getRun: vi.fn(),
@@ -309,6 +311,7 @@ describe.sequential("agent permission routes", () => {
     mockAgentService.listConfigRevisions.mockReset();
     mockAgentService.list.mockReset();
     mockAgentService.listSummaries.mockReset();
+    mockAgentService.listSummariesVersionKey.mockReset();
     mockAgentService.create.mockReset();
     mockAgentService.activatePendingApproval.mockReset();
     mockAgentService.terminate.mockReset();
@@ -332,6 +335,7 @@ describe.sequential("agent permission routes", () => {
     mockApprovalService.reject.mockReset();
     mockBudgetService.upsertPolicy.mockReset();
     mockHeartbeatService.listTaskSessions.mockReset();
+    mockHeartbeatService.listVersionKey.mockReset();
     mockHeartbeatService.resetRuntimeSession.mockReset();
     mockHeartbeatService.getRun.mockReset();
     mockHeartbeatService.cancelRun.mockReset();
@@ -357,6 +361,8 @@ describe.sequential("agent permission routes", () => {
     mockAgentService.listConfigRevisions.mockResolvedValue([]);
     mockAgentService.list.mockResolvedValue([baseAgent]);
     mockAgentService.listSummaries.mockResolvedValue([baseAgentListItem]);
+    mockAgentService.listSummariesVersionKey.mockResolvedValue('"agents-v1"');
+    mockHeartbeatService.listVersionKey.mockResolvedValue('"runs-v1"');
     mockAgentService.getChainOfCommand.mockResolvedValue([]);
     mockAgentService.resolveByReference.mockResolvedValue({ ambiguous: false, agent: baseAgent });
     mockAgentService.create.mockResolvedValue(baseAgent);
@@ -500,7 +506,7 @@ describe.sequential("agent permission routes", () => {
   // TEC-7032 reported the env leak against this endpoint, and the row no longer
   // carries adapterConfig at all, so the leak is impossible by construction.
   // The model the list column shows travels as the precomputed `adapterModel`.
-  it("serves GET /api/companies/:companyId/agents without adapterConfig and with adapterModel", async () => {
+  it("serves GET /api/companies/:companyId/agents with a version-key ETag", async () => {
     const plaintextValue = "listed-value-must-not-leak";
     mockAgentService.listSummaries.mockResolvedValue([
       { ...baseAgentListItem, envLeakGuard: plaintextValue },
@@ -519,6 +525,12 @@ describe.sequential("agent permission routes", () => {
     );
 
     expect(res.status).toBe(200);
+    expect(res.headers.etag).toBe('"agents-v1"');
+    expect(res.headers["cache-control"]).toBe("private, must-revalidate");
+    expect(mockAgentService.listSummariesVersionKey).toHaveBeenCalledWith(
+      companyId,
+      "board:board-user:admin",
+    );
     expect(mockAgentService.listSummaries).toHaveBeenCalledWith(companyId);
     expect(mockAgentService.list).not.toHaveBeenCalled();
     expect(res.body).toHaveLength(1);
@@ -532,6 +544,27 @@ describe.sequential("agent permission routes", () => {
     // The route serves the rows the slim reader returned, unredacted: there is
     // no config left to redact.
     expect(JSON.stringify(res.body)).not.toContain("***REDACTED***");
+  }, 20_000);
+
+  it("returns 304 for a matching agent-list ETag before building the list body", async () => {
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .get(`/api/companies/${companyId}/agents`)
+        .set("If-None-Match", '"agents-v1"'),
+    );
+
+    expect(res.status).toBe(304);
+    expect(res.text).toBe("");
+    expect(mockAgentService.listSummariesVersionKey).toHaveBeenCalledOnce();
+    expect(mockAgentService.listSummaries).not.toHaveBeenCalled();
   }, 20_000);
 
   // Mutation routes echo the stored row back, so they leak the same values the
