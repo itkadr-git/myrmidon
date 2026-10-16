@@ -11,7 +11,7 @@ import {
   type SwarmClaimSettings,
   type SwarmQueueCandidate,
 } from "@paperclipai/shared";
-import { companies } from "@paperclipai/db";
+import { companies, issues } from "@paperclipai/db";
 import { claimCovers, selectQueueForAgent } from "./domain.js";
 import { createSwarmClaimSweeper } from "./sweep.js";
 import type { SwarmClaimEnqueueWakeup } from "./service.js";
@@ -78,19 +78,19 @@ describe("myrmidon(1.6.1 SWARM-IDLE-WAKE) sweep pass", () => {
       select: (projection: Record<string, unknown>) => ({
         from: (table: unknown) => {
           const selectQuery = {
-            innerJoin: () => ({
-              where: () => ({
-                orderBy: () => Promise.resolve([
-                  { id: "idle-agent", companyId: "company-1", name: "Idle agent", reportsTo: null, role: "engineer", status: "idle", metadata: {} },
-                ]),
-              }),
-            }),
-            innerJoin: () => ({
-              where: () => ({
-                orderBy: () => ({
-                  limit: () => Promise.resolve([]),
-                }),
-              }),
+            innerJoin: (joinedTable: unknown) => ({
+              where: () => {
+                if (joinedTable === issues) {
+                  return {
+                    orderBy: () => ({ limit: () => Promise.resolve([]) }),
+                  };
+                }
+                return {
+                  orderBy: () => Promise.resolve([
+                    { id: "idle-agent", companyId: "company-1", name: "Idle agent", reportsTo: null, role: "engineer", status: "idle", metadata: {} },
+                  ]),
+                };
+              },
             }),
             leftJoin: () => ({
               leftJoin: () => ({
