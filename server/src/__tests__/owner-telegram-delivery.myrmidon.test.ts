@@ -60,7 +60,7 @@ describeEmbeddedPostgres(
 
     beforeAll(async () => {
       mkdirSync(secretsTmpDir, { recursive: true });
-      process.env.MYRMIDON_AUTH_PUBLIC_BASE_URL = "https://paperclip.local";
+      process.env.MYRMIDON_AUTH_PUBLIC_BASE_URL = "https://board.example";
       delete process.env.PAPERCLIP_AUTH_PUBLIC_BASE_URL;
       process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE = path.join(
         secretsTmpDir,
@@ -312,7 +312,7 @@ describeEmbeddedPostgres(
       expect(payload.text).toContain("1. Morning — Before noon");
       expect(payload.text).toContain("2. Evening — After work");
       expect(payload.text).toContain("Ответьте сообщением: номером варианта или своими словами.");
-      expect(payload.text).toContain("https://paperclip.local");
+      expect(payload.text).toContain("https://board.example");
       expect(payload.interaction).toBeUndefined();
       expect(payload.text).not.toContain("chat_action");
       const [boundConversation] = await db
