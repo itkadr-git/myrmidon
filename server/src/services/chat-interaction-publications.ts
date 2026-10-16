@@ -355,6 +355,18 @@ export async function enqueueIssueInteractionChatPublications(
   if (bindings.length === 0) return [];
 
   const taskUrl = publicChatInteractionTaskUrl(interaction.issueId);
+  const ownerTask = ownerOnly
+    ? await db
+        .select({ title: issues.title })
+        .from(issues)
+        .where(
+          and(
+            eq(issues.companyId, interaction.companyId),
+            eq(issues.id, interaction.issueId),
+          ),
+        )
+        .then((rows) => rows[0] ?? null)
+    : null;
   const question =
     interaction.kind === "ask_user_questions"
       ? nativeChatQuestion(interaction)
@@ -391,7 +403,9 @@ export async function enqueueIssueInteractionChatPublications(
     const ownerTelegramText =
       endpoint.provider === "telegram"
         ? telegramOwnerInteractionText(
-            interaction,
+            ownerTask?.title
+              ? { ...interaction, title: ownerTask.title }
+              : interaction,
             taskUrl,
             isOwnerTelegramBinding,
             confirmation !== null,
