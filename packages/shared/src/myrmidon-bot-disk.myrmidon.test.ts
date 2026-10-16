@@ -1,4 +1,4 @@
-// myrmidon(1.6.6 SETTINGS-UI-B / OPE-6258): the 14 stored keys of
+// myrmidon(1.6.6 SETTINGS-UI-B / OPE-6258): the 16 stored keys of
 // `general.botDisk` survive every PATCH. Before this part the five
 // workspace-lifecycle numbers (closing grace, scratch TTL, the three partition
 // percents) lived only under `wsBotDiskSettingsSchema` and were not part of the
@@ -28,17 +28,19 @@ const BASE = {
   gitMirrorRefreshMs: 900_000,
   pnpmStoreDir: "/data/hermes/.store",
   pnpmImportMethod: "copy" as const,
+  uvCacheDir: "/data/hermes/.uv",
+  uvLinkMode: "copy" as const,
   sharedCacheRoles: ["engineer"],
   sharedBotRuntimePath: "/srv/myrmidon/runtime",
 };
 
 describe("1.6.6-SETTINGS-UI-B bot disk stored shape", () => {
-  it("the three key groups are 14 distinct keys", () => {
+  it("the three key groups are 16 distinct keys", () => {
     const all = [...BOT_DISK_SETTING_KEYS, ...BOT_DISK_LAYOUT_KEYS, ...BOT_DISK_WORKSPACE_LIFECYCLE_KEYS];
-    expect(new Set(all).size).toBe(14);
+    expect(new Set(all).size).toBe(16);
   });
 
-  it("the canonical schema accepts all 14 keys", () => {
+  it("the canonical schema accepts all 16 keys", () => {
     expect(botDiskSettingsSchema.safeParse(BASE).success).toBe(true);
   });
 

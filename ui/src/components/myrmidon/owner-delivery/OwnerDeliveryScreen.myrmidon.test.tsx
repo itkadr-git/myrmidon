@@ -93,6 +93,14 @@ describe("myrmidon(1.6.5-OWNER-DM-FILTER) owner delivery screen", () => {
     expect(onSave).toHaveBeenCalledWith({ mode: "owner_decisions_only" });
   });
 
+  it("offers the bot-message mode and selects it when nothing is stored", () => {
+    const onSave = vi.fn();
+    renderView({ settings: { mode: "via_bot" }, onSave });
+    expect(card("Message from the bot").getAttribute("aria-checked")).toBe("true");
+    act(() => saveButton().click());
+    expect(onSave).toHaveBeenCalledWith({ mode: "via_bot" });
+  });
+
   it("disables Save while the save is in flight", () => {
     renderView({ settings: STORED_ALL, onSave: vi.fn(), pending: true });
     expect(saveButton().disabled).toBe(true);

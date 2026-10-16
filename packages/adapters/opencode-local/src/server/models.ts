@@ -7,6 +7,7 @@ import {
   runChildProcess,
 } from "@paperclipai/adapter-utils/server-utils";
 import { isValidOpenCodeModelId } from "../index.js";
+import { readProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
 
 const MODELS_CACHE_TTL_MS = 60_000;
 const MODELS_DISCOVERY_TIMEOUT_MS = 20_000;
@@ -21,10 +22,10 @@ function sleep(ms: number): Promise<void> {
 }
 
 function resolveOpenCodeCommand(input: unknown): string {
+  const envOverrideRaw = readProductEnv("OPENCODE_COMMAND");
   const envOverride =
-    typeof process.env.PAPERCLIP_OPENCODE_COMMAND === "string" &&
-    process.env.PAPERCLIP_OPENCODE_COMMAND.trim().length > 0
-      ? process.env.PAPERCLIP_OPENCODE_COMMAND.trim()
+    typeof envOverrideRaw === "string" && envOverrideRaw.trim().length > 0
+      ? envOverrideRaw.trim()
       : "opencode";
   return asString(input, envOverride);
 }
@@ -33,7 +34,7 @@ const discoveryCache = new Map<
   string,
   { expiresAt: number; models: AdapterModel[] }
 >();
-const VOLATILE_ENV_KEY_PREFIXES = ["PAPERCLIP_", "npm_", "NPM_"] as const;
+const VOLATILE_ENV_KEY_PREFIXES = ["PAPERCLIP_", "MYRMIDON_", "npm_", "NPM_"] as const; // myrmidon(REBRAND-C)
 const VOLATILE_ENV_KEY_EXACT = new Set([
   "PWD",
   "OLDPWD",

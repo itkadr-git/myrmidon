@@ -68,6 +68,8 @@ case "$1" in
   fetch) ;;
   merge-base) exit 0 ;;
   ls-remote) cat "$SANDBOX/git-tags" ;;
+  # F-05: the version stamp of the deploy journal (log_script_version).
+  describe) echo "myr-v1.6.5-rc.7-3-gdeadbee" ;;
 esac
 `;
 
@@ -377,5 +379,26 @@ esac
     assert.equal(r.phase, "rollback-failed");
     // deploy.sh refused before the pull; nothing was switched.
     assert.doesNotMatch(calls(sb), /docker pull --quiet/);
+  });
+
+  it("the deploy journal (job-<id>.log) opens with the scripts' version line (F-05)", () => {
+    // deploy-from-job.sh runs `deploy.sh ... 2>job-<id>.log`: the version stamp
+    // is the deploy journal's first line only when it goes to stderr, and
+    // stderr of that very run is what this file captures. A stdout stamp would
+    // escape into the executor's own output and never reach the journal.
+    const sb = sandbox({ job: { id: JOB_ID, status: "maintenance_on", digest: NEW } });
+    const { code, out } = run(sb, ["--once"]);
+    assert.equal(code, 0, out);
+    const journalFile = path.join(sb.dir, "state", `job-${JOB_ID}.log`);
+    const journal = read(journalFile);
+    assert.equal(journal.split("\n")[0], "deploy scripts at myr-v1.6.5-rc.7-3-gdeadbee");
+    // The executor's own stdout must not carry the stamp (its stderr is this
+    // test's harness output, and it legitimately starts with the stamp).
+    const result = spawnSync(
+      process.env.PATH.split(":").map((d) => path.join(d, "bash")).find((f) => fs.existsSync(f)),
+      [path.join(HERE, "deploy-from-job.sh"), "--config", sb.config, "--once"],
+      { env: { ...process.env, PATH: `${sb.bin}:${process.env.PATH}`, SANDBOX: sb.dir }, encoding: "utf8" },
+    );
+    assert.ok(!(result.stdout || "").includes("deploy scripts at"), result.stdout);
   });
 });

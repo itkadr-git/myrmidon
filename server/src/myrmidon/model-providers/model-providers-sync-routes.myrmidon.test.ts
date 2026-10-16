@@ -13,6 +13,7 @@
 import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi, type Mocked } from "vitest";
+import { listAvailableModelProviderTypes } from "@paperclipai/shared";
 import { errorHandler } from "../../middleware/index.js";
 import { modelProviderRoutesWithSync } from "./routes-with-sync.js";
 import type { ModelProviderService, ModelProviderView } from "./service.js";
@@ -68,6 +69,16 @@ function fakeService() {
         { id: "m2", modelName: "model-b", litellmModelName: "openai/model-b", enabled: true, free: false },
       ];
     },
+    async listChannels(companyId, providerId) {
+      return {
+        providerId,
+        providerType: "chatgpt-pool",
+        channels: [],
+        signals: [],
+      };
+    },
+    listAvailableTypes: () => listAvailableModelProviderTypes(),
+    syncPoolSignals: async () => [],
   };
   return service;
 }

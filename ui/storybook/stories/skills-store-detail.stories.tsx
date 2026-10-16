@@ -75,6 +75,7 @@ const MOCK_DETAIL: CompanySkillDetail = {
     createdAt: NOW,
   },
   starredByCurrentActor: true,
+  requiredEnv: [],
 };
 
 const MOCK_VERSIONS: CompanySkillVersion[] = [

@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { readProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
 
 type PreparedCodexRuntimeConfig = {
   notes: string[];
@@ -340,7 +341,7 @@ export async function prepareCodexRuntimeConfig(input: {
   const resolveEnv = (name: string): string | undefined => input.env[name] ?? process.env[name];
   const notes: string[] = [];
   const parsed = parseCodexProvidersConfig(
-    input.env.PAPERCLIP_CODEX_PROVIDERS ?? process.env.PAPERCLIP_CODEX_PROVIDERS,
+    input.env.PAPERCLIP_CODEX_PROVIDERS ?? readProductEnv("CODEX_PROVIDERS"),
     resolveEnv,
     notes,
   );

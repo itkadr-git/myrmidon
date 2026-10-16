@@ -12,6 +12,21 @@ export const bridgeTextRu: Record<BridgeTextKey, string> = {
   "menu.stop": "Остановить текущий ответ",
   "menu.status": "Показать модель, сессию и текущий ответ",
   "menu.plan": "Превратить сообщение в план эпика (только владелец компании)",
+  "menu.accept": "Принять карточку плана (только владелец компании)",
+  "menu.reject": "Отклонить карточку плана (только владелец компании)",
+
+  // /accept and /reject (1.6.3-CTO-CHAT-B)
+  "accept.noId": "Укажите ID карточки: /accept <id> — ID карточки с планом из ответа бота.",
+  "accept.notPlanOrProcessed": "Эта карточка не является предложением задач или уже обработана.",
+  "accept.ok": "✅ План принят.\n\nЭпик: {epicLink}\nСоздано задач: {count}",
+  "accept.error": "Не удалось принять карточку: {message}",
+  "accept.notOwner": "Команда /accept доступна только владельцу компании.",
+  "reject.notOwner": "Команда /reject доступна только владельцу компании.",
+  "reject.noId": "Укажите ID карточки: /reject <id> — ID карточки с планом из ответа бота.",
+  "reject.alreadyProcessed": "Эта карточка уже обработана.",
+  "reject.notPlan": "Эта карточка не является предложением задач; /reject применим только к планам.",
+  "reject.ok": "❌ План отклонён. Задачи не созданы.",
+  "reject.error": "Не удалось отклонить карточку: {message}",
   // myrmidon(X9c): /agents, /to, /who — addressing the company's agents.
   "menu.agents": "Показать агентов компании и их алиасы",
   "menu.to": "Выбрать адресата по умолчанию (/to <алиас>; без аргумента — сброс)",
@@ -45,17 +60,45 @@ export const bridgeTextRu: Record<BridgeTextKey, string> = {
   // /model and /think
   "model.statusLabel": "Модель",
   "reasoning.statusLabel": "Рассуждения",
-  "model.unavailable": "Смена модели недоступна для этого агента.",
-  "reasoning.unavailable": "Смена глубины рассуждений недоступна для этого агента.",
+  // myrmidon(1.6.5-TG-LOCALE-C): недоступную смену объясняем до конца — названы
+  // адаптер и причина, сказано, где значение меняется (карточка агента на доске)
+  // и когда вступит в силу.
+  "model.unavailable":
+    "Смена модели недоступна для адаптера {adapterType}: {reason}. Модель меняется на доске — в разделе моделей карточки агента; применится со следующего ответа.",
+  "reasoning.unavailable":
+    "Смена глубины рассуждений недоступна для адаптера {adapterType}: {reason}. Глубина рассуждений меняется на доске — в разделе моделей карточки агента; применится со следующего ответа.",
   "model.unknownNoun": "Неизвестная модель",
   "reasoning.unknownNoun": "Неизвестная глубина рассуждений",
   "chooser.effective": "{label}: {value} ({source}).",
   "chooser.availableHeader": "Доступно:",
-  "chooser.usage": "Укажите /{command} <имя или номер> либо /{command} default.",
+  "chooser.usage": "Ответьте на это сообщение номером или именем либо укажите /{command} <имя или номер> или /{command} default.",
   "chooser.agentDefaultParen": "по умолчанию у агента ({value})",
   "chooser.defaultApplied": "{label} для этого чата: {agentDefault}.",
   "chooser.set": "{label} для этого чата: {value}. Следующий ответ начнёт новую сессию модели с недавней историей этого чата.",
   "chooser.unknownError": "{noun} «{value}».\n{list}",
+  // myrmidon(F06-A): см. en.ts — список моделей агента, применение профиля и
+  // причина недоступности команды.
+  "chooser.catalogWhole":
+    "Показан весь каталог шлюза — собственный список моделей агента прочитать не удалось.",
+  "chooser.effortNotAllowed": "Глубина рассуждений «{value}» не поддерживается моделью {model}; допустимо: {list}.",
+  "chooser.applyNextTurn":
+    "Профиль агента применён без перезапуска: изменение вступит в силу со следующего ответа.",
+  "chooser.applyFailed":
+    "Изменение записано для этого чата, но применить профиль агента не удалось: {reason}",
+  "chooser.applyNotApplied":
+    "Агент пока работает на прежнем профиле ({reason}); изменение вступит в силу при следующем применении профиля.",
+  "chooser.applyRolledBack": "Прежнее значение возвращено.",
+  "chooser.reason.unsupportedAdapter": "этот адаптер не поддерживает смену из чата",
+  "chooser.reason.noCandidates": "не удалось прочитать варианты для этого чата",
+  "chooser.button.default": "↩ По умолчанию у агента",
+  "chooser.moreHidden": "Кнопки есть у первых {count} моделей; остальные выбирайте номером или именем из списка.",
+  // myrmidon(F06-D): почему собственный список агента не использован.
+  "chooser.keyFailure": "Причина: {reason}.",
+  "chooser.keyFailure.noGatewayUrl": "в доске не настроен адрес шлюза LLM",
+  "chooser.keyFailure.noKey": "у агента нет привязанного ключа шлюза",
+  "chooser.keyFailure.secretError": "ключ шлюза не удалось прочитать из хранилища секретов",
+  "chooser.keyFailure.gatewayError": "шлюз не вернул список моделей для ключа этого агента",
+  "chooser.keyFailure.emptyList": "ключ этого агента не разрешает ни одной модели",
 
   // /stop
   "stop.unavailable": "Сейчас остановка недоступна.",
@@ -86,11 +129,48 @@ export const bridgeTextRu: Record<BridgeTextKey, string> = {
 
   // myrmidon(X9c): /agents, /to and /who — which agent of the company this
   // chat addresses. Agent names and aliases are data, not prose.
+  // myrmidon(1.6.5 OPE-6318 part A) adds the group titles of /agents, the
+  // live-status words and the grouped line template.
   "agents.header": "Агенты компании:",
   "agents.noAliases": "—",
   "agents.currentSuffix": "текущий адресат",
   "agents.none": "В этой компании нет агентов, доступных для адресации.",
   "agents.hint": "Выбрать адресата по умолчанию: /to <алиас>. /to без аргумента сбрасывает выбор.",
+  // Названия групп для карточек без своего `telegramGroup`: группа берётся из
+  // префикса имени (см. ../grouping.ts).
+  "agents.group.infra": "Инфраструктура / Myrmidon",
+  "agents.group.bbq": "bbq",
+  "agents.group.work": "work",
+  "agents.group.other": "Прочие",
+  // «{group}» — уже готовое название группы: из каталога или из карточки.
+  "agents.groupHeader": "{group}:",
+  "agents.groupHeaderPaused": "{group} (на паузе: {count}):",
+  // Живые статусы строки карточки (agents.status).
+  "agents.status.idle": "свободен",
+  "agents.status.running": "работает",
+  "agents.status.paused": "на паузе",
+  "agents.status.unknown": "статус неизвестен",
+  // Строка агента: имя, роль одной строкой (agents.title), статус, алиасы.
+  "agents.line": "• {name} — {role} · {status} ({aliases})",
+  "agents.lineNoRole": "• {name} · {status} ({aliases})",
+  // /agents с inline-кнопками (1.6.5 OPE-6318, часть B).
+  "agents.buttons.groupsTitle": "Агенты",
+  "agents.buttons.groupsIntro": "Выберите направление, затем агента. Полный список с ролями: /agents text.",
+  "agents.buttons.groupLine": "• {group}: {count}",
+  "agents.buttons.groupLinePaused": "• {group}: {count} (на паузе: {paused})",
+  "agents.buttons.groupButton": "{group} ({count})",
+  "agents.buttons.moreGroups": "Направлений больше, чем кнопок: остальные — в /agents text.",
+  "agents.buttons.page": "Страница {page} из {pages}",
+  "agents.buttons.more": "Ещё ▸",
+  "agents.buttons.back": "◂ Направления",
+  "agents.buttons.backToGroup": "◂ {group}",
+  "agents.buttons.write": "Написать этому агенту",
+  "agents.buttons.model": "Модель",
+  "agents.buttons.stop": "Стоп",
+  "agents.buttons.agentTitle": "Агент {name}",
+  "agents.buttons.modelNote": "Модель этого чата меняется командой /model.",
+  "agents.buttons.expired": "Эти кнопки устарели. Отправьте /agents заново.",
+  "agents.buttons.unavailable": "Этого агента или направления больше нет. Отправьте /agents заново.",
   "to.unsetLine": "Адресат по умолчанию не задан: отвечает {agent}.",
   "to.cleared": "Выбор адресата сброшен. Дальше отвечает агент этого чата по умолчанию.",
   "to.alreadySet": "Адресат уже {agent} ({aliases}).",

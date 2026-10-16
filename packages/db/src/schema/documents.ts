@@ -1,4 +1,5 @@
 import { pgTable, uuid, text, integer, timestamp, index, jsonb } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 import type { SourceTrustMetadata } from "@paperclipai/shared";
 import { companies } from "./companies.js";
 import { agents } from "./agents.js";
@@ -29,5 +30,15 @@ export const documents = pgTable(
     companyCreatedIdx: index("documents_company_created_idx").on(table.companyId, table.createdAt),
     titleSearchIdx: index("documents_title_search_idx").using("gin", table.title.op("gin_trgm_ops")),
     bodySearchIdx: index("documents_latest_body_search_idx").using("gin", table.latestBody.op("gin_trgm_ops")),
+    // myrmidon(PERF-DIET-P): the artifact branches of company search match
+    // `coalesce(title, '') ILIKE '%…%'` (server/src/services/company-search.ts,
+    // company-artifacts.ts), and a column wrapped in coalesce cannot use the
+    // plain-column index above: the planner falls back to a sequential scan of
+    // documents — the table that carries the heavy latest_body column. This
+    // expression index matches the emitted expression.
+    coalescedTitleSearchIdx: index("documents_coalesced_title_search_idx").using(
+      "gin",
+      sql`(coalesce(${table.title}, '')) gin_trgm_ops`,
+    ),
   }),
 );

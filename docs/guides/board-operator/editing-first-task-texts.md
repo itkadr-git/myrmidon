@@ -17,7 +17,7 @@ The text for a new organization's first task lives in `server/src/onboarding-ass
 | `chief-of-staff/AGENTS.md` | The first agent's chief-of-staff persona. |
 | `README.md` | A maintainer reference for the files, placeholders, toggle, and update behavior. |
 
-The templates support `{{agentName}}`, `{{organizationName}}`, and `{{proposalStep}}`. Paperclip fills them when it creates the organization, first agent, and first task.
+The templates support `{{agentName}}`, `{{organizationName}}`, and `{{proposalStep}}`. Myrmidon fills them when it creates the organization, first agent, and first task.
 
 ## How the first-task flow works
 
@@ -42,4 +42,4 @@ Open **Settings > Experimental** and find **First task: propose with a plan docu
 - **Off:** the chief of staff answers a single-task request with one confirmation card.
 - **On:** the chief of staff writes a short plan document and adds a checkbox card.
 
-Paperclip reads this setting once, when it creates an organization's first task. Changing it later does not alter an existing first task.
+Myrmidon reads this setting once, when it creates an organization's first task. Changing it later does not alter an existing first task.

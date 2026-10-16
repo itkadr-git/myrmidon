@@ -9,8 +9,12 @@
 // interface the two parts agreed on.
 
 import { and, asc, eq, inArray, isNull, lt, notInArray, or, sql } from "drizzle-orm";
+import { isUniqueViolation } from "../../db-errors.js";
 import { issueClaims, issues, type Db } from "@paperclipai/db";
-import type { SwarmClaimLease } from "@paperclipai/shared";
+import {
+  SWARM_CLAIM_QUEUE_ISSUE_STATUSES,
+  type SwarmClaimLease,
+} from "@paperclipai/shared";
 
 /** A lease row reshaped into the shared contract both parts order and render. */
 function toLease(row: typeof issueClaims.$inferSelect): SwarmClaimLease {
@@ -54,7 +58,7 @@ export async function findLiveClaimForIssue(
 
 /**
  * 1.6.1 (SWARM-SETTINGS-UI): every live claim of the instance, oldest first —
- * the read the disable path of the sweep uses to free the leases a pilot
+ * the read the disable path of the sweep uses to free the leases a swarm
  * switch-off left behind. Bounded by the caller's page size.
  */
 export async function listAllLiveClaims(
@@ -109,6 +113,13 @@ export async function liveClaimsForIssues(
  * Live claims of one company that have run out at `now`: never released and
  * `expires_at` at or before the cutoff. This is the sweep's one read, and it is
  * indexed by `issue_claims_expires_idx`.
+ *
+ * design §4.1, correction 1 (review item 7): a lease the board wrote and no run
+ * has checked out yet (`run_id IS NULL`) does not expire while a wake for its
+ * task is in flight (`queued` / `deferred_issue_execution` / `claimed`, not
+ * parked on an execution hold). The start limit holds a wake in the queue; the
+ * lease must outlast that wait, or the sweep takes the owner off a task whose
+ * run is about to start and the run is cancelled as `reassigned`.
  */
 export async function listExpiredClaims(
   db: Db,
@@ -116,7 +127,20 @@ export async function listExpiredClaims(
   now: Date,
   limit = 200,
 ): Promise<Array<typeof issueClaims.$inferSelect>> {
-  const conditions = [isNull(issueClaims.releasedAt), lt(issueClaims.expiresAt, now)];
+  const conditions = [
+    isNull(issueClaims.releasedAt),
+    lt(issueClaims.expiresAt, now),
+    sql`(${issueClaims.runId} is not null or not exists (
+      select 1 from agent_wakeup_requests w
+      where w.company_id = ${issueClaims.companyId}
+        and w.status in ('queued', 'deferred_issue_execution', 'claimed')
+        and w.payload ->> 'issueId' = ${issueClaims.issueId}::text
+        and not (
+          w.status = 'deferred_issue_execution'
+          and coalesce(jsonb_typeof(w.payload -> 'executionWait'), 'null') = 'object'
+        )
+    ))`,
+  ];
   if (companyId) conditions.push(eq(issueClaims.companyId, companyId));
   return db
     .select()
@@ -186,9 +210,100 @@ export async function insertClaim(
       heartbeatAt: input.heartbeatAt,
       expiresAt: input.expiresAt,
     })
-    .returning();
+    .returning()
+    // 1.6.5 (OPE-5401 ч.A): the pre-check above is advisory — two processes can pass it
+    // in the same window. The partial unique index `issue_claims_issue_active_uq`
+    // (issue_id WHERE released_at IS NULL) is the real gate, and 23505 is the losing side
+    // of the race, not a failure: same null = «занято» as the pre-check returns.
+    .catch((err: unknown) => {
+      if (isUniqueViolation(err)) return [];
+      throw err;
+    });
   const row = inserted[0];
   return row ? toLease(row) : null;
+}
+
+/**
+ * 1.6.5 (OPE-6608 SWARM-WAKE-FIX A): the queue's own assignment. Before this,
+ * the idle pass woke an agent and trusted the run to claim the task on
+ * checkout — and the dispatcher cancelled every such run first, because an
+ * unassigned issue does not belong to the agent the wake named
+ * (`decideIssueOwnership` saw NULL ≠ runAgentId and read it as "reassigned").
+ * The queue now does what a claim does, on the server, before the wake: the
+ * issue is assigned to the agent under a conditional update (assignee still
+ * empty, status still a queue status) and the claim row is written behind the
+ * same partial unique index the checkout path uses. Returns false when the
+ * task was taken meanwhile — then nobody is woken for it.
+ */
+export async function assignIssueToAgentForIdleClaim(
+  db: Db,
+  input: { companyId: string; issueId: string; agentId: string; now: Date },
+): Promise<boolean> {
+  const updated = await db
+    .update(issues)
+    .set({ assigneeAgentId: input.agentId, updatedAt: input.now })
+    .where(
+      and(
+        eq(issues.id, input.issueId),
+        eq(issues.companyId, input.companyId),
+        isNull(issues.assigneeAgentId),
+        inArray(issues.status, [...SWARM_CLAIM_QUEUE_ISSUE_STATUSES]),
+      ),
+    )
+    .returning({ id: issues.id });
+  return updated.length > 0;
+}
+
+/**
+ * Undo of `assignIssueToAgentForIdleClaim`: used when the assignment landed but
+ * the claim row lost the race (someone claimed the task in between). The
+ * assignment is reverted so the task stays in the queue for the next pass
+ * instead of dangling on an agent that holds no lease.
+ */
+export async function revertIdleClaimAssignment(
+  db: Db,
+  input: { companyId: string; issueId: string; agentId: string; now: Date },
+): Promise<boolean> {
+  const reverted = await db
+    .update(issues)
+    .set({ assigneeAgentId: null, updatedAt: input.now })
+    .where(
+      and(
+        eq(issues.id, input.issueId),
+        eq(issues.companyId, input.companyId),
+        eq(issues.assigneeAgentId, input.agentId),
+      ),
+    )
+    .returning({ id: issues.id });
+  return reverted.length > 0;
+}
+
+/**
+ * 1.6.5 (OPE-6608 §4.1, review item 2): take the owner off a task whose lease
+ * lapsed with no run behind it. The old pass left the assignee in place and
+ * woke a DIFFERENT agent on the task; that run was then cancelled as
+ * `reassigned` before its checkout — the failure this ticket exists for.
+ * Conditional on purpose: a task that moved on (status left the queue, or the
+ * owner changed meanwhile) is left exactly as it is, and the conditional update
+ * is the same shape the claim path uses.
+ */
+export async function clearExpiredAssignee(
+  db: Db,
+  input: { companyId: string; issueId: string; agentId: string; now: Date },
+): Promise<boolean> {
+  const cleared = await db
+    .update(issues)
+    .set({ assigneeAgentId: null, updatedAt: input.now })
+    .where(
+      and(
+        eq(issues.id, input.issueId),
+        eq(issues.companyId, input.companyId),
+        eq(issues.assigneeAgentId, input.agentId),
+        inArray(issues.status, [...SWARM_CLAIM_QUEUE_ISSUE_STATUSES]),
+      ),
+    )
+    .returning({ id: issues.id });
+  return cleared.length > 0;
 }
 
 /**

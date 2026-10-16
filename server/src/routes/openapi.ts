@@ -143,6 +143,8 @@ import {
   companySkillCreateSchema,
   companySkillFileDeleteSchema,
   companySkillFileUpdateSchema,
+  companySkillDiscoverSchema,
+  companySkillDiscoverResultSchema,
   companySkillImportSchema,
   companySkillProjectBrowseRequestSchema,
   companySkillProjectBrowseResultSchema,
@@ -3653,10 +3655,15 @@ registry.registerPath({
   tags: ["issues"],
   summary: "List issues in a company",
   description:
-    "Use `view=compact` for the board issue-list row contract. The default response remains the broad compatibility contract.",
+    "Use `view=compact` for the board issue-list row contract. The default response remains the broad compatibility contract. " +
+    "myrmidon(F16): for an agent actor the instance setting `issuesListAgentDefaults` (default on) changes the defaults — " +
+    "a request without `view` is answered as `view=compact`, `limit` defaults to 200 with a maximum of 500 (a larger value is a 400 " +
+    "advising pagination via `offset`/`afterId`), and the compact body omits `description`. An agent may pass an explicit " +
+    "`view=full` only together with an explicit `limit <= 100`. With `issuesListAgentDefaults.enabled: false` the agent behaviour is the same as the board's.",
   request: {
     params: z.object({ companyId: z.string() }),
-    query: z.object({ view: z.enum(["compact"]).optional() }).passthrough(),
+    // myrmidon(F16): `view=full` is accepted for agent actors only (capped by limit).
+    query: z.object({ view: z.enum(["compact", "full"]).optional() }).passthrough(),
   },
   responses: {
     200: r.ok(),
@@ -5177,6 +5184,39 @@ registry.registerPath({
     200: {
       description: "Agent action audit export",
       content: { "text/csv": { schema: z.string() } },
+    },
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+  },
+});
+
+// myrmidon(AUDIT-JSONL): fork-only JSONL export of the agent action audit feed.
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/audit/agent-actions.jsonl",
+  tags: ["activity"],
+  summary: "Export agent action audit entries as JSONL",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    query: z.object({
+      agentId: z.string().guid().optional(),
+      responsibleUserId: z.string().min(1).optional(),
+      runId: z.string().guid().optional(),
+      entityType: z.string().min(1).optional(),
+      entityId: z.string().min(1).optional(),
+      action: z.string().min(1).optional(),
+      actorType: z.enum(["agent", "user", "system", "plugin"]).optional(),
+      from: z.string().datetime().optional(),
+      to: z.string().datetime().optional(),
+      cursor: z.string().min(1).optional(),
+      limit: z.coerce.number().int().min(1).max(200).optional(),
+    }),
+  },
+  responses: {
+    200: {
+      description: "Agent action audit export, one JSON object per line",
+      content: { "application/x-ndjson": { schema: z.string() } },
     },
     400: r.badRequest,
     401: r.unauthorized,
@@ -7646,6 +7686,23 @@ registry.registerPath({
     }),
   },
   responses: { 200: r.ok(), 401: r.unauthorized, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/skills/discover",
+  tags: ["skills"],
+  summary: "Discover agentskills.io skills from a site",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    body: jsonBody(companySkillDiscoverSchema),
+  },
+  responses: {
+    200: r.ok(companySkillDiscoverResultSchema),
+    400: r.badRequest,
+    401: r.unauthorized,
+    422: r.unprocessable,
+  },
 });
 
 registry.registerPath({

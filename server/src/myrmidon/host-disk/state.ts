@@ -24,6 +24,31 @@ export interface HostDiskSweepResult {
   consumers: HostDiskConsumerEntry[];
   signalled: boolean;
   error: string | null;
+  /**
+   * myrmidon(1.6.5 F-03): the measurement state. `measured` — the data root
+   * exists and `statfs` answered; `unmeasured` — the path is missing or
+   * unreadable, so every numeric field above is null and `error` carries the
+   * reason an operator can act on. A state string lets an operator check
+   * (`post-boot-check.sh`, the API reader) tell "never measured yet"
+   * (result absent) from "tried and failed" (result present, unmeasured).
+   */
+  state: "measured" | "unmeasured";
+  /**
+   * myrmidon(1.6.5 F-03): per-path usage for every measured path (the data
+   * root plus each consumer path whose statfs answered). The data root stays
+   * the main result in the flat fields above; this list is how a consumer
+   * that lives on a DIFFERENT filesystem than the data root becomes visible
+   * in the API instead of only in the threshold signal.
+   */
+  measurements: HostDiskPathMeasurement[];
+}
+
+export interface HostDiskPathMeasurement {
+  path: string;
+  usedPercent: number;
+  usedBytes: number;
+  totalBytes: number;
+  freeBytes: number;
 }
 
 export class HostDiskSampleRing {

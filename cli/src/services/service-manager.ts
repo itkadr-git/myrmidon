@@ -5,6 +5,7 @@ import path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { resolvePaperclipHomeDir, resolvePaperclipInstanceId } from "../config/home.js";
+import { readProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
 
 const execFileAsync = promisify(execFile);
 
@@ -74,7 +75,7 @@ function escapeRegExp(value: string): string {
 }
 
 export function resolveServiceShimPath(homeDir = os.homedir()): string {
-  return process.env.PAPERCLIP_SHIM_PATH?.trim() || path.join(homeDir, ".local", "bin", "paperclipai");
+  return readProductEnv("SHIM_PATH")?.trim() || path.join(homeDir, ".local", "bin", "paperclipai");
 }
 
 // The installed definition, not the current environment, is the truth
@@ -360,7 +361,7 @@ export async function detectServiceManager(input: { instanceId?: string; platfor
 }
 
 export async function assertForegroundRunAllowed(instanceId: string, force = false, detector: typeof detectServiceManager = detectServiceManager): Promise<void> {
-  if (force || process.env.PAPERCLIP_SERVICE_MANAGED === "1") return;
+  if (force || readProductEnv("SERVICE_MANAGED") === "1") return;
   const detection = await detector({ instanceId });
   if (!detection.supported) return;
   const status = await detection.manager.status();

@@ -20,7 +20,10 @@ settings file of an installation lives in a private deploy repository and never 
 - the Myrmidon server runs under docker compose, and the service image is set in a separate
   override file (`COMPOSE_OVERRIDE_FILE`). The script changes only the `image:` line in it;
 - a database dump command (`DUMP_COMMAND`) and, for a rollback with a restore, a restore
-  command (`RESTORE_COMMAND`). Both get the path in the `DUMP_FILE` variable;
+  command (`RESTORE_COMMAND`). Both get the path in the `DUMP_FILE` variable. The board
+  database is pure configuration: either the built-in `db` compose service or a database
+  on a shared PostgreSQL server (`pg_dump`/`pg_restore` by `DATABASE_URL` — see the two
+  profiles in `deploy.env.example`); the scripts hold no container name of their own;
 - in `authenticated` mode, anonymous `/api/health` shows the commit but not the version. A
   board key in a file with mode `0600` at `HEALTH_TOKEN_FILE` is **required**: without it the
   version check at step 7 fails and the deploy counts as failed (by design — the version is
@@ -170,10 +173,29 @@ scripts/myrmidon/deploy/deploy.sh --config deploy.env --release myr-v1.6.2
   **paused or idle**; a busy bot is retried within `MYRMIDON_BOT_IMAGE_ROLLOUT_BOT_TIMEOUT_SEC`
   and otherwise keeps its old image (the periodic sweep applies it later), so no run is
   interrupted. Every batch and failure is logged and journalled
-  (`$STATE_DIR/bot-image-rollout.log`), with a summary in
-  `$STATE_DIR/bot-image-rollout-summary.json`. The superseded bot images leave `images[]`
-  only after every bot moved. Bot-card failures end the deploy as DEGRADED. There is no board
-  setting for a default bot image to update.
+ (`$STATE_DIR/bot-image-rollout.log`), with a summary in
+ `$STATE_DIR/bot-image-rollout-summary.json`. Applying an image is asynchronous: a bot that
+ accepts the apply answers 202 with an `applyId`, and the script polls
+ `GET /api/myrmidon/bot-container/apply/:applyId` every
+ `MYRMIDON_BOT_IMAGE_ROLLOUT_APPLY_POLL_SEC` (default 4 s) until the job reports
+ `succeeded` or `failed`, for at most `MYRMIDON_BOT_IMAGE_ROLLOUT_APPLY_WAIT_SEC` (default
+ 300 s). A success is then confirmed with `GET /api/myrmidon/bot-container/status`; a
+ timeout counts the bot as deferred instead of applied, and the plain synchronous apply
+ response is still accepted. The success confirm reads `GET /api/myrmidon/bot-container/status`. When the switch loop ends, the rollout verifies the FACT for
+ every tracking bot: the card's image (`adapterConfig.container.image`) against the running
+ container's image
+ (`GET /api/myrmidon/agents/:id/bot-container/status`, the same board API the script
+ already uses), and prints a per-bot table of
+ `switched | deferred | mismatch | failed` (a deferred row carries its reason). The
+ verdict follows the fact, not the apply answers: a `mismatch` or a `failed` bot ends the
+ deploy as DEGRADED (exit 1); bots that are only deferred exit 0 with a WARNING and the
+ printed command of the standard
+ re-run pass — `--retry-deferred [--wait-sec N]` (default `N=30`, from
+ `MYRMIDON_BOT_IMAGE_ROLLOUT_RETRY_WAIT_SEC`). The re-run reads the deferred list from the
+ previous rollout's summary (a missing summary fails closed with exit 1, never a silent
+ empty retry), waits `N` seconds per bot, re-switches only those bots and verifies again;
+ no pass ever interrupts a running bot. The superseded bot images leave `images[]`
+ only after every bot moved. There is no board setting for a default bot image to update.
 
 ### Release candidates and the `latest` marker (RC-VERSIONS)
 
@@ -559,6 +581,18 @@ ORDER BY total_exec_time DESC LIMIT 20;"
 A reset of the counters between the two samples makes the comparison clean:
 `SELECT pg_stat_statements_reset();` (same `exec -T db psql -c` shape, run by the operator).
 
+## nginx proxy buffers in front of the board (NGINX-PROXY-BUFFERS)
+
+The production reverse proxy lives outside this repository, but its sizing is
+board-relevant: agent wakes embed the issue list, and answers of 64 KB+ overflow
+nginx's default proxy buffers (the upstream response gets buffered to disk).
+[`scripts/myrmidon/deploy/nginx-proxy-buffers.conf.example`](../../scripts/myrmidon/deploy/nginx-proxy-buffers.conf.example)
+carries the server-block fragment (`proxy_buffer_size 64k`, `proxy_buffers 16 64k`,
+`proxy_busy_buffers_size 128k`) for the `location /` block that proxies to the board
+service; the agent list defaults (compact projection, limit 200 by default and 500 at most, no description; switch `issuesListAgentDefaults`) keep
+the typical wake answer <= 500 KB, the buffers absorb the larger explicit requests.
+Apply with `nginx -t && nginx -s reload`.
+
 ## One boot path (systemd unit)
 
 The board container must be started at boot from **the same compose files the
@@ -677,6 +711,45 @@ scripts/myrmidon/deploy/rollback.sh --config /path/to/deploy.env --to sha256:<ol
 
 The script asks to type `RESTORE` (or takes `--yes-restore-database`), stops the server
 service, runs `RESTORE_COMMAND`, then brings the old image up.
+
+## Multi-process mode (BOARD-PROCESSES)
+
+> Russian version of this section: [deploy.ru.md](deploy.ru.md#многопроцессный-режим-board-processes)
+
+The board can run as more than one Node process inside the same container. This is
+delivered in stages; the default `single` mode — one process that does everything — is
+unchanged and stays the current behavior until an operator deliberately turns the split
+on.
+
+**Two roles, one container.** In `split` mode there is one **worker** process (the
+scheduler, the run executor, the bots, the plugins, the chat reconciliation — all the
+background timers) and N **api** processes (HTTP / WebSocket / MCP on `:3100`). The
+worker is also the parent and supervisor of the api children. Communication between
+processes goes only through Postgres: table rows plus `LISTEN/NOTIFY`. There is no Redis,
+no IPC protocol, no second container.
+
+**Turning the split on.** The switch lives in the interface, not in the environment:
+Instance settings → **«Процессы»** (writes `instance_settings.general.processes`). Set
+`mode` to `split` and choose `apiCount`. The change applies **without a restart**: the
+worker forks the api children, and once they report ready it closes its own `:3100`
+listener (`server.close()` + `closeIdleConnections()`, WebSocket clients get a `1012`
+close and reconnect to the children within 1–16 s). There is no downtime — the port is
+listened on by someone the whole time.
+
+**Rollback to one process.** Set `mode` back to `single` in the same settings screen.
+The worker opens `:3100` itself (`reusePort` lets it do so while children are still
+alive) and then drains the children one by one. The switch back takes seconds and does
+**not** restart the container. If a settings change itself caused trouble and you need a
+"start as before" path, the environment override `PAPERCLIP_PROCESS_MODE=single` is read
+before the database and forces the single-process mode on boot.
+
+**How many api processes.** Recommended starting point on a 4-core container: **worker
+1 + api 2** (three processes ≈ three cores at peak, one core left for GC, plugin workers
+and `pg_dump`). The practical ceiling for `apiCount` is **3**: more api processes only add
+parallel load to Postgres, which is the next bottleneck. Raise `apiCount` by one only
+when the process metrics show `event_loop_utilization` of the api processes staying above
+0.6 **and** Postgres CPU staying below 300 %. If it is the worker's ELU that is high,
+that is the run-supervision / background work — more api processes will not help.
 
 ### Откат на локальный образ (ROLLBACK-LOCAL)
 

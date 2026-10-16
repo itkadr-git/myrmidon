@@ -218,6 +218,7 @@ function compareIssueCoreFields(source: IssueRow, target: IssueRow): string[] {
   if ((source.description ?? null) !== (target.description ?? null)) driftKeys.push("description");
   if (source.status !== target.status) driftKeys.push("status");
   if (source.priority !== target.priority) driftKeys.push("priority");
+  if ((source.pheromoneStrength ?? 0) !== (target.pheromoneStrength ?? 0)) driftKeys.push("pheromoneStrength");
   if ((source.parentId ?? null) !== (target.parentId ?? null)) driftKeys.push("parentId");
   if ((source.projectId ?? null) !== (target.projectId ?? null)) driftKeys.push("projectId");
   if ((source.projectWorkspaceId ?? null) !== (target.projectWorkspaceId ?? null)) driftKeys.push("projectWorkspaceId");
