@@ -468,13 +468,13 @@ describe("archiveTree: bounded like the fallback tar", () => {
 
   it("a tree under the limit is archived and verified (control)", () => {
     const { dir, archiveRoot } = makeTree("tree-ok", 10_000);
-    const r = archiveTree(dir, "legacy-ok", { archiveRoot, fullTarCapBytes: 20_000, minFreeBytes: 0 });
-    assert.equal(r.ok, true, r.reason);
-    assert.ok(fs.existsSync(r.entry.dirTar));
-    // ARCHIVE-MODE: the dir.tar is born group-readable, never world-readable,
-    // even when the process umask is permissive.
+    // Reproduce botd's production umask before the tar is created. Without
+    // archiveTree's mode window the resulting dir.tar would be 0644.
     const previous = process.umask(0o022);
     try {
+      const r = archiveTree(dir, "legacy-ok", { archiveRoot, fullTarCapBytes: 20_000, minFreeBytes: 0 });
+      assert.equal(r.ok, true, r.reason);
+      assert.ok(fs.existsSync(r.entry.dirTar));
       assert.equal(fs.statSync(r.entry.dirTar).mode & 0o777, 0o640);
     } finally {
       process.umask(previous);
