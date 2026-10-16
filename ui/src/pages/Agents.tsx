@@ -425,7 +425,7 @@ export function Agents({ initialView = "list" }: { initialView?: AgentsView } = 
     return <PageSkeleton variant="list" />;
   }
 
-  const scopedAgents = filterAgentsByScope(agents ?? [], scope, selectedProject?.leadAgentId ?? null);
+  const scopedAgents = filterAgentsByScope(agents ?? [], scope, activeProjects);
   const scopedAgentIds = new Set(scopedAgents.map((agent) => agent.id));
   const filtered = filterAgents(scopedAgents, tab, builtInAgentIds)
     .filter((agent) => roleFilter === "all" || agent.role === roleFilter)

@@ -314,7 +314,7 @@ describe("Agents scope filters", () => {
 
   it("preserves the whole roster for company scope", () => {
     const roster = [makeAgent({ id: "a1" }), makeAgent({ id: "a2" })];
-    expect(filterAgentsByScope(roster, { type: "company" }, null)).toEqual(roster);
+    expect(filterAgentsByScope(roster, { type: "company" }, [])).toEqual(roster);
   });
 });
 
