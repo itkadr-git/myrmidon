@@ -73,6 +73,7 @@ describe("myrmidon(1.6.1 SWARM-IDLE-WAKE) sweep pass", () => {
       update: vi.fn(async () => [{ id: "released-issue" }]),
     };
     let whereLimitCalls = 0;
+    let whereCalls = 0;
     const queryResult = <T>(rows: T[] = []) => ({
       limit: (limit: number) => Promise.resolve(rows.slice(0, limit)),
       then: (resolve: (value: T[]) => unknown, reject?: (reason: unknown) => unknown) =>
@@ -114,18 +115,24 @@ describe("myrmidon(1.6.1 SWARM-IDLE-WAKE) sweep pass", () => {
               }),
             }),
           }),
-          where: () => ({
-            orderBy: () => ({ limit: empty }),
-            groupBy: empty,
-            limit: (limit: number) => {
-              whereLimitCalls += 1;
-              const rows = whereLimitCalls === 1
-                ? [{ id: "released-issue", status: "todo", assigneeAgentId: null }]
-                : [{ agentId: "idle-agent" }];
-              return Promise.resolve(rows.slice(0, limit));
-            },
-            then: (resolve: (rows: unknown[]) => unknown) => Promise.resolve([]).then(resolve),
-          }),
+          where: () => {
+            whereCalls += 1;
+            const queryNumber = whereCalls;
+            return {
+              orderBy: () => ({ limit: empty }),
+              groupBy: empty,
+              limit: (limit: number) => {
+                whereLimitCalls += 1;
+                // Readiness re-checks and active-lease counts are both bounded
+                // reads; distinguish them by the originating query, not call order.
+                const rows = queryNumber === 1
+                  ? [{ id: "released-issue", status: "todo", assigneeAgentId: null }]
+                  : [];
+                return Promise.resolve(rows.slice(0, limit));
+              },
+              then: (resolve: (rows: unknown[]) => unknown) => Promise.resolve([]).then(resolve),
+            };
+          },
           for: () => queryResult([{ status: "todo", assigneeAgentId: null }]),
         }),
       }),
