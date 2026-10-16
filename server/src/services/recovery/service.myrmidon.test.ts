@@ -83,19 +83,10 @@ describeEmbeddedPostgres("reconcileStrandedAssignedIssues: infrastructure interr
       createdAt: new Date(now.getTime() - 60 * 60 * 1000),
     });
     if (input.blockerIssueId) {
-      await db.insert(issues).values({
-        id: input.blockerIssueId,
-        companyId,
-        title: "Unresolved prerequisite",
-        status: "in_progress",
-        priority: "medium",
-        createdAt: now,
-        updatedAt: now,
-      });
       await db.insert(issueRelations).values({
         companyId,
-        issueId: input.blockerIssueId,
-        relatedIssueId: issueId,
+        issueId,
+        relatedIssueId: input.blockerIssueId,
         type: "blocks",
       });
     }
@@ -167,13 +158,11 @@ describeEmbeddedPostgres("reconcileStrandedAssignedIssues: infrastructure interr
   }, 30_000);
 
   it("keeps real unresolved blockers on blocked issues during reroute", async () => {
-    const companyId = randomUUID();
-    const blockerId = randomUUID();
-    const { issueId } = await seedStrandedIssue({
+    const { companyId, issueId } = await seedStrandedIssue({
       errorCode: "agent_paused",
       scheduledRetryAttempt: 0,
-      blockerIssueId: blockerId,
     });
+    const blockerId = randomUUID();
     const now = new Date();
     await db.insert(issues).values({
       id: blockerId,
@@ -183,6 +172,12 @@ describeEmbeddedPostgres("reconcileStrandedAssignedIssues: infrastructure interr
       priority: "medium",
       createdAt: now,
       updatedAt: now,
+    });
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId,
+      relatedIssueId: blockerId,
+      type: "blocks",
     });
 
     await heartbeatService(db).reconcileStrandedAssignedIssues();
