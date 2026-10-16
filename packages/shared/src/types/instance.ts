@@ -48,6 +48,8 @@ import type { BudgetEnforcementSettings } from "../myrmidon-budget-enforcement.j
 // myrmidon(1.7-AGENT-EXCHANGE-A): the discussion-room settings stored in the
 // same general settings row.
 import type { AgentExchangeSettings } from "../myrmidon-agent-exchange.js";
+// myrmidon(1.7-AGENT-EXCHANGE-B): owner-facing exchange feed settings.
+import type { AgentExchangeFeedSettings } from "../myrmidon-agent-exchange-feed.js";
 // myrmidon(PLUGIN-ENTITLEMENT C): accepted plugin entitlement keys live in
 // the same general settings row.
 import type { PluginEntitlementKey } from "../myrmidon-plugin-entitlement.js";
@@ -409,6 +411,8 @@ export interface InstanceGeneralSettings {
    * and with the reader in packages/shared/src/myrmidon-foraging-pass-journal.ts.
    */
   foragingPassJournal?: unknown[];
+  /** myrmidon(1.7-AGENT-EXCHANGE-B): owner feed configuration. */
+  agentExchangeFeed?: AgentExchangeFeedSettings;
   /**
    * myrmidon(PLUGIN-ENTITLEMENT C): accepted plugin entitlement keys, managed
    * from the instance settings page. Absent means "no keys registered". Kept
