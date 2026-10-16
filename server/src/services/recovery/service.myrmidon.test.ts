@@ -185,18 +185,15 @@ describeEmbeddedPostgres("reconcileStrandedAssignedIssues: infrastructure interr
       scheduledRetryAttempt: 0,
       createdAtOffsetMs: 0,
       scheduledRetryReason: "Recovery retry budget was exhausted",
-      blockerIssueId: blockerId,
     });
-    await db.update(issues).set({ status: "in_progress" }).where(eq(issues.id, issueId));
-    const now = new Date();
     await db.insert(issues).values({
       id: blockerId,
       companyId,
       title: "Unresolved prerequisite",
       status: "in_progress",
       priority: "medium",
-      createdAt: now,
-      updatedAt: now,
+      createdAt: new Date(),
+      updatedAt: new Date(),
     });
     await db.insert(issueRelations).values({
       companyId,
