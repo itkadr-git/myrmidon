@@ -2578,7 +2578,7 @@ export function recoveryService(
       .where(and(eq(issues.id, input.issue.id), eq(issues.companyId, input.issue.companyId)))
       .limit(1);
     if (!existingIssue || existingIssue.status === "done" || existingIssue.status === "cancelled") return false;
-    const blockers = await existingUnresolvedBlockerIssues(input.issue.companyId, input.issue.id);
+    const blockers = await existingUnresolvedBlockerIssues(input.issue.companyId, existingIssue.id);
     const blockedByIssueIds = blockers.map((blocker) => blocker.id);
     if (blockedByIssueIds.length > 0) {
       await issuesSvc.update(existingIssue.id, {
