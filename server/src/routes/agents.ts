@@ -7063,6 +7063,45 @@ export function agentRoutes(
     res.json(await runRedactions.redactForRuns(companyId, runs));
   });
 
+  router.get("/companies/:companyId/external-sessions", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    if (!(await assertRunTelemetryReadAllowed(req, res, companyId))) return;
+    const agentId = typeof req.query.agentId === "string" ? req.query.agentId : undefined;
+    const issueId = typeof req.query.issueId === "string" ? req.query.issueId : undefined;
+    const limitParam = Number(req.query.limit ?? 100);
+    const limit = Number.isFinite(limitParam) ? Math.max(1, Math.min(200, Math.trunc(limitParam))) : 100;
+    const rows = await db.select({
+      id: heartbeatRuns.id,
+      agentId: heartbeatRuns.agentId,
+      status: heartbeatRuns.status,
+      startedAt: heartbeatRuns.startedAt,
+      finishedAt: heartbeatRuns.finishedAt,
+      createdAt: heartbeatRuns.createdAt,
+      logBytes: heartbeatRuns.logBytes,
+      exitCode: heartbeatRuns.exitCode,
+      errorCode: heartbeatRuns.errorCode,
+      externalSession: sql<Record<string, unknown> | null>`coalesce(${heartbeatRuns.contextSnapshot}->'externalSession', '{}'::jsonb)`.as("externalSession"),
+      issueId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'issueId'`.as("issueId"),
+    }).from(heartbeatRuns).where(and(
+      eq(heartbeatRuns.companyId, companyId),
+      sql`${heartbeatRuns.contextSnapshot} ? 'externalSession'`,
+      ...(agentId ? [eq(heartbeatRuns.agentId, agentId)] : []),
+      ...(issueId ? [sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`] : []),
+    )).orderBy(desc(heartbeatRuns.createdAt)).limit(limit);
+    res.set("Cache-Control", "no-cache, no-store");
+    res.json(await runRedactions.redactForRuns(companyId, await Promise.all(rows.map(async (row) => {
+      const decorated = await heartbeat.decorateActiveRunStatus(row);
+      return {
+        ...row,
+        externalSession: await runRedactions.redactForRun(companyId, row.id, row.externalSession),
+        status: decorated.status,
+        logUrl: `/api/heartbeat-runs/${row.id}/log`,
+        cancelUrl: ["queued", "running"].includes(decorated.status) ? `/api/heartbeat-runs/${row.id}/cancel` : null,
+      };
+    }))));
+  });
+
   router.get("/companies/:companyId/provider-traces", async (req, res) => {
     assertInstanceAdmin(req);
     const companyId = req.params.companyId as string;
