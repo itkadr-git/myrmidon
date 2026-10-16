@@ -2596,12 +2596,20 @@ export function recoveryService(
       rerouteToSharedQueue: true,
     });
     if (!action) return false;
-    const issue = await issuesSvc.update(existingIssue.id, {
-      status: "todo",
-      assigneeAgentId: targetAssigneeId,
-      blockedByIssueIds: [],
-    });
-    if (!issue) return false;
+    if (targetAssigneeId && existingIssue.assigneeAgentId === targetAssigneeId) {
+      const updatedIssue = await issuesSvc.update(existingIssue.id, {
+        status: "todo",
+        assigneeAgentId: null,
+        blockedByIssueIds: [],
+      });
+      await issuesSvc.update(updatedIssue.id, { assigneeAgentId: targetAssigneeId });
+    } else {
+      await issuesSvc.update(existingIssue.id, {
+        status: "todo",
+        assigneeAgentId: targetAssigneeId,
+        blockedByIssueIds: [],
+      });
+    }
     return true;
   }
 
