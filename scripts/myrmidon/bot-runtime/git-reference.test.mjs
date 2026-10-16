@@ -865,6 +865,15 @@ module.exports = { parseCloneArgs };
     assert.ok(!JSON.stringify(r.ws).includes("filter") && !JSON.stringify(r.ws).includes("depth"));
   });
 
+  it("routes clone targets under /workspace/<issue>/ to that issue, without sharing the scratch slot", () => {
+    const first = run(["clone", "https://github.com/acme/widgets", "/workspace/OPE-1/repo"]);
+    const second = run(["clone", "https://github.com/acme/widgets", "/workspace/OPE-2/repo"]);
+    assert.deepEqual(first.ws, [["open", "OPE-1", "acme/widgets"]]);
+    assert.deepEqual(second.ws, [["open", "OPE-2", "acme/widgets"]]);
+    assert.deepEqual(first.realGit, []);
+    assert.deepEqual(second.realGit, []);
+  });
+
   it("uses --scratch <dir name> without a task workspace, or with one that is no issue key", () => {
     const a = run(["clone", "https://github.com/acme/widgets", "/tmp/probe-1"]);
     assert.deepEqual(a.ws, [["open", "--scratch", "probe-1", "acme/widgets"]]);

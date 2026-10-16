@@ -1103,11 +1103,9 @@ export function listServerAdapters(): ServerAdapterModule[] {
  * functional for existing agents but hidden from selection.
  */
 export function listEnabledServerAdapters(): ServerAdapterModule[] {
-  const disabled = getDisabledAdapterTypesFromStore();
-  const disabledSet = disabled.length > 0 ? new Set(disabled) : null;
-  return disabledSet
-    ? Array.from(adaptersByType.values()).filter((a) => !disabledSet.has(a.type))
-    : Array.from(adaptersByType.values());
+  const disabled = new Set(getDisabledAdapterTypesFromStore());
+  if (process.env.MYRMIDON_DISABLE_HERMES_LOCAL === "1") disabled.add("hermes_local");
+  return Array.from(adaptersByType.values()).filter((adapter) => !disabled.has(adapter.type));
 }
 
 export async function detectAdapterModel(
