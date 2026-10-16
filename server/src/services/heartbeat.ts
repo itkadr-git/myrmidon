@@ -29841,27 +29841,19 @@ export function heartbeatService(
                 harnessKind: issue.harnessKind,
                 executionWorkspacePreference: issue.executionWorkspacePreference,
               })) {
-                const now = new Date();
-                await tx.update(issues).set({
+                const requeued = await issuesSvc.update(issue.id, {
                   status: "todo",
                   assigneeAgentId: null,
+                  assigneeUserId: null,
                   checkoutRunId: null,
                   executionRunId: null,
                   executionAgentNameKey: null,
                   executionLockedAt: null,
-                  updatedAt: now,
-                }).where(eq(issues.id, issue.id));
-                await logActivity(tx as unknown as Db, {
-                  companyId: issue.companyId,
-                  actorType: "system",
-                  actorId: "system",
-                  agentId,
-                  runId: null,
-                  action: "issue.engineer_workspace_requeued",
-                  entityType: "issue",
-                  entityId: issue.id,
-                  details: { reason: WORKSPACE_WORKTREE_REQUIRES_PROJECT_CODE },
-                });
+                  actorAgentId: null,
+                  actorUserId: null,
+                  companyGuard: issue.companyId,
+                }, tx, activityPublications);
+                if (!requeued) throw new Error("Engineer workspace recovery could not update the issue");
                 return { kind: "skipped" as const };
               }
               const now = new Date();
