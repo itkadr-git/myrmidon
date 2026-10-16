@@ -67,6 +67,11 @@ instance admin) и `POST`/`DELETE /api/myrmidon/auto-update/approvals[/:tag]` �
 
 The instance update policy is configured in Instance → General and read on each deploy tick: maintenance window, manual or approved-release automation, and fleet canary thresholds. Values show their source (stored settings, forced environment override, or default); changes apply without a restart. See [the operator guide](guides/auto-update-window-canary.md).
 
+| `MYRMIDON_DEPLOY_UPDATE_MODE`, `MYRMIDON_DEPLOY_UPDATE_WINDOW_DAYS`, `MYRMIDON_DEPLOY_UPDATE_WINDOW_FROM`, `MYRMIDON_DEPLOY_UPDATE_WINDOW_TO`, `MYRMIDON_DEPLOY_UPDATE_CANARY`, `MYRMIDON_DEPLOY_UPDATE_CANARY_SHARE`, `MYRMIDON_DEPLOY_UPDATE_CANARY_MIN_BOTS`, `MYRMIDON_DEPLOY_UPDATE_CANARY_MAX_BOTS`, `MYRMIDON_DEPLOY_UPDATE_CANARY_SETTLE_SEC` | 1.7-AUTO-UPDATE-B | unset (use instance setting/default) | Forced overrides for the auto-update policy. Window days are UTC weekday numbers; times use `HH:MM`; canary values control enablement, batch share, minimum/maximum bots and health-settle seconds | Unset — the saved instance policy/default applies. Invalid values are ignored and the UI reports the source of each effective value |
+
+| `MYRMIDON_DEPLOY_WINDOW_WAIT_TIMEOUT_SEC` | 1.7-AUTO-UPDATE-B | `604800` | Maximum seconds a verified deploy waits for its maintenance window | From 60 to 2592000; outside that range the default applies |
+| `MYRMIDON_DEPLOY_CANARY_TIMEOUT_SEC` | 1.7-AUTO-UPDATE-B | `3600` | Maximum seconds spent in fleet-canary observation and rollout | From 60 to 86400; outside that range the default applies |
+
 ## settings-ru-new
 
 <!-- after: Трек 6 — безопасность и модели -->
@@ -74,6 +79,11 @@ The instance update policy is configured in Instance → General and read on eac
 ### 1.7 — AUTO-UPDATE-SETTINGS B (окно обновления, режим, канарейка парка)
 
 Политика обновления экземпляра настраивается в Instance → General и читается при каждом тике выката: окно обслуживания, ручной режим или автостарт одобренного релиза, параметры канарейки парка. У каждого значения показан источник (сохранённая настройка, принудительное переопределение окружением или умолчание); изменения действуют без перезапуска. См. [руководство оператора](guides/auto-update-window-canary.ru.md).
+
+| `MYRMIDON_DEPLOY_UPDATE_MODE`, `MYRMIDON_DEPLOY_UPDATE_WINDOW_DAYS`, `MYRMIDON_DEPLOY_UPDATE_WINDOW_FROM`, `MYRMIDON_DEPLOY_UPDATE_WINDOW_TO`, `MYRMIDON_DEPLOY_UPDATE_CANARY`, `MYRMIDON_DEPLOY_UPDATE_CANARY_SHARE`, `MYRMIDON_DEPLOY_UPDATE_CANARY_MIN_BOTS`, `MYRMIDON_DEPLOY_UPDATE_CANARY_MAX_BOTS`, `MYRMIDON_DEPLOY_UPDATE_CANARY_SETTLE_SEC` | 1.7-AUTO-UPDATE-B | не заданы (настройка экземпляра/умолчание) | Принудительные переопределения политики автообновления. Дни окна — номера дней недели UTC; время — `HH:MM`; параметры канарейки задают включение, долю, минимум/максимум ботов и секунды наблюдения | Не заданы — действует сохранённая политика экземпляра/умолчание. Некорректные значения игнорируются; интерфейс показывает источник каждого эффективного значения |
+
+| `MYRMIDON_DEPLOY_WINDOW_WAIT_TIMEOUT_SEC` | 1.7-AUTO-UPDATE-B | `604800` | Максимум секунд, сколько проверенный выкат ждёт окно обслуживания | От 60 до 2592000; вне диапазона применяется умолчание |
+| `MYRMIDON_DEPLOY_CANARY_TIMEOUT_SEC` | 1.7-AUTO-UPDATE-B | `3600` | Максимум секунд фазы наблюдения/выката канарейки парка | От 60 до 86400; вне диапазона применяется умолчание |
 
 ## settings-en
 

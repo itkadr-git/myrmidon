@@ -408,7 +408,7 @@ describe("auto-update: the fleet canary (B-2)", () => {
     await h.service.tick();
 
     const after = (await h.service.current()).job;
-    expect(after?.status).toBe("succeeded");
+    expect(after?.status).toBe("canary_failed");
     expect(after?.steps[after.steps.length - 1]?.detail).toContain("no fleet canary on this instance");
   });
 });
