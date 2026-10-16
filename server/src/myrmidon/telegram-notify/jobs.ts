@@ -1,12 +1,8 @@
 // server/src/myrmidon/telegram-notify/jobs.ts
 //
-// myrmidon(1.6.1-TG-NOTIFY-B): the periodic digest and escalation jobs of the
-// Telegram notify track. Both jobs read the owner settings through the
-// contract of part A (the `telegramNotify` area of instance settings); part A
-// is not merged yet, so this module never reads the vendor instance-settings
-// row itself: the runtime-changeable settings arrive through the injected
-// `readSettings` port, and until part A merges the default wiring returns the
-// fixed all-off defaults. Nothing is sent unless `digest.enabled` /
+// myrmidon(TG-NOTIFY-B): the periodic digest and escalation jobs of the
+// Telegram notify track. Settings are read from the company-scoped persisted
+// contract on every pass; until explicitly enabled, both jobs stay off.
 // `escalations.enabled` is explicitly true — the release criterion: with the
 // defaults the owner receives only replies to his own messages and U2
 // decision cards.
@@ -79,8 +75,7 @@ export interface TelegramNotifyJobPorts {
     idempotencyKey: string;
     text: string;
   }): Promise<{ inserted: boolean }>;
-  /** The settings contract of part A. Until part A merges, the default
-   *  wiring returns the fixed all-off document (nothing is ever sent). */
+  /** The company-scoped settings document, re-read every pass. */
   readSettings(companyId: string): Promise<TelegramNotifySettings>;
   /** Owner settings are runtime-changeable; the digest job consults them on
    *  every pass rather than at startup. */
@@ -477,11 +472,10 @@ export function telegramNotifyJobPorts(db: Db): TelegramNotifyJobPorts {
         .returning({ id: (await import("@myrmidon/db")).chatPublications.id });
       return { inserted: rows.length > 0 };
     },
-    // Part A is not merged: the settings contract answers the fixed
-    // all-off document, so both jobs stay off. Part A replaces this port.
-    async readSettings() {
-      const { defaultTelegramNotifySettings } = await import("./settings.js");
-      return defaultTelegramNotifySettings();
+    async readSettings(companyId) {
+      const { readTelegramNotifySettingsDocument } = await import("./settings-store.js");
+      const document = await readTelegramNotifySettingsDocument(db, companyId);
+      return document.settings;
     },
     now: () => new Date(),
     log: logger,

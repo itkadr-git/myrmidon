@@ -73,7 +73,8 @@ export async function readTelegramNotifySettingsDocument(db: Runner, companyId: 
     .from(instanceSettings)
     .where(eq(instanceSettings.singletonKey, SINGLETON_KEY))
     .then((rows) => rows[0] ?? null);
-  return companyDocuments(row?.general?.[TELEGRAM_NOTIFY_GENERAL_KEY])[companyId] ?? emptyTelegramNotifyDocument();
+  const documents = companyDocuments(row?.general?.[TELEGRAM_NOTIFY_GENERAL_KEY]);
+  return documents[companyId] ?? emptyTelegramNotifyDocument();
 }
 
 /**
