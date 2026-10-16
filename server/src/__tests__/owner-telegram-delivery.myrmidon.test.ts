@@ -296,6 +296,7 @@ describeEmbeddedPostgres(
         text?: string;
         interaction?: { id?: string; card?: { actions?: unknown[] } };
       };
+      expect(payload.text).toContain("Owner question about the release");
       expect(payload.text).toContain("Choose a deploy window");
       expect(payload.text).toContain("Which deploy window?");
       expect(payload.text).toContain("Choose one and include any timing constraints.");
@@ -303,7 +304,6 @@ describeEmbeddedPostgres(
       expect(payload.text).toContain("2. Evening — After work");
       expect(payload.text).toContain("Ответьте сообщением: номером варианта или своими словами.");
       expect(payload.text).toContain("https://paperclip.local");
-      expect(payload.interaction?.id).toBe(interaction.id);
       expect(payload.interaction).toBeUndefined();
       expect(payload.text).not.toContain("chat_action");
       const [boundConversation] = await db

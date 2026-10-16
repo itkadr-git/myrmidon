@@ -22,13 +22,17 @@ export function telegramOwnerQuestionText(
   taskUrl: string | null,
 ): string {
   const questionSet = interaction.payload.questionSet;
+  const issueTitle = interaction.title?.trim();
   const lines = [
     questionSet?.title?.trim() ||
       interaction.payload.title?.trim() ||
-      interaction.title?.trim() ||
+      issueTitle ||
       "Нужен ответ",
     "",
   ];
+  if (issueTitle && issueTitle !== lines[0]) {
+    lines.push(issueTitle, "");
+  }
   if (questionSet?.description?.trim()) lines.push(questionSet.description.trim(), "");
   if (questionSet) {
     for (const question of questionSet.questions) {
