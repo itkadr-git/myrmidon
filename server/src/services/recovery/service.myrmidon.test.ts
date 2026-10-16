@@ -45,6 +45,7 @@ describeEmbeddedPostgres("reconcileStrandedAssignedIssues: infrastructure interr
     // positive path; pass a non-conversation adapter (or null) to exercise
     // the gate that keeps the vendor's escalation in place for those.
     adapterType?: string | null;
+    runtimeMode?: "native" | "conversation";
     // myrmidon(L1): the run's persisted resultJson, e.g. an
     // executionCancellation state the provider stop left behind.
     resultJson?: Record<string, unknown> | null;
@@ -96,6 +97,7 @@ describeEmbeddedPostgres("reconcileStrandedAssignedIssues: infrastructure interr
       id: runId,
       companyId,
       agentId,
+      runtimeMode: input.runtimeMode ?? (claimedAdapterType === null ? "native" : "conversation"),
       status: "cancelled",
       contextSnapshot: { issueId, ...input.contextSnapshotExtra },
       errorCode: input.errorCode,
@@ -145,6 +147,7 @@ describeEmbeddedPostgres("reconcileStrandedAssignedIssues: infrastructure interr
   it("returns stranded work to the shared unassigned engineer queue", async () => {
     const { issueId } = await seedStrandedIssue({
       errorCode: "adapter_failed",
+      runtimeMode: "native",
       scheduledRetryAttempt: 0,
       createdAtOffsetMs: 0,
       contextSnapshotExtra: { retryReason: "issue_continuation_needed" },
@@ -162,6 +165,7 @@ describeEmbeddedPostgres("reconcileStrandedAssignedIssues: infrastructure interr
     const blockerId = randomUUID();
     const { companyId, issueId } = await seedStrandedIssue({
       errorCode: "adapter_failed",
+      runtimeMode: "native",
       scheduledRetryAttempt: 0,
       createdAtOffsetMs: 0,
       scheduledRetryReason: "Recovery retry budget was exhausted",
@@ -191,6 +195,7 @@ describeEmbeddedPostgres("reconcileStrandedAssignedIssues: infrastructure interr
   it("returns an assigned terminal reroute to todo and wakes the same engineer", async () => {
     const { companyId, agentId, issueId } = await seedStrandedIssue({
       errorCode: "adapter_failed",
+      runtimeMode: "native",
       scheduledRetryAttempt: 0,
       createdAtOffsetMs: 0,
       scheduledRetryReason: "Recovery retry budget was exhausted",
@@ -306,6 +311,7 @@ describeEmbeddedPostgres("reconcileStrandedAssignedIssues: infrastructure interr
   it("does not escalate while paused and within budget when the provider stop was acknowledged", async () => {
     const { issueId } = await seedStrandedIssue({
       errorCode: "agent_paused",
+      runtimeMode: "native",
       scheduledRetryAttempt: 0,
       resultJson: { executionCancellation: { state: "acknowledged", acknowledgedAt: new Date().toISOString() } },
     });
@@ -320,6 +326,7 @@ describeEmbeddedPostgres("reconcileStrandedAssignedIssues: infrastructure interr
   it("still escalates while paused and within budget when the stranded run's adapter was never claimed", async () => {
     const { issueId } = await seedStrandedIssue({
       errorCode: "agent_paused",
+      runtimeMode: "conversation",
       scheduledRetryAttempt: 0,
       adapterType: null,
     });
