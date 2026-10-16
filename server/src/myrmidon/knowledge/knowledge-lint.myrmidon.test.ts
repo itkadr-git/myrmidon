@@ -16,7 +16,7 @@ describe("knowledge deterministic lint", () => {
       page("orphan", "No inbound links."),
     ]);
 
-    expect(report.counts).toEqual({ unresolved_link: 1, orphan: 1, missing_source: 1 });
+    expect(report.counts).toEqual({ unresolved_link: 1, orphan: 2, missing_source: 1 });
     expect(report.findings).toEqual([
       { kind: "unresolved_link", slug: "a", target: "missing", suggestion: "Create a published page for [[missing]] or remove the link." },
       { kind: "missing_source", slug: "orphan", suggestion: "Attach at least one source reference before relying on this page." },
@@ -30,7 +30,10 @@ describe("knowledge deterministic lint", () => {
       { ...page("a", "Draft."), status: "draft" as const },
     ];
     expect(lintKnowledgePages(pages)).toEqual(lintKnowledgePages([...pages].reverse()));
-    expect(lintKnowledgePages(pages).findings).toEqual([]);
+    expect(lintKnowledgePages(pages).findings).toEqual([
+      { kind: "unresolved_link", slug: "z", target: "a", suggestion: "Create a published page for [[a]] or remove the link." },
+      { kind: "orphan", slug: "z", suggestion: "Add an inbound [[link]] from a related page or mark this page archived." },
+    ]);
   });
 
   it("counts repeated targets once per source page", () => {
