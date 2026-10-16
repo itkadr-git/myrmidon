@@ -15,7 +15,7 @@
 // hand-rolled UPDATE, and the lead/operator signal is the existing
 // `blocker_attention` attention-feed source computed on the fly.
 
-import { and, asc, eq, inArray } from "drizzle-orm";
+import { and, asc, eq, inArray, notExists, sql } from "drizzle-orm";
 import {
   issueRelations,
   issues,
@@ -128,18 +128,53 @@ type BlockedRow = {
 };
 
 async function blockedCandidates(db: Db, pageSize: number): Promise<BlockedRow[]> {
-  return db
-    .select({
-      id: issues.id,
-      companyId: issues.companyId,
-      identifier: issues.identifier,
-      title: issues.title,
-      unblockDescriptor: issues.unblockDescriptor,
-    })
+  const columns = {
+    id: issues.id,
+    companyId: issues.companyId,
+    identifier: issues.identifier,
+    title: issues.title,
+    unblockDescriptor: issues.unblockDescriptor,
+  };
+  // myrmidon(STALE-BLOCK): the page is sized for live-reason tasks, but a
+  // bare block (no reasonRef, no edges) must not starve behind a full page
+  // of old live blocks: reserve one slot for the oldest bare block so the
+  // E3 backfill (reasons.length === 0 → todo) advances every pass. Blocked-by
+  // edges are the fallback reason source (collectStaleBlockReasons), so the
+  // reservation query excludes them with NOT EXISTS; tasks whose descriptor
+  // merely lacks a reasonRef but still carry edges are not bare.
+  const [oldestBare] = await db
+    .select(columns)
+    .from(issues)
+    .where(
+      and(
+        eq(issues.status, "blocked"),
+        sql`${issues.unblockDescriptor} is null or (${issues.unblockDescriptor} -> 'reasonRef') is null`,
+        notExists(
+          db
+            .select({ one: sql`1` })
+            .from(issueRelations)
+            .where(
+              and(
+                eq(issueRelations.companyId, issues.companyId),
+                eq(issueRelations.relatedIssueId, issues.id),
+                eq(issueRelations.type, "blocks"),
+              ),
+            ),
+        ),
+      ),
+    )
+    .orderBy(asc(issues.updatedAt), asc(issues.id))
+    .limit(1);
+  const rows = await db
+    .select(columns)
     .from(issues)
     .where(eq(issues.status, "blocked"))
     .orderBy(asc(issues.updatedAt), asc(issues.id))
     .limit(pageSize);
+  if (!oldestBare) return rows;
+  if (rows.some((row) => row.id === oldestBare.id)) return rows;
+  if (rows.length < pageSize) return [oldestBare, ...rows];
+  return [...rows.slice(0, pageSize - 1), oldestBare];
 }
 
 async function blockedByEdgesFor(db: Db, companyId: string, issueId: string): Promise<string[]> {
@@ -309,6 +344,30 @@ export function createStaleBlockSweep(deps: StaleBlockSweepDeps) {
         actions,
       );
       if (!updated) return false;
+      // myrmidon(STALE-BLOCK): the sweep's own marker row (above) is not an
+      // `issue.updated` status move, so BLOCKED-LOOP's history reader would
+      // never see this exit from `blocked`. Record the same transition in the
+      // route's `changes.status` shape ({ from, to }) that
+      // `toBlockedLoopEvent` reads, so the limiter sees the sweep-written
+      // unblock exactly like a board-driven one. Actor stays `system`: the
+      // limiter counts only agent `entered_blocked` events toward a streak, so
+      // this row is visible as a `left_blocked` step without framing anyone.
+      await deps.logActivity?.({
+        companyId: locked.companyId,
+        actorType: "system",
+        actorId: STALE_BLOCK_ACTIVITY_ACTOR,
+        action: "issue.updated",
+        entityType: "issue",
+        entityId: locked.id,
+        issueId: locked.id,
+        details: {
+          identifier: locked.identifier ?? null,
+          source: "stale_block_sweep",
+          changes: {
+            status: { from: "blocked", to: effectiveTargetStatus },
+          },
+        },
+      });
       await deps.logActivity?.({
         companyId: locked.companyId,
         actorType: "system",
