@@ -72,18 +72,10 @@ describe("myrmidon(1.6.1 SWARM-IDLE-WAKE) sweep pass", () => {
       }]),
       update: vi.fn(async () => [{ id: "released-issue" }]),
     };
-    const fakeQueryResults: unknown[][] = [
-      [], // listClaimsOnNonQueueIssues
-      [{ id: "released-issue", status: "todo", assigneeAgentId: null }], // claim lock/read
-    ];
-    let releasedQueryIndex = 0;
-    const queryResult = <T>() => ({
-      limit: (limit: number) => {
-        const result = fakeQueryResults[releasedQueryIndex++] ?? [];
-        return Promise.resolve(result.slice(0, limit) as T[]);
-      },
-      then: (resolve: (rows: T[]) => unknown, reject?: (reason: unknown) => unknown) =>
-        Promise.resolve((fakeQueryResults[releasedQueryIndex++] ?? []) as T[]).then(resolve, reject),
+    const queryResult = <T>(rows: T[] = []) => ({
+      limit: (limit: number) => Promise.resolve(rows.slice(0, limit)),
+      then: (resolve: (value: T[]) => unknown, reject?: (reason: unknown) => unknown) =>
+        Promise.resolve(rows).then(resolve, reject),
     });
     const db = {
       query: { issues: issueTable },
@@ -104,7 +96,12 @@ describe("myrmidon(1.6.1 SWARM-IDLE-WAKE) sweep pass", () => {
           where: () => ({
             orderBy: () => ({ limit: empty }),
             groupBy: empty,
-            limit: empty,
+            limit: (limit: number) => Promise.resolve([
+              { id: "released-issue", status: "todo", assigneeAgentId: null },
+            ].slice(0, limit)),
+            then: (resolve: (rows: unknown[]) => unknown) => Promise.resolve([
+              { id: "released-issue", status: "todo", assigneeAgentId: null },
+            ]).then(resolve),
           }),
           for: () => queryResult(),
         }),
