@@ -179,6 +179,7 @@ describeEmbeddedPostgres("heartbeat task-drain admission release", () => {
     await db.insert(companySkills).values({
       companyId,
       key: "heartbeat-task-drain-race",
+      slug: "heartbeat-task-drain-race",
       name: "Heartbeat task drain race",
       description: "Test-only skill fixture",
       markdown: "# Test fixture",
