@@ -5582,7 +5582,7 @@ without checking the free space.
 - When an agent creates a human-only question or confirmation for the task owner, the author is woken on that task with the open decision in its prompt and must explain it to the owner in one plain message: what to decide, why, each option with its consequence, a recommendation.
 - New agent tool `myrmidonMessageOwner` (`POST /api/myrmidon/owner-message`) writes that message into the owner's standing Telegram DM conversation from a run on any task. Only the author of an open owner decision may use it; one message per question; several open questions must be covered by one summary message (`409 summary_required`).
 - The owner's text answer reaches the agent as a normal DM turn marked as a reply to the open interaction. The new tool `myrmidonResolveInteractionByOwnerReply` (`POST /api/myrmidon/owner-message/resolve`) closes the interaction as the OWNER (the ordinary accept / reject / respond route runs with the owner as the acting user) and only when the owner's own comment in that chat, written after the bound message and received from Telegram, is named. Tool-action, secret and connection confirmations are not closable this way.
-- The Paperclip skill documents both tools (`references/owner-dialogue.md`); the owner-delivery settings screen offers the new mode.
+- The `paperclip` skill documents both tools (`references/owner-dialogue.md`); the owner-delivery settings screen offers the new mode.
 
 ### The predeploy copy gets planner statistics before the board is checked (1.6.5 PREDEPLOY-ANALYZE)
 

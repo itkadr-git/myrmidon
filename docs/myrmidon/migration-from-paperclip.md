@@ -25,9 +25,10 @@ cut over, not after.
 Not covered, by design: secrets kept in an external provider (for example a cloud secret
 manager) are copied as references — the values stay where they are and the Myrmidon target must
 be able to reach them; assets stored in an object store (S3 and similar) are copied as rows, the
-objects are not moved; tables outside the `public` schema are not transferred; the Paperclip
-state that lives outside the database and the storage directory (agent workspaces, adapter
-sessions on disk, environment variables of the service) is yours to carry over.
+objects are not moved; tables outside the `public` schema are not transferred;
+the Paperclip state that lives outside the database and the storage directory
+(agent workspaces, adapter sessions on disk, environment variables of the service)
+is yours to carry over.
 
 ## 2. Prerequisites
 

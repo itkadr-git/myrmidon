@@ -24,6 +24,7 @@ const docsRoot = path.join(repoRoot, "docs");
 // name, a license/attribution string, or a historical record of a pre-rename
 // state.
 const ALLOWLIST = [
+  "[Paperclip](https://github.com/paperclipai/paperclip)",
   "paperclipai", // @paperclipai/* packages, the paperclipai CLI, vendor repo URLs
   "PAPERCLIP_", // env vars
   "X-Paperclip-", // HTTP headers
@@ -49,6 +50,7 @@ const ALLOWLIST = [
   "paperclip-runnerd", "paperclip.adapterUiParser",
   "paperclip.manifest.json", "stack-registry",
   "`paperclip`", "\"paperclip\"", "'paperclip'",
+  "\"Paperclip\"", "\"Paperclip …\"",
   "paperclip:2026.", "paperclipVersionMin",
   "Copyright (c) 2025 Paperclip",
   "Based on Paperclip",
@@ -67,11 +69,22 @@ const ALLOWLIST = [
   "Paperclip — только основа", "Paperclip 2026.916.1",
   "Paperclip base", "Paperclip в основе", "основы Paperclip",
   "рутина Paperclip", "рутине Paperclip", "за основу",
-  "Base Paperclip version", "**База:** Paperclip", "Paperclip (MIT)»",
+  "Base Paperclip version", "base Paperclip version", "базового Paperclip",
+  "**База:** Paperclip", "Paperclip (MIT)»",
   "PaperclipIcon", "PaperclipLockup.tsx", "Paperclip»-строки",
   "`Paperclip`", "Paperclip, взятого",
   "Paperclip**", "«Paperclip»", "stays Paperclip", "остаётся Paperclip",
   "Paperclip-managed", // managed-by-vendor flows named in prose; kept one release
+  "управляемые навыки Paperclip",
+  "Allow Paperclip reads", "upstream Paperclip", "вендорского Paperclip",
+  "Paperclip server failed to start", "Paperclip вендора",
+  "Paperclip v2026.1001.0",
+  "from Paperclip to Myrmidon", "с Paperclip на Myrmidon",
+  "Paperclip instance", "экземпляр Paperclip",
+  "Paperclip release", "Paperclip релиза",
+  "Paperclip state", "состояние Paperclip",
+  "Paperclip server", "сервер Paperclip",
+  "old Paperclip", "старый Paperclip",
   "/paperclip", // docker container/volume paths
   "paperclip/", // repo-relative internal paths
 ];
