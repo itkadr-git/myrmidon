@@ -1,6 +1,6 @@
 ---
 divergence-section: Трек 6 — безопасность и модели
-settings-section: Track 6 — security and models
+settings-section: 1.7 — AUTO-UPDATE-SETTINGS part B: maintenance window, update mode, fleet canary
 ---
 
 ## changelog-en
