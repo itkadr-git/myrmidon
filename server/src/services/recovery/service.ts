@@ -2601,12 +2601,6 @@ export function recoveryService(
       blockedByIssueIds: [],
     });
     if (!issue) return false;
-    await issuesSvc.addComment(
-      input.issue.id,
-      `Recovery rerouted this stranded issue ${stillAssigned ? "back to its available assignee" : "to the shared engineer queue"} (${input.reason}).`,
-      {},
-      { authorType: "system" },
-    );
     return true;
   }
 
@@ -3958,6 +3952,18 @@ export function recoveryService(
     successfulRunHandoffEvidence?: SuccessfulRunHandoffRecoveryEvidence | null;
     rerouteToSharedQueue?: boolean;
   }) {
+    const comment = input.comment?.trim();
+    if (input.rerouteToSharedQueue && !comment) {
+      await issuesSvc.addComment(
+        input.issue.id,
+        `Recovery returned this issue to the shared engineer queue (${input.latestRun?.errorCode ?? input.recoveryCause ?? "stranded_assigned_issue"}).`,
+        {},
+        { authorType: "system" },
+      );
+    }
+    if (comment) {
+      await issuesSvc.addComment(input.issue.id, comment, {}, { authorType: "system" });
+    }
     if (input.rerouteToSharedQueue) {
       const rerouted = await rerouteStrandedIssueToSharedQueue({
         issue: input.issue,
