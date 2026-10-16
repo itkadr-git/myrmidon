@@ -75,12 +75,16 @@ describe("myrmidon(1.6.1 SWARM-IDLE-WAKE) sweep pass", () => {
     const db = {
       query: { issues: issueTable },
       select: () => ({
-        from: () => ({
-          where: () => ({
-            orderBy: () => ({ limit: empty }),
-            limit: empty,
-          }),
-        }),
+        from: () => {
+          const query = {
+            where: () => ({
+              orderBy: () => ({ limit: empty }),
+              limit: empty,
+            }),
+            innerJoin: () => query,
+          };
+          return query;
+        },
       }),
       insert: () => ({ values: () => ({ returning: empty }) }),
       transaction: async (fn: (tx: unknown) => Promise<unknown>) => fn(db),
