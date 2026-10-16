@@ -130,6 +130,10 @@ function registerModuleMocks() {
           feedbackDataSharingPreference: "prompt",
         },
       })),
+      getExperimental: vi.fn(async () => ({
+        enableExternalObjects: false,
+        enableAgentChat: false,
+      })),
       listCompanyIds: vi.fn(async () => ["company-1"]),
     }),
     issueApprovalService: () => mockIssueApprovalService,
