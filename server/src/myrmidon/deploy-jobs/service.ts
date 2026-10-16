@@ -689,11 +689,14 @@ export function deployJobsService(db: Db, deps: DeployJobServiceDeps) {
       case "fleet_canary": {
         // B-2: the board switched; the canary batch is watched for at least the
         // configured settle time, and only a healthy batch lets the rest follow.
+        const policy = await resolvePolicy();
         if (!deps.fleetCanary) {
-          await completeCanary(job.id, "succeeded", "no fleet canary on this instance: nothing to wait for");
+          const reason = policy.settings.canary.enabled
+            ? "fleet canary is enabled but no fleet canary runtime is wired; refusing to report a healthy rollout"
+            : "fleet canary is disabled by policy";
+          await completeCanary(job.id, policy.settings.canary.enabled ? "canary_failed" : "succeeded", reason);
           return;
         }
-        const policy = await resolvePolicy();
         const startedAt = job.canaryStartedAt === null ? at.getTime() : Date.parse(job.canaryStartedAt);
         if (at.getTime() - startedAt < policy.settings.canary.healthSettleSec * 1000) return;
         const port = deps.fleetCanary;

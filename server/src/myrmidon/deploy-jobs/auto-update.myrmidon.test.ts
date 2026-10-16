@@ -349,6 +349,23 @@ describe("auto-update: the fleet canary (B-2)", () => {
     expect(h.maintenance.exit).toHaveBeenCalledWith("deploy canary failed");
   });
 
+  it("fails closed if canary is enabled but no fleet port is wired", async () => {
+    const h = harness({ policy: policy({ window: OPEN_DAY }), port: null });
+    seed(h.store, {
+      status: "fleet_canary",
+      canaryBatch: ["bot-a"],
+      fleetRest: ["bot-b"],
+      canaryStartedAt: "2026-10-07T08:50:00.000Z",
+    });
+
+    await h.service.tick();
+
+    const after = (await h.service.current()).job;
+    expect(after?.status).toBe("canary_failed");
+    expect(after?.failureReason).toContain("no fleet canary runtime is wired");
+    expect(h.maintenance.exit).toHaveBeenCalledWith("deploy canary failed");
+  });
+
   it("lets the rest follow a healthy canary batch and finishes the update", async () => {
     const fake = fakePort("healthy");
     const h = harness({ policy: policy({ window: OPEN_DAY }), port: fake.port });
