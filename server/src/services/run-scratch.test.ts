@@ -150,7 +150,7 @@ describe("heartbeat run scratch cleanup", () => {
     }));
 
     const result = buildHeartbeatRunScratchEnv({ CHROME_USER_DATA_DIR: "/custom/chrome" }, scratch);
-    expect(result.env.CHROME_USER_DATA_DIR).toBe("/custom/chrome");
+    expect(result.env.CHROME_USER_DATA_DIR).toBeUndefined();
     expect(result.env.PAPERCLIP_RUN_DIR).toBe(scratch.runDir);
   });
 });
