@@ -273,16 +273,10 @@ describe("myrmidon(FLEETD-VMEXEC) fleetd driver — request injection hooks", ()
     const https = await import("node:https");
     const fakeAgent = new https.Agent();
     let capturedOptions: any = null;
-    const spy = vi.spyOn(https, "request").mockImplementation((options: any) => {
+    fakeAgent.addRequest = (req: any, options: any) => {
       capturedOptions = options;
-      const fakeReq: any = {
-        on: vi.fn(),
-        write: vi.fn(),
-        end: vi.fn(),
-        destroy: vi.fn(),
-      };
-      return fakeReq;
-    });
+      req.destroy();
+    };
 
     try {
       const driver = fleetdBotContainerDriver({
@@ -294,7 +288,7 @@ describe("myrmidon(FLEETD-VMEXEC) fleetd driver — request injection hooks", ()
         httpsAgent: fakeAgent,
       });
 
-      driver.status("bot-test").catch(() => {});
+      await driver.status("bot-test").catch(() => {});
 
       expect(capturedOptions).toBeDefined();
       expect(capturedOptions.host).toBe("fleetd.example.com");
@@ -305,7 +299,6 @@ describe("myrmidon(FLEETD-VMEXEC) fleetd driver — request injection hooks", ()
       expect(capturedOptions.agent).toBe(fakeAgent);
       expect(capturedOptions.rejectUnauthorized).toBe(true);
     } finally {
-      spy.mockRestore();
       fakeAgent.destroy();
     }
   });
