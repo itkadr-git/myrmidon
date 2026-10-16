@@ -123,10 +123,21 @@ describe("myrmidon(1.6.1 SWARM-IDLE-WAKE) sweep pass", () => {
               { id: "released-issue", status: "todo", assigneeAgentId: null },
             ]).then(resolve),
           }),
-          for: () => queryResult(),
+          for: () => queryResult([{ status: "todo", assigneeAgentId: null }]),
         }),
       }),
-      insert: () => ({ values: () => ({ returning: empty }) }),
+      insert: () => ({
+        values: () => ({
+          returning: () => Promise.resolve([{
+            id: "claim-new",
+            issueId: "released-issue",
+            agentId: "idle-agent",
+            heartbeatAt: NOW,
+            expiresAt: new Date(NOW.getTime() + 60_000),
+            releasedAt: null,
+          }]),
+        }),
+      }),
       transaction: async (fn: (tx: unknown) => Promise<unknown>) => fn(db),
     };
     const settings: SwarmClaimSettings = {
