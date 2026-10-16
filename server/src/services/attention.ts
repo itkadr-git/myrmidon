@@ -284,6 +284,8 @@ const SOURCE_RANK: Record<AttentionSourceKind, number> = {
   secret_off_run_grant_expiring: 18,
   // myrmidon(1.6.6 OPE-7198): pool account alerts are high/medium operational notices.
   codex_pool_alert: 4,
+  // myrmidon(OPE-7932): overdue monitors need operator visibility, below blockers.
+  issue_monitor_overdue: 12,
 };
 
 const PENDING_INTERACTION_STATUSES = ["pending"] as const;
