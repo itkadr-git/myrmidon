@@ -1,7 +1,7 @@
 // myrmidon(1.7 KNOWLEDGE-2.0 L-7): deterministic, database-free knowledge audit.
 
 import { extractLinkTargets, normalizeLinkTarget } from "./domain.js";
-import type { KnowledgeItemStatus } from "@paperclipai/db";
+import type { KnowledgeItemStatus } from "./domain.js";
 
 export interface KnowledgeLintSource {
   kind: string;
