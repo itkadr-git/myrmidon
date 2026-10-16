@@ -84,6 +84,8 @@ const DRAIN_EXIT_TIMEOUT_MS = 70_000;
 
 type WaitForOptions = { timeoutMs: number; intervalMs?: number; label: string };
 
+const childLogs: string[] = [];
+
 async function waitFor(
   check: () => Promise<boolean | string> | boolean | string,
   options: WaitForOptions,
@@ -100,7 +102,9 @@ async function waitFor(
     }
     await new Promise((resolve) => setTimeout(resolve, options.intervalMs ?? 500));
   }
-  throw new Error(`timed out waiting for ${options.label} (last: ${lastDetail})`);
+  const tail = childLogs.slice(-25).join("");
+  const suffix = tail ? `\n--- Recent child output ---\n${tail}` : "";
+  throw new Error(`timed out waiting for ${options.label} (last: ${lastDetail})${suffix}`);
 }
 
 /** One heartbeat request against the shared board port. Every failure is
@@ -309,8 +313,17 @@ describeProcs("drain and failover e2e: supervisor in-process, two api children (
             pathToFileURL(tsxLoader).href,
             "--max-old-space-size=1024",
           ],
-          silent: false,
+          silent: true,
         });
+        const prefix = `child#${index}`;
+        const record = (chunk: Buffer) => {
+          const str = chunk.toString("utf8");
+          process.stderr.write(`[${prefix}] ${str}`);
+          childLogs.push(`[${prefix}] ${str}`);
+          if (childLogs.length > 100) childLogs.shift();
+        };
+        child.stdout?.on("data", record);
+        child.stderr?.on("data", record);
         if (child.pid) forkedPids.push(child.pid);
         return child;
       },
