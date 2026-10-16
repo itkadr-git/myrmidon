@@ -205,6 +205,14 @@ describeEmbeddedPostgres("heartbeat task-drain admission release", () => {
         .update(issues)
         .set({ status: "in_progress", executionRunId: input.runId })
         .where(eq(issues.id, issueId));
+      await runDb.insert(heartbeatRunEvents).values({
+        companyId,
+        agentId,
+        runId: input.runId,
+        seq: 1,
+        eventType: "adapter.invoke",
+        payload: { adapterType: "codex_local" },
+      });
       return { trustPreset: { kind: "standard" }, executionPolicy: null } as never;
     });
     let activePromise: Promise<unknown> | undefined;
