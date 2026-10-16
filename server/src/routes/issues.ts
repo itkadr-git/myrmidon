@@ -3954,27 +3954,14 @@ export function issueRoutes(
     },
     actor: ReturnType<typeof getActorInfo>,
   ) {
-    const [company] = await db
-      .select({ defaultResponsibleUserId: companies.defaultResponsibleUserId })
-      .from(companies)
-      .where(eq(companies.id, issue.companyId));
-    const sourceTrust = await resolveActorSourceTrustForIssue({
-      db,
-      issue: {
-        ...issue,
-        responsibleUserId:
-          issue.responsibleUserId ??
-          actor.onBehalfOfUserId ??
-          company?.defaultResponsibleUserId ??
-          null,
-      },
-      actor,
-    });
-    if (!sourceTrust) return null;
-    if (sourceTrust.disposition !== "quarantined") return sourceTrust;
+    const sourceTrust = await resolveActorSourceTrustForIssue({ db, issue, actor });
+    if (!sourceTrust || sourceTrust.disposition !== "quarantined") {
+      return sourceTrust;
+    }
+    const company = await companyService().getById(issue.companyId);
     const promotionOwnerUserId =
       issue.responsibleUserId ??
-      actor.onBehalfOfUserId ??
+      (actor.actorType === "user" ? actor.actorId : null) ??
       company?.defaultResponsibleUserId ??
       null;
     if (!promotionOwnerUserId) {
@@ -11390,7 +11377,8 @@ export function issueRoutes(
       )
         return;
       const actor = getActorInfo(req);
-      if (await sourceTrustForActorWrite(issue, actor)) {
+      const sourceTrust = await resolveActorSourceTrustForIssue({ db, issue, actor });
+      if (sourceTrust) {
         res.status(403).json({
           error: "Low-trust actors cannot promote quarantined output",
         });
@@ -18319,7 +18307,10 @@ export function issueRoutes(
           actorUserId: actor.actorType === "user" ? actor.actorId : null,
         };
 
-        const sourceTrust = await sourceTrustForActorWrite(currentIssue, actor);
+        const sourceTrust =
+          actor.actorType === "agent"
+            ? await sourceTrustForActorWrite(currentIssue, actor)
+            : null;
         const commentOptions = {
           authorType:
             req.body.authorType ??

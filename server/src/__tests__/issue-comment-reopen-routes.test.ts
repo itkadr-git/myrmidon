@@ -17,6 +17,10 @@ const mockIssueService = vi.hoisted(() => ({
   getRelationSummaries: vi.fn(),
 }));
 
+const mockCompanyService = vi.hoisted(() => ({
+  getById: vi.fn(async () => ({ id: "company-1", defaultResponsibleUserId: "local-board" })),
+}));
+
 const mockAccessService = vi.hoisted(() => ({
   canUser: vi.fn(),
   decide: vi.fn(),
@@ -165,9 +169,7 @@ vi.mock("../services/runner-goals.js", () => ({
 }));
 
 vi.mock("../services/index.js", () => ({
-  companyService: () => ({
-    getById: vi.fn(async () => ({ id: "company-1" })),
-  }),
+  companyService: () => mockCompanyService,
   accessService: () => mockAccessService,
   agentService: () => mockAgentService,
   companySkillService: () => ({

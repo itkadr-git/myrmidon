@@ -92,6 +92,7 @@ export type SourceTrustIssueContext = {
   companyId: string;
   projectId?: string | null;
   executionPolicy?: unknown;
+  responsibleUserId?: string | null;
 };
 
 export function isLowTrustQuarantined(sourceTrust: SourceTrustMetadata | null | undefined): boolean {
