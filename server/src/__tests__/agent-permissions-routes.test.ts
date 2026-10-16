@@ -55,6 +55,8 @@ const mockAgentService = vi.hoisted(() => ({
   list: vi.fn(),
   // myrmidon(PERF-DIET-G): the slim reader the company list route uses
   listSummaries: vi.fn(),
+  // myrmidon(PERF-DIET-T): version key used before list response hydration
+  listSummariesVersionKey: vi.fn(),
   create: vi.fn(),
   activatePendingApproval: vi.fn(),
   terminate: vi.fn(),
@@ -309,6 +311,7 @@ describe.sequential("agent permission routes", () => {
     mockAgentService.listConfigRevisions.mockReset();
     mockAgentService.list.mockReset();
     mockAgentService.listSummaries.mockReset();
+    mockAgentService.listSummariesVersionKey.mockReset();
     mockAgentService.create.mockReset();
     mockAgentService.activatePendingApproval.mockReset();
     mockAgentService.terminate.mockReset();
@@ -357,6 +360,7 @@ describe.sequential("agent permission routes", () => {
     mockAgentService.listConfigRevisions.mockResolvedValue([]);
     mockAgentService.list.mockResolvedValue([baseAgent]);
     mockAgentService.listSummaries.mockResolvedValue([baseAgentListItem]);
+    mockAgentService.listSummariesVersionKey.mockResolvedValue('"agents-list:test"');
     mockAgentService.getChainOfCommand.mockResolvedValue([]);
     mockAgentService.resolveByReference.mockResolvedValue({ ambiguous: false, agent: baseAgent });
     mockAgentService.create.mockResolvedValue(baseAgent);
@@ -520,6 +524,7 @@ describe.sequential("agent permission routes", () => {
 
     expect(res.status).toBe(200);
     expect(mockAgentService.listSummaries).toHaveBeenCalledWith(companyId);
+    expect(mockAgentService.listSummariesVersionKey).toHaveBeenCalledWith(companyId, expect.any(String));
     expect(mockAgentService.list).not.toHaveBeenCalled();
     expect(res.body).toHaveLength(1);
     expect(Object.prototype.hasOwnProperty.call(res.body[0], "adapterConfig")).toBe(false);
