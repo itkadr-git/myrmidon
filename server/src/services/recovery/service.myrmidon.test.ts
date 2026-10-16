@@ -149,7 +149,11 @@ describeEmbeddedPostgres("reconcileStrandedAssignedIssues: infrastructure interr
     const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
     expect(issue!.status).toBe("todo");
     expect(issue!.assigneeAgentId).toBeNull();
-    expect(issue!.blockedByIssueIds).toEqual([]);
+    const blockers = await db
+      .select({ id: issueRelations.issueId })
+      .from(issueRelations)
+      .where(eq(issueRelations.relatedIssueId, issueId));
+    expect(blockers).toEqual([]);
     expect(await activeRecoveryActionsFor(issueId)).toHaveLength(0);
   }, 30_000);
 
