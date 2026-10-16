@@ -150,8 +150,8 @@ for (const [key, envName, fallback, validate] of [
 
 for (const [key, envName, fallback, validate] of [
   ["run_env_allow", "MYRMIDON_RUN_ENV_ALLOW", [] as string[], environmentNameList],
-  ["bot_docker_image_allowlist", "MYRMIDON_BOT_IMAGE_ALLOWLIST", [] as string[], textList],
-  ["bot_docker_mount_sources", "MYRMIDON_BOT_DOCKER_MOUNT_SOURCES", [] as string[], textList],
+  ["bot_image_allowlist", "MYRMIDON_BOT_IMAGE_ALLOWLIST", [] as string[], textList],
+  ["bot_mount_sources", "MYRMIDON_BOT_MOUNT_SOURCES", [] as string[], textList],
   ["bot_container_github_env_allowlist", "MYRMIDON_BOT_CONTAINER_GITHUB_ENV_ALLOWLIST", [] as string[], environmentNameList],
   ["bot_hindsight_allowed_banks", "MYRMIDON_BOT_HINDSIGHT_ALLOWED_BANKS", [] as string[], textList],
   ["bot_mcp_servers", "MYRMIDON_BOT_MCP_SERVERS", [] as string[], textList],

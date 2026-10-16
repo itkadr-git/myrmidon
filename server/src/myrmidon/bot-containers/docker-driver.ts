@@ -171,34 +171,34 @@ export interface DockerDriverConfig {
 export const DOCKERGATE_MAX_RPS_ENV = "MYRMIDON_DOCKERGATE_MAX_RPS";
 const DEFAULT_DOCKERGATE_MAX_RPS = 20;
 
-export function readDockerDriverConfig(env: NodeJS.ProcessEnv = process.env): DockerDriverConfig {
-  const volumeRoot = env[BOT_VOLUME_ROOT_ENV]?.trim();
+export function readDockerDriverConfig(env?: NodeJS.ProcessEnv): DockerDriverConfig {
+  const source = env ?? process.env;
+  const runtimeEnv = env === undefined;
+  const volumeRoot = source[BOT_VOLUME_ROOT_ENV]?.trim();
   if (!volumeRoot) {
     throw new BotContainerTemplateError(`${BOT_VOLUME_ROOT_ENV} must be set to use the bot container driver`);
   }
   let maxRps = DEFAULT_DOCKERGATE_MAX_RPS;
-  const rawRps = env[DOCKERGATE_MAX_RPS_ENV]?.trim();
+  const rawRps = source[DOCKERGATE_MAX_RPS_ENV]?.trim();
   if (rawRps) {
     const value = Number(rawRps);
     if (Number.isFinite(value) && value >= 0 && value <= 50) maxRps = value;
   }
+  const imageAllowlist = runtimeEnv ? liveBehaviorSetting<unknown>("bot_image_allowlist") : undefined;
+  const mountAllowlist = runtimeEnv ? liveBehaviorSetting<unknown>("bot_mount_sources") : undefined;
   return {
-    socketPath: env[BOT_DOCKER_SOCKET_ENV]?.trim() || DEFAULT_BOT_DOCKER_SOCKET,
+    socketPath: source[BOT_DOCKER_SOCKET_ENV]?.trim() || DEFAULT_BOT_DOCKER_SOCKET,
     volumeRoot,
     // "." can never begin a bot key, so the default cannot collide with a bot's directory.
-    scopeRoot: env[BOT_SCOPE_ROOT_ENV]?.trim() || `${volumeRoot}/.scopes`,
-    network: env[BOT_NETWORK_ENV]?.trim() || DEFAULT_BOT_NETWORK,
+    scopeRoot: source[BOT_SCOPE_ROOT_ENV]?.trim() || `${volumeRoot}/.scopes`,
+    network: source[BOT_NETWORK_ENV]?.trim() || DEFAULT_BOT_NETWORK,
     allowlist: parseImageAllowlist(
-      env === process.env
-        ? JSON.stringify(liveBehaviorSetting("bot_image_allowlist") ?? env[BOT_IMAGE_ALLOWLIST_ENV])
-        : env[BOT_IMAGE_ALLOWLIST_ENV],
+      Array.isArray(imageAllowlist) ? imageAllowlist.join(",") : source[BOT_IMAGE_ALLOWLIST_ENV],
     ),
     mountSources: parseMountSourceAllowlist(
-      env === process.env
-        ? JSON.stringify(liveBehaviorSetting("bot_mount_sources") ?? env[BOT_MOUNT_SOURCES_ENV])
-        : env[BOT_MOUNT_SOURCES_ENV],
+      Array.isArray(mountAllowlist) ? mountAllowlist.join(",") : source[BOT_MOUNT_SOURCES_ENV],
     ),
-    devbuild: parseDevbuildSettings(env),
+    devbuild: parseDevbuildSettings(source),
     maxRps,
   };
 }

@@ -64,12 +64,13 @@ export class BrowserConsoleError extends Error {
 export function browserConsoleService(deps: BrowserSessionServiceDeps) {
   const now = deps.now ?? (() => Date.now());
   const env = deps.env ?? process.env;
+  const useLiveSettings = deps.env === undefined;
   const log = deps.log ?? logger;
   const newSessionId = deps.newSessionId ?? (() => randomUUID());
 
   function currentTimers(): BrowserConsoleTimers {
     const base = readBrowserConsoleTimers(env);
-    if (env === process.env) {
+    if (useLiveSettings) {
       return {
         idleTimeoutMs: (liveBehaviorSetting<number>("browser_idle_timeout_min") ?? base.idleTimeoutMs / 60_000) * 60_000,
         maxDurationMs: (liveBehaviorSetting<number>("browser_max_duration_min") ?? base.maxDurationMs / 60_000) * 60_000,
@@ -79,7 +80,7 @@ export function browserConsoleService(deps: BrowserSessionServiceDeps) {
   }
 
   function fleet(): BrowserFleetEntry[] {
-    const raw = env === process.env ? JSON.stringify(liveBehaviorSetting("browser_fleet")) : env.MYRMIDON_BROWSER_FLEET;
+    const raw = useLiveSettings ? JSON.stringify(liveBehaviorSetting("browser_fleet")) : env.MYRMIDON_BROWSER_FLEET;
     const parsed = parseBrowserFleet(raw);
     if (!parsed.ok) {
       log.warn(`browser console: ${parsed.error}; the registry is empty until it is fixed`);

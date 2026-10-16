@@ -104,11 +104,11 @@ const COMPANY_URL = (companyId: string) => `/api/myrmidon/behavior-settings/${co
 
 describe("myrmidon(1.7) behavior settings: registry coverage", () => {
   it("registers guardrail and fleet settings with strict list validation", () => {
-    for (const key of ["run_env_allow", "bot_containers", "bot_reconcile_interval_sec", "bot_docker_image_allowlist", "bot_docker_mount_sources", "bot_container_github_env_allowlist", "bot_yolo", "bot_hindsight_allowed_banks", "bot_mcp_servers", "browser_fleet", "browser_idle_timeout_min", "browser_max_duration_min", "stack_check_interval_sec"]) {
+    for (const key of ["run_env_allow", "bot_containers", "bot_reconcile_interval_sec", "bot_image_allowlist", "bot_mount_sources", "bot_container_github_env_allowlist", "bot_yolo", "bot_hindsight_allowed_banks", "bot_mcp_servers", "browser_fleet", "browser_idle_timeout_min", "browser_max_duration_min", "stack_check_interval_sec"]) {
       expect(behaviorSettingRegistry.get(key)).toBeDefined();
     }
-    const result = resolveBehaviorSettings({ stored: { bot_docker_image_allowlist: ["repo/image:tag", " "] }, env: {} });
-    expect(result.settings.bot_docker_image_allowlist).toEqual([]);
+    const result = resolveBehaviorSettings({ stored: { bot_image_allowlist: ["repo/image:tag", " "] }, env: {} });
+    expect(result.settings.bot_image_allowlist).toEqual(["repo/image:tag"]);
   });
 
   it("prefers a declared environment value to its stored override", () => {

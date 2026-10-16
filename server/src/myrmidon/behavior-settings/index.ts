@@ -6,7 +6,6 @@ import { logger } from "../../middleware/logger.js";
 import { behaviorSettingsRoutes } from "./routes.js";
 import { behaviorSettingsService, type BehaviorSettingsServiceDeps } from "./service.js";
 import { applyMyrmidonRunEnvAllow } from "@paperclipai/adapter-utils/myrmidon-run-env";
-import { liveBehaviorSettingsView } from "./live.js";
 import { applyLiveBehaviorSettings } from "./live.js";
 import { startBotContainers, stopBotContainers } from "../bot-containers/startup.js";
 import { startStackCheckSweep, stopStackCheckSweep } from "../stack-registry/index.js";
@@ -51,23 +50,23 @@ export {
  * read their keys through `liveBehaviorSetting`.
  */
 function productionDeps(): Partial<BehaviorSettingsServiceDeps> {
-    return {
-      apply: (settings) => {
-        const instanceSettings = Object.fromEntries(
-          Object.entries(settings).filter(([key]) => {
-            const definition = behaviorSettingRegistry.get(key);
-            return definition?.scope === "instance";
-          }),
-        );
-        const view = resolveBehaviorSettings({ stored: instanceSettings, env: process.env });
-        applyLiveBehaviorSettings({
-          settings: Object.fromEntries(Object.entries(view.settings).filter(([key]) => behaviorSettingRegistry.get(key)?.scope === "instance")),
-          sources: Object.fromEntries(Object.entries(view.sources).filter(([key]) => behaviorSettingRegistry.get(key)?.scope === "instance")),
-        });
-        applyMyrmidonRunEnvAllow((view.settings.run_env_allow as string[] | undefined) ?? []);
-      },
-      scheduleResweep: scheduleBehaviorSettingsResweep,
-    };
+  return {
+    apply: (settings) => {
+      const instanceSettings = Object.fromEntries(
+        Object.entries(settings).filter(([key]) => {
+          const definition = behaviorSettingRegistry.get(key);
+          return definition?.scope === "instance";
+        }),
+      );
+      const view = resolveBehaviorSettings({ stored: instanceSettings, env: process.env });
+      applyLiveBehaviorSettings({
+        settings: Object.fromEntries(Object.entries(view.settings).filter(([key]) => behaviorSettingRegistry.get(key)?.scope === "instance")),
+        sources: Object.fromEntries(Object.entries(view.sources).filter(([key]) => behaviorSettingRegistry.get(key)?.scope === "instance")),
+      });
+      applyMyrmidonRunEnvAllow((view.settings.run_env_allow as string[] | undefined) ?? []);
+    },
+    scheduleResweep: scheduleBehaviorSettingsResweep,
+  };
 }
 
 /** Router for app.ts: GET/PATCH /api/myrmidon/behavior-settings[/:companyId]. */
