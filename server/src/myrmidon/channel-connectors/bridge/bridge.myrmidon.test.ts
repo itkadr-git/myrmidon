@@ -361,6 +361,8 @@ function importPairs(source: string): { names: string[]; specifier: string }[] {
   const pattern = /import\s+(?:type\s+)?\{([\s\S]*?)\}\s*from\s*"([^"]+)"/g;
   for (const match of source.matchAll(pattern)) {
     const names = match[1]
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/\/\/[^\r\n]*/g, "")
       .split(",")
       .map((part) => part.replace(/^\s*type\s+/, "").split(/\s+as\s+/)[0].trim())
       .filter(Boolean);
