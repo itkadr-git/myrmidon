@@ -360,9 +360,10 @@ function createRunContextDb(
   };
   const buildQuery = (selection: Record<string, unknown>, chatBindingQuery = false, settledRecoveryQuery = false) => {
     const whereResult = {
-      orderBy: vi.fn(() => whereResult),
-      limit: vi.fn(() => ({
-        then: async (resolve: (limitedRows: unknown[]) => unknown) => resolve(await rowsForSelection(selection, chatBindingQuery, settledRecoveryQuery)),
+      orderBy: vi.fn(() => ({
+        limit: vi.fn(() => ({
+          then: async (resolve: (limitedRows: unknown[]) => unknown) => resolve(await rowsForSelection(selection, chatBindingQuery, settledRecoveryQuery)),
+        })),
       })),
       for: vi.fn(() => ({
         then: async (resolve: (selectedRows: unknown[]) => unknown) => resolve(await rowsForSelection(selection, chatBindingQuery, settledRecoveryQuery)),
@@ -2703,9 +2704,10 @@ describe("agent issue mutation checkout ownership", () => {
       const buildQuery = (selection: Record<string, unknown>) => {
         const rows = rowsForSelection(selection);
         const whereResult = {
-          orderBy: vi.fn(() => whereResult),
-          limit: vi.fn(() => ({
-            then: async (resolve: (limitedRows: unknown[]) => unknown) => resolve(rows),
+          orderBy: vi.fn(() => ({
+            limit: vi.fn(() => ({
+              then: async (resolve: (limitedRows: unknown[]) => unknown) => resolve(rows),
+            })),
           })),
           then: async (resolve: (selectedRows: unknown[]) => unknown) => resolve(rows),
         };
