@@ -1,5 +1,10 @@
 # LiteLLM budget projection (BUDGET-CONFIG C)
 
+> This guide covers spend-budget projection only. It does not provide an API to
+> change LiteLLM `router_settings.fallbacks`; the board's fallback-topology view
+> is read-only. Do not treat a successful key/tag budget update as evidence that
+> fallback routing was changed.
+
 > Russian version: [litellm-budget-projection.ru.md](litellm-budget-projection.ru.md)
 
 The board owns the spend limits; the LLM gateway (LiteLLM) enforces them.
