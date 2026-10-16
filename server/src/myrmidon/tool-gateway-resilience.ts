@@ -27,7 +27,6 @@ import { toolApplications, toolCatalogEntries, toolConnections } from "@papercli
 import { logger } from "../middleware/logger.js";
 import { validateToolContent } from "../services/tool-content-guards.js";
 import { liveBehaviorSetting, liveBehaviorSettingsView } from "./behavior-settings/live.js";
-import { behaviorSettingRegistry } from "@paperclipai/shared";
 
 // ---------------------------------------------------------------------------
 // Settings
@@ -70,14 +69,23 @@ function readPositiveInt(env: NodeJS.ProcessEnv, key: string, fallback: number):
   return value > 0 ? value : fallback;
 }
 
+const RESILIENCE_SETTING_KEYS = [
+  ["tool_breaker_failures", TOOL_BREAKER_FAILURES_ENV],
+  ["tool_breaker_cooldown_ms", TOOL_BREAKER_COOLDOWN_MS_ENV],
+  ["tool_breaker_window_ms", TOOL_BREAKER_WINDOW_MS_ENV],
+  ["tool_timeout_max_ms", TOOL_TIMEOUT_MAX_MS_ENV],
+  ["tool_timeout_slow_ms", TOOL_TIMEOUT_SLOW_MS_ENV],
+] as const;
+
 const envForLive = (): NodeJS.ProcessEnv => {
   const env = { ...process.env };
   const view = liveBehaviorSettingsView();
-  for (const [key, value] of Object.entries(view.settings)) {
-    const def = behaviorSettingRegistry.get(key);
-    if (def && def.envName !== "MYRMIDON_BOT_EGRESS_MODE" && key !== "tool_breaker_failures" && key !== "tool_breaker_cooldown_ms" && key !== "tool_breaker_window_ms" && key !== "tool_timeout_max_ms" && key !== "tool_timeout_slow_ms" && view.sources[key] !== "env") {
-      env[def.envName] = typeof value === "string" ? value : JSON.stringify(value);
-    }
+  for (const [key, envKey] of RESILIENCE_SETTING_KEYS) {
+    // Env is a forced override only when the resolver recorded it as the source.
+    if (view.sources[key] === "env") continue;
+    const value = view.settings[key];
+    if (value !== undefined && value !== null) env[envKey] = String(value);
+    else delete env[envKey];
   }
   return env;
 };
