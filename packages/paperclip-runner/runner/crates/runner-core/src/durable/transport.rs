@@ -2427,7 +2427,6 @@ mod tests {
                 && observed_read_timeout <= RUNTIME_READ_TIMEOUT + Duration::from_millis(10),
             "runtime read timeout {observed_read_timeout:?} outside kernel-tick tolerance"
         );
-        );
         assert_eq!(welcome.connection.lease_id, "lease_1");
         assert_eq!(welcome.lease.unwrap().expose().unwrap(), "lease-secret");
         handle.join().unwrap();
