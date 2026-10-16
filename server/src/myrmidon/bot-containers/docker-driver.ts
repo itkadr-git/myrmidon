@@ -56,6 +56,7 @@
 
 import { CLONE_HYGIENE_REPORT_PATH } from "./clone-hygiene.js"; // myrmidon(1.6.2-BOT-DISK-C)
 import { randomBytes } from "node:crypto";
+import { liveBehaviorSetting } from "../behavior-settings/live.js";
 import http from "node:http";
 import {
   RATE_LIMIT_MAX_RETRIES,
@@ -187,8 +188,16 @@ export function readDockerDriverConfig(env: NodeJS.ProcessEnv = process.env): Do
     // "." can never begin a bot key, so the default cannot collide with a bot's directory.
     scopeRoot: env[BOT_SCOPE_ROOT_ENV]?.trim() || `${volumeRoot}/.scopes`,
     network: env[BOT_NETWORK_ENV]?.trim() || DEFAULT_BOT_NETWORK,
-    allowlist: parseImageAllowlist(env[BOT_IMAGE_ALLOWLIST_ENV]),
-    mountSources: parseMountSourceAllowlist(env[BOT_MOUNT_SOURCES_ENV]),
+    allowlist: parseImageAllowlist(
+      env === process.env
+        ? JSON.stringify(liveBehaviorSetting("bot_image_allowlist") ?? env[BOT_IMAGE_ALLOWLIST_ENV])
+        : env[BOT_IMAGE_ALLOWLIST_ENV],
+    ),
+    mountSources: parseMountSourceAllowlist(
+      env === process.env
+        ? JSON.stringify(liveBehaviorSetting("bot_mount_sources") ?? env[BOT_MOUNT_SOURCES_ENV])
+        : env[BOT_MOUNT_SOURCES_ENV],
+    ),
     devbuild: parseDevbuildSettings(env),
     maxRps,
   };
