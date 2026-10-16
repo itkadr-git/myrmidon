@@ -2703,7 +2703,7 @@ describe("agent issue mutation checkout ownership", () => {
       const buildQuery = (selection: Record<string, unknown>) => {
         const rows = rowsForSelection(selection);
         const whereResult = {
-          orderBy: vi.fn(async () => []),
+          orderBy: vi.fn(() => whereResult),
           limit: vi.fn(() => ({
             then: async (resolve: (limitedRows: unknown[]) => unknown) => resolve(rows),
           })),
