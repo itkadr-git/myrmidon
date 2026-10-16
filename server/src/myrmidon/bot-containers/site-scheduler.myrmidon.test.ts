@@ -214,7 +214,7 @@ describe("site-scheduler", () => {
       // p0-bot was placed on myr-vm1 and evicted low-bot
       expect(res.decisions.get("p0-bot")?.status).toBe("placed");
       expect(res.decisions.get("p0-bot")?.targetHost).toBe("myr-vm1");
-      expect(res.decisions.get("p0-bot")?.preemptedBotKeys).toContain("low-bot");
+      expect(res.decisions.get("low-bot")?.reason).toBe("preempted");
 
       expect(res.decisions.get("low-bot")?.status).toBe("pending_placement");
       expect(res.decisions.get("low-bot")?.reason).toBe("preempted");

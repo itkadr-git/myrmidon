@@ -30,7 +30,7 @@ export function fleetMoveRoutes(deps: FleetMoveRoutesDeps): Router {
   async function handleMovePost(req: Request, res: Response): Promise<void> {
     assertBoard(req);
 
-    const botKey = req.params.key;
+    const botKey = typeof req.params.key === "string" ? req.params.key : undefined;
     if (!botKey) throw badRequest("botKey required");
 
     const parsed = moveBodySchema.safeParse(req.body ?? {});
@@ -64,7 +64,7 @@ export function fleetMoveRoutes(deps: FleetMoveRoutesDeps): Router {
   async function handleMoveGet(req: Request, res: Response): Promise<void> {
     assertBoard(req);
 
-    const botKey = req.params.key;
+    const botKey = typeof req.params.key === "string" ? req.params.key : undefined;
     if (!botKey) throw badRequest("botKey required");
 
     let companyId: string | undefined = typeof req.query.companyId === "string" ? req.query.companyId : undefined;
