@@ -57,7 +57,7 @@ describe("myrmidon(1.6.1 SWARM-IDLE-WAKE) released work", () => {
 });
 
 describe("myrmidon(1.6.1 SWARM-IDLE-WAKE) sweep pass", () => {
-  it("E2-E5: the next sweep claims released work and wakes its new owner", async () => {
+  it("E2-E5: the next sweep hands released work to its new owner", async () => {
     const wakes: Array<{ agentId: string; opts: Record<string, unknown> }> = [];
     const empty = <T>() => Promise.resolve([] as T[]);
     const issueTable = {
@@ -75,16 +75,25 @@ describe("myrmidon(1.6.1 SWARM-IDLE-WAKE) sweep pass", () => {
     const db = {
       query: { issues: issueTable },
       select: () => ({
-        from: () => {
-          const query = {
+        from: () => ({
+          innerJoin: () => ({
             where: () => ({
               orderBy: () => ({ limit: empty }),
+              groupBy: empty,
               limit: empty,
             }),
-            innerJoin: () => query,
-          };
-          return query;
-        },
+          }),
+          leftJoin: () => ({
+            leftJoin: () => ({
+              where: () => ({ orderBy: () => ({ limit: empty }) }),
+            }),
+          }),
+          where: () => ({
+            orderBy: () => ({ limit: empty }),
+            groupBy: empty,
+            limit: empty,
+          }),
+        }),
       }),
       insert: () => ({ values: () => ({ returning: empty }) }),
       transaction: async (fn: (tx: unknown) => Promise<unknown>) => fn(db),
