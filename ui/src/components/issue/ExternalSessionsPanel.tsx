@@ -44,8 +44,8 @@ export function ExternalSessionsPanel({
     },
     onSuccess: async (response) => {
       await queryClient.invalidateQueries({ queryKey: ["external-sessions", companyId, issueId] });
-      if (response.issueId && "id" in response) {
-        await issuesApi.addComment(response.issueId, `External session started (run ${response.id}). Use the session controls below to view logs or cancel.`);
+      if ("id" in response) {
+        await issuesApi.addComment(issueId, `External session started (run ${response.id}). Use the session controls below to view logs or cancel.`);
       }
     },
   });
