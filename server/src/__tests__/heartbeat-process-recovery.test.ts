@@ -6021,6 +6021,55 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     ).toBe(true);
   });
 
+  it("does not recreate a removed blocker when converting a continuation into dependency wait", async () => {
+    const { companyId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "cancelled",
+      retryReason: "issue_continuation_needed",
+      runErrorCode: "issue_continuation_waiting_on_review",
+      runError: "Continuation parked: issue is waiting for review/approval",
+    });
+    const removedBlockerId = randomUUID();
+    await db.insert(issues).values({
+      id: removedBlockerId,
+      companyId,
+      title: "Former blocker",
+      status: "in_progress",
+      priority: "medium",
+      issueNumber: 30,
+      identifier: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}-30`,
+    });
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: removedBlockerId,
+      relatedIssueId: issueId,
+      type: "blocks",
+    });
+    // Model the operator removing the blocker before reconciliation runs.
+    await db
+      .delete(issueRelations)
+      .where(
+        and(
+          eq(issueRelations.companyId, companyId),
+          eq(issueRelations.issueId, removedBlockerId),
+          eq(issueRelations.relatedIssueId, issueId),
+          eq(issueRelations.type, "blocks"),
+        ),
+      );
+
+    const result = await heartbeatService(db).reconcileStrandedAssignedIssues();
+
+    expect(result.waitingOnReviewResolved).toBe(0);
+    expect(result.escalated).toBe(1);
+    expect(await sourceBlockerIssueIds(companyId, issueId)).toEqual([]);
+    const issue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issue?.status).not.toBe("blocked");
+  });
+
   it("converts a continuation parked for review into a dependency wait on its existing blockers", async () => {
     const { companyId, agentId, issueId } = await seedStrandedIssueFixture({
       status: "in_progress",
