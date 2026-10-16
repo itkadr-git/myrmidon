@@ -3974,6 +3974,17 @@ export function recoveryService(
     rerouteToSharedQueue?: boolean;
   }) {
     if (isStrandedIssueRecoveryIssue(input.issue)) {
+      if (input.rerouteToSharedQueue) {
+        const rerouted = await rerouteStrandedIssueToSharedQueue({
+          issue: input.issue,
+          reason: input.notice?.title ?? "stranded recovery issue",
+          latestRun: input.latestRun,
+          previousStatus: input.previousStatus,
+          recoveryCause: input.recoveryCause,
+          successfulRunHandoffEvidence: input.successfulRunHandoffEvidence,
+        });
+        return rerouted ? input.issue : null;
+      }
       const activeActions = await db
         .select({ id: issueRecoveryActions.id })
         .from(issueRecoveryActions)
