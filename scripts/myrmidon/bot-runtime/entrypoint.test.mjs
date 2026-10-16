@@ -46,9 +46,9 @@ describe("docker/bot-runtime/entrypoint.sh", () => {
     assert.match(source, /timeout 120 reflink_self_check/);
     assert.match(source, /timeout 120 uv_cache_self_check/);
     assert.match(source, /timeout 120 git_objects_self_check/);
-    assert.match(source, /command -v reflink_self_check/);
-    assert.match(source, /command -v uv_cache_self_check/);
-    assert.match(source, /command -v git_objects_self_check/);
+    assert.match(source, /type -t reflink_self_check/);
+    assert.match(source, /type -t uv_cache_self_check/);
+    assert.match(source, /type -t git_objects_self_check/);
     assert.match(source, /DEVBUILD_BOT_NAME:-.*DEVBUILD_HOST:-.*devbuild/s);
   });
 
