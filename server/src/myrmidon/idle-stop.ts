@@ -49,7 +49,7 @@ export class IdleStopService {
       debug: (msg: string, ...args: any[]) => console.debug(`[DEBUG] ${msg}`, ...args),
     };
     this.config = {
-      enabled: config.enabled ?? false,
+      enabled: config.enabled ?? true,
       afterSec: config.afterSec ?? 1800, // 30 minutes default
       healthTimeoutMs: config.healthTimeoutMs ?? 30000,
       sweepIntervalMs: config.sweepIntervalMs ?? DEFAULT_SWEEP_INTERVAL_MS,

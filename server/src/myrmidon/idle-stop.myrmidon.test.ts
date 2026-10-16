@@ -84,6 +84,17 @@ describe('IdleStopService', () => {
     });
   }
 
+  describe('defaults', () => {
+    it('enables idle stop when no explicit setting is provided', () => {
+      const service = new IdleStopService(mockDriver, mockDb, {}, mockLogger);
+      service.start();
+      expect(mockLogger.info).toHaveBeenCalledWith(
+        'Starting IDLE-STOP service: afterSec=1800, healthTimeoutMs=30000',
+      );
+      service.stop();
+    });
+  });
+
   describe('sweeper functionality', () => {
     it('should not stop container with active runs', async () => {
       const botKey = '550e8400-e29b-41d4-a716-446655440000';
