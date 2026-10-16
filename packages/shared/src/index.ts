@@ -2898,6 +2898,15 @@ export * from "./myrmidon-datastore-care.js";
 export * from "./myrmidon-shared-mount.js";
 // myrmidon(BOT-RUNTIME-TUNING D2): the settings contract of the model fallback
 // signal (stored instance settings over environment over defaults).
+// Unique SETTINGS-TO-UI B registration module is imported for side effects by
+// myrmidon-behavior-settings.ts; avoid star-exporting its duplicate registry names.
+export {
+  RUNS_QUEUE_SECTION,
+  RUNS_QUEUE_SETTING_KEYS,
+  validateRunsQueueBoolean,
+  validateRunsQueueIntRange,
+} from "./myrmidon-runs-queue-settings.js";
+
 export * from "./myrmidon-fallback-signal.js";
 
 // myrmidon(1.6.5 BASE-SKILLS): the company base-skills contract — the list of

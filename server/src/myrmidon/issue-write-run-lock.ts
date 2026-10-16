@@ -30,18 +30,20 @@
  * it, and how this fits the rest of the write-lock decision.
  */
 
+import { liveRunPipelineSettings } from "./runs-queue-settings/live.js";
+
 export const WRITE_LOCK_REQUIRES_LIVE_RUN_ENV =
   "MYRMIDON_WRITE_LOCK_REQUIRES_LIVE_RUN";
 
 /**
- * Unset, empty, or anything other than "0"/"false" (case-insensitive) keeps
- * the fix enabled — CONVENTIONS.md §8: a defect fix defaults to on.
+ * OPE-4096: resolves live (UI value → env forced override → default on).
+ * Unset or anything other than an explicit off value keeps the fix enabled
+ * (CONVENTIONS.md §8); an explicit env value always wins.
  */
 export function isWriteLockLiveRunCheckEnabled(
   env: NodeJS.ProcessEnv = process.env,
 ): boolean {
-  const raw = env[WRITE_LOCK_REQUIRES_LIVE_RUN_ENV]?.trim().toLowerCase();
-  return raw !== "0" && raw !== "false";
+  return liveRunPipelineSettings(env).writeLockRequiresLiveRun;
 }
 
 /**

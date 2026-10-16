@@ -79,6 +79,9 @@ export class BehaviorSettingRegistry {
 /** Global registry instance */
 export const behaviorSettingRegistry = new BehaviorSettingRegistry();
 
+// Register runs-and-queue settings before the server builds the live settings view.
+import "./myrmidon-runs-queue-settings.js";
+
 // Example settings for self-validation - these will be removed in production
 behaviorSettingRegistry.register({
   key: "debug_mode",

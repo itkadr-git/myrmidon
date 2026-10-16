@@ -36,6 +36,7 @@ import { TeamLivenessSettingsPanel } from "@/components/myrmidon/TeamLivenessSet
 import { BotLspSettingsPanel } from "@/components/myrmidon/BotLspSettingsPanel"; // myrmidon(BOT-LSP-DEFAULTS)
 import { SwarmClaimSettingsPanel } from "@/components/myrmidon/SwarmClaimSettingsPanel"; // myrmidon(1.6.1 SWARM-SETTINGS-UI)
 import { ReviewReworkSettingsPanel } from "@/components/myrmidon/ReviewReworkSettingsPanel"; // myrmidon(REVIEW-REWORK)
+import { RunsQueueSettingsPanel } from "@/components/myrmidon/RunsQueueSettingsPanel"; // myrmidon(1.7, OPE-4096, SETTINGS-TO-UI B)
 import { ChannelSettingsPanel } from "@/components/myrmidon/ChannelSettingsPanel"; // myrmidon(SETTINGS-UI A)
 import { AboutSettingsPanel } from "@/components/myrmidon/AboutSettingsPanel"; // myrmidon(ABOUT)
 import { DeployJobsPanel } from "@/components/myrmidon/DeployJobsPanel"; // myrmidon(R5-A)
@@ -178,6 +179,7 @@ export function InstanceGeneralSettings({ embedded = false }: { embedded?: boole
       <BotLspSettingsPanel /> {/* myrmidon(BOT-LSP-DEFAULTS) */}
       <SwarmClaimSettingsPanel /> {/* myrmidon(1.6.1 SWARM-SETTINGS-UI) */}
       <ReviewReworkSettingsPanel /> {/* myrmidon(REVIEW-REWORK) */}
+      <RunsQueueSettingsPanel /> {/* myrmidon(1.7, OPE-4096, SETTINGS-TO-UI B) */}
       <ChannelSettingsPanel /> {/* myrmidon(SETTINGS-UI A, 1.7-SETTINGS-TO-UI) */}
       <DeployJobsPanel /> {/* myrmidon(R5-A) */}
       <PluginEntitlementSettings /> {/* myrmidon(PLUGIN-ENTITLEMENT C) */}
