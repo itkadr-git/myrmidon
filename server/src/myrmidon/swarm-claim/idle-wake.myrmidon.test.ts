@@ -97,7 +97,20 @@ describe("myrmidon(1.6.1 SWARM-IDLE-WAKE) sweep pass", () => {
           }),
           leftJoin: () => ({
             leftJoin: () => ({
-              where: () => ({ orderBy: empty }),
+              where: () => ({
+                orderBy: () => Promise.resolve([
+                  {
+                    issueId: "released-issue",
+                    identifier: "ENG-42",
+                    priority: "medium",
+                    pheromoneStrength: 0,
+                    failedRunsSinceLastChange: 0,
+                    queuedAt: NOW,
+                    assigneeAgentId: null,
+                    projectId: null,
+                  },
+                ]),
+              }),
             }),
           }),
           where: () => ({
