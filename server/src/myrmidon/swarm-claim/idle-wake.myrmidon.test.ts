@@ -73,6 +73,7 @@ describe("myrmidon(1.6.1 SWARM-IDLE-WAKE) sweep pass", () => {
       update: vi.fn(async () => [{ id: "released-issue" }]),
     };
     const fakeQueryResults: unknown[][] = [
+      [], // listClaimsOnNonQueueIssues
       [{ id: "released-issue", status: "todo", assigneeAgentId: null }], // claim lock/read
     ];
     let releasedQueryIndex = 0;
