@@ -176,6 +176,15 @@ describeEmbeddedPostgres("heartbeat task-drain admission release", () => {
   it("keeps an active adapter run in flight until graceful shutdown records its retry", async () => {
     const { companyId, agentId, issueId, runId, wakeupRequestId } = await seedQueuedRun();
     const heartbeat = heartbeatService(db);
+    await db.insert(companySkills).values({
+      companyId,
+      key: "heartbeat-task-drain-race",
+      name: "Heartbeat task drain race",
+      description: "Test-only skill fixture",
+      markdown: "# Test fixture",
+      source: "local",
+      updatedByAgentId: null,
+    });
     const retainTrust = vi.spyOn(runTrustPreset, "resolveAndRetainRunTrustPreset").mockImplementation(async (_db, input) => {
       const runDb = _db as typeof db;
       await runDb.insert(heartbeatRuns).values({
