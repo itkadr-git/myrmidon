@@ -3,6 +3,7 @@ import { createReadStream } from "node:fs";
 import { lstat, readdir } from "node:fs/promises";
 import path from "node:path";
 import { inspectMigrations } from "@paperclipai/db";
+import { verifyPgDumpMigrationChain } from "./myrmidon-migrate-compatibility.js";
 
 type MigrationOptions = {
   sourceUrl?: string;
@@ -15,7 +16,7 @@ type MigrationOptions = {
 
 type InventoryEntry = { path: string; sizeBytes: number; sha256: string };
 
-const SUPPORTED_COMMON_BASE = "0279";
+const SUPPORTED_COMMON_BASE = "0279_tired_deathstrike";
 
 function requireExactlyOne(options: MigrationOptions): "url" | "dump" {
   const hasUrl = Boolean(options.sourceUrl?.trim());
@@ -85,15 +86,12 @@ export async function myrmidonMigrateCommand(options: MigrationOptions): Promise
     const dumpPath = path.resolve(options.sourceDump!);
     const stats = await lstat(dumpPath);
     if (!stats.isFile()) throw new Error(`Source dump is not a regular file: ${dumpPath}`);
-    result.sourceDump = { path: dumpPath, sizeBytes: stats.size, sha256: await hashFile(dumpPath) };
+    const content = await import("node:fs/promises").then(({ readFile }) => readFile(dumpPath, "utf8"));
+    const chain = verifyPgDumpMigrationChain(content);
+    result.sourceDump = { sizeBytes: stats.size, sha256: await hashFile(dumpPath), migrationChain: chain };
   } else {
     const state = await inspectMigrations(options.sourceUrl!);
-    result.sourceMigrations = state;
-    if (state.appliedMigrations.at(-1)?.slice(0, 4) !== SUPPORTED_COMMON_BASE) {
-      throw new Error(
-        `Unsupported source migration history; exact hash-chain compatibility is required and only common base ${SUPPORTED_COMMON_BASE} is supported.`,
-      );
-    }
+    throw new Error(`Source URL migration inspection is not an exact hash-chain proof (status ${state.status}); URL sources are rejected until the database exposes verifiable applied hashes.`);
   }
 
   if (options.targetDir) {
@@ -119,7 +117,7 @@ export async function myrmidonMigrateCommand(options: MigrationOptions): Promise
 export function registerMyrmidonMigrateCommand(program: { command: (name: string) => any }): void {
   program
     .command("myrmidon:migrate")
-    .description("Preflight or dry-run a fail-closed Paperclip to Myrmidon migration")
+    .description(`Preflight or dry-run a fail-closed Paperclip to Myrmidon migration (compatible through ${SUPPORTED_COMMON_BASE})`)
     .option("--source-url <url>", "Read-only source PostgreSQL URL")
     .option("--source-dump <path>", "Read-only source pg_dump file")
     .option("--target-url <url>", "Target PostgreSQL URL (never written in preflight/dry-run)")
