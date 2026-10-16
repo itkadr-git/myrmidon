@@ -13,13 +13,18 @@ import { fileURLToPath } from "node:url";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 const ENTRYPOINT = path.join(ROOT, "docker/bot-runtime/entrypoint.sh");
+const COREUTILS_TIMEOUT = "/usr/bin/timeout";
 
 function run(env) {
-  return spawnSync("bash", [ENTRYPOINT], {
-    env: { PATH: process.env.PATH, HOME: process.env.HOME, ...env },
+  const bin = fs.mkdtempSync(path.join(os.tmpdir(), "myrmidon-test-bin-"));
+  fs.symlinkSync(COREUTILS_TIMEOUT, path.join(bin, "timeout"));
+  const result = spawnSync("bash", [ENTRYPOINT], {
+    env: { PATH: `${bin}:${process.env.PATH}`, HOME: process.env.HOME, ...env },
     encoding: "utf8",
     timeout: 10_000,
   });
+  fs.rmSync(bin, { recursive: true, force: true });
+  return result;
 }
 
 /** A fresh HERMES_HOME dir, optionally with a .env carrying API_SERVER_KEY. */
@@ -197,6 +202,9 @@ function runWithStub(env, probeDir) {
   const bin = probeDir ?? stubHermes();
   if (probeDir && !fs.existsSync(path.join(bin, "hermes"))) {
     fs.writeFileSync(path.join(bin, "hermes"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+  }
+  if (!fs.existsSync(path.join(bin, "timeout"))) {
+    fs.symlinkSync(COREUTILS_TIMEOUT, path.join(bin, "timeout"));
   }
   try {
     // PATH is the stub dir plus the base system dirs only: the dev-variant
