@@ -176,16 +176,6 @@ describeEmbeddedPostgres("heartbeat task-drain admission release", () => {
   it("keeps an active adapter run in flight until graceful shutdown records its retry", async () => {
     const { companyId, agentId, issueId, runId, wakeupRequestId } = await seedQueuedRun();
     const heartbeat = heartbeatService(db);
-    await db.insert(companySkills).values({
-      companyId,
-      key: "heartbeat-task-drain-race",
-      slug: "heartbeat-task-drain-race",
-      name: "Heartbeat task drain race",
-      description: "Test-only skill fixture",
-      markdown: "# Test fixture",
-      source: "local",
-      updatedByAgentId: null,
-    });
     const retainTrust = vi.spyOn(runTrustPreset, "resolveAndRetainRunTrustPreset").mockImplementation(async (_db, input) => {
       const runDb = _db as typeof db;
       await runDb.insert(heartbeatRuns).values({
@@ -206,20 +196,26 @@ describeEmbeddedPostgres("heartbeat task-drain admission release", () => {
         .update(issues)
         .set({ status: "in_progress", executionRunId: input.runId })
         .where(eq(issues.id, issueId));
-      await runDb.insert(heartbeatRunEvents).values({
-        companyId,
-        agentId,
-        runId: input.runId,
-        seq: 1,
-        eventType: "adapter.invoke",
-        payload: { adapterType: "codex_local" },
-      });
       return { trustPreset: { kind: "standard" }, executionPolicy: null } as never;
+    });
+    const activeAdapter = new Promise<void>((resolve) => {
+      const unsubscribe = subscribeCompanyLiveEvents(companyId, (event) => {
+        const payload = event.payload as { runId?: string; eventType?: string };
+        if (
+          event.type === "heartbeat.run.event" &&
+          payload.runId === runId &&
+          payload.eventType === "adapter.invoke"
+        ) {
+          unsubscribe();
+          resolve();
+        }
+      });
     });
     let activePromise: Promise<unknown> | undefined;
     try {
       activePromise = heartbeat.invoke(agentId, "assignment", { issueId }, "system");
       await waitForActiveRun(runId);
+      await activeAdapter;
 
       const activeState = getTaskDrainStatus();
       expect(activeState.activeRuns).toBe(1);
@@ -228,7 +224,7 @@ describeEmbeddedPostgres("heartbeat task-drain admission release", () => {
       startTaskDrain({});
       const shutdown = await heartbeat.drainRunningRunsForShutdown("SIGTERM", new Date(), [runId]);
       expect(shutdown.interruptedRunIds).toEqual([runId]);
-      expect(shutdown.retryRunIds).toHaveLength(1);
+      expect(shutdown.retryRunIds).toEqual([runId]);
       await heartbeat.drainActiveRunExecutions();
       await activePromise;
 
