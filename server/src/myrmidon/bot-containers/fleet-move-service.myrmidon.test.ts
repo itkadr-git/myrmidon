@@ -28,7 +28,7 @@ describe("FleetMoveService", () => {
           botKey,
           host: srcSite,
         },
-        apiBaseUrl: `http://10.10.0.110:8642`,
+        apiBaseUrl: `http://site-myr-vm1:8642`,
       },
     };
 
@@ -126,7 +126,7 @@ describe("FleetMoveService", () => {
         return mockSiteAgent(site);
       },
       async getSiteUrl(site) {
-        return site === "myr-vm1" ? "http://10.10.0.110:9100" : "http://10.10.100.1:9100";
+        return site === "myr-vm1" ? "http://site-myr-vm1:9100" : "http://site-vm-core:9100";
       },
 
       async getAgentCard(key) {
@@ -221,7 +221,7 @@ describe("FleetMoveService", () => {
     // Verify agent card was updated
     const finalCard = harness.getCard();
     expect(finalCard.adapterConfig.container.host).toBe("vm-core");
-    expect(finalCard.adapterConfig.apiBaseUrl).toBe("http://10.10.100.1:18642");
+    expect(finalCard.adapterConfig.apiBaseUrl).toBe("http://site-vm-core:18642");
   });
 
   it("supports roundtrip move work-qa myr-vm1 -> vm-core -> back to myr-vm1", async () => {
@@ -244,7 +244,7 @@ describe("FleetMoveService", () => {
     });
     expect(move2.phase).toBe("done");
     expect(harness.getCard().adapterConfig.container.host).toBe("myr-vm1");
-    expect(harness.getCard().adapterConfig.apiBaseUrl).toBe("http://10.10.0.110:18642");
+    expect(harness.getCard().adapterConfig.apiBaseUrl).toBe("http://site-myr-vm1:18642");
   });
 
   it("fails gracefully and records error in phase log when a phase throws", async () => {
