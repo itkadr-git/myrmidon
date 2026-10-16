@@ -17,7 +17,7 @@
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { and, eq } from "drizzle-orm";
-import { authAccounts, authSessions, authUsers, createDb, instanceSettings } from "@paperclipai/db";
+import { authAccounts, authSessions, authUsers, companyMemberships, companies, createDb, instanceSettings, principalPermissionGrants } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -138,6 +138,27 @@ describeEmbeddedPostgres("users-admin-a: admin-managed users", () => {
     expect(signIn.body?.user?.email).toBe("boardlogin@myr.local");
     const cookies = String(signIn.headers["set-cookie"] ?? "");
     expect(cookies).toContain("session_token");
+  });
+
+  it("creates the requested company membership and role grants", async () => {
+    const company = await db.insert(companies).values({
+      name: "Users admin test company",
+      issuePrefix: `UA${Math.random().toString(36).slice(2, 8).toUpperCase()}`,
+    }).returning().then((rows) => rows[0]!);
+    const created = await usersAdminCreateUser(db, {
+      username: "companyoperator",
+      password: USER_PASSWORD,
+      role: "member",
+      companyId: company.id,
+      companyRole: "operator",
+      actorUserId: "00000000-0000-0000-0000-000000000001",
+    });
+    const membership = await db.select().from(companyMemberships).where(eq(companyMemberships.principalId, created.id));
+    const grants = await db.select().from(principalPermissionGrants).where(eq(principalPermissionGrants.principalId, created.id));
+    expect(membership).toHaveLength(1);
+    expect(membership[0]?.companyId).toBe(company.id);
+    expect(membership[0]?.membershipRole).toBe("operator");
+    expect(grants.map((grant) => grant.permissionKey)).toContain("tasks:assign");
   });
 
   it("refuses self-registration while the switch is off, then allows it after the instance enables it", async () => {

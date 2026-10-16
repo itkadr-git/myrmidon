@@ -40,6 +40,8 @@ const createUserSchema = z
     /** Either a password or a one-time password-set link (omit both = link). */
     password: z.string().min(8).max(128).optional().nullable(),
     role: z.enum(["instance_admin", "member"]).default("member"),
+    companyId: z.string().uuid().optional(),
+    companyRole: z.enum(["owner", "admin", "operator", "viewer"]).optional(),
   })
   .strict();
 
@@ -202,6 +204,15 @@ export function usersAdminRoutes(db: Db) {
       }
     },
   );
+
+  router.get("/myrmidon/password-set", (req, res) => {
+    const token = typeof req.query.token === "string" ? req.query.token : "";
+    if (!token) {
+      res.status(400).send("Password setup token is required");
+      return;
+    }
+    res.type("html").send(`<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Set password</title></head><body><main><h1>Set your password</h1><form id="password-form"><label>New password <input name="password" type="password" minlength="8" required autocomplete="new-password"></label><button>Save password</button><p id="result" role="status"></p></form></main><script>const token=${JSON.stringify(token)};document.getElementById('password-form').addEventListener('submit',async e=>{e.preventDefault();const p=e.currentTarget.elements.password.value;const r=await fetch('/api/myrmidon/users-admin-a/password-set',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({token,newPassword:p})});document.getElementById('result').textContent=r.ok?'Password saved. You can now sign in.':'This password link is invalid or expired.';});</script></body></html>`);
+  });
 
   router.get("/myrmidon/users-admin-a/self-sign-up", async (req, res) => {
     assertBoardOrgAccess(req);

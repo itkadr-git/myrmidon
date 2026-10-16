@@ -30,7 +30,10 @@ import {
   authAccounts,
   authSessions,
   authUsers,
+  companyMemberships,
   instanceUserRoles,
+  principalPermissionGrants,
+  companies,
   userPasswordSetTokens,
 } from "@paperclipai/db";
 import {
@@ -46,6 +49,7 @@ import {
   type AuthSelfSignUpSource,
 } from "@paperclipai/shared";
 import { setBlockedUser, readStoredBlockedUsers } from "./store.js";
+import { grantsForHumanRole } from "../../services/company-member-roles.js";
 
 // The vendor's own password primitives (@better-auth/utils via
 // better-auth/crypto): scrypt with the exact parameters Better Auth's
@@ -58,6 +62,7 @@ export const CREDENTIAL_ISSUER = "local:credential";
 export const PASSWORD_SET_TOKEN_TTL_MS = 24 * 60 * 60 * 1000;
 
 export type UserRole = "instance_admin" | "member";
+export type HumanCompanyRole = "owner" | "admin" | "operator" | "viewer";
 
 export interface CreateUserData {
   username: string;
@@ -65,6 +70,8 @@ export interface CreateUserData {
   email?: string | null;
   password?: string | null;
   role: UserRole;
+  companyId?: string | null;
+  companyRole?: HumanCompanyRole;
   actorUserId: string;
 }
 
@@ -149,6 +156,10 @@ export async function createUser(db: Db, input: CreateUserData): Promise<Created
   let passwordHash: string | null = null;
 
   await db.transaction(async (tx) => {
+    if (input.role === "member" && input.companyId) {
+      const company = await tx.select({ id: companies.id }).from(companies).where(eq(companies.id, input.companyId)).then((rows) => rows[0] ?? null);
+      if (!company) notFound("Company not found");
+    }
     await tx.insert(authUsers).values({
       id: userId,
       name: input.displayName?.trim() || username,
@@ -171,7 +182,7 @@ export async function createUser(db: Db, input: CreateUserData): Promise<Created
         issuedByUserId: input.actorUserId,
         createdAt: now,
       });
-      passwordSetLink = `/api/myrmidon/users-admin-a/password-set?token=${token}`;
+      passwordSetLink = `/myrmidon/password-set?token=${encodeURIComponent(token)}`;
     }
 
     await tx.insert(authAccounts).values({
@@ -190,6 +201,26 @@ export async function createUser(db: Db, input: CreateUserData): Promise<Created
         .insert(instanceUserRoles)
         .values({ userId, role: "instance_admin" })
         .onConflictDoNothing({ target: [instanceUserRoles.userId, instanceUserRoles.role] });
+    } else if (input.companyId) {
+      const membershipRole = input.companyRole ?? "operator";
+      await tx.insert(companyMemberships).values({
+        companyId: input.companyId,
+        principalType: "user",
+        principalId: userId,
+        status: "active",
+        membershipRole,
+      });
+      const grants = grantsForHumanRole(membershipRole);
+      if (grants.length) {
+        await tx.insert(principalPermissionGrants).values(grants.map((grant) => ({
+          companyId: input.companyId!,
+          principalType: "user",
+          principalId: userId,
+          permissionKey: grant.permissionKey,
+          scope: grant.scope,
+          grantedByUserId: input.actorUserId,
+        })));
+      }
     }
   });
 
@@ -267,7 +298,7 @@ export async function resetUserPassword(
     issuedByUserId: input.actorUserId,
     createdAt: now,
   });
-  return { passwordSetLink: `/api/myrmidon/users-admin-a/password-set?token=${token}` };
+  return { passwordSetLink: `/myrmidon/password-set?token=${encodeURIComponent(token)}` };
 }
 
 /** Consumes a one-time password-set token. 404 on unknown/used, 410 on expired. */
