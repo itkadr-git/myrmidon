@@ -142,42 +142,12 @@ describeEmbeddedPostgres("reconcileStrandedAssignedIssues: infrastructure interr
     expect(issue!.status).toBe("in_progress");
   }, 30_000);
 
-  it("returns terminal stranded work to the shared unassigned engineer queue", async () => {
-    const { companyId, issueId } = await seedStrandedIssue({
+  it("returns stranded work to the shared unassigned engineer queue", async () => {
+    const { issueId } = await seedStrandedIssue({
       errorCode: "adapter_failed",
       scheduledRetryAttempt: 0,
       createdAtOffsetMs: 0,
       scheduledRetryReason: "Recovery retry budget was exhausted",
-    });
-    await db.update(issues).set({ status: "in_progress", assigneeAgentId: null }).where(eq(issues.id, issueId));
-    const [manager] = await db.insert(agents).values({
-      id: randomUUID(),
-      companyId,
-      name: "recovery-coordinator",
-      role: "engineer",
-      status: "active",
-      adapterType: "codex_local",
-      adapterConfig: {},
-      runtimeConfig: {},
-      permissions: {},
-    }).returning();
-    const coordinatorIssueId = randomUUID();
-    const now = new Date();
-    await db.insert(issues).values({
-      id: coordinatorIssueId,
-      companyId,
-      title: "Recovery coordinator",
-      status: "in_progress",
-      priority: "medium",
-      assigneeAgentId: manager!.id,
-      createdAt: now,
-      updatedAt: now,
-    });
-    await db.insert(issueRelations).values({
-      companyId,
-      issueId: coordinatorIssueId,
-      relatedIssueId: issueId,
-      type: "blocks",
     });
 
     await heartbeatService(db).reconcileStrandedAssignedIssues();
@@ -207,8 +177,8 @@ describeEmbeddedPostgres("reconcileStrandedAssignedIssues: infrastructure interr
     });
     await db.insert(issueRelations).values({
       companyId,
-      issueId,
-      relatedIssueId: blockerId,
+      issueId: blockerId,
+      relatedIssueId: issueId,
       type: "blocks",
     });
 
@@ -218,9 +188,26 @@ describeEmbeddedPostgres("reconcileStrandedAssignedIssues: infrastructure interr
     expect(issue!.status).toBe("blocked");
   }, 30_000);
 
+  it("returns an assigned terminal reroute to todo and wakes the same engineer", async () => {
+    const { companyId, agentId, issueId } = await seedStrandedIssue({
+      errorCode: "adapter_failed",
+      scheduledRetryAttempt: 0,
+      createdAtOffsetMs: 0,
+      scheduledRetryReason: "Recovery retry budget was exhausted",
+    });
+    await db.update(agents).set({ status: "active" }).where(eq(agents.id, agentId));
+
+    await heartbeatService(db).reconcileStrandedAssignedIssues();
+
+    const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
+    expect(issue!.status).toBe("todo");
+    expect(issue!.assigneeAgentId).toBe(agentId);
+    const wake = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+    expect(wake.some((run: typeof heartbeatRuns.$inferSelect) => run.contextSnapshot && (run.contextSnapshot as Record<string, unknown>).issueId === issueId)).toBe(true);
+  }, 30_000);
+
   it("still escalates to the board once the shared infra-interrupt retry budget is exhausted", async () => {
     const { issueId } = await seedStrandedIssue({ errorCode: "agent_paused", scheduledRetryAttempt: 2 });
-
     await heartbeatService(db).reconcileStrandedAssignedIssues();
 
     const actions = await activeRecoveryActionsFor(issueId);
