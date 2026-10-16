@@ -529,7 +529,7 @@ describe.sequential("agent permission routes", () => {
     expect(res.headers["cache-control"]).toBe("private, must-revalidate");
     expect(mockAgentService.listSummariesVersionKey).toHaveBeenCalledWith(
       companyId,
-      "board:board-user:user",
+      "board:board-user:admin",
     );
     expect(mockAgentService.listSummaries).toHaveBeenCalledWith(companyId);
     expect(mockAgentService.list).not.toHaveBeenCalled();
