@@ -280,6 +280,8 @@ describeProcs("drain and failover e2e: supervisor in-process, two api children (
           execArgv: [
             ...execArgv,
             "--import",
+            "data:text/javascript,if(typeof%20process.send==='function')process.send=process.send.bind(process);",
+            "--import",
             pathToFileURL(tsxLoader).href,
             "--max-old-space-size=1024",
           ],
@@ -294,9 +296,9 @@ describeProcs("drain and failover e2e: supervisor in-process, two api children (
       clearTimeout,
       log: {
         debug: () => undefined,
-        info: () => undefined,
-        warn: () => undefined,
-        error: () => undefined,
+        info: (fields: object, message: string) => console.log(`[supervisor:info] ${message}`, fields),
+        warn: (fields: object, message: string) => console.warn(`[supervisor:warn] ${message}`, fields),
+        error: (fields: object, message: string) => console.error(`[supervisor:error] ${message}`, fields),
       },
     });
   }, 360_000);
