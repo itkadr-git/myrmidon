@@ -235,7 +235,9 @@ export function scheduleSitePlacements(
   unpinnedBots.sort((a, b) => {
     const pA = priorityRank[a.priority ?? "medium"] ?? 2;
     const pB = priorityRank[b.priority ?? "medium"] ?? 2;
-    return pB - pA;
+    // Place lower-priority bots first only when preemption is enabled, so P0
+    // placement can reclaim capacity from eligible low-priority occupants.
+    return options.preemptionEnabled ? pA - pB : pB - pA;
   });
 
   // 2. Process bots with affinity rules
@@ -262,7 +264,8 @@ export function scheduleSitePlacements(
         // Preemption check: if preemptionEnabled and agent is critical (P0)
         let preempted = false;
         if (options.preemptionEnabled && agent.priority === "critical") {
-          // Find low priority bots currently on targetSite that are not pinned
+          // Find low priority bots currently on targetSite that are not pinned.
+          // Capacity is resource-based; evict until the critical bot actually fits.
           const lowBotsOnSite = alloc.bots
             .map((k) => botMap.get(k))
             .filter((b): b is AgentPlacementInput => b !== undefined && !b.hostPinned && b.priority === "low");
@@ -272,7 +275,6 @@ export function scheduleSitePlacements(
             deallocate(targetSiteName, lowBot);
             evictedKeys.push(lowBot.botKey);
 
-            // Re-check if agent now fits
             if (fitsInSite(targetSite.capacity, allocations.get(targetSiteName)!, agent.spec)) {
               preempted = true;
               break;
