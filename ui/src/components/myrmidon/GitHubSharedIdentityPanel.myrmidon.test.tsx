@@ -248,6 +248,7 @@ describe("GitHubSharedIdentityPanelView", () => {
       bodyFromDraft({
         enabled: false,
         commitEmailDomain: " example.com ",
+        pats: [{ id: "pat-1", name: " PAT ", tokenSecretId: " secret-1 ", allowedRepos: "BastionPrime/wellboard, BastionPrime/wellmagram", agentIds: [" agent-1 "] }],
         apps: [
           {
             id: ENTRY_A,
@@ -265,6 +266,7 @@ describe("GitHubSharedIdentityPanelView", () => {
     ).toEqual({
       enabled: false,
       commitEmailDomain: "example.com",
+      pats: [{ id: "pat-1", name: "PAT", tokenSecretId: "secret-1", allowedRepos: ["BastionPrime/wellboard", "BastionPrime/wellmagram"], agentIds: ["agent-1"] }],
       apps: [
         {
           id: ENTRY_A,
