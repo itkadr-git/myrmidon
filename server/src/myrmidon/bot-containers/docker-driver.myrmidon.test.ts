@@ -4,6 +4,7 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { applyLiveBehaviorSettings, liveBehaviorSettingsView } from "../behavior-settings/live.js";
 import {
   APPLIED_MARKER_CONTAINER_PATH,
   BOT_CONTAINER_UID,
@@ -21,6 +22,8 @@ import {
   CONTAINER_TEMPLATE_INSPECT_FIELDS,
   demuxDockerLogs,
   dockerBotContainerDriver,
+  readDockerDriverConfig,
+  BOT_VOLUME_ROOT_ENV,
   parseAppliedMarker,
   serializeAppliedMarker,
   templateDriftFields,
@@ -88,6 +91,21 @@ function testProfile(
 }
 
 const NONCE = "00112233aabbccdd";
+
+describe("readDockerDriverConfig YOLO setting", () => {
+  it("uses the live instance setting and lets explicit process env override it", () => {
+    const previous = liveBehaviorSettingsView();
+    applyLiveBehaviorSettings({ settings: { bot_yolo: false }, sources: {} as never });
+    try {
+      const volume = { [BOT_VOLUME_ROOT_ENV]: "/var/lib/myrmidon/bots" };
+      expect(readDockerDriverConfig(volume).yolo).toBe(false);
+      expect(readDockerDriverConfig({ ...volume, [BOT_YOLO_ENV]: "true" }).yolo).toBe(true);
+      expect(readDockerDriverConfig({ ...volume, [BOT_YOLO_ENV]: "0" }).yolo).toBe(false);
+    } finally {
+      applyLiveBehaviorSettings(previous);
+    }
+  });
+});
 
 describe("buildCreateContainerRequestBody", () => {
   it("adds the read-only git mirror bind after the writable cache binds (1.6.2-BOT-DISK-C)", () => {
