@@ -19,11 +19,23 @@ function parseBoolean(raw: string): boolean | null {
   return null;
 }
 
+function parseStrictOn(raw: string): boolean | null {
+  return raw === "1" ? true : raw === "0" ? false : null;
+}
+
 function parseIntInRange(min: number, max: number) {
   return (raw: string): number | null => {
     const value = Number(raw);
     if (!Number.isInteger(value) || value < min || value > max) return null;
     return value;
+  };
+}
+
+function parseClampedInt(min: number, max: number) {
+  return (raw: string): number | null => {
+    const value = Number(raw);
+    if (!Number.isInteger(value) || value < 0 || value > max) return null;
+    return Math.max(min, value);
   };
 }
 
@@ -58,7 +70,7 @@ function resolve<T>(
 export function liveIdlePickupSettings(env: NodeJS.ProcessEnv = process.env) {
   return {
     enabled: resolve(env, "MYRMIDON_IDLE_PICKUP_ENABLED", "runsQueue.idlePickup.enabled", parseBoolean, true),
-    intervalSec: resolve(env, "MYRMIDON_IDLE_PICKUP_INTERVAL_SEC", "runsQueue.idlePickup.intervalSec", parseIntInRange(5, Number.MAX_SAFE_INTEGER), 30),
+    intervalSec: resolve(env, "MYRMIDON_IDLE_PICKUP_INTERVAL_SEC", "runsQueue.idlePickup.intervalSec", parseClampedInt(5, Number.MAX_SAFE_INTEGER), 30),
     recentSuccessWindowMs: resolve(env, "MYRMIDON_IDLE_PICKUP_RECENT_SUCCESS_WINDOW_MS", "runsQueue.idlePickup.recentSuccessWindowMs", parseIntInRange(0, Number.MAX_SAFE_INTEGER), 15 * 60 * 1000),
   };
 }
@@ -112,7 +124,7 @@ export function liveStrandedSettings(env: NodeJS.ProcessEnv = process.env) {
   return {
     enabled: resolve(env, "MYRMIDON_STRANDED_AUTOPOLICY_ENABLED", "runsQueue.strandedAutopolicy.enabled", parseBoolean, true),
     autoRetriesPerDay: resolve(env, "MYRMIDON_STRANDED_AUTO_RETRIES_PER_DAY", "runsQueue.strandedAutopolicy.autoRetriesPerDay", parseIntInRange(0, Number.MAX_SAFE_INTEGER), 2),
-    settledHoldsBlockExplicitWakes: resolve(env, "MYRMIDON_SETTLED_HOLDS_BLOCK_EXPLICIT_WAKES", "runsQueue.settledHolds.blockExplicitWakes", parseBoolean, false),
+    settledHoldsBlockExplicitWakes: resolve(env, "MYRMIDON_SETTLED_HOLDS_BLOCK_EXPLICIT_WAKES", "runsQueue.settledHolds.blockExplicitWakes", parseStrictOn, false),
   };
 }
 
@@ -120,7 +132,7 @@ export function liveStrandedSettings(env: NodeJS.ProcessEnv = process.env) {
 export function liveRunPipelineSettings(env: NodeJS.ProcessEnv = process.env) {
   return {
     infraInterruptCodes: resolve(env, "MYRMIDON_INFRA_INTERRUPT_CODES", "runsQueue.infraInterrupt.codes", parseStringList, ["agent_paused", "process_lost", "server_shutdown_interrupted", "issue_reassigned"]),
-    writeLockRequiresLiveRun: resolve(env, "MYRMIDON_WRITE_LOCK_REQUIRES_LIVE_RUN", "runsQueue.writeLock.requiresLiveRun", parseBoolean, true),
+    writeLockRequiresLiveRun: resolve(env, "MYRMIDON_WRITE_LOCK_REQUIRES_LIVE_RUN", "runsQueue.writeLock.requiresLiveRun", parseStrictOn, true),
     crossIssueInfluenceLimit: resolve(env, "MYRMIDON_CROSS_ISSUE_INFLUENCE_LIMIT", "runsQueue.crossIssueInfluence.limit", parseIntInRange(1, Number.MAX_SAFE_INTEGER), 20),
     continuationHistoryLimit: resolve(env, "MYRMIDON_CONTINUATION_HISTORY_LIMIT", "runsQueue.continuationHistory.limit", parseIntInRange(0, Number.MAX_SAFE_INTEGER), 30),
     staleLeaseGraceMs: resolve(env, "MYRMIDON_STALE_LEASE_GRACE_MS", "runsQueue.staleLease.graceMs", parseIntInRange(0, Number.MAX_SAFE_INTEGER), 10 * 60 * 1000),
@@ -144,11 +156,9 @@ export function liveSwarmSettings(env: NodeJS.ProcessEnv = process.env) {
 
 /** DB backup catch-up window (empty = off). */
 export function liveDbBackupCatchupWindow(env: NodeJS.ProcessEnv = process.env): string {
-  return resolve(env, "MYRMIDON_DB_BACKUP_CATCHUP_WINDOW", "runsQueue.dbBackup.catchupWindow", (raw) => {
-    const trimmed = raw.trim();
-    if (trimmed === "") return "";
-    return /^(\S+)\s+(\d{1,2}):(\d{2})\s*-\s*(\d{1,2}):(\d{2})$/.test(trimmed) ? trimmed : null;
-  }, "");
+  const raw = env.MYRMIDON_DB_BACKUP_CATCHUP_WINDOW?.trim();
+  if (raw) return raw;
+  return liveBehaviorSetting<string>("runsQueue.dbBackup.catchupWindow") ?? "";
 }
 
 /** Workspace hygiene: cooldown for merged worktrees and stuck-signal threshold. */
