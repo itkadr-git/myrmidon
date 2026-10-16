@@ -184,12 +184,14 @@ describeEmbeddedPostgres("reconcileStrandedAssignedIssues: infrastructure interr
   }, 30_000);
 
   it("keeps real unresolved blockers on blocked issues during reroute", async () => {
-    const { companyId, issueId } = await seedStrandedIssue({
+    const terminalRetryIssue = await seedStrandedIssue({
       errorCode: "adapter_failed",
       scheduledRetryAttempt: 0,
       createdAtOffsetMs: 0,
       scheduledRetryReason: "Recovery retry budget was exhausted",
     });
+    const { companyId, issueId } = terminalRetryIssue;
+    await db.update(issues).set({ status: "in_progress" }).where(eq(issues.id, issueId));
     const blockerId = randomUUID();
     const now = new Date();
     await db.insert(issues).values({

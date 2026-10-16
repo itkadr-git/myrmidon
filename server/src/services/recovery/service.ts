@@ -3902,7 +3902,7 @@ export function recoveryService(
         issue: input.issue,
         reason: input.latestRun?.errorCode ?? input.recoveryCause ?? "stranded_assigned_issue",
       });
-      return rerouted ? input.issue : null;
+      if (rerouted) return input.issue;
     }
     if (isStrandedIssueRecoveryIssue(input.issue)) {
       const activeActions = await db
