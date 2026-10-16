@@ -288,42 +288,25 @@ export const SUPPORTED_SOURCE_TAGS = [
   "0279_tired_deathstrike"
 ] as const;
 
-type Journal = {
-  version: string;
-  dialect?: string;
-  entries: Array<{ idx: number; when: number; tag: string; breakpoints: boolean }>;
-};
+type Journal = { version: string; dialect: string; entries: Array<{ idx: number; version: string; when: number; tag: string; breakpoints: boolean }> };
 
 function assertSupportedJournal(value: unknown): Journal {
   if (!value || typeof value !== "object") throw new Error("Unsupported source migration journal.");
-  const journal = value as Partial<Journal>;
-  if (journal.version !== SUPPORTED_SOURCE_JOURNAL.version || journal.dialect !== "postgresql" || !Array.isArray(journal.entries)) {
+  const journal = value as { version?: unknown; dialect?: unknown; entries?: unknown };
+  if (journal.version !== "7" || !Array.isArray(journal.entries)) {
     throw new Error("Unsupported source migration journal version or dialect.");
   }
-  const canonical = JSON.stringify(journal);
-  const bytes = new TextEncoder().encode(canonical);
-  const sha256 = createHash("sha256").update(bytes).digest("hex");
-  const entries = journal.entries;
-  if (
-    entries.length !== SUPPORTED_SOURCE_JOURNAL.entryCount ||
-    entries.at(-1)?.tag !== SUPPORTED_SOURCE_JOURNAL.lastTag ||
-    sha256 !== SUPPORTED_SOURCE_JOURNAL.sha256 ||
-    entries.some((entry, index) => !entry || entry.idx !== index || typeof entry.when !== "number" || typeof entry.tag !== "string" || typeof entry.breakpoints !== "boolean")
-  ) {
+  const entries = journal.entries as Array<{ idx?: unknown; version?: unknown; when?: unknown; tag?: unknown; breakpoints?: unknown }>;
+  if (entries.length !== SUPPORTED_SOURCE_JOURNAL.entryCount || entries.some((entry, index) =>
+    !entry || entry.idx !== index || entry.version !== "7" || typeof entry.when !== "number" ||
+    entry.tag !== SUPPORTED_SOURCE_TAGS[index] || typeof entry.breakpoints !== "boolean"
+  )) {
     throw new Error("Unsupported source migration history; exact full journal hash-chain compatibility is required.");
   }
-  return journal as Journal;
-}
-
-export function verifySupportedMigrationChain(applied: unknown): { version: string; appliedMigrations: string[] } {
-  if (!Array.isArray(applied) || applied.length !== SUPPORTED_SOURCE_JOURNAL.entryCount || applied.some((name) => typeof name !== "string")) {
-    throw new Error("Unsupported source migration history; applied migration chain is incomplete or has extra entries.");
-  }
-  const names = applied as string[];
-  if (names.some((name, idx) => name !== SUPPORTED_SOURCE_TAGS[idx])) {
-    throw new Error("Unsupported source migration history; applied migration chain is incomplete or altered.");
-  }
-  return { version: SUPPORTED_SOURCE_JOURNAL.version, appliedMigrations: names };
+  const canonicalEntries = entries.map((entry) => ({ idx: entry.idx, version: entry.version, when: entry.when, tag: entry.tag, breakpoints: entry.breakpoints }));
+  const sha256 = createHash("sha256").update(new TextEncoder().encode(JSON.stringify({ version: journal.version, dialect: "postgresql", entries: canonicalEntries }))).digest("hex");
+  if (sha256 !== SUPPORTED_SOURCE_JOURNAL.sha256) throw new Error("Unsupported source migration journal dialect or exact metadata hash.");
+  return { version: "7", dialect: "postgresql", entries: canonicalEntries as Journal["entries"] };
 }
 
 function parseSqlValue(value: string): unknown {
@@ -331,36 +314,23 @@ function parseSqlValue(value: string): unknown {
 }
 
 export function readJournalFromPgDump(dump: string): unknown {
-  const inserts = [...dump.matchAll(/INSERT INTO\s+[^;]*?\s+VALUES\s*\(\s*'version'\s*,\s*'([^']+)'\s*,\s*'postgresql'\s*,\s*'((?:''|[^'])*)'\s*\)\s*;/gis)];
+  const inserts = [...dump.matchAll(/INSERT INTO\s+[^;]*?\s+VALUES\s*\(\s*([0-9]+)\s*,\s*'((?:''|[^'])*)'\s*,\s*([0-9]+)\s*\)\s*;/gis)];
   const copies = [...dump.matchAll(/COPY\s+[^\n]*\s+\(\s*version\s*,\s*dialect\s*,\s*\w+\s*\)\s+FROM stdin;\s*\n([\s\S]*?)\n\\\./gi)];
   if (inserts.length + copies.length !== 1) throw new Error("pg_dump must contain exactly one Drizzle migration journal record.");
   if (inserts.length) {
-    const raw = inserts[0][2].replace(/''/g, "'");
-    const journal = parseSqlValue(raw);
-    if (!journal) throw new Error("Unsupported or malformed pg_dump migration journal.");
-    if (journal.version !== inserts[0][1]) throw new Error("pg_dump journal version does not match journal payload.");
-    return journal;
+    return { id: Number(inserts[0][1]), hash: inserts[0][2].replace(/''/g, "'"), created_at: Number(inserts[0][3]) };
   }
-  const fields = copies[0][1].split("\t");
-  const journal = parseSqlValue(fields[2]);
-  if (!journal || journal.version !== fields[0] || fields[1] !== "postgresql") throw new Error("Unsupported or malformed pg_dump migration journal.");
-  return journal;
-}
-
-export function readJournalFromSqlInsert(dump: string): unknown {
-  const inserts = [...dump.matchAll(/INSERT INTO\s+[^;]*?\s+VALUES\s*\(\s*'([^']+)'\s*,\s*'([^']+)'\s*,\s*'([^']+)'\s*,\s*'((?:''|[^'])*)'\s*\)\s*;/gis)];
-  if (inserts.length !== 1) throw new Error("pg_dump must contain exactly one Drizzle migration journal record.");
-  const [, version, dialect, , raw] = inserts[0];
-  const journal = parseSqlValue(raw.replace(/''/g, "'"));
-  if (!journal || typeof journal !== "object" || (journal as { version?: unknown }).version !== version || dialect !== "postgresql") throw new Error("Unsupported or malformed pg_dump migration journal.");
-  return journal;
+  throw new Error("pg_dump journal format is not supported.");
 }
 
 export function verifyPgDumpMigrationChain(dump: string): { version: string; appliedMigrations: string[] } {
-  const journal = assertSupportedJournal(readJournalFromSqlInsert(dump));
-  return { version: journal.version, appliedMigrations: journal.entries.map((entry) => entry.tag) };
+  const journal = readJournalFromPgDump(dump) as { id: number; hash: string; created_at: number };
+  throw new Error(`Unsupported pg_dump source history: migration table contains opaque SQL hashes (first id ${journal.id}); a complete supported chain cannot be proven.`);
 }
 
 export function verifyJournalHash(value: unknown): void {
+  if (!value || typeof value !== "object") throw new Error("Unsupported source migration journal.");
+  const journal = value as { version?: unknown; dialect?: unknown; entries?: unknown };
+  if (journal.dialect !== "postgresql") throw new Error("Unsupported source migration journal dialect.");
   assertSupportedJournal(value);
 }

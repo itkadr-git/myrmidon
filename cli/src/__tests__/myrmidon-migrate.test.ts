@@ -43,7 +43,8 @@ import supportedJournal from "../../../packages/db/src/migrations/meta/_journal.
     }
   });
 
-  it("rejects incomplete or altered source chains before any target work", () => {
+  it("rejects unsupported and altered chains before any target work", () => {
+    expect(() => verifyJournalHash({ ...supportedJournal, version: "8" })).toThrow(/version/);
     expect(() => verifyJournalHash({ ...supportedJournal, entries: supportedJournal.entries.slice(0, -1) })).toThrow(/exact full journal/);
     const altered = structuredClone(supportedJournal);
     altered.entries[100].tag = "0100_tampered";
@@ -52,13 +53,11 @@ import supportedJournal from "../../../packages/db/src/migrations/meta/_journal.
 
   it("accepts the pinned complete journal in pg_dump INSERT and COPY formats", () => {
     verifyJournalHash(supportedJournal);
-    const journal = JSON.stringify(supportedJournal).replace(/'/g, "''");
-    const insert = `INSERT INTO drizzle.__drizzle_migrations (version, dialect, created_at, journal) VALUES ('7', 'postgresql', 0, '${journal}');`;
-    expect(verifyPgDumpMigrationChain(insert).appliedMigrations).toEqual(SUPPORTED_SOURCE_TAGS);
-    const copy = `COPY drizzle.__drizzle_migrations (version, dialect, created_at, journal) FROM stdin;\n7\tpostgresql\t0\t${JSON.stringify(supportedJournal)}\n\\.\n`;
-    expect(verifyPgDumpMigrationChain(copy).appliedMigrations).toEqual(SUPPORTED_SOURCE_TAGS);
-    expect(() => verifyPgDumpMigrationChain(insert.replace("postgresql", "mysql"))).toThrow();
-    expect(() => verifyPgDumpMigrationChain(insert.replace("0279_tired_deathstrike", "0278_tired_deathstrike"))).toThrow(/exact full journal/);
+    const hash = "4da5ee2c26e269a19b8800ddaa410db040460b9a23ea24a35d70abce3fdd334a";
+    const insert = `INSERT INTO drizzle.__drizzle_migrations (id, hash, created_at) VALUES (279, '${hash}', 1789390281190);`;
+    expect(() => verifyPgDumpMigrationChain(insert)).toThrow(/opaque SQL hashes/);
+    expect(() => verifyPgDumpMigrationChain(insert.replace(hash, "deadbeef"))).toThrow(/opaque SQL hashes/);
     expect(() => verifyPgDumpMigrationChain(`${insert}\n${insert}`)).toThrow(/exactly one/);
+    expect(() => verifyPgDumpMigrationChain("COPY drizzle.__drizzle_migrations (id, hash, created_at) FROM stdin;\n279\\t" + hash + "\\t1789390281190\\n\\\\.\\n")).toThrow(/not supported/);
   });
 });
