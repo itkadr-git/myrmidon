@@ -3,6 +3,8 @@ import { inventoryDirectory, myrmidonMigrateCommand } from "../commands/myrmidon
 import { mkdir, mkdtemp, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { verifyJournalHash, verifyPgDumpMigrationChain, SUPPORTED_SOURCE_TAGS } from "../commands/myrmidon-migrate-compatibility.js";
+import supportedJournal from "../../../packages/db/src/migrations/meta/_journal.json" with { type: "json" };
 
  describe("myrmidon:migrate safety contract", () => {
   it("requires exactly one source and an explicit target", async () => {
@@ -39,5 +41,24 @@ import path from "node:path";
     } finally {
       await rm(root, { recursive: true, force: true });
     }
+  });
+
+  it("rejects incomplete or altered source chains before any target work", () => {
+    expect(() => verifyJournalHash({ ...supportedJournal, entries: supportedJournal.entries.slice(0, -1) })).toThrow(/exact full journal/);
+    const altered = structuredClone(supportedJournal);
+    altered.entries[100].tag = "0100_tampered";
+    expect(() => verifyJournalHash(altered)).toThrow(/exact full journal/);
+  });
+
+  it("accepts the pinned complete journal in pg_dump INSERT and COPY formats", () => {
+    verifyJournalHash(supportedJournal);
+    const journal = JSON.stringify(supportedJournal).replace(/'/g, "''");
+    const insert = `INSERT INTO drizzle.__drizzle_migrations (version, dialect, created_at, journal) VALUES ('7', 'postgresql', 0, '${journal}');`;
+    expect(verifyPgDumpMigrationChain(insert).appliedMigrations).toEqual(SUPPORTED_SOURCE_TAGS);
+    const copy = `COPY drizzle.__drizzle_migrations (version, dialect, created_at, journal) FROM stdin;\n7\tpostgresql\t0\t${JSON.stringify(supportedJournal)}\n\\.\n`;
+    expect(verifyPgDumpMigrationChain(copy).appliedMigrations).toEqual(SUPPORTED_SOURCE_TAGS);
+    expect(() => verifyPgDumpMigrationChain(insert.replace("postgresql", "mysql"))).toThrow();
+    expect(() => verifyPgDumpMigrationChain(insert.replace("0279_tired_deathstrike", "0278_tired_deathstrike"))).toThrow(/exact full journal/);
+    expect(() => verifyPgDumpMigrationChain(`${insert}\n${insert}`)).toThrow(/exactly one/);
   });
 });
