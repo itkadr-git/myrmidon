@@ -22,6 +22,7 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
+import { conflict } from "../errors.js";
 import { taskWatchdogService } from "../services/task-watchdogs.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -301,6 +302,45 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
     expect(comments).toHaveLength(2);
     const [watchdog] = await db.select().from(issueWatchdogs).where(eq(issueWatchdogs.issueId, sourceId));
     expect(watchdog?.triggerCount).toBe(2);
+  });
+
+  it("skips a watchdog whose agent is paused (409) without throwing and still processes the others", async () => {
+    const companyId = await seedCompany();
+    const pausedSourceId = await seedIssue(companyId, { identifier: "WDOG-PAUSED", status: "done" });
+    const okSourceId = await seedIssue(companyId, { identifier: "WDOG-OKAGENT", status: "done" });
+    const pausedAgentId = await seedAgent(companyId);
+    const okAgentId = await seedAgent(companyId);
+    await seedWatchdog(companyId, pausedSourceId, pausedAgentId);
+    await seedWatchdog(companyId, okSourceId, okAgentId);
+    const wakes: string[] = [];
+    const service = taskWatchdogService(db, {
+      enqueueWakeup: async (agentId) => {
+        if (agentId === pausedAgentId) {
+          throw conflict("Agent is not invokable in its current state", { status: "paused" });
+        }
+        wakes.push(agentId);
+        return { id: randomUUID() };
+      },
+    });
+
+    const result = await service.reconcileTaskWatchdogs({ companyId });
+
+    expect(result).toMatchObject({ checked: 2, triggered: 1, skipped: 1 });
+    expect(wakes).toEqual([okAgentId]);
+  });
+
+  it("still throws on a non-409 wake failure", async () => {
+    const companyId = await seedCompany();
+    const sourceId = await seedIssue(companyId, { identifier: "WDOG-BOOM", status: "done" });
+    const agentId = await seedAgent(companyId);
+    await seedWatchdog(companyId, sourceId, agentId);
+    const service = taskWatchdogService(db, {
+      enqueueWakeup: async () => {
+        throw new Error("boom");
+      },
+    });
+
+    await expect(service.reconcileTaskWatchdogs({ companyId })).rejects.toThrow("boom");
   });
 
   it("does not trigger while a non-watchdog descendant has live work", async () => {

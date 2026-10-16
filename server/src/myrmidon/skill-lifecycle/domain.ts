@@ -22,6 +22,13 @@ export const SKILL_PROMOTION_APPROVAL_TYPE = "skill_promotion";
 /** The env var naming the pilot agents, comma-separated agent ids. */
 export const SKILL_PILOT_AGENTS_ENV = "MYRMIDON_SKILL_PILOT_AGENTS";
 
+/**
+ * Metadata key a back-imported bot skill carries: the id of the agent (bot)
+ * that wrote it. The bot-container back-import sets it; the delivery decision
+ * reads it so the author gets its own candidate back after a volume recreation.
+ */
+export const BOT_BACKIMPORT_ORIGIN_METADATA_KEY = "bot_backimport_agent";
+
 export interface SkillLifecycleRecord {
   skillId: string;
   companyId: string;
@@ -180,6 +187,13 @@ export interface SkillDeliveryDecision {
 export interface SkillDeliveryState {
   state: SkillLifecycleState;
   verifiedVersionId: string | null;
+  /**
+   * The agent that authored the skill (a bot back-import's origin marker), or
+   * null. A candidate is delivered to its author even outside the pilot set:
+   * the author already had it in its own container, and withholding it would
+   * make a volume recreation lose the bot's own skill.
+   */
+  authorAgentId?: string | null;
 }
 
 /**
@@ -204,7 +218,7 @@ export function decideSkillDelivery(input: {
     return { blocked: true, reason: `skill ${skillKey} is deprecated`, pinnedVersionId: null };
   }
   // candidate
-  if (pilotAgentIds.has(agentId)) {
+  if (pilotAgentIds.has(agentId) || (lifecycle.authorAgentId != null && lifecycle.authorAgentId === agentId)) {
     return { blocked: false, reason: null, pinnedVersionId: lifecycle.verifiedVersionId };
   }
   return { blocked: true, reason: `skill ${skillKey} is a candidate and this agent is not in the pilot set`, pinnedVersionId: null };

@@ -12,6 +12,7 @@ import path from "node:path";
 
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 import { runtimePublicOrigin } from "./cloud-runtime-identity.js";
+import { readProductEnv, readProductEnvFrom } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
 
 const IDENTITY_VERSION = 1;
 const ENROLLMENT_FILE = "paperclip-cloud-connector.json";
@@ -74,10 +75,10 @@ export function paperclipCloudConnectorEnrollmentStatus(
   env: NodeJS.ProcessEnv = process.env,
 ): PaperclipCloudConnectorEnrollmentStatus {
   const identity = loadPaperclipCloudConnectorIdentity();
-  const managedInstanceId = env.PAPERCLIP_CLOUD_CONNECTOR_INSTANCE_ID?.trim();
-  const managedSignPrivateKey = env.PAPERCLIP_CLOUD_CONNECTOR_SIGN_PRIVATE_KEY?.trim();
-  const managedSealPrivateKey = env.PAPERCLIP_CLOUD_CONNECTOR_SEAL_PRIVATE_KEY?.trim();
-  const managedEnvironment = env.PAPERCLIP_CLOUD_CONNECTOR_ENVIRONMENT?.trim();
+  const managedInstanceId = readProductEnvFrom(env, "CLOUD_CONNECTOR_INSTANCE_ID")?.trim();
+  const managedSignPrivateKey = readProductEnvFrom(env, "CLOUD_CONNECTOR_SIGN_PRIVATE_KEY")?.trim();
+  const managedSealPrivateKey = readProductEnvFrom(env, "CLOUD_CONNECTOR_SEAL_PRIVATE_KEY")?.trim();
+  const managedEnvironment = readProductEnvFrom(env, "CLOUD_CONNECTOR_ENVIRONMENT")?.trim();
   const hasManagedIdentityOverride = hasManagedConnectorIdentityOverride(env);
   if (hasManagedIdentityOverride) {
     const { brokerBaseUrl, environment } = connectorTarget(env);
@@ -193,7 +194,7 @@ async function startPaperclipCloudConnectorEnrollmentUnlocked(input: {
       origin,
       returnUri,
       returnState,
-      label: input.label?.trim() || process.env.PAPERCLIP_INSTANCE_ID?.trim() || "Self-hosted Paperclip",
+      label: input.label?.trim() || readProductEnv("INSTANCE_ID")?.trim() || "Self-hosted Paperclip",
       signPublicKey: identity.signPublicKey,
       sealPublicKey: identity.sealPublicKey,
     }),
@@ -351,7 +352,7 @@ function connectorEnvironment(
     : host === "my-staging.paperclip.app"
       ? "staging"
       : "development";
-  const value = env.PAPERCLIP_CLOUD_CONNECTOR_ENVIRONMENT?.trim() || fallback || inferred;
+  const value = readProductEnvFrom(env, "CLOUD_CONNECTOR_ENVIRONMENT")?.trim() || fallback || inferred;
   if (!isEnvironment(value)) throw new Error("Paperclip Cloud connector environment is invalid");
   if ((host === "my.paperclip.app" && value !== "production")
     || (host === "my-staging.paperclip.app" && value !== "staging")) {
@@ -364,7 +365,7 @@ function connectorTarget(
   env: NodeJS.ProcessEnv,
   identity?: PaperclipCloudConnectorIdentity | null,
 ): Pick<PaperclipCloudConnectorIdentity, "brokerBaseUrl" | "environment"> {
-  const brokerOverride = env.PAPERCLIP_CLOUD_CONNECTOR_BASE_URL?.trim() || undefined;
+  const brokerOverride = readProductEnvFrom(env, "CLOUD_CONNECTOR_BASE_URL")?.trim() || undefined;
   const brokerBaseUrl = normalizeBrokerOrigin(
     brokerOverride ?? identity?.brokerBaseUrl ?? "https://my.paperclip.app",
   );
@@ -383,9 +384,9 @@ function identityMatchesTarget(
 
 function hasManagedConnectorIdentityOverride(env: NodeJS.ProcessEnv): boolean {
   return [
-    env.PAPERCLIP_CLOUD_CONNECTOR_INSTANCE_ID,
-    env.PAPERCLIP_CLOUD_CONNECTOR_SIGN_PRIVATE_KEY,
-    env.PAPERCLIP_CLOUD_CONNECTOR_SEAL_PRIVATE_KEY,
+    readProductEnvFrom(env, "CLOUD_CONNECTOR_INSTANCE_ID"),
+    readProductEnvFrom(env, "CLOUD_CONNECTOR_SIGN_PRIVATE_KEY"),
+    readProductEnvFrom(env, "CLOUD_CONNECTOR_SEAL_PRIVATE_KEY"),
   ].some((value) => Boolean(value?.trim()));
 }
 

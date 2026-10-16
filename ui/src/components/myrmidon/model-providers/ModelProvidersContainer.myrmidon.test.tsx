@@ -21,6 +21,7 @@ const apiMock = vi.hoisted(() => ({
   remove: vi.fn(),
   models: vi.fn(),
   updateModels: vi.fn(),
+  channels: vi.fn(),
 }));
 
 vi.mock("./modelProvidersApi", async (importOriginal) => ({

@@ -31,7 +31,7 @@ const MATERIALIZATION_NOTE =
   "Enabled skills are materialized into the stable Myrmidon-managed prompt bundle on the agent's next run.";
 
 /** Company skill key of the Paperclip core skill that carries beta releases. */
-const PAPERCLIP_CORE_SKILL_KEY = "paperclipai/paperclip/paperclip";
+const PAPERCLIP_CORE_SKILL_KEY = "paperclipai/paperclip/myrmidon";
 
 /** Build the desired-skill sync payload, carrying any active version pins. */
 export function toDesiredSkillPayload(

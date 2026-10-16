@@ -45,6 +45,23 @@ export const issues = pgTable(
     workMode: text("work_mode").notNull().default("standard"),
     harnessKind: text("harness_kind"),
     priority: text("priority").notNull().default("medium"),
+    // 1.6.5 (F-27 PHEROMONE): the numeric pheromone strength; the swarm queue
+    // orders by it inside the P0 band. Zero means "no scent" — the task ranks
+    // behind every task with an explicit strength of the same band.
+    pheromoneStrength: integer("pheromone_strength").notNull().default(0),
+    // 1.6.5 (F-27 rework 09.10, design §2.1): the task's caste — a key of the
+    // company's caste directory (`agent_castes.key`). Replaces the `role:<key>`
+    // label as the swarm routing source; NULL falls back to the project's
+    // `default_caste_key`, then the company's default caste.
+    casteKey: text("caste_key"),
+    // myrmidon(1.6.5 F-26 T10 SCENT): the stored scent of the task
+    // ({tags[≤8], casteProbs, complexity{coordination,uncertainty,consequences}},
+    // design §2.4/§7.1 п.4a); NULL = not classified — the markup queue picks
+    // it up within its hour budget.
+    scent: jsonb("scent"),
+    // Who set the caste: 'manual' | 'project' | 'auto' | 'default'
+    // (design §2.1). NULL on rows that never went through the create hook.
+    casteSource: text("caste_source"),
     reviewPolicy: text("review_policy").$type<IssueReviewPolicy>(),
     assigneeAgentId: uuid("assignee_agent_id").references(() => agents.id),
     assigneeUserId: text("assignee_user_id"),
@@ -88,6 +105,12 @@ export const issues = pgTable(
     hiddenAt: timestamp("hidden_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    // myrmidon(DB-PERF-P7): denormalized "last activity" of an issue —
+    // greatest(updated_at, newest comment, newest activity_log row outside the
+    // local-inbox actions). Kept current by the triggers of migration 0307;
+    // the issue list orders and reports by this column instead of running two
+    // correlated MAX subqueries per candidate row.
+    lastActivityAt: timestamp("last_activity_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({
     conversationIdentityIdx: uniqueIndex("issues_conversation_identity_idx").on(table.companyId, table.conversationAgentId, table.conversationUserId),
@@ -121,6 +144,8 @@ export const issues = pgTable(
     executionWorkspaceIdx: index("issues_company_execution_workspace_idx").on(table.companyId, table.executionWorkspaceId),
     dueMonitorIdx: index("issues_company_monitor_due_idx").on(table.companyId, table.monitorNextCheckAt),
     companyUpdatedIdx: index("issues_company_updated_idx").on(table.companyId, table.updatedAt),
+    // myrmidon(DB-PERF-P7): the issue list sorts by company and last activity.
+    companyLastActivityIdx: index("issues_company_last_activity_at_idx").on(table.companyId, table.lastActivityAt),
     companyCreatedIdx: index("issues_company_created_idx").on(table.companyId, table.createdAt),
     openNormalizedTitleCreatedIdx: index("issues_open_normalized_title_created_idx")
       .on(
@@ -131,6 +156,10 @@ export const issues = pgTable(
       )
       .where(sql`${table.hiddenAt} is null and ${table.status} not in ('done', 'cancelled')`),
     companyPriorityIdx: index("issues_company_priority_idx").on(table.companyId, table.priority),
+    // 1.6.5 (F-27 rework 09.10): swarm-claim routing filters ready tasks by
+    // caste per company; the index keeps that lookup off a seq scan. Created in
+    // migration 0384.
+    companyCasteIdx: index("issues_company_caste_idx").on(table.companyId, table.casteKey),
     // myrmidon(DB-AUDIT-INDEXES): the issue claim lockup selects
     // company + (id or execution_run_id or checkout_run_id) FOR UPDATE. Only
     // partial unique indexes covered the run columns, so the statement ran a
@@ -146,6 +175,15 @@ export const issues = pgTable(
     identifierIdx: uniqueIndex("issues_identifier_idx").on(table.identifier),
     titleSearchIdx: index("issues_title_search_idx").using("gin", table.title.op("gin_trgm_ops")),
     identifierSearchIdx: index("issues_identifier_search_idx").using("gin", table.identifier.op("gin_trgm_ops")),
+    // myrmidon(PERF-DIET-P): company search matches `coalesce(identifier, '')`
+    // ILIKE '%…%' in its artifact branches (server/src/services/company-search.ts,
+    // company-artifacts.ts). The coalesce wrapper prevents the planner from using
+    // the plain-column trgm index above; this expression index matches the emitted
+    // expression exactly.
+    coalescedIdentifierSearchIdx: index("issues_coalesced_identifier_search_idx").using(
+      "gin",
+      sql`(coalesce(${table.identifier}, '')) gin_trgm_ops`,
+    ),
     descriptionSearchIdx: index("issues_description_search_idx").using("gin", table.description.op("gin_trgm_ops")),
     openRoutineExecutionIdx: uniqueIndex("issues_open_routine_execution_uq")
       .on(table.companyId, table.originKind, table.originId, table.originFingerprint)

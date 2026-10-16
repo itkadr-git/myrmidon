@@ -4,6 +4,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { gunzipSync } from "node:zlib";
 import { and, asc, desc, eq, inArray, isNull, lt, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
@@ -42,6 +43,7 @@ import type {
   CompanySkillCreateRequest,
   CompanySkillCompatibility,
   CompanySkillDetail,
+  CompanySkillDiscoverResult,
   CompanySkillFileDeleteRequest,
   CompanySkillFileDeleteResult,
   CompanySkillFileDetail,
@@ -105,7 +107,7 @@ import {
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 // myrmidon(B1c): product name in user-facing skill texts; see product.ts.
 import { PRODUCT_NAME as PN } from "../myrmidon/product.js";
-import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
+import { conflict, forbidden, notFound, payloadTooLarge, unprocessable } from "../errors.js";
 import { ghFetch, gitHubApiBase, resolveRawGitHubUrl } from "./github-fetch.js";
 import { agentService } from "./agents.js";
 import { issueDocumentSelect, mapIssueDocumentRow } from "./documents.js";
@@ -273,9 +275,332 @@ type ParsedSkillImportSource = {
   requestedSkillSlug: string | null;
   originalSkillsShUrl: string | null;
   warnings: string[];
+  /**
+   * Set when the input is a bare agentskills.io site (e.g. `https://kie.ai` or
+   * `npx skills add https://kie.ai`): the origin whose
+   * `/.well-known/agent-skills/index.json` can be discovered and imported.
+   */
+  wellKnownOrigin: string | null;
 };
 
-const EXTERNAL_SKILL_SOURCE_TYPES = new Set<CompanySkillSourceType>(["github", "skills_sh", "url"]);
+const EXTERNAL_SKILL_SOURCE_TYPES = new Set<CompanySkillSourceType>(["github", "skills_sh", "url", "well_known"]);
+
+// --- agentskills.io well-known discovery -------------------------
+const WELL_KNOWN_AGENT_SKILLS_INDEX_PATH = "/.well-known/agent-skills/index.json";
+const WELL_KNOWN_STORED_DIR_NAME = "__wellknown__";
+const WELL_KNOWN_DISCOVERY_TIMEOUT_MS = 15_000;
+const WELL_KNOWN_ARCHIVE_TIMEOUT_MS = 60_000;
+const WELL_KNOWN_INDEX_MAX_BYTES = 2 * 1024 * 1024;
+const WELL_KNOWN_ARCHIVE_MAX_BYTES = 20 * 1024 * 1024;
+const WELL_KNOWN_MAX_UNPACKED_BYTES = 64 * 1024 * 1024;
+const WELL_KNOWN_MAX_ENTRIES = 2_000;
+
+type WellKnownSkillEntry = {
+  name: string;
+  description: string | null;
+  url: string;
+  digest: string;
+};
+
+function buildWellKnownIndexUrl(origin: string) {
+  return `${origin}${WELL_KNOWN_AGENT_SKILLS_INDEX_PATH}`;
+}
+
+/**
+ * A bare-site HTTPS URL (e.g. `https://kie.ai`, or the index URL itself) is a
+ * well-known discovery source. GitHub repos, skills.sh links, and file-style
+ * URLs (anything with a real path) are handled by the existing import kinds.
+ */
+function deriveWellKnownOrigin(rawSource: string): string | null {
+  let url: URL;
+  try {
+    url = new URL(rawSource);
+  } catch {
+    return null;
+  }
+  if (url.protocol !== "https:") return null;
+  if (url.username || url.password) return null;
+  if (url.pathname === WELL_KNOWN_AGENT_SKILLS_INDEX_PATH) return url.origin;
+  if (url.pathname !== "/" && url.pathname !== "") return null;
+  return url.origin;
+}
+
+function normalizeSkillDigest(rawDigest: string | null | undefined): string | null {
+  const value = asString(rawDigest);
+  if (!value) return null;
+  const hex = value.toLowerCase().replace(/^sha256:/, "");
+  if (!/^[0-9a-f]{64}$/.test(hex)) return null;
+  return `sha256:${hex}`;
+}
+
+async function readResponseBufferCapped(response: Response, maxBytes: number, label: string): Promise<Buffer> {
+  const limitMb = Math.floor(maxBytes / (1024 * 1024));
+  const declared = Number(response.headers.get("content-length") ?? "NaN");
+  if (Number.isFinite(declared) && declared > maxBytes) {
+    throw payloadTooLarge(`${label} exceeds the ${limitMb} MB limit.`, { code: "skill_payload_too_large" });
+  }
+  const chunks: Buffer[] = [];
+  let total = 0;
+  if (response.body) {
+    const reader = response.body.getReader();
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        total += value.byteLength;
+        if (total > maxBytes) {
+          await reader.cancel().catch(() => undefined);
+          throw payloadTooLarge(`${label} exceeds the ${limitMb} MB limit.`, { code: "skill_payload_too_large" });
+        }
+        chunks.push(Buffer.from(value));
+      }
+    } finally {
+      reader.releaseLock();
+    }
+  } else {
+    const buffer = Buffer.from(await response.arrayBuffer());
+    if (buffer.byteLength > maxBytes) {
+      throw payloadTooLarge(`${label} exceeds the ${limitMb} MB limit.`, { code: "skill_payload_too_large" });
+    }
+    return buffer;
+  }
+  return Buffer.concat(chunks, total);
+}
+
+async function fetchWellKnownIndex(origin: string): Promise<WellKnownSkillEntry[]> {
+  const indexUrl = buildWellKnownIndexUrl(origin);
+  let response: Response;
+  try {
+    response = await fetch(indexUrl, {
+      redirect: "follow",
+      headers: { accept: "application/json" },
+      signal: AbortSignal.timeout(WELL_KNOWN_DISCOVERY_TIMEOUT_MS),
+    });
+  } catch (error) {
+    if (error instanceof Error && error.name === "TimeoutError") {
+      throw unprocessable(`Timed out while loading the agentskills.io discovery index at ${indexUrl}.`, {
+        code: "skill_discovery_timeout",
+      });
+    }
+    throw unprocessable(`Could not connect to the agentskills.io discovery index at ${indexUrl}.`, {
+      code: "skill_discovery_unreachable",
+    });
+  }
+  if (!response.ok) {
+    throw unprocessable(`The agentskills.io discovery index at ${indexUrl} returned HTTP ${response.status}.`, {
+      code: "skill_discovery_unreachable",
+    });
+  }
+  const bytes = await readResponseBufferCapped(response, WELL_KNOWN_INDEX_MAX_BYTES, "The discovery index");
+  let payload: unknown;
+  try {
+    payload = JSON.parse(bytes.toString("utf8"));
+  } catch {
+    throw unprocessable(`The agentskills.io discovery index at ${indexUrl} is not valid JSON.`, {
+      code: "skill_discovery_invalid",
+    });
+  }
+  if (!isPlainRecord(payload) || !Array.isArray(payload.skills)) {
+    throw unprocessable(`The agentskills.io discovery index at ${indexUrl} does not contain a "skills" array.`, {
+      code: "skill_discovery_invalid",
+    });
+  }
+  const entries: WellKnownSkillEntry[] = [];
+  for (const item of payload.skills) {
+    if (!isPlainRecord(item)) continue;
+    const name = asString(item.name);
+    const type = asString(item.type) ?? "archive";
+    const rawUrl = asString(item.url);
+    const digest = normalizeSkillDigest(asString(item.digest));
+    if (!name || !rawUrl || type !== "archive" || !digest) continue;
+    entries.push({ name, description: asString(item.description) ?? null, url: rawUrl, digest });
+  }
+  if (entries.length === 0) {
+    throw unprocessable(`The agentskills.io discovery index at ${indexUrl} does not list any importable archive skills.`, {
+      code: "skill_discovery_invalid",
+    });
+  }
+  return entries;
+}
+
+function resolveWellKnownArchiveUrl(origin: string, rawUrl: string) {
+  let resolved: URL;
+  try {
+    resolved = new URL(rawUrl, `${origin}/`);
+  } catch {
+    throw unprocessable(`Invalid skill archive URL "${rawUrl}".`, { code: "skill_discovery_invalid" });
+  }
+  if (resolved.protocol !== "https:") {
+    throw unprocessable("Skill archives must be served over HTTPS.", { code: "skill_source_validation_failed" });
+  }
+  if (resolved.origin !== origin) {
+    throw unprocessable("Skill archive URLs must stay on the discovery site's origin.", {
+      code: "skill_source_validation_failed",
+    });
+  }
+  return resolved.toString();
+}
+
+async function fetchWellKnownArchiveBytes(url: string): Promise<Buffer> {
+  let response: Response;
+  try {
+    response = await fetch(url, { redirect: "follow", signal: AbortSignal.timeout(WELL_KNOWN_ARCHIVE_TIMEOUT_MS) });
+  } catch (error) {
+    if (error instanceof Error && error.name === "TimeoutError") {
+      throw unprocessable(`Timed out while downloading the skill archive from ${url}.`, { code: "skill_archive_timeout" });
+    }
+    throw unprocessable(`Could not connect to ${url} to download the skill archive.`, { code: "skill_archive_unreachable" });
+  }
+  if (!response.ok) {
+    throw unprocessable(`The skill archive at ${url} returned HTTP ${response.status}.`, { code: "skill_archive_unreachable" });
+  }
+  return readResponseBufferCapped(response, WELL_KNOWN_ARCHIVE_MAX_BYTES, "The skill archive");
+}
+
+function normalizeTarEntryPath(rawName: string): string {
+  const trimmed = rawName.trim().replace(/^\.\//, "").replace(/\\/g, "/");
+  if (!trimmed) {
+    throw unprocessable("The skill archive contains an empty path.", { code: "skill_archive_unsafe" });
+  }
+  if (trimmed.startsWith("/") || /^[a-zA-Z]:\//.test(trimmed)) {
+    throw unprocessable(`The skill archive contains an absolute path ("${rawName}"); absolute paths are not allowed.`, {
+      code: "skill_archive_unsafe",
+    });
+  }
+  const segments = trimmed.split("/").filter((segment) => segment.length > 0 && segment !== ".");
+  if (segments.some((segment) => segment === "..")) {
+    throw unprocessable(`The skill archive contains a path traversal entry ("${rawName}").`, {
+      code: "skill_archive_unsafe",
+    });
+  }
+  return segments.join("/");
+}
+
+/**
+ * Parse an in-memory `.tar.gz` blob into UTF-8 text files, rejecting anything
+ * unsafe: links, non-regular entries, absolute paths, `..` traversal, and
+ * archives that grow past the unpacked-size entry limits. Binary files are
+ * skipped (Part A imports markdown-only skill packages).
+ */
+function unpackSkillArchive(bytes: Buffer): Array<{ path: string; content: string }> {
+  let tar: Buffer;
+  try {
+    tar = gunzipSync(bytes);
+  } catch {
+    throw unprocessable("The skill archive is not a valid .tar.gz file.", { code: "skill_archive_invalid" });
+  }
+  const entries: Array<{ path: string; content: string }> = [];
+  let offset = 0;
+  let pendingLongName: string | null = null;
+  let totalUnpacked = 0;
+  const readText = (start: number, length: number) =>
+    tar.subarray(start, start + length).toString("utf8").replace(/\0.*$/s, "");
+  const readOctal = (start: number, length: number) => {
+    const raw = readText(start, length).trim();
+    return /^[0-7]+$/.test(raw) ? parseInt(raw, 8) : NaN;
+  };
+  while (offset + 512 <= tar.length) {
+    const headerStart = offset;
+    const header = tar.subarray(headerStart, headerStart + 512);
+    if (header.every((byte) => byte === 0)) break;
+    const rawName = pendingLongName ?? ((): string => {
+      const name = readText(headerStart, 100);
+      const prefix = readText(headerStart + 345, 155);
+      return prefix ? `${prefix}/${name}` : name;
+    })();
+    pendingLongName = null;
+    const size = readOctal(headerStart + 124, 12);
+    const typeflag = String.fromCharCode(header[156] ?? 0x30);
+    const dataSize = Number.isFinite(size) && size >= 0 ? Math.floor(size) : 0;
+    const dataBlocks = Math.floor((dataSize + 511) / 512);
+    const dataStart = headerStart + 512;
+    if (dataStart + dataBlocks * 512 > tar.length) {
+      throw unprocessable("The skill archive is truncated or malformed.", { code: "skill_archive_invalid" });
+    }
+    offset = dataStart + dataBlocks * 512;
+    if (typeflag === "L") {
+      pendingLongName = tar.subarray(dataStart, dataStart + dataSize).toString("utf8").replace(/\0.*$/s, "");
+      continue;
+    }
+    if (typeflag === "x" || typeflag === "g" || typeflag === "A") continue;
+    if (typeflag === "5") continue;
+    if (typeflag === "1" || typeflag === "2") {
+      throw unprocessable(`The skill archive contains a link entry ("${rawName}"); links are not allowed.`, {
+        code: "skill_archive_unsafe",
+      });
+    }
+    if (typeflag !== "0" && typeflag !== "\0" && typeflag !== "7") {
+      throw unprocessable(`The skill archive contains an unsupported entry type ("${rawName}").`, {
+        code: "skill_archive_unsafe",
+      });
+    }
+    if (!Number.isFinite(size)) {
+      throw unprocessable(`The skill archive entry "${rawName}" has an invalid size.`, { code: "skill_archive_invalid" });
+    }
+    const normalized = normalizeTarEntryPath(rawName);
+    totalUnpacked += dataSize;
+    if (totalUnpacked > WELL_KNOWN_MAX_UNPACKED_BYTES) {
+      throw unprocessable("The skill archive expands beyond the unpacked size limit.", { code: "skill_archive_unsafe" });
+    }
+    if (entries.length >= WELL_KNOWN_MAX_ENTRIES) {
+      throw unprocessable("The skill archive contains too many files.", { code: "skill_archive_unsafe" });
+    }
+    const buffer = Buffer.from(tar.subarray(dataStart, dataStart + dataSize));
+    if (buffer.includes(0)) continue;
+    entries.push({ path: normalized, content: buffer.toString("utf8") });
+  }
+  if (entries.length === 0) {
+    throw unprocessable("The skill archive did not contain any importable files.", { code: "skill_archive_invalid" });
+  }
+  if (!entries.some((entry) => entry.path === "SKILL.md")) {
+    const roots = new Set(entries.map((entry) => entry.path.split("/")[0] ?? entry.path));
+    if (roots.size === 1) {
+      const [root] = Array.from(roots);
+      if (root) {
+        const stripped = entries.map((entry) => ({ ...entry, path: entry.path.slice(root.length + 1) }));
+        if (stripped.some((entry) => entry.path === "SKILL.md")) return stripped;
+      }
+    }
+    throw unprocessable("The skill archive does not contain a SKILL.md file.", { code: "skill_archive_invalid" });
+  }
+  return entries;
+}
+
+const REQUIRED_ENV_SUFFIX_RE = /(?:_[A-Z0-9]+)*_(?:KEY|TOKEN|SECRET|PASSWORD|PASSPHRASE)$/;
+
+/**
+ * Extract environment variable names a skill's SKILL.md text depends on:
+ * `*_KEY`/`*_TOKEN`/`*_SECRET` style names plus explicit `os.environ`,
+ * `process.env` and `$VAR`/`${VAR}` references.
+ */
+export function extractRequiredEnvFromMarkdown(markdown: string): string[] {
+  const names = new Set<string>();
+  const patterns: RegExp[] = [
+    /os\.environ(?:\.get)?\s*[\[(]\s*["']([A-Za-z_][A-Za-z0-9_]*)["']/g,
+    /process\.env(?:\.([A-Za-z_][A-Za-z0-9_]*)|\[\s*["']([A-Za-z_][A-Za-z0-9_]*)["']\s*\])/g,
+    /\$\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}/g,
+    /\$([A-Za-z_][A-Za-z0-9_]*)/g,
+  ];
+  for (const pattern of patterns) {
+    for (const match of markdown.matchAll(pattern)) {
+      const name = match[1] ?? match[2];
+      if (name) names.add(name.toUpperCase());
+    }
+  }
+  for (const match of markdown.matchAll(/\b[A-Z][A-Z0-9_]*\b/g)) {
+    const token = match[0];
+    if (REQUIRED_ENV_SUFFIX_RE.test(token)) names.add(token);
+  }
+  return Array.from(names)
+    .filter((name) => /^[A-Z][A-Z0-9_]{2,}$/.test(name))
+    .sort();
+}
+
+function getRequiredEnvFromSkill(skill: Pick<CompanySkill, "metadata">): string[] {
+  const raw = getSkillMeta(skill).requiredEnv;
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((entry): entry is string => typeof entry === "string" && entry.length > 0);
+}
 
 function isPinnedCommitRef(value: string | null | undefined) {
   return Boolean(value && /^[0-9a-f]{40}$/i.test(value.trim()));
@@ -341,6 +666,12 @@ type SkillSourceMeta = {
   packageVersion?: string;
   originVersion?: string;
   originSnapshotLocator?: string;
+  storedDir?: string;
+  requiredEnv?: unknown;
+  wellKnownOrigin?: string;
+  wellKnownName?: string;
+  archiveUrl?: string;
+  digest?: string;
   installedHash?: string;
   forkedByAgentId?: string | null;
   forkedByUserId?: string | null;
@@ -582,7 +913,9 @@ function uniqueImportedSkillKey(companyId: string, baseSlug: string, usedKeys: S
 }
 
 function buildSkillRuntimeName(key: string, slug: string) {
-  if (key.startsWith("paperclipai/paperclip/")) return slug;
+  if (key.startsWith("paperclipai/paperclip/")) {
+    return LEGACY_BUNDLED_SKILL_SLUGS[slug] ?? slug;
+  }
   return `${slug}--${hashSkillValue(key)}`;
 }
 
@@ -632,31 +965,58 @@ function readCanonicalSkillKey(frontmatter: Record<string, unknown>, metadata: R
  * `ensureSkillInventoryCurrent` imports into every company library.
  */
 export const PAPERCLIP_CORE_SKILL_KEYS = [
-  "paperclipai/paperclip/paperclip",
-  "paperclipai/paperclip/paperclip-board",
-  "paperclipai/paperclip/paperclip-converting-plans-to-tasks",
-  "paperclipai/paperclip/paperclip-create-agent",
+  "paperclipai/paperclip/myrmidon",
+  "paperclipai/paperclip/myrmidon-board",
+  "paperclipai/paperclip/myrmidon-converting-plans-to-tasks",
+  "paperclipai/paperclip/myrmidon-create-agent",
   "paperclipai/paperclip/para-memory-files",
 ] as const;
+
+const LEGACY_BUNDLED_SKILL_SLUGS: Record<string, string> = {
+  paperclip: "myrmidon",
+  "paperclip-board": "myrmidon-board",
+  "paperclip-converting-plans-to-tasks": "myrmidon-converting-plans-to-tasks",
+  "paperclip-create-agent": "myrmidon-create-agent",
+};
+const MYRMIDON_BUNDLED_SKILL_KEYS: Record<string, string> = {
+  paperclip: "paperclipai/paperclip/myrmidon",
+  "paperclip-board": "paperclipai/paperclip/myrmidon-board",
+  "paperclip-converting-plans-to-tasks": "paperclipai/paperclip/myrmidon-converting-plans-to-tasks",
+  "paperclip-create-agent": "paperclipai/paperclip/myrmidon-create-agent",
+};
 
 function deriveCanonicalSkillKey(
   companyId: string,
   input: Pick<ImportedSkill, "slug" | "sourceType" | "sourceLocator" | "metadata">,
 ) {
-  const slug = normalizeSkillSlug(input.slug) ?? "skill";
+  const requestedSlug = normalizeSkillSlug(input.slug) ?? "skill";
+  const slug = LEGACY_BUNDLED_SKILL_SLUGS[requestedSlug] ?? requestedSlug;
   const metadata = isPlainRecord(input.metadata) ? input.metadata : null;
   const explicitKey = readCanonicalSkillKey({}, metadata);
   if (explicitKey) return explicitKey;
 
   const sourceKind = asString(metadata?.sourceKind);
   if (sourceKind === "paperclip_bundled") {
-    return `paperclipai/paperclip/${slug}`;
+    return `paperclipai/paperclip/${LEGACY_BUNDLED_SKILL_SLUGS[slug] ?? slug}`;
   }
 
   const owner = normalizeSkillSlug(asString(metadata?.owner));
   const repo = normalizeSkillSlug(asString(metadata?.repo));
   if ((input.sourceType === "github" || input.sourceType === "skills_sh" || sourceKind === "github" || sourceKind === "skills_sh") && owner && repo) {
     return `${owner}/${repo}/${slug}`;
+  }
+
+  if (input.sourceType === "well_known" || sourceKind === "well_known") {
+    const locator = asString(input.sourceLocator);
+    if (locator) {
+      try {
+        const url = new URL(locator);
+        const host = normalizeSkillSlug(url.host) ?? "site";
+        return `well-known/${host}/${slug}`;
+      } catch {
+        return `well-known/unknown/${hashSkillValue(locator)}/${slug}`;
+      }
+    }
   }
 
   if (input.sourceType === "url" || sourceKind === "url") {
@@ -894,6 +1254,7 @@ export function parseSkillImportSourceInput(rawInput: string): ParsedSkillImport
       requestedSkillSlug: normalizeSkillSlug(skillSlugRaw),
       originalSkillsShUrl: `https://skills.sh/${owner}/${repo}/${skillSlugRaw}`,
       warnings,
+      wellKnownOrigin: null,
     };
   }
 
@@ -903,6 +1264,7 @@ export function parseSkillImportSourceInput(rawInput: string): ParsedSkillImport
       requestedSkillSlug,
       originalSkillsShUrl: null,
       warnings,
+      wellKnownOrigin: null,
     };
   }
 
@@ -915,6 +1277,7 @@ export function parseSkillImportSourceInput(rawInput: string): ParsedSkillImport
       requestedSkillSlug: skillSlugRaw ? normalizeSkillSlug(skillSlugRaw) : requestedSkillSlug,
       originalSkillsShUrl: canonicalSource,
       warnings,
+      wellKnownOrigin: null,
     };
   }
 
@@ -929,6 +1292,7 @@ export function parseSkillImportSourceInput(rawInput: string): ParsedSkillImport
     requestedSkillSlug,
     originalSkillsShUrl: null,
     warnings,
+    wellKnownOrigin: deriveWellKnownOrigin(canonicalSource),
   };
 }
 
@@ -2137,6 +2501,15 @@ function resolveSkillReference(
     if (byKey) {
       return { skill: byKey, ambiguous: false };
     }
+    const keyParts = normalizedKey.split("/");
+    const legacySlug = keyParts.at(-1) ?? "";
+    const aliasedSlug = LEGACY_BUNDLED_SKILL_SLUGS[legacySlug];
+    if (aliasedSlug && keyParts.length === 3) {
+      const byLegacyKey = skills.find(
+        (skill) => skill.key === `${keyParts[0]}/${keyParts[1]}/${aliasedSlug}`,
+      );
+      if (byLegacyKey) return { skill: byLegacyKey, ambiguous: false };
+    }
   }
 
   const normalizedSlug = normalizeSkillSlug(trimmed);
@@ -2144,7 +2517,8 @@ function resolveSkillReference(
     return { skill: null, ambiguous: false };
   }
 
-  const bySlug = skills.filter((skill) => skill.slug === normalizedSlug);
+  const aliasedSlug = LEGACY_BUNDLED_SKILL_SLUGS[normalizedSlug] ?? normalizedSlug;
+  const bySlug = skills.filter((skill) => skill.slug === aliasedSlug);
   if (bySlug.length === 1) {
     return { skill: bySlug[0] ?? null, ambiguous: false };
   }
@@ -2669,6 +3043,17 @@ function deriveSkillSourceInfo(skill: SkillSourceInfoTarget): {
     };
   }
 
+  if (skill.sourceType === "well_known") {
+    const origin = asString(metadata.wellKnownOrigin) ?? skill.sourceLocator;
+    return {
+      editable: false,
+      editableReason: "Skills imported from agentskills.io are read-only. Re-import the source site to update them.",
+      sourceLabel: origin,
+      sourceBadge: "well_known",
+      sourcePath: null,
+    };
+  }
+
   if (skill.sourceType === "skills_sh") {
     const owner = asString(metadata.owner) ?? null;
     const repo = asString(metadata.repo) ?? null;
@@ -2755,6 +3140,7 @@ function enrichSkill(
     existingForks,
     currentVersion,
     starredByCurrentActor,
+    requiredEnv: getRequiredEnvFromSkill(skill),
     ...source,
   };
 }
@@ -2951,8 +3337,15 @@ export function companySkillService(db: Db) {
       const bundledSkills = await readLocalSkillImports(companyId, skillsRoot)
         .then((skills) => skills.map((skill) => ({
           ...skill,
-          key: deriveCanonicalSkillKey(companyId, {
+          slug: LEGACY_BUNDLED_SKILL_SLUGS[skill.slug] ?? skill.slug,
+          name: LEGACY_BUNDLED_SKILL_SLUGS[skill.slug] ?? skill.name,
+          markdown: rewriteFrontmatterName(
+            skill.markdown,
+            LEGACY_BUNDLED_SKILL_SLUGS[skill.slug] ?? skill.name,
+          ),
+          key: MYRMIDON_BUNDLED_SKILL_KEYS[skill.slug] ?? deriveCanonicalSkillKey(companyId, {
             ...skill,
+            slug: LEGACY_BUNDLED_SKILL_SLUGS[skill.slug] ?? skill.slug,
             metadata: {
               ...(skill.metadata ?? {}),
               sourceKind: "paperclip_bundled",
@@ -3009,7 +3402,7 @@ export function companySkillService(db: Db) {
   }
 
   async function ensureBundledSkillReleases(companyId: string, bundledSkills: CompanySkill[]) {
-    const paperclipSkill = bundledSkills.find((skill) => skill.key === "paperclipai/paperclip/paperclip");
+    const paperclipSkill = bundledSkills.find((skill) => skill.key === "paperclipai/paperclip/myrmidon");
     if (!paperclipSkill) return;
     for (const release of await readBundledSkillReleaseRegistry()) {
       const fileInventory = serializeVersionFileInventory(
@@ -3084,6 +3477,31 @@ export function companySkillService(db: Db) {
       companyId,
       Array.from(foldersByCategory.keys(), bundledFolderLabel),
     );
+    const bundledRows = await db
+      .select({ id: companySkills.id, key: companySkills.key, slug: companySkills.slug, name: companySkills.name, metadata: companySkills.metadata })
+      .from(companySkills)
+      .where(eq(companySkills.companyId, companyId));
+    for (const row of bundledRows) {
+      const targetKey = MYRMIDON_BUNDLED_SKILL_KEYS[row.slug];
+      if (!targetKey || (row.key === targetKey && row.slug === (LEGACY_BUNDLED_SKILL_SLUGS[row.slug] ?? row.slug))) continue;
+      const meta = isPlainRecord(row.metadata) ? row.metadata : {};
+      if (meta.sourceKind !== "paperclip_bundled") continue;
+      const conflictingKey = await db.select({ id: companySkills.id })
+        .from(companySkills)
+        .where(and(eq(companySkills.companyId, companyId), eq(companySkills.key, targetKey)))
+        .then((rows) => rows[0] ?? null);
+      if (conflictingKey && conflictingKey.id !== row.id) {
+        const conflictingSkill = await db.select({ metadata: companySkills.metadata })
+          .from(companySkills)
+          .where(and(eq(companySkills.companyId, companyId), eq(companySkills.id, conflictingKey.id)))
+          .then((rows) => rows[0] ?? null);
+        if (!conflictingSkill || !isPlainRecord(conflictingSkill.metadata) || conflictingSkill.metadata.sourceKind !== "paperclip_bundled") continue;
+        await db.delete(companySkills).where(and(eq(companySkills.companyId, companyId), eq(companySkills.id, conflictingKey.id)));
+      }
+      await db.update(companySkills)
+        .set({ key: targetKey, slug: LEGACY_BUNDLED_SKILL_SLUGS[row.slug] ?? row.slug, name: LEGACY_BUNDLED_SKILL_SLUGS[row.slug] ?? row.slug, updatedAt: new Date() })
+        .where(and(eq(companySkills.companyId, companyId), eq(companySkills.id, row.id)));
+    }
   }
 
   async function reconcileLocalPathSkillSources(companyId: string) {
@@ -4328,6 +4746,25 @@ export function companySkillService(db: Db) {
         } else {
           throw error;
         }
+      }
+    } else if (skill.sourceType === "well_known") {
+      const storedDirRaw = asString(getSkillMeta(skill).storedDir);
+      const storedDir = storedDirRaw ? path.resolve(storedDirRaw) : null;
+      const candidate = storedDir ? path.resolve(storedDir, normalizedPath) : null;
+      const withinRoot = Boolean(
+        candidate
+        && storedDir
+        && (candidate === storedDir || candidate.startsWith(`${storedDir}${path.sep}`)),
+      );
+      const diskContent = withinRoot && candidate
+        ? await fs.readFile(candidate, "utf8").catch(() => null)
+        : null;
+      if (diskContent !== null) {
+        content = diskContent;
+      } else if (normalizedPath === "SKILL.md") {
+        content = skill.markdown;
+      } else {
+        throw notFound("Skill file is unavailable: the stored skill archive files are missing.");
       }
     } else if (skill.sourceType === "url") {
       if (normalizedPath !== "SKILL.md") {
@@ -6065,10 +6502,13 @@ export function companySkillService(db: Db) {
         continue;
       }
 
-      const metadata = {
+      const metadata: Record<string, unknown> = {
         ...(skill.metadata ?? {}),
         skillKey: skill.key,
       };
+      if (EXTERNAL_SKILL_SOURCE_TYPES.has(skill.sourceType) && !Array.isArray(metadata.requiredEnv)) {
+        metadata.requiredEnv = extractRequiredEnvFromMarkdown(skill.markdown);
+      }
       const parsed = parseFrontmatterMarkdown(skill.markdown);
       const storeMetadata = readSkillStoreMetadata(parsed.frontmatter, metadata);
       const bundledCategory = paperclipBundledFolderCategory(skill.key, incomingMeta);
@@ -6127,9 +6567,18 @@ export function companySkillService(db: Db) {
     return out;
   }
 
-  async function importFromSource(companyId: string, source: string): Promise<CompanySkillImportResult> {
+  async function importFromSource(
+    companyId: string,
+    source: string,
+    options: { skillName?: string | null } = {},
+  ): Promise<CompanySkillImportResult> {
     await ensureSkillInventoryCurrent(companyId);
     const parsed = parseSkillImportSourceInput(source);
+    if (parsed.wellKnownOrigin) {
+      return await importWellKnownSkill(companyId, parsed.wellKnownOrigin, {
+        skillName: options.skillName ?? parsed.requestedSkillSlug,
+      });
+    }
     const local = !/^https?:\/\//i.test(parsed.resolvedSource);
     if (local) {
       await assertLocalImportSourceAllowed(companyId, parsed.resolvedSource);
@@ -6168,6 +6617,143 @@ export function companySkillService(db: Db) {
     }
     const imported = await upsertImportedSkills(companyId, filteredSkills);
     return { imported, warnings };
+  }
+
+  async function discoverSkills(companyId: string, source: string): Promise<CompanySkillDiscoverResult> {
+    await ensureSkillInventoryCurrent(companyId);
+    const parsed = parseSkillImportSourceInput(source);
+    const origin = parsed.wellKnownOrigin;
+    if (!origin) {
+      throw unprocessable(
+        "Skill discovery needs a bare agentskills.io site URL (for example https://kie.ai), not a GitHub or skills.sh source.",
+        { code: "skill_discovery_invalid_source" },
+      );
+    }
+    const entries = await fetchWellKnownIndex(origin);
+    return {
+      skills: entries.map((entry) => ({
+        name: entry.name,
+        description: entry.description,
+        digest: entry.digest,
+        url: resolveWellKnownArchiveUrl(origin, entry.url),
+      })),
+    };
+  }
+
+  async function importWellKnownSkill(
+    companyId: string,
+    origin: string,
+    options: { skillName?: string | null } = {},
+  ): Promise<CompanySkillImportResult> {
+    const entries = await fetchWellKnownIndex(origin);
+    const requested = options.skillName ? normalizeSkillSlug(options.skillName) : null;
+    const entry: WellKnownSkillEntry | null = requested
+      ? entries.find((candidate) => normalizeSkillSlug(candidate.name) === requested) ?? null
+      : entries.length === 1 ? entries[0]! : null;
+    if (!entry) {
+      if (requested) {
+        throw unprocessable(
+          `Skill "${options.skillName}" was not found in the agentskills.io index at ${buildWellKnownIndexUrl(origin)}.`,
+          { code: "skill_discovery_skill_not_found", available: entries.map((candidate) => candidate.name) },
+        );
+      }
+      throw unprocessable(
+        `The agentskills.io index at ${buildWellKnownIndexUrl(origin)} lists ${entries.length} skills; specify "skillName" to pick one.`,
+        { code: "skill_discovery_ambiguous", available: entries.map((candidate) => candidate.name) },
+      );
+    }
+
+    const archiveUrl = resolveWellKnownArchiveUrl(origin, entry.url);
+    const archiveBytes = await fetchWellKnownArchiveBytes(archiveUrl);
+    const digestHex = createHash("sha256").update(archiveBytes).digest("hex");
+    const computedDigest = `sha256:${digestHex}`;
+    if (entry.digest !== computedDigest) {
+      throw unprocessable(
+        `Digest mismatch while importing skill "${entry.name}" from ${origin}: the index advertises ${entry.digest} but the downloaded archive hashes to ${computedDigest}. The archive was not imported.`,
+        { code: "skill_digest_mismatch", expected: entry.digest, actual: computedDigest },
+      );
+    }
+
+    const files = unpackSkillArchive(archiveBytes);
+    const skillFile = files.find((file) => file.path === "SKILL.md")!;
+    const markdown = skillFile.content;
+    const parsedMarkdown = parseFrontmatterMarkdown(markdown);
+    const slug = normalizeSkillSlug(entry.name) ?? deriveImportedSkillSlug(parsedMarkdown.frontmatter, "skill");
+    const fileInventory = files
+      .map((file) => ({ path: file.path, kind: classifyInventoryKind(file.path) }))
+      .sort((left, right) => left.path.localeCompare(right.path));
+
+    const metadata: Record<string, unknown> = {
+      sourceKind: "well_known",
+      wellKnownOrigin: origin,
+      wellKnownName: entry.name,
+      archiveUrl,
+      digest: computedDigest,
+      requiredEnv: extractRequiredEnvFromMarkdown(markdown),
+    };
+    const imported: ImportedSkill = {
+      key: deriveCanonicalSkillKey(companyId, {
+        slug,
+        sourceType: "well_known",
+        sourceLocator: origin,
+        metadata,
+      }),
+      slug,
+      name: asString(parsedMarkdown.frontmatter.name) ?? entry.name,
+      description: asString(parsedMarkdown.frontmatter.description) ?? entry.description,
+      markdown,
+      sourceType: "well_known",
+      sourceLocator: origin,
+      sourceRef: computedDigest,
+      trustLevel: deriveTrustLevel(fileInventory),
+      compatibility: "compatible",
+      fileInventory,
+      metadata,
+    };
+    assertImportedSkillKeyAllowed(imported);
+    assertImportedSkillSourceAllowed(imported);
+
+    const existing = await getByKey(companyId, imported.key);
+    const existingMeta = existing ? getSkillMeta(existing) : {};
+    const existingStoredDir = asString(existingMeta.storedDir);
+    if (
+      existing
+      && asString(existingMeta.digest) === computedDigest
+      && existingStoredDir
+      && await resolveExistingSkillDirectory(path.resolve(existingStoredDir))
+    ) {
+      return { imported: [existing], warnings: [] };
+    }
+
+    const storedRoot = path.resolve(resolveManagedSkillsRoot(companyId), WELL_KNOWN_STORED_DIR_NAME);
+    const targetDir = path.resolve(storedRoot, buildSkillRuntimeName(imported.key, imported.slug));
+    const replacement = await createDirectoryReplacement(targetDir);
+    try {
+      for (const file of files) {
+        const resolved = resolveVersionSnapshotPath(replacement.stagingDir, file.path);
+        if (!resolved) throw unprocessable(`Skill archive path is invalid: ${file.path}`);
+        await fs.mkdir(path.dirname(resolved.targetPath), { recursive: true });
+        await fs.writeFile(resolved.targetPath, file.content, "utf8");
+      }
+      await replacement.commit();
+    } catch (error) {
+      await replacement.cleanup().catch(() => undefined);
+      throw error;
+    }
+    imported.metadata = { ...metadata, storedDir: targetDir };
+
+    const [persisted] = await upsertImportedSkills(companyId, [imported]);
+    if (!persisted) throw notFound("Failed to persist the imported skill");
+    const versionLabel = `Imported ${entry.name} (${computedDigest.slice(7, 15)})`;
+    await createVersion(companyId, persisted.id, { label: versionLabel }, null, {
+      fileInventory: files.map((file) => ({
+        path: file.path,
+        kind: classifyInventoryKind(file.path),
+        content: file.content,
+      })),
+      skill: persisted,
+    });
+    return { imported: [persisted], warnings: [] };
   }
 
   async function listTestInputs(companyId: string, skillId: string): Promise<CompanySkillTestInput[]> {
@@ -7033,6 +7619,7 @@ export function companySkillService(db: Db) {
     deleteTestRun,
     pruneExpiredTestHarnessIssues,
     importFromSource,
+    discoverSkills,
     installFromCatalog,
     browseProjectWorkspace,
     scanProjectWorkspaces,

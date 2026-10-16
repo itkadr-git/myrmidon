@@ -13,7 +13,7 @@
 import express from "express";
 import request from "supertest";
 import { describe, expect, it, vi } from "vitest";
-import { AUTONOMY_SAFE_DEFAULTS, type AutonomyChangeLogEntry } from "@paperclipai/shared";
+import { AUTONOMY_SAFE_DEFAULTS, type AutonomyActionClass, type AutonomyChangeLogEntry } from "@paperclipai/shared";
 import { errorHandler } from "../../middleware/index.js";
 import { autonomyRoutes } from "./routes.js";
 import { autonomyGate, AUTONOMY_FORBIDDEN_CODE } from "./gate.js";
@@ -82,13 +82,19 @@ function app(actor: unknown, store = memoryAutonomyStore()) {
   return { server, store, changelog };
 }
 
-/** A tiny express app that proves the gate stops a handler. */
-function gatedApp(actor: unknown, verdictRole = "engineer") {
+/** A tiny express app that proves the gate stops a handler.
+ *
+ * The class under test is a parameter: the same harness carries the pause/wake
+ * class and the two leaf classes (deploy, merge), so the refusal is proven once
+ * per class on the same seam. The path is a stand-in — the gate reads the class
+ * passed to `assertAllowed`, not the route.
+ */
+function gatedApp(actor: unknown, verdictRole = "engineer", actionClass: AutonomyActionClass = "pause_wake_agents") {
   const store = memoryAutonomyStore({
     version: 1,
     matrix: {
       version: 2,
-      rules: [{ role: verdictRole, actionClass: "pause_wake_agents", verdict: "forbidden" }],
+      rules: [{ role: verdictRole, actionClass, verdict: "forbidden" }],
       defaults: { ...AUTONOMY_SAFE_DEFAULTS },
     },
     regulations: [],
@@ -103,7 +109,7 @@ function gatedApp(actor: unknown, verdictRole = "engineer") {
   });
   server.post("/api/agents/:id/pause", async (req, res, next) => {
     try {
-      await gate.assertAllowed(req, "pause_wake_agents");
+      await gate.assertAllowed(req, actionClass);
       ran();
       res.json({ ok: true });
     } catch (err) {
@@ -120,6 +126,22 @@ describe("myrmidon(1.6-AUTONOMY) gate: instruction-independent enforcement", () 
     const res = await request(server).post(`/api/agents/${AGENT_ID}/pause`).expect(403);
     expect(res.body.code).toBe(AUTONOMY_FORBIDDEN_CODE);
     expect(res.body.details?.actionClass).toBe("pause_wake_agents");
+    expect(ran).not.toHaveBeenCalled();
+  });
+
+  it("refuses the deploy class for an agent caller with 403 and does not run the handler", async () => {
+    const { server, ran } = gatedApp(agentActor, "engineer", "deploy");
+    const res = await request(server).post(`/api/agents/${AGENT_ID}/pause`).expect(403);
+    expect(res.body.code).toBe(AUTONOMY_FORBIDDEN_CODE);
+    expect(res.body.details?.actionClass).toBe("deploy");
+    expect(ran).not.toHaveBeenCalled();
+  });
+
+  it("refuses the merge class for an agent caller with 403 and does not run the handler", async () => {
+    const { server, ran } = gatedApp(agentActor, "engineer", "merge");
+    const res = await request(server).post(`/api/agents/${AGENT_ID}/pause`).expect(403);
+    expect(res.body.code).toBe(AUTONOMY_FORBIDDEN_CODE);
+    expect(res.body.details?.actionClass).toBe("merge");
     expect(ran).not.toHaveBeenCalled();
   });
 

@@ -5,16 +5,12 @@
 // "Myrmidon" instead, and checks that the shipped page/manifest advertise the
 // new name and that no paperclip artwork (loading glyph, login-screen ASCII
 // sprites, export-README links to the vendor site) is rendered any more.
-// The allowlist is deliberately narrow: only wire-protocol identifiers
-// (X-Paperclip-* headers, PAPERCLIP_* env vars, @paperclipai/* packages, the
-// lucide-react "Paperclip" attachment icon), the MIT attribution line and the
-// legacy "Paperclip ..." recovery-notice sentences that old stored comments
-// still carry (matchers and variants only). myrmidon(DB1): DEBRAND 1.6.6-a
-// removed the vendor-product exceptions ("Paperclip Cloud"/"Labs"/"EE"/
-// "Enterprise") from visible UI copy — those surfaces now say Myrmidon, so the
-// words are no longer exempt. See docs/myrmidon/CONVENTIONS.md #8/#9.
+// The allowlist covers only wire-protocol identifiers, MIT attribution and
+// legacy recovery-notice wording that old stored comments still carry.
 import { describe, expect, it } from "vitest";
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { PRODUCT_NAME } from "@paperclipai/shared";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -22,12 +18,9 @@ const UI_SRC = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const REPO_ROOT = path.resolve(UI_SRC, "..", "..");
 const APP_DEFINITIONS_DIR = path.join(REPO_ROOT, "packages", "shared", "src", "app-definitions");
 
-// Match-level exemptions: the vendor's real external products. Everything else
-// that reads "Paperclip" as a word in a user-visible string is a violation,
-// including "Paperclip Runner", "Paperclip Computer", "Paperclip-managed" and
-// (since myrmidon(DB1)) "Paperclip Cloud"/"Labs"/"EE"/"Enterprise" — those
-// name parts of our own product and read "Myrmidon ..." instead.
-const WORD_PATTERN = /\bPaperclip\b/; // myrmidon(DB1): DEBRAND 1.6.6-a removed the Cloud/Labs/EE/Enterprise exceptions
+// No vendor product phrase is exempt: Cloud/Labs/EE/Enterprise references in
+// first-party UI are user-visible branding regressions just like any other.
+const WORD_PATTERN = /\bPaperclip\b/;
 
 // Line-level exemptions are limited to text that cannot be renamed at all.
 const LINE_ALLOW_SUBSTR = [
@@ -135,6 +128,24 @@ function reportOrThrow(violations: Violation[]): void {
 }
 
 describe("myrmidon(B1a): no stray Paperclip branding in ui/src", () => {
+  it.each([
+    "Paperclip Cloud",
+    "Paperclip-Cloud",
+    "Paperclip Labs",
+    "Paperclip EE",
+    "Paperclip Enterprise",
+  ])("rejects first-party UI copy containing %s", (copy) => {
+    const fixtureDir = mkdtempSync(path.join(tmpdir(), "myrmidon-branding-"));
+    const file = path.join(fixtureDir, "fixture.ts");
+    writeFileSync(file, `export const label = ${JSON.stringify(copy)};`);
+    try {
+      // Exercise the same scanner used against real source files.
+      expect(findViolationsIn([file], fixtureDir)).toHaveLength(1);
+    } finally {
+      rmSync(fixtureDir, { recursive: true, force: true });
+    }
+  });
+
   it("has no user-visible 'Paperclip' text outside the documented allowlist", () => {
     const files = walk(UI_SRC, /\.(ts|tsx)$/).filter((fp) => !path.basename(fp).includes(".test."));
     reportOrThrow(findViolationsIn(files, UI_SRC));
@@ -162,17 +173,17 @@ describe("myrmidon(B1a): no stray Paperclip branding in shared UI-facing message
 });
 
 describe("myrmidon(B1a): shipped page and manifest advertise Myrmidon", () => {
-  it("index.html title and app name say Myrmidon", () => {
+  it("index.html title and app name say the shared product name", () => {
     const html = readFileSync(path.join(REPO_ROOT, "ui", "index.html"), "utf-8");
-    expect(html).toMatch(/<title>Myrmidon<\/title>/);
-    expect(html).toMatch(/apple-mobile-web-app-title" content="Myrmidon"/);
+    expect(html).toContain(`<title>${PRODUCT_NAME}</title>`);
+    expect(html).toContain(`apple-mobile-web-app-title" content="${PRODUCT_NAME}"`);
     expect(html).not.toMatch(/<title>Paperclip<\/title>/);
   });
 
-  it("site.webmanifest name and short_name say Myrmidon", () => {
+  it("site.webmanifest name and short_name use the shared product name", () => {
     const manifest = JSON.parse(readFileSync(path.join(REPO_ROOT, "ui", "public", "site.webmanifest"), "utf-8"));
-    expect(manifest.name).toBe("Myrmidon");
-    expect(manifest.short_name).toBe("Myrmidon");
+    expect(manifest.name).toBe(PRODUCT_NAME);
+    expect(manifest.short_name).toBe(PRODUCT_NAME);
   });
 });
 
