@@ -1089,6 +1089,31 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     });
   });
 
+  it("does not repeat assignment wakes after a daily cap skip", async () => {
+    const { agentId } = await seedCompanyAndAgent({
+      heartbeatConfig: { maxDailyRuns: 0 },
+    });
+
+    expect(await heartbeat.wakeup(agentId, {
+      source: "assignment",
+      triggerDetail: "system",
+    })).toBeNull();
+    expect(await heartbeat.wakeup(agentId, {
+      source: "assignment",
+      triggerDetail: "system",
+    })).toBeNull();
+
+    const wakes = await db
+      .select({ status: agentWakeupRequests.status, reason: agentWakeupRequests.reason })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, agentId));
+    expect(wakes).toHaveLength(1);
+    expect(wakes[0]).toMatchObject({
+      status: "skipped",
+      reason: "heartbeat.daily_run_limit",
+    });
+  });
+
   it("treats zero daily run cap as a hard stop", async () => {
     const { agentId } = await seedCompanyAndAgent({
       heartbeatConfig: {
