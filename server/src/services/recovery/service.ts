@@ -2555,26 +2555,32 @@ export function recoveryService(
     issue: typeof issues.$inferSelect;
     reason: string;
   }) {
-    const candidate = input.issue.assigneeAgentId
-      ? await evaluateAgentInvokabilityFromDb(db, input.issue.assigneeAgentId)
+    const assignee = input.issue.assigneeAgentId
+      ? await getAgent(input.issue.assigneeAgentId)
+      : null;
+    const candidate = assignee
+      ? await evaluateAgentInvokabilityFromDb(db, assignee)
       : null;
     const targetAssigneeId = candidate?.invokable ? input.issue.assigneeAgentId : null;
     const stillAssigned = targetAssigneeId !== null;
     const [existingIssue] = await db
-      .select()
+      .select({
+        id: issues.id,
+        companyId: issues.companyId,
+        assigneeAgentId: issues.assigneeAgentId,
+        status: issues.status,
+      })
       .from(issues)
       .where(and(eq(issues.id, input.issue.id), eq(issues.companyId, input.issue.companyId)))
       .limit(1);
     if (!existingIssue || existingIssue.status === "done" || existingIssue.status === "cancelled") return false;
-    if (existingIssue.blockedByIssueIds.length > 0) {
-      const blockers = await existingUnresolvedBlockerIssues(input.issue.companyId, input.issue.id);
-      if (blockers.length > 0) {
-        await issuesSvc.update(existingIssue.id, {
-          status: "blocked",
-          blockedByIssueIds: blockers.map((blocker) => blocker.id),
-        });
-        return false;
-      }
+    const blockers = await existingUnresolvedBlockerIssues(input.issue.companyId, input.issue.id);
+    if (blockers.length > 0) {
+      await issuesSvc.update(existingIssue.id, {
+        status: "blocked",
+        blockedByIssueIds: blockers.map((blocker) => blocker.id),
+      });
+      return false;
     }
     const issue = await issuesSvc.update(existingIssue.id, {
       status: "todo",
@@ -3952,11 +3958,10 @@ export function recoveryService(
         .from(issueRecoveryActions)
         .where(
           and(
-            eq(issueRecoveryActions.issueId, input.issue.id),
+            eq(issueRecoveryActions.sourceIssueId, input.issue.id),
             eq(issueRecoveryActions.companyId, input.issue.companyId),
             inArray(issueRecoveryActions.status, ["active", "escalated"]),
-            eq(issueRecoveryActions.sourceKind, "assigned_issue"),
-            eq(issueRecoveryActions.sourceId, input.issue.id),
+            eq(issueRecoveryActions.kind, "assigned_issue"),
           ),
         )
         .limit(1);

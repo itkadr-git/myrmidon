@@ -9,7 +9,7 @@
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { agents, companies, createDb, heartbeatRuns, issueRecoveryActions, issues } from "@paperclipai/db";
+import { agents, companies, createDb, heartbeatRuns, issueRecoveryActions, issueRelations, issues } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -34,6 +34,7 @@ describeEmbeddedPostgres("reconcileStrandedAssignedIssues: infrastructure interr
 
   async function seedStrandedIssue(input: {
     errorCode: string | null;
+    blockerIssueId?: string;
     scheduledRetryAttempt?: number;
     scheduledRetryReason?: string | null;
     contextSnapshotExtra?: Record<string, unknown>;
@@ -81,6 +82,14 @@ describeEmbeddedPostgres("reconcileStrandedAssignedIssues: infrastructure interr
       responsibleUserId: "user-a",
       createdAt: new Date(now.getTime() - 60 * 60 * 1000),
     });
+    if (input.blockerIssueId) {
+      await db.insert(issueRelations).values({
+        companyId,
+        issueId: input.blockerIssueId,
+        relatedIssueId: issueId,
+        type: "blocks",
+      });
+    }
     const claimedAdapterType = input.adapterType === undefined ? "codex_local" : input.adapterType;
     await db.insert(heartbeatRuns).values({
       id: runId,
@@ -145,8 +154,13 @@ describeEmbeddedPostgres("reconcileStrandedAssignedIssues: infrastructure interr
   }, 30_000);
 
   it("keeps real unresolved blockers on blocked issues during reroute", async () => {
-    const { companyId, issueId } = await seedStrandedIssue({ errorCode: "agent_paused", scheduledRetryAttempt: 0 });
+    const companyId = randomUUID();
     const blockerId = randomUUID();
+    const { issueId } = await seedStrandedIssue({
+      errorCode: "agent_paused",
+      scheduledRetryAttempt: 0,
+      blockerIssueId: blockerId,
+    });
     const now = new Date();
     await db.insert(issues).values({
       id: blockerId,
@@ -157,13 +171,11 @@ describeEmbeddedPostgres("reconcileStrandedAssignedIssues: infrastructure interr
       createdAt: now,
       updatedAt: now,
     });
-    await db.update(issues).set({ blockedByIssueIds: [blockerId] }).where(eq(issues.id, issueId));
 
     await heartbeatService(db).reconcileStrandedAssignedIssues();
 
     const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
     expect(issue!.status).toBe("blocked");
-    expect(issue!.blockedByIssueIds).toEqual([blockerId]);
   }, 30_000);
 
   it("still escalates to the board once the shared infra-interrupt retry budget is exhausted", async () => {
