@@ -2593,15 +2593,6 @@ export function recoveryService(
       await issuesSvc.update(reblockedIssue.id, { status: "blocked", blockedByIssueIds });
       return false;
     }
-    const action = await ensureSourceScopedStrandedRecoveryAction({
-      issue: input.issue,
-      latestRun: input.latestRun,
-      previousStatus: input.previousStatus,
-      recoveryCause: input.recoveryCause,
-      successfulRunHandoffEvidence: input.successfulRunHandoffEvidence,
-      rerouteToSharedQueue: true,
-    });
-    if (!action) return false;
     const [updatedIssue] = await db
       .update(issues)
       .set({
@@ -2630,6 +2621,7 @@ export function recoveryService(
     successfulRunHandoffEvidence?: SuccessfulRunHandoffRecoveryEvidence | null;
     rerouteToSharedQueue?: boolean;
   }) {
+    if (input.rerouteToSharedQueue) return null;
     const recoveryCause = resolveStrandedRecoveryCause(
       input.latestRun,
       input.recoveryCause,
