@@ -48,6 +48,7 @@ import { ForagingSettingsPanel } from "@/components/myrmidon/ForagingSettingsPan
 import { WorkspaceHygieneSettingsPanel } from "@/components/myrmidon/WorkspaceHygieneSettingsPanel"; // myrmidon(SETTINGS-UI A)
 import { ChannelSettingsPanel } from "@/components/myrmidon/ChannelSettingsPanel"; // myrmidon(SETTINGS-UI A)
 import { ModelFallbackSignalSettingsPanel } from "@/components/myrmidon/ModelFallbackSignalSettingsPanel"; // myrmidon(SETTINGS-UI A)
+import { LicensingSettingsPanel } from "@/components/myrmidon/LicensingSettingsPanel"; // myrmidon(LICENSING)
 import { AboutSettingsPanel } from "@/components/myrmidon/AboutSettingsPanel"; // myrmidon(ABOUT)
 import { DeployJobsPanel } from "@/components/myrmidon/DeployJobsPanel"; // myrmidon(R5-A)
 import { BoardProcessesSettingsPanel } from "@/components/myrmidon/BoardProcessesSettingsPanel"; // myrmidon(1.6.6 PROCS-0.1)
@@ -206,6 +207,7 @@ export function InstanceGeneralSettings({ embedded = false }: { embedded?: boole
       <BoardProcessesSettingsPanel /> {/* myrmidon(1.6.6 PROCS-0.1) */}
       <BoardLeasesPanel /> {/* myrmidon(1.6.5 BOARD-PROCESSES) */}
       <PluginEntitlementSettings /> {/* myrmidon(PLUGIN-ENTITLEMENT C) */}
+      <LicensingSettingsPanel /> {/* myrmidon(LICENSING): install id, license request, issue form */}
       <AttentionFeedSettingsPanel /> {/* myrmidon(1.6.5 F-15) */}
 
       {showDeploymentStatus && (
