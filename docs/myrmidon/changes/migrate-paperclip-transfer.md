@@ -4,7 +4,7 @@ divergence-section: Трек 5 — эксплуатация
 
 ## changelog-en
 
-### CLI: `myrmidon:migrate` moves a Paperclip v2026.916.1 instance into a clean Myrmidon target (MIGRATE-A)
+### CLI: `myrmidon:migrate` moves a vendor v2026.916.1 instance into a clean Myrmidon target (MIGRATE-A)
 
 - New command `paperclipai myrmidon:migrate`: `--dry-run` prints a full JSON inventory (tables, row counts, content digests, secret carriers, file manifest, exclusions) and writes nothing; without `--dry-run` it transfers the database, the storage files and the secrets.
 - Source is a PostgreSQL URL (read-only snapshot) or a plain `pg_dump` file restored into an empty scratch database. The source is supported only when its applied migration hashes equal the pinned vendor chain of release v2026.916.1 exactly; any other history is rejected before the target is touched.
@@ -14,7 +14,7 @@ divergence-section: Трек 5 — эксплуатация
 
 ## changelog-ru
 
-### CLI: `myrmidon:migrate` переносит инстанс Paperclip v2026.916.1 в чистый Myrmidon (MIGRATE-A)
+### CLI: `myrmidon:migrate` переносит инстанс вендора v2026.916.1 в чистый Myrmidon (MIGRATE-A)
 
 - Новая команда `paperclipai myrmidon:migrate`: `--dry-run` печатает полный JSON-инвентарь (таблицы, число строк, дайджесты содержимого, носители секретов, манифест файлов, исключения) и ничего не пишет; без `--dry-run` переносит базу, файлы хранилища и секреты.
 - Источник — URL PostgreSQL (снимок только для чтения) или plain-файл `pg_dump`, разворачиваемый в пустую временную базу. Источник поддержан, только если хэши применённых миграций в точности равны закреплённой цепочке вендорского релиза v2026.916.1; любая другая история отвергается до обращения к целевой базе.
@@ -24,4 +24,4 @@ divergence-section: Трек 5 — эксплуатация
 
 ## divergence
 
-| MIGRATE-A | Команда переноса Paperclip → Myrmidon (`myrmidon:migrate`): проверка цепочки хэшей, снимок источника, перенос БД/файлов/секретов, журнал, откат; в `server/package.json` добавлен подпуть экспорта `./secrets/local-encrypted-provider`, в `packages/db` — чтение цепочки миграций `listMigrationChain` | `server/package.json` (exports), `packages/db/src/{client,index}.ts` (+`listMigrationChain`); + `cli/src/commands/myrmidon-migrate*.ts`, `cli/src/index.ts` | Переход пользователей Paperclip на Myrmidon без потери данных и секретов | `cli/src/__tests__/myrmidon-migrate.test.ts` | При переносе: оставить подпуть экспорта server, остальное — наше | — |
+| MIGRATE-A | Команда переноса инстанса вендора → Myrmidon (`myrmidon:migrate`): проверка цепочки хэшей, снимок источника, перенос БД/файлов/секретов, журнал, откат; в `server/package.json` добавлен подпуть экспорта `./secrets/local-encrypted-provider`, в `packages/db` — чтение цепочки миграций `listMigrationChain` | `server/package.json` (exports), `packages/db/src/{client,index}.ts` (+`listMigrationChain`); + `cli/src/commands/myrmidon-migrate*.ts`, `cli/src/index.ts` | Переход пользователей на Myrmidon без потери данных и секретов | `cli/src/__tests__/myrmidon-migrate.test.ts` | При переносе: оставить подпуть экспорта server, остальное — наше | — |
