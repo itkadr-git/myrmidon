@@ -2558,10 +2558,10 @@ export function recoveryService(
     const assignee = input.issue.assigneeAgentId
       ? await getAgent(input.issue.assigneeAgentId)
       : null;
-    const candidate = assignee
+    const invokability = assignee
       ? await evaluateAgentInvokabilityFromDb(db, assignee)
       : null;
-    const targetAssigneeId = candidate?.invokable ? input.issue.assigneeAgentId : null;
+    const targetAssigneeId = invokability?.invokable ? input.issue.assigneeAgentId : null;
     const stillAssigned = targetAssigneeId !== null;
     const [existingIssue] = await db
       .select({
