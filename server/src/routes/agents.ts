@@ -2236,6 +2236,7 @@ export function agentRoutes(
       }
     }
     const disabled = new Set(getDisabledAdapterTypes());
+    if (process.env.MYRMIDON_DISABLE_HERMES_LOCAL === "1") disabled.add("hermes_local");
     if (!disabled.has(adapterType)) return adapterType;
     const available = listServerAdapters()
       .map((a) => a.type)

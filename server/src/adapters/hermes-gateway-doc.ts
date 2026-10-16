@@ -14,7 +14,7 @@ Don't use when:
 Runtime distinction:
 - hermes_local: Myrmidon starts Hermes on the Myrmidon host through the built-in local adapter.
 - hermes_gateway: Myrmidon calls an already-running Hermes API server using agentDefaultsPayload.apiBaseUrl.
-- Hermes-originated Paperclip API usage: Hermes calls Paperclip with PAPERCLIP_API_URL and the Paperclip API key claimed through the standard join approval flow. Do not use agentDefaultsPayload.apiBaseUrl for Paperclip API calls. For internet-facing Hermes chat/webhook task bridges, use a separate task_bridge key instead of exposing the normal claimed agent key.
+- Hermes-originated Myrmidon API usage: Hermes calls Myrmidon with PAPERCLIP_API_URL and the Myrmidon API key claimed through the standard join approval flow. Do not use agentDefaultsPayload.apiBaseUrl for Myrmidon API calls. For internet-facing Hermes chat/webhook task bridges, use a separate task_bridge key instead of exposing the normal claimed agent key.
 
 Hermes gateway process setup:
 - Set API_SERVER_ENABLED=true.
@@ -40,16 +40,16 @@ Join request minimum:
 Core fields:
 - agentDefaultsPayload.apiBaseUrl (string, required): Base URL for the Hermes API server as reachable from the Myrmidon server. A default dashboard root or chat URL such as http://127.0.0.1:9119 or http://127.0.0.1:9119/chat is accepted and maps to http://127.0.0.1:9119/api.
 - agentDefaultsPayload.apiKey (string, required unless the adapter package documents another auth field): Hermes API server key matching API_SERVER_KEY. This is the Hermes gateway key, not the claimed Myrmidon API key.
-- agentDefaultsPayload.paperclipApiUrl (string, strongly recommended): Paperclip base URL as reachable from Hermes for invite, claim, skill bootstrap, and later Paperclip API calls.
+- agentDefaultsPayload.paperclipApiUrl (string, strongly recommended): Myrmidon base URL as reachable from Hermes for invite, claim, skill bootstrap, and later Myrmidon API calls.
 - agentDefaultsPayload.timeoutSec or timeoutMs (number, optional): Runtime request timeout when supported by the installed Hermes gateway adapter.
 
 Network examples:
-- Local loopback on one host: agentDefaultsPayload.apiBaseUrl = "http://127.0.0.1:8642"; agentDefaultsPayload.paperclipApiUrl = "http://127.0.0.1:3100".
+- Local loopback on one host: agentDefaultsPayload.apiBaseUrl = "http://127.0.0.1:8642"; agentDefaultsPayload.paperclipApiUrl = "http://myrmidon.local:3100".
 - Local dashboard root or chat URL on one host: agentDefaultsPayload.apiBaseUrl = "http://127.0.0.1:9119" or "http://127.0.0.1:9119/chat"; Myrmidon maps it to "http://127.0.0.1:9119/api".
-- LAN/private network: agentDefaultsPayload.apiBaseUrl = "http://192.168.1.25:8642"; agentDefaultsPayload.paperclipApiUrl = "http://192.168.1.10:3100". Use private IPs or hostnames reachable from both machines.
-- Private overlay: agentDefaultsPayload.apiBaseUrl = "http://hermes-host.tailnet-name.ts.net:8642"; agentDefaultsPayload.paperclipApiUrl = "http://paperclip-host.tailnet-name.ts.net:3100". Add the Myrmidon hostname with npx myrmidon allowed-hostname <host> when authenticated/private mode requires it.
+- LAN/private network: agentDefaultsPayload.apiBaseUrl = "http://192.168.1.25:8642"; agentDefaultsPayload.paperclipApiUrl = "http://myrmidon-host:3100". Use private IPs or hostnames reachable from both machines.
+- Private overlay: agentDefaultsPayload.apiBaseUrl = "http://hermes-host.tailnet-name.ts.net:8642"; agentDefaultsPayload.paperclipApiUrl = "http://myrmidon-host.tailnet-name.ts.net:3100". Add the Myrmidon hostname with npx myrmidon allowed-hostname <host> when authenticated/private mode requires it.
 - Docker: if Hermes runs on the host and Myrmidon runs in Docker, use agentDefaultsPayload.apiBaseUrl = "http://host.docker.internal:8642". If Hermes runs in another container, use the Compose service DNS name such as "http://hermes:8642".
-- Reverse proxy/TLS: publish Hermes behind HTTPS and set agentDefaultsPayload.apiBaseUrl = "https://hermes-gateway.example"; set agentDefaultsPayload.paperclipApiUrl = "https://paperclip.example". Keep API_SERVER_KEY required at the origin or proxy.
+- Reverse proxy/TLS: publish Hermes behind HTTPS and set agentDefaultsPayload.apiBaseUrl = "https://hermes-gateway.example"; set agentDefaultsPayload.paperclipApiUrl = "https://myrmidon.example". Keep API_SERVER_KEY required at the origin or proxy.
 
 Security notes:
 - Treat API_SERVER_KEY and PAPERCLIP_BRIDGE_API_KEY as secrets.

@@ -612,12 +612,23 @@ function scratchNameFor(dir, repo) {
  * The `myr-ws open` argv for a parsed GitHub clone (parseCloneArgs result), or
  * null. Pure: the task key comes from `env`.
  */
+function taskKeyFromTarget(dir) {
+  if (!dir) return null;
+  const absolute = path.resolve(String(dir));
+  const parts = absolute.split(path.sep).filter(Boolean);
+  const workspaceAt = parts.lastIndexOf("workspace");
+  if (workspaceAt < 0 || workspaceAt + 1 >= parts.length) return null;
+  const candidate = parts[workspaceAt + 1];
+  return ISSUE_KEY_RE.test(candidate) ? candidate : null;
+}
+
 function openArgsFor(parsed, env = process.env) {
   if (!parsed || parsed.kind !== "github" || !parsed.owner || !parsed.repo) return null;
   const repo = `${parsed.owner}/${parsed.repo}`;
   const taskDir = env.MYRMIDON_TASK_WORKSPACE;
-  const key = taskDir ? path.basename(String(taskDir).replace(/\/+$/, "")) : "";
-  if (ISSUE_KEY_RE.test(key)) return ["open", key, repo];
+  const envKey = taskDir ? path.basename(String(taskDir).replace(/\/+$/, "")) : "";
+  const key = ISSUE_KEY_RE.test(envKey) ? envKey : taskKeyFromTarget(parsed.dir);
+  if (key) return ["open", key, repo];
   return ["open", "--scratch", scratchNameFor(parsed.dir, parsed.repo), repo];
 }
 

@@ -12,7 +12,7 @@ async function makeTempDir(prefix: string): Promise<string> {
 }
 
 describe("codex local skill sync", () => {
-  const paperclipKey = "paperclipai/paperclip/paperclip";
+  const paperclipKey = "paperclipai/paperclip/myrmidon";
   const cleanupDirs = new Set<string>();
 
   afterEach(async () => {
@@ -76,7 +76,7 @@ describe("codex local skill sync", () => {
     const after = await syncCodexSkills(configuredCtx, [paperclipKey]);
     expect(after.mode).toBe("ephemeral");
     expect(after.entries.find((entry) => entry.key === paperclipKey)?.state).toBe("configured");
-    await expect(fs.lstat(path.join(codexHome, "skills", "paperclip"))).rejects.toMatchObject({
+    await expect(fs.lstat(path.join(codexHome, "skills", "myrmidon"))).rejects.toMatchObject({
       code: "ENOENT",
     });
   });
