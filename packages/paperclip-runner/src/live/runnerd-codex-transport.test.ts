@@ -4508,6 +4508,16 @@ it.each([
     let firstCloseCompletedState: Awaited<
       ReturnType<typeof readCloseDiagnostic>
     > | null = null;
+    const withinCloseDeadline = async <T>(label: string, promise: Promise<T>) =>
+      await Promise.race([
+        promise,
+        new Promise<never>((_resolve, reject) =>
+          setTimeout(
+            () => reject(new Error(`${label} did not settle within 30s`)),
+            30_000,
+          ),
+        ),
+      ]);
     const identity = {
       runnerInstanceId: "runner-close-backlog",
       environmentLeaseId: "lease-close-backlog",
@@ -4611,7 +4621,7 @@ it.each([
       }
       closePhase = "first-close";
       closeStartedAt = Date.now();
-      await first.transport.close();
+      await withinCloseDeadline("first transport close", first.transport.close());
       closePhase = "after-first-close";
       firstCloseCompletedState = await readCloseDiagnostic().catch(() => null);
       // Local transports have no remote checkpoint callback. They must still
@@ -4843,7 +4853,7 @@ it.each([
         expect(secondSemanticResult).toHaveBeenCalledTimes(1);
         closePhase = "second-close";
         closeStartedAt = Date.now();
-        await second.transport.close();
+        await withinCloseDeadline("second transport close", second.transport.close());
         closePhase = "after-second-close";
         expect(await readRunnerState()).toMatchObject({
           lifecycle: "suspended",
@@ -4871,10 +4881,13 @@ it.each([
       }
       throw error;
     } finally {
-      await Promise.allSettled([
-        first.transport.close(),
-        second?.transport.close(),
-      ]);
+      await withinCloseDeadline(
+        "transport close cleanup",
+        Promise.allSettled([
+          first.transport.close(),
+          second?.transport.close(),
+        ]),
+      ).catch(() => undefined);
       if (!preserveFailedState)
         await rm(stateDirectory, { recursive: true, force: true });
     }
