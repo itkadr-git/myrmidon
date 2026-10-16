@@ -12,7 +12,7 @@
 
 import { createPgKnowledgeSearchIndex, type Db } from "@paperclipai/db";
 import { createKnowledgeService, type KnowledgeServiceOptions } from "./store.js";
-import type { SearchIndex } from "./domain.js";
+import type { KnowledgeRevisionLang, SearchIndex } from "./domain.js";
 
 export interface KnowledgeModuleOptions extends KnowledgeServiceOptions {
   /** Override the search index (tests inject the memory one). */
@@ -51,9 +51,9 @@ export function createKnowledgeModule(db: Db, companyId: string, options: Knowle
     archive: (idOrSlug: string, actor: Parameters<typeof service.archive>[2]) => service.archive(nestId, idOrSlug, actor),
     supersede: (idOrSlug: string, actor: Parameters<typeof service.supersede>[2], input: Parameters<typeof service.supersede>[3]) =>
       service.supersede(nestId, idOrSlug, actor, input),
-    get: (idOrSlug: string) => service.get(nestId, idOrSlug),
+    get: (idOrSlug: string, language?: KnowledgeRevisionLang) => service.get(nestId, idOrSlug, language),
     getRevision: (idOrSlug: string, revisionId: string) => service.getRevision(nestId, idOrSlug, revisionId),
-    listRevisions: (idOrSlug: string) => service.listRevisions(nestId, idOrSlug),
+    listRevisions: (idOrSlug: string, language?: KnowledgeRevisionLang) => service.listRevisions(nestId, idOrSlug, language),
     listItems: (filter?: Parameters<typeof service.listItems>[1]) => service.listItems(nestId, filter),
     backlinks: (idOrSlug: string) => service.backlinks(nestId, idOrSlug),
     listEvents: (itemId?: string, limit?: number) => service.listEvents(nestId, itemId, limit),
