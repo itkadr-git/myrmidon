@@ -741,30 +741,62 @@ describeEmbeddedPostgres("issue watchdog routes", () => {
         ),
       );
     expect(watchdogBlockers.map((r) => r.blockerId)).toEqual([firstChildRes.body.id]);
+  });
 
-    // 2. Create second follow-up child from the watchdog run (verifying ordinary child serialization).
-    const secondChildRes = await request(app)
+  it("preserves child serialization behind existing non-watchdog child during watchdog follow-up", async () => {
+    const companyId = await seedCompany();
+    const watchdogAgentId = await seedAgent(companyId, { name: "Serialization Watchdog" });
+    const childAssigneeAgentId = await seedAgent(companyId, { name: "Child Assignee" });
+    const watchedRootId = await seedIssue(companyId, { title: "Watched root" });
+    const existingChildId = await seedIssue(companyId, {
+      title: "Existing blocked child",
+      parentId: watchedRootId,
+      status: "blocked",
+      assigneeAgentId: childAssigneeAgentId,
+    });
+    const watchdogIssueId = await seedIssue(companyId, {
+      title: "Watchdog child issue",
+      parentId: watchedRootId,
+      status: "in_progress",
+      originKind: "task_watchdog",
+      originId: watchedRootId,
+      assigneeAgentId: watchdogAgentId,
+    });
+    const runId = await seedWatchdogRun({
+      companyId,
+      watchdogAgentId,
+      watchedIssueId: watchedRootId,
+      watchdogIssueId,
+    });
+    const app = createApp(companyId, {
+      type: "agent",
+      agentId: watchdogAgentId,
+      companyId,
+      runId,
+      source: "agent_jwt",
+    });
+
+    const newChildRes = await request(app)
       .post(`/api/issues/${watchedRootId}/children`)
-      .send({ title: "Second follow-up child", assigneeAgentId: childAssigneeAgentId });
+      .send({ title: "New serialized child", assigneeAgentId: childAssigneeAgentId });
 
-    expect(secondChildRes.status, JSON.stringify(secondChildRes.body)).toBe(201);
-    expect(secondChildRes.body).toMatchObject({
-      title: "Second follow-up child",
+    expect(newChildRes.status, JSON.stringify(newChildRes.body)).toBe(201);
+    expect(newChildRes.body).toMatchObject({
+      title: "New serialized child",
       parentId: watchedRootId,
       status: "blocked",
     });
 
-    // Second child should be serialized behind first child, not the watchdog.
-    const secondChildBlockers = await db
+    const newChildBlockers = await db
       .select({ blockerId: issueRelations.issueId })
       .from(issueRelations)
       .where(
         and(
           eq(issueRelations.companyId, companyId),
-          eq(issueRelations.relatedIssueId, secondChildRes.body.id),
+          eq(issueRelations.relatedIssueId, newChildRes.body.id),
           eq(issueRelations.type, "blocks"),
         ),
       );
-    expect(secondChildBlockers.map((r) => r.blockerId)).toEqual([firstChildRes.body.id]);
+    expect(newChildBlockers.map((r) => r.blockerId)).toEqual([existingChildId]);
   });
 });
