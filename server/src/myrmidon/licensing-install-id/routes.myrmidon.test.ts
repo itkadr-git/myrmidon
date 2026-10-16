@@ -2,7 +2,6 @@ import express from "express";
 import request from "supertest";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createHash } from "node:crypto";
-import * as fs from "node:fs";
 import { errorHandler } from "../../middleware/index.js";
 import { licensingInstallIdRoutes } from "./routes.js";
 
@@ -38,11 +37,6 @@ describe("GET /api/licensing/install-id", () => {
   });
 
   it("derives the A1 ID from the primary machine-id file", async () => {
-    vi.stubEnv("MYR_LICENSE_INSTANCE_ID", "");
-    vi.spyOn(fs, "readFileSync").mockImplementation(((path: unknown) => {
-      if (path === "/etc/machine-id") return `  ${MACHINE_ID}\n`;
-      throw Object.assign(new Error("missing"), { code: "ENOENT" });
-    }) as typeof fs.readFileSync);
 
     const expected = `myr-${createHash("sha256").update(MACHINE_ID, "utf8").digest("hex").slice(0, 20)}`;
     const response = await request(app(true)).get("/api/licensing/install-id").expect(200);
