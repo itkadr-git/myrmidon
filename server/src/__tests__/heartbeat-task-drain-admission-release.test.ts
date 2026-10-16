@@ -254,7 +254,7 @@ describeEmbeddedPostgres("heartbeat task-drain admission release", () => {
         .from(heartbeatRuns)
         .where(eq(heartbeatRuns.id, retryRunId))
         .then((rows) => rows[0] ?? null);
-      expect(retry?.status).toBe("running");
+      expect(retry?.status).toBe("scheduled_retry");
       expect(retry?.errorCode).toBe("process_lost");
       expect(getTaskDrainStatus()).toMatchObject({ draining: true, activeRuns: 0, quiescent: true });
     } finally {
