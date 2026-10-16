@@ -22387,7 +22387,8 @@ export function heartbeatService(
           typeof externalSession.model !== "string" ||
           typeof externalSession.connectionId !== "string" ||
           typeof externalSession.grantId !== "string" ||
-          aiBinding?.mode !== "shared" ||
+          !aiBinding ||
+          aiBinding.mode !== "shared" ||
           aiBinding.connectionId !== externalSession.connectionId ||
           aiBinding.grantId !== externalSession.grantId
         ) {
