@@ -2562,7 +2562,7 @@ export function recoveryService(
     successfulRunHandoffEvidence?: SuccessfulRunHandoffRecoveryEvidence | null;
   }) {
     const latestRun = await getLatestIssueRun(input.issue.companyId, input.issue.id);
-    if (latestRun?.status !== "failed" && latestRun?.status !== "timed_out" && latestRun?.status !== "cancelled" && latestRun?.status !== "interrupted") return false;
+    if (!latestRun || (latestRun.status !== "failed" && latestRun.status !== "timed_out" && latestRun.status !== "cancelled" && latestRun.status !== "interrupted" && latestRun.status !== "succeeded")) return false;
     const assignee = input.issue.assigneeAgentId
       ? await getAgent(input.issue.assigneeAgentId)
       : null;
@@ -2593,6 +2593,15 @@ export function recoveryService(
       await issuesSvc.update(reblockedIssue.id, { status: "blocked", blockedByIssueIds });
       return false;
     }
+    const action = await ensureSourceScopedStrandedRecoveryAction({
+      issue: input.issue,
+      latestRun,
+      previousStatus: input.previousStatus,
+      recoveryCause: input.recoveryCause,
+      successfulRunHandoffEvidence: input.successfulRunHandoffEvidence,
+      rerouteToSharedQueue: true,
+    });
+    if (!action) return false;
     const [updatedIssue] = await db
       .update(issues)
       .set({
