@@ -2,7 +2,7 @@ import { listOpenRouterModels } from "../services/openrouter-models.js";
 // myrmidon(B1c): product name in user-facing runner errors; see product.ts.
 import { PRODUCT_NAME } from "../myrmidon/product.js";
 import { prepareManagedAiRuntime, assertManagedAiProjectAuth, stripAiAuthBindings } from "../services/ai-connection-runtime.js";
-import { ADAPTER_AUTH_MISSING_CHECK_CODE, AI_CONNECTION_CAPABILITIES, aiConnectionBindingSchema, isAiConnectionCompatible, type AiConnectionBinding } from "@paperclipai/shared";
+import { ADAPTER_AUTH_MISSING_CHECK_CODE, AI_CONNECTION_CAPABILITIES, aiConnectionBindingSchema, aiConnectionMetadataSchema, isAiConnectionCompatible, type AiConnectionBinding } from "@paperclipai/shared";
 import { aiConnectionService } from "../services/ai-connections.js";
 import { defaultAiConnectionForHire } from "../services/agent-ai-connection-default.js";
 import { assertAiConnectionCreateAccess, canInstallSharedAiConnectionForNewAgent, responsibleUserForAiRequest, validateAiApiKey } from "./ai-connections.js";
@@ -6177,8 +6177,8 @@ export function agentRoutes(
       if (selected.connection.id !== connectionId || selected.grant.id !== grantId || selected.attribution.mode !== "shared") {
         throw forbidden("External sessions may only use the agent's configured shared AI connection");
       }
-      const selectedMetadata = selected.connection.config.ai;
-      if (!selectedMetadata || !isAiConnectionCompatible(selectedMetadata, agent.adapterType, model, parseObject(agent.adapterConfig).provider, parseObject(agent.adapterConfig).acpxAgent)) {
+      const selectedMetadata = aiConnectionMetadataSchema.safeParse(selected.connection.config.ai);
+      if (!selectedMetadata.success || !isAiConnectionCompatible(selectedMetadata.data, agent.adapterType, model, parseObject(agent.adapterConfig).provider, parseObject(agent.adapterConfig).acpxAgent)) {
         throw unprocessable("Selected model is incompatible with the agent adapter");
       }
     }
