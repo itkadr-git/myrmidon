@@ -6021,6 +6021,42 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     ).toBe(true);
   });
 
+  it("does not fail recovery when the dependency wait would close a cycle with a child it blocks", async () => {
+    const { companyId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "cancelled",
+      retryReason: "issue_continuation_needed",
+      runErrorCode: "issue_continuation_waiting_on_review",
+      runError: "Continuation parked: issue is waiting on review/approval",
+    });
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const childId = randomUUID();
+    await db.insert(issues).values({
+      id: childId,
+      companyId,
+      parentId: issueId,
+      title: "Child the parent itself blocks",
+      status: "blocked",
+      priority: "medium",
+      issueNumber: 30,
+      identifier: `${issuePrefix}-30`,
+    });
+    // parent blocks its own open child: making the parent wait on the child would be a cycle
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId,
+      relatedIssueId: childId,
+      type: "blocks",
+    });
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+
+    expect(result.waitingOnReviewResolved).toBe(0);
+    const [parent] = await db.select().from(issues).where(eq(issues.id, issueId));
+    expect(parent?.status).not.toBe("blocked");
+  });
+
   it("converts a continuation parked for review into a dependency wait on its existing blockers", async () => {
     const { companyId, agentId, issueId } = await seedStrandedIssueFixture({
       status: "in_progress",
