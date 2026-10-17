@@ -298,6 +298,7 @@ describe("myrmidon(FLEETD-VMEXEC) fleetd driver — request injection hooks", ()
       expect(capturedOptions.key).toBe("test-client-key");
       expect(capturedOptions.agent).toBe(fakeAgent);
       expect(capturedOptions.rejectUnauthorized).toBe(true);
+      expect(capturedOptions.headers.authorization).toBe("Bearer test-token");
     } finally {
       fakeAgent.destroy();
     }
