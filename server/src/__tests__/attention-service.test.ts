@@ -739,7 +739,7 @@ describeEmbeddedPostgres("attention service", () => {
 
     const feed = await attentionService(db, TEST_SERVICE_OPTS).list(companyId, { userId: "board-user" });
 
-    expect(feed.totalCount).toBe(11);
+    expect(feed.totalCount).toBe(12);
     expect(feed.countsBySourceKind).toMatchObject({
       approval: 1,
       issue_thread_interaction: 1,
@@ -751,6 +751,7 @@ describeEmbeddedPostgres("attention service", () => {
       failed_run: 1,
       budget_alert: 2,
       agent_error_alert: 1,
+      replay_blocked: 1,
     });
     const replayCard = feed.items.find((item) => item.sourceKind === "replay_blocked");
     expect(replayCard).toMatchObject({
