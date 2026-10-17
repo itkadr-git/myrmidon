@@ -2697,12 +2697,13 @@ describe("agent issue mutation checkout ownership", () => {
       }];
       const rowsForSelection = (selection: Record<string, unknown>) => {
         const keys = Object.keys(selection);
-        if (keys.includes("entityId")) return [];
+        if (keys.includes("entityId") && keys.includes("action")) return [];
         if (keys.includes("contextSnapshot")) return runRows;
         if (keys.includes("watchdogAgentId")) return watchdogRows;
         if (keys.includes("parentId")) return ancestryRows;
         if (keys.includes("status")) return [];
         if (keys.includes("agentCompanyId")) return runRows;
+        if (keys.includes("id")) return [{ id: peerAgentId, companyId }];
         return [{ id: peerAgentId, companyId, permissions: {}, role: "engineer", reportsTo: null }];
       };
       const buildQuery = (selection: Record<string, unknown>) => {
