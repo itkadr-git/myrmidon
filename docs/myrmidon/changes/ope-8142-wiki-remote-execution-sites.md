@@ -8,7 +8,9 @@
   IPsec/WireGuard), the 13-route site-agent API of `fleetd`, the five site
   health states with epoch lease fencing, the secret-safe error reason
   codes, and the rollout runbook — canary migration, rollback without
-  deleting data volumes.
+  deleting data volumes; the deployment step now covers the configured
+  `siteId`/`epoch` identity in `fleetd.json` (commit 5867fb21a of the
+  upstream PR).
 - The page condenses the authoritative operator guide
   `docs/myrmidon/guides/remote-execution-sites.md` (EN/RU) and
   `docs/myrmidon/fleetd-vmexec.md` (EN/RU) delivered with the remote
@@ -24,7 +26,9 @@
   IPsec/WireGuard), API агента площадки `fleetd` из 13 маршрутов, пять
   состояний здоровья площадки с ограждением аренд по эпохе,
   секретобезопасные коды причин ошибок и порядок внедрения — канареечная
-  миграция, откат без удаления томов с данными.
+  миграция, откат без удаления томов с данными; шаг развёртывания теперь
+  охватывает настраиваемую идентичность `siteId`/`epoch` в `fleetd.json`
+  (коммит 5867fb21a исходного PR).
 - Страница сжимает авторитетное руководство оператора
   `docs/myrmidon/guides/remote-execution-sites.ru.md` (RU/EN) и
   `docs/myrmidon/fleetd-vmexec.ru.md` (RU/EN), поставленное с функцией

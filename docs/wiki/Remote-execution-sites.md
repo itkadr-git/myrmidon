@@ -81,9 +81,10 @@ Every error response uses single-line, secret-safe reason codes — for example
 1. Prepare a dedicated Linux host (XFS with project quotas for the bot
    volumes), the private tunnel, and a random bearer token stored as a
    company secret on the board.
-2. Configure the site-agent in `/etc/myrmidon/fleetd.json` (`0600`): listen
-   address, token, Docker socket, and the enrolled bots with their quotas.
-   Port 9100 must not be exposed publicly.
+2. Configure the site-agent in `/etc/myrmidon/fleetd.json` (`0600`): the
+   site identity — `siteId` and the starting `epoch` (validated; used for
+   lease fencing) — plus the listen address, token, Docker socket, and the
+   enrolled bots with their quotas. Port 9100 must not be exposed publicly.
 3. On the board, list the site in `MYRMIDON_FLEET_HOSTS`: name, private URL,
    token secret reference, egress endpoints, volume root, network and the
    image allowlist (digest-pinned).
