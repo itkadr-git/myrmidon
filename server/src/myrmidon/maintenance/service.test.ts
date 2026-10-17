@@ -176,6 +176,34 @@ describeEmbeddedPostgres("maintenance service and API", () => {
     expect((await svc.status()).active).toBe(false);
   }, 30_000);
 
+  it("does not mark maintenance on when scheduled retry promotion fails", async () => {
+    const { agentId } = await seed("setTimeout(() => process.exit(0), 30_000)");
+    await wake(agentId);
+    await waitFor(async () => (await runStatuses(agentId)).includes("running"));
+
+    const heartbeat = heartbeatService(db);
+    const svc = maintenanceService(db, {
+      heartbeat: {
+        ...heartbeat,
+        promoteDueScheduledRetries: async () => { throw new Error("retry promotion failed"); },
+      },
+    });
+    await svc.enter({ scope: { type: "instance" }, reason: "deploy", drainTimeoutSec: 1, onTimeout: "interrupt_and_retry" }, ADMIN);
+    await waitFor(async () => (await runStatuses(agentId)).includes("scheduled_retry"));
+
+    const clock = new Date(Date.now() + 2_000);
+    const retrySvc = maintenanceService(db, {
+      heartbeat: {
+        ...heartbeat,
+        promoteDueScheduledRetries: async () => { throw new Error("retry promotion failed"); },
+      },
+      now: () => clock,
+    });
+    await retrySvc.tick();
+    expect((await retrySvc.status()).instance?.state).toBe("entering");
+    expect(await runStatuses(agentId)).toEqual(["scheduled_retry"]);
+  }, 30_000);
+
   it("reports a drain timeout once and keeps waiting with onTimeout=wait", async () => {
     const { agentId } = await seed("setTimeout(() => process.exit(0), 3000)");
     await wake(agentId);

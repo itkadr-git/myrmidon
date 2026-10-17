@@ -224,10 +224,9 @@ export function isStuckOpenWindow(
   now: Date,
   stuckGraceMs: number = DEFAULT_STUCK_GRACE_MS,
 ): boolean {
-  // `leaving` windows are finished by the tick's own leaving path
-  // (finishLeaving retires unconditionally); the backstop targets windows
-  // that still hold admission (entering/on).
-  if (window.state === "leaving") return false;
+  // `on` windows are closed only by an explicit exit. The backstop is solely
+  // for a drain stuck in `entering`; `leaving` has its own completion path.
+  if (window.state !== "entering") return false;
   const cutoff = Date.parse(window.drainDeadlineAt) + stuckGraceMs;
   return now.getTime() >= cutoff;
 }

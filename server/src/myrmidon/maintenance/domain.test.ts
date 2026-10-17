@@ -137,17 +137,16 @@ describe("maintenance tick decisions", () => {
   });
 
   describe("stuck open window backstop", () => {
-    it("an open window past deadline + grace is stuck", () => {
+    it("only treats an entering window past deadline + grace as stuck", () => {
       const past = new Date(now.getTime() + 60_000 + DEFAULT_STUCK_GRACE_MS + 1_000);
       expect(isStuckOpenWindow(entering, past)).toBe(true);
-      expect(isStuckOpenWindow({ ...entering, state: "on" }, past)).toBe(true);
+      expect(isStuckOpenWindow({ ...entering, state: "on" }, past)).toBe(false);
+      expect(isStuckOpenWindow({ ...entering, state: "leaving" }, past)).toBe(false);
     });
 
-    it("within the grace the window is not stuck; leaving is the tick's own path", () => {
+    it("within the grace the entering window is not stuck", () => {
       expect(isStuckOpenWindow(entering, now)).toBe(false);
       expect(isStuckOpenWindow(entering, new Date(now.getTime() + 60_000 + DEFAULT_STUCK_GRACE_MS))).toBe(true);
-      // A leaving window is finished by the tick's finishLeaving, not retired here.
-      expect(isStuckOpenWindow({ ...entering, state: "leaving" }, new Date(now.getTime() + 999_999))).toBe(false);
     });
 
     it("the grace is configurable", () => {
