@@ -127,7 +127,7 @@ ins_items AS (
       '[]'::jsonb
     ),
     false, 1,
-    NULL, 'system:skill-lifecycle-backfill', now(), now()
+    NULL, 'system:skill-lifecycle-backfill', NULL, now(), now()
   FROM card_body cb
   ON CONFLICT DO NOTHING
   RETURNING "knowledge_items".*
