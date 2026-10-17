@@ -131,4 +131,35 @@ describe("myrmidon(FLEETD-VMEXEC) fleet routing — every driver call goes by th
     expect(d.local.calls).toEqual(["local:list"]);
     expect(d.fleetA.calls).toEqual(["fleet-a:list"]);
   });
+
+  it("supports dynamic fleet map provider (hot-reload)", async () => {
+    const local = recordingDriver("local");
+    const fleetA = recordingDriver("fleet-a");
+    const fleetB = recordingDriver("fleet-b");
+    let currentMap = new Map<string, BotContainerDriver>([["host-a", fleetA]]);
+
+    const routed = fleetRoutingDriver({ local, fleet: () => currentMap }, () => agent("host-b"));
+
+    // host-b is not in currentMap yet
+    await expect(routed.start("bot-b")).rejects.toThrow(/names no configured fleet host/);
+
+    // hot-reload updates the map
+    currentMap = new Map<string, BotContainerDriver>([["host-a", fleetA], ["host-b", fleetB]]);
+    await routed.start("bot-b");
+    expect(fleetB.calls).toEqual(["fleet-b:start:bot-b"]);
+  });
+
+  it("supports async agentOf resolution", async () => {
+    const d = deps();
+    const routed = fleetRoutingDriver(d, async (botKey) => {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      return agent(botKey === "remote" ? "host-a" : null);
+    });
+
+    await routed.start("remote");
+    await routed.start("local");
+
+    expect(d.fleetA.calls).toEqual(["fleet-a:start:remote"]);
+    expect(d.local.calls).toEqual(["local:start:local"]);
+  });
 });
