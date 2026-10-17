@@ -106,7 +106,7 @@ export class RemoteSiteContractError extends Error {
     readonly reasonCode: string,
     message?: string,
   ) {
-    super(message ?? `site-agent ${status}: ${reasonCode}`);
+    super(message ? `site-agent ${status} ${reasonCode}: ${message}` : `site-agent ${status} ${reasonCode}`);
     this.name = "RemoteSiteContractError";
   }
 }
