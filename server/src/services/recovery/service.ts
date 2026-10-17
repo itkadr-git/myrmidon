@@ -2981,6 +2981,32 @@ export function recoveryService(
     return openChildren;
   }
 
+  /**
+   * myrmidon: issuesSvc.update for a recovery dependency wait. The board refuses a
+   * wait that would close a blocking cycle (422 — e.g. the issue itself blocks the
+   * open child it would wait on; 17.10: OPE-5963 -> OPE-7915). One such issue must
+   * not fail the whole recovery pass: at startup that error exited the board. The
+   * refusal is logged and the issue is left as it is (null).
+   */
+  async function updateDependencyWait(
+    issueId: string,
+    patch: Parameters<typeof issuesSvc.update>[1],
+    source: string,
+  ) {
+    try {
+      return await issuesSvc.update(issueId, patch);
+    } catch (err) {
+      if (err instanceof HttpError && err.status === 422) {
+        logger.warn(
+          { err, issueId, source, blockedByIssueIds: patch.blockedByIssueIds },
+          "recovery: dependency wait refused by the board; issue left as it is",
+        );
+        return null;
+      }
+      throw err;
+    }
+  }
+
   async function resolveContinuationWaitingOnReview(
     issue: typeof issues.$inferSelect,
   ) {
@@ -2996,26 +3022,11 @@ export function recoveryService(
     ];
     if (blockedByIssueIds.length === 0) return null;
 
-    let updated: Awaited<ReturnType<typeof issuesSvc.update>>;
-    try {
-      updated = await issuesSvc.update(issue.id, {
-        status: "blocked",
-        blockedByIssueIds,
-      });
-    } catch (err) {
-      // myrmidon: a child that this issue itself blocks would close a cycle; the
-      // update refuses it (422). One such issue must not fail the whole startup
-      // recovery (17.10: the board exited on boot) — fall back to the disposition
-      // repair path instead.
-      if (err instanceof HttpError && err.status === 422) {
-        logger.warn(
-          { err, issueId: issue.id, blockedByIssueIds },
-          "recovery: waiting-on-review dependency wait refused; falling back to disposition repair",
-        );
-        return null;
-      }
-      throw err;
-    }
+    const updated = await updateDependencyWait(
+      issue.id,
+      { status: "blocked", blockedByIssueIds },
+      "continuation_waiting_on_review",
+    );
     if (!updated) return null;
 
     const waitingOn = formatIssueLinksForComment([
@@ -3534,15 +3545,19 @@ export function recoveryService(
             issue.companyId,
             issue.id,
           );
-          await issuesSvc.update(issue.id, {
-            status: "blocked",
-            blockedByIssueIds: [
-              ...new Set([
-                ...blockerIds,
-                ...healthyChildren.map((child) => child.id),
-              ]),
-            ],
-          });
+          await updateDependencyWait(
+            issue.id,
+            {
+              status: "blocked",
+              blockedByIssueIds: [
+                ...new Set([
+                  ...blockerIds,
+                  ...healthyChildren.map((child) => child.id),
+                ]),
+              ],
+            },
+            "active_recovery_action_healthy_child",
+          );
         }
         const resolved = await recoveryActionsSvc.resolveActiveForIssue({
           companyId: action.companyId,
