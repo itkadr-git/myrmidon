@@ -35,6 +35,42 @@ export type KnowledgeItemStatus = (typeof KNOWLEDGE_ITEM_STATUSES)[number];
 export const KNOWLEDGE_REVISION_STATUSES = ["draft", "submitted", "approved", "rejected"] as const;
 export type KnowledgeRevisionStatus = (typeof KNOWLEDGE_REVISION_STATUSES)[number];
 
+export const KNOWLEDGE_REVISION_LANGS = ["en", "ru"] as const;
+export type KnowledgeRevisionLang = (typeof KNOWLEDGE_REVISION_LANGS)[number];
+
+export function normalizeKnowledgeRevisionLang(value: unknown): KnowledgeRevisionLang {
+  if (typeof value !== "string") return "en";
+  const normalized = value.trim().toLowerCase().split(/[-_]/, 1)[0];
+  return normalized === "ru" ? "ru" : "en";
+}
+
+export function assertTranslationOf(input: {
+  revisionId?: string;
+  lang: KnowledgeRevisionLang;
+  canonical?: { id: string; lang: KnowledgeRevisionLang } | null;
+}): void {
+  if (!input.canonical) return;
+  if (input.revisionId && input.revisionId === input.canonical.id) {
+    throw new KnowledgeDomainError("translation_self_reference", 400, "A revision cannot translate itself.");
+  }
+  if (input.canonical.lang === input.lang) {
+    throw new KnowledgeDomainError("translation_language_mismatch", 400, "A translation must use a different language from its canonical revision.");
+  }
+}
+
+export function selectKnowledgeRevision<T extends {
+  id: string;
+  lang: KnowledgeRevisionLang;
+  translationOf: string | null;
+  status: KnowledgeRevisionStatus;
+}>(revisions: readonly T[], requestedLang: KnowledgeRevisionLang): T | undefined {
+  const approved = revisions.filter((revision) => revision.status === "approved");
+  const canonical = approved.find((revision) => revision.translationOf === null);
+  if (!canonical) return undefined;
+  if (canonical.lang === requestedLang) return canonical;
+  return approved.find((revision) => revision.translationOf === canonical.id && revision.lang === requestedLang) ?? canonical;
+}
+
 export const KNOWLEDGE_SOURCE_KINDS = ["task", "pr", "issue", "run", "document", "decision", "url"] as const;
 export type KnowledgeSourceKind = (typeof KNOWLEDGE_SOURCE_KINDS)[number];
 
