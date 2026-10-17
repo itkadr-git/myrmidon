@@ -39,7 +39,7 @@ export function createCorpusPorts(db: Db, context: CorpusPortContext, config: Co
       }
       return db.execute(query) as unknown as Promise<Row[]>;
     },
-    async withTransaction<T>(run: (transaction: CorpusSqlExecutor) => Promise<T>): Promise<T> {
+    async withTransaction<T>(run: (transaction: SqlExecutor) => Promise<T>): Promise<T> {
       return db.transaction(async (tx) => run({
         async query<Row extends Record<string, unknown>>(text: string, values: readonly unknown[] = []): Promise<Row[]> {
           const params = [...values]; const parts = text.split(/\$(\d+)/g);
@@ -50,7 +50,7 @@ export function createCorpusPorts(db: Db, context: CorpusPortContext, config: Co
           }
           return tx.execute(query) as unknown as Promise<Row[]>;
         },
-        async withTransaction<Tx>(nested: (tx: CorpusSqlExecutor) => Promise<Tx>) { return nested(this); },
+        async withTransaction<Tx>(nested: (tx: SqlExecutor) => Promise<Tx>) { return nested(this); },
       }));
     },
   } });
