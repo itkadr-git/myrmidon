@@ -1,3 +1,4 @@
+ALTER TABLE "myrmidon_fleet_servers" ADD COLUMN "keep_password" boolean DEFAULT false NOT NULL;--> statement-breakpoint
 CREATE TABLE "myrmidon_fleet_onboard_jobs" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"company_id" uuid NOT NULL,
@@ -29,3 +30,5 @@ CREATE INDEX "myrmidon_fleet_onboard_jobs_company_idx" ON "myrmidon_fleet_onboar
 CREATE INDEX "myrmidon_fleet_onboard_jobs_server_idx" ON "myrmidon_fleet_onboard_jobs" USING btree ("server_id");--> statement-breakpoint
 ALTER TABLE "myrmidon_fleet_servers" ADD CONSTRAINT "myrmidon_fleet_servers_role_check" CHECK ("myrmidon_fleet_servers"."role" in ('generic', 'build-runner', 'sandbox', 'bot-host'));--> statement-breakpoint
 ALTER TABLE "myrmidon_fleet_servers" ADD CONSTRAINT "myrmidon_fleet_servers_onboard_state_check" CHECK ("myrmidon_fleet_servers"."onboard_state" in ('new', 'onboarding', 'ready', 'needs_attention', 'decommissioned'));
+--> statement-breakpoint
+ALTER TABLE "myrmidon_fleet_onboard_jobs" ADD COLUMN "secret_consumed_at" timestamp with time zone;

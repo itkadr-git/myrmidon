@@ -30,6 +30,7 @@ export function myrmidonOnboardRoutes(db: Db) {
         accessKeySecretKey: row.accessKeySecretKey,
         hostKeyFingerprint: row.hostKeyFingerprint,
         role: row.role,
+        keepPassword: row.keepPassword,
       };
     },
   });

@@ -70,10 +70,11 @@ export const onboardStartSchema = z
   })
   .strict();
 
-export const claimSchema = z.object({}).strict();
+export const claimSchema = z.object({ companyId: UUID }).strict();
 
 export const reportSchema = z
   .object({
+    companyId: UUID,
     step: z.string().trim().min(1).max(64).optional(),
     result: z.enum(["ok", "skipped", "failed"]).optional(),
     detail: z.string().max(2000).nullable().optional(),
@@ -133,7 +134,7 @@ export function onboardRoutes(deps: { service: OnboardService }) {
   });
 
   router.post("/myrmidon/fleet/onboard-jobs/claim", validate(claimSchema), async (req, res) => {
-    const claim = await deps.service.claim(executorToken(req));
+    const claim = await deps.service.claim((req.body as { companyId: string }).companyId, executorToken(req));
     if (!claim) res.status(204).end();
     else res.json(claim);
   });
@@ -145,6 +146,7 @@ export function onboardRoutes(deps: { service: OnboardService }) {
     const body = req.body as z.infer<typeof reportSchema>;
     try {
       const job = await deps.service.report(executorToken(req), {
+        companyId: body.companyId,
         jobId,
         step: body.step,
         entry:
