@@ -1685,7 +1685,7 @@ docker_free_gb() {
 # Image references are immutable digests; Buildx reads registry layer sizes
 # without downloading image layers. The configured DB reserve covers the dump.
 deploy_disk_precheck() {
-  local where="$1" min_gb="${MYRMIDON_DEPLOY_MIN_FREE_GB:-15}" free_kb required_kb image_ref image_size local_ref
+  local where="$1" min_gb="${MYRMIDON_DEPLOY_MIN_FREE_GB:-15}" free_kb required_kb image_ref image_size image_json local_ref local_manifest local_size
   local -a image_refs=()
   # shellcheck disable=SC2153  # Set by deploy.sh before the precheck.
   if declare -p MYRMIDON_DEPLOY_IMAGE_REFS >/dev/null 2>&1; then image_refs=("${MYRMIDON_DEPLOY_IMAGE_REFS[@]}"); fi
@@ -1702,12 +1702,19 @@ deploy_disk_precheck() {
     [[ -n "$image_ref" ]] || continue
     [[ "$image_ref" == *@sha256:* ]] || die "disk precheck requires immutable image digest: $image_ref"
     local_ref="${image_ref##*/}"
-    if docker image inspect "$image_ref" >/dev/null 2>&1 || docker image inspect "${image_ref#*@}" >/dev/null 2>&1; then
+    if docker image inspect "$image_ref" >/dev/null 2>&1; then
       log "disk precheck: image already local, no additional layer space: $image_ref"
       continue
     fi
-    image_size="$(with_timeout docker buildx imagetools inspect "$image_ref" --format '{{json .Manifest.Layers}}' 2>/dev/null)" || die "cannot determine registry layer sizes for $image_ref; refusing deploy before pull, dump, or maintenance"
-    image_size="$(jq -er '[.[] | .size] | if all(.[]; type == "number") then add else error("invalid sizes") end' <<<"$image_size")" || die "invalid registry layer sizes for $image_ref; refusing deploy before pull, dump, or maintenance"
+    if docker image inspect "${image_ref#*@}" >/dev/null 2>&1; then
+      local_manifest="$(docker image inspect --format '{{json .RootFS.Layers}}' "${image_ref#*@}" 2>/dev/null)" || local_manifest=""
+      local_size="$(jq -er 'if type == "array" and length > 0 then length else error("no local layers") end' <<<"$local_manifest")" || die "cannot determine local image layer count for $image_ref; refusing deploy before pull, dump, or maintenance"
+      image_json="$(with_timeout docker buildx imagetools inspect "$image_ref" --format '{{json .Manifest}}' 2>/dev/null)" || die "cannot determine registry layer sizes for $image_ref; refusing deploy before pull, dump, or maintenance"
+      image_size="$(jq -er --argjson count "$local_size" 'if type == "object" and (.Layers | type == "array") and (.Layers | length) == $count and all(.Layers[]; (.size | type) == "number") then [.Layers[].size] | add // 0 else error("invalid manifest") end' <<<"$image_json")" || die "invalid registry layer sizes for $image_ref; refusing deploy before pull, dump, or maintenance"
+    else
+      image_json="$(with_timeout docker buildx imagetools inspect "$image_ref" --format '{{json .Manifest}}' 2>/dev/null)" || die "cannot determine registry layer sizes for $image_ref; refusing deploy before pull, dump, or maintenance"
+      image_size="$(jq -er 'if type == "object" and (.Layers | type == "array") and all(.Layers[]; (.size | type) == "number") then [.Layers[].size] | add // 0 else error("invalid manifest") end' <<<"$image_json")" || die "invalid registry layer sizes for $image_ref; refusing deploy before pull, dump, or maintenance"
+    fi
     required_kb=$((required_kb + (image_size + 1023) / 1024))
   done
   if [[ "$DRY_RUN" == "1" ]]; then
