@@ -1669,12 +1669,6 @@ order of magnitude below the 1 % budget.
 - Swarm supervisor: queue rows carry the effective pheromone strength, the nest agent and the waiting time; the overview adds free agents, recent matches, cooling tasks and warnings. The pilot-report route is removed.
 - The menu lists "Swarm: queues" and "Foraging"; the streamlined sidebar keeps both visible.
 
-### Low-trust quarantines require a promotion owner at issue creation
-
-- Low-trust issue creation, single-child creation, and accepted-plan bulk child creation now resolve the promotion owner from the canonical responsible user, authenticated on-behalf-of user, acting board user, parent owner where applicable, or company default.
-- These creation paths reject quarantine when no promotion owner can be resolved; the owner is recorded in quarantine metadata so the notice and later promotion use the same responsibility.
-- Promotion remains an operator review action through `POST /api/issues/:id/low-trust/promotions`.
-
 ### Internal delegation no longer quarantines lead tasks, without weakening the trust check
 
 - A task written from another agent's same-company run used to be sent to
