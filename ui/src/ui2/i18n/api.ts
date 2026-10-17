@@ -33,6 +33,7 @@ export interface TelegramBridgeSourceWire {
 export interface Ui2LanguagePreferenceWire {
   language: Ui2Language;
   updatedAt: string | null;
+  catalogs?: Partial<Record<Ui2Language, Record<string, unknown>>>;
   telegramBridge?: TelegramBridgeSourceWire;
 }
 
@@ -52,6 +53,8 @@ export const ui2LanguageApi = {
   get: () => api.get<Ui2LanguagePreferenceWire>("/myrmidon/ui2/language/me"),
   put: (language: Ui2Language) =>
     api.put<Ui2LanguagePreferenceWire>("/myrmidon/ui2/language/me", { language }),
+  putCatalog: (language: Ui2Language, catalog: Record<string, unknown>) =>
+    api.put<{ catalogs: Partial<Record<Ui2Language, Record<string, unknown>>> }>("/myrmidon/ui2/language/me/catalog", { language, catalog }),
 };
 
 export const bridgeLanguageApi = {

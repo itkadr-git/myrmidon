@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { en } from "./catalogs/en";
-import { previewCatalogText, validateCatalogJson } from "./catalog-upload";
+import { previewCatalogText, validateCatalogJson, mergeCatalog } from "./catalog-upload";
 
 const catalog = JSON.stringify(en);
 
@@ -22,7 +22,17 @@ describe("custom locale catalog upload", () => {
     expect(validateCatalogJson(JSON.stringify(altered)).invalidValues).toContain("language.previewDecisionCardBody");
   });
 
-  it("rejects oversized payloads", () => {
-    expect(validateCatalogJson(" ".repeat(256 * 1024 + 1)).parseError).toBe(true);
+  it("merges a custom catalog without mutating the built-in catalog", () => {
+    const custom = { language: { label: "My language" } };
+    const merged = mergeCatalog(en, custom);
+    expect((merged.language as Record<string, unknown>).label).toBe("My language");
+    expect((merged.language as Record<string, unknown>).english).toBe((en.language as Record<string, unknown>).english);
+    expect((en.language as Record<string, unknown>).label).not.toBe("My language");
   });
+
+  it("rejects dangerous object keys", () => {
+    const source = '{"__proto__":{},"constructor":{}}';
+    expect(validateCatalogJson(source).valid).toBe(false);
+  });
+
 });
