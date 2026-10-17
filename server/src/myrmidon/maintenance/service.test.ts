@@ -182,16 +182,20 @@ describeEmbeddedPostgres("maintenance service and API", () => {
     await waitFor(async () => (await runStatuses(agentId)).includes("running"));
 
     const heartbeat = heartbeatService(db);
+    let clock = new Date();
     const svc = maintenanceService(db, {
       heartbeat: {
         ...heartbeat,
         promoteDueScheduledRetries: async () => { throw new Error("retry promotion failed"); },
       },
+      now: () => clock,
     });
     await svc.enter({ scope: { type: "instance" }, reason: "deploy", drainTimeoutSec: 1, onTimeout: "interrupt_and_retry" }, ADMIN);
+    clock = new Date(clock.getTime() + 2_000);
+    await svc.tick();
     await waitFor(async () => (await runStatuses(agentId)).includes("scheduled_retry"));
 
-    const clock = new Date(Date.now() + 2_000);
+    clock = new Date(clock.getTime() + 1_000);
     const retrySvc = maintenanceService(db, {
       heartbeat: {
         ...heartbeat,
