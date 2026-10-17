@@ -1895,7 +1895,14 @@ describeEmbeddedPostgres(
           lowTrustContext.status,
           JSON.stringify(lowTrustContext.body),
         ).toBe(200);
-        expect(JSON.stringify(lowTrustContext.body.wakeComment)).toContain(
+        expect(lowTrustContext.body.wakeComment).toMatchObject({
+          body: expect.stringContaining(LOW_TRUST_QUARANTINED_BODY),
+          sourceTrust: {
+            disposition: "quarantined",
+            promotionOwnerUserId: "board-user",
+          },
+        });
+        expect(lowTrustContext.body.wakeComment.body).not.toContain(
           fixture.canaries.raw,
         );
 
@@ -2177,7 +2184,7 @@ describeEmbeddedPostgres(
         preset: LOW_TRUST_REVIEW_PRESET,
         disposition: "promoted",
         sourceIssueId: fixture.issues.assignedReview.id,
-        promotionOwnerUserId: "board-user",
+        promotionOwnerUserId: null,
         promotedFrom: {
           artifactKind: "work_product",
           artifactId: rawProduct!.id,
