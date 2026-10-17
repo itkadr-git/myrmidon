@@ -105,12 +105,31 @@ export interface HeartbeatRunListOptions {
   summary?: boolean;
 }
 
+export interface ExternalSessionRun {
+  id: string;
+  agentId: string;
+  agentName: string;
+  issueId: string | null;
+  status: string;
+  createdAt: string;
+  finishedAt: string | null;
+  externalSession: { model?: string | null };
+}
+
 export interface ProviderTraceInspection {
   trace: ProviderTraceMetadata | null;
   entries: Array<Record<string, unknown>>;
 }
 
 export const heartbeatsApi = {
+  externalSessions: (companyId: string, issueId: string) =>
+    api.get<ExternalSessionRun[]>(
+      `/companies/${encodeURIComponent(companyId)}/external-sessions?issueId=${encodeURIComponent(issueId)}`,
+    ),
+  logTail: (runId: string) =>
+    api.get<{ content: string; nextOffset?: number }>(
+      `/heartbeat-runs/${encodeURIComponent(runId)}/log?offset=0&limitBytes=64000`,
+    ),
   executionForIssue: (issueId: string) => api.get<{ runId: string; agentId: string; recoveryAction: IssueRecoveryAction | null; execution: HeartbeatRun["execution"] } | null>(`/issues/${issueId}/execution`),
   list: (
     companyId: string,
