@@ -33,7 +33,8 @@ function isRecord(value: unknown): value is CatalogObject {
 }
 
 export function validateCatalogJson(source: string): CatalogValidation {
-  if (new TextEncoder().encode(source).byteLength > MAX_CATALOG_BYTES) {
+  const byteLength = new TextEncoder().encode(source).byteLength;
+  if (byteLength > MAX_CATALOG_BYTES) {
     return { catalog: null, missingKeys: [], unknownKeys: [], invalidValues: [], parseError: true, valid: false };
   }
   let parsed: unknown;
@@ -46,6 +47,9 @@ export function validateCatalogJson(source: string): CatalogValidation {
     return { catalog: null, missingKeys: [], unknownKeys: [], invalidValues: [], parseError: true, valid: false };
   }
 
+  if (Object.keys(parsed).some((key) => ["__proto__", "constructor", "prototype"].includes(key))) {
+    return { catalog: null, missingKeys: [], unknownKeys: [], invalidValues: [], parseError: true, valid: false };
+  }
   const base = flatten(baseCatalog);
   const uploaded = flatten(parsed);
   const missingKeys = [...base.keys()].filter((key) => !uploaded.has(key)).sort();
@@ -65,4 +69,18 @@ export function previewCatalogText(source: string, limit = 8): string[] {
   const result = validateCatalogJson(source);
   if (!result.catalog) return [];
   return [...flatten(result.catalog)].slice(0, limit).map(([key, value]) => `${key}: ${value}`);
+}
+
+/** Merge a complete uploaded locale into a fresh base tree without mutating imports. */
+export function mergeCatalog(base: CatalogObject, uploaded: CatalogObject): CatalogObject {
+  const merged: CatalogObject = {};
+  for (const [key, baseValue] of Object.entries(base)) {
+    const uploadedValue = uploaded[key];
+    if (typeof baseValue === "string") {
+      merged[key] = typeof uploadedValue === "string" ? uploadedValue : baseValue;
+    } else {
+      merged[key] = mergeCatalog(baseValue as CatalogObject, (uploadedValue as CatalogObject | undefined) ?? {});
+    }
+  }
+  return merged;
 }
