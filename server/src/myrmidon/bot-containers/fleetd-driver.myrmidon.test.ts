@@ -275,7 +275,7 @@ describe("myrmidon(FLEETD-VMEXEC) fleetd driver — request injection hooks", ()
     let capturedOptions: any = null;
     fakeAgent.addRequest = (req: any, options: any) => {
       capturedOptions = options;
-      req.destroy();
+      setImmediate(() => req.emit("error", new Error("test abort")));
     };
 
     try {
