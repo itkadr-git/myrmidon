@@ -2151,10 +2151,6 @@ edits `instance_settings.general.myrmidonGithubSharedIdentity[companyId]`:
 | `enabled` | `false` | Master switch. Off: no App serves anybody (the pre-change behavior). |
 | `apps[].appId` | — | The id of our own GitHub App (registered with Contents and Pull requests read/write, Metadata read). |
 | `apps[].privateKeySecretId` | — | Company secret (company scope, active) holding the App's private key PEM. Validated on save. |
-| `pats[]` | `[]` | Static GitHub PAT entries, independently scoped by `tokenSecretId` (active company secret), explicit `agentIds`, and `allowedRepos`. A PAT must never overlap an App or another PAT for the same agent/repository. |
-| `pats[].tokenSecretId` | — | Active company secret holding the PAT. The broker resolves it per operation and never returns it in the identity summary. |
-| `pats[].agentIds` | `[]` | Explicit agent UUID allowlist; empty means nobody. |
-| `pats[].allowedRepos` | `[]` | Literal owner and repository pattern allowlist. PAT identity is selected only when both the agent and repository match. |
 | `apps[].installationId` | `null` | Installation id; `null` — discovered per repository (`GET /repos/{owner}/{repo}/installation`). |
 | `apps[].roles` / `apps[].agentIds` | `[]` | Agents that may use the App (by role or id). Both empty: nobody. |
 | `apps[].allowedRepos` | `[]` | `owner/repo` or `owner/<pattern with *>` the App serves; the owner is literal. The broker picks the App by the target repository of each operation; a repository matched by two Apps is an error. |
