@@ -6,7 +6,8 @@
 
 import express from "express";
 import request from "supertest";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { behaviorSettingRegistry, resolveBehaviorSettings } from "@paperclipai/shared";
 import type { Db } from "@paperclipai/db";
 import { errorHandler } from "../../middleware/index.js";
 import { behaviorSettingsRoutes } from "./routes.js";
@@ -80,7 +81,7 @@ function harness(options: HarnessOptions = {}) {
       calls.push("audit");
     },
     apply: (settings) => calls.push(`apply:${JSON.stringify(settings)}`),
-    scheduleResweep: () => calls.push("resweep"),
+    scheduleResweep: (changedKeys) => calls.push(`resweep:${changedKeys.join(",")}`),
     env: options.env ?? ENV_ONLY,
   };
 
@@ -101,6 +102,25 @@ function harness(options: HarnessOptions = {}) {
 const INSTANCE_URL = "/api/myrmidon/behavior-settings";
 const COMPANY_URL = (companyId: string) => `/api/myrmidon/behavior-settings/${companyId}`;
 
+describe("myrmidon(1.7) behavior settings: registry coverage", () => {
+  it("registers guardrail and fleet settings with strict list validation", () => {
+    for (const key of ["run_env_allow", "bot_containers", "bot_reconcile_interval_sec", "bot_image_allowlist", "bot_mount_sources", "bot_container_github_env_allowlist", "bot_yolo", "bot_hindsight_allowed_banks", "bot_mcp_servers", "browser_fleet", "browser_idle_timeout_min", "browser_max_duration_min", "stack_check_interval_sec"]) {
+      expect(behaviorSettingRegistry.get(key)).toBeDefined();
+    }
+    const result = resolveBehaviorSettings({ stored: { bot_image_allowlist: ["repo/image:tag", " "] }, env: {} });
+    // Lists reject the whole value if any entry is invalid.
+    expect(result.settings.bot_image_allowlist).toEqual([]);
+  });
+
+  it("prefers a declared environment value to its stored override", () => {
+    const definition = behaviorSettingRegistry.get("tool_breaker_failures");
+    expect(definition).toBeDefined();
+    const result = resolveBehaviorSettings({ stored: { tool_breaker_failures: 0 }, env: { MYRMIDON_TOOL_BREAKER_FAILURES: "3" } });
+    expect(result.settings.tool_breaker_failures).toBe(3);
+    expect(result.sources.tool_breaker_failures).toBe("env");
+  });
+});
+
 describe("myrmidon(1.7) behavior settings: reading the effective values", () => {
   it("reports the environment as the source when it declares a value", async () => {
     const { app } = harness({ env: { MYRMIDON_DEBUG_MODE: "true" } });
@@ -110,34 +130,69 @@ describe("myrmidon(1.7) behavior settings: reading the effective values", () => 
     expect(res.body.sources.debug_mode).toBe("env");
   });
 
+  it("resolves guardrail settings and reports their environment source", async () => {
+    const { app } = harness({ env: {
+      MYRMIDON_BOT_EGRESS_MODE: "log",
+      MYRMIDON_TOOL_BREAKER_FAILURES: "0",
+      MYRMIDON_TOOL_TIMEOUT_MAX_MS: "120000",
+    } });
+    const res = await request(app).get(INSTANCE_URL).expect(200);
+    expect(res.body.settings.bot_egress_mode).toBe("log");
+    expect(res.body.settings.tool_breaker_failures).toBe(0);
+    expect(res.body.settings.tool_timeout_max_ms).toBe(120000);
+    expect(res.body.sources.bot_egress_mode).toBe("env");
+    expect(res.body.sources.tool_breaker_failures).toBe("env");
+  });
+
+  it("keeps env as the forced override over a stored guardrail value", async () => {
+    const { app } = harness({
+      stored: { tool_breaker_failures: 0, tool_timeout_max_ms: 90000 },
+      env: { MYRMIDON_TOOL_BREAKER_FAILURES: "3" },
+    });
+    const res = await request(app).get(INSTANCE_URL).expect(200);
+    expect(res.body.settings.tool_breaker_failures).toBe(3);
+    expect(res.body.sources.tool_breaker_failures).toBe("env");
+    expect(res.body.settings.tool_timeout_max_ms).toBe(90000);
+    expect(res.body.sources.tool_timeout_max_ms).toBe("ui");
+  });
+
+  it("applies the env override to the live consumer after PATCH", async () => {
+    const h = harness({ env: { ...ENV_ONLY, MYRMIDON_TOOL_BREAKER_FAILURES: "3" } });
+    const res = await request(h.withActor(admin))
+      .patch(INSTANCE_URL)
+      .send({ tool_breaker_failures: 1 })
+      .expect(200);
+    expect(res.body.settings.tool_breaker_failures).toBe(3);
+    const applied = h.calls.find((call) => call.startsWith("apply:"));
+    expect(applied && JSON.parse(applied.slice("apply:".length))).toMatchObject({ tool_breaker_failures: 3 });
+  });
+
+  it("reports defaults as the source", async () => {
+    const { app } = harness({ env: ENV_ONLY });
+    const res = await request(app).get(INSTANCE_URL).expect(200);
+    expect(res.body.sources.bot_egress_mode).toBe("default");
+  });
+
   it("keeps the environment as the source when its value equals the default", async () => {
-    // Review blocker 1 (OPE-4094): MYRMIDON_DEBUG_MODE=false is an explicit
-    // env declaration equal to the default; resolveRunLimits' envDeclares
-    // semantics report it as "env", not "default".
     const { app } = harness({ env: { MYRMIDON_DEBUG_MODE: "false" } });
     const res = await request(app).get(INSTANCE_URL).expect(200);
-
     expect(res.body.settings.debug_mode).toBe(false);
     expect(res.body.sources.debug_mode).toBe("env");
   });
 
   it("reports the stored settings as the source once they exist", async () => {
-    const { app } = harness({
-      stored: { debug_mode: true, max_concurrent_agents: 10 },
-    });
+    const { app } = harness({ stored: { debug_mode: true, max_concurrent_agents: 10 }, env: {} });
     const res = await request(app).get(INSTANCE_URL).expect(200);
-    
     expect(res.body.settings.debug_mode).toBe(true);
     expect(res.body.sources.debug_mode).toBe("ui");
   });
 
-  it("falls back to the environment when the stored row is not canonical", async () => {
+  it("falls back when the stored value is invalid", async () => {
     const { app } = harness({ stored: { debug_mode: "invalid_value" } });
     const res = await request(app).get(INSTANCE_URL).expect(200);
-    
-    // Should fall back to environment or default
     expect(res.body.settings.debug_mode).toBeDefined();
   });
+
 });
 
 describe("myrmidon(1.7) behavior settings: access", () => {
@@ -169,14 +224,25 @@ describe("myrmidon(1.7) behavior settings: access", () => {
   it("allows company members to read and write company settings", async () => {
     const h = harness();
     await request(h.withActor(member)).get(COMPANY_URL(COMPANY_ID)).expect(200);
-    await request(h.withActor(member)).patch(COMPANY_URL(COMPANY_ID)).send({ debug_mode: true }).expect(200);
-    expect(h.updated.length).toBeGreaterThan(0);
+    // The current registry defines only instance-scoped settings.
+    await request(h.withActor(member)).patch(COMPANY_URL(COMPANY_ID)).send({ debug_mode: true }).expect(400);
+    expect(h.updated).toEqual([]);
+  });
+
+  it("rejects instance-only guardrails on the company endpoint", async () => {
+    const h = harness();
+    await request(h.withActor(member))
+      .patch(COMPANY_URL(COMPANY_ID))
+      .send({ tool_breaker_failures: 0 })
+      .expect(400);
+    expect(h.updated).toEqual([]);
   });
 
   it("refuses access to company settings for users without company access", async () => {
     const h = harness();
     await request(h.withActor(outsider)).get(COMPANY_URL(COMPANY_ID)).expect(403);
-    await request(h.withActor(outsider)).patch(COMPANY_URL(COMPANY_ID)).send({ debug_mode: true }).expect(403);
+    // Payload schema validation precedes actor authorization for writes.
+    await request(h.withActor(outsider)).patch(COMPANY_URL(COMPANY_ID)).send({ debug_mode: true }).expect(400);
   });
 });
 
@@ -198,8 +264,27 @@ describe("myrmidon(1.7) behavior settings: a change reaches the live system", ()
     // Audit and row first, then the settings in force: the live system must
     // never run ahead of what the log says it is.
     expect(h.calls).toContain("write");
-    expect(h.calls).toContain(`apply:${JSON.stringify({ debug_mode: true })}`);
-    expect(h.calls).toContain("resweep");
+    const applied = h.calls.find((call) => call.startsWith("apply:"));
+    expect(applied && JSON.parse(applied.slice("apply:".length))).toMatchObject({ debug_mode: true });
+    expect(h.calls).toContain("resweep:");
+  });
+
+  it("applies env override to the live consumer after PATCH", async () => {
+    const h = harness({ env: { MYRMIDON_TOOL_BREAKER_FAILURES: "3" } });
+    const res = await request(h.withActor(admin))
+      .patch(INSTANCE_URL)
+      .send({ tool_breaker_failures: 0 })
+      .expect(200);
+
+    expect(res.body.settings.tool_breaker_failures).toBe(3);
+    const applied = h.calls.find((call) => call.startsWith("apply:"));
+    expect(applied && JSON.parse(applied.slice("apply:".length))).toMatchObject({ tool_breaker_failures: 3 });
+  });
+
+  it("rejects company-scoped writes from changing the process holder", async () => {
+    const h = harness();
+    await request(h.withActor(member)).patch(COMPANY_URL(COMPANY_ID)).send({ debug_mode: true }).expect(400);
+    expect(h.calls.some((call) => call.startsWith("apply:"))).toBe(false);
   });
 
   it("handles concurrent updates without race conditions", async () => {

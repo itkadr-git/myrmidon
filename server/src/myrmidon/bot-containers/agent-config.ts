@@ -7,6 +7,7 @@
 // of its own: everything testable in it is pushed down into domain.ts/service.ts.
 
 import type { BotContainerSpec, BotExtraMount, BotSharedMount } from "./driver.js";
+import { liveBehaviorSetting } from "../behavior-settings/live.js";
 import { BOT_KEY_PATTERN } from "./template.js";
 import type { SharedMountSettings } from "@paperclipai/shared";
 import { resolveBotSharedMount } from "./shared-mount.js";
@@ -15,7 +16,8 @@ export const BOT_CONTAINERS_ENV = "MYRMIDON_BOT_CONTAINERS";
 
 export function isBotContainersEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
   const raw = env[BOT_CONTAINERS_ENV]?.trim().toLowerCase();
-  return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
+  if (raw) return ["1", "true", "yes", "on"].includes(raw);
+  return env === process.env && liveBehaviorSetting<boolean>("bot_containers");
 }
 
 const HERMES_GATEWAY_ADAPTER_TYPE = "hermes_gateway";

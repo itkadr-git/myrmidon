@@ -11,9 +11,9 @@ import { z } from "zod";
  * The precedence, per value, is decided here once and read from both the server
  * and the settings page:
  *
- * - the stored settings value, when the key is present in the appropriate location;
- * - otherwise the environment variable, which stays the default for the first
- *   start on an instance that has never saved these settings;
+ * - the environment variable, when it declares a valid value;
+ * - otherwise the stored setting, when the key is present in the appropriate
+ *   location;
  * - otherwise the built-in default.
  *
  * Settings can be scoped to instance or company level. Instance-level settings 
@@ -40,7 +40,7 @@ export interface BehaviorSettingDef<T = unknown> {
   key: string;
   /** Environment variable name for the setting */
   envName: string;
-  /** Default value when neither UI nor environment is set */
+  /** Default value when neither environment nor UI is set */
   default: T;
   /** Scope of the setting: instance-wide or company-specific */
   scope: SettingScope;
@@ -74,12 +74,108 @@ export class BehaviorSettingRegistry {
   getKeys(): string[] {
     return Array.from(this.settings.keys());
   }
+
+  getInstanceKeys(): string[] {
+    return this.getAll().filter((setting) => setting.scope === "instance").map((setting) => setting.key);
+  }
 }
 
 /** Global registry instance */
 export const behaviorSettingRegistry = new BehaviorSettingRegistry();
 
-// Example settings for self-validation - these will be removed in production
+behaviorSettingRegistry.register({
+  key: "bot_egress_mode",
+  envName: "MYRMIDON_BOT_EGRESS_MODE",
+  default: "off",
+  scope: "instance",
+  section: "guardrails",
+  valueType: "string",
+  validate: (value: unknown): "off" | "log" | null =>
+    typeof value === "string" && ["off", "log"].includes(value.trim().toLowerCase())
+      ? (value.trim().toLowerCase() as "off" | "log")
+      : null,
+});
+
+const nonNegativeInteger = (value: unknown): number | null => {
+  const parsed = typeof value === "number" ? value : Number(value);
+  return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : null;
+};
+const positiveInteger = (value: unknown): number | null => {
+  const parsed = typeof value === "number" ? value : Number(value);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
+};
+const textList = (value: unknown): string[] | null => {
+  const items = Array.isArray(value) ? value : typeof value === "string" ? value.split(",") : null;
+  if (!items || !items.every((item) => typeof item === "string" && item.trim().length > 0)) return null;
+  return [...new Set(items.map((item) => item.trim()))];
+};
+const environmentNameList = (value: unknown): string[] | null => {
+  const names = textList(value);
+  return names && names.every((name) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) ? names : null;
+};
+const booleanValue = (value: unknown): boolean | null => {
+  if (typeof value === "boolean") return value;
+  if (typeof value !== "string") return null;
+  const normalized = value.toLowerCase();
+  if (["true", "1", "yes", "on"].includes(normalized)) return true;
+  if (["false", "0", "no", "off"].includes(normalized)) return false;
+  return null;
+};
+const objectArray = (value: unknown): Record<string, unknown>[] | null => {
+  let parsed = value;
+  if (typeof value === "string") {
+    try { parsed = JSON.parse(value); } catch { return null; }
+  }
+  return Array.isArray(parsed) && parsed.every((item) => item !== null && typeof item === "object" && !Array.isArray(item))
+    ? parsed as Record<string, unknown>[] : null;
+};
+
+for (const [key, envName, fallback, validate] of [
+  ["tool_breaker_failures", "MYRMIDON_TOOL_BREAKER_FAILURES", 3, nonNegativeInteger],
+  ["tool_breaker_cooldown_ms", "MYRMIDON_TOOL_BREAKER_COOLDOWN_MS", 60_000, positiveInteger],
+  ["tool_breaker_window_ms", "MYRMIDON_TOOL_BREAKER_WINDOW_MS", 600_000, positiveInteger],
+  ["tool_timeout_max_ms", "MYRMIDON_TOOL_TIMEOUT_MAX_MS", 180_000, positiveInteger],
+  ["tool_timeout_slow_ms", "MYRMIDON_TOOL_TIMEOUT_SLOW_MS", 45_000, positiveInteger],
+] as const) {
+  behaviorSettingRegistry.register({
+    key,
+    envName,
+    default: fallback,
+    scope: "instance",
+    section: "guardrails",
+    valueType: "number",
+    validate,
+  });
+}
+
+for (const [key, envName, fallback, validate] of [
+  ["run_env_allow", "MYRMIDON_RUN_ENV_ALLOW", [] as string[], environmentNameList],
+  ["bot_image_allowlist", "MYRMIDON_BOT_IMAGE_ALLOWLIST", [] as string[], textList],
+  ["bot_mount_sources", "MYRMIDON_BOT_MOUNT_SOURCES", [] as string[], textList],
+  ["bot_container_github_env_allowlist", "MYRMIDON_BOT_CONTAINER_GITHUB_ENV_ALLOWLIST", [] as string[], environmentNameList],
+  ["bot_hindsight_allowed_banks", "MYRMIDON_BOT_HINDSIGHT_ALLOWED_BANKS", [] as string[], textList],
+  ["bot_mcp_servers", "MYRMIDON_BOT_MCP_SERVERS", [] as string[], textList],
+] as const) {
+  behaviorSettingRegistry.register({ key, envName, default: fallback, scope: "instance", section: key === "run_env_allow" ? "guardrails" : "fleet", valueType: "json", validate });
+}
+for (const [key, envName, fallback, validate] of [
+  ["bot_reconcile_interval_sec", "MYRMIDON_BOT_RECONCILE_INTERVAL_SEC", 60, positiveInteger],
+  ["browser_idle_timeout_min", "MYRMIDON_BROWSER_IDLE_TIMEOUT_MIN", 30, positiveInteger],
+  ["browser_max_duration_min", "MYRMIDON_BROWSER_MAX_DURATION_MIN", 240, positiveInteger],
+  ["stack_check_interval_sec", "MYRMIDON_STACK_CHECK_INTERVAL_SEC", 0, nonNegativeInteger],
+] as const) {
+  behaviorSettingRegistry.register({ key, envName, default: fallback, scope: "instance", section: "fleet", valueType: "number", validate });
+}
+behaviorSettingRegistry.register({
+  key: "browser_fleet", envName: "MYRMIDON_BROWSER_FLEET", default: [] as Record<string, unknown>[],
+  scope: "instance", section: "fleet", valueType: "json", validate: objectArray,
+});
+for (const [key, envName] of [
+  ["bot_containers", "MYRMIDON_BOT_CONTAINERS"],
+  ["bot_yolo", "MYRMIDON_BOT_YOLO"],
+] as const) {
+  behaviorSettingRegistry.register({ key, envName, default: false, scope: "instance", section: "fleet", valueType: "boolean", validate: booleanValue });
+}
 behaviorSettingRegistry.register({
   key: "debug_mode",
   envName: "MYRMIDON_DEBUG_MODE",
@@ -136,6 +232,9 @@ behaviorSettingRegistry.register({
  */
 export function parseSettingFromEnv<T>(raw: string | undefined, def: BehaviorSettingDef<T>): T | null {
   if (raw === undefined || raw === "") return null;
+  if (def.valueType === "json" && typeof raw === "string") {
+    try { return def.validate(JSON.parse(raw)); } catch { return null; }
+  }
   return def.validate(raw);
 }
 
@@ -169,21 +268,21 @@ export function resolveSetting<T>(options: {
   }
 
   const env = options.env;
-  
-  // Try stored value first
+
+  // Environment variables remain the operator's forced override, even when a
+  // UI value has been persisted.
+  // The source is "env" whenever the environment declares a valid value, even
+  // when that value equals the default (mirrors resolveRunLimits' envDeclares semantics).
+  const envValue = readSettingFromEnv(env, def);
+  if (envValue !== null) {
+    return { value: envValue, source: "env" };
+  }
+
   if (options.stored !== undefined) {
     const normalized = normalizeSetting<T>(options.stored, def);
     if (normalized !== null) {
       return { value: normalized, source: "ui" };
     }
-  }
-  
-  // Then try environment: the source is "env" whenever the environment
-  // declares a valid value, even when that value equals the default
-  // (mirrors resolveRunLimits' envDeclares semantics).
-  const envValue = readSettingFromEnv(env, def);
-  if (envValue !== null) {
-    return { value: envValue, source: "env" };
   }
   
   // Finally return default
@@ -230,9 +329,15 @@ export function resolveBehaviorSettings(options: {
  * Schema for validating a behavior settings patch
  */
 export function createBehaviorSettingsPatchSchema() {
+  return createBehaviorSettingsScopePatchSchema("all");
+}
+
+/** Build a patch schema restricted to one persistence scope. */
+export function createBehaviorSettingsScopePatchSchema(scope: SettingScope | "all") {
   const shape: Record<string, z.ZodTypeAny> = {};
   
   for (const def of behaviorSettingRegistry.getAll()) {
+    if (scope !== "all" && def.scope !== scope) continue;
     switch (def.valueType) {
       case "boolean":
         shape[def.key] = z.boolean().optional();
