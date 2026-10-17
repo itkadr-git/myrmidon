@@ -2184,7 +2184,7 @@ describeEmbeddedPostgres(
         preset: LOW_TRUST_REVIEW_PRESET,
         disposition: "promoted",
         sourceIssueId: fixture.issues.assignedReview.id,
-        promotionOwnerUserId: null,
+        promotionOwnerUserId: "board-user",
         promotedFrom: {
           artifactKind: "work_product",
           artifactId: rawProduct!.id,
