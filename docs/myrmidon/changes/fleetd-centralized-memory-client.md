@@ -1,7 +1,3 @@
----
-settings-section: Bot containers (G-series, the 28.09 "option B" plan)
----
-
 <!-- bot/OPE-8136 — 1.6.6 fleetd: centralized-memory client boundary -->
 
 ## changelog-en
@@ -39,10 +35,12 @@ settings-section: Bot containers (G-series, the 28.09 "option B" plan)
   HTTP <code>`, `memory upstream unavailable`), без паник и тихих деградаций;
   ответы ограничены по размеру, каждый запрос имеет таймаут.
 
-## settings-en
+## settings-en-append
 
-| `FLEETD_MEMORY_*` (JSON config `memory` block) | 1.6.6 fleetd | off (block absent) | Centralized-memory client for fleetd: `enabled`, `url` (http(s) only), `token`, `bank`, `timeoutMs`. When enabled, `/v1/memory/recall` and `/v1/memory/retain` proxy to the bank service | Omit the `memory` block or set `enabled: false` |
+<!-- section: Bot containers (G-series, the 28.09 "option B" plan) -->
+| `FLEETD_MEMORY_*` (fleetd JSON config `memory` block) | 1.6.6 fleetd | off (block absent) | Centralized-memory client of fleetd: `enabled`, `url` (http(s) only, no embedded credentials), `token`, `bank`, `timeoutMs` (100–120000 ms, default 15000). When enabled, `/v1/memory/recall` and `/v1/memory/retain` proxy to the bank service of the configured URL behind the fleetd bearer auth | Omit the `memory` block or set `enabled: false` — the routes answer `503 centralized_memory_disabled` |
 
-## settings-ru
+## settings-ru-append
 
-| `FLEETD_MEMORY_*` (JSON config `memory` block) | 1.6.6 fleetd | выключен (блока нет) | Клиент централизованной памяти fleetd: `enabled`, `url` (только http(s)), `token`, `bank`, `timeoutMs`. При включении `/v1/memory/recall` и `/v1/memory/retain` проксируют в сервис банка | Убрать блок `memory` или поставить `enabled: false` |
+<!-- section: Контейнеры ботов (G-серия, план 28.09 «вариант Б») -->
+| `FLEETD_MEMORY_*` (JSON-конфиг fleetd, блок `memory`) | 1.6.6 fleetd | выключен (блока нет) | Клиент централизованной памяти fleetd: `enabled`, `url` (только http(s), без встроенных кредов), `token`, `bank`, `timeoutMs` (100–120000 мс, по умолчанию 15000). При включении `/v1/memory/recall` и `/v1/memory/retain` проксируют в сервис банка настроенного URL за bearer-авторизацией fleetd | Убрать блок `memory` или поставить `enabled: false` — маршруты отвечают `503 centralized_memory_disabled` |
