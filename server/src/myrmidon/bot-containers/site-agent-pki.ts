@@ -204,6 +204,31 @@ export function generateEphemeralTestPki(customScratchDir?: string): TestPkiArti
   ]);
 
   // 5. Expired client cert signed by site-ca (expired in 2020)
+  // Uses `openssl ca` with -startdate and -enddate for universal compatibility across OpenSSL 1.1, 3.0, and 3.5.
+  const indexTxtPath = path.join(pkiDir, "index.txt");
+  const serialPath = path.join(pkiDir, "serial");
+  const caCnfPath = path.join(pkiDir, "ca.cnf");
+
+  fs.writeFileSync(indexTxtPath, "", { mode: 0o600 });
+  fs.writeFileSync(serialPath, "01\n", { mode: 0o600 });
+
+  const caCnfContent = `[ ca ]
+default_ca = test_ca
+
+[ test_ca ]
+database = ${indexTxtPath}
+serial = ${serialPath}
+new_certs_dir = ${pkiDir}
+certificate = ${caCertPath}
+private_key = ${caKeyPath}
+default_md = sha256
+policy = policy_any
+
+[ policy_any ]
+commonName = supplied
+`;
+  fs.writeFileSync(caCnfPath, caCnfContent, { mode: 0o600 });
+
   runOpenssl([
     "req",
     "-newkey",
@@ -216,21 +241,19 @@ export function generateEphemeralTestPki(customScratchDir?: string): TestPkiArti
     "-subj",
     "/CN=expired-client",
   ]);
+
   runOpenssl([
-    "x509",
-    "-req",
+    "ca",
+    "-config",
+    caCnfPath,
+    "-batch",
     "-in",
     expiredClientCsrPath,
-    "-CA",
-    caCertPath,
-    "-CAkey",
-    caKeyPath,
-    "-CAcreateserial",
     "-out",
     expiredClientCertPath,
-    "-not_before",
+    "-startdate",
     "20190101000000Z",
-    "-not_after",
+    "-enddate",
     "20200101000000Z",
   ]);
 
