@@ -69,9 +69,31 @@ case "$1" in
     echo "TYPE            TOTAL     ACTIVE    SIZE      RECLAIMABLE"
     echo "Images          8         3         33GB      20GB"
     exit 0 ;;
-  buildx)
-    printf '[{"size":1048576}]\n'
+  inspect)
+    case "$2" in
+      *'@sha256:'*) exit 1 ;;
+    esac
+    echo '{"Id":"sha256:local"}'
     exit 0 ;;
+  image)
+    case "$2" in
+      inspect)
+        case "$3" in
+          *'@sha256:'*) exit 1 ;;
+          *) echo '{"Id":"sha256:local"}' ;;
+        esac
+        exit 0 ;;
+    esac
+    ;;
+  buildx)
+    for a in "$@"; do
+      case "$a" in
+        *Manifest.Layers*) printf '[{"size":1048576}]\\n'; exit 0 ;;
+      esac
+    done
+    printf '{}\\n'
+    exit 0 ;;
+esac
 
 exit 0
 `;
