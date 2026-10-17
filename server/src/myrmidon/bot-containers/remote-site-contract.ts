@@ -116,7 +116,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 const BOT_KEY_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
-const PINNED_DIGEST_PATTERN = /^[a-zA-Z0-9_./-]+@sha256:[a-f0-9]{64}$/;
+const PINNED_DIGEST_PATTERN = /^[a-zA-Z0-9_.:/-]+@sha256:[a-f0-9]{64}$/;
 
 /**
  * Checks whether an image reference is pinned by a full sha256 digest.

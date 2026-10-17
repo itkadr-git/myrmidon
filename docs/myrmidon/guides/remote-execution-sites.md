@@ -14,7 +14,7 @@ In Myrmidon, the board running on `vm-core` is the single management plane (`tar
 - The central board holds the database, task queue, scheduler, secret store, event journal, and audit log.
 - Remote execution sites (such as `myr-vm1`) run dedicated bot execution environments.
 - **Directionality invariant**: Control-plane connections are strictly one-way from `vm-core` to the remote execution site over private IPsec / WireGuard networking. The remote site agent holds no board administrator tokens, database access, or reverse credentials into `vm-core`.
-- The remote site agent (`fleetd`) listens on a private interface (e.g. `10.10.0.110:9100`), holds the local Docker daemon socket (`/var/run/docker.sock`) of that host, and executes container lifecycle requests strictly within pre-enrolled quotas and image allowlists.
+- The remote site agent (`fleetd`) listens on a private interface (e.g. `fleetd.internal:9100`), holds the local Docker daemon socket (`/var/run/docker.sock`) of that host, and executes container lifecycle requests strictly within pre-enrolled quotas and image allowlists.
 
 ```
 +-----------------------------------------------------------------------+
@@ -29,7 +29,7 @@ In Myrmidon, the board running on `vm-core` is the single management plane (`tar
 |          v (HTTP / mTLS + Bearer Token over IPsec)                    |
 +----------|------------------------------------------------------------+
            |
-           | Private network (e.g. 10.10.100.1 <-> 10.10.0.110)
+           | Private network (e.g. board.internal <-> fleetd.internal)
            v
 +-----------------------------------------------------------------------+
 |  myr-vm1 (Remote Execution Site)                                      |
@@ -307,7 +307,7 @@ Every error response follows single-line, secret-safe reason codes:
 ### 4.1 Prerequisites
 
 1. **Host requirements**: Dedicated Linux VM (e.g. `myr-vm1`, 16+ cores, 64 GB RAM, XFS filesystem with project quotas enabled at `/srv/myrmidon-xfs`).
-2. **Network**: IPsec tunnel between `vm-core` (`10.10.100.1`) and `myr-vm1` (`10.10.0.110`). No public exposure of port `9100`.
+2. **Network**: IPsec tunnel between `vm-core` (`board.internal`) and `myr-vm1` (`fleetd.internal`). No public exposure of port `9100`.
 3. **Certificates & Tokens**: Generate a 64-character random token and store it as a company secret on the board:
    ```bash
    TOKEN=$(openssl rand -hex 32)
@@ -321,7 +321,7 @@ Create `/etc/myrmidon/fleetd.json` with permissions `0600`:
 
 ```json
 {
-  "listen": "10.10.0.110:9100",
+  "listen": "0.0.0.0:9100",
   "token": "<TOKEN>",
   "upstream": "/var/run/docker.sock",
   "bots": [
@@ -369,7 +369,7 @@ systemctl enable --now myrmidon-fleetd
 
 Verify local health:
 ```bash
-curl -s -H "Authorization: Bearer $TOKEN" http://10.10.0.110:9100/v1/health | jq .
+curl -s -H "Authorization: Bearer $TOKEN" http://fleetd.internal:9100/v1/health | jq .
 ```
 
 ---
@@ -382,10 +382,10 @@ On `vm-core`, configure `MYRMIDON_FLEET_HOSTS` in `/etc/myrmidon/board.env` (or 
 MYRMIDON_FLEET_HOSTS='[
   {
     "name": "myr-vm1",
-    "url": "http://10.10.0.110:9100",
+    "url": "http://fleetd.internal:9100",
     "tokenSecret": "fleetd-myr-vm1-token",
-    "hindsightUrl": "http://10.10.0.110:8890",
-    "llmBaseUrl": "http://10.10.100.1:4000",
+    "hindsightUrl": "http://hindsight.internal:8890",
+    "llmBaseUrl": "http://llm.internal:4000",
     "boardExtraHost": "paperclip-server-1",
     "volumeRoot": "/srv/myrmidon-xfs/myrmidon-bots",
     "network": "myrmidon-bots",
@@ -403,7 +403,7 @@ Register the company secret `fleetd-myr-vm1-token` containing the shared secret 
 To migrate bots (e.g. `work-finansist` or `work-qa`) from local or unmanaged manual mode to remote site management without losing sessions, memory, or Telegram webhooks:
 
 1. **Pre-flight verification**:
-   - Check site health: `curl -H "Authorization: Bearer ..." http://10.10.0.110:9100/v1/health`.
+   - Check site health: `curl -H "Authorization: Bearer ..." http://fleetd.internal:9100/v1/health`.
    - Confirm bind volumes exist at `/srv/myrmidon-xfs/myrmidon-bots/<botKey>/{hermes,workspace,scratch}`.
    - Verify image digest is pinned in CI release manifest (`release-components.json`).
 2. **Canary Migration (`work-qa`)**:
@@ -411,7 +411,7 @@ To migrate bots (e.g. `work-finansist` or `work-qa`) from local or unmanaged man
      Set `container.enabled = true`, `container.host = "myr-vm1"`.
    - Reconciler detects host assignment:
      Transitions bot via R3 maintenance window (`pause` -> `drain` -> `writeProfile` -> `start`).
-   - The site agent allocates `gatewayPort` (e.g. `18642`), returns status, and card sync updates `apiBaseUrl` to `http://10.10.0.110:18642`.
+   - The site agent allocates `gatewayPort` (e.g. `18642`), returns status, and card sync updates `apiBaseUrl` to `http://fleetd.internal:18642`.
 3. **Verification**:
    - Run a test prompt: verify session continuation and memory recall from local C-MEM.
    - Confirm zero secret leakage in logs.
@@ -421,5 +421,5 @@ To migrate bots (e.g. `work-finansist` or `work-qa`) from local or unmanaged man
    - Group 2: Heavy engineering bots.
    - Group 3: Primary operational bot (`work`).
 5. **Rollback Runbook**:
-   - If an issue occurs during canary, set `container.host = null` or revert card to manual mode (`container.enabled = false`, `apiBaseUrl = "http://10.10.0.110:18642"`).
+   - If an issue occurs during canary, set `container.host = null` or revert card to manual mode (`container.enabled = false`, `apiBaseUrl = "http://fleetd.internal:18642"`).
    - Data volumes on disk are **never deleted** on rollback.
