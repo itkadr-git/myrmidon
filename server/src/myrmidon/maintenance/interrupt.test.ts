@@ -72,7 +72,7 @@ describeEmbeddedPostgres("maintenance interrupt_and_retry", () => {
   });
 
   /** An agent working on an assigned issue, its run already started. */
-  async function seedIssueRun(script: string) {
+  async function seedIssueRun(script: string, start = true) {
     const companyId = randomUUID();
     const agentId = randomUUID();
     const issueId = randomUUID();
@@ -118,7 +118,7 @@ describeEmbeddedPostgres("maintenance interrupt_and_retry", () => {
         contextSnapshot: { issueId, wakeReason: "issue_assigned" },
       })
       .returning();
-    await heartbeatService(db).resumeQueuedRuns();
+    if (start) await heartbeatService(db).resumeQueuedRuns();
     return { companyId, agentId, issueId, runId: run!.id };
   }
 
@@ -138,6 +138,19 @@ describeEmbeddedPostgres("maintenance interrupt_and_retry", () => {
     const rows = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId));
     return rows.filter((r) => r.cause === LEGACY_RECOVERY_CAUSE);
   }
+
+  it("does not claim a queued run after maintenance starts", async () => {
+    const { runId } = await seedIssueRun(FAST, false);
+    const svc = maintenanceService(db, { heartbeat: maintenanceHeartbeatPort(heartbeatService(db)) });
+    await svc.enter(
+      { scope: { type: "instance" }, reason: "deploy", drainTimeoutSec: 0, onTimeout: "interrupt_and_retry" },
+      ADMIN,
+    );
+
+    await heartbeatService(db).resumeQueuedRuns();
+    expect((await run(runId)).status).toBe("queued");
+    expect((await svc.status()).instance).toMatchObject({ runningRuns: 0, queuedRuns: 1 });
+  }, 30_000);
 
   it("interrupts at the drain timeout without a reconciliation hold and retries after exit", async () => {
     const { agentId, issueId, runId } = await seedIssueRun(SLOW);
