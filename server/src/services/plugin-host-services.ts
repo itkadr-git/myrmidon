@@ -29,6 +29,8 @@ import type {
 } from "@paperclipai/plugin-sdk";
 import type { CreateIssueThreadInteraction, InviteJoinType, IssueDocumentSummary, PermissionKey, PrincipalType } from "@paperclipai/shared";
 import { pluginOperationIssueOriginKind } from "@paperclipai/shared";
+import { isAllowedContentType, MAX_ATTACHMENT_BYTES, normalizeUploadAttachmentContentType } from "../attachment-types.js";
+import { getStorageService } from "../storage/index.js";
 import { companyService } from "./companies.js";
 import { agentService } from "./agents.js";
 import { projectService } from "./projects.js";
@@ -41,7 +43,6 @@ import { heartbeatService } from "./heartbeat.js";
 import { budgetService } from "./budgets.js";
 import { issueApprovalService } from "./issue-approvals.js";
 import { approvalService } from "./approvals.js";
-import { getStorageService } from "../storage/index.js";
 import { subscribeCompanyLiveEvents } from "./live-events.js";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import path from "node:path";
@@ -2584,6 +2585,22 @@ export function buildHostServices(
         if (!inCompany(await issues.getById(params.issueId), companyId)) return [];
         return (await issues.listAttachments(params.issueId)) as any;
       },
+      async uploadAttachment(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        const issue = await issues.getById(params.issueId);
+        if (!inCompany(issue, companyId)) throw new Error("Issue not found in company scope");
+        const bytes = Buffer.from(params.contentBase64, "base64");
+        if (!bytes.length || bytes.length > MAX_ATTACHMENT_BYTES || bytes.toString("base64") !== params.contentBase64) throw new Error("Attachment data must be valid base64 and within the size limit");
+        const contentType = normalizeUploadAttachmentContentType({ contentType: params.contentType, originalFilename: params.filename });
+        if (!isAllowedContentType(contentType)) throw new Error("Unsupported attachment content type");
+        const stored = await getStorageService().putFile({ companyId, namespace: "issue-attachments", originalFilename: params.filename, contentType, body: bytes });
+        const { actorAgentId, actorUserId, actorRunId } = params.actor ?? {};
+        const row = await issues.createAttachment({ issueId: issue.id, provider: stored.provider, objectKey: stored.objectKey, contentType: stored.contentType, byteSize: stored.byteSize, sha256: stored.sha256, originalFilename: stored.originalFilename, createdByAgentId: actorAgentId ?? null, createdByUserId: actorUserId ?? null, createdByRunId: actorRunId ?? null });
+        await logPluginActivity({ companyId, action: "issue.attachment.uploaded", entityType: "issue", entityId: issue.id, details: { attachmentId: row.id, byteSize: row.byteSize, contentType: row.contentType }, actor: { actorAgentId, actorUserId, actorRunId } });
+        return row as any;
+      },
+
       async getAttachmentContent(params) {
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
@@ -2636,6 +2653,7 @@ export function buildHostServices(
           contentBase64: bytes.toString("base64"),
         };
       },
+
     },
 
     approvals: {

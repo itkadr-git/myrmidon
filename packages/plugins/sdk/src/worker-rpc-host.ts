@@ -1077,6 +1077,9 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
             maxBytes: options?.maxBytes ?? null,
           });
         },
+        async uploadAttachment(input) {
+          return callHost("issues.uploadAttachment", input);
+        },
 
         documents: {
           async list(issueId: string, companyId: string) {
