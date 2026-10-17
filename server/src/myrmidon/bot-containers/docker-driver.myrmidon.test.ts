@@ -95,7 +95,7 @@ const NONCE = "00112233aabbccdd";
 describe("readDockerDriverConfig YOLO setting", () => {
   it("uses the live instance setting and lets explicit process env override it", () => {
     const previous = liveBehaviorSettingsView();
-    applyLiveBehaviorSettings({ settings: { bot_yolo: false }, sources: {} as never });
+    applyLiveBehaviorSettings({ settings: { bot_yolo: false }, sources: { bot_yolo: "ui" } });
     try {
       const volume = { [BOT_VOLUME_ROOT_ENV]: "/var/lib/myrmidon/bots" };
       expect(readDockerDriverConfig(volume).yolo).toBe(false);

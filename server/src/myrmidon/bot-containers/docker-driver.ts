@@ -56,7 +56,7 @@
 
 import { CLONE_HYGIENE_REPORT_PATH } from "./clone-hygiene.js"; // myrmidon(1.6.2-BOT-DISK-C)
 import { randomBytes } from "node:crypto";
-import { liveBehaviorSetting } from "../behavior-settings/live.js";
+import { liveBehaviorSetting, liveBehaviorSettingsView } from "../behavior-settings/live.js";
 import http from "node:http";
 import {
   RATE_LIMIT_MAX_RETRIES,
@@ -191,10 +191,14 @@ export function readDockerDriverConfig(env?: NodeJS.ProcessEnv): DockerDriverCon
     const value = Number(rawRps);
     if (Number.isFinite(value) && value >= 0 && value <= 50) maxRps = value;
   }
-  const imageAllowlist = runtimeEnv ? liveBehaviorSetting<unknown>("bot_image_allowlist") : undefined;
-  const mountAllowlist = runtimeEnv ? liveBehaviorSetting<unknown>("bot_mount_sources") : undefined;
-  const rawYolo = runtimeEnv && source[BOT_YOLO_ENV] === undefined
-    ? liveBehaviorSetting<boolean>("bot_yolo")
+  const liveView = runtimeEnv ? liveBehaviorSettingsView() : undefined;
+  const liveSettings = liveView?.settings;
+  const imageAllowlist = liveSettings && "bot_image_allowlist" in liveSettings
+    ? liveSettings.bot_image_allowlist : runtimeEnv ? liveBehaviorSetting<unknown>("bot_image_allowlist") : undefined;
+  const mountAllowlist = liveSettings && "bot_mount_sources" in liveSettings
+    ? liveSettings.bot_mount_sources : runtimeEnv ? liveBehaviorSetting<unknown>("bot_mount_sources") : undefined;
+  const rawYolo = runtimeEnv && source[BOT_YOLO_ENV] === undefined && liveSettings && "bot_yolo" in liveSettings
+    ? liveSettings?.bot_yolo as boolean | undefined
     : source[BOT_YOLO_ENV];
   const yolo = rawYolo === undefined
     ? undefined

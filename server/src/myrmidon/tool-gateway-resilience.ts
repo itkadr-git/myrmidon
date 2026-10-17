@@ -82,7 +82,7 @@ const envForLive = (): NodeJS.ProcessEnv => {
   const view = liveBehaviorSettingsView();
   for (const [key, envKey] of RESILIENCE_SETTING_KEYS) {
     // Env is a forced override only when the resolver recorded it as the source.
-    if (view.sources[key] === "env") continue;
+    if (!(key in view.settings) || view.sources[key] === "env") continue;
     const value = view.settings[key];
     if (value !== undefined && value !== null) env[envKey] = String(value);
     else delete env[envKey];
