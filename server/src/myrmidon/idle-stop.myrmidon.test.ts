@@ -155,7 +155,7 @@ describe('IdleStopService', () => {
       let selectCallCount = 1;
       mockDb.select.mockImplementation(() => {
         selectCallCount++;
-        // 2 = resolveAgentId (hasActiveRuns), 3 = hasActiveRuns, 4 = resolveAgentId (getIdleDurationSec), 5 = getIdleDurationSec
+        // 2 = resolveAgentId (hasActiveRuns), 3 = hasActiveRuns, 4 = agent config, 5 = resolveAgentId, 6 = getIdleDurationSec
         if (selectCallCount === 2) {
           // First resolveAgentId call (in hasActiveRuns)
           return {
@@ -179,6 +179,19 @@ describe('IdleStopService', () => {
             }),
           };
         } else if (selectCallCount === 4) {
+          // Agent configuration lookup for the per-bot idle-stop mode.
+          return {
+            from: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                limit: vi.fn().mockReturnValue({
+                  then: vi.fn().mockImplementation((resolve: any) =>
+                    resolve([{ adapterConfig: { container: { idleStopMode: 'on_demand' } } }]),
+                  ),
+                }),
+              }),
+            }),
+          };
+        } else if (selectCallCount === 5) {
           // Second resolveAgentId call (in getIdleDurationSec)
           return {
             from: vi.fn().mockReturnValue({
@@ -227,7 +240,7 @@ describe('IdleStopService', () => {
       let selectCallCount = 1;
       mockDb.select.mockImplementation(() => {
         selectCallCount++;
-        // 2 = resolveAgentId (hasActiveRuns), 3 = hasActiveRuns, 4 = resolveAgentId (getIdleDurationSec), 5 = getIdleDurationSec
+        // 2 = resolveAgentId (hasActiveRuns), 3 = hasActiveRuns, 4 = agent config, 5 = resolveAgentId, 6 = getIdleDurationSec
         if (selectCallCount === 2) {
           // First resolveAgentId call (in hasActiveRuns)
           return {
@@ -251,6 +264,19 @@ describe('IdleStopService', () => {
             }),
           };
         } else if (selectCallCount === 4) {
+          // Agent configuration lookup for the per-bot idle-stop mode.
+          return {
+            from: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                limit: vi.fn().mockReturnValue({
+                  then: vi.fn().mockImplementation((resolve: any) =>
+                    resolve([{ adapterConfig: { container: { idleStopMode: 'on_demand' } } }]),
+                  ),
+                }),
+              }),
+            }),
+          };
+        } else if (selectCallCount === 5) {
           // Second resolveAgentId call (in getIdleDurationSec)
           return {
             from: vi.fn().mockReturnValue({
