@@ -9,6 +9,7 @@ import {
   inspectMigrations,
   runDatabaseRestore,
 } from "@paperclipai/db";
+import { checkVendorChain, chainStartsWithVendor, type ChainCheck } from "./myrmidon-migrate-chain.js";
 import {
   buildVendorOnlyIndex,
   loadVendorChain,
