@@ -53,10 +53,16 @@ const mockDbSelectWhere = vi.hoisted(() => vi.fn(() => ({
 })));
 const mockDbSelectFrom = vi.hoisted(() => vi.fn(() => ({ where: mockDbSelectWhere })));
 const mockDbSelect = vi.hoisted(() => vi.fn(() => ({ from: mockDbSelectFrom })));
+const mockDbInsert = vi.hoisted(() => vi.fn(() => ({ values: vi.fn(async () => undefined) })));
 const mockDb = vi.hoisted(() => ({
   select: mockDbSelect,
-  transaction: vi.fn(async (callback: (tx: { select: typeof mockDbSelect }) => Promise<unknown>) =>
-    callback({ select: mockDbSelect })),
+  insert: mockDbInsert,
+  // Transaction callbacks in issue PATCH must support downstream external-object sync.
+  update: vi.fn(),
+  delete: vi.fn(),
+  execute: vi.fn(),
+  transaction: vi.fn(async (callback: (tx: typeof mockDb) => Promise<unknown>) =>
+    callback(mockDb)),
 }));
 
 const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
@@ -127,6 +133,10 @@ function registerModuleMocks() {
           censorUsernameInLogs: false,
           feedbackDataSharingPreference: "prompt",
         },
+      })),
+      getExperimental: vi.fn(async () => ({
+        enableExternalObjects: false,
+        enableAgentChat: false,
       })),
       listCompanyIds: vi.fn(async () => ["company-1"]),
     }),

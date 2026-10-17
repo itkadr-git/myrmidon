@@ -3837,7 +3837,7 @@ function normalizeMaxConcurrentRuns(value: unknown) {
   );
 }
 
-interface WakeupOptions {
+export interface WakeupOptions {
   /** Set only by authenticated board wake routes; never copied from caller payloads. */
   manualUserWake?: boolean;
   /** Internal resume of a queue with persisted board interruption intent. */
@@ -21017,6 +21017,46 @@ export function heartbeatService(
   // prologue. drainActiveRunExecutions can then await a wake that is still before
   // run registration. Internal callers reference enqueueWakeup directly and
   // already await it, so they do not need this registration.
+  async function insertReviewAdmissionWakeup(
+    agentId: string,
+    opts: WakeupOptions,
+    tx: Db,
+  ) {
+    const source = opts.source ?? "on_demand";
+    const reason = opts.reason ?? null;
+    const payload = opts.payload ? { ...opts.payload } : null;
+    if (payload) {
+      delete payload.queuedCommentInterrupt;
+      delete payload.manualUserWake;
+    }
+    const contextSnapshot = { ...(opts.contextSnapshot ?? {}) };
+    const resolvedIssueId =
+      readNonEmptyString(contextSnapshot.issueId) ??
+      readNonEmptyString(payload?.issueId) ??
+      readNonEmptyString(payload?.taskId);
+    const key = opts.idempotencyKey ??
+      `issue-review-admission:${resolvedIssueId ?? "unknown"}:${agentId}`;
+    const agent = await tx
+      .select()
+      .from(agents)
+      .where(eq(agents.id, agentId))
+      .then((rows) => rows[0] ?? null);
+    if (!agent) throw new Error(`Review admission agent ${agentId} not found`);
+    await tx.insert(agentWakeupRequests).values({
+      companyId: agent.companyId,
+      agentId,
+      source,
+      triggerDetail: opts.triggerDetail ?? null,
+      reason,
+      payload: resolvedIssueId ? { ...(payload ?? {}), issueId: resolvedIssueId } : payload,
+      status: "queued",
+      requestedByActorType: opts.requestedByActorType ?? null,
+      requestedByActorId: opts.requestedByActorId ?? null,
+      idempotencyKey: key,
+    });
+    return { created: true };
+  }
+
   function trackWakeup(
     agentId: string,
     opts: WakeupOptions = {},
@@ -31439,6 +31479,7 @@ export function heartbeatService(
       }),
 
     wakeup: trackWakeup,
+    insertReviewAdmissionWakeup,
     dispatchPendingNativeStatusWakeups,
     triggerIssueMonitor,
 
