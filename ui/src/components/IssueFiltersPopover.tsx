@@ -68,6 +68,7 @@ const INBOX_CATEGORY_OPTIONS: ReadonlyArray<[InboxCategoryFilter, string]> = [
   ["everything", "All categories"],
   ["issues_i_touched", "My recent tasks"],
   ["join_requests", "Join requests"],
+  ["knowledge", "Knowledge suggestions"],
   ["approvals", "Approvals"],
   ["failed_runs", "Failed runs"],
   ["alerts", "Alerts"],

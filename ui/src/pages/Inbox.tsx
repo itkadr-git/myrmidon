@@ -4,9 +4,12 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { deriveOriginatingActor, INBOX_MINE_ISSUE_STATUS_FILTER } from "@paperclipai/shared";
 import { usePublishSharedQueryData, useSharedPollingQuery } from "@/hooks/useSharedPolling";
 import { approvalsApi } from "../api/approvals";
+import { ApiError } from "../api/client";
+import { knowledgeApi } from "../api/knowledge";
+import type { KnowledgeSuggestion } from "../api/knowledge";
 import { accessApi } from "../api/access";
 import { authApi } from "../api/auth";
-import { ApiError } from "../api/client";
+
 import { dashboardApi } from "../api/dashboard";
 import { executionWorkspacesApi } from "../api/execution-workspaces";
 import { issuesApi } from "../api/issues";
@@ -175,7 +178,8 @@ import {
   INBOX_FILTER_PREFERENCES_KEY_PREFIX,
   INBOX_ISSUE_COLUMNS_KEY,
 } from "../lib/inbox";
-import { useDismissedInboxAlerts, useInboxDismissals, useReadInboxItems } from "../hooks/useInboxBadge";
+import { useDismissedInboxAlerts, useInboxDismissals,
+ useInboxBadge, useReadInboxItems } from "../hooks/useInboxBadge";
 import { useInboxSortAttention } from "../hooks/useInboxSortAttention";
 import {
   captureInboxOrderPin,
@@ -809,6 +813,7 @@ function StreamlinedInbox() {
   const { isMobile } = useSidebar();
   const navigate = useNavigate();
   const { pushToast } = useToastActions();
+  useInboxBadge(selectedCompanyId);
   const { t } = useTranslation();
   const location = useLocation();
   const queryClient = useQueryClient();
@@ -885,6 +890,11 @@ function StreamlinedInbox() {
       : ["execution-workspaces", "__disabled__"],
     queryFn: () => executionWorkspacesApi.listSummaries(selectedCompanyId!),
     enabled: !!selectedCompanyId && isolatedWorkspacesEnabled,
+  });
+  const { data: knowledgeSuggestions = [] } = useQuery({
+    queryKey: ["knowledge-suggestions", selectedCompanyId],
+    queryFn: () => knowledgeApi.listSuggestions(selectedCompanyId!),
+    enabled: Boolean(selectedCompanyId),
   });
 
   useEffect(() => {
@@ -1326,6 +1336,7 @@ function StreamlinedInbox() {
   }, [approvals, tab, allApprovalFilter, currentUserId, dismissedAtByKey]);
   const showJoinRequestsCategory =
     allCategoryFilter === "everything" || allCategoryFilter === "join_requests";
+  const showKnowledgeCategory = allCategoryFilter === "everything" || allCategoryFilter === "knowledge";
   const showTouchedCategory =
     allCategoryFilter === "everything" || allCategoryFilter === "issues_i_touched";
   const showApprovalsCategory =
@@ -1355,8 +1366,9 @@ function StreamlinedInbox() {
         approvals: tab === "all" && !showApprovalsCategory ? [] : approvalsToRender,
         failedRuns: failedRunsForTab,
         joinRequests: joinRequestsForTab,
+        knowledgeSuggestions: tab === "all" && !showKnowledgeCategory ? [] : knowledgeSuggestions,
       }),
-    [approvalsToRender, issuesToRender, showApprovalsCategory, showTouchedCategory, tab, failedRunsForTab, joinRequestsForTab],
+    [allCategoryFilter, approvalsToRender, issuesToRender, showApprovalsCategory, showTouchedCategory, showKnowledgeCategory, tab, failedRunsForTab, joinRequestsForTab, knowledgeSuggestions],
   );
 
   const filteredWorkItems = useMemo(() => {
@@ -1391,6 +1403,10 @@ function StreamlinedInbox() {
           if (issue?.identifier?.toLowerCase().includes(q)) return true;
         }
         return false;
+      }
+      if (item.kind === "knowledge") {
+        const suggestion = item.suggestion;
+        return `${suggestion.body} ${suggestion.rationale ?? ""} ${suggestion.sourceRef ?? ""}`.toLowerCase().includes(q);
       }
       if (item.kind === "join_request") {
         const jr = item.joinRequest;
@@ -1792,6 +1808,12 @@ function StreamlinedInbox() {
     onError: (err) => {
       setActionError(err instanceof Error ? err.message : "Failed to reject join request");
     },
+  });
+
+  const rejectKnowledgeMutation = useMutation({
+    mutationFn: (suggestion: KnowledgeSuggestion) => knowledgeApi.decideSuggestion(selectedCompanyId!, suggestion.id, "declined"),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["knowledge-suggestions", selectedCompanyId] }),
+    onError: (err) => setActionError(err instanceof Error ? err.message : "Failed to reject knowledge suggestion"),
   });
 
   const [retryingRunIds, setRetryingRunIds] = useState<Set<string>>(new Set());
@@ -3140,6 +3162,17 @@ function StreamlinedInbox() {
                       continue;
                     }
 
+                    if (item.kind === "knowledge") {
+                      elements.push(wrapItem(`knowledge:${item.suggestion.id}`, isSelected,
+                        <div className="rounded-lg border p-4">
+                          <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground"><span>Knowledge</span><span>{new Date(item.suggestion.createdAt).toLocaleDateString()}</span></div>
+                          <p className="mt-2 line-clamp-3 whitespace-pre-wrap text-sm">{item.suggestion.body}</p>
+                          {item.suggestion.rationale && <p className="mt-2 line-clamp-2 text-xs text-muted-foreground">Recommendation: {item.suggestion.rationale}</p>}
+                          <Button variant="outline" size="sm" className="mt-3" onClick={() => navigate("/knowledge/review")}>Review suggestion</Button>
+                        </div>));
+                      continue;
+                    }
+
                     if (item.kind === "join_request") {
                       const joinKey = `join:${item.joinRequest.id}`;
                       const isArchiving = archivingNonIssueIds.has(joinKey);
@@ -3174,6 +3207,8 @@ function StreamlinedInbox() {
                       ) : <InboxRowSurface selected={isSelected}>{row}</InboxRowSurface>));
                       continue;
                     }
+
+                    if (item.kind !== "issue") continue;
 
                     const issue = item.issue;
                     const childIssues = group.childrenByIssueId.get(issue.id) ?? [];

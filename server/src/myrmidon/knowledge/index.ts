@@ -24,6 +24,7 @@ export {
   type ImportTreeResult,
 } from "./store.js";
 export { createKnowledgeModule, type KnowledgeModule, type KnowledgeModuleOptions } from "./service.js";
+export { myrmidonKnowledgeRoutes } from "./routes.js";
 export {
   seedKnowledgeBase,
   SEED_ACTOR,

@@ -7,6 +7,7 @@ import type {
   Issue,
   JoinRequest,
 } from "@paperclipai/shared";
+import type { KnowledgeSuggestion } from "../api/knowledge";
 import {
   applyIssueFilters,
   defaultIssueFilterState,
@@ -33,6 +34,7 @@ export type InboxCategoryFilter =
   | "everything"
   | "issues_i_touched"
   | "join_requests"
+  | "knowledge"
   | "approvals"
   | "failed_runs"
   | "alerts";
@@ -77,6 +79,11 @@ export type InboxWorkItem =
       kind: "join_request";
       timestamp: number;
       joinRequest: JoinRequest;
+    }
+  | {
+      kind: "knowledge";
+      timestamp: number;
+      suggestion: KnowledgeSuggestion;
     };
 
 export interface InboxBadgeData {
@@ -84,6 +91,8 @@ export interface InboxBadgeData {
   approvals: number;
   failedRuns: number;
   joinRequests: number;
+  knowledgeSuggestions: number;
+
   mineIssues: number;
   alerts: number;
 }
@@ -169,6 +178,7 @@ const defaultInboxFilterPreferences: InboxFilterPreferences = {
 function normalizeInboxCategoryFilter(value: unknown): InboxCategoryFilter {
   return value === "issues_i_touched"
     || value === "join_requests"
+    || value === "knowledge"
     || value === "approvals"
     || value === "failed_runs"
     || value === "alerts"
@@ -820,11 +830,13 @@ export function getInboxWorkItems({
   approvals,
   failedRuns = [],
   joinRequests = [],
+  knowledgeSuggestions = [],
 }: {
   issues: Issue[];
   approvals: Approval[];
   failedRuns?: HeartbeatRun[];
   joinRequests?: JoinRequest[];
+  knowledgeSuggestions?: KnowledgeSuggestion[];
 }): InboxWorkItem[] {
   return [
     ...issues.map((issue) => ({
@@ -847,10 +859,14 @@ export function getInboxWorkItems({
       timestamp: normalizeTimestamp(joinRequest.createdAt),
       joinRequest,
     })),
+    ...knowledgeSuggestions.map((suggestion) => ({
+      kind: "knowledge" as const,
+      timestamp: normalizeTimestamp(suggestion.createdAt),
+      suggestion,
+    })),
   ].sort((a, b) => {
     const timestampDiff = b.timestamp - a.timestamp;
     if (timestampDiff !== 0) return timestampDiff;
-
     if (a.kind === "issue" && b.kind === "issue") {
       return sortIssuesByMostRecentActivity(a.issue, b.issue);
     }
@@ -858,6 +874,9 @@ export function getInboxWorkItems({
       return approvalActivityTimestamp(b.approval) - approvalActivityTimestamp(a.approval);
     }
 
+    if (a.kind === "knowledge" || b.kind === "knowledge") {
+      return a.kind === "knowledge" ? -1 : 1;
+    }
     return a.kind === "approval" ? -1 : 1;
   });
 }
@@ -867,6 +886,7 @@ const inboxWorkItemKindOrder: InboxWorkItem["kind"][] = [
   "approval",
   "failed_run",
   "join_request",
+  "knowledge",
 ];
 
 const inboxWorkItemKindLabels: Record<InboxWorkItem["kind"], string> = {
@@ -874,6 +894,7 @@ const inboxWorkItemKindLabels: Record<InboxWorkItem["kind"], string> = {
   approval: "Approvals",
   failed_run: "Failed runs",
   join_request: "Join requests",
+  knowledge: "Knowledge suggestions",
 };
 
 function resolveIssueAssigneeGroup(
@@ -1092,8 +1113,11 @@ export function buildInboxNesting(items: InboxWorkItem[]): {
   const issueItems: (InboxWorkItem & { kind: "issue" })[] = [];
   const nonIssueItems: InboxWorkItem[] = [];
   for (const item of items) {
-    if (item.kind === "issue") issueItems.push(item as InboxWorkItem & { kind: "issue" });
-    else nonIssueItems.push(item);
+    if (item.kind !== "issue") {
+      nonIssueItems.push(item);
+      continue;
+    }
+    issueItems.push(item);
   }
 
   const issueIdSet = new Set(issueItems.map((i) => i.issue.id));
@@ -1187,7 +1211,8 @@ export function getInboxWorkItemKey(item: InboxWorkItem): string {
   if (item.kind === "issue") return `issue:${item.issue.id}`;
   if (item.kind === "approval") return `approval:${item.approval.id}`;
   if (item.kind === "failed_run") return `run:${item.run.id}`;
-  return `join:${item.joinRequest.id}`;
+  if (item.kind === "join_request") return `join:${item.joinRequest.id}`;
+  return `knowledge:${item.suggestion.id}`;
 }
 
 export function buildInboxKeyboardNavEntries(
@@ -1266,6 +1291,7 @@ export function shouldShowInboxSection({
 export function computeInboxBadgeData({
   approvals,
   joinRequests,
+  knowledgeSuggestions = [],
   dashboard,
   heartbeatRuns,
   mineIssues,
@@ -1275,6 +1301,7 @@ export function computeInboxBadgeData({
 }: {
   approvals: Approval[];
   joinRequests: JoinRequest[];
+  knowledgeSuggestions?: KnowledgeSuggestion[];
   dashboard: DashboardSummary | undefined;
   heartbeatRuns: HeartbeatRun[];
   mineIssues: Issue[];
@@ -1294,6 +1321,10 @@ export function computeInboxBadgeData({
   const visibleJoinRequests = joinRequests.filter(
     (jr) => !isInboxEntityDismissed(dismissedAtByKey, `join:${jr.id}`, jr.updatedAt ?? jr.createdAt),
   ).length;
+  const visibleKnowledgeSuggestions = knowledgeSuggestions.filter(
+    (suggestion) => suggestion.status === "pending" &&
+      !isInboxEntityDismissed(dismissedAtByKey, `knowledge:${suggestion.id}`, suggestion.createdAt),
+  ).length;
   const visibleMineIssues = mineIssues.filter((issue) => issue.isUnreadForMe).length;
   const agentErrorCount = dashboard?.agents.error ?? 0;
   const monthBudgetCents = dashboard?.costs.monthBudgetCents ?? 0;
@@ -1310,10 +1341,11 @@ export function computeInboxBadgeData({
 
   return {
     // The inbox badge reflects personal/actionable work, not company-wide health alerts.
-    inbox: actionableApprovals + visibleJoinRequests + failedRuns + visibleMineIssues,
+    inbox: actionableApprovals + visibleJoinRequests + visibleKnowledgeSuggestions + failedRuns + visibleMineIssues,
     approvals: actionableApprovals,
     failedRuns,
     joinRequests: visibleJoinRequests,
+    knowledgeSuggestions: visibleKnowledgeSuggestions,
     mineIssues: visibleMineIssues,
     alerts,
   };
