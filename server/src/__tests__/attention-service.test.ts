@@ -760,6 +760,7 @@ describeEmbeddedPostgres("attention service", () => {
       decideBy: null,
       whyNow: expect.stringContaining("board operator"),
     });
+    expect(replayCard?.subject.metadata?.dueAt).toBe("2026-07-10T12:00:00.000Z");
     expect(feed.items.map((item) => item.sourceKind)).toEqual(expect.arrayContaining([
       "approval",
       "issue_thread_interaction",
