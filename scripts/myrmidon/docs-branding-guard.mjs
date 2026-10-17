@@ -82,14 +82,14 @@ const ALLOWLIST = [
   "Paperclip v2026.1001.0",
   "from Paperclip to Myrmidon", "с Paperclip на Myrmidon",
   "Paperclip instance", "экземпляр Paperclip",
-  "Paperclip release", "Paperclip релиза",
+  "Paperclip release",
   "Paperclip state", "состояние Paperclip",
   "Paperclip server", "сервер Paperclip",
   "old Paperclip", "старый Paperclip",
   // MIGRATE-D: supported source releases and features of the vendor that Myrmidon lacks
-  "Paperclip releases", "Paperclip features", "Paperclip release", "Paperclip feature",
+  "Paperclip releases", "Paperclip features", "Paperclip feature",
   "релизов Paperclip", "релизы Paperclip", "релиз Paperclip", "возможностей Paperclip",
-  "возможности Paperclip", "релизом Paperclip", "Возможности Paperclip", "Релизы Paperclip",
+  "Возможности Paperclip", "Релизы Paperclip",
   "/paperclip", // docker container/volume paths
   "paperclip/", // repo-relative internal paths
 ];
