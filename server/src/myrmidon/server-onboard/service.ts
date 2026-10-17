@@ -196,16 +196,16 @@ export function onboardService(db: Db, deps: OnboardServiceDeps) {
       let created: Awaited<ReturnType<FleetOnboardStore["createServerAndJob"]>>;
       try {
         created = await deps.store.createServerAndJob(input.companyId, {
-        slug: input.slug,
-        name: input.name,
-        hostname: input.hostname,
-        port: input.port,
-        username: input.username,
-        role: input.role,
-        passwordSecretKey: passwordSecretName,
-        accessKeySecretKey: accessKeySecretName,
-        keepPassword,
-        createdBy: input.createdBy,
+          slug: input.slug,
+          name: input.name,
+          hostname: input.hostname,
+          port: input.port,
+          username: input.username,
+          role: input.role,
+          passwordSecretKey: passwordSecretName,
+          accessKeySecretKey: accessKeySecretName,
+          keepPassword,
+          createdBy: input.createdBy,
         });
       } catch (error) {
         if (passwordSecretName) await deps.secrets.deleteSecret(input.companyId, passwordSecretName).catch(() => {});
