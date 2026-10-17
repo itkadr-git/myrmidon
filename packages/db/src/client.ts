@@ -104,6 +104,15 @@ function quoteLiteral(value: string): string {
   return `'${value.replaceAll("'", "''")}'`;
 }
 
+function normalizeSqlWhitespace(value: string): string {
+  return value.replace(/\s+/g, " ").trim();
+}
+
+function extractFunctionBody(definition: string): string | null {
+  const bodyMatch = definition.match(/\$\$(.*?)\$\$/s);
+  return bodyMatch?.[1] ?? null;
+}
+
 function splitMigrationStatements(content: string): string[] {
   return content
     .split("--> statement-breakpoint")
@@ -739,12 +748,16 @@ async function migrationStatementAlreadyApplied(
   );
   if (createFunctionMatch) {
     const functionName = createFunctionMatch[1];
-    const expectedBody = normalized.slice(createFunctionMatch[0].length).trim();
+    const expectedBody = extractFunctionBody(normalized);
+    if (!expectedBody) return functionExists(sql, functionName);
+
     const rows = await sql.unsafe<{ definition: string | null }[]>(
-      `SELECT pg_get_functiondef(p.oid) AS definition FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = 'public' AND p.proname = ${quoteLiteral(functionName)} LIMIT 1`,
+      `SELECT pg_get_functiondef(p.oid) AS definition FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = 'public' AND p.proname = ${quoteLiteral(functionName)}`,
     );
-    const actualBody = rows[0]?.definition?.replace(/\s+/g, " ").trim();
-    return actualBody?.includes(expectedBody.replace(/\s+/g, " ")) ?? false;
+    return rows.some((row) => {
+      const actualBody = row.definition ? extractFunctionBody(row.definition) : null;
+      return actualBody !== null && normalizeSqlWhitespace(actualBody) === normalizeSqlWhitespace(expectedBody);
+    });
   }
 
   const createTriggerMatch = normalized.match(
