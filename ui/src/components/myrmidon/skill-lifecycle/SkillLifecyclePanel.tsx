@@ -82,6 +82,17 @@ export function SkillLifecyclePanelView(props: SkillLifecyclePanelViewProps) {
                       <span className="truncate text-xs text-muted-foreground">
                         {skill.key} · {revisionLabel(skill.verifiedRevisionNumber, t)} · {approverLabel(skill, t)}
                       </span>
+                      {skill.gitDrift ? (
+                        <span className="text-xs text-destructive" data-testid={`myrmidon-skill-git-drift-${skill.key}`}>
+                          {t("skillLifecycle.gitDrift", {
+                            reason: t(
+                              skill.gitDrift === "missing"
+                                ? "skillLifecycle.gitDriftMissing"
+                                : "skillLifecycle.gitDriftContentMismatch",
+                            ),
+                          })}
+                        </span>
+                      ) : null}
                     </button>
                     <div className="flex items-center gap-2">
                       <span
