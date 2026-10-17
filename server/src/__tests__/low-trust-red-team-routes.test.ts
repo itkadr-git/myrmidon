@@ -919,7 +919,10 @@ describeEmbeddedPostgres(
       );
       const createWithoutOwner = await request(app)
         .post(`/api/companies/${fixture.company.id}/issues`)
-        .send({ title: `quarantined ${fixture.canaries.raw}` });
+        .send({
+          projectId: fixture.projects.allowed.id,
+          title: `quarantined ${fixture.canaries.raw}`,
+        });
       expect(createWithoutOwner.status, JSON.stringify(createWithoutOwner.body)).toBe(422);
       expect(createWithoutOwner.body.error).toContain("without a promotion owner");
       const childWithoutOwner = await request(app)
