@@ -843,7 +843,8 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
         input.allowBoardOverride &&
         requestedStatus &&
         requestedStatus !== "in_review" &&
-        requestedStatus !== "in_progress"
+        requestedStatus !== "in_progress" &&
+        requestedStatus !== "blocked"
       ) {
         patch.executionState = null;
         return { patch };
