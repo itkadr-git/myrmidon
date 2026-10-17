@@ -36,6 +36,7 @@ const page = (over: Partial<KnowledgeTreePage> = {}): KnowledgeTreePage => ({
   kind: "note",
   folder: "",
   tags: [],
+  roles: [],
   status: "draft",
   approvalRequired: false,
   approverKind: null,

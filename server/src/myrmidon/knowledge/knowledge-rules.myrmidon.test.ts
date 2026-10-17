@@ -125,7 +125,7 @@ describe("resolvedRules: the resolver the delivery path asks", () => {
     const resolved = await resolvedRules(port([smm, everyone, engineers, draft, undelivered], revisions), "smm");
     expect(resolved.map((rule) => rule.slug)).toEqual(["rules/smm/publications", "rules/tone"]);
     const [first] = resolved;
-    expect(first).toMatchObject({ pageId: smm.id, title: "Публикации", revisionNumber: 3, roles: ["smm"] });
+    expect(first).toMatchObject({ pageId: smm.slug, title: "Публикации", revisionNumber: 3, roles: ["smm"] });
     expect(first!.sources).toEqual([{ kind: "decision", ref: "DECISIONS#29.09", note: null }]);
 
     const engineerRules = await resolvedRules(port([smm, everyone, engineers], revisions), "engineer");

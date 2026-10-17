@@ -44,6 +44,7 @@ import {
   claimNativeSessionResumptions,
   dispatchNativeSessionResumptions,
 } from "../services/native-runtime/native-finalization-reconciler.js";
+import { waitForPendingRunFailureReports } from "../services/run-failure-report.js";
 
 const legacyAdapterExecute = vi.hoisted(() => vi.fn(async () => ({
   exitCode: 0,
@@ -563,10 +564,8 @@ describe("P6-25 pre-result native session recovery", () => {
     const captureCallsBefore = mockCaptureRunFailure.mock.calls.length;
 
     await claimNativeSessionResumptions({ db, runnerInstanceId: "reaper", runIds: [freshRunId] });
-    // The Sentry report fires without an await inside the reconciler, so a
-    // follow-up round trip to the real database gives that fire-and-forget
-    // call room to complete before this test reads the spy.
-    await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, freshRunId));
+    // Wait for the fire-and-forget Sentry report to complete.
+    await waitForPendingRunFailureReports(30_000);
 
     const newCaptures = mockCaptureRunFailure.mock.calls.slice(captureCallsBefore);
     expect(newCaptures).toHaveLength(1);

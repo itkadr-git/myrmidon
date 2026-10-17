@@ -13,15 +13,19 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, isNull, sql } from "drizzle-orm";
 import {
   activityLog,
+  agentCastes,
   agents,
   companies,
   createDb,
   createPgKnowledgeSearchIndex,
   knowledgeItems,
   knowledgeLinks,
+  knowledgeRevisions,
+  knowledgeSources,
+  myrmidonWikiRegulations,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -39,6 +43,7 @@ type Db = ReturnType<typeof createDb>;
 let AGENT!: KnowledgeActor; // rebuilt per company: activity_log.agent_id is an FK
 let BOT!: KnowledgeActor;
 const OWNER: KnowledgeActor = { actorType: "user", actorId: "owner-1", kind: "owner" };
+const OPERATOR: KnowledgeActor = { actorType: "user", actorId: "operator-1", kind: "operator" };
 
 describeEmbeddedPostgres("myrmidon(1.6.6 KNOWLEDGE-2.0 K-1) knowledge store over the database", () => {
   let db!: Db;
@@ -52,7 +57,11 @@ describeEmbeddedPostgres("myrmidon(1.6.6 KNOWLEDGE-2.0 K-1) knowledge store over
 
   afterEach(async () => {
     await db.delete(activityLog);
+    await db.delete(knowledgeSources);
+    await db.delete(knowledgeRevisions);
     await db.delete(knowledgeItems);
+    await db.delete(myrmidonWikiRegulations);
+    await db.delete(agentCastes);
     await db.delete(agents);
     await db.delete(companies);
   });
@@ -149,7 +158,7 @@ describeEmbeddedPostgres("myrmidon(1.6.6 KNOWLEDGE-2.0 K-1) knowledge store over
     companyId = await makeCompany();
     const store = makeStore();
     await store.create(
-      { companyId, nestId: companyId, slug: "budget-rule", title: "Budget rule", content: "cap 100", kind: "rule", approverKind: "owner" },
+      { companyId, nestId: companyId, slug: "budget-rule", title: "Budget rule", content: "cap 100", kind: "rule", roles: ["cmo"] },
       AGENT,
     );
     await store.submit(companyId, "budget-rule", AGENT);
@@ -167,6 +176,165 @@ describeEmbeddedPostgres("myrmidon(1.6.6 KNOWLEDGE-2.0 K-1) knowledge store over
 
     const events = await store.listEvents(companyId, approved.id);
     expect(events.map((event) => event.event)).toEqual(["knowledge.created", "knowledge.submitted", "knowledge.approved"]);
+  });
+
+  it("derives approver_kind from roles and the caste directory: SMM rule refuses operator 403 and succeeds for owner", async () => {
+    companyId = await makeCompany();
+    await db.insert(agentCastes).values({
+      companyId,
+      key: "smm",
+      nameEn: "SMM",
+      color: "blue",
+      sensitive: true,
+    });
+    const store = makeStore();
+    const created = await store.create(
+      { companyId, nestId: companyId, slug: "rules/smm/publications", title: "SMM Rules", content: "review first", kind: "rule", roles: ["smm"], approverKind: "operator" },
+      AGENT,
+    );
+    expect(created.approverKind).toBe("owner");
+    await store.submit(companyId, "rules/smm/publications", AGENT);
+
+    const operatorAttempt = await store.approve(companyId, "rules/smm/publications", OPERATOR).catch((e) => e);
+    expect((operatorAttempt as KnowledgeDomainError).status).toBe(403);
+    expect((operatorAttempt as KnowledgeDomainError).code).toBe("approver_kind_mismatch");
+
+    const approved = await store.approve(companyId, "rules/smm/publications", OWNER, { publish: true });
+    expect(approved.status).toBe("published");
+    expect(approved.deliveredRevisionId).not.toBeNull();
+  });
+
+  it("migrates legacy wiki regulations to knowledge rules (N-4) idempotently", async () => {
+    companyId = await makeCompany();
+    const regId = randomUUID();
+    await db.insert(myrmidonWikiRegulations).values({
+      id: regId,
+      companyId,
+      slug: "rules/ops/runbooks",
+      title: "Ops Runbooks",
+      content: "Revision 2 content",
+      status: "approved",
+      roles: ["devops"],
+      revisions: [
+        { revisionNumber: 1, status: "draft", content: "Revision 1 draft", changeSummary: "Initial draft", createdAt: "2026-09-01T00:00:00.000Z" },
+        { revisionNumber: 2, status: "approved", content: "Revision 2 content", changeSummary: "Approved", createdAt: "2026-09-02T00:00:00.000Z" },
+      ],
+      revisionNumber: 2,
+    });
+
+    const runMigration = async () => {
+      await db.execute(sql`
+        INSERT INTO "knowledge_items" (
+          "company_id", "nest_id", "kind", "slug", "title", "summary", "status", "folder_path",
+          "tags", "roles", "approval_required", "approver_kind", "current_revision_number",
+          "created_at", "updated_at"
+        )
+        SELECT
+          w."company_id", w."company_id", 'rule', w."slug", w."title", NULL, 'draft',
+          COALESCE(NULLIF(regexp_replace(w."slug", '/[^/]*$', ''), w."slug"), ''),
+          '[]'::jsonb, w."roles", true,
+          CASE WHEN EXISTS (
+            SELECT 1 FROM jsonb_array_elements_text(w."roles") AS role_key
+            JOIN "agent_castes" c
+              ON c."company_id" = w."company_id" AND c."key" = role_key AND c."sensitive"
+            WHERE role_key <> '*'
+          ) THEN 'owner' ELSE 'operator' END,
+          0, w."created_at", w."updated_at"
+        FROM "myrmidon_wiki_regulations" w
+        WHERE NOT EXISTS (
+          SELECT 1 FROM "knowledge_items" k WHERE k."nest_id" = w."company_id" AND k."slug" = w."slug"
+        );
+
+        INSERT INTO "knowledge_revisions" (
+          "company_id", "nest_id", "item_id", "revision_number", "status", "content",
+          "change_summary", "created_by_agent_id", "created_by_user_id", "created_at"
+        )
+        SELECT
+          k."company_id", k."nest_id", k."id", rev."revision_number", rev."status", rev."content",
+          rev."change_summary", rev."created_by_agent_id", rev."created_by_user_id", rev."created_at"
+        FROM "myrmidon_wiki_regulations" w
+        JOIN "knowledge_items" k
+          ON k."nest_id" = w."company_id" AND k."slug" = w."slug" AND k."kind" = 'rule'
+        CROSS JOIN LATERAL (
+          SELECT
+            (entry ->> 'revisionNumber')::integer AS "revision_number",
+            CASE WHEN entry ->> 'status' = 'approved' THEN 'approved' ELSE 'draft' END AS "status",
+            COALESCE(entry ->> 'content', '') AS "content",
+            NULLIF(entry ->> 'changeSummary', '') AS "change_summary",
+            NULLIF(entry ->> 'createdByAgentId', '') AS "created_by_agent_id",
+            NULLIF(entry ->> 'createdByUserId', '') AS "created_by_user_id",
+            COALESCE((entry ->> 'createdAt')::timestamptz, w."created_at") AS "created_at"
+          FROM jsonb_array_elements(w."revisions") AS entry
+          UNION ALL
+          SELECT 1, w."status", w."content", NULL, NULL, NULL, w."created_at"
+          WHERE jsonb_typeof(w."revisions") IS DISTINCT FROM 'array' OR jsonb_array_length(w."revisions") = 0
+        ) rev
+        WHERE NOT EXISTS (
+          SELECT 1 FROM "knowledge_revisions" r
+          WHERE r."item_id" = k."id" AND r."revision_number" = rev."revision_number"
+        );
+
+        UPDATE "knowledge_items" k
+        SET
+          "current_revision_number" = agg."max_revision",
+          "delivered_revision_id" = (
+            SELECT r."id" FROM "knowledge_revisions" r
+            WHERE r."item_id" = k."id" AND r."status" = 'approved'
+            ORDER BY r."revision_number" DESC LIMIT 1
+          ),
+          "status" = CASE WHEN agg."approved_count" > 0 THEN 'published' ELSE 'draft' END,
+          "updated_at" = now()
+        FROM (
+          SELECT "item_id",
+                 MAX("revision_number") AS "max_revision",
+                 COUNT(*) FILTER (WHERE "status" = 'approved') AS "approved_count"
+          FROM "knowledge_revisions"
+          GROUP BY "item_id"
+        ) agg
+        WHERE agg."item_id" = k."id"
+          AND k."kind" = 'rule'
+          AND EXISTS (
+            SELECT 1 FROM "myrmidon_wiki_regulations" w
+            WHERE w."company_id" = k."nest_id" AND w."slug" = k."slug"
+          );
+
+        INSERT INTO "knowledge_sources" ("company_id", "nest_id", "revision_id", "kind", "ref", "note")
+        SELECT
+          r."company_id", r."nest_id", r."id", 'document',
+          'myrmidon_wiki_regulations:' || w."id"::text,
+          'legacy wiki regulation moved into the knowledge module by K-3 (N-4)'
+        FROM "knowledge_revisions" r
+        JOIN "knowledge_items" k ON k."id" = r."item_id" AND k."kind" = 'rule'
+        JOIN "myrmidon_wiki_regulations" w ON w."company_id" = k."nest_id" AND w."slug" = k."slug"
+        ON CONFLICT DO NOTHING;
+      `);
+    };
+
+    // First run
+    await runMigration();
+    const items = await db.select().from(knowledgeItems).where(eq(knowledgeItems.companyId, companyId));
+    expect(items).toHaveLength(1);
+    const [migrated] = items;
+    expect(migrated!.slug).toBe("rules/ops/runbooks");
+    expect(migrated!.status).toBe("published");
+    expect(migrated!.currentRevisionNumber).toBe(2);
+    expect(migrated!.deliveredRevisionId).not.toBeNull();
+
+    const revs = await db.select().from(knowledgeRevisions).where(eq(knowledgeRevisions.itemId, migrated!.id));
+    expect(revs).toHaveLength(2);
+
+    const sources = await db.select().from(knowledgeSources).where(eq(knowledgeSources.companyId, companyId));
+    expect(sources).toHaveLength(2);
+    expect(sources[0]!.ref).toBe(`myrmidon_wiki_regulations:${regId}`);
+
+    // Second run is idempotent
+    await runMigration();
+    const itemsSecond = await db.select().from(knowledgeItems).where(eq(knowledgeItems.companyId, companyId));
+    expect(itemsSecond).toHaveLength(1);
+    const revsSecond = await db.select().from(knowledgeRevisions).where(eq(knowledgeRevisions.itemId, migrated!.id));
+    expect(revsSecond).toHaveLength(2);
+    const sourcesSecond = await db.select().from(knowledgeSources).where(eq(knowledgeSources.companyId, companyId));
+    expect(sourcesSecond).toHaveLength(2);
   });
 
   it("rollback copies the target revision and moves the pointer (S5)", async () => {
@@ -244,7 +412,7 @@ describeEmbeddedPostgres("myrmidon(1.6.6 KNOWLEDGE-2.0 K-1) knowledge store over
     const store = makeStore();
     await store.create({ companyId, nestId: companyId, slug: "a/page", title: "Page A", content: "alpha content", kind: "note", tags: ["t1"] }, AGENT);
     await store.publish(companyId, "a/page", AGENT);
-    await store.create({ companyId, nestId: companyId, slug: "b/rule", title: "Rule B", content: "cap", kind: "rule", approverKind: "owner" }, AGENT);
+    await store.create({ companyId, nestId: companyId, slug: "b/rule", title: "Rule B", content: "cap", kind: "rule", roles: ["cmo"], approverKind: "owner" }, AGENT);
     await store.submit(companyId, "b/rule", AGENT);
     await store.approve(companyId, "b/rule", OWNER, { publish: true });
     await store.create({ companyId, nestId: companyId, slug: "c/draft", title: "Draft C", content: "never delivered" }, AGENT);
@@ -341,6 +509,7 @@ describe("myrmidon(1.6.6 KNOWLEDGE-2.0 K-1) module hygiene", () => {
     expect(sources).toEqual([
       "domain.ts",
       "index.ts",
+      "rules.ts",
       "seed-data.ts",
       "seed-product.ts",
       "seed.ts",

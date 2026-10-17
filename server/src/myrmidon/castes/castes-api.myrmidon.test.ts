@@ -31,6 +31,7 @@ const casteView = (key: string): CasteView => ({
   swarmEligible: true,
   maxActiveTasks: null,
   builtIn: true,
+  sensitive: false,
   isDefault: true, // myrmidon(1.6.5 F-26 T3): the shared view carries the flag
   createdAt: "2026-01-01T00:00:00.000Z",
   updatedAt: "2026-01-01T00:00:00.000Z",

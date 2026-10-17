@@ -78,12 +78,19 @@ export interface RulesReadPort {
 export async function resolvedRules(read: RulesReadPort, caste: string): Promise<ResolvedRule[]> {
   const items = await read.listItems({ kind: "rule", status: "published" });
   const mine = items.filter((item) => rolesMatchCaste(item.roles, caste));
+  const isWildcardOnly = (roles: readonly string[]) => roles.length === 1 && roles[0] === RULE_ROLE_ANY;
+  mine.sort((a, b) => {
+    const aWild = isWildcardOnly(a.roles) ? 1 : 0;
+    const bWild = isWildcardOnly(b.roles) ? 1 : 0;
+    if (aWild !== bWild) return aWild - bWild;
+    return a.slug.localeCompare(b.slug);
+  });
   const resolved: ResolvedRule[] = [];
   for (const item of mine) {
     const delivered = await deliveredRevision(read, item);
     if (delivered === null) continue; // published without a delivered revision: nothing to read
     resolved.push({
-      pageId: item.id,
+      pageId: item.slug,
       slug: item.slug,
       title: item.title,
       roles: item.roles ?? [],

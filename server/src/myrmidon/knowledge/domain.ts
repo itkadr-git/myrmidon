@@ -359,7 +359,7 @@ export function serializeKnowledgeTree(doc: KnowledgeTreeDoc): Buffer {
       `summary: ${page.summary ?? ""}`,
       `folder: ${page.folder}`,
       `tags: ${page.tags.join(",")}`,
-      `roles: ${page.roles.join(",")}`,
+      `roles: ${(page.roles ?? []).join(",")}`,
       `status: ${page.status}`,
       `approval_required: ${page.approvalRequired ? "true" : "false"}`,
       `approver_kind: ${page.approverKind ?? ""}`,

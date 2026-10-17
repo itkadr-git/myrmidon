@@ -25,6 +25,7 @@
 import { and, asc, eq, inArray, isNull, or } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
+  agentCastes,
   knowledgeEvents,
   knowledgeItems,
   knowledgeLinks,
@@ -32,7 +33,9 @@ import {
   knowledgeSources,
   knowledgeSuggestions,
 } from "@paperclipai/db";
+import { BUILTIN_SENSITIVE_CASTES } from "@paperclipai/shared";
 import { logActivity } from "../../services/activity-log.js";
+import { ruleApproverKind } from "./rules.js";
 import {
   KnowledgeDomainError,
   assertApprovable,
@@ -331,6 +334,21 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
     }
   }
 
+  async function resolveCasteSensitivity(companyId: string): Promise<{ sensitive: ReadonlySet<string> }> {
+    try {
+      const rows = await db
+        .select({ key: agentCastes.key, sensitive: agentCastes.sensitive })
+        .from(agentCastes)
+        .where(eq(agentCastes.companyId, companyId));
+      if (rows.length > 0) {
+        return { sensitive: new Set(rows.filter((r) => r.sensitive).map((r) => r.key)) };
+      }
+    } catch {
+      // In case agentCastes is not in mock db
+    }
+    return { sensitive: new Set(BUILTIN_SENSITIVE_CASTES) };
+  }
+
   // ---------------------------------------------------------------- create
 
   async function create(input: CreateKnowledgeInput, actor: KnowledgeActor): Promise<KnowledgeItemDto> {
@@ -347,7 +365,13 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
       throw new KnowledgeDomainError("invalid_metadata", 400, "Roles are only valid on rules (kind \"rule\").");
     }
     const approvalRequired = kind === "rule" ? true : (input.approvalRequired ?? false);
-    assertRuleFields(kind, approvalRequired, input.approverKind ?? null);
+
+    let approverKind = input.approverKind ?? null;
+    if (kind === "rule") {
+      const sensitivity = await resolveCasteSensitivity(input.companyId);
+      approverKind = ruleApproverKind(roles, sensitivity);
+    }
+    assertRuleFields(kind, approvalRequired, approverKind);
 
     const createdAt = now();
     const row = await db.transaction(async (tx) => {
@@ -373,7 +397,7 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
           tags: input.tags ?? [],
           roles,
           approvalRequired,
-          approverKind: input.approverKind ?? null,
+          approverKind,
           deliveredRevisionId: null,
           currentRevisionNumber: 1,
           createdByAgentId: actor.actorType === "agent" ? (actor.actorId ?? null) : null,
@@ -621,10 +645,15 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
    */
   async function approve(nestId: string, idOrSlug: string, actor: KnowledgeActor, input: ApproveKnowledgeInput = {}): Promise<KnowledgeItemDto> {
     const current = await loadItem(nestId, idOrSlug);
+    let approverKind = current.approverKind;
+    if (current.kind === "rule") {
+      const sensitivity = await resolveCasteSensitivity(current.companyId);
+      approverKind = ruleApproverKind(current.roles ?? [], sensitivity);
+    }
     const gateItem: KnowledgeApprovalGateItem = {
       kind: current.kind,
       approvalRequired: current.approvalRequired,
-      approverKind: current.approverKind,
+      approverKind,
     };
     const approver: KnowledgeApprover = { actorType: actor.actorType, actorId: actor.actorId, kind: actor.kind ?? null };
     assertApprovable(gateItem, approver);
