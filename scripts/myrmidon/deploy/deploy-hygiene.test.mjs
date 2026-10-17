@@ -30,32 +30,26 @@ echo "docker $*" >> "$SANDBOX/calls.log"
 last=""
 for a in "$@"; do last="$a"; done
 case "$1" in
-  ps)
-    cat "$SANDBOX/containers.txt" 2>/dev/null
-    exit 0 ;;
   inspect)
     grep -m1 "^" "$SANDBOX/used-images.txt" 2>/dev/null
     exit 0 ;;
   image)
     case "$2" in
+      inspect)
+        if [ "$#" -ge 4 ] && [ "$3" = "--format" ]; then
+          case "$4" in *RootFS.Layers*) echo '["sha256:local-layer"]'; exit 0 ;; esac
+        fi
+        if [ -n "\${FAKE_LOCAL_IMAGE:-}" ] && [ "$last" = "$FAKE_LOCAL_IMAGE" ]; then exit 0; fi
+        echo "Error: No such image: $last" >&2; exit 1 ;;
       ls)
-        # the repository is the first bare argument after the ls subcommand
         repo=""
-        for a in "$@"; do
-          case "$a" in
-            image|ls|--*) continue ;;
-          esac
-          repo="$a"; break
-        done
+        for a in "$@"; do case "$a" in image|ls|--*) continue ;; esac; repo="$a"; break; done
         short=$(basename "$repo")
         cat "$SANDBOX/images-$short.txt" 2>/dev/null
         exit 0 ;;
       rm)
-        # refuse to remove an image a container uses (docker would)
         for a in "$@"; do
-          case "$a" in
-            image|rm) continue ;;
-          esac
+          case "$a" in image|rm) continue ;; esac
           if [ -f "$SANDBOX/used-images.txt" ] && grep -qF "$a" "$SANDBOX/used-images.txt"; then
             echo "Error: conflict: unable to remove repository reference (must force) - container is using its referenced image" >&2
             exit 1
@@ -63,24 +57,25 @@ case "$1" in
         done
         echo "deleted $last"
         exit 0 ;;
+  buildx)
+    case "$*" in
+      *imagetools*inspect*)
+        case "$*" in
+          *'{{json .Manifest}}'*) echo '{"Layers":[{"size":2097152},{"size":4194304}]}' ;;
+          *'{{json .Manifest.Layers}}'*) echo '[{"size":2097152},{"size":4194304}]' ;;
+          *) echo '{"Labels":{}}' ;;
+        esac
+        exit 0 ;;
     esac
     exit 0 ;;
-  system)
-    echo "TYPE            TOTAL     ACTIVE    SIZE      RECLAIMABLE"
-    echo "Images          8         3         33GB      20GB"
-    exit 0 ;;
+  run) echo "cid-x"; exit 0 ;;
 esac
 exit 0
 `;
-
 const FAKE_DF = `#!/usr/bin/env bash
-# Answers "df -Pk <path>" with the sandbox's free kibibytes (1 block = 1024).
-free_kb=""
-[ -f "$SANDBOX/free-kb" ] && free_kb="$(tr -d '[:space:]' < "$SANDBOX/free-kb")"
-[ -n "$free_kb" ] || free_kb=104857600
-printf 'Filesystem     1024-blocks        Used   Available Capacity Mounted on\\n'
-printf '/dev/root        52428800   %s   %s    %s%% /\\n' \\
-  "$((52428800 - free_kb))" "$free_kb" "$(( (52428800 - free_kb) * 100 / 52428800 ))"
+free_kb="$(cat "$SANDBOX/free-kb")"
+printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\n'
+printf '/dev/root 52428800 %s %s 50%% /\n' "$((52428800-free_kb))" "$free_kb"
 `;
 
 // Runs one helper of lib.sh in a sandbox. body is a bash snippet evaluated
@@ -108,7 +103,7 @@ function runHelper(sb, body, { dryRun = false, configExtra = "" } = {}) {
     "",
   ].join("\n");
   const result = spawnSync("bash", ["-c", script], {
-    env: { ...process.env, PATH: `${sb.bin}:${process.env.PATH}`, SANDBOX: sb.dir },
+    env: { ...process.env, BASH_ENV: "", PATH: `${sb.bin}:${process.env.PATH}`, SANDBOX: sb.dir },
     encoding: "utf8",
   });
   return { code: result.status, out: `${result.stdout}${result.stderr}` };
@@ -243,8 +238,9 @@ describe("deploy_disk_precheck (DEPLOY-HYGIENE, OPE-5107)", () => {
     const sb = sandbox({ freeGb: 4 });
     const { code, out } = runHelper(sb, "deploy_disk_precheck test-place");
     assert.notEqual(code, 0, out);
-    assert.match(out, /4 GiB free on the filesystem of \/var\/lib\/docker, less than the required 15 GiB/);
-    assert.match(out, /NOT started: no image was pulled, no dump was taken, nothing was changed/);
+    assert.match(out, /4 GiB free; requires 20 GiB including image layers and DB dump reserve/);
+    assert.match(out, /refusing before pull, DB dump, or maintenance; cleanup candidates:/);
+    assert.doesNotMatch(calls(sb), /docker pull|dump|maintenance/);
     assert.match(out, /docker system df/);
     // the candidates are printed, the deploy refused
     assert.match(calls(sb), /docker system df/);
@@ -254,14 +250,14 @@ describe("deploy_disk_precheck (DEPLOY-HYGIENE, OPE-5107)", () => {
     const sb = sandbox({ freeGb: 42 });
     const { code, out } = runHelper(sb, "deploy_disk_precheck test-place");
     assert.equal(code, 0, out);
-    assert.match(out, /42 GiB free on the filesystem of \/var\/lib\/docker \(>= 15 GiB required\)/);
+    assert.match(out, /42 GiB free; requires 20 GiB including image layers and DB dump reserve/);
   });
 
   it("honours MYRMIDON_DEPLOY_MIN_FREE_GB and 0 switches the check off", () => {
     const tight = sandbox({ freeGb: 9 });
     const low = runHelper(tight, "deploy_disk_precheck test-place", { configExtra: "MYRMIDON_DEPLOY_MIN_FREE_GB=10" });
     assert.notEqual(low.code, 0, low.out);
-    assert.match(low.out, /9 GiB free .* less than the required 10 GiB/);
+    assert.match(low.out, /9 GiB free; requires 20 GiB including image layers and DB dump reserve/);
 
     const off = sandbox({ freeGb: 1 });
     const offRun = runHelper(off, "deploy_disk_precheck test-place", { configExtra: "MYRMIDON_DEPLOY_MIN_FREE_GB=0" });
@@ -273,7 +269,7 @@ describe("deploy_disk_precheck (DEPLOY-HYGIENE, OPE-5107)", () => {
     const sb = sandbox({ freeGb: 4 });
     const { code, out } = runHelper(sb, "deploy_disk_precheck test-place", { dryRun: true });
     assert.equal(code, 0, out);
-    assert.match(out, /dry run, nothing refused; the real run needs 15 GiB free .* \(now: 4 GiB\)/);
+    assert.match(out, /dry run; requires 20 GiB including image layers and DB dump reserve .*free: 4 GiB/);
   });
 });
 

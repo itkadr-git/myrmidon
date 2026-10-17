@@ -487,10 +487,20 @@ preflight_all() {
 }
 preflight_all
 
-# DEPLOY-HYGIENE (OPE-5107): refuse BEFORE the first pull and the dump when
-# the filesystem of /var/lib/docker cannot hold the images of this release
-# (MYRMIDON_DEPLOY_MIN_FREE_GB, default 15 GiB). In a dry run the check is
-# reported with the current value instead.
+# DEPLOY-HYGIENE: estimate all target image layers (board, changed release
+# components and bot digests) plus the DB-dump reserve before any pull/dump.
+MYRMIDON_DEPLOY_IMAGE_REFS=("$MYRMIDON_IMAGE@$digest")
+for name in "${changed_components[@]}"; do MYRMIDON_DEPLOY_IMAGE_REFS+=("${COMP_REF[$name]}"); done
+for ((bi = 0; bi < ${#bot_digest_args[@]}; bi += 2)); do
+  kv="${bot_digest_args[bi + 1]}"; bname="${kv%%=*}"
+  case "$bname" in
+    hermes) brepo="ghcr.io/itkadr-git/myrmidon-hermes" ;;
+    hermes-dev) brepo="ghcr.io/itkadr-git/myrmidon-hermes-dev" ;;
+    hermes-node) brepo="ghcr.io/itkadr-git/myrmidon-hermes-node" ;;
+    *) continue ;;
+  esac
+  MYRMIDON_DEPLOY_IMAGE_REFS+=("$brepo@${kv#*=}")
+done
 deploy_disk_precheck deploy.sh
 # The check above covers the whole deploy: the bot-image rollout script skips
 # its own precheck and its own end-of-run image cleanup (deploy.sh runs them).
