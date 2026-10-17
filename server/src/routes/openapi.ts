@@ -1503,6 +1503,7 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "POST /api/chat-endpoints/{endpointId}/conversations/{conversationId}/publications",
   "GET /api/chat-endpoints/{endpointId}/conversations/{conversationId}/publications/{publicationId}/status",
   "GET /api/issues/{issueId}/chat-binding",
+  "POST /api/issues/{id}/stalled-review-decision",
 ]);
 
 const INSTANCE_ADMIN_OPERATIONS = new Set([

@@ -246,6 +246,16 @@ describe("openapi routes", () => {
     expect(dismiss.description).toContain("viewers may dismiss their own");
   });
 
+  it("documents stalled-review decisions as board-only", () => {
+    const { spec } = loadSpecRoutes();
+    const stalledDecision = spec.paths["/api/issues/{id}/stalled-review-decision"].post;
+    expect(stalledDecision["x-paperclip-authorization"]).toEqual({ actor: "board" });
+    expect(stalledDecision.security).toEqual([
+      { BoardSessionAuth: [] },
+      { BoardApiKeyAuth: [] },
+    ]);
+  });
+
   it("documents exact failed-run selection and durable accepted retry responses", async () => {
     const res = await request(createApp()).get("/api/openapi.json");
     const wake = res.body.paths["/api/agents/{id}/wakeup"].post;
