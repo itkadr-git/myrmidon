@@ -10,6 +10,7 @@ import { ToastProvider } from "../context/ToastContext";
 import type { BuiltInAgentState } from "../api/builtInAgents";
 import { Agents } from "./Agents";
 import { Agents as ProductionAgents } from "./Agents.production";
+import { agentBelongsToProject, filterAgentsByScope, parseAgentScope } from "./Agents.scope-filters";
 import type { AgentOrgChainHealth } from "@paperclipai/shared";
 
 const mockRouterState = vi.hoisted(() => ({
@@ -21,6 +22,7 @@ const mockAgentsApi = vi.hoisted(() => ({
   list: vi.fn(),
   org: vi.fn(),
 }));
+const mockProjectsApi = vi.hoisted(() => ({ list: vi.fn() }));
 
 const mockBuiltInAgentsApi = vi.hoisted(() => ({
   list: vi.fn(),
@@ -77,6 +79,7 @@ vi.mock("../context/SidebarContext", () => ({
 vi.mock("../api/agents", () => ({
   agentsApi: mockAgentsApi,
 }));
+vi.mock("../api/projects", () => ({ projectsApi: mockProjectsApi }));
 
 vi.mock("../api/builtInAgents", () => ({
   builtInAgentsApi: mockBuiltInAgentsApi,
@@ -294,6 +297,27 @@ function findAgentRow(container: HTMLElement, agentName: string): HTMLElement | 
   return Array.from(container.querySelectorAll("a")).find((row) => row.textContent?.includes(agentName)) ?? null;
 }
 
+describe("Agents scope filters", () => {
+  it("parses company and project scope from the URL", () => {
+    expect(parseAgentScope("")).toEqual({ type: "company" });
+    expect(parseAgentScope("?scope=project%3Ap-1")).toEqual({ type: "project", projectId: "p-1" });
+  });
+
+  it("filters only by explicit membership, falling back to project lead", () => {
+    const projectAgent = makeAgent({ id: "a1", projectIds: ["p1"] } as Partial<Agent>);
+    const otherAgent = makeAgent({ id: "a2", projectIds: ["p2"] } as Partial<Agent>);
+    expect(agentBelongsToProject(projectAgent, { id: "p1", leadAgentId: null, agentIds: [] })).toBe(true);
+    expect(agentBelongsToProject(otherAgent, { id: "p1", leadAgentId: "a2", agentIds: [] })).toBe(false);
+    expect(filterAgentsByScope([projectAgent, otherAgent], { type: "project", projectId: "p1" }, [{ id: "p1", leadAgentId: null, agentIds: [] }]))
+      .toEqual([projectAgent]);
+  });
+
+  it("preserves the whole roster for company scope", () => {
+    const roster = [makeAgent({ id: "a1" }), makeAgent({ id: "a2" })];
+    expect(filterAgentsByScope(roster, { type: "company" }, [])).toEqual(roster);
+  });
+});
+
 describe("Agents", () => {
   let container: HTMLDivElement;
   let root: ReturnType<typeof createRoot> | null;
@@ -318,6 +342,7 @@ describe("Agents", () => {
         lastHeartbeatAt: new Date("2026-01-15T00:00:00Z"),
       }),
     ]);
+    mockProjectsApi.list.mockResolvedValue([]);
     mockAgentsApi.org.mockResolvedValue([
       {
         id: "agent-1",
@@ -538,6 +563,7 @@ describe("Agents", () => {
       urlKey: "regular-agent",
     });
     mockAgentsApi.list.mockResolvedValue([builtInAgent, regularAgent]);
+    mockProjectsApi.list.mockResolvedValue([]);
     mockAgentsApi.org.mockResolvedValue([
       {
         id: "built-in-agent",
@@ -725,6 +751,7 @@ describe("Agents", () => {
         defaultEnvironmentId: "env-daytona",
       }),
     ]);
+    mockProjectsApi.list.mockResolvedValue([]);
     mockAgentsApi.org.mockResolvedValue([
       {
         id: "agent-local",
@@ -785,6 +812,7 @@ describe("Agents", () => {
         defaultEnvironmentId: "env-override",
       }),
     ]);
+    mockProjectsApi.list.mockResolvedValue([]);
     mockAgentsApi.org.mockResolvedValue([
       {
         id: "agent-fallback",
@@ -930,6 +958,7 @@ describe("Agents", () => {
         urlKey: "regular-agent",
       }),
     ]);
+    mockProjectsApi.list.mockResolvedValue([]);
     mockAgentsApi.org.mockResolvedValue([
       {
         id: "built-in-agent",
