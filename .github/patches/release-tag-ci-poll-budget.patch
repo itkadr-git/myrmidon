@@ -1,0 +1,29 @@
+From e516225aa2385288575063ec02f3b535c530f297 Mon Sep 17 00:00:00 2001
+From: adm-dev-eng-6 <adm-dev-eng-6@paperclip.local>
+Date: Fri, 9 Oct 2026 08:36:46 +0000
+Subject: [PATCH] myrmidon(RELEASE-GATE-POLL-BUDGET): workflow part - raise the tag-CI gate wait budget to 80 min
+
+The workflow-file part of the change. Apply on top of the branch head with:
+  git am -3 .github/patches/release-tag-ci-poll-budget.patch
+
+---
+diff --git a/.github/workflows/myrmidon-release.yml b/.github/workflows/myrmidon-release.yml
+index 281342f40..2a14da952 100644
+--- a/.github/workflows/myrmidon-release.yml
++++ b/.github/workflows/myrmidon-release.yml
+@@ -54,6 +54,15 @@ jobs:
+           GITHUB_TOKEN: ${{ github.token }}
+           GITHUB_REPOSITORY: ${{ github.repository }}
+           TAG: ${{ inputs.tag || github.ref_name }}
++          # RELEASE-GATE-POLL-BUDGET: the gate waits for the tag's
++          # own CI run up to POLL_SECONDS x POLL_MAX. Under the tag-push load
++          # (9 workflows started at once) the hosted-runner queue delayed the
++          # rc.13 tag CI to ~50 min while the default budget was 20x120 =
++          # 40 min — the publish died with an empty verdict at 40 min, with
++          # the green run landing 11 min later. 20x240 = 80 min covers the
++          # observed queue delay; the job timeout is 90 min and the wait
++          # exits early once the verdict appears.
++          MYRMIDON_RELEASE_POLL_MAX: "240"
+         run: |
+           set -euo pipefail
+           ./scripts/myrmidon/release/publish-github-release.sh --tag "$TAG"
