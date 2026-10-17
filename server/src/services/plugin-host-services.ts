@@ -2595,7 +2595,7 @@ export function buildHostServices(
         const contentType = normalizeUploadAttachmentContentType({ contentType: params.contentType, originalFilename: params.filename });
         if (!isAllowedContentType(contentType)) throw new Error("Unsupported attachment content type");
         const stored = await getStorageService().putFile({ companyId, namespace: "issue-attachments", originalFilename: params.filename, contentType, body: bytes });
-        const { actorAgentId, actorUserId, actorRunId } = params;
+        const { actorAgentId, actorUserId, actorRunId } = params.actor ?? {};
         const row = await issues.createAttachment({ issueId: issue.id, provider: stored.provider, objectKey: stored.objectKey, contentType: stored.contentType, byteSize: stored.byteSize, sha256: stored.sha256, originalFilename: stored.originalFilename, createdByAgentId: actorAgentId ?? null, createdByUserId: actorUserId ?? null, createdByRunId: actorRunId ?? null });
         await logPluginActivity({ companyId, action: "issue.attachment.uploaded", entityType: "issue", entityId: issue.id, details: { attachmentId: row.id, byteSize: row.byteSize, contentType: row.contentType }, actor: { actorAgentId, actorUserId, actorRunId } });
         return row as any;
