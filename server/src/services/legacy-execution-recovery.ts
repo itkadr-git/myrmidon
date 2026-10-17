@@ -28,7 +28,9 @@ export function legacyExecutionNeedsReconciliation(
     !["failed", "timed_out", "interrupted", "cancelled"].includes(run.status)
   )
     return false;
-  if (run.errorCode === MAINTENANCE_INTERRUPT_ERROR_CODE) return false; // myrmidon(R3): maintenance interruption, retried after exit
+  // Maintenance interruption explicitly means retry, including after the
+  // bounded retry scheduler's ordinary attempt budget is exhausted.
+  if (run.errorCode === MAINTENANCE_INTERRUPT_ERROR_CODE) return false;
   if (run.errorCode === RUN_STALL_ERROR_CODE) return false; // myrmidon(RUN-STALL): stall interruption, the sweep re-opens the task itself
   if (shouldSkipReconciliationForInfraInterrupt(run)) return false; // myrmidon(L1): infrastructure interruption, retried or released, not held
   // myrmidon(CONTINUATION-WAIT-HOLD): a queued continuation cancelled before
