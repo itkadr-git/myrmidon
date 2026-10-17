@@ -20,7 +20,7 @@ export async function databaseCheck(config: PaperclipConfig, configPath?: string
         status: "fail",
         message: "PostgreSQL mode selected but no connection string configured",
         canRepair: false,
-        repairHint: "Run `paperclipai configure --section database`",
+        repairHint: "Run `myrmidon configure --section database`",
       };
     }
 
@@ -87,6 +87,6 @@ export async function databaseCheck(config: PaperclipConfig, configPath?: string
     status: "fail",
     message: `Unknown database mode: ${String(config.database.mode)}`,
     canRepair: false,
-    repairHint: "Run `paperclipai configure --section database`",
+    repairHint: "Run `myrmidon configure --section database`",
   };
 }

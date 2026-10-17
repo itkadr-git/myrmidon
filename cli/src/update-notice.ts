@@ -20,4 +20,4 @@ export async function checkForUpdateNotice(options: { configPath?: string; now?:
   const tag = readInstallManifest(paths)?.channel === "canary" ? "canary" : "latest";
   try { const response = await (options.fetchImpl ?? fetch)(updateCheckUrl()!, { signal: AbortSignal.timeout(2500) }); if (!response.ok) return null; const body = await response.json() as { ["dist-tags"]?: Record<string, string> }; const latest = body["dist-tags"]?.[tag]; fs.mkdirSync(path.dirname(cachePath), { recursive: true, mode: 0o700 }); fs.writeFileSync(cachePath, JSON.stringify({ checkedAt: now, latest: latest ?? null }) + "\n", { mode: 0o600 }); return latest && compareVersions(latest, packageVersion) > 0 ? latest : null; } catch { return null; }
 }
-export async function printUpdateNotice(configPath?: string): Promise<void> { const latest = await checkForUpdateNotice({ configPath }); if (latest) console.log(`Update available: ${latest} — run \`paperclipai update\``); }
+export async function printUpdateNotice(configPath?: string): Promise<void> { const latest = await checkForUpdateNotice({ configPath }); if (latest) console.log(`Update available: ${latest} — run \`myrmidon update\``); }

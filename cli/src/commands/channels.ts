@@ -115,5 +115,5 @@ export async function channelsCommand(
   } else {
     console.log(`This install is version ${pc.bold(packageVersion)} on the ${pc.bold(currentChannel)} channel.`);
   }
-  console.log(`Docker images use the same names: ghcr.io/paperclipai/paperclip:{latest,beta,nightly,canary}`);
+  console.log(`Docker images use the same names: ghcr.io/myrmidon/paperclip:{latest,beta,nightly,canary}`);
 }

@@ -39,7 +39,7 @@ interface TargetHealth {
   deploymentExposure?: string;
 }
 
-/** Result of probing the Paperclip instance the CLI is about to talk to. */
+/** Result of probing the Myrmidon instance the CLI is about to talk to. */
 interface TargetDiagnostics {
   apiBase: string;
   reachable: boolean;
@@ -292,7 +292,7 @@ export function buildPluginInitNextCommands(outputDir: string): string[] {
     `cd ${quotedOutputDir}`,
     "pnpm install",
     "pnpm dev",
-    `paperclipai plugin install ${quotedOutputDir}`,
+    `myrmidon plugin install ${quotedOutputDir}`,
   ];
 }
 
@@ -401,15 +401,15 @@ export function registerPluginCommands(program: Command): void {
       .description(
         "Install a plugin from a local path or npm package.\n" +
           "  Examples:\n" +
-          "    paperclipai plugin install ./my-plugin              # local path\n" +
-          "    paperclipai plugin install @acme/plugin-linear      # npm package\n" +
-          "    paperclipai plugin install @acme/plugin-linear@1.2  # pinned version",
+          "    myrmidon plugin install ./my-plugin              # local path\n" +
+          "    myrmidon plugin install @acme/plugin-linear      # npm package\n" +
+          "    myrmidon plugin install @acme/plugin-linear@1.2  # pinned version",
       )
       .option("-l, --local", "Treat <package> as a local filesystem path", false)
       .option("--version <version>", "Specific npm version to install (npm packages only)")
       .option(
         "--no-verify-target",
-        "Skip the pre-install probe that reports which Paperclip instance the plugin installs into",
+        "Skip the pre-install probe that reports which Myrmidon instance the plugin installs into",
       )
       .action(async (packageArg: string, opts: PluginInstallOptions) => {
         try {
@@ -480,7 +480,7 @@ export function registerPluginCommands(program: Command): void {
     plugin
       .command("target")
       .description(
-        "Show which Paperclip instance plugin commands will talk to.\n" +
+        "Show which Myrmidon instance plugin commands will talk to.\n" +
           "  Reports the resolved API URL plus the server status/version/mode from\n" +
           "  GET /api/health so you can confirm you are installing into the branch\n" +
           "  runtime and not a stale control-plane host.",
@@ -667,7 +667,7 @@ export function registerPluginCommands(program: Command): void {
             console.log(
               `${pc.bold(ex.displayName)}  ${pc.dim(ex.pluginKey)}\n` +
                 `  ${ex.description}\n` +
-                `  ${pc.cyan(`paperclipai plugin install ${ex.localPath}`)}`,
+                `  ${pc.cyan(`myrmidon plugin install ${ex.localPath}`)}`,
             );
           }
         } catch (err) {

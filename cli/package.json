@@ -1,9 +1,10 @@
 {
-  "name": "paperclipai",
+  "name": "myrmidon",
   "version": "0.3.1",
-  "description": "Paperclip CLI — orchestrate AI agent teams to run a business",
+  "description": "Myrmidon CLI — orchestrate AI agent teams to run a business",
   "type": "module",
   "bin": {
+    "myrmidon": "./dist/index.js",
     "paperclipai": "./dist/index.js"
   },
   "keywords": [

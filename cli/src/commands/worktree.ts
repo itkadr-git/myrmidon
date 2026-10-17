@@ -71,7 +71,7 @@ import { ensureAgentJwtSecret, ensureToolActionSigningSecret, loadPaperclipEnvFi
 import { expandHomePrefix } from "../config/home.js";
 import type { PaperclipConfig } from "../config/schema.js";
 import { readConfig, resolveConfigPath, writeConfig } from "../config/store.js";
-import { printPaperclipCliBanner } from "../utils/banner.js";
+import { printMyrmidonCliBanner } from "../utils/banner.js";
 import { resolveRuntimeLikePath } from "../utils/path-resolver.js";
 import {
   buildWorktreeConfig,
@@ -1437,7 +1437,7 @@ export function resolveWorktreeSeedMigrationRevision(
     appliedMigrationNames.size !== expectedAppliedPrefix.length ||
     expectedAppliedPrefix.some((migration) => !appliedMigrationNames.has(migration))
   ) {
-    throw new Error("Migration journal is not a prefix of this Paperclip checkout's migration journal.");
+    throw new Error("Migration journal is not a prefix of this Myrmidon checkout's migration journal.");
   }
 
   if (requirement === "upToDate" && migrationState.status !== "upToDate") {
@@ -2585,14 +2585,14 @@ async function runWorktreeInit(opts: WorktreeInitOptions): Promise<void> {
 }
 
 export async function worktreeInitCommand(opts: WorktreeInitOptions): Promise<void> {
-  printPaperclipCliBanner();
-  p.intro(pc.bgCyan(pc.black(" paperclipai worktree init ")));
+  printMyrmidonCliBanner();
+  p.intro(pc.bgCyan(pc.black(" myrmidon worktree init ")));
   await runWorktreeInit(opts);
 }
 
 export async function worktreeEnsureSeededCommand(opts: WorktreeEnsureSeededOptions): Promise<void> {
-  printPaperclipCliBanner();
-  p.intro(pc.bgCyan(pc.black(" paperclipai worktree ensure-seeded ")));
+  printMyrmidonCliBanner();
+  p.intro(pc.bgCyan(pc.black(" myrmidon worktree ensure-seeded ")));
 
   const spinner = p.spinner();
   spinner.start("Checking isolated worktree database seed state...");
@@ -2627,8 +2627,8 @@ export async function worktreeEnsureSeededCommand(opts: WorktreeEnsureSeededOpti
 }
 
 export async function worktreeMakeCommand(nameArg: string, opts: WorktreeMakeOptions): Promise<void> {
-  printPaperclipCliBanner();
-  p.intro(pc.bgCyan(pc.black(" paperclipai worktree:make ")));
+  printMyrmidonCliBanner();
+  p.intro(pc.bgCyan(pc.black(" myrmidon worktree:make ")));
 
   const name = resolveWorktreeMakeName(nameArg);
   const startPoint = resolveWorktreeStartPoint(opts.startPoint);
@@ -2860,8 +2860,8 @@ function worktreePathHasUncommittedChanges(worktreePath: string): boolean {
 }
 
 export async function worktreeCleanupCommand(nameArg: string, opts: WorktreeCleanupOptions): Promise<void> {
-  printPaperclipCliBanner();
-  p.intro(pc.bgCyan(pc.black(" paperclipai worktree:cleanup ")));
+  printMyrmidonCliBanner();
+  p.intro(pc.bgCyan(pc.black(" myrmidon worktree:cleanup ")));
 
   const name = resolveWorktreeMakeName(nameArg);
   const sourceCwd = process.cwd();
@@ -3678,7 +3678,7 @@ function resolveWorktreeEndpointFromSelector(
     );
   }
   if (!matched.hasPaperclipConfig && !matched.isCurrent) {
-    throw new Error(`Resolved worktree "${selector}" does not look like a Paperclip worktree.`);
+    throw new Error(`Resolved worktree "${selector}" does not look like a Myrmidon worktree.`);
   }
   return resolveEndpointFromChoice(matched);
 }
@@ -3695,7 +3695,7 @@ async function promptForSourceEndpoint(excludeWorktreePath?: string): Promise<Re
       hint: `${choice.worktree}${choice.isCurrent ? " (current)" : ""}`,
     }));
   if (choices.length === 0) {
-    throw new Error("No Paperclip worktrees were found. Run `paperclipai worktree:list` to inspect the repo worktrees.");
+    throw new Error("No Myrmidon worktrees were found. Run `myrmidon worktree:list` to inspect the repo worktrees.");
   }
   const selection = await p.select<string>({
     message: "Choose the source worktree to import from",
@@ -4123,7 +4123,7 @@ export async function worktreeMergeHistoryCommand(sourceArg: string | undefined,
       : await promptForSourceEndpoint(targetEndpoint.rootPath);
 
   if (path.resolve(sourceEndpoint.configPath) === path.resolve(targetEndpoint.configPath)) {
-    throw new Error("Source and target Paperclip configs are the same. Choose different --from/--to worktrees.");
+    throw new Error("Source and target Myrmidon configs are the same. Choose different --from/--to worktrees.");
   }
 
   const scopes = parseWorktreeMergeScopes(opts.scope);
@@ -4252,7 +4252,7 @@ async function runWorktreeReseed(opts: WorktreeReseedOptions): Promise<void> {
   const source = resolveWorktreeReseedSource(opts);
 
   if (path.resolve(source.configPath) === path.resolve(targetEndpoint.configPath)) {
-    throw new Error("Source and target Paperclip configs are the same. Choose different --from/--to values.");
+    throw new Error("Source and target Myrmidon configs are the same. Choose different --from/--to values.");
   }
   if (!existsSync(source.configPath)) {
     throw new Error(`Source config not found at ${source.configPath}.`);
@@ -4281,7 +4281,7 @@ async function runWorktreeReseed(opts: WorktreeReseedOptions): Promise<void> {
   const confirmed = opts.yes
     ? true
     : await p.confirm({
-      message: `Overwrite the isolated Paperclip DB for ${targetEndpoint.label} from ${source.label} using ${seedMode} seed mode?`,
+      message: `Overwrite the isolated Myrmidon DB for ${targetEndpoint.label} from ${source.label} using ${seedMode} seed mode?`,
       initialValue: false,
     });
   if (p.isCancel(confirmed) || !confirmed) {
@@ -4349,14 +4349,14 @@ async function runWorktreeReseed(opts: WorktreeReseedOptions): Promise<void> {
 }
 
 export async function worktreeReseedCommand(opts: WorktreeReseedOptions): Promise<void> {
-  printPaperclipCliBanner();
-  p.intro(pc.bgCyan(pc.black(" paperclipai worktree reseed ")));
+  printMyrmidonCliBanner();
+  p.intro(pc.bgCyan(pc.black(" myrmidon worktree reseed ")));
   await runWorktreeReseed(opts);
 }
 
 export async function worktreeRepairCommand(opts: WorktreeRepairOptions): Promise<void> {
-  printPaperclipCliBanner();
-  p.intro(pc.bgCyan(pc.black(" paperclipai worktree repair ")));
+  printMyrmidonCliBanner();
+  p.intro(pc.bgCyan(pc.black(" myrmidon worktree repair ")));
 
   const seedMode = opts.seedMode ?? "minimal";
   if (!isWorktreeSeedMode(seedMode)) {
@@ -4379,7 +4379,7 @@ export async function worktreeRepairCommand(opts: WorktreeRepairOptions): Promis
     throw new Error(`Source config not found at ${source.configPath}.`);
   }
   if (path.resolve(source.configPath) === path.resolve(target.configPath)) {
-    throw new Error("Source and target Paperclip configs are the same. Use --from-config/--from-instance to point repair at a different source.");
+    throw new Error("Source and target Myrmidon configs are the same. Use --from-config/--from-instance to point repair at a different source.");
   }
 
   const targetConfig = existsSync(target.configPath) ? readConfig(target.configPath) : null;
@@ -4441,11 +4441,11 @@ export async function worktreeRepairCommand(opts: WorktreeRepairOptions): Promis
 }
 
 export function registerWorktreeCommands(program: Command): void {
-  const worktree = program.command("worktree").description("Worktree-local Paperclip instance helpers");
+  const worktree = program.command("worktree").description("Worktree-local Myrmidon instance helpers");
 
   program
     .command("worktree:make")
-    .description("Create ~/NAME as a git worktree, then initialize an isolated Paperclip instance inside it")
+    .description("Create ~/NAME as a git worktree, then initialize an isolated Myrmidon instance inside it")
     .argument("<name>", "Worktree name — auto-prefixed with paperclip- if needed (created at ~/paperclip-NAME)")
     .option("--start-point <ref>", "Remote ref to base the new branch on (env: PAPERCLIP_WORKTREE_START_POINT)")
     .option("--instance <id>", "Explicit isolated instance id")
@@ -4480,7 +4480,7 @@ export function registerWorktreeCommands(program: Command): void {
 
   worktree
     .command("env")
-    .description("Print shell exports for the current worktree-local Paperclip instance")
+    .description("Print shell exports for the current worktree-local Myrmidon instance")
     .option("-c, --config <path>", "Path to config file")
     .option("--json", "Print JSON instead of shell exports")
     .action(worktreeEnvCommand);
@@ -4497,7 +4497,7 @@ export function registerWorktreeCommands(program: Command): void {
 
   program
     .command("worktree:list")
-    .description("List git worktrees visible from this repo and whether they look like Paperclip worktrees")
+    .description("List git worktrees visible from this repo and whether they look like Myrmidon worktrees")
     .option("--json", "Print JSON instead of text output")
     .action(worktreeListCommand);
 
@@ -4516,7 +4516,7 @@ export function registerWorktreeCommands(program: Command): void {
 
   worktree
     .command("reseed")
-    .description("Re-seed an existing worktree-local instance from another Paperclip instance or worktree")
+    .description("Re-seed an existing worktree-local instance from another Myrmidon instance or worktree")
     .option("--from <worktree>", "Source worktree path, directory name, branch name, or current")
     .option("--to <worktree>", "Target worktree path, directory name, branch name, or current (defaults to current)")
     .option("--from-config <path>", "Source config.json to seed from")
@@ -4531,7 +4531,7 @@ export function registerWorktreeCommands(program: Command): void {
 
   worktree
     .command("repair")
-    .description("Create or repair a linked worktree-local Paperclip instance without touching the primary checkout")
+    .description("Create or repair a linked worktree-local Myrmidon instance without touching the primary checkout")
     .option("--branch <name>", "Existing branch/worktree selector to repair, or a branch name to create under .paperclip/worktrees")
     .option("--home <path>", `Home root for worktree instances (env: PAPERCLIP_WORKTREES_DIR, default: ${DEFAULT_WORKTREE_HOME})`)
     .option("--from-config <path>", "Source config.json to seed from")
