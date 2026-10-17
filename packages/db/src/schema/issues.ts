@@ -107,7 +107,7 @@ export const issues = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
     // myrmidon(DB-PERF-P7): denormalized "last activity" of an issue —
     // greatest(updated_at, newest comment, newest activity_log row outside the
-    // local-inbox actions). Kept current by the triggers of migration 0307;
+    // local-inbox actions). Kept current by the triggers of migration 0355;
     // the issue list orders and reports by this column instead of running two
     // correlated MAX subqueries per candidate row.
     lastActivityAt: timestamp("last_activity_at", { withTimezone: true }).notNull().defaultNow(),
