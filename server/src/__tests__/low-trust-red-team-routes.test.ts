@@ -910,18 +910,28 @@ describeEmbeddedPostgres(
       await db.update(issues)
         .set({ responsibleUserId: null })
         .where(eq(issues.id, fixture.issues.reviewRoot.id));
-      const app = createApp(db, agentActor(fixture, fixture.agents.standard.id));
-      const createWithoutOwner = await request(app)
-        .post(`/api/companies/${fixture.company.id}/issues`)
-        .send({
-          projectId: fixture.issues.assignedReview.projectId,
-          title: `quarantined ${fixture.canaries.raw}`,
-          executionPolicy: {
-            authorizationPolicy: {
-              trustPreset: LOW_TRUST_REVIEW_PRESET,
+      await db.update(heartbeatRuns)
+        .set({
+          contextSnapshot: {
+            issueId: fixture.issues.reviewRoot.id,
+            executionPolicy: {
+              authorizationPolicy: {
+                trustBoundary: {
+                  mode: LOW_TRUST_REVIEW_PRESET,
+                  companyId: fixture.company.id,
+                  projectIds: [fixture.issues.assignedReview.projectId],
+                  rootIssueId: fixture.issues.reviewRoot.id,
+                  issueIds: [fixture.issues.reviewRoot.id],
+                },
+              },
             },
           },
-        });
+        })
+        .where(eq(heartbeatRuns.id, fixture.runs.lowTrust.id));
+      const app = createApp(db, agentActor(fixture));
+      const createWithoutOwner = await request(app)
+        .post(`/api/companies/${fixture.company.id}/issues`)
+        .send({ title: `quarantined ${fixture.canaries.raw}` });
       expect(createWithoutOwner.status, JSON.stringify(createWithoutOwner.body)).toBe(422);
       expect(createWithoutOwner.body.error).toContain("without a promotion owner");
       const childWithoutOwner = await request(app)
