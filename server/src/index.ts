@@ -8,6 +8,12 @@ import { sentryReady, shutdownSentry, captureException } from "./sentry.js";
 import { waitForPendingRunFailureReports } from "./services/run-failure-report.js";
 import { verifyStoppedNativeSessionForReplacement } from "./services/native-runtime/native-session-executor.js";
 import { embeddedPostgresOwnerPort } from "./embedded-postgres-owner.js";
+// myrmidon(PROCS-1.3) + myrmidon(1.6.6 RUN-DISPATCH-NOTIFY, OPE-6444): the
+// inter-process bus (Postgres LISTEN/NOTIFY) the run-start dispatcher's
+// `notify` mode publishes `run_queued` to, and the executor process subscribes
+// to. Constructed only in a multi-process deployment (PAPERCLIP_PROCESS_ROLE
+// set); a single-process deployment never starts it — byte-for-byte unchanged.
+import { ProcessBus } from "./services/process-bus.js";
 import { deliverExecutionStatuses } from "./services/execution-status-delivery.js";
 import { deliverReconciledExecutions, settleUnrecoverableExecutions } from "./services/execution-recovery-resolution.js";
 import { reconcileSafeNativeReplacements } from "./services/native-runtime/native-safe-replacement.js";
@@ -26,6 +32,7 @@ import { warnIfUnsupportedNodeVersion } from "@paperclipai/shared/node-version";
 import { and, eq, sql } from "drizzle-orm";
 import {
   createDb,
+  createPostgresJsClient,
   ensurePostgresDatabase,
   formatEmbeddedPostgresError,
   getPostgresDataDirectory,
@@ -1080,13 +1087,23 @@ async function startServerWithDatabaseTeardown(
     }
   };
   const pluginWorkerManager = createPluginWorkerManager();
-  // myrmidon(PROCS-1.1): an api process never claims or executes runs, so it
-  // builds no heartbeat service at all. That single gate covers the whole
-  // `if (heartbeat)` block below — startup recovery, every sweep, the scheduler
-  // interval and the plugin workers — which is what the api-role timer test
-  // asserts.
+  // myrmidon(PROCS-1.3) + myrmidon(1.6.6 RUN-DISPATCH-NOTIFY, OPE-6444): the
+  // process bus is only needed when process roles split API from execution.
+  const processBus = processRoleProfile.role === "all"
+    ? null
+    : new ProcessBus(
+        createPostgresJsClient(activeDatabaseConnectionString, { maxConnections: 1 }),
+      );
+  if (processBus) {
+    try {
+      await processBus.start();
+      logger.info({ role: processRoleProfile.role }, "process bus started (PROCS-1.3)");
+    } catch (err) {
+      logger.error({ err }, "process bus failed to start; notify mode degrades to the resweep");
+    }
+  }
   const heartbeat = config.heartbeatSchedulerEnabled && processRoleProfile.executesRuns
-    ? heartbeatService(db as any, { pluginWorkerManager })
+    ? heartbeatService(db as any, { pluginWorkerManager, processBus })
     : null;
   const decisionServiceOptions = {
     wakeOriginAgent: createDecisionWakeOriginAgent(heartbeat?.wakeup ?? null),
@@ -2815,6 +2832,16 @@ async function startServerWithDatabaseTeardown(
       prepareHotRestartShutdown,
       waitForHeartbeatSchedulerIdle,
     });
+    // myrmidon(PROCS-1.3): the bus stops with the rest of the background work —
+    // its postgres.js client and the LISTEN connections go before the shared
+    // pool closes.
+    if (processBus) {
+      try {
+        await processBus.stop();
+      } catch (err) {
+        logger.error({ err, signal }, "process bus stop failed during shutdown");
+      }
+    }
     const skipHeartbeatDrain = heartbeatShutdown.hotRestart?.skipDrain === true;
     const selectiveDrainRunIds = heartbeatShutdown.hotRestart?.drainRunIds ?? null;
     if (skipHeartbeatDrain) {
