@@ -1528,6 +1528,15 @@ describe.sequential("issue comment reopen routes", () => {
       ...makeIssue("in_progress"),
       responsibleUserId: null,
     });
+    mockIssueService.getCurrentRunForIssue.mockResolvedValue(null);
+    mockIssueService.getCurrentScheduledRetry.mockResolvedValue(null);
+    mockIssueService.getLastRunForIssue.mockResolvedValue(null);
+    mockDbSelectWhere.mockImplementation(() => ({
+      then: (
+        onFulfilled: (rows: unknown[]) => unknown,
+        onRejected?: (reason: unknown) => unknown,
+      ) => Promise.resolve([]).then(onFulfilled, onRejected),
+    }));
 
     const res = await request(await installActor(createApp(), agentActor()))
       .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
