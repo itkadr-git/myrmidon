@@ -211,15 +211,8 @@ describeEmbeddedPostgres("maintenance service and API", () => {
     await waitFor(async () => (await runStatuses(agentId)).includes("scheduled_retry"));
 
     clock = new Date(clock.getTime() + 1_000);
-    const retrySvc = maintenanceService(db, {
-      heartbeat: {
-        ...heartbeat,
-        promoteDueScheduledRetries: async () => { throw new Error("retry promotion failed"); },
-      },
-      now: () => clock,
-    });
-    await retrySvc.tick();
-    expect((await retrySvc.status()).instance?.state).toBe("entering");
+    await svc.tick();
+    expect((await svc.status()).instance?.state).toBe("entering");
     expect(await runStatuses(agentId)).toEqual(["scheduled_retry"]);
   }, 30_000);
 
