@@ -20,7 +20,7 @@ type Sql = ReturnType<typeof postgres>;
 
 const MIGRATION_PATH = fileURLToPath(
   new URL(
-    "./migrations/0355_issues_last_activity_at.sql",
+    "./migrations/0398_issues_last_activity_at.sql",
     import.meta.url,
   ),
 );
@@ -119,7 +119,7 @@ const INBOX_AT = "2026-01-09T10:00:00.000Z";
 
 d("issues.last_activity_at", () => {
   it("backfills the column with the expression the list used before it existed", async () => {
-    const sql = await startDatabase("pap0355-backfill-");
+    const sql = await startDatabase("pap0398-backfill-");
     const issueWithCommentAndLog = "00000000-0000-0000-0000-00000000a001";
     const issueWithInboxOnly = "00000000-0000-0000-0000-00000000a002";
     const quietIssue = "00000000-0000-0000-0000-00000000a003";
@@ -179,7 +179,7 @@ d("issues.last_activity_at", () => {
   }, 90_000);
 
   it("raises the column on a new comment and never lowers it", async () => {
-    const sql = await startDatabase("pap0355-comment-");
+    const sql = await startDatabase("pap0398-comment-");
     const issueId = "00000000-0000-0000-0000-00000000a011";
     const laterCommentAt = "2026-02-02T10:00:00.000Z";
     await seedIssue(sql, issueId, "task-a", "2026-02-01T10:00:00.000Z");
@@ -208,7 +208,7 @@ d("issues.last_activity_at", () => {
   }, 90_000);
 
   it("raises the column on an activity row but not on local-inbox actions", async () => {
-    const sql = await startDatabase("pap0355-log-");
+    const sql = await startDatabase("pap0398-log-");
     const issueId = "00000000-0000-0000-0000-00000000a021";
     const logAt = "2026-03-02T10:00:00.000Z";
     const inboxAt = "2026-03-03T10:00:00.000Z";
@@ -252,7 +252,7 @@ d("issues.last_activity_at", () => {
   }, 90_000);
 
   it("raises the column when an issue update moves updated_at", async () => {
-    const sql = await startDatabase("pap0355-update-");
+    const sql = await startDatabase("pap0398-update-");
     const issueId = "00000000-0000-0000-0000-00000000a031";
     const laterUpdate = "2026-04-04T10:00:00.000Z";
     await seedIssue(sql, issueId, "task-a", "2026-04-01T10:00:00.000Z");
@@ -267,7 +267,7 @@ d("issues.last_activity_at", () => {
   }, 90_000);
 
   it("sorts the list from the new index without correlated subplans", async () => {
-    const sql = await startDatabase("pap0355-plan-");
+    const sql = await startDatabase("pap0398-plan-");
     await sql.unsafe(
       `INSERT INTO issues ("company_id","title","created_at","updated_at")
        SELECT '${COMPANY_ID}', 'task-' || series,
@@ -303,7 +303,7 @@ d("issues.last_activity_at", () => {
   }, 90_000);
 
   it("keeps the list order identical to the expression it replaced", async () => {
-    const sql = await startDatabase("pap0355-order-");
+    const sql = await startDatabase("pap0398-order-");
     const base = Date.parse("2026-05-01T10:00:00.000Z");
     const ids: string[] = [];
     for (let index = 0; index < 6; index += 1) {
