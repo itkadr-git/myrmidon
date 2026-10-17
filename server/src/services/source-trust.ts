@@ -162,7 +162,7 @@ export function buildPromotedSourceTrust(input: {
     },
     promotedByActorType: input.promotedByActorType,
     promotedByActorId: input.promotedByActorId,
-    promotionOwnerUserId: input.promotionOwnerUserId,
+    promotionOwnerUserId: input.promotionOwnerUserId ?? null,
     promotedAt: (input.promotedAt ?? new Date()).toISOString(),
   };
 }

@@ -18433,7 +18433,7 @@ export function issueRoutes(
           attachmentIds: req.body.attachmentIds,
           clientRequestId: actor.actorType === "user" ? req.body.clientRequestId : undefined,
           authorizationReason: commentAuthorizationReason,
-          sourceTrust: await sourceTrustForActorWrite(currentIssue, actor, true),
+          sourceTrust: await sourceTrustForActorWrite(currentIssue, actor),
         };
         const add = (dbOrTx: Db = db) =>
           svc.addComment(

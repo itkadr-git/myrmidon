@@ -1524,7 +1524,10 @@ describe.sequential("issue comment reopen routes", () => {
   });
 
   it("leaves normal agent comments without derived presentation", async () => {
-    mockIssueService.getById.mockResolvedValue(makeIssue("in_progress"));
+    mockIssueService.getById.mockResolvedValue({
+      ...makeIssue("in_progress"),
+      responsibleUserId: null,
+    });
 
     const res = await request(await installActor(createApp(), agentActor()))
       .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
