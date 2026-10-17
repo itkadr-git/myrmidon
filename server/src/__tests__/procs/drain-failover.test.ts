@@ -109,12 +109,15 @@ async function waitFor(
 
 /** One heartbeat request against the shared board port. Every failure is
  * data, not an exception — the test asserts on the failure counter. */
-async function heartbeat(): Promise<boolean> {
+async function heartbeat(): Promise<{ ok: boolean; error?: string }> {
   try {
-    const response = await requestApi(BOARD_URL, "/api/health");
-    return response.status === 200;
-  } catch {
-    return false;
+    const response = await requestApi(BOARD_URL, "/api/health", {
+      headers: { connection: "close" },
+    });
+    if (response.status === 200) return { ok: true };
+    return { ok: false, error: `status ${response.status}` };
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error) };
   }
 }
 
@@ -136,10 +139,10 @@ async function runHeartbeatLoad(options: { rps?: number; durationMs: number }): 
     total += 1;
     const firedAt = Date.now();
     pending.push(
-      heartbeat().then((ok) => {
-        if (!ok) {
+      heartbeat().then((res) => {
+        if (!res.ok) {
           failed += 1;
-          failures.push(`t+${firedAt - startedAt}ms`);
+          failures.push(`t+${firedAt - startedAt}ms (${res.error ?? "unknown"})`);
         }
       }),
     );
@@ -207,6 +210,11 @@ describeProcs("drain and failover e2e: supervisor in-process, two api children (
   function openProbeListener(): Promise<SupervisorListenerHandle> {
     return new Promise((resolve, reject) => {
       const server = net.createServer();
+      const sockets = new Set<net.Socket>();
+      server.on("connection", (socket) => {
+        sockets.add(socket);
+        socket.on("close", () => sockets.delete(socket));
+      });
       server.once("error", reject);
       server.listen({ host: "0.0.0.0", port: BOARD_PORT, reusePort: true }, () => {
         probeServer = server;
@@ -216,10 +224,19 @@ describeProcs("drain and failover e2e: supervisor in-process, two api children (
           },
           close: () =>
             new Promise<void>((resolveClose) => {
+              for (const socket of sockets) {
+                socket.destroy();
+              }
+              sockets.clear();
               server.close(() => resolveClose());
             }),
           closeIdleConnections: () => undefined,
-          closeAllConnections: () => undefined,
+          closeAllConnections: () => {
+            for (const socket of sockets) {
+              socket.destroy();
+            }
+            sockets.clear();
+          },
         });
       });
     });
@@ -275,6 +292,12 @@ describeProcs("drain and failover e2e: supervisor in-process, two api children (
 
     supervisor = createProcessSupervisor({
       openPublicListener: openProbeListener,
+      drainPublicListener: async (handle) => {
+        await handle.close();
+        handle.closeIdleConnections();
+        handle.closeAllConnections();
+        probeServer = null;
+      },
       // The fork starts the real production entry (SERVER_ENTRY) with role=api
       // and an isolated instance home/config, hooked via IPC to the supervisor.
       forkChild: (env, execArgv) => {
@@ -372,7 +395,9 @@ describeProcs("drain and failover e2e: supervisor in-process, two api children (
           .from(boardProcesses)
           .where(eq(boardProcesses.role, "api"));
         if (rows.length < 2) return `${rows.length} api rows in board_processes`;
-        return supervisor!.state() === "split" ? true : `supervisor state: ${supervisor!.state()}`;
+        if (supervisor!.state() !== "split") return `supervisor state: ${supervisor!.state()}`;
+        if (probeServer?.listening) return "probe listener still open";
+        return true;
       },
       { timeoutMs: SPLIT_READY_TIMEOUT_MS, label: "two api children registered and supervisor split" },
     );
@@ -452,6 +477,9 @@ describeProcs("drain and failover e2e: supervisor in-process, two api children (
   }, 420_000);
 
   it("scenario 2: kill -9 one api child under split=2 — the survivor keeps serving, the slot restarts with backoff, no row is lost", async () => {
+    expect(survivorPid, "survivor pid from scenario 1 is known").toBeGreaterThan(0);
+    expect(drainedPid, "drained pid from scenario 1 is known").toBeGreaterThan(0);
+
     // Grow back to two api children so the kill leaves a survivor serving the
     // shared port (the failover shape the ticket asks for). The fresh child
     // forks at attempt 0 — an initial fork, not a restart.
@@ -517,11 +545,22 @@ describeProcs("drain and failover e2e: supervisor in-process, two api children (
     // killed child's row (reaper waits 2 min), and the restarted child's
     // fresh row. Scoped to the suite's own pids so a reused external database
     // cannot break the count.
+    const ownPids = [drainedPid, survivorPid, victimPid, freshPid];
+    await waitFor(
+      async () => {
+        const rows = await db
+          .select({ bootId: boardProcesses.bootId, role: boardProcesses.role, pid: boardProcesses.pid })
+          .from(boardProcesses);
+        const apiRows = rows.filter((row) => row.role === "api");
+        const count = apiRows.filter((row) => ownPids.includes(row.pid!)).length;
+        return count === 4 ? true : `expected 4 api rows in board_processes, found ${count}`;
+      },
+      { timeoutMs: SPLIT_READY_TIMEOUT_MS, label: "restarted child registered in board_processes" },
+    );
     const rows = await db
       .select({ bootId: boardProcesses.bootId, role: boardProcesses.role, pid: boardProcesses.pid })
       .from(boardProcesses);
     const apiRows = rows.filter((row) => row.role === "api");
-    const ownPids = [drainedPid, survivorPid, victimPid, freshPid];
     expect(
       apiRows.filter((row) => ownPids.includes(row.pid!)).length,
       "drained + survivor + killed (grown) + restarted rows all present (reaper waits 2 min)",
