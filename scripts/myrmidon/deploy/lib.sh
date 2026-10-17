@@ -917,6 +917,7 @@ take_dump() {
 
 # Keep the newest validated dumps only. A listing or deletion error aborts deploy.
 prune_dumps() {
+  [[ -d "$DUMP_DIR" ]] || die "dump directory does not exist: $DUMP_DIR"
   local -a dumps=() ordered=()
   local path find_status listing_error
   listing_error="${DUMP_DIR%/}/.predeploy-retention-listing-error.$$"
