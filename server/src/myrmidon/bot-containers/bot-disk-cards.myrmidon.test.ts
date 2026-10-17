@@ -146,6 +146,8 @@ describe("foreign", () => {
   it("a card for a deferred foreign-owner cleanup is high severity and clears when the report is repaired", () => {
     const card = buildForeignUidCards(input([bot({ foreignUid: { path: "/workspace/ABC-010", reason: "EACCES uid 0" } })]))[0]!;
     expect(card).toMatchObject({ severity: "high", cardKey: WS_CARD_KEYS.foreign, payload: { path: "/workspace/ABC-010" } });
+    expect(buildForeignUidCards(input([bot({ report: { ...fixture(), foreignUid: { path: "/workspace/ABC-010", reason: "EACCES uid 0" } } })]))).toHaveLength(1);
+    expect(buildForeignUidCards(input([bot({ report: { ...fixture(), foreignUid: { path: "/workspace/ABC-010", reason: "EACCES uid 0" } }, foreignUid: { path: "/workspace/other", reason: "EACCES uid 1" } })]))[0]!.payload.path).toBe("/workspace/other");
     expect(buildForeignUidCards(input([bot({ foreignUid: null })]))).toHaveLength(0);
   });
 

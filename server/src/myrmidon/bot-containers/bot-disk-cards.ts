@@ -329,7 +329,7 @@ export function buildBotDiskCards(input: BotDiskCardsInput): BotDiskCard[] {
 /** Surface botd's permission failure instead of repeatedly retrying its archive. */
 export function buildForeignUidCards(input: BotDiskCardsInput): BotDiskCard[] {
   return input.bots.flatMap((bot) => {
-    const issue = bot.foreignUid;
+    const issue = bot.foreignUid ?? (bot.report?.foreignUid ?? null);
     if (!issue) return [];
     const at = iso(bot.receivedAtMs ?? input.nowMs);
     const path = redactReportText(issue.path);
