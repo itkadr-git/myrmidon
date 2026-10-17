@@ -991,7 +991,7 @@ describe("issue execution policy transitions", () => {
         actor: { agentId: coderAgentId },
       });
 
-      expect(result.patch).toMatchObject({ status: "blocked" });
+      expect(result.patch.status).toBeUndefined();
       expect(result.patch.monitorNextCheckAt).toEqual(new Date(monitor.nextCheckAt));
       expect(result.patch.executionPolicy).toMatchObject({ monitor: { nextCheckAt: monitor.nextCheckAt } });
     });
@@ -1021,7 +1021,7 @@ describe("issue execution policy transitions", () => {
         allowBoardOverride: true,
       });
 
-      expect(result.patch).toMatchObject({ status: "blocked" });
+      expect(result.patch.status).toBeUndefined();
       expect(result.patch.monitorNextCheckAt).toEqual(new Date(monitor.nextCheckAt));
       expect(result.patch.executionPolicy).toMatchObject({ monitor: { nextCheckAt: monitor.nextCheckAt } });
     });
