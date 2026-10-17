@@ -27570,7 +27570,7 @@ export function heartbeatService(
         if (latestRun) await resumeRemoteStopComments(latestRun).catch(err => {
           logger.warn({ err, runId: run.id }, "failed to resume user messages after remote Stop");
         });
-        await startNextQueuedRunForAgent(run.agentId);
+        await runStartDispatcher.dispatchRunStart(run.agentId);
       }
     }
   }
@@ -30048,12 +30048,12 @@ export function heartbeatService(
       }
       if (outcome.kind === "deferred") return null;
       if (outcome.kind === "coalesced") {
-        await startNextQueuedRunForAgent(agent.id);
+        await runStartDispatcher.dispatchRunStart(agent.id);
         return outcome.run;
       }
       if (outcome.kind === "replayed") {
         if (outcome.run.status === "queued")
-          await startNextQueuedRunForAgent(agent.id);
+          await runStartDispatcher.dispatchRunStart(agent.id);
         return outcome.run;
       }
 
@@ -30070,7 +30070,7 @@ export function heartbeatService(
         },
       });
 
-      await startNextQueuedRunForAgent(agent.id);
+      await runStartDispatcher.dispatchRunStart(agent.id);
       return newRun;
     }
 
@@ -30273,7 +30273,7 @@ export function heartbeatService(
       },
     });
 
-    await startNextQueuedRunForAgent(agent.id);
+    await runStartDispatcher.dispatchRunStart(agent.id);
 
     return newRun;
   }
@@ -31024,7 +31024,7 @@ export function heartbeatService(
         await finalizeAgentStatus(run.agentId, "cancelled", undefined, {
           wasFirstHeartbeat: timerClaimWasFirstHeartbeat(run),
         });
-        await startNextQueuedRunForAgent(run.agentId);
+        await runStartDispatcher.dispatchRunStart(run.agentId);
       }
       return cancelled;
     } finally {
