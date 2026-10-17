@@ -40,7 +40,9 @@ import {
   eq,
   inArray,
   isNull,
+  ne,
   notInArray,
+  or,
   sql,
 } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -6240,10 +6242,18 @@ export function issueRoutes(
       : [...new Set(current)];
   }
 
-  async function findCurrentSerializedWatchdogChild(parent: {
-    id: string;
-    companyId: string;
-  }) {
+  async function findCurrentSerializedWatchdogChild(
+    parent: {
+      id: string;
+      companyId: string;
+    },
+    options?: {
+      excludeIssueIds?: (string | null | undefined)[];
+    },
+  ) {
+    const excludedIssueIds = (options?.excludeIssueIds ?? []).filter(
+      (id): id is string => typeof id === "string" && id.trim().length > 0,
+    );
     const children = await db
       .select({
         id: issueRows.id,
@@ -6254,6 +6264,10 @@ export function issueRoutes(
         and(
           eq(issueRows.companyId, parent.companyId),
           eq(issueRows.parentId, parent.id),
+          or(
+            isNull(issueRows.originKind),
+            ne(issueRows.originKind, TASK_WATCHDOG_ORIGIN_KIND),
+          ),
           inArray(issueRows.status, [
             "todo",
             "in_progress",
@@ -6261,6 +6275,9 @@ export function issueRoutes(
             "blocked",
           ]),
           isNull(issueRows.hiddenAt),
+          ...(excludedIssueIds.length > 0
+            ? [notInArray(issueRows.id, excludedIssueIds)]
+            : []),
         ),
       )
       .orderBy(
@@ -6277,6 +6294,7 @@ export function issueRoutes(
     currentChildIssueId: string | null | undefined;
   }) {
     if (!input.watchdogParentIssueId || !input.currentChildIssueId) return;
+    if (input.watchdogParentIssueId === input.currentChildIssueId) return;
     const watchdogParent = await svc.getById(input.watchdogParentIssueId);
     if (
       !watchdogParent ||
@@ -6288,12 +6306,21 @@ export function issueRoutes(
       watchdogParent.status !== "blocked"
     )
       return;
+    if (watchdogParent.id === input.currentChildIssueId) return;
 
     const relations = await svc.getRelationSummaries(watchdogParent.id);
     const nextBlockedByIssueIds = mergeIssueBlockerIds(
       relations.blockedBy?.map((relation) => relation.id) ?? [],
       input.currentChildIssueId,
-    );
+    ).filter((id) => id !== watchdogParent.id);
+
+    if (
+      nextBlockedByIssueIds.length === (relations.blockedBy?.length ?? 0) &&
+      watchdogParent.status === "blocked"
+    ) {
+      return;
+    }
+
     await svc.update(watchdogParent.id, {
       status: "blocked",
       blockedByIssueIds: nextBlockedByIssueIds,
@@ -12560,7 +12587,9 @@ export function issueRoutes(
       const serializationContext =
         await resolveWatchdogFollowUpSerializationContext(req, parent);
       const currentSerializedChild = serializationContext
-        ? await findCurrentSerializedWatchdogChild(parent)
+        ? await findCurrentSerializedWatchdogChild(parent, {
+            excludeIssueIds: [serializationContext.watchdogParentIssueId],
+          })
         : null;
       const executionPolicy = applyActorMonitorScheduledBy(
         normalizeIssueExecutionPolicy(createBody.executionPolicy),
@@ -12824,7 +12853,9 @@ export function issueRoutes(
       const serializationContext =
         await resolveWatchdogFollowUpSerializationContext(req, sourceIssue);
       const existingSerializedChild = serializationContext
-        ? await findCurrentSerializedWatchdogChild(sourceIssue)
+        ? await findCurrentSerializedWatchdogChild(sourceIssue, {
+            excludeIssueIds: [serializationContext.watchdogParentIssueId],
+          })
         : null;
       const serializedBlockedChildIds = new Set<string>();
       if (serializationContext) {
