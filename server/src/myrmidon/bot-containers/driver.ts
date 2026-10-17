@@ -93,6 +93,11 @@ export interface BotContainerStatus {
    *  field — "not reported", which the card shows as unknown, never as a match. */
   maxConcurrentRuns?: number;
   /**
+   * myrmidon(1.6.6-REMOTE-SITES): the gateway port allocated by the remote site
+   * driver (fleetd/site-agent). Required for building the bot card's gateway base URL.
+   */
+  gatewayPort?: number;
+  /**
    * myrmidon(OPE-4789): the raw container inspect behind this status, when the
    * driver has it (the local docker driver always does — the status IS an
    * inspect). Lets a caller that already paid for one inspect hand it to

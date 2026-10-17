@@ -80,6 +80,10 @@ func routeRequest(s *server, method, path, token, body string) *httptest.Respons
 	}
 	rec := httptest.NewRecorder()
 	s.requireAuth(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/health" {
+			s.health(w, r)
+			return
+		}
 		if r.URL.Path == "/v1/bots" {
 			s.list(w, r)
 			return
@@ -87,6 +91,24 @@ func routeRequest(s *server, method, path, token, body string) *httptest.Respons
 		s.route(w, r)
 	})(rec, req)
 	return rec
+}
+
+func TestHealthEndpoint(t *testing.T) {
+	s, _ := newServer(t)
+	rec := routeRequest(s, http.MethodGet, "/v1/health", s.cfg.Token, "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("got status %d", rec.Code)
+	}
+	var h siteHealth
+	if err := json.Unmarshal(rec.Body.Bytes(), &h); err != nil {
+		t.Fatalf("failed to decode health: %v", err)
+	}
+	if h.Status != "healthy" || h.Epoch != 1 || h.SiteId == "" {
+		t.Fatalf("unexpected health payload: %+v", h)
+	}
+	if h.Capacity.MemoryMb <= 0 || !h.EgressCheck.Ok {
+		t.Fatalf("unexpected capacity or egress: %+v", h)
+	}
 }
 
 func TestAuth(t *testing.T) {

@@ -80,6 +80,29 @@ describe("myrmidon(FLEETD-VMEXEC) fleetd driver — the HTTP contract", () => {
     }
   });
 
+  it("status preserves gatewayPort when reported by fleetd", async () => {
+    const { server, config } = await fakeServer((_call, res) => {
+      res.setHeader("Content-Type", "application/json");
+      res.end(
+        JSON.stringify({
+          botKey: "bot-a",
+          state: "running",
+          image: "example.com/bot@sha256:aa",
+          gatewayPort: 18642,
+          restartHash: "r1",
+          filesHash: "f1",
+        }),
+      );
+    });
+    try {
+      const driver = fleetdBotContainerDriver(config);
+      const status = await driver.status("bot-a");
+      expect(status.gatewayPort).toBe(18642);
+    } finally {
+      server.close();
+    }
+  });
+
   it("list accepts both a bare array and { bots: [...] }", async () => {
     for (const body of [
       [{ botKey: "bot-a", state: "stopped" }],
