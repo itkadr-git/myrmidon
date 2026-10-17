@@ -1,9 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -229,4 +232,109 @@ func itoa(n int64) string {
 func jsonInt(n int64) string {
 	b, _ := json.Marshal(n)
 	return string(b)
+}
+
+func TestSnapshotAndRestore(t *testing.T) {
+	tempRoot := t.TempDir()
+	s, _ := newServer(t)
+	s.cfg.VolumeRoot = tempRoot
+	key := s.cfg.Bots[0].BotKey
+
+	// Prepare bot source files
+	botDir := filepath.Join(tempRoot, key)
+	if err := os.MkdirAll(filepath.Join(botDir, "hermes"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(botDir, "hermes", "session.db"), []byte("sqlite-data-mock-bytes"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(botDir, "workspace"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(botDir, "workspace", "code.txt"), []byte("hello workspace"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// 1. Snapshot
+	rec := routeRequest(s, http.MethodPost, "/v1/bots/"+key+"/snapshot", s.cfg.Token, "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("snapshot failed: %d %s", rec.Code, rec.Body.String())
+	}
+	archiveBytes := rec.Body.Bytes()
+	if len(archiveBytes) == 0 {
+		t.Fatal("empty snapshot archive")
+	}
+
+	// 2. Restore into a new volume root
+	targetRoot := t.TempDir()
+	targetServer, _ := newServer(t)
+	targetServer.cfg.VolumeRoot = targetRoot
+
+	restoreReq := httptest.NewRequest(http.MethodPost, "http://fleetd.example.com/v1/bots/"+key+"/restore", bytes.NewReader(archiveBytes))
+	restoreReq.Header.Set("Authorization", "Bearer "+targetServer.cfg.Token)
+	restoreRec := httptest.NewRecorder()
+	targetServer.requireAuth(func(w http.ResponseWriter, r *http.Request) {
+		targetServer.route(w, r)
+	})(restoreRec, restoreReq)
+
+	if restoreRec.Code != http.StatusOK {
+		t.Fatalf("restore failed: %d %s", restoreRec.Code, restoreRec.Body.String())
+	}
+
+	// Verify restored files
+	restoredDb, err := os.ReadFile(filepath.Join(targetRoot, key, "hermes", "session.db"))
+	if err != nil {
+		t.Fatalf("read restored db: %v", err)
+	}
+	if string(restoredDb) != "sqlite-data-mock-bytes" {
+		t.Fatalf("restored db mismatch: %q", string(restoredDb))
+	}
+
+	restoredCode, err := os.ReadFile(filepath.Join(targetRoot, key, "workspace", "code.txt"))
+	if err != nil {
+		t.Fatalf("read restored code: %v", err)
+	}
+	if string(restoredCode) != "hello workspace" {
+		t.Fatalf("restored code mismatch: %q", string(restoredCode))
+	}
+}
+
+func TestQuarantine(t *testing.T) {
+	tempRoot := t.TempDir()
+	s, _ := newServer(t)
+	s.cfg.VolumeRoot = tempRoot
+	key := s.cfg.Bots[0].BotKey
+
+	botDir := filepath.Join(tempRoot, key)
+	if err := os.MkdirAll(botDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(botDir, "test.txt"), []byte("data"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := routeRequest(s, http.MethodPost, "/v1/bots/"+key+"/quarantine", s.cfg.Token, "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("quarantine failed: %d %s", rec.Code, rec.Body.String())
+	}
+
+	if _, err := os.Stat(botDir); !os.IsNotExist(err) {
+		t.Fatalf("bot directory still exists at original path: %v", err)
+	}
+
+	// Check quarantined folder exists
+	entries, err := os.ReadDir(tempRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), ".quarantined-"+key+"-") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("quarantined directory not found in volume root")
+	}
 }
