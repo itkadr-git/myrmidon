@@ -1,0 +1,38 @@
+name: Myrmidon Paperclip release watch
+
+# Fails when Paperclip has published a release that `myrmidon migrate` does not
+# accept as a source yet. Scheduled on purpose, not part of PR checks: a vendor
+# release must not break unrelated pull requests.
+# Fix: node scripts/myrmidon/vendor-release-add.mjs <tag>, then commit the
+# regenerated cli/src/commands/myrmidon-migrate-vendor-releases.ts.
+
+on:
+  schedule:
+    - cron: "17 5 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: myrmidon-paperclip-release-watch
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    name: Newest Paperclip release is a supported migration source
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+
+      - name: Compare the newest Paperclip release with the supported list
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/myrmidon/vendor-release-add.mjs --check-latest

@@ -30,6 +30,14 @@ export interface BotExtraMount {
 
 /** Desired shape of a bot's container. Immutable for the life of the container:
  *  a change is a template drift (`templateDrift`), applied by `recreate`. */
+/** The instance-wide shared directory a bot may get at `/shared`. */
+export interface BotSharedMount {
+  /** Host directory; absent means `<volumeRoot>/shared` of the driver. */
+  hostPath?: string;
+  /** Mounted read-write when true, read-only otherwise. */
+  writable: boolean;
+}
+
 export interface BotContainerSpec {
   /** [a-z0-9-], validated by the driver. Also the container's name and its DNS name
    *  on the bot network (`myrmidon-bot-<botKey>`). */
@@ -46,6 +54,9 @@ export interface BotContainerSpec {
    *  are checked against MYRMIDON_BOT_MOUNT_SOURCES when the create body is
    *  built; a mount outside that list is refused, not silently dropped. */
   extraMounts?: readonly BotExtraMount[];
+  /** myrmidon(1.6.1-BOT-DISK-D): bind the instance-wide shared directory at
+   *  `/shared`. Absent = no shared mount. `hostPath` absent = `<volumeRoot>/shared`. */
+  sharedMount?: BotSharedMount;
   /** Extra, non-authoritative labels (e.g. a project grouping). The driver's own
    *  identification labels (see template.ts BOT_LABEL_KEYS) always win on
    *  conflict and cannot be overridden through this field. */
@@ -148,6 +159,17 @@ export interface BotContainerDriver {
    * drift check of one pass.
    */
   templateDrift(spec: BotContainerSpec, knownStatus?: BotContainerStatus): Promise<TemplateDriftReport>;
+  templateDrift(spec: BotContainerSpec): Promise<TemplateDriftReport>;
+  /**
+   * myrmidon(1.6.5-DOCKERGATE-A2A3-STORM): the one-inspect probe — `status` and
+   * `templateDrift` from a SINGLE container inspect plus the marker read. The
+   * reconcile sweep did both separately: two A2 inspects and one A3 per bot per
+   * pass (3 requests), 74 bots at a 60 s tick ≈ 3,7 requests/s — already over
+   * the planned ~2,5/s before any rollout started. The probe answers the same
+   * facts for 2 requests/bot. Optional: a driver without it is used through
+   * `status` + `templateDrift` as before (fleetd).
+   */
+  statusWithDrift?(spec: BotContainerSpec): Promise<{ status: BotContainerStatus; drift: TemplateDriftReport }>;
   /** Creates the bot's container from `spec` without starting it, after
    *  preparing its volumes (created if absent, owned by the container's uid,
    *  mode 0700). Throws, before creating anything, if the image is not present
@@ -182,4 +204,26 @@ export interface BotContainerDriver {
    * Optional: a driver that cannot read it (fleetd) leaves it out.
    */
   readCloneReport?(botKey: string): Promise<string | null>;
+  /**
+   * myrmidon(1.6.5-BOT-SKILL-BACKIMPORT, OPE-6401): the bot's OWN skills —
+   * the directories under hermes/skills/ (the container's ~/.hermes/skills),
+   * where a bot keeps the skills it created at runtime — as (directory name,
+   * files). The board's own delivery (hermes/skills-board/, the profile's
+   * managed directory) is NOT part of the result. The reconcile pass feeds
+   * this to the back-importer (skill-backimport.ts), so a skill the bot made
+   * lands in the company catalog and survives a volume recreation through
+   * the normal compile-and-apply path. Empty array: the bot has a skills
+   * directory but nothing in it (or none at all). Null: the container is not
+   * running or the read failed — the pass skips the import, it never fails
+   * on it. Optional: a driver that cannot read the filesystem (fleetd)
+   * leaves it out and its bots keep no back-import.
+   */
+  readBotSkills?(botKey: string): Promise<BotSkillDirectory[] | null>;
+}
+
+/** One skill directory of a bot container: its directory name under
+ *  hermes/skills/ and its files (path relative to the skill directory). */
+export interface BotSkillDirectory {
+  name: string;
+  files: Array<{ path: string; content: string }>;
 }

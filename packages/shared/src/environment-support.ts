@@ -74,6 +74,8 @@ const REMOTE_MANAGED_ADAPTERS = new Set<AgentAdapterType>([
   "kimi_local",
   "opencode_local",
   "pi_local",
+  // myrmidon(OMP-LOCAL): remote-managed OMP execution
+  "omp_local",
 ]);
 
 export function adapterSupportsRemoteManagedEnvironments(adapterType: string): boolean {

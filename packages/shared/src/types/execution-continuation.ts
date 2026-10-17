@@ -21,6 +21,13 @@ export interface ExecutionContinuationEnvelope {
     updatedAt: string;
     deleted: boolean;
     sourceTrust: unknown;
+    /**
+     * Reference-only entry. The envelope dropped this body to stay inside its
+     * character budget; identity and freshness stay comparable through `id`,
+     * `updatedAt`, `deleted` and the author fields. Read the body from the task
+     * thread when the text is needed.
+     */
+    bodyOmitted?: boolean;
   }>;
   interactionOutcomes: Array<{
     id: string;
@@ -51,4 +58,16 @@ export interface ExecutionContinuationEnvelope {
     throughCommentId: string | null;
     summaryThroughCommentId: null;
   };
+}
+
+/**
+ * References that point at the wake payload of a run instead of copying it.
+ * The continuation row keeps these links so a reader can rebuild the wake
+ * reference without a second copy of `paperclipWake`.
+ */
+export interface ExecutionContinuationWakeLinks {
+  runId: string;
+  originCommentIds: string[];
+  sourceRunId: string | null;
+  interactionId: string | null;
 }

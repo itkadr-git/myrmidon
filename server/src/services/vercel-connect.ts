@@ -20,6 +20,9 @@ import type {
   VercelConnectCredentialReference,
   VercelConnectGrantReference,
 } from "@paperclipai/shared";
+// myrmidon(B1c): product name in user-facing texts; see product.ts.
+import { PRODUCT_NAME as PN } from "../myrmidon/product.js";
+import { readProductEnv, readProductEnvFrom } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
 
 export type VercelConnectFailureCode =
   | "vercel_connect_unavailable"
@@ -42,15 +45,15 @@ export class VercelConnectClientError extends Error {
 export function vercelConnectFailureMessage(code: VercelConnectFailureCode): string {
   switch (code) {
     case "vercel_connect_unavailable":
-      return "Vercel Connect is not configured on this Paperclip instance.";
+      return `Vercel Connect is not configured on this ${PN} instance.`;
     case "vercel_connect_auth_failed":
-      return "Paperclip could not authenticate to Vercel Connect. Repair or refresh the instance's Vercel authority.";
+      return `${PN} could not authenticate to Vercel Connect. Repair or refresh the instance's Vercel authority.`;
     case "vercel_connect_connector_not_found":
       return "Vercel Connect could not find an attached connector with that UID.";
     case "vercel_connect_authorization_required":
       return "This Vercel Connect identity needs authorization.";
     case "vercel_connect_installation_required":
-      return "This connector must be installed or attached in Vercel before Paperclip can use it.";
+      return `This connector must be installed or attached in Vercel before ${PN} can use it.`;
     default:
       return "Vercel Connect could not complete the credential request.";
   }
@@ -82,8 +85,8 @@ export function vercelConnectIntegrationStatus(env: NodeJS.ProcessEnv = process.
   authentication: "workload_oidc" | "access_token" | null;
   manageUrl: string;
 } {
-  const integrationEnabled = enabled(env.PAPERCLIP_VERCEL_CONNECT_ENABLED);
-  const hasAccessToken = Boolean(env.PAPERCLIP_VERCEL_CONNECT_ACCESS_TOKEN?.trim());
+  const integrationEnabled = enabled(readProductEnvFrom(env, "VERCEL_CONNECT_ENABLED"));
+  const hasAccessToken = Boolean(readProductEnvFrom(env, "VERCEL_CONNECT_ACCESS_TOKEN")?.trim());
   const hasWorkloadOidc = Boolean(env.VERCEL_OIDC_TOKEN?.trim());
   return {
     enabled: integrationEnabled,
@@ -124,7 +127,7 @@ export function vercelConnectSdkOptions(
   const hasWorkloadOidc = Boolean(env.VERCEL_OIDC_TOKEN?.trim());
   const vercelToken = hasWorkloadOidc
     ? undefined
-    : env.PAPERCLIP_VERCEL_CONNECT_ACCESS_TOKEN?.trim();
+    : readProductEnvFrom(env, "VERCEL_CONNECT_ACCESS_TOKEN")?.trim();
   return {
     ...(vercelToken ? { vercelToken } : {}),
     ...(forceRefresh ? { forceRefresh: true } : {}),
@@ -235,8 +238,8 @@ export function deriveVercelConnectSubject(input: {
   subjectUserId?: string | null;
 }): { subject: ConnectTokenSubject; subjectId?: string } {
   if (input.credential.principalMode === "app") return { subject: { type: "app" } };
-  const instanceId = process.env.PAPERCLIP_INSTANCE_ID
-    ?? process.env.PAPERCLIP_DEPLOYMENT_ID
+  const instanceId = readProductEnv("INSTANCE_ID")
+    ?? readProductEnv("DEPLOYMENT_ID")
     ?? "paperclip-instance";
   const subjectId = `pc_${subjectHash([
     instanceId,

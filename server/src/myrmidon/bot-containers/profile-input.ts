@@ -65,6 +65,29 @@ export const BOT_MCP_SERVERS_ENV = "MYRMIDON_BOT_MCP_SERVERS";
 export const BOT_COMPRESSION_THRESHOLD_TOKENS_ENV = "MYRMIDON_BOT_COMPRESSION_THRESHOLD_TOKENS";
 
 /**
+ * myrmidon(TOOL-DIET): MYRMIDON_BOT_DISABLED_TOOLS — comma-separated single tool names that every
+ * bot's config.yaml lists under `agent.disabled_tools`, so their schemas are not sent on each
+ * model call. Unset means {@link BOT_DEFAULT_DISABLED_TOOLS}; `none` (also `off`, `-`) means no
+ * tool is disabled — the one-line way back to the previous config.yaml. A card's own
+ * `disabledTools` list replaces it, and `vision_analyze` is kept for a card with a vision model.
+ */
+export const BOT_DISABLED_TOOLS_ENV = "MYRMIDON_BOT_DISABLED_TOOLS";
+
+/**
+ * myrmidon(TOOL-DIET): the fleet default — the tools that no measured role called even once in
+ * ~7000 model calls over three days (engineering, infrastructure and dev roles): the five browser
+ * credential-vault tools and `vision_analyze`. Their schemas cost about 1.2k tokens per call.
+ */
+export const BOT_DEFAULT_DISABLED_TOOLS: readonly string[] = [
+  "browser_vault_enter_code",
+  "browser_vault_fill",
+  "browser_vault_list",
+  "browser_vault_save_login",
+  "browser_vault_unlock",
+  "vision_analyze",
+];
+
+/**
  * myrmidon(BOT-RUNTIME-TUNING-A): the company default for the compression
  * token cap, in tokens — used when MYRMIDON_BOT_COMPRESSION_THRESHOLD_TOKENS
  * is unset (or holds no usable integer). It is a company-level (instance)
@@ -90,6 +113,15 @@ export const BOT_AUX_COMPRESSION_MODEL_ENV = "MYRMIDON_BOT_AUX_COMPRESSION_MODEL
  * served by a paid model (fact 02.10: session titles did exactly that).
  */
 export const BOT_AUX_FALLBACK_MODELS_ENV = "MYRMIDON_BOT_AUX_FALLBACK_MODELS";
+/**
+ * myrmidon(MEMORY-CENTRAL-A): instance-wide switch that turns every bot's Hermes
+ * LOCAL memory off (config.yaml `memory.enabled: false`), so durable memory
+ * lives only in the shared hindsight service. Truthy like the other bot
+ * switches (`1`/`true`/`yes`/`on`, case-insensitive); anything else, including
+ * a typo, keeps local memory on — off is the default, an opt-in feature must
+ * not flip on by accident.
+ */
+export const BOT_LOCAL_MEMORY_OFF_ENV = "MYRMIDON_BOT_LOCAL_MEMORY_OFF";
 
 /**
  * One instance-wide MCP server. The token is never in the setting: `tokenSecret`
@@ -191,11 +223,56 @@ export interface BotProfileSettings {
    * aliases the gateway actually serves.
    */
   auxiliaryFallbackModels?: string[] | null;
+  /**
+   * myrmidon(MEMORY-CENTRAL-A): MYRMIDON_BOT_LOCAL_MEMORY_OFF — when truthy,
+   * every bot's Hermes LOCAL memory is turned off in config.yaml
+   * (`memory.memory_enabled`/`user_profile_enabled: false`); durable memory
+   * then lives only in hindsight. Optional in the type so preexisting
+   * hand-built settings objects keep compiling; `readBotProfileSettings`
+   * always fills it.
+   */
+  localMemoryOff?: boolean;
+  /**
+   * myrmidon(TOOL-DIET): MYRMIDON_BOT_DISABLED_TOOLS resolved — the default list when unset, an
+   * empty list for `none`. Optional in the type so hand-built settings objects keep compiling;
+   * `readBotProfileSettings` always fills it.
+   */
+  disabledTools?: string[];
+}
+
+/**
+ * myrmidon(TOOL-DIET): MYRMIDON_BOT_DISABLED_TOOLS -> tool names. Unset/blank -> the fleet default;
+ * `none`/`off`/`-` -> []; otherwise the comma-separated names, trimmed, deduplicated, order kept.
+ */
+export function parseBotDisabledTools(raw: string | null): string[] {
+  if (raw === null) return [...BOT_DEFAULT_DISABLED_TOOLS];
+  const lowered = raw.trim().toLowerCase();
+  if (lowered === "none" || lowered === "off" || lowered === "-") return [];
+  const seen = new Set<string>();
+  const names: string[] = [];
+  for (const item of raw.split(",")) {
+    const name = item.trim();
+    if (!name || seen.has(name)) continue;
+    seen.add(name);
+    names.push(name);
+  }
+  return names;
 }
 
 function readSetting(env: NodeJS.ProcessEnv, name: string): string | null {
   const value = env[name]?.trim();
   return value ? value : null;
+}
+
+/**
+ * myrmidon(MEMORY-CENTRAL-A): the shared truthiness of the bot instance
+ * switches (`1`/`true`/`yes`/`on`, case-insensitive) — the same set
+ * `isBotContainersEnabled` accepts in agent-config.ts.
+ */
+function isTruthyBotSwitch(value: string | null): boolean {
+  if (!value) return false;
+  const raw = value.toLowerCase();
+  return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
 }
 
 /**
@@ -424,6 +501,12 @@ export function readBotProfileSettings(env: NodeJS.ProcessEnv = process.env): Bo
     auxiliaryTitleModel: readSetting(env, BOT_AUX_TITLE_MODEL_ENV),
     auxiliaryCompressionModel: readSetting(env, BOT_AUX_COMPRESSION_MODEL_ENV),
     auxiliaryFallbackModels,
+    // myrmidon(MEMORY-CENTRAL-A): MYRMIDON_BOT_LOCAL_MEMORY_OFF, truthy like
+    // the other bot switches; anything else (including a typo) keeps local
+    // memory on — the feature is opt-in and off by default.
+    localMemoryOff: isTruthyBotSwitch(readSetting(env, BOT_LOCAL_MEMORY_OFF_ENV)),
+    // myrmidon(TOOL-DIET): the single tools no bot sends to the model.
+    disabledTools: parseBotDisabledTools(readSetting(env, BOT_DISABLED_TOOLS_ENV)),
   };
 }
 
@@ -656,6 +739,8 @@ function readAdapterConfig(card: Record<string, unknown>): HermesProfileAdapterC
     // ceiling in buildHermesProfileInput (the ceiling is instance settings).
     parallelHelpers: readParallelHelpersCard(card),
     toolsets,
+    // myrmidon(TOOL-DIET): present (even empty) it replaces the instance list; absent, the instance list applies.
+    disabledTools: Array.isArray(card.disabledTools) ? (asStringList(card.disabledTools) ?? []) : undefined,
   };
 }
 
@@ -914,7 +999,14 @@ export function buildHermesProfileInput(source: BotProfileSource, settings: BotP
       ...(source.instanceDefaults?.compression ?? {}),
     },
     sessionsRetentionDays: source.instanceDefaults?.sessionsRetentionDays,
+    // myrmidon(MEMORY-CENTRAL-A): MYRMIDON_BOT_LOCAL_MEMORY_OFF is an instance
+    // switch read into settings; a hand-built settings object without the
+    // field falls back to the caller's own instanceDefaults.
+    disableLocalMemory: settings.localMemoryOff ?? source.instanceDefaults?.disableLocalMemory,
     modelContextLengths: settings.modelContextLengths ?? source.instanceDefaults?.modelContextLengths,
+    // myrmidon(TOOL-DIET): MYRMIDON_BOT_DISABLED_TOOLS (default list when unset); a hand-built
+    // settings object without the field falls back to the caller's own instanceDefaults.
+    disabledTools: settings.disabledTools ?? source.instanceDefaults?.disabledTools,
     auxiliary: {
       ...(source.instanceDefaults?.auxiliary ?? {}),
       ...(settings.auxiliaryTitleModel ? { titleGenerationModel: settings.auxiliaryTitleModel } : {}),

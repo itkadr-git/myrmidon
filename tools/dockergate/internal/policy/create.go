@@ -49,6 +49,11 @@ type Env struct {
 	// PackageCacheRoot is the host directory of the shared package cache
 	// (configuration key "packageCacheRoot"). Empty allows no cache mount.
 	PackageCacheRoot string
+	// BotRuntimeRoot is the host directory of the shared bot runtime
+	// (configuration key "botRuntimeRoot", myrmidon 1.6.5-BOT-DISK-H11). Its
+	// bin/lazy-packages/lsp subdirectories are mounted read-only over the bot's
+	// own runtime paths. Empty allows no such mount.
+	BotRuntimeRoot string
 	// ScopeRoot is the host directory of shared isolation-scope instances
 	// (configuration key "scopeRoot", BOT-DISK-F), and ScopeInstances the
 	// instance directories THIS bot is enrolled for (bots[].scopeInstances).
@@ -81,6 +86,11 @@ type Create struct {
 // mount, so link(2) works between them; /data/hermes, /workspace and /scratch
 // are links made by the image that resolve into it.
 const BotMountTarget = "/bot"
+
+// BotHermesVolume is where a bot sees its hermes volume — HERMES_HOME, and the
+// mount point the image links `/data/hermes` to under the single-mount form
+// (HERMES_MOUNT_PATH in server/src/myrmidon/bot-containers/template.ts).
+const BotHermesVolume = "/data/hermes"
 
 // LegacyBotBindsAreAllowed: a LEGACY-layout bot (a contract "1" image without
 // the scope label — an image built for the three separate volumes) gets the
@@ -118,6 +128,14 @@ const ScopeDataTmpfs = "uid=10001,gid=10001,mode=0755,size=1m"
 // ScopeHelperTarget is where the prepare helper of a shared member sees the
 // instance directory, to hand it to the bot's uid.
 const ScopeHelperTarget = "/scope"
+
+// PackageCacheHelperTarget is where the root-owned prepare helper sees the
+// host directory of the shared package cache (myrmidon 1.6.5-BOT-DISK-UV-B
+// board side), so its script can create and chown every cache subdirectory for
+// the bot's uid. It mirrors HELPER_PACKAGE_CACHE_MOUNT in
+// server/src/myrmidon/bot-containers/template.ts. Only the prepare helper may
+// carry this bind — it runs as root with CAP_CHOWN for exactly this.
+const PackageCacheHelperTarget = "/package-cache"
 
 // ScopeBind is the one bind of a shared member's bot container.
 func ScopeBind(scopeRoot, instance string) string {
@@ -177,11 +195,17 @@ func Binds(volumeRoot, botKey string) []string {
 // neither take one of them over nor shadow a path under it.
 var reservedTargets = []string{"/bot", "/bot-scope", "/scope", "/data", "/data/hermes", "/workspace", "/scratch", "/tmp"}
 
+// plainContainerPath reports whether p has the shape of a container path: a
+// plain absolute path without .., //, a trailing / or a NUL byte.
+func plainContainerPath(p string) bool {
+	return strings.HasPrefix(p, "/") && p != "/" && !strings.Contains(p, "..") &&
+		!strings.Contains(p, "//") && !strings.HasSuffix(p, "/") && !strings.Contains(p, "\x00")
+}
+
 // safeContainerTarget reports whether p may be the destination of an extra mount:
 // a plain absolute path outside the reserved mount points.
 func safeContainerTarget(p string) bool {
-	if !strings.HasPrefix(p, "/") || p == "/" || strings.Contains(p, "..") ||
-		strings.Contains(p, "//") || strings.HasSuffix(p, "/") || strings.Contains(p, "\x00") {
+	if !plainContainerPath(p) {
 		return false
 	}
 	for _, r := range reservedTargets {
@@ -212,10 +236,12 @@ func parseExtraBind(bind string) (source, target, mode string, ok bool) {
 // These are the only extra mounts that may be read-write, and only as exactly
 // these pairs: a writable bind cannot name another source or another target.
 var PackageCacheMounts = map[string]string{
-	"pnpm":     "/cache/pnpm",
-	"go-mod":   "/cache/go-mod",
-	"go-build": "/cache/go-build",
-	"gradle":   "/cache/gradle",
+	"pnpm":       "/cache/pnpm",
+	"pnpm-store": "/cache/pnpm-store", // 1.6.5-BOT-DISK-H8a: the pnpm store, one per partition
+	"uv":         "/cache/uv",         // 1.6.5-BOT-DISK-UV-A: the uv cache, one per partition
+	"go-mod":     "/cache/go-mod",
+	"go-build":   "/cache/go-build",
+	"gradle":     "/cache/gradle",
 }
 
 // PackageCacheReadOnlyMounts is the read-only part of the shared package
@@ -248,6 +274,96 @@ func isCachePair(pairs map[string]string, root, source, target string) bool {
 	return ok && want == target
 }
 
+// BotRuntimeMounts is the read-only part of the shared bot runtime (myrmidon
+// 1.6.5-BOT-DISK-H11): the subdirectory of env.BotRuntimeRoot -> the path the
+// bot sees it at, i.e. its mount point inside the bot's own hermes volume. It
+// mirrors BOT_RUNTIME_MOUNTS in
+// server/src/myrmidon/bot-containers/template.ts. These pairs are accepted only
+// as "ro" and need no mountSources entry.
+var BotRuntimeMounts = map[string]string{
+	"bin":           "/data/hermes/bin",
+	"lazy-packages": "/data/hermes/lazy-packages",
+	"lsp":           "/data/hermes/lsp",
+}
+
+// OwnerDataContainerRoots are the subtrees of a bot's own hermes volume that
+// hold operator data kept ONCE on the host and used by many bots — the class J
+// of the BOT-DISK-H design (1.6.5). A card may name a mount point inside one of
+// them; the driver puts the bind at the real path of that mount point
+// (botTreeTarget), and the gate accepts it only there.
+var OwnerDataContainerRoots = []string{"/data/hermes/.hermes/shared", "/data/hermes/media", "/data/hermes/work"}
+
+// ownerDataContainerPath reports whether p names a path at or under one of
+// OwnerDataContainerRoots.
+func ownerDataContainerPath(p string) bool {
+	for _, root := range OwnerDataContainerRoots {
+		if p == root || strings.HasPrefix(p, root+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+// BotHermesTreeSuffix is where the bot's hermes volume sits inside the bot's
+// own tree: the single-mount form binds one directory at BotMountTarget and the
+// volume is its "hermes" subdirectory (HERMES_MOUNT_PATH, /data/hermes, is a
+// link to it inside the image), and a member of a shared scope instance sees
+// the same layout one level down. It mirrors BOT_HERMES_REAL_PATH in
+// server/src/myrmidon/bot-containers/template.ts.
+const BotHermesTreeSuffix = "/hermes"
+
+// botTreeTarget maps a mount point the board names inside the bot's hermes
+// volume to the path this create must actually bind, in the layout of the body:
+// the bot's own directory for a single-mount bot, the instance directory plus
+// the bot key for a member of a shared scope instance (BOT-DISK-F), and the
+// path itself for a legacy three-bind bot, which mounts the volume directly. It
+// mirrors botTreeRealPath in server/src/myrmidon/bot-containers/template.ts.
+func botTreeTarget(target, botKey string, shared, legacy bool) string {
+	if legacy {
+		return target
+	}
+	prefix := BotMountTarget
+	if shared {
+		prefix = ScopeMountTarget + "/" + botKey
+	}
+	return prefix + BotHermesTreeSuffix + strings.TrimPrefix(target, BotHermesVolume)
+}
+
+// botTreeContainerPath is the reverse of botTreeTarget: the path the bot sees,
+// given the bind target of this layout (ok=false when target is not inside the
+// bot's own tree).
+func botTreeContainerPath(target, botKey string, shared, legacy bool) (string, bool) {
+	if legacy {
+		if target == BotHermesVolume || strings.HasPrefix(target, BotHermesVolume+"/") {
+			return target, true
+		}
+		return "", false
+	}
+	prefix := BotMountTarget + BotHermesTreeSuffix
+	if shared {
+		prefix = ScopeMountTarget + "/" + botKey + BotHermesTreeSuffix
+	}
+	if target == prefix {
+		return BotHermesVolume, true
+	}
+	if strings.HasPrefix(target, prefix+"/") {
+		return BotHermesVolume + strings.TrimPrefix(target, prefix), true
+	}
+	return "", false
+}
+
+// isBotRuntimeBind reports whether source:target is one of the shared bot
+// runtime pairs under root, in the layout of this create: the source must be
+// <root>/<subdir> in full and the target must be that pair's mount point as it
+// is actually bound. An empty root allows none.
+func isBotRuntimeBind(root, source, target, botKey string, shared, legacy bool) bool {
+	if root == "" || !strings.HasPrefix(source, root+"/") {
+		return false
+	}
+	want, ok := BotRuntimeMounts[strings.TrimPrefix(source, root+"/")]
+	return ok && botTreeTarget(want, botKey, shared, legacy) == target
+}
+
 // parseBotBinds checks HostConfig.Binds: the one fixed bind first, then the bot's extra read-only mounts. Every extra source must be one
 // of env.MountSources (exact match, no prefix rule — a card cannot reach a
 // sibling directory the operator did not name) and every extra target must be a
@@ -270,6 +386,7 @@ func parseBotBinds(v *jsonx.Value, path string, env *Env, botKey string, shared 
 	// of env.ScopeInstances, the bind is rebuilt from it byte for byte.
 	instance := ""
 	var base []string
+	legacy := false
 	if shared {
 		prefix := env.ScopeRoot + "/"
 		const suffix = ":" + ScopeMountTarget
@@ -286,6 +403,7 @@ func parseBotBinds(v *jsonx.Value, path string, env *Env, botKey string, shared 
 		// three entries in the driver's order, then the same extras the
 		// single-mount form may carry.
 		base = append([]string(nil), got[:3]...)
+		legacy = true
 	} else {
 		base = []string{BotBind(env.VolumeRoot, botKey)}
 		if got[0] != base[0] {
@@ -303,14 +421,24 @@ func parseBotBinds(v *jsonx.Value, path string, env *Env, botKey string, shared 
 		if !ok {
 			return nil, "", deny.Field(deny.BindsMismatch, path, []byte(bind))
 		}
+		// myrmidon(1.6.5-BOT-DISK-H11): two kinds of bind land INSIDE the bot's
+		// own hermes volume — the shared bot runtime (the fixed pairs under
+		// env.BotRuntimeRoot, class C) and a mount point at or under one of
+		// OwnerDataContainerRoots (class J). Under the single-mount form the
+		// volume is not a bind of its own any more, so the driver puts them at
+		// the REAL path under the bot's tree (botTreeTarget) instead of at the
+		// path the board names; the gate translates back and compares that.
+		runtime := isBotRuntimeBind(env.BotRuntimeRoot, source, target, botKey, shared, legacy)
+		containerPath, inTree := botTreeContainerPath(target, botKey, shared, legacy)
+		ownerData := !runtime && inTree && ownerDataContainerPath(containerPath)
 		if mode == "rw" {
 			if !isPackageCacheBind(env.PackageCacheRoot, source, target) {
 				return nil, "", deny.Field(deny.MountSourceNotAllowed, path, []byte(source))
 			}
-		} else if !allowed[source] && !isPackageCacheReadOnlyBind(env.PackageCacheRoot, source, target) {
+		} else if !allowed[source] && !isPackageCacheReadOnlyBind(env.PackageCacheRoot, source, target) && !runtime {
 			return nil, "", deny.Field(deny.MountSourceNotAllowed, path, []byte(source))
 		}
-		if !safeContainerTarget(target) || seen[target] {
+		if !plainContainerPath(target) || (!runtime && !ownerData && !safeContainerTarget(target)) || seen[target] {
 			return nil, "", deny.Field(deny.BindsMismatch, path, []byte(target))
 		}
 		seen[target] = true
@@ -542,7 +670,7 @@ func parseBot(root *jsonx.Value, r *route.Route, env *Env) (*Create, *deny.Error
 
 	// Env is present only for a shared member (ScopeSubdirEnv, detected above) or a
 	// dev-variant bot (the DEVBUILD_* triple); parseBotEnv accepts exactly those forms.
-	envList, err := parseBotEnv(top["Env"], "Env")
+	envList, err := parseBotEnv(top["Env"], "Env", r.BotKey)
 	if err != nil {
 		return nil, err
 	}
@@ -671,13 +799,18 @@ const (
 // paths of the build server, not secrets.
 var botEnvNames = []string{"DEVBUILD_HOST", "DEVBUILD_USER", "DEVBUILD_BASE"}
 
+// botEnvBotName is the optional fourth devbuild entry (1.6.6 DEVBUILD-ISOLATION): the
+// driver keys the build-host copy by the bot, since every bot container runs as the same
+// user. Its value must be exactly the route's bot key — a body cannot name another bot.
+const botEnvBotName = "DEVBUILD_BOT_NAME"
+
 // parseBotEnv checks the Env list of a bot body: empty (no devbuild wiring, not a shared
 // member), exactly the driver's three DEVBUILD_* entries in order (BUILD-OFFLOAD C — the
 // driver's builder writes all of them or none, so a prefix or a suffix is a body the driver
 // never produced), or the single shared-scope entry (MYRMIDON_BOT_SCOPE_SUBDIR=<botKey>).
 // Each entry is a single NAME=VALUE line without a NUL or a newline; the caller reproduces
 // the list byte for byte. A nil *jsonx.Value (no Env key) is the empty list.
-func parseBotEnv(v *jsonx.Value, path string) ([]string, *deny.Error) {
+func parseBotEnv(v *jsonx.Value, path string, botKey string) ([]string, *deny.Error) {
 	if v == nil {
 		return nil, nil
 	}
@@ -688,6 +821,20 @@ func parseBotEnv(v *jsonx.Value, path string) ([]string, *deny.Error) {
 	if len(got) == 1 && strings.HasPrefix(got[0], ScopeSubdirEnv+"=") {
 		return got, nil
 	}
+	if len(got) == len(botEnvNames)+1 {
+		if got[len(botEnvNames)] != botEnvBotName+"="+botKey || botKey == "" {
+			return nil, deny.FieldOnly(deny.JSONValue, path)
+		}
+		if _, err := parseBotEnv3(got[:len(botEnvNames)], path); err != nil {
+			return nil, err
+		}
+		return got, nil
+	}
+	return parseBotEnv3(got, path)
+}
+
+// parseBotEnv3 checks the empty list or the three DEVBUILD_HOST/USER/BASE entries in order.
+func parseBotEnv3(got []string, path string) ([]string, *deny.Error) {
 	if len(got) != 0 && len(got) != len(botEnvNames) {
 		return nil, deny.FieldOnly(deny.JSONValue, path)
 	}
@@ -853,6 +1000,17 @@ func matchHelperBinds(got []string, env *Env, botKey string, prepare, sharedPrep
 		if equal(want) {
 			return want, "", nil
 		}
+		// myrmidon(1.6.5-BOT-DISK-UV-B board side): with a configured package
+		// cache the root-owned prepare helper also binds the cache root itself at
+		// PackageCacheHelperTarget, so its script can create and chown the cache
+		// subdirectories for the bot's uid. The apply-profile helper never gets
+		// it (it runs as the bot).
+		if prepare && env.PackageCacheRoot != "" {
+			want = append(want, env.PackageCacheRoot+":"+PackageCacheHelperTarget)
+			if equal(want) {
+				return want, "", nil
+			}
+		}
 	}
 	// A shared layout: the instance is read from the first bind.
 	if env.ScopeRoot != "" && len(got) > 0 {
@@ -867,6 +1025,18 @@ func matchHelperBinds(got []string, env *Env, botKey string, prepare, sharedPrep
 						return nil, "", deny.Field(deny.ScriptMismatch, "Cmd[0]", []byte("prepare")).WithDetail("prepare_scope")
 					}
 					return want, instance, nil
+				}
+				// myrmidon(1.6.5-BOT-DISK-UV-B board side): with a configured
+				// package cache the root-owned prepare helper of a member also
+				// binds the cache root (see the isolated branch above).
+				if prepare && env.PackageCacheRoot != "" {
+					want = append(want, env.PackageCacheRoot+":"+PackageCacheHelperTarget)
+					if equal(want) {
+						if !sharedPrepare {
+							return nil, "", deny.Field(deny.ScriptMismatch, "Cmd[0]", []byte("prepare")).WithDetail("prepare_scope")
+						}
+						return want, instance, nil
+					}
 				}
 			}
 			return nil, "", deny.Field(deny.MountSourceNotAllowed, "HostConfig.Binds", []byte(got[0]))

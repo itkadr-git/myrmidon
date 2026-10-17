@@ -12,6 +12,7 @@ import type { Db } from "@paperclipai/db";
 import { myrmidonMetricsRoutes, type MetricsRoutesDeps } from "./routes.js";
 
 export * from "./metrics.js";
+export * from "./process-metrics.js";
 export {
   METRICS_TOKEN_SECRET_ENV,
   METRICS_TOKEN_ENV,

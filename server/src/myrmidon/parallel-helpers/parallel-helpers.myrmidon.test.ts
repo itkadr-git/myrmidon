@@ -86,6 +86,21 @@ describe("myrmidon(PARALLEL-HELPERS) routes: reading the settings and hint", () 
     expect(res.body.capacity).toMatchObject({ requestedTotal: 0, enabledAgents: 0, warning: null });
   });
 
+  it("reports the owner's ceiling as written — no hard cap above 50 (HELPERS-NO-CAP)", async () => {
+    const { app } = harness({ stored: { maxPerAgent: 500 } });
+    const res = await request(app).get(URL).expect(200);
+    expect(res.body.effective.ceiling).toBe(500);
+  });
+
+  it("counts a card limit above the old hard cap at its resolved value", async () => {
+    const { app } = harness({
+      stored: { maxPerAgent: 200 },
+      cards: [{ id: "a", name: "A", adapterConfig: { parallelHelpers: { enabled: true, maxConcurrent: 150 } } }],
+    });
+    const res = await request(app).get(URL).expect(200);
+    expect(res.body.capacity).toMatchObject({ requestedTotal: 150, enabledAgents: 1 });
+  });
+
   it("sums the enabled agents' limits into the hint, resolved like the compiler", async () => {
     const { app } = harness({
       stored: { maxPerAgent: 6 },
@@ -134,6 +149,24 @@ describe("myrmidon(PARALLEL-HELPERS) routes: writing the settings", () => {
     expect(audits).toHaveLength(2);
     expect(audits[0]).toMatchObject({ action: PARALLEL_HELPERS_ACTION, entityType: "instance_settings" });
     expect(audits[0]?.details).toMatchObject({ changedKeys: ["defaultMaxPerAgent"] });
+  });
+
+  it("accepts null to clear host capacity values while retaining other settings", async () => {
+    const { withActor, updated, audits } = harness({
+      stored: { maxPerAgent: 7, buildSlots: 8, hostMemoryMb: 16384 },
+    });
+    const res = await request(withActor(admin))
+      .patch(URL)
+      .send({ buildSlots: null, hostMemoryMb: null })
+      .expect(200);
+
+    expect(updated[0]?.parallelHelpers).toEqual({
+      maxPerAgent: 7,
+      buildSlots: null,
+      hostMemoryMb: null,
+    });
+    expect(res.body.settings).toEqual(updated[0]?.parallelHelpers);
+    expect(audits[0]?.details).toMatchObject({ changedKeys: ["buildSlots", "hostMemoryMb"] });
   });
 
   it("rejects invalid bodies with 400", async () => {

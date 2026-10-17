@@ -1,6 +1,8 @@
 import type { AdapterRuntimeCommandSpec, ServerAdapterModule } from "./types.js";
 import { parseAdapterModelsEnv } from "../services/adapter-models-env.js";
 import { stampClaudeAgentIdHeader } from "./claude-agent-id-header.js";
+// myrmidon(B1c): product name in user-facing runner texts; see product.ts.
+import { PRODUCT_NAME } from "../myrmidon/product.js";
 import {
   buildSandboxNpmInstallCommand,
   getAdapterSessionManagement,
@@ -130,6 +132,16 @@ import {
   listPiModels,
 } from "@paperclipai/adapter-pi-local/server";
 import { agentConfigurationDoc as piAgentConfigurationDoc } from "@paperclipai/adapter-pi-local";
+// myrmidon(OMP-LOCAL): register omp_local adapter
+import {
+  execute as ompExecute,
+  listOmpSkills,
+  syncOmpSkills,
+  testEnvironment as ompTestEnvironment,
+  sessionCodec as ompSessionCodec,
+  listOmpModels,
+} from "@paperclipai/adapter-omp-local/server";
+import { agentConfigurationDoc as ompAgentConfigurationDoc } from "@paperclipai/adapter-omp-local";
 import { BUILTIN_ADAPTER_TYPES } from "./builtin-adapter-types.js";
 import { buildExternalAdapters } from "./plugin-loader.js";
 import { getDisabledAdapterTypes } from "../services/adapter-plugin-store.js";
@@ -142,6 +154,7 @@ import {
   QUALIFIED_OPENCODE_RUNNER_VERSION,
   resolvePaperclipRunnerProviderProfile,
 } from "../services/native-runtime/provider-profile.js";
+import { readProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
 
 function readConfiguredCommand(config: Record<string, unknown>, fallback: string): string {
   const value = typeof config.command === "string" ? config.command.trim() : "";
@@ -390,7 +403,8 @@ const paperclipRunnerAdapter: ServerAdapterModule = {
         ? error
         : new PaperclipRunnerProviderProfileError(
             "paperclip_runner_provider_unsupported",
-            "Paperclip Runner provider configuration is invalid.",
+            // myrmidon(B1c): visible test-failure text names our product part.
+            `${PRODUCT_NAME} Runner provider configuration is invalid.`,
           );
       return {
         adapterType: "paperclip_runner",
@@ -510,7 +524,8 @@ const paperclipRunnerAdapter: ServerAdapterModule = {
         )
       : buildNpmRuntimeCommandSpec(config, "codex", "@openai/codex@0.153.4"),
   agentConfigurationDoc:
-    "# Paperclip Runner\n\nAdapter: paperclip_runner\n\nRuns Codex, OpenCode, Claude Managed, AWS AgentCore, or ACPX Claude through the Rust Paperclip runner and authenticated PRP transport. Pi is not available through the qualified ACPX profile. Managed providers use company-scoped qualified profiles, explicit retention acknowledgement, and spend limits.\n",
+    // myrmidon(B1c): visible agent-configuration document names our product part.
+    `# ${PRODUCT_NAME} Runner\n\nAdapter: paperclip_runner\n\nRuns Codex, OpenCode, Claude Managed, AWS AgentCore, or ACPX Claude through the Rust ${PRODUCT_NAME} runner and authenticated PRP transport. Pi is not available through the qualified ACPX profile. Managed providers use company-scoped qualified profiles, explicit retention acknowledgement, and spend limits.\n`,
   getConfigSchema: () => ({
     fields: [
       {
@@ -606,7 +621,7 @@ const paperclipRunnerAdapter: ServerAdapterModule = {
         label: "Estimated session ceiling (USD)",
         type: "number" as const,
         default: 1,
-        hint: "Paperclip estimate; AWS does not provide a per-session currency hard stop.",
+        hint: `${PRODUCT_NAME} estimate; AWS does not provide a per-session currency hard stop.`,
         meta: { visibleWhen: { key: "provider", value: "aws_agentcore" } },
       },
       {
@@ -839,6 +854,27 @@ const piLocalAdapter: ServerAdapterModule = {
   agentConfigurationDoc: piAgentConfigurationDoc,
 };
 
+// myrmidon(OMP-LOCAL): omp_local adapter
+const ompLocalAdapter: ServerAdapterModule = {
+  type: "omp_local",
+  runtimeToolDelivery: "environment",
+  execute: ompExecute,
+  testEnvironment: ompTestEnvironment,
+  listSkills: listOmpSkills,
+  syncSkills: syncOmpSkills,
+  sessionCodec: ompSessionCodec,
+  sessionManagement: getAdapterSessionManagement("omp_local") ?? undefined,
+  models: [],
+  listModels: listOmpModels,
+  supportsLocalAgentJwt: true,
+  supportsInstructionsBundle: true,
+  instructionsPathKey: "instructionsFilePath",
+  requiresMaterializedRuntimeSkills: true,
+  getRuntimeCommandSpec: (config) =>
+    buildNpmRuntimeCommandSpec(config, "omp", "@oh-my-pi/pi-coding-agent@18.9.2"),
+  agentConfigurationDoc: ompAgentConfigurationDoc,
+};
+
 const adaptersByType = new Map<string, ServerAdapterModule>();
 
 // For builtin types that are overridden by an external adapter, we keep the
@@ -858,6 +894,7 @@ function registerBuiltInAdapters() {
     paperclipRunnerAdapter,
     openCodeLocalAdapter,
     piLocalAdapter,
+    ompLocalAdapter,
     cursorCloudAdapter,
     cursorLocalAdapter,
     geminiLocalAdapter,
@@ -931,7 +968,7 @@ const externalAdaptersReady: Promise<void> = (async () => {
       const overriding = BUILTIN_ADAPTER_TYPES.has(externalAdapter.type);
       if (overriding) {
         console.log(
-          `[paperclip] External adapter "${externalAdapter.type}" overrides built-in adapter`,
+          `[myrmidon] External adapter "${externalAdapter.type}" overrides built-in adapter`,
         );
         // Save the original builtin for later restoration.
         const existing = adaptersByType.get(externalAdapter.type);
@@ -945,7 +982,7 @@ const externalAdaptersReady: Promise<void> = (async () => {
       );
     }
   } catch (err) {
-    console.error("[paperclip] Failed to load external adapters:", err);
+    console.error("[myrmidon] Failed to load external adapters:", err);
   }
 })();
 
@@ -1011,7 +1048,7 @@ let adapterModelsEnvCache: {
 } | null = null;
 
 function getDeclaredAdapterModels(): ReturnType<typeof parseAdapterModelsEnv> {
-  const raw = process.env.PAPERCLIP_ADAPTER_MODELS;
+  const raw = readProductEnv("ADAPTER_MODELS");
   if (adapterModelsEnvCache && adapterModelsEnvCache.raw === raw) {
     return adapterModelsEnvCache.value;
   }
@@ -1020,7 +1057,7 @@ function getDeclaredAdapterModels(): ReturnType<typeof parseAdapterModelsEnv> {
     value = parseAdapterModelsEnv(process.env);
   } catch (err) {
     console.error(
-      "[paperclip] Invalid PAPERCLIP_ADAPTER_MODELS; ignoring declared model lists:",
+      "[myrmidon] Invalid PAPERCLIP_ADAPTER_MODELS; ignoring declared model lists:",
       err,
     );
   }
@@ -1066,11 +1103,9 @@ export function listServerAdapters(): ServerAdapterModule[] {
  * functional for existing agents but hidden from selection.
  */
 export function listEnabledServerAdapters(): ServerAdapterModule[] {
-  const disabled = getDisabledAdapterTypesFromStore();
-  const disabledSet = disabled.length > 0 ? new Set(disabled) : null;
-  return disabledSet
-    ? Array.from(adaptersByType.values()).filter((a) => !disabledSet.has(a.type))
-    : Array.from(adaptersByType.values());
+  const disabled = new Set(getDisabledAdapterTypesFromStore());
+  if (process.env.MYRMIDON_DISABLE_HERMES_LOCAL === "1") disabled.add("hermes_local");
+  return Array.from(adaptersByType.values()).filter((adapter) => !disabled.has(adapter.type));
 }
 
 export async function detectAdapterModel(
@@ -1110,12 +1145,12 @@ export function setOverridePaused(type: string, paused: boolean): boolean {
   const wasPaused = pausedOverrides.has(type);
   if (paused && !wasPaused) {
     pausedOverrides.add(type);
-    console.log(`[paperclip] Override paused for "${type}" — builtin adapter restored`);
+    console.log(`[myrmidon] Override paused for "${type}" — builtin adapter restored`);
     return true;
   }
   if (!paused && wasPaused) {
     pausedOverrides.delete(type);
-    console.log(`[paperclip] Override resumed for "${type}" — external adapter active`);
+    console.log(`[myrmidon] Override resumed for "${type}" — external adapter active`);
     return true;
   }
   return false;

@@ -2,98 +2,65 @@
 
 > Русская версия: [System-requirements.ru](System-requirements.ru)
 
-What a host needs to run a Myrmidon install. The values below come from the
-product documentation and the deploy scripts
-([`docs/myrmidon/deploy.md`](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/deploy.md),
-[`scripts/myrmidon/deploy/deploy.env.example`](https://github.com/itkadr-git/myrmidon/blob/main/scripts/myrmidon/deploy/deploy.env.example)).
-Where the docs name a number, it is quoted; where they do not, this page says
-so instead of inventing one.
+What a server needs to run Myrmidon. The minimum values below are the checks
+the installer performs before it touches anything — a machine below them is
+refused with a plain-language message. The recommended values come from the
+production installation that runs the project itself.
 
-## Software (required)
+## Operating system and architecture
 
-From the deploy documentation — the deploy refuses to run without these:
+- **Ubuntu 24.04 or newer, or Debian 13 or newer** — other distributions work
+  in principle, but the installer warns that they are untested.
+- Architecture **x86_64 or aarch64**.
+- `systemd` is expected so the service survives a host reboot.
+- Root rights for the installation (the one-line command already runs the
+  installer through `sudo`).
+- `curl` on a brand-new system; everything else the installer installs
+  itself (including Docker and the compose plugin).
 
-- `bash` 4+
-- `docker` with the `compose` and `buildx` plugins (buildx is needed to
-  inspect the image digest: `docker buildx imagetools inspect`)
-- `curl`, `jq`, `git`
-- a clone of `itkadr-git/myrmidon` on the deploy host, whose `origin` points
-  at `github.com/itkadr-git/myrmidon` — the deploy script checks the image
-  commit against this clone
-- a database dump command (`DUMP_COMMAND`, e.g. `pg_dump`) and, for a
-  rollback with restore, a restore command (`RESTORE_COMMAND`, e.g.
-  `pg_restore`)
+## Minimum (checked by the installer)
 
-The documentation names no specific OS distribution or version; any Linux
-that runs current Docker with the compose and buildx plugins qualifies.
+| Resource | Minimum |
+|---|---|
+| CPU | 2 cores |
+| Memory (RAM) | 4 GB |
+| Free disk under `/opt/myrmidon` | 10 GB |
+| Port | 3100 free (a different one can be passed as `--port`) |
 
-## Docker images
+The minimum runs the board itself comfortably and a few agents.
 
-The board runs from the CI-built image `ghcr.io/itkadr-git/myrmidon`,
-published by the **Myrmidon image** workflow. Only CI-built images from
-`main` or a `myr-v*` tag are accepted by the deploy script — there is no
-flag or setting that skips this check.
+## Recommended
+
+| Resource | Recommended |
+|---|---|
+| Board without agents | 4 cores, 8 GB RAM (4 GB for the board, 4 GB for the database), 50 GB disk |
+| Each agent on the same host | +1–4 GB RAM and a disk quota for its files |
+| Large installation | the project's own production server runs **74 agents on 16 cores / 64 GB RAM** |
+
+A rule of thumb for a host with N agents: 8 GB for the board and the
+database, plus 1–4 GB per agent. The board additionally keeps a safety floor:
+by default a new agent run starts only while the host has at least 15 GB of
+free memory (the `minFreeHostMemoryMb` setting, see
+[Settings in the interface](Settings-in-the-interface)).
+
+## Disk layout
+
+- The program and the database live under the install directory
+  (`/opt/myrmidon` by default).
+- Every agent owns a directory on the host with its working copies and
+  profile; its size is capped by a per-agent disk quota set in the interface
+  (see [Settings in the interface](Settings-in-the-interface)). Size this
+  space for the number of agents and their working copies.
+- The board watches the host disk fill itself and raises an attention signal
+  at 85 % (critical from 95 %).
+
+## Network
+
+- The board (interface and API) listens on port **3100**; it needs outbound
+  internet access to download releases and program images.
+- Agents on **other** machines need network access to this board.
 
 ## Database
 
-All board state lives in PostgreSQL. The predeploy check restores the dump
-into a throwaway Postgres container (default image `postgres:16-alpine`);
-its major version must be able to read the dump, because `pg_restore`
-refuses an older server.
-
-## Network and ports
-
-- The board serves the UI and API on port `3100`
-  (`HEALTH_URL=http://127.0.0.1:3100/api/health` in the example settings).
-- The maintenance API lives on the same port
-  (`/api/myrmidon/maintenance`).
-- In `authenticated` deployment mode the anonymous `/api/health` shows the
-  commit but not the version, so a board API key in a `0600` file
-  (`HEALTH_TOKEN_FILE`) is required for the deploy's version check.
-- fleetd (bots on other machines) needs a health URL
-  (`MYR_FLEETD_HEALTH_URL`) reachable **from the deploy host** — without it
-  the rollout refuses before it pulls anything. dockergate has no health
-  URL by design: its socket answers only the board's main process, and it is
-  proven by its own log lines.
-
-## Memory
-
-The run admission defaults document the memory the host is expected to keep
-free ([`docs/myrmidon/guides/run-limits.md`](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/run-limits.md)):
-
-- `minFreeHostMemoryMb` defaults to `15360` (15 GB) — a run starts only
-  while the host keeps at least this much `MemAvailable`.
-- `runMemoryEstimateMb` defaults to `300` MB — the budget counted per run
-  against the free-memory check.
-
-The documentation names no minimum or recommended absolute CPU/RAM sizes for
-an install; it only names the free-memory floor above.
-
-## Disk
-
-- Board data lives under the data root (`/data` by default for the
-  host-disk measurement, `MYRMIDON_HOST_DISK_DATA_ROOT`). The board measures
-  the host disk fill on every scheduler tick and raises an attention signal
-  at the threshold (default 85 %, critical from 95 %)
-  ([`docs/myrmidon/host-disk.md`](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/host-disk.md)).
-- Every bot owns a directory on the host that runs its containers:
-  `<MYRMIDON_BOT_VOLUME_ROOT>/<botKey>/{hermes,workspace,scratch}` — clones
-  of working copies, scratch dumps, the bot's profile. Per-bot disk quotas
-  are configured in the instance settings
-  ([`docs/myrmidon/bot-disk-quota.md`](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/bot-disk-quota.md)).
-  Size this partition for the number of bots and their working copies; the
-  docs name no fixed gigabyte figure — quota fields (`defaultQuotaMb`,
-  `perCaste`, `perAgent`) are the operative knobs.
-- Database dumps go to `DUMP_DIR`; the deploy aborts if the dump file is
-  missing or smaller than `DUMP_MIN_BYTES` (1024 in the example).
-
-## Deploy-time extras (optional)
-
-- `MYRMIDON_PREDEPLOY_CHECK=1` (default) restores the predeploy dump into a
-  throwaway Postgres and boots the new board and the new dockergate against
-  it before the maintenance window — it needs a free local port
-  (`MYRMIDON_PREDEPLOY_BOARD_PORT`, default `13110`) and the board's own
-  env file.
-- The systemd boot unit (`SYSTEMD_UNIT_NAME=paperclip.service`) is verified
-  before anything changes; `SYSTEMD_UNIT_INSTALL=1` installs the canonical
-  unit when none exists yet (needs root).
+All board state lives in PostgreSQL — the installer brings it up in a
+container itself; no separate database server is needed.

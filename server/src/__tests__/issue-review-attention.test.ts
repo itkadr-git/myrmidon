@@ -81,6 +81,9 @@ describeEmbeddedPostgres("issue review attention", () => {
     executionState?: Record<string, unknown> | null;
     monitorNextCheckAt?: Date | null;
     executionPolicy?: Record<string, unknown> | null;
+    // myrmidon(HUMAN-REVIEW-WAIT): the human wait facts.
+    reviewPolicy?: "anyone" | "not_creator" | "human_only" | null;
+    responsibleUserId?: string | null;
   }) {
     const id = randomUUID();
     await db.insert(issues).values({
@@ -95,9 +98,40 @@ describeEmbeddedPostgres("issue review attention", () => {
       executionState: input.executionState ?? null,
       monitorNextCheckAt: input.monitorNextCheckAt ?? null,
       executionPolicy: input.executionPolicy ?? null,
+      reviewPolicy: input.reviewPolicy ?? null,
+      responsibleUserId: input.responsibleUserId ?? null,
     });
     return id;
   }
+
+  it("keeps a human_only review on the assignee covered as a human reviewer wait", async () => {
+    const { companyId, agentId } = await seed();
+    const waitingIssueId = await insertReview({
+      companyId,
+      agentId,
+      identifier: "RVA-H1",
+      reviewPolicy: "human_only",
+      responsibleUserId: "board-owner",
+    });
+    const controlIssueId = await insertReview({
+      companyId,
+      agentId,
+      identifier: "RVA-H2",
+      reviewPolicy: "anyone",
+      responsibleUserId: "board-owner",
+    });
+
+    const rows = await svc.list(companyId, { status: "in_review" });
+    const byId = new Map(rows.map((row) => [row.id, row.reviewAttention]));
+    expect(byId.get(waitingIssueId)).toMatchObject({
+      state: "covered",
+      paths: expect.arrayContaining([
+        expect.objectContaining({ kind: "human_reviewer", responder: "board-owner" }),
+      ]),
+    });
+    // "anyone" is not a human wait: it must still read as stalled.
+    expect(byId.get(controlIssueId)).toMatchObject({ state: "stalled", paths: [] });
+  });
 
   it("surfaces a pathless agent-owned review as stalled and a queued recovery as covered", async () => {
     const { companyId, agentId } = await seed();

@@ -219,7 +219,8 @@ export function TrustPresetSection({
                   target="_blank"
                   rel="noreferrer"
                 >
-                  Get Paperclip EE.
+                  {/* myrmidon(DB1): DEBRAND 1.6.6-a — vendor-store name in visible CTA. */}
+                  Get Myrmidon EE.
                 </a>
               </p>
               <CollapsibleSection

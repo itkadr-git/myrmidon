@@ -138,7 +138,7 @@ by default — the full reference is
 
 Release notes live in [docs/myrmidon/CHANGELOG.md](docs/myrmidon/CHANGELOG.md)
 (Russian: [CHANGELOG.ru.md](docs/myrmidon/CHANGELOG.ru.md)). Highlights of
-what exists as of 1.6.4 (latest release; 1.6.5-rc.2 is the current release candidate):
+what exists as of 1.6.4 (latest release; 1.6.5-rc.14 is the current release candidate):
 
 ### Work and agents
 
@@ -152,7 +152,10 @@ what exists as of 1.6.4 (latest release; 1.6.5-rc.2 is the current release candi
   on every agent row, and flagged in the attention feed when over
   ([wip-limit](docs/myrmidon/guides/wip-limit.md)). A stale-block watchdog
   lifts blocks whose every reason is dead and says why in a system comment
-  ([stale-block](docs/myrmidon/guides/stale-block.md)).
+  ([stale-block](docs/myrmidon/guides/stale-block.md)). A prompt-budget
+  advisor on the agent card names the bloated part of the last run's prompt
+  and the concrete fix, and one button files a cheap-model deep-analysis
+  task ([prompt-budget-advice](docs/myrmidon/guides/prompt-budget-advice.md)).
 - **Agents in isolated containers.** Each agent runs in a Docker container the
   board creates and maintains: its own image, CPU/memory/PID limits, its own
   LLM gateway key and its own tools — no server secrets reach a run
@@ -164,9 +167,9 @@ what exists as of 1.6.4 (latest release; 1.6.5-rc.2 is the current release candi
 - **The swarm.** Per-role task queues: an agent takes the top task of its
   role's queue behind a lease (TTL + heartbeat), an expired lease returns to
   the queue, a P0 task preempts, a per-agent active-task limit applies, and a
-  supervisor view reports against a frozen baseline. Off until enabled — see
-  [Configuration](#configuration); the pilot (roles, companies, lease TTL,
-  limits) is edited live in Instance settings
+  supervisor view shows the queues and leases. Off until enabled — see
+  [Configuration](#configuration); the swarm settings (lease TTL,
+  limits) are edited live in Instance settings
   ([swarm-claim-settings](docs/myrmidon/guides/swarm-claim-settings.md)).
 - **Parallel helpers.** Per-agent helper subagents with a company ceiling and
   a helper model — see [CHANGELOG](docs/myrmidon/CHANGELOG.md) (1.6.0).
@@ -177,7 +180,10 @@ what exists as of 1.6.4 (latest release; 1.6.5-rc.2 is the current release candi
 
 - **Baseline metrics.** Cycle time, time in review, return rate, blocked time,
   runs and LLM cost per task, by project and by role, on the Quality screen —
-  see [CHANGELOG](docs/myrmidon/CHANGELOG.md) (1.6.0).
+  with a comparison against the pinned baseline snapshot (current window,
+  baseline, delta per row) right under the metrics tables
+  ([guide](docs/myrmidon/guides/baseline-comparison.md),
+  [CHANGELOG](docs/myrmidon/CHANGELOG.md), 1.6.0/1.6.5).
 - **Reference-task evals.** An LLM judge scores the pilot role against a
   reference corpus; a regression verdict acts only after a confirmation run
   ([reference-task-evals](docs/myrmidon/guides/reference-task-evals.md)).
@@ -193,11 +199,15 @@ what exists as of 1.6.4 (latest release; 1.6.5-rc.2 is the current release candi
 
 ### Channels
 
-- **The owner's channel.** Question and confirmation cards reach the owner's
-  Telegram and can be answered there
+- **The owner's channel.** Owner decisions reach the owner's Telegram — a
+  plain bot message the owner answers in text (the default), or a card with
+  buttons — and can be answered there
   ([owner-telegram-cards](docs/myrmidon/guides/owner-telegram-cards.md)); a
   run shows one live status message in the DM
   ([telegram-dm-status](docs/myrmidon/guides/telegram-dm-status.md)).
+- **Any agent from one Telegram chat.** A bridged DM addresses any agent of
+  the company with a `@`-mention or the `/agents`, `/to` and `/who` commands
+  ([telegram-multi-agent](docs/myrmidon/guides/telegram-multi-agent.md)).
 - **CTO chat.** The owner writes one free-text request and gets a proposed
   epic with child tasks, approved by a card
   ([cto-chat-planner](docs/myrmidon/guides/cto-chat-planner.md)); the
@@ -264,7 +274,7 @@ what exists as of 1.6.4 (latest release; 1.6.5-rc.2 is the current release candi
 Full notes per release: [CHANGELOG.md](docs/myrmidon/CHANGELOG.md) and the
 [releases page](https://github.com/itkadr-git/myrmidon/releases) — latest is
 [1.6.4](https://github.com/itkadr-git/myrmidon/releases/tag/myr-v1.6.4);
-[1.6.5-rc.2](https://github.com/itkadr-git/myrmidon/releases/tag/myr-v1.6.5-rc.2)
+[1.6.5-rc.14](https://github.com/itkadr-git/myrmidon/releases/tag/myr-v1.6.5-rc.14)
 is the current release candidate.
 
 - **1.6.3 — one deploy for every component.** `deploy.sh --release` updates

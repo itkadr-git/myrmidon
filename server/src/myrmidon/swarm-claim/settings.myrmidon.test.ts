@@ -46,8 +46,6 @@ describe("myrmidon(1.6.1 SWARM-SETTINGS-UI) settings service", () => {
     const { service } = fakePorts({
       [SWARM_CLAIM_SETTINGS_KEY]: {
         enabled: true,
-        enabledRoles: ["engineer"],
-        enabledCompanyIds: [],
         leaseTtlSec: 900,
         maxActiveTasks: 3,
         sweepIntervalSec: 30,
@@ -56,14 +54,49 @@ describe("myrmidon(1.6.1 SWARM-SETTINGS-UI) settings service", () => {
     });
     const resolved = await service.read();
     expect(resolved.settings.enabled).toBe(true);
-    expect(resolved.settings.enabledRoles).toEqual(["engineer"]);
     expect(resolved.sources.enabled).toBe("settings");
+  });
+
+  it("reads a row saved by an older build: pilot fields dropped, the switch kept", async () => {
+    const withPilotFields = fakePorts({
+      [SWARM_CLAIM_SETTINGS_KEY]: {
+        enabled: true,
+        enabledRoles: ["engineer"],
+        enabledCompanyIds: ["comp-1"],
+        idleWakeBatch: 9,
+        leaseTtlSec: 600,
+        maxActiveTasks: 3,
+        sweepIntervalSec: 30,
+        p0Preemption: true,
+      },
+    });
+    const read = await withPilotFields.service.read();
+    expect(read.settings).toEqual({
+      enabled: true,
+      leaseTtlSec: 600,
+      maxActiveTasks: 3,
+      sweepIntervalSec: 30,
+      p0Preemption: true,
+      pheromone: {},
+    });
+    expect(read.sources.enabled).toBe("settings");
+  });
+
+  it("never reads or writes general.swarm — that block is the F-26 wake guard's", async () => {
+    const guard = { cooldownBaseMin: 45, cooldownCeilingHours: 12 };
+    const ports = fakePorts({ swarm: guard });
+    // Nothing under `swarmClaim`: the claim settings are the defaults.
+    expect((await ports.service.read()).sources.enabled).toBe("default");
+    await ports.service.update({ enabled: true }, { actorType: "user", actorId: "u" });
+    expect(ports.store.updates[0]![SWARM_CLAIM_SETTINGS_KEY]).toMatchObject({ enabled: true });
+    expect(ports.store.updates[0]!.swarm).toBeUndefined();
+    expect(ports.store.general.swarm).toEqual(guard);
   });
 
   it("an update merges the patch, writes the row and appends the journal entry", async () => {
     const { service, store, logActivity } = fakePorts();
     const resolved = await service.update(
-      { enabled: true, enabledRoles: ["engineer"], leaseTtlSec: 600 },
+      { enabled: true, leaseTtlSec: 600 },
       { actorType: "user", actorId: "user-7" },
     );
     expect(resolved.settings.enabled).toBe(true);
@@ -99,8 +132,6 @@ describe("myrmidon(1.6.1 SWARM-SETTINGS-UI) settings service", () => {
       {
         [SWARM_CLAIM_SETTINGS_KEY]: {
           enabled: true,
-          enabledRoles: [],
-          enabledCompanyIds: [],
           leaseTtlSec: 900,
           maxActiveTasks: 3,
           sweepIntervalSec: 30,

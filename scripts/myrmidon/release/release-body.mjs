@@ -152,6 +152,9 @@ export function buildManifest({ version, digests }) {
   return { schema: 1, version, tag: `myr-v${version}`, components };
 }
 
+/** GitHub rejects a release body over 125000 characters (422). */
+export const GITHUB_RELEASE_BODY_LIMIT = 125000;
+
 /** The complete release body: deploy line, notes, digest table, cross-check. */
 export function buildBody({ version, notesVersion = null, previous, section, digestRows }) {
   const anchor = previous
@@ -252,7 +255,18 @@ async function main() {
   if (manifestOut) {
     fs.writeFileSync(manifestOut, `${JSON.stringify(buildManifest({ version, digests }), null, 2)}\n`);
   }
-  process.stdout.write(buildBody({ version, notesVersion: notes, previous, section, digestRows: rows }));
+  let body = buildBody({ version, notesVersion: notes, previous, section, digestRows: rows });
+  if (body.length > GITHUB_RELEASE_BODY_LIMIT) {
+    // BODY-CONDENSE (the 1.6.6-rc.1 publish failure, 172 entries): a full
+    // section over GitHub's limit is published as its entry headings plus a
+    // pointer at the complete notes in the changelog of this tag.
+    const condensed = condenseSection(section, notes);
+    console.error(
+      `release body for ${version} is ${body.length} characters (limit ${GITHUB_RELEASE_BODY_LIMIT}) — publishing the entry headings with a pointer to the full changelog`,
+    );
+    body = buildBody({ version, notesVersion: notes, previous, section: condensed, digestRows: rows });
+  }
+  process.stdout.write(enforceBodyLimit(body, version));
 }
 
 if (process.argv[1] && process.argv[1].endsWith("release-body.mjs")) {
@@ -267,4 +281,41 @@ function rcNotesFromFragments(root = ".") {
     if (body && body.trim()) blocks.push(body.trim());
   }
   return blocks.length ? blocks.join("\n\n") : null;
+}
+
+/**
+ * A notes section too long for a GitHub release body, reduced to its entry
+ * headings ("### …") as a list, with a pointer at the full notes.
+ */
+export function condenseSection(section, notesVersion) {
+  const headings = section
+    .split("\n")
+    .filter((line) => /^###\s+/.test(line))
+    .map((line) => `- ${line.replace(/^###\s+/, "").trim()}`);
+  return [
+    `## ${notesVersion}`,
+    "",
+    `The full notes of this release are longer than a GitHub release allows; they are in [docs/myrmidon/CHANGELOG.md](docs/myrmidon/CHANGELOG.md) (section "${notesVersion}", RU: docs/myrmidon/CHANGELOG.ru.md) at this tag. Entries:`,
+    "",
+    ...headings,
+  ].join("\n");
+}
+
+// BODY-LIMIT (the 1.6.5-rc.6 publish failure): an rc body collects EVERY
+// pending change fragment, so a long release window overruns GitHub's
+// 125000-character release-body limit and `gh release create` dies with
+// HTTP 422 after every gate already passed. Refuse BEFORE the publish with
+// the byte count, so the release engineer trims the fragment notes instead
+// of debugging a bare 422 at the end of a 20-minute CI run.
+function enforceBodyLimit(body, version) {
+  const chars = body.length;
+  if (chars > GITHUB_RELEASE_BODY_LIMIT) {
+    console.error(
+      `release body for ${version} is ${chars} characters — GitHub rejects bodies over ` +
+        `${GITHUB_RELEASE_BODY_LIMIT} (HTTP 422 "body is too long"). Trim the pending change ` +
+        `fragment notes (docs/myrmidon/changes/*) or fold them into the CHANGELOG section first.`,
+    );
+    process.exit(1);
+  }
+  return body;
 }
