@@ -2031,7 +2031,7 @@ async function buildAttentionFeedSnapshot(
           eq(issues.companyId, companyId),
           sql`${issues.monitorNextCheckAt} is not null`,
           lte(issues.monitorNextCheckAt, new Date(now - 5 * 60_000)),
-          sql`(${issues.monitorWakeRequestedAt} is null or ${issues.monitorWakeRequestedAt} < ${new Date(now - 5 * 60_000)})`,
+          sql`(${issues.monitorWakeRequestedAt} is null or ${issues.monitorWakeRequestedAt} < ${new Date(now - 5 * 60_000).toISOString()}::timestamptz)`,
           sql`${issues.status} not in ('done', 'cancelled')`,
           isNull(issues.assigneeUserId),
           isNotNull(issues.assigneeAgentId),
