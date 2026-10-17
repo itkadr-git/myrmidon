@@ -11,6 +11,7 @@
 // view the sweep works in.
 
 import { readRunStallFromEnv } from "@paperclipai/shared";
+import { liveRunStallSettings } from "../runs-queue-settings/live.js";
 
 export {
   DEFAULT_RUN_STALL_CHECK_INTERVAL_SEC,
@@ -44,14 +45,15 @@ export interface RunStallSettings {
  * rule).
  */
 export function readRunStallEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
-  return readRunStallFromEnv(env).enabled;
+  return liveRunStallSettings(env).enabled;
 }
 
 export function readRunStallSettings(env: NodeJS.ProcessEnv = process.env): RunStallSettings {
   const values = readRunStallFromEnv(env);
+  const live = liveRunStallSettings(env);
   return {
-    enabled: values.enabled,
-    thresholdMs: values.thresholdSec * 1000,
+    enabled: live.enabled,
+    thresholdMs: live.thresholdSec * 1000,
     checkIntervalMs: values.checkIntervalSec * 1000,
     pageSize: values.pageSize,
   };

@@ -4,6 +4,7 @@ import { logger } from "../middleware/logger.js";
 // myrmidon(TEAM-LIVENESS-SETTINGS): the instance settings (and the per-agent card
 // switch) this sweep obeys, so the switch can be changed without a restart.
 import { resolveAgentTeamLiveness, type ResolvedTeamLiveness } from "@paperclipai/shared";
+import { liveAutoResumeSettings } from "./runs-queue-settings/live.js";
 
 /**
  * AUTO-RESUME (Myrmidon 1.4).
@@ -53,8 +54,6 @@ export const AUTO_RESUME_EXHAUSTED_ACTIVITY_ACTION = "agent.auto_resume_exhauste
 
 const AUTO_RESUME_ACTOR_ID = "auto_resume";
 
-const DISABLED_VALUES = new Set(["0", "false", "off", "no"]);
-
 export interface AutoResumeSettings {
   enabled: boolean;
   /** Backoff step in milliseconds per attempt index; the last step repeats. */
@@ -64,45 +63,25 @@ export interface AutoResumeSettings {
   failureWindowMs: number;
 }
 
-function parsePositiveInt(raw: string | undefined, fallback: number, min = 1): number {
-  const value = raw?.trim();
-  if (!value || !/^\d+$/.test(value)) return fallback;
-  const parsed = Number(value);
-  if (!Number.isSafeInteger(parsed) || parsed < min) return fallback;
-  return parsed;
-}
-
-function parseBackoff(raw: string | undefined): number[] {
-  const value = raw?.trim();
-  if (!value) return [...DEFAULT_AUTO_RESUME_BACKOFF_MS];
-  const parsed = value
-    .split(",")
-    .map((part) => part.trim())
-    .filter(Boolean)
-    .map((part) => (/^\d+$/.test(part) ? Number(part) : NaN))
-    .filter((part) => Number.isSafeInteger(part) && part > 0);
-  return parsed.length > 0 ? parsed : [...DEFAULT_AUTO_RESUME_BACKOFF_MS];
-}
-
 /**
  * The feature ships enabled (a defect fix per CONVENTIONS.md §8): an unset or
  * unrecognized value keeps it on. Only an explicit off value disables it.
+ * OPE-4096: resolves live (UI value → env forced override → default on).
  */
 export function readAutoResumeEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
-  const raw = env[AUTO_RESUME_ENABLED_ENV]?.trim().toLowerCase();
-  return !raw || !DISABLED_VALUES.has(raw);
+  return liveAutoResumeSettings(env).enabled;
 }
 
 export function readAutoResumeSettings(env: NodeJS.ProcessEnv = process.env): AutoResumeSettings {
+  // OPE-4096: resolve live (UI value → env forced override → default) so a
+  // settings-page save applies without a restart; an explicit env value wins.
+  const live = liveAutoResumeSettings(env);
   return {
-    enabled: readAutoResumeEnabled(env),
-    backoffMs: parseBackoff(env[AUTO_RESUME_BACKOFF_MS_ENV]),
-    maxAttempts: parsePositiveInt(env[AUTO_RESUME_MAX_ATTEMPTS_ENV], DEFAULT_AUTO_RESUME_MAX_ATTEMPTS),
-    intervalSec: Math.max(
-      MIN_AUTO_RESUME_INTERVAL_SEC,
-      parsePositiveInt(env[AUTO_RESUME_INTERVAL_SEC_ENV], DEFAULT_AUTO_RESUME_INTERVAL_SEC),
-    ),
-    failureWindowMs: parsePositiveInt(env[AUTO_RESUME_WINDOW_MS_ENV], DEFAULT_AUTO_RESUME_WINDOW_MS),
+    enabled: live.enabled,
+    backoffMs: live.backoffMs,
+    maxAttempts: live.maxAttempts,
+    intervalSec: Math.max(MIN_AUTO_RESUME_INTERVAL_SEC, live.intervalSec),
+    failureWindowMs: live.windowMs,
   };
 }
 
