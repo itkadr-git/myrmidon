@@ -261,7 +261,7 @@ describeEmbeddedPostgres("attention service", () => {
     }).where(eq(issues.id, claimedId));
 
     const feed = await attentionService(db, { ...TEST_SERVICE_OPTS, now: () => Date.parse("2026-08-02T12:00:00.000Z") })
-      .list(companyId, { all: true });
+      .list(companyId, { all: true, queue: "agent" });
     const alerts = feed.items.filter((item) => item.sourceKind === "issue_monitor_overdue");
     expect(alerts).toHaveLength(1);
     expect(alerts[0]?.subject.id).toBe(overdueId);
