@@ -155,18 +155,18 @@ describe("myrmidon(1.7) behavior settings: reading the effective values", () => 
     expect(res.body.sources.tool_timeout_max_ms).toBe("ui");
   });
 
-  it("applies an instance patch to the live consumer without restarting", async () => {
-    const h = harness({ env: { MYRMIDON_TOOL_BREAKER_FAILURES: "3" } });
+  it("applies the env override to the live consumer after PATCH", async () => {
+    const h = harness({ env: { ...ENV_ONLY, MYRMIDON_TOOL_BREAKER_FAILURES: "3" } });
     const res = await request(h.withActor(admin))
       .patch(INSTANCE_URL)
       .send({ tool_breaker_failures: 1 })
       .expect(200);
     expect(res.body.settings.tool_breaker_failures).toBe(3);
-    expect(h.calls).toContain(expect.stringContaining('"tool_breaker_failures":3'));
+    expect(h.calls).toContain(`apply:${JSON.stringify({ tool_breaker_failures: 3 })}`);
   });
 
   it("reports defaults as the source", async () => {
-    const { app } = harness({ env: {} });
+    const { app } = harness({ env: ENV_ONLY });
     const res = await request(app).get(INSTANCE_URL).expect(200);
     expect(res.body.sources.bot_egress_mode).toBe("default");
   });

@@ -268,12 +268,11 @@ export function resolveSetting<T>(options: {
   }
 
   const env = options.env;
-  
+
   // Environment variables remain the operator's forced override, even when a
   // UI value has been persisted.
-  // The source is "env" whenever the environment
-  // declares a valid value, even when that value equals the default
-  // (mirrors resolveRunLimits' envDeclares semantics).
+  // The source is "env" whenever the environment declares a valid value, even
+  // when that value equals the default (mirrors resolveRunLimits' envDeclares semantics).
   const envValue = readSettingFromEnv(env, def);
   if (envValue !== null) {
     return { value: envValue, source: "env" };
