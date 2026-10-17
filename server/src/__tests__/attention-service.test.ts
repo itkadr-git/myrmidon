@@ -756,7 +756,7 @@ describeEmbeddedPostgres("attention service", () => {
     const replayCard = feed.items.find((item) => item.sourceKind === "replay_blocked");
     expect(replayCard).toMatchObject({
       sourceKind: "replay_blocked",
-      subject: { id: replayHoldIssueId, metadata: { responsibleAgentId: null, responsibleUserId: "board-user", dueAt: expect.any(String) } },
+      subject: { id: replayHoldIssueId, metadata: { responsibleAgentId: null, responsibleUserId: null, dueAt: expect.any(String) } },
       decideBy: null,
       whyNow: expect.stringContaining("board operator"),
     });

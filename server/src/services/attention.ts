@@ -625,8 +625,6 @@ function createItem(input: CreateAttentionItemInput): AttentionItem {
     keep: false,
     archivedAt: null,
     retentionVersion: 0,
-    decideBy: input.decideBy ?? null,
-    decideByAttribution: input.decideByAttribution ?? null,
     snoozedUntil: null,
     detail: input.detail ?? null,
     trainingExampleId: null,
