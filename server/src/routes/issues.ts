@@ -55,6 +55,7 @@ import {
   chatPublications,
   companyMemberships,
   documents,
+  projects as projectRows,
   executionWorkspaces,
   heartbeatRuns,
   issueApprovals,
@@ -64,6 +65,8 @@ import {
   issueRelations,
   issueRecoveryActions,
   issueThreadInteractions,
+  issueLabels,
+  labels,
   issues as issueRows,
   issueWorkProducts,
   pipelineCaseIssueLinks,
@@ -73,6 +76,8 @@ import {
   projectWorkspaces,
 } from "@paperclipai/db";
 import { dbAutonomyGate } from "../myrmidon/autonomy/gate.js";
+import { requiresEngineer } from "../myrmidon/swarm-claim/requires-engineer.js";
+import { resolveTaskCaste } from "../myrmidon/castes/index.js";
 import {
   addIssueCommentSchema,
   acceptIssueThreadInteractionSchema,
@@ -3629,6 +3634,30 @@ export function issueRoutes(
   const documentAnnotationsSvc = documentAnnotationService(db);
   const decisionTrainingSvc = decisionTrainingService(db);
   const issueReferencesSvc = issueReferenceService(db);
+  async function issueRequiresEngineer(issue: typeof issueRows.$inferSelect): Promise<boolean> {
+    const labelsForIssue = await db
+      .select({ name: labels.name })
+      .from(issueLabels)
+      .innerJoin(labels, eq(issueLabels.labelId, labels.id))
+      .where(eq(issueLabels.issueId, issue.id));
+    const resolvedCaste = await resolveTaskCaste(db, {
+      companyId: issue.companyId,
+      issueId: issue.id,
+    }).catch(() => issue.casteKey ?? null);
+    const projectDefault = issue.projectId
+      ? await db.query.projects.findFirst({
+          where: eq(projectRows.id, issue.projectId),
+          columns: { defaultCasteKey: true },
+        }).catch(() => null)
+      : null;
+    return requiresEngineer({
+      labels: labelsForIssue.map((row) => row.name),
+      casteKey: resolvedCaste,
+      projectDefaultCasteKey: projectDefault?.defaultCasteKey,
+      harnessKind: issue.harnessKind,
+      executionWorkspacePreference: issue.executionWorkspacePreference as any,
+    });
+  }
   const issueThreadInteractionsSvc = issueThreadInteractionService(db);
   const questionResponseDeliveries = questionResponseDeliveryService(db, {
     heartbeat,
@@ -12110,6 +12139,26 @@ export function issueRoutes(
           rawCreateBody.assigneeAgentId as string | null | undefined,
           { actorType: req.actor.type },
         );
+      if (normalizedAssigneeAgentId && !rawCreateBody.assigneeUserId) {
+        const requestedAgent = await agentsSvc.getById(normalizedAssigneeAgentId);
+        const explicitCaste = typeof rawCreateBody.casteKey === "string" ? rawCreateBody.casteKey : null;
+        if (requestedAgent?.role !== "engineer" && requiresEngineer({
+          labels: Array.isArray(rawCreateBody.labels) ? rawCreateBody.labels as string[] : [],
+          casteKey: explicitCaste,
+          projectDefaultCasteKey: rawCreateBody.projectId
+            ? (await db.query.projects.findFirst({ where: eq(projectRows.id, rawCreateBody.projectId), columns: { defaultCasteKey: true } }))?.defaultCasteKey
+            : null,
+          harnessKind: typeof rawCreateBody.harnessKind === "string" ? rawCreateBody.harnessKind : null,
+          executionWorkspacePreference: typeof rawCreateBody.executionWorkspacePreference === "string"
+            ? rawCreateBody.executionWorkspacePreference as any
+            : null,
+        })) {
+          throw unprocessable("This issue requires an engineer", {
+            code: "issue_requires_engineer",
+            assigneeAgentId: normalizedAssigneeAgentId,
+          });
+        }
+      }
       await assertNoAgentDelegationCycle({
         actorType: req.actor.type,
         parentIssueId:
@@ -13231,6 +13280,20 @@ export function issueRoutes(
           req.body.assigneeAgentId as string | null | undefined,
           { actorType: req.actor.type },
         );
+      if (
+        normalizedAssigneeAgentId &&
+        normalizedAssigneeAgentId !== existing.assigneeAgentId &&
+        !req.body.assigneeUserId
+      ) {
+        const requestedAgent = await agentsSvc.getById(normalizedAssigneeAgentId);
+        if (requestedAgent?.role !== "engineer" && await issueRequiresEngineer(existing)) {
+          throw unprocessable("This issue requires an engineer", {
+            code: "issue_requires_engineer",
+            issueId: existing.id,
+            assigneeAgentId: normalizedAssigneeAgentId,
+          });
+        }
+      }
       const titleOrDescriptionChanged =
         req.body.title !== undefined || req.body.description !== undefined;
       const existingRelations = Array.isArray(req.body.blockedByIssueIds)
@@ -13343,6 +13406,20 @@ export function issueRoutes(
         normalizedAssigneeAgentId === undefined
           ? existing.assigneeAgentId
           : normalizedAssigneeAgentId;
+      if (
+        requestedAssigneeAgentId &&
+        requestedAssigneeAgentId !== existing.assigneeAgentId &&
+        !req.body.assigneeUserId
+      ) {
+        const assignee = await agentsSvc.getById(requestedAssigneeAgentId);
+        if (assignee?.role !== "engineer" && await issueRequiresEngineer(existing)) {
+          throw unprocessable("This issue requires an engineer", {
+            code: "issue_requires_engineer",
+            issueId: existing.id,
+            assigneeAgentId: requestedAssigneeAgentId,
+          });
+        }
+      }
       const explicitMoveToTodoRequested =
         reopenRequested || resumeRequested === true;
       const recoveryRelevantSourceMutationRequested =

@@ -926,7 +926,10 @@ describeEmbeddedPostgres("heartbeat workspace branch containment", () => {
     await tempDb?.cleanup();
   }, 60_000);
 
-  it("blocks projectless isolated git-worktree issues before dispatch", async () => {
+  it.each<[string, string[]]>([
+    ["product issue", []],
+    ["engineer issue", ["needs-engineer"]],
+  ])("handles projectless isolated git-worktree %s before dispatch", async (kind, labels) => {
     const companyId = randomUUID();
     const agentId = randomUUID();
     const issueId = randomUUID();
@@ -972,6 +975,7 @@ describeEmbeddedPostgres("heartbeat workspace branch containment", () => {
         mode: "isolated_workspace",
         workspaceStrategy: { type: "git_worktree" },
       },
+      ...(labels.length ? { labels } : {}),
     });
 
     const heartbeat = heartbeatService(db);
@@ -989,9 +993,10 @@ describeEmbeddedPostgres("heartbeat workspace branch containment", () => {
     const runRows = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns);
     expect(runRows).toEqual([]);
 
-    const blockedIssue = await db
+    const resultingIssue = await db
       .select({
         status: issues.status,
+        assigneeAgentId: issues.assigneeAgentId,
         checkoutRunId: issues.checkoutRunId,
         executionRunId: issues.executionRunId,
         executionAgentNameKey: issues.executionAgentNameKey,
@@ -999,8 +1004,23 @@ describeEmbeddedPostgres("heartbeat workspace branch containment", () => {
       .from(issues)
       .where(eq(issues.id, issueId))
       .then((rows) => rows[0] ?? null);
-    expect(blockedIssue).toEqual({
+    if (kind === "engineer issue") {
+      expect(resultingIssue).toEqual({
+        status: "todo",
+        assigneeAgentId: null,
+        checkoutRunId: null,
+        executionRunId: null,
+        executionAgentNameKey: null,
+      });
+      const activity = await db.select({ action: activityLog.action })
+        .from(activityLog).where(eq(activityLog.entityId, issueId))
+        .then((rows) => rows[0] ?? null);
+      expect(activity?.action).toBe("issue.engineer_workspace_requeued");
+      return;
+    }
+    expect(resultingIssue).toEqual({
       status: "blocked",
+      assigneeAgentId: agentId,
       checkoutRunId: null,
       executionRunId: null,
       executionAgentNameKey: null,
