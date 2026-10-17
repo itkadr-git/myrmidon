@@ -984,11 +984,15 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
     actor: KnowledgeActor,
     input: { suggestionId: string; companyId: string; decision: "accepted" | "declined"; reason?: string | null },
   ): Promise<{ id: string; status: string }> {
-    const [row] = await db
+    let [row] = await db
       .select()
       .from(knowledgeSuggestions)
       .where(and(eq(knowledgeSuggestions.nestId, nestId), eq(knowledgeSuggestions.id, input.suggestionId), eq(knowledgeSuggestions.status, "pending")))
       .limit(1);
+    if (!row) {
+      [row] = await db.select().from(knowledgeSuggestions)
+        .where(and(eq(knowledgeSuggestions.nestId, nestId), eq(knowledgeSuggestions.id, input.suggestionId))).limit(1);
+    }
     if (!row) throw new KnowledgeDomainError("suggestion_not_found", 404, "No such suggestion.");
     if (row.status !== "pending") {
       throw new KnowledgeDomainError("suggestion_decided", 409, `Suggestion is already ${row.status}.`);
