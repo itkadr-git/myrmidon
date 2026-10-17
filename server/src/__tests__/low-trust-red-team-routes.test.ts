@@ -2126,6 +2126,7 @@ describeEmbeddedPostgres(
             sourceIssueId: fixture.issues.assignedReview.id,
             sourceRunId: fixture.runs.lowTrust.id,
             sourceAgentId: fixture.agents.lowTrust.id,
+            promotionOwnerUserId: "board-user",
           },
         })
         .returning();
