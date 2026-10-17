@@ -2893,7 +2893,7 @@ function myLastTouchAtExpr(companyId: string, userId: string) {
 // myrmidon(DB-PERF-P7): the canonical "last activity" of an issue is
 // greatest(updated_at, newest comment, newest activity_log row outside the
 // local-inbox actions). It is denormalized into issues.last_activity_at and kept
-// current by the triggers of migration 0307, so ordering and reporting read one
+// current by the triggers of migration 0355, so ordering and reporting read one
 // column instead of two correlated MAX subqueries per candidate row (the cost
 // that dominated GET /issues before this column existed).
 function issueCanonicalLastActivityAtExpr() {
