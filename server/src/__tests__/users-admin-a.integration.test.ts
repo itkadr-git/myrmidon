@@ -9,27 +9,20 @@
  *     succeeds only after the instance explicitly enables it.
  *  3. A blocked user cannot sign in, and blocking closes their live sessions.
  *
- * The admin side of the API (create/block/reset) is exercised through the
- * service functions directly: the routes are thin wrappers (validation and
- * authorization) and the auth-plugin behavior needs the Better Auth instance
- * anyway, which the service functions share through the same database.
+ * Admin create/block/reset and token consumption are exercised through the
+ * mounted HTTP router as well as the real Better Auth sign-in endpoints.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { and, eq } from "drizzle-orm";
-import { authAccounts, authSessions, authUsers, createDb, instanceSettings } from "@paperclipai/db";
+import { authAccounts, authSessions, authUsers, companyMemberships, companies, createDb, instanceSettings, principalPermissionGrants } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { createBetterAuthHandler, createBetterAuthInstance } from "../auth/better-auth.js";
-import {
-  createUser as usersAdminCreateUser,
-  setUserBlocked as usersAdminSetUserBlocked,
-  resetUserPassword as usersAdminResetUserPassword,
-  consumePasswordSetToken as usersAdminConsumePasswordSetToken,
-  listUsers as usersAdminListUsers,
-} from "../myrmidon/users-admin-a/service.js";
+import { usersAdminRoutes } from "../myrmidon/users-admin-a/routes.js";
+import { createUser as usersAdminCreateUser, listUsers as usersAdminListUsers } from "../myrmidon/users-admin-a/service.js";
 import { setBlockedUser } from "../myrmidon/users-admin-a/store.js";
 import type { Config } from "../config.js";
 import { resolveAuthSelfSignUp } from "@paperclipai/shared";
@@ -72,7 +65,24 @@ function readGeneralRow(db: ReturnType<typeof createDb>) {
 function buildAuthApp(db: ReturnType<typeof createDb>, config: Config) {
   const auth = createBetterAuthInstance(db, config, [ORIGIN]);
   const app = express();
+  app.use(express.json());
+  app.use((req, _res, next) => {
+    req.actor = {
+      type: "board",
+      userId: "00000000-0000-0000-0000-000000000001",
+      source: "local_implicit",
+      companyIds: [],
+      memberships: [],
+      isInstanceAdmin: true,
+    } as unknown as Express.Request["actor"];
+    next();
+  });
+  app.use("/api", usersAdminRoutes(db));
   app.all("/api/auth/{*authPath}", createBetterAuthHandler(auth));
+  app.use((err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+    const candidate = err as { status?: number; message?: string };
+    res.status(candidate.status ?? 500).json({ error: candidate.message ?? "Internal error" });
+  });
   return app;
 }
 
@@ -107,13 +117,16 @@ describeEmbeddedPostgres("users-admin-a: admin-managed users", () => {
   });
 
   it("creates a user without an email and signs them in by username", async () => {
-    const created = await usersAdminCreateUser(db, {
-      username: "boardlogin",
-      displayName: "Board Login",
-      password: USER_PASSWORD,
-      role: "member",
-      actorUserId: "00000000-0000-0000-0000-000000000001",
-    });
+    const company = await db.insert(companies).values({
+      name: "Login test company",
+      issuePrefix: `UL${Math.random().toString(36).slice(2, 8).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    }).returning().then((rows) => rows[0]!);
+    const response = await request(app)
+      .post("/api/myrmidon/users-admin-a/users")
+      .send({ username: "boardlogin", displayName: "Board Login", password: USER_PASSWORD, role: "member", companyId: company.id, companyRole: "operator" });
+    expect(response.status, JSON.stringify(response.body)).toBe(201);
+    const created = response.body;
 
     expect(created.syntheticEmail).toBe(true);
     expect(created.email).toBe("boardlogin@myr.local");
@@ -138,6 +151,50 @@ describeEmbeddedPostgres("users-admin-a: admin-managed users", () => {
     expect(signIn.body?.user?.email).toBe("boardlogin@myr.local");
     const cookies = String(signIn.headers["set-cookie"] ?? "");
     expect(cookies).toContain("session_token");
+  });
+
+  it("rejects user-management writes from a non-admin board actor", async () => {
+    const ordinaryApp = express();
+    ordinaryApp.use(express.json());
+    ordinaryApp.use((req, _res, next) => {
+      req.actor = {
+        type: "board",
+        userId: "00000000-0000-0000-0000-000000000002",
+        source: "session",
+        sessionId: "nonadmin-session",
+        companyIds: [],
+        memberships: [],
+        isInstanceAdmin: false,
+      } as unknown as Express.Request["actor"];
+      next();
+    });
+    ordinaryApp.use("/api", usersAdminRoutes(db));
+    const response = await request(ordinaryApp)
+      .post("/api/myrmidon/users-admin-a/users")
+      .send({ username: "unauthorized-create", role: "instance_admin" });
+    expect(response.status).toBe(403);
+  });
+
+  it("creates the requested company membership and role grants", async () => {
+    const company = await db.insert(companies).values({
+      name: "Users admin test company",
+      issuePrefix: `UA${Math.random().toString(36).slice(2, 8).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    }).returning().then((rows) => rows[0]!);
+    const created = await usersAdminCreateUser(db, {
+      username: "companyoperator",
+      password: USER_PASSWORD,
+      role: "member",
+      companyId: company.id,
+      companyRole: "operator",
+      actorUserId: "00000000-0000-0000-0000-000000000001",
+    });
+    const membership = await db.select().from(companyMemberships).where(eq(companyMemberships.principalId, created.id));
+    const grants = await db.select().from(principalPermissionGrants).where(eq(principalPermissionGrants.principalId, created.id));
+    expect(membership).toHaveLength(1);
+    expect(membership[0]?.companyId).toBe(company.id);
+    expect(membership[0]?.membershipRole).toBe("operator");
+    expect(grants.map((grant) => grant.permissionKey)).toContain("tasks:assign");
   });
 
   it("refuses self-registration while the switch is off, then allows it after the instance enables it", async () => {
@@ -187,10 +244,16 @@ describeEmbeddedPostgres("users-admin-a: admin-managed users", () => {
   });
 
   it("blocks a user: closes live sessions and refuses new sign-ins", async () => {
+    const company = await db.insert(companies).values({
+      name: "Block test company",
+      issuePrefix: `UB${Math.random().toString(36).slice(2, 8).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    }).returning().then((rows) => rows[0]!);
     const created = await usersAdminCreateUser(db, {
       username: "blockeduser",
       password: USER_PASSWORD,
       role: "member",
+      companyId: company.id,
       actorUserId: "00000000-0000-0000-0000-000000000001",
     });
 
@@ -206,13 +269,11 @@ describeEmbeddedPostgres("users-admin-a: admin-managed users", () => {
       .where(eq(authSessions.userId, created.id));
     expect(sessionsBefore.length).toBeGreaterThan(0);
 
-    const blocked = await usersAdminSetUserBlocked(db, {
-      userId: created.id,
-      blocked: true,
-      actorUserId: "00000000-0000-0000-0000-000000000001",
-      reason: "test block",
-    });
-    expect(blocked.sessionsClosed).toBe(sessionsBefore.length);
+    const blocked = await request(app)
+      .patch(`/api/myrmidon/users-admin-a/users/${created.id}`)
+      .send({ blocked: true, reason: "test block" });
+    expect(blocked.status, JSON.stringify(blocked.body)).toBe(200);
+    expect(blocked.body.sessionsClosed).toBe(sessionsBefore.length);
 
     // The sessions are gone.
     const sessionsAfter = await db
@@ -230,12 +291,10 @@ describeEmbeddedPostgres("users-admin-a: admin-managed users", () => {
     expect(signIn2.body?.code).toBe("USER_BLOCKED");
 
     // Unblock restores sign-in.
-    await setBlockedUser(db, {
-      userId: created.id,
-      blocked: false,
-      blockedBy: "00000000-0000-0000-0000-000000000001",
-      reason: null,
-    });
+    const unblocked = await request(app)
+      .patch(`/api/myrmidon/users-admin-a/users/${created.id}`)
+      .send({ blocked: false });
+    expect(unblocked.status).toBe(200);
     const signIn3 = await request(app)
       .post("/api/auth/sign-in/username")
       .set("origin", ORIGIN)
@@ -244,20 +303,26 @@ describeEmbeddedPostgres("users-admin-a: admin-managed users", () => {
   });
 
   it("resets the password through a one-time link, and the link dies after use", async () => {
+    const company = await db.insert(companies).values({
+      name: "Password set test company",
+      issuePrefix: `UP${Math.random().toString(36).slice(2, 8).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    }).returning().then((rows) => rows[0]!);
     const created = await usersAdminCreateUser(db, {
       username: "resetuser",
       password: USER_PASSWORD,
       role: "member",
+      companyId: company.id,
       actorUserId: "00000000-0000-0000-0000-000000000001",
     });
 
-    const reset = await usersAdminResetUserPassword(db, {
-      userId: created.id,
-      actorUserId: "00000000-0000-0000-0000-000000000001",
-    });
-    expect(reset.passwordSetLink).toMatch(/^\/api\/myrmidon\/users-admin-a\/password-set\?token=/);
+    const reset = await request(app)
+      .patch(`/api/myrmidon/users-admin-a/users/${created.id}`)
+      .send({ resetPassword: true });
+    expect(reset.status, JSON.stringify(reset.body)).toBe(200);
+    expect(reset.body.passwordSetLink).toMatch(/^\/api\/myrmidon\/password-set\?token=/);
 
-    const token = reset.passwordSetLink.split("token=")[1] ?? "";
+    const token = new URL(reset.body.passwordSetLink, "http://localhost").searchParams.get("token") ?? "";
 
     // The old password no longer works only after the set; here nothing was
     // changed yet, so the old password still signs in.
@@ -268,11 +333,10 @@ describeEmbeddedPostgres("users-admin-a: admin-managed users", () => {
     expect(oldSignIn.status).toBe(200);
 
     // Consume the token: set a new password.
-    const consumed = await usersAdminConsumePasswordSetToken(db, {
-      token,
-      newPassword: USER_PASSWORD_2,
-    });
-    expect(consumed.userId).toBe(created.id);
+    const consumed = await request(app)
+      .post("/api/myrmidon/users-admin-a/password-set")
+      .send({ token, newPassword: USER_PASSWORD_2 });
+    expect(consumed.status, JSON.stringify(consumed.body)).toBe(200);
 
     // The new password signs in.
     const newSignIn = await request(app)
@@ -282,9 +346,10 @@ describeEmbeddedPostgres("users-admin-a: admin-managed users", () => {
     expect(newSignIn.status).toBe(200);
 
     // A second use of the same token is dead.
-    await expect(
-      usersAdminConsumePasswordSetToken(db, { token, newPassword: USER_PASSWORD_2 }),
-    ).rejects.toMatchObject({ status: 404 });
+    const replay = await request(app)
+      .post("/api/myrmidon/users-admin-a/password-set")
+      .send({ token, newPassword: USER_PASSWORD_2 });
+    expect(replay.status).toBe(404);
 
     // The old password no longer signs in.
     const oldSignIn2 = await request(app)
@@ -294,22 +359,41 @@ describeEmbeddedPostgres("users-admin-a: admin-managed users", () => {
     expect(oldSignIn2.status).toBe(401);
   });
 
-  it("creates a user with a one-time password-set link instead of a password", async () => {
+  it("creates a user with a one-time password-set link and consumes it over HTTP", async () => {
     const created = await usersAdminCreateUser(db, {
       username: "linkuser",
       role: "member",
       actorUserId: "00000000-0000-0000-0000-000000000001",
     });
-    expect(created.passwordSetLink).toMatch(/^\/api\/myrmidon\/users-admin-a\/password-set\?token=/);
+    expect(created.passwordSetLink).toMatch(/^\/api\/myrmidon\/password-set\?token=/);
 
-    const token = created.passwordSetLink!.split("token=")[1] ?? "";
-    await usersAdminConsumePasswordSetToken(db, { token, newPassword: USER_PASSWORD_2 });
+    const user = (await usersAdminListUsers(db)).find((entry) => entry.username === "linkuser");
+    const reset = await request(app)
+      .patch(`/api/myrmidon/users-admin-a/users/${user!.id}`)
+      .send({ resetPassword: true });
+    expect(reset.status, JSON.stringify(reset.body)).toBe(200);
+    const passwordLink = reset.body.passwordSetLink as string;
+
+    const page = await request(app).get(passwordLink);
+    expect(page.status).toBe(200);
+    expect(page.text).toContain("/api/myrmidon/users-admin-a/password-set");
+
+    const token = new URL(passwordLink, "http://localhost").searchParams.get("token");
+    const consumed = await request(app)
+      .post("/api/myrmidon/users-admin-a/password-set")
+      .send({ token, newPassword: USER_PASSWORD_2 });
+    expect(consumed.status, JSON.stringify(consumed.body)).toBe(200);
 
     const signIn = await request(app)
       .post("/api/auth/sign-in/username")
       .set("origin", ORIGIN)
       .send({ username: "linkuser", password: USER_PASSWORD_2 });
     expect(signIn.status).toBe(200);
+
+    const replay = await request(app)
+      .post("/api/myrmidon/users-admin-a/password-set")
+      .send({ token, newPassword: USER_PASSWORD_2 });
+    expect(replay.status).toBe(404);
   });
 
   it("grants the instance_admin role and lists users with role and block state", async () => {
