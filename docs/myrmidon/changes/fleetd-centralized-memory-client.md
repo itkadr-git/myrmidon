@@ -1,3 +1,7 @@
+---
+settings-section: Bot containers (G-series, the 28.09 "option B" plan)
+---
+
 <!-- bot/OPE-8136 — 1.6.6 fleetd: centralized-memory client boundary -->
 
 ## changelog-en
