@@ -26,6 +26,7 @@ import { RunQueuePrioritySettingsPanel } from "@/components/myrmidon/RunQueuePri
 import { RunStallSettingsPanel } from "@/components/myrmidon/RunStallSettingsPanel"; // myrmidon(RUN-STALL-SETTINGS)
 import { BudgetEnforcementSettingsPanel } from "@/components/myrmidon/BudgetEnforcementSettingsPanel"; // myrmidon(1.7-BUDGET-CONFIG-B)
 import { AgentExchangeSettingsPanel } from "@/components/myrmidon/AgentExchangeSettingsPanel"; // myrmidon(1.7-AGENT-EXCHANGE-A)
+import { AgentExchangeFeedSettingsPanel } from "@/components/myrmidon/AgentExchangeFeedSettingsPanel"; // myrmidon(1.7-AGENT-EXCHANGE-B)
 import { TelegramDmProgressSettingsPanel } from "@/components/myrmidon/TelegramDmProgressSettingsPanel"; // myrmidon(DM-PROGRESS)
 import { DebateSettingsPanel } from "@/components/myrmidon/DebateSettingsPanel"; // myrmidon(1.7-DEBATE-ASYM-A)
 import { HostDiskSettingsPanel } from "@/components/myrmidon/HostDiskSettingsPanel"; // myrmidon(BOT-DISK E)
@@ -49,6 +50,7 @@ import { ForagingSettingsPanel } from "@/components/myrmidon/ForagingSettingsPan
 import { WorkspaceHygieneSettingsPanel } from "@/components/myrmidon/WorkspaceHygieneSettingsPanel"; // myrmidon(SETTINGS-UI A)
 import { ChannelSettingsPanel } from "@/components/myrmidon/ChannelSettingsPanel"; // myrmidon(SETTINGS-UI A)
 import { ModelFallbackSignalSettingsPanel } from "@/components/myrmidon/ModelFallbackSignalSettingsPanel"; // myrmidon(SETTINGS-UI A)
+import { LicensingSettingsPanel } from "@/components/myrmidon/LicensingSettingsPanel"; // myrmidon(LICENSING)
 import { AboutSettingsPanel } from "@/components/myrmidon/AboutSettingsPanel"; // myrmidon(ABOUT)
 import { DeployJobsPanel } from "@/components/myrmidon/DeployJobsPanel"; // myrmidon(R5-A)
 import { BoardProcessesSettingsPanel } from "@/components/myrmidon/BoardProcessesSettingsPanel"; // myrmidon(1.6.6 PROCS-0.1)
@@ -181,6 +183,7 @@ export function InstanceGeneralSettings({ embedded = false }: { embedded?: boole
       <RunStallSettingsPanel /> {/* myrmidon(RUN-STALL-SETTINGS) */}
       <BudgetEnforcementSettingsPanel /> {/* myrmidon(1.7-BUDGET-CONFIG-B) */}
       <AgentExchangeSettingsPanel /> {/* myrmidon(1.7-AGENT-EXCHANGE-A) */}
+      <AgentExchangeFeedSettingsPanel /> {/* myrmidon(1.7-AGENT-EXCHANGE-B) */}
       <TelegramDmProgressSettingsPanel /> {/* myrmidon(DM-PROGRESS) */}
       <DebateSettingsPanel /> {/* myrmidon(1.7-DEBATE-ASYM-A) */}
       <HostDiskSettingsPanel /> {/* myrmidon(BOT-DISK E) */}
@@ -208,6 +211,7 @@ export function InstanceGeneralSettings({ embedded = false }: { embedded?: boole
       <BoardProcessesSettingsPanel /> {/* myrmidon(1.6.6 PROCS-0.1) */}
       <BoardLeasesPanel /> {/* myrmidon(1.6.5 BOARD-PROCESSES) */}
       <PluginEntitlementSettings /> {/* myrmidon(PLUGIN-ENTITLEMENT C) */}
+      <LicensingSettingsPanel /> {/* myrmidon(LICENSING): install id, license request, issue form */}
       <AttentionFeedSettingsPanel /> {/* myrmidon(1.6.5 F-15) */}
 
       {showDeploymentStatus && (

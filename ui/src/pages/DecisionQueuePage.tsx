@@ -48,6 +48,8 @@ import { IssueGroupHeader } from "../components/IssueGroupHeader";
 import { Button } from "../components/ui/button";
 import { useTranslation } from "@/i18n"; // myrmidon(UI-RU)
 import { Popover, PopoverContent, PopoverTrigger } from "../components/ui/popover";
+import { issuesApi } from "../api/issues";
+import { getStuckSignalCounts } from "../lib/stuckSignal";
 
 /**
  * Queue page. A single queue's pending
@@ -116,6 +118,15 @@ export function DecisionQueuePage() {
     queryFn: () => agentsApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
+  const { data: openIssues } = useQuery({
+    queryKey: [...queryKeys.issues.list(selectedCompanyId!), "stuck-signal-open"],
+    queryFn: () => issuesApi.list(selectedCompanyId!, { status: "todo,in_progress,blocked,in_review", limit: 1000 }),
+    enabled: !!selectedCompanyId,
+  });
+  const stuckCounts = useMemo(
+    () => getStuckSignalCounts(feed?.items ?? [], openIssues ?? [], agents ?? []),
+    [feed?.items, openIssues, agents],
+  );
   const { data: session } = useQuery({
     queryKey: queryKeys.auth.session,
     queryFn: () => authApi.getSession(),
@@ -225,6 +236,10 @@ export function DecisionQueuePage() {
 
   return (
     <div className="max-w-3xl space-y-4">
+      <section aria-label="Workload signals" className="grid grid-cols-2 gap-3 rounded-lg border bg-card p-3">
+        <div><p className="text-xs text-muted-foreground">Signaled issues without motion</p><p className="text-2xl font-semibold">{stuckCounts.attentionIssuesWithoutMotion}</p></div>
+        <div><p className="text-xs text-muted-foreground">Idle engineers</p><p className="text-2xl font-semibold">{stuckCounts.idleEngineers}</p></div>
+      </section>
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="min-w-0">
           <h1 className="text-xl font-bold">{queue?.title ?? queueKey}</h1>
