@@ -22,6 +22,8 @@ export type ColumnInfo = {
   generated: boolean;
   identityAlways: boolean;
   hasIdentity: boolean;
+  /** The column default as Postgres prints it, or null. */
+  defaultExpr: string | null;
 };
 export type TableInfo = { name: string; columns: ColumnInfo[] };
 
@@ -62,6 +64,7 @@ export async function introspectTables(q: Q): Promise<Map<string, TableInfo>> {
       generated: row.is_generated === "ALWAYS",
       identityAlways: row.identity_generation === "ALWAYS",
       hasIdentity: row.identity_generation !== null,
+      defaultExpr: row.column_default,
     });
   }
   return tables;
@@ -141,6 +144,23 @@ export async function databaseIdentity(q: Q): Promise<{ name: string; oid: strin
 
 export async function countRows(q: Q, table: string): Promise<number> {
   const rows = await all<{ n: number }>(q, sql.raw(`select count(*)::int as n from ${qi("public")}.${qi(table)}`));
+  return rows[0]?.n ?? 0;
+}
+
+// Column defaults that are plain literals; only these are ever put back into a query.
+const LITERAL_DEFAULT = /^(true|false|-?[0-9]+(\.[0-9]+)?|'[^']*'(::[a-z_ ]+)?)$/i;
+
+/**
+ * Number of rows in which a column holds something other than "nothing": not
+ * null, and not just the column default when that default is a plain literal.
+ */
+export async function countNonEmpty(q: Q, table: string, column: ColumnInfo): Promise<number> {
+  const dflt = column.defaultExpr !== null && LITERAL_DEFAULT.test(column.defaultExpr.trim()) ? column.defaultExpr.trim() : null;
+  const extra = dflt === null ? "" : ` and ${qi(column.name)} is distinct from ${dflt}`;
+  const rows = await all<{ n: number }>(
+    q,
+    sql.raw(`select count(*)::int as n from ${qi("public")}.${qi(table)} where ${qi(column.name)} is not null${extra}`),
+  );
   return rows[0]?.n ?? 0;
 }
 
