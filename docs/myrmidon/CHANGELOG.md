@@ -10,6 +10,18 @@ version file to edit. Base Paperclip version is in the image label
 
 ## Unreleased
 
+### Remote execution sites: the site-agent contract and operator guide reach the wiki (OPE-8142)
+
+- The new wiki page
+  [Remote-execution-sites](https://github.com/itkadr-git/myrmidon/wiki/Remote-execution-sites)
+  ([Russian](https://github.com/itkadr-git/myrmidon/wiki/Remote-execution-sites.ru))
+  condenses the remote execution sites work from
+  `docs/myrmidon/guides/remote-execution-sites.md` (EN/RU) and
+  `docs/myrmidon/fleetd-vmexec.md` (EN/RU): the one-way management plane,
+  the 13-route site-agent API, the five site health states with epoch
+  lease fencing, the secret-safe error reason codes, and the rollout with
+  canary migration and rollback. Linked from the wiki Home page (EN/RU).
+
 ## 1.6.6
 
 ### The company agent list ships without adapter_config; the config stays one request away (PERF-DIET G2)
