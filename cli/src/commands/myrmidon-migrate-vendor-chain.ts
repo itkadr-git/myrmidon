@@ -62,6 +62,8 @@ export function buildVendorReleases(
   extras: ReadonlyArray<VendorReleaseExtra> = VENDOR_EXTRA_RELEASES,
 ): VendorRelease[] {
   return [
+    // These two vendor tags point to the same 278-entry migration chain.
+    { release: "v2026.916.0", chain: base },
     { release: PAPERCLIP_VENDOR_RELEASE, chain: base },
     ...extras.map((r) => ({
       release: r.release,
