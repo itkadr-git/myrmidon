@@ -79,6 +79,14 @@ case "$1" in
       exit 0 ;;
     esac
     case "$*" in *pg_available_extensions*)
+      case "$*" in *"SELECT extname FROM pg_available_extensions"*)
+        echo 'psql: error: column "extname" does not exist' >&2
+        exit 2 ;;
+      esac
+      case "$*" in *"SELECT name FROM pg_available_extensions"*)
+        if [ -f "$SANDBOX/copy-available.txt" ]; then cat "$SANDBOX/copy-available.txt"; fi
+        exit 0 ;;
+      esac
       # myrmidon(PREDEPLOY-PG-COMPAT): models the production failure mode —
       # the copy answers the version probe but the extension probe aborts
       # (auth/role/timing). The caller must retry and name this error.
@@ -701,6 +709,20 @@ describe("predeploy-board-check.sh (PREDEPLOY-PG-COMPAT: the copy matches the du
     assert.equal(code, 0, out);
     assert.match(out, /the copy is Postgres 18, the same major the production dump came from/);
     assert.doesNotMatch(out, /syntax error in expression/);
+  });
+
+  it("queries pg_available_extensions.name and fails before restore when an extension is absent", () => {
+    const sb = sandbox();
+    withToc(sb, toc("18.0", "vector", "fuzzystrmatch"));
+    answer(sb, "copy-version.txt", "18.0\n");
+    answer(sb, "copy-available.txt", "plpgsql\nfuzzystrmatch\n");
+    const { code, out } = full(sb);
+    assert.notEqual(code, 0, out);
+    assert.match(out, /does not provide them/);
+    assert.match(out, /vector/);
+    assert.match(calls(sb), /SELECT name FROM pg_available_extensions/);
+    assert.doesNotMatch(calls(sb), /SELECT extname FROM pg_available_extensions/);
+    assert.doesNotMatch(calls(sb), /pg_restore -U/);
   });
 
   it("reads the copy's extension list and dies when the dump's extension is missing from it", () => {
