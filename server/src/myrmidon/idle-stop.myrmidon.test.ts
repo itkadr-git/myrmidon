@@ -17,7 +17,14 @@ vi.mock('@paperclipai/db', () => ({
     adapterType: 'adapter_type',
     status: 'status',
     adapterConfig: 'adapter_config',
+    role: 'role',
   },
+}));
+
+vi.mock('../services/instance-settings.js', () => ({
+  instanceSettingsService: () => ({
+    getGeneral: async () => ({}),
+  }),
 }));
 
 describe('IdleStopService', () => {
