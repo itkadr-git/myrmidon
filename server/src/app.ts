@@ -191,7 +191,8 @@ import { licensingInstallIdRoutes } from "./myrmidon/licensing-install-id/routes
 import { myrmidonLitellmBudgetSyncRoutes } from "./myrmidon/litellm-budget-sync/index.js"; // myrmidon(1.7-BUDGET-CONFIG-C)
 import { myrmidonLitellmWorkersRoutes } from "./myrmidon/litellm-workers/routes.js"; // myrmidon(1.6.5 LITELLM-WORKERS A)
 import { agentInstructionsRevisionsRoutes } from "./myrmidon/agent-instructions-revisions/index.js"; // myrmidon(H2)
-import { myrmidonFleetConsoleRoutes } from "./myrmidon/fleet-console/index.js"; // myrmidon(SC1)
+import { myrmidonFleetConsoleRoutes } from "./myrmidon/fleet-console/index.js";
+import { myrmidonOnboardRoutes } from "./myrmidon/server-onboard/index.js"; // myrmidon(SC1)
 import { myrmidonFleetSiteRoutes } from "./myrmidon/bot-containers/fleet-site-wiring.js"; // myrmidon(1.6.6 OPE-8999)
 import { myrmidonFleetSiteManageRoutes } from "./myrmidon/bot-containers/fleet-site-manage-wiring.js"; // myrmidon(1.6.6 REMOTE-SITES-T8)
 import { myrmidonFleetMoveRoutes } from "./myrmidon/bot-containers/fleet-move-wiring.js"; // myrmidon(1.6.6 REMOTE-SITES-T5)
@@ -1199,7 +1200,8 @@ export async function createApp(
   api.use(myrmidonLitellmBudgetSyncRoutes(db)); // myrmidon(1.7-BUDGET-CONFIG-C): LiteLLM budget projection settings, status, re-sync
   api.use(myrmidonLitellmWorkersRoutes(db)); // myrmidon(1.6.5 LITELLM-WORKERS A): LiteLLM worker-process target, live pool size and TTIN/TTOU resize
   api.use(agentInstructionsRevisionsRoutes(db)); // myrmidon(H2)
-  api.use(myrmidonFleetConsoleRoutes(db)); // myrmidon(SC1)
+  api.use(myrmidonFleetConsoleRoutes(db));
+  api.use(myrmidonOnboardRoutes(db)); // myrmidon(SC1)
   api.use(myrmidonFleetMoveRoutes(db)); // myrmidon(1.6.6 REMOTE-SITES-T5)
   api.use(myrmidonFleetSiteRoutes(db)); // myrmidon(1.6.6 OPE-8999): enroll / list / delete execution sites
   api.use(siteHealthRoutes(db)); // myrmidon(1.6.6 REMOTE-SITES-T4): site health badges

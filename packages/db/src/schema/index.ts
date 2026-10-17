@@ -235,7 +235,7 @@ export {
   myrmidonScopeSettings,
   myrmidonScopeAgentPrefs,
 } from "./myrmidon_bot_scope.js";
-export { myrmidonFleetServers } from "./myrmidon_fleet_servers.js"; // myrmidon(SC1): fleet-server registry for the browser console
+export { myrmidonFleetServers, myrmidonFleetOnboardJobs } from "./myrmidon_fleet_servers.js"; // myrmidon(SC1): fleet-server registry for the browser console
 export { myrmidonFleetSites, fleetSites, type FleetSiteCapacity, type FleetSiteHealth, type FleetSiteProfile } from "./myrmidon_fleet_sites.js";
 export { myrmidonFleetAffinity, fleetAffinity } from "./myrmidon_fleet_affinity.js";
 export { myrmidonFleetMoves, type FleetMovePhaseLogEntry } from "./myrmidon_fleet_moves.js";
