@@ -20,8 +20,8 @@ API_TOKEN = os.environ["BOARD_API_TOKEN"]
 DURATION = float(os.environ.get("DURATION", "150"))
 RPS = float(os.environ.get("RPS", "8"))
 OUTPUT = os.environ.get("OUTPUT", "ope6419-results.jsonl")
-if DURATION < 70 or RPS <= 0:
-    raise SystemExit("DURATION must be >=70 seconds and RPS must be positive")
+if DURATION < 100 or RPS <= 0:
+    raise SystemExit("DURATION must be >=100 seconds and RPS must be positive")
 BODY = json.dumps({"model": "mock-gpt", "messages": [{"role": "user", "content": "ping"}], "max_tokens": 1}).encode()
 HEADERS = {"Content-Type": "application/json", "Authorization": f"Bearer {os.environ.get('LITELLM_API_TOKEN', 'local-test-key')}"}
 results = []
@@ -87,21 +87,40 @@ def pump():
             thread_errors.append(f"{type(exc).__name__}: {str(exc)[:120]}")
 
 
-events = [{"phase": "start", "target": 2, "at_s": 0, "result": resize(2)}]
+events = []
+resize_errors = []
+
+
+def record_resize(phase, target):
+    event = {"phase": phase, "target": target, "at_s": round(time.monotonic() - START, 1)}
+    try:
+        event["result"] = resize(target)
+    except Exception as exc:
+        message = f"{type(exc).__name__}: {str(exc)[:160]}"
+        event["error"] = message
+        resize_errors.append(message)
+    events.append(event)
+
+
 START = time.monotonic()
+record_resize("start", 2)
 STOP = START + DURATION
 next_slot = START
 threads = [threading.Thread(target=pump, daemon=True) for _ in range(16)]
 for thread in threads:
     thread.start()
-time.sleep(30)
-events.append({"phase": "scale_up", "target": 4, "at_s": round(time.monotonic() - START, 1), "result": resize(4)})
-time.sleep(40)
-events.append({"phase": "scale_down", "target": 2, "at_s": round(time.monotonic() - START, 1), "result": resize(2)})
-for thread in threads:
-    thread.join(timeout=max(0, STOP - time.monotonic()) + 35)
+scale_up_at = START + DURATION * 0.2
+scale_down_at = START + DURATION * 0.5
+try:
+    time.sleep(max(0, scale_up_at - time.monotonic()))
+    record_resize("scale_up", 4)
+    time.sleep(max(0, scale_down_at - time.monotonic()))
+    record_resize("scale_down", 2)
+finally:
+    for thread in threads:
+        thread.join(timeout=max(0, STOP - time.monotonic()) + 35)
 if any(thread.is_alive() for thread in threads):
-    raise RuntimeError("load worker threads did not finish")
+    thread_errors.append("load worker threads did not finish")
 
 codes = {}
 for record in results:
@@ -110,9 +129,9 @@ for record in results:
 success = [record for record in results if record["code"] == 200]
 errors = [record["err"] for record in results if record["err"]]
 phase_latency = {
-    "before_resize_s": [r["lat"] for r in success if r["t"] < 30],
-    "four_workers_s": [r["lat"] for r in success if 35 <= r["t"] < 70],
-    "after_resize_s": [r["lat"] for r in success if r["t"] >= 75],
+    "before_resize_s": [r["lat"] for r in success if r["t"] < DURATION * 0.2],
+    "four_workers_s": [r["lat"] for r in success if DURATION * 0.25 <= r["t"] < DURATION * 0.5],
+    "after_resize_s": [r["lat"] for r in success if r["t"] >= DURATION * 0.55],
 }
 medians = {name: round(statistics.median(values), 3) if values else None
            for name, values in phase_latency.items()}
@@ -128,6 +147,7 @@ summary = {
     "worker_current_events": [e.get("result", {}).get("current") for e in events],
     "completed_rps": round(completed_rps, 3), "planned_requests": planned_requests,
     "transport_errors": len(errors), "timeouts": sum("timeout" in e.lower() for e in errors),
+    "elapsed_s": round(elapsed, 3),
     "thread_errors": thread_errors,
     "latency_medians_s": medians, "resize_events": events,
 }
@@ -146,10 +166,16 @@ if thread_errors:
     failure_reasons.append("load thread errors")
 if not success:
     failure_reasons.append("no successful responses")
+if any(record["code"] != 200 for record in results):
+    failure_reasons.append("non-200 HTTP responses")
+if resize_errors:
+    failure_reasons.append("worker resize API errors")
 if any(value is None for value in medians.values()):
     failure_reasons.append("missing latency phase")
 if len(results) != planned_requests:
     failure_reasons.append("completed request count differs from planned attempts")
+if completed_rps + 0.05 < RPS:
+    failure_reasons.append("completed RPS is below configured aggregate target")
 if [e.get("result", {}).get("current") for e in events] != [2, 4, 2]:
     failure_reasons.append("worker resize not confirmed as 2 -> 4 -> 2")
 if failure_reasons:
