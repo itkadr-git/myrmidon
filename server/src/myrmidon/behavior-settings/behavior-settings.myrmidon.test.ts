@@ -234,3 +234,238 @@ describe("myrmidon(1.7) behavior settings: a change reaches the live system", ()
     expect(h.calls).toEqual([]);
   });
 });
+
+describe("myrmidon(1.7) behavior settings: reading defaults and definitions", () => {
+  it("reads defaults for the first batch of portable S-size registry keys", async () => {
+    const { app } = harness({ env: {} });
+    const res = await request(app).get(INSTANCE_URL).expect(200);
+
+    // Verify S-size keys from OPE-8146 registry
+    expect(res.body.settings.autonomy_level).toBe("full");
+    expect(res.body.sources.autonomy_level).toBe("default");
+
+    expect(res.body.settings.pause_drain_enabled).toBe(true);
+    expect(res.body.sources.pause_drain_enabled).toBe("default");
+
+    expect(res.body.settings.pause_drain_grace_sec).toBe(120);
+    expect(res.body.sources.pause_drain_grace_sec).toBe("default");
+
+    expect(res.body.settings.stranded_autopolicy_enabled).toBe(true);
+    expect(res.body.sources.stranded_autopolicy_enabled).toBe("default");
+
+    expect(res.body.settings.stranded_autopolicy_retries_per_day).toBe(3);
+    expect(res.body.sources.stranded_autopolicy_retries_per_day).toBe("default");
+
+    expect(res.body.settings.swarm_claim_enabled).toBe(false);
+    expect(res.body.sources.swarm_claim_enabled).toBe("default");
+
+    expect(res.body.settings.swarm_scent_weight_similarity).toBe(0.5);
+    expect(res.body.sources.swarm_scent_weight_similarity).toBe("default");
+
+    expect(res.body.settings.continuation_history_limit).toBe(30);
+    expect(res.body.sources.continuation_history_limit).toBe("default");
+
+    expect(res.body.settings.review_routing_enabled).toBe(true);
+    expect(res.body.sources.review_routing_enabled).toBe("default");
+  });
+
+  it("lists all setting definitions with metadata", async () => {
+    const { app } = harness();
+    const res = await request(app).get(`${INSTANCE_URL}/definitions`).expect(200);
+
+    expect(Array.isArray(res.body)).toBe(true);
+    expect(res.body.length).toBeGreaterThan(20);
+
+    const pauseDrain = res.body.find((d: { key: string }) => d.key === "pause_drain_enabled");
+    expect(pauseDrain).toMatchObject({
+      key: "pause_drain_enabled",
+      envName: "MYRMIDON_PAUSE_DRAIN_ENABLED",
+      default: true,
+      scope: "instance",
+      section: "kill_switches",
+      valueType: "boolean",
+    });
+    expect(pauseDrain.description).toBeDefined();
+
+    const scentWeight = res.body.find((d: { key: string }) => d.key === "swarm_scent_weight_similarity");
+    expect(scentWeight).toMatchObject({
+      key: "swarm_scent_weight_similarity",
+      valueType: "number",
+      default: 0.5,
+    });
+  });
+
+  it("reads a single setting by key via query param and path param", async () => {
+    const { app } = harness({ env: {} });
+
+    // via query param ?key=
+    const resQuery = await request(app).get(`${INSTANCE_URL}?key=pause_drain_enabled`).expect(200);
+    expect(resQuery.body).toMatchObject({
+      key: "pause_drain_enabled",
+      value: true,
+      source: "default",
+    });
+    expect(resQuery.body.definition).toBeDefined();
+
+    // via path param /key/:key
+    const resPath = await request(app).get(`${INSTANCE_URL}/key/pause_drain_enabled`).expect(200);
+    expect(resPath.body).toMatchObject({
+      key: "pause_drain_enabled",
+      value: true,
+      source: "default",
+    });
+
+    // 404 on unknown key
+    await request(app).get(`${INSTANCE_URL}?key=nonexistent_setting`).expect(404);
+    await request(app).get(`${INSTANCE_URL}/key/nonexistent_setting`).expect(404);
+  });
+});
+
+describe("myrmidon(1.7) behavior settings: write and read cycle", () => {
+  it("persists instance settings and returns updated values on subsequent read", async () => {
+    const h = harness({ env: {} });
+
+    // PATCH update with S-size settings
+    const patchPayload = {
+      pause_drain_enabled: false,
+      pause_drain_grace_sec: 240,
+      swarm_claim_enabled: true,
+      swarm_scent_weight_similarity: 0.8,
+    };
+
+    const updateRes = await request(h.withActor(admin))
+      .patch(INSTANCE_URL)
+      .send(patchPayload)
+      .expect(200);
+
+    expect(updateRes.body.settings.pause_drain_enabled).toBe(false);
+    expect(updateRes.body.sources.pause_drain_enabled).toBe("ui");
+    expect(updateRes.body.settings.pause_drain_grace_sec).toBe(240);
+    expect(updateRes.body.sources.pause_drain_grace_sec).toBe("ui");
+    expect(updateRes.body.settings.swarm_claim_enabled).toBe(true);
+    expect(updateRes.body.sources.swarm_claim_enabled).toBe("ui");
+    expect(updateRes.body.settings.swarm_scent_weight_similarity).toBe(0.8);
+    expect(updateRes.body.sources.swarm_scent_weight_similarity).toBe("ui");
+
+    // Subsequent read sees persisted settings
+    const readRes = await request(h.withActor(member)).get(INSTANCE_URL).expect(200);
+    expect(readRes.body.settings.pause_drain_enabled).toBe(false);
+    expect(readRes.body.sources.pause_drain_enabled).toBe("ui");
+    expect(readRes.body.settings.pause_drain_grace_sec).toBe(240);
+
+    // Single key read reflects updated value
+    const singleRes = await request(h.withActor(member))
+      .get(`${INSTANCE_URL}?key=pause_drain_enabled`)
+      .expect(200);
+    expect(singleRes.body.value).toBe(false);
+    expect(singleRes.body.source).toBe("ui");
+  });
+
+  it("supports PUT alias for updating instance settings", async () => {
+    const h = harness({ env: {} });
+    const res = await request(h.withActor(admin))
+      .put(INSTANCE_URL)
+      .send({ pause_drain_enabled: false })
+      .expect(200);
+    expect(res.body.settings.pause_drain_enabled).toBe(false);
+  });
+
+  it("persists and reads company-scoped settings", async () => {
+    const h = harness({ env: {} });
+
+    const patchRes = await request(h.withActor(member))
+      .patch(COMPANY_URL(COMPANY_ID))
+      .send({ review_routing_enabled: false })
+      .expect(200);
+
+    expect(patchRes.body.settings.review_routing_enabled).toBe(false);
+    expect(patchRes.body.sources.review_routing_enabled).toBe("ui");
+
+    const readRes = await request(h.withActor(member))
+      .get(COMPANY_URL(COMPANY_ID))
+      .expect(200);
+    expect(readRes.body.settings.review_routing_enabled).toBe(false);
+    expect(readRes.body.sources.review_routing_enabled).toBe("ui");
+  });
+});
+
+describe("myrmidon(1.7) behavior settings: type and range validation", () => {
+  it("rejects invalid types with 400 Bad Request", async () => {
+    const h = harness();
+
+    // boolean field given string
+    await request(h.withActor(admin))
+      .patch(INSTANCE_URL)
+      .send({ pause_drain_enabled: "yes_definitely" })
+      .expect(400);
+
+    // number field given string
+    await request(h.withActor(admin))
+      .patch(INSTANCE_URL)
+      .send({ pause_drain_grace_sec: "one_hundred" })
+      .expect(400);
+
+    // string field given number
+    await request(h.withActor(admin))
+      .patch(INSTANCE_URL)
+      .send({ autonomy_level: 123 })
+      .expect(400);
+  });
+
+  it("rejects out-of-range or enum-violating values with 400 Bad Request", async () => {
+    const h = harness();
+
+    // negative integer where min is 0
+    await request(h.withActor(admin))
+      .patch(INSTANCE_URL)
+      .send({ pause_drain_grace_sec: -5 })
+      .expect(400);
+
+    // integer above max limit (stranded_autopolicy_retries_per_day max is 10)
+    await request(h.withActor(admin))
+      .patch(INSTANCE_URL)
+      .send({ stranded_autopolicy_retries_per_day: 99 })
+      .expect(400);
+
+    // float outside [0.0..1.0] range
+    await request(h.withActor(admin))
+      .patch(INSTANCE_URL)
+      .send({ swarm_scent_weight_similarity: 1.5 })
+      .expect(400);
+
+    // invalid enum value
+    await request(h.withActor(admin))
+      .patch(INSTANCE_URL)
+      .send({ autonomy_level: "unlimited_power" })
+      .expect(400);
+  });
+
+  it("rejects unrecognized keys with 400 Bad Request", async () => {
+    const h = harness();
+    await request(h.withActor(admin))
+      .patch(INSTANCE_URL)
+      .send({ totally_random_key_that_does_not_exist: true })
+      .expect(400);
+  });
+});
+
+describe("myrmidon(1.7) behavior settings: permission matrix", () => {
+  it("rejects unauthenticated requests or agents on definitions endpoint", async () => {
+    const h = harness();
+    await request(h.withActor(agentActor)).get(`${INSTANCE_URL}/definitions`).expect(403);
+    await request(h.withActor(outsider)).get(`${INSTANCE_URL}/definitions`).expect(403);
+  });
+
+  it("rejects non-admin board members on instance write endpoints", async () => {
+    const h = harness();
+    await request(h.withActor(member)).patch(INSTANCE_URL).send({ pause_drain_enabled: false }).expect(403);
+    await request(h.withActor(member)).put(INSTANCE_URL).send({ pause_drain_enabled: false }).expect(403);
+  });
+
+  it("allows board members to read definitions and instance settings", async () => {
+    const h = harness();
+    await request(h.withActor(member)).get(`${INSTANCE_URL}/definitions`).expect(200);
+    await request(h.withActor(member)).get(INSTANCE_URL).expect(200);
+    await request(h.withActor(member)).get(`${INSTANCE_URL}?key=autonomy_level`).expect(200);
+  });
+});
