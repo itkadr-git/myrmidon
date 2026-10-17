@@ -271,7 +271,7 @@ describe("myrmidon(FLEETD-VMEXEC) fleetd driver — request injection hooks", ()
 
   it("passes mTLS options (ca, cert, key, agent) to https transport on https baseUrl", async () => {
     const https = await import("node:https");
-    const fakeAgent = new https.Agent();
+    const fakeAgent: any = new https.Agent();
     let capturedOptions: any = null;
     fakeAgent.addRequest = (req: any, options: any) => {
       capturedOptions = options;
