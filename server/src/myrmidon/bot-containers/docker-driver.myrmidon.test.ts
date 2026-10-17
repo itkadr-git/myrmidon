@@ -97,8 +97,21 @@ describe("readDockerDriverConfig YOLO setting", () => {
     const previous = liveBehaviorSettingsView();
     applyLiveBehaviorSettings({ settings: { bot_yolo: false }, sources: { bot_yolo: "ui" } });
     try {
-      const volume = { [BOT_VOLUME_ROOT_ENV]: "/var/lib/myrmidon/bots" };
-      expect(readDockerDriverConfig(volume).yolo).toBe(false);
+      const volume: NodeJS.ProcessEnv = { [BOT_VOLUME_ROOT_ENV]: "/var/lib/myrmidon/bots" };
+      // Omit env to exercise the runtime live-settings path; explicit env maps
+      // intentionally suppress live settings and model isolated configuration.
+      const previousProcessYolo = process.env[BOT_YOLO_ENV];
+      const previousVolumeRoot = process.env[BOT_VOLUME_ROOT_ENV];
+      delete process.env[BOT_YOLO_ENV];
+      try {
+        process.env[BOT_VOLUME_ROOT_ENV] = volume[BOT_VOLUME_ROOT_ENV];
+        expect(readDockerDriverConfig().yolo).toBe(false);
+      } finally {
+        if (previousProcessYolo === undefined) delete process.env[BOT_YOLO_ENV];
+        else process.env[BOT_YOLO_ENV] = previousProcessYolo;
+        if (previousVolumeRoot === undefined) delete process.env[BOT_VOLUME_ROOT_ENV];
+        else process.env[BOT_VOLUME_ROOT_ENV] = previousVolumeRoot;
+      }
       expect(readDockerDriverConfig({ ...volume, [BOT_YOLO_ENV]: "true" }).yolo).toBe(true);
       expect(readDockerDriverConfig({ ...volume, [BOT_YOLO_ENV]: "0" }).yolo).toBe(false);
     } finally {
