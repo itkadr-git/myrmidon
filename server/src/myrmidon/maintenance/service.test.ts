@@ -186,6 +186,21 @@ describeEmbeddedPostgres("maintenance service and API", () => {
     const svc = maintenanceService(db, {
       heartbeat: {
         ...heartbeat,
+        interruptRunForMaintenance: async (runId, windowId) => {
+          const stopped = await heartbeat.cancelRun(runId, "maintenance test interrupt", {
+            errorCode: "myrmidon_maintenance_interrupted",
+            resultJson: { myrmidonMaintenance: { windowId } },
+            suppressImmediateRecovery: true,
+          });
+          if (stopped?.status === "running" || stopped?.status === "queued") {
+            throw new Error(`run ${runId} remains ${stopped.status}`);
+          }
+          return heartbeat.scheduleBoundedRetry(runId, {
+            retryReason: "myrmidon_maintenance",
+            wakeReason: "myrmidon_maintenance_retry",
+            delayMs: 0,
+          }).then((retry) => ({ retryScheduled: retry.outcome === "scheduled" }));
+        },
         promoteDueScheduledRetries: async () => { throw new Error("retry promotion failed"); },
       },
       now: () => clock,
