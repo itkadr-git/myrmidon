@@ -212,6 +212,7 @@ const ATTENTION_SOURCE_KINDS: AttentionSourceKind[] = [
   "pause_guard",
   // myrmidon(OPE-6011): a held task's silent-wake notice.
   "execution_hold",
+  "replay_blocked",
   // myrmidon(1.6.5-F21-B): owner decision cards waiting on the owner.
   "owner_pending_card",
   // myrmidon(1.6.6 OPE-7198): banned or exhausted Codex / ChatGPT subscription accounts.
@@ -624,8 +625,8 @@ function createItem(input: CreateAttentionItemInput): AttentionItem {
     keep: false,
     archivedAt: null,
     retentionVersion: 0,
-    decideBy: null,
-    decideByAttribution: null,
+    decideBy: input.decideBy ?? null,
+    decideByAttribution: input.decideByAttribution ?? null,
     snoozedUntil: null,
     detail: input.detail ?? null,
     trainingExampleId: null,
@@ -3032,8 +3033,6 @@ async function buildAttentionFeedSnapshot(
             "the replay block is cleared or superseded, or the issue loses its assignee.",
           dedupKey: executionHoldSignalDedupKey(card),
           severity: executionHoldSignalSeverity(),
-          decideBy: card.decideByAt,
-          decideByAttribution: { type: card.responsibleAgentId ? "agent" : "user", agentId: card.responsibleAgentId, agentName: card.responsibleAgentName, userId: null, runId: null, responsibleUserId: card.responsibleUserId, updatedAt: card.activityAt },
           activityAt: card.activityAt,
           createdAt: card.activityAt,
           updatedAt: card.activityAt,

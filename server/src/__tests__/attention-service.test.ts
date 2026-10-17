@@ -546,7 +546,7 @@ describeEmbeddedPostgres("attention service", () => {
     const replayHoldActionId = randomUUID();
     await db.insert(issueRecoveryActions).values({
       id: replayHoldActionId, companyId, sourceIssueId: replayHoldIssueId, kind: "active_run_watchdog", status: "resolved",
-      cause: "uncertain_provider_action", fingerprint: "attention-replay-hold",
+      cause: "legacy_execution_requires_reconciliation", fingerprint: "attention-replay-hold",
       evidence: { automaticRecovery: { replay: "blocked" } }, nextAction: "Inspect failed execution", updatedAt: baseTime,
     });
     await db.insert(issueRecoveryActions).values([
