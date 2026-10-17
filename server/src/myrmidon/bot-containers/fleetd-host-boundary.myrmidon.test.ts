@@ -379,7 +379,7 @@ describe("OPE-8137: fleet routing completely isolates fleet-placed bots from loc
 describe("OPE-8137: fleet placement and host parsing boundaries", () => {
   it("fleetGatewayApiBaseUrl derives gateway URL purely in memory without socket or filesystem access", () => {
     expect(fleetGatewayApiBaseUrl("http://fleetd.internal:9100", 8080)).toBe("http://fleetd.internal:8080");
-    expect(fleetGatewayApiBaseUrl("http://192.168.1.50:9100", 3001)).toBe("http://192.168.1.50:3001");
+    expect(fleetGatewayApiBaseUrl("http://fleetd2.example.com:9100", 3001)).toBe("http://fleetd2.example.com:3001");
 
     expect(() => fleetGatewayApiBaseUrl("http://fleetd.internal:9100", undefined)).toThrow(
       /fleetd did not report a gateway port/,
