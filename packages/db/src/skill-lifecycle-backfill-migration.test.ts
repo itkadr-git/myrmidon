@@ -67,11 +67,11 @@ describeEmbeddedPostgres("skill lifecycle backfill migration", () => {
       INSERT INTO "company_skills" ("id", "company_id", "key", "slug", "name", "markdown", "description", "source_type", "source_locator", "categories")
       VALUES
         (${legacySkillId}, ${companyId}, 'paperclipai/bundled/DevOps/Deploy', 'deploy', 'Deploy', '# Deploy', 'Ship it to prod', 'catalog', 'git:ops/deploy', ARRAY['DevOps','Release']),
-        (${collisionFirstId}, ${companyId}, 'company/foo-bar', 'foo-bar', 'Foo Bar', '# Foo', NULL, 'local_path', NULL, ARRAY[]),
-        (${collisionSecondId}, ${companyId}, 'company/foo bar', 'foo-bar-2', 'Foo Bar Two', '# Foo2', 'second', 'local_path', '/srv/skills/foo', ARRAY[]),
-        (${urlSkillId}, ${companyId}, 'company/url-skill', 'url-skill', 'URL Skill', '# URL', 'from the net', 'url', 'https://example.com/skill', ARRAY[]),
-        (${noVersionSkillId}, ${companyId}, 'company/no-version', 'no-version', 'No Version', '# NV', '', 'local_path', '', ARRAY[]),
-        (${managedSkillId}, ${companyId}, 'company/managed', 'managed', 'Managed', '# M', 'managed', 'catalog', 'git:managed', ARRAY[])
+        (${collisionFirstId}, ${companyId}, 'company/foo-bar', 'foo-bar', 'Foo Bar', '# Foo', NULL, 'local_path', NULL, ARRAY[]::text[]),
+        (${collisionSecondId}, ${companyId}, 'company/foo bar', 'foo-bar-2', 'Foo Bar Two', '# Foo2', 'second', 'local_path', '/srv/skills/foo', ARRAY[]::text[]),
+        (${urlSkillId}, ${companyId}, 'company/url-skill', 'url-skill', 'URL Skill', '# URL', 'from the net', 'url', 'https://example.com/skill', ARRAY[]::text[]),
+        (${noVersionSkillId}, ${companyId}, 'company/no-version', 'no-version', 'No Version', '# NV', '', 'local_path', '', ARRAY[]::text[]),
+        (${managedSkillId}, ${companyId}, 'company/managed', 'managed', 'Managed', '# M', 'managed', 'catalog', 'git:managed', ARRAY[]::text[])
     `;
     await sql`
       INSERT INTO "company_skill_versions" ("id", "company_id", "company_skill_id", "revision_number")
@@ -88,7 +88,7 @@ describeEmbeddedPostgres("skill lifecycle backfill migration", () => {
     await sql`
       INSERT INTO "company_skills" ("id", "company_id", "key", "slug", "name", "markdown", "source_type", "categories")
       VALUES
-        (${otherCompanySkillId}, ${otherCompanyId}, 'other/skill', 'skill', 'Other Skill', '# O', 'local_path', ARRAY[])
+        (${otherCompanySkillId}, ${otherCompanyId}, 'other/skill', 'skill', 'Other Skill', '# O', 'local_path', ARRAY[]::text[])
     `;
     // A lifecycle row a real promotion already wrote: the backfill must not
     // touch its state, pointer or reason.
