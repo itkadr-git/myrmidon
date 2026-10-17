@@ -20,8 +20,8 @@ describe("knowledge revision languages", () => {
   });
 
   it("uses exact language when available and canonical fallback otherwise", () => {
-    const canonical = { id: "en-1", lang: "en", translationOf: null, status: "approved" as const };
-    const russian = { id: "ru-1", lang: "ru", translationOf: "en-1", status: "approved" as const };
+    const canonical = { id: "en-1", lang: "en" as const, translationOf: null, status: "approved" as const };
+    const russian = { id: "ru-1", lang: "ru" as const, translationOf: "en-1", status: "approved" as const };
     expect(selectKnowledgeRevision([canonical, russian], "ru")).toBe(russian);
     expect(selectKnowledgeRevision([canonical], "ru")).toBe(canonical);
     expect(selectKnowledgeRevision([canonical, russian], "en")).toBe(canonical);
