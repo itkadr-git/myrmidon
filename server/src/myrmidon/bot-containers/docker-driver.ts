@@ -333,7 +333,7 @@ export interface DockerCreateContainerBody {
  */
 export function buildCreateContainerRequestBody(
   spec: BotContainerSpec,
-  config: Pick<DockerDriverConfig, "volumeRoot" | "network" | "allowlist" | "mountSources" | "devbuild">,
+  config: Pick<DockerDriverConfig, "volumeRoot" | "network" | "allowlist" | "mountSources" | "devbuild" | "yolo">,
   sharedPackageCachePath?: string,
   gitMirror = false,
   /** myrmidon(BOT-DISK-F): the instance a shared member binds (isolated when absent). */
