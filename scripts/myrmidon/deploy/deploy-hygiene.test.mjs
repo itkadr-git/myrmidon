@@ -69,7 +69,10 @@ case "$1" in
     echo "TYPE            TOTAL     ACTIVE    SIZE      RECLAIMABLE"
     echo "Images          8         3         33GB      20GB"
     exit 0 ;;
-esac
+  buildx)
+    printf '[{"size":1048576}]\n'
+    exit 0 ;;
+
 exit 0
 `;
 
@@ -78,9 +81,8 @@ const FAKE_DF = `#!/usr/bin/env bash
 free_kb=""
 [ -f "$SANDBOX/free-kb" ] && free_kb="$(tr -d '[:space:]' < "$SANDBOX/free-kb")"
 [ -n "$free_kb" ] || free_kb=104857600
-printf 'Filesystem     1024-blocks        Used   Available Capacity Mounted on\\n'
-printf '/dev/root        52428800   %s   %s    %s%% /\\n' \\
-  "$((52428800 - free_kb))" "$free_kb" "$(( (52428800 - free_kb) * 100 / 52428800 ))"
+printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\n'
+printf '/dev/root 52428800 %s %s 50%% /\n' "$((52428800-free_kb))" "$free_kb"
 `;
 
 // Runs one helper of lib.sh in a sandbox. body is a bash snippet evaluated
@@ -243,8 +245,8 @@ describe("deploy_disk_precheck (DEPLOY-HYGIENE, OPE-5107)", () => {
     const sb = sandbox({ freeGb: 4 });
     const { code, out } = runHelper(sb, "deploy_disk_precheck test-place");
     assert.notEqual(code, 0, out);
-    assert.match(out, /4 GiB free on the filesystem of \/var\/lib\/docker, less than the required 15 GiB/);
-    assert.match(out, /NOT started: no image was pulled, no dump was taken, nothing was changed/);
+    assert.match(out, /4 GiB free; requires 20 GiB including image layers and DB dump reserve/);
+    assert.match(out, /cleanup candidates:/);
     assert.match(out, /docker system df/);
     // the candidates are printed, the deploy refused
     assert.match(calls(sb), /docker system df/);
@@ -254,14 +256,14 @@ describe("deploy_disk_precheck (DEPLOY-HYGIENE, OPE-5107)", () => {
     const sb = sandbox({ freeGb: 42 });
     const { code, out } = runHelper(sb, "deploy_disk_precheck test-place");
     assert.equal(code, 0, out);
-    assert.match(out, /42 GiB free on the filesystem of \/var\/lib\/docker \(>= 15 GiB required\)/);
+    assert.match(out, /42 GiB free; requires 20 GiB including image layers and DB dump reserve/);
   });
 
   it("honours MYRMIDON_DEPLOY_MIN_FREE_GB and 0 switches the check off", () => {
     const tight = sandbox({ freeGb: 9 });
     const low = runHelper(tight, "deploy_disk_precheck test-place", { configExtra: "MYRMIDON_DEPLOY_MIN_FREE_GB=10" });
     assert.notEqual(low.code, 0, low.out);
-    assert.match(low.out, /9 GiB free .* less than the required 10 GiB/);
+    assert.match(low.out, /9 GiB free; requires 15 GiB including image layers and DB dump reserve/);
 
     const off = sandbox({ freeGb: 1 });
     const offRun = runHelper(off, "deploy_disk_precheck test-place", { configExtra: "MYRMIDON_DEPLOY_MIN_FREE_GB=0" });
@@ -273,7 +275,7 @@ describe("deploy_disk_precheck (DEPLOY-HYGIENE, OPE-5107)", () => {
     const sb = sandbox({ freeGb: 4 });
     const { code, out } = runHelper(sb, "deploy_disk_precheck test-place", { dryRun: true });
     assert.equal(code, 0, out);
-    assert.match(out, /dry run, nothing refused; the real run needs 15 GiB free .* \(now: 4 GiB\)/);
+    assert.match(out, /dry run; requires 20 GiB including image layers and DB dump reserve .*free: 4 GiB/);
   });
 });
 
