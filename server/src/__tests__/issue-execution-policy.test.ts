@@ -969,9 +969,7 @@ describe("issue execution policy transitions", () => {
 
     it("preserves a scheduled monitor when an issue becomes blocked", () => {
       const monitor = {
-        status: "scheduled",
         nextCheckAt: "2026-10-16T20:00:00.000Z",
-        attemptCount: 2,
         notes: "Await CI",
         scheduledBy: "assignee",
       };
@@ -998,9 +996,7 @@ describe("issue execution policy transitions", () => {
 
     it("preserves the scheduled monitor when a board override moves a review into blocked", () => {
       const monitor = {
-        status: "scheduled",
         nextCheckAt: "2026-10-16T20:00:00.000Z",
-        attemptCount: 2,
         notes: "Await CI",
         scheduledBy: "assignee",
       };
