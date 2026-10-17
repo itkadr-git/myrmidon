@@ -178,6 +178,7 @@ import {
   budgetService,
   companySkillService,
   companySearchService,
+  companyService,
   executionWorkspaceService,
   enrichWorkProductMetadataWithDiff,
   goalService,
@@ -18437,9 +18438,10 @@ export function issueRoutes(
         const add = (dbOrTx: Db = db) =>
           svc.addComment(
             id,
-            sourceTrust?.disposition === "quarantined"
+            commentOptions.sourceTrust?.disposition === "quarantined"
               ? buildLowTrustQuarantineNotice({
-                  promotionOwnerUserId: sourceTrust.promotionOwnerUserId ?? null,
+                  promotionOwnerUserId:
+                    commentOptions.sourceTrust.promotionOwnerUserId ?? null,
                 })
               : req.body.body,
             {
