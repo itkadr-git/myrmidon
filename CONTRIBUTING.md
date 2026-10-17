@@ -156,6 +156,7 @@ Bugs, docs improvements, and small targeted improvements are still the easiest p
 - One PR = one logical change (unless it's a small related group)
 - Run tests locally first
 - Be kind in discussions 😄
+- No AI signatures: commit messages, PR titles and PR descriptions must not carry an AI assistant `Co-Authored-By` trailer or a "Generated with ..." banner, and no commit may be authored or committed under the bot identity `OpenClaw ADM`. The CI job `checks` (commits, step "AI signatures") and the job `PR text scan` (title and description) fail the PR when they find one. History of `main` is not rewritten; fix the PR by amending the commits and editing the description. Details: `docs/myrmidon/publish-scan.md`, section "AI signatures".
 
 ## Writing a Good PR message
 

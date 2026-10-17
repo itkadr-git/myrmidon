@@ -2,6 +2,7 @@ package gate
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/itkadr-git/myrmidon/tools/dockergate/internal/config"
 	"github.com/itkadr-git/myrmidon/tools/dockergate/internal/deny"
+	"github.com/itkadr-git/myrmidon/tools/dockergate/internal/disk"
 	"github.com/itkadr-git/myrmidon/tools/dockergate/internal/policy"
 	"github.com/itkadr-git/myrmidon/tools/dockergate/internal/route"
 	"github.com/itkadr-git/myrmidon/tools/dockergate/internal/upstream"
@@ -536,5 +538,34 @@ func (rs *reqState) a12(ctx context.Context, st *runtime, rt *route.Route, bs *b
 		return derr
 	}
 	rs.respond(ans)
+	return nil
+}
+
+// a14: GET /myrmidon/disk. The partition (statfs of the volume root) and the
+// project quotas (`xfs_quota report`), never a call to the daemon. A partition
+// without prjquota is a normal answer (quotaEnabled=false), not an error; what
+// is an error is a volume root that cannot be read or a report that cannot be
+// understood, and a command that does not finish in time.
+func (rs *reqState) a14(ctx context.Context, st *runtime) *deny.Error {
+	def, _, _ := rs.timeouts()
+	cctx, cancel := context.WithTimeout(ctx, def)
+	defer cancel()
+	resp, err := disk.Collect(cctx, st.cfg.VolumeRoot, rs.g.disk)
+	switch {
+	case err == nil:
+	case errors.Is(err, context.DeadlineExceeded):
+		return deny.New(deny.UpstreamTimeout).WithDetail("xfs_quota")
+	case errors.Is(err, disk.ErrStatfs):
+		return deny.New(deny.UpstreamError).WithDetail("statfs")
+	case errors.Is(err, disk.ErrReport):
+		return deny.New(deny.UpstreamError).WithDetail("xfs_report")
+	default:
+		return deny.New(deny.UpstreamError).WithDetail("disk")
+	}
+	body, err := json.Marshal(resp)
+	if err != nil {
+		return deny.New(deny.UpstreamError).WithDetail("disk_json")
+	}
+	rs.respond(&answer{status: http.StatusOK, ctype: jsonType, body: body})
 	return nil
 }

@@ -18,11 +18,19 @@
     <link rel="manifest" href="/site.webmanifest" crossorigin="use-credentials" />
     <script>
       (() => {
-        const key = "paperclip.theme";
+        const key = "myrmidon.theme";
+        const legacyKey = "paperclip.theme";
         const darkThemeColor = "#18181b";
         const lightThemeColor = "#ffffff";
         try {
-          const stored = window.localStorage.getItem(key);
+          let stored = window.localStorage.getItem(key);
+          if (stored === null || stored === "") {
+            stored = window.localStorage.getItem(legacyKey);
+            if (stored !== null) {
+              window.localStorage.setItem(key, stored);
+              window.localStorage.removeItem(legacyKey);
+            }
+          }
           const prefersDark =
             typeof window.matchMedia === "function" &&
             window.matchMedia("(prefers-color-scheme: dark)").matches;

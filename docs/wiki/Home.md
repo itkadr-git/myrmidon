@@ -33,6 +33,7 @@ needs one. It is an independent product maintained as a fork of
   architectures, minimum and recommended CPU/RAM/disk, network and ports.
 - [Installation](Installation) — one command brings a clean server to a
   working board.
+- [Migration from Paperclip](Migration-from-Paperclip) — move a Paperclip v2026.916.1 instance into a clean Myrmidon with `myrmidon:migrate`: preflight, DB, files and secrets transfer, rollback.
 - [Upgrading and rollback](Upgrading-and-rollback) — re-run the installer to
   update; RC and final releases; the manual `deploy.sh --release` flow.
 - [Settings in the interface](Settings-in-the-interface) — where run limits,

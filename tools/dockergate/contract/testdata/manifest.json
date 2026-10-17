@@ -173,6 +173,13 @@
    "file": "bodies/helper-apply-9999999999999999.json",
    "image": "sha256:fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
    "nonce": "9999999999999999"
+  },
+  {
+   "id": "helper-prepare-package-cache",
+   "form": "helper-prepare",
+   "name": "myrmidon-bot-aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa.helper",
+   "file": "bodies/helper-prepare-package-cache.json",
+   "image": "ghcr.io/itkadr-git/myrmidon-hermes@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
   }
  ],
  "archives": [
@@ -213,5 +220,6 @@
   "helperPrepare": "scope/helper-prepare.json",
   "helperApply": "scope/helper-apply.json",
   "nonce": "0123456789abcdef"
- }
+ },
+ "packageCacheRoot": "/srv/myrmidon-cache"
 }

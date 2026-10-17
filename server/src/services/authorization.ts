@@ -32,6 +32,7 @@ import { logger } from "../middleware/logger.js";
 import { decideAgentSelfConfigUpdate } from "../myrmidon/agent-self-update.js";
 import { normalizeAgentPermissions } from "./agent-permissions.js";
 import { grantsForHumanRole, normalizeHumanRole } from "./company-member-roles.js";
+import { readProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
 
 export type AuthorizationActor =
   {
@@ -127,6 +128,7 @@ export type AuthorizationDecision = {
     | "deny_company_boundary"
     | "deny_missing_membership"
     | "deny_missing_grant"
+    | "deny_expired_grant"
     | "deny_missing_consent"
     | "deny_no_grant"
     | "deny_policy_restricted"
@@ -482,8 +484,8 @@ type ResponsibleUserActorWithMemo = AuthorizationActor & {
 };
 
 export function responsibleUserAuthzShadowMode() {
-  const mode = process.env.PAPERCLIP_RESPONSIBLE_USER_AUTHZ_MODE?.trim().toLowerCase();
-  const shadow = process.env.PAPERCLIP_RESPONSIBLE_USER_AUTHZ_SHADOW?.trim().toLowerCase();
+  const mode = readProductEnv("RESPONSIBLE_USER_AUTHZ_MODE")?.trim().toLowerCase();
+  const shadow = readProductEnv("RESPONSIBLE_USER_AUTHZ_SHADOW")?.trim().toLowerCase();
   return mode === "shadow" || shadow === "1" || shadow === "true" || shadow === "yes";
 }
 
@@ -696,6 +698,23 @@ export function authorizationService(db: Db | DbTransaction) {
         action: input.action,
         reason: "deny_missing_grant",
         explanation: `Missing permission: ${input.permissionKey}.`,
+      });
+    }
+
+    // myrmidon(1.6.5-F-23): a grant with an expires_at in the past no longer
+    // authorizes. This is the single read path for every permission grant, so
+    // the check here covers secrets:read_off_run and any future expiring grant.
+    if (grant.expiresAt && grant.expiresAt.getTime() <= Date.now()) {
+      return deny({
+        action: input.action,
+        reason: "deny_expired_grant",
+        explanation: `Permission ${input.permissionKey} grant expired at ${grant.expiresAt.toISOString()}.`,
+        grant: {
+          principalType: input.principalType,
+          principalId: input.principalId,
+          permissionKey: input.permissionKey,
+          scope: grant.scope ?? null,
+        },
       });
     }
 

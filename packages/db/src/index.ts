@@ -5,6 +5,8 @@ export {
   ensurePostgresDatabase,
   resetPostgresDatabase,
   inspectMigrations,
+  listMigrationChain,
+  type MigrationChainEntry,
   applyPendingMigrations,
   reconcilePendingMigrationHistory,
   type MigrationState,
@@ -25,6 +27,9 @@ export {
   runDatabaseRestore,
   formatDatabaseBackupResult,
   BackupVerificationError,
+  BackupClientVersionError,
+  parsePgMajorVersion,
+  diagnosePgDumpClient,
   type BackupRetentionPolicy,
   type RunDatabaseBackupOptions,
   type RunDatabaseBackupResult,
@@ -53,3 +58,13 @@ export {
   type KnowledgeSearchPage,
   type KnowledgeSearchHit,
 } from "./knowledge-search.js";
+export {
+  runContextPersistenceFields,
+  runContextWritePatch,
+  readRunContextColumnValues,
+  heartbeatRunListContextColumnProjections,
+  attentionRunIssueTaskColumns,
+  HEARTBEAT_RUN_CONTEXT_SUMMARY_MAX_CHARS,
+  RUN_CONTEXT_CONTINUATION_KEY,
+  type HeartbeatRunContextColumnValues,
+} from "./run-context-columns.js";

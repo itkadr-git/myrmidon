@@ -2,6 +2,20 @@
 import { readQueuedInteractionResponse } from "../myrmidon/upstream-steer/queued-interaction-response.js";
 import { AGENT_CHAT_DIRECTIVE, conversationReplay, isConversation, isConversationExecutionWake, isWaitingConversation, prepareConversationTurn, settleConversationTurn } from "./agent-conversations.js";
 // myrmidon(B1): product name in the notice/prompt text below; see product.ts.
+import { INPUT_LIMIT_CONFIG_KEY } from "@paperclipai/adapter-utils/input-limit";
+import {
+  INPUT_LIMIT_EVENT_KEY,
+  INPUT_LIMIT_FRESH_SESSION_ACTION,
+  planInputLimit,
+} from "../myrmidon/input-limit/input-limit.js";
+import {
+  buildInputOverflowAttentionComment,
+  countConsecutiveInputOverflowFailures,
+  countInputOverflowFailures,
+  decideInputOverflowAction,
+  detectInputOverflowRun,
+  readInputOverflowMaxFailures,
+} from "../myrmidon/input-overflow-guard.js";
 import { PRODUCT_NAME, productPossessive, productSaid } from "../myrmidon/product.js";
 // myrmidon(B1c): short alias for template literals below.
 import { PRODUCT_NAME as PN } from "../myrmidon/product.js";
@@ -21,7 +35,15 @@ import { userCommentMentionsWokenAgent } from "../myrmidon/settled-holds/mention
 // continuation see no hold. See docs/myrmidon/DIVERGENCE.md "L2".
 import { supersedeExplicitWakeSettledHold } from "../myrmidon/settled-holds/supersede-explicit-wake.js";
 // myrmidon(CHAT-HOLD): a chat is never held; an owner message lifts a hold.
-import { isChatBackedIssue, isChatOwnerMessageWake } from "../myrmidon/chat-holds/chat-backed.js";
+import {
+  isChatBackedIssue,
+  compareOwnerChatTurnFirst,
+  countLeadingOwnerChatTurns,
+  isChatOwnerMessageWake,
+  listOwnerChatTurnRunIds,
+} from "../myrmidon/chat-holds/chat-backed.js";
+// myrmidon(1.6.5 F-26 T5): taskless-wake gate + cooling (design §3.7, §4.3).
+import { tasklessGateReason, readSwarmSettings } from "../myrmidon/wake-task-guard.js";
 import { clearChatHoldsOnOwnerMessage } from "../myrmidon/chat-holds/clear-on-message.js";
 // myrmidon(L2, round 3 fix): retire the woken agent's own waiting run that the
 // bypassed hold would cancel at its claim, so the wake is not lost with it.
@@ -55,10 +77,15 @@ import {
 } from "./adapter-execution-control.js";
 import { executionFailureRetryCount } from "./execution-recovery-attempt.js";
 import { buildHeartbeatRunStatusLiveEventPayload } from "./heartbeat-run-status-payload.js";
+import { readProductEnv, readProductEnvFrom } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
 export { buildHeartbeatRunStatusLiveEventPayload } from "./heartbeat-run-status-payload.js";
 import { buildExecutionContinuation } from "./execution-continuation.js";
 // myrmidon(RUN-SNAPSHOT-DEDUP): the single-copy continuation invariant.
-import { wakePayloadForDispatch } from "./run-continuation-snapshot.js";
+import {
+  persistRunContinuation,
+  runContextForPersistence,
+  wakePayloadForDispatch,
+} from "./run-continuation-snapshot.js";
 import { renderPaperclipWakePrompt } from "@paperclipai/adapter-utils/server-utils";
 import { PROJECT_REPOSITORIES_DIR, readGitWorkspaceSnapshot } from "@paperclipai/adapter-utils/git-workspace-sync";
 import { isWorkspaceGitScanError, WorkspaceGitScanError, WORKSPACE_GIT_SCAN_ERROR_CODES } from "./workspace-git-operation-scheduler.js";
@@ -158,6 +185,7 @@ import {
   documentRevisions,
   environmentLeases,
   issueDocuments,
+  issueLabels,
   executionWorkspaces,
   heartbeatRunEvents,
   heartbeatRuns,
@@ -170,6 +198,7 @@ import {
   issueThreadInteractions,
   issues,
   issueWorkProducts,
+  labels,
   nativeRunFinalizations,
   projects,
   projectWorkspaces,
@@ -184,6 +213,8 @@ import {
   toolProfileEntries,
   toolProfiles,
   workspaceOperations,
+  runContextPersistenceFields,
+  heartbeatRunListContextColumnProjections,
 } from "@paperclipai/db";
 import { conflict, HttpError, notFound } from "../errors.js";
 import {
@@ -384,6 +415,7 @@ import {
 // task whose delivering PRs are all merged and settles it instead.
 import {
   createTaskPrSyncWakeGuard,
+  isTaskPrSyncWakeGuardCandidate,
   readTaskPrSyncWakeGuardEnabled,
   TASK_PR_SYNC_WAKE_SKIP_REASON,
 } from "../myrmidon/task-pr-sync/wake-guard.js";
@@ -612,6 +644,8 @@ import {
   writePaperclipSkillSyncPreference,
 } from "@paperclipai/adapter-utils/server-utils";
 import { extractSkillMentionIds, isUuidLike } from "@paperclipai/shared";
+// myrmidon(1.6.5-BOT-DISK-H4b): general.botDisk.defaultRepo rides the run context.
+import { normalizeStoredBotDiskSettings } from "@paperclipai/shared";
 import { evaluateCodexCredentialReadiness } from "@paperclipai/adapter-codex-local/server";
 import { environmentService } from "./environments.js";
 import { parseExecutionPolicyBootstrapEnv } from "./execution-policy-bootstrap.js";
@@ -674,16 +708,34 @@ import { jsonTextUuid } from "../myrmidon/db-hot-path/json-uuid.js";
 import { createStaleActiveLeaseSweep } from "../myrmidon/leases-stale-sweep.js";
 // myrmidon(M3): skip idle timer heartbeats
 import { hasOtherActionableWork, skipIdleHeartbeatsEnabled } from "../myrmidon/heartbeat-idle-skip.js";
+// myrmidon(1.2-COST-CACHING): idle-skip metrics + prompt cache by cost data.
+import {
+  fingerprintWakeContext,
+  findReusablePromptAnswer,
+  idleSkipMetricsEnabled,
+  readPromptCacheSettings,
+  recordIdleSkip,
+} from "../myrmidon/cost-caching.js";
 // myrmidon(IDLE-PICKUP): the board wakes an idle agent on its next ready task
 import {
   createIdlePickupSweeper,
   createIdleWakeBudget,
+  findTopReadyIssueForAgent,
   idlePickupForAgent,
 } from "../myrmidon/idle-pickup.js";
 // myrmidon(AUTO-RESUME): the board resumes an agent left in `error` with backoff
 import { createAutoResumeSweeper } from "../myrmidon/auto-resume.js";
 // myrmidon(1.6-SWARM): the expired-claim sweep of the per-role task queues
-import { buildSwarmClaimSweeper } from "../myrmidon/swarm-claim/index.js";
+// myrmidon(1.6.5 OPE-6608): and the board-side matcher of the event paths — the
+// release path below hands the freed agent to it (design §3.5).
+import {
+  buildSwarmClaimSweeper,
+  buildSwarmMatcher,
+  matchFreedAgent,
+  notifySwarmAgentEvent,
+  setSwarmEventSink,
+} from "../myrmidon/swarm-claim/index.js";
+import { createCasteDirectoryReader } from "../myrmidon/castes/directory.js";
 // myrmidon(1.6-SWARM): the checkout/release claim hooks of the run lifecycle
 import {
   recordSwarmClaimOnCheckoutImpl,
@@ -702,6 +754,27 @@ import {
 // Hermes gateway — one task's session key gains a `:g<N>` once it passes its
 // age/activity threshold, so the task's Hermes state stays bounded
 import { resolveHeartbeatSessionGeneration } from "../myrmidon/session-generations/index.js";
+import { getIdleStopService } from "../myrmidon/idle-stop-startup.js";
+// myrmidon(1.6.5 RUN-PRIORITY A): queued runs start by role/issue/release
+// weight with aging; the settings live-refresh per pass (runtime-limits pattern).
+import { currentRunPrioritySettings } from "../myrmidon/run-priority/state.js";
+// myrmidon(1.6.5 RUN-PRIORITY-PICK): the per-agent pass starts the agent's most
+// important ready task before a less important standing run; a starvation lift
+// no longer crosses the next issue-priority step.
+import {
+  RUN_PRIORITY_PICK_WAIT_REASON,
+  runPriorityPickForAgent,
+  type OperatorCancellationMark,
+  type RunPriorityPickCandidate,
+} from "../myrmidon/run-priority/pick.js";
+import {
+  compareRunsByPriority,
+  rankQueuedRuns,
+  runMatchesCurrentRelease,
+  type PriorityScoredRun,
+} from "../myrmidon/run-priority/scoring.js";
+import { runPriorityWeight, type RunPrioritySettings } from "@paperclipai/shared";
+import { effectivePheromone } from "@paperclipai/shared";
 // myrmidon(S2-hostcred): a run never inherits the host's GitHub credentials
 import {
   filterHostGitHubCredentialEnv,
@@ -725,6 +798,12 @@ import {
   buildCrossChannelContext,
   buildMentionedChatContext,
 } from "../myrmidon/channel-connectors/bridge/cross-channel.js";
+// myrmidon(1.6.5-OWNER-VIA-BOT): the owner dialogue block of a run prompt (explain a decision / owner's DM answer)
+import {
+  appendOwnerViaBotBlock,
+  buildOwnerViaBotPromptBlock,
+} from "../myrmidon/owner-delivery/owner-message.js";
+import { looksLikeOwnerExplainWake } from "../modules/run-dispatch/myrmidon-pending-interaction-wake.js";
 
 // myrmidon(M3): owner signal on a budget hard-stop (see budget-signal.ts)
 import {
@@ -737,6 +816,7 @@ import {
 // budget service asks for, and the signal-only notice delivery (see
 // budget-enforcement/).
 import { readBudgetEnforcement } from "../myrmidon/budget-enforcement/settings.js";
+import { guardrailsOnRunOutput } from "../myrmidon/guardrails/run-output.js"; // myrmidon(1.6-GRD)
 import {
   deliverBudgetSignalOnly,
   type BudgetSignalOnlyInput,
@@ -782,7 +862,7 @@ const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
 const EXTERNAL_ATTACHMENT_OMISSIONS_KEY = "externalAttachmentOmissions";
 const PAPERCLIP_WAKE_PAYLOAD_KEY = "paperclipWake";
 const ACCEPTED_PLAN_CONVERSION_SKILL_KEY =
-  "paperclipai/paperclip/paperclip-converting-plans-to-tasks";
+  "paperclipai/paperclip/myrmidon-converting-plans-to-tasks";
 const PAPERCLIP_AGENT_MESSAGE_KEY = "paperclipAgentMessage";
 const PAPERCLIP_HARNESS_CHECKOUT_KEY = "paperclipHarnessCheckedOut";
 const PAPERCLIP_EXTERNAL_CHAT_EXECUTION_BOUND_KEY =
@@ -1015,6 +1095,8 @@ const GIT_SENSITIVE_LOCAL_ADAPTER_TYPES = new Set([
   "kimi_local",
   "opencode_local",
   "pi_local",
+  // myrmidon(OMP-LOCAL): local OMP git sensitive adapter
+  "omp_local",
 ]);
 export { MAX_TURN_CONTINUATION_RETRY_REASON };
 export const MAX_TURN_CONTINUATION_WAKE_REASON = "max_turns_continuation_retry";
@@ -1404,6 +1486,8 @@ const SESSIONED_LOCAL_ADAPTERS = new Set([
   "kimi_local",
   "opencode_local",
   "pi_local",
+  // myrmidon(OMP-LOCAL): sessioned local OMP adapter
+  "omp_local",
 ]);
 // Routes and the scheduler construct separate heartbeatService instances, but
 // they must agree on in-process adapter executions when reaping stale runs.
@@ -3496,36 +3580,10 @@ const heartbeatRunSummaryListColumns = {
   resultJson: sql<Record<string, unknown> | null>`NULL`.as("resultJson"),
 } as const;
 
-const heartbeatRunListContextColumns = {
-  contextIssueId: sql<
-    string | null
-  >`${heartbeatRuns.contextSnapshot} ->> 'issueId'`.as("contextIssueId"),
-  contextTaskId: sql<
-    string | null
-  >`${heartbeatRuns.contextSnapshot} ->> 'taskId'`.as("contextTaskId"),
-  contextTaskKey: sql<
-    string | null
-  >`${heartbeatRuns.contextSnapshot} ->> 'taskKey'`.as("contextTaskKey"),
-  contextCommentId: sql<
-    string | null
-  >`${heartbeatRuns.contextSnapshot} ->> 'commentId'`.as("contextCommentId"),
-  contextWakeCommentId: sql<
-    string | null
-  >`${heartbeatRuns.contextSnapshot} ->> 'wakeCommentId'`.as(
-    "contextWakeCommentId",
-  ),
-  contextWakeReason: sql<
-    string | null
-  >`${heartbeatRuns.contextSnapshot} ->> 'wakeReason'`.as("contextWakeReason"),
-  contextWakeSource: sql<
-    string | null
-  >`${heartbeatRuns.contextSnapshot} ->> 'wakeSource'`.as("contextWakeSource"),
-  contextWakeTriggerDetail: sql<
-    string | null
-  >`${heartbeatRuns.contextSnapshot} ->> 'wakeTriggerDetail'`.as(
-    "contextWakeTriggerDetail",
-  ),
-} as const;
+// Thin-column projections with a snapshot coalesce fallback for historical
+// rows; see packages/db/src/run-context-columns.ts. OPE-5007 П2: the run list
+// must not detoast context_snapshot for rows that already carry the columns.
+const heartbeatRunListContextColumns = heartbeatRunListContextColumnProjections;
 
 const heartbeatRunListResultColumns = {
   resultSummary: sql<
@@ -4598,7 +4656,7 @@ type ManagedMcpGatewayRunConfig = {
 };
 
 function configuredPaperclipApiBaseUrl(): string | null {
-  const configured = readNonEmptyString(process.env.PAPERCLIP_API_URL);
+  const configured = readNonEmptyString(readProductEnv("API_URL"));
   return configured
     ? configured.replace(/\/+$/, "").replace(/\/api$/, "")
     : null;
@@ -5456,6 +5514,17 @@ export function shouldResetTaskSessionForWake(
   if (contextSnapshot?.forceFreshSession === true) return true;
 
   const wakeReason = readNonEmptyString(contextSnapshot?.wakeReason);
+  // myrmidon(OPE-6168): upstream #15487 — an automatic transient retry must not inherit the failed
+  // attempt's transcript (the failed turn's prompt is re-sent into the same
+  // session and the history grows on every retry). The one exception is the
+  // codex ladder's explicit same-session first step.
+  if (
+    wakeReason === BOUNDED_TRANSIENT_HEARTBEAT_RETRY_WAKE_REASON &&
+    readNonEmptyString(contextSnapshot?.codexTransientFallbackMode) !==
+      "same_session"
+  ) {
+    return true;
+  }
   if (
     wakeReason === "issue_assigned" ||
     wakeReason === EXECUTION_REVIEW_PARTICIPANT_RECOVERY_WAKE_REASON ||
@@ -5559,6 +5628,15 @@ export function describeSessionResetReason(
 
   const wakeReason = readNonEmptyString(contextSnapshot?.wakeReason);
   if (wakeReason === "issue_assigned") return "wake reason is issue_assigned";
+  // myrmidon(OPE-6168): paired with the transient_failure_retry branch of
+  // shouldResetTaskSessionForWake (upstream #15487).
+  if (
+    wakeReason === BOUNDED_TRANSIENT_HEARTBEAT_RETRY_WAKE_REASON &&
+    readNonEmptyString(contextSnapshot?.codexTransientFallbackMode) !==
+      "same_session"
+  ) {
+    return "wake reason is transient_failure_retry (retry starts a fresh session)";
+  }
   if (wakeReason === EXECUTION_REVIEW_PARTICIPANT_RECOVERY_WAKE_REASON) {
     return `wake reason is ${EXECUTION_REVIEW_PARTICIPANT_RECOVERY_WAKE_REASON}`;
   }
@@ -6801,6 +6879,11 @@ export function shouldQueueFollowupForRunningIssueWake(input: {
   ) {
     return true;
   }
+  // myrmidon(1.6.5-OWNER-FALLBACK): the "explain it to the owner" wake carries a
+  // prompt block that is built when its run starts. Merged into the author's
+  // running run (which raised the decision in the same turn) the block would
+  // never reach the prompt, so it waits for its own run after the current one.
+  if (input.contextSnapshot && looksLikeOwnerExplainWake(input.contextSnapshot)) return true;
   const wakeReason = readNonEmptyString(input.contextSnapshot?.wakeReason);
   return Boolean(
     wakeReason && RUNNING_ISSUE_WAKE_REASONS_REQUIRING_FOLLOWUP.has(wakeReason),
@@ -9286,14 +9369,14 @@ export function resolveHeartbeatSchedulingSuppression(
     "worktree_instance" | "database_restore_in_progress" | "task_drain" | null;
 } {
   if (
-    isTruthyRuntimeEnvValue(env.PAPERCLIP_IN_WORKTREE) &&
+    isTruthyRuntimeEnvValue(readProductEnvFrom(env, "IN_WORKTREE")) &&
     !overrides.allowWorktreeRunExecution
   ) {
     return { suppressed: true, reason: "worktree_instance" };
   }
   if (
-    isTruthyRuntimeEnvValue(env.PAPERCLIP_DATABASE_RESTORE_IN_PROGRESS) ||
-    isTruthyRuntimeEnvValue(env.PAPERCLIP_RESTORE_IN_PROGRESS)
+    isTruthyRuntimeEnvValue(readProductEnvFrom(env, "DATABASE_RESTORE_IN_PROGRESS")) ||
+    isTruthyRuntimeEnvValue(readProductEnvFrom(env, "RESTORE_IN_PROGRESS"))
   ) {
     return { suppressed: true, reason: "database_restore_in_progress" };
   }
@@ -9316,7 +9399,7 @@ export function heartbeatService(
   });
   const runtimeEnv = options.runtimeEnv ?? process.env;
   const inWorktreeRuntime = isTruthyRuntimeEnvValue(
-    runtimeEnv.PAPERCLIP_IN_WORKTREE,
+    readProductEnvFrom(runtimeEnv, "IN_WORKTREE"),
   );
   // Preview worktree instances suppress the run engine by default. Users can lift
   // that per-worktree via the `enableWorktreeRunExecution` experimental setting
@@ -9346,7 +9429,7 @@ export function heartbeatService(
     try {
       const activation = resolveWorktreeRunExecutionActivation(
         await instanceSettings.getExperimental(),
-        runtimeEnv.PAPERCLIP_INSTANCE_ID?.trim() || null,
+        readProductEnvFrom(runtimeEnv, "INSTANCE_ID")?.trim() || null,
       );
       const cutoff = activation.armed ? new Date(activation.cutoff) : null;
       cachedWorktreeRunExecutionOverride = {
@@ -14013,7 +14096,7 @@ export function heartbeatService(
           triggerDetail: "system",
           status: "queued",
           wakeupRequestId: wakeupRequest.id,
-          contextSnapshot: retryContextSnapshot,
+          ...runContextPersistenceFields(retryContextSnapshot),
           responsibleUserId,
           sessionIdBefore: sessionBefore,
           retryOfRunId: run.id,
@@ -15154,6 +15237,81 @@ export function heartbeatService(
     };
   }
 
+  // myrmidon(OPE-6168): a provider input-length rejection is deterministic.
+  // Drop the saved task session so the next attempt starts fresh, and after N
+  // consecutive identical failures on one issue stop and raise an attention
+  // item with the facts instead of looping at scheduler cadence.
+  async function handleInputOverflowFailure(
+    run: typeof heartbeatRuns.$inferSelect,
+    agent: typeof agents.$inferSelect,
+  ) {
+    const match = detectInputOverflowRun(run);
+    if (!match) return null;
+    const context = parseObject(run.contextSnapshot);
+    const issueId = readNonEmptyString(context.issueId);
+    const taskKey = deriveTaskKey(context, null);
+    const resultJson = parseObject(run.resultJson);
+    if (readNonEmptyString(resultJson.errorFamily) !== "input_overflow") {
+      await db
+        .update(heartbeatRuns)
+        .set({ resultJson: { ...resultJson, errorFamily: "input_overflow" } })
+        .where(eq(heartbeatRuns.id, run.id));
+    }
+    if (taskKey) {
+      await clearTaskSessions(run.companyId, agent.id, { taskKey });
+    }
+    if (!issueId) return { action: "fresh_session" as const };
+
+    const previous = await countConsecutiveInputOverflowFailures(db, {
+      companyId: run.companyId,
+      agentId: agent.id,
+      issueId,
+      excludeRunId: run.id,
+    });
+    const decision = decideInputOverflowAction(
+      previous + 1,
+      readInputOverflowMaxFailures(),
+    );
+    await appendRunEvent(run, {
+      eventType: "lifecycle",
+      stream: "system",
+      level: "warn",
+      message:
+        decision.action === "stop"
+          ? `Provider rejected the input as too long ${decision.consecutive} times in a row; automatic retries stopped`
+          : "Provider rejected the input as too long; the next attempt starts a fresh session",
+      payload: { inputOverflow: { ...match, ...decision } },
+    });
+    if (decision.action !== "stop") return decision;
+
+    const issue = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, run.companyId), eq(issues.id, issueId)))
+      .then((rows) => rows[0] ?? null);
+    if (
+      !issue ||
+      (issue.status !== "todo" &&
+        issue.status !== "in_progress" &&
+        issue.status !== "in_review")
+    ) {
+      return decision;
+    }
+    await recovery.escalateStrandedAssignedIssue({
+      issue,
+      previousStatus: issue.status,
+      latestRun: run,
+      comment: buildInputOverflowAttentionComment({
+        match,
+        consecutive: decision.consecutive,
+        max: decision.max,
+        runId: run.id,
+        errorExcerpt: run.error ? run.error.slice(0, 300) : null,
+      }),
+    });
+    return decision;
+  }
+
   async function scheduleBoundedRetryForRun(
     run: typeof heartbeatRuns.$inferSelect,
     agent: typeof agents.$inferSelect,
@@ -15810,7 +15968,7 @@ export function heartbeatService(
             triggerDetail: "system",
             status: "scheduled_retry",
             wakeupRequestId: wakeupRequest.id,
-            contextSnapshot: retryContextSnapshot,
+            ...runContextPersistenceFields(retryContextSnapshot),
             ...(hasConversationContinuationPolicy(run.resultJson)
               ? { resultJson: { conversationContinuation: CONVERSATION_CONTINUATION_POLICY } } : {}),
             responsibleUserId,
@@ -16440,7 +16598,7 @@ export function heartbeatService(
         .update(heartbeatRuns)
         .set({
           scheduledRetryAt: now,
-          contextSnapshot,
+          ...runContextPersistenceFields(contextSnapshot),
           updatedAt: now,
         })
         .where(
@@ -17552,9 +17710,11 @@ export function heartbeatService(
                     ...legacyControllerClaim(run.runtimeMode),
                   responsibleUserId,
                   startedAt: lockedRun.startedAt ?? claimedAt,
-                  contextSnapshot: withQueuedCommentIdsInRunContext(
-                    lockedRun.contextSnapshot,
-                    liveIds,
+                  ...runContextPersistenceFields(
+                    withQueuedCommentIdsInRunContext(
+                      lockedRun.contextSnapshot,
+                      liveIds,
+                    ),
                   ),
                   updatedAt: claimedAt,
                 })
@@ -17655,6 +17815,24 @@ export function heartbeatService(
     publishRunLifecyclePluginEvent(claimed);
 
     await setWakeupStatus(claimed.wakeupRequestId, "claimed", { claimedAt });
+
+    // IDLE-STOP: wake the container before proceeding with run execution
+    const idleStopService = getIdleStopService();
+    if (idleStopService) {
+      try {
+        await idleStopService.ensureStartedAndHealthy(claimed.agentId);
+      } catch (err) {
+        logger.error(
+          { err, runId: claimed.id, agentId: claimed.agentId },
+          "claimQueuedRun: container failed to start or become healthy, cannot proceed with run",
+        );
+        await cancelRunInternal(
+          claimed.id,
+          `Cancelled because container failed to start: ${err instanceof Error ? err.message : String(err)}`,
+        );
+        return null;
+      }
+    }
 
     // Fix A (lazy locking): stamp executionRunId now that the run is actually running,
     // not at queue time. Guard is idempotent — safe if called more than once.
@@ -18367,7 +18545,7 @@ export function heartbeatService(
   // The release path wakes the next agent of the role directly; this pass is
   // the safety net that makes "an idle agent with a non-empty queue of its
   // role" impossible past one lease period (TTL + one sweep interval). All
-  // admission gates still apply inside enqueueWakeup; with the pilot flag off
+  // admission gates still apply inside enqueueWakeup; with the swarm switched off
   // the pass reads once and releases nothing.
   const swarmClaimSweeper = buildSwarmClaimSweeper({
     db,
@@ -18378,7 +18556,31 @@ export function heartbeatService(
       },
     },
     enqueueWakeup: (agentId, opts) => enqueueWakeup(agentId, opts),
+    // The caste directory (review item 6): without this port `swarmEligible:
+    // false` and the per-caste ceiling were never read on the live pass.
+    castes: createCasteDirectoryReader(db),
     env: process.env,
+  });
+  // myrmidon(1.6.5 OPE-6608, review item 2 / design §3.5): the event sink of the
+  // board matcher. The issue service (a task appeared or became available) and
+  // the agent resume path call it; the matcher is built per event so the swarm
+  // switch is read at that moment — turning the swarm off stops matching at
+  // once, with no restart (`buildSwarmMatcher` returns null when it is off).
+  const swarmMatcherPorts = () => ({
+    db,
+    settings: {
+      getGeneral: () => instanceSettings.getGeneral(),
+      updateGeneral: () => {
+        throw new Error("not used by the matcher");
+      },
+    },
+    enqueueWakeup: (agentId: string, opts: Parameters<typeof enqueueWakeup>[1]) => enqueueWakeup(agentId, opts),
+    castes: createCasteDirectoryReader(db),
+    env: process.env,
+  });
+  setSwarmEventSink({
+    forIssue: async (issueId) => (await buildSwarmMatcher(swarmMatcherPorts()))?.forIssue(issueId) ?? null,
+    forAgent: async (agentId) => (await buildSwarmMatcher(swarmMatcherPorts()))?.forAgent(agentId) ?? null,
   });
 
   async function sweepPendingCleanupLeases(opts?: {
@@ -18805,7 +19007,7 @@ export function heartbeatService(
         : await dispatchNativeSessionResumptions({
             db,
             runnerInstanceId:
-              runtimeEnv.PAPERCLIP_INSTANCE_ID?.trim() || "paperclip-heartbeat",
+              readProductEnvFrom(runtimeEnv, "INSTANCE_ID")?.trim() || "paperclip-heartbeat",
             now,
             runIds: [...claimableNativeRunIds],
             dispatch: (claim) => {
@@ -19207,7 +19409,7 @@ export function heartbeatService(
     }
 
     // myrmidon(1.6-SWARM): the expired-claim sweep on the same tick. Cheap
-    // when the pilot flag is off; with the pilot on it returns expired tasks
+    // when the swarm is off; with it on it returns expired tasks
     // to their role's queue and wakes the next agent, keeping an idle agent
     // with a non-empty queue impossible past one lease period.
     try {
@@ -19248,13 +19450,238 @@ export function heartbeatService(
     return { reaped: reaped.length, runIds: reaped };
   }
 
+  // myrmidon(1.6.5 RUN-PRIORITY A): attach the queue keys (role, issue
+  // priority, current-release membership) to queued runs. Lookups are batched
+  // per sweep pass — one query per table, not per run — and
+  // `currentRunPrioritySettings()` is read fresh on every pass, so a changed
+  // weight reaches the queue without a restart (the runtime-limits pattern).
+  // The scores never touch `contextSnapshot`: `writeQueuedRunWaitReason`
+  // rewrites it per pass, and a stored score would go stale.
+  async function decorateQueuedRunKeys<T extends {
+    id: string;
+    agentId: string;
+    createdAt: Date;
+    contextSnapshot: unknown;
+  }>(runs: readonly T[], settings: RunPrioritySettings): Promise<Array<T & PriorityScoredRun>> {
+    if (runs.length === 0) return [];
+    const roleByAgent = new Map<string, string | null>();
+    const roleRows = await db
+      .select({ id: agents.id, role: agents.role })
+      .from(agents)
+      .where(inArray(agents.id, [...new Set(runs.map((run) => run.agentId))]));
+    for (const row of roleRows) roleByAgent.set(row.id, row.role);
+
+    const issueIds = [
+      ...new Set(
+        runs
+          .map((run) => readNonEmptyString(parseObject(run.contextSnapshot).issueId))
+          .filter((issueId): issueId is string => Boolean(issueId)),
+      ),
+    ];
+    type IssueKey = { priority: string; labels: string[]; branchName: string | null; pheromoneStrength: number; issueCreatedAt: Date | null };
+    const issueByKey = new Map<string, IssueKey>();
+    if (issueIds.length > 0) {
+      const issueRows = await db
+        .select({
+          id: issues.id,
+          priority: issues.priority,
+          executionWorkspaceId: issues.executionWorkspaceId,
+          pheromoneStrength: issues.pheromoneStrength,
+          createdAt: issues.createdAt,
+        })
+        .from(issues)
+        .where(inArray(issues.id, issueIds));
+      const labelRows = await db
+        .select({ issueId: issueLabels.issueId, name: labels.name })
+        .from(issueLabels)
+        .innerJoin(labels, eq(labels.id, issueLabels.labelId))
+        .where(inArray(issueLabels.issueId, issueIds));
+      const workspaceIds = [
+        ...new Set(
+          issueRows
+            .map((row) => row.executionWorkspaceId)
+            .filter((id): id is string => Boolean(id)),
+        ),
+      ];
+      const branchRows = workspaceIds.length
+        ? await db
+            .select({ id: executionWorkspaces.id, branchName: executionWorkspaces.branchName })
+            .from(executionWorkspaces)
+            .where(inArray(executionWorkspaces.id, workspaceIds))
+        : [];
+      const branchById = new Map(branchRows.map((row) => [row.id, row.branchName]));
+      const labelsByIssue = new Map<string, string[]>();
+      for (const row of labelRows) {
+        const list = labelsByIssue.get(row.issueId) ?? [];
+        list.push(row.name);
+        labelsByIssue.set(row.issueId, list);
+      }
+      for (const row of issueRows) {
+        issueByKey.set(row.id, {
+          priority: row.priority,
+          labels: labelsByIssue.get(row.id) ?? [],
+          branchName: row.executionWorkspaceId
+            ? branchById.get(row.executionWorkspaceId) ?? null
+            : null,
+          pheromoneStrength: row.pheromoneStrength ?? 0,
+          issueCreatedAt: row.createdAt ?? null,
+        });
+      }
+    }
+
+    return runs.map((run) => {
+      const context = parseObject(run.contextSnapshot);
+      const issueId = readNonEmptyString(context.issueId);
+      const issue = issueId ? issueByKey.get(issueId) ?? null : null;
+      return {
+        ...run,
+        role: roleByAgent.get(run.agentId) ?? null,
+        hasIssue: Boolean(issue),
+        issuePriority: issue?.priority ?? null,
+        releaseMatched: runMatchesCurrentRelease(settings.currentRelease, [
+          ...(issue?.labels ?? []),
+          issue?.branchName ?? null,
+          readNonEmptyString(context.branchName) ?? null,
+        ]),
+        createdAtMs: run.createdAt.getTime(),
+        // 1.6.5 (F-27 rework 09.10, design §4): the effective strength of the
+        // run's issue, with the swarm defaults (the run scorer applies the
+        // runPriority.pheromoneWeight; the swarm dynamics are the shared
+        // defaults here — the run queue reorders runs, the swarm queue owns
+        // the per-instance dynamics knobs).
+        effectivePheromone: issue
+          ? effectivePheromone({
+              pheromoneStrength: issue.pheromoneStrength,
+              queuedAt: issue.issueCreatedAt,
+            })
+          : 0,
+      };
+    });
+  }
+
+  // myrmidon(1.6.5 RUN-PRIORITY A): the global sweep's agent order. Each
+  // agent is represented by its best-weighted queued run (highest effective
+  // weight, then the oldest such run); agents then visit in weight-desc /
+  // run-age-asc / id order. With every weight equal this is the fairness
+  // order `orderAgentIdsByOldestQueuedRun` produced, so an instance that
+  // never configured priority behaves exactly as before.
+  function orderAgentsByTopRunPriority<T extends PriorityScoredRun & { agentId: string }>(
+    runs: readonly T[],
+    settings: RunPrioritySettings,
+    nowMs: number = Date.now(),
+  ): string[] {
+    const topByAgent = new Map<string, { run: T; weight: number }>();
+    for (const run of runs) {
+      const weight = runPriorityWeight(
+        {
+          role: run.role,
+          hasIssue: run.hasIssue,
+          issuePriority: run.issuePriority,
+          releaseMatched: run.releaseMatched,
+          createdAtMs: run.createdAtMs,
+        },
+        settings,
+        nowMs,
+      );
+      const current = topByAgent.get(run.agentId);
+      if (
+        !current ||
+        weight > current.weight ||
+        (weight === current.weight && run.createdAtMs < current.run.createdAtMs)
+      ) {
+        topByAgent.set(run.agentId, { run, weight });
+      }
+    }
+    return [...topByAgent]
+      .sort((a, b) => {
+        if (a[1].weight !== b[1].weight) return b[1].weight - a[1].weight;
+        if (a[1].run.createdAtMs !== b[1].run.createdAtMs) {
+          return a[1].run.createdAtMs - b[1].run.createdAtMs;
+        }
+        return a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0;
+      })
+      .map(([agentId]) => agentId);
+  }
+
   // myrmidon(1.6.5 RUN-FAIRNESS): why a run stays queued. Written onto the
   // run itself (`contextSnapshot.waitReason`) whenever a sweep pass leaves it
   // queued because of an admission gate; removed by the claim that starts it.
   // `agent_fair_share` and `agent_concurrency` are decided by the sweep around
   // the admission (the share gate and the per-agent ceiling); the admission
   // itself names only its own gates (`lastDenialReason`).
-  type QueuedRunWaitReason = RunAdmissionDenialReason | "agent_fair_share" | "agent_concurrency";
+  // myrmidon(1.6.5 RUN-PRIORITY A): `priority` is the sweep's own reason — with
+  // priority on, the runs a pass leaves behind lost their slots to heavier ones.
+  // myrmidon(1.6.5 RUN-PRIORITY-PICK): `higher_priority_ready` is the per-agent
+  // pass holding a standing run behind a more important ready task of the same
+  // agent that was just woken — the panel shows the run as waiting on that task.
+  type QueuedRunWaitReason =
+    | RunAdmissionDenialReason
+    | "agent_fair_share"
+    | "agent_concurrency"
+    | "priority"
+    | "maintenance"
+    | "agent_not_invokable"
+    | "scheduling_suppressed"
+    | typeof RUN_PRIORITY_PICK_WAIT_REASON;
+
+  // myrmidon(1.6.5 F-09): thresholds for queued-run explanation. The explain
+  // threshold decides when a still-queued run must carry a `waitReason`; the
+  // stall threshold decides when the attention feed surfaces a `queue_stall`
+  // card. Both come from instance_settings.general with env-var defaults and
+  // are clamped to safe bounds.
+  const QUEUED_RUN_EXPLAIN_AFTER_SEC_DEFAULT = 60;
+  const QUEUED_RUN_STALE_AFTER_SEC_DEFAULT = 3600;
+
+  function clampNumber(value: unknown, min: number, max: number): number | null {
+    const n = typeof value === "number" ? value : typeof value === "string" ? Number(value) : NaN;
+    if (!Number.isFinite(n)) return null;
+    return Math.max(min, Math.min(max, Math.round(n)));
+  }
+
+  type QueuedRunThresholds = { explainAfterMs: number; staleAfterMs: number };
+
+  async function readQueuedRunThresholds(): Promise<QueuedRunThresholds> {
+    let explainAfterSec = QUEUED_RUN_EXPLAIN_AFTER_SEC_DEFAULT;
+    let staleAfterSec = QUEUED_RUN_STALE_AFTER_SEC_DEFAULT;
+    const envExplain = readProductEnvFrom(runtimeEnv, "QUEUED_RUN_EXPLAIN_AFTER_SEC");
+    if (envExplain !== undefined && envExplain !== null && envExplain !== "") {
+      const n = Number(envExplain);
+      if (Number.isFinite(n) && n > 0) explainAfterSec = n;
+    }
+    const envStale = readProductEnvFrom(runtimeEnv, "QUEUED_RUN_STALE_AFTER_SEC");
+    if (envStale !== undefined && envStale !== null && envStale !== "") {
+      const n = Number(envStale);
+      if (Number.isFinite(n) && n > 0) staleAfterSec = n;
+    }
+    const general = await instanceSettings.getGeneral().catch(() => ({}) as Record<string, unknown>);
+    const g = (general ?? {}) as Record<string, unknown>;
+    explainAfterSec = clampNumber(g.queuedRunExplainAfterSec, 10, 86400) ?? explainAfterSec;
+    staleAfterSec = clampNumber(g.queuedRunStaleAfterSec, 60, 604800) ?? staleAfterSec;
+    return { explainAfterMs: explainAfterSec * 1000, staleAfterMs: staleAfterSec * 1000 };
+  }
+
+  /**
+   * Fill waitReason for queued runs older than the explain threshold.
+   * A null `reason` means "no observed cause" — nothing is written, so the
+   * run keeps waitReason = null and stays visible to the queue_stall
+   * attention card (its generator matches waitReason IS NULL). Never write
+   * a guessed reason here: a fabricated value would mask OPE-4099-style
+   * stuck-queue diagnostics.
+   */
+  async function explainStaleQueuedRuns(now: Date, reason: QueuedRunWaitReason | null): Promise<void> {
+    if (reason == null) return;
+    const { explainAfterMs } = await readQueuedRunThresholds();
+    const cutoff = new Date(now.getTime() - explainAfterMs);
+    const rows = await db
+      .select({ id: heartbeatRuns.id, contextSnapshot: heartbeatRuns.contextSnapshot })
+      .from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.status, "queued"), lte(heartbeatRuns.createdAt, cutoff)));
+    const needsReason = rows
+      .filter((row) => parseObject(row.contextSnapshot).waitReason == null)
+      .map((row) => row.id);
+    if (needsReason.length === 0) return;
+    await writeQueuedRunWaitReason(needsReason, reason);
+  }
 
   async function writeQueuedRunWaitReason(
     runIds: ReadonlyArray<string>,
@@ -19286,13 +19713,87 @@ export function heartbeatService(
       .where(inArray(heartbeatRuns.id, [...runIds]));
     for (const row of rows) {
       const context = parseObject(row.contextSnapshot);
-      if (context.waitReason === undefined) continue;
-      const { waitReason: _cleared, ...rest } = context;
+      if (
+        context.waitReason === undefined &&
+        context.queuePosition === undefined &&
+        context.queueLength === undefined
+      ) {
+        continue;
+      }
+      const {
+        waitReason: _clearedReason,
+        queuePosition: _clearedPosition,
+        queueLength: _clearedLength,
+        ...rest
+      } = context;
       await db
         .update(heartbeatRuns)
         .set({ contextSnapshot: rest })
         .where(eq(heartbeatRuns.id, row.id));
     }
+  }
+
+  // myrmidon(1.6.5 RUN-PRIORITY A): *where* a run waits, written onto the run
+  // itself (`contextSnapshot.queuePosition` of `contextSnapshot.queueLength`) in
+  // the same pass that decides the order, so the run card can show "Queue
+  // position 3 of 12" next to the wait reason. The rank is the whole waiting
+  // queue's priority order, not the per-agent slice: a run of a heavier role or
+  // a run carrying the current release is ahead whatever agent owns it. The
+  // claim that starts the run drops the note with the wait reason.
+  async function writeQueuedRunQueuePositions(
+    positionByRunId: ReadonlyMap<string, number>,
+  ): Promise<void> {
+    if (positionByRunId.size === 0) return;
+    const queueLength = positionByRunId.size;
+    const runIds = [...positionByRunId.keys()];
+    const rows = await db
+      .select({ id: heartbeatRuns.id, contextSnapshot: heartbeatRuns.contextSnapshot })
+      .from(heartbeatRuns)
+      .where(and(inArray(heartbeatRuns.id, runIds), eq(heartbeatRuns.status, "queued")));
+    const at = new Date();
+    for (const row of rows) {
+      const position = positionByRunId.get(row.id);
+      if (position === undefined) continue;
+      const context = parseObject(row.contextSnapshot);
+      if (context.queuePosition === position && context.queueLength === queueLength) continue;
+      await db
+        .update(heartbeatRuns)
+        .set({ contextSnapshot: { ...context, queuePosition: position, queueLength }, updatedAt: at })
+        .where(and(eq(heartbeatRuns.id, row.id), eq(heartbeatRuns.status, "queued")));
+    }
+  }
+
+  // myrmidon(1.6.5 F-09): cancel queued runs whose issue is not startable
+  // (backlog). The cancellation carries the `queued_run_issue_not_startable`
+  // error code. Returns the ids that really were cancelled; the post-commit
+  // effects (the run status event) are applied like at every other caller of
+  // `cancelStaleQueuedRun`.
+  async function cancelQueuedRunsAsNotStartable(
+    runs: ReadonlyArray<{ id: string; companyId: string }>,
+  ): Promise<Set<string>> {
+    const cancelled = new Set<string>();
+    for (const run of runs) {
+      const staleness = await runDispatch.cancelStaleQueuedRun({
+        runId: run.id,
+        companyId: run.companyId,
+        expectedStatus: "queued",
+        now: new Date(),
+      });
+      if (staleness.outcome === "cancelled") {
+        applyRunDispatchPostCommitEffects(staleness.postCommitEffects);
+        cancelled.add(run.id);
+        logger.info(
+          { runId: run.id, errorCode: staleness.errorCode },
+          "queued run sweep: cancelled queued run whose task is not startable",
+        );
+      } else {
+        logger.info(
+          { runId: run.id, outcome: staleness.outcome },
+          "queued run sweep: queued run kept (not cancelled as not startable)",
+        );
+      }
+    }
+    return cancelled;
   }
 
   // myrmidon(1.6.5 RUN-FAIRNESS): the per-agent share ceiling of the sliding
@@ -19309,7 +19810,11 @@ export function heartbeatService(
   }
 
   async function resumeQueuedRuns() {
-    if ((await getSchedulingSuppression()).suppressed) return;
+    const schedulingSuppression = await getSchedulingSuppression();
+    if (schedulingSuppression.suppressed) {
+      await explainStaleQueuedRuns(new Date(), "scheduling_suppressed");
+      return;
+    }
     await resumeExecutionWaitComments();
     const cutoff = await getWorktreeExecutionCutoff();
     const pendingInterrupts = await db.select({ id: agentWakeupRequests.id, companyId: agentWakeupRequests.companyId })
@@ -19404,8 +19909,19 @@ export function heartbeatService(
 
     // myrmidon(1.6.5 RUN-FAIRNESS): the fair-share gate reads the age of each
     // agent's oldest queued run, so the queue read selects it with the agent.
+    // myrmidon(1.6.5 RUN-PRIORITY A): id and contextSnapshot come along — the
+    // priority decorator resolves the queue keys from them (one batched query
+    // per table, not per run).
     const queuedRuns = await db
-      .select({ agentId: heartbeatRuns.agentId, createdAt: heartbeatRuns.createdAt })
+      .select({
+        id: heartbeatRuns.id,
+        agentId: heartbeatRuns.agentId,
+        // myrmidon(1.6.5 RUN-PRIORITY-PICK): the pass reads the agent's ready
+        // task by company, so the run row carries it.
+        companyId: heartbeatRuns.companyId,
+        createdAt: heartbeatRuns.createdAt,
+        contextSnapshot: heartbeatRuns.contextSnapshot,
+      })
       .from(heartbeatRuns)
       .innerJoin(companies, eq(companies.id, heartbeatRuns.companyId))
       .where(
@@ -19418,12 +19934,28 @@ export function heartbeatService(
       // myrmidon: oldest waiting run first, so capped admission stays fair
       .orderBy(asc(heartbeatRuns.createdAt));
 
-    // myrmidon: keep the admission count honest against the database
+    // myrmidon(1.6.5 RUN-FAIRNESS): keep the admission count honest against
+    // the database
     const [{ running }] = await db
       .select({ running: sql<number>`count(*)` })
       .from(heartbeatRuns)
       .where(eq(heartbeatRuns.status, "running"));
     sharedRunAdmission().syncRunning(Number(running ?? 0));
+
+    // myrmidon(1.6.5 RUN-PRIORITY A): the in-force weights are read fresh on
+    // every pass (the runtime-limits pattern) — a saved change reaches the
+    // queue without restarting the process. Switched off, the pass runs its
+    // pre-feature fairness order with no extra queries.
+    const prioritySettings = currentRunPrioritySettings();
+    const keyedQueuedRuns = prioritySettings.enabled
+      ? await decorateQueuedRunKeys(queuedRuns, prioritySettings)
+      : [];
+    if (prioritySettings.enabled) {
+      // myrmidon(1.6.5 RUN-PRIORITY A): the waiting runs learn their place in
+      // the pass's order — the run card shows "Queue position N of M" beside the
+      // wait reason. Runs this pass starts drop the note with their claim.
+      await writeQueuedRunQueuePositions(rankQueuedRuns(keyedQueuedRuns, prioritySettings));
+    }
 
     // myrmidon(1.6.5 RUN-FAIRNESS): the sweep visits the agents by the age of
     // each agent's OLDEST queued run, so a freed global slot goes to the
@@ -19436,11 +19968,26 @@ export function heartbeatService(
         firstQueuedRunAtByAgent.set(run.agentId, run.createdAt);
       }
     }
-    const agentIds = orderAgentIdsByOldestQueuedRun([...firstQueuedRunAtByAgent]);
+    // myrmidon(1.6.5 RUN-PRIORITY A): with priority on, agents are visited by
+    // their BEST-weighted queued run (weight desc, then the age of that run,
+    // then id), so at a closed admission the review/release/current-release
+    // queue starts first; aging is inside the weight, so a run past the
+    // starvation limit pulls its agent to the front. Equal weights keep the
+    // fairness order's oldest-first tie-break.
+    const agentIds = prioritySettings.enabled
+      ? orderAgentsByTopRunPriority(keyedQueuedRuns, prioritySettings)
+      : orderAgentIdsByOldestQueuedRun([...firstQueuedRunAtByAgent]);
     for (const agentId of agentIds) {
       // myrmidon: one agent's failure (e.g. a duplicate routine issue on claim)
       // must not stop the sweep for every agent queued after it
       try {
+        // myrmidon(1.6.5 RUN-PRIORITY-PICK): the agent's most important ready
+        // task starts before a less important standing run — the pass wakes it
+        // and leaves the run queued with `higher_priority_ready`. A false here
+        // means nothing changed, so the pass starts its best run as before.
+        if (await pickHigherPriorityReadyTaskForAgent(agentId, keyedQueuedRuns, prioritySettings)) {
+          continue;
+        }
         await startNextQueuedRunForAgent(
           agentId,
           // myrmidon(1.6.5 RUN-FAIRNESS): the share gate holds an agent only
@@ -19451,6 +19998,201 @@ export function heartbeatService(
         logger.error({ err, agentId }, "queued run sweep: start failed for agent");
       }
     }
+  }
+
+  // myrmidon(1.6.5 RUN-PRIORITY-PICK): the per-agent pass starts the agent's
+  // most important ready task before a less important standing run.
+  //
+  // The queue only ever compared runs that were already standing (RUN-PRIORITY
+  // A), so an event run on a low task held the agent while its critical task —
+  // assigned, ready, without a run — waited for a slot it never entered; the
+  // only place that picks by *task* importance is the idle pickup, and it runs
+  // for an agent without a live run, which a busy agent never is. This hook
+  // closes the gap at the pass itself: the agent's top ready task is read with
+  // the idle pickup's own rules (`findTopReadyIssueForAgent`), compared by task
+  // importance (priority step + the pheromone strength term the weight carries,
+  // never the composed run weight, so starvation and aging cannot outrank it),
+  // and when it is strictly more important than the best standing run the agent
+  // is woken for it and the standing runs stay queued with the
+  // `higher_priority_ready` wait reason the run card shows.
+  //
+  // The hook can only reorder a start, never remove one: it holds the standing
+  // runs only after a wake was really emitted (a suppressed wake — a paused
+  // agent, the wake budget, a coalesced duplicate, the behaviour switched off —
+  // leaves the queue untouched), and it never throws: a failure falls back to
+  // the pass's own order, which is exactly the pre-feature behaviour.
+  async function pickHigherPriorityReadyTaskForAgent(
+    agentId: string,
+    keyedRuns: ReadonlyArray<
+      PriorityScoredRun & {
+        id: string;
+        agentId: string;
+        companyId: string;
+        contextSnapshot: unknown;
+      }
+    >,
+    prioritySettings: RunPrioritySettings,
+  ): Promise<boolean> {
+    try {
+      const agentRuns = keyedRuns.filter((run) => run.agentId === agentId);
+      const companyId = agentRuns[0]?.companyId;
+      if (!companyId) return false;
+      const candidates: RunPriorityPickCandidate[] = agentRuns.map((run) => ({
+        runId: run.id,
+        issueId: readNonEmptyString(parseObject(run.contextSnapshot).issueId) ?? null,
+        issuePriority: run.issuePriority ?? null,
+      }));
+      // The instance switch and this agent's own card switch gate this path
+      // exactly as they gate the sweep and the release path (TEAM-LIVENESS).
+      const liveness = await teamLivenessRead();
+      const agent = await getAgent(agentId).catch(() => null);
+      const pickupAllowed =
+        liveness.settings.idlePickupEnabled &&
+        resolveAgentTeamLiveness(
+          readAgentCard(agent?.adapterConfig),
+          liveness.settings,
+        ).idlePickupEnabled;
+      idleWakeBudget.configure({
+        perMinute: liveness.settings.idlePickupWakeBudgetPerMin,
+        batch: Math.min(
+          liveness.settings.idlePickupWakeBatch,
+          liveness.settings.idlePickupWakeBudgetPerMin,
+        ),
+      });
+      const outcome = await runPriorityPickForAgent({
+        settings: prioritySettings,
+        candidates,
+        findReadyTask: async () => {
+          const candidate = await findTopReadyIssueForAgent(db, { id: agentId, companyId });
+          return candidate
+            ? { issueId: candidate.id, issuePriority: candidate.priority, extraWeight: 0 }
+            : null;
+        },
+        // Requirement 3: an operator's Stop is durable intent — the sweep does
+        // not push the just-cancelled task back into the queue; it returns on a
+        // new event on the task (`readOperatorCancellationMark`).
+        operatorCancellation: (issueId) => readOperatorCancellationMark(issueId, agentId, companyId),
+        wake: async () => {
+          const result = await idlePickupForAgent(
+            {
+              db,
+              // The same company-wide allowance as the periodic sweeper and the
+              // release path, so no path bursts past the per-minute ceiling.
+              budget: idleWakeBudget,
+              enqueueWakeup: (id, opts) => enqueueWakeup(id, opts),
+              logActivity: async (input) => {
+                await logActivity(db, {
+                  companyId: input.companyId,
+                  actorType: input.actorType,
+                  actorId: input.actorId,
+                  agentId: input.agentId,
+                  runId: input.runId,
+                  action: input.action,
+                  entityType: input.entityType,
+                  entityId: input.entityId,
+                  details: input.details,
+                });
+              },
+            },
+            { id: agentId, companyId },
+            { behaviorEnabled: pickupAllowed },
+          );
+          return result.woken > 0;
+        },
+        holdRuns: async (runIds, waitReason) => {
+          // The waiting runs learn why they stay queued; the claim that starts
+          // them clears the note like every other sweep reason.
+          await writeQueuedRunWaitReason(runIds, waitReason);
+        },
+        log: (event) => {
+          // The note is about a task; a run without one has nothing to name.
+          if (!event.issueId) return;
+          // A log line, not an activity_log row: this pass can fire on any
+          // sweep, and the durable trace of a held run is its queued-run wait
+          // reason (`higher_priority_ready`) in the run panel. Writing an
+          // activity row per decision would also leave company-scoped rows
+          // behind in every test that sweeps with a pick.
+          logger.info(
+            {
+              agentId,
+              issueId: event.issueId,
+              reason: event.reason,
+              heldRunIds: event.heldRunIds,
+              readyImportance: event.readyImportance,
+              bestImportance: event.bestImportance,
+            },
+            "queued run sweep: run-priority pick",
+          );
+        },
+      });
+      return outcome.picked;
+    } catch (err) {
+      // Never the sweep's reason to skip an agent: the pass starts its best
+      // standing run exactly as it would with the pick switched off.
+      logger.warn({ err, agentId }, "queued run sweep: run-priority pick failed");
+      return false;
+    }
+  }
+
+  /**
+   * myrmidon(1.6.5 RUN-PRIORITY-PICK): what an operator's cancellation of this
+   * issue's run left behind, for the pick's requirement 3.
+   *
+   * A Stop records `cancelledByActorType`/`cancelledByUserId` on the run's
+   * result (`stop.ts`, the issue routes, the agents routes) — the mark recovery
+   * and the chat bridge already read. A *new* wake request for the issue
+   * created with the cancellation (or later) is new information: a comment, a
+   * continuation, a manual wake. Until then the task stays out of the pick,
+   * which is what makes Stop stick instead of the sweep re-waking the run the
+   * operator just killed.
+   */
+  async function readOperatorCancellationMark(
+    issueId: string,
+    agentId: string,
+    companyId: string,
+  ): Promise<OperatorCancellationMark | null> {
+    const [latest] = await db
+      .select({
+        status: heartbeatRuns.status,
+        resultJson: heartbeatRuns.resultJson,
+        finishedAt: heartbeatRuns.finishedAt,
+        updatedAt: heartbeatRuns.updatedAt,
+        createdAt: heartbeatRuns.createdAt,
+      })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, companyId),
+          eq(heartbeatRuns.agentId, agentId),
+          sql`coalesce(${heartbeatRuns.contextIssueId}, ${heartbeatRuns.contextSnapshot}->>'issueId') = ${issueId}`,
+        ),
+      )
+      .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id))
+      .limit(1);
+    if (!latest || latest.status !== "cancelled") return null;
+    const result = parseObject(latest.resultJson);
+    const actor = readNonEmptyString(result.cancelledByActorType);
+    if (actor !== "user" && actor !== "board") return null;
+    const cancelledAt = latest.finishedAt ?? latest.updatedAt ?? latest.createdAt;
+    const [newestWake] = await db
+      .select({ requestedAt: agentWakeupRequests.requestedAt })
+      .from(agentWakeupRequests)
+      .where(
+        and(
+          eq(agentWakeupRequests.companyId, companyId),
+          eq(agentWakeupRequests.agentId, agentId),
+          // Only an event ON THIS TASK is new information; a wake for another
+          // task says nothing about the task the operator stopped.
+          sql`coalesce(${agentWakeupRequests.payload}->>'issueId', ${agentWakeupRequests.payload}->>'taskKey') = ${issueId}`,
+        ),
+      )
+      .orderBy(desc(agentWakeupRequests.requestedAt))
+      .limit(1);
+    return {
+      issueId,
+      cancelledAtMs: cancelledAt.getTime(),
+      newEventAtMs: newestWake ? newestWake.requestedAt.getTime() : null,
+    };
   }
 
   // myrmidon: when admission held runs back, sweep again once the start window
@@ -19812,7 +20554,10 @@ export function heartbeatService(
     // holds its own queue.
     options: { otherAgentsWaiting?: boolean } = {},
   ) {
-    if ((await getSchedulingSuppression()).suppressed) return [];
+    if ((await getSchedulingSuppression()).suppressed) {
+      await explainStaleQueuedRuns(new Date(), "scheduling_suppressed");
+      return [];
+    }
     // myrmidon(R3): queued runs wait for maintenance exit — except the
     // CHAT-FIRST exemption below.
     const maintenanceWindows = await maintenanceWindowsForAgent(db, agentId);
@@ -19825,7 +20570,7 @@ export function heartbeatService(
       // reconciler's drain wait then never reaches zero, its finally exits
       // the window, and the profile update retries on the next sweep.
       const queuedPeek = await db
-        .select({ contextSnapshot: heartbeatRuns.contextSnapshot, requestedByActorType: agentWakeupRequests.requestedByActorType })
+        .select({ id: heartbeatRuns.id, contextSnapshot: heartbeatRuns.contextSnapshot, requestedByActorType: agentWakeupRequests.requestedByActorType })
         .from(heartbeatRuns)
         .leftJoin(agentWakeupRequests, eq(agentWakeupRequests.id, heartbeatRuns.wakeupRequestId))
         .where(and(eq(heartbeatRuns.agentId, agentId), eq(heartbeatRuns.status, "queued")));
@@ -19835,7 +20580,13 @@ export function heartbeatService(
           requestedByActorType: row.requestedByActorType ?? null,
         }),
       );
-      if (!chatExempt) return [];
+      if (!chatExempt) {
+        const staleIds = queuedPeek
+          .filter((row) => parseObject(row.contextSnapshot).waitReason == null)
+          .map((row) => row.id);
+        if (staleIds.length > 0) await writeQueuedRunWaitReason(staleIds, "maintenance");
+        return [];
+      }
     }
     const cutoff = await getWorktreeExecutionCutoff();
 
@@ -19849,6 +20600,17 @@ export function heartbeatService(
             agentId,
             `Cancelled because the agent is not invokable: ${invokability.reason}`,
           );
+        } else {
+          // myrmidon(1.6.5 F-09): the sweep leaves the queued runs in place
+          // but names why they wait.
+          const staleQueued = await db
+            .select({ id: heartbeatRuns.id, contextSnapshot: heartbeatRuns.contextSnapshot })
+            .from(heartbeatRuns)
+            .where(and(eq(heartbeatRuns.agentId, agentId), eq(heartbeatRuns.status, "queued")));
+          const needsReason = staleQueued
+            .filter((row) => parseObject(row.contextSnapshot).waitReason == null)
+            .map((row) => row.id);
+          if (needsReason.length > 0) await writeQueuedRunWaitReason(needsReason, "agent_not_invokable");
         }
         return [];
       }
@@ -19860,7 +20622,7 @@ export function heartbeatService(
       );
       // myrmidon(1.6.5 RUN-FAIRNESS): the per-agent ceiling check moved below
       // the queue read, so the runs it holds get their waitReason.
-      const queuedRuns = await db
+      const queuedRunRows = await db
         .select()
         .from(heartbeatRuns)
         .where(
@@ -19871,6 +20633,46 @@ export function heartbeatService(
           ),
         )
         .orderBy(asc(heartbeatRuns.createdAt));
+      if (queuedRunRows.length === 0) return [];
+
+      // myrmidon(1.6.5 F-09): queued runs whose task is in backlog are
+      // cancelled BEFORE any early exit below (per-agent ceiling, fair share),
+      // so an agent at its concurrency ceiling still loses its backlog runs.
+      // Hidden todos stay: they are the supported Summarizer pattern (summary
+      // slots / status cards), the claim path decides their fate. Cancelled
+      // runs leave the sweep's queue.
+      const earlyIssueIds = [
+        ...new Set(
+          queuedRunRows
+            .map((run) => readNonEmptyString(parseObject(run.contextSnapshot).issueId))
+            .filter((issueId): issueId is string => Boolean(issueId)),
+        ),
+      ];
+      const backlogIssueIds = new Set(
+        earlyIssueIds.length > 0
+          ? (
+              await db
+                .select({ id: issues.id })
+                .from(issues)
+                .where(
+                  and(
+                    eq(issues.companyId, agent.companyId),
+                    inArray(issues.id, earlyIssueIds),
+                    eq(issues.status, "backlog"),
+                  ),
+                )
+            ).map((row) => row.id)
+          : [],
+      );
+      const notStartableRuns = queuedRunRows.filter((run) => {
+        const issueId = readNonEmptyString(parseObject(run.contextSnapshot).issueId);
+        return issueId ? backlogIssueIds.has(issueId) : false;
+      });
+      const cancelledRunIds =
+        notStartableRuns.length > 0
+          ? await cancelQueuedRunsAsNotStartable(notStartableRuns)
+          : new Set<string>();
+      const queuedRuns = queuedRunRows.filter((run) => !cancelledRunIds.has(run.id));
       if (queuedRuns.length === 0) return [];
 
       // myrmidon(1.6.5 RUN-FAIRNESS): the per-agent ceiling holds these runs;
@@ -19919,6 +20721,24 @@ export function heartbeatService(
         agent.companyId,
         queuedRuns,
       );
+      // myrmidon(1.6.5 OWNER-CHAT-ADMISSION): the owner's own turns in a chat
+      // among the runs about to start — read before the sort, because they rank
+      // first in the queue and are admitted by the server container's floor
+      // alone. A read that fails keeps the vendor order and the host ceilings,
+      // which is the safe side when the turns cannot be told apart.
+      let ownerChatTurnRunIds = new Set<string>();
+      try {
+        ownerChatTurnRunIds = await listOwnerChatTurnRunIds(
+          db,
+          agent.companyId,
+          queuedRuns,
+        );
+      } catch (err) {
+        logger.warn(
+          { err, agentId },
+          "queued run sweep: could not read the owner chat turns — keeping the vendor order and the host ceilings",
+        );
+      }
       const queuedIssueIds = [
         ...new Set(
           queuedRuns
@@ -19933,6 +20753,7 @@ export function heartbeatService(
           id: issues.id,
           status: issues.status,
           priority: issues.priority,
+          hiddenAt: issues.hiddenAt,
         })
         .from(issues)
         .where(
@@ -19944,7 +20765,31 @@ export function heartbeatService(
             : sql`false`,
         );
       const issueById = new Map(issueRows.map((row) => [row.id, row]));
+      // myrmidon(1.6.5 RUN-PRIORITY A): inside each readiness rank the runs
+      // now sort by the effective weight (role + issue priority + release
+      // bonus + aging) with a createdAt tie-break. The readiness rank stays
+      // first: a run whose dependencies are not ready must not start ahead of
+      // a ready one because of its weights.
+      const prioritySettings = currentRunPrioritySettings();
+      const keyedById = prioritySettings.enabled
+        ? new Map(
+            (await decorateQueuedRunKeys(queuedRuns, prioritySettings)).map((run) => [run.id, run]),
+          )
+        : null;
       const companyAgents = await listCompanyAgentOrgRows(agent.companyId);
+      // myrmidon(1.6.5 OWNER-CHAT-ADMISSION): the owner turns that can start now.
+      // A turn whose issue still waits for its dependencies keeps the readiness
+      // rank 3 behind the ready runs, so it is neither sorted ahead nor counted
+      // in the owner prefix handed to `reserve`.
+      const startableOwnerChatRunIds = new Set(
+        queuedRuns
+          .filter((run) => {
+            if (!ownerChatTurnRunIds.has(run.id)) return false;
+            const issueId = readNonEmptyString(parseObject(run.contextSnapshot).issueId);
+            return issueId ? (dependencyReadiness.get(issueId)?.isDependencyReady ?? true) : true;
+          })
+          .map((run) => run.id),
+      );
       const prioritizedRuns = [...queuedRuns].sort((left, right) => {
         const leftIssueId = readNonEmptyString(
           parseObject(left.contextSnapshot).issueId,
@@ -19980,7 +20825,34 @@ export function heartbeatService(
               : 1
             : 3
           : 2;
-        if (leftRank !== rightRank) return leftRank - rightRank;
+        // myrmidon(1.6.5 OWNER-CHAT-ADMISSION): the owner's own turn in a chat
+        // goes ahead of every run that can start — ahead of the readiness ranks
+        // 0/1/2, not only within one of them (a chat task reopened to `todo`
+        // must not queue behind an automatic `in_progress` run of the same
+        // agent). A run whose dependencies are not settled (rank 3) stays
+        // behind, owner turn or not: readiness is checked first.
+        const leftOwner = startableOwnerChatRunIds.has(left.id);
+        const rightOwner = startableOwnerChatRunIds.has(right.id);
+        const ownerOrder = compareOwnerChatTurnFirst(leftOwner, rightOwner);
+        if (ownerOrder !== 0) return ownerOrder;
+        if (!leftOwner && leftRank !== rightRank) return leftRank - rightRank;
+        // myrmidon(1.6.5 RUN-PRIORITY A): the effective weight subsumes the
+        // old `issueRunPriorityRank` step (issue priority is one of its keys)
+        // and adds the role, current-release and aging dimensions; with the
+        // feature off the old comparator runs untouched.
+        if (keyedById) {
+          return compareRunsByPriority(
+            keyedById.get(left.id)!,
+            keyedById.get(right.id)!,
+            prioritySettings,
+            Date.now(),
+            // equal weight (one agent = one role): issue priority first,
+            // then createdAt inside compareRunsByPriority
+            (leftRun, rightRun) =>
+              issueRunPriorityRank(leftRun.issuePriority) -
+              issueRunPriorityRank(rightRun.issuePriority),
+          );
+        }
         const leftPriorityRank = issueRunPriorityRank(leftIssue?.priority);
         const rightPriorityRank = issueRunPriorityRank(rightIssue?.priority);
         if (leftPriorityRank !== rightPriorityRank)
@@ -19994,23 +20866,49 @@ export function heartbeatService(
       // myrmidon(1.6.5 RUN-FAIRNESS): the reservation names its agent, so the
       // start counts against this agent's share of the sliding start window.
       const admission = sharedRunAdmission();
-      const admitted = admission.reserve(availableSlots, { agentId });
+      // myrmidon(1.6.5 OWNER-CHAT-ADMISSION): the owner turns sit at the front
+      // of the queue, so the front of the reservation is exactly them — the
+      // count is that prefix, not every owner turn (a run whose dependencies
+      // are not settled stays behind the ready ones).
+      const ownerChatTurns = countLeadingOwnerChatTurns(prioritizedRuns, startableOwnerChatRunIds);
+      const admitted = admission.reserve(availableSlots, {
+        agentId,
+        ownerChatTurns,
+      });
       // myrmidon(1.6.5 RUN-FAIRNESS): the runs an admission gate leaves
       // queued say why they wait; a claimed run drops the note.
       const runsLeftQueued = admitted < prioritizedRuns.length
         ? prioritizedRuns.slice(Math.max(admitted, 0))
         : [];
       if (runsLeftQueued.length > 0) {
-        await writeQueuedRunWaitReason(
-          runsLeftQueued.map((run) => run.id),
-          admission.lastDenialReason() ?? "global_cap",
-        );
+        // myrmidon(1.6.5 RUN-PRIORITY A): a run that was ready and still lost its
+        // slot in a pass that DID start runs lost it to a heavier one — that is
+        // the reason the card shows. A run whose dependencies are not settled
+        // waits for them (the sweep ranks it behind the ready ones), so it keeps
+        // the admission gate's own reason.
+        const gateReason: QueuedRunWaitReason = admission.lastDenialReason() ?? "global_cap";
+        const passedOver: string[] = [];
+        const heldByGate: string[] = [];
+        for (const run of runsLeftQueued) {
+          const issueId = readNonEmptyString(parseObject(run.contextSnapshot).issueId);
+          const ready =
+            !issueId || (dependencyReadiness.get(issueId)?.isDependencyReady ?? true);
+          if (prioritySettings.enabled && admitted > 0 && ready) passedOver.push(run.id);
+          else heldByGate.push(run.id);
+        }
+        await writeQueuedRunWaitReason(heldByGate, gateReason);
+        await writeQueuedRunWaitReason(passedOver, "priority");
       }
       try {
-        for (const queuedRun of prioritizedRuns) {
+        for (const [queuedIndex, queuedRun] of prioritizedRuns.entries()) {
           if (claimedRuns.length >= admitted) break;
           const claimed = await claimQueuedRun(queuedRun, companyAgents);
           if (claimed) claimedRuns.push(claimed);
+          // myrmidon(1.6.5 OWNER-CHAT-ADMISSION): a slot admitted for an owner
+          // turn is not handed to an automatic run behind it when the claim
+          // comes back empty — that run was admitted by the host ceilings, not
+          // by this slot. Stop; the released slot and the resweep serve it.
+          else if (queuedIndex < ownerChatTurns) break;
         }
       } finally {
         admission.release(admitted - claimedRuns.length);
@@ -20088,7 +20986,7 @@ export function heartbeatService(
         await dispatchNativeSessionResumptions({
           db,
           runnerInstanceId:
-            runtimeEnv.PAPERCLIP_INSTANCE_ID?.trim() || "paperclip-heartbeat",
+            readProductEnvFrom(runtimeEnv, "INSTANCE_ID")?.trim() || "paperclip-heartbeat",
           runIds: [runId],
           dispatch: (claim) => {
             const execution = executeRun(claim.runId, {
@@ -20365,7 +21263,7 @@ export function heartbeatService(
       run = { ...run, contextSnapshot: preparedConversation.context };
       if (preparedConversation.reset) {
         const contextSnapshot = { ...preparedConversation.context, conversationReset: true };
-        await setRunStatus(run.id, "succeeded", { finishedAt: new Date(), contextSnapshot, resultJson: { conversationReset: true }, issueCommentStatus: "not_applicable" });
+        await setRunStatus(run.id, "succeeded", { finishedAt: new Date(), ...runContextPersistenceFields(contextSnapshot), resultJson: { conversationReset: true }, issueCommentStatus: "not_applicable" });
         await setWakeupStatus(run.wakeupRequestId, "completed", { finishedAt: new Date() });
         const resetRun = (await getRun(run.id))!;
         await settleConversationTurn(db, resetRun);
@@ -20900,6 +21798,28 @@ export function heartbeatService(
             })
           : null;
       context.executionContinuation = executionContinuation;
+      // myrmidon(DB-CARE DBC-3): the envelope is stored once, in
+      // heartbeat_run_continuations. Every snapshot write below persists
+      // runContextForPersistence(context), which drops the top-level copy, so
+      // heartbeat_runs.context_snapshot stops carrying the task history.
+      if (executionContinuation) {
+        await persistRunContinuation(db, {
+          companyId: agent.companyId,
+          agentId: agent.id,
+          issueId: issueRef?.id ?? null,
+          runId: run.id,
+          previousContextRunId: taskSession?.lastRunId ?? null,
+          envelope: executionContinuation,
+          // References to the wake payload (run, comments, interaction) instead
+          // of a second copy of it.
+          wakeLinks: {
+            runId: run.id,
+            originCommentIds: executionContinuation.originCommentIds,
+            sourceRunId: executionContinuation.trigger.sourceRunId,
+            interactionId: executionContinuation.trigger.interactionId,
+          },
+        });
+      }
       const paperclipWakePayload = await buildPaperclipWakePayload({
         db,
         companyId: agent.companyId,
@@ -21059,14 +21979,27 @@ export function heartbeatService(
         });
         if (x9MentionChat) taskMarkdown += `\n\n${x9MentionChat}`;
       }
-      const taskMarkdownCompact = appendCrossChannelDelta(
+      // myrmidon(1.6.5-OWNER-VIA-BOT): the owner dialogue of the via_bot mode — the
+      // instruction to explain an open owner decision in a DM, or the note that the
+      // owner's DM message may answer one (both empty outside those two cases).
+      const ownerViaBotBlock = issueId
+        ? await buildOwnerViaBotPromptBlock(db, {
+            companyId: agent.companyId,
+            agentId: agent.id,
+            issue: issueContext,
+            ownerExplainInteractionId: readNonEmptyString(context.ownerExplainInteractionId),
+            wakeCommentId,
+          })
+        : "";
+      if (ownerViaBotBlock) taskMarkdown = appendOwnerViaBotBlock(taskMarkdown ?? "", ownerViaBotBlock);
+      const taskMarkdownCompact = appendOwnerViaBotBlock(appendCrossChannelDelta(
         buildPaperclipTaskMarkdown({
           ...taskMarkdownInput,
           taskPlan,
           includeDescription: false,
         }) ?? "", // myrmidon(X8d): buildPaperclipTaskMarkdown can return null; appendCrossChannelDelta requires string
         x8CrossChannel,
-      ); // myrmidon(X8d)
+      ), ownerViaBotBlock); // myrmidon(X8d), myrmidon(1.6.5-OWNER-VIA-BOT)
       if (issueRef) {
         context.paperclipIssue = {
           id: issueRef.id,
@@ -22305,7 +23238,9 @@ export function heartbeatService(
         await db
           .update(heartbeatRuns)
           .set({
-            contextSnapshot: context,
+            // thin columns derive from the full context; the stored snapshot drops the envelope
+            ...runContextPersistenceFields(context),
+            contextSnapshot: runContextForPersistence(context),
             updatedAt: new Date(),
           })
           .where(eq(heartbeatRuns.id, run.id));
@@ -22576,7 +23511,7 @@ export function heartbeatService(
         // whether GitHub is configured or a credential can be acquired.
         networkAccess:
           trustPreset.kind === "standard" &&
-          process.env.PAPERCLIP_RUNNER_NETWORK_ACCESS !== "disabled",
+          readProductEnv("RUNNER_NETWORK_ACCESS") !== "disabled",
       });
       // myrmidon(S2-hostcred): belt to the decision above — even a host-mode
       // probe or an upstream binding leaves no host credential name in the run
@@ -22642,7 +23577,9 @@ export function heartbeatService(
       await db
         .update(heartbeatRuns)
         .set({
-          contextSnapshot: context,
+          // thin columns derive from the full context; the stored snapshot drops the envelope
+          ...runContextPersistenceFields(context),
+          contextSnapshot: runContextForPersistence(context),
           updatedAt: new Date(),
         })
         .where(eq(heartbeatRuns.id, run.id));
@@ -22707,6 +23644,17 @@ export function heartbeatService(
         })(),
       };
       context.paperclipWorkspaces = buildRunWorkspaceHints(resolvedWorkspace);
+      // myrmidon(1.6.5-BOT-DISK-H4b): the instance default repository, the gateway
+      // adapter's last-resort source of the run's `workspace.repo` (after the
+      // project workspace). Best effort: a settings read failure leaves it unset.
+      {
+        const defaultRepo = await instanceSettings
+          .getGeneral()
+          .then((general) => normalizeStoredBotDiskSettings((general as unknown as Record<string, unknown>).botDisk).defaultRepo)
+          .catch(() => undefined);
+        if (defaultRepo) context.paperclipBotDiskDefaultRepo = defaultRepo;
+        else delete context.paperclipBotDiskDefaultRepo;
+      }
       // Emit exactly one requested-vs-synced observability line for the referenced-project set. A run
       // with no referenced project stays silent, so this adds no noise to the anchor-only default. The
       // per-drop human warning already rides `runtimeWorkspaceWarnings`; this line carries the counts
@@ -22882,6 +23830,91 @@ export function heartbeatService(
         }
       }
 
+      // myrmidon(OPE-6168): adapters that keep a provider-side session keyed by
+      // issue (hermes_gateway) start a new generation after an input-overflow
+      // failure: generation 1 is the unsuffixed key, each overflow adds one.
+      const inputOverflowFailures = issueId
+        ? await countInputOverflowFailures(db, {
+            companyId: agent.companyId,
+            agentId: agent.id,
+            issueId,
+          }).catch(() => 0)
+        : 0;
+      if (inputOverflowFailures > 0) {
+        runtimeConfig = {
+          ...runtimeConfig,
+          // Stacked on top of the PERF-DIET-K generation above (integration of
+          // #921 + #903): every recorded overflow moves the key one generation on.
+          sessionGeneration: Math.max(Number(runtimeConfig.sessionGeneration) || 1, 1) + inputOverflowFailures,
+        };
+      }
+
+      // myrmidon(OPE-6168): check the model input limit before the run is sent.
+      // The limit comes from the model catalog (or an agent override) and rides
+      // the adapter config so the adapter trims a request that alone exceeds
+      // it; when the task's session already holds so many prompts that the next
+      // one would not fit, the run starts a fresh session instead of sending
+      // into the full one. The decision is recorded as a lifecycle event, which
+      // is what keeps later runs on the new session generation.
+      try {
+        const inputLimitPlan = await planInputLimit(db, {
+          companyId: agent.companyId,
+          agentId: agent.id,
+          issueId: issueId ?? null,
+          runId: run.id,
+          adapterConfig: runtimeConfig,
+          overflowFailures: inputOverflowFailures,
+        });
+        if (inputLimitPlan.hint) {
+          runtimeConfig = {
+            ...runtimeConfig,
+            [INPUT_LIMIT_CONFIG_KEY]: inputLimitPlan.hint,
+          };
+        }
+        // Stacked on top of the PERF-DIET-K generation and the overflow bumps
+        // applied above (integration of #921 + #903 + #950): the plan's
+        // generation is 1 + overflow failures + recorded fresh-session resets
+        // (+1 for this run's reset), so the part that is the pre-check's own
+        // (resets) is added to the generation already on the config. A max()
+        // here would swallow the reset whenever the PERF-DIET-K base is
+        // already ahead; adding keeps the key strictly moving on.
+        const inputLimitBumps = Math.max(
+          inputLimitPlan.generation - 1 - inputOverflowFailures,
+          0,
+        );
+        if (inputLimitBumps > 0) {
+          runtimeConfig = {
+            ...runtimeConfig,
+            sessionGeneration: Math.max(Number(runtimeConfig.sessionGeneration) || 1, 1) + inputLimitBumps,
+          };
+        }
+        if (inputLimitPlan.decision.reset) {
+          runtimeSessionIdForAdapter = null;
+          runtimeSessionParamsForAdapter = null;
+          previousSessionDisplayId = null;
+          runtimeWorkspaceWarnings.push(
+            "Starting a fresh session because the session would exceed the model input limit.",
+          );
+          await appendRunEvent(run, {
+            eventType: "lifecycle",
+            stream: "system",
+            level: "warn",
+            message: `Session holds about ${inputLimitPlan.decision.sessionTokens} prompt tokens and the next prompt would bring it to ${inputLimitPlan.decision.expectedTokens}, over the ${inputLimitPlan.decision.budgetTokens}-token budget of the model input limit; starting a fresh session`,
+            payload: {
+              [INPUT_LIMIT_EVENT_KEY]: {
+                action: INPUT_LIMIT_FRESH_SESSION_ACTION,
+                sessionTokens: inputLimitPlan.decision.sessionTokens,
+                expectedTokens: inputLimitPlan.decision.expectedTokens,
+                budgetTokens: inputLimitPlan.decision.budgetTokens,
+                generation: inputLimitPlan.generation,
+              },
+            },
+          });
+        }
+      } catch (err) {
+        logger.warn({ err, runId: run.id }, "failed to apply the model input-limit pre-check");
+      }
+
       if (managedAiRuntime) {
         sessionConfigMetadata.aiCredentialIdentity = managedAiRuntime.identity;
         if (taskSessionDecodedParams?.paperclipAiCredentialIdentity !== managedAiRuntime.identity) {
@@ -22996,7 +24029,9 @@ export function heartbeatService(
             startedAt,
             sessionIdBefore:
               runtimeForAdapter.sessionDisplayId ?? runtimeForAdapter.sessionId,
-            contextSnapshot: context,
+            // thin columns derive from the full context; the stored snapshot drops the envelope
+            ...runContextPersistenceFields(context),
+            contextSnapshot: runContextForPersistence(context),
             updatedAt: new Date(),
           })
           .where(eq(heartbeatRuns.id, run.id))
@@ -23221,7 +24256,9 @@ export function heartbeatService(
           await db
             .update(heartbeatRuns)
             .set({
-              contextSnapshot: context,
+              // thin columns derive from the full context; the stored snapshot drops the envelope
+              ...runContextPersistenceFields(context),
+              contextSnapshot: runContextForPersistence(context),
               updatedAt: new Date(),
             })
             .where(eq(heartbeatRuns.id, run.id));
@@ -24348,7 +25385,7 @@ export function heartbeatService(
             > = null;
             if (
               executionTarget?.kind === "remote" &&
-              adapterEnv.PAPERCLIP_GITHUB_BROKER_TOKEN
+              readProductEnvFrom(adapterEnv, "GITHUB_BROKER_TOKEN")
             ) {
               try {
                 nativeGitHubBridge =
@@ -24362,8 +25399,8 @@ export function heartbeatService(
                       run.id,
                     ),
                     adapterKey: "native-github",
-                    hostApiToken: adapterEnv.PAPERCLIP_GITHUB_BROKER_TOKEN,
-                    hostApiUrl: adapterEnv.PAPERCLIP_GITHUB_BROKER_URL,
+                    hostApiToken: readProductEnvFrom(adapterEnv, "GITHUB_BROKER_TOKEN"),
+                    hostApiUrl: readProductEnvFrom(adapterEnv, "GITHUB_BROKER_URL"),
                     onLog,
                   });
               } catch {
@@ -24462,21 +25499,21 @@ export function heartbeatService(
                         nativeRuntimeResolution,
                       ),
                       runnerPublicUrl:
-                        runtimeEnv.PAPERCLIP_RUNNER_PUBLIC_URL?.trim() || null,
+                        readProductEnvFrom(runtimeEnv, "RUNNER_PUBLIC_URL")?.trim() || null,
                       runnerCaBundlePath:
-                        runtimeEnv.PAPERCLIP_RUNNER_CA_BUNDLE_PATH?.trim() ||
+                        readProductEnvFrom(runtimeEnv, "RUNNER_CA_BUNDLE_PATH")?.trim() ||
                         null,
                       runnerRemoteBinaryPath:
-                        runtimeEnv.PAPERCLIP_RUNNER_REMOTE_BINARY_PATH?.trim() ||
+                        readProductEnvFrom(runtimeEnv, "RUNNER_REMOTE_BINARY_PATH")?.trim() ||
                         null,
                       runnerRemoteCodexPath:
-                        runtimeEnv.PAPERCLIP_RUNNER_REMOTE_CODEX_PATH?.trim() ||
+                        readProductEnvFrom(runtimeEnv, "RUNNER_REMOTE_CODEX_PATH")?.trim() ||
                         null,
                       runnerRemoteCodexNpmSpec:
-                        runtimeEnv.PAPERCLIP_RUNNER_REMOTE_CODEX_NPM_SPEC?.trim() ||
+                        readProductEnvFrom(runtimeEnv, "RUNNER_REMOTE_CODEX_NPM_SPEC")?.trim() ||
                         null,
                       runnerRemoteProviderPackPath:
-                        runtimeEnv.PAPERCLIP_RUNNER_REMOTE_PROVIDER_PACK_PATH?.trim() ||
+                        readProductEnvFrom(runtimeEnv, "RUNNER_REMOTE_PROVIDER_PACK_PATH")?.trim() ||
                         null,
                       enqueueWakeup,
                       onSpawn: async (meta) => {
@@ -24956,7 +25993,9 @@ export function heartbeatService(
           await db
             .update(heartbeatRuns)
             .set({
-              contextSnapshot: context,
+              // thin columns derive from the full context; the stored snapshot drops the envelope
+              ...runContextPersistenceFields(context),
+              contextSnapshot: runContextForPersistence(context),
               updatedAt: new Date(),
             })
             .where(eq(heartbeatRuns.id, run.id));
@@ -25358,6 +26397,16 @@ export function heartbeatService(
               presentationDecision.commentAction === "create" &&
               resolved.text
             ) {
+              // myrmidon(1.6-GRD): flag-only output scan of the final run text
+              // before it becomes the visible issue comment; never blocks,
+              // never masks here — the event journal records the hits.
+              await guardrailsOnRunOutput({
+                db,
+                companyId: livenessRun.companyId,
+                runId: livenessRun.id,
+                issueId,
+                text: resolved.text,
+              }).catch(() => null);
               // The presentation resolver exposes only the final assistant
               // surface selected from completed final messages or accepted
               // semantic results. For an exactly bound external-chat run,
@@ -25439,6 +26488,14 @@ export function heartbeatService(
               "stderr",
               `[myrmidon] Failed to resolve run presentation: ${err instanceof Error ? err.message : String(err)}\n`,
             );
+          }
+          if (outcome === "failed") {
+            await handleInputOverflowFailure(livenessRun, agent).catch((err) => {
+              logger.warn(
+                { err, runId: livenessRun.id },
+                "failed to apply input-overflow guard",
+              );
+            });
           }
           if (outcome === "failed" && isMaxTurnExhaustionRun(livenessRun)) {
             const policy = parseMaxTurnContinuationPolicy(agent);
@@ -26447,7 +27504,7 @@ export function heartbeatService(
   async function releaseSwarmClaimsForRun(
     run: Pick<typeof heartbeatRuns.$inferSelect, "id" | "companyId">,
   ) {
-    await releaseSwarmClaimsForRunImpl({ db, settings: instanceSettings }, run, enqueueWakeup);
+    await releaseSwarmClaimsForRunImpl({ db, settings: instanceSettings }, run);
   }
 
   async function releaseIssueExecutionAndPromote(
@@ -26513,33 +27570,63 @@ export function heartbeatService(
           const releasedIssueId = readNonEmptyString(
             parseObject(releasedRun.contextSnapshot).issueId,
           );
-          await idlePickupForAgent(
+          // myrmidon(1.6.5 OPE-6608, review item 1 / design §3.5): with the
+          // swarm on, the agent that just became free is paired by the board
+          // itself — its own assigned ready task first, otherwise the top ready
+          // task of its caste and nest. The idle-pickup wake below (the "go and
+          // look for work" path OPE-6640 retires) is then not used at all.
+          const swarmFreed = await matchFreedAgent(
             {
               db,
-              // myrmidon(IDLE-WAKE-BUDGET): the release path spends the same
-              // company-wide allowance as the periodic sweeper, so a fleet of
-              // finishing runs cannot burst past the per-minute ceiling.
-              budget: idleWakeBudget,
+              settings: instanceSettings,
               enqueueWakeup: (agentId, opts) => enqueueWakeup(agentId, opts),
-              logActivity: async (input) => {
-                await logActivity(db, {
-                  companyId: input.companyId,
-                  actorType: input.actorType,
-                  actorId: input.actorId,
-                  agentId: input.agentId,
-                  runId: input.runId,
-                  action: input.action,
-                  entityType: input.entityType,
-                  entityId: input.entityId,
-                  details: input.details,
-                });
-              },
+              castes: createCasteDirectoryReader(db),
             },
-            { id: releasedRun.agentId, companyId: releasedRun.companyId },
-            // The just-released issue is the past work: waking it again right
-            // after its run finished is the runaway loop the review caught.
-            { excludeIssueId: releasedIssueId, behaviorEnabled: pickupAllowed },
-          );
+            releasedRun.agentId,
+            {
+              // The loop guards idle pickup had on this very path (review item
+              // 1): the task whose run just ended is not offered back, the
+              // idle-pickup switches (instance and agent card) hold, and the
+              // wake spends the same company allowance.
+              excludeIssueId: releasedIssueId,
+              pickupAllowed,
+              wakeBudget: idleWakeBudget,
+            },
+          ).catch((err) => {
+            logger.warn({ err, runId: run.id }, "swarm match of the freed agent failed");
+            // A failed match must never strand the agent: the idle-pickup path
+            // keeps its own admission gates and is the safer fallback.
+            return { enabled: false, pair: null };
+          });
+          if (!swarmFreed.enabled) {
+            await idlePickupForAgent(
+              {
+                db,
+                // myrmidon(IDLE-WAKE-BUDGET): the release path spends the same
+                // company-wide allowance as the periodic sweeper, so a fleet of
+                // finishing runs cannot burst past the per-minute ceiling.
+                budget: idleWakeBudget,
+                enqueueWakeup: (agentId, opts) => enqueueWakeup(agentId, opts),
+                logActivity: async (input) => {
+                  await logActivity(db, {
+                    companyId: input.companyId,
+                    actorType: input.actorType,
+                    actorId: input.actorId,
+                    agentId: input.agentId,
+                    runId: input.runId,
+                    action: input.action,
+                    entityType: input.entityType,
+                    entityId: input.entityId,
+                    details: input.details,
+                  });
+                },
+              },
+              { id: releasedRun.agentId, companyId: releasedRun.companyId },
+              // The just-released issue is the past work: waking it again right
+              // after its run finished is the runaway loop the review caught.
+              { excludeIssueId: releasedIssueId, behaviorEnabled: pickupAllowed },
+            );
+          }
         }
       } catch (idlePickupErr) {
         logger.warn(
@@ -26587,10 +27674,71 @@ export function heartbeatService(
     });
     let issueId =
       readNonEmptyString(enrichedContextSnapshot.issueId) ?? issueIdFromPayload;
+    // myrmidon(N4-WAKE-ISSUE-CONTEXT): a wake that names its task only in the
+    // resolved context (contextSnapshot.issueId) must also carry the
+    // identifier in the payload consumers read first: the agent's wake
+    // payload is built from the payload, not from the snapshot, so a wake
+    // whose only issueId lives in contextSnapshot arrives at the agent
+    // without its task context. Mirror the resolved id back into the payload
+    // here, after enrichment, so every downstream read (wake payload renderer,
+    // coalescing key, execution-blocker check) sees the same issueId.
+    if (
+      issueId &&
+      !readNonEmptyString(payload?.["issueId"]) &&
+      !readNonEmptyString(payload?.["taskId"])
+    ) {
+      payload = { ...payload, issueId };
+    }
     if (executionReconciliationWake && !issueId) return null;
 
     let agent = await getAgent(agentId);
     if (!agent) throw notFound("Agent not found");
+
+    // myrmidon(1.6.5 F-26 T5, design §3.7): the run-without-task gate. An
+    // automatic wake of a swarm reason that names no existing task must never
+    // reach the adapter — it is recorded `skipped` here with 0 tokens. Manual
+    // wakes and chat are untouched; a manual wake of a user always passes.
+    {
+      const swarmSettings = await readSwarmSettings(db);
+      if (swarmSettings.runWithoutTaskGate) {
+        const gateReason = await tasklessGateReason(db, agent.companyId, {
+          source,
+          reason:
+            readNonEmptyString(enrichedContextSnapshot.wakeReason) ?? reason,
+          issueId,
+          manualUserWake: opts.manualUserWake === true,
+        });
+        if (gateReason) {
+          logger.info(
+            {
+              agentId,
+              companyId: agent.companyId,
+              source,
+              reason,
+              issueId: issueId ?? null,
+              gateReason,
+            },
+            "myrmidon.wake_task_guard.skipped: taskless automatic wake closed before the adapter (0 tokens)",
+          );
+          await logActivity(db, {
+            companyId: agent.companyId,
+            actorType: "system",
+            actorId: "heartbeat",
+            agentId,
+            action: "heartbeat.wake_skipped_taskless",
+            entityType: "agent",
+            entityId: agentId,
+            details: {
+              reason: reason ?? null,
+              gateReason,
+              counter: "myrmidon.heartbeat.taskless_wakes_skipped",
+            },
+          });
+          return null;
+        }
+      }
+    }
+
     if (issueId) {
       const conversation = await getIssueExecutionContext(agent.companyId, issueId);
       if (isConversation(conversation)) {
@@ -27064,8 +28212,65 @@ export function heartbeatService(
         reason:
           "No assigned todo or in_progress issue requires this agent before timer adapter invocation.",
       });
+      // myrmidon(1.2-COST-CACHING): count the saved model call when the
+      // metrics setting is on; never let metrics break the skip itself.
+      if (idleSkipMetricsEnabled()) {
+        try {
+          recordIdleSkip({ companyId: agent.companyId, agentId });
+        } catch (err) {
+          logger.warn({ err, agentId }, "idle-skip metrics write failed");
+        }
+      }
       await markTimerHeartbeatChecked(agentId, source);
       return null;
+    }
+
+    // myrmidon(1.2-COST-CACHING): a generic timer wake whose context snapshot
+    // is identical to the agent's previous finished run reuses that run's
+    // recorded answer instead of a new adapter invocation — only when the
+    // recorded answer cost at least MYRMIDON_PROMPT_CACHE_MIN_COST (USD).
+    // Cheap answers are always recomputed; wakes with a concrete reason
+    // (issue/comment/task) never reach this branch. The cached wake lands as
+    // a `skipped` row naming the source run, so the audit trail shows where
+    // the reused answer came from.
+    if (genericTimerWake) {
+      const promptCache = readPromptCacheSettings();
+      if (promptCache.enabled) {
+        try {
+          const fingerprint = fingerprintWakeContext(enrichedContextSnapshot);
+          const cached = await findReusablePromptAnswer(db, {
+            agentId,
+            companyId: agent.companyId,
+            fingerprint,
+            minCostUsd: promptCache.minCostUsd,
+          });
+          if (cached) {
+            await writeSkippedHeartbeatRequest("heartbeat.timer.cached_identical_prompt", {
+              reason:
+                "Identical prompt to a previous expensive run; reusing the recorded answer.",
+              reusedRunId: cached.runId,
+              reusedRunCostUsd: cached.costUsd,
+              reusedRunFinishedAt: cached.finishedAt?.toISOString() ?? null,
+              minCostUsd: promptCache.minCostUsd,
+            });
+            logger.info(
+              {
+                companyId: agent.companyId,
+                agentId,
+                reusedRunId: cached.runId,
+                reusedRunCostUsd: cached.costUsd,
+              },
+              "prompt cache hit: identical timer wake reuses the previous answer",
+            );
+            await markTimerHeartbeatChecked(agentId, source);
+            return null;
+          }
+        } catch (err) {
+          // The cache is an optimization; a read failure must never block a
+          // wake — fall through to the normal admission path.
+          logger.warn({ err, agentId }, "prompt cache lookup failed; running normally");
+        }
+      }
     }
 
     if (issueId) {
@@ -28043,7 +29248,12 @@ export function heartbeatService(
                 finishedAt: new Date(),
               },
             });
-            return { kind: "skipped" as const };
+            return {
+              kind: "skipped" as const,
+              dependencyBlockedAgent: agent,
+              dependencyBlockedIssueId: issue.id,
+              dependencyBlockedReadyForPickup: !activeExecutionRun,
+            };
           }
 
           if (
@@ -28253,12 +29463,13 @@ export function heartbeatService(
           // would only race the settle sweep (TASK-PR-SYNC part C). Skip it
           // with the vendor's skipped-wakeup-request mechanism and let the
           // sweep close the task; human comment and interaction wakes carry
-          // events and are never suppressed. Guarded by the same event-free
-          // predicate the vendor's rewake throttle applies, so a wake that
-          // bypasses the throttle can never be skipped here.
+          // events and are never suppressed. Guarded by the vendor rewake
+          // throttle's event-free predicate, plus `issue_assigned` (which the
+          // throttle lets through since #1267 but which would still race the
+          // settle sweep).
           if (
             readTaskPrSyncWakeGuardEnabled() &&
-            isThrottleCandidateIssueRewake({
+            isTaskPrSyncWakeGuardCandidate({
               reason,
               wakeCommentId: wakeCommentId ?? null,
               requestedByActorType: opts.requestedByActorType ?? null,
@@ -28623,12 +29834,14 @@ export function heartbeatService(
               retryOfRunId: failedChatRetry
                 ? durableRequest!.failedRunRetry!.failedRunId
                 : opts.failedRunId ?? automaticParentRunId,
-              contextSnapshot: adoptedComments.length
-                ? withQueuedCommentIdsInRunContext(
-                    enrichedContextSnapshot,
-                    adoptedCommentIds,
-                  )
-                : enrichedContextSnapshot,
+              ...runContextPersistenceFields(
+                adoptedComments.length
+                  ? withQueuedCommentIdsInRunContext(
+                      enrichedContextSnapshot,
+                      adoptedCommentIds,
+                    )
+                  : enrichedContextSnapshot,
+              ),
               sessionIdBefore: explicitContinuation ? null : sessionBefore,
               continuationAttempt,
               ...(reconciledSourceRunId
@@ -28702,9 +29915,52 @@ export function heartbeatService(
       if (outcome.kind === "durable") {
         return outcome.receipt.runId ? getRun(outcome.receipt.runId) : null;
       }
-      if (outcome.kind === "deferred" || outcome.kind === "skipped") {
+      if (outcome.kind === "skipped") {
+        if (
+          "dependencyBlockedAgent" in outcome &&
+          outcome.dependencyBlockedReadyForPickup
+        ) {
+          try {
+            const releaseLiveness = await teamLivenessRead();
+            const pickupAllowed =
+              releaseLiveness.settings.idlePickupEnabled &&
+              resolveAgentTeamLiveness(
+                readAgentCard(outcome.dependencyBlockedAgent.adapterConfig),
+                releaseLiveness.settings,
+              ).idlePickupEnabled;
+            if (pickupAllowed) {
+              idleWakeBudget.configure({
+                perMinute: releaseLiveness.settings.idlePickupWakeBudgetPerMin,
+                batch: Math.min(
+                  releaseLiveness.settings.idlePickupWakeBatch,
+                  releaseLiveness.settings.idlePickupWakeBudgetPerMin,
+                ),
+              });
+              await idlePickupForAgent(
+                {
+                  db,
+                  budget: idleWakeBudget,
+                  enqueueWakeup: (nextAgentId, wakeOptions) =>
+                    enqueueWakeup(nextAgentId, wakeOptions),
+                },
+                outcome.dependencyBlockedAgent,
+                { excludeIssueId: outcome.dependencyBlockedIssueId, behaviorEnabled: true },
+              );
+            }
+          } catch (err) {
+            logger.warn(
+              {
+                err,
+                agentId: outcome.dependencyBlockedAgent.id,
+                issueId: outcome.dependencyBlockedIssueId,
+              },
+              "idle pickup after dependency-blocked wake failed",
+            );
+          }
+        }
         return null;
       }
+      if (outcome.kind === "deferred") return null;
       if (outcome.kind === "coalesced") {
         await startNextQueuedRunForAgent(agent.id);
         return outcome.run;
@@ -28797,7 +30053,7 @@ export function heartbeatService(
       const mergedRun = await db
         .update(heartbeatRuns)
         .set({
-          contextSnapshot: mergedContextSnapshot,
+          ...runContextPersistenceFields(mergedContextSnapshot),
           updatedAt: new Date(),
         })
         .where(eq(heartbeatRuns.id, coalescedTargetRun.id))
@@ -28898,7 +30154,7 @@ export function heartbeatService(
           status: "queued",
           responsibleUserId: await resolveQueuedResponsibleUserId(),
           wakeupRequestId: wakeupRequest.id,
-          contextSnapshot: enrichedContextSnapshot,
+          ...runContextPersistenceFields(enrichedContextSnapshot),
           sessionIdBefore: sessionBefore,
           continuationAttempt,
         })
@@ -30225,8 +31481,14 @@ export function heartbeatService(
     // myrmidon(L3): wakes queued runs and stranded assigned todo/in_progress
     // issues a drained pause left idle; logic in myrmidon/pause-drain.ts.
     // Its sole caller is the agent resume route.
-    resumeAgentAfterPause: (agentId: string) =>
-      pauseResumeWakeAgent({ db, startNextQueuedRunForAgent, enqueueWakeup }, agentId),
+    resumeAgentAfterPause: async (agentId: string) => {
+      const resumed = await pauseResumeWakeAgent({ db, startNextQueuedRunForAgent, enqueueWakeup }, agentId);
+      // myrmidon(1.6.5 OPE-6608, review item 2): a lifted pause frees the agent
+      // — the board matcher gives it its own ready task, else a ready task of
+      // its caste (design §3.5). Fire-and-forget: it never fails the resume.
+      notifySwarmAgentEvent(agentId);
+      return resumed;
+    },
 
     scheduleBoundedRetry: async (
       runId: string,
