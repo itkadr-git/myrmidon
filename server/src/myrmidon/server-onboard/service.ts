@@ -96,6 +96,7 @@ export interface OnboardServiceDeps {
     accessKeySecretKey: string | null;
     hostKeyFingerprint: string | null;
     role: string;
+    keepPassword: boolean;
   } | null>;
   /** Registry row by slug, for the add-server uniqueness check. */
   getServerBySlug?(companyId: string, slug: string): Promise<{ id: string } | null>;
@@ -166,6 +167,7 @@ export function onboardService(db: Db, deps: OnboardServiceDeps) {
       const existing = await deps.getServerBySlug?.(input.companyId, input.slug);
       if (existing) throw new OnboardServiceError(409, `Server slug already exists: ${input.slug}`);
 
+      const keepPassword = input.auth.type === "password" && input.keepPassword && deps.settings.allowKeepPassword;
       let generatedPublicKey: string | null = null;
       let passwordSecretName: string | null = null;
       let accessKeySecretName: string | null = null;
@@ -191,7 +193,9 @@ export function onboardService(db: Db, deps: OnboardServiceDeps) {
       }
 
       // Registry row (secret names in, values never), then the pending job.
-      const server = await deps.store.createServer(input.companyId, {
+      let created: Awaited<ReturnType<FleetOnboardStore["createServerAndJob"]>>;
+      try {
+        created = await deps.store.createServerAndJob(input.companyId, {
         slug: input.slug,
         name: input.name,
         hostname: input.hostname,
@@ -200,13 +204,15 @@ export function onboardService(db: Db, deps: OnboardServiceDeps) {
         role: input.role,
         passwordSecretKey: passwordSecretName,
         accessKeySecretKey: accessKeySecretName,
-      });
-      const job = await deps.store.createJob({
-        companyId: input.companyId,
-        serverId: server.id,
-        kind: "onboard",
+        keepPassword,
         createdBy: input.createdBy,
-      });
+        });
+      } catch (error) {
+        if (passwordSecretName) await deps.secrets.deleteSecret(input.companyId, passwordSecretName).catch(() => {});
+        if (accessKeySecretName) await deps.secrets.deleteSecret(input.companyId, accessKeySecretName).catch(() => {});
+        throw error;
+      }
+      const { server, job } = created;
       await writeAudit(input.companyId, "server_added", server.id, {
         slug: server.slug,
         hostname: server.hostname,
@@ -233,11 +239,14 @@ export function onboardService(db: Db, deps: OnboardServiceDeps) {
     },
 
     /** Executor entry: claim the next pending job and get its one-time secrets. */
-    async claim(presentedToken: string | null | undefined): Promise<(OnboardJobClaim & { secretValues: Record<string, string> }) | null> {
+    async claim(companyId: string, presentedToken: string | null | undefined): Promise<(OnboardJobClaim & { secretValues: Record<string, string> }) | null> {
       requireEnabled();
       requireExecutorToken(presentedToken);
-      const claim = await deps.store.claimNext();
+      const claim = await deps.store.claimNext(companyId);
       if (!claim) return null;
+      if (!(await deps.store.consumeClaimSecrets(companyId, claim.job.id))) {
+        throw new OnboardServiceError(409, "Onboarding job secrets have already been consumed");
+      }
       const secretValues: Record<string, string> = {};
       const wanted: Array<[string | null, string]> = [
         [claim.server.passwordSecretKey, "bootstrapPassword"],
@@ -255,13 +264,13 @@ export function onboardService(db: Db, deps: OnboardServiceDeps) {
     /** Executor report after each step; also the terminal transition. */
     async report(
       presentedToken: string | null | undefined,
-      input: { jobId: string; step?: string; entry?: OnboardStepLogEntry; status?: OnboardJob["status"]; error?: string | null; hostKeyFingerprint?: string | null },
+      input: { companyId: string; jobId: string; step?: string; entry?: OnboardStepLogEntry; status?: OnboardJob["status"]; error?: string | null; hostKeyFingerprint?: string | null },
     ): Promise<OnboardJob | null> {
       requireEnabled();
       requireExecutorToken(presentedToken);
-      const job = await deps.store.getJobById(input.jobId);
+      const job = await deps.store.getJob(input.companyId, input.jobId);
       if (!job) throw new OnboardServiceError(404, "Job not found");
-      const updated = await deps.store.updateJob(input.jobId, {
+      const updated = await deps.store.updateJob(input.companyId, input.jobId, {
         status: input.status,
         step: input.step ?? (input.status ? null : undefined),
         stepLogEntry: input.entry,
@@ -281,7 +290,7 @@ export function onboardService(db: Db, deps: OnboardServiceDeps) {
       } else if (input.entry?.step === "access" && input.entry.result === "ok") {
         await deps.store.updateServerOnboard(job.companyId, job.serverId, { onboardState: "onboarding" });
         const server = await deps.getServer(job.companyId, job.serverId);
-        if (server?.passwordSecretKey && !server.accessKeySecretKey) {
+        if (server?.passwordSecretKey && !server.accessKeySecretKey && !server.keepPassword) {
           // key login verified — the bootstrap password has done its job
           await deps.secrets.deleteSecret(job.companyId, server.passwordSecretKey);
         }
