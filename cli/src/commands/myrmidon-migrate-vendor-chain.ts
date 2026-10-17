@@ -62,9 +62,9 @@ export function buildVendorReleases(
   extras: ReadonlyArray<VendorReleaseExtra> = VENDOR_EXTRA_RELEASES,
 ): VendorRelease[] {
   return [
-    // These two vendor tags point to the same 278-entry migration chain.
-    { release: "v2026.916.0", chain: base },
     { release: PAPERCLIP_VENDOR_RELEASE, chain: base },
+    // Treat the identical 916.0 chain as an alias without changing release attribution.
+    { release: "v2026.916.0", chain: base },
     ...extras.map((r) => ({
       release: r.release,
       chain: [...base, ...r.extra.map((e) => [e.tag, e.sha256, e.when] as const)],

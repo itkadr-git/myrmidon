@@ -69,8 +69,8 @@ describe("myrmidon:migrate pure guards", () => {
   const rowsOf = (r: VendorRelease) => r.chain.map((e) => ({ hash: e[1] }));
   const release = (name: string) => releases.find((r) => r.release === name)!;
   const SUPPORTED: [string, number, string][] = [
-    ["v2026.916.0", 278, "0279_tired_deathstrike"],
     ["v2026.916.1", 278, "0279_tired_deathstrike"],
+    ["v2026.916.0", 278, "0279_tired_deathstrike"],
     ["v2026.1001.0", 282, "0283_jittery_psynapse"],
     ["v2026.1005.0", 292, "0293_broad_rattler"],
     ["v2026.1012.0", 304, "0305_chubby_vin_gonzales"],
