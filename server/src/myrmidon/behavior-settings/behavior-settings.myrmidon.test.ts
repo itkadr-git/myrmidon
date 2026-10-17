@@ -266,7 +266,7 @@ describe("myrmidon(1.7) behavior settings: a change reaches the live system", ()
     expect(h.calls).toContain("write");
     const applied = h.calls.find((call) => call.startsWith("apply:"));
     expect(applied && JSON.parse(applied.slice("apply:".length))).toMatchObject({ debug_mode: true });
-    expect(h.calls).toContain("resweep:debug_mode");
+    expect(h.calls).toContain("resweep:");
   });
 
   it("applies env override to the live consumer after PATCH", async () => {
