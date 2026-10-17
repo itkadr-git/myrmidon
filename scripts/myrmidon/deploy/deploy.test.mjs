@@ -60,7 +60,7 @@ case "$1" in
     case "$4" in
       *myrmidon-dockergate*|*myrmidon-fleetd*)
         if [ -e "$SANDBOX/components-missing" ]; then echo "ERROR: $4: not found" >&2; exit 1; fi
-        for a in "$@"; do case "$a" in *Manifest.Digest*) cat "$SANDBOX/component-digests.json" | jq -r --arg r "$4" '.[\$r]'; exit 0 ;; esac; done
+        for a in "$@"; do case "$a" in *Manifest.Layers*) printf '[{"size":1048576}]\n'; exit 0 ;; esac; done
         cat "$SANDBOX/component-image.json" ;;
       *)
         if [ -e "$SANDBOX/registry-missing" ]; then echo "ERROR: $4: not found" >&2; exit 1; fi
