@@ -304,8 +304,18 @@ describe('IdleStopService', () => {
       expect(mockDriver.start).toHaveBeenCalledWith(botKey);
     });
 
+    it('should return true without starting anything for an agent without a bot container', async () => {
+      const botKey = 'host-run-agent';
+      vi.mocked(mockDriver.status).mockResolvedValue({ botKey, state: 'missing' });
+      mockListBotKeys(mockDb, []);
+
+      await expect(idleStopService.wake(botKey)).resolves.toBe(true);
+      expect(mockDriver.start).not.toHaveBeenCalled();
+    });
+
     it('should return false if container is missing', async () => {
       const botKey = 'missing-bot';
+      mockListBotKeys(mockDb, [botKey]);
 
       vi.mocked(mockDriver.status).mockResolvedValue({
         botKey,
@@ -357,8 +367,18 @@ describe('IdleStopService', () => {
       expect(mockDriver.start).toHaveBeenCalledWith(botKey);
     });
 
+    it('should not block a run of an agent without a bot container (antigravity_local, no adapterConfig.container)', async () => {
+      const botKey = 'host-run-agent';
+      vi.mocked(mockDriver.status).mockResolvedValue({ botKey, state: 'missing' });
+      mockListBotKeys(mockDb, []);
+
+      await expect(idleStopService.ensureStartedAndHealthy(botKey)).resolves.toBeUndefined();
+      expect(mockDriver.start).not.toHaveBeenCalled();
+    });
+
     it('should throw error if container is missing', async () => {
       const botKey = 'missing-bot';
+      mockListBotKeys(mockDb, [botKey]);
 
       vi.mocked(mockDriver.status).mockResolvedValue({
         botKey,
