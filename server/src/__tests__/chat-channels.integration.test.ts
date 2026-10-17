@@ -21567,7 +21567,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       await deliverMessage({
         callbacks,
         endpointId: endpoint.id,
-        thread,
+        thread: thread.thread,
         message,
         trigger: "mention",
       });
