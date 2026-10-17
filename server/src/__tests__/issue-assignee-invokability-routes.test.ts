@@ -49,7 +49,10 @@ vi.mock("../services/cross-issue-influence-limit.js", async (importOriginal) => 
 
 vi.mock("../services/index.js", () => ({
   companyService: () => ({
-    getById: vi.fn(async () => ({ id: "company-1" })),
+    getById: vi.fn(async () => ({
+      id: "company-1",
+      defaultResponsibleUserId: "local-board",
+    })),
   }),
   accessService: () => ({
     canUser: vi.fn(async () => true),

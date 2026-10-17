@@ -522,6 +522,11 @@ async function seedLowTrustFixture(db: Db) {
       status: "in_progress",
       priority: "medium",
       responsibleUserId: "board-user",
+      sourceTrust: {
+        preset: LOW_TRUST_REVIEW_PRESET,
+        disposition: "quarantined",
+        promotionOwnerUserId: "board-user",
+      },
     })
     .returning();
   const [sameBoundaryChild] = await db
@@ -585,7 +590,7 @@ async function seedLowTrustFixture(db: Db) {
               assignedReview!.id,
               sameBoundaryChild!.id,
             ],
-            allowedAgentIds: [collaborator!.id],
+            allowedAgentIds: [collaborator!.id, standard!.id],
           },
         },
       },
@@ -895,6 +900,47 @@ describeEmbeddedPostgres(
 
     afterAll(async () => {
       await tempDb?.cleanup();
+    });
+
+    it("fails closed when a low-trust issue or child has no promotion owner", async () => {
+      const fixture = await seedLowTrustFixture(db);
+      await db.update(companies)
+        .set({ defaultResponsibleUserId: null })
+        .where(eq(companies.id, fixture.company.id));
+      await db.update(issues)
+        .set({ responsibleUserId: null })
+        .where(eq(issues.id, fixture.issues.reviewRoot.id));
+      await db.update(projects)
+        .set({
+          executionWorkspacePolicy: {
+            trustPreset: LOW_TRUST_REVIEW_PRESET,
+            authorizationPolicy: {
+              trustBoundary: {
+                mode: LOW_TRUST_REVIEW_PRESET,
+                companyId: fixture.company.id,
+                projectIds: [fixture.projects.allowed.id],
+              },
+            },
+          },
+        })
+        .where(eq(projects.id, fixture.projects.allowed.id));
+      const app = createApp(
+        db,
+        agentActor(fixture, fixture.agents.standard.id),
+      );
+      const createWithoutOwner = await request(app)
+        .post(`/api/companies/${fixture.company.id}/issues`)
+        .send({
+          projectId: fixture.projects.allowed.id,
+          title: `quarantined ${fixture.canaries.raw}`,
+        });
+      expect(createWithoutOwner.status, JSON.stringify(createWithoutOwner.body)).toBe(422);
+      expect(createWithoutOwner.body.error).toContain("without a promotion owner");
+      const childWithoutOwner = await request(app)
+        .post(`/api/issues/${fixture.issues.reviewRoot.id}/children`)
+        .send({ title: `child ${fixture.canaries.raw}` });
+      expect(childWithoutOwner.status, JSON.stringify(childWithoutOwner.body)).toBe(422);
+      expect(childWithoutOwner.body.error).toContain("without a promotion owner");
     });
 
     it("allows bounded same-issue reads and writes while quarantining low-trust output", async () => {
@@ -1895,7 +1941,14 @@ describeEmbeddedPostgres(
           lowTrustContext.status,
           JSON.stringify(lowTrustContext.body),
         ).toBe(200);
-        expect(JSON.stringify(lowTrustContext.body.wakeComment)).toContain(
+        expect(lowTrustContext.body.wakeComment).toMatchObject({
+          body: expect.stringContaining(LOW_TRUST_QUARANTINED_BODY),
+          sourceTrust: {
+            disposition: "quarantined",
+            promotionOwnerUserId: "board-user",
+          },
+        });
+        expect(lowTrustContext.body.wakeComment.body).not.toContain(
           fixture.canaries.raw,
         );
 
@@ -2114,6 +2167,7 @@ describeEmbeddedPostgres(
             sourceIssueId: fixture.issues.assignedReview.id,
             sourceRunId: fixture.runs.lowTrust.id,
             sourceAgentId: fixture.agents.lowTrust.id,
+            promotionOwnerUserId: "board-user",
           },
         })
         .returning();
@@ -2177,6 +2231,7 @@ describeEmbeddedPostgres(
         preset: LOW_TRUST_REVIEW_PRESET,
         disposition: "promoted",
         sourceIssueId: fixture.issues.assignedReview.id,
+        promotionOwnerUserId: "board-user",
         promotedFrom: {
           artifactKind: "work_product",
           artifactId: rawProduct!.id,
@@ -2205,6 +2260,7 @@ describeEmbeddedPostgres(
       expect(promotedSource?.sourceTrust).toMatchObject({
         preset: LOW_TRUST_REVIEW_PRESET,
         disposition: "promoted",
+        promotionOwnerUserId: "board-user",
         promotedFrom: {
           artifactKind: "work_product",
           artifactId: rawProduct!.id,
