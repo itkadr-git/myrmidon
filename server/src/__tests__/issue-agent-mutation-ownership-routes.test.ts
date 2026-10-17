@@ -354,8 +354,7 @@ function createRunContextDb(
     if (settledRecoveryQuery) return [];
     const keys = Object.keys(selection);
     if (keys.includes("entityId") && keys.includes("action")) return [];
-    if (keys.includes("contextSnapshot")) return runRows;
-    if (keys.includes("agentCompanyId")) return runRows;
+    if (keys.includes("contextSnapshot") || keys.includes("agentCompanyId")) return runRows;
     if (keys.length === 0) {
       const issue = await mockIssueService.getById(issueId);
       return issue ? [issue] : [];
@@ -2723,7 +2722,12 @@ describe("agent issue mutation checkout ownership", () => {
         return query;
       };
       return {
-        transaction: async (callback: (tx: Record<string, never>) => Promise<unknown>) => callback({}),
+        transaction: async (callback: (tx: Record<string, unknown>) => Promise<unknown>) => callback({
+          select: vi.fn((selection: Record<string, unknown> = {}) => ({
+            from: vi.fn(() => buildQuery(selection)),
+          })),
+          insert: vi.fn(() => ({ values: vi.fn(async () => undefined) })),
+        }),
         select: vi.fn((selection: Record<string, unknown> = {}) => ({
           from: vi.fn(() => buildQuery(selection)),
         })),

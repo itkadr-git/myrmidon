@@ -31,26 +31,36 @@ const mockAccessService = vi.hoisted(() => ({
   decide: vi.fn(),
   hasPermission: vi.fn(async () => false),
 }));
-const mockDbSelectWhere = vi.hoisted(() => vi.fn(() => ({
-  for: () => ({
-    then: (onFulfilled: (rows: unknown[]) => unknown, onRejected?: (reason: unknown) => unknown) =>
-      Promise.resolve([{
+const mockDbSelectWhere = vi.hoisted(() => vi.fn((selection: Record<string, unknown> = {}) => {
+  const keys = Object.keys(selection);
+  const rows = keys.length === 0
+    ? []
+    : keys.includes("agentId") || keys.includes("contextSnapshot") || keys.includes("agentCompanyId")
+    ? [{
         id: "55555555-5555-4555-8555-555555555555",
         companyId: "company-1",
         agentId: "33333333-3333-4333-8333-333333333333",
         contextSnapshot: { issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" },
         permissions: null,
-      }]).then(onFulfilled, onRejected),
-  }),
-  then: (onFulfilled: (rows: unknown[]) => unknown, onRejected?: (reason: unknown) => unknown) =>
-    Promise.resolve([{
-      id: "55555555-5555-4555-8555-555555555555",
-      companyId: "company-1",
-      agentId: "33333333-3333-4333-8333-333333333333",
-      contextSnapshot: { issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" },
-      permissions: null,
-    }]).then(onFulfilled, onRejected),
-})));
+      }]
+    : keys.includes("id") && !keys.includes("agentCompanyId") && !keys.includes("agentId") && !keys.includes("contextSnapshot")
+    ? [{ id: "33333333-3333-4333-8333-333333333333", companyId: "company-1" }]
+    : [{
+        id: "55555555-5555-4555-8555-555555555555",
+        companyId: "company-1",
+        agentId: "33333333-3333-4333-8333-333333333333",
+        contextSnapshot: { issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" },
+        permissions: null,
+      }];
+  return {
+    for: () => ({
+      then: (onFulfilled: (rows: unknown[]) => unknown, onRejected?: (reason: unknown) => unknown) =>
+        Promise.resolve(rows).then(onFulfilled, onRejected),
+    }),
+    then: (onFulfilled: (rows: unknown[]) => unknown, onRejected?: (reason: unknown) => unknown) =>
+      Promise.resolve(rows).then(onFulfilled, onRejected),
+  };
+}));
 const mockDbSelectFrom = vi.hoisted(() => vi.fn(() => ({ where: mockDbSelectWhere })));
 const mockDbSelect = vi.hoisted(() => vi.fn(() => ({ from: mockDbSelectFrom })));
 const mockDbInsert = vi.hoisted(() => vi.fn(() => ({ values: vi.fn(async () => undefined) })));
@@ -225,26 +235,30 @@ describe("issue execution policy routes", () => {
     mockIssueApprovalService.listApprovalsForIssue.mockResolvedValue([]);
     mockDbSelect.mockImplementation(() => ({ from: mockDbSelectFrom }));
     mockDbSelectFrom.mockImplementation(() => ({ where: mockDbSelectWhere }));
-    mockDbSelectWhere.mockImplementation(() => ({
-      for: () => ({
-        then: (onFulfilled: (rows: unknown[]) => unknown, onRejected?: (reason: unknown) => unknown) =>
-          Promise.resolve([{
+    mockDbSelectWhere.mockImplementation((selection: Record<string, unknown> = {}) => {
+      const keys = Object.keys(selection);
+      const rows = keys.length === 0
+        ? []
+        : keys.includes("agentId") || keys.includes("contextSnapshot") || keys.includes("agentCompanyId")
+        ? [{
             id: "55555555-5555-4555-8555-555555555555",
             companyId: "company-1",
             agentId: "33333333-3333-4333-8333-333333333333",
             contextSnapshot: { issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" },
             permissions: null,
-          }]).then(onFulfilled, onRejected),
-      }),
-      then: (onFulfilled: (rows: unknown[]) => unknown, onRejected?: (reason: unknown) => unknown) =>
-        Promise.resolve([{
-          id: "55555555-5555-4555-8555-555555555555",
-          companyId: "company-1",
-          agentId: "33333333-3333-4333-8333-333333333333",
-          contextSnapshot: { issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" },
-          permissions: null,
-        }]).then(onFulfilled, onRejected),
-    }));
+          }]
+        : keys.includes("id") && !keys.includes("agentCompanyId") && !keys.includes("agentId") && !keys.includes("contextSnapshot")
+          ? [{ id: "33333333-3333-4333-8333-333333333333", companyId: "company-1" }]
+          : [{ id: "55555555-5555-4555-8555-555555555555", companyId: "company-1" }];
+      return {
+        for: () => ({
+          then: (onFulfilled: (rows: unknown[]) => unknown, onRejected?: (reason: unknown) => unknown) =>
+            Promise.resolve(rows).then(onFulfilled, onRejected),
+        }),
+        then: (onFulfilled: (rows: unknown[]) => unknown, onRejected?: (reason: unknown) => unknown) =>
+          Promise.resolve(rows).then(onFulfilled, onRejected),
+      };
+    });
     mockIssueService.createChild.mockResolvedValue({
       issue: {
         id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
