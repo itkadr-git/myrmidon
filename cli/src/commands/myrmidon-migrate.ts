@@ -9,8 +9,14 @@ import {
   inspectMigrations,
   runDatabaseRestore,
 } from "@paperclipai/db";
-import { checkVendorChain, chainStartsWithVendor, type ChainCheck } from "./myrmidon-migrate-chain.js";
-import { buildVendorOnlyIndex, loadVendorChain, loadVendorReleases, type VendorOnlyIndex } from "./myrmidon-migrate-vendor-chain.js";
+import {
+  buildVendorOnlyIndex,
+  loadVendorChain,
+  loadVendorOnlyIndex,
+  loadVendorReleases,
+  type TargetSchemaLookup,
+  type VendorOnlyIndex,
+} from "./myrmidon-migrate-vendor-chain.js";
 import {
   all,
   captureBaseline,
@@ -256,6 +262,7 @@ async function analyzeSource(
   src: Q,
   keys: { source: string; target: string },
   sourceFilesDir: string | undefined,
+  targetSchema?: TargetSchemaLookup,
 ): Promise<SourceAnalysis> {
   const options = ctx.options;
   const chainRows = await readAppliedChain(src);
@@ -275,7 +282,9 @@ async function analyzeSource(
   const carrierSummary: CarrierColumn[] = [];
   const plainHashes: string[] = [];
   const plainByColumn = new Map<string, string[]>();
-  const vendorIndex = buildVendorOnlyIndex();
+  const vendorIndex = targetSchema
+    ? buildVendorOnlyIndex(undefined, targetSchema)
+    : await loadVendorOnlyIndex();
   const vendorOnlyCandidates: VendorOnlyFinding[] = [];
   let carrierTotal = 0;
   let undecryptable = 0;
@@ -612,7 +621,7 @@ function describeFinding(f: VendorOnlyFinding): string {
 }
 
 /** Stops, before anything is written, when data of features Myrmidon lacks would be left behind without the owner's word. */
-function assertVendorOnlyAccepted(options: MigrationOptions, analysis: SourceAnalysis): void {
+export function assertVendorOnlyAccepted(options: MigrationOptions, analysis: SourceAnalysis): void {
   const withData = analysis.vendorOnlyCandidates.filter((c) => c.rows > 0);
   if (withData.length === 0 || options.acceptVendorOnlyData) return;
   const shown = withData.slice(0, 8).map(describeFinding).join(", ");
@@ -622,7 +631,7 @@ function assertVendorOnlyAccepted(options: MigrationOptions, analysis: SourceAna
   );
 }
 
-function vendorOnlyReport(findings: VendorOnlyFinding[]) {
+export function vendorOnlyReport(findings: VendorOnlyFinding[]) {
   const sorted = [...findings].sort((a, b) => `${a.table}.${a.column ?? ""}`.localeCompare(`${b.table}.${b.column ?? ""}`));
   return {
     withData: sorted.filter((f) => f.rows > 0),
@@ -913,7 +922,7 @@ async function execute(
         return {
           ...base,
           vendorOnlyData: {
-            // Known from the source release alone; the target is only checked in a real run.
+            // Pre-checked against our target schema from the migration tree; only truly vendor-only features require the flag.
             requiresFlag: candidates.withData.length > 0,
             flag: "--accept-vendor-only-data",
             ...candidates,

@@ -1,4 +1,4 @@
-import { listMigrationChain } from "@paperclipai/db";
+import { listMigrationChain, loadMigrationTargetSchema, type MigrationTargetSchema } from "@paperclipai/db";
 import { VENDOR_EXTRA_RELEASES } from "./myrmidon-migrate-vendor-releases.js";
 
 // The vendor Paperclip releases this tool migrates from, and the shape of their
@@ -42,6 +42,11 @@ export type VendorOnlyIndex = {
   columns: ReadonlyMap<string, string>;
 };
 
+export type TargetSchemaLookup = {
+  tables: ReadonlySet<string>;
+  columns: ReadonlySet<string>;
+};
+
 let cachedBase: Promise<ReadonlyArray<VendorChainEntry>> | null = null;
 
 /** The chain shared by every supported release (the base release, v2026.916.1). */
@@ -74,15 +79,42 @@ export async function loadVendorReleases(): Promise<VendorRelease[]> {
   return buildVendorReleases(await loadVendorChain());
 }
 
-/** Tables and columns that exist only in later releases, keyed to the first release that has them. */
-export function buildVendorOnlyIndex(extras: ReadonlyArray<VendorReleaseExtra> = VENDOR_EXTRA_RELEASES): VendorOnlyIndex {
+/**
+ * Tables and columns that exist only in later releases and are absent from
+ * the target schema, keyed to the first release that has them.
+ */
+export function buildVendorOnlyIndex(
+  extras: ReadonlyArray<VendorReleaseExtra> = VENDOR_EXTRA_RELEASES,
+  targetSchema?: TargetSchemaLookup,
+): VendorOnlyIndex {
   const tables = new Map<string, string>();
   const columns = new Map<string, string>();
   for (const r of extras) {
     for (const e of r.extra) {
-      for (const t of e.tables) if (!tables.has(t)) tables.set(t, r.release);
-      for (const c of e.columns) if (!columns.has(c)) columns.set(c, r.release);
+      for (const t of e.tables) {
+        if (!tables.has(t) && (!targetSchema || !targetSchema.tables.has(t))) {
+          tables.set(t, r.release);
+        }
+      }
+      for (const c of e.columns) {
+        if (!columns.has(c) && (!targetSchema || !targetSchema.columns.has(c))) {
+          columns.set(c, r.release);
+        }
+      }
     }
   }
   return { tables, columns };
 }
+
+/**
+ * Resolves the target schema from our migration tree and builds the vendor-only
+ * index containing only features that Myrmidon's target schema really lacks.
+ */
+export async function loadVendorOnlyIndex(
+  extras: ReadonlyArray<VendorReleaseExtra> = VENDOR_EXTRA_RELEASES,
+  targetSchema?: TargetSchemaLookup,
+): Promise<VendorOnlyIndex> {
+  const resolvedTarget = targetSchema ?? (await loadMigrationTargetSchema());
+  return buildVendorOnlyIndex(extras, resolvedTarget);
+}
+
