@@ -765,7 +765,6 @@ describeEmbeddedPostgres("attention service", () => {
       "issue_thread_interaction",
       "join_request",
       "recovery_action",
-      "replay_blocked",
       "blocker_attention",
       "review",
       "failed_run",
