@@ -1,5 +1,5 @@
 {
-  "id": "07e3ffc6-5a67-47ff-824f-d59046b267e8",
+  "id": "1b979af2-f927-4baa-bcd8-26a036a0b214",
   "prevId": "95aa876a-3470-5183-a3d1-42b260ec6674",
   "version": "7",
   "dialect": "postgresql",
@@ -51808,6 +51808,13 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
+        },
+        "custom_catalogs": {
+          "name": "custom_catalogs",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'::jsonb"
         }
       },
       "indexes": {
@@ -55286,19 +55293,6 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
-        },
-        "lang": {
-          "name": "lang",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'en'"
-        },
-        "translation_of": {
-          "name": "translation_of",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
         }
       },
       "indexes": {
@@ -55352,21 +55346,6 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
-        },
-        "knowledge_revisions_translation_idx": {
-          "name": "knowledge_revisions_translation_idx",
-          "columns": [
-            {
-              "expression": "translation_of",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
         }
       },
       "foreignKeys": {
@@ -55407,20 +55386,6 @@
             "id"
           ],
           "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "knowledge_revisions_translation_of_knowledge_revisions_id_fk": {
-          "name": "knowledge_revisions_translation_of_knowledge_revisions_id_fk",
-          "tableFrom": "knowledge_revisions",
-          "tableTo": "knowledge_revisions",
-          "schemaTo": "public",
-          "columnsFrom": [
-            "translation_of"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "set null",
           "onUpdate": "no action"
         }
       },
