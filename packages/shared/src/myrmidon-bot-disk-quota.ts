@@ -108,6 +108,12 @@ export interface BotDiskQuotaSignal {
   usageBytes: number;
   quotaMb: number;
   observedAtMs: number;
+  /**
+   * 1.6.5-BOT-DISK-H9c: `estimate` when the usage is the du walk (quotas are off
+   * on the bot partition, or dockergate did not answer), absent/`physical` when
+   * it is the xfs project figure.
+   */
+  usageSource?: "physical" | "estimate";
 }
 
 export function botDiskQuotaDedupKey(agentId: string): string {
@@ -115,11 +121,14 @@ export function botDiskQuotaDedupKey(agentId: string): string {
 }
 
 /** The operator-facing sentence for one signal. */
-export function botDiskQuotaWhyNow(signal: Pick<BotDiskQuotaSignal, "overQuota" | "usageBytes" | "quotaMb">): string {
+export function botDiskQuotaWhyNow(
+  signal: Pick<BotDiskQuotaSignal, "overQuota" | "usageBytes" | "quotaMb"> & Partial<Pick<BotDiskQuotaSignal, "usageSource">>,
+): string {
   const usageMb = Math.round(signal.usageBytes / (1024 * 1024));
+  const note = signal.usageSource === "estimate" ? " (estimate: the disk quota is not enforced on the partition)" : "";
   return signal.overQuota
-    ? `Bot disk quota exceeded: ${usageMb} MB of ${signal.quotaMb} MB used. New clones are refused until the bot volume shrinks.`
-    : `Bot disk quota almost full: ${usageMb} MB of ${signal.quotaMb} MB used.`;
+    ? `Bot disk quota exceeded: ${usageMb} MB of ${signal.quotaMb} MB used${note}. New clones are refused until the bot volume shrinks.`
+    : `Bot disk quota almost full: ${usageMb} MB of ${signal.quotaMb} MB used${note}.`;
 }
 
 /**

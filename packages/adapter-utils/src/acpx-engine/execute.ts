@@ -156,6 +156,7 @@ import {
   type StartupStepMeasureOptions,
   type StartupTraceContext,
 } from "./startup-timing.js";
+import { readProductEnv, readProductEnvFrom, writeProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
 
 const defaultModuleDir = path.dirname(fileURLToPath(import.meta.url));
 const PAPERCLIP_MANAGED_CODEX_SKILLS_MANIFEST = ".paperclip-managed-skills.json";
@@ -779,8 +780,8 @@ export async function referencedSourceContentSignature(
 }
 
 function defaultPaperclipInstanceDir(): string {
-  const home = process.env.PAPERCLIP_HOME?.trim() || path.join(os.homedir(), ".paperclip");
-  const instanceId = process.env.PAPERCLIP_INSTANCE_ID?.trim() || "default";
+  const home = readProductEnv("HOME")?.trim() || path.join(os.homedir(), ".paperclip");
+  const instanceId = readProductEnv("INSTANCE_ID")?.trim() || "default";
   return resolvePaperclipInstanceRootForAdapter({
     homeDir: home,
     instanceId,
@@ -1914,13 +1915,13 @@ async function buildRuntime(input: {
     ? context.issueIds.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
     : [];
   const issueWorkMode = readPaperclipIssueWorkModeFromContext(context);
-  if (wakeTaskId) env.PAPERCLIP_TASK_ID = wakeTaskId;
-  if (issueWorkMode) env.PAPERCLIP_ISSUE_WORK_MODE = issueWorkMode;
-  if (wakeReason) env.PAPERCLIP_WAKE_REASON = wakeReason;
-  if (wakeCommentId) env.PAPERCLIP_WAKE_COMMENT_ID = wakeCommentId;
-  if (approvalId) env.PAPERCLIP_APPROVAL_ID = approvalId;
-  if (approvalStatus) env.PAPERCLIP_APPROVAL_STATUS = approvalStatus;
-  if (linkedIssueIds.length > 0) env.PAPERCLIP_LINKED_ISSUE_IDS = linkedIssueIds.join(",");
+  if (wakeTaskId) writeProductEnv(env, "TASK_ID", wakeTaskId); // myrmidon(REBRAND-C)
+  if (issueWorkMode) writeProductEnv(env, "ISSUE_WORK_MODE", issueWorkMode); // myrmidon(REBRAND-C)
+  if (wakeReason) writeProductEnv(env, "WAKE_REASON", wakeReason); // myrmidon(REBRAND-C)
+  if (wakeCommentId) writeProductEnv(env, "WAKE_COMMENT_ID", wakeCommentId); // myrmidon(REBRAND-C)
+  if (approvalId) writeProductEnv(env, "APPROVAL_ID", approvalId); // myrmidon(REBRAND-C)
+  if (approvalStatus) writeProductEnv(env, "APPROVAL_STATUS", approvalStatus); // myrmidon(REBRAND-C)
+  if (linkedIssueIds.length > 0) writeProductEnv(env, "LINKED_ISSUE_IDS", linkedIssueIds.join(",")); // myrmidon(REBRAND-C)
   applyPaperclipWorkspaceEnv(env, {
     workspaceCwd: shapedWorkspaceEnv.workspaceCwd,
     workspaceSource,
@@ -1968,7 +1969,7 @@ async function buildRuntime(input: {
     // are absent from tempKeysApplied and keep their compatibility protection.
     if (!scratchKeys.has(key) || value !== scratch.dir) resolvedAdapterEnv[key] = value;
   }
-  if (authToken) env.PAPERCLIP_API_KEY = authToken;
+  if (authToken) writeProductEnv(env, "API_KEY", authToken); // myrmidon(REBRAND-C)
   // For the claude agent, set model via ANTHROPIC_MODEL at startup rather than
   // via session/set_config_option — the ACP server's set_config_option handler
   // validates the value against its internal available-models list and rejects
@@ -2310,7 +2311,7 @@ async function buildRuntime(input: {
           stagedProjectDirs,
         }).workspaceHints;
         if (shapedHints.length > 0) {
-          env.PAPERCLIP_WORKSPACES_JSON = JSON.stringify(shapedHints);
+          writeProductEnv(env, "WORKSPACES_JSON", JSON.stringify(shapedHints)); // myrmidon(REBRAND-C)
         }
       },
       onReuseLog: () =>
@@ -2325,7 +2326,7 @@ async function buildRuntime(input: {
           runtimeRootDir,
           adapterKey: input.engine.adapterType,
           timeoutSec,
-          hostApiToken: env.PAPERCLIP_API_KEY,
+          hostApiToken: readProductEnvFrom(env, "API_KEY"),
           enableSandboxDuplexBridge: adapterExecutionTargetEnablesSandboxDuplexBridge(remoteTarget),
           duplexObservabilityRecorder: adapterExecutionTargetDuplexObservabilityRecorder(remoteTarget),
           onLog: input.ctx.onLog,
@@ -2892,7 +2893,7 @@ function guardEnsureSession(params: {
 // myrmidon(B1c): visible agent-facing notes name our product.
 function renderPaperclipEnvNote(env: Record<string, string>): string {
   const paperclipKeys = Object.keys(env)
-    .filter((key) => key.startsWith("PAPERCLIP_"))
+    .filter((key) => key.startsWith("PAPERCLIP_") || key.startsWith("MYRMIDON_")) // myrmidon(REBRAND-C)
     .sort();
   if (paperclipKeys.length === 0) return "";
   return [
@@ -2903,7 +2904,7 @@ function renderPaperclipEnvNote(env: Record<string, string>): string {
 }
 
 function renderApiAccessNote(env: Record<string, string>): string {
-  if (!env.PAPERCLIP_API_URL || !env.PAPERCLIP_API_KEY) return "";
+  if (!readProductEnvFrom(env, "API_URL") || !readProductEnvFrom(env, "API_KEY")) return "";
   const lines = [
     "Myrmidon API access note:",
     "Use terminal commands with curl to make Myrmidon API requests.",
@@ -2912,7 +2913,7 @@ function renderApiAccessNote(env: Record<string, string>): string {
     "GET example:",
     `  curl -s -H "Authorization: Bearer $PAPERCLIP_API_KEY" "$PAPERCLIP_API_BASE/api/agents/me"`,
   ];
-  if (env.PAPERCLIP_TASK_ID) {
+  if (readProductEnvFrom(env, "TASK_ID")) {
     lines.push(
       "Scoped issue comment example:",
       `  curl -s -X POST -H "Authorization: Bearer $PAPERCLIP_API_KEY" -H "Content-Type: application/json" -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID" -d '{"body":"Status update from agent."}' "$PAPERCLIP_API_BASE/api/issues/$PAPERCLIP_TASK_ID/comments"`,

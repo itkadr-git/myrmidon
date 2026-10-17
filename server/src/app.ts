@@ -100,59 +100,84 @@ import { resourceMembershipRoutes } from "./routes/resource-memberships.js";
 import { inboxDismissalRoutes } from "./routes/inbox-dismissals.js";
 import { instanceSettingsRoutes } from "./routes/instance-settings.js";
 import { myrmidonMaintenanceRoutes } from "./myrmidon/maintenance/index.js"; // myrmidon(R3)
+import { datastoreCareRetentionRoutes } from "./myrmidon/datastore-care/index.js"; // myrmidon(1.6.5-DBC1)
 import { myrmidonDeployJobsRoutes } from "./myrmidon/deploy-jobs/index.js"; // myrmidon(R5-A)
 import { myrmidonRuntimeLimitsRoutes } from "./myrmidon/runtime-limits/index.js"; // myrmidon(C0)
 import { myrmidonRunStallRoutes } from "./myrmidon/run-stall/index.js"; // myrmidon(RUN-STALL-SETTINGS)
 import { myrmidonCorpusRoutes, resolveCorpusPorts } from "./myrmidon/corpus/index.js"; // myrmidon(1.6.6 CORPUS-2.0 ч.C)
+import { myrmidonProcessesRouter } from "./myrmidon/processes/index.js"; // myrmidon(PROCS-1.1)
+// myrmidon(PAUSE-GUARD): GET/PATCH the forgotten-pause guard settings
+import { myrmidonPauseGuardRoutes } from "./myrmidon/pause-guard/index.js";
+import { myrmidonRunPriorityRoutes } from "./myrmidon/run-priority/index.js"; // myrmidon(1.6.5 RUN-PRIORITY A)
 import { myrmidonBudgetEnforcementRoutes } from "./myrmidon/budget-enforcement/index.js"; // myrmidon(1.7-BUDGET-CONFIG-B)
 import { myrmidonBehaviorSettingsRoutes } from "./myrmidon/behavior-settings/index.js"; // myrmidon(SETTINGS-CORE)
 import { myrmidonTelegramDmProgressRoutes } from "./myrmidon/telegram-dm-progress/index.js"; // myrmidon(DM-PROGRESS)
+// myrmidon(1.6.5-TG-LOCALE-C): GET/PATCH the instance-wide bridge language
+import { myrmidonBridgeLanguageRoutes } from "./myrmidon/bridge-language/index.js";
 import { myrmidonChannelSettingsRoutes } from "./myrmidon/channel-settings/index.js"; // myrmidon(1.7-SETTINGS-TO-UI)
+import { channelAllowlistRoutes } from "./myrmidon/channel-allowlist/routes.js"; // myrmidon(CA-A)
+import { channelAllowlistService } from "./myrmidon/channel-allowlist/service.js"; // myrmidon(CA-A)
+
 import { myrmidonParallelHelpersRoutes } from "./myrmidon/parallel-helpers/index.js"; // myrmidon(PARALLEL-HELPERS)
 import { myrmidonTeamLivenessRoutes } from "./myrmidon/team-liveness/index.js"; // myrmidon(TEAM-LIVENESS-SETTINGS)
 import { myrmidonBotLspRoutes } from "./myrmidon/bot-lsp/index.js"; // myrmidon(BOT-LSP-DEFAULTS)
 import { myrmidonReplayBlockedRoutes } from "./myrmidon/replay-blocked/index.js"; // myrmidon(N1)
 import { aboutRoutes } from "./myrmidon/about/routes.js"; // myrmidon(ABOUT)
+import { licensingRoutes } from "./myrmidon/licensing/routes.js"; // myrmidon(LICENSING)
 import { myrmidonBotContainerRoutes } from "./myrmidon/bot-containers/routes-wiring.js"; // myrmidon(W2b)
 import { myrmidonBrowserConsoleRoutes } from "./myrmidon/browser-console/wiring.js"; // myrmidon(BROWSER-CONSOLE)
 import { myrmidonLitellmCostsRoutes } from "./myrmidon/litellm-costs/routes.js"; // myrmidon(M2-A)
 import { myrmidonLitellmKeysRoutes } from "./myrmidon/litellm-keys/routes.js"; // myrmidon(M2-B)
 // myrmidon(1.6.1 MODEL-PROVIDERS A): company model-provider registry, secrets, settings API
 import { myrmidonModelProviderRoutes } from "./myrmidon/model-providers/wiring.js";
+import { bindModelProviderPluginLifecycle } from "./myrmidon/model-providers/plugin-lifecycle.js"; // myrmidon(1.6.6 OPE-7198)
 import { myrmidonAgentExchangeRoutes } from "./myrmidon/agent-exchange/wiring.js"; // myrmidon(1.7-AGENT-EXCHANGE-A)
+// myrmidon(1.7-AGENT-EXCHANGE-B): the owner-facing feed of discussion rooms and
+// the «to skill» action that registers a room outcome as a skill candidate.
+import { myrmidonAgentExchangeFeedRoutes } from "./myrmidon/agent-exchange/feed-wiring.js"; // myrmidon(1.7-AGENT-EXCHANGE-B)
 import { myrmidonBaselineRoutes } from "./myrmidon/baseline/routes.js"; // myrmidon(1.6-BASELINE)
 import { myrmidonBotEgressRoutes } from "./myrmidon/bot-containers/egress-wiring.js"; // myrmidon(EGRESS-B)
 import { myrmidonBotCanaryRoutes } from "./myrmidon/bot-containers/canary-index.js"; // myrmidon(R5-B)
 import { myrmidonWorkspaceHygieneRoutes } from "./myrmidon/workspace-hygiene/index.js"; // myrmidon(WORKSPACE-HYGIENE)
 // myrmidon(BOT-DISK E): host disk usage threshold and signal
-import { myrmidonHostDiskRoutes } from "./myrmidon/host-disk/index.js"; // myrmidon(BOT-DISK E)
+import { hostDiskRuntime, myrmidonHostDiskRoutes } from "./myrmidon/host-disk/index.js"; // myrmidon(BOT-DISK E)
 import { myrmidonAttentionFeedRoutes } from "./myrmidon/attention-feed/index.js"; // myrmidon(1.6.6 SETTINGS-UI C-4)
 import { myrmidonAlertRecoveryRoutes } from "./myrmidon/monitoring/alert-recovery/index.js"; // myrmidon(1.6.6-MONITORING-D)
+import { myrmidonDatastoreCareRoutes } from "./myrmidon/datastore-care/index.js"; // myrmidon(DBC-4)
+import { myrmidonDataRetentionRoutes } from "./myrmidon/data-retention/index.js"; // myrmidon(1.6.5-DB-RETENTION)
 import { myrmidonBotDiskLifecycleRoutes } from "./myrmidon/bot-containers/bot-disk-routes.js"; // myrmidon(BOT-DISK-A)
 // myrmidon(1.6.6-SETTINGS-UI-B): the read side of the lifecycle screen (the C5
 // relay + the stored C4 reports) and the bot-side C4 report POST.
 import { myrmidonBotDiskPhysicalRoutes } from "./myrmidon/bot-containers/bot-disk-physical-routes.js";
 import { myrmidonBotDiskReportRoutes } from "./myrmidon/bot-containers/bot-disk-report-routes.js";
 import { myrmidonBotScopeRoutes } from "./myrmidon/bot-containers/scope-wiring.js"; // myrmidon(BOT-DISK-F)
+import { botWorkspacePressureFromPartition } from "./myrmidon/bot-containers/bot-workspaces-pressure.js"; // myrmidon(1.6.5-BOT-DISK-H4a)
 import { myrmidonBotWorkspacesRoutes } from "./myrmidon/bot-containers/bot-workspaces-routes.js"; // myrmidon(1.6.5-BOT-DISK-H4a)
+
+// myrmidon(1.7-BUDGET-CONFIG A): per-level spend limits, journal and usage
+import { myrmidonBudgetLimitsRoutes } from "./myrmidon/budget-limits/index.js";
 import { myrmidonBotDiskQuotaRoutes } from "./myrmidon/bot-containers/bot-disk-quota-routes.js"; // myrmidon(1.6.1-BOT-DISK-C)
 import { myrmidonBotImageRolloutRoutes } from "./myrmidon/bot-containers/bot-image-rollout-routes.js"; // myrmidon(BOT-ROLLOUT)
 import { myrmidonMetricsApp } from "./myrmidon/monitoring/metrics/index.js"; // myrmidon(1.7-METRICS)
 import { boardLoadApp, boardLoadRequestMiddleware } from "./myrmidon/monitoring/board-load/index.js"; // myrmidon(1.6.6 PROCS-0.3A)
 import { myrmidonMonitoringAlertsRoutes } from "./myrmidon/monitoring/alerts/index.js"; // myrmidon(1.6.6-ALERTS)
 import { swarmClaimApp } from "./myrmidon/swarm-claim/index.js"; // myrmidon(1.6-SWARM)
+import { createCasteDirectoryReader } from "./myrmidon/castes/directory.js"; // myrmidon(1.6.5 OPE-6608)
 // myrmidon(EMERGENCY-STOP): immediate stop of the runs a draining pause left running
 import { myrmidonEmergencyStopRoutes } from "./myrmidon/emergency-stop.js";
+import { myrmidonWakeTaskGuardRoutes } from "./myrmidon/wake-task-guard-routes.js"; // myrmidon(1.6.5 F-26 T5)
 import { myrmidonStackRegistryRoutes } from "./myrmidon/stack-registry/index.js"; // myrmidon(SUA)
 import { myrmidonWipLimitRoutes } from "./myrmidon/wip-limit/index.js"; // myrmidon(1.6.1-WIP-LIMIT-A)
 import { projectTokenQuotaRoutes } from "./myrmidon/project-token-quota/index.js"; // myrmidon(1.6.6 QUOTA-V2)
 import { myrmidonPromptBudgetRoutes } from "./myrmidon/prompt-budget/index.js"; // myrmidon(1.6.3 PROMPT-BUDGET B)
 import { modelFallbackSignalRoutes } from "./myrmidon/litellm-fallback-signal/routes.js"; // myrmidon(BOT-RUNTIME-TUNING D2)
+import { myrmidonOwnerDeliveryRoutes } from "./myrmidon/owner-delivery/index.js"; // myrmidon(1.6.5-OWNER-DM-FILTER)
 import { reviewRoutingRoutes } from "./myrmidon/review-routing/routes.js"; // myrmidon(REVIEW-ROUTING)
 import { reviewReworkRoutes } from "./myrmidon/review-rework/routes.js"; // myrmidon(REVIEW-REWORK)
 // myrmidon(PLUGIN-ENTITLEMENT C): instance-level plugin entitlement keys
 import { pluginEntitlementRoutes } from "./myrmidon/plugin-entitlement/index.js";
 import { myrmidonLitellmBudgetSyncRoutes } from "./myrmidon/litellm-budget-sync/index.js"; // myrmidon(1.7-BUDGET-CONFIG-C)
+import { myrmidonLitellmWorkersRoutes } from "./myrmidon/litellm-workers/routes.js"; // myrmidon(1.6.5 LITELLM-WORKERS A)
 import { agentInstructionsRevisionsRoutes } from "./myrmidon/agent-instructions-revisions/index.js"; // myrmidon(H2)
 import { myrmidonFleetConsoleRoutes } from "./myrmidon/fleet-console/index.js"; // myrmidon(SC1)
 import { myrmidonPromptBudgetAdviceRoutes } from "./myrmidon/prompt-budget-advice/index.js"; // myrmidon(1.6.3 PROMPT-BUDGET C)
@@ -165,8 +190,9 @@ import { myrmidonAutonomyRoutes } from "./myrmidon/autonomy/index.js"; // myrmid
 import { sweepTelegramNotifyProactivity } from "./myrmidon/telegram-notify/sweep.js";
 import { accessHubRoutes } from "./myrmidon/access-hub/routes.js"; // myrmidon(SEC1)
 import { ui2LanguageRoutes } from "./myrmidon/ui2-language/routes.js"; // myrmidon(UI2-I18N)
-import { myrmidonForagingRoutes } from "./myrmidon/foraging/index.js"; // myrmidon(1.6-FORAGE)
+import { myrmidonForagingRoutes, myrmidonForagingIdleGateRoutes, myrmidonForagingPassRoutes } from "./myrmidon/foraging/index.js"; // myrmidon(1.6-FORAGE, 1.6.3-FORAGING-IDLE-GATE)
 import { myrmidonAgentMemoryRoutes, myrmidonAgentMemorySettingsRoutes } from "./myrmidon/agent-memory/index.js"; // myrmidon(MEMORY-UI)
+import { myrmidonToolPolicyCacheRoutes } from "./myrmidon/tool-policy-cache/index.js"; // myrmidon(DB-PERF-C-P4)
 // myrmidon(1.6-SKILL-LIFE): company skill lifecycle (candidate/verified/deprecated, rollback)
 import { myrmidonSkillLifecycleRoutes } from "./myrmidon/skill-lifecycle/index.js";
 import {
@@ -175,6 +201,8 @@ import {
 } from "./myrmidon/browser-bridge/index.js"; // myrmidon(EXTCASE-B)
 // myrmidon(EXT-CASE-OCR): the OCR path (PDF -> text in the bot's workspace)
 import { myrmidonOcrRoutes } from "./myrmidon/ocr/index.js";
+// myrmidon(1.6.6-CORPUS-D): the corpus MCP endpoint (`corpus_*` for bots)
+import { myrmidonCorpusMcpRoutes } from "./myrmidon/corpus/index.js";
 import { myrmidonSttRoutes } from "./myrmidon/stt/index.js"; // myrmidon(1.6.1 VOICE-STT A1)
 import { myrmidonGitHubSharedIdentityRoutes } from "./myrmidon/github-shared-identity/index.js"; // myrmidon(GITHUB-SHARED-IDENTITY)
 
@@ -182,6 +210,7 @@ import { createTelegramVoiceSttWiring } from "./myrmidon/telegram-voice-stt-inta
 import { myrmidonVoiceMeetingProtocolRoutes } from "./myrmidon/voice-meeting-protocol/index.js"; // myrmidon(1.6.5 VOICE-STT B)
 import { myrmidonEvalsRoutes } from "./myrmidon/evals/index.js"; // myrmidon(1.6-EVALS)
 import { myrmidonDebateRoutes } from "./myrmidon/debates/index.js"; // myrmidon(1.7-DEBATE-ASYM-A)
+import { myrmidonScentRoutes } from "./myrmidon/scent/index.js"; // myrmidon(1.6.5 F-26 T10 SCENT)
 // myrmidon(TRACING-HEALTH): LLM tracing health check (GET /api/myrmidon/tracing/health)
 import { myrmidonTracingHealthRoutes } from "./myrmidon/tracing-health/index.js"; // myrmidon(TRACING-HEALTH)
 // myrmidon(1.6-WIKI): company regulations as wiki pages (statuses, revisions, rollback, resolver)
@@ -248,11 +277,18 @@ import { toolAccessService } from "./services/tool-access.js";
 import { chatChannelService } from "./services/chat-channels.js";
 import { deliverNativeQuestionResponse } from "./services/native-runtime/native-question-bridge.js";
 import { enqueueChatRunMilestones } from "./services/chat-run-publications.js";
+import { readProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
 import {
   chatReconcileMinimumSpacingMs,
   getChatReconcileFallbackIntervalMs,
   createReconcileInterval,
 } from "./myrmidon/chat-reconciliation/reconcile-interval.js";
+// myrmidon(DB-PERF-C-P5): cheap per-lane work gates for the chat
+// reconciliation coordinator. See docs/myrmidon/DIVERGENCE.md.
+import {
+  createChatReconciliationWorkGates,
+  type ChatReconciliationWorkGates,
+} from "./myrmidon/chat-reconciliation/work-gates.js";
 import {
   createCoalescedAsyncTrigger,
   isChatPublicationCommitSignal,
@@ -283,6 +319,8 @@ import { chatWebhookBodyParser } from "./middleware/chat-webhook-body.js";
 import { createChatWebhookDiagnostics } from "./services/chat-webhook-diagnostics.js";
 // myrmidon(CUSTOM-CASTES): company caste directory — table, seed, CRUD API
 import { myrmidonCasteRoutes } from "./myrmidon/castes/wiring.js";
+// myrmidon(1.6-GRD): guardrail event journal for the flag-only output detectors
+import { myrmidonGuardrailsRoutes } from "./myrmidon/guardrails/index.js"; // myrmidon(1.6-GRD)
 
 type UiMode = "none" | "static" | "vite-dev";
 const FEEDBACK_EXPORT_FLUSH_INTERVAL_MS = 5_000;
@@ -384,7 +422,11 @@ type ChatReconciliationLane =
   | "run milestones"
   | "publications"
   | "Slack file receipts"
-  | "Slack session status";
+  | "Slack session status"
+  // myrmidon(DB-PERF-C-P5): the Telegram-notify proactivity sweep used to run
+  // inside the publications lane; it is a producer for that lane's queue, so
+  // it keeps its own cadence while the publication flush is gated.
+  | "telegram notify proactivity";
 
 /**
  * Provider recovery can wait on slow external I/O. Keep each existing durable
@@ -407,16 +449,58 @@ export function createChatReconciliationCoordinator(input: {
   // own default spacing. See chatReconcileMinimumSpacingMs's doc comment and
   // docs/myrmidon/SETTINGS.md.
   milestoneMinimumSpacingMs?: number;
+  // myrmidon(DB-PERF-C-P5): one cheap "is there work" gate per durable lane.
+  // A lane whose gate answers "no work" is skipped for that tick instead of
+  // running its queries (see server/src/myrmidon/chat-reconciliation/
+  // work-gates.ts). Absent gates keep today's behaviour: every lane runs on
+  // every tick.
+  workGates?: ChatReconciliationWorkGates;
+  // myrmidon(DB-PERF-C-P5): the Telegram-notify proactivity sweep is a
+  // producer for the publication queue and used to sit in front of the
+  // publication flush inside its lane. It moves to its own lane so gating the
+  // flush cannot stall it; without this input nothing changes.
+  sweepTelegramNotifyProactivity?: () => Promise<unknown>;
 }) {
   let stopped = false;
   const inFlight = new Map<ChatReconciliationLane, Promise<void>>();
+  // myrmidon(DB-PERF-C-P5): notifyPublications() is a live "a publication was
+  // just committed" signal. It must reach the lanes even when their gate
+  // answers "no work", otherwise the committed publication would wait for the
+  // next tick that happens to have other work. Each flag buys exactly one
+  // forced pass and is consumed by that pass.
+  let publicationForced = false;
+  let milestoneForced = false;
   const publicationReconciliation = createCoalescedAsyncTrigger({
-    run: input.flushPublications,
+    run: async () => {
+      if (
+        !publicationForced &&
+        input.workGates &&
+        !(await input.workGates.hasPublicationWork())
+      )
+        return;
+      publicationForced = false;
+      await input.flushPublications();
+      // myrmidon(DB-PERF-C-P5): a completed pass postpones the lane's forced
+      // safety pass. The gate's own probe only covers the durable publication
+      // outbox; the notice producers inside the lane need this window.
+      input.workGates?.notePublicationPassCompleted(new Date());
+    },
     onError: (error) => input.onError("publications", error),
   });
   const milestoneReconciliation = createCoalescedAsyncTrigger({
     run: async () => {
+      if (
+        !milestoneForced &&
+        input.workGates &&
+        !(await input.workGates.hasMilestoneWork())
+      )
+        return;
+      milestoneForced = false;
+      // The milestone watermark reads the moment the pass began, so a run
+      // updated while the pass ran is still a candidate for the next probe.
+      const startedAt = new Date();
       const inserted = await input.projectRunMilestones();
+      input.workGates?.noteMilestonePassCompleted(startedAt, inserted);
       // Existing final/question publications never wait on this optional
       // projection. Newly committed milestones get a bounded dispatch wake;
       // an empty/contended pass does not create a self-sustaining loop.
@@ -439,11 +523,33 @@ export function createChatReconciliationCoordinator(input: {
       });
     inFlight.set(lane, pending);
   };
+  // myrmidon(DB-PERF-C-P5): the gate runs inside the lane's single-flight
+  // slot, so a lane that is still working on the previous tick is not
+  // double-checked, and a skipped lane costs one gate statement and nothing
+  // else. No gate means the lane runs exactly as before.
+  const startGated = (
+    lane: ChatReconciliationLane,
+    gate: (() => Promise<boolean>) | undefined,
+    task: () => Promise<unknown>,
+  ) => {
+    if (!gate) {
+      start(lane, task);
+      return;
+    }
+    start(lane, async () => {
+      if (!(await gate())) return;
+      await task();
+    });
+  };
   return {
     reconcile() {
       if (stopped) return;
       start("provider runtimes", input.reconcileProviderRuntimes);
-      start("deliveries", input.processPendingDeliveries);
+      startGated(
+        "deliveries",
+        input.workGates?.hasDeliveryWork,
+        input.processPendingDeliveries,
+      );
       if (input.processFailedGitHubWebhookDeliveries) {
         start(
           "GitHub webhook recovery",
@@ -452,10 +558,28 @@ export function createChatReconciliationCoordinator(input: {
       }
       milestoneReconciliation.poll();
       publicationReconciliation.poll();
-      start("Slack file receipts", input.processPendingSlackFileUploadReceipts);
-      start("Slack session status", input.processPendingSlackSessionSyncs);
+      startGated(
+        "Slack file receipts",
+        input.workGates?.hasSlackFileReceiptWork,
+        input.processPendingSlackFileUploadReceipts,
+      );
+      startGated(
+        "Slack session status",
+        input.workGates?.hasSlackSessionSyncWork,
+        input.processPendingSlackSessionSyncs,
+      );
+      if (input.sweepTelegramNotifyProactivity) {
+        start(
+          "telegram notify proactivity",
+          input.sweepTelegramNotifyProactivity,
+        );
+      }
     },
     notifyPublications() {
+      // myrmidon(DB-PERF-C-P5): a commit signal bypasses both gates for one
+      // pass; see the flags' doc comment above.
+      milestoneForced = true;
+      publicationForced = true;
       milestoneReconciliation.notify();
       publicationReconciliation.notify();
     },
@@ -585,6 +709,13 @@ export async function createApp(
       }): Promise<unknown>;
     };
     databaseBackupService?: InstanceDatabaseBackupService;
+    /**
+     * myrmidon(PROCS-1.1): whether this process performs the periodic work the
+     * app owns — export flushes, spool sweeps, plugin job scheduling, channel
+     * polling and the boot-time reconciliations. An `api`-role process passes
+     * `false`; the default keeps every existing caller on today's behavior.
+     */
+    backgroundWork?: boolean;
     databaseBackupHealth?: InspectDatabaseBackupHealthOptions;
     deploymentMode: DeploymentMode;
     deploymentExposure: DeploymentExposure;
@@ -600,11 +731,16 @@ export async function createApp(
     localPluginDir?: string;
     pluginMigrationDb?: Db;
     pluginWorkerManager?: PluginWorkerManager;
-    /** myrmidon(1.6.6 PROCS-1.5): the supervisor view the aggregate `/healthz`
-     * reads — desired api count plus the readiness of each child (PROCS-1.2).
+    /** myrmidon(1.6.6 PROCS-1.5): the worker's process supervisor — the
+     * aggregate `/healthz` reads its desired api count and child readiness
+     * (PROCS-1.2), and PATCH /api/myrmidon/processes on this process drives
+     * it. Structurally assignable to ProcessSupervisorReadinessSource.
      * Absent on today's single process and on an api child; `/healthz` then
      * answers for this process itself. */
-    processSupervisor?: ProcessSupervisorReadinessSource | null;
+    processSupervisor?: import("./myrmidon/processes/index.js").ProcessSupervisor | null;
+    // ProcessSupervisor (PROCS-1.2) is structurally assignable to the
+    // readiness view (PROCS-1.5) — state() and children() match, so one
+    // declaration serves both call sites.
     decisionServiceOptions: DecisionServiceOptions;
     betterAuthHandler?: express.RequestHandler;
     resolveSession?: (
@@ -659,6 +795,10 @@ export async function createApp(
   );
   app.use("/api", apiCompression());
   app.use(httpLogger);
+  // myrmidon(PROCS-1.1): one flag decides whether this app process performs its
+  // own periodic work. The `api` role passes false; anything that omits the
+  // option keeps today's behavior.
+  const backgroundWorkEnabled = opts.backgroundWork !== false;
   const privateHostnameGateEnabled = shouldEnablePrivateHostnameGuard({
     deploymentMode: opts.deploymentMode,
     deploymentExposure: opts.deploymentExposure,
@@ -922,8 +1062,8 @@ export async function createApp(
     }),
   );
   const trustedLocalStdioRuntimeHost =
-    process.env.PAPERCLIP_TRUSTED_MCP_RUNTIME_HOST ??
-    process.env.PAPERCLIP_TOOL_RUNTIME_TRUSTED_HOST ??
+    readProductEnv("TRUSTED_MCP_RUNTIME_HOST") ??
+    readProductEnv("TOOL_RUNTIME_TRUSTED_HOST") ??
     null;
   api.use(costRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(activityRoutes(db));
@@ -940,26 +1080,33 @@ export async function createApp(
   api.use(inboxDismissalRoutes(db));
   api.use(instanceSettingsRoutes(db));
   api.use(myrmidonMaintenanceRoutes(db)); // myrmidon(R3)
+  api.use(datastoreCareRetentionRoutes(db)); // myrmidon(1.6.5-DBC1)
   api.use(boardLoadApp(db)); // myrmidon(1.6.6 PROCS-0.3A): lanes, api-load p95, pg_stat_statements, cpu-profile
   api.use(myrmidonDeployJobsRoutes(db)); // myrmidon(R5-A)
   api.use(myrmidonRuntimeLimitsRoutes(db)); // myrmidon(C0)
+  api.use(myrmidonPauseGuardRoutes(db)); // myrmidon(PAUSE-GUARD)
+  api.use(myrmidonRunPriorityRoutes(db)); // myrmidon(1.6.5 RUN-PRIORITY A)
   api.use(myrmidonRunStallRoutes(db)); // myrmidon(RUN-STALL-SETTINGS)
   api.use(myrmidonCorpusRoutes(db, { ports: resolveCorpusPorts })); // myrmidon(1.6.6 CORPUS-2.0 ч.C): corpus datasets/documents/search + module settings
+  api.use(myrmidonProcessesRouter(db as any, opts.processSupervisor ?? null)); // myrmidon(PROCS-1.1/1.2): GET/PATCH /api/myrmidon/processes, applied without a restart
   api.use(myrmidonBudgetEnforcementRoutes(db)); // myrmidon(1.7-BUDGET-CONFIG-B)
   api.use(myrmidonBehaviorSettingsRoutes(db)); // myrmidon(SETTINGS-CORE): unified behavior settings, UI→env→default without restart
   api.use(myrmidonTelegramDmProgressRoutes(db)); // myrmidon(DM-PROGRESS): live progress steps of the Telegram DM status
   api.use(myrmidonChannelSettingsRoutes(db)); // myrmidon(1.7-SETTINGS-TO-UI): GET/PATCH /api/myrmidon/channel-settings
+  api.use(channelAllowlistRoutes(db, channelAllowlistService(db))); // myrmidon(CA-A): GET/POST/PATCH /api/myrmidon/channel-allowlist
   api.use(myrmidonParallelHelpersRoutes(db)); // myrmidon(PARALLEL-HELPERS)
   api.use(myrmidonTeamLivenessRoutes(db)); // myrmidon(TEAM-LIVENESS-SETTINGS)
   api.use(myrmidonBotLspRoutes(db)); // myrmidon(BOT-LSP-DEFAULTS)
   api.use(myrmidonReplayBlockedRoutes(db)); // myrmidon(N1)
   api.use(aboutRoutes()); // myrmidon(ABOUT)
+  api.use(licensingRoutes()); // myrmidon(LICENSING): install id, license request and issue form (instance admin)
   api.use(myrmidonBotContainerRoutes(db)); // myrmidon(W2b)
   api.use(myrmidonBrowserConsoleRoutes(db)); // myrmidon(BROWSER-CONSOLE)
   api.use(myrmidonLitellmCostsRoutes(db)); // myrmidon(M2-A): gateway-collected costs and model catalog
   api.use(myrmidonLitellmKeysRoutes(db)); // myrmidon(M2-B): per-agent gateway keys and fallback topology
   api.use(myrmidonModelProviderRoutes(db)); // myrmidon(1.6.1 MODEL-PROVIDERS A+B): model-provider store, settings API and LiteLLM sync
   api.use(myrmidonAgentExchangeRoutes(db)); // myrmidon(1.7-AGENT-EXCHANGE-A): discussion rooms on issue cards
+  api.use(myrmidonAgentExchangeFeedRoutes(db)); // myrmidon(1.7-AGENT-EXCHANGE-B): owner feed + «to skill» candidate
   api.use(myrmidonBaselineRoutes(db)); // myrmidon(1.6-BASELINE): cycle/review/return/blocked/run/cost metrics
   api.use(myrmidonBotEgressRoutes(db)); // myrmidon(EGRESS-B)
   api.use(myrmidonBotCanaryRoutes(db)); // myrmidon(R5-B)
@@ -967,31 +1114,42 @@ export async function createApp(
   api.use(myrmidonHostDiskRoutes(db)); // myrmidon(BOT-DISK E)
   api.use(myrmidonAttentionFeedRoutes(db)); // myrmidon(1.6.6 SETTINGS-UI C-4): attention-feed windows (failed-run horizon, feed cache TTL)
   api.use(myrmidonAlertRecoveryRoutes(db)); // myrmidon(1.6.6-MONITORING-D)
+  api.use(myrmidonDatastoreCareRoutes(db)); // myrmidon(DBC-4): GET/POST /api/myrmidon/datastores*, audit reports and their .md export
+  api.use(myrmidonDataRetentionRoutes(db)); // myrmidon(1.6.5-DB-RETENTION)
   api.use(myrmidonBotDiskLifecycleRoutes(db)); // myrmidon(BOT-DISK-A)
   api.use(myrmidonBotDiskPhysicalRoutes(db)); // myrmidon(1.6.6-SETTINGS-UI-B): C5 relay + C4 reports for the lifecycle screen
   api.use(myrmidonBotDiskReportRoutes()); // myrmidon(1.6.6-SETTINGS-UI-B): C4 POST /myrmidon/bots/me/disk-report (was unmounted)
   api.use(myrmidonBotScopeRoutes(db)); // myrmidon(BOT-DISK-F)
+  api.use(myrmidonBudgetLimitsRoutes(db)); // myrmidon(1.7-BUDGET-CONFIG A): per-level spend limits, journal and usage
   api.use(myrmidonBotDiskQuotaRoutes(db)); // myrmidon(1.6.1-BOT-DISK-C)
-  api.use(myrmidonBotWorkspacesRoutes(db)); // myrmidon(1.6.5-BOT-DISK-H4a)
+  api.use(myrmidonBotWorkspacesRoutes(db, {
+    // myrmidon(1.6.5-BOT-DISK-H4a): the pressure block comes from the host-disk partition measurement
+    readPressure: async () => botWorkspacePressureFromPartition(hostDiskRuntime(db).partition.current()),
+  }));
   api.use(myrmidonBotImageRolloutRoutes(db)); // myrmidon(BOT-ROLLOUT)
   api.use(swarmClaimApp({
     db,
     settings: instanceSettingsService(db),
-    enqueueWakeup: undefined, // agent claim wake goes through the board queue admission; heartbeat injects it at runtime
+    enqueueWakeup: undefined, // the explicit pull wakes nobody (the asking agent is awake); the matcher events carry their own wake port
+    castes: createCasteDirectoryReader(db), // myrmidon(1.6.5 OPE-6608): the claim API honours swarmEligible=false and the per-caste ceiling
     env: process.env,
   })); // myrmidon(1.6-SWARM): per-role queues with leased claims
   api.use(myrmidonEmergencyStopRoutes(db)); // myrmidon(EMERGENCY-STOP)
+  api.use(myrmidonWakeTaskGuardRoutes(db)); // myrmidon(1.6.5 F-26 T5): cooling list for the swarm panel (T4)
   api.use(myrmidonAgentMemoryRoutes(db)); // myrmidon(MEMORY-UI): agent card Memory tab
   api.use(myrmidonAgentMemorySettingsRoutes(db)); // myrmidon(MEMORY-UI): Memory tab settings (instance admin)
+  api.use(myrmidonToolPolicyCacheRoutes(db)); // myrmidon(DB-PERF-C-P4): TTL of the tool gateway policy cache (instance admin)
   api.use(myrmidonSkillLifecycleRoutes(db)); // myrmidon(1.6-SKILL-LIFE): skill lifecycle API
   api.use(myrmidonStackRegistryRoutes(db)); // myrmidon(SUA)
   api.use(myrmidonWipLimitRoutes(db)); // myrmidon(1.6.1-WIP-LIMIT-A): per-agent WIP limit settings and status
   api.use(projectTokenQuotaRoutes(db)); // myrmidon(1.6.6 QUOTA-V2): project token quota read/write
   api.use(modelFallbackSignalRoutes(db)); // myrmidon(BOT-RUNTIME-TUNING D2): fallback-signal settings and the live per-agent fallback share
+  api.use(myrmidonOwnerDeliveryRoutes(db)); // myrmidon(1.6.5-OWNER-DM-FILTER): GET/PATCH /api/myrmidon/owner-delivery
   api.use(reviewRoutingRoutes(db)); // myrmidon(REVIEW-ROUTING): automatic reviewer routing settings
   api.use(reviewReworkRoutes(db)); // myrmidon(REVIEW-REWORK): review-return loop settings
   api.use(pluginEntitlementRoutes(db)); // myrmidon(PLUGIN-ENTITLEMENT C): accept/remove plugin keys (instance admin)
   api.use(myrmidonLitellmBudgetSyncRoutes(db)); // myrmidon(1.7-BUDGET-CONFIG-C): LiteLLM budget projection settings, status, re-sync
+  api.use(myrmidonLitellmWorkersRoutes(db)); // myrmidon(1.6.5 LITELLM-WORKERS A): LiteLLM worker-process target, live pool size and TTIN/TTOU resize
   api.use(agentInstructionsRevisionsRoutes(db)); // myrmidon(H2)
   api.use(myrmidonFleetConsoleRoutes(db)); // myrmidon(SC1)
   api.use(myrmidonCloudConnectorRoutes(db)); // myrmidon(CLOUD-CONNECTOR)
@@ -1002,6 +1160,7 @@ export async function createApp(
   api.use(accessHubRoutes(db)); // myrmidon(SEC1): access-hub routes
   api.use(myrmidonBrowserBridgeRoutes(db)); // myrmidon(EXTCASE-B): bridge panel (codes, devices, allowlist)
   api.use(myrmidonOcrRoutes(db)); // myrmidon(EXT-CASE-OCR): company OCR MCP endpoint (ocr.pdf)
+  api.use(myrmidonCorpusMcpRoutes(db)); // myrmidon(1.6.6-CORPUS-D): company corpus MCP endpoint (corpus_search, corpus_get_document, corpus_list_datasets, corpus_list_documents)
   api.use(myrmidonSttRoutes(db)); // myrmidon(1.6.1 VOICE-STT A1)
   api.use(myrmidonGitHubSharedIdentityRoutes(db)); // myrmidon(GITHUB-SHARED-IDENTITY): access rules of the shared GitHub authorization
   api.use(myrmidonVoiceMeetingProtocolRoutes()); // myrmidon(1.6.5 VOICE-STT B): meeting protocol from a labeled transcript
@@ -1009,12 +1168,18 @@ export async function createApp(
   api.use(myrmidonDebateRoutes(db)); // myrmidon(1.7-DEBATE-ASYM-A): asymmetric debates (roles, rounds, token ceiling, cost, result document)
   api.use(myrmidonTracingHealthRoutes(db)); // myrmidon(TRACING-HEALTH): LLM tracing health check
   api.use(myrmidonCtoChatRoutes(db)); // myrmidon(1.6-CTO-CHAT-B): board chat planner (owner text -> proposed epic)
-  api.use(myrmidonSwarmSupervisorRoutes(db)); // myrmidon(1.6-SWARM-CLAIM-B): supervisor view, rebalance, pilot report
+  api.use(myrmidonSwarmSupervisorRoutes(db)); // myrmidon(1.6-SWARM-CLAIM-B): supervisor view, rebalance
+  api.use(myrmidonScentRoutes(db)); // myrmidon(1.6.5 F-26 T10 SCENT): task/agent scent refresh + swarm scent status
   api.use(myrmidonTelegramNotifyRoutes(db)); // myrmidon(TG-NOTIFY-A): telegramNotify settings core (GET/PATCH + changelog)
   api.use(ui2LanguageRoutes(db)); // myrmidon(UI2-I18N): per-user UI language preference
+  // myrmidon(1.6.5-TG-LOCALE-C): instance-wide default language of the bridged
+  // Telegram DM — read by board members, changed by instance admins.
+  api.use(myrmidonBridgeLanguageRoutes(db));
   api.use(myrmidonForagingRoutes(db)); // myrmidon(1.6-FORAGE): source registry, findings and the manual sweep
   api.use(myrmidonMonitoringAlertsRoutes(db)); // myrmidon(1.6.6-ALERTS): monitoring alerts webhook (Zabbix/Alertmanager) and its settings
   api.use(myrmidonMonitoringDashboardRoutes(db)); // myrmidon(1.6.6 MONITORING C): fleet dashboard from VictoriaMetrics + Zabbix, connection settings, selfcheck
+  api.use(myrmidonForagingIdleGateRoutes(db)); // myrmidon(1.6.3-FORAGING-IDLE-GATE): the idle-gate toggle
+  api.use(myrmidonForagingPassRoutes(db)); // myrmidon(1.6.3-FORAGING-IDLE-GATE, UI half): the pass history
   api.use(myrmidonWikiCortexRoutes(db)); // myrmidon(1.6-WIKI): company regulations (wiki pages, revisions, resolver)
   api.use(myrmidonBoardProcessRegistryRoutes(db)); // myrmidon(1.6.6 PROCS-0.1): process registry read by the «Процессы» panel
   if (opts.databaseBackupService) {
@@ -1034,6 +1199,14 @@ export async function createApp(
     workerManager,
     lifecycleManager: lifecycle,
     db,
+  });
+  const modelProviderPluginBridge = bindModelProviderPluginLifecycle({
+    lifecycle,
+    registry: pluginRegistry,
+    db,
+  });
+  void modelProviderPluginBridge.syncFromRegistry().catch((err) => {
+    logger.warn({ err }, "failed to sync model provider connectors from registry");
   });
   const gatewayOAuthAccess = toolAccessService(db, {
     deploymentMode: opts.deploymentMode,
@@ -1160,6 +1333,7 @@ export async function createApp(
     }),
   );
   api.use(myrmidonCasteRoutes(db)); // myrmidon(CUSTOM-CASTES): caste directory CRUD
+  api.use(myrmidonGuardrailsRoutes(db)); // myrmidon(1.6-GRD): flag-only guardrail event journal (board-only read route)
   api.use(
     accessRoutes(db, {
       deploymentMode: opts.deploymentMode,
@@ -1246,7 +1420,7 @@ export async function createApp(
     } else {
       console.warn("[myrmidon] UI dist not found; running in API-only mode");
     }
-    if (process.env.PAPERCLIP_MANAGED_RUNTIME_EXPOSURE === "tailscale_https") {
+    if (readProductEnv("MANAGED_RUNTIME_EXPOSURE") === "tailscale_https") {
       // The managed-runtime supervisor waits for the app port AND its derived
       // Vite HMR companion port to bind before publishing the service. Static
       // mode has no Vite, so bind the same placeholder listener dev mode uses
@@ -1271,14 +1445,14 @@ export async function createApp(
     const hmrPort = resolveViteHmrPort(opts.serverPort);
     const hmrHost = resolveViteHmrHost(opts.bindHost);
     const hmrProtocol = resolveViteHmrProtocol(
-      process.env.PAPERCLIP_VITE_HMR_PROTOCOL,
+      readProductEnv("VITE_HMR_PROTOCOL"),
     );
     const hmrServer = createHttpServer((_req, res) => {
       res.writeHead(426, { "Content-Type": "text/plain" });
       res.end("Upgrade Required");
     });
     const { createServer: createViteServer } = await import("vite");
-    const configuredViteCacheDir = process.env.PAPERCLIP_VITE_CACHE_DIR?.trim();
+    const configuredViteCacheDir = readProductEnv("VITE_CACHE_DIR")?.trim();
     const vite = await createViteServer({
       root: uiRoot,
       ...(configuredViteCacheDir
@@ -1343,8 +1517,13 @@ export async function createApp(
 
   app.use(errorHandler);
 
-  jobCoordinator.start();
-  scheduler.start();
+  // myrmidon(PROCS-1.1): the plugin job coordinator and its scheduler are
+  // background work. An api process starts neither, so it also forks no plugin
+  // worker.
+  if (backgroundWorkEnabled) {
+    jobCoordinator.start();
+    scheduler.start();
+  }
   let feedbackExportShuttingDown = false;
   let feedbackExportTimer: ReturnType<typeof setInterval> | null = null;
   const disableFeedbackExportFlushes = () => {
@@ -1371,17 +1550,24 @@ export async function createApp(
     }
   };
 
-  feedbackExportTimer = opts.feedbackExportService
+  // myrmidon(PROCS-1.1): feedback export flushes and channel polling are
+  // periodic work — an api process schedules neither.
+  feedbackExportTimer = opts.feedbackExportService && backgroundWorkEnabled
     ? setInterval(() => {
         void flushPendingFeedbackExports();
       }, FEEDBACK_EXPORT_FLUSH_INTERVAL_MS)
     : null;
   feedbackExportTimer?.unref?.();
-  if (opts.feedbackExportService) {
+  if (opts.feedbackExportService && backgroundWorkEnabled) {
     void flushPendingFeedbackExports();
   }
-  emailChannels.start();
-  const flushChatPublications = async () => {
+  if (backgroundWorkEnabled) {
+    emailChannels.start();
+  }
+  // myrmidon(DB-PERF-C-P5): the Telegram-notify proactivity sweep is a
+  // producer for the publication queue and keeps its own lane; only the
+  // durable publication flush is gated (see work-gates.ts).
+  const runTelegramNotifyProactivitySweep = async () => {
     // myrmidon(1.6-TG-PROACTIVITY-E): bundle U2 cards past the window and
     // drain rarely queues into the durable outbox before the lane runs, so
     // the vendor's own delivery path carries them (no new provider client).
@@ -1390,8 +1576,15 @@ export async function createApp(
     } catch (err) {
       logger.error({ err }, "telegram-notify proactivity sweep failed");
     }
+  };
+  const flushChatPublications = async () => {
     await chatChannels.schedulePendingPublications();
   };
+  // myrmidon(DB-PERF-C-P5): one gate per durable lane; each is one cheap
+  // `select 1 ... limit 1` on an existing index.
+  const chatReconciliationWorkGates = createChatReconciliationWorkGates({
+    db,
+  });
   const chatReconciliation = createChatReconciliationCoordinator({
     reconcileProviderRuntimes: () => chatChannels.reconcileProviderRuntimes(),
     processPendingDeliveries: () => chatChannels.processPendingDeliveries(),
@@ -1406,6 +1599,8 @@ export async function createApp(
       chatChannels.processPendingSlackFileUploadReceipts(),
     processPendingSlackSessionSyncs: () =>
       chatChannels.processPendingSlackSessionSyncs(),
+    sweepTelegramNotifyProactivity: runTelegramNotifyProactivitySweep,
+    workGates: chatReconciliationWorkGates,
     onError: (lane, err) => {
       logger.error({ err, lane }, `Failed to reconcile chat ${lane}`);
     },
@@ -1434,7 +1629,11 @@ export async function createApp(
   );
   // Remove the old 1-second polling interval; reconciliation now happens based on events
   // with a fallback timer that triggers only when idle
-  chatReconciliation.reconcile();
+  // myrmidon(PROCS-1.1): the boot-time reconciliation is background work, like
+  // every other sweep — an api process leaves it to its worker sibling.
+  if (backgroundWorkEnabled) {
+    chatReconciliation.reconcile();
+  }
   // Abandoned chunked-import spool sweep: hourly (plus once at startup),
   // deleting spool dirs whose transfer saw no activity for 24h and cancelling
   // their still-open ledger runs. Same setInterval + unref + shutdown-clear
@@ -1455,18 +1654,24 @@ export async function createApp(
       });
   };
   let importTransferSweepTimer: ReturnType<typeof setInterval> | null =
-    setInterval(
-      sweepImportTransferSpools,
-      IMPORT_TRANSFER_SPOOL_SWEEP_INTERVAL_MS,
-    );
-  importTransferSweepTimer.unref?.();
+    // myrmidon(PROCS-1.1): an api process owns no spool sweeps.
+    backgroundWorkEnabled
+      ? setInterval(
+          sweepImportTransferSpools,
+          IMPORT_TRANSFER_SPOOL_SWEEP_INTERVAL_MS,
+        )
+      : null;
+  importTransferSweepTimer?.unref?.();
   // Startup only (never on the hourly interval — that would kill live
   // applies): apply jobs are in-memory in this single process, so any run
   // still "applying" now was interrupted by the previous shutdown and would
   // otherwise 409 every retry forever. Fail those stranded runs — their
   // spooled parts stay reusable — then run the normal sweep once.
-  void companyTransferRunService
-    .recoverStrandedApplyingRuns(db)
+  void (backgroundWorkEnabled
+    // myrmidon(PROCS-1.1): recovering stranded applies mutates runs — the
+    // background role owns it; an api process resolves to an empty result.
+    ? companyTransferRunService.recoverStrandedApplyingRuns(db)
+    : Promise.resolve<string[]>([]))
     .then((recovered) => {
       if (recovered.length > 0) {
         logger.warn(
@@ -1479,7 +1684,8 @@ export async function createApp(
       logger.error({ err }, "stranded company transfer apply recovery failed");
     })
     .finally(() => {
-      sweepImportTransferSpools();
+      // myrmidon(PROCS-1.1): the follow-up sweep is background work too.
+      if (backgroundWorkEnabled) sweepImportTransferSpools();
     });
   void toolDispatcher.initialize().catch((err) => {
     logger.error({ err }, "Failed to initialize plugin tool dispatcher");
@@ -1553,6 +1759,7 @@ export async function createApp(
       // awaited teardown, so no tick runs after the caller ends the pool.
       scheduler.stop();
       jobCoordinator.stop();
+      modelProviderPluginBridge.teardown();
       disableFeedbackExportFlushes();
       unsubscribeChatPublicationSignals();
       chatReconciliation.stop();

@@ -22,6 +22,8 @@ const support = await getEmbeddedPostgresTestSupport();
   const latestRequest = "Latest request: also add a migration section.";
   const previousLimit = process.env.MYRMIDON_CONTINUATION_HISTORY_LIMIT;
   const previousChars = process.env.MYRMIDON_CONTINUATION_HISTORY_CHARS;
+  const previousMessageMax = process.env.MYRMIDON_CONTINUATION_MESSAGE_MAX_CHARS;
+  const previousMessageChars = process.env.MYRMIDON_CONTINUATION_MESSAGE_CHARS;
 
   beforeAll(async () => {
     database = await startEmbeddedPostgresTestDatabase("paperclip-continuation-limit-");
@@ -76,6 +78,10 @@ const support = await getEmbeddedPostgresTestSupport();
     else process.env.MYRMIDON_CONTINUATION_HISTORY_LIMIT = previousLimit;
     if (previousChars === undefined) delete process.env.MYRMIDON_CONTINUATION_HISTORY_CHARS;
     else process.env.MYRMIDON_CONTINUATION_HISTORY_CHARS = previousChars;
+    if (previousMessageMax === undefined) delete process.env.MYRMIDON_CONTINUATION_MESSAGE_MAX_CHARS;
+    else process.env.MYRMIDON_CONTINUATION_MESSAGE_MAX_CHARS = previousMessageMax;
+    if (previousMessageChars === undefined) delete process.env.MYRMIDON_CONTINUATION_MESSAGE_CHARS;
+    else process.env.MYRMIDON_CONTINUATION_MESSAGE_CHARS = previousMessageChars;
   });
 
   const build = () =>
@@ -124,9 +130,12 @@ const support = await getEmbeddedPostgresTestSupport();
     );
   });
 
-  it("returns the full history when the count limit and the volume bound are both off", async () => {
+  it("returns the full history when the count limit and the volume bound are and the message bounds are all off", async () => {
     process.env.MYRMIDON_CONTINUATION_HISTORY_LIMIT = "0";
     process.env.MYRMIDON_CONTINUATION_HISTORY_CHARS = "0";
+    // LONG-TASK-CONTEXT adds two more bounds on by default; "all off" means all.
+    process.env.MYRMIDON_CONTINUATION_MESSAGE_MAX_CHARS = "0";
+    process.env.MYRMIDON_CONTINUATION_MESSAGE_CHARS = "0";
     const envelope = await build();
     expect(envelope.messages).toHaveLength(COMMENT_COUNT);
     expect("truncationNotice" in envelope).toBe(false);

@@ -9,6 +9,8 @@ import {
   BOT_BOARD_URL_ENV,
   BOT_COMPRESSION_THRESHOLD_TOKENS_ENV,
   BOT_DEFAULT_COMPRESSION_THRESHOLD_TOKENS,
+  BOT_DEFAULT_DISABLED_TOOLS,
+  BOT_DISABLED_TOOLS_ENV,
   BOT_HINDSIGHT_ALLOWED_BANKS_ENV,
   BOT_HINDSIGHT_API_URL_ENV,
   BOT_HINDSIGHT_BANK_ENV,
@@ -25,6 +27,7 @@ import {
   buildHermesProfileInput,
   cardUsesLlmGateway,
   parseBotCompressionThresholdTokens,
+  parseBotDisabledTools,
   parseBotMcpServers,
   parseBotAuxFallbackModels,
   parseBotModelContextLengths,
@@ -118,6 +121,8 @@ describe("myrmidon(W2a) readBotProfileSettings", () => {
       auxiliaryFallbackModels: null,
       // myrmidon(MEMORY-CENTRAL-A): unset in the env above -> the switch is off.
       localMemoryOff: false,
+      // myrmidon(TOOL-DIET): unset in the env above -> the fleet default list.
+      disabledTools: [...BOT_DEFAULT_DISABLED_TOOLS],
     });
     expect(readBotProfileSettings({ [BOT_BOARD_URL_ENV]: "   " }).boardUrl).toBeNull();
     expect(readBotProfileSettings({}).hindsightApiUrl).toBeNull();
@@ -377,6 +382,88 @@ describe("myrmidon(MEMORY-CENTRAL-A) MYRMIDON_BOT_LOCAL_MEMORY_OFF", () => {
     expect(fileContent(compileHermesProfile(fromEnv.input), "hermes/config.yaml")).not.toContain("memory_enabled");
   });
 });
+
+// myrmidon(TOOL-DIET): MYRMIDON_BOT_DISABLED_TOOLS — single tools no bot sends to the model.
+describe("myrmidon(TOOL-DIET) MYRMIDON_BOT_DISABLED_TOOLS", () => {
+  const configYaml = (input: ReturnType<typeof buildHermesProfileInput>["input"]) =>
+    fileContent(compileHermesProfile(input), "hermes/config.yaml");
+
+  it("parses: unset -> the fleet default, none/off/- -> nothing, otherwise the trimmed unique names in order", () => {
+    expect(parseBotDisabledTools(null)).toEqual([...BOT_DEFAULT_DISABLED_TOOLS]);
+    expect(BOT_DEFAULT_DISABLED_TOOLS).toContain("vision_analyze");
+    expect(BOT_DEFAULT_DISABLED_TOOLS.filter((name) => name.startsWith("browser_vault_"))).toHaveLength(5);
+    for (const raw of ["none", " NONE ", "off", "-"]) expect(parseBotDisabledTools(raw)).toEqual([]);
+    expect(parseBotDisabledTools(" web_extract , skill_manage,, web_extract ")).toEqual(["web_extract", "skill_manage"]);
+    expect(readBotProfileSettings({ [BOT_DISABLED_TOOLS_ENV]: "memory" }).disabledTools).toEqual(["memory"]);
+    expect(readBotProfileSettings({ [BOT_DISABLED_TOOLS_ENV]: "   " }).disabledTools).toEqual([...BOT_DEFAULT_DISABLED_TOOLS]);
+  });
+
+  it("the default list is written to agent.disabled_tools", () => {
+    const { input } = buildHermesProfileInput(source(), readBotProfileSettings({ ...baseEnv() }));
+    const yaml = configYaml(input);
+    expect(yaml).toContain("disabled_tools:");
+    for (const name of BOT_DEFAULT_DISABLED_TOOLS) expect(yaml).toContain(`- "${name}"`);
+  });
+
+  it("the card's own list replaces the instance list; an empty card list keeps every tool", () => {
+    const own = buildHermesProfileInput(
+      source({ adapterConfig: { disabledTools: ["web_extract"] } }),
+      readBotProfileSettings({ ...baseEnv() }),
+    );
+    const ownYaml = configYaml(own.input);
+    expect(ownYaml).toContain('disabled_tools:\n  - "web_extract"');
+    expect(ownYaml).not.toContain("browser_vault_fill");
+    const none = buildHermesProfileInput(
+      source({ adapterConfig: { disabledTools: [] } }),
+      readBotProfileSettings({ ...baseEnv() }),
+    );
+    expect(configYaml(none.input)).not.toMatch(/disabled_tools:/);
+  });
+
+  it("a card with a vision model of its own keeps vision_analyze (the instance list gives way)", () => {
+    const { input } = buildHermesProfileInput(
+      source({ adapterConfig: { models: { vision: "fleet-vision" } } }),
+      readBotProfileSettings({ ...baseEnv() }),
+    );
+    const yaml = configYaml(input);
+    expect(yaml).not.toContain("vision_analyze");
+    expect(yaml).toContain("browser_vault_fill");
+  });
+
+  it("MYRMIDON_BOT_DISABLED_TOOLS=none restores the byte-identical profile a pre-feature build compiled", () => {
+    const before = compileHermesProfile(buildHermesProfileInput(source(), settings()).input);
+    const on = compileHermesProfile(buildHermesProfileInput(source(), settings({ disabledTools: [...BOT_DEFAULT_DISABLED_TOOLS] })).input);
+    const off = compileHermesProfile(
+      buildHermesProfileInput(
+        source(),
+        settings({ disabledTools: parseBotDisabledTools("none") }),
+      ).input,
+    );
+    expect(on.restartHash).not.toBe(before.restartHash);
+    expect(off.restartHash).toBe(before.restartHash);
+    expect(fileContent(off, "hermes/config.yaml")).toBe(fileContent(before, "hermes/config.yaml"));
+  });
+
+  it("names that are not tool names are dropped, never written", () => {
+    const { input } = buildHermesProfileInput(
+      source({ adapterConfig: { disabledTools: ["web_extract", "bad name; rm -rf /", "x".repeat(80)] } }),
+      readBotProfileSettings({ ...baseEnv() }),
+    );
+    const yaml = configYaml(input);
+    expect(yaml).toContain('- "web_extract"');
+    expect(yaml).not.toContain("rm -rf");
+  });
+});
+
+function baseEnv(): Record<string, string> {
+  return {
+    [BOT_BOARD_URL_ENV]: "http://board.example.com:3100",
+    [BOT_HINDSIGHT_API_URL_ENV]: "https://example.com/hindsight",
+    [BOT_HINDSIGHT_BANK_ENV]: "fleet-default",
+    [BOT_LLM_BASE_URL_ENV]: "https://example.com/llm/v1",
+    [BOT_LLM_API_KEY_ENV_ENV]: "FLEET_LLM_API_KEY",
+  };
+}
 
 describe("myrmidon(MEMORY-ISOLATION) MYRMIDON_BOT_HINDSIGHT_ALLOWED_BANKS parsing", () => {
   it("splits on commas, trims, drops empties and duplicates, keeps order", () => {

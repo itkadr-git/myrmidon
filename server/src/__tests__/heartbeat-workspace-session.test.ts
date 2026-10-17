@@ -1946,6 +1946,19 @@ describe("shouldResetTaskSessionForWake", () => {
     expect(shouldResetTaskSessionForWake({ wakeReason: "execution_changes_requested" })).toBe(false);
   });
 
+  it("resets session context on automatic transient retries (upstream #15487)", () => {
+    expect(shouldResetTaskSessionForWake({ wakeReason: "transient_failure_retry" })).toBe(true);
+  });
+
+  it("keeps the codex same-session first retry step", () => {
+    expect(
+      shouldResetTaskSessionForWake({
+        wakeReason: "transient_failure_retry",
+        codexTransientFallbackMode: "same_session",
+      }),
+    ).toBe(false);
+  });
+
   it("preserves session context on timer heartbeats", () => {
     expect(shouldResetTaskSessionForWake({ wakeSource: "timer" })).toBe(false);
   });

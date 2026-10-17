@@ -1,3 +1,5 @@
+import { readProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
+
 /**
  * Shared attachment content-type configuration.
  *
@@ -148,7 +150,7 @@ export function isInlineAttachmentContentType(contentType: string): boolean {
 // ---------- Module-level singletons read once at startup ----------
 
 const allowedPatterns: string[] = parseAllowedTypes(
-  process.env.PAPERCLIP_ALLOWED_ATTACHMENT_TYPES,
+  readProductEnv("ALLOWED_ATTACHMENT_TYPES"),
 );
 
 /** Convenience wrapper using the process-level allowed list. */
@@ -162,7 +164,7 @@ export function isAllowedContentType(contentType: string): boolean {
  * value, so an operator raises or lowers the limit in exactly one place.
  */
 export const MAX_ATTACHMENT_BYTES =
-  Number(process.env.PAPERCLIP_ATTACHMENT_MAX_BYTES) || 10 * 1024 * 1024;
+  Number(readProductEnv("ATTACHMENT_MAX_BYTES")) || 10 * 1024 * 1024;
 
 const ATTACHMENT_SIZE_UNITS: readonly string[] = ["KB", "MB", "GB"];
 

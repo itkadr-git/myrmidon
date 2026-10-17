@@ -1,10 +1,11 @@
+// myrmidon(DEBRAND-c): persist browser state under the Myrmidon namespace.
 import {
   RECENT_SELECTION_DISPLAY_LIMIT,
   readRecentSelectionIds,
   trackRecentSelectionId,
 } from "./recent-selections";
 
-const STORAGE_KEY = "paperclip:recent-assignees";
+const STORAGE_KEY = "myrmidon:recent-assignees";
 
 function agentSelectionId(agentId: string): string {
   return `agent:${agentId}`;

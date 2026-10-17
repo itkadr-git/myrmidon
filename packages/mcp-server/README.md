@@ -80,6 +80,8 @@ Write tools:
 - `myrmidonAskUserQuestions`
 - `myrmidonRequestConfirmation`
 - `myrmidonRequestCheckboxConfirmation`
+- `myrmidonMessageOwner` (explain your own open owner decisions to the owner in one direct message; owner delivery mode `via_bot`)
+- `myrmidonResolveInteractionByOwnerReply` (close an owner decision from the owner's explicit text answer)
 - `myrmidonUpsertIssueDocument`
 - `myrmidonRestoreIssueDocumentRevision`
 - `myrmidonControlIssueWorkspaceServices`

@@ -11,7 +11,9 @@ import {
   versionSelectionSignature,
   type BotProfileSkillReaders,
 } from "./profile-skills.js";
+import { createSkillLifecycleService, SKILL_PILOT_AGENTS_ENV } from "../skill-lifecycle/index.js";
 import type { SkillLifecycleDelivery } from "../skill-lifecycle/index.js";
+import type { SkillLifecycleStore } from "../skill-lifecycle/store.js";
 
 // Placeholder data only: fake ids, example paths, obviously-fake content.
 
@@ -231,5 +233,75 @@ describe("myrmidon(PERF-DIET-G): the skills port reads the company scope once pe
 
     expect(result.skills["symlink-skill"]?.map((file) => file.path)).toEqual(["SKILL.md"]);
     expect(result.warnings.some((line) => line.includes("symlink alias.md skipped"))).toBe(true);
+  });
+});
+describe("myrmidon(1.6.5-BOT-SKILL-BACKIMPORT): a back-imported candidate is compiled back into its author's profile", () => {
+  const AUTHOR = "agent-author";
+  const KEY = "company/company-1/bot-made";
+
+  // The REAL lifecycle service over a two-read store: the profile compiler is
+  // fed by the same resolveDelivery production uses, not by a hand-built delivery.
+  function lifecycleReaders(env: NodeJS.ProcessEnv, originAgentId: string | null): BotProfileSkillReaders {
+    const store = {
+      async listSkills() {
+        return [{ id: "skill-1", key: KEY, name: "bot-made", slug: "bot-made", currentVersionId: "v1", originAgentId }];
+      },
+      async listRecords() {
+        return [
+          {
+            skillId: "skill-1",
+            companyId: "company-1",
+            state: "candidate" as const,
+            verifiedVersionId: "v1",
+            previousVerifiedVersionId: null,
+            approvedBy: null,
+            approvedAt: null,
+            reason: null,
+            updatedAt: "2026-10-09T00:00:00.000Z",
+          },
+        ];
+      },
+    } as unknown as SkillLifecycleStore;
+    const lifecycle = createSkillLifecycleService({ store, env });
+    const source = skillDirectory("bot-made-skill", { "SKILL.md": "# bot made\n" });
+    return {
+      async readExperimental() {
+        return { enableBetaSkills: true };
+      },
+      resolveLifecycle: (companyId, agentId, cache) => lifecycle.resolveDelivery(companyId, agentId, cache),
+      async listRuntimeSkillEntries() {
+        return [
+          {
+            key: KEY,
+            runtimeName: "bot-made",
+            source,
+            versionId: "v1",
+            currentVersionId: "v1",
+            sourceStatus: "available",
+            missingDetail: null,
+          } as PaperclipSkillEntry,
+        ];
+      },
+    };
+  }
+
+  it("delivers the candidate to the authoring bot although it is not a pilot agent", async () => {
+    const load = createBotProfileSkillLoader(lifecycleReaders({ [SKILL_PILOT_AGENTS_ENV]: "agent-pilot" }, AUTHOR));
+    const result = await load(agentCard(AUTHOR, [KEY]));
+    expect(result.warnings).toEqual([]);
+    expect(result.skills["bot-made"]?.map((file) => file.path)).toEqual(["SKILL.md"]);
+  });
+
+  it("still withholds it from every other non-pilot bot", async () => {
+    const load = createBotProfileSkillLoader(lifecycleReaders({ [SKILL_PILOT_AGENTS_ENV]: "agent-pilot" }, AUTHOR));
+    const result = await load(agentCard("agent-other", [KEY]));
+    expect(result.skills["bot-made"]).toBeUndefined();
+    expect(result.warnings[0]).toContain("candidate");
+  });
+
+  it("withholds a candidate without an origin marker from the same bot (no author, no exception)", async () => {
+    const load = createBotProfileSkillLoader(lifecycleReaders({ [SKILL_PILOT_AGENTS_ENV]: "agent-pilot" }, null));
+    const result = await load(agentCard(AUTHOR, [KEY]));
+    expect(result.skills["bot-made"]).toBeUndefined();
   });
 });

@@ -46,6 +46,48 @@ const LIGHT = [
 export const SELECTIVE_PACKAGES = ["@paperclipai/server", "@paperclipai/ui", "paperclipai"];
 export const MAX_FAST_FILES_PER_PACKAGE = 60;
 
+/**
+ * Applies the release-branch fast mode to a plan.
+ *
+ * Release branches (rel/*): PRs touching shared foundations run only the tests
+ * their change touches, so a full-classified plan is lowered to fast. The
+ * release branch itself still gets one full run before the release tag
+ * (manual run or the `full-ci` label), and the fast mode applies only while
+ * every package's selection stays within MAX_FAST_FILES_PER_PACKAGE: above
+ * the limit the affected set no longer fits the fast job, so the plan
+ * escalates back to full. A full run before the tag is never cancelled by
+ * this helper.
+ *
+ * plan:      the classifyChanges result ({ tier, reasons, ... })
+ * selection: the selectTests result for the change ({ files: [{ package, files }] })
+ * options:   { releaseFast, forceFull } — the CLI flags
+ *
+ * Returns the plan to use (a new object when the tier changes) plus, for a
+ * surviving fast tier, the selection attached.
+ */
+export function applyReleaseFast(plan, selection, { releaseFast = false, forceFull = false } = {}) {
+  const releaseFastActive = releaseFast && !forceFull && plan.tier === "full";
+  if (releaseFastActive) {
+    plan = {
+      tier: "fast",
+      reasons: [`release branch PR: affected tests only (was full: ${plan.reasons.slice(0, 3).join("; ")})`],
+      ...(plan.changed ? { changed: plan.changed } : {}),
+    };
+  }
+  if (plan.tier !== "fast") return plan;
+  const tooMany = (selection?.files ?? []).filter((entry) => entry.files.length > MAX_FAST_FILES_PER_PACKAGE);
+  if (tooMany.length > 0) {
+    return {
+      tier: "full",
+      reasons: tooMany.map(
+        (e) => `${e.files.length} ${e.package} test files import the change (limit ${MAX_FAST_FILES_PER_PACKAGE})`,
+      ),
+      ...(plan.changed ? { changed: plan.changed } : {}),
+    };
+  }
+  return { ...plan, selection };
+}
+
 export function classifyChanges(files, { forceFull = false } = {}) {
   if (forceFull) return { tier: "full", reasons: ["full run requested"] };
   if (files.length === 0) return { tier: "docs", reasons: ["no changed files"] };
