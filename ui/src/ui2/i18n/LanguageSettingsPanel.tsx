@@ -22,11 +22,13 @@ import { Languages } from "lucide-react";
 import { useUi2T } from "./useUi2T";
 import {
   ui2LanguageLabel,
+  registerUi2Catalogs,
   useUi2Language,
   UI2_LANGUAGES,
   type Ui2Language,
 } from ".";
-import type { TelegramBridgeSourceWire } from "./api";
+import { validateCatalogJson, previewCatalogText } from "./catalog-upload";
+import { ui2LanguageApi, type TelegramBridgeSourceWire } from "./api";
 
 export function ui2LanguageQueryKey(): Array<string> {
   return ["myrmidon", "ui2", "language"];
@@ -43,7 +45,7 @@ function bridgeLanguageLabel(source: TelegramBridgeSourceWire | undefined): stri
 
 export function LanguageSettingsPanel() {
   const { t } = useUi2T();
-  const { language, setLanguage, saving, saveError } = useUi2Language();
+  const { language, setLanguage, saving, saveError, customCatalogs, setCatalogs } = useUi2Language();
   const queryClient = useQueryClient();
   const preference = useQuery({
     queryKey: ui2LanguageQueryKey(),
@@ -60,6 +62,40 @@ export function LanguageSettingsPanel() {
   const [instanceSaving, setInstanceSaving] = useState(false);
   const [instanceSaved, setInstanceSaved] = useState<Ui2Language | null>(null);
   const [instanceError, setInstanceError] = useState(false);
+  const [uploadLocale, setUploadLocale] = useState<Ui2Language>("ru");
+  const [uploadSource, setUploadSource] = useState("");
+  const [uploadError, setUploadError] = useState("");
+  const uploadValidation = validateCatalogJson(uploadSource);
+  const uploadPreview = uploadValidation.valid
+    ? previewCatalogText(uploadSource)
+    : uploadValidation.catalog
+      ? [...uploadValidation.missingKeys.slice(0, 2), ...uploadValidation.unknownKeys.slice(0, 2), ...uploadValidation.invalidValues.slice(0, 2)].map((key) => `${key}: issue`)
+      : [];
+
+  const saveUploadedCatalog = async () => {
+    if (!uploadValidation.valid || !uploadValidation.catalog) return;
+    setUploadError("");
+    try {
+      await ui2LanguageApi.putCatalog(uploadLocale, uploadValidation.catalog);
+      const catalogs = { ...(customCatalogs ?? {}), [uploadLocale]: uploadValidation.catalog };
+      setCatalogs(catalogs);
+      registerUi2Catalogs(catalogs);
+      setUploadSource("");
+      await queryClient.invalidateQueries({ queryKey: ui2LanguageQueryKey() });
+    } catch {
+      setUploadError(t("language.uploadError"));
+    }
+  };
+
+  const handleCatalogFile = async (file?: File) => {
+    if (!file) return;
+    if (file.size > 256 * 1024) {
+      setUploadError(t("language.uploadSizeError"));
+      return;
+    }
+    setUploadError("");
+    setUploadSource(await file.text());
+  };
 
   useEffect(() => {
     if (instance.data?.language) setInstanceChoice(instance.data.language);
@@ -214,6 +250,34 @@ export function LanguageSettingsPanel() {
           </p>
         ) : null}
       </section>
+
+      <section className="ui2-language-settings__upload" aria-labelledby="ui2-language-upload-title" data-testid="ui2-language-upload">
+        <h3 id="ui2-language-upload-title">{t("language.uploadTitle")}</h3>
+        <p>{t("language.uploadDescription")}</p>
+        <label>
+          {t("language.uploadLocale")}
+          <select value={uploadLocale} onChange={(event) => setUploadLocale(event.target.value as Ui2Language)}>
+            {UI2_LANGUAGES.map((locale) => <option key={locale} value={locale}>{ui2LanguageLabel(locale)}</option>)}
+          </select>
+        </label>
+        <label>
+          {t("language.uploadFile")}
+          <input type="file" accept="application/json,.json" onChange={(event) => void handleCatalogFile(event.target.files?.[0])} />
+        </label>
+        {uploadSource ? <>
+          <h4>{t("language.uploadPreview")}</h4>
+          <pre aria-label={t("language.uploadPreview")}>{uploadPreview.join("\n")}</pre>
+          {!uploadValidation.valid ? <p role="alert">{t("language.uploadInvalid")}</p> : null}
+          <p>{t("language.uploadMissingCount", { count: uploadValidation.missingKeys.length })}; {t("language.uploadUnknownCount", { count: uploadValidation.unknownKeys.length })}; {t("language.uploadPlaceholderCount", { count: uploadValidation.invalidValues.length })}</p>
+        </> : null}
+        {uploadError ? <p role="alert">{uploadError}</p> : null}
+        <button type="button" onClick={() => void saveUploadedCatalog()} disabled={!uploadValidation.valid}>
+          {t("language.uploadApply")}
+        </button>
+      </section>
+
+
+
 
       {saveError ? (
         <p className="ui2-language-settings__error" role="alert" data-testid="ui2-language-save-error">
