@@ -67,7 +67,7 @@ const ALLOWLIST = [
   "отличий Myrmidon от Paperclip",
   "вместо Paperclip", "остаётся Paperclip",
   "Paperclip — только основа", "Paperclip 2026.916.1",
-  "Paperclip v2026.916.1", "Paperclip → Myrmidon", "пользователей Paperclip", // MIGRATE-A changelog (myrmidon:migrate moves a Paperclip instance)
+  "Paperclip v2026.916.1", "Paperclip → Myrmidon", "пользователей Paperclip", "Migration from Paperclip", "Миграция с Paperclip", "Migration-from-Paperclip", // MIGRATE-A changelog (myrmidon:migrate moves a Paperclip instance)
   "Paperclip base", "Paperclip в основе", "основы Paperclip",
   "рутина Paperclip", "рутине Paperclip", "за основу",
   "Base Paperclip version", "base Paperclip version", "базового Paperclip",
