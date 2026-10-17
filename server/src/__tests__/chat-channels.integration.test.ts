@@ -21582,12 +21582,17 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         await holdLock;
       });
       await entered;
-      await deferred.shift()?.();
-      const [delivery] = await db
-        .select()
-        .from(chatDeliveries)
-        .where(eq(chatDeliveries.endpointId, endpoint.id));
-      expect(delivery).toMatchObject({ state: "retry", attempts: 1 });
+      deferred.shift()?.();
+      await vi.waitFor(
+        async () => {
+          const [delivery] = await db
+            .select()
+            .from(chatDeliveries)
+            .where(eq(chatDeliveries.endpointId, endpoint.id));
+          expect(delivery).toMatchObject({ state: "retry", attempts: 1 });
+        },
+        { timeout: 10_000 },
+      );
     } finally {
       releaseLock();
       await lockTransaction;
