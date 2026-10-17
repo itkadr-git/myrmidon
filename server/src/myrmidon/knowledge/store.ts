@@ -294,16 +294,26 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
       .where(and(eq(knowledgeItems.nestId, nestId), eq(knowledgeItems.id, itemId)))
       .limit(1);
     if (!item) return;
-    let content = "";
+    const contents: string[] = [];
+    let canonicalId: string | null = null;
     if (item.deliveredRevisionId) {
-      const [rev] = await db
-        .select({ content: knowledgeRevisions.content })
+      const [delivered] = await db
+        .select({ id: knowledgeRevisions.id, lang: knowledgeRevisions.lang, content: knowledgeRevisions.content, translationOf: knowledgeRevisions.translationOf })
         .from(knowledgeRevisions)
         .where(eq(knowledgeRevisions.id, item.deliveredRevisionId))
         .limit(1);
-      content = rev?.content ?? "";
+      canonicalId = delivered?.translationOf ?? delivered?.id ?? null;
+      if (delivered?.translationOf) {
+        const [canonical] = await db.select({ content: knowledgeRevisions.content }).from(knowledgeRevisions).where(eq(knowledgeRevisions.id, delivered.translationOf)).limit(1);
+        if (canonical) contents.push(canonical.content);
+      } else if (delivered) contents.push(delivered.content);
+      const translations = canonicalId ? await db
+        .select({ content: knowledgeRevisions.content })
+        .from(knowledgeRevisions)
+        .where(and(eq(knowledgeRevisions.translationOf, canonicalId), eq(knowledgeRevisions.status, "approved"))) : [];
+      contents.push(...translations.map((row: { content: string }) => row.content));
     }
-    await search.upsert({ itemId: item.id, nestId, slug: item.slug, title: item.title, summary: item.summary, content });
+    await search.upsert({ itemId: item.id, nestId, slug: item.slug, title: item.title, summary: item.summary, content: contents.join("\n") });
   }
 
   async function syncLinks(tx: Db | Parameters<Parameters<Db["transaction"]>[0]>[0], item: { companyId: string; nestId: string; id: string; slug: string }, content: string): Promise<void> {
@@ -989,9 +999,34 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
     }));
   }
 
-  async function searchNest(nestId: string, query: string, limit = 20): Promise<Array<{ itemId: string; slug: string; title: string }>> {
+  async function searchNest(nestId: string, query: string, limit = 20, language?: KnowledgeRevisionLang): Promise<Array<{ itemId: string; slug: string; title: string }>> {
     if (!search) throw new KnowledgeDomainError("search_unavailable", 501, "No SearchIndex is attached to this knowledge service.");
-    return search.search(nestId, query, limit);
+    const results = await search.search(nestId, query, limit);
+    if (!language || results.length === 0) return results;
+    const lang = normalizeKnowledgeRevisionLang(language);
+    const resultIds = new Set(results.map(({ itemId }) => itemId));
+    const revisions: RevisionRow[] = await db
+      .select()
+      .from(knowledgeRevisions)
+      .where(and(inArray(knowledgeRevisions.itemId, Array.from(resultIds)), eq(knowledgeRevisions.status, "approved")))
+      .orderBy(asc(knowledgeRevisions.revisionNumber));
+    const canonical = new Map(revisions.filter((row) => row.translationOf === null).map((row) => [row.id, row]));
+    const byItem = new Map<string, RevisionRow[]>();
+    for (const row of revisions) {
+      const canonicalId = row.translationOf ?? row.id;
+      if (!canonical.has(canonicalId)) continue;
+      const group = byItem.get(row.itemId) ?? [];
+      group.push(row);
+      byItem.set(row.itemId, group);
+    }
+    return results.flatMap((result) => {
+      const available = byItem.get(result.itemId) ?? [];
+      const canonicalRevision = available.find((row) => row.translationOf === null);
+      const selected = canonicalRevision?.lang === lang
+        ? canonicalRevision
+        : available.find((row) => row.translationOf === canonicalRevision?.id && row.lang === lang) ?? canonicalRevision;
+      return selected ? [result] : [];
+    });
   }
 
   // ------------------------------------------------------- suggestions S8

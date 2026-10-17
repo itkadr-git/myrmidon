@@ -58,6 +58,19 @@ export function assertTranslationOf(input: {
   }
 }
 
+export function selectKnowledgeRevision<T extends {
+  id: string;
+  lang: KnowledgeRevisionLang;
+  translationOf: string | null;
+  status: KnowledgeRevisionStatus;
+}>(revisions: readonly T[], requestedLang: KnowledgeRevisionLang): T | undefined {
+  const approved = revisions.filter((revision) => revision.status === "approved");
+  const canonical = approved.find((revision) => revision.translationOf === null);
+  if (!canonical) return undefined;
+  if (canonical.lang === requestedLang) return canonical;
+  return approved.find((revision) => revision.translationOf === canonical.id && revision.lang === requestedLang) ?? canonical;
+}
+
 export const KNOWLEDGE_SOURCE_KINDS = ["task", "pr", "issue", "run", "document", "decision", "url"] as const;
 export type KnowledgeSourceKind = (typeof KNOWLEDGE_SOURCE_KINDS)[number];
 

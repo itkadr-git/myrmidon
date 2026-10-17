@@ -51,6 +51,7 @@ describe("knowledge domain — slugs and single-line metadata", () => {
     expect(normalizeKnowledgeRevisionLang("EN_us")).toBe("en");
     expect(normalizeKnowledgeRevisionLang("xx")).toBe("en");
     assertTranslationOf({ lang: "ru", canonical: { id: "canonical", lang: "en" } });
+    expect(() => assertTranslationOf({ lang: "ru", revisionId: "canonical", canonical: { id: "canonical", lang: "en" } })).toThrow(/cannot translate itself/);
     expect(() => assertTranslationOf({ lang: "en", canonical: { id: "canonical", lang: "en" } })).toThrow(/different language/);
   });
 
