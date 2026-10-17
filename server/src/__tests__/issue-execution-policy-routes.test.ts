@@ -57,8 +57,8 @@ const mockDbInsert = vi.hoisted(() => vi.fn(() => ({ values: vi.fn(async () => u
 const mockDb = vi.hoisted(() => ({
   select: mockDbSelect,
   insert: mockDbInsert,
-  transaction: vi.fn(async (callback: (tx: { select: typeof mockDbSelect; insert: typeof mockDbInsert }) => Promise<unknown>) =>
-    callback({ select: mockDbSelect, insert: mockDbInsert })),
+  transaction: vi.fn(async (callback: (tx: typeof mockDb) => Promise<unknown>) =>
+    callback(mockDb)),
 }));
 
 const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
