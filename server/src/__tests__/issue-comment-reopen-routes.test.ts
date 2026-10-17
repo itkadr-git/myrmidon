@@ -1563,7 +1563,7 @@ describe.sequential("issue comment reopen routes", () => {
       {
         agentId: "22222222-2222-4222-8222-222222222222",
         userId: undefined,
-        runId: null,
+        runId: "run-1",
         onBehalfOfUserId: null,
       },
       expect.objectContaining({ attachmentIds: undefined, presentation: null, sourceTrust: null }),
