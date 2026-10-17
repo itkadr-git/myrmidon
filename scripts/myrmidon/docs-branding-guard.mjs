@@ -80,6 +80,7 @@ const ALLOWLIST = [
   "Allow Paperclip reads", "upstream Paperclip", "вендорского Paperclip",
   "Paperclip server failed to start", "Paperclip вендора",
   "Paperclip v2026.1001.0",
+  "Paperclip v2026.916.1", "Paperclip → Myrmidon", "пользователей Paperclip",
   "from Paperclip to Myrmidon", "с Paperclip на Myrmidon",
   "Paperclip instance", "экземпляр Paperclip",
   "Paperclip release",
