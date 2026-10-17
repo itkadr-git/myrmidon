@@ -8,6 +8,7 @@ set -eu
 DURATION=${DURATION:-150}
 RPS=${RPS:-8}
 OUTPUT=${OUTPUT:-"$PWD/ope6419-results.jsonl"}
+mkdir -p "$(dirname "$OUTPUT")"
 export DURATION RPS OUTPUT
 
 python3 "$(dirname "$0")/load_test.py"
