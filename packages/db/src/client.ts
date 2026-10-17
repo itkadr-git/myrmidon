@@ -738,7 +738,13 @@ async function migrationStatementAlreadyApplied(
     /^CREATE OR REPLACE FUNCTION "?([A-Za-z_][A-Za-z0-9_]*)"?\s*\(/i,
   );
   if (createFunctionMatch) {
-    return functionExists(sql, createFunctionMatch[1]);
+    const functionName = createFunctionMatch[1];
+    const expectedBody = normalized.slice(createFunctionMatch[0].length).trim();
+    const rows = await sql.unsafe<{ definition: string | null }[]>(
+      `SELECT pg_get_functiondef(p.oid) AS definition FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = 'public' AND p.proname = ${quoteLiteral(functionName)} LIMIT 1`,
+    );
+    const actualBody = rows[0]?.definition?.replace(/\s+/g, " ").trim();
+    return actualBody?.includes(expectedBody.replace(/\s+/g, " ")) ?? false;
   }
 
   const createTriggerMatch = normalized.match(
