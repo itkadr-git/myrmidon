@@ -14,9 +14,10 @@ import { fileURLToPath } from "node:url";
 //     verified `<base>.full.tar.zst` of the whole directory, which clears removal —
 //     bounded: over the size cap or with no free space it is refused (ok:false)
 //     and the directory stays;
-//   * the rhythm cache: the same op on the same path runs at most once per hour,
-//     keyed by path+op (a different op on the same path is a different decision);
-//     a repeat inside the window is a silent skip; the pass ends with
+//   * the rhythm cache: successful or error attempts on the same path/op are
+//     silently skipped inside the cooldown; deferred foreign-owner attempts are
+//     reported each pass so the board keeps a live attention card.
+//     a different op on the same path is a different decision; the pass ends with
 //     `cleaned N, deferred M (...)`.
 // Placeholder keys and repositories only.
 
@@ -344,6 +345,24 @@ describe("loop: the rhythm cache and the pass summary", () => {
     const { loop: loop3, calls: _c } = loopRig({ actions, executor: { remove: async () => { calls += 1; return "removed"; } }, cooldown: later });
     await loop3.runOnce();
     assert.equal(calls, 2);
+  });
+
+  it("a deferred foreign-owner action is retried and reported on the next pass", async () => {
+    const file = path.join(tmp, "cooldown-deferred", "botd-cooldown.json");
+    const cooldown = createCooldown(file);
+    let calls = 0;
+    const actions = [{ op: "remove", path: "/scratch/foreign", reason: "closing" }];
+    const { loop } = loopRig({
+      actions,
+      executor: { remove: async () => (++calls === 1 ? { deferred: "foreign-uid", detail: "EACCES" } : "removed") },
+      cooldown,
+    });
+    const first = await loop.runOnce();
+    assert.match(first.executed[0].detail, /deferred: foreign-uid/);
+    const second = await loop.runOnce();
+    assert.equal(calls, 2, "deferred permissions must be retried after the owner is repaired");
+    assert.equal(second.executed[0].result, "ok");
+    assert.equal(cooldown.deferredRecent("/scratch/foreign", "remove"), false);
   });
 
   it("without the cooldown module every action runs (behaviour unchanged)", async () => {
