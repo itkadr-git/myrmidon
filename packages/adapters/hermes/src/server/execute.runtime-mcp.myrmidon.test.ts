@@ -377,6 +377,24 @@ describe("P4 execute() spawn contract", () => {
     expect(fsSync.existsSync(observed.hermesHome as string)).toBe(false);
   });
 
+  it("passes workspace confinement only when the feature flag is enabled", async () => {
+    const realHome = await makeRealHermesHome();
+    const { ctx } = makeCtx({ realHome, extraConfig: { filesystemScope: "workspace" } });
+    await execute(ctx as never);
+    const call = vi.mocked(serverUtils.runChildProcess).mock.calls.at(-1)!;
+    const sandbox = (call[3] as { localProcessSandbox?: { filesystemScope?: string; workspaceDir?: string } }).localProcessSandbox;
+    expect(sandbox?.filesystemScope).toBe("workspace");
+    expect(sandbox?.workspaceDir).toBeTruthy();
+  });
+
+  it("passes explicit deny network confinement", async () => {
+    const realHome = await makeRealHermesHome();
+    const { ctx } = makeCtx({ realHome, extraConfig: { networkScope: "deny" } });
+    await execute(ctx as never);
+    const call = vi.mocked(serverUtils.runChildProcess).mock.calls.at(-1)!;
+    expect((call[3] as { localProcessSandbox?: { networkScope?: string } }).localProcessSandbox?.networkScope).toBe("deny");
+  });
+
   it("keeps the previous behavior for an agent without MCP connections", async () => {
     const realHome = await makeRealHermesHome();
     const { ctx } = makeCtx({ realHome, toolsets: "terminal", logs: observed.logs });

@@ -43,6 +43,13 @@ import {
 } from "@paperclipai/adapter-utils/server-utils";
 // myrmidon(S2): allow-listed run environment
 import { myrmidonInheritedProcessEnv, readInheritProcessEnvFlag } from "@paperclipai/adapter-utils/myrmidon-run-env";
+import {
+  parseLocalProcessFilesystemScope,
+  parseLocalProcessSandboxExtraPaths,
+  parseLocalProcessNetworkAllowlist,
+  parseLocalProcessNetworkScope,
+  type LocalProcessSandboxOptions,
+} from "@paperclipai/adapter-utils/local-process-sandbox";
 
 import {
   HERMES_CLI,
@@ -573,6 +580,33 @@ export async function execute(
     // Non-fatal
   }
 
+  // myrmidon(OPE-8135): opt-in confinement for hermes_local. The default
+  // remains unrestricted for compatibility; enabled runs have no host root.
+  const filesystemScope = parseLocalProcessFilesystemScope(config.filesystemScope);
+  const networkScope = parseLocalProcessNetworkScope(config.networkScope);
+  const localProcessSandbox: LocalProcessSandboxOptions | null =
+    (filesystemScope || networkScope)
+      ? {
+          workspaceDir: cwd,
+          filesystemScope,
+          managedPaths: env.HERMES_HOME ? [{ path: env.HERMES_HOME, access: "rw" }] : [],
+          extraPaths: parseLocalProcessSandboxExtraPaths(config.filesystemExtraPaths),
+          homeDir: filesystemScope ? env.HERMES_HOME ?? null : null,
+          networkScope,
+          networkAllowlist: parseLocalProcessNetworkAllowlist(config.networkAllowlist),
+          networkTrustedUrls: [env.PAPERCLIP_API_URL].filter(
+            (value): value is string => typeof value === "string" && value.length > 0,
+          ),
+          command: cfgString(config.filesystemSandboxCommand) || "bwrap",
+        }
+      : null;
+  if (localProcessSandbox) {
+    const scopes = [filesystemScope ? "workspace filesystem" : null, networkScope ? `${networkScope} network` : null]
+      .filter(Boolean)
+      .join(" and ");
+    await ctx.onLog("stdout", `[paperclip] Confining Hermes with ${scopes} scope.\n`);
+  }
+
   // ── Log start ──────────────────────────────────────────────────────────
   await ctx.onLog(
     "stdout",
@@ -624,6 +658,7 @@ export async function execute(
       stdin: prompt,
       inheritProcessEnv: readInheritProcessEnvFlag(config), // myrmidon(S2)
       runEnvAdapterType: "hermes_local", // myrmidon(S2)
+      localProcessSandbox,
     });
   } finally {
     await runtimeMcpCleanup?.();
