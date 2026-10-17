@@ -43,6 +43,36 @@ it("registers the async writer-acquire delta with fail-closed markers", () => {
   assert.match(patch, /pytest.raises\(SidecarScanIncompleteError\)/);
 });
 
+
+it("maps the accepted writer lifecycle anchors to the pinned Hermes source", async () => {
+  const sha = "f97608f178d1ffeca59860195ab7da295f7c8e5f";
+  const paths = [
+    "gateway/run.py",
+    "gateway/run_startup.py",
+    "gateway/run_shutdown.py",
+    "gateway/run_bootstrap.py",
+    "gateway/run_runtime_init.py",
+  ];
+  const responses = new Map();
+  for (const file of paths) {
+    const response = await fetch(
+      `https://raw.githubusercontent.com/NousResearch/hermes-agent/${sha}/${file}`,
+    );
+    responses.set(file, response.status);
+    if (response.ok && file === "gateway/run.py") {
+      const source = await response.text();
+      for (const symbol of ["class GatewayRunner", "def _init_session_store", "def _init_session_db", "def start_gateway"]) {
+        assert.ok(source.includes(symbol), `pinned run.py must expose ${symbol}`);
+      }
+    }
+  }
+  assert.equal(responses.get("gateway/run.py"), 200);
+  assert.equal(responses.get("gateway/run_startup.py"), 200);
+  assert.equal(responses.get("gateway/run_shutdown.py"), 200);
+  assert.equal(responses.get("gateway/run_bootstrap.py"), 404);
+  assert.equal(responses.get("gateway/run_runtime_init.py"), 404);
+});
+
 const fakeRun = (texts) =>
   run({
     registryPath: REGISTRY,
