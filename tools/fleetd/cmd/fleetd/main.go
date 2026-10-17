@@ -6,13 +6,18 @@
 package main
 
 import (
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
+	"time"
 )
 
 // botStatus is the driver contract's BotContainerStatus.
@@ -54,10 +59,13 @@ type profile struct {
 // config is the JSON configuration (see docs/myrmidon/fleetd-vmexec.md).
 // Unknown keys are rejected at load time, the same discipline as dockergate.
 type config struct {
-	Listen   string `json:"listen"`
-	Token    string `json:"token"`
-	Upstream string `json:"upstream"`
-	Bots     []bot  `json:"bots"`
+	Listen     string `json:"listen"`
+	Token      string `json:"token"`
+	Upstream   string `json:"upstream"`
+	SiteCA     string `json:"siteCA"`
+	ServerCert string `json:"serverCert"`
+	ServerKey  string `json:"serverKey"`
+	Bots       []bot  `json:"bots"`
 }
 
 type bot struct {
@@ -81,7 +89,7 @@ func strictDecode(data []byte, out any) error {
 }
 
 func main() {
-	configPath := flag.String("config", "", "path to the JSON configuration")
+	configPath := flag.String("config", "/etc/myrmidon/fleetd.json", "path to the fleetd JSON configuration")
 	check := flag.Bool("check-config", false, "validate the configuration and exit")
 	flag.Parse()
 	if *configPath == "" {
@@ -95,35 +103,67 @@ func main() {
 	if err := strictDecode(raw, &cfg); err != nil {
 		log.Fatalf("config is invalid: %v", err)
 	}
-	if err := validate(&cfg); err != nil {
+	if err := validate(&cfg, *check); err != nil {
 		log.Fatalf("config is invalid: %v", err)
 	}
 	if *check {
 		fmt.Println("configuration is valid")
 		return
 	}
+	listener, err := tlsListener(&cfg)
+	if err != nil {
+		log.Fatalf("TLS setup failed: %v", err)
+	}
 	srv := &server{cfg: &cfg}
-	http.HandleFunc("/v1/bots", srv.requireAuth(srv.list))
-	http.HandleFunc("/v1/bots/", srv.requireAuth(srv.route))
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/bots", srv.requireAuth(srv.list))
+	mux.HandleFunc("/v1/bots/", srv.requireAuth(srv.route))
 	log.Printf("fleetd listening on %s", cfg.Listen)
-	log.Fatal(http.ListenAndServe(cfg.Listen, nil))
+	log.Fatal((&http.Server{
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+	}).ServeTLS(listener, "", ""))
 }
 
-func validate(cfg *config) error {
+func validate(cfg *config, checkConfig bool) error {
 	if cfg.Listen == "" {
 		return fmt.Errorf("listen is required (host:port)")
+	}
+	if checkConfig {
+		if len(cfg.Token) < 32 {
+			return fmt.Errorf("token must be at least 32 characters")
+		}
+		if cfg.Upstream != "" && !strings.HasPrefix(cfg.Upstream, "http://") && !strings.HasPrefix(cfg.Upstream, "https://") {
+			return fmt.Errorf("upstream must be an http(s) URL")
+		}
+		return validateBots(cfg.Bots)
+	}
+	if cfg.SiteCA == "" || cfg.ServerCert == "" || cfg.ServerKey == "" {
+		return fmt.Errorf("siteCA, serverCert and serverKey are required")
+	}
+	for name, path := range map[string]string{"siteCA": cfg.SiteCA, "serverCert": cfg.ServerCert, "serverKey": cfg.ServerKey} {
+		if !filepath.IsAbs(path) {
+			return fmt.Errorf("%s path must be absolute", name)
+		}
+		if _, err := os.Stat(path); err != nil {
+			return fmt.Errorf("%s: %w", name, err)
+		}
 	}
 	if len(cfg.Token) < 32 {
 		return fmt.Errorf("token must be at least 32 characters")
 	}
-	if cfg.Upstream == "" {
-		cfg.Upstream = "/var/run/docker.sock"
+	if cfg.Upstream != "" && !strings.HasPrefix(cfg.Upstream, "http://") && !strings.HasPrefix(cfg.Upstream, "https://") {
+		return fmt.Errorf("upstream must be an http(s) URL")
 	}
-	if len(cfg.Bots) == 0 {
+	return validateBots(cfg.Bots)
+}
+
+func validateBots(bots []bot) error {
+	if len(bots) == 0 {
 		return fmt.Errorf("at least one bots[] entry is required")
 	}
-	for i := range cfg.Bots {
-		b := &cfg.Bots[i]
+	for i := range bots {
+		b := &bots[i]
 		if b.BotKey == "" || !validBotKey(b.BotKey) {
 			return fmt.Errorf("bots[%d].botKey %q is invalid", i, b.BotKey)
 		}
@@ -132,6 +172,31 @@ func validate(cfg *config) error {
 		}
 	}
 	return nil
+}
+
+func tlsListener(cfg *config) (net.Listener, error) {
+	pair, err := tls.LoadX509KeyPair(cfg.ServerCert, cfg.ServerKey)
+	if err != nil {
+		return nil, fmt.Errorf("load server certificate")
+	}
+	caPEM, err := os.ReadFile(cfg.SiteCA)
+	if err != nil {
+		return nil, fmt.Errorf("read site CA")
+	}
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(caPEM) {
+		return nil, fmt.Errorf("site CA contains no certificates")
+	}
+	base, err := net.Listen("tcp", cfg.Listen)
+	if err != nil {
+		return nil, err
+	}
+	return tls.NewListener(base, &tls.Config{
+		MinVersion:   tls.VersionTLS12,
+		Certificates: []tls.Certificate{pair},
+		ClientCAs:    pool,
+		ClientAuth:   tls.RequireAndVerifyClientCert,
+	}), nil
 }
 
 func validBotKey(key string) bool {

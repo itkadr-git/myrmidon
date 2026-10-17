@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -19,9 +20,14 @@ func fakeBearer() string {
 	}, "")
 }
 
-func testConfig() *config {
+func testConfig(t *testing.T) *config {
+	t.Helper()
 	cfg := &config{
-		Listen: "127.0.0.1:0",
+		Listen:     "127.0.0.1:0",
+		Token:      fakeBearer(),
+		SiteCA:     filepath.Join(t.TempDir(), "site-ca.pem"),
+		ServerCert: filepath.Join(t.TempDir(), "server.pem"),
+		ServerKey:  filepath.Join(t.TempDir(), "server-key.pem"),
 		Bots: []bot{
 			{BotKey: "bot-example-one", MaxMemoryMb: 1536, MaxCpus: 1, MaxPids: 256},
 		},
@@ -32,7 +38,7 @@ func testConfig() *config {
 
 func newServer(t *testing.T) (*server, *httptest.Server) {
 	t.Helper()
-	srv := &server{cfg: testConfig()}
+	srv := &server{cfg: testConfig(t)}
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/v1/bots") {
 			srv.requireAuth(func(w http.ResponseWriter, r *http.Request) {
@@ -180,24 +186,41 @@ func TestBadBotKeyIsRejected(t *testing.T) {
 	}
 }
 
+func TestValidateConfigRequiresMutualTLSMaterial(t *testing.T) {
+	for _, field := range []string{"siteCA", "serverCert", "serverKey"} {
+		cfg := testConfig(t)
+		switch field {
+		case "siteCA":
+			cfg.SiteCA = ""
+		case "serverCert":
+			cfg.ServerCert = ""
+		case "serverKey":
+			cfg.ServerKey = ""
+		}
+		if err := validate(cfg, false); err == nil || !strings.Contains(err.Error(), field) {
+			t.Errorf("missing %s accepted: %v", field, err)
+		}
+	}
+}
+
 func TestValidateConfig(t *testing.T) {
-	cfg := testConfig()
-	if err := validate(cfg); err != nil {
+	cfg := testConfig(t)
+	if err := validate(cfg, true); err != nil {
 		t.Fatalf("valid config rejected: %v", err)
 	}
-	bad := testConfig()
+	bad := testConfig(t)
 	bad.Token = "short"
-	if err := validate(bad); err == nil || !strings.Contains(err.Error(), "token") {
+	if err := validate(bad, true); err == nil || !strings.Contains(err.Error(), "token") {
 		t.Fatalf("short token accepted: %v", err)
 	}
-	bad = testConfig()
+	bad = testConfig(t)
 	bad.Bots = nil
-	if err := validate(bad); err == nil || !strings.Contains(err.Error(), "bots[]") {
+	if err := validate(bad, true); err == nil || !strings.Contains(err.Error(), "bots[]") {
 		t.Fatalf("no bots accepted: %v", err)
 	}
-	bad = testConfig()
+	bad = testConfig(t)
 	bad.Bots[0].BotKey = "-leading-dash-"
-	if err := validate(bad); err == nil || !strings.Contains(err.Error(), "botKey") {
+	if err := validate(bad, true); err == nil || !strings.Contains(err.Error(), "botKey") {
 		t.Fatalf("bad key accepted: %v", err)
 	}
 }
