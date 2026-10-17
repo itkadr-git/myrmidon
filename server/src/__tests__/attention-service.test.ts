@@ -757,7 +757,7 @@ describeEmbeddedPostgres("attention service", () => {
     expect(replayCard).toMatchObject({
       sourceKind: "replay_blocked",
       subject: { id: replayHoldIssueId, metadata: { responsibleAgentId: null, responsibleUserId: "board-user", dueAt: expect.any(String) } },
-      decideBy: expect.any(String),
+      decideBy: null,
       whyNow: expect.stringContaining("board operator"),
     });
     expect(feed.items.map((item) => item.sourceKind)).toEqual(expect.arrayContaining([
