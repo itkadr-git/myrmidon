@@ -590,7 +590,7 @@ async function seedLowTrustFixture(db: Db) {
               assignedReview!.id,
               sameBoundaryChild!.id,
             ],
-            allowedAgentIds: [collaborator!.id],
+            allowedAgentIds: [collaborator!.id, standard!.id],
           },
         },
       },
