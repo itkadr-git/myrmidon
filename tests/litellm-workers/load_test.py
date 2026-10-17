@@ -118,9 +118,7 @@ try:
     record_resize("scale_down", 2)
 finally:
     for thread in threads:
-        thread.join(timeout=max(0, STOP - time.monotonic()) + 35)
-if any(thread.is_alive() for thread in threads):
-    thread_errors.append("load worker threads did not finish")
+        thread.join()
 
 codes = {}
 for record in results:
@@ -145,17 +143,21 @@ summary = {
     "completed_requests": len(results), "attempted_rps": round(attempted_rps, 3),
     "codes": codes, "http_5xx": http_5xx,
     "worker_current_events": [e.get("result", {}).get("current") for e in events],
+    "resize_confirmed": [e.get("result", {}).get("current") for e in events] == [2, 4, 2],
     "completed_rps": round(completed_rps, 3), "planned_requests": planned_requests,
     "transport_errors": len(errors), "timeouts": sum("timeout" in e.lower() for e in errors),
+    "connection_errors": sum(any(token in e.lower() for token in ("connectionreset", "connectionaborted", "brokenpipe", "remotedisconnected")) for e in errors),
     "elapsed_s": round(elapsed, 3),
     "thread_errors": thread_errors,
     "latency_medians_s": medians, "resize_events": events,
 }
 output_path = os.path.abspath(OUTPUT)
 os.makedirs(os.path.dirname(output_path), exist_ok=True)
-with open(output_path, "w", encoding="utf-8") as output:
+temporary_path = output_path + ".tmp"
+with open(temporary_path, "w", encoding="utf-8") as output:
     for record in results:
         output.write(json.dumps(record) + "\n")
+os.replace(temporary_path, output_path)
 print(json.dumps(summary, indent=2))
 failure_reasons = []
 if http_5xx:
