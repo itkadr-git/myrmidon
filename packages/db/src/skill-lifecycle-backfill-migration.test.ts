@@ -17,7 +17,7 @@ import {
 // item per skill, mirrored into `knowledge_search` with provenance and audit
 // rows; and (4) be a no-op on replay.
 
-const MIGRATION_FILE = "0314_skill_lifecycle_backfill.sql";
+const MIGRATION_FILE = "0398_skill_lifecycle_backfill.sql";
 const cleanups: Array<() => Promise<void>> = [];
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -99,7 +99,7 @@ describeEmbeddedPostgres("skill lifecycle backfill migration", () => {
 
     await applyPendingMigrations(database.connectionString);
     // The fixture rows were inserted after the boot-time migration run, so run
-    // 0314 again to see the backfill act on them.
+    // 0398 again to see the backfill act on them.
     await unapplyMigration(sql);
     await applyPendingMigrations(database.connectionString);
 
