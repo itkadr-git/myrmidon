@@ -1975,10 +1975,12 @@ export function recoveryService(
     reason:
       | "issue_assignment_recovery"
       | "issue_continuation_needed"
+      | "stranded_recovery_reroute"
       | typeof EXECUTION_REVIEW_PARTICIPANT_RECOVERY_REASON;
     retryReason:
       | "assignment_recovery"
       | "issue_continuation_needed"
+      | "stranded_recovery_reroute"
       | typeof EXECUTION_REVIEW_PARTICIPANT_RECOVERY_REASON;
     source: string;
     retryOfRunId?: string | null;
@@ -2548,13 +2550,84 @@ export function recoveryService(
     };
   }
 
+  async function rerouteStrandedIssueToSharedQueue(input: {
+    issue: typeof issues.$inferSelect;
+    reason: string;
+    latestRun: LatestIssueRun;
+    previousStatus: StrandedPreviousStatus;
+    recoveryCause?: StrandedRecoveryCause;
+    successfulRunHandoffEvidence?: SuccessfulRunHandoffRecoveryEvidence | null;
+  }) {
+    const latestRun = await getLatestIssueRun(input.issue.companyId, input.issue.id);
+    if (!latestRun || (latestRun.status !== "failed" && latestRun.status !== "timed_out" && latestRun.status !== "cancelled" && latestRun.status !== "interrupted" && latestRun.status !== "succeeded")) return false;
+    const assignee = input.issue.assigneeAgentId
+      ? await getAgent(input.issue.assigneeAgentId)
+      : null;
+    const invokability = assignee
+      ? await evaluateAgentInvokabilityFromDb(db, assignee)
+      : null;
+    const targetAssigneeId = invokability?.invokable ? input.issue.assigneeAgentId : null;
+    const stillAssigned = targetAssigneeId !== null;
+    const [existingIssue] = await db
+      .select({
+        id: issues.id,
+        companyId: issues.companyId,
+        status: issues.status,
+      })
+      .from(issues)
+      .where(and(eq(issues.id, input.issue.id), eq(issues.companyId, input.issue.companyId)))
+      .limit(1);
+    if (!existingIssue || existingIssue.status === "done" || existingIssue.status === "cancelled") return false;
+    const blockers = await existingUnresolvedBlockerIssues(input.issue.companyId, existingIssue.id);
+    const blockedByIssueIds = blockers.map((blocker) => blocker.id);
+    if (blockedByIssueIds.length > 0) {
+      const [reblockedIssue] = await db
+        .update(issues)
+        .set({ status: "blocked", updatedAt: new Date() })
+        .where(and(eq(issues.id, existingIssue.id), eq(issues.companyId, input.issue.companyId)))
+        .returning();
+      if (!reblockedIssue) return false;
+      await issuesSvc.update(reblockedIssue.id, { status: "blocked", blockedByIssueIds });
+      return false;
+    }
+    const action = await ensureSourceScopedStrandedRecoveryAction({
+      issue: input.issue,
+      latestRun,
+      previousStatus: input.previousStatus,
+      recoveryCause: input.recoveryCause,
+      successfulRunHandoffEvidence: input.successfulRunHandoffEvidence,
+      rerouteToSharedQueue: true,
+    });
+    if (!action) return false;
+    const [updatedIssue] = await db
+      .update(issues)
+      .set({
+        status: "todo",
+        assigneeAgentId: targetAssigneeId,
+        updatedAt: new Date(),
+      })
+      .where(and(eq(issues.id, existingIssue.id), eq(issues.companyId, input.issue.companyId)))
+      .returning();
+    if (!updatedIssue) return false;
+    await issuesSvc.addComment(
+      updatedIssue.id,
+      `Recovery returned this stranded issue to the ${stillAssigned ? "original available engineer assignment" : "unassigned engineer queue"} (${input.reason}).`,
+      {},
+      { authorType: "system" },
+    );
+    await issuesSvc.update(updatedIssue.id, { status: "todo", assigneeAgentId: targetAssigneeId });
+    return true;
+  }
+
   async function ensureSourceScopedStrandedRecoveryAction(input: {
     issue: typeof issues.$inferSelect;
     latestRun: LatestIssueRun;
     previousStatus: StrandedPreviousStatus;
     recoveryCause?: StrandedRecoveryCause;
     successfulRunHandoffEvidence?: SuccessfulRunHandoffRecoveryEvidence | null;
+    rerouteToSharedQueue?: boolean;
   }) {
+    if (input.issue.originKind === "stranded_issue_recovery") return null;
     const recoveryCause = resolveStrandedRecoveryCause(
       input.latestRun,
       input.recoveryCause,
@@ -2633,7 +2706,9 @@ export function recoveryService(
                     : recoveryCause === "execution_review_participant_recovery"
                       ? "Board operator: repair the failed review participant path, restore a live reviewer, explicitly reassign, or record an intentional resolution."
                       : "Board operator: inspect the evidence, repair the runtime if appropriate, then explicitly retry the original owner, reassign, or intentionally resolve the task.",
-      wakePolicy: isProviderQuotaWait
+      wakePolicy: input.rerouteToSharedQueue
+        ? { type: "system_retry", reason: "stranded_recovery" }
+        : isProviderQuotaWait
         ? {
             type: "monitor_only",
             reason: recoveryCause,
@@ -3848,15 +3923,34 @@ export function recoveryService(
     notice?: StrandedRecoveryNoticeSeed | null;
     recoveryCause?: StrandedRecoveryCause;
     successfulRunHandoffEvidence?: SuccessfulRunHandoffRecoveryEvidence | null;
+    rerouteToSharedQueue?: boolean;
   }) {
     if (isStrandedIssueRecoveryIssue(input.issue)) {
-      return escalateStrandedRecoveryIssueInPlace({
-        issue: input.issue,
-        previousStatus: input.previousStatus,
-        latestRun: input.latestRun,
-      });
+      if (input.rerouteToSharedQueue) {
+        const rerouted = await rerouteStrandedIssueToSharedQueue({
+          issue: input.issue,
+          reason: input.notice?.title ?? "stranded recovery issue",
+          latestRun: input.latestRun,
+          previousStatus: input.previousStatus,
+          recoveryCause: input.recoveryCause,
+          successfulRunHandoffEvidence: input.successfulRunHandoffEvidence,
+        });
+        return rerouted ? input.issue : null;
+      }
+      const activeActions = await db
+        .select({ id: issueRecoveryActions.id })
+        .from(issueRecoveryActions)
+        .where(
+          and(
+            eq(issueRecoveryActions.sourceIssueId, input.issue.id),
+            eq(issueRecoveryActions.companyId, input.issue.companyId),
+            inArray(issueRecoveryActions.status, ["active", "escalated"]),
+            eq(issueRecoveryActions.kind, "assigned_issue"),
+          ),
+        )
+        .limit(1);
+      if (activeActions.length > 0) return null;
     }
-
     const recoveryCause = resolveStrandedRecoveryCause(
       input.latestRun,
       input.recoveryCause,
@@ -3885,6 +3979,7 @@ export function recoveryService(
     if (
       readStrandedAutoPolicyEnabled() &&
       strandedAutoPolicyLatestRun?.status === "succeeded" &&
+      !input.rerouteToSharedQueue &&
       isStrandedAutoPolicyCause(recoveryCause) &&
       (input.previousStatus === "in_progress" || input.issue.status === "in_progress") &&
       input.issue.assigneeAgentId &&
@@ -4258,7 +4353,20 @@ export function recoveryService(
       latestRun: input.latestRun,
       recoveryCause,
       successfulRunHandoffEvidence: input.successfulRunHandoffEvidence,
+      rerouteToSharedQueue: input.rerouteToSharedQueue,
     });
+    if (!recoveryAction && input.issue.originKind === "stranded_issue_recovery") {
+      if (input.rerouteToSharedQueue) return false;
+      const blockerIds = await existingUnresolvedBlockerIssueIds(
+        input.issue.companyId,
+        input.issue.id,
+      );
+      return issuesSvc.update(input.issue.id, {
+        status: "blocked",
+        blockedByIssueIds: blockerIds,
+      });
+    }
+    if (!recoveryAction) return input.issue;
     const isProviderQuotaWait =
       recoveryCause === "provider_quota" &&
       !recoveryAction.ownerAgentId &&
@@ -4275,6 +4383,22 @@ export function recoveryService(
       input.issue.companyId,
       input.issue.id,
     );
+    if (input.rerouteToSharedQueue && blockerIds.length === 0) {
+      const rerouted = await rerouteStrandedIssueToSharedQueue({
+        issue: input.issue,
+        reason: input.notice?.title ?? recoveryCause,
+        latestRun: input.latestRun,
+        previousStatus: input.previousStatus,
+        recoveryCause,
+        successfulRunHandoffEvidence: input.successfulRunHandoffEvidence,
+      });
+      if (rerouted) {
+        return (await db.query.issues.findFirst({
+          where: and(eq(issues.id, input.issue.id), eq(issues.companyId, input.issue.companyId)),
+        })) ?? null;
+      }
+      return input.issue;
+    }
     const updated = await issuesSvc.update(input.issue.id, {
       status: "blocked",
       blockedByIssueIds: blockerIds,
@@ -4650,6 +4774,7 @@ export function recoveryService(
 
   async function reconcileStrandedAssignedIssues(opts?: {
     issueCreatedAtGte?: Date | null;
+    issueIds?: string[];
   }) {
     const candidates = await db
       .select()
@@ -4665,6 +4790,7 @@ export function recoveryService(
           opts?.issueCreatedAtGte
             ? gte(issues.createdAt, opts.issueCreatedAtGte)
             : undefined,
+          opts?.issueIds ? inArray(issues.id, opts.issueIds) : undefined,
           isNull(issues.hiddenAt),
           not(unadmittedChatWakeupCondition(issues.id, issues.companyId)),
         ),
@@ -5513,10 +5639,11 @@ export function recoveryService(
               body:
                 productSaid("automatically retried dispatch for this assigned `todo` issue after a lost wake/run, ") +
                 "but it still has no live execution path. " +
-                "Moving it to `blocked` so it is visible for intervention.",
+                "Returning it to the shared engineer queue for intervention.",
               title: "No live execution path",
               tone: "danger",
             },
+            rerouteToSharedQueue: true,
           });
           if (updated) {
             result.escalated += 1;
@@ -5584,6 +5711,7 @@ export function recoveryService(
           latestRun,
           recoveryCause: SUCCESSFUL_RUN_MISSING_STATE_REASON,
           successfulRunHandoffEvidence: handoffEvidence,
+          rerouteToSharedQueue: true,
         });
         if (updated) {
           result.successfulRunHandoffEscalated += 1;
@@ -5631,7 +5759,8 @@ export function recoveryService(
               latestRun: successfulRun,
               comment:
                 productSaid("automatically retried continuation for this assigned `in_progress` issue and the retry ") +
-                "made progress, but it still has no live execution path. Moving it to `blocked` so it is visible for intervention.",
+                "made progress, but it still has no live execution path. Returning it to the shared engineer queue for intervention.",
+              rerouteToSharedQueue: true,
             });
             if (updated) {
               result.escalated += 1;
@@ -5733,11 +5862,11 @@ export function recoveryService(
               notice: {
                 body:
                   productSaid("automatically retried continuation for this assigned `in_progress` issue after its live ") +
-                  `execution disappeared, but it still has no live execution path${attemptCopy}. ` +
-                  "Moving it to `blocked` so it is visible for intervention.",
+                  `execution disappeared, but it still has no live execution path${attemptCopy}. Returning it to the shared engineer queue for intervention.`,
                 title: "No live execution path",
                 tone: "danger",
               },
+              rerouteToSharedQueue: true,
             });
             if (updated) {
               result.escalated += 1;
