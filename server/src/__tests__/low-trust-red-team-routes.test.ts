@@ -902,6 +902,30 @@ describeEmbeddedPostgres(
       await tempDb?.cleanup();
     });
 
+    it("fails closed when a low-trust issue or child has no promotion owner", async () => {
+      const fixture = await seedLowTrustFixture(db);
+      await db.update(companies)
+        .set({ defaultResponsibleUserId: null })
+        .where(eq(companies.id, fixture.company.id));
+      await db.update(issues)
+        .set({ responsibleUserId: null })
+        .where(eq(issues.id, fixture.issues.reviewRoot.id));
+      await db.update(issues)
+        .set({ responsibleUserId: null })
+        .where(eq(issues.id, fixture.issues.assignedReview.id));
+      const app = createApp(db, agentActor(fixture));
+      const createWithoutOwner = await request(app)
+        .post(`/api/companies/${fixture.company.id}/issues`)
+        .send({ title: `quarantined ${fixture.canaries.raw}` });
+      expect(createWithoutOwner.status, JSON.stringify(createWithoutOwner.body)).toBe(422);
+      expect(createWithoutOwner.body.error).toContain("without a promotion owner");
+      const childWithoutOwner = await request(app)
+        .post(`/api/issues/${fixture.issues.reviewRoot.id}/children`)
+        .send({ title: `child ${fixture.canaries.raw}` });
+      expect(childWithoutOwner.status, JSON.stringify(childWithoutOwner.body)).toBe(422);
+      expect(childWithoutOwner.body.error).toContain("without a promotion owner");
+    });
+
     it("allows bounded same-issue reads and writes while quarantining low-trust output", async () => {
       const fixture = await seedLowTrustFixture(db);
       const app = createApp(db, agentActor(fixture));

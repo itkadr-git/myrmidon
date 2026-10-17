@@ -3955,16 +3955,21 @@ export function issueRoutes(
     actor: ReturnType<typeof getActorInfo>,
     requirePromotionOwner = false,
   ) {
-    const sourceTrust = await resolveActorSourceTrustForIssue({ db, issue, actor, requirePromotionOwner });
-    if (!sourceTrust || sourceTrust.disposition !== "quarantined") {
-      return sourceTrust;
-    }
     const company = await companiesSvc.getById(issue.companyId);
     const promotionOwnerUserId =
       issue.responsibleUserId ??
       (actor.actorType === "user" ? actor.actorId : null) ??
       company?.defaultResponsibleUserId ??
       null;
+    const sourceTrust = await resolveActorSourceTrustForIssue({
+      db,
+      issue: { ...issue, responsibleUserId: promotionOwnerUserId },
+      actor,
+      requirePromotionOwner,
+    });
+    if (!sourceTrust || sourceTrust.disposition !== "quarantined") {
+      return sourceTrust;
+    }
     if (requirePromotionOwner && !promotionOwnerUserId) {
       throw unprocessable("Low-trust output cannot be quarantined without a promotion owner");
     }
@@ -12245,14 +12250,25 @@ export function issueRoutes(
         Boolean(executionPolicy?.monitor),
       );
       const issueId = randomUUID();
+      const company = await companiesSvc.getById(companyId);
+      const promotionOwnerUserId =
+        authenticatedActorResponsibleUserId(req) ??
+        (actor.actorType === "user" ? actor.actorId : null) ??
+        company?.defaultResponsibleUserId ??
+        null;
+      if (actor.actorType === "agent" && !promotionOwnerUserId) {
+        throw unprocessable("Low-trust output cannot be quarantined without a promotion owner");
+      }
       const sourceTrust = await sourceTrustForActorWrite(
         {
           id: issueId,
           companyId,
           projectId: createBody.projectId ?? null,
           executionPolicy,
+          responsibleUserId: promotionOwnerUserId,
         },
         actor,
+        true,
       );
       let deduplicationReason: "idempotency_key" | "recent_open_title" | null =
         null;
@@ -12267,7 +12283,8 @@ export function issueRoutes(
         createdByAgentId: actor.agentId,
         createdByUserId: actor.actorType === "user" ? actor.actorId : null,
         actorRunId: actor.runId,
-        actorResponsibleUserId: authenticatedActorResponsibleUserId(req),
+        actorResponsibleUserId:
+          authenticatedActorResponsibleUserId(req) ?? promotionOwnerUserId,
         trustExplicitResponsibleUserId: actor.actorType === "user",
         watchdogActorRunId: actor.runId,
         onDeduplicated: (reason: "idempotency_key" | "recent_open_title") => {
@@ -12592,20 +12609,32 @@ export function issueRoutes(
         Boolean(executionPolicy?.monitor),
       );
       const issueId = randomUUID();
+      const company = await companiesSvc.getById(parent.companyId);
+      const promotionOwnerUserId =
+        authenticatedActorResponsibleUserId(req) ??
+        (actor.actorType === "user" ? actor.actorId : parent.responsibleUserId) ??
+        company?.defaultResponsibleUserId ??
+        null;
+      if (actor.actorType === "agent" && !promotionOwnerUserId) {
+        throw unprocessable("Low-trust output cannot be quarantined without a promotion owner");
+      }
       const sourceTrust = await sourceTrustForActorWrite(
         {
           id: issueId,
           companyId: parent.companyId,
           projectId: createBody.projectId ?? parent.projectId ?? null,
           executionPolicy,
+          responsibleUserId: promotionOwnerUserId,
         },
         actor,
+        true,
       );
       const { issue, parentBlockerAdded } = await svc.createChild(parent.id, {
         ...createBody,
         ...(taskBridgeOriginForActor(req) ?? {}),
         id: issueId,
         executionPolicy,
+        ...(sourceTrust ? { sourceTrust } : {}),
         ...(currentSerializedChild
           ? {
               status: "blocked",
@@ -12615,11 +12644,11 @@ export function issueRoutes(
               ),
             }
           : {}),
-        ...(sourceTrust ? { sourceTrust } : {}),
         createdByAgentId: actor.agentId,
         createdByUserId: actor.actorType === "user" ? actor.actorId : null,
         actorRunId: actor.runId,
-        actorResponsibleUserId: authenticatedActorResponsibleUserId(req),
+        actorResponsibleUserId:
+          authenticatedActorResponsibleUserId(req) ?? promotionOwnerUserId,
         trustExplicitResponsibleUserId: actor.actorType === "user",
         actorAgentId: actor.agentId,
         actorUserId: actor.actorType === "user" ? actor.actorId : null,
@@ -12802,7 +12831,15 @@ export function issueRoutes(
       }
 
       const actor = getActorInfo(req);
+      const company = await companiesSvc.getById(sourceIssue.companyId);
       const normalizedChildren = [];
+      const promotionOwnerUserId =
+        authenticatedActorResponsibleUserId(req) ??
+        (actor.actorType === "user" ? actor.actorId : sourceIssue.responsibleUserId) ??
+        company?.defaultResponsibleUserId ??
+        null;
+      const missingPromotionOwner =
+        actor.actorType === "agent" && !promotionOwnerUserId;
       for (const child of requestedChildren) {
         const executionPolicy = applyActorMonitorScheduledBy(
           normalizeIssueExecutionPolicy(child.executionPolicy),
@@ -12815,6 +12852,9 @@ export function issueRoutes(
           child.assigneeAgentId ?? null,
           Boolean(executionPolicy?.monitor),
         );
+        if (missingPromotionOwner) {
+          throw unprocessable("Low-trust output cannot be quarantined without a promotion owner");
+        }
         const childIssueId = randomUUID();
         const sourceTrust = await sourceTrustForActorWrite(
           {
@@ -12822,8 +12862,10 @@ export function issueRoutes(
             companyId: sourceIssue.companyId,
             projectId: child.projectId ?? sourceIssue.projectId ?? null,
             executionPolicy,
+            responsibleUserId: promotionOwnerUserId,
           },
           actor,
+          true,
         );
         normalizedChildren.push({
           ...child,
@@ -12833,11 +12875,15 @@ export function issueRoutes(
           createdByAgentId: actor.agentId,
           createdByUserId: actor.actorType === "user" ? actor.actorId : null,
           actorRunId: actor.runId,
-          actorResponsibleUserId: authenticatedActorResponsibleUserId(req),
+          actorResponsibleUserId:
+            authenticatedActorResponsibleUserId(req) ?? promotionOwnerUserId,
           trustExplicitResponsibleUserId: actor.actorType === "user",
           actorAgentId: actor.agentId,
           actorUserId: actor.actorType === "user" ? actor.actorId : null,
         });
+      }
+      if (missingPromotionOwner) {
+        throw unprocessable("Low-trust output cannot be quarantined without a promotion owner");
       }
       const serializationContext =
         await resolveWatchdogFollowUpSerializationContext(req, sourceIssue);

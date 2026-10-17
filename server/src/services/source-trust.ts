@@ -232,6 +232,7 @@ export async function resolveActorSourceTrustForIssue(input: {
         issueId: input.issue.id,
         runId: input.actor.runId,
         agentId: input.actor.agentId,
+        promotionOwnerUserId: input.issue.responsibleUserId,
       });
     }
   }
@@ -266,5 +267,6 @@ export async function resolveActorSourceTrustForIssue(input: {
     issueId: input.issue.id,
     runId: input.actor.runId,
     agentId: input.actor.agentId,
+    promotionOwnerUserId: input.issue.responsibleUserId,
   });
 }
