@@ -2,6 +2,7 @@
 // @vitest-environment node
 
 import { beforeEach, describe, expect, it } from "vitest";
+import type { KnowledgeSuggestion } from "../api/knowledge";
 import type {
   Approval,
   DashboardSummary,
@@ -575,6 +576,22 @@ describe("inbox helpers", () => {
       "join:join-1",
       "approval:approval-oldest",
     ]);
+  });
+
+  it("mixes knowledge suggestions into the inbox feed", () => {
+    const suggestion: KnowledgeSuggestion = {
+      id: "suggestion-1",
+      targetItemId: null,
+      body: "Use the review queue",
+      rationale: "Keeps decisions auditable",
+      sourceKind: "lesson",
+      sourceRef: "lesson-1",
+      status: "pending",
+      createdAt: "2026-03-11T06:00:00.000Z",
+    };
+    const items = getInboxWorkItems({ issues: [], approvals: [], knowledgeSuggestions: [suggestion] });
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({ kind: "knowledge", suggestion });
   });
 
   it("skips hidden groups when building keyboard navigation entries", () => {

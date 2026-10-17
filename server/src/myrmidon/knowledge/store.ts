@@ -982,12 +982,12 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
   async function decideSuggestion(
     nestId: string,
     actor: KnowledgeActor,
-    input: { suggestionId: string; companyId: string; decision: "accepted" | "declined" },
+    input: { suggestionId: string; companyId: string; decision: "accepted" | "declined"; reason?: string | null },
   ): Promise<{ id: string; status: string }> {
     const [row] = await db
       .select()
       .from(knowledgeSuggestions)
-      .where(and(eq(knowledgeSuggestions.nestId, nestId), eq(knowledgeSuggestions.id, input.suggestionId)))
+      .where(and(eq(knowledgeSuggestions.nestId, nestId), eq(knowledgeSuggestions.id, input.suggestionId), eq(knowledgeSuggestions.status, "pending")))
       .limit(1);
     if (!row) throw new KnowledgeDomainError("suggestion_not_found", 404, "No such suggestion.");
     if (row.status !== "pending") {
@@ -995,7 +995,7 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
     }
     await db
       .update(knowledgeSuggestions)
-      .set({ status: input.decision, decidedBy: `${actor.actorType}:${actor.actorId ?? "unknown"}`, decidedAt: now() })
+      .set({ status: input.decision, rationale: input.reason ?? row.rationale, decidedBy: `${actor.actorType}:${actor.actorId ?? "unknown"}`, decidedAt: now() })
       .where(and(eq(knowledgeSuggestions.nestId, nestId), eq(knowledgeSuggestions.id, row.id), eq(knowledgeSuggestions.status, "pending")));
     await appendEvent(db, {
       companyId: input.companyId,
@@ -1018,7 +1018,7 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
     const [row] = await db
       .select()
       .from(knowledgeSuggestions)
-      .where(and(eq(knowledgeSuggestions.nestId, nestId), eq(knowledgeSuggestions.id, input.suggestionId)))
+      .where(and(eq(knowledgeSuggestions.nestId, nestId), eq(knowledgeSuggestions.id, input.suggestionId), eq(knowledgeSuggestions.status, "pending")))
       .limit(1);
     if (!row) throw new KnowledgeDomainError("suggestion_not_found", 404, "No such suggestion.");
     if (row.status !== "pending") {
