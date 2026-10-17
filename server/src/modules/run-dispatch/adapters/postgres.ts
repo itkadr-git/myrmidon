@@ -88,6 +88,7 @@ type LoadStalenessFactsInput = {
   issueId: string;
   contextSnapshot: Record<string, unknown>;
   scheduledRetryReason: string | null;
+  invocationSource: string;
 };
 type CancelSuppressedRetryInput = {
   runId: string;
@@ -566,6 +567,15 @@ export function createPostgresRunDispatchAdapter(
             .limit(1)
             .then((rows) => Boolean(rows[0]))
         : false;
+    // Recovery-created continuation runs may legitimately execute for a prior assignee.
+    // Bind this bypass to the exact automation source and continuation reason.
+    const isProductiveContinuationRecovery = Boolean(
+      issue &&
+        input.invocationSource === "automation" &&
+        context.source === "issue.productive_terminal_continuation_recovery" &&
+        wakeReason === "issue_continuation_needed" &&
+        retryReason === "issue_continuation_needed",
+    );
 
     const retryReasonKind = classifyRetryReasonKind(retryReason);
     // Dependency edges can change after scheduled promotion without changing
@@ -595,6 +605,7 @@ export function createPostgresRunDispatchAdapter(
       // myrmidon(P2): pending interaction addressee wake
       isPendingInteractionAddresseeWake: pendingInteractionAddresseeWake,
       isAuthorizedSourceScopedRecovery,
+      isProductiveContinuationRecovery,
       isNonAssigneeWorkspaceBusyRetry: isNonAssigneeWorkspaceBusyRetry(retryReason, context),
       resumeIntent,
       wakeCommentIdPresent: Boolean(wakeCommentId),
@@ -996,6 +1007,7 @@ export function createPostgresRunDispatchAdapter(
         issueId,
         contextSnapshot,
         scheduledRetryReason: run.scheduledRetryReason,
+        invocationSource: run.invocationSource,
       },
       now,
       tx,
