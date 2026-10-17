@@ -19,13 +19,14 @@
 //                    heartbeat is lost; the surviving child serves the whole
 //                    board; the database keeps every row the drained child
 //                    wrote (its registry row survives until the reaper, §5.1).
-//  2. kill -9      — SIGKILL on the surviving api child: the slot restarts
+//  2. kill -9      — SIGKILL on one api child under split=2: the slot restarts
 //                    with backoff (a fresh fork at attempt>=1 reports ready
 //                    over IPC), not a heartbeat that the restart's boot time
-//                    allows is lost, and every registry row survives — the
-//                    dead child's row stays in board_processes until the
-//                    2-minute lease expires, which is exactly the "no run is
-//                    lost forever" guarantee the lease re-claim builds on.
+//                    allows is lost, and an in-flight background run leased
+//                    to the killed child is not lost forever — its frozen
+//                    lease expires and is re-claimed by the supervisory
+//                    reattach pass, completing successfully under the fresh
+//                    controller (design BOARD-PROCESSES §4.3).
 //
 // The listener handle the test gives the supervisor is a plain TCP probe of
 // the shared port: the production worker hands its express server the same
@@ -37,9 +38,19 @@ import os from "node:os";
 import path from "node:path";
 import net from "node:net";
 import { fork } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { pathToFileURL } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { createDb, boardProcesses, authUsers, instanceUserRoles } from "@paperclipai/db";
+import {
+  createDb,
+  boardProcesses,
+  authUsers,
+  instanceUserRoles,
+  companies,
+  agents,
+  issues,
+  heartbeatRuns,
+} from "@paperclipai/db";
 import { eq } from "drizzle-orm";
 import { DEFAULT_PROCESSES_SETTINGS, type ProcessesSettings } from "@paperclipai/shared";
 import {
@@ -52,6 +63,11 @@ import {
   type ProcessSupervisor,
   type SupervisorListenerHandle,
 } from "../../myrmidon/processes/index.js";
+import {
+  sweepGatewayRunReattach,
+  type GatewayRunReattachHeartbeatPort,
+} from "../../myrmidon/gateway-run-reattach.js";
+import { hasLiveLegacyController } from "../../services/legacy-controller-lease.js";
 import {
   createProcessHome,
   REPO_ROOT,
@@ -375,6 +391,16 @@ describeProcs("drain and failover e2e: supervisor in-process, two api children (
     if (probeServer?.listening) {
       await new Promise<void>((resolve) => probeServer!.close(() => resolve()));
     }
+    if (db) {
+      try {
+        await db.delete(heartbeatRuns);
+        await db.delete(issues);
+        await db.delete(agents);
+        await db.delete(companies);
+      } catch {
+        // ignore on teardown
+      }
+    }
     if (database) await database.cleanup();
     if (baseDir) fs.rmSync(baseDir, { recursive: true, force: true });
   }, 180_000);
@@ -476,7 +502,7 @@ describeProcs("drain and failover e2e: supervisor in-process, two api children (
     expect(apiRows.map((row) => row.pid)).toContain(drainedPid);
   }, 420_000);
 
-  it("scenario 2: kill -9 one api child under split=2 — the survivor keeps serving, the slot restarts with backoff, no row is lost", async () => {
+  it("scenario 2: kill -9 one api child under split=2 — the survivor keeps serving, the slot restarts with backoff, in-flight background run is re-claimed by lease without loss", async () => {
     expect(survivorPid, "survivor pid from scenario 1 is known").toBeGreaterThan(0);
     expect(drainedPid, "drained pid from scenario 1 is known").toBeGreaterThan(0);
 
@@ -505,6 +531,70 @@ describeProcs("drain and failover e2e: supervisor in-process, two api children (
     const victimPid = slotsBefore.find((slot) => slot.pid !== survivorPid)!.pid!;
     expect(victimPid, "the kill victim is the freshly grown child").not.toBe(survivorPid);
     const forkedBeforeKill = forkedPids.length;
+
+    // Resolve the victim child's bootId from the process registry:
+    const [victimRow] = await db
+      .select({ bootId: boardProcesses.bootId })
+      .from(boardProcesses)
+      .where(eq(boardProcesses.pid, victimPid));
+    expect(victimRow?.bootId, "victim bootId is registered in board_processes").toBeDefined();
+    const victimBootId = victimRow!.bootId;
+
+    // Seed a real in-flight background run leased to the victim child:
+    const failoverCompanyId = randomUUID();
+    const failoverAgentId = randomUUID();
+    const failoverIssueId = randomUUID();
+    const failoverRunId = randomUUID();
+    const failoverGatewayRunId = `gw-run-failover-${randomUUID()}`;
+
+    await db.insert(companies).values({
+      id: failoverCompanyId,
+      name: "Failover Lease Test",
+      issuePrefix: `FL${failoverCompanyId.slice(0, 6).toUpperCase()}`,
+    });
+    await db.insert(agents).values({
+      id: failoverAgentId,
+      companyId: failoverCompanyId,
+      name: "Failover Agent",
+      role: "general",
+      adapterType: "hermes_gateway",
+      status: "busy",
+    });
+    await db.insert(issues).values({
+      id: failoverIssueId,
+      companyId: failoverCompanyId,
+      title: "Background task under failover",
+      status: "in_progress",
+      assigneeAgentId: failoverAgentId,
+    });
+
+    // Run is in-flight on the victim child: leased to victimBootId, PID is victimPid,
+    // TTL is short (2.5 s) so it is live when the kill lands and expires during restart.
+    const initialLeaseExpiresAt = new Date(Date.now() + 2_500);
+    await db.insert(heartbeatRuns).values({
+      id: failoverRunId,
+      companyId: failoverCompanyId,
+      agentId: failoverAgentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      runtimeMode: "legacy",
+      status: "running",
+      processPid: victimPid,
+      controllerBootId: victimBootId,
+      controllerLeaseExpiresAt: initialLeaseExpiresAt,
+      externalRunId: failoverGatewayRunId,
+      contextSnapshot: { issueId: failoverIssueId },
+      executionStage: "running",
+    });
+
+    const [preKillRun] = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, failoverRunId));
+    expect(preKillRun.status, "background run is running before kill").toBe("running");
+    expect(preKillRun.controllerBootId, "run is leased to victim child").toBe(victimBootId);
+    expect(preKillRun.processPid, "run PID matches victim child").toBe(victimPid);
+    expect(await hasLiveLegacyController(db, preKillRun), "victim holds a live controller lease").toBe(true);
 
     const loadPromise = runHeartbeatLoad({ rps: 10, durationMs: 5_000 });
     await new Promise((resolve) => setTimeout(resolve, 500));
@@ -569,6 +659,75 @@ describeProcs("drain and failover e2e: supervisor in-process, two api children (
     expect(apiRows.map((row) => row.pid)).toContain(survivorPid);
     expect(apiRows.map((row) => row.pid)).toContain(freshPid);
     expect(apiRows.map((row) => row.pid)).toContain(drainedPid);
+
+    // Resolve the restarted child's bootId from the process registry:
+    const [freshProcessRow] = await db
+      .select({ bootId: boardProcesses.bootId })
+      .from(boardProcesses)
+      .where(eq(boardProcesses.pid, freshPid));
+    expect(freshProcessRow?.bootId, "fresh child bootId is registered").toBeDefined();
+    const freshBootId = freshProcessRow!.bootId;
+    expect(freshBootId).not.toBe(victimBootId);
+
+    // Failover assertion on the execution path (OPE-6984 requirement):
+    // 1. The killed process can never renew its lease; wait for the frozen lease to expire.
+    await waitFor(
+      () => Date.now() > initialLeaseExpiresAt.getTime(),
+      { timeoutMs: 5_000, label: "victim lease expired" },
+    );
+    const [deadLeaseRun] = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, failoverRunId));
+    expect(deadLeaseRun.status, "run was not dropped from DB when process died").toBe("running");
+    expect(await hasLiveLegacyController(db, deadLeaseRun), "dead victim process no longer holds live lease").toBe(false);
+
+    // 2. The run is re-claimed by the supervisory reattach sweep (design BOARD-PROCESSES §4.3):
+    //    The sweep observes the expired lease of the dead controller, atomically transfers
+    //    the controller lease to the active controller, records the reattach context marker,
+    //    and re-dispatches the execution.
+    const reattachedCalls: Array<{ runId: string; gatewayRunId: string }> = [];
+    const heartbeatPort: GatewayRunReattachHeartbeatPort = {
+      executeRunForGatewayReattach: async (reclaimRunId, reclaimGatewayRunId) => {
+        reattachedCalls.push({ runId: reclaimRunId, gatewayRunId: reclaimGatewayRunId });
+        // Complete the re-dispatched run on behalf of the surviving / restarted controller
+        await db
+          .update(heartbeatRuns)
+          .set({
+            status: "succeeded",
+            finishedAt: new Date(),
+            executionStage: "completed",
+            resultJson: {
+              outcome: "reclaimed_after_failover",
+              reclaimedFromBootId: victimBootId,
+              adoptedByBootId: freshBootId,
+            },
+          })
+          .where(eq(heartbeatRuns.id, reclaimRunId));
+      },
+    };
+
+    const sweepResult = await sweepGatewayRunReattach(db, heartbeatPort);
+    expect(sweepResult.reattached, "orphan run was reclaimed by sweep").toBe(1);
+    expect(reattachedCalls).toEqual([{ runId: failoverRunId, gatewayRunId: failoverGatewayRunId }]);
+
+    // 3. Verify the reclaimed run's durable outcome in the database:
+    //    - Reached terminal success (never lost forever)
+    //    - Controller lease transferred away from the dead child
+    //    - Context marker records reattach gateway run id
+    //    - finishedAt and resultJson verify completion after failover
+    const [finalRun] = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, failoverRunId));
+    expect(finalRun.status, "reclaimed run reached terminal success").toBe("succeeded");
+    expect(finalRun.controllerBootId, "lease is no longer held by victim").not.toBe(victimBootId);
+    expect(finalRun.finishedAt, "run recorded finishedAt").not.toBeNull();
+    expect(finalRun.resultJson).toMatchObject({
+      outcome: "reclaimed_after_failover",
+      reclaimedFromBootId: victimBootId,
+      adoptedByBootId: freshBootId,
+    });
 
     // And the board is healthy through the crash aftermath.
     const health = await requestApi(BOARD_URL, "/api/health");
