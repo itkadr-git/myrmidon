@@ -62,12 +62,19 @@ export interface TelegramNotifyProactivitySettings {
   rarelyMaxPerDay: number;
 }
 
+export interface TelegramNotifyDeploySettings {
+  enabled: boolean;
+  chatId: string | null;
+  topicId: number | null;
+}
+
 export interface TelegramNotifySettings {
   digest: TelegramNotifyDigestSettings;
   errors: TelegramNotifyErrorsSettings;
   inbound: TelegramNotifyInboundSettings;
   escalations: TelegramNotifyEscalationsSettings;
   proactivity: TelegramNotifyProactivitySettings;
+  deploys: TelegramNotifyDeploySettings;
 }
 
 /** The all-off document: the exact defaults of the parent's GET contract. */
@@ -96,5 +103,6 @@ export function defaultTelegramNotifySettings(): TelegramNotifySettings {
       topicId: null,
     },
     proactivity: { mode: "only_on_owner_request", rarelyMaxPerDay: 3 },
+    deploys: { enabled: false, chatId: null, topicId: null },
   };
 }
