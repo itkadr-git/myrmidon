@@ -1537,11 +1537,21 @@ describe.sequential("issue comment reopen routes", () => {
       then: (
         onFulfilled: (rows: unknown[]) => unknown,
         onRejected?: (reason: unknown) => unknown,
-      ) => Promise.resolve([]).then(onFulfilled, onRejected),
+      ) =>
+        Promise.resolve([
+          {
+            id: "run-1",
+            companyId: "company-1",
+            agentId: "22222222-2222-4222-8222-222222222222",
+            permissions: {},
+            invocationSource: "assignment",
+            contextSnapshot: { source: "assignment" },
+          },
+        ]).then(onFulfilled, onRejected),
     }));
 
     const res = await request(
-      await installActor(createApp(), { ...agentActor(), runId: null }),
+      await installActor(createApp(), agentActor()),
     )
       .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
       .send({ body: "Normal work update." });
