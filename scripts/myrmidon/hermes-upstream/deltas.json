@@ -298,6 +298,26 @@
         "path": "model_tools.py",
         "upstreamMarker": "disabled_tools\\b"
       }
+    },
+    {
+      "id": "18-async-state-db-writer-acquire",
+      "kind": "patch",
+      "patch": "docker/bot-runtime/patches/18-async-writer-acquire.patch",
+      "files": [
+        "hermes_state_dbfile.py",
+        "hermes_state_errors.py",
+        "hermes_state.py",
+        "tests/hermes_state/test_deleted_wal_generation_guard.py"
+      ],
+      "reason": "Fail closed when Linux /proc visibility is incomplete: writer-open must not interpret an empty or partial holder scan as CLEAN_COMPLETE. This scanner-verdict delta is only a prerequisite; the OPE-7854 A-G async lifecycle contract is not implemented here.",
+      "dropCondition": "Upstream distinguishes complete from indeterminate sidecar scans and refuses writer-open unless a complete scan confirms no holders; lifecycle deltas for contract OPE-7854 A-G are tracked separately.",
+      "offer": null,
+      "offerNote": "Not offered yet: publisher-scan wrapper is not available.",
+      "probe": {
+        "source": "hermes",
+        "path": "hermes_state_dbfile.py",
+        "upstreamMarker": "SidecarScanIncompleteError"
+      }
     }
   ]
 }

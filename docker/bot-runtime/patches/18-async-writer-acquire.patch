@@ -1,0 +1,170 @@
+diff --git a/hermes_state_dbfile.py b/hermes_state_dbfile.py
+--- a/hermes_state_dbfile.py
++++ b/hermes_state_dbfile.py
+@@ -23,6 +23,9 @@
+ import time
+ from pathlib import Path
+ from typing import Any, Callable, Dict, List, Optional, Tuple
++
++# myrmidon(G1): a failed sidecar scan is never an empty holder list.
++from hermes_state_errors import SidecarScanIncompleteError
+ 
+ from hermes_state_holders import canonical_sqlite_path, read_only_db_uri
+ from hermes_state_common import (
+@@ -192,19 +192,30 @@
+ 
+ 
+ def _iter_proc_fd_targets():
+-    """Yield ``(pid, readlink target, fd path)`` for every readable ``/proc/<pid>/fd`` entry."""
+-    for pid_str in os.listdir("/proc"):
++    """Yield readable proc descriptors; only proven process/FD disappearance is ignored."""
++    try:
++        pid_entries = os.listdir("/proc")
++    except OSError as exc:
++        raise SidecarScanIncompleteError(f"/proc enumeration failed: {exc.errno}") from exc
++    for pid_str in pid_entries:
+         if not pid_str.isdigit():
+             continue
+         fd_dir = f"/proc/{pid_str}/fd"
+         try:
+             fds = os.listdir(fd_dir)
+-        except OSError:
+-            continue  # process gone or not ours
++        except OSError as exc:
++            if exc.errno in (errno.ENOENT, errno.ESRCH):
++                continue
++            raise SidecarScanIncompleteError(f"fd enumeration failed: {exc.errno}") from exc
+         for fd in fds:
+-            with contextlib.suppress(OSError):
+-                fd_path = f"{fd_dir}/{fd}"
+-                yield int(pid_str), os.readlink(fd_path), fd_path
++            fd_path = f"{fd_dir}/{fd}"
++            try:
++                target = os.readlink(fd_path)
++            except OSError as exc:
++                if exc.errno in (errno.ENOENT, errno.ESRCH):
++                    continue
++                raise SidecarScanIncompleteError(f"fd readlink failed: {exc.errno}") from exc
++            yield int(pid_str), target, fd_path
+ 
+ 
+ # ── macOS fd enumeration (libproc) ──────────────────────────────────────────────────────────────
+@@ -338,27 +348,40 @@
+     if sys.platform == "win32":
+         return []
+     holders: List[Tuple[int, str]] = []
+-    try:
+-        if sys.platform == "darwin":
+-            holders = _iter_darwin_sidecar_holders(db_path)
+-        elif sys.platform.startswith("linux"):
+-            watched = _watched_sqlite_sidecar_paths(db_path)
+-            for pid, target, fd_path in _iter_proc_fd_targets():
+-                canonical = canonical_sqlite_path(target)
+-                if (" (deleted)" in target and canonical in watched
+-                        and _fd_is_truly_unlinked(fd_path, watched[canonical])):
+-                    holders.append((pid, target))
++    if sys.platform == "darwin":
++        try:
++            return _iter_darwin_sidecar_holders(db_path)
++        except SidecarScanIncompleteError:
++            raise
++        except Exception as exc:
++            raise SidecarScanIncompleteError("Darwin fd scan failed") from exc
++    if not sys.platform.startswith("linux"):
++        raise SidecarScanIncompleteError(f"unsupported scan platform: {sys.platform}")
++    try:
++        watched = _watched_sqlite_sidecar_paths(db_path)
++        for pid, target, fd_path in _iter_proc_fd_targets():
++            canonical = canonical_sqlite_path(target)
++            if (" (deleted)" in target and canonical in watched
++                    and _fd_is_truly_unlinked(fd_path, watched[canonical])):
++                holders.append((pid, target))
++    except SidecarScanIncompleteError:
++        raise
++    except OSError as exc:
++        raise SidecarScanIncompleteError(f"sidecar scan failed: {exc.errno}") from exc
+     except Exception as exc:
+-        logger.debug("deleted-WAL holder scan failed for %s: %s", db_path, exc)
++        raise SidecarScanIncompleteError("sidecar scan failed") from exc
+     return holders
+ 
+ 
+ def refuse_deleted_wal_generation(db_path) -> None:
+-    """Raise if any process holds a deleted WAL/SHM generation for *db_path*; called
+-    *before* ``sqlite3.connect`` so a second opener cannot mint a replacement WAL inode."""
++    """Refuse writer-open if a holder exists or a complete scan is unavailable."""
+     from hermes_state import DeletedWalGenerationError
+     from hermes_state_errors import _DELETED_WAL_GENERATION_MSG
+-    if not iter_deleted_sqlite_sidecar_holders(db_path):
++    try:
++        holders = iter_deleted_sqlite_sidecar_holders(db_path)
++    except SidecarScanIncompleteError:
++        raise
++    if not holders:
+         return
+     logger.error(_DELETED_WAL_GENERATION_MSG)
+     raise DeletedWalGenerationError(_DELETED_WAL_GENERATION_MSG)
+diff --git a/hermes_state_errors.py b/hermes_state_errors.py
+--- a/hermes_state_errors.py
++++ b/hermes_state_errors.py
+@@ -184,6 +184,10 @@
+     intermittent SQLITE_CORRUPT / IOERR). Stop the writers; never unlink the WAL
+     yourself. Subclasses StateDbReplacedError so every consumer that diverts
+     transcripts on a replaced store handles this identically."""
++
++
++class SidecarScanIncompleteError(RuntimeError):
++    """The writer-open sidecar scan could not establish complete visibility."""
+ 
+ 
+ # SQLite header application_id (offset 68). Distinct from inode: ``cp`` onto the
+diff --git a/tests/hermes_state/test_deleted_wal_generation_guard.py b/tests/hermes_state/test_deleted_wal_generation_guard.py
+--- a/tests/hermes_state/test_deleted_wal_generation_guard.py
++++ b/tests/hermes_state/test_deleted_wal_generation_guard.py
+@@ -23,7 +23,9 @@
+     DeletedWalGenerationError, SessionDB, StateDbReplacedError, _close_time_checkpoint_configurable,
+     classify_persistence_error, refuse_deleted_wal_generation,
+ )
+-from hermes_state_dbfile import _pread_db_header, iter_deleted_sqlite_sidecar_holders
++from hermes_state_dbfile import (
++    SidecarScanIncompleteError, _pread_db_header, iter_deleted_sqlite_sidecar_holders,
++)
+ from tests.hermes_state._wal_generation_harness import (
+     gateway_writer, integrity_ok_path, lose_sidecars, make_db, message_count, pin_wal, require_wal,
+     write_second_generation,
+@@ -156,6 +158,35 @@
+         assert holders, "deleted WAL under the resolved target name must be found"
+     finally:
+         conn.close()
++
++
++@pytest.mark.linux_only
++@pytest.mark.parametrize("failure", [errno.EACCES, errno.EIO, errno.EPERM])
++def test_incomplete_proc_fd_scan_fails_closed(tmp_path, monkeypatch, failure):
++    monkeypatch.setattr(sys, "platform", "linux")
++    monkeypatch.setattr(
++        hermes_state_dbfile.os,
++        "listdir",
++        lambda _path: (_ for _ in ()).throw(OSError(failure, "not visible")),
++    )
++    with pytest.raises(SidecarScanIncompleteError):
++        iter_deleted_sqlite_sidecar_holders(tmp_path / "state.db")
++
++
++@pytest.mark.linux_only
++def test_partial_proc_fd_scan_fails_closed(tmp_path, monkeypatch):
++    monkeypatch.setattr(sys, "platform", "linux")
++    calls = iter([["1", "2"], ["0"], OSError(errno.EIO, "denied")])
++
++    def partial(_path):
++        value = next(calls)
++        if isinstance(value, Exception):
++            raise value
++        return value
++
++    monkeypatch.setattr(hermes_state_dbfile.os, "listdir", partial)
++    with pytest.raises(SidecarScanIncompleteError):
++        iter_deleted_sqlite_sidecar_holders(tmp_path / "state.db")
+ 
+ 
+ @pytest.mark.skipif(

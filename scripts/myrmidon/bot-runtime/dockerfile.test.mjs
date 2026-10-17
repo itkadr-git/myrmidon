@@ -13,6 +13,18 @@ const IMAGE_DIR = path.join(ROOT, "docker/bot-runtime");
 const dockerfile = fs.readFileSync(path.join(IMAGE_DIR, "Dockerfile"), "utf8");
 const workflow = fs.readFileSync(path.join(ROOT, ".github/workflows/myrmidon-bot-image.yml"), "utf8");
 
+it("pins the async writer-acquire scanner fail-closed patch", () => {
+  const patch = fs.readFileSync(path.join(IMAGE_DIR, "patches/18-async-writer-acquire.patch"), "utf8");
+  const registry = JSON.parse(fs.readFileSync(path.join(ROOT, "scripts/myrmidon/hermes-upstream/deltas.json"), "utf8"));
+  const delta = registry.deltas.find((item) => item.id === "18-async-state-db-writer-acquire");
+  assert.ok(delta, "writer acquire delta must be registered");
+  assert.match(patch, /SidecarScanIncompleteError/);
+  assert.match(patch, /raise SidecarScanIncompleteError/);
+  assert.match(delta.files.join(" "), /hermes_state_dbfile\.py/);
+  assert.match(patch, /myrmidon\(G1\)/);
+  assert.match(delta.reason, /scanner-verdict delta/);
+});
+
 // The Dockerfile documents, in a comment, that it deliberately does not
 // install media tools — so "no media tools" is checked against the
 // instructions only, not comment prose explaining that absence.
@@ -319,6 +331,11 @@ describe("docker/bot-runtime/patches/", () => {
       // Comments in code are English (CONVENTIONS.md §8); a Cyrillic comment means a
       // reference-checkout patch was copied instead of rewritten.
       assert.doesNotMatch(patch, /[\u0400-\u04FF]/, `${file} must be written in English`);
+      if (file === "18-async-writer-acquire.patch") {
+        assert.match(patch, /class SidecarScanIncompleteError/);
+        assert.match(patch, /myrmidon\(G1\)/);
+        continue;
+      }
       // Every edit to hermes code carries the fork label (CONVENTIONS.md §8).
       assert.match(patch, /myrmidon\(G1\)/, `${file} must carry the myrmidon(G1) label`);
     }
