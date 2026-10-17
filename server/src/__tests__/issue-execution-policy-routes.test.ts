@@ -19,6 +19,7 @@ const mockIssueService = vi.hoisted(() => ({
 
 const mockHeartbeatService = vi.hoisted(() => ({
   wakeup: vi.fn(async () => undefined),
+  insertReviewAdmissionWakeup: vi.fn(async () => ({ created: true })),
   triggerIssueMonitor: vi.fn(async () => ({ outcome: "triggered" as const })),
   reportRunActivity: vi.fn(async () => undefined),
   getRun: vi.fn(async () => null),

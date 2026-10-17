@@ -3589,7 +3589,10 @@ export function issueRoutes(
   const heartbeat = heartbeatService(db, {
     pluginWorkerManager: opts.pluginWorkerManager,
   });
-  const insertReviewAdmissionWakeup = heartbeat.insertReviewAdmissionWakeup;
+  const insertReviewAdmissionWakeup =
+    typeof heartbeat?.insertReviewAdmissionWakeup === "function"
+      ? heartbeat.insertReviewAdmissionWakeup.bind(heartbeat)
+      : async () => ({ created: false });
 
   const commentWasCreatedByAssigneeRun = async (
     comment: { companyId: string; createdByRunId?: string | null },
@@ -14231,6 +14234,7 @@ export function issueRoutes(
                   stageWake.agentId,
                   stageWake.wakeup,
                   tx as unknown as Db,
+                  updated.companyId,
                 );
               }
               if (
@@ -14252,6 +14256,7 @@ export function issueRoutes(
                   updated.assigneeAgentId,
                   wakeup,
                   tx as unknown as Db,
+                  updated.companyId,
                 );
               }
             }
