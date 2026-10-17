@@ -72,7 +72,7 @@ describe("notify mode: the role gate of the dispatcher (part B)", () => {
     expect(startNextQueuedRunForAgent).not.toHaveBeenCalled();
   });
 
-  it("the executor (executesRuns=true) starts inline even in notify mode", async () => {
+  it("notify-mode executor publishes instead of running inline", async () => {
     const { bus, published } = fakeBus();
     const startNextQueuedRunForAgent = vi.fn(async () => [{ id: "run-1" }]);
     const dispatcher = createRunStartDispatcher({
@@ -84,12 +84,9 @@ describe("notify mode: the role gate of the dispatcher (part B)", () => {
         bus.publish(RUN_QUEUED_CHANNEL, buildRunQueuedPayload(agentId, "company-1")),
     });
 
-    const result = await dispatcher.dispatchRunStart("agent-1");
-    expect(result).toEqual([{ id: "run-1" }]);
-    expect(startNextQueuedRunForAgent).toHaveBeenCalledTimes(1);
-    // The executor publishes too: the listener of the other executors reacts
-    // without waiting for its resweep; its own listener message for the same
-    // agent is a no-op on the agent start lock.
+    expect(await dispatcher.dispatchRunStart("agent-1")).toEqual([]);
+    expect(startNextQueuedRunForAgent).not.toHaveBeenCalled();
+    // The worker listener receives this wakeup and owns the vendor start path.
     expect(published).toEqual([
       {
         channel: RUN_QUEUED_CHANNEL,

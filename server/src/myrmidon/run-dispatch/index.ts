@@ -207,25 +207,13 @@ export function createRunStartDispatcher(deps: RunStartDispatcherDeps): RunStart
       // behave exactly like main, whatever the role context says.
       return deps.startNextQueuedRunForAgent(agentId, options);
     }
-    // myrmidon(1.6.6 RUN-DISPATCH-NOTIFY, OPE-6977): the role gate of T1.1. In
-    // `notify` a process that must not execute runs (the api role) NEVER takes
-    // the vendor start path — it publishes `run_queued` and the executor's
-    // listener lifts the run. With no role context injected the process is
-    // treated as an api (part A reserved exactly this shape for the executor
-    // gate), so the default `notify` never starts locally: the resweep of the
-    // executor carries the run within its interval.
-    if ((deps.executesRuns?.() ?? false) !== true) {
-      await publishRemoteStart(agentId, runStartDispatch);
-      return [];
-    }
-    // `notify` on an executor: start inline — this process IS an executor — and
-    // ALSO publish `run_queued`, so the worker-side listener of the other
-    // executor processes can react without waiting for their own resweep.
-    // The local start does not wait for the publish: NOTIFY is the accelerator,
-    // never the carrier of correctness (design OPE-5394 section 0 item 2).
-    const started = await deps.startNextQueuedRunForAgent(agentId, options);
+    // In notify mode every process publishes the wakeup. A worker starts the
+    // run only from its bus listener, which keeps this dispatcher from becoming
+    // an accidental inline path for API, heartbeat, or resweep callers.
+    // NOTIFY is only an accelerator; the worker resweep remains the correctness
+    // fallback (design OPE-5394 section 0 item 2).
     await publishRemoteStart(agentId, runStartDispatch);
-    return started;
+    return [];
   };
 
   const publishRemoteStart = async (
@@ -253,7 +241,7 @@ export function createRunStartDispatcher(deps: RunStartDispatcherDeps): RunStart
     let failed = 0;
     for (const agent of agents) {
       try {
-        const startedRuns = await deps.startNextQueuedRunForAgent(agent.agentId, {
+        const startedRuns = await dispatchRunStart(agent.agentId, {
           // The vendor sweep's fair-share hint: more than one agent is waiting.
           otherAgentsWaiting: agents.length > 1,
         });
