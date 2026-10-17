@@ -198,7 +198,13 @@ export const DEFAULT_STUCK_GRACE_MS = 60_000;
 export function decideTick(window: MaintenanceWindow, runningRunIds: string[], now: Date): TickDecision {
   if (window.state === "leaving") return { kind: "finish_leaving" };
   if (window.state !== "entering") return { kind: "none" };
-  if (runningRunIds.length === 0) return { kind: "mark_on" };
+  if (runningRunIds.length === 0) {
+    // A maintenance interrupt drains the run asynchronously. Do not treat the
+    // empty running snapshot as a normal drain: the scheduled retries still
+    // need promotion before the window may become `on`.
+    if (window.interruptedRunIds.length > 0) return { kind: "drained_after_interrupts" };
+    return { kind: "mark_on" };
+  }
   const nowMs = now.getTime();
   const deadlineMs = Date.parse(window.drainDeadlineAt);
   if (nowMs < deadlineMs) return { kind: "none" };
