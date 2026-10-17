@@ -365,6 +365,7 @@ describe("inbox helpers", () => {
       approvals: 0,
       failedRuns: 0,
       joinRequests: 0,
+      knowledgeSuggestions: 0,
       mineIssues: 0,
       alerts: 0,
     });

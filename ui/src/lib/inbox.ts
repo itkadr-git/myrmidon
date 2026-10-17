@@ -1113,8 +1113,11 @@ export function buildInboxNesting(items: InboxWorkItem[]): {
   const issueItems: (InboxWorkItem & { kind: "issue" })[] = [];
   const nonIssueItems: InboxWorkItem[] = [];
   for (const item of items) {
-    if (item.kind === "issue") issueItems.push(item as InboxWorkItem & { kind: "issue" });
-    else nonIssueItems.push(item);
+    if (item.kind !== "issue") {
+      nonIssueItems.push(item);
+      continue;
+    }
+    issueItems.push(item);
   }
 
   const issueIdSet = new Set(issueItems.map((i) => i.issue.id));

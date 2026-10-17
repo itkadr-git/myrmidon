@@ -3209,9 +3209,9 @@ function StreamlinedInbox() {
                     }
 
                     if (item.kind === "knowledge") {
-                      const suggestionKey = `knowledge:${item.suggestion.id}`;
+                      const suggestionKey = getInboxWorkItemKey(item);
                       const suggestion = item.suggestion;
-                      elements.push(wrapItem(suggestionKey, isSelected, (
+                      const child = wrapItem(suggestionKey, isSelected, (
                         <InboxRowSurface selected={isSelected}>
                           <div className="flex items-start justify-between gap-4 px-4 py-3">
                             <div className="min-w-0">
@@ -3219,14 +3219,15 @@ function StreamlinedInbox() {
                               <p className="mt-1 text-sm text-muted-foreground">{suggestion.body}</p>
                               {suggestion.rationale && <p className="mt-1 text-xs text-muted-foreground">{suggestion.rationale}</p>}
                             </div>
-                            <Button size="sm" variant="outline" onClick={() => navigate("/knowledge/review")}>
-                              Review
-                            </Button>
+                            <Button size="sm" variant="outline" onClick={() => navigate("/knowledge/review")}>Review</Button>
                           </div>
                         </InboxRowSurface>
-                      )));
+                      ));
+                      elements.push(child);
                       continue;
                     }
+
+                    if (item.kind !== "issue") continue;
 
                     const issue = item.issue;
                     const childIssues = group.childrenByIssueId.get(issue.id) ?? [];
