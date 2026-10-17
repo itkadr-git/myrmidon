@@ -1068,7 +1068,13 @@ function applyMonitorTransition(input: TransitionInput, stagePatch: Record<strin
     stagePatch.executionState !== undefined
       ? parseIssueExecutionState(stagePatch.executionState)
       : existingState;
-  const invalidReason = input.policy?.monitor
+  // A blocked issue may keep an existing schedule, but a workflow override
+  // must not create a new monitor while leaving it without an owner.
+  const preservesExistingBlockedMonitor =
+    nextStatus === "blocked" &&
+    Boolean(input.issue.monitorNextCheckAt) &&
+    !input.monitorExplicitlyUpdated;
+  const invalidReason = input.policy?.monitor && !preservesExistingBlockedMonitor
     ? monitorClearReasonForIssue(nextStatus, assigneeAgentId, assigneeUserId)
     : null;
 
