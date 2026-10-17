@@ -55409,8 +55409,8 @@
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
-        "knowledge_revisions_translation_of_fk": {
-          "name": "knowledge_revisions_translation_of_fk",
+        "knowledge_revisions_translation_of_knowledge_revisions_id_fk": {
+          "name": "knowledge_revisions_translation_of_knowledge_revisions_id_fk",
           "tableFrom": "knowledge_revisions",
           "tableTo": "knowledge_revisions",
           "schemaTo": "public",
