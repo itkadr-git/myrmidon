@@ -57,6 +57,7 @@ const view: GitHubSharedIdentityView = {
   settings: {
     version: 1,
     enabled: true,
+    pats: [],
     apps: [
       {
         id: ENTRY_A,
@@ -194,6 +195,7 @@ describe("GitHubSharedIdentityPanelView", () => {
     expect(onSave).toHaveBeenCalledWith({
       enabled: true,
       commitEmailDomain: null,
+      pats: [],
       apps: [
         view.settings.apps[0],
         {
@@ -246,6 +248,7 @@ describe("GitHubSharedIdentityPanelView", () => {
       bodyFromDraft({
         enabled: false,
         commitEmailDomain: " example.com ",
+        pats: [{ id: "pat-1", name: " PAT ", tokenSecretId: " secret-1 ", allowedRepos: "BastionPrime/wellboard, BastionPrime/wellmagram", agentIds: [" agent-1 "] }],
         apps: [
           {
             id: ENTRY_A,
@@ -263,6 +266,7 @@ describe("GitHubSharedIdentityPanelView", () => {
     ).toEqual({
       enabled: false,
       commitEmailDomain: "example.com",
+      pats: [{ id: "pat-1", name: "PAT", tokenSecretId: "secret-1", allowedRepos: ["BastionPrime/wellboard", "BastionPrime/wellmagram"], agentIds: ["agent-1"] }],
       apps: [
         {
           id: ENTRY_A,
@@ -390,6 +394,7 @@ describe("GitHubSharedIdentityPanelView — manifest flow", () => {
     expect(onSave).toHaveBeenCalledWith({
       enabled: true,
       commitEmailDomain: null,
+      pats: [],
       apps: [
         view.settings.apps[0],
         {
@@ -485,7 +490,7 @@ describe("GitHubSharedIdentityPanel — server callback", () => {
     apiMocks.get.mockReset();
     apiMocks.beginAppManifest.mockReset();
     apiMocks.getAppInstallUrl.mockReset();
-    apiMocks.get.mockResolvedValue({ settings: { version: 1, enabled: true, apps: [], commitEmailDomain: null }, vendorConnectorEnabled: false });
+    apiMocks.get.mockResolvedValue({ settings: { version: 1, enabled: true, pats: [], apps: [], commitEmailDomain: null }, vendorConnectorEnabled: false });
     apiMocks.beginAppManifest.mockResolvedValue({
       manifestUrl: "https://github.com/settings/apps/new",
       manifest: { name: "my-app" },

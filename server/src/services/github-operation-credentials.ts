@@ -22,8 +22,8 @@ import { applyGitHubAppIdentity } from "../myrmidon/github-shared-identity/broke
 
 export type GitHubCredentialSummary = {
   status: "available" | "absent" | "unavailable";
-  // myrmidon(GITHUB-SHARED-IDENTITY): "app" — a self-hosted GitHub App token for `repository`
-  source?: "personal" | "dedicated" | "app";
+  // myrmidon(GITHUB-SHARED-IDENTITY): "app" — a self-hosted GitHub App token for `repository`, "pat" — a scoped company-secret PAT
+  source?: "personal" | "dedicated" | "app" | "pat";
   repository?: string;
   login?: string;
   reason?: string;
