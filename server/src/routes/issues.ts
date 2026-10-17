@@ -3963,7 +3963,7 @@ export function issueRoutes(
     const promotionOwnerUserId =
       issue.responsibleUserId ??
       (actor.actorType === "user" ? actor.actorId : null) ??
-      company.defaultResponsibleUserId ??
+      company?.defaultResponsibleUserId ??
       null;
     if (requirePromotionOwner && !promotionOwnerUserId) {
       throw unprocessable("Low-trust output cannot be quarantined without a promotion owner");
