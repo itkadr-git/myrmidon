@@ -910,24 +910,6 @@ describeEmbeddedPostgres(
       await db.update(issues)
         .set({ responsibleUserId: null })
         .where(eq(issues.id, fixture.issues.reviewRoot.id));
-      await db.update(heartbeatRuns)
-        .set({
-          contextSnapshot: {
-            issueId: fixture.issues.reviewRoot.id,
-            executionPolicy: {
-              authorizationPolicy: {
-                trustBoundary: {
-                  mode: LOW_TRUST_REVIEW_PRESET,
-                  companyId: fixture.company.id,
-                  projectIds: [fixture.issues.assignedReview.projectId],
-                  rootIssueId: fixture.issues.reviewRoot.id,
-                  issueIds: [fixture.issues.reviewRoot.id],
-                },
-              },
-            },
-          },
-        })
-        .where(eq(heartbeatRuns.id, fixture.runs.lowTrust.id));
       const app = createApp(db, agentActor(fixture));
       const createWithoutOwner = await request(app)
         .post(`/api/companies/${fixture.company.id}/issues`)
