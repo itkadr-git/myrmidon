@@ -19,11 +19,13 @@
 
 import type { Db } from "@paperclipai/db";
 import {
+  behaviorSettingRegistry,
   resolveBehaviorSettings,
   mergeBehaviorSettings,
   type BehaviorSettingsPatch,
   type ResolvedBehaviorSettings,
 } from "@paperclipai/shared";
+import { badRequest } from "../../errors.js";
 import { logger } from "../../middleware/logger.js";
 import { instanceSettingsService, logActivity } from "../../services/index.js";
 import {
@@ -144,6 +146,7 @@ export function behaviorSettingsService(
 
     updateInstance: async (patch, actor) =>
       withBehaviorSettingsTransition(async () => {
+        validatePatchValues(patch);
         const before = await deps.instanceSettings.readInstance();
         const previous = resolveBehaviorSettings({ stored: before, env });
 
@@ -184,6 +187,7 @@ export function behaviorSettingsService(
 
     updateCompany: async (companyId, patch, actor) =>
       withBehaviorSettingsTransition(async () => {
+        validatePatchValues(patch);
         const before = await deps.instanceSettings.readCompany(companyId);
         const previous = resolveBehaviorSettings({ stored: before, env });
 
@@ -217,6 +221,18 @@ export function behaviorSettingsService(
         return resolveBehaviorSettings({ stored: next, env });
       }),
   };
+}
+
+function validatePatchValues(patch: BehaviorSettingsPatch): void {
+  for (const [key, value] of Object.entries(patch)) {
+    const def = behaviorSettingRegistry.get(key);
+    if (!def) {
+      throw badRequest(`Unknown setting key: '${key}'`);
+    }
+    if (value !== undefined && def.validate(value) === null) {
+      throw badRequest(`Invalid value for setting '${key}'`);
+    }
+  }
 }
 
 function changedSettingKeys(
