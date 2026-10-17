@@ -57,6 +57,10 @@ const mockDbInsert = vi.hoisted(() => vi.fn(() => ({ values: vi.fn(async () => u
 const mockDb = vi.hoisted(() => ({
   select: mockDbSelect,
   insert: mockDbInsert,
+  // Transaction callbacks in issue PATCH must support downstream external-object sync.
+  update: vi.fn(),
+  delete: vi.fn(),
+  execute: vi.fn(),
   transaction: vi.fn(async (callback: (tx: typeof mockDb) => Promise<unknown>) =>
     callback(mockDb)),
 }));
