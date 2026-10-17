@@ -23,6 +23,9 @@ import {
   issues,
   toolApplications,
   toolConnections,
+  documents,
+  issueDocuments,
+  documentRevisions,
 } from "@paperclipai/db";
 import type { ChatProvider } from "@paperclipai/shared";
 // myrmidon(1.6.5-OWNER-DM-FILTER)
@@ -48,6 +51,8 @@ describeEmbeddedPostgres(
       ReturnType<typeof startEmbeddedPostgresTestDatabase>
     > | null = null;
     const previousKeyFile = process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE;
+    const previousPublicUrl = process.env.MYRMIDON_AUTH_PUBLIC_BASE_URL;
+    const previousLegacyPublicUrl = process.env.PAPERCLIP_AUTH_PUBLIC_BASE_URL;
     const secretsTmpDir = path.join(
       os.tmpdir(),
       `paperclip-myrmidon-u2-owner-delivery-${randomUUID()}`,
@@ -55,6 +60,8 @@ describeEmbeddedPostgres(
 
     beforeAll(async () => {
       mkdirSync(secretsTmpDir, { recursive: true });
+      process.env.MYRMIDON_AUTH_PUBLIC_BASE_URL = "https://board.example";
+      delete process.env.PAPERCLIP_AUTH_PUBLIC_BASE_URL;
       process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE = path.join(
         secretsTmpDir,
         "master.key",
@@ -73,6 +80,12 @@ describeEmbeddedPostgres(
 
     afterAll(async () => {
       await tempDb?.cleanup();
+      if (previousPublicUrl === undefined)
+        delete process.env.MYRMIDON_AUTH_PUBLIC_BASE_URL;
+      else process.env.MYRMIDON_AUTH_PUBLIC_BASE_URL = previousPublicUrl;
+      if (previousLegacyPublicUrl === undefined)
+        delete process.env.PAPERCLIP_AUTH_PUBLIC_BASE_URL;
+      else process.env.PAPERCLIP_AUTH_PUBLIC_BASE_URL = previousLegacyPublicUrl;
       if (previousKeyFile === undefined)
         delete process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE;
       else process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE = previousKeyFile;
@@ -249,7 +262,7 @@ describeEmbeddedPostgres(
       return { companyId, agentId, boardUserId, endpointId, dmIssue, workIssue };
     }
 
-    it("delivers an agent question card on an unbound task to the owner's Telegram conversation", async () => {
+    it("delivers owner questions as complete plain text without actions", async () => {
       const fixture = await seedFixture();
       const question = {
         kind: "ask_user_questions" as const,
@@ -263,14 +276,32 @@ describeEmbeddedPostgres(
             {
               id: "deploy-window",
               prompt: "Which deploy window?",
+              helpText: "Choose one and include any timing constraints.",
               selectionMode: "single" as const,
               allowOther: false,
               options: [
-                { id: "morning", label: "Morning" },
-                { id: "evening", label: "Evening" },
+                { id: "morning", label: "Morning", description: "Before noon" },
+                { id: "evening", label: "Evening", description: "After work" },
               ],
             },
           ],
+          questionSet: {
+            schema: "paperclip.question_set.v1" as const,
+            questions: [
+              {
+                id: "deploy-window",
+                header: "Deploy window",
+                prompt: "Which deploy window?",
+                helpText: "Choose one and include any timing constraints.",
+                required: true,
+                answerMode: "single_select" as const,
+                options: [
+                  { id: "morning", label: "Morning", description: "Before noon" },
+                  { id: "evening", label: "Evening", description: "After work" },
+                ],
+              },
+            ],
+          },
         },
       };
 
@@ -287,6 +318,20 @@ describeEmbeddedPostgres(
       expect(publications).toHaveLength(1);
       expect(publications[0]!.endpointId).toBe(fixture.endpointId);
       expect(publications[0]!.conversationId).not.toBeNull();
+      const payload = publications[0]!.payload as {
+        text?: string;
+        interaction?: { id?: string; card?: { actions?: unknown[] } };
+      };
+      expect(payload.text).toContain("Owner question about the release");
+      expect(payload.text).toContain("Deploy window");
+      expect(payload.text).toContain("Which deploy window?");
+      expect(payload.text).toContain("Choose one and include any timing constraints.");
+      expect(payload.text).toContain("1. Morning — Before noon");
+      expect(payload.text).toContain("2. Evening — After work");
+      expect(payload.text).toContain("Ответьте сообщением: номером варианта или своими словами.");
+      expect(payload.text).toContain("https://board.example");
+      expect(payload.interaction).toBeUndefined();
+      expect(payload.text).not.toContain("chat_action");
       const [boundConversation] = await db
         .select()
         .from(chatConversations)
@@ -303,8 +348,32 @@ describeEmbeddedPostgres(
       expect(boundConversation?.isDirectMessage).toBe(true);
     });
 
-    it("delivers a native telegram confirmation card on an unbound task to the owner's Telegram conversation", async () => {
+    it("delivers confirmation details as plain text with no executable actions", async () => {
       const fixture = await seedFixture();
+      const [document] = await db.insert(documents).values({
+        companyId: fixture.companyId,
+        title: "Plan",
+        format: "markdown",
+        latestBody: "Deploy plan",
+        latestRevisionNumber: 1,
+        createdByAgentId: fixture.agentId,
+      }).returning();
+      const [revision] = await db.insert(documentRevisions).values({
+        companyId: fixture.companyId,
+        documentId: document!.id,
+        revisionNumber: 1,
+        title: "Plan",
+        format: "markdown",
+        body: "Deploy plan",
+        createdByAgentId: fixture.agentId,
+      }).returning();
+      await db.update(documents).set({ latestRevisionId: revision!.id }).where(eq(documents.id, document!.id));
+      await db.insert(issueDocuments).values({
+        companyId: fixture.companyId,
+        issueId: fixture.workIssue.id,
+        documentId: document!.id,
+        key: "plan",
+      });
       const interaction = await issueThreadInteractionService(db).create(
         { id: fixture.workIssue.id, companyId: fixture.companyId },
         {
@@ -317,6 +386,7 @@ describeEmbeddedPostgres(
             version: 1 as const,
             prompt: "Proceed with the deploy?",
             detailsMarkdown: "Deploy build to production.",
+            target: { type: "issue_document" as const, key: "plan", revisionId: revision!.id },
             acceptLabel: "Accept",
             rejectLabel: "Reject",
             allowDeclineReason: true,
@@ -332,12 +402,13 @@ describeEmbeddedPostgres(
       expect(publications).toHaveLength(1);
       expect(publications[0]!.endpointId).toBe(fixture.endpointId);
       const payload = publications[0]!.payload as {
-        card?: { kind?: string; actions?: Array<{ label?: string }> };
+        text?: string;
+        interaction?: { card?: { actions?: unknown[] } };
       };
-      expect(payload.card?.kind).toBe("confirmation");
-      expect(
-        payload.card?.actions?.map((action) => action.label),
-      ).toEqual(["Accept", "Reject"]);
+      expect(payload.text).toContain("Proceed with the deploy?");
+      expect(payload.text).toContain("Deploy build to production.");
+      expect(payload.text).toContain("Ответить можно только на доске.");
+      expect(payload.interaction).toBeUndefined();
     });
 
     it("keeps the card board-only when the owner has no standing Telegram conversation", async () => {
@@ -670,14 +741,16 @@ describeEmbeddedPostgres(
         });
         const text = await publicationText(fixture.companyId, interaction.id);
         expect(text).not.toBeNull();
-        expect(text!.startsWith("Нужно ваше решение")).toBe(true);
+        expect(text!.startsWith("Proceed with the deploy?")).toBe(true);
         expect(text).toContain("Proceed with the deploy?");
-        // Guard: no uuids, run ids or commit-sha-like tokens in the owner text.
-        expect(text).not.toMatch(
+        // The task URL is intentionally UUID-shaped; inspect human text only.
+        const humanText = text!.replace(/\nhttps:\/\/[^\s]+$/, "");
+        // Guard: no internal UUIDs, run ids or commit-sha-like tokens.
+        expect(humanText).not.toMatch(
           /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i,
         );
-        expect(text).not.toMatch(/\b[0-9a-f]{7,40}\b/);
-        expect(text).not.toMatch(/run[_ -]?id/i);
+        expect(humanText).not.toMatch(/\b[0-9a-f]{7,40}\b/i);
+        expect(humanText).not.toMatch(/run[_ -]?id/i);
       });
     });
   },
