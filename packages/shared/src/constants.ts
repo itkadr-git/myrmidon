@@ -1393,7 +1393,6 @@ export const PLUGIN_CAPABILITIES = [
   "issues.wakeup",
   "issue.comments.create",
   "issue.comments.create_human_attributed",
-  "issue.attachments.write",
   "issue.interactions.create",
   // Respond to (accept/reject) an issue-thread interaction on behalf of a
   // paired board user. Impersonation surface: the host independently
