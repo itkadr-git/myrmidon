@@ -16,7 +16,7 @@
 // keeps human-user IDs from masquerading as agent IDs. A task without a
 // project stays open to the company. A manually assigned task is never gated.
 
-import { and, eq, isNotNull, sql, type SQL } from "drizzle-orm";
+import { and, eq, isNotNull, sql, type SQL, type SQLWrapper } from "drizzle-orm";
 import { agents, issues, projectMemberships, projects, type Db } from "@paperclipai/db";
 
 /**
@@ -30,8 +30,9 @@ export function projectScopedClaimGate(agentId: string): SQL {
   return projectScopedClaimGateForAgentSql(sql`${agentId}`);
 }
 
-/** SQL variant for query paths that select or gate an agent id from a row. */
+/** SQL variant for query paths that gate an agent id from a row. */
 export function projectScopedClaimGateForAgentSql(agentId: SQLWrapper): SQL {
+  const agentRef = agentId;
   return sql`(
     ${issues.projectId} is null
     or exists (
@@ -41,11 +42,11 @@ export function projectScopedClaimGateForAgentSql(agentId: SQLWrapper): SQL {
         and p.id = ${issues.projectId}
         and exists (
           select 1 from agents a
-          where a.id = ${agentId}
+          where a.id = ${agentRef}
             and a.company_id = ${issues.companyId}
         )
         and (
-          p.lead_agent_id = ${agentId}
+          p.lead_agent_id = ${agentRef}
           or exists (
             select 1
             from project_memberships pm
@@ -54,9 +55,9 @@ export function projectScopedClaimGateForAgentSql(agentId: SQLWrapper): SQL {
                and a.id::text = pm.user_id
             where pm.company_id = ${issues.companyId}
               and pm.project_id = ${issues.projectId}
-              and pm.user_id = ${agentId}
+              and pm.user_id = ${sql`${agentRef}::text`}
               and pm.state = 'joined'
-              and a.id = ${agentId}
+              and a.id = ${agentRef}
           )
         )
     )
