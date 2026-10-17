@@ -70,6 +70,7 @@ describe("myrmidon:migrate pure guards", () => {
   const release = (name: string) => releases.find((r) => r.release === name)!;
   const SUPPORTED: [string, number, string][] = [
     ["v2026.916.1", 278, "0279_tired_deathstrike"],
+    ["v2026.916.0", 278, "0279_tired_deathstrike"],
     ["v2026.1001.0", 282, "0283_jittery_psynapse"],
     ["v2026.1005.0", 292, "0293_broad_rattler"],
     ["v2026.1012.0", 304, "0305_chubby_vin_gonzales"],
@@ -87,9 +88,10 @@ describe("myrmidon:migrate pure guards", () => {
     expect(release("v2026.1012.0").chain.slice(0, 292)).toEqual(release("v2026.1005.0").chain);
   });
 
-  it.each(SUPPORTED)("accepts exactly the chain of %s and names the release", (name, length) => {
+  it.each(SUPPORTED)("accepts exactly the chain of %s and reports its canonical release", (name, length) => {
     const check = checkVendorChain(rowsOf(release(name)), releases);
-    expect(check).toMatchObject({ supported: true, vendorRelease: name, applied: length, expected: length });
+    const canonicalRelease = name === "v2026.916.0" ? "v2026.916.1" : name;
+    expect(check).toMatchObject({ supported: true, vendorRelease: canonicalRelease, applied: length, expected: length });
     expect(check.supportedReleases).toEqual(SUPPORTED.map((x) => x[0]));
   });
 
