@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import {
   applyCompanyPrefix,
   extractCompanyPrefixFromPath,
@@ -7,6 +9,31 @@ import {
 } from "./company-routes";
 
 describe("company routes", () => {
+  it("keeps board route roots in sync with the company-prefixed route tree", () => {
+    const appSource = readFileSync(fileURLToPath(new URL("../App.tsx", import.meta.url)), "utf8");
+    const boardRouteRoots = new Set<string>();
+    const routeBlock = appSource.match(/function boardRoutes\([\s\S]*?(?=\nfunction )/)?.[0];
+    expect(routeBlock).toBeDefined();
+    for (const [, root] of routeBlock!.matchAll(/<Route\s+path="([a-z][a-z0-9-]*)"/g)) {
+      if (!["runs", "budgets"].includes(root!)) boardRouteRoots.add(root!);
+    }
+    const legacyStart = appSource.indexOf("<Route element={streamlinedUiLoaded", appSource.indexOf("export function App()"));
+    const legacyBlock = legacyStart >= 0
+      ? appSource.slice(legacyStart).split('<Route path=":companyPrefix"')[0]
+      : "";
+    for (const [, root] of legacyBlock.matchAll(/<Route\s+path="([a-z][a-z0-9-]*)"/g)) {
+      boardRouteRoots.add(root!);
+    }
+    const source = readFileSync(fileURLToPath(new URL("./company-routes.ts", import.meta.url)), "utf8");
+    const rootsBlock = source.match(/const BOARD_ROUTE_ROOTS = new Set\(\[([\s\S]*?)\]\);/)?.[1];
+    expect(rootsBlock).toBeDefined();
+    const listedRoots = new Set([...rootsBlock!.matchAll(/"([a-z][a-z0-9-]*)"/g)].map(([, root]) => root!));
+
+    expect(listedRoots.size).toBe([...rootsBlock!.matchAll(/"([a-z][a-z0-9-]*)"/g)].length);
+    expect([...listedRoots].filter((root) => !boardRouteRoots.has(root))).toEqual([]);
+    expect([...boardRouteRoots].filter((root) => !listedRoots.has(root))).toEqual([]);
+  });
+
   it.each(["swarm-claim", "foraging", "quality", "status", "cases", "pipelines", "stack"])(
     "scopes the Myrmidon %s menu route to the current company",
     (root) => {
