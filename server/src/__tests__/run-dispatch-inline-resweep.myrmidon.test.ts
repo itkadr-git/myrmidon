@@ -165,6 +165,44 @@ describe("queued resweep pass", () => {
     expect(startNextQueuedRunForAgent).toHaveBeenCalledTimes(1);
   });
 
+  it("uses the local executor start path when notify resweep recovers a lost NOTIFY", async () => {
+    const startNextQueuedRunForAgent = vi.fn(async () => [{ id: "run" }]);
+    const requestRemoteStart = vi.fn(async () => {});
+    const dispatcher = createRunStartDispatcher({
+      listQueuedAgents: async () => [queued("agent-1")],
+      startNextQueuedRunForAgent,
+      loadSettings: async () => ({ runStartDispatch: "notify", queuedResweepSec: 30 }),
+      executesRuns: () => true,
+      requestRemoteStart,
+    });
+
+    expect(await dispatcher.sweepQueuedWithoutRunning()).toMatchObject({ agents: 1, started: 1 });
+    expect(startNextQueuedRunForAgent).toHaveBeenCalledWith("agent-1", {
+      otherAgentsWaiting: false,
+    });
+    expect(requestRemoteStart).not.toHaveBeenCalled();
+  });
+
+  it("keeps api resweeps in notify mode remote-only", async () => {
+    const startNextQueuedRunForAgent = vi.fn(async () => [{ id: "run" }]);
+    const requestRemoteStart = vi.fn(async () => {});
+    const dispatcher = createRunStartDispatcher({
+      listQueuedAgents: async () => [queued("agent-1")],
+      startNextQueuedRunForAgent,
+      loadSettings: async () => ({ runStartDispatch: "notify", queuedResweepSec: 30 }),
+      executesRuns: () => false,
+      requestRemoteStart,
+    });
+
+    expect(await dispatcher.sweepQueuedWithoutRunning()).toEqual({
+      agents: 1,
+      started: 0,
+      failed: 0,
+    });
+    expect(startNextQueuedRunForAgent).not.toHaveBeenCalled();
+    expect(requestRemoteStart).toHaveBeenCalledWith("agent-1");
+  });
+
   it("does not start a run for an agent that already has one (queued without running)", async () => {
     // After the first pass the run is no longer queued, so the selection of the
     // second pass is empty — nothing is started twice.

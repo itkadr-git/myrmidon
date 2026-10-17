@@ -241,10 +241,19 @@ export function createRunStartDispatcher(deps: RunStartDispatcherDeps): RunStart
     let failed = 0;
     for (const agent of agents) {
       try {
-        const startedRuns = await dispatchRunStart(agent.agentId, {
-          // The vendor sweep's fair-share hint: more than one agent is waiting.
-          otherAgentsWaiting: agents.length > 1,
-        });
+        // A resweep is the correctness carrier for a lost notification. On an
+        // executor it must use the vendor start path directly; routing it back
+        // through notify would publish another wakeup without a subscriber.
+        const startedRuns =
+          (await loadSettings()).runStartDispatch === "notify" &&
+          (deps.executesRuns?.() ?? true)
+            ? await deps.startNextQueuedRunForAgent(agent.agentId, {
+                otherAgentsWaiting: agents.length > 1,
+              })
+            : await dispatchRunStart(agent.agentId, {
+                // The vendor sweep's fair-share hint: another agent is waiting.
+                otherAgentsWaiting: agents.length > 1,
+              });
         if (startedRuns.length > 0) started += 1;
       } catch (err) {
         failed += 1;
