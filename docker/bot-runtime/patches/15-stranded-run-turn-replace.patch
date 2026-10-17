@@ -1,0 +1,100 @@
+diff --git a/agent/session_persistence.py b/agent/session_persistence.py
+index 23f2d15..2228e41 100644
+--- a/agent/session_persistence.py
++++ b/agent/session_persistence.py
+@@ -165,6 +165,78 @@ def adopt_unanswered_turn(history: List[Dict[str, Any]], query: Any, agent: Any)
+     return True
+ 
+ 
++# myrmidon(G1): head length compared when deciding that a stranded prompt is an earlier attempt of this run.
++_STRANDED_REPLAY_PREFIX_CHARS = 256
++
++
++def replace_stranded_run_turn(history: List[Dict[str, Any]], query: Any, agent: Any) -> int:
++    """myrmidon(G1): replace the transcript's unanswered tail prompt(s) with THIS run's prompt.
++
++    Returns the number of rows removed from the active transcript.
++
++    ``/v1/runs`` callers re-dispatch a whole fresh prompt after a failed run. The failed run's turn-start
++    persist left its prompt as the unanswered tail user row, and every further retry added one more, so a
++    session that kept failing grew one user row per attempt; the live-replay ``user;user`` merge then sent
++    all of them as ONE user message (43 rows of about 220 KB became a single 9.6 MB message) and the
++    provider kept rejecting the request as too large. Unlike the peer-DM lane (``adopt_unanswered_turn``)
++    the retry text is not byte-identical (run ids, timestamps and fresh context differ), so the stranded
++    rows are matched by the head of their text and SUPERSEDED: soft-deleted through the one rewind
++    implementation (``SessionDB.rewind_user_turn``) and dropped from ``history`` in place, after which the
++    turn appends the new prompt as the single tail row.
++
++    Only a tail of plain-text user rows (optionally followed by the failed attempt's tool scaffolding, with
++    no assistant reply after them) whose text head equals the new prompt's head is replaced; compaction
++    carriers, answered turns and unrelated text are never touched. A rewind that cannot be persisted still
++    drops the rows from this turn's in-memory history, so the doomed prefix is not sent again.
++    ``HERMES_KEEP_STRANDED_RUN_TURNS=1`` disables the behaviour."""
++    import os
++
++    if os.environ.get("HERMES_KEEP_STRANDED_RUN_TURNS") == "1" or not history:
++        return 0
++    from agent.context_compressor import split_user_originated_turn
++    from agent.message_content import flatten_message_text
++
++    def _is_scaffolding(row: Any) -> bool:
++        return isinstance(row, dict) and (
++            row.get("role") == "tool" or (row.get("role") == "assistant" and bool(row.get("tool_calls"))))
++
++    end = len(history)
++    while end > 0 and _is_scaffolding(history[end - 1]):
++        end -= 1
++    start = end
++    while start > 0 and isinstance(history[start - 1], dict) and history[start - 1].get("role") == "user":
++        handoff, live = split_user_originated_turn(history[start - 1])
++        if handoff is not None or live is None:
++            break
++        start -= 1
++    if start == end:
++        return 0
++    head = flatten_message_text(query)[:_STRANDED_REPLAY_PREFIX_CHARS]
++    if not head.strip():
++        return 0
++    for row in history[start:end]:
++        if not isinstance(row.get("content"), str):
++            return 0  # multimodal rows are not merged by the replay repair: leave them alone
++        if flatten_message_text(row.get("content"))[:_STRANDED_REPLAY_PREFIX_CHARS] != head:
++            return 0
++    rewound = 0
++    db = getattr(agent, "_session_db", None)
++    session_id = getattr(agent, "session_id", None)
++    if db is not None and session_id:
++        try:
++            # Ordinal -1 is the newest user turn of the repaired projection: the merged tail run, anchored at
++            # its first row, so every stranded row (and any scaffolding behind it) leaves the active transcript.
++            rewound = int(db.rewind_user_turn(session_id, -1).rewound_count)
++        except Exception:
++            logger.warning(
++                "stranded run prompt could not be rewound in session=%s; dropping it from this turn's history only",
++                session_id, exc_info=True)
++    logger.info("replaced %d stranded unanswered user row(s) with the new run prompt session=%s rewound=%d",
++                end - start, session_id or "none", rewound)
++    del history[start:]
++    return max(rewound, end - start)
++
++
+ # --- flush phases (module-level so the flush also works bound onto duck-typed agents) ---
+ 
+ def _db_flush_seed_ids(agent) -> set:
+diff --git a/gateway/platforms/api_server_runs.py b/gateway/platforms/api_server_runs.py
+index fc389b3..b15e667 100644
+--- a/gateway/platforms/api_server_runs.py
++++ b/gateway/platforms/api_server_runs.py
+@@ -774,6 +774,12 @@ def _run_agent_sync(self, run: _RunLaunch, agent, approval_notify, *, _api_serve
+             _api_server._publish_turn_process_ownership(agent, effective_task_id)
+             # Passed only when set: a human turn keeps today's call shape.
+             author_kwargs = {"turn_author": run.turn_author} if run.turn_author is not None else {}
++            if run.session_history_delivery:
++                # myrmidon(G1): history came from the session store; a prompt stranded there by a failed
++                # run is superseded by this run's prompt instead of piling up one user row per retry.
++                from agent.session_persistence import replace_stranded_run_turn
++
++                replace_stranded_run_turn(run.conversation_history, run.user_message, agent)
+             r = agent.run_conversation(
+                 user_message=run.user_message, conversation_history=run.conversation_history,
+                 task_id=effective_task_id, **author_kwargs)

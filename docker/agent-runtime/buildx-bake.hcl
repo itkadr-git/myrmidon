@@ -1,5 +1,5 @@
 group "default" {
-  targets = ["base", "claude", "codex", "gemini", "opencode", "pi", "hermes"]
+  targets = ["base", "claude", "codex", "gemini", "opencode", "pi", "hermes", "omp"]
 }
 
 variable "VERSION" { default = "dev" }
@@ -88,4 +88,11 @@ target "hermes" {
   contexts = {
     "paperclipai/agent-runtime-base:${VERSION}" = "target:base"
   }
+}
+
+target "omp" {
+  context = "."
+  dockerfile = "docker/agent-runtime/Dockerfile.omp"
+  platforms = ["linux/amd64"]
+  tags = ["${REGISTRY}/agent-runtime-omp:${VERSION}"]
 }

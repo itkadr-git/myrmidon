@@ -21,7 +21,7 @@
 // `api_port` is null for a process that serves no HTTP (the worker in the
 // split layout) and for a single-process board that has not bound yet.
 //
-// Additive migration only: one new table plus one index, no vendor table
+// Additive migration only: two new tables plus one index, no vendor table
 // touched, no data rewritten.
 
 import { bigint, index, integer, pgTable, text, timestamp } from "drizzle-orm/pg-core";
@@ -64,9 +64,9 @@ export const boardProcesses = pgTable(
  * (`scheduler`, `backup`, ...). `holder_boot_id` points at the owner's
  * `board_processes.boot_id` (no FK: a reaped process must not block the
  * takeover of its lease), `epoch` grows on every handover (fencing token) and
- * `expires_at` is the TTL deadline. The leader-lease service writes these
- * rows and the process panel reads them; a reaped process must not block a
- * takeover because there is no foreign key to the process registry.
+ * `expires_at` is the TTL deadline. Today the table has no writer — a
+ * single-process board holds no lease — and the read route answers an empty
+ * list; the lease holder of the later stages writes here.
  */
 export const boardLeases = pgTable("board_leases", {
   name: text("name").primaryKey(),

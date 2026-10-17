@@ -97,6 +97,8 @@ import {
 import { AgentCardLspFields } from "./myrmidon/AgentCardLspFields"; // myrmidon(BOT-LSP-DEFAULTS)
 import { botLspApi, botLspQueryKey } from "./myrmidon/botLspApi"; // myrmidon(BOT-LSP-DEFAULTS)
 import { AgentCardEgressFields } from "./myrmidon/AgentCardEgressFields"; // myrmidon(EGRESS-B)
+import { AgentCardNestsFields } from "./myrmidon/AgentCardNestsFields"; // myrmidon(1.6.5 F-26 T3)
+import { AgentCardTelegramFields } from "./myrmidon/AgentCardTelegramFields"; // myrmidon(1.6.5-TG-LOCALE-D)
 import { OpenCodeLogoIcon } from "./OpenCodeLogoIcon";
 import { ReportsToPicker } from "./ReportsToPicker";
 import {
@@ -1334,7 +1336,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
         ? "mode"
         : adapterType === "opencode_local"
           ? "variant"
-          : adapterType === "pi_local" ? "thinking" : "effort";
+          : adapterType === "pi_local" || adapterType === "omp_local" ? "thinking" : "effort";
   // myrmidon(BOT-TUNING-C): hermes_local offers only the values the selected
   // model accepts (GLM: low/high/max, no medium) instead of the claude list.
   const isHermesLocalEffort = adapterType === "hermes_local";
@@ -1352,7 +1354,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
           ? openCodeThinkingEffortOptions
           : adapterType === "kimi_local"
             ? kimiThinkingEffortOptions
-            : adapterType === "pi_local"
+            : adapterType === "pi_local" || adapterType === "omp_local"
               ? [{ id: "", label: "Auto" }, ...["off", "minimal", "low", "medium", "high", "xhigh"].map(id => ({ id, label: id }))]
               : isHermesLocalEffort
                 // myrmidon(BOT-TUNING-C): the per-model list; "" compiles to
@@ -1815,6 +1817,16 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
           {!isCreate && adapterType === "hermes_gateway" && (
             <AgentCardEgressFields agentId={props.agent.id} />
           )}
+          {/* myrmidon(1.6.5 F-26 T3 CASTES-AND-NESTS): the projects this agent works in */}
+          {!isCreate && <AgentCardNestsFields agentId={props.agent.id} />}
+          {/* myrmidon(1.6.5-TG-LOCALE-D): Telegram aliases and group on the card */}
+          {!isCreate && (
+            <AgentCardTelegramFields
+              agentId={props.agent.id}
+              agentName={props.agent.name}
+              metadata={props.agent.metadata}
+            />
+          )}
           {/* myrmidon(PARALLEL-HELPERS): parallel helper subagents on the agent card.
               The ceiling/default come from the instance settings; read-only here,
               changed on the settings page. */}
@@ -1904,9 +1916,9 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 open={modelOpen}
                 onOpenChange={setModelOpen}
                 defaultLabel={adapterType === "claude_local" ? `Default (${DEFAULT_CLAUDE_LOCAL_MODEL})` : undefined}
-                allowDefault={adapterType !== "opencode_local" && adapterType !== "pi_local" && adapterType !== "paperclip_runner"}
-                required={adapterType === "opencode_local" || adapterType === "pi_local"}
-                groupByProvider={adapterType === "opencode_local" || adapterType === "pi_local"}
+                allowDefault={adapterType !== "opencode_local" && adapterType !== "pi_local" && adapterType !== "omp_local" && adapterType !== "paperclip_runner"}
+                required={adapterType === "opencode_local" || adapterType === "pi_local" || adapterType === "omp_local"}
+                groupByProvider={adapterType === "opencode_local" || adapterType === "pi_local" || adapterType === "omp_local"}
                 creatable
                 detectedModel={detectedModel}
                 detectedModelCandidates={[]}
@@ -1981,7 +1993,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                   value={eff("adapterConfig", "models", config.models)}
                   onChange={(next) => mark("adapterConfig", "models", next)}
                   renderModelPicker={(picker) => (
-                    <ModelDropdown models={models} value={picker.value} onChange={picker.onChange} open={picker.open} onOpenChange={picker.onOpenChange} allowDefault required={false} groupByProvider={adapterType === "opencode_local" || adapterType === "pi_local"} creatable />
+                    <ModelDropdown models={models} value={picker.value} onChange={picker.onChange} open={picker.open} onOpenChange={picker.onOpenChange} allowDefault required={false} groupByProvider={adapterType === "opencode_local" || adapterType === "pi_local" || adapterType === "omp_local"} creatable />
                   )}
                 />
               )}
@@ -2071,6 +2083,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                         gemini_local: "gemini",
                         kimi_local: "kimi",
                         pi_local: "pi",
+                        omp_local: "omp",
                         cursor: "agent",
                         opencode_local: "opencode",
                       } as Record<string, string>)[adapterType] ?? adapterType.replace(/_local$/, "")

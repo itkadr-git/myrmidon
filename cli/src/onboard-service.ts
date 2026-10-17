@@ -19,6 +19,7 @@ import {
 } from "./services/service-manager.js";
 import { buildLocalAppUrl, buildLocalHealthUrl } from "./utils/health-url.js";
 import { packageVersion } from "./version.js";
+import { readProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
 
 export type OnboardServiceOptions = {
   yes?: boolean;
@@ -40,7 +41,7 @@ type OnboardServiceDashboardDependencies = {
   warn: (message: string) => void;
 };
 
-function envDisablesBrowser(value = process.env.PAPERCLIP_NO_BROWSER): boolean {
+function envDisablesBrowser(value = readProductEnv("NO_BROWSER")): boolean {
   const normalized = value?.trim().toLowerCase();
   return normalized === "1" || normalized === "true" || normalized === "yes";
 }

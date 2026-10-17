@@ -30,7 +30,7 @@
  * @see PLUGIN_SPEC.md §21.3 — `plugin_jobs` / `plugin_job_runs` tables
  */
 
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, lt, ne } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { plugins, pluginJobs, pluginJobRuns } from "@paperclipai/db";
 import type {
@@ -44,7 +44,7 @@ import { notFound } from "../errors.js";
 /**
  * The statuses used for job *definitions* in the `plugin_jobs` table.
  * Aliased from `PluginJobRecord` to keep the store API aligned with
- * the domain type (`"active" | "paused" | "failed"`).
+ * the domain type (`"active" | "paused" | "failed" | "running"`).
  */
 type JobDefinitionStatus = PluginJobRecord["status"];
 
@@ -294,6 +294,76 @@ export function pluginJobStore(db: Db) {
         .update(pluginJobs)
         .set({ status, updatedAt: new Date() })
         .where(eq(pluginJobs.id, jobId));
+    },
+
+    /**
+     * Cross-process CAS capture of a job launch (OPE-5401 ч.B).
+     *
+     * Atomically flips `status` from anything-other-than-`running` to
+     * `running`. Only the process whose UPDATE returns the row owns this
+     * run; every other concurrent capture (a second scheduler process, a
+     * double tick) receives no row and must skip the launch — a skip, not
+     * an error. Release happens in `releaseJobAfterRun` once the run
+     * reaches a terminal state.
+     *
+     * @param jobId - UUID of the job row
+     * @returns `true` when this caller captured the job
+     */
+    async captureJobForRun(jobId: string): Promise<boolean> {
+      const captured = await db
+        .update(pluginJobs)
+        .set({ status: "running", updatedAt: new Date() })
+        .where(and(eq(pluginJobs.id, jobId), ne(pluginJobs.status, "running")))
+        .returning({ id: pluginJobs.id });
+      return captured.length > 0;
+    },
+
+    /**
+     * Release the CAS capture taken by `captureJobForRun`.
+     *
+     * Conditional by design: it only clears the capture while the job is
+     * still in `running` state, so a concurrent operator pause/resume
+     * (`updateJobStatus`) or a `syncJobDeclarations` overwrite is never
+     * clobbered back to `active` by a finishing run.
+     *
+     * @param jobId - UUID of the job row
+     */
+    async releaseJobAfterRun(jobId: string): Promise<void> {
+      await db
+        .update(pluginJobs)
+        .set({ status: "active", updatedAt: new Date() })
+        .where(and(eq(pluginJobs.id, jobId), eq(pluginJobs.status, "running")));
+    },
+
+    /**
+     * Reclaim launch captures left behind by a process that died mid-run.
+     *
+     * A `running` row is a lease: it is normally released by
+     * `releaseJobAfterRun` in the dispatch `finally`. If the owning process
+     * crashed, the lease would otherwise outlive its owner and the job would
+     * never return to the `active` due-set — behaviour no worse than the old
+     * in-process `activeJobs` guard, but not the pre-fix behaviour either.
+     * This closes the gap: captures older than the given cutoff are flipped
+     * back to `active` so the scheduler can dispatch them again.
+     *
+     * Idempotent and race-safe: the conditional update only touches rows
+     * still marked `running`, so a lease released concurrently is a no-op.
+     *
+     * @param olderThan - captures whose `updatedAt` precedes this timestamp
+     * @returns number of reclaimed captures
+     */
+    async reclaimStaleJobCaptures(olderThan: Date): Promise<number> {
+      const reclaimed = await db
+        .update(pluginJobs)
+        .set({ status: "active", updatedAt: new Date() })
+        .where(
+          and(
+            eq(pluginJobs.status, "running"),
+            lt(pluginJobs.updatedAt, olderThan),
+          ),
+        )
+        .returning({ id: pluginJobs.id });
+      return reclaimed.length;
     },
 
     /**

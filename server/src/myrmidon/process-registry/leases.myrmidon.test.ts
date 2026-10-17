@@ -1,4 +1,4 @@
-// myrmidon(1.6.6 PROCS-1.7 part A): GET /api/myrmidon/processes/leases — the read the
+// myrmidon(1.6.5 PROCS-0.1): GET /api/myrmidon/processes/leases — the read the
 // lease block of the «Процессы» panel polls. Pins:
 //   * a single-process board (no lease rows) answers an empty list with its
 //     own boot id, so the panel shows the single-process state;

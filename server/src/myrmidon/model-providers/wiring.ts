@@ -47,11 +47,10 @@ export async function recordModelProviderActivity(
   });
 }
 
-export function myrmidonModelProviderRoutes(db: Db, env: NodeJS.ProcessEnv = process.env): Router {
+/** Builds the production ModelProviderService backed by Db, secrets and default catalog port. */
+export function createDefaultModelProviderService(db: Db): ReturnType<typeof createModelProviderService> {
   const secrets = secretService(db);
-
-  // Create the basic model provider service
-  const modelProviderService = createModelProviderService({
+  return createModelProviderService({
     db,
     secrets: {
       readSecretValue: (companyId, secretName) =>
@@ -68,6 +67,7 @@ export function myrmidonModelProviderRoutes(db: Db, env: NodeJS.ProcessEnv = pro
             key: input.name,
             value: input.value,
             description: input.description,
+            provider: "local_encrypted",
           } as never,
           { userId: null, agentId: null },
         )) as { id: string };
@@ -77,11 +77,16 @@ export function myrmidonModelProviderRoutes(db: Db, env: NodeJS.ProcessEnv = pro
         await secrets.rotate(secretId, { value }, { userId: null, agentId: null });
       },
       deleteSecret: async (secretId) => {
-        await secrets.update(secretId, { status: "deleted" });
+        await secrets.remove(secretId);
       },
     },
     catalog: createModelProviderCatalogPort(),
   });
+}
+
+export function myrmidonModelProviderRoutes(db: Db, env: NodeJS.ProcessEnv = process.env): Router {
+  const secrets = secretService(db);
+  const modelProviderService = createDefaultModelProviderService(db);
 
   // Part B: the gateway pair is instance configuration; the admin key is a
   // company secret NAME whose VALUE is resolved per company. A company that

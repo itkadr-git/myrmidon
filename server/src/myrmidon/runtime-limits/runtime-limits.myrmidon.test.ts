@@ -133,6 +133,9 @@ describe("myrmidon(C0) runtime limits: reading the effective values", () => {
       // myrmidon(1.6.5 C0-ui): without a memory snapshot source the view
       // carries none.
       memory: null,
+      // myrmidon(1.6.5 F-09): without an admission the view carries no
+      // denial counters.
+      admissionDenials: null,
     });
   });
 

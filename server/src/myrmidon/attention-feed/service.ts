@@ -23,7 +23,7 @@ import type { LogActivityInput } from "../../services/activity-log.js";
  * Contract: `instance_settings.general.attentionFailedRunHorizonDays` and
  * `.attentionFeedCacheTtlSeconds` are the source of truth once an operator
  * saves them; there is no environment variable, so the built-in default (7
- * days, 45 s) is the only fallback. The feed re-reads the row on the next
+ * days, 60 s) is the only fallback. The feed re-reads the row on the next
  * build — `server/src/services/attention.ts` keeps its settings read behind a
  * short memo — so a PATCH applies without a restart, and no runtime has to be
  * rebuilt here.

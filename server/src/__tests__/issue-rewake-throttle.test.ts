@@ -32,11 +32,11 @@ describe("isThrottleCandidateIssueRewake", () => {
   };
 
   it("throttles state-poll reasons and reason-less invokes", () => {
-    expect(isThrottleCandidateIssueRewake(base)).toBe(true);
-    expect(isThrottleCandidateIssueRewake({ ...base, reason: null })).toBe(true);
+    expect(isThrottleCandidateIssueRewake(base)).toBe(false);
     expect(isThrottleCandidateIssueRewake({ ...base, reason: "issue_continuation_needed" })).toBe(true);
     expect(isThrottleCandidateIssueRewake({ ...base, reason: "issue_assignment_recovery" })).toBe(true);
     expect(isThrottleCandidateIssueRewake({ ...base, reason: "issue_graph_liveness_backstop" })).toBe(true);
+    expect(isThrottleCandidateIssueRewake({ ...base, reason: null })).toBe(true);
   });
 
   it("keeps agent comments throttle-eligible without granting human comment privileges", () => {

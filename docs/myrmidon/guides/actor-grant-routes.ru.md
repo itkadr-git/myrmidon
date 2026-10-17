@@ -64,12 +64,41 @@ Board-актор не изменился: мутации окружений ин
 | `assertToolsRuntimeManage` (`tools:manage_runtime`) | `GET /api/companies/:companyId/tools/runtime-slots`, `POST …/runtime-slots/:id/stop`, `POST …/runtime-slots/:id/restart` |
 | `assertBoardAnyToolPermission` (любой из) | `GET /api/tool-connections/:connectionId/test-agents` и другие маршруты тестирования подключения: `tools:use` **или** `tools:manage_connections` |
 
-Путь настройки подключения (настройка, переподключение, удаление подключения
-компании) остаётся **только для доски**: он закрыт стражем
-`isToolConnectionManager`, который начинается с `assertBoard` и отвечает
-`403 Board access required` любому агенту независимо от грантов. Грант
-`tools:manage_connections` помогает агенту только на маршрутах
-**тестирования** подключений (строка выше); путь настройки он не открывает.
+Начиная с 1.6.5 (F-22) галерея инструментов и маршруты подключений также
+пропускают агента-актёра по гранту через `assertBoardOrAgentGrant` в
+`authz.ts` (board-акторы проходят ровно как раньше):
+
+| Маршрут | Board-актор | Агент-актор |
+|---|---|---|
+| `GET /api/companies/:companyId/tools/gallery` | как раньше | `tools:admin` или `tools:manage_connections` |
+| `GET /api/companies/:companyId/tools/connections` | как раньше | `tools:admin` или `tools:manage_connections` |
+| `GET /api/tool-connections/:connectionId` | как раньше | `tools:admin` или `tools:manage_connections` |
+| `POST /api/companies/:companyId/tools/connections` | как раньше | `tools:manage_connections` |
+| `PATCH /api/tool-connections/:connectionId` | как раньше | `tools:manage_connections` |
+| `PUT /api/tool-connections/:connectionId/installs` | как раньше | `tools:manage_connections` |
+| `DELETE /api/tool-connections/:connectionId` | как раньше | 403, всегда — см. ниже |
+
+Агент без гранта получает `403 Missing permission: <key>`; совпадение
+компании проверяется до проверки гранта. Удалить подключение компании агент
+не может никогда: `DELETE` всегда отвечает 403 с
+`Removing a tool connection requires operator confirmation; an agent cannot delete a connection directly`,
+потому что удаление снимает все построенные на подключении гранты, а
+взаимодействие «удаление по подтверждению» требует контекста задачи, которого
+у этого маршрута нет — удаление передаётся оператору.
+
+Каждый вызов агента на этих поверхностях также пишет строку в
+`tool_access_audit_events` (`actorType: "agent"`, действие
+`tool_access.gallery.read`, `tool_access.connections.list.read`,
+`tool_access.connection.read`, `tool_access.connections.create`,
+`tool_access.connection.update`, `tool_access.connection.installs_sync` или
+`tool_access.connection.delete`, исход
+`success` или `denied`) рядом со строками журнала активности, которые мутации
+уже записывают с `actorType: "agent"`.
+
+Остальные поверхности настройки подключений (переподключение, сервисы
+подключения, приложения, гранты) остаются **только для доски**: они закрыты
+стражем `isToolConnectionManager`, который начинается с `assertBoard` и
+отвечает `403 Board access required` любому агенту независимо от грантов.
 
 Остальные маршруты подключений сохраняют прежнюю логику членства/ролей для
 board-акторов и остаются только для доски на мутациях, если не перечислены

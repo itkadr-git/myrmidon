@@ -9,7 +9,7 @@ panel that switches the mode is part B of the same task (OPE-5413).
 - New tables: `board_processes` (one row per running process, refreshed by a
   10 s pulse; rows older than 2 min are reaped by the leader) and
   `board_leases` (`name` PK, `holder_boot_id`, `epoch`, `acquired_at`,
-  `expires_at`) — migration 0315.
+  `expires_at`) — migration 0388.
 - The leader lease service (`server/src/services/leader-lease.ts`) implements
   the design §5.3 protocol: acquire as `INSERT … ON CONFLICT DO NOTHING`
   followed by `UPDATE … WHERE name=? AND (expires_at < clock_timestamp() OR

@@ -139,6 +139,99 @@ function sandbox({ freeGb, images = [], containers = [], usedImages = [] } = {})
 const read = (file) => (fs.existsSync(file) ? fs.readFileSync(file, "utf8") : "");
 const calls = (sb) => read(path.join(sb.dir, "calls.log"));
 
+describe("log_script_version (myrmidon(F-05)): the deploy journal opens with the script version", () => {
+  // The journal line of a deploy run is the fake-git answer below; the real
+  // value is `git describe --tags --always` of the clone holding the scripts.
+  const FAKE_GIT = `#!/usr/bin/env bash
+for a in "$@"; do
+  case "$a" in
+    rev-parse) echo "$SANDBOX"; exit 0 ;;
+    describe) echo "myr-v1.6.5-rc.7-3-gdeadbee"; exit 0 ;;
+  esac
+done
+exit 0
+`;
+  const BROKEN_GIT = "#!/usr/bin/env bash\nexit 1\n";
+  const NO_CLONE_GIT = `#!/usr/bin/env bash
+for a in "$@"; do
+  case "$a" in
+    rev-parse) exit 1 ;;
+    describe) echo "fallback-sha1"; exit 0 ;;
+  esac
+done
+exit 0
+`;
+
+  // A PATH without git: symlinks of the core tools bash needs, no git.
+  function noGitBin(dir) {
+    const bin = path.join(dir, "no-git-bin");
+    fs.mkdirSync(bin);
+    for (const tool of ["bash", "sh", "sed", "dirname", "env", "pwd"]) {
+      const real = spawnSync("/usr/bin/bash", ["-c", `command -v ${tool} || true`], { encoding: "utf8" }).stdout.trim();
+      if (real && path.isAbsolute(real)) fs.symlinkSync(real, path.join(bin, tool));
+    }
+    return bin;
+  }
+
+  function versionSandbox(gitContent) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "myrmidon-script-version-"));
+    const bin = path.join(dir, "bin");
+    fs.mkdirSync(bin);
+    if (gitContent === null) return { dir, bin: noGitBin(dir) };
+    fs.writeFileSync(path.join(bin, "git"), gitContent, { mode: 0o755 });
+    return { dir, bin };
+  }
+  // Runs deploy.sh up to its first argument check with the fake git first in
+  // PATH; the run dies on "give --digest or --release", after the journal's
+  // first line. The deploy journal is STDERR (deploy-from-job.sh captures it
+  // as job-<id>.log), so the head assertions read stderr only — and each case
+  // also proves the stamp never leaks into stdout.
+  function runJournal(sb, exactPath = false) {
+    return spawnSync("bash", [path.join(HERE, "deploy.sh")], {
+      env: { ...process.env, PATH: exactPath ? sb.bin : `${sb.bin}:${process.env.PATH}`, SANDBOX: sb.dir },
+      encoding: "utf8",
+    });
+  }
+  function journalHead(sb, exactPath = false) {
+    const r = runJournal(sb, exactPath);
+    return r.stderr.split("\n")[0];
+  }
+  function assertNoStdoutStamp(r) {
+    assert.ok(
+      !(r.stdout || "").includes("deploy scripts at"),
+      `the version stamp must go to stderr (the deploy journal), not stdout: ${JSON.stringify(r.stdout)}`,
+    );
+  }
+
+  it("the journal's first line names the script version (git describe)", () => {
+    const sb = versionSandbox(FAKE_GIT);
+    const r = runJournal(sb);
+    assert.equal(journalHead(sb), "deploy scripts at myr-v1.6.5-rc.7-3-gdeadbee");
+    assertNoStdoutStamp(r);
+  });
+
+  it("falls back to unknown when git cannot answer", () => {
+    const sb = versionSandbox(BROKEN_GIT);
+    const r = runJournal(sb);
+    assert.equal(journalHead(sb), "deploy scripts at unknown");
+    assertNoStdoutStamp(r);
+  });
+
+  it("falls back to unknown when git itself is not installed", () => {
+    const sb = versionSandbox(null);
+    const r = runJournal(sb, true);
+    assert.equal(journalHead(sb, true), "deploy scripts at unknown");
+    assertNoStdoutStamp(r);
+  });
+
+  it("describes the scripts' directory when it is not inside a git clone", () => {
+    const sb = versionSandbox(NO_CLONE_GIT);
+    const r = runJournal(sb);
+    assert.equal(journalHead(sb), "deploy scripts at fallback-sha1");
+    assertNoStdoutStamp(r);
+  });
+});
+
 // An image entry of one repository; created is RFC3339-ish (sort order is the
 // image creation date).
 function img(repo, id, created, tag = "<none>") {

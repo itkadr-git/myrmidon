@@ -1,6 +1,6 @@
 // server/src/myrmidon/process-registry/leases.ts
 //
-// myrmidon(1.6.6 PROCS-1.7 part A): the read side of the leader leases — what the
+// myrmidon(1.6.5 PROCS-0.1): the read side of the leader leases — what the
 // lease block of the «Процессы» panel shows (GET /api/myrmidon/processes/leases).
 // The wire shape is the contract the UI reader keeps in
 // ui/src/components/myrmidon/boardLeasesApi.ts. On a single-process board no

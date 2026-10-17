@@ -152,6 +152,22 @@ export class HourlyRateLimiter {
     return true;
   }
 
+  /** True when `key` still has room under `limit` in the current hour; counts nothing. */
+  hasRoom(key: string, limit: number): boolean {
+    if (limit <= 0) return false;
+    const hourStart = Math.floor(this.now().getTime() / this.windowMs) * this.windowMs;
+    const bucket = this.buckets.get(key);
+    return !bucket || bucket.hourStart !== hourStart || bucket.count < limit;
+  }
+
+  /** Charge one admission for `key`; call it only after the work really happened. */
+  consume(key: string): void {
+    const hourStart = Math.floor(this.now().getTime() / this.windowMs) * this.windowMs;
+    const bucket = this.buckets.get(key);
+    if (!bucket || bucket.hourStart !== hourStart) this.buckets.set(key, { hourStart, count: 1 });
+    else bucket.count += 1;
+  }
+
   /** Test seam: forget all buckets. */
   reset(): void {
     this.buckets.clear();
@@ -283,7 +299,7 @@ export interface ErrorChannelSweepDeps {
   feed: AttentionFeedSource;
   /** Insert seam for tests; production uses stageErrorChannelPublication. */
   stage?: typeof stageErrorChannelPublication;
-  /** Rate limiter; production keeps one instance per process per company. */
+  /** Rate limiter; production keeps ONE instance for the process lifetime (see createTgNotifySweepRunner). */
   limiter?: HourlyRateLimiter;
 }
 
@@ -315,7 +331,10 @@ export async function sweepErrorChannel(
       continue;
     }
     result.checked += 1;
-    if (!limiter.admit(companyId, limit)) {
+    // The quota is charged only for a publication that was really staged: a
+    // card already staged on an earlier pass (conflict, no new row) must not eat
+    // the hour's quota again.
+    if (!limiter.hasRoom(companyId, limit)) {
       result.droppedRateLimited += 1;
       continue;
     }
@@ -327,7 +346,10 @@ export async function sweepErrorChannel(
       idempotencyKey: errorChannelPublicationKey(item),
       text: errorChannelCardText(item),
     });
-    if (staged) result.sent += 1;
+    if (staged) {
+      limiter.consume(companyId);
+      result.sent += 1;
+    }
   }
   return result;
 }

@@ -17,6 +17,7 @@ function facts(overrides: Partial<QueuedRunFacts> = {}): QueuedRunFacts {
     isResolvedInteractionContinuation: false,
     isInteractionWake: false,
     isAuthorizedSourceScopedRecovery: false,
+    isProductiveContinuationRecovery: false,
     isNonAssigneeWorkspaceBusyRetry: false,
     resumeIntent: false,
     wakeCommentIdPresent: false,
@@ -66,6 +67,35 @@ describe("decideQueuedRunStaleness: pending interaction addressee (P2)", () => {
     expect(
       decideQueuedRunStaleness(facts({ isInteractionWake: true, issueStatus: "done" }), NOW),
     ).toMatchObject({ stale: true, errorCode: "issue_terminal_status" });
+  });
+});
+
+describe("decideQueuedRunStaleness: productive continuation recovery", () => {
+  it("allows the source-scoped recovery run to start after assignment changed", () => {
+    expect(
+      decideQueuedRunStaleness(
+        facts({
+          issueAssigneeAgentId: "new-agent",
+          isProductiveContinuationRecovery: true,
+          wakeReason: "issue_continuation_needed",
+          retryReason: "issue_continuation_needed",
+        }),
+        NOW,
+      ),
+    ).toEqual({ stale: false });
+  });
+
+  it("does not allow an ordinary continuation wake to bypass ownership", () => {
+    expect(
+      decideQueuedRunStaleness(
+        facts({
+          issueAssigneeAgentId: "new-agent",
+          wakeReason: "issue_continuation_needed",
+          retryReason: "issue_continuation_needed",
+        }),
+        NOW,
+      ),
+    ).toMatchObject({ stale: true, errorCode: "issue_assignee_changed" });
   });
 });
 

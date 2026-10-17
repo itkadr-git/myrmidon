@@ -1,4 +1,5 @@
 import type { TelemetryBackoffConfig, TelemetryConfig } from "./types.js";
+import { readProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
 
 const CI_ENV_VARS = ["CI", "CONTINUOUS_INTEGRATION", "BUILD_NUMBER", "GITHUB_ACTIONS", "GITLAB_CI"];
 
@@ -68,7 +69,7 @@ export function resolveTelemetryConfig(
 ): TelemetryConfig {
   const caps = resolveCaps(fileConfig);
 
-  if (process.env.PAPERCLIP_TELEMETRY_DISABLED === "1") {
+  if (readProductEnv("TELEMETRY_DISABLED") === "1") {
     return { enabled: false, ...caps };
   }
   if (process.env.DO_NOT_TRACK === "1") {
@@ -82,7 +83,7 @@ export function resolveTelemetryConfig(
   }
 
   // myrmidon(TEL): opt-in only; both the enable flag and an explicit endpoint are required
-  const endpoint = process.env.PAPERCLIP_TELEMETRY_ENDPOINT?.trim() || undefined;
+  const endpoint = readProductEnv("TELEMETRY_ENDPOINT")?.trim() || undefined;
   if (fileConfig?.enabled !== true || !endpoint) {
     return { enabled: false, ...caps };
   }
