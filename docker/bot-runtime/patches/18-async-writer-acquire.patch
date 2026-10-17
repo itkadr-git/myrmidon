@@ -8,12 +8,12 @@ diff --git a/hermes_state_dbfile.py b/hermes_state_dbfile.py
 +
 +# myrmidon(G1): a failed sidecar scan is never an empty holder list.
 +from hermes_state_errors import SidecarScanIncompleteError
- 
+
  from hermes_state_holders import canonical_sqlite_path, read_only_db_uri
  from hermes_state_common import (
 @@ -192,19 +192,30 @@
- 
- 
+
+
  def _iter_proc_fd_targets():
 -    """Yield ``(pid, readlink target, fd path)`` for every readable ``/proc/<pid>/fd`` entry."""
 -    for pid_str in os.listdir("/proc"):
@@ -46,8 +46,8 @@ diff --git a/hermes_state_dbfile.py b/hermes_state_dbfile.py
 +                    continue
 +                raise SidecarScanIncompleteError(f"fd readlink failed: {exc.errno}") from exc
 +            yield int(pid_str), target, fd_path
- 
- 
+
+
  # ── macOS fd enumeration (libproc) ──────────────────────────────────────────────────────────────
 @@ -338,27 +348,40 @@
      if sys.platform == "win32":
@@ -87,8 +87,8 @@ diff --git a/hermes_state_dbfile.py b/hermes_state_dbfile.py
 -        logger.debug("deleted-WAL holder scan failed for %s: %s", db_path, exc)
 +        raise SidecarScanIncompleteError("sidecar scan failed") from exc
      return holders
- 
- 
+
+
  def refuse_deleted_wal_generation(db_path) -> None:
 -    """Raise if any process holds a deleted WAL/SHM generation for *db_path*; called
 -    *before* ``sqlite3.connect`` so a second opener cannot mint a replacement WAL inode."""
@@ -115,8 +115,8 @@ diff --git a/hermes_state_errors.py b/hermes_state_errors.py
 +
 +class SidecarScanIncompleteError(RuntimeError):
 +    """The writer-open sidecar scan could not establish complete visibility."""
- 
- 
+
+
  # SQLite header application_id (offset 68). Distinct from inode: ``cp`` onto the
 diff --git a/tests/hermes_state/test_deleted_wal_generation_guard.py b/tests/hermes_state/test_deleted_wal_generation_guard.py
 --- a/tests/hermes_state/test_deleted_wal_generation_guard.py
@@ -165,6 +165,6 @@ diff --git a/tests/hermes_state/test_deleted_wal_generation_guard.py b/tests/her
 +    monkeypatch.setattr(hermes_state_dbfile.os, "listdir", partial)
 +    with pytest.raises(SidecarScanIncompleteError):
 +        iter_deleted_sqlite_sidecar_holders(tmp_path / "state.db")
- 
- 
+
+
  @pytest.mark.skipif(
