@@ -70,6 +70,7 @@ restart. The block list (`general.myrmidonAuthBlockedUsers`) and the password-se
 token table (`user_password_set_tokens`, migration 0298) carry the rest of the
 feature. See `docs/myrmidon/guides/users-admin-a.md` for the full contract.
 | `MYRMIDON_AUTH_SELF_SIGN_UP` | USERS-ADMIN-UI A | unset | **Forced override** of the self-registration switch: `1`/`true`/`yes`/`on` opens `POST /api/auth/sign-up/email`, `0`/`false`/`no`/`off` closes it, winning over the stored instance setting | Unset — the stored setting applies; a typo in the value is neither on nor off (the next source decides) |
+| `MYRMIDON_AUTH_BLOCKED_USERS` | USERS-ADMIN-UI A | unset | **Forced override** of the blocked-user list, replacing `instance_settings.general.myrmidonAuthBlockedUsers` | Unset — the saved instance list applies |
 
 ## settings-ru-new
 
@@ -85,3 +86,4 @@ feature. See `docs/myrmidon/guides/users-admin-a.md` for the full contract.
 функции. Полный контракт — в `docs/myrmidon/guides/users-admin-a.ru.md`.
 | Переменная | Функция | По умолчанию | Что делает | Как отключить / особенности |
 | `MYRMIDON_AUTH_SELF_SIGN_UP` | USERS-ADMIN-UI A | не задана | **Принудительное переопределение** переключателя саморегистрации: `1`/`true`/`yes`/`on` открывает `POST /api/auth/sign-up/email`, `0`/`false`/`no`/`off` закрывает, побеждая сохранённую настройку экземпляра | Не задана — действует сохранённая настройка; опечатка в значении не считается ни включением, ни выключением (решает следующий источник) |
+| `MYRMIDON_AUTH_BLOCKED_USERS` | USERS-ADMIN-UI A | не задана | **Принудительное переопределение** списка заблокированных пользователей, заменяющее `instance_settings.general.myrmidonAuthBlockedUsers` | Не задана — действует сохранённый список экземпляра |
