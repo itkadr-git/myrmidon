@@ -991,7 +991,7 @@ describe("issue execution policy transitions", () => {
 
       expect(result.patch.status).toBeUndefined();
       expect(result.patch.monitorNextCheckAt).toEqual(new Date(monitor.nextCheckAt));
-      expect(result.patch.executionPolicy).toMatchObject({ monitor: { nextCheckAt: monitor.nextCheckAt } });
+      expect(result.patch.executionPolicy).toBeUndefined();
     });
 
     it("preserves the scheduled monitor when a board override moves a review into blocked", () => {
@@ -1019,7 +1019,7 @@ describe("issue execution policy transitions", () => {
 
       expect(result.patch.status).toBeUndefined();
       expect(result.patch.monitorNextCheckAt).toEqual(new Date(monitor.nextCheckAt));
-      expect(result.patch.executionPolicy).toMatchObject({ monitor: { nextCheckAt: monitor.nextCheckAt } });
+      expect(result.patch.executionPolicy).toBeUndefined();
     });
 
     it("non-done status change without review context is a no-op", () => {
