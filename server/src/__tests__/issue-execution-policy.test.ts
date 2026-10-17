@@ -996,6 +996,36 @@ describe("issue execution policy transitions", () => {
       expect(result.patch.executionPolicy).toMatchObject({ monitor: { nextCheckAt: monitor.nextCheckAt } });
     });
 
+    it("preserves the scheduled monitor when a board override moves a review into blocked", () => {
+      const monitor = {
+        status: "scheduled",
+        nextCheckAt: "2026-10-16T20:00:00.000Z",
+        attemptCount: 2,
+        notes: "Await CI",
+        scheduledBy: "assignee",
+      };
+      const result = applyIssueExecutionPolicyTransition({
+        issue: {
+          status: "in_review",
+          assigneeAgentId: coderAgentId,
+          assigneeUserId: null,
+          executionPolicy: { ...policy, monitor },
+          executionState: null,
+          monitorNextCheckAt: new Date(monitor.nextCheckAt),
+          monitorAttemptCount: 2,
+        },
+        policy: { ...policy, monitor },
+        requestedStatus: "blocked",
+        requestedAssigneePatch: {},
+        actor: { agentId: coderAgentId },
+        allowBoardOverride: true,
+      });
+
+      expect(result.patch).toMatchObject({ status: "blocked" });
+      expect(result.patch.monitorNextCheckAt).toEqual(new Date(monitor.nextCheckAt));
+      expect(result.patch.executionPolicy).toMatchObject({ monitor: { nextCheckAt: monitor.nextCheckAt } });
+    });
+
     it("non-done status change without review context is a no-op", () => {
       const result = applyIssueExecutionPolicyTransition({
         issue: {
@@ -1774,7 +1804,7 @@ describe("issue execution policy transitions", () => {
       expect(() =>
         applyIssueExecutionPolicyTransition({
           issue: {
-            status: "in_progress",
+            status: "done",
             assigneeAgentId: coderAgentId,
             assigneeUserId: null,
             executionPolicy: null,

@@ -2035,14 +2035,11 @@ async function buildAttentionFeedSnapshot(
           sql`${issues.status} not in ('done', 'cancelled')`,
           isNull(issues.assigneeUserId),
           isNotNull(issues.assigneeAgentId),
+          executionIssueCondition(),
         ))
         .orderBy(asc(issues.monitorNextCheckAt), asc(issues.id));
-      const overduePolicyRows = overdueMonitors.filter((issue) => {
-        const policy = issue.executionPolicy as { monitor?: { nextCheckAt?: unknown } } | null;
-        return typeof policy?.monitor?.nextCheckAt === "string";
-      });
-      const overdueIssueMap = await issueSummaryMap(db, companyId, overduePolicyRows.map((issue) => issue.id));
-      for (const monitorIssue of overduePolicyRows) {
+      const overdueIssueMap = new Map(overdueMonitors.map((issue) => [issue.id, issue]));
+      for (const monitorIssue of overdueMonitors) {
         const subject = overdueIssueMap.get(monitorIssue.id);
         if (!subject) continue;
         const nextCheckAt = monitorIssue.monitorNextCheckAt?.toISOString() ?? "unknown";
