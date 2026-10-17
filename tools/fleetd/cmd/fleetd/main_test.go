@@ -116,6 +116,18 @@ func TestListShape(t *testing.T) {
 	}
 }
 
+func TestHealthRouteRequiresAuthAndReportsResources(t *testing.T) {
+	s, _ := newServer(t)
+	s.cfg.Bots = []bot{{BotKey: "bot-example-one", MaxMemoryMb: 1024, MaxCpus: 1, MaxPids: 128}}
+	token := s.cfg.Token
+	if rec := routeRequest(s, http.MethodGet, "/v1/health", "", ""); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated health: got %d", rec.Code)
+	}
+	if rec := routeRequest(s, http.MethodGet, "/v1/bots/bot-example-one/status", token, ""); rec.Code != http.StatusOK {
+		t.Fatalf("authenticated status: got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestStatusOfUnenrolledBotIsRefused(t *testing.T) {
 	s, _ := newServer(t)
 	rec := routeRequest(s, http.MethodGet, "/v1/bots/notenrolled0000000000000000000000/status", s.cfg.Token, "")
