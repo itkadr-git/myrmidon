@@ -241,6 +241,10 @@ export function setupLiveEventsWebSocketServer(
   const wss = new WebSocketServer({ noServer: true });
   const cleanupByClient = new Map<WsSocket, () => void>();
   const aliveByClient = new Map<WsSocket, boolean>();
+  // myrmidon(PROCS-1.2): the supervisor's drain reads the live clients to
+  // close them with 1012; the registry is this module's own set, exposed
+  // read-only so nothing outside the lane mutates it.
+  const liveClients: ReadonlySet<WsSocket> = wss.clients;
 
   const pingInterval = setInterval(() => {
     for (const socket of wss.clients) {
@@ -346,5 +350,5 @@ export function setupLiveEventsWebSocketServer(
       });
   });
 
-  return wss;
+  return { wss, clients: liveClients };
 }

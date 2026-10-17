@@ -74,7 +74,8 @@ jobs:
           failed=0
           for f in docs/wiki/*.md; do
             page="$(basename "$f" .md)"
-            code="$(curl -s -o /dev/null -w '%{http_code}' "https://github.com/${{ github.repository }}/wiki/${page}")"
+            # Home answers 301 to the wiki root: follow redirects, judge the final page
+            code="$(curl -sL -o /dev/null -w '%{http_code}' "https://github.com/${{ github.repository }}/wiki/${page}")"
             echo "${page}: ${code}"
             if [ "$code" != "200" ]; then
               failed=1

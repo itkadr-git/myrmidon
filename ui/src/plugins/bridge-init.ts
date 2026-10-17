@@ -1,3 +1,4 @@
+// myrmidon(DEBRAND-c): persist browser state under the Myrmidon namespace.
 /**
  * Plugin bridge initialization.
  *
@@ -251,7 +252,7 @@ function PluginSdkIssuesList({
   companyId,
   projectId = null,
   filters,
-  viewStateKey = "paperclip:plugin-issues-view",
+  viewStateKey = "myrmidon:plugin-issues-view",
   initialSearch,
   createIssueLabel,
   searchWithinLoadedIssues = true,

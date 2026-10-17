@@ -15,7 +15,7 @@
 // the same 12 rows.
 
 import { and, asc, eq, inArray } from "drizzle-orm";
-import { BUILTIN_CASTE_SEED } from "@paperclipai/shared";
+import { BUILTIN_CASTE_SEED, BUILTIN_CASTE_SEED_DEFAULT_KEY } from "@paperclipai/shared";
 import { agentCastes, type Db } from "@paperclipai/db";
 import { conflict, notFound } from "../../errors.js";
 
@@ -53,6 +53,41 @@ export function createCasteStore(deps: CasteStoreDeps) {
       .where(and(eq(agentCastes.companyId, companyId), eq(agentCastes.key, key)))
       .limit(1);
     return rows[0] ?? null;
+  }
+
+  /**
+   * The company's default caste (agent_castes.is_default), or null when the
+   * flag is on no row. The partial unique index allows at most one, so the
+   * limit is a formality.
+   */
+  async function findDefaultCaste(companyId: string): Promise<CasteRow | null> {
+    const rows = await deps.db
+      .select()
+      .from(agentCastes)
+      .where(and(eq(agentCastes.companyId, companyId), eq(agentCastes.isDefault, true)))
+      .limit(1);
+    return rows[0] ?? null;
+  }
+
+  /**
+   * Moves the default flag to `key` in ONE transaction: the previous default is
+   * cleared before the new one is set, so the partial unique index never sees
+   * two defaults. Returns the new default row, or null when the key is not in
+   * the company.
+   */
+  async function setDefaultCaste(companyId: string, key: string): Promise<CasteRow | null> {
+    return deps.db.transaction(async (tx) => {
+      await tx
+        .update(agentCastes)
+        .set({ isDefault: false, updatedAt: now() })
+        .where(and(eq(agentCastes.companyId, companyId), eq(agentCastes.isDefault, true)));
+      const rows = await tx
+        .update(agentCastes)
+        .set({ isDefault: true, updatedAt: now() })
+        .where(and(eq(agentCastes.companyId, companyId), eq(agentCastes.key, key)))
+        .returning();
+      return rows[0] ?? null;
+    });
   }
 
   /**
@@ -143,6 +178,10 @@ export function createCasteStore(deps: CasteStoreDeps) {
             swarmEligible: true,
             maxActiveTasks: null,
             builtIn: true,
+            // The seed flags ONE template caste as the company default, so a
+            // fresh company always resolves a caste (design.md §7.1 п.4). The
+            // flag is data, not logic: the settings radio moves it.
+            isDefault: seed.key === BUILTIN_CASTE_SEED_DEFAULT_KEY,
           })),
         )
         .onConflictDoNothing({ target: [agentCastes.companyId, agentCastes.key] });
@@ -158,6 +197,8 @@ export function createCasteStore(deps: CasteStoreDeps) {
   return {
     listCastes,
     findCaste,
+    findDefaultCaste,
+    setDefaultCaste,
     insertCaste,
     updateCaste,
     deleteCaste,

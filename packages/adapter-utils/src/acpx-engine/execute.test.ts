@@ -1464,8 +1464,8 @@ describe("shared ACPX engine runtime behavior", () => {
     const skillRoot = path.join(root, "skills");
     const codexHome = path.join(root, "codex-home");
     const operational = {
-      ...await createSkill(skillRoot, "paperclip"),
-      key: "paperclipai/paperclip/paperclip",
+      ...await createSkill(skillRoot, "myrmidon"),
+      key: "paperclipai/paperclip/myrmidon",
     };
 
     await runExecutor({

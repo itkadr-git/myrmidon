@@ -127,6 +127,28 @@
    "suffixes": [
     ""
    ]
+  },
+  {
+   "id": "A16",
+   "method": "GET",
+   "template": "containers/{name}/archive?path=%2Fbot%2Fhermes%2Fskills",
+   "suffixes": [
+    ""
+   ]
+  },
+  {
+   "id": "A16",
+   "method": "GET",
+   "template": "containers/{name}/archive?path=%2Fdata%2Fhermes%2Fskills",
+   "suffixes": [
+    ""
+   ]
+  },
+  {
+   "id": "A14",
+   "method": "GET",
+   "template": "myrmidon/disk",
+   "noPrefix": true
   }
  ]
 }

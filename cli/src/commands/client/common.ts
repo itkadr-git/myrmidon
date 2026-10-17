@@ -5,6 +5,7 @@ import { buildCliCommandLabel } from "../../client/command-label.js";
 import { readConfig } from "../../config/store.js";
 import { readContext, resolveProfile, type ClientContextProfile } from "../../client/context.js";
 import { ApiRequestError, PaperclipApiClient } from "../../client/http.js";
+import { readProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
 
 export interface BaseClientOptions {
   config?: string;
@@ -61,7 +62,7 @@ export function resolveCommandContext(
 
   const companyId =
     options.companyId?.trim() ||
-    process.env.PAPERCLIP_COMPANY_ID?.trim() ||
+    readProductEnv("COMPANY_ID")?.trim() ||
     profile.companyId;
 
   if (opts?.requireCompany && !companyId) {
@@ -74,7 +75,7 @@ export function resolveCommandContext(
   // in-progress issue) require the X-Paperclip-Run-Id header (the server returns
   // "401 Agent run id required" without it). Source it from --run-id, else the
   // PAPERCLIP_RUN_ID env the adapter/embodiment context already exports.
-  const runId = options.runId?.trim() || process.env.PAPERCLIP_RUN_ID?.trim() || undefined;
+  const runId = options.runId?.trim() || readProductEnv("RUN_ID")?.trim() || undefined;
 
   const api = new PaperclipApiClient({
     apiBase,
@@ -111,7 +112,7 @@ export function resolveCommandContext(
 export function resolveApiBase(options: Pick<BaseClientOptions, "apiBase" | "config">, profile: ClientContextProfile = {}): string {
   return normalizeApiBase(
     options.apiBase?.trim() ||
-    process.env.PAPERCLIP_API_URL?.trim() ||
+    readProductEnv("API_URL")?.trim() ||
     profile.apiBase ||
     inferApiBaseFromConfig(options.config),
   );
@@ -171,7 +172,7 @@ function resolveApiKey(
   const optionValue = options.apiKey?.trim();
   if (optionValue) return { value: optionValue, source: "explicit" };
 
-  const envValue = process.env.PAPERCLIP_API_KEY?.trim();
+  const envValue = readProductEnv("API_KEY")?.trim();
   if (envValue) return { value: envValue, source: "env" };
 
   const profileEnvValue = readKeyFromProfileEnv(profile);
@@ -261,8 +262,8 @@ function renderValue(value: unknown): string {
 }
 
 export function inferApiBaseFromConfig(configPath?: string): string {
-  const envHost = process.env.PAPERCLIP_SERVER_HOST?.trim() || "localhost";
-  let port = Number(process.env.PAPERCLIP_SERVER_PORT || "");
+  const envHost = readProductEnv("SERVER_HOST")?.trim() || "localhost";
+  let port = Number(readProductEnv("SERVER_PORT") || "");
 
   if (!Number.isFinite(port) || port <= 0) {
     try {

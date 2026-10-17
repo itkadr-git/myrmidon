@@ -1,5 +1,5 @@
 // Package route matches the raw request-target of a client request against the
-// allowlist of dockergate (A1..A13). There is no percent-decoding anywhere: the
+// allowlist of dockergate (A1..A14). There is no percent-decoding anywhere: the
 // target is compared as a string with anchored templates, and the only escapes
 // that can match are the literals that a template contains.
 package route
@@ -41,7 +41,44 @@ const (
 	A11 = "A11"
 	A12 = "A12"
 	A13 = "A13"
+	// A14 is GET /myrmidon/disk: the one route outside the Docker API prefix. It
+	// reads the bot partition (statfs and the project quotas), never the daemon.
+	A14 = "A14"
 )
+
+// A15 is the disk route PUT /myrmidon/disk/<botKey>/quota (contract C5). It is
+// not a Docker API route: it has no APIPrefix and never reaches the daemon.
+const A15 = "A15"
+
+// A16 is the bot skills read of BOT-SKILL-BACKIMPORT (1.6.5, OPE-6401): GET
+// containers/{name}/archive?path=<root>/hermes/skills, where <root> is the
+// bot's real root of the same three shapes the marker and the clone report
+// use (/bot, /data for LEGACY-layout, /bot-scope/<botKey> for a scope member).
+// The gate allows it on the main container only, like A3/A13; the flag itself
+// (MYRMIDON_BOT_SKILL_BACKIMPORT) is read by the board, not by the gate.
+const A16 = "A16"
+
+// skillsReadQuery is the skills directory the gate serves for A16, in the same
+// literal-encoded form the marker and clone-report queries use.
+const skillsReadQuery = "path=%2Fbot%2Fhermes%2Fskills"
+
+// LegacySkillsReadQuery is the skills directory of a LEGACY-layout bot
+// (contract "1"): the hermes volume is bound at /data/hermes itself.
+const LegacySkillsReadQuery = "path=%2Fdata%2Fhermes%2Fskills"
+
+// DiskPrefix is the start of the disk routes (A14, A15).
+const DiskPrefix = "/myrmidon/disk/"
+
+// diskQuotaTail ends the target of A15.
+const diskQuotaTail = "/quota"
+
+// DiskTarget is the request-target of A14 (contract C5). It has no API prefix:
+// it is not a call to the daemon.
+const DiskTarget = "/myrmidon/disk"
+
+// diskPrefix is where every disk route lives; what is under it and is not a
+// route of this list is refused as route_not_allowed.
+const diskPrefix = "/myrmidon/"
 
 // Mount paths that a tar upload (A5) may target, keyed by the raw query value.
 var archiveMounts = map[string]string{
@@ -86,6 +123,15 @@ func ScopeCloneReportQuery(botKey string) string {
 
 // CloneReportQuery is cloneReportQuery for other packages.
 const CloneReportQuery = cloneReportQuery
+
+// SkillsReadQuery is the bot skills read of A16 for other packages.
+const SkillsReadQuery = skillsReadQuery
+
+// ScopeSkillsReadQuery is the skills directory of a member of a shared scope
+// instance, under /bot-scope/<botKey>/hermes/skills.
+func ScopeSkillsReadQuery(botKey string) string {
+	return "path=%2Fbot-scope%2F" + botKey + "%2Fhermes%2Fskills"
+}
 
 // Route is a parsed and matched request.
 type Route struct {
@@ -201,6 +247,17 @@ func splitName(name string) (key string, suffix Suffix, ok bool) {
 
 func notAllowed() *deny.Error { return deny.New(deny.RouteNotAllowed) }
 
+// parseDisk matches the target that follows DiskPrefix: A15 is exactly
+// "<botKey>/quota" with the PUT method. Nothing else is decoded or accepted: a
+// key that is not a lowercase UUID ("..", an escape, a query) is not a route.
+func parseDisk(method, rest string) (*Route, *deny.Error) {
+	key, ok := strings.CutSuffix(rest, diskQuotaTail)
+	if !ok || !IsBotKey(key) || method != "PUT" {
+		return nil, notAllowed()
+	}
+	return &Route{ID: A15, Method: method, BotKey: key}, nil
+}
+
 // Parse matches a request against the allowlist. target is the raw
 // request-target exactly as the client sent it; images is the A1 set.
 func Parse(method, target string, images Images) (*Route, *deny.Error) {
@@ -213,6 +270,20 @@ func Parse(method, target string, images Images) (*Route, *deny.Error) {
 	case "GET", "POST", "PUT", "DELETE":
 	default:
 		return nil, deny.New(deny.MethodNotAllowed)
+	}
+	// A14: the exact target, GET only. A15 lives under DiskPrefix. Anything else
+	// under /myrmidon/ is not a route.
+	if target == DiskTarget {
+		if method == "GET" {
+			return &Route{ID: A14, Method: method}, nil
+		}
+		return nil, notAllowed()
+	}
+	if rest, ok := strings.CutPrefix(target, DiskPrefix); ok {
+		return parseDisk(method, rest)
+	}
+	if strings.HasPrefix(target, diskPrefix) {
+		return nil, notAllowed()
 	}
 	if !strings.HasPrefix(target, APIPrefix) {
 		return nil, deny.New(deny.APIVersion)
@@ -283,6 +354,11 @@ func Parse(method, target string, images Images) (*Route, *deny.Error) {
 		r.ID = A13
 		r.ScopeMarker = tail == "/archive?"+ScopeCloneReportQuery(key)
 		r.LegacyMarker = tail == "/archive?"+LegacyCloneReportQuery
+	case "/archive?" + skillsReadQuery, "/archive?" + LegacySkillsReadQuery, "/archive?" + ScopeSkillsReadQuery(key):
+		if method != "GET" || suffix != SuffixMain {
+			return nil, notAllowed()
+		}
+		r.ID = A16
 	case "/start":
 		if method != "POST" || suffix == SuffixNext {
 			return nil, notAllowed()

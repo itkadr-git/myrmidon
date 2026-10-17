@@ -144,6 +144,15 @@ type InteractionActor = {
     | IssueThreadInteractionResolverRestriction
     | null;
   suggestedTaskEffectsAuthorized?: boolean;
+  /**
+   * myrmidon(1.6.3-CTO-CHAT-B): explicit opt-in, set only by trusted server
+   * code (the owner-checked Telegram /accept). When the card hangs on a
+   * conversation issue, `createChild` refuses to parent work on it; with this
+   * flag the ROOT task of the card is created as a parentless task instead
+   * (the vendor message: "create a task in a project instead"). Without it
+   * (portal accept, agents) the vendor refusal stays exactly as on main.
+   */
+  conversationRootTasksAllowed?: boolean;
   resolutionDetails?: Record<string, unknown>;
 };
 
@@ -2615,7 +2624,7 @@ export function issueThreadInteractionService(
         const [sourceRun] = await tx.select({ context: heartbeatRuns.contextSnapshot }).from(heartbeatRuns)
           .where(and(eq(heartbeatRuns.id, input.sourceRunId), eq(heartbeatRuns.companyId, issue.companyId)));
         if (!sourceRun) throw unprocessable("Interaction source run is unavailable");
-        const originCommentIds = await currentContinuationOrigins(tx as unknown as Db, issue.companyId, issue.id, sourceRun.context);
+        const originCommentIds = await currentContinuationOrigins(tx as unknown as Db, issue.companyId, issue.id, sourceRun.context, input.sourceRunId);
         const [row] = await tx
           .insert(issueThreadInteractions)
           .values({
@@ -3465,7 +3474,7 @@ export function issueThreadInteractionService(
         if (!sourceRun || sourceRun.companyId !== issue.companyId) {
           throw unprocessable("sourceRunId must belong to the same company");
         }
-        originCommentIds = [...new Set([...originCommentIds, ...await currentContinuationOrigins(db, issue.companyId, issue.id, sourceRun.contextSnapshot)])];
+        originCommentIds = [...new Set([...originCommentIds, ...await currentContinuationOrigins(db, issue.companyId, issue.id, sourceRun.contextSnapshot, data.sourceRunId)])];
         sourceIdentityContextId = actor.identityContextId ?? sourceRun.activeIdentityContextId;
         if (sourceIdentityContextId) {
           const [origin] = await db.select({id: runIdentityContexts.id}).from(runIdentityContexts).where(and(
@@ -3749,6 +3758,17 @@ export function issueThreadInteractionService(
       actor: InteractionActor,
     ) => {
       assertIssueOpenForInteractionResolution(issue);
+      // myrmidon(1.6.3-CTO-CHAT-B): is the card's host a conversation issue?
+      // Only consulted for the opt-in below; one row, before the transaction.
+      const hostConversationAgentId =
+        actor.conversationRootTasksAllowed === true
+          ? ((
+              await db
+                .select({ conversationAgentId: issues.conversationAgentId })
+                .from(issues)
+                .where(and(eq(issues.id, issue.id), eq(issues.companyId, issue.companyId)))
+            )[0]?.conversationAgentId ?? null)
+          : null;
       const current = await db
         .select()
         .from(issueThreadInteractions)
@@ -3865,9 +3885,7 @@ export function issueThreadInteractionService(
             );
           }
 
-          const { issue: createdIssue } = await issueService(
-            tx as unknown as Db,
-          ).createChild(parentIssueId, {
+          const taskInput = {
             title: task.title,
             description: task.description ?? null,
             status: "todo",
@@ -3884,7 +3902,16 @@ export function issueThreadInteractionService(
             originRunId: interaction.sourceRunId ?? null,
             actorAgentId: actor.agentId ?? null,
             actorUserId: actor.userId ?? null,
-          } as Parameters<ReturnType<typeof issueService>["createChild"]>[1]);
+          } as Parameters<ReturnType<typeof issueService>["createChild"]>[1];
+          const taskIssueService = issueService(tx as unknown as Db);
+          // myrmidon(1.6.3-CTO-CHAT-B): see InteractionActor.conversationRootTasksAllowed.
+          // Only the card's root under a conversation host takes this path and
+          // only for an opted-in caller; project/goal come from the host the
+          // caller passed in, as for any child.
+          const { issue: createdIssue } =
+            hostConversationAgentId != null && parentIssueId === issue.id
+              ? { issue: await taskIssueService.create(issue.companyId, taskInput) }
+              : await taskIssueService.createChild(parentIssueId, taskInput);
 
           const parentIdentifier =
             createdByClientKey.get(task.parentClientKey ?? "")?.identifier ??

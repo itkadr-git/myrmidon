@@ -68,7 +68,7 @@ function minimalDriver(overrides: Partial<BotContainerDriver> = {}): BotContaine
 function deps(driver: BotContainerDriver, extra: Partial<BotContainerRuntimeDeps> = {}): BotContainerRuntimeDeps {
   return {
     driver,
-    compile: async (_agentId, botKey) => ({ botKey, files: [], restartHash: "r", filesHash: "f" }),
+    compile: async (_agentId, botKey) => ({ botKey, files: [], restartHash: "r", filesHash: "f", apiServerKeyVersion: 1 }),
     maintenance: fakeMaintenance(),
     network: "myrmidon-bots",
     lock: createBotKeyLock(),
@@ -95,7 +95,7 @@ describe("applyBotContainerNow", () => {
         throw new Error("the driver must not be called while the feature is off");
       },
     });
-    const compile = vi.fn(async () => ({ botKey: "agent-a", files: [], restartHash: "r", filesHash: "f" }));
+    const compile = vi.fn(async () => ({ botKey: "agent-a", files: [], restartHash: "r", filesHash: "f", apiServerKeyVersion: 1 }));
     for (const env of [{}, { [BOT_CONTAINERS_ENV]: "0" }]) {
       const outcome = await applyBotContainerNow(agent(), deps(driver, { compile }), { env });
       expect(outcome).toEqual({ kind: "not_applicable", reason: `${BOT_CONTAINERS_ENV} is not enabled` });
@@ -345,7 +345,7 @@ describe("startBotContainerReconciliation", () => {
     const listAgents = vi.fn(async () => [agent({ agentId: "agent-slow" }), agent({ agentId: "agent-fast" })]);
     const stop = startBotContainerReconciliation(
       listAgents,
-      deps(driver, { compile: async (_agentId, botKey) => ({ botKey, files: [], restartHash: "new", filesHash: "new" }) }),
+      deps(driver, { compile: async (_agentId, botKey) => ({ botKey, files: [], restartHash: "new", filesHash: "new", apiServerKeyVersion: 1 }) }),
       { env: ENABLED },
     );
     try {
@@ -405,7 +405,10 @@ describe("applyBotContainerNow: syncCard hook (W2a)", () => {
     expect(syncCard).not.toHaveBeenCalled();
   });
 
-  it("calls syncCard with the agent id and bot key after a pass that left the container applied, and logs a change", async () => {
+  // myrmidon(BOT-KEY-401): the third argument is the API-server-key secret version
+  // the compiled profile carries — the card pins exactly it, so a rotation whose
+  // container switch failed never reaches the card (the card-sync tests cover the pin).
+  it("calls syncCard with the agent id, bot key, and applied key version after a pass that left the container applied, and logs a change", async () => {
     const cases: Array<[string, BotContainerDriver, string]> = [
       ["unchanged", minimalDriver(), "unchanged"],
       [
@@ -426,7 +429,7 @@ describe("applyBotContainerNow: syncCard hook (W2a)", () => {
       const outcome = await applyBotContainerNow(agent(), deps(driver, { syncCard, activity: sink }), { env: ENABLED });
       expect(outcome.kind, label).toBe(kind);
       expect(syncCard, label).toHaveBeenCalledTimes(1);
-      expect(syncCard, label).toHaveBeenCalledWith("agent-a", "agent-a");
+      expect(syncCard, label).toHaveBeenCalledWith("agent-a", "agent-a", 1);
       const synced = sink.entries.filter((entry) => entry.message === "agent card pointed at the bot container");
       expect(synced, label).toHaveLength(1);
       expect(synced[0]?.details).toEqual({ changedKeys: ["apiBaseUrl", "apiKey"] });
