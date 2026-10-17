@@ -260,7 +260,7 @@ export function useInboxBadge(companyId: string | null | undefined) {
     staleTime: INBOX_BADGE_HOT_PATH_STALE_MS,
   });
   const { data: knowledgeSuggestions = [] } = useQuery({
-    queryKey: ["myrmidon", companyId, "knowledge-suggestions"],
+    queryKey: ["knowledge-suggestions", companyId],
     queryFn: () => knowledgeApi.listSuggestions(companyId!),
     enabled: Boolean(companyId),
   });
@@ -270,6 +270,7 @@ export function useInboxBadge(companyId: string | null | undefined) {
       computeInboxBadgeData({
         approvals,
         joinRequests,
+        knowledgeSuggestions,
         dashboard,
         heartbeatRuns,
         mineIssues,

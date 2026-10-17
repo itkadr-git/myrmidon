@@ -342,6 +342,7 @@ describe("inbox helpers", () => {
       approvals: 1,
       failedRuns: 2,
       joinRequests: 1,
+      knowledgeSuggestions: 0,
       mineIssues: 1,
       alerts: 1,
     });
@@ -526,7 +527,8 @@ describe("inbox helpers", () => {
         if (item.kind === "issue") return `issue:${item.issue.id}`;
         if (item.kind === "approval") return `approval:${item.approval.id}`;
         if (item.kind === "join_request") return `join:${item.joinRequest.id}`;
-        return `run:${item.run.id}`;
+        if (item.kind === "failed_run") return `run:${item.run.id}`;
+        return `knowledge:${item.suggestion.id}`;
       }),
     ).toEqual([
       "issue:1",
@@ -569,7 +571,8 @@ describe("inbox helpers", () => {
         if (item.kind === "issue") return `issue:${item.issue.id}`;
         if (item.kind === "approval") return `approval:${item.approval.id}`;
         if (item.kind === "join_request") return `join:${item.joinRequest.id}`;
-        return `run:${item.run.id}`;
+        if (item.kind === "failed_run") return `run:${item.run.id}`;
+        return `knowledge:${item.suggestion.id}`;
       }),
     ).toEqual([
       "issue:1",

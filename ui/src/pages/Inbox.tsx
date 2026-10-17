@@ -4,6 +4,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { deriveOriginatingActor, INBOX_MINE_ISSUE_STATUS_FILTER } from "@paperclipai/shared";
 import { usePublishSharedQueryData, useSharedPollingQuery } from "@/hooks/useSharedPolling";
 import { approvalsApi } from "../api/approvals";
+import { ApiError } from "../api/client";
 import { knowledgeApi } from "../api/knowledge";
 import type { KnowledgeSuggestion } from "../api/knowledge";
 import { accessApi } from "../api/access";
@@ -891,7 +892,7 @@ function StreamlinedInbox() {
     enabled: !!selectedCompanyId && isolatedWorkspacesEnabled,
   });
   const { data: knowledgeSuggestions = [] } = useQuery({
-    queryKey: ["myrmidon", selectedCompanyId, "knowledge-suggestions"],
+    queryKey: ["knowledge-suggestions", selectedCompanyId],
     queryFn: () => knowledgeApi.listSuggestions(selectedCompanyId!),
     enabled: Boolean(selectedCompanyId),
   });
@@ -1811,7 +1812,7 @@ function StreamlinedInbox() {
 
   const rejectKnowledgeMutation = useMutation({
     mutationFn: (suggestion: KnowledgeSuggestion) => knowledgeApi.decideSuggestion(selectedCompanyId!, suggestion.id, "declined"),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["myrmidon", selectedCompanyId, "knowledge-suggestions"] }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["knowledge-suggestions", selectedCompanyId] }),
     onError: (err) => setActionError(err instanceof Error ? err.message : "Failed to reject knowledge suggestion"),
   });
 
@@ -3204,6 +3205,26 @@ function StreamlinedInbox() {
                           {row}
                         </SwipeToArchive>
                       ) : <InboxRowSurface selected={isSelected}>{row}</InboxRowSurface>));
+                      continue;
+                    }
+
+                    if (item.kind === "knowledge") {
+                      const suggestionKey = `knowledge:${item.suggestion.id}`;
+                      const suggestion = item.suggestion;
+                      elements.push(wrapItem(suggestionKey, isSelected, (
+                        <InboxRowSurface selected={isSelected}>
+                          <div className="flex items-start justify-between gap-4 px-4 py-3">
+                            <div className="min-w-0">
+                              <p className="text-sm font-medium">Knowledge suggestion</p>
+                              <p className="mt-1 text-sm text-muted-foreground">{suggestion.body}</p>
+                              {suggestion.rationale && <p className="mt-1 text-xs text-muted-foreground">{suggestion.rationale}</p>}
+                            </div>
+                            <Button size="sm" variant="outline" onClick={() => navigate("/knowledge/review")}>
+                              Review
+                            </Button>
+                          </div>
+                        </InboxRowSurface>
+                      )));
                       continue;
                     }
 

@@ -91,6 +91,7 @@ export interface InboxBadgeData {
   approvals: number;
   failedRuns: number;
   joinRequests: number;
+  knowledgeSuggestions: number;
 
   mineIssues: number;
   alerts: number;
@@ -888,6 +889,14 @@ const inboxWorkItemKindOrder: InboxWorkItem["kind"][] = [
   "knowledge",
 ];
 
+const inboxWorkItemKindLabels: Record<InboxWorkItem["kind"], string> = {
+  issue: "Tasks",
+  approval: "Approvals",
+  failed_run: "Failed runs",
+  join_request: "Join requests",
+  knowledge: "Knowledge suggestions",
+};
+
 function resolveIssueAssigneeGroup(
   issue: Pick<Issue, "assigneeAgentId" | "assigneeUserId">,
   {
@@ -1279,6 +1288,7 @@ export function shouldShowInboxSection({
 export function computeInboxBadgeData({
   approvals,
   joinRequests,
+  knowledgeSuggestions = [],
   dashboard,
   heartbeatRuns,
   mineIssues,
@@ -1288,6 +1298,7 @@ export function computeInboxBadgeData({
 }: {
   approvals: Approval[];
   joinRequests: JoinRequest[];
+  knowledgeSuggestions?: KnowledgeSuggestion[];
   dashboard: DashboardSummary | undefined;
   heartbeatRuns: HeartbeatRun[];
   mineIssues: Issue[];
@@ -1307,6 +1318,10 @@ export function computeInboxBadgeData({
   const visibleJoinRequests = joinRequests.filter(
     (jr) => !isInboxEntityDismissed(dismissedAtByKey, `join:${jr.id}`, jr.updatedAt ?? jr.createdAt),
   ).length;
+  const visibleKnowledgeSuggestions = knowledgeSuggestions.filter(
+    (suggestion) => suggestion.status === "pending" &&
+      !isInboxEntityDismissed(dismissedAtByKey, `knowledge:${suggestion.id}`, suggestion.createdAt),
+  ).length;
   const visibleMineIssues = mineIssues.filter((issue) => issue.isUnreadForMe).length;
   const agentErrorCount = dashboard?.agents.error ?? 0;
   const monthBudgetCents = dashboard?.costs.monthBudgetCents ?? 0;
@@ -1323,10 +1338,11 @@ export function computeInboxBadgeData({
 
   return {
     // The inbox badge reflects personal/actionable work, not company-wide health alerts.
-    inbox: actionableApprovals + visibleJoinRequests + failedRuns + visibleMineIssues,
+    inbox: actionableApprovals + visibleJoinRequests + visibleKnowledgeSuggestions + failedRuns + visibleMineIssues,
     approvals: actionableApprovals,
     failedRuns,
     joinRequests: visibleJoinRequests,
+    knowledgeSuggestions: visibleKnowledgeSuggestions,
     mineIssues: visibleMineIssues,
     alerts,
   };
