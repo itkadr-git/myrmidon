@@ -13,7 +13,7 @@
 
 import { Router, type Request, type Response } from "express";
 import type { Db } from "@paperclipai/db";
-import { upsertUi2LanguageSchema, type Ui2Language } from "@paperclipai/shared";
+import { upsertUi2CatalogSchema, upsertUi2LanguageSchema, type Ui2Language } from "@paperclipai/shared";
 import { validate } from "../../middleware/validate.js";
 import { getActorInfo } from "../../routes/authz.js";
 // myrmidon(1.7-TG-LOCALE): the Settings → Language screen shows the source of
@@ -49,6 +49,7 @@ export function ui2LanguageRoutes(db: Db, deps?: Ui2LanguageServiceDeps) {
     const userId = requireBoardUserId(req, res);
     if (!userId) return;
     const language = await service.getLanguage(userId);
+    const catalogs = await service.getCatalogs(userId);
     // myrmidon(1.7-TG-LOCALE): the Settings → Language screen must show the
     // SOURCE of the effective value. `telegramBridge.source` is
     // "environment" while MYRMIDON_TELEGRAM_DM_LANGUAGE forces all bridged DM
@@ -61,6 +62,7 @@ export function ui2LanguageRoutes(db: Db, deps?: Ui2LanguageServiceDeps) {
     const bridge = await service.resolveBridgeLanguage(userId);
     res.json({
       language: language ?? "en",
+      catalogs,
       updatedAt: null,
       telegramBridge: {
         source: bridge.source,
@@ -69,6 +71,14 @@ export function ui2LanguageRoutes(db: Db, deps?: Ui2LanguageServiceDeps) {
         ...(bridge.instanceLanguage ? { instanceLanguage: bridge.instanceLanguage } : {}),
       },
     });
+  });
+
+  router.put("/myrmidon/ui2/language/me/catalog", validate(upsertUi2CatalogSchema), async (req, res) => {
+    const userId = requireBoardUserId(req, res);
+    if (!userId) return;
+    const { language, catalog } = req.body as { language: Ui2Language; catalog: Record<string, unknown> };
+    await service.upsertCatalog(userId, language, catalog);
+    res.json({ catalogs: await service.getCatalogs(userId) });
   });
 
   router.put("/myrmidon/ui2/language/me", validate(upsertUi2LanguageSchema), async (req, res) => {
