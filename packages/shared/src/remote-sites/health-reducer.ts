@@ -9,6 +9,7 @@ export interface SiteHealthSnapshot {
   unavailableSince: number | null;
   manualDrain: boolean;
   pinnedBotCount: number;
+  failoverIssued: boolean;
 }
 
 export interface SiteHealthInput {
@@ -42,7 +43,7 @@ export function reduceSiteHealth(input: SiteHealthInput): SiteHealthOutput {
   if (result === "invalid_certificate" || result === "incompatible_protocol") {
     state = "quarantined";
     if (previous.state !== "quarantined") intents.push("quarantine");
-    return { ...previous, state, intents };
+    return { ...previous, state, failoverIssued: previous.failoverIssued, intents };
   }
 
   if (result === "success") {
@@ -52,7 +53,7 @@ export function reduceSiteHealth(input: SiteHealthInput): SiteHealthOutput {
     if (previous.state !== "draining" && previous.state !== "quarantined") {
       state = resourceDegraded ? "degraded" : "healthy";
     }
-    return { ...previous, state, lastSeenAt, missCount, unavailableSince, intents };
+    return { ...previous, state, lastSeenAt, missCount, unavailableSince, failoverIssued: false, intents };
   }
 
   unavailableSince ??= now;
@@ -61,12 +62,19 @@ export function reduceSiteHealth(input: SiteHealthInput): SiteHealthOutput {
     state = previous.manualDrain ? "draining" : "unreachable";
     if (!previous.manualDrain && previous.state !== "unreachable" && previous.state !== "draining") intents.push("drain");
   }
-  if (now - unavailableSince >= SITE_HEALTH_FAILOVER_AFTER_MS && previous.pinnedBotCount === 0) {
+  if (now - unavailableSince >= SITE_HEALTH_FAILOVER_AFTER_MS && previous.pinnedBotCount === 0 && !previous.failoverIssued) {
     intents.push("failover");
   }
-  return { ...previous, state, missCount, unavailableSince, intents: intents.length ? intents : EMPTY_INTENTS };
+  return {
+    ...previous,
+    state,
+    missCount,
+    unavailableSince,
+    failoverIssued: previous.failoverIssued || intents.includes("failover"),
+    intents: intents.length ? intents : EMPTY_INTENTS,
+  };
 }
 
 export function createSiteHealthSnapshot(overrides: Partial<SiteHealthSnapshot> = {}): SiteHealthSnapshot {
-  return { state: "unknown", lastSeenAt: null, missCount: 0, unavailableSince: null, manualDrain: false, pinnedBotCount: 0, ...overrides };
+  return { state: "unknown", lastSeenAt: null, missCount: 0, unavailableSince: null, manualDrain: false, pinnedBotCount: 0, failoverIssued: false, ...overrides };
 }
