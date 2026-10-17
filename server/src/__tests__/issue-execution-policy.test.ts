@@ -967,6 +967,61 @@ describe("issue execution policy transitions", () => {
     const policy = twoStagePolicy();
     const reviewStageId = policy.stages[0].id;
 
+    it("preserves a scheduled monitor when an issue becomes blocked", () => {
+      const monitor = {
+        nextCheckAt: "2026-10-16T20:00:00.000Z",
+        notes: "Await CI",
+        scheduledBy: "assignee",
+      };
+      const result = applyIssueExecutionPolicyTransition({
+        issue: {
+          status: "in_progress",
+          assigneeAgentId: coderAgentId,
+          assigneeUserId: null,
+          executionPolicy: { ...policy, monitor },
+          executionState: null,
+          monitorNextCheckAt: new Date(monitor.nextCheckAt),
+          monitorAttemptCount: 2,
+        },
+        policy: { ...policy, monitor },
+        requestedStatus: "blocked",
+        requestedAssigneePatch: {},
+        actor: { agentId: coderAgentId },
+      });
+
+      expect(result.patch.status).toBeUndefined();
+      expect(result.patch.monitorNextCheckAt).toEqual(new Date(monitor.nextCheckAt));
+      expect(result.patch.executionPolicy).toBeUndefined();
+    });
+
+    it("preserves the scheduled monitor when a board override moves a review into blocked", () => {
+      const monitor = {
+        nextCheckAt: "2026-10-16T20:00:00.000Z",
+        notes: "Await CI",
+        scheduledBy: "assignee",
+      };
+      const result = applyIssueExecutionPolicyTransition({
+        issue: {
+          status: "in_review",
+          assigneeAgentId: coderAgentId,
+          assigneeUserId: null,
+          executionPolicy: { ...policy, monitor },
+          executionState: null,
+          monitorNextCheckAt: new Date(monitor.nextCheckAt),
+          monitorAttemptCount: 2,
+        },
+        policy: { ...policy, monitor },
+        requestedStatus: "blocked",
+        requestedAssigneePatch: {},
+        actor: { agentId: coderAgentId },
+        allowBoardOverride: true,
+      });
+
+      expect(result.patch.status).toBeUndefined();
+      expect(result.patch.monitorNextCheckAt).toEqual(new Date(monitor.nextCheckAt));
+      expect(result.patch.executionPolicy).toBeUndefined();
+    });
+
     it("non-done status change without review context is a no-op", () => {
       const result = applyIssueExecutionPolicyTransition({
         issue: {
@@ -1745,7 +1800,7 @@ describe("issue execution policy transitions", () => {
       expect(() =>
         applyIssueExecutionPolicyTransition({
           issue: {
-            status: "blocked",
+            status: "done",
             assigneeAgentId: coderAgentId,
             assigneeUserId: null,
             executionPolicy: null,

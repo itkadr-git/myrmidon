@@ -71,7 +71,7 @@ export const DEFAULT_MAX_REVIEW_ROUNDS = 3;
 const COMPLETED_STATUS: IssueExecutionState["status"] = "completed";
 const PENDING_STATUS: IssueExecutionState["status"] = "pending";
 const CHANGES_REQUESTED_STATUS: IssueExecutionState["status"] = "changes_requested";
-const MONITOR_INVALID_MESSAGE = "Monitor can only be scheduled on issues assigned to an agent in in_progress or in_review";
+const MONITOR_INVALID_MESSAGE = "Monitor can only be scheduled on issues assigned to an agent in in_progress, in_review, or blocked";
 const MONITOR_BOUNDS_EXHAUSTED_MESSAGE = "Monitor bounds are already exhausted";
 const STAGE_DECISION_COMMENT_HINT = "Include the decision comment in the same PATCH request; prior comments are not considered.";
 export const REDACTED_ISSUE_MONITOR_EXTERNAL_REF = "[redacted]";
@@ -263,7 +263,7 @@ function buildClearedMonitorState(input: {
 }
 
 function issueAllowsMonitor(status: string, assigneeAgentId: string | null, assigneeUserId: string | null) {
-  return Boolean(assigneeAgentId) && !assigneeUserId && (status === "in_progress" || status === "in_review");
+  return Boolean(assigneeAgentId) && !assigneeUserId && (status === "in_progress" || status === "in_review" || status === "blocked");
 }
 
 function monitorClearReasonForIssue(
@@ -273,6 +273,7 @@ function monitorClearReasonForIssue(
 ): IssueExecutionMonitorClearReason | null {
   if (status === "done") return "done";
   if (status === "cancelled") return "cancelled";
+  if (status === "blocked") return null;
   if (!issueAllowsMonitor(status, assigneeAgentId, assigneeUserId)) {
     if (assigneeUserId || !assigneeAgentId) return "invalid_assignee";
     return "invalid_status";
@@ -842,7 +843,8 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
         input.allowBoardOverride &&
         requestedStatus &&
         requestedStatus !== "in_review" &&
-        requestedStatus !== "in_progress"
+        requestedStatus !== "in_progress" &&
+        requestedStatus !== "blocked"
       ) {
         patch.executionState = null;
         return { patch };
@@ -1066,7 +1068,13 @@ function applyMonitorTransition(input: TransitionInput, stagePatch: Record<strin
     stagePatch.executionState !== undefined
       ? parseIssueExecutionState(stagePatch.executionState)
       : existingState;
-  const invalidReason = input.policy?.monitor
+  // A blocked issue may keep an existing schedule, but a workflow override
+  // must not create a new monitor while leaving it without an owner.
+  const preservesExistingBlockedMonitor =
+    nextStatus === "blocked" &&
+    Boolean(input.issue.monitorNextCheckAt) &&
+    !input.monitorExplicitlyUpdated;
+  const invalidReason = input.policy?.monitor && !preservesExistingBlockedMonitor
     ? monitorClearReasonForIssue(nextStatus, assigneeAgentId, assigneeUserId)
     : null;
 
