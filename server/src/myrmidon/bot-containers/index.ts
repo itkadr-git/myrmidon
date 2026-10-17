@@ -739,3 +739,16 @@ export { BOT_GATEWAY_PORT, createBotCardSync, gatewayApiBaseUrl, planGatewayCard
 export type { BotCardSyncPorts, BotCardSyncResult, GatewayCardPlan } from "./card-sync.js";
 export { BOT_MCP_SERVERS_ENV, buildHermesProfileInput, readBotProfileSettings } from "./profile-input.js";
 export type { BotMcpSource, BotProfileSettings, BotProfileSource, BotStaticMcpServer } from "./profile-input.js";
+// myrmidon(1.6.6 T10-A): Site-agent test adapter and autonomous security regression harness
+export { createSiteAgentTestAdapter, type SiteAgentTestAdapter, type SiteAgentTestAdapterConfig } from "./site-agent-test-adapter.js";
+export {
+  runSecurityRegressionHarness,
+  validateContainerEnv,
+  validateImageReference,
+  validateNoSiteToCoreCredentials,
+  validateProfileFiles,
+  type SecurityHarnessReport,
+  type SecurityScenarioResult,
+} from "./site-agent-security-harness.js";
+export { generateEphemeralTestPki, cleanupTestPki, type TestPkiArtifacts } from "./site-agent-pki.js";
+
