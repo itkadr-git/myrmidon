@@ -367,6 +367,7 @@ function createRunContextDb(
         limit: vi.fn(() => ({
           then: async (resolve: (limitedRows: unknown[]) => unknown) => resolve(await rowsForSelection(selection, chatBindingQuery, settledRecoveryQuery)),
         })),
+        then: async (resolve: (selectedRows: unknown[]) => unknown) => resolve(await rowsForSelection(selection, chatBindingQuery, settledRecoveryQuery)),
       })),
       for: vi.fn(() => ({
         then: async (resolve: (selectedRows: unknown[]) => unknown) => resolve(await rowsForSelection(selection, chatBindingQuery, settledRecoveryQuery)),
@@ -390,6 +391,15 @@ function createRunContextDb(
         buildQuery(selection, getTableName(table) === "chat_conversations", getTableName(table) === "issue_recovery_actions")),
     })),
     insert: vi.fn(() => ({ values: vi.fn(async () => undefined) })),
+    update: vi.fn(() => ({
+      set: vi.fn(() => ({
+        where: vi.fn(async () => undefined),
+      })),
+    })),
+    delete: vi.fn(() => ({
+      where: vi.fn(async () => undefined),
+    })),
+    execute: vi.fn(async () => undefined),
   };
   return dbStub;
 }
@@ -2708,10 +2718,14 @@ describe("agent issue mutation checkout ownership", () => {
       const buildQuery = (selection: Record<string, unknown>) => {
         const rows = rowsForSelection(selection);
         const whereResult = {
+          for: vi.fn(() => ({
+            then: async (resolve: (selectedRows: unknown[]) => unknown) => resolve(rows),
+          })),
           orderBy: vi.fn(() => ({
             limit: vi.fn(() => ({
               then: async (resolve: (limitedRows: unknown[]) => unknown) => resolve(rows),
             })),
+            then: async (resolve: (selectedRows: unknown[]) => unknown) => resolve(rows),
           })),
           then: async (resolve: (selectedRows: unknown[]) => unknown) => resolve(rows),
         };
@@ -2721,16 +2735,25 @@ describe("agent issue mutation checkout ownership", () => {
         };
         return query;
       };
-      return {
-        transaction: async (callback: (tx: Record<string, unknown>) => Promise<unknown>) => callback({
-          select: vi.fn((selection: Record<string, unknown> = {}) => ({
-            from: vi.fn(() => buildQuery(selection)),
-          })),
-          insert: vi.fn(() => ({ values: vi.fn(async () => undefined) })),
-        }),
+      const txMock: Record<string, unknown> = {
         select: vi.fn((selection: Record<string, unknown> = {}) => ({
           from: vi.fn(() => buildQuery(selection)),
         })),
+        insert: vi.fn(() => ({ values: vi.fn(async () => undefined) })),
+        update: vi.fn(() => ({
+          set: vi.fn(() => ({
+            where: vi.fn(async () => undefined),
+          })),
+        })),
+        delete: vi.fn(() => ({
+          where: vi.fn(async () => undefined),
+        })),
+        execute: vi.fn(async () => undefined),
+      };
+      txMock.transaction = async (callback: (tx: unknown) => Promise<unknown>) => callback(txMock);
+      return {
+        ...txMock,
+        transaction: async (callback: (tx: unknown) => Promise<unknown>) => callback(txMock),
       };
     }
 

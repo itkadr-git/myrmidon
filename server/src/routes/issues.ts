@@ -14216,7 +14216,6 @@ export function issueRoutes(
             if (!updated) return null;
             if (
               updated.status === "in_review" &&
-              updated.assigneeAgentId &&
               (enteringReviewRequested || assigneeWillChange)
             ) {
               const stageWake = buildExecutionStageWakeup({
@@ -14227,46 +14226,33 @@ export function issueRoutes(
                 requestedByActorType: actor.actorType === "user" ? "user" : "agent",
                 requestedByActorId: actor.actorId,
               });
-              const wakeup: WakeupOptions = stageWake?.wakeup ?? {
-                source: "assignment",
-                triggerDetail: "system",
-                reason: enteringReviewRequested ? "issue_entered_review" : "issue_review_reassigned",
-                payload: { issueId: updated.id, mutation: "review_admission" },
-                idempotencyKey: `issue-review-admission:${updated.id}:${updated.assigneeAgentId}`,
-                requestedByActorType: actor.actorType,
-                requestedByActorId: actor.actorId,
-                contextSnapshot: { issueId: updated.id, taskId: updated.id },
-              };
-              let reviewWakePersisted = false;
-              if (
-                stageWake?.agentId &&
-                stageWake.agentId === updated.assigneeAgentId
-              ) {
+              if (stageWake?.agentId) {
                 await insertReviewAdmissionWakeup(
                   stageWake.agentId,
                   stageWake.wakeup,
                   tx as unknown as Db,
                 );
-                reviewWakePersisted = true;
               }
-              if (!reviewWakePersisted) {
-                if (stageWake?.agentId) {
-                  await insertReviewAdmissionWakeup(
-                    stageWake.agentId,
-                    stageWake.wakeup,
-                    tx as unknown as Db,
-                  );
-                }
-                if (
-                  !stageWake ||
-                  stageWake.agentId !== updated.assigneeAgentId
-                ) {
-                  await insertReviewAdmissionWakeup(
-                    updated.assigneeAgentId,
-                    wakeup,
-                    tx as unknown as Db,
-                  );
-                }
+              if (
+                assigneeWillChange &&
+                updated.assigneeAgentId &&
+                (!stageWake || stageWake.agentId !== updated.assigneeAgentId)
+              ) {
+                const wakeup: WakeupOptions = {
+                  source: "assignment",
+                  triggerDetail: "system",
+                  reason: enteringReviewRequested ? "issue_entered_review" : "issue_review_reassigned",
+                  payload: { issueId: updated.id, mutation: "review_admission" },
+                  idempotencyKey: `issue-review-admission:${updated.id}:${updated.assigneeAgentId}`,
+                  requestedByActorType: actor.actorType,
+                  requestedByActorId: actor.actorId,
+                  contextSnapshot: { issueId: updated.id, taskId: updated.id },
+                };
+                await insertReviewAdmissionWakeup(
+                  updated.assigneeAgentId,
+                  wakeup,
+                  tx as unknown as Db,
+                );
               }
             }
             // myrmidon(HOLD-READY): an explicit human unblock is an operator
@@ -15204,14 +15190,18 @@ export function issueRoutes(
           });
         };
 
-        const reviewAdmissionWakePersisted =
+        const reviewAdmissionStageWakePersisted =
           issue.status === "in_review" &&
-          Boolean(issue.assigneeAgentId) &&
-          (enteringReviewRequested || assigneeWillChange);
+          (enteringReviewRequested || assigneeWillChange) &&
+          Boolean(executionStageWakeup);
+        const reviewAdmissionAssigneeWakePersisted =
+          issue.status === "in_review" &&
+          (enteringReviewRequested || assigneeWillChange) &&
+          assigneeChanged;
         if (
           executionStageWakeup &&
           deferWakeForGoal !== true &&
-          !reviewAdmissionWakePersisted
+          !reviewAdmissionStageWakePersisted
         ) {
           addWakeup(executionStageWakeup.agentId, executionStageWakeup.wakeup);
         } else if (
@@ -15219,7 +15209,7 @@ export function issueRoutes(
           issue.assigneeAgentId &&
           issue.status !== "backlog" &&
           deferWakeForGoal !== true &&
-          !reviewAdmissionWakePersisted
+          !reviewAdmissionAssigneeWakePersisted
         ) {
           addWakeup(issue.assigneeAgentId, {
             source: "assignment",
