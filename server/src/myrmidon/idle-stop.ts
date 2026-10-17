@@ -119,6 +119,29 @@ export class IdleStopService {
    * board names the bots — from the agents table, same as the reconciliation
    * sweep.
    */
+  /**
+   * True when the agent is a container-enabled hermes_gateway agent (the predicate of listBotKeys).
+   * On a database error the answer is true, which keeps the strict "container is missing" check.
+   */
+  private async isContainerBot(botKey: string): Promise<boolean> {
+    try {
+      const rows = await this.db
+        .select({ agentId: agents.id })
+        .from(agents)
+        .where(
+          and(
+            eq(agents.id, botKey),
+            eq(agents.adapterType, 'hermes_gateway'),
+            sql`${agents.adapterConfig} #> '{container,enabled}' = 'true'::jsonb`,
+          ),
+        );
+      return rows.length > 0;
+    } catch (error) {
+      this.logger.error(`Error checking whether bot ${botKey} has a container:`, error);
+      return true;
+    }
+  }
+
   private async listBotKeys(): Promise<string[]> {
     try {
       const rows = await this.db
@@ -286,6 +309,7 @@ export class IdleStopService {
       }
 
       if (status.state === 'missing') {
+        if (!(await this.isContainerBot(botKey))) return true; // runs without a bot container: nothing to wake
         this.logger.error(`Cannot wake bot ${botKey}: container is missing`);
         return false;
       }
@@ -339,6 +363,9 @@ export class IdleStopService {
       }
 
       if (status.state === 'missing') {
+        // Agents without a bot container (no adapterConfig.container, or another adapter such as
+        // antigravity_local) run in the server itself; IDLE-STOP has nothing to start for them.
+        if (!(await this.isContainerBot(botKey))) return;
         throw new Error(`Container for bot ${botKey} is missing - cannot start`);
       }
 
