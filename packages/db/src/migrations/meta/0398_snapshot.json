@@ -54899,7 +54899,7 @@
           "type": "jsonb",
           "primaryKey": false,
           "notNull": true,
-          "default": "[]::jsonb"
+          "default": "'[]'::jsonb"
         }
       },
       "indexes": {
