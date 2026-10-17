@@ -911,7 +911,18 @@ describeEmbeddedPostgres(
         .set({ responsibleUserId: null })
         .where(eq(issues.id, fixture.issues.reviewRoot.id));
       await db.update(projects)
-        .set({ executionWorkspacePolicy: { trustPreset: LOW_TRUST_REVIEW_PRESET } })
+        .set({
+          executionWorkspacePolicy: {
+            trustPreset: LOW_TRUST_REVIEW_PRESET,
+            authorizationPolicy: {
+              trustBoundary: {
+                mode: LOW_TRUST_REVIEW_PRESET,
+                companyId: fixture.company.id,
+                projectIds: [fixture.projects.allowed.id],
+              },
+            },
+          },
+        })
         .where(eq(projects.id, fixture.projects.allowed.id));
       const app = createApp(
         db,
