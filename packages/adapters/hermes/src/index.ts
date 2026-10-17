@@ -102,6 +102,10 @@ tools, persistent memory, session persistence, skills, and MCP support.
 | persistSession | boolean | true | Resume sessions across heartbeats |
 | worktreeMode | boolean | false | Use git worktree for isolated changes |
 | checkpoints | boolean | false | Enable filesystem checkpoints |
+| filesystemScope | string | (off) | Set to `workspace` to isolate hermes_local from host-root paths; requires Bubblewrap. |
+| filesystemSandboxCommand | string | bwrap | Bubblewrap executable used for the workspace boundary. |
+| networkScope | string | (off) | Optional `deny` or `allowlist` network confinement. |
+| networkAllowlist | string[] | (off) | Hosts/origins allowed when networkScope is `allowlist`. |
 
 ## Advanced
 
