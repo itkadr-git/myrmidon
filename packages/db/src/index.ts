@@ -7,6 +7,8 @@ export {
   inspectMigrations,
   listMigrationChain,
   type MigrationChainEntry,
+  loadMigrationTargetSchema,
+  type MigrationTargetSchema,
   applyPendingMigrations,
   reconcilePendingMigrationHistory,
   type MigrationState,
