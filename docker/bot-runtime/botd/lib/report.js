@@ -128,6 +128,9 @@ export function buildReport(parts) {
       .slice(-MAX_ACTIONS)
       .map((a) => (a.detail === undefined ? a : { ...a, detail: clip(a.detail, 500) })),
     foreign: [...(parts.foreign ?? [])],
+    foreignUid: parts.foreignUid && typeof parts.foreignUid === "object"
+      ? { path: clip(parts.foreignUid.path, 500), reason: clip(parts.foreignUid.reason, 500) }
+      : null,
   };
   const size = () => Buffer.byteLength(JSON.stringify(report));
   for (const key of ["copies", "foreign", "archives", "bases", "actions"]) {

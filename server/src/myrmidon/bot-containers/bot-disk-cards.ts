@@ -46,6 +46,8 @@ export interface BotDiskBotSnapshot {
   receivedAtMs: number | null;
   /** The last accepted report (contract C4); null = none yet. */
   report: WsDiskReport | null;
+  /** Latest botd foreign-owner/deferred attention, if any. */
+  foreignUid?: { path: string; reason: string } | null;
   /**
    * Desired state (contract C3): issue key -> ISO time the task became
    * terminal / reassigned / PR-merged (`state: "closing"` + `since`). A copy
@@ -316,11 +318,37 @@ export function buildImageStaleCards(input: BotDiskCardsInput): BotDiskCard[] {
 export function buildBotDiskCards(input: BotDiskCardsInput): BotDiskCard[] {
   return [
     ...buildAgentSilentCards(input),
+    ...buildForeignUidCards(input),
     ...buildDriftCards(input),
     ...buildForeignCards(input),
     ...buildArchiveCards(input),
     ...buildImageStaleCards(input),
   ];
+}
+
+/** Surface botd's permission failure instead of repeatedly retrying its archive. */
+export function buildForeignUidCards(input: BotDiskCardsInput): BotDiskCard[] {
+  return input.bots.flatMap((bot) => {
+    const issue = bot.foreignUid ?? (bot.report?.foreignUid ?? null);
+    if (!issue) return [];
+    const at = iso(bot.receivedAtMs ?? input.nowMs);
+    const path = redactReportText(issue.path);
+    const reason = redactReportText(issue.reason);
+    return [{
+      sourceKind: "bot_disk_lifecycle" as const,
+      cardKey: WS_CARD_KEYS.foreign,
+      botKey: bot.botKey,
+      issueKey: null,
+      dedupKey: `${WS_CARD_KEYS.foreign}:${bot.botKey}:foreign-uid:${path}`,
+      severity: "high" as const,
+      title: "Bot disk cleanup deferred by foreign ownership",
+      whyNow: `Cleanup of ${path} was deferred: ${reason}. Correct the file ownership before retrying.`,
+      entryRule: "botd reports a foreign-owner permission error while cleaning a workspace",
+      exitRule: "a fresh bot report clears the foreign-owner attention",
+      at,
+      payload: { botKey: bot.botKey, at, path, reason },
+    }];
+  });
 }
 
 // ---------------------------------------------------------------------------
