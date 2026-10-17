@@ -10,19 +10,6 @@
 
 ## Без выпуска
 
-### Удалённые площадки исполнения: контракт агента площадки и руководство оператора дошли до вики (OPE-8142)
-
-- Новая страница вики
-  [Remote-execution-sites](https://github.com/itkadr-git/myrmidon/wiki/Remote-execution-sites)
-  ([русская](https://github.com/itkadr-git/myrmidon/wiki/Remote-execution-sites.ru))
-  сжимает работу по удалённым площадкам исполнения из
-  `docs/myrmidon/guides/remote-execution-sites.ru.md` (RU/EN) и
-  `docs/myrmidon/fleetd-vmexec.ru.md` (RU/EN): односторонняя плоскость
-  управления, API агента площадки из 13 маршрутов, пять состояний здоровья
-  площадки с ограждением аренд по эпохе, секретобезопасные коды причин
-  ошибок и внедрение с канареечной миграцией и откатом. Страница связана с
-  Home вики (RU/EN).
-
 ## 1.6.6
 
 ### Занятый бот больше не держит раскатку образов (BOT-ROLLOUT-SKIP-BUSY, OPE-5098)
