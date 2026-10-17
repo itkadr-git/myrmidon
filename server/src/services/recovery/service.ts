@@ -61,7 +61,7 @@ import {
   nativeRunnerOwnershipNotHeldCondition,
 } from "../native-runtime/native-runner-ownership.js";
 import { visibleIssueCondition } from "../issue-visibility.js";
-import { forbidden, notFound } from "../../errors.js";
+import { forbidden, HttpError, notFound } from "../../errors.js";
 import { logger } from "../../middleware/logger.js";
 import {
   isPidAlive,
@@ -2996,10 +2996,26 @@ export function recoveryService(
     ];
     if (blockedByIssueIds.length === 0) return null;
 
-    const updated = await issuesSvc.update(issue.id, {
-      status: "blocked",
-      blockedByIssueIds,
-    });
+    let updated: Awaited<ReturnType<typeof issuesSvc.update>>;
+    try {
+      updated = await issuesSvc.update(issue.id, {
+        status: "blocked",
+        blockedByIssueIds,
+      });
+    } catch (err) {
+      // myrmidon: a child that this issue itself blocks would close a cycle; the
+      // update refuses it (422). One such issue must not fail the whole startup
+      // recovery (17.10: the board exited on boot) — fall back to the disposition
+      // repair path instead.
+      if (err instanceof HttpError && err.status === 422) {
+        logger.warn(
+          { err, issueId: issue.id, blockedByIssueIds },
+          "recovery: waiting-on-review dependency wait refused; falling back to disposition repair",
+        );
+        return null;
+      }
+      throw err;
+    }
     if (!updated) return null;
 
     const waitingOn = formatIssueLinksForComment([
