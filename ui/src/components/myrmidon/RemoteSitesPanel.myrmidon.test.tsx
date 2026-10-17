@@ -10,7 +10,7 @@ import { RemoteSitesPanel, type RemoteSiteRow } from "./RemoteSitesPanel";
 const now = Date.parse("2026-10-17T12:00:00Z");
 const statuses = ["reachable", "degraded", "unreachable", "draining", "quarantined", "disabled"] as const;
 const site = (status: RemoteSiteRow["status"] = "reachable"): RemoteSiteRow => ({
-  name: "fixture-site", status, lastSeenAt: new Date(now - 10_000).toISOString(), capacity: { used: 2, total: 8 }, botCount: 1, driftCount: 0,
+  name: `fixture-site-${status}`, status, lastSeenAt: new Date(now - 10_000).toISOString(), capacity: { used: 2, total: 8 }, botCount: 1, driftCount: 0,
   clientCertNotAfter: new Date(now + 86_400_000).toISOString(),
   bots: [{ agent: "fixture-agent", imageDigest: `sha256:${"a".repeat(64)}`, state: "running", drift: false, apiBaseUrl: "https://fixture.invalid" }],
 });
@@ -40,8 +40,11 @@ describe("RemoteSitesPanel", () => {
   });
   it("disables operations for stale health and expired certificates", () => {
     for (const overrides of [{ lastSeenAt: new Date(now - 120_000).toISOString() }, { clientCertNotAfter: new Date(now - 1).toISOString() }]) {
-      render({ sites: [{ ...site(), ...overrides }], nowMs: now, onAction: vi.fn(), allowedActions: { restart: true } }); click(container.querySelector("button"));
-      expect(container.querySelectorAll("button")[1].disabled).toBe(true);
+      act(() => root.unmount());
+      root = createRoot(container);
+      render({ sites: [{ ...site(), ...overrides }], nowMs: now, onAction: vi.fn(), allowedActions: { restart: true } });
+      click(container.querySelector("button"));
+      expect(container.querySelectorAll("button")[1]?.disabled).toBe(true);
     }
     expect(container.textContent).toContain("Client certificate expired");
   });
