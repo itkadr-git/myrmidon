@@ -21536,6 +21536,119 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     await service.shutdown();
   });
 
+  it("retries a durable wakeup after deferred drain hits NOWAIT contention", async () => {
+    const fixture = await seedCompany();
+    const deferred: Array<() => void> = [];
+    const { callbacks, endpoint, runtime, service, wakeup } =
+      await configuredSlackEndpoint(fixture, {
+        deferWebhookProcessing: true,
+        scheduleDeferredWork: (task) => deferred.push(task),
+      });
+    const thread = makeThread({
+      channelId: "C-DURABLE-RETRY",
+      id: "slack:C-DURABLE-RETRY:1000.1",
+      name: "durable-retry",
+    });
+    const message = makeMessage({
+      id: "1000.1",
+      text: "@maya retry this durable wakeup",
+      mentioned: true,
+    });
+    let releaseLock!: () => void;
+    let lockEntered!: () => void;
+    const holdLock = new Promise<void>((resolve) => {
+      releaseLock = resolve;
+    });
+    const entered = new Promise<void>((resolve) => {
+      lockEntered = resolve;
+    });
+    let lockTransaction: Promise<unknown> | undefined;
+    try {
+      await deliverMessage({
+        callbacks,
+        endpointId: endpoint.id,
+        thread,
+        message,
+        trigger: "mention",
+      });
+      expect(deferred).toHaveLength(1);
+      lockTransaction = db.transaction(async (tx) => {
+        await tx
+          .select({ id: chatEndpoints.id })
+          .from(chatEndpoints)
+          .where(eq(chatEndpoints.id, endpoint.id))
+          .for("update");
+        lockEntered();
+        await holdLock;
+      });
+      await entered;
+      deferred.shift()?.();
+      await vi.waitFor(async () => {
+        const [delivery] = await db
+          .select()
+          .from(chatDeliveries)
+          .where(eq(chatDeliveries.endpointId, endpoint.id));
+        expect(delivery).toMatchObject({ state: "retry", attempts: 1 });
+      });
+    } finally {
+      releaseLock();
+      await lockTransaction;
+    }
+
+    const [firstAttempt] = await db
+      .select()
+      .from(chatDeliveries)
+      .where(eq(chatDeliveries.endpointId, endpoint.id));
+    expect(firstAttempt).toMatchObject({ state: "retry", attempts: 1 });
+    const actionsAfterConflict = await db
+      .select()
+      .from(chatActions)
+      .where(
+        and(
+          eq(chatActions.endpointId, endpoint.id),
+          eq(chatActions.kind, "inbound_wakeup"),
+        ),
+      );
+    expect(actionsAfterConflict).toHaveLength(1);
+    expect(actionsAfterConflict[0]).toMatchObject({
+      status: "issued",
+      result: {
+        code: "inbound_wakeup_retry",
+        attemptCount: 1,
+        retryAt: expect.any(String),
+      },
+    });
+    await db
+      .update(chatDeliveries)
+      .set({ nextAttemptAt: new Date(Date.now() - 1_000) })
+      .where(eq(chatDeliveries.id, firstAttempt.id));
+
+    await service.processPendingDeliveries();
+    const deliveries = await db
+      .select()
+      .from(chatDeliveries)
+      .where(eq(chatDeliveries.endpointId, endpoint.id));
+    const actions = await db
+      .select()
+      .from(chatActions)
+      .where(
+        and(
+          eq(chatActions.endpointId, endpoint.id),
+          eq(chatActions.kind, "inbound_wakeup"),
+        ),
+      );
+    expect(deliveries).toHaveLength(1);
+    expect(deliveries[0]).toMatchObject({ state: "processed", attempts: 2 });
+    expect(actions).toHaveLength(1);
+    expect(actions[0]).toMatchObject({
+      status: "processed",
+      result: { attemptCount: 2, code: "inbound_wakeup_durable" },
+    });
+    expect(wakeup).toHaveBeenCalledTimes(1);
+    expect(runtime.endpoints.get(endpoint.id)?.reactions).toHaveLength(1);
+    await service.shutdown();
+  });
+
   it("deduplicates inbound events, keeps one task per thread, and requires enablement for newly discovered channels", async () => {
     const fixture = await seedCompany();
     const { callbacks, endpoint, runtime, service, wakeup } =
