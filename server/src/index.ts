@@ -194,6 +194,7 @@ import {
   CORPUS_PARSE_SWEEP_INTERVAL_MS,
   corpusService,
   createCorpusParseWorker,
+  configureCorpusAdapters,
   resolveCorpusPorts,
 } from "./myrmidon/corpus/index.js";
 import {
@@ -1156,6 +1157,7 @@ async function startServerWithDatabaseTeardown(
     logger.info("myrmidon(PROCS-1.2): process supervisor wired on the worker");
   }
   await startProcessesSettings(db as any, processSupervisor);
+  configureCorpusAdapters(db as any, config);
   const app = await createApp(db as any, {
     uiMode,
     serverPort: listenPort,
