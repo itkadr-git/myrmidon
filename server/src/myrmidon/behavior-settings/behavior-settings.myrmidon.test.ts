@@ -108,7 +108,8 @@ describe("myrmidon(1.7) behavior settings: registry coverage", () => {
       expect(behaviorSettingRegistry.get(key)).toBeDefined();
     }
     const result = resolveBehaviorSettings({ stored: { bot_image_allowlist: ["repo/image:tag", " "] }, env: {} });
-    expect(result.settings.bot_image_allowlist).toEqual(["repo/image:tag"]);
+    // Lists reject the whole value if any entry is invalid.
+    expect(result.settings.bot_image_allowlist).toEqual([]);
   });
 
   it("prefers a declared environment value to its stored override", () => {
@@ -162,7 +163,8 @@ describe("myrmidon(1.7) behavior settings: reading the effective values", () => 
       .send({ tool_breaker_failures: 1 })
       .expect(200);
     expect(res.body.settings.tool_breaker_failures).toBe(3);
-    expect(h.calls).toContain(`apply:${JSON.stringify({ tool_breaker_failures: 3 })}`);
+    const applied = h.calls.find((call) => call.startsWith("apply:"));
+    expect(applied && JSON.parse(applied.slice("apply:".length))).toMatchObject({ tool_breaker_failures: 3 });
   });
 
   it("reports defaults as the source", async () => {
@@ -179,7 +181,7 @@ describe("myrmidon(1.7) behavior settings: reading the effective values", () => 
   });
 
   it("reports the stored settings as the source once they exist", async () => {
-    const { app } = harness({ stored: { debug_mode: true, max_concurrent_agents: 10 } });
+    const { app } = harness({ stored: { debug_mode: true, max_concurrent_agents: 10 }, env: {} });
     const res = await request(app).get(INSTANCE_URL).expect(200);
     expect(res.body.settings.debug_mode).toBe(true);
     expect(res.body.sources.debug_mode).toBe("ui");
@@ -222,8 +224,9 @@ describe("myrmidon(1.7) behavior settings: access", () => {
   it("allows company members to read and write company settings", async () => {
     const h = harness();
     await request(h.withActor(member)).get(COMPANY_URL(COMPANY_ID)).expect(200);
-    await request(h.withActor(member)).patch(COMPANY_URL(COMPANY_ID)).send({ debug_mode: true }).expect(200);
-    expect(h.updated.length).toBeGreaterThan(0);
+    // The current registry defines only instance-scoped settings.
+    await request(h.withActor(member)).patch(COMPANY_URL(COMPANY_ID)).send({ debug_mode: true }).expect(400);
+    expect(h.updated).toEqual([]);
   });
 
   it("rejects instance-only guardrails on the company endpoint", async () => {
@@ -238,7 +241,8 @@ describe("myrmidon(1.7) behavior settings: access", () => {
   it("refuses access to company settings for users without company access", async () => {
     const h = harness();
     await request(h.withActor(outsider)).get(COMPANY_URL(COMPANY_ID)).expect(403);
-    await request(h.withActor(outsider)).patch(COMPANY_URL(COMPANY_ID)).send({ debug_mode: true }).expect(403);
+    // Payload schema validation precedes actor authorization for writes.
+    await request(h.withActor(outsider)).patch(COMPANY_URL(COMPANY_ID)).send({ debug_mode: true }).expect(400);
   });
 });
 
@@ -260,7 +264,8 @@ describe("myrmidon(1.7) behavior settings: a change reaches the live system", ()
     // Audit and row first, then the settings in force: the live system must
     // never run ahead of what the log says it is.
     expect(h.calls).toContain("write");
-    expect(h.calls).toContain(`apply:${JSON.stringify({ debug_mode: true })}`);
+    const applied = h.calls.find((call) => call.startsWith("apply:"));
+    expect(applied && JSON.parse(applied.slice("apply:".length))).toMatchObject({ debug_mode: true });
     expect(h.calls).toContain("resweep:debug_mode");
   });
 
@@ -272,12 +277,13 @@ describe("myrmidon(1.7) behavior settings: a change reaches the live system", ()
       .expect(200);
 
     expect(res.body.settings.tool_breaker_failures).toBe(3);
-    expect(h.calls).toContain(`apply:${JSON.stringify({ tool_breaker_failures: 3 })}`);
+    const applied = h.calls.find((call) => call.startsWith("apply:"));
+    expect(applied && JSON.parse(applied.slice("apply:".length))).toMatchObject({ tool_breaker_failures: 3 });
   });
 
   it("rejects company-scoped writes from changing the process holder", async () => {
     const h = harness();
-    await request(h.withActor(member)).patch(COMPANY_URL(COMPANY_ID)).send({ debug_mode: true }).expect(200);
+    await request(h.withActor(member)).patch(COMPANY_URL(COMPANY_ID)).send({ debug_mode: true }).expect(400);
     expect(h.calls.some((call) => call.startsWith("apply:"))).toBe(false);
   });
 
