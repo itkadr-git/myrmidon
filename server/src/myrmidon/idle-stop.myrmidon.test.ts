@@ -17,7 +17,14 @@ vi.mock('@paperclipai/db', () => ({
     adapterType: 'adapter_type',
     status: 'status',
     adapterConfig: 'adapter_config',
+    role: 'role',
   },
+}));
+
+vi.mock('../services/instance-settings.js', () => ({
+  instanceSettingsService: () => ({
+    getGeneral: async () => ({}),
+  }),
 }));
 
 describe('IdleStopService', () => {
@@ -67,6 +74,7 @@ describe('IdleStopService', () => {
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     vi.clearAllMocks();
   });
 
@@ -84,8 +92,21 @@ describe('IdleStopService', () => {
     });
   }
 
+  describe('defaults', () => {
+    it('enables idle stop when no explicit setting is provided', () => {
+      const service = new IdleStopService(mockDriver, mockDb, {}, mockLogger);
+      service.start();
+      expect(mockLogger.info).toHaveBeenCalledWith(
+        'Starting IDLE-STOP service: afterSec=1800, healthTimeoutMs=30000',
+      );
+      service.stop();
+    });
+  });
+
   describe('sweeper functionality', () => {
     it('should not stop container with active runs', async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2026-10-16T20:00:00.000Z'));
       const botKey = '550e8400-e29b-41d4-a716-446655440000';
 
       mockListBotKeys(mockDb, [botKey]);
@@ -121,6 +142,8 @@ describe('IdleStopService', () => {
     });
 
     it('should stop container without active runs for longer than threshold', async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2026-10-16T20:00:00.000Z'));
       const botKey = '550e8400-e29b-41d4-a716-446655440000';
 
       mockListBotKeys(mockDb, [botKey]);
@@ -132,7 +155,7 @@ describe('IdleStopService', () => {
       let selectCallCount = 1;
       mockDb.select.mockImplementation(() => {
         selectCallCount++;
-        // 2 = resolveAgentId (hasActiveRuns), 3 = hasActiveRuns, 4 = resolveAgentId (getIdleDurationSec), 5 = getIdleDurationSec
+        // 2 = resolveAgentId (hasActiveRuns), 3 = hasActiveRuns, 4 = agent config, 5 = resolveAgentId, 6 = getIdleDurationSec
         if (selectCallCount === 2) {
           // First resolveAgentId call (in hasActiveRuns)
           return {
@@ -156,6 +179,19 @@ describe('IdleStopService', () => {
             }),
           };
         } else if (selectCallCount === 4) {
+          // Agent configuration lookup for the per-bot idle-stop mode.
+          return {
+            from: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                limit: vi.fn().mockReturnValue({
+                  then: vi.fn().mockImplementation((resolve: any) =>
+                    resolve([{ adapterConfig: { container: { idleStopMode: 'on_demand' } } }]),
+                  ),
+                }),
+              }),
+            }),
+          };
+        } else if (selectCallCount === 5) {
           // Second resolveAgentId call (in getIdleDurationSec)
           return {
             from: vi.fn().mockReturnValue({
@@ -191,6 +227,8 @@ describe('IdleStopService', () => {
     });
 
     it('should not stop container that was recently active', async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2026-10-16T20:00:00.000Z'));
       const botKey = '550e8400-e29b-41d4-a716-446655440000';
 
       mockListBotKeys(mockDb, [botKey]);
@@ -202,7 +240,7 @@ describe('IdleStopService', () => {
       let selectCallCount = 1;
       mockDb.select.mockImplementation(() => {
         selectCallCount++;
-        // 2 = resolveAgentId (hasActiveRuns), 3 = hasActiveRuns, 4 = resolveAgentId (getIdleDurationSec), 5 = getIdleDurationSec
+        // 2 = resolveAgentId (hasActiveRuns), 3 = hasActiveRuns, 4 = agent config, 5 = resolveAgentId, 6 = getIdleDurationSec
         if (selectCallCount === 2) {
           // First resolveAgentId call (in hasActiveRuns)
           return {
@@ -226,6 +264,19 @@ describe('IdleStopService', () => {
             }),
           };
         } else if (selectCallCount === 4) {
+          // Agent configuration lookup for the per-bot idle-stop mode.
+          return {
+            from: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                limit: vi.fn().mockReturnValue({
+                  then: vi.fn().mockImplementation((resolve: any) =>
+                    resolve([{ adapterConfig: { container: { idleStopMode: 'on_demand' } } }]),
+                  ),
+                }),
+              }),
+            }),
+          };
+        } else if (selectCallCount === 5) {
           // Second resolveAgentId call (in getIdleDurationSec)
           return {
             from: vi.fn().mockReturnValue({
@@ -261,6 +312,8 @@ describe('IdleStopService', () => {
     });
 
     it('should skip non-running containers', async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2026-10-16T20:00:00.000Z'));
       const botKey = '550e8400-e29b-41d4-a716-446655440000';
 
       mockListBotKeys(mockDb, [botKey]);

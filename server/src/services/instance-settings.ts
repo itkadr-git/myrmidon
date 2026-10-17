@@ -788,6 +788,7 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
               ...preserveBrowserConsoleGeneralKey(current.general), // myrmidon(BROWSER-CONSOLE)
               ...preserveStackGeneralKey(current.general), // myrmidon(SUA)
               ...preserveBotCanaryGeneralKey(current.general), // myrmidon(R5-B)
+              ...(current.general.idleStop !== undefined ? { idleStop: current.general.idleStop } : {}), // myrmidon(OPE-7898)
               ...preserveBotRolloutDeferredGeneralKey(current.general), // myrmidon(BOT-ROLLOUT)
               ...preserveAccessHubHostsGeneralKey(current.general), // myrmidon(SEC1)
               ...preserveCloudConnectorGeneralKey(current.general), // myrmidon(CLOUD-CONNECTOR)

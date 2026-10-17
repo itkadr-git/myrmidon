@@ -148,6 +148,7 @@ export interface BotContainerStatusResponse {
   /** The gateway is limiting runs below the board's limit (unmanaged gateway with
    *  recently rate-limited runs). Null when there is nothing to warn about. */
   gatewayConcurrencyWarning: string | null;
+  idleStopMode: "on_demand" | "always_on";
 }
 
 export type BotContainerApplyResponse = { outcome: Exclude<ApplyBotContainerOutcome, { kind: "not_applicable" }> };
@@ -272,6 +273,7 @@ export function botContainerRoutes(deps: BotContainerRoutesDeps) {
       gatewayConcurrency: null,
       gatewayConcurrencyNote: null,
       gatewayConcurrencyWarning: null,
+      idleStopMode: ((agent.adapterConfig.container as { idleStopMode?: string } | undefined)?.idleStopMode === "always_on" ? "always_on" : "on_demand"),
     };
 
     const botKey = botKeyForAgent(agent.id);
