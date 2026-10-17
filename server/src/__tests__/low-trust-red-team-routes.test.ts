@@ -522,6 +522,11 @@ async function seedLowTrustFixture(db: Db) {
       status: "in_progress",
       priority: "medium",
       responsibleUserId: "board-user",
+      sourceTrust: {
+        preset: LOW_TRUST_REVIEW_PRESET,
+        disposition: "quarantined",
+        promotionOwnerUserId: "board-user",
+      },
     })
     .returning();
   const [sameBoundaryChild] = await db
