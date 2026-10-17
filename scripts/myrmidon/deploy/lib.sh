@@ -415,6 +415,8 @@ load_config() {
   : "${DUMP_DIR:=$STATE_DIR/dumps}"
   : "${DUMP_COMMAND:=}"
   : "${DUMP_MIN_BYTES:=1}"
+  # PREDEPLOY-RETENTION: only validated dumps are eligible for cleanup.
+  : "${DUMP_KEEP:=3}"
   : "${RESTORE_COMMAND:=}"
   : "${MAINTENANCE_MODE:=pause}"
   : "${MAINTENANCE_API_URL:=}"
@@ -910,6 +912,33 @@ take_dump() {
   fi
   log "dump: ok ($size bytes)"
   LAST_DUMP_FILE="$file"
+  prune_dumps
+}
+
+# Keep the newest validated dumps only. A listing or deletion error aborts deploy.
+prune_dumps() {
+  local -a dumps=() ordered=()
+  local path find_status listing_error
+  listing_error="${DUMP_DIR%/}/.predeploy-retention-listing-error.$$"
+  rm -f -- "$listing_error" || die "cannot prepare predeploy dump listing in $DUMP_DIR"
+  mapfile -d '' -t dumps < <(
+    find "$DUMP_DIR" -maxdepth 1 -type f -name 'myrmidon-*.dump' -printf '%T@ %p\0' || touch "$listing_error"
+  )
+  find_status=0
+  [[ ! -e "$listing_error" ]] || find_status=1
+  if ((find_status == 0)) && ((${#dumps[@]})); then
+    mapfile -t ordered < <(printf '%s\n' "${dumps[@]}" | sort -nr)
+    ((${#ordered[@]} == ${#dumps[@]})) || find_status=1
+  fi
+  rm -f -- "$listing_error" || die "cannot finalize predeploy dump listing in $DUMP_DIR"
+  ((find_status == 0)) || die "cannot list predeploy dumps in $DUMP_DIR; refusing retention cleanup"
+  (( ${#ordered[@]} > DUMP_KEEP )) || return 0
+  for path in "${ordered[@]:DUMP_KEEP}"; do
+    path="${path#* }"
+    [[ -n "$path" && -f "$path" ]] || die "invalid predeploy dump candidate during retention cleanup; refusing further cleanup"
+    rm -- "$path" || die "cannot remove old predeploy dump $path; refusing deploy"
+    log "dump retention: removed $path"
+  done
 }
 
 record_history() {
