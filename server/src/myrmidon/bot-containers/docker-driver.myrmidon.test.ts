@@ -1067,6 +1067,8 @@ describe("dockerBotContainerDriver against a fake Docker daemon", () => {
       "myrmidon-hermes:1.6.4": LEGACY_CONTRACT_LABELS, // the three-volume release image of the rollout defect
       "myrmidon-hermes:1.0.0": null, // built before the runtime contract: no label at all
       "myrmidon-hermes:3.0.0": { [BOT_RUNTIME_CONTRACT_LABEL]: "3" }, // a contract this driver does not know
+      "myrmidon-hermes-dev:latest": CONTRACT_LABELS,
+      "ghcr.io/itkadr-git/myrmidon-hermes-dev:main": CONTRACT_LABELS,
     });
     const volumeRoot = path.join(tmp, "bots");
     volumes = {
@@ -1343,6 +1345,47 @@ describe("dockerBotContainerDriver against a fake Docker daemon", () => {
 
     it("reads the marker from its real path inside the single mount", () => {
       expect(APPLIED_MARKER_CONTAINER_PATH).toBe("/bot/hermes/.myrmidon/applied.json");
+    });
+
+    it("keeps a developer image during its initial unhealthy startup window", async () => {
+      const waits: number[] = [];
+      let clock = 0;
+      const devbuild = { host: "devbuild.internal", user: "worker", base: "/build" };
+      const devDriver = dockerBotContainerDriver(
+        {
+          socketPath: daemon.socketPath,
+          volumeRoot: path.join(tmp, "bots"),
+          network: "myrmidon-bots",
+          allowlist: ["myrmidon-hermes-dev:*"],
+          mountSources: [],
+          devbuild,
+        },
+        {
+          healthPollIntervalMs: 5_000,
+          startHealthTimeoutMs: 180_000,
+          sleep: async (ms) => {
+            waits.push(ms);
+            clock += ms;
+            if (clock >= 60_000) bot()!.health = "healthy";
+          },
+          clock: () => clock,
+        },
+      );
+      const devSpec = spec({ image: "myrmidon-hermes-dev:latest" });
+      await devDriver.create(devSpec);
+      await devDriver.writeProfile("agent-a", testProfile());
+      daemon.options.healthOnStart = "unhealthy";
+
+      await devDriver.start("agent-a");
+      expect(waits).toContain(5_000);
+      expect(bot()?.state).toBe("running");
+    });
+
+    it("fails an unhealthy non-developer container without startup grace", async () => {
+      await driver.create(spec());
+      await driver.writeProfile("agent-a", testProfile());
+      daemon.options.healthOnStart = "unhealthy";
+      await expect(driver.start("agent-a")).rejects.toThrow(/reports unhealthy/);
     });
 
     it("reports Docker's health verdict", async () => {

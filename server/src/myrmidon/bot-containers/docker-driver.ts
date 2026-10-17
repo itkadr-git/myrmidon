@@ -126,7 +126,9 @@ export const BOT_CONTAINER_UID = 10001;
 const DOCKER_API_VERSION = "v1.45";
 /** Seconds Docker waits after SIGTERM before SIGKILL on stop/restart. */
 export const BOT_STOP_TIMEOUT_SEC = 30;
-const DEFAULT_START_HEALTH_TIMEOUT_MS = 120_000;
+const DEFAULT_START_HEALTH_TIMEOUT_MS = 180_000;
+// Developer images run slow cache/devbuild diagnostics during container init.
+const DEFAULT_HEALTH_START_GRACE_MS = 90_000;
 // myrmidon(1.6.5-DOCKERGATE-A2A3-STORM): 1 s polling of a container's health was
 // the rollout's second storm source — a 120 s wait meant up to 120 A2 inspects
 // per bot, and dockergate bills every one against the per-bot inspect bucket and
@@ -811,7 +813,7 @@ interface DockerInspect {
   Id: string;
   /** Image id the container runs (sha256:…). */
   Image: string;
-  Config?: { Image?: string; Labels?: Record<string, string> };
+  Config?: { Image?: string; Labels?: Record<string, string>; Env?: string[] };
   State?: { Status?: string; ExitCode?: number; Health?: { Status?: string } };
   HostConfig?: { Memory?: number; NanoCpus?: number; PidsLimit?: number; NetworkMode?: string; Binds?: string[] };
 }
@@ -1663,14 +1665,27 @@ export function dockerBotContainerDriver(
 
   async function waitForHealthy(botKey: string): Promise<void> {
     const name = containerNameFor(botKey);
-    const deadline = clock() + startHealthTimeoutMs;
+    const startedAt = clock();
+    const deadline = startedAt + startHealthTimeoutMs;
+    let unhealthySince: number | undefined;
     for (;;) {
       const info = await inspectByName(name);
       if (!info) throw new Error(`${name} disappeared while waiting for it to become healthy`);
       const state = info.State?.Status ?? "unknown";
       const health = info.State?.Health?.Status;
       if (state === "running" && (health === undefined || health === "healthy")) return;
-      if (state === "running" && health === "unhealthy") throw new Error(`${name} reports unhealthy after start`);
+      if (state === "running" && health === "unhealthy") {
+        const isDeveloperContainer = (info.Config?.Env ?? []).some((entry) => entry.startsWith("DEVBUILD_BOT_NAME="));
+        const healthGrace = isDeveloperContainer ? Math.min(startHealthTimeoutMs, DEFAULT_HEALTH_START_GRACE_MS) : 0;
+        if (healthGrace > 0) {
+          unhealthySince ??= clock();
+          if (clock() - unhealthySince >= healthGrace) throw new Error(`${name} reports unhealthy after start`);
+        } else {
+          throw new Error(`${name} reports unhealthy after start`);
+        }
+      } else {
+        unhealthySince = undefined;
+      }
       if (state === "exited" || state === "dead") {
         throw new Error(`${name} ${state} (exit code ${info.State?.ExitCode ?? "unknown"}) instead of becoming healthy`);
       }

@@ -21,16 +21,14 @@ import path from "node:path";
 
 const ENTRYPOINT = path.resolve("docker/bot-runtime/entrypoint.sh");
 
-// Extract the devbuild_self_check function body plus the guard line and run
-// them in a sandboxed shell with stub `devbuild`, `log`, `json_escape` and a
-// scratch HERMES_HOME. This keeps the test honest — it is the same code the
-// image runs — without executing the PID-1 tail of the entrypoint.
+// Extract only devbuild_self_check up to its following section comment. This
+// avoids coupling this test to other startup helper definitions.
 function extractSelfCheck() {
   const src = readFileSync(ENTRYPOINT, "utf8");
   const start = src.indexOf("devbuild_self_check() {");
-  const end = src.indexOf("fi", src.indexOf('MYRMIDON_DEVBUILD_CHECK', start));
-  assert.ok(start > 0 && end > start, "devbuild_self_check block found in the entrypoint");
-  return src.slice(start, end + 2);
+  const end = src.indexOf("\n# --- bot disk lifecycle agent", start);
+  assert.ok(start > 0 && end > start, "devbuild self-check function found in the entrypoint");
+  return src.slice(start, end);
 }
 
 function makeSandbox({ devbuildExit = 0, withDevbuild = true } = {}) {
@@ -54,6 +52,7 @@ HERMES_HOME="${hermesHome}"
 log() { echo "$@" >> "${logFile}"; }
 json_escape() { printf '%s' "$1" | sed 's/"/\\\\"/g'; }
 ${extractSelfCheck()}
+if [ "\${MYRMIDON_DEVBUILD_CHECK:-1}" != "0" ]; then devbuild_self_check; fi
 `;
   return { root, hermesHome, logFile, script };
 }
