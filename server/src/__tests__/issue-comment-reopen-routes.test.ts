@@ -1540,7 +1540,9 @@ describe.sequential("issue comment reopen routes", () => {
       ) => Promise.resolve([]).then(onFulfilled, onRejected),
     }));
 
-    const res = await request(await installActor(createApp(), agentActor()))
+    const res = await request(
+      await installActor(createApp(), { ...agentActor(), runId: null }),
+    )
       .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
       .send({ body: "Normal work update." });
 
@@ -1551,10 +1553,10 @@ describe.sequential("issue comment reopen routes", () => {
       {
         agentId: "22222222-2222-4222-8222-222222222222",
         userId: undefined,
-        runId: "run-1",
+        runId: null,
         onBehalfOfUserId: null,
       },
-      expect.objectContaining({ attachmentIds: undefined, presentation: null }),
+      expect.objectContaining({ attachmentIds: undefined, presentation: null, sourceTrust: null }),
       mockDb,
     );
   });
