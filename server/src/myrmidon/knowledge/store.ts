@@ -997,10 +997,12 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
     if (row.status !== "pending") {
       throw new KnowledgeDomainError("suggestion_decided", 409, `Suggestion is already ${row.status}.`);
     }
-    await db
+    const [updated] = await db
       .update(knowledgeSuggestions)
       .set({ status: input.decision, rationale: input.reason ?? row.rationale, decidedBy: `${actor.actorType}:${actor.actorId ?? "unknown"}`, decidedAt: now() })
-      .where(and(eq(knowledgeSuggestions.nestId, nestId), eq(knowledgeSuggestions.id, row.id), eq(knowledgeSuggestions.status, "pending")));
+      .where(and(eq(knowledgeSuggestions.nestId, nestId), eq(knowledgeSuggestions.id, row.id), eq(knowledgeSuggestions.status, "pending")))
+      .returning({ id: knowledgeSuggestions.id });
+    if (!updated) throw new KnowledgeDomainError("suggestion_decided", 409, "Suggestion was decided concurrently.");
     await appendEvent(db, {
       companyId: input.companyId,
       nestId,
