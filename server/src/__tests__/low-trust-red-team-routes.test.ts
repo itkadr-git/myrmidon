@@ -910,7 +910,13 @@ describeEmbeddedPostgres(
       await db.update(issues)
         .set({ responsibleUserId: null })
         .where(eq(issues.id, fixture.issues.reviewRoot.id));
-      const app = createApp(db, agentActor(fixture));
+      await db.update(projects)
+        .set({ executionWorkspacePolicy: { trustPreset: LOW_TRUST_REVIEW_PRESET } })
+        .where(eq(projects.id, fixture.projects.allowed.id));
+      const app = createApp(
+        db,
+        agentActor(fixture, fixture.agents.standard.id),
+      );
       const createWithoutOwner = await request(app)
         .post(`/api/companies/${fixture.company.id}/issues`)
         .send({ title: `quarantined ${fixture.canaries.raw}` });
