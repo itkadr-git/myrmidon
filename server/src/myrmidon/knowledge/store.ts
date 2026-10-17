@@ -868,17 +868,23 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
       const item = await loadItem(nestId, idOrSlug);
       let deliveredContent: string | null = null;
       if (item.deliveredRevisionId) {
-        const [canonical] = await db
-          .select({ id: knowledgeRevisions.id, lang: knowledgeRevisions.lang })
+        const [delivered] = await db
+          .select({ id: knowledgeRevisions.id, lang: knowledgeRevisions.lang, translationOf: knowledgeRevisions.translationOf, status: knowledgeRevisions.status })
           .from(knowledgeRevisions)
           .where(eq(knowledgeRevisions.id, item.deliveredRevisionId));
-        if (canonical) {
-          const requested = language ? normalizeKnowledgeRevisionLang(language) : canonical.lang;
+        if (delivered) {
+          const canonicalId = delivered.translationOf ?? delivered.id;
+          const [canonical] = await db
+            .select({ id: knowledgeRevisions.id, lang: knowledgeRevisions.lang, status: knowledgeRevisions.status })
+            .from(knowledgeRevisions)
+            .where(eq(knowledgeRevisions.id, canonicalId));
+          if (!canonical || canonical.status !== "approved") return { ...toItemDto(item), deliveredContent: null };
+          const requested = language ? normalizeKnowledgeRevisionLang(language) : delivered.translationOf ? delivered.lang : canonical.lang;
           const [translation] = await db
             .select({ content: knowledgeRevisions.content })
             .from(knowledgeRevisions)
             .where(and(
-              eq(knowledgeRevisions.translationOf, canonical.id),
+              eq(knowledgeRevisions.translationOf, canonicalId),
               eq(knowledgeRevisions.lang, requested),
               eq(knowledgeRevisions.status, "approved"),
             ))
@@ -886,7 +892,7 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
             .limit(1);
           if (translation) deliveredContent = translation.content;
           else {
-            const [revision] = await db.select({ content: knowledgeRevisions.content }).from(knowledgeRevisions).where(eq(knowledgeRevisions.id, canonical.id));
+            const [revision] = await db.select({ content: knowledgeRevisions.content }).from(knowledgeRevisions).where(eq(knowledgeRevisions.id, canonicalId));
             deliveredContent = revision?.content ?? null;
           }
         }
@@ -1002,8 +1008,8 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
   async function searchNest(nestId: string, query: string, limit = 20, language?: KnowledgeRevisionLang): Promise<Array<{ itemId: string; slug: string; title: string }>> {
     if (!search) throw new KnowledgeDomainError("search_unavailable", 501, "No SearchIndex is attached to this knowledge service.");
     const results = await search.search(nestId, query, limit);
-    if (!language || results.length === 0) return results;
-    const lang = normalizeKnowledgeRevisionLang(language);
+    if (results.length === 0) return results;
+    const lang = language ? normalizeKnowledgeRevisionLang(language) : undefined;
     const resultIds = new Set(results.map(({ itemId }) => itemId));
     const revisions: RevisionRow[] = await db
       .select()
@@ -1022,7 +1028,7 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
     return results.flatMap((result) => {
       const available = byItem.get(result.itemId) ?? [];
       const canonicalRevision = available.find((row) => row.translationOf === null);
-      const selected = canonicalRevision?.lang === lang
+      const selected = !language || canonicalRevision?.lang === lang
         ? canonicalRevision
         : available.find((row) => row.translationOf === canonicalRevision?.id && row.lang === lang) ?? canonicalRevision;
       return selected ? [result] : [];
