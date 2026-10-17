@@ -18,8 +18,8 @@ function createMocks() {
     jobs: [] as any[],
   };
 
-  const mockStore: FleetOnboardStore = {
-    async createServer(companyId, input) {
+  const createServer = async (companyId: string, input: any) => {
+
       const server = {
         id: `server-${store.servers.length + 1}`,
         companyId,
@@ -29,6 +29,7 @@ function createMocks() {
         port: input.port,
         username: input.username,
         role: input.role,
+        keepPassword: input.keepPassword,
         passwordSecretKey: input.passwordSecretKey ?? null,
         accessKeySecretKey: input.accessKeySecretKey ?? null,
         hostKeyFingerprint: null,
@@ -36,8 +37,8 @@ function createMocks() {
       };
       store.servers.push(server);
       return server as any;
-    },
-    async createJob(input) {
+  };
+  const createJob = async (input: any) => {
       const job: OnboardJob = {
         id: `job-${store.jobs.length + 1}`,
         companyId: input.companyId,
@@ -55,9 +56,17 @@ function createMocks() {
       };
       store.jobs.push(job);
       return job;
+  };
+  const mockStore: FleetOnboardStore = {
+    async createServer() { throw new Error("createServer should not be called"); },
+    async createServerAndJob(companyId, input) {
+      const server = await createServer(companyId, input);
+      const job = await createJob({ companyId, serverId: server.id, kind: "onboard", createdBy: input.createdBy });
+      return { server, job };
     },
-    async claimNext() {
-      const job = store.jobs.find((j: any) => j.status === "pending");
+    async createJob(input) { return createJob(input); },
+    async claimNext(companyId: string) {
+      const job = store.jobs.find((j: any) => j.status === "pending" && j.companyId === companyId);
       if (!job) return null;
       job.status = "claimed";
       job.startedAt = new Date().toISOString();
@@ -72,16 +81,23 @@ function createMocks() {
           username: server.username,
           protocol: "ssh",
           passwordSecretKey: server.passwordSecretKey,
+          keepPassword: server.keepPassword ?? false,
           accessKeySecretKey: server.accessKeySecretKey,
           hostKeyFingerprint: server.hostKeyFingerprint,
         },
         steps: ["access", "harden", "agent", "docker", "ready"],
         options: {
-          keepPassword: false,
+          keepPassword: server.keepPassword ?? false,
           installDocker: true,
           role: "build-runner",
         },
       };
+    },
+    async consumeClaimSecrets(companyId, jobId) {
+      const job = store.jobs.find((j: any) => j.id === jobId && j.companyId === companyId);
+      if (!job || job.secretConsumed) return false;
+      job.secretConsumed = true;
+      return true;
     },
     async getJobById(jobId) {
       return store.jobs.find((j: any) => j.id === jobId) ?? null;
@@ -95,8 +111,8 @@ function createMocks() {
     async getServerById(companyId, serverId) {
       return store.servers.find((s: any) => s.id === serverId && s.companyId === companyId) ?? null;
     },
-    async updateJob(jobId, patch) {
-      const job = store.jobs.find((j: any) => j.id === jobId);
+    async updateJob(companyId, jobId, patch) {
+      const job = store.jobs.find((j: any) => j.id === jobId && j.companyId === companyId);
       if (!job) return null;
       if (patch.status !== undefined) job.status = patch.status;
       if (patch.step !== undefined) job.step = patch.step;
@@ -226,7 +242,7 @@ describe("SERVER-ONBOARD logic", () => {
     });
 
     // 2. Claim
-    const claim = await service.claim("valid-executor-token");
+    const claim = await service.claim("company-1", "valid-executor-token");
     expect(claim).not.toBeNull();
     expect(claim?.job.id).toBe("job-1");
     expect(claim?.secretValues.bootstrapPassword).toBe("pwd-1");
@@ -241,6 +257,7 @@ describe("SERVER-ONBOARD logic", () => {
     };
 
     const jobAfterReport = await service.report("valid-executor-token", {
+      companyId: "company-1",
       jobId: "job-1",
       entry: stepEntry,
     });
@@ -252,6 +269,7 @@ describe("SERVER-ONBOARD logic", () => {
 
     // 4. Report final success
     const finalJob = await service.report("valid-executor-token", {
+      companyId: "company-1",
       jobId: "job-1",
       status: "succeeded",
       hostKeyFingerprint: "SHA256:fingerprint",
@@ -260,6 +278,25 @@ describe("SERVER-ONBOARD logic", () => {
     expect(finalJob?.status).toBe("succeeded");
     expect(store.servers[0].onboardState).toBe("ready");
     expect(store.servers[0].hostKeyFingerprint).toBe("SHA256:fingerprint");
+  });
+
+  it("claims only the requested company and consumes a claim secret once", async () => {
+    const { mockStore, mockSecrets, mockGetServer, store } = createMocks();
+    const service = onboardService(null as any, { store: mockStore, settings: mockSettings, secrets: mockSecrets, getServer: mockGetServer });
+    await service.addServer({ companyId: "company-a", slug: "tenant-a", name: "A", hostname: "192.0.2.4", port: 22, username: "root", role: "generic", keepPassword: false, auth: { type: "password", password: "pwd-a" }, createdBy: null });
+    await service.addServer({ companyId: "company-b", slug: "tenant-b", name: "B", hostname: "192.0.2.5", port: 22, username: "root", role: "generic", keepPassword: false, auth: { type: "password", password: "pwd-b" }, createdBy: null });
+    const claim = await service.claim("company-b", "valid-executor-token");
+    expect(claim?.job.companyId).toBe("company-b");
+    await expect(service.claim("company-b", "valid-executor-token")).rejects.toThrow("already been consumed");
+  });
+
+  it("persists the password-retention choice and deletes only when not retained", async () => {
+    const { mockStore, mockSecrets, mockGetServer, secretsStore, store } = createMocks();
+    const service = onboardService(null as any, { store: mockStore, settings: mockSettings, secrets: mockSecrets, getServer: mockGetServer });
+    await service.addServer({ companyId: "company-1", slug: "retained", name: "Retained", hostname: "192.0.2.3", port: 22, username: "root", role: "generic", keepPassword: true, auth: { type: "password", password: "pwd-retained" }, createdBy: "actor-1" });
+    expect(store.servers[0].keepPassword).toBe(true);
+    await service.report("valid-executor-token", { companyId: "company-1", jobId: "job-1", entry: { step: "access", startedAt: new Date().toISOString(), finishedAt: new Date().toISOString(), result: "ok", detail: null } });
+    expect(secretsStore["fleet/retained/bootstrap-password"]).toBe("pwd-retained");
   });
 
   it("can start subsequent job", async () => {

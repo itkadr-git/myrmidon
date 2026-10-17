@@ -24,6 +24,7 @@ export const myrmidonFleetServers = pgTable(
     username: text("username").notNull().default("fleet-console"),
     /** Panel secret key that holds the node password; null means key auth. */
     passwordSecretKey: text("password_secret_key"),
+    keepPassword: boolean("keep_password").notNull().default(false),
     description: text("description"),
     enabled: boolean("enabled").notNull().default(true),
     // myrmidon(SERVER-ONBOARD A): onboarding state, role, host-key pinning and
@@ -66,6 +67,7 @@ export const myrmidonFleetOnboardJobs = pgTable(
     status: text("status").notNull().default("pending"),
     step: text("step"),
     stepLog: jsonb("step_log").notNull().default(sql`'[]'::jsonb`),
+    secretConsumedAt: timestamp("secret_consumed_at", { withTimezone: true }),
     error: text("error"),
     createdBy: text("created_by"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),

@@ -61,12 +61,13 @@ export interface OnboardJobClaim {
 export interface FleetOnboardStore {
   createJob(input: { companyId: string; serverId: string; kind: OnboardJobKind; createdBy: string | null }): Promise<OnboardJob>;
   getJob(companyId: string, jobId: string): Promise<OnboardJob | null>;
-  /** Company-less lookup for the executor report path (token-authenticated). */
   getJobById(jobId: string): Promise<OnboardJob | null>;
   listJobs(companyId: string, serverId?: string): Promise<OnboardJob[]>;
   /** Atomically move pending→claimed and hand the executor its work. */
-  claimNext(): Promise<OnboardJobClaim | null>;
+  claimNext(companyId: string): Promise<OnboardJobClaim | null>;
+  consumeClaimSecrets(companyId: string, jobId: string): Promise<boolean>;
   updateJob(
+    companyId: string,
     jobId: string,
     patch: { status?: OnboardJobStatus; step?: string | null; stepLogEntry?: OnboardStepLogEntry; error?: string | null },
   ): Promise<OnboardJob | null>;
@@ -83,8 +84,10 @@ export interface FleetOnboardStore {
       role: string;
       passwordSecretKey: string | null;
       accessKeySecretKey: string | null;
+      keepPassword: boolean;
     },
   ): Promise<OnboardServerRow>;
+  createServerAndJob(companyId: string, input: { slug: string; name: string; hostname: string; port: number; username: string; role: string; passwordSecretKey: string | null; accessKeySecretKey: string | null; keepPassword: boolean; createdBy: string | null }): Promise<{ server: OnboardServerRow; job: OnboardJob }>;
   getServerById(companyId: string, serverId: string): Promise<OnboardServerRow | null>;
   /** Registry row by slug, for the add-server uniqueness check. */
   getServerBySlug(companyId: string, slug: string): Promise<{ id: string } | null>;
@@ -173,7 +176,7 @@ export function fleetOnboardStore(db: Db): FleetOnboardStore {
       const row = await db
         .select()
         .from(myrmidonFleetOnboardJobs)
-        .where(eq(myrmidonFleetOnboardJobs.id, jobId))
+        .where(and(eq(myrmidonFleetOnboardJobs.companyId, companyId), eq(myrmidonFleetOnboardJobs.id, jobId)))
         .then((rows) => rows[0] ?? null);
       return row ? toJob(row) : null;
     },
@@ -191,11 +194,11 @@ export function fleetOnboardStore(db: Db): FleetOnboardStore {
       return rows.map(toJob);
     },
 
-    async claimNext() {
+    async claimNext(companyId) {
       const rows = await db.execute(sql`
         WITH next_job AS (
           SELECT id FROM myrmidon_fleet_onboard_jobs
-          WHERE status = 'pending'
+          WHERE status = 'pending' AND company_id = ${companyId}::uuid
           ORDER BY created_at ASC
           LIMIT 1
           FOR UPDATE SKIP LOCKED
@@ -217,7 +220,7 @@ export function fleetOnboardStore(db: Db): FleetOnboardStore {
       const server = await db
         .select()
         .from(myrmidonFleetServers)
-        .where(eq(myrmidonFleetServers.id, job.serverId))
+        .where(and(eq(myrmidonFleetServers.companyId, companyId), eq(myrmidonFleetServers.id, job.serverId)))
         .then((r) => r[0]);
       if (!server) return null;
       return {
@@ -230,19 +233,28 @@ export function fleetOnboardStore(db: Db): FleetOnboardStore {
           username: server.username,
           protocol: server.protocol,
           passwordSecretKey: server.passwordSecretKey,
+          keepPassword: server.keepPassword,
           accessKeySecretKey: server.accessKeySecretKey,
           hostKeyFingerprint: server.hostKeyFingerprint,
         },
         steps: ["connect", "preflight", "access", "verify"],
-        options: { keepPassword: true, installDocker: false, role: server.role },
+        options: { keepPassword: server.keepPassword, installDocker: false, role: server.role },
       };
     },
 
-    async updateJob(jobId, patch) {
+    async consumeClaimSecrets(companyId, jobId) {
+      const rows = await db.update(myrmidonFleetOnboardJobs)
+        .set({ secretConsumedAt: new Date() })
+        .where(and(eq(myrmidonFleetOnboardJobs.id, jobId), eq(myrmidonFleetOnboardJobs.companyId, companyId), eq(myrmidonFleetOnboardJobs.status, "claimed"), sql`${myrmidonFleetOnboardJobs.secretConsumedAt} IS NULL`))
+        .returning({ id: myrmidonFleetOnboardJobs.id });
+      return rows.length === 1;
+    },
+
+    async updateJob(companyId, jobId, patch) {
       const current = await db
         .select()
         .from(myrmidonFleetOnboardJobs)
-        .where(eq(myrmidonFleetOnboardJobs.id, jobId))
+        .where(and(eq(myrmidonFleetOnboardJobs.companyId, companyId), eq(myrmidonFleetOnboardJobs.id, jobId)))
         .then((r) => r[0] ?? null);
       if (!current) return null;
       const log: OnboardStepLogEntry[] = Array.isArray(current.stepLog) ? (current.stepLog as OnboardStepLogEntry[]) : [];
@@ -258,7 +270,7 @@ export function fleetOnboardStore(db: Db): FleetOnboardStore {
           ...(finished ? { finishedAt: new Date() } : {}),
           updatedAt: new Date(),
         })
-        .where(eq(myrmidonFleetOnboardJobs.id, jobId))
+        .where(and(eq(myrmidonFleetOnboardJobs.companyId, companyId), eq(myrmidonFleetOnboardJobs.id, jobId)))
         .returning();
       return row ? toJob(row) : null;
     },
@@ -290,6 +302,7 @@ export function fleetOnboardStore(db: Db): FleetOnboardStore {
           protocol: "ssh",
           username: input.username,
           passwordSecretKey: input.passwordSecretKey,
+          keepPassword: input.keepPassword,
           accessKeySecretKey: input.accessKeySecretKey,
           role: input.role,
           onboardState: "new",
@@ -302,6 +315,14 @@ export function fleetOnboardStore(db: Db): FleetOnboardStore {
         })
         .returning();
       return toServer(row!);
+    },
+
+    async createServerAndJob(companyId, input) {
+      return db.transaction(async (tx) => {
+        const [serverRow] = await tx.insert(myrmidonFleetServers).values({ companyId, slug: input.slug, name: input.name, hostname: input.hostname, port: input.port, protocol: "ssh", username: input.username, passwordSecretKey: input.passwordSecretKey, keepPassword: input.keepPassword, accessKeySecretKey: input.accessKeySecretKey, role: input.role, onboardState: "new", bootstrapVersion: ONBOARD_BOOTSTRAP_VERSION }).returning();
+        const [jobRow] = await tx.insert(myrmidonFleetOnboardJobs).values({ companyId, serverId: serverRow!.id, kind: "onboard", status: "pending", createdBy: input.createdBy }).returning();
+        return { server: toServer(serverRow!), job: toJob(jobRow!) };
+      });
     },
 
     async getServerById(companyId, serverId) {
