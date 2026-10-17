@@ -1,6 +1,8 @@
 export interface ExternalSessionSchedulerOptions {
   /** Maximum active sessions for the same credential/account. */
   concurrencyPerCredential: number;
+  /** Accept an opaque, company-owned registry reference, never a credential secret. */
+  authorizeCredential?: (credentialId: string) => Promise<boolean> | boolean;
 }
 
 export interface ExternalSessionSchedulerSnapshot {
@@ -20,16 +22,21 @@ export class ExternalSessionScheduler {
   private readonly active = new Map<string, number>();
   private readonly queues = new Map<string, QueueEntry<unknown>[]>();
   private readonly concurrencyPerCredential: number;
+  private readonly authorizeCredential: (credentialId: string) => Promise<boolean> | boolean;
 
   constructor(options: ExternalSessionSchedulerOptions) {
     if (!Number.isInteger(options.concurrencyPerCredential) || options.concurrencyPerCredential < 1) {
       throw new Error("concurrencyPerCredential must be a positive integer");
     }
     this.concurrencyPerCredential = options.concurrencyPerCredential;
+    this.authorizeCredential = options.authorizeCredential ?? (() => true);
   }
 
-  schedule<T>(credentialId: string, run: () => Promise<T>): Promise<T> {
-    if (!credentialId.trim()) return Promise.reject(new Error("credentialId is required"));
+  async schedule<T>(credentialId: string, run: () => Promise<T>): Promise<T> {
+    if (!credentialId.trim()) throw new Error("credentialId is required");
+    if (!(await this.authorizeCredential(credentialId))) {
+      throw new Error("credentialId is not authorized");
+    }
 
     return new Promise<T>((resolve, reject) => {
       const queue = this.queues.get(credentialId) ?? [];

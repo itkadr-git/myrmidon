@@ -61,4 +61,28 @@ describe("ExternalSessionScheduler", () => {
     const scheduler = new ExternalSessionScheduler({ concurrencyPerCredential: 1 });
     await expect(scheduler.schedule(" ", async () => undefined)).rejects.toThrow("credentialId is required");
   });
+
+  it("authorizes an opaque credential reference before starting work", async () => {
+    const authorizeCredential = vi.fn((credentialId: string) => credentialId === "company-credential-1");
+    const run = vi.fn(async () => "started");
+    const scheduler = new ExternalSessionScheduler({ concurrencyPerCredential: 1, authorizeCredential });
+
+    await expect(scheduler.schedule("other-company-credential", run)).rejects.toThrow("credentialId is not authorized");
+    expect(run).not.toHaveBeenCalled();
+    await expect(scheduler.schedule("company-credential-1", run)).resolves.toBe("started");
+    expect(authorizeCredential).toHaveBeenCalledTimes(2);
+    expect(run).toHaveBeenCalledOnce();
+  });
+
+  it("rejects authorization failures without queueing or starting work", async () => {
+    const run = vi.fn(async () => "started");
+    const scheduler = new ExternalSessionScheduler({
+      concurrencyPerCredential: 1,
+      authorizeCredential: async () => { throw new Error("registry unavailable"); },
+    });
+
+    await expect(scheduler.schedule("company-credential-1", run)).rejects.toThrow("registry unavailable");
+    expect(run).not.toHaveBeenCalled();
+    expect(scheduler.snapshot()).toEqual({ activeByCredential: {}, queuedByCredential: {} });
+  });
 });
