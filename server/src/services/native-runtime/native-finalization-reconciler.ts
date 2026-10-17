@@ -30,6 +30,8 @@ import {
   NativeStatusRaceError,
 } from "./status-decision-committer.js";
 import { issueRecoveryActionService } from "../issue-recovery-actions.js";
+// myrmidon(1.6.1 OPE-3983): the ambiguous-state block carries the recovery-liveness reasonRef.
+import { recoveryLivenessDescriptor } from "../../myrmidon/stale-block/event-keys.js";
 import { issueService } from "../issues.js";
 import { emitAgentTaskRun } from "../agent-task-run-telemetry.js";
 import { reportRunFailure } from "../run-failure-report.js";
@@ -469,7 +471,15 @@ export async function claimNativeSessionResumptions(input: {
           updatedRun && updatedRun.status !== row.run.status ? updatedRun : null;
         await issueService(tx as unknown as Db).update(
           row.coordinator.issueId,
-          { status: "blocked" },
+          {
+            status: "blocked",
+            // myrmidon(1.6.1 OPE-3983): the watchdog incident upserted right
+            // below is the liveness oracle the stale-block sweep judges.
+            unblockDescriptor: recoveryLivenessDescriptor(
+              row.coordinator.issueId,
+              "Inspect the original provider failure and explicitly resolve recovery; do not open a duplicate provider session.",
+            ),
+          },
           tx,
         );
         await issueRecoveryActionService(tx as unknown as Db).upsertSourceScoped({
