@@ -232,7 +232,8 @@ describe("OPE-8137: board/fleetd path operates without /host or docker.sock", ()
     expect(() => parseFleetdEndpoint("unix:///var/run/docker.sock")).toThrow(/must be http:\/\//);
     expect(() => parseFleetdEndpoint("file:///host/dev")).toThrow(/must be http:\/\//);
     expect(() => parseFleetdEndpoint("https://fleetd.example.com")).toThrow(/must be http:\/\//);
-    expect(() => parseFleetdEndpoint("http://fleetd.example.com:99999")).toThrow(/port is invalid/);
+    expect(() => parseFleetdEndpoint("http://fleetd.example.com:0")).toThrow(/port is invalid/);
+    expect(() => parseFleetdEndpoint("http://fleetd.example.com:99999")).toThrow();
   });
 });
 
@@ -271,34 +272,34 @@ describe("OPE-8137: fleet routing completely isolates fleet-placed bots from loc
 
     const fleetCalls: string[] = [];
     const fleetDriver: BotContainerDriver = {
-      status: vi.fn(async (botKey) => {
+      status: vi.fn(async (botKey: string) => {
         fleetCalls.push(`status:${botKey}`);
-        return { botKey, state: "running" };
+        return { botKey, state: "running" as const };
       }),
       list: vi.fn(async () => {
         fleetCalls.push("list");
-        return [{ botKey: "bot-fleet", state: "running" }];
+        return [{ botKey: "bot-fleet", state: "running" as const }];
       }),
-      templateDrift: vi.fn(async (spec) => {
+      templateDrift: vi.fn(async (spec: BotContainerSpec) => {
         fleetCalls.push(`drift:${spec.botKey}`);
         return { drifted: false, fields: [] };
       }),
-      create: vi.fn(async (spec) => {
+      create: vi.fn(async (spec: BotContainerSpec) => {
         fleetCalls.push(`create:${spec.botKey}`);
       }),
-      recreate: vi.fn(async (spec) => {
+      recreate: vi.fn(async (spec: BotContainerSpec) => {
         fleetCalls.push(`recreate:${spec.botKey}`);
       }),
-      writeProfile: vi.fn(async (botKey) => {
+      writeProfile: vi.fn(async (botKey: string) => {
         fleetCalls.push(`writeProfile:${botKey}`);
       }),
-      start: vi.fn(async (botKey) => {
+      start: vi.fn(async (botKey: string) => {
         fleetCalls.push(`start:${botKey}`);
       }),
-      restart: vi.fn(async (botKey) => {
+      restart: vi.fn(async (botKey: string) => {
         fleetCalls.push(`restart:${botKey}`);
       }),
-      stop: vi.fn(async (botKey) => {
+      stop: vi.fn(async (botKey: string) => {
         fleetCalls.push(`stop:${botKey}`);
       }),
     };
@@ -346,7 +347,7 @@ describe("OPE-8137: fleet routing completely isolates fleet-placed bots from loc
 
   it("throws clear configuration error when an unknown fleet host is requested, without fallback or host probes", async () => {
     const localDriver: BotContainerDriver = {
-      status: vi.fn(async () => ({ botKey: "b", state: "running" })),
+      status: vi.fn(async () => ({ botKey: "b", state: "running" as const })),
       list: vi.fn(async () => []),
       templateDrift: vi.fn(async () => ({ drifted: false, fields: [] })),
       create: vi.fn(async () => {}),
@@ -474,8 +475,8 @@ describe("OPE-8137: disabled flags and fail-safe boundaries", () => {
             throw new Error("compile must not be called");
           }) as any,
           maintenance: {
-            enter: async () => ({ state: "on", runningRuns: 0, owned: true }),
-            status: async () => ({ state: "on", runningRuns: 0 }),
+            enter: async () => ({ state: "on" as const, runningRuns: 0, owned: true }),
+            status: async () => ({ state: "on" as const, runningRuns: 0 }),
             exit: async () => {},
           },
           network: "net",
@@ -534,7 +535,7 @@ describe("OPE-8137: disabled flags and fail-safe boundaries", () => {
 
     // Writable extra mount is forbidden
     expect(() =>
-      validateExtraMounts([{ source: "/srv/allowed", containerPath: "/mnt/allowed", readOnly: false }], allowedSources),
+      validateExtraMounts([{ source: "/srv/allowed", containerPath: "/mnt/allowed", readOnly: false as unknown as true }], allowedSources),
     ).toThrow(/must be read-only/);
 
     // Reserved paths cannot be overridden

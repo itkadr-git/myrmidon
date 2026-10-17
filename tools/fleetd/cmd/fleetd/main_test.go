@@ -278,4 +278,3 @@ func TestValidateConfigUpstreamDefaultAndDisabledSafe(t *testing.T) {
 		t.Fatalf("valid config with custom upstream rejected: %v", err)
 	}
 }
-
