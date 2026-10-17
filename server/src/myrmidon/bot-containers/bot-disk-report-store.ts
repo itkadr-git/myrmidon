@@ -27,7 +27,7 @@ export function storeBotDiskReport(botKey: string, report: WsDiskReport, nowMs =
   const entry: BotDiskReportEntry = {
     botKey,
     report,
-    foreignUid: foreignAction ? { path: foreignAction.path, reason: foreignAction.detail ?? "permission denied" } : null,
+    foreignUid: report.foreignUid ?? (foreignAction ? { path: foreignAction.path, reason: foreignAction.detail ?? "permission denied" } : null),
     receivedAt: new Date(nowMs).toISOString(),
   };
   reports.set(botKey, entry);

@@ -285,6 +285,10 @@ export function createLoop(deps) {
         copies: g.parts.copies,
         archives: g.parts.archives,
         foreign: g.parts.foreign,
+        foreignUid: g.parts.foreignUid ?? (() => {
+          const action = [...results].reverse().find((item) => /foreign-uid|EACCES|EPERM/i.test(item.detail || ""));
+          return action ? { path: action.path, reason: action.detail || "foreign-uid" } : null;
+        })(),
         actions: results,
       });
       sent = await deps.report.send(report);

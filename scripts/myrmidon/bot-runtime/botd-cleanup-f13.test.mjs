@@ -27,6 +27,7 @@ const { guardedRemove, inside } = await import(lib("remove.js"));
 const { createAttention, createCooldown, DEFAULT_TTL_MS } = await import(lib("cache.js"));
 const { archive, archiveTree, readManifest, retain, retainPass, verifyEntry, FULL_TAR_CAP_BYTES } = await import(lib("archive.js"));
 const { createLoop } = await import(lib("loop.js"));
+const { buildReport } = await import(lib("report.js"));
 const { archiveThenRemove } = await import(lib("legacy.js"));
 
 const KEY = "ABC-123";
@@ -48,6 +49,19 @@ const git = (cwd, ...args) => {
   return r.stdout.trim();
 };
 const at = (iso) => new Date(iso);
+
+describe("botd foreign-owner report", () => {
+  it("keeps the explicit ownership attention outside the truncated action log", () => {
+    const report = buildReport({
+      botKey: "bot-test",
+      at: new Date("2026-10-17T00:00:00Z"),
+      actions: [{ at: "2026-10-17T00:00:00Z", action: "skip", path: "/workspace/ABC-123", result: "skipped", detail: "remove: closing-unpushed — deferred: foreign-uid (EACCES)" }],
+      foreignUid: { path: "/workspace/ABC-123", reason: "EACCES foreign-uid uid 0" },
+    });
+    assert.deepEqual(report.foreignUid, { path: "/workspace/ABC-123", reason: "EACCES foreign-uid uid 0" });
+    assert.equal(report.actions.length, 1);
+  });
+});
 
 /** A copy with one unpushed commit on a branch: the bundle would have real content. */
 function makeRepo(dir) {
