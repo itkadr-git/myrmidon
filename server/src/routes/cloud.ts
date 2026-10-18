@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { notFound } from "../errors.js";
+import { forbidden, HttpError, notFound } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { readProductEnvFrom } from "@paperclipai/shared/env-alias";
 import {

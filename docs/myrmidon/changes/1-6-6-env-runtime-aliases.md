@@ -1,3 +1,8 @@
+---
+divergence-section: Трек 1 — платформа
+settings-section: Track 1 — platform
+---
+
 ## changelog-en
 
 ### DEBRAND runtime environment aliases (OPE-8124)
