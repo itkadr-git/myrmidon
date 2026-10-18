@@ -22,7 +22,9 @@ it("pins the async writer-acquire scanner fail-closed patch", () => {
   assert.match(patch, /raise SidecarScanIncompleteError/);
   assert.match(delta.files.join(" "), /hermes_state_dbfile\.py/);
   assert.match(patch, /myrmidon\(G1\)/);
-  assert.match(delta.reason, /scanner-verdict delta/);
+  assert.match(delta.reason, /worker-owned async writer acquire/);
+  assert.match(patch, /async def acquire_async/);
+  assert.match(patch, /close_all_db_handles_async/);
 });
 
 // The Dockerfile documents, in a comment, that it deliberately does not
@@ -333,6 +335,8 @@ describe("docker/bot-runtime/patches/", () => {
       assert.doesNotMatch(patch, /[\u0400-\u04FF]/, `${file} must be written in English`);
       if (file === "18-async-writer-acquire.patch") {
         assert.match(patch, /class SidecarScanIncompleteError/);
+        assert.match(patch, /async def acquire_async/);
+        assert.match(patch, /close_all_db_handles_async/);
         assert.match(patch, /myrmidon\(G1\)/);
         continue;
       }

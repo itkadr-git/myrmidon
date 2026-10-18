@@ -28,8 +28,14 @@ it("registers the async writer-acquire delta with fail-closed markers", () => {
   const delta = registry.deltas.find((item) => item.id === "18-async-state-db-writer-acquire");
   assert.ok(delta, "delta 18 must remain registered without renumbering older deltas");
   assert.equal(delta.patch, "docker/bot-runtime/patches/18-async-writer-acquire.patch");
-  assert.deepEqual(delta.files, ["hermes_state_dbfile.py", "hermes_state_errors.py", "hermes_state.py", "tests/hermes_state/test_deleted_wal_generation_guard.py"]);
-  assert.match(delta.reason, /scanner-verdict delta/);
+  assert.deepEqual(delta.files, [
+    "hermes_state_dbfile.py", "hermes_state_errors.py", "hermes_state.py", "hermes_state_registry.py",
+    "gateway/session_db_recovery.py", "gateway/session.py", "gateway/session_persistence.py",
+    "gateway/session_recovery.py", "gateway/session_lifecycle.py", "gateway/session_transcript.py",
+    "gateway/run.py", "gateway/run_startup.py", "gateway/run_shutdown.py",
+    "tests/hermes_state/test_deleted_wal_generation_guard.py",
+  ]);
+  assert.match(delta.reason, /worker-owned async writer acquire/);
   assert.match(delta.probe.upstreamMarker, /SidecarScanIncompleteError/);
   assert.match(delta.dropCondition, /complete/);
   const patch = fs.readFileSync(path.join(ROOT, delta.patch), "utf8");
@@ -41,6 +47,9 @@ it("registers the async writer-acquire delta with fail-closed markers", () => {
   assert.match(patch, /class SidecarScanIncompleteError/);
   assert.match(patch, /raise SidecarScanIncompleteError/);
   assert.match(patch, /pytest.raises\(SidecarScanIncompleteError\)/);
+  assert.match(patch, /async def acquire_async/);
+  assert.match(patch, /initialize_writer/);
+  assert.match(patch, /close_all_db_handles_async/);
 });
 
 

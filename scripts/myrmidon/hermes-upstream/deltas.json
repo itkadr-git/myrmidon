@@ -1,5 +1,5 @@
 {
-  "$comment": "Machine-readable delta registry for hermes-agent. Every change we carry on top of the pinned upstream tag lives here with the reason and the condition under which it can be dropped; hermes-upstream-check.mjs compares it against upstream and flags the deltas upstream has caught up with. Docs: docs/myrmidon/hermes-deltas.md. Keep pinnedRef/pinnedVersion in sync with docker/bot-runtime/Dockerfile (the checker fails when they disagree). `source` stays the upstream repository (that is what the pin is compared against); the image itself clones `docker/bot-runtime/Dockerfile`'s HERMES_REPO, our mirror fork — see the 'Not deltas' section of the docs.",
+  "$comment": "Machine-readable delta registry for hermes-agent. Every change we carry on top of the pinned upstream tag lives here with the reason and the condition under which it can be dropped; hermes-upstream-check.mjs compares it against upstream and flags the deltas upstream has caught up with. Docs: docs/myrmidon/hermes-deltas.md. Keep pinnedRef/pinnedVersion in sync with docker/bot-runtime/Dockerfile (the checker fails when they disagree). `source` stays the upstream repository (that is what the pin is compared against); the image itself clones `docker/bot-runtime/Dockerfile`'s HERMES_REPO, our mirror fork \u2014 see the 'Not deltas' section of the docs.",
   "component": "hermes-agent",
   "source": "https://github.com/NousResearch/hermes-agent.git",
   "pinnedRef": "v2026.9.24",
@@ -72,7 +72,7 @@
       "files": [
         "hermes_state.py"
       ],
-      "reason": "Before every state-DB write the gateway probes whether the WAL/SHM generation this handle opened is still on disk. When the handle has no recorded sidecar identity the probe readlinks every open descriptor of the process on the calling thread — the gateway's event loop. A state.db reached through a symlink never records an identity (SQLite puts -wal/-shm next to the link target, so the literal <path>-wal never stats), so a multi-profile gateway with hundreds of descriptors walked /proc/self/fd once per write and starved the out-of-loop liveness watchdog into a hard exit (75), failing every run in flight. Same verdict, at most one walk per second per handle.",
+      "reason": "Before every state-DB write the gateway probes whether the WAL/SHM generation this handle opened is still on disk. When the handle has no recorded sidecar identity the probe readlinks every open descriptor of the process on the calling thread \u2014 the gateway's event loop. A state.db reached through a symlink never records an identity (SQLite puts -wal/-shm next to the link target, so the literal <path>-wal never stats), so a multi-profile gateway with hundreds of descriptors walked /proc/self/fd once per write and starved the out-of-loop liveness watchdog into a hard exit (75), failing every run in flight. Same verdict, at most one walk per second per handle.",
       "dropCondition": "Upstream stops walking /proc/self/fd on the write path: a cached probe verdict, a minimum interval between probes, or the probe moved off the caller's thread.",
       "offer": null,
       "offerNote": "Not offered yet: see the note on delta 02 (publisher-scan wrapper pending).",
@@ -89,7 +89,7 @@
       "files": [
         "agent/file_safety.py"
       ],
-      "reason": "The run harness removes each run's scratch dir at the run boundary. A path remembered mid-session then succeeds again the moment a write tool's folded mkdir -p re-creates the missing paperclip-run-* parent: mode 755, no run-scratch marker file, never reclaimed — unmarked residue in the shared /tmp holding payloads and comment bodies readable to every co-tenant agent in the container. The guard refuses a write whose ancestor is a removed run-scratch root; a live root and dirs outside the class are untouched, and the guard fails open on its own errors.",
+      "reason": "The run harness removes each run's scratch dir at the run boundary. A path remembered mid-session then succeeds again the moment a write tool's folded mkdir -p re-creates the missing paperclip-run-* parent: mode 755, no run-scratch marker file, never reclaimed \u2014 unmarked residue in the shared /tmp holding payloads and comment bodies readable to every co-tenant agent in the container. The guard refuses a write whose ancestor is a removed run-scratch root; a live root and dirs outside the class are untouched, and the guard fails open on its own errors.",
       "dropCondition": "Upstream ships an equivalent guard in agent/file_safety.py / tools/file_operations.py: a write into a removed run-scratch root is refused instead of re-creating it.",
       "offer": null,
       "offerNote": "Not offered yet: see the note on delta 02 (publisher-scan wrapper pending).",
@@ -197,7 +197,7 @@
       "files": [
         "agent/redact.py"
       ],
-      "reason": "A live board key (pcp_ + family + opaque body) reached the delegation live transcript verbatim: every existing matcher in agent/redact.py needs a KEY=, header or JSON-field shape, and transcript prose (subagent result text, CLI echo, error message) carries none of them. Six bare-token prefix patterns — pcp_, pcp_board_, pcp_cli_auth_, pcp_invite_, pcp_bootstrap_, pcp_claim_ — join _PREFIX_PATTERNS so the generic pass masks the key wherever it appears. Bodies are controlled per family: invite tokens are base64url(32 bytes), so the invite pattern takes [A-Za-z0-9_-]{20,} (an alphanumeric-only body silently fails to match whenever a separator lands in the first 20 chars, because the compiled matcher's trailing lookahead forbids ending the run before a '-'/'_'); the other five keep [A-Za-z0-9]{20,} so the short form cannot swallow legitimate pcp_board_-style config slugs. One pattern per family: the engine validator rejects top-level alternation, and one merged grouped alternative would force a single body class on all families; a grouped pcp_(?:board|cli_auth|...)_ prefix would also drop the extracted literal prefix to 'pcp_' only — per-family patterns keep full literal prefixes for the pre-screen.",
+      "reason": "A live board key (pcp_ + family + opaque body) reached the delegation live transcript verbatim: every existing matcher in agent/redact.py needs a KEY=, header or JSON-field shape, and transcript prose (subagent result text, CLI echo, error message) carries none of them. Six bare-token prefix patterns \u2014 pcp_, pcp_board_, pcp_cli_auth_, pcp_invite_, pcp_bootstrap_, pcp_claim_ \u2014 join _PREFIX_PATTERNS so the generic pass masks the key wherever it appears. Bodies are controlled per family: invite tokens are base64url(32 bytes), so the invite pattern takes [A-Za-z0-9_-]{20,} (an alphanumeric-only body silently fails to match whenever a separator lands in the first 20 chars, because the compiled matcher's trailing lookahead forbids ending the run before a '-'/'_'); the other five keep [A-Za-z0-9]{20,} so the short form cannot swallow legitimate pcp_board_-style config slugs. One pattern per family: the engine validator rejects top-level alternation, and one merged grouped alternative would force a single body class on all families; a grouped pcp_(?:board|cli_auth|...)_ prefix would also drop the extracted literal prefix to 'pcp_' only \u2014 per-family patterns keep full literal prefixes for the pre-screen.",
       "dropCondition": "Upstream ships a bare-token prefix family covering the pcp_ key prefixes in agent/redact.py.",
       "offer": null,
       "offerNote": "Not offered yet: see the note on delta 02 (publisher-scan wrapper pending). The pattern family is board-specific anyway; the general defect upstream owns is that no bare-token pass exists for vendor prefixes outside its list.",
@@ -214,7 +214,7 @@
       "files": [
         "tools/delegation_live_log.py"
       ],
-      "reason": "LiveTranscriptWriter created task-N.log with path.write_text(), i.e. 0o644 & ~umask — world-readable under the image's umask 022. The transcripts live in a shared bot container under HERMES_HOME/delegation/live/ and survive 7 days, so any co-tenant process could read them; combined with the missing pcp_ redaction (delta 12) a live board key was readable container-wide. The header write now goes through tempfile.mkstemp(dir=...) + os.replace, which creates the file 0o600 without a mode argument, so there is no chmod race and no world-readable window; later event() appends touch an existing 0o600 file.",
+      "reason": "LiveTranscriptWriter created task-N.log with path.write_text(), i.e. 0o644 & ~umask \u2014 world-readable under the image's umask 022. The transcripts live in a shared bot container under HERMES_HOME/delegation/live/ and survive 7 days, so any co-tenant process could read them; combined with the missing pcp_ redaction (delta 12) a live board key was readable container-wide. The header write now goes through tempfile.mkstemp(dir=...) + os.replace, which creates the file 0o600 without a mode argument, so there is no chmod race and no world-readable window; later event() appends touch an existing 0o600 file.",
       "dropCondition": "Upstream creates delegation live transcripts owner-only (0o600).",
       "offer": null,
       "offerNote": "Not offered yet: see the note on delta 02 (publisher-scan wrapper pending). This one is a generic security fix worth offering on its own once the publish path exists.",
@@ -307,10 +307,20 @@
         "hermes_state_dbfile.py",
         "hermes_state_errors.py",
         "hermes_state.py",
+        "hermes_state_registry.py",
+        "gateway/session_db_recovery.py",
+        "gateway/session.py",
+        "gateway/session_persistence.py",
+        "gateway/session_recovery.py",
+        "gateway/session_lifecycle.py",
+        "gateway/session_transcript.py",
+        "gateway/run.py",
+        "gateway/run_startup.py",
+        "gateway/run_shutdown.py",
         "tests/hermes_state/test_deleted_wal_generation_guard.py"
       ],
-      "reason": "Fail closed when Linux /proc visibility is incomplete: writer-open must not interpret an empty or partial holder scan as CLEAN_COMPLETE. This scanner-verdict delta is only a prerequisite; the OPE-7854 A-G async lifecycle contract is not implemented here.",
-      "dropCondition": "Upstream distinguishes complete from indeterminate sidecar scans and refuses writer-open unless a complete scan confirms no holders; lifecycle deltas for contract OPE-7854 A-G are tracked separately.",
+      "reason": "worker-owned async writer acquire: one awaited scan, connect and registry/cache ownership transaction. Includes full OPE-7854 lifecycle A-G implementation.",
+      "dropCondition": "Upstream implements the complete OPE-7854 A-G contract: strict complete scanner verdict before every writer connect, one shared sync/async registry, cancellation-safe ownership and cache drain, async lazy profile/routing/recovery opens, and awaited gateway startup/shutdown lifecycle.",
       "offer": null,
       "offerNote": "Not offered yet: publisher-scan wrapper is not available.",
       "probe": {
