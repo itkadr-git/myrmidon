@@ -32,9 +32,17 @@ settings-section: 1.6.6 — GOOGLE-AI-CONNECT-UI: Google AI Pro subscription con
   `GET /v1/health`; when the session flips to stale, the screen shows
   "expired" and the owner gets a plain question in the Telegram channel from
   the notifier, with the reconnection instruction. The bridge contract is the
-  frozen one (bridge 8080, MCP 127.0.0.1:18081→8081, `/v1/generate`,
-  `/v1/jobs/{id}`, `/v1/health`, errors session_stale / video_disabled /
-  job_not_found / quota_* / transport_error).
+  frozen one (`/v1/generate`, `/v1/jobs/{id}`, `/v1/health`, errors session_stale /
+  video_disabled / job_not_found / quota_* / transport_error). The agent-facing
+  tools are supplied by the separate `google-ai-mcp` connector, not by the board
+  UI; image results are paths in the agent workspace. For text-only agent-model
+  use, the bridge additionally exposes dynamically discovered `/v1/models` and
+  OpenAI-compatible `/v1/chat/completions`: streaming is explicitly unsupported
+  (`501 not_implemented`), and an expired subscription returns `session_stale`.
+  Agent model selection is available only when the provider/model is configured
+  in the board; expiration does not promise automatic fallback to another model.
+  Tell the owner to reconnect the session and report the failure, rather than
+  retrying repeatedly.
 
 ## changelog-ru
 
