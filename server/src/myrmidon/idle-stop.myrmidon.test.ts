@@ -44,6 +44,7 @@ describe('IdleStopService', () => {
     mockDriver = {
       status: vi.fn(),
       stop: vi.fn(),
+      stopIdle: vi.fn(),
       start: vi.fn(),
       list: vi.fn(),
       templateDrift: vi.fn(),
