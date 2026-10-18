@@ -246,7 +246,12 @@
     "agentView": "Вид агентов",
     "live": "В работе",
     "liveCount": "В работе ({{count}})",
-    "sandbox": "Песочница"
+    "sandbox": "Песочница",
+    "scopeCompany": "Компания",
+    "scopeCompanyNamed": "Компания: {{name}}",
+    "filterRole": "Роль",
+    "filterModel": "Модель",
+    "filterAll": "Все"
   },
   "inbox": {
     "title": "Входящие",
