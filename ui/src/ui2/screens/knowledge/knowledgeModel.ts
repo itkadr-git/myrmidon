@@ -126,7 +126,7 @@ function isDescendant(
   let current: KnowledgeTreeNode | undefined = candidate;
   for (let step = 0; step <= nodes.size && current; step += 1) {
     if (current === node) return true;
-    const parentSlug = current.item.parentSlug;
+    const parentSlug: string | null | undefined = current.item.parentSlug;
     current = parentSlug
       ? nodes.get(treeKey(current.item.spaceKey, parentSlug))
       : undefined;
