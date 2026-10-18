@@ -340,7 +340,6 @@ describe("myrmidon(1.6.6 KNOWLEDGE-2.0 K-1) module hygiene", () => {
       "seed-product.ts", "seed.ts", "service.ts", "store.ts",
     ]);
   });
-  });
 
   for (const name of sources) {
     it(`${name} contains no raw dialect SQL and no triggers`, () => {
