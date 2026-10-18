@@ -20,6 +20,12 @@ function withEnv(env: Record<string, string>) {
 }
 
 describe("readAboutBuildInfo", () => {
+  it("accepts canonical build stamps before their legacy aliases", () => {
+    expect(resolveAboutVersion({ MYRMIDON_BUILD_VERSION: "9.8.7" })).toBe("9.8.7");
+    expect(resolveAboutVersion({ PAPERCLIP_BUILD_VERSION: "9.8.7" })).toBe("9.8.7");
+    expect(resolveAboutVersion({ MYRMIDON_BUILD_VERSION: "9.8.7", PAPERCLIP_BUILD_VERSION: "1.2.3" })).toBe("9.8.7");
+  });
+
   it("reports the stamped release version, commit, build date and vendor base", () => {
     withEnv({
       PAPERCLIP_BUILD_VERSION: "1.2.1",
