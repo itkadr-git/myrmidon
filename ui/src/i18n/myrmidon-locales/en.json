@@ -246,7 +246,12 @@
     "agentView": "Agent view",
     "live": "Live",
     "liveCount": "Live ({{count}})",
-    "sandbox": "Sandbox"
+    "sandbox": "Sandbox",
+    "scopeCompany": "Company",
+    "scopeCompanyNamed": "Company: {{name}}",
+    "filterRole": "Role",
+    "filterModel": "Model",
+    "filterAll": "All"
   },
   "inbox": {
     "title": "Inbox",
