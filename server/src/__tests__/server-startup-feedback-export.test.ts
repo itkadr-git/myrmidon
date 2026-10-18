@@ -659,6 +659,8 @@ describe("startServer feedback export wiring", () => {
 
   it("does not create heartbeat recovery, execution-control interval, or background sweeps in the api role", async () => {
     const originalRole = process.env.PAPERCLIP_PROCESS_ROLE;
+    const originalMigrations = inspectMigrationsMock.getMockImplementation();
+    inspectMigrationsMock.mockResolvedValue({ status: "upToDate", appliedMigrations: [] });
     process.env.PAPERCLIP_PROCESS_ROLE = "api";
     loadConfigMock.mockReturnValue(buildTestConfig({ heartbeatSchedulerEnabled: true }));
     existingSettingsRows.push({
@@ -695,6 +697,8 @@ describe("startServer feedback export wiring", () => {
       setIntervalSpy.mockRestore();
       if (originalRole === undefined) delete process.env.PAPERCLIP_PROCESS_ROLE;
       else process.env.PAPERCLIP_PROCESS_ROLE = originalRole;
+      if (originalMigrations) inspectMigrationsMock.mockImplementation(originalMigrations);
+      else inspectMigrationsMock.mockReset();
     }
   });
 
