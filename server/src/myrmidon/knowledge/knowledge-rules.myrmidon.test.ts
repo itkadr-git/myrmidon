@@ -49,6 +49,8 @@ function revision(over: Partial<KnowledgeRevisionDto> & { id: string; itemId: st
   return {
     revisionNumber: 1,
     status: "approved",
+    lang: "ru",
+    translationOf: null,
     content: "text",
     changeSummary: null,
     rolledBackFromRevisionId: null,
@@ -58,6 +60,8 @@ function revision(over: Partial<KnowledgeRevisionDto> & { id: string; itemId: st
     createdAt: "2026-10-10T00:00:00.000Z",
     sources: [],
     ...over,
+    lang: over.lang ?? "ru",
+    translationOf: over.translationOf !== undefined ? over.translationOf : null,
   };
 }
 
