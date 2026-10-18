@@ -19,7 +19,8 @@ import {
   ownerDeliveryAllowsCard,
   type OwnerDeliveryMode,
 } from "@paperclipai/shared";
-import { telegramConversationUserId } from "../agent-chat-bridge/identity.js";
+// myrmidon(1.6.6 CH-CONNECTOR-D): the conversation key comes through the seam.
+import { telegramConversationUserId } from "../channel-connectors/bridge/identity.js";
 
 /** Bindings the owner-delivery extension may hand back to the publication path. */
 export interface OwnerDeliveryBinding {
