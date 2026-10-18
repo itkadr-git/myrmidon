@@ -6,13 +6,18 @@
 package main
 
 import (
+	"crypto/subtle"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
+	"time"
 )
 
 // botStatus is the driver contract's BotContainerStatus.
@@ -54,11 +59,19 @@ type profile struct {
 // config is the JSON configuration (see docs/myrmidon/fleetd-vmexec.md).
 // Unknown keys are rejected at load time, the same discipline as dockergate.
 type config struct {
-	Listen   string        `json:"listen"`
-	Token    string        `json:"token"`
-	Upstream string        `json:"upstream"`
-	Bots     []bot         `json:"bots"`
-	Memory   *memoryConfig `json:"memory,omitempty"`
+	Listen           string        `json:"listen"`
+	Token            string        `json:"token"`
+	Upstream         string        `json:"upstream"`
+	SiteCA           string        `json:"siteCA,omitempty"`
+	ServerCert       string        `json:"serverCert,omitempty"`
+	ServerKey        string        `json:"serverKey,omitempty"`
+	Version          string        `json:"version,omitempty"`
+	DockerAPIVersion string        `json:"dockerApiVersion,omitempty"`
+	VolumeRoot       string        `json:"volumeRoot,omitempty"`
+	Network          string        `json:"network,omitempty"`
+	Images           []string      `json:"images,omitempty"`
+	Bots             []bot         `json:"bots"`
+	Memory           *memoryConfig `json:"memory,omitempty"`
 }
 
 type bot struct {
@@ -107,13 +120,26 @@ func main() {
 	if cfg.Memory != nil && cfg.Memory.Enabled && err != nil {
 		log.Fatalf("config is invalid: %v", err)
 	}
-	srv := &server{cfg: &cfg, memory: memory}
+	srv := &server{cfg: &cfg, memory: memory, docker: newDockerClient(&cfg)}
+	http.HandleFunc("/health", srv.requireAuth(srv.health))
 	http.HandleFunc("/v1/bots", srv.requireAuth(srv.list))
 	http.HandleFunc("/v1/bots/", srv.requireAuth(srv.route))
 	http.HandleFunc("/v1/memory/recall", srv.requireAuth(srv.memoryRecall))
 	http.HandleFunc("/v1/memory/retain", srv.requireAuth(srv.memoryRetain))
 	log.Printf("fleetd listening on %s", cfg.Listen)
-	log.Fatal(http.ListenAndServe(cfg.Listen, nil))
+	if cfg.SiteCA == "" || cfg.ServerCert == "" || cfg.ServerKey == "" {
+		log.Fatal("siteCA, serverCert and serverKey are required for mTLS")
+	}
+	caPEM, err := os.ReadFile(cfg.SiteCA)
+	if err != nil {
+		log.Fatalf("read site CA: %v", err)
+	}
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(caPEM) {
+		log.Fatal("site CA has no valid certificates")
+	}
+	srvHTTP := &http.Server{Addr: cfg.Listen, Handler: http.DefaultServeMux, ReadHeaderTimeout: 10 * time.Second, TLSConfig: &tls.Config{MinVersion: tls.VersionTLS13, ClientAuth: tls.RequireAndVerifyClientCert, ClientCAs: pool}}
+	log.Fatal(srvHTTP.ListenAndServeTLS(cfg.ServerCert, cfg.ServerKey))
 }
 
 func validate(cfg *config) error {
@@ -168,6 +194,7 @@ func (c c) in(set string) bool { return strings.ContainsRune(set, rune(c)) }
 type server struct {
 	cfg    *config
 	memory *memoryClient
+	docker *dockerClient
 }
 
 func (s *server) memoryRecall(w http.ResponseWriter, r *http.Request) {
@@ -225,7 +252,7 @@ func (s *server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		auth := r.Header.Get("Authorization")
 		const prefix = "Bearer "
-		if len(auth) <= len(prefix) || auth[:len(prefix)] != prefix || auth[len(prefix):] != s.cfg.Token {
+		if len(auth) <= len(prefix) || auth[:len(prefix)] != prefix || len(auth[len(prefix):]) != len(s.cfg.Token) || subtle.ConstantTimeCompare([]byte(auth[len(prefix):]), []byte(s.cfg.Token)) != 1 {
 			http.Error(w, "invalid_token", http.StatusUnauthorized)
 			return
 		}
@@ -234,6 +261,14 @@ func (s *server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 }
 
 // list answers GET /v1/bots.
+func (s *server) health(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method_not_allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	writeJSON(w, map[string]any{"version": s.cfg.Version, "managedContainers": len(s.cfg.Bots), "timestamp": time.Now().UTC(), "cpu": map[string]any{}, "ram": map[string]any{}, "disk": map[string]any{}})
+}
+
 func (s *server) list(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method_not_allowed", http.StatusMethodNotAllowed)
@@ -262,7 +297,85 @@ func (s *server) route(w http.ResponseWriter, r *http.Request) {
 	}
 	switch {
 	case action == "status" && r.Method == http.MethodGet:
-		writeJSON(w, botStatus{BotKey: botKey, State: "missing"})
+		status, err := s.docker.status(r.Context(), botKey)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+		writeJSON(w, status)
+	case action == "logs" && r.Method == http.MethodGet:
+		logs, err := s.docker.logs(r.Context(), botKey)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+		writeJSON(w, map[string]string{"logs": logs})
+	case action == "create" && r.Method == http.MethodPost:
+		var sp spec
+		if err := decodeBody(r, &sp); err != nil {
+			http.Error(w, "body_not_allowed", 400)
+			return
+		}
+		if err := s.checkSpec(botKey, &sp); err != nil {
+			http.Error(w, err.Error(), 403)
+			return
+		}
+		if err := s.docker.create(r.Context(), sp); err != nil {
+			http.Error(w, err.Error(), 502)
+			return
+		}
+		writeJSON(w, map[string]string{"botKey": botKey, "state": "created"})
+	case (action == "start" || action == "restart" || action == "stop") && r.Method == http.MethodPost:
+		if err := s.docker.action(r.Context(), botKey, action); err != nil {
+			http.Error(w, err.Error(), 502)
+			return
+		}
+		writeJSON(w, map[string]string{"botKey": botKey, "state": action})
+	case action == "recreate" && r.Method == http.MethodPost:
+		var sp spec
+		if err := decodeBody(r, &sp); err != nil {
+			http.Error(w, "body_not_allowed", 400)
+			return
+		}
+		if err := s.checkSpec(botKey, &sp); err != nil {
+			http.Error(w, err.Error(), 403)
+			return
+		}
+		if err := s.docker.remove(r.Context(), botKey); err != nil && !strings.Contains(err.Error(), "404") {
+			http.Error(w, err.Error(), 502)
+			return
+		}
+		if err := s.docker.create(r.Context(), sp); err != nil {
+			http.Error(w, err.Error(), 502)
+			return
+		}
+		writeJSON(w, map[string]string{"botKey": botKey, "state": "created"})
+	case action == "writeProfile" && r.Method == http.MethodPost:
+		var p profile
+		if err := decodeBody(r, &p); err != nil {
+			http.Error(w, "body_not_allowed", 400)
+			return
+		}
+		if p.BotKey != botKey {
+			http.Error(w, "name_label_mismatch", 403)
+			return
+		}
+		for _, f := range p.Files {
+			dest, err := safeProfilePath(s.cfg.VolumeRoot, botKey, f.Path)
+			if err != nil {
+				http.Error(w, err.Error(), 403)
+				return
+			}
+			if err := os.MkdirAll(filepath.Dir(dest), 0700); err != nil {
+				http.Error(w, err.Error(), 500)
+				return
+			}
+			if err := os.WriteFile(dest, []byte(f.Content), os.FileMode(f.Mode)&0777); err != nil {
+				http.Error(w, err.Error(), 500)
+				return
+			}
+		}
+		writeJSON(w, map[string]string{"botKey": botKey, "state": "written"})
 	case action == "template-drift" && r.Method == http.MethodPost:
 		var body struct {
 			Spec spec `json:"spec"`
