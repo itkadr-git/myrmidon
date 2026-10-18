@@ -136,7 +136,7 @@ analyze_command="${MYRMIDON_PREDEPLOY_ANALYZE_COMMAND:-}"
 #   * the extensions: every extension the dump restores (the TOC lines pg_restore
 #     --list prints as `170; 3079 12350 EXTENSION - vector owner`, from
 #     _printTocEntry's `%d; %u %u %s %s %s %s`) must be available in the copy
-#     (SELECT extname FROM pg_available_extensions) — the board restores and
+#     (SELECT name FROM pg_available_extensions) — the board restores and
 #     reads with them (vector since migration 0051, fuzzystrmatch since 0080)
 #     and a plain postgres image does not carry pgvector, which is why the
 #     deploy example defaults the copy to pgvector/pgvector:pg18. After the
@@ -395,7 +395,7 @@ else
   fi
   if [[ -n "$dump_exts" ]]; then
     available_exts=""
-    if copy_probe 'SELECT extname FROM pg_available_extensions'; then
+    if copy_probe 'SELECT name FROM pg_available_extensions'; then
       available_exts="$(cat "$pg_probe_out")"
     else
       copy_exts_reason="$(probe_reason)"

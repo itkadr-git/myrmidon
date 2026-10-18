@@ -3,7 +3,7 @@ import { Link } from "@/lib/router";
 import { Button } from "@/components/ui/button";
 import { cn, formatDateTime } from "@/lib/utils";
 import { formatMonitorOffset } from "@/lib/issue-monitor";
-import { formatRetryReason } from "@/lib/runRetryState";
+import { formatRetryAttemptCounter, formatRetryClassification, formatRetryReason } from "@/lib/runRetryState";
 import type { IssueScheduledRetry } from "@paperclipai/shared";
 import { useRetryNowMutation, type RetryNowError } from "../hooks/useRetryNowMutation";
 import { Badge } from "@/components/ui/badge";
@@ -50,12 +50,18 @@ export function IssueScheduledRetryCard({
     ? formatDateTime(scheduledRetry.scheduledRetryAt)
     : null;
   const reason = formatRetryReason(scheduledRetry.scheduledRetryReason);
-  const attempt =
-    typeof scheduledRetry.scheduledRetryAttempt === "number"
-    && Number.isFinite(scheduledRetry.scheduledRetryAttempt)
-    && scheduledRetry.scheduledRetryAttempt > 0
-      ? scheduledRetry.scheduledRetryAttempt
-      : null;
+  const attemptLabel = formatRetryAttemptCounter(
+    scheduledRetry.scheduledRetryAttempt,
+    scheduledRetry.scheduledRetryMaxAttempts,
+  );
+  // myrmidon(1.6.6 RUN-RETRY-POLICY): the class of the failure behind the retry,
+  // recorded by the scheduler with the schedule itself.
+  const classificationLabel = formatRetryClassification(
+    scheduledRetry.scheduledRetryClassification,
+  );
+  // The reason and the class often say the same thing ("transient_failure" is a
+  // transient failure); show the class only when it adds something.
+  const showClassificationLabel = classificationLabel !== null && classificationLabel !== reason;
 
   const badgeLabel = continuation ? "Continuation scheduled" : "Retry scheduled";
   const titleAction = continuation ? "Automatic continuation" : "Automatic retry";
@@ -88,8 +94,11 @@ export function IssueScheduledRetryCard({
               <Clock className="h-3 w-3" aria-hidden="true" />
               {badgeLabel}
             </Badge>
-            {attempt !== null ? (
-              <span className="text-muted-foreground">Attempt {attempt}</span>
+            {attemptLabel !== null ? (
+              <span className="text-muted-foreground">{attemptLabel}</span>
+            ) : null}
+            {showClassificationLabel ? (
+              <span className="text-muted-foreground">{classificationLabel}</span>
             ) : null}
             {reason ? (
               <span className="text-muted-foreground">{reason}</span>

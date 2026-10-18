@@ -14,6 +14,13 @@ draft → approved revisions and a change log. An approved regulation is what
 agents of that role are expected to follow; editing one is a deliberate,
 reviewed act, not a quiet file change.
 
+Knowledge revisions can be labelled English or Russian and linked to a
+canonical revision as its translation. Reads and search prefer an approved
+translation in the requested language; when none is available, they fall back
+to the canonical revision. This links existing content without duplicating the
+knowledge item. The current interface and import flow do not provide translation
+editing; this is a storage and read-selection capability.
+
 ## Foraging: gathering fresh knowledge
 
 Foraging lets the colony collect fresh knowledge from approved external
