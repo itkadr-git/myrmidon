@@ -57,20 +57,24 @@ video ungranted unless the deployment explicitly enables it.
 
 ## Use Gemini as an agent model
 
-The bridge's model endpoint is dynamic, but an agent can select a subscription
-model only if that provider and model have been configured in the board's
-model catalog. Choose it in the agent's model/provider settings. This is
-different from calling `creative_text`: model selection routes the agent's
-text-generation requests through Gemini, while `creative_text` is an explicit
-tool call. The settings page described here does not show which model answered
-an individual agent turn; check the run/provider details exposed by your board
-version. Streaming is not supported by the bridge model endpoint.
+The C1b bridge exposes a dynamic OpenAI-compatible model list at `/v1/models`
+from the live subscription session. The C1 settings screen does not configure
+a provider or select the model; this requires registration in the board model
+catalog and agent/role model controls from C1/C3 deployment. If configured,
+select the subscription provider/model in agent or role settings. This differs
+from `creative_text`: model selection routes the agent's text-generation
+requests through Gemini, while `creative_text` is an explicit tool call. The
+bridge rejects `stream:true` with HTTP 501 `not_implemented`; streaming is
+unsupported. The Google model name is visible in run/provider details only if
+the deployed board version exposes it; the C1 settings page itself does not
+show which model answered a turn.
 
-If the session expires, model requests can fail. Do not assume the board
-automatically falls back to the previous model; reconnect the Google session
-and retry the task deliberately. Tool calls can report `session_stale`,
-`quota_exceeded`, `quota_paused`, or `quota_refused`; surface the error to the
-owner and do not retry in a loop.
+If the session expires, `/v1/models` reports `401 session_stale`; model
+completion requests can fail with the same session error. Automatic fallback
+to the previous model is not specified: inspect the failed run and explicitly
+select a working model before retrying. Tool calls can report
+`session_stale`, `quota_exceeded`, `quota_paused`, or `quota_refused`; surface
+the error to the owner and do not retry in a loop.
 
 ## Related
 
