@@ -206,6 +206,20 @@ describe("myrmidon(1.6.1 SWARM-IDLE-WAKE) sweep pass", () => {
                 if (!projection) {
                   return { orderBy: () => ({ limit: (limit: number) => Promise.resolve([expiredClaim].slice(0, limit)) }) };
                 }
+                if ("issueId" in projection) {
+                  // matchIssue reads the ready-queue projection for the expired
+                  // task after reclaim; it must see the state after assignee clear.
+                  return { orderBy: () => ({ limit: (limit: number) => Promise.resolve([{
+                    issueId: issueState.id,
+                    identifier: "ENG-42",
+                    priority: "medium",
+                    pheromoneStrength: 0,
+                    failedRunsSinceLastChange: 0,
+                    queuedAt: NOW,
+                    assigneeAgentId: issueState.assigneeAgentId,
+                    projectId: null,
+                  }].slice(0, limit)) }) };
+                }
                 return {
                   orderBy: () => ({ limit: (limit: number) => Promise.resolve(claimState && !claimState.releasedAt ? [claimState].slice(0, limit) : []) }),
                 };
