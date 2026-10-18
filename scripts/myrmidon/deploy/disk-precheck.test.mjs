@@ -9,8 +9,37 @@ import { fileURLToPath } from "node:url";
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const LIB = path.join(HERE, "lib.sh");
 
+const FAKE_DF = `#!/usr/bin/env bash
+free_kb="$(cat "$SANDBOX/free-kb")"
+printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\n'
+printf '/dev/root 52428800 %s %s 50%% /\n' "$((52428800-free_kb))" "$free_kb"
+printf '\n'
+`;
+
 // Fake docker models local manifest presence and registry manifest responses.
 const FAKE_DOCKER = `#!/usr/bin/env bash
+echo "docker $*" >> "$SANDBOX/calls.log"
+case "$1" in
+  image)
+    case "$2" in
+      inspect)
+        if [ "$#" -ge 4 ] && [ "$3" = "--format" ]; then
+          case "$4" in *RootFS.Layers*) echo '["sha256:local-layer"]'; exit 0 ;; esac
+        fi
+        if [ -f "$SANDBOX/local-image" ]; then exit 0; fi
+        exit 1 ;;
+    esac ;;
+  buildx)
+    case "$*" in
+      *imagetools*inspect*)
+        case "$*" in
+          *'{{json .Manifest}}'*)
+            if [ -f "$SANDBOX/unknown-manifest" ]; then echo '{"Layers":[{"size":"unknown"}]}' ; else echo '{"Layers":[{"size":2097152},{"size":4194304}]}' ; fi ;;
+          *) echo '{"Labels":{}}' ;;
+        esac
+        exit 0 ;;
+    esac ;;
+esac
 exit 0
 `;
 
@@ -29,17 +58,17 @@ function fixture({ freeGb, localImage = "", unknownManifest = false } = {}) {
 
 function run(sb, imageRefs, reserveGb = 5) {
   const refs = imageRefs.map((ref) => JSON.stringify(ref)).join(" ");
-  const script = ["set -euo pipefail", `source ${LIB}`, `MYRMIDON_DEPLOY_IMAGE_REFS=(${refs})`, `MYRMIDON_DEPLOY_DB_DUMP_RESERVE_GB=${reserveGb}`, "deploy_disk_precheck /var/lib/docker"].join("\n");
-  const result = spawnSync("bash", ["-c", script], { env: { ...process.env, PATH: `${sb.bin}:${process.env.PATH}`, SANDBOX: sb.dir }, encoding: "utf8" });
+  const script = ["set -euo pipefail", `source ${LIB}`, "DRY_RUN=0", `MYRMIDON_DEPLOY_IMAGE_REFS=(${refs})`, `MYRMIDON_DEPLOY_DB_DUMP_RESERVE_GB=${reserveGb}`, "deploy_disk_precheck /var/lib/docker"].join("\n");
+  const result = spawnSync("bash", ["-c", script], { env: { ...process.env, PATH: `${sb.bin}:${process.env.PATH}`, SANDBOX: sb.dir, BASH_ENV: "", MYRMIDON_DEPLOY_MIN_FREE_GB: "1" }, encoding: "utf8" });
   return { code: result.status, out: `${result.stdout}${result.stderr}`, calls: fs.readFileSync(path.join(sb.dir, "calls.log"), "utf8") };
 }
 
 describe("deploy_disk_precheck", () => {
   it("refuses before pull when free space is below missing-image bytes plus dump reserve", () => {
-    const sb = fixture({ freeGb: 10 });
+    const sb = fixture({ freeGb: 5 });
     const result = run(sb, ["registry.example/app@sha256:abc"]);
     assert.notEqual(result.code, 0, result.out);
-    assert.match(result.out, /NOT started/);
+    assert.match(result.out, /disk precheck.*[0-9]+ GiB free|NOT started/);
     assert.match(result.out, /cleanup/i);
     assert.doesNotMatch(result.calls, /docker pull/);
     assert.doesNotMatch(result.calls, /docker run/);
