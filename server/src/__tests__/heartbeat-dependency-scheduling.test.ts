@@ -373,7 +373,7 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
         .where(
           and(
             eq(agentWakeupRequests.agentId, agentId),
-            sql`${agentWakeupRequests.contextSnapshot} ->> 'issueId' = ${readyIssueId}`,
+            sql`${agentWakeupRequests.payload} ->> 'issueId' = ${readyIssueId}`,
           ),
         )
         .orderBy(agentWakeupRequests.requestedAt);
