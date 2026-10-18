@@ -87,7 +87,7 @@ describe("OpenCode local skill injection", () => {
     const configuredHome = path.join(root, "configured-home");
     const workspace = path.join(root, "workspace");
     const commandPath = path.join(root, "opencode");
-    const skillSource = await createSkillDir(path.join(root, "runtime-skills"), "paperclip");
+    const skillSource = await createSkillDir(path.join(root, "runtime-skills"), "myrmidon");
     await fs.mkdir(workspace, { recursive: true });
     await fs.writeFile(commandPath, "#!/bin/sh\nexit 0\n", "utf8");
     await fs.chmod(commandPath, 0o755);
@@ -128,8 +128,8 @@ describe("OpenCode local skill injection", () => {
             OPENCODE_ALLOW_ALL_MODELS: "1",
           },
           paperclipRuntimeSkills: [{
-            key: "paperclipai/paperclip/paperclip",
-            runtimeName: "paperclip",
+            key: "paperclipai/paperclip/myrmidon",
+            runtimeName: "myrmidon",
             source: skillSource,
           }],
           promptTemplate: "Follow the paperclip heartbeat.",
@@ -140,10 +140,10 @@ describe("OpenCode local skill injection", () => {
       });
 
       expect(result.exitCode).toBe(0);
-      const installedSkill = path.join(configuredHome, ".claude", "skills", "paperclip");
+      const installedSkill = path.join(configuredHome, ".claude", "skills", "myrmidon");
       expect((await fs.lstat(installedSkill)).isSymbolicLink()).toBe(true);
       expect(await fs.realpath(installedSkill)).toBe(await fs.realpath(skillSource));
-      await expect(fs.lstat(path.join(processHome, ".claude", "skills", "paperclip"))).rejects.toThrow();
+      await expect(fs.lstat(path.join(processHome, ".claude", "skills", "myrmidon"))).rejects.toThrow();
     } finally {
       if (previousHome === undefined) delete process.env.HOME;
       else process.env.HOME = previousHome;

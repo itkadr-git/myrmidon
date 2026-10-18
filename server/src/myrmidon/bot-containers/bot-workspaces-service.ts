@@ -5,9 +5,19 @@
 // by reassignment lately (read from the activity log). Pull-request facts are
 // the work products the task-pr-sync keeps current; this service only reads
 // them. The repository is the task's project repository (Repo URL of its
-// workspace) or, failing that, the latest pull request's repository. The
+// workspace) or, failing that, the latest pull request's repository, or,
+// failing that, the instance's `general.botDisk.defaultRepo`. The
 // pressure block comes from the last dockergate snapshot when one is wired in;
 // without it the level is `none`.
+//
+// myrmidon(1.6.5-BOT-DISK-H LOAD): BOT-DISK-H polls this document about 30 times
+// a minute across the fleet. The per-bot result — and the `enabled` settings read
+// the route does in front of it — is cached in process memory for
+// WS_DESIRED_STATE_TTL_MS (300 s, the same window as the report cadence the bot
+// is told to honor), so one bot costs the board at most one store pass per
+// window. The 5-minute slack is contract-safe: `closing` stays valid for 14
+// days, and a woken bot gets SIGUSR1 from its run anyway. No event
+// invalidation: TTL is enough.
 
 import { and, desc, eq, gt, inArray, ne, or, sql } from "drizzle-orm";
 import {
@@ -21,6 +31,8 @@ import {
   WS_BOT_DISK_SETTING_DEFAULTS,
   WS_TASK_BRANCH_PREFIX,
   myrWsIssueKeySchema,
+  normalizeStoredBotDiskSettings,
+  resolveBotDiskSettings,
   myrWsRepoNameSchema,
   wsBotDiskSettingsSchema,
   type WsDesiredState,
@@ -29,11 +41,22 @@ import {
 import { instanceSettingsService } from "../../services/instance-settings.js";
 import { effectivePullRequestState, readPullRequestMetadata } from "../task-pr-sync/policy.js";
 import { prStateOf, workspaceStateOf, type WorkspacePrFact } from "./workspace-state.js";
+// myrmidon(1.6.5-BOT-DISK-H4a-INVALIDATE): drop the per-bot cache entries on
+// the board event (status or assignee change), not only on TTL.
+import { registerDesiredStateDropper } from "./bot-workspaces-invalidation.js";
 
 /** Terminal tasks stay in the list this long so botd can see and remove their copy. */
 export const WS_TERMINAL_LOOKBACK_MS = 14 * 24 * 60 * 60 * 1000;
 /** Orphan grace (copies of tasks absent from the list) in hours; contract `grace.orphanHours`. */
 export const WS_ORPHAN_HOURS = 24;
+/**
+ * myrmidon(1.6.5-BOT-DISK-H LOAD): how long one bot's built desired state (and the
+ * `enabled` read in front of it) is reused from process memory. 300 s matches the
+ * `nextReportSec` the bot is told to honor, so a bot costs the store at most one
+ * pass per window instead of ~30 board queries a minute. A rejected build is not
+ * cached; the next request retries.
+ */
+export const WS_DESIRED_STATE_TTL_MS = 300 * 1000;
 
 export interface WorkspaceIssueRow {
   id: string;
@@ -61,6 +84,12 @@ export interface BotWorkspacesStore {
   listIssues(input: { companyId: string; agentId: string; since: Date }): Promise<WorkspaceIssueRow[]>;
   /** Pull-request work products of the tasks, newest first. */
   listPrProducts(input: { issueIds: string[] }): Promise<WorkspacePrProductRow[]>;
+  /**
+   * Keys of done/cancelled tasks the bot holds or held (assigned now, or reassigned
+   * away from it at any time), with no lookback limit. Optional so older stores keep
+   * working: without it `closedKeys` comes from the lookback rows only.
+   */
+  listClosedKeys?(input: { companyId: string; agentId: string }): Promise<string[]>;
   /** Repo URL of the primary project workspace per project id. */
   listProjectRepoUrls(input: { projectIds: string[] }): Promise<Map<string, string>>;
   /** Stored `general.botDisk` (raw), for the grace settings. */
@@ -77,6 +106,10 @@ export interface BotWorkspacesServiceDeps {
   /** Latest dockergate snapshot for the bot; null/absent means no data (level none). */
   readPressure?: (input: BotWorkspacePressureInput) => Promise<BotWorkspacePressure | null>;
   now?: () => Date;
+  /** Environment for the `enabled` default (tests inject it). */
+  env?: Record<string, string | undefined>;
+  /** Override the desired-state cache window (tests); default `WS_DESIRED_STATE_TTL_MS`. */
+  desiredStateTtlMs?: number;
 }
 
 const GITHUB_REPO_RE = /github\.com[/:]([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?(?:[/#?]|$)/i;
@@ -100,8 +133,14 @@ const NO_PRESSURE: BotWorkspacePressure = { quotaPercent: null, partitionPercent
 
 export function botWorkspacesService(deps: BotWorkspacesServiceDeps) {
   const now = deps.now ?? (() => new Date());
+  const ttlMs = deps.desiredStateTtlMs ?? WS_DESIRED_STATE_TTL_MS;
 
-  return {
+  const core = {
+    /** `general.botDisk.enabled` (stored, else env, else default true): false switches the reaping off. */
+    async isEnabled(): Promise<boolean> {
+      const stored = await deps.store.readBotDiskSettings();
+      return resolveBotDiskSettings({ stored, env: deps.env ?? process.env }).settings.enabled;
+    },
     async desiredState(input: { companyId: string; agentId: string }): Promise<WsDesiredState> {
       const at = now();
       const since = new Date(at.getTime() - WS_TERMINAL_LOOKBACK_MS);
@@ -117,6 +156,11 @@ export function botWorkspacesService(deps: BotWorkspacesServiceDeps) {
         list.push(product);
         productsByIssue.set(product.issueId, list);
       }
+
+      const rawSettings = await deps.store.readBotDiskSettings();
+      // myrmidon(1.6.5-BOT-DISK-H4b): the fallback repository for tasks without a
+      // project repository and without a pull request.
+      const defaultRepo = normalizeStoredBotDiskSettings(rawSettings).defaultRepo;
 
       const workspaces: WsDesiredWorkspace[] = [];
       for (const row of keyed) {
@@ -134,10 +178,12 @@ export function botWorkspacesService(deps: BotWorkspacesServiceDeps) {
           },
           prFacts,
         );
-        // Project repository first; otherwise the latest pull request's repository.
+        // Project repository first; otherwise the latest pull request's repository;
+        // otherwise the instance default repository (when one is set).
         const repo =
           repoNameFromUrl(row.projectId ? projectRepos.get(row.projectId) : undefined) ??
-          issueProducts.map(prRepoOf).find((value): value is string => !!value);
+          issueProducts.map(prRepoOf).find((value): value is string => !!value) ??
+          defaultRepo;
 
         let sinceDate: Date;
         if (verdict.state === "active") {
@@ -163,7 +209,27 @@ export function botWorkspacesService(deps: BotWorkspacesServiceDeps) {
         });
       }
 
-      const settings = wsBotDiskSettingsSchema.safeParse(await deps.store.readBotDiskSettings());
+      // Every open task of this bot, repository or not: botd protects their directories.
+      const protectKeys = keyed
+        .filter(
+          (row) =>
+            row.assigneeAgentId === input.agentId && row.status !== "done" && row.status !== "cancelled",
+        )
+        .map((row) => row.identifier as string);
+
+      // Board-confirmed closed (done/cancelled) tasks of this bot: the lookback rows plus the
+      // unbounded store query, so a directory of a task closed long ago is still confirmed.
+      const closedSet = new Set<string>(
+        keyed.filter((row) => row.status === "done" || row.status === "cancelled").map((row) => row.identifier as string),
+      );
+      const extraClosed = (await deps.store.listClosedKeys?.({ companyId: input.companyId, agentId: input.agentId })) ?? [];
+      for (const key of extraClosed) {
+        if (myrWsIssueKeySchema.safeParse(key).success) closedSet.add(key);
+      }
+      for (const key of protectKeys) closedSet.delete(key);
+      const closedKeys = [...closedSet].sort();
+
+      const settings = wsBotDiskSettingsSchema.safeParse(rawSettings);
       const configured = settings.success ? settings.data : {};
       const pressure = (await deps.readPressure?.({ agentId: input.agentId }).catch(() => null)) ?? NO_PRESSURE;
 
@@ -173,10 +239,52 @@ export function botWorkspacesService(deps: BotWorkspacesServiceDeps) {
           closingMinutes: configured.graceClosingMinutes ?? WS_BOT_DISK_SETTING_DEFAULTS.graceClosingMinutes,
           scratchTtlHours: configured.scratchTtlHours ?? WS_BOT_DISK_SETTING_DEFAULTS.scratchTtlHours,
           orphanHours: WS_ORPHAN_HOURS,
+          ...(configured.legacyPressureIdleDays !== undefined ? { legacyPressureIdleDays: configured.legacyPressureIdleDays } : {}),
         },
         pressure,
         workspaces,
+        protectKeys,
+        closedKeys,
       };
+    },
+  };
+
+  // myrmidon(1.6.5-BOT-DISK-H LOAD): per-bot desired-state cache in process
+  // memory. The key is the bot (companyId + agentId), so different bots never
+  // share an entry. The in-flight promise is cached too, so concurrent pollers
+  // of one bot collapse into a single store pass. Only a successful build is
+  // kept for the window: a rejection drops the entry and the next request
+  // retries. The route still serializes the answer through wsDesiredStateSchema,
+  // so a cached value is contract-checked on every reply.
+  // myrmidon(1.6.5-BOT-DISK-H4a-INVALIDATE): TTL alone is not enough — a
+  // reopened task must return to `protectKeys` at once (botd would otherwise
+  // archive-delete the directory mid-work), and a reassignment must move the
+  // key between bots. The issue route publishes the event through the
+  // process-local registry and every service drops the affected entries.
+  const desiredCache = new Map<string, { expiresAtMs: number; promise: Promise<WsDesiredState> }>();
+  // myrmidon(1.6.5-BOT-DISK-H4a-INVALIDATE): the cache is dropped on the board
+  // event, not only by TTL. The registry is a process-local fan-out: the issue
+  // route publishes, every constructed service drops its own entries.
+  registerDesiredStateDropper(({ companyId, agentId }) => {
+    desiredCache.delete(`${companyId}:${agentId}`);
+  });
+
+  return {
+    isEnabled: core.isEnabled,
+    async desiredState(input: { companyId: string; agentId: string }): Promise<WsDesiredState> {
+      const key = `${input.companyId}:${input.agentId}`;
+      const e = now().getTime();
+      const hit = desiredCache.get(key);
+      if (hit && hit.expiresAtMs > e) return hit.promise;
+      const entry: { expiresAtMs: number; promise: Promise<WsDesiredState> } = {
+        expiresAtMs: e + ttlMs,
+        promise: core.desiredState(input).catch((err) => {
+          if (desiredCache.get(key) === entry) desiredCache.delete(key);
+          throw err;
+        }),
+      };
+      desiredCache.set(key, entry);
+      return entry.promise;
     },
   };
 }
@@ -238,6 +346,31 @@ export function botWorkspacesStore(db: Db): BotWorkspacesStore {
               )
           : [];
       return [...mine, ...lost];
+    },
+
+    async listClosedKeys({ companyId, agentId }) {
+      const reassigned = await db
+        .selectDistinct({ entityId: activityLog.entityId })
+        .from(activityLog)
+        .where(
+          and(
+            eq(activityLog.companyId, companyId),
+            eq(activityLog.entityType, "issue"),
+            eq(activityLog.action, "issue.updated"),
+            sql`${activityLog.details}->'_previous'->>'assigneeAgentId' = ${agentId}`,
+          ),
+        );
+      const reassignedIds = reassigned.map((r) => r.entityId);
+      const held =
+        reassignedIds.length > 0
+          ? or(eq(issues.assigneeAgentId, agentId), inArray(sql`${issues.id}::text`, reassignedIds))
+          : eq(issues.assigneeAgentId, agentId);
+      const rows = await db
+        .select({ identifier: issues.identifier })
+        .from(issues)
+        .where(and(eq(issues.companyId, companyId), sql`${issues.status} in ('done', 'cancelled')`, held))
+        .limit(5000);
+      return rows.map((r) => r.identifier).filter((id): id is string => !!id);
     },
 
     async listPrProducts({ issueIds }) {

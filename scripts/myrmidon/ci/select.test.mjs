@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { classifyChanges, importSpecifiers, selectTests } from "./select.mjs";
+import { applyReleaseFast, classifyChanges, importSpecifiers, selectTests, MAX_FAST_FILES_PER_PACKAGE } from "./select.mjs";
 
 const packages = [
   { name: "@paperclipai/server", dir: "server" },
@@ -99,5 +99,52 @@ describe("selectTests", () => {
   it("selects nothing for a change nobody imports", () => {
     const result = selectTests(["server/src/services/lonely.ts"], packages, testFiles);
     assert.deepEqual(result, { wholePackages: [], files: [] });
+  });
+});
+
+describe("applyReleaseFast", () => {
+  const fullPlan = { tier: "full", reasons: ["CI test selection: scripts/myrmidon/ci/select.mjs"], changed: ["scripts/myrmidon/ci/select.mjs"] };
+  const smallSelection = { wholePackages: [], files: [{ package: "@paperclipai/server", files: ["server/src/__tests__/a.test.ts"] }] };
+  const bigFiles = Array.from({ length: MAX_FAST_FILES_PER_PACKAGE + 1 }, (_, i) => `server/src/__tests__/bulk-${i}.test.ts`);
+  const bigSelection = { wholePackages: [], files: [{ package: "@paperclipai/server", files: bigFiles }] };
+
+  it("keeps a small release PR fast", () => {
+    const result = applyReleaseFast(fullPlan, smallSelection, { releaseFast: true });
+    assert.equal(result.tier, "fast");
+    assert.deepEqual(result.selection, smallSelection);
+    assert.match(result.reasons[0], /release branch PR: affected tests only/);
+  });
+
+  it("escalates a release PR past the per-package file limit to full", () => {
+    const result = applyReleaseFast(fullPlan, bigSelection, { releaseFast: true });
+    assert.equal(result.tier, "full");
+    assert.equal(result.selection, undefined);
+    assert.match(result.reasons[0], new RegExp(`${MAX_FAST_FILES_PER_PACKAGE + 1} @paperclipai/server test files`));
+  });
+
+  it("escalates a non-release fast plan past the limit to full (unchanged behaviour)", () => {
+    const fastPlan = { tier: "fast", reasons: ["affected tests only"], changed: ["server/src/services/heartbeat.ts"] };
+    const result = applyReleaseFast(fastPlan, bigSelection, { releaseFast: false });
+    assert.equal(result.tier, "full");
+    assert.match(result.reasons[0], /test files import the change/);
+  });
+
+  it("keeps a non-release fast plan within the limit fast", () => {
+    const fastPlan = { tier: "fast", reasons: ["affected tests only"] };
+    const result = applyReleaseFast(fastPlan, smallSelection, { releaseFast: false });
+    assert.equal(result.tier, "fast");
+    assert.deepEqual(result.selection, smallSelection);
+  });
+
+  it("never lowers a forced full run", () => {
+    const result = applyReleaseFast(fullPlan, smallSelection, { releaseFast: true, forceFull: true });
+    assert.equal(result.tier, "full");
+  });
+
+  it("leaves a docs plan alone", () => {
+    const docsPlan = { tier: "docs", reasons: ["only Myrmidon docs and scripts"] };
+    const result = applyReleaseFast(docsPlan, null, { releaseFast: true });
+    assert.equal(result.tier, "docs");
+    assert.equal(result.selection, undefined);
   });
 });

@@ -11,6 +11,10 @@ export const principalPermissionGrants = pgTable(
     permissionKey: text("permission_key").notNull(),
     scope: jsonb("scope").$type<Record<string, unknown> | null>(),
     grantedByUserId: text("granted_by_user_id"),
+    // myrmidon(1.6.5-F-23): optional validity deadline. decidePrincipalGrant
+    // denies a grant once this instant passes; the secrets:read_off_run grant
+    // is always issued with one (default +30 days).
+    expiresAt: timestamp("expires_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },

@@ -257,6 +257,20 @@ export function createPluginJobScheduler(
     try {
       const now = new Date();
 
+      // Reclaim launch captures left behind by a crashed process (see
+      // `reclaimStaleJobCaptures`). The cutoff is deliberately generous —
+      // a live run always releases its capture in the dispatch `finally`,
+      // so anything older than the job timeout plus a full timeout margin
+      // is a lease whose owner died.
+      const staleCutoff = new Date(now.getTime() - jobTimeoutMs * 2);
+      const reclaimed = await jobStore.reclaimStaleJobCaptures(staleCutoff);
+      if (reclaimed > 0) {
+        log.warn(
+          { reclaimed },
+          "reclaimed stale plugin job launch captures",
+        );
+      }
+
       // Query for jobs whose nextRunAt has passed and are active.
       // We include jobs with null nextRunAt since they may have just been
       // registered and need their first run calculated.
@@ -346,6 +360,28 @@ export function createPluginJobScheduler(
     const { id: jobId, pluginId, jobKey, schedule } = job;
     const jobLog = log.child({ jobId, pluginId, jobKey });
 
+    // Cross-process launch capture (OPE-5401 ч.B): atomically flip the
+    // job to `running` at the DB level. Only the caller whose UPDATE
+    // returns the row owns this run; a concurrent tick (same or another
+    // process) receives no row and skips the launch — a skip, not an
+    // error. The capture is released in the `finally` below.
+    let captured: boolean;
+    try {
+      captured = await jobStore.captureJobForRun(jobId);
+    } catch (err) {
+      jobLog.error(
+        { err: err instanceof Error ? err.message : String(err) },
+        "failed to capture job launch — skipping dispatch",
+      );
+      return;
+    }
+    if (!captured) {
+      jobLog.debug(
+        "skipping dispatch — job launch already captured by a concurrent tick",
+      );
+      return;
+    }
+
     // Mark as active (overlap prevention)
     activeJobs.add(jobId);
 
@@ -427,6 +463,18 @@ export function createPluginJobScheduler(
         jobLog.error(
           { err: err instanceof Error ? err.message : String(err) },
           "failed to advance schedule pointer",
+        );
+      }
+
+      // 6. Release the launch capture. Runs AFTER the pointer advance so a
+      // concurrent tick never re-dispatches with a stale `nextRunAt`; the
+      // conditional release also preserves operator pauses/failures.
+      try {
+        await jobStore.releaseJobAfterRun(jobId);
+      } catch (err) {
+        jobLog.error(
+          { err: err instanceof Error ? err.message : String(err) },
+          "failed to release job launch capture",
         );
       }
     }

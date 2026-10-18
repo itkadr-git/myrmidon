@@ -71,6 +71,15 @@ export const patchCasteSchema = z.object({
   defaultModel: z.string().trim().min(1).max(512).optional().nullable(),
   swarmEligible: z.boolean().optional(),
   maxActiveTasks: z.number().int().min(1).max(1000).optional().nullable(),
+  /**
+   * myrmidon(1.6.5 F-26 T3): `{ "isDefault": true }` makes this caste the
+   * company's default and clears the flag on the previous one (one transaction,
+   * partial unique index on (company_id) WHERE is_default). `false` is only
+   * accepted while another caste of the company holds the flag — a company
+   * always has exactly one default. The matcher reads the flag on every pass,
+   * so the move takes effect without a restart.
+   */
+  isDefault: z.boolean().optional(),
 });
 export type PatchCasteInput = z.infer<typeof patchCasteSchema>;
 
@@ -95,6 +104,8 @@ export interface CasteView {
   swarmEligible: boolean;
   maxActiveTasks: number | null;
   builtIn: boolean;
+  /** The company's default caste (1.6.5 F-26 T3); exactly one per company. */
+  isDefault: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -114,6 +125,14 @@ export const BUILTIN_CASTE_SEED: ReadonlyArray<{
   const label = AGENT_ROLE_LABELS[key];
   return { key, nameEn: label, nameRu: label, color: casteSeedColor(key) };
 });
+
+/**
+ * The caste the seed flags as the company's default (1.6.5 F-26 T3). A
+ * seed-template value, NOT swarm logic: the matcher reads
+ * `agent_castes.is_default`, so renaming this caste, deleting it or moving the
+ * radio on the castes screen changes the match immediately.
+ */
+export const BUILTIN_CASTE_SEED_DEFAULT_KEY: AgentRole = "engineer";
 
 /** Evenly spread seed colors over the token palette (deterministic). */
 function casteSeedColor(key: AgentRole): CasteColor {

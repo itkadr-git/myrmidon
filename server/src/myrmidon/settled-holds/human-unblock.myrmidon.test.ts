@@ -84,6 +84,33 @@ describe("isHumanUnblock / mayBeHumanUnblock", () => {
     expect(isHumanUnblock({ ...board, before: side("todo"), after: side("todo") })).toBe(false);
   });
 
+  // myrmidon(OPE-6954): REQUEUE-HOLD leaves a re-queued task in its own
+  // `todo`/`backlog`, so the person's "carry on" is a move into a workable
+  // status from wherever the task sits, not only out of `blocked`.
+  it("a board person starting a held task that already sits in a workable status is an unblock", () => {
+    expect(isHumanUnblock({ ...board, before: side("todo"), after: side("in_progress") })).toBe(true);
+    expect(isHumanUnblock({ ...board, before: side("backlog"), after: side("todo") })).toBe(true);
+    expect(isHumanUnblock({ ...board, before: side("in_review"), after: side("in_progress") })).toBe(true);
+    // Closing it, or handing it to a user, still is not.
+    expect(isHumanUnblock({ ...board, before: side("todo"), after: side("done") })).toBe(false);
+    expect(isHumanUnblock({ ...board, before: side("todo"), after: side("in_progress", null, "user-a") })).toBe(false);
+    expect(
+      mayBeHumanUnblock({ ...board, existingStatus: "todo", assigneeChangeRequested: false, statusChangeRequested: true }),
+    ).toBe(true);
+    expect(
+      mayBeHumanUnblock({ ...board, existingStatus: "todo", assigneeChangeRequested: false, statusChangeRequested: false }),
+    ).toBe(false);
+    expect(
+      mayBeHumanUnblock({
+        requestActorType: "board",
+        runId: "run-a",
+        existingStatus: "todo",
+        assigneeChangeRequested: false,
+        statusChangeRequested: true,
+      }),
+    ).toBe(false);
+  });
+
   it("an agent, or an agent's run acting through the board, is never a person unblocking", () => {
     const transition = { before: side("blocked"), after: side("todo") };
     expect(isHumanUnblock({ requestActorType: "agent", runId: null, ...transition })).toBe(false);
@@ -297,6 +324,35 @@ describeEmbeddedPostgres("a board unblock lifts a settled replay hold (HOLD-READ
     const runs = await waitForRun(companyId, otherAgentId, issueId);
     expect(runs.length, JSON.stringify(runs)).toBeGreaterThan(0);
     expect(runs.filter((run) => run.errorCode === "execution_reconciliation_required")).toEqual([]);
+  }, TEST_TIMEOUT_MS);
+
+  // myrmidon(OPE-6954): the state REQUEUE-HOLD leaves behind — the actor's
+  // `todo` with the settled hold — is released by the person moving the task
+  // into work, since the `blocked -> todo` move the hold used to key on is
+  // exactly what the closure no longer performs.
+  it("a board person starting a held todo task lifts the hold and the agent is woken", async () => {
+    const { companyId, agentId, issueId, actionId, parkedWakeId } = await seedStuck();
+    const server = app(companyId);
+
+    // The stall: with the hold standing the task is not ready, so the manual
+    // wake is refused and the actor's re-queued task sits idle.
+    const refused = await request(server).post(`/api/agents/${agentId}/wakeup`).send({});
+    expect(refused.status, JSON.stringify(refused.body)).toBe(409);
+    expect(refused.body.details?.code).toBe("wakeup_requires_ready_task");
+
+    const patched = await request(server).patch(`/api/issues/${issueId}`).send({ status: "in_progress" });
+    expect(patched.status, JSON.stringify(patched.body)).toBe(200);
+
+    expect(await replayOf(actionId)).toMatchObject({
+      replay: "cleared",
+      replayClearedBy: "user-a",
+      replayClearedByType: "user",
+    });
+
+    const runs = await waitForRun(companyId, agentId, issueId);
+    expect(runs.length, JSON.stringify(runs)).toBeGreaterThan(0);
+    expect(runs.filter((run) => run.errorCode === "execution_reconciliation_required")).toEqual([]);
+    expect(await waitForWakeToLeave(parkedWakeId, "deferred_issue_execution")).not.toBe("deferred_issue_execution");
   }, TEST_TIMEOUT_MS);
 
   it("without a human unblock the held task stays held and is not reported as ready", async () => {

@@ -14,6 +14,7 @@ import {
   issueThreadInteractions,
   issues,
   type Db,
+  runContextPersistenceFields,
 } from "@paperclipai/db";
 
 import { sanitizeQuarantinedCommentForHigherTrust } from "./source-trust.js";
@@ -213,7 +214,7 @@ export async function prepareConversationTurn(
     };
     await tx
       .update(heartbeatRuns)
-      .set({ contextSnapshot: next })
+      .set({ ...runContextPersistenceFields(next) })
       .where(eq(heartbeatRuns.id, run.id));
     return { context: next, reset, conversation: true };
   });

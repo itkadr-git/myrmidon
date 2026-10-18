@@ -1,4 +1,5 @@
-const STORAGE_PREFIX = "paperclip:recent-searches:";
+// myrmidon(DEBRAND-c): persist browser state under the Myrmidon namespace.
+const STORAGE_PREFIX = "myrmidon:recent-searches:";
 const MAX_RECENT_SEARCHES = 5;
 
 function storageKey(companyId: string) {

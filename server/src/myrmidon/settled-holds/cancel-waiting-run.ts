@@ -24,11 +24,11 @@
 // transaction has committed.
 import { and, eq } from "drizzle-orm";
 import { agentWakeupRequests, heartbeatRuns, issues, type Db } from "@paperclipai/db";
-import { deriveCommentId } from "../../modules/run-dispatch/domain/wake-context.js";
+import { deriveCommentId } from "../../modules/run-dispatch/index.js";
 import type { PostCommitEffect } from "../../modules/run-dispatch/index.js";
 import { getExecutionBlocker } from "../../services/execution-blocker.js";
 import { appendHeartbeatRunEvent } from "../../services/heartbeat-run-events.js";
-import { parseObject, readNonEmptyString } from "../../modules/wake-queue/domain/values.js";
+import { parseObject, readNonEmptyString } from "../../modules/wake-queue/index.js";
 import { INFRA_INTERRUPT_CONTEXT_ATTEMPT_KEY, infraInterruptAttemptCount } from "../infra-interrupts.js";
 
 type HeartbeatRun = typeof heartbeatRuns.$inferSelect;
