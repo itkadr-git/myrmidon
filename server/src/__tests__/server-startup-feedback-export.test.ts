@@ -618,6 +618,40 @@ describe("startServer feedback export wiring", () => {
     }
   });
 
+  it("does not create heartbeat recovery, execution-control interval, or background sweeps in the api role", async () => {
+    const originalRole = process.env.PAPERCLIP_PROCESS_ROLE;
+    process.env.PAPERCLIP_PROCESS_ROLE = "api";
+    loadConfigMock.mockReturnValue(buildTestConfig({ heartbeatSchedulerEnabled: true }));
+    const intervals: number[] = [];
+    const setIntervalSpy = vi.spyOn(globalThis, "setInterval").mockImplementation(((
+      _callback: () => void,
+      interval: number,
+    ) => {
+      intervals.push(interval);
+      return 1 as unknown as ReturnType<typeof setInterval>;
+    }) as typeof setInterval);
+    try {
+      await startServer();
+      await new Promise<void>((resolve) => setImmediate(resolve));
+
+      expect(heartbeatServiceFactoryMock).not.toHaveBeenCalled();
+      expect(heartbeatServiceMock.reconcileHotRestartAdoption).not.toHaveBeenCalled();
+      expect(heartbeatServiceMock.reapOrphanedRuns).not.toHaveBeenCalled();
+      expect(heartbeatServiceMock.recoverNativeRunsAfterRestart).not.toHaveBeenCalled();
+      expect(heartbeatServiceMock.tickTimers).not.toHaveBeenCalled();
+      expect(reconcileSafeNativeReplacements).not.toHaveBeenCalled();
+      expect(intervals).not.toContain(EXECUTION_RECONCILIATION_INTERVAL_MS);
+      expect(externalObjectsServiceMock.refreshDueObjectsForActiveCompanies).not.toHaveBeenCalled();
+      expect(issueThreadInteractionServiceMock.sweepMergedPullRequestConfirmations).not.toHaveBeenCalled();
+      expect(executionWorkspaceServiceMock.sweepTerminalWorkspaces).not.toHaveBeenCalled();
+      expect(routineServiceMock.tickScheduledTriggers).not.toHaveBeenCalled();
+    } finally {
+      setIntervalSpy.mockRestore();
+      if (originalRole === undefined) delete process.env.PAPERCLIP_PROCESS_ROLE;
+      else process.env.PAPERCLIP_PROCESS_ROLE = originalRole;
+    }
+  });
+
   it("keeps routine ticks and setup cleanup active when heartbeat scheduling is suppressed", async () => {
     loadConfigMock.mockReturnValue(buildTestConfig({
       heartbeatSchedulerEnabled: true,
