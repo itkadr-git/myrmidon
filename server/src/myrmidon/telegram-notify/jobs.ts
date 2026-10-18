@@ -1,12 +1,8 @@
 // server/src/myrmidon/telegram-notify/jobs.ts
 //
-// myrmidon(1.6.1-TG-NOTIFY-B): the periodic digest and escalation jobs of the
-// Telegram notify track. Both jobs read the owner settings through the
-// contract of part A (the `telegramNotify` area of instance settings); part A
-// is not merged yet, so this module never reads the vendor instance-settings
-// row itself: the runtime-changeable settings arrive through the injected
-// `readSettings` port, and until part A merges the default wiring returns the
-// fixed all-off defaults. Nothing is sent unless `digest.enabled` /
+// myrmidon(TG-NOTIFY-B): the periodic digest and escalation jobs of the
+// Telegram notify track. Settings are read from the company-scoped persisted
+// contract on every pass; until explicitly enabled, both jobs stay off.
 // `escalations.enabled` is explicitly true — the release criterion: with the
 // defaults the owner receives only replies to his own messages and U2
 // decision cards.
@@ -41,6 +37,21 @@ import { logger } from "../../middleware/logger.js";
 import { projectSafeChatPublication } from "../../services/chat-publication-projection.js";
 import { readTelegramNotifyDocument, mutateTelegramNotifyDocument } from "./store.js";
 import type { TelegramNotifySettings } from "./settings.js";
+
+/** Convert the route contract's opaque topic identifiers to Telegram numeric IDs. */
+function toJobSettings(settings: import("@paperclipai/shared").TelegramNotifySettings): TelegramNotifySettings {
+  const topicId = (value: string | null): number | null => {
+    if (value === null) return null;
+    const parsed = Number(value);
+    return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : null;
+  };
+  return {
+    ...settings,
+    digest: { ...settings.digest, topicId: topicId(settings.digest.topicId) },
+    errors: { ...settings.errors, minSeverity: settings.errors.minSeverity === "warn" ? "warning" : "error", topicId: topicId(settings.errors.topicId) },
+    escalations: { ...settings.escalations, topicId: topicId(settings.escalations.topicId) },
+  };
+}
 
 /** The sweep period: how often the job checks whether the digest time or the
  *  escalation threshold has arrived. One shared interval for both jobs. */
@@ -78,8 +89,7 @@ export interface TelegramNotifyJobPorts {
     idempotencyKey: string;
     text: string;
   }): Promise<{ inserted: boolean }>;
-  /** The settings contract of part A. Until part A merges, the default
-   *  wiring returns the fixed all-off document (nothing is ever sent). */
+  /** The company-scoped settings document, re-read every pass. */
   readSettings(companyId: string): Promise<TelegramNotifySettings>;
   /** Owner settings are runtime-changeable; the digest job consults them on
    *  every pass rather than at startup. */
@@ -476,11 +486,10 @@ export function telegramNotifyJobPorts(db: Db): TelegramNotifyJobPorts {
         .returning({ id: (await import("@paperclipai/db")).chatPublications.id });
       return { inserted: rows.length > 0 };
     },
-    // Part A is not merged: the settings contract answers the fixed
-    // all-off document, so both jobs stay off. Part A replaces this port.
-    async readSettings() {
-      const { defaultTelegramNotifySettings } = await import("./settings.js");
-      return defaultTelegramNotifySettings();
+    async readSettings(companyId) {
+      const { readTelegramNotifySettingsDocument } = await import("./settings-store.js");
+      const document = await readTelegramNotifySettingsDocument(db, companyId);
+      return toJobSettings(document.settings);
     },
     now: () => new Date(),
     log: logger,

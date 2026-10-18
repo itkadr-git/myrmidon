@@ -25,11 +25,14 @@ import {
   toolConnections,
 } from "@paperclipai/db";
 import type { Db } from "@paperclipai/db";
+import { emptyTelegramNotifyDocument, type TelegramNotifySettings as SharedTelegramNotifySettings } from "@paperclipai/shared";
 import {
   runDigestForCompany,
   runEscalationsForCompany,
+  telegramNotifyJobPorts,
 } from "./jobs.js";
 import { readTelegramNotifyDocument } from "./store.js";
+import { mutateTelegramNotifySettingsDocument } from "./settings-store.js";
 import { defaultTelegramNotifySettings, type TelegramNotifySettings } from "./settings.js";
 
 const externalTestDatabaseUrl = process.env.PAPERCLIP_TEST_DATABASE_URL;
@@ -218,7 +221,25 @@ function makePorts(fixture: Fixture, settings: TelegramNotifySettings, now: () =
   };
 }
 
-describe("telegram notify jobs (DB-backed, part A settings mocked)", () => {
+describe("telegram notify jobs (DB-backed)", () => {
+  it("production job ports read each company's live settings document", async () => {
+    const fixture = await seedFixture();
+    const settings = defaultTelegramNotifySettings();
+    settings.digest.enabled = true;
+    settings.digest.time = "08:45";
+    await mutateTelegramNotifySettingsDocument(db, fixture.companyId, () => ({
+      next: { ...emptyTelegramNotifyDocument(), settings: settings as SharedTelegramNotifySettings },
+      result: undefined,
+    }));
+
+    const ports = telegramNotifyJobPorts(db);
+    expect(await ports.readSettings(fixture.companyId)).toEqual({
+      ...defaultTelegramNotifySettings(),
+      digest: { ...settings.digest, topicId: null },
+    });
+    expect(await ports.readSettings(randomUUID())).toEqual(defaultTelegramNotifySettings());
+  });
+
   it("sends nothing with the defaults (both jobs off)", async () => {
     const fixture = await seedFixture();
     await seedQuestion(fixture, new Date(Date.now() - 48 * 3_600_000));
