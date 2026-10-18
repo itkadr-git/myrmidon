@@ -5,10 +5,9 @@
 //   knowledge-migrate classify --root <export> [--map <map.json>] [--emit-map <file>]
 //   knowledge-migrate import   --root <export> --map <map.json> --company-id <uuid>
 //
-// Both take `--dry-run` (compute everything, write nothing) and both print a
-// numeric report: page counts per §5.3 class and their sum, the link
-// resolution rate, the frontmatter keys that were parsed. Page bodies never
-// reach the report — they may hold personal data (§5.3).
+// runImport performs preflight before any store read or write. Existing
+// targets are compared by their latest revision and source refs so reruns are
+// idempotent, including recovery after partial failure.
 
 import { readFileSync, writeFileSync } from "node:fs";
 import { createDb, createPgKnowledgeSearchIndex } from "../packages/db/src/index.js";
@@ -26,6 +25,7 @@ import {
   type KnowledgeActor,
   type MigrationPlan,
   type MigrateMap,
+  type KnowledgeWriter,
 } from "../server/src/myrmidon/knowledge/migrate/index.js";
 
 function flag(name: string): string | null {
@@ -45,6 +45,9 @@ function usage(): never {
       "usage:",
       "  knowledge-migrate classify --root <export> [--map <map.json>] [--emit-map <file>] [--catalog <json>] [--out <json>] [--expected-total 170] [--dry-run]",
       "  knowledge-migrate import   --root <export> --map <map.json> --company-id <uuid> [--nest-id <uuid>] [--actor-agent <id>] [--out <json>] [--dry-run]",
+      "  Import preflight rejects class-count mismatches and unresolved merge/approver decisions before opening the database.",
+      "  Re-import is revision-aware and safe to retry after a partial run.",
+      "  --dry-run must never open the writer; reports contain counts only, not page bodies or field values.",
     ].join("\n"),
   );
   process.exit(2);
@@ -131,9 +134,15 @@ async function main(): Promise<void> {
     ? { actorType: "system", actorId: null, kind: null }
     : { actorType: "agent", actorId: actorAgent, kind: null };
 
-  const db = createDb(databaseUrl());
-  const service = createKnowledgeService(db, { searchIndex: createPgKnowledgeSearchIndex(db) });
-  const report = await runImport({ plan, service, companyId, nestId, actor, dryRun, expectedTotal });
+  let report: Awaited<ReturnType<typeof runImport>>;
+  if (dryRun) {
+    report = await runImport({ plan, service: null as unknown as KnowledgeWriter, companyId, nestId, actor, dryRun, expectedTotal });
+  } else {
+    const db = createDb(databaseUrl());
+    const service = createKnowledgeService(db, { searchIndex: createPgKnowledgeSearchIndex(db) });
+    report = await runImport({ plan, service, companyId, nestId, actor, dryRun, expectedTotal });
+  }
+
   emit(report, out);
 
   console.log(

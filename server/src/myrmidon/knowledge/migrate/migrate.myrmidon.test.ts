@@ -58,6 +58,11 @@ interface WriterLog {
   draft: Array<{ nestId: string; slug: string; input: DraftKnowledgeInput; actor: KnowledgeActor }>;
   supersede: Array<{ nestId: string; slug: string; bySlug: string }>;
   search: string[];
+  get: string[];
+  listRevisions: string[];
+  statuses: Map<string, { deliveredContent: string | null; status: string; supersededByItemId: string | null }>;
+  revisions: Map<string, Array<{ content: string; sources: Array<{ kind: "document" | "issue" | "url" | "task" | "pr" | "run" | "decision"; ref: string; note: string | null }> }>>;
+  failDraftOn?: string;
 }
 
 function stubWriter(log: WriterLog, options: { failOn?: string } = {}): KnowledgeWriter {
@@ -67,17 +72,39 @@ function stubWriter(log: WriterLog, options: { failOn?: string } = {}): Knowledg
         throw Object.assign(new Error("slug taken"), { code: "knowledge_slug_taken" });
       }
       log.create.push({ input, actor });
+      log.revisions.set(input.slug, [{ content: input.content, sources: (input.sources ?? []).map((source) => ({ ...source, note: source.note ?? null })) }]);
+      log.statuses.set(input.slug, { deliveredContent: input.content, status: "draft", supersededByItemId: null });
       return { id: `id-${input.slug}`, slug: input.slug };
     },
     async draft(nestId, slug, input, actor) {
       log.draft.push({ nestId, slug, input, actor });
+      if (log.failDraftOn === slug) {
+        log.failDraftOn = undefined;
+        throw Object.assign(new Error("temporary failure"), { code: "temporary_failure" });
+      }
+      const revisions = log.revisions.get(slug) ?? [];
+      revisions.push({ content: input.content, sources: (input.sources ?? []).map((source) => ({ ...source, note: source.note ?? null })) });
+      log.revisions.set(slug, revisions);
+      log.statuses.set(slug, { deliveredContent: input.content, status: "draft", supersededByItemId: null });
       return { id: `id-${slug}`, slug };
     },
     async supersede(nestId, slug, _actor, input) {
       log.supersede.push({ nestId, slug, bySlug: input.bySlug });
       return {};
     },
-    async searchNest(_nestId, query) {
+    async get(_nestId, slug) {
+      log.get.push(slug);
+      const item = log.statuses.get(slug);
+      if (item) return item;
+      return log.revisions.has(slug)
+        ? { deliveredContent: log.revisions.get(slug)?.at(-1)?.content ?? null, status: "draft", supersededByItemId: null }
+        : null;
+    },
+    async listRevisions(_nestId, slug) {
+      log.listRevisions.push(slug);
+      return log.revisions.get(slug) ?? [];
+    },
+    async search(_nestId, query) {
       log.search.push(query);
       return [{ itemId: "id-product/roles-and-castes", slug: "product/roles-and-castes", title: "Roles and castes" }];
     },
@@ -85,7 +112,7 @@ function stubWriter(log: WriterLog, options: { failOn?: string } = {}): Knowledg
 }
 
 function emptyLog(): WriterLog {
-  return { create: [], draft: [], supersede: [], search: [] };
+  return { create: [], draft: [], supersede: [], search: [], get: [], listRevisions: [], statuses: new Map(), revisions: new Map() };
 }
 
 describe("frontmatter", () => {
@@ -306,6 +333,20 @@ describe("import run", () => {
     expect(report.failed).toEqual([]);
   });
 
+  it("rejects a class sum mismatch before invoking any writer method", async () => {
+    const root = makeExport({ "myrmidon/foo.md": long("Foo body") });
+    const plan = planMigration({ root, map: emptyMap({ expectedTotal: 170 }), expectedTotal: 170 });
+    const log = emptyLog();
+    await expect(runImport({ plan, service: stubWriter(log), companyId: "company-1", nestId: "nest-1", actor: AGENT, dryRun: false }))
+      .rejects.toThrow(/class sum 1 != expected 170/);
+    expect(log.create).toEqual([]);
+    expect(log.draft).toEqual([]);
+    expect(log.supersede).toEqual([]);
+    expect(log.get).toEqual([]);
+    expect(log.listRevisions).toEqual([]);
+    expect(log.search).toEqual([]);
+  });
+
   it("writes nothing in dry-run but reports the same numbers", async () => {
     const root = makeExport(files);
     const plan = planMigration({ root, map: map(), expectedTotal: 5, dryRun: true });
@@ -323,6 +364,30 @@ describe("import run", () => {
     expect(report.checks[0]?.found).toBe(false);
   });
 
+  it("keeps a shared target complete after a partial failure and rerun", async () => {
+    const root = makeExport({
+      "company/roles-adm.md": long("Adm caste roles"),
+      "company/roles-bbq.md": long("Bbq caste roles"),
+    });
+    const plan = planMigration({ root, map: emptyMap({ expectedTotal: 2 }), expectedTotal: 2 });
+    const log = emptyLog();
+    log.failDraftOn = "product/roles-and-castes";
+    const writer = stubWriter(log);
+    const first = await runImport({ plan, service: writer, companyId: "company-1", nestId: "nest-1", actor: AGENT, dryRun: false });
+    const firstRevisionCount = log.revisions.get("product/roles-and-castes")?.length;
+    expect(first.failed).toContainEqual({ path: "company/roles-bbq.md", code: "temporary_failure" });
+    const second = await runImport({ plan, service: writer, companyId: "company-1", nestId: "nest-1", actor: AGENT, dryRun: false });
+    const revisions = log.revisions.get("product/roles-and-castes") ?? [];
+    expect(second.failed).toEqual([]);
+    expect(revisions.at(-1)?.content).toContain("Adm caste roles");
+    expect(revisions.at(-1)?.content).toContain("Bbq caste roles");
+    expect(revisions.length).toBe((firstRevisionCount ?? 0) + 1);
+    expect(revisions.at(-1)?.sources.map((source) => source.ref)).toEqual(expect.arrayContaining([
+      "wiki/company/roles-adm.md",
+      "wiki/company/roles-bbq.md",
+    ]));
+  });
+
   it("reports a failing page by its code and keeps going", async () => {
     const root = makeExport(files);
     const plan = planMigration({ root, map: map(), expectedTotal: 5 });
@@ -338,6 +403,25 @@ describe("import run", () => {
     expect(report.failed).toContainEqual({ path: "myrmidon/bar.md", code: "knowledge_slug_taken" });
     expect(report.created).toBe(3);
   });
+
+  it("is safe to run twice against the same writer", async () => {
+    const root = makeExport({ "myrmidon/foo.md": long("Foo body") });
+    const plan = planMigration({ root, map: emptyMap({ expectedTotal: 1 }), expectedTotal: 1 });
+    const log = emptyLog();
+    const writer = stubWriter(log);
+
+    const first = await runImport({ plan, service: writer, companyId: "company-1", nestId: "nest-1", actor: AGENT, dryRun: false });
+    const createsAfterFirst = log.create.length;
+    const draftsAfterFirst = log.draft.length;
+    const second = await runImport({ plan, service: writer, companyId: "company-1", nestId: "nest-1", actor: AGENT, dryRun: false });
+
+    expect(first.created).toBe(1);
+    expect(second.created).toBe(0);
+    expect(log.create.length).toBe(createsAfterFirst);
+    expect(log.draft.length).toBe(draftsAfterFirst);
+    expect(second.failed).toEqual([]);
+  });
+
 });
 
 describe("seeding the operator's map", () => {

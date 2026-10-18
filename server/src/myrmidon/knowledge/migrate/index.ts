@@ -33,13 +33,13 @@ export { readSourceTree, parseCatalog, SourceTreeError, type SourceTree, type So
 export { buildClassifyReport, classesOf, type ClassifyReport, type ImportReport, type PlannedPage } from "./report.js";
 export {
   planMigration,
-  runImport,
   readSlugMap,
   seedSlugMap,
   buildLinkResolver,
-  type KnowledgeWriter,
   type MigrationPlan,
   type PlanOptions,
   type ImportOptions,
 } from "./run.js";
+export { runImport } from "./run.js";
+export type { KnowledgeWriter } from "./run.js";
 export type { CreateKnowledgeInput, DraftKnowledgeInput, KnowledgeActor } from "../store.js";

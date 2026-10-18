@@ -10,6 +10,7 @@
 //              (create → revision + sources + frontmatter fields). `--dry-run`
 //              does the whole computation and reports what it would write.
 
+import { Buffer } from "node:buffer";
 import { classifyPath, slugFor } from "./classify.js";
 import { rewriteLinks } from "./links.js";
 import { parseSlugMap, serializeSlugMap, type MigrateMap, type MigratePagePlan } from "./map.js";
@@ -23,7 +24,13 @@ export interface KnowledgeWriter {
   create(input: CreateKnowledgeInput, actor: KnowledgeActor): Promise<{ id: string; slug: string }>;
   draft(nestId: string, idOrSlug: string, input: DraftKnowledgeInput, actor: KnowledgeActor): Promise<{ id: string; slug: string }>;
   supersede(nestId: string, idOrSlug: string, actor: KnowledgeActor, input: { bySlug: string }): Promise<unknown>;
-  searchNest(nestId: string, query: string, limit?: number): Promise<Array<{ itemId: string; slug: string; title: string }>>;
+  search(nestId: string, query: string, limit?: number): Promise<Array<{ itemId: string; slug: string; title: string }>>;
+  get(nestId: string, idOrSlug: string): Promise<{
+    deliveredContent: string | null;
+    status: string;
+    supersededByItemId: string | null;
+  } | null>;
+  listRevisions(nestId: string, idOrSlug: string): Promise<Array<{ content: string; sources: Array<{ kind: KnowledgeSourceKind; ref: string; note: string | null }> }>>;
 }
 
 export interface MigrationPlan {
@@ -253,6 +260,7 @@ interface CreatedTarget {
   slug: string;
   /** Accumulated content (in memory only) so a shared target keeps all pages. */
   content: string;
+  sources: Array<{ kind: KnowledgeSourceKind; ref: string; note: string | null }>;
 }
 
 /** Writes the plan through the K-1 service. Dry-run computes, writes nothing. */
@@ -260,8 +268,26 @@ export async function runImport(options: ImportOptions): Promise<ImportReport> {
   const { plan, service, companyId, nestId, actor, dryRun } = options;
   const writable = plan.pages.filter((page) => page.target !== null);
   const ordered = writable.slice().sort((a, b) => (a.path < b.path ? -1 : 1));
+  const expected = options.expectedTotal ?? plan.map.expectedTotal;
+  const classCountActual = plan.pages.length;
+  const mismatch = classCountActual !== expected;
+  const preflightMergeNeedsDecision = plan.pages
+    .filter((page) => page.plan.action === "merge" && !page.plan.mergeInto)
+    .map((page) => page.path)
+    .sort();
+  const unresolvedRules = writable.filter((page) => (page.plan.kind ?? "wiki") === "rule" && !page.plan.approverKind);
+  if (mismatch || preflightMergeNeedsDecision.length > 0 || unresolvedRules.length > 0) {
+    throw new MigrateInputError(
+      mismatch
+        ? `class sum ${classCountActual} != expected ${expected}`
+        : preflightMergeNeedsDecision.length > 0
+          ? `merge decisions are required for ${preflightMergeNeedsDecision.length} page(s)`
+          : `approver decisions are required for ${unresolvedRules.length} rule page(s)`,
+    );
+  }
 
   const created = new Map<string, CreatedTarget>();
+  let createdCount = 0;
   const failed: Array<{ path: string; code: string }> = [];
   const superseded: string[] = [];
   const publishIntent: string[] = [];
@@ -283,6 +309,13 @@ export async function runImport(options: ImportOptions): Promise<ImportReport> {
     const sources = sourcesFor(page, page.plan.sources ?? source?.fields.sources ?? [], plan.map.defaultSources);
     const existing = created.get(target);
     if (existing === undefined) {
+      const sourceRefs = new Set<string>();
+      const uniqueSources = sources.filter((source) => {
+        const key = `${source.kind}:${source.ref}`;
+        if (sourceRefs.has(key)) return false;
+        sourceRefs.add(key);
+        return true;
+      }).map((source) => ({ ...source, note: source.note ?? null }));
       const input: CreateKnowledgeInput = {
         companyId,
         nestId,
@@ -295,20 +328,48 @@ export async function runImport(options: ImportOptions): Promise<ImportReport> {
         tags: page.plan.tags ?? source?.fields.tags ?? [],
         approvalRequired: (page.plan.kind ?? "wiki") === "rule",
         approverKind: page.plan.approverKind ?? null,
-        sources,
+        sources: uniqueSources,
       };
       if (page.plan.publish === true) publishIntent.push(target);
       if (!dryRun) {
         try {
-          const item = await service.create(input, actor);
-          created.set(target, { id: item.id, slug: item.slug, content });
+          const alreadyThere = await service.get(nestId, target);
+          if (alreadyThere === null) {
+            const item = await service.create(input, actor);
+            created.set(target, { id: item.id, slug: item.slug, content, sources: uniqueSources });
+            createdCount += 1;
+          } else {
+            const revisions = await service.listRevisions(nestId, target);
+            const currentContent = revisions.at(-1)?.content ?? alreadyThere.deliveredContent ?? "";
+            const knownRefs = new Set(revisions.flatMap((revision) => revision.sources.map((source) => `${source.kind}:${source.ref}`)));
+            const newSources = sources.filter((source) => !knownRefs.has(`${source.kind}:${source.ref}`));
+            const preservedSources = revisions.flatMap((revision) => revision.sources).map((source) => ({ ...source, note: source.note ?? null }));
+            const sameContent = currentContent === content;
+            const appendedContent = !sameContent && currentContent.includes(content);
+            const preservedPartial = !sameContent && revisions.length > 1 && !appendedContent;
+            if ((!sameContent && !appendedContent) || newSources.length > 0) {
+              await service.draft(nestId, target, {
+                content: sameContent || appendedContent || preservedPartial ? currentContent : content,
+                changeSummary: "re-imported from plugin export",
+                sources: [...preservedSources, ...newSources.map((source) => ({ ...source, note: source.note ?? null }))].filter((source, index, all) =>
+                  all.findIndex((candidate) => candidate.kind === source.kind && candidate.ref === source.ref) === index,
+                ),
+              }, actor);
+              revisionsWritten += 1;
+              sourcesWritten += newSources.length;
+              bytesWritten += sameContent || appendedContent || preservedPartial ? 0 : Buffer.byteLength(content, "utf8");
+              appended += 1;
+            }
+            created.set(target, { id: "existing", slug: target, content: currentContent, sources: revisions.flatMap((revision) => revision.sources) });
+          }
         } catch (error) {
           failed.push({ path: page.path, code: (error as { code?: string }).code ?? "error" });
           continue;
         }
       } else {
-        created.set(target, { id: `dry-run:${target}`, slug: target, content });
+        created.set(target, { id: `dry-run:${target}`, slug: target, content, sources: uniqueSources });
       }
+      if (!dryRun && created.get(target)?.id === "existing") continue;
       bytesWritten += Buffer.byteLength(content, "utf8");
       sourcesWritten += sources.length;
       revisionsWritten += 1;
@@ -316,15 +377,19 @@ export async function runImport(options: ImportOptions): Promise<ImportReport> {
       // A second source page for the same target is knowledge, not noise:
       // its text is appended as a new revision so nothing is lost (§5.3).
       const merged = `${existing.content}\n\n${content}`;
+      const mergedSources = [...(existing.sources ?? []), ...sources].map((source) => ({ ...source, note: source.note ?? null })).filter((source, index, all) =>
+        all.findIndex((candidate) => candidate.kind === source.kind && candidate.ref === source.ref) === index,
+      );
       if (!dryRun) {
         try {
-          await service.draft(nestId, target, { content: merged, changeSummary: "merged from a second plugin page", sources }, actor);
+          await service.draft(nestId, target, { content: merged, changeSummary: "merged from a second plugin page", sources: mergedSources }, actor);
         } catch (error) {
           failed.push({ path: page.path, code: (error as { code?: string }).code ?? "error" });
           continue;
         }
       }
       existing.content = merged;
+      existing.sources = mergedSources;
       appended += 1;
       bytesWritten += Buffer.byteLength(content, "utf8");
       sourcesWritten += sources.length;
@@ -345,6 +410,13 @@ export async function runImport(options: ImportOptions): Promise<ImportReport> {
       continue;
     }
     try {
+      const sourceItem = await service.get(nestId, target);
+      if (sourceItem === null || sourceItem.status === "superseded") continue;
+      const replacement = await service.get(nestId, mergeInto);
+      if (replacement === null) {
+        failed.push({ path: page.path, code: "merge_target_missing" });
+        continue;
+      }
       await service.supersede(nestId, target, actor, { bySlug: mergeInto });
       superseded.push(target);
     } catch (error) {
@@ -358,7 +430,7 @@ export async function runImport(options: ImportOptions): Promise<ImportReport> {
       checks.push({ query: check.query, expect: check.expect, found: false, slug: null });
       continue;
     }
-    const results = await service.searchNest(nestId, check.query, 10);
+    const results = await service.search(nestId, check.query, 10);
     const hit = results.find((row) => row.slug === check.expect || row.slug.includes(check.expect) || row.title.includes(check.expect));
     checks.push({ query: check.query, expect: check.expect, found: hit !== undefined, slug: hit?.slug ?? null });
   }
@@ -379,7 +451,7 @@ export async function runImport(options: ImportOptions): Promise<ImportReport> {
     nestId,
     classes,
     classSum: { expected: options.expectedTotal ?? plan.map.expectedTotal, actual, ok: actual === (options.expectedTotal ?? plan.map.expectedTotal) },
-    created: created.size,
+    created: createdCount,
     appended,
     superseded,
     dropped: plan.pages.filter((page) => page.target === null).length,
