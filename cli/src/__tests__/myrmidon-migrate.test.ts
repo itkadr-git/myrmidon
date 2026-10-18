@@ -155,8 +155,8 @@ describe("myrmidon:migrate pure guards", () => {
     const index = buildVendorOnlyIndex();
     expect(index.tables.get("mcp_oauth_clients")).toBe("v2026.1012.0");
     expect(index.tables.size).toBeGreaterThan(20);
-    expect(index.columns.get("user.keyboard_shortcuts")).toBeDefined();
     expect(index.columns.get("agents.appearance")).toBeDefined();
+    expect(index.columns.get("routine_triggers.archived")).toBeDefined();
     // nothing of the base release is listed as vendor-only
     expect(index.tables.has("agents")).toBe(false);
     expect(index.tables.has("assets")).toBe(false);
@@ -499,7 +499,7 @@ describeEmbeddedPostgres("myrmidon:migrate against a real Postgres", () => {
     await scalar(f.sourceUrl, 'alter table "user" add column if not exists "keyboard_shortcuts" jsonb');
     await scalar(
       f.sourceUrl,
-      "insert into \"user\" (id, name, email, keyboard_shortcuts) values ('88888888-8888-4888-8888-888888888888', 'Shortcuts User', 'sc@test.local', '{\"ctrl_k\": true}')",
+      "insert into \"user\" (id, name, email, created_at, updated_at, keyboard_shortcuts) values ('88888888-8888-4888-8888-888888888888', 'Shortcuts User', 'sc@test.local', now(), now(), '{\"ctrl_k\": true}')",
     );
 
     // Dry-run through production precheck: user.keyboard_shortcuts does NOT require the flag
@@ -518,7 +518,7 @@ describeEmbeddedPostgres("myrmidon:migrate against a real Postgres", () => {
     await scalar(f2.sourceUrl, 'alter table "user" add column if not exists "keyboard_shortcuts" jsonb');
     await scalar(
       f2.sourceUrl,
-      "insert into \"user\" (id, name, email, keyboard_shortcuts) values ('88888888-8888-4888-8888-888888888888', 'Shortcuts User', 'sc@test.local', '{\"ctrl_k\": true}')",
+      "insert into \"user\" (id, name, email, created_at, updated_at, keyboard_shortcuts) values ('88888888-8888-4888-8888-888888888888', 'Shortcuts User', 'sc@test.local', now(), now(), '{\"ctrl_k\": true}')",
     );
     await scalar(f2.sourceUrl, 'alter table "agents" add column if not exists "appearance" jsonb');
     await scalar(f2.sourceUrl, "update \"agents\" set \"appearance\" = '{\"theme\": \"dark\"}'::jsonb");
