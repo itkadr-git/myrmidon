@@ -121,6 +121,15 @@ describe("POST disk-report", () => {
     expect(readBotDiskReports()).toHaveLength(0);
   });
 
+  it("a body without botKey is accepted and stored under the caller's key", async () => {
+    const body = { ...reportFor(BOT_A) } as Record<string, unknown>;
+    delete body.botKey;
+    const res = await request(appFor(agent(BOT_A))).post(URL).send(body);
+    expect(res.status).toBe(200);
+    expect(readBotDiskReports().map((e) => e.botKey)).toEqual([BOT_A]);
+    expect(readBotDiskReport(BOT_A)!.report.botKey).toBe(BOT_A);
+  });
+
   it("a board actor is 403 and an anonymous call is 401", async () => {
     expect((await request(appFor(boardActor)).post(URL).send(reportFor(BOT_A))).status).toBe(403);
     expect((await request(appFor({ type: "none", source: "none" })).post(URL).send(reportFor(BOT_A))).status).toBe(401);

@@ -37,6 +37,10 @@ import {
   BOT_DISK_DEFAULT_GIT_MIRROR_REFRESH_MS,
   BOT_DISK_DEFAULT_IDLE_TTL_MS,
   BOT_DISK_DEFAULT_SHARED_CACHE_ROLES,
+  BOT_DISK_DEFAULT_UV_CACHE_DIR,
+  BOT_DISK_DEFAULT_UV_LINK_MODE,
+  BOT_DISK_UV_LINK_MODES,
+  botDiskUvCacheDirProblem,
   BOT_DISK_MAX_GIT_MIRROR_REFRESH_MS,
   BOT_DISK_MAX_IDLE_TTL_MS,
   BOT_DISK_MIN_GIT_MIRROR_REFRESH_MS,
@@ -270,6 +274,35 @@ export function BotDiskSettingsPanel({ now, taskStatuses }: { now?: number; task
   };
   const storeUnchanged = view !== undefined && (storeDraft ?? "").trim() === (view.settings.pnpmStoreDir ?? "");
 
+  const [uvCacheDirDraft, setUvCacheDirDraft] = useState<string | null>(null);
+  const [uvError, setUvError] = useState<string | null>(null);
+  useEffect(() => {
+    if (view && uvCacheDirDraft === null) setUvCacheDirDraft(view.settings.uvCacheDir ?? "");
+  }, [view, uvCacheDirDraft]);
+  const saveUv = useMutation({
+    mutationFn: botDiskApi.setUv,
+    onSuccess: (saved) => {
+      setUvError(null);
+      setUvCacheDirDraft(saved.settings.uvCacheDir ?? "");
+      queryClient.invalidateQueries({ queryKey: botDiskQueryKey });
+    },
+    onError: (err) => setUvError(err instanceof Error ? err.message : "Could not save the uv settings. Try again."),
+  });
+  const submitUvCacheDir = () => {
+    const dir = (uvCacheDirDraft ?? "").trim();
+    if (dir !== "" && dir !== BOT_DISK_DEFAULT_UV_CACHE_DIR && dir.startsWith(`${BOT_DISK_DEFAULT_UV_CACHE_DIR}/`)) {
+      setUvError(`Use ${BOT_DISK_DEFAULT_UV_CACHE_DIR} or an allowed per-bot cache directory`);
+      return;
+    }
+    const problem = botDiskUvCacheDirProblem(dir);
+    if (dir !== "" && problem !== null) {
+      setUvError(problem);
+      return;
+    }
+    saveUv.mutate({ uvCacheDir: dir === "" ? null : dir });
+  };
+  const uvCacheUnchanged = view !== undefined && (uvCacheDirDraft ?? "").trim() === (view.settings.uvCacheDir ?? "");
+
   const reposUnchanged =
     view !== undefined && parseRepos(reposDraft ?? "").join("\n") === (view.settings.gitMirrorRepos ?? []).join("\n");
 
@@ -450,6 +483,26 @@ export function BotDiskSettingsPanel({ now, taskStatuses }: { now?: number; task
           here as an attention card.
         </p>
         {storeError && <p className="text-xs text-red-600">{storeError}</p>}
+      </div>
+      <div className="space-y-2">
+        <Label htmlFor="bot-disk-uv-cache">uv cache directory</Label>
+        <div className="flex items-center gap-2">
+          <Input id="bot-disk-uv-cache" value={uvCacheDirDraft ?? ""} placeholder={BOT_DISK_DEFAULT_UV_CACHE_DIR}
+            onChange={(event) => { setUvCacheDirDraft(event.target.value); setUvError(null); }}
+            data-testid="bot-disk-uv-cache-input" />
+          <Button size="sm" onClick={submitUvCacheDir} disabled={saveUv.isPending || uvCacheDirDraft === null || uvCacheUnchanged}>
+            {saveUv.isPending ? "Saving…" : "Save"}
+          </Button>
+        </div>
+        <Label htmlFor="bot-disk-uv-link-mode">uv link mode</Label>
+        <select id="bot-disk-uv-link-mode" className="h-8 rounded-md border bg-background px-2 text-sm"
+          value={view?.settings.uvLinkMode ?? BOT_DISK_DEFAULT_UV_LINK_MODE}
+          onChange={(event) => saveUv.mutate({ uvLinkMode: event.target.value as (typeof BOT_DISK_UV_LINK_MODES)[number] })}
+          disabled={saveUv.isPending || !view} data-testid="bot-disk-uv-link-mode-select">
+          {BOT_DISK_UV_LINK_MODES.map((mode) => <option key={mode} value={mode}>{mode}</option>)}
+        </select>
+        <p className="text-xs text-muted-foreground">Applies to bot containers on their next reconcile pass.</p>
+        {uvError && <p className="text-xs text-red-600">{uvError}</p>}
       </div>
       <BotDiskLifecycleEditSection view={view} queryClient={queryClient} />
       <BotDiskLifecycleSection now={now} taskStatuses={taskStatuses} />

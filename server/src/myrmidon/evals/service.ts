@@ -27,6 +27,7 @@ import {
   type EvalRubric,
   type EvalRunOutcome,
   type EvalRunScores,
+  type EvalSubjectKind,
   type EvalTaskKind,
   type EvalVerdict,
   type EvalVerdictForLifecycle,
@@ -51,6 +52,13 @@ export interface EvalRunInput {
   role: string;
   /** The candidate identifier: a skill version, an agent config, a draft. */
   subject: string;
+  /**
+   * myrmidon(1.6.6 KNOWLEDGE-2.0 K-9): set when the run is the knowledge gate
+   * for a published item — the item kind and its slug. Free-form candidate
+   * runs leave both undefined.
+   */
+  subjectKind?: EvalSubjectKind | null;
+  subjectRef?: string | null;
   /** The answer text per task slug. Missing slugs score zero. */
   answers: Record<string, string>;
   /** CI pass rate for code tasks (0-100); required to fold code scoring in. */
@@ -65,6 +73,8 @@ export interface EvalRunRecord {
   companyId: string;
   role: string;
   subject: string;
+  subjectKind: string | null;
+  subjectRef: string | null;
   baselineId: string | null;
   confirmRunId: string | null;
   kind: "first" | "confirm";
@@ -127,6 +137,8 @@ function toOutcome(row: typeof evalRuns.$inferSelect): EvalRunRecord {
     companyId: row.companyId,
     role: row.role,
     subject: row.subject,
+    subjectKind: row.subjectKind,
+    subjectRef: row.subjectRef,
     baselineId: row.baselineId,
     confirmRunId: row.confirmRunId,
     kind: row.kind as "first" | "confirm",
@@ -274,6 +286,8 @@ export function createEvalsService(db: Db, deps: EvalsServiceDeps) {
         companyId: input.companyId,
         role: input.role,
         subject: input.subject,
+        subjectKind: input.subjectKind ?? null,
+        subjectRef: input.subjectRef ?? null,
         baselineId: input.baselineRunId ?? null,
         kind: "first",
         status: "running",
@@ -363,6 +377,8 @@ export function createEvalsService(db: Db, deps: EvalsServiceDeps) {
         companyId: first.companyId,
         role: first.role,
         subject: first.subject,
+        subjectKind: first.subjectKind,
+        subjectRef: first.subjectRef,
         baselineId: first.baselineId,
         confirmRunId: firstRunId,
         kind: "confirm",

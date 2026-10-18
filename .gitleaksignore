@@ -1,0 +1,4 @@
+# Fake fixtures in 1.6.5 botd test files (neutral placeholder strings, not credentials).
+# Fingerprints of the two tag commits the forward-merge range re-scans.
+3e8022e942e7a42ea41800b52e19406fd6a61689:scripts/myrmidon/bot-runtime/botd-classify.test.mjs:generic-api-key:30
+3ba1594facc8459895d818f7eddbe42e1d338ebb:scripts/myrmidon/bot-runtime/botd-desired.test.mjs:generic-api-key:14

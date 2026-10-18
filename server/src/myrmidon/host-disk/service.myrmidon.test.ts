@@ -34,6 +34,16 @@ const sweep: HostDiskSweepResult = {
   consumers: [{ path: "/srv/data/workspaces", sizeBytes: 40 * 1024 * 1024 * 1024 }],
   signalled: true,
   error: null,
+  state: "measured",
+  measurements: [
+    {
+      path: "/srv/data",
+      usedPercent: 91,
+      usedBytes: 91 * 1024 * 1024 * 1024,
+      totalBytes: 100 * 1024 * 1024 * 1024,
+      freeBytes: 9 * 1024 * 1024 * 1024,
+    },
+  ],
 };
 
 describe("hostDiskService read", () => {

@@ -17,7 +17,7 @@
 
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { boardProcesses, createDb, type Db } from "@paperclipai/db";
+import { boardLeases, boardProcesses, createDb, type Db } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -28,6 +28,7 @@ import {
 } from "../monitoring/metrics/process-metrics.js";
 import { resolveBoardProcessIdentity, type BoardProcessIdentity } from "./domain.js";
 import { createBoardProcessPulse } from "./pulse.js";
+import { createBoardLeaseStore } from "./leases.js";
 import { createBoardProcessStore } from "./store.js";
 
 type CapturedRow = Record<string, unknown>;
@@ -157,6 +158,7 @@ describeEmbeddedPostgres("board process store against Postgres (myrmidon PROCS-0
   afterAll(async () => {
     disablePulseEventLoopMonitor();
     if (db) await db.delete(boardProcesses);
+    if (db) await db.delete(boardLeases);
     if (tempDb) await tempDb.cleanup();
   });
 
@@ -219,5 +221,31 @@ describeEmbeddedPostgres("board process store against Postgres (myrmidon PROCS-0
     const bootIds = (await store.listProcesses()).map((row) => row.bootId);
     expect(bootIds).toContain(live.bootId);
     expect(bootIds).not.toContain(dead.bootId);
+  });
+
+  it("reads the lease rows by name, with epoch as a number and an unheld lease as nulls", async () => {
+    await db.insert(boardLeases).values([
+      {
+        name: "scheduler",
+        holderBootId: "boot-a",
+        epoch: 12,
+        acquiredAt: t0,
+        expiresAt: new Date(t0.getTime() + 30_000),
+      },
+      { name: "backup" },
+    ]);
+
+    const leases = await createBoardLeaseStore(db).listLeases();
+
+    expect(leases).toEqual([
+      { name: "backup", holderBootId: null, epoch: 0, acquiredAt: null, expiresAt: null },
+      {
+        name: "scheduler",
+        holderBootId: "boot-a",
+        epoch: 12,
+        acquiredAt: t0,
+        expiresAt: new Date(t0.getTime() + 30_000),
+      },
+    ]);
   });
 });

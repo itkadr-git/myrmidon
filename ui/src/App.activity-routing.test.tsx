@@ -107,6 +107,20 @@ vi.mock("./pages/Costs.production", () => ({
   },
 }));
 
+vi.mock("./pages/SwarmSupervisor.production", () => ({
+  SwarmSupervisor: () => {
+    const location = useLocation();
+    return <div>{`SWARM_SUPERVISOR@${location.pathname}`}</div>;
+  },
+}));
+
+vi.mock("./pages/Foraging", () => ({
+  Foraging: () => {
+    const location = useLocation();
+    return <div>{`FORAGING@${location.pathname}`}</div>;
+  },
+}));
+
 vi.mock("./pages/NotFound", () => ({
   NotFoundPage: ({ scope }: { scope: string }) => <div>{`NOT_FOUND:${scope}`}</div>,
 }));
@@ -192,6 +206,34 @@ describe("App Activity routing (PAP-16302)", () => {
     expect(container.textContent).not.toContain("No organization matches prefix");
     flushSync(() => root.unmount());
   });
+
+  it.each([
+    ["/swarm-claim", "SWARM_SUPERVISOR@/PAP/swarm-claim"],
+    ["/foraging", "FORAGING@/PAP/foraging"],
+  ])("redirects the unprefixed Myrmidon route %s to the selected company", async (path: string, expected: string) => {
+    // These pages live in the production surface (Streamlined UI off), where the sidebar shows them.
+    streamlinedUiState.enabled = false;
+    const root = renderAppAt(container, path);
+    await waitForRoute(container, expected);
+    expect(container.textContent).not.toContain("NOT_FOUND");
+    flushSync(() => root.unmount());
+  });
+
+  it.each([
+    [true, "/PAP/swarm-claim", "SWARM_SUPERVISOR@/PAP/swarm-claim"],
+    [false, "/PAP/swarm-claim", "SWARM_SUPERVISOR@/PAP/swarm-claim"],
+    [true, "/PAP/foraging", "FORAGING@/PAP/foraging"],
+    [false, "/PAP/foraging", "FORAGING@/PAP/foraging"],
+  ])(
+    "serves the prefixed Myrmidon page with Streamlined UI enabled=%s at %s (OPE-7948)",
+    async (enabled: boolean, path: string, expected: string) => {
+      streamlinedUiState.enabled = enabled;
+      const root = renderAppAt(container, path);
+      await waitForRoute(container, expected);
+      expect(container.textContent).not.toContain("NOT_FOUND");
+      flushSync(() => root.unmount());
+    },
+  );
 
   it("serves organization and entity-scoped run history beneath Activity", async () => {
     const root = renderAppAt(
