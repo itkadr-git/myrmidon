@@ -34,6 +34,7 @@ export const MODEL_PROVIDER_TYPES = [
   "dashscope",
   "google",
   "openai-compatible",
+  "chatgpt-pool",
 ] as const;
 export type ModelProviderType = (typeof MODEL_PROVIDER_TYPES)[number];
 

@@ -1,3 +1,4 @@
+// myrmidon(DEBRAND-c): persist browser state under the Myrmidon namespace.
 export const TASK_COLLECTION_PREFERENCES_VERSION = 1 as const;
 
 type StorageLike = Pick<Storage, "getItem" | "setItem">;
@@ -46,7 +47,7 @@ export function taskCollectionPreferencesStorageKey({
   companyId,
   collectionKey,
 }: Pick<TaskCollectionPreferenceLocation, "companyId" | "collectionKey">): string {
-  return `paperclip:task-collection:v${TASK_COLLECTION_PREFERENCES_VERSION}:${encodeURIComponent(companyId)}:${encodeURIComponent(collectionKey)}`;
+  return `myrmidon:task-collection:v${TASK_COLLECTION_PREFERENCES_VERSION}:${encodeURIComponent(companyId)}:${encodeURIComponent(collectionKey)}`;
 }
 
 function isCurrentEnvelope<TViewState, TColumn extends string>(

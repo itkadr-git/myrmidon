@@ -15,8 +15,13 @@
  * addressees, so the caller (part B) can answer politely with the candidates.
  * Resolution is read-only: one select over `agents`, no vendor file changes.
  */
-import { and, eq } from "drizzle-orm";
+import { and, asc, eq } from "drizzle-orm";
 import { agents, type Db } from "@paperclipai/db";
+import {
+  isHiddenAgentCard,
+  isRetiredAgentName,
+  isServiceAgentCard,
+} from "./grouping.js";
 
 /** The addressee this module resolved, in the caller's terms. */
 export interface TelegramAddressee {
@@ -212,6 +217,71 @@ function readCardTelegramAliases(card: Record<string, unknown> | null | undefine
 }
 
 /**
+ * myrmidon(1.6.5 OPE-6318 part A): the short alias computed for a card that
+ * carries no `telegramAliases` — the last dash-separated segment of the name,
+ * lower-cased, latin letters/digits/underscore only (`adm-dev-eng-15` → `15`,
+ * `bbq-editor` → `editor`, `Wiki Maintainer` → `wikimaintainer`). A tail with
+ * no latin character at all yields "" and the card gets no computed alias.
+ *
+ * This is a READ-TIME convenience: nothing is written back to the card, so a
+ * later explicit `telegramAliases` keeps winning and no migration is needed.
+ */
+export function defaultAliasFromName(name: string): string {
+  const segments = name.trim().toLowerCase().split("-");
+  const tail = segments[segments.length - 1] ?? "";
+  return tail.replace(/[^a-z0-9_]/g, "");
+}
+
+/** A card as the alias assignment sees it. */
+export interface AgentAliasCard {
+  name: string;
+  aliases: string[];
+}
+
+/**
+ * Fills the computed default alias into every card that has none, company-wide
+ * so one alias means one agent: an alias an operator set explicitly is
+ * reserved first, then the company's agent names (a computed alias never
+ * shadows another agent's name), and a collision inside the same base gets
+ * the `-2`, `-3`, … suffix. Cards are visited in name order, so the same
+ * company always yields the same aliases; `/agents`, `/to` and the @-mention
+ * resolver therefore agree on what a computed alias points at.
+ */
+export function addDefaultAliases<T extends AgentAliasCard>(cards: readonly T[]): T[] {
+  const reserved = new Set<string>();
+  for (const card of cards) {
+    for (const alias of card.aliases) {
+      const key = normalizeAlias(alias);
+      if (key) reserved.add(key);
+    }
+  }
+  const byName = new Map<string, T>();
+  for (const card of cards) {
+    const key = normalizeAlias(card.name);
+    if (key && !byName.has(key)) byName.set(key, card);
+  }
+  const order = cards
+    .map((card, index) => ({ card, index }))
+    .sort((a, b) => a.card.name.localeCompare(b.card.name) || a.index - b.index);
+  const assigned = new Map<number, string>();
+  for (const { card, index } of order) {
+    if (card.aliases.length > 0) continue;
+    const base = defaultAliasFromName(card.name);
+    if (!base) continue;
+    let candidate = base;
+    for (let suffix = 1; reserved.has(candidate) || (byName.has(candidate) && byName.get(candidate) !== card); suffix += 1) {
+      candidate = `${base}-${suffix + 1}`;
+    }
+    reserved.add(candidate);
+    assigned.set(index, candidate);
+  }
+  return cards.map((card, index) => {
+    const alias = assigned.get(index);
+    return alias ? { ...card, aliases: [alias] } : card;
+  });
+}
+
+/**
  * `@<alias>` tokens the resolver looks for. A token is `@` followed by word
  * characters (letters, digits, underscore). The longest match wins so a
  * `@гип` token cannot shadow `@гип2`.
@@ -256,20 +326,39 @@ async function loadCompanyAgents(db: Db, companyId: string): Promise<AgentCandid
       id: agents.id,
       name: agents.name,
       title: agents.title,
+      status: agents.status,
       adapterConfig: agents.adapterConfig,
       metadata: agents.metadata,
     })
     .from(agents)
-    .where(eq(agents.companyId, companyId));
-  return rows.map((row) => ({
-    id: row.id,
-    name: row.name,
-    title: row.title,
-    aliases: [
-      ...readCardTelegramAliases(row.adapterConfig as Record<string, unknown> | null),
-      ...readCardTelegramAliases(row.metadata as Record<string, unknown> | null),
-    ],
-  }));
+    .where(eq(agents.companyId, companyId))
+    // Name order decides the computed default aliases: when two cards want the
+    // same short handle, the first name wins, and /agents (same order) agrees.
+    .orderBy(asc(agents.name));
+  const cards = rows
+    // The same live-card rule as /agents: a service card, an archived
+    // `-retired` copy or a status no chat can reach is not addressable, so a
+    // mention of one keeps failing with the candidate list.
+    .filter(
+      (row) =>
+        !isHiddenAgentCard({
+          status: row.status,
+          retired: isRetiredAgentName(row.name),
+          service: isServiceAgentCard(row.metadata),
+        }),
+    )
+    .map((row) => ({
+      id: row.id,
+      name: row.name,
+      title: row.title,
+      aliases: [
+        ...readCardTelegramAliases(row.adapterConfig as Record<string, unknown> | null),
+        ...readCardTelegramAliases(row.metadata as Record<string, unknown> | null),
+      ],
+    }));
+  // The computed default aliases are drawn over the whole company, so /agents,
+  // /to and @-mentions pick the same agent for the same short handle.
+  return addDefaultAliases(cards);
 }
 
 /**

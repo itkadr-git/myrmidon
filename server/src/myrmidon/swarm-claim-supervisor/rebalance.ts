@@ -1,7 +1,7 @@
 // myrmidon(1.6-SWARM-CLAIM-B): the supervisor's rebalance action.
 //
-// One action: release a live lease so the task returns to its role queue and
-// the next agent of that role is woken immediately. The claim table and the
+// One action: release a live lease, take the owner off the task and hand it to
+// the board matcher, which pairs it with a free agent of its caste. The claim table and the
 // release path belong to part A (`server/src/myrmidon/swarm-claim/`): when
 // part A's `releaseClaim` is importable it is used (it also writes the
 // `issue.swarm_claim.released` activity); otherwise the port falls back to a
@@ -10,8 +10,9 @@
 
 import { sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { SWARM_CLAIM_QUEUE_WAKE_REASON, type SwarmSupervisorReadPort } from "./view.js";
+import type { SwarmSupervisorReadPort } from "./view.js";
 import { createSwarmSupervisorDbPort } from "./view.js";
+import { clearExpiredAssignee } from "../swarm-claim/store.js";
 
 export const SUPERVISOR_RELEASE_REASON = "supervisor_rebalance";
 export const SWARM_CLAIM_SUPERVISOR_RELEASE_ACTION = "issue.swarm_claim_supervisor_release";
@@ -20,6 +21,7 @@ export interface SwarmReleaseLeaseResult {
   released: boolean;
   claimId: string;
   issueId: string | null;
+  /** The agent the matcher paired with the task (and woke); null when none was free. */
   wokenAgentId: string | null;
   reason: string;
 }
@@ -41,17 +43,13 @@ export class ClaimNotLiveError extends Error {
 
 export interface SwarmRebalanceDeps {
   port: SwarmSupervisorReleasePort;
-  /** Board wake admission path; every limit and gate is enforced inside it. */
-  enqueueWakeup: (
-    agentId: string,
-    opts: {
-      source?: "automation";
-      triggerDetail?: "system";
-      reason?: string;
-      idempotencyKey?: string;
-      contextSnapshot?: Record<string, unknown>;
-    },
-  ) => Promise<unknown>;
+  /**
+   * The event "the task has no owner and is ready" (design §3.5): the board's
+   * matcher for one task (`matcher.forIssue`). It owns the wake — admission
+   * limits and gates are enforced inside it. Absent (the swarm is off or in a
+   * unit test), the release stands alone.
+   */
+  matchIssue?: (issueId: string) => Promise<{ agentId: string } | null>;
   /** Optional activity log; absent in unit tests. */
   logActivity?: (input: {
     companyId: string;
@@ -75,7 +73,7 @@ function toDate(value: Date | string | null): Date | null {
 }
 
 /**
- * Release a live lease and wake the next agent of the role. Throws
+ * Release a live lease, take the owner off the task and hand it to the matcher. Throws
  * `ClaimNotFoundError` / `ClaimNotLiveError` for the 404/409 cases; returns
  * `released: false` only when part A's release path declined the release.
  */
@@ -96,57 +94,34 @@ export async function releaseLeaseForRebalance(
   const expiresAt = toDate(claim.expires_at);
   if (expiresAt && expiresAt.getTime() < nowMs) throw new ClaimNotLiveError(claimId);
 
-  const [agents, liveRunAgents, ttlCap] = await Promise.all([
-    deps.port.listAgents(companyId),
-    deps.port.liveRunAgentIds(companyId),
-    deps.port.maxActiveTasksPerAgent(),
-  ]);
-  const holder = agents.find((agent) => agent.agent_id === claim.agent_id) ?? null;
-  const role = holder?.role ?? "general";
-
-  // Count the holder's remaining live claims (excluding the one being
-  // released) to know whether the role still needs a wake.
-  const activeByAgent = new Map<string, number>();
-  for (const row of claimRows) {
-    if (toDate(row.released_at) !== null) continue;
-    if (row.claim_id === claimId) continue;
-    activeByAgent.set(row.agent_id, (activeByAgent.get(row.agent_id) ?? 0) + 1);
-  }
-
   const released = await releaseThroughPort(deps, companyId, claimId, reason, deps.now());
   if (!released) {
     // Part A's release path declined (for example the claim was released
-    // concurrently); report it without a wake.
+    // concurrently); report it without a match.
     return { released: false, claimId, issueId: claim.issue_id, wokenAgentId: null, reason };
   }
 
-  // Wake the next agent of the role: idle (no live run), under the cap, not
-  // the holder that just lost the lease. All admission gates (pause,
-  // maintenance, limits, concurrency, budget) are enforced by enqueueWakeup
-  // itself; if no agent qualifies the periodic claim sweep still returns the
-  // task to circulation.
+  // 1.6.5 (OPE-6608, review item 3 / design §4.2): the lease is gone, so the
+  // task stops being the holder's — the board takes the owner off it and hands
+  // it to the matcher, which pairs it with a free agent of its caste (ties by
+  // the smallest agent id) and wakes THAT agent for a task that is already its
+  // own. The old shape (leave the owner, wake "the next agent of the role" by
+  // load) woke an agent for a task owned by somebody else; the dispatcher
+  // cancelled that run as `reassigned` before its checkout, and the same
+  // holder kept the task, so nothing rotated. The wake is best-effort: the
+  // periodic matcher pass is the safety net.
   let wokenAgentId: string | null = null;
-  const cap = typeof ttlCap === "number" && ttlCap > 0 ? ttlCap : null;
-  const candidates = agents
-    .filter((agent) => agent.role === role)
-    .filter((agent) => agent.agent_id !== claim.agent_id)
-    .filter((agent) => agent.status !== "paused" && agent.status !== "error")
-    .filter((agent) => !liveRunAgents.has(agent.agent_id))
-    .filter((agent) => cap === null || (activeByAgent.get(agent.agent_id) ?? 0) < cap)
-    .sort((a, b) => (activeByAgent.get(a.agent_id) ?? 0) - (activeByAgent.get(b.agent_id) ?? 0));
-  const wakeTarget = candidates[0];
-  if (wakeTarget) {
+  try {
+    await deps.port.unassignIssue(companyId, claim.issue_id, claim.agent_id, deps.now());
+  } catch {
+    // The release already happened; an owner left in place is picked up again
+    // by the periodic pass, which never wakes anyone for a foreign task.
+  }
+  if (deps.matchIssue) {
     try {
-      await deps.enqueueWakeup(wakeTarget.agent_id, {
-        source: "automation",
-        triggerDetail: "system",
-        reason: SWARM_CLAIM_QUEUE_WAKE_REASON,
-        idempotencyKey: `swarm_claim_rebalance:${claimId}`,
-        contextSnapshot: { issueId: claim.issue_id },
-      });
-      wokenAgentId = wakeTarget.agent_id;
+      const pair = await deps.matchIssue(claim.issue_id);
+      wokenAgentId = pair?.agentId ?? null;
     } catch {
-      // The wake is best-effort: the periodic claim sweep is the safety net.
       wokenAgentId = null;
     }
   }
@@ -225,6 +200,8 @@ async function resolvePartARelease(): Promise<PartAReleaseClaim | null> {
  */
 export interface SwarmSupervisorReleasePort extends SwarmSupervisorReadPort {
   releaseClaim(companyId: string, claimId: string, reason: string, now: Date): Promise<boolean>;
+  /** Take the owner off a queue-status task (conditional on the owner still being `agentId`). */
+  unassignIssue(companyId: string, issueId: string, agentId: string, now: Date): Promise<boolean>;
 }
 
 export function createSwarmSupervisorReleasePort(
@@ -252,5 +229,7 @@ export function createSwarmSupervisorReleasePort(
       `);
       return Array.isArray(rows) && rows.length > 0;
     },
+    unassignIssue: (companyId, issueId, agentId, now) =>
+      clearExpiredAssignee(db, { companyId, issueId, agentId, now }),
   };
 }

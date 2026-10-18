@@ -10,6 +10,7 @@ import { execute as grokExecute } from "@paperclipai/adapter-grok-local/server";
 import { execute as kimiExecute } from "@paperclipai/adapter-kimi-local/server";
 import { execute as opencodeExecute } from "@paperclipai/adapter-opencode-local/server";
 import { execute as piExecute } from "@paperclipai/adapter-pi-local/server";
+import { execute as ompExecute } from "@paperclipai/adapter-omp-local/server";
 import {
   PROMPT_TOO_LARGE_FOR_ARGUMENT,
   resetCliFlagSupportCache,
@@ -42,8 +43,8 @@ if (argv.includes("--help")) {
   console.log(${JSON.stringify(help)});
   process.exit(0);
 }
-if (argv.includes("--list-models")) {
-  console.log("provider  model\\ngoogle    gemini-3-flash-preview");
+if (argv.includes("--list-models") || (argv.includes("models") && argv.includes("ls"))) {
+  console.log("provider  model\\ngoogle    gemini-3-flash-preview\\nopenai    gpt-4o");
   process.exit(0);
 }
 if (argv.includes("--version") || argv[0] === "version") {
@@ -91,6 +92,7 @@ const STDIN_OR_FILE_ADAPTERS: AdapterCase[] = [
   { name: "grok-local", adapterType: "grok_local", execute: grokExecute as Execute },
   { name: "opencode-local", adapterType: "opencode_local", execute: opencodeExecute as Execute, config: { model: "openai/gpt-5" } },
   { name: "pi-local", adapterType: "pi_local", execute: piExecute as Execute, config: { model: "google/gemini-3-flash-preview" } },
+  { name: "omp-local", adapterType: "omp_local", execute: ompExecute as Execute, config: { model: "openai/gpt-4o" } },
 ];
 
 let root: string;

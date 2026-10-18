@@ -18,6 +18,10 @@
       "kind": "vitest-project"
     },
     {
+      "package": "@paperclipai/adapter-omp-local",
+      "kind": "vitest-project"
+    },
+    {
       "package": "@paperclipai/adapter-pi-local",
       "kind": "vitest-project"
     },
@@ -79,6 +83,14 @@
     },
     {
       "package": "@paperclipai/plugin-llm-wiki",
+      "kind": "vitest-in-package",
+      "args": [
+        "--config",
+        "./vitest.config.ts"
+      ]
+    },
+    {
+      "package": "@paperclipai/plugin-mail-imap",
       "kind": "vitest-in-package",
       "args": [
         "--config",

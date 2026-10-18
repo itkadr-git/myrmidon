@@ -1,3 +1,4 @@
+// myrmidon(DEBRAND-c): persist browser state under the Myrmidon namespace.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Navigate, useNavigate, useParams } from "@/lib/router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -68,7 +69,7 @@ import type {
   RoutineVariable,
 } from "@paperclipai/shared";
 
-const LAST_SECTION_STORAGE_KEY = "paperclip.routineLastSection";
+const LAST_SECTION_STORAGE_KEY = "myrmidon.routineLastSection";
 
 export function buildRoutineProjectOptions(
   projects: ReadonlyArray<{ id: string; name: string; description?: string | null; archivedAt?: Date | string | null }>,

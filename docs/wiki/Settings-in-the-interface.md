@@ -46,10 +46,26 @@ divergence
 Related: the **WIP limit** caps how many tasks one agent holds in flight —
 **Company Settings → WIP limit**, with the live load on every agent row
 ([wip-limit](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/wip-limit.md)).
-Role queue parameters (lease TTL, per-agent active-task ceiling, sweep
-interval, P0 preemption) are edited live in **Instance → General → Role
-queues (SWARM-CLAIM)**
-([swarm-claim-settings](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/swarm-claim-settings.md)).
+Swarm self-organization parameters (starting pheromone strength per
+priority, waiting bonus, penalty for a failed run without a task change,
+lease TTL, per-agent active-task ceiling, P0 preemption) are
+edited live in **Instance → General → Self-organization (swarm)** — the
+swarm is off by default and is turned on with the "Enable the swarm" switch;
+the task cooldown after a run that moved nothing (base 30 min, cap 24 h) is
+set by the wake guard (`general.swarm.cooldownBaseMin` /
+`cooldownCeilingHours`); how to
+switch the swarm on and verify it in three steps —
+[swarm-self-organization](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/swarm-self-organization.md).
+Lower-level queue details —
+[swarm-claim-settings](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/swarm-claim-settings.md).
+
+## Agent castes (the company role directory)
+
+**Company Settings → Agent castes** — the company's own directory of agent
+roles. It starts from the twelve built-in castes and the owner can create,
+edit, and delete castes; the role on the agent card is a key from this
+directory, and changes are visible to the swarm at once, without a restart
+([custom-castes](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/custom-castes.md)).
 
 ## Parallel helpers
 
@@ -62,6 +78,28 @@ and the per-agent default (`2`), and shows a capacity hint summing the
 resolved limits against the host's build slots. Saving applies on every bot's
 next reconcile tick, without a restart. Details:
 [parallel-helpers](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/parallel-helpers.md).
+
+## Parallel helpers
+
+Agents can split a task across parallel helper subagents
+(`delegate_task`). On the card of a `hermes_gateway` agent, the **Parallel
+helpers** section turns this on and sets the per-agent limit, the helper
+model and an optional per-helper turn budget; **Instance → General →
+"Parallel helpers"** sets the company ceiling (default `10`, no built-in
+upper bound since HELPERS-NO-CAP (1.6.1) — a saved ceiling above 50 only
+shows a host-load warning) and the per-agent default (`2`), and shows a
+capacity hint summing the resolved limits against the host's build slots.
+Saving applies on every bot's
+next reconcile tick, without a restart. Details:
+[parallel-helpers](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/parallel-helpers.md).
+
+## Agent castes (the company role directory)
+
+**Company Settings → Agent castes** — the company's own directory of agent
+roles. It starts from the twelve built-in castes and the owner can create,
+edit, and delete castes; the role on the agent card is a key from this
+directory, and changes are visible to the swarm at once, without a restart
+([custom-castes](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/custom-castes.md)).
 
 ## Backups
 
@@ -97,11 +135,21 @@ keep the database limit unchanged (1.6.5 BACKUP-STATEMENT-TIMEOUT).
 - **Attention feed windows** — the "Attention feed" panel on Instance →
   General (since 1.6.6) edits how far back the attention feed looks for an
   unresolved failed or timed-out run (1–365 days, default 7) and how long
-  the built feed is reused per company (0–300 seconds, default 45; `0`
-  turns the cache off). Each field shows its bounds, the built-in default
+  the built feed is reused per company (0–300 seconds, default 60; `0`
+  turns the cache off; a snapshot older than the TTL, up to twice the TTL, is
+  served at once while one background rebuild refreshes it). Each field shows its bounds, the built-in default
   and whether the value in force comes from the saved settings row or from
   the default. Saving applies without a restart: the feed picks the new
   value up on its next build. Read by any board member, written by an
   instance administrator via `GET`/`PATCH /api/myrmidon/attention-feed`
   (stored as `attentionFailedRunHorizonDays` and
   `attentionFeedCacheTtlSeconds` in the instance settings).
+
+## Model shown for a gateway run
+
+The run detail on the agent page names the model that actually answered.
+For `hermes_gateway` runs the value comes from a three-step fallback: the
+model the gateway returns in its response, then the LiteLLM `model_group`
+the request was routed to, then the model configured on the launch. Empty
+strings and the sentinel `unknown` are dropped at each step, so the field is
+either a real model name or absent.

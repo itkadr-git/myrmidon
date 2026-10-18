@@ -316,6 +316,11 @@ describe("decideQueuedRunStaleness", () => {
       errorCode: "issue_terminal_status",
     },
     {
+      name: "queued_run_issue_not_startable (backlog)",
+      overrides: { issueStatus: "backlog" } satisfies Partial<QueuedRunFacts>,
+      errorCode: "queued_run_issue_not_startable",
+    },
+    {
       name: "issue_execution_lock_changed",
       overrides: {
         retryReasonKind: "max_turn_continuation",
@@ -353,6 +358,16 @@ describe("decideQueuedRunStaleness", () => {
     const decision = decideQueuedRunStaleness(facts, NOW);
     expect(decision.stale).toBe(true);
     expect(decision).toMatchObject({ errorCode });
+  });
+
+  it("keeps a hidden todo queued (Summarizer pattern)", () => {
+    const facts = {
+      ...baseStalenessFacts(),
+      issueStatus: "todo",
+      issueHiddenAt: new Date("2025-01-01T00:00:00Z"),
+    } satisfies Partial<QueuedRunFacts>;
+    const decision = decideQueuedRunStaleness(facts, NOW);
+    expect(decision.stale).toBe(false);
   });
 
   describe.each([

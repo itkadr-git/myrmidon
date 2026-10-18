@@ -1,7 +1,0 @@
----
-divergence-section: L3b — пауза оператора не эскалирует задачи как зависшие
----
-
-## divergence
-
-| REVIEW-PARTICIPANT-LIVE-SKIP | Разбор зависших назначенных задач не уводит задачу на ревью в board-only `blocked`, пока у назначенного участника стадии есть живой прогон по ЛЮБОМУ тикету: перед эскалацией к доске новый helper `getLatestLiveRunForAgent` ищет последний прогон этого агента в статусах исполнения по всей компании, и найденный живой прогон пропускает и эскалацию, и разбор adapter-failure участника — задача ждёт живого участника вместо карточки доске. Касается политики `board_escalation_no_takeover_v1` | Вендор: `server/src/services/recovery/service.ts` (helper `getLatestLiveRunForAgent` + ветка проверки живого прогона в `reconcileStrandedAssignedIssues`, метки `myrmidon(REVIEW-PARTICIPANT-LIVE-SKIP)`); наш тест-сторож в вендорском `server/src/__tests__/heartbeat-process-recovery.test.ts` | Участник ревью, занятый живым прогоном по другому тикету, считался мёртвым: живая задача на ревью уходила в board-only `blocked` с карточкой доске, хотя участник жив и вернётся к ней сам | `server/src/__tests__/heartbeat-process-recovery.test.ts` (тест «should not escalate to board when review participant has a live run on another issue») | Когда вендор сам перестанет эскалировать задачу на ревью, пока у участника есть живой прогон: удалить helper `getLatestLiveRunForAgent` и ветку проверки в `reconcileStrandedAssignedIssues` | (этот PR) |

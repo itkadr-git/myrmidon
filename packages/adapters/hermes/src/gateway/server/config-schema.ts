@@ -46,6 +46,15 @@ export function getConfigSchema(): AdapterConfigSchema {
         default: DEFAULT_TIMEOUT_SEC,
       },
       {
+        // myrmidon(N4-RUN-LIVENESS): per-agent opt-in for event-based
+        // liveness; the instance-wide switch is MYRMIDON_RUN_LIVENESS_EVENTS.
+        key: "livenessEvents",
+        label: "Liveness by gateway events",
+        type: "toggle",
+        default: false,
+        hint: "On: a run that keeps emitting gateway events past its timeout is left alive; only a run silent for the whole timeout budget is cut. Off (default): the fixed wall-clock timeout. The instance env MYRMIDON_RUN_LIVENESS_EVENTS enables it for every card.",
+      },
+      {
         // myrmidon(G5): per-agent run-create timeout
         key: "createRequestTimeoutSec",
         label: "Run create timeout seconds",

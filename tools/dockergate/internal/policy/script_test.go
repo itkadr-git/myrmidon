@@ -56,10 +56,25 @@ func TestRedTeam_RT1_2_PrepareScriptStatic(t *testing.T) {
 	}
 	// myrmidon(BOT-ROOT-TRAVERSE): the fixed traversal fix on the bot's root bind,
 	// one non-recursive chmod on the /bot mount point, owner untouched.
-	if !strings.HasSuffix(s, "\nchmod 0711 bot") {
+	if !strings.Contains(s, "\nchmod 0711 bot\n") {
 		t.Errorf("the bot root traversal line is missing or different")
 	}
-	if strings.Count(s, "\n") != 6 {
+	// myrmidon(1.6.5-BOT-DISK-UV-B board side): the trailing block hands every
+	// package-cache subdirectory to the bot's uid, behind a test(1) guard (the
+	// red-team list forbids "[" in the constant script), so a bot without the
+	// cache bind skips it.
+	for _, sub := range []string{"pnpm", "pnpm-store", "uv", "go-mod", "go-build", "gradle"} {
+		if !strings.Contains(s, "install -d -o 10001 -g 10001 \"package-cache/"+sub+"\"") {
+			t.Errorf("package-cache subdirectory %q is not handed to the bot's uid", sub)
+		}
+	}
+	if strings.Count(s, "install -d") != 6 {
+		t.Errorf("want the six package-cache subdirectories of the fixed list")
+	}
+	if !strings.HasSuffix(s, "\nfi") {
+		t.Errorf("the package-cache block does not close the script")
+	}
+	if strings.Count(s, "\n") != 14 {
 		t.Errorf("unexpected shape: %d lines", strings.Count(s, "\n")+1)
 	}
 	// It does not depend on the nonce or on anything the board sends.

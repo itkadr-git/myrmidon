@@ -31,6 +31,10 @@ import {
 import { toolAccessPolicyService } from "../services/tool-access-policy.js";
 import { toolAccessService } from "../services/tool-access.js";
 import { createToolGatewayService, ToolGatewayHttpError } from "../services/tool-gateway.js";
+// myrmidon(DB-PERF-C-P4): the cases below insert policy, profile and binding rows straight
+// through the database handle, so they drop the company snapshot the way the production
+// writers outside the tool-access services do.
+import { invalidateToolPolicyCache } from "../myrmidon/tool-policy-cache/runtime.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -651,6 +655,8 @@ describeEmbeddedPostgres("tool access policy service", () => {
       selectors: { toolName: "send_email" },
     }).returning().then((rows) => rows[0]!);
 
+    // myrmidon(DB-PERF-C-P4): the insert above bypasses the service's own invalidation.
+    invalidateToolPolicyCache(db, company.id);
     await expect(toolAccessPolicyService(db).decide(input)).resolves.toMatchObject({
       allowed: false,
       decision: "require_approval",
@@ -1128,12 +1134,16 @@ describeEmbeddedPostgres("tool access policy service", () => {
       priority: 2,
     }).returning();
 
+    // myrmidon(DB-PERF-C-P4): the inserts above bypass the service's own invalidation.
+    invalidateToolPolicyCache(db, company.id);
     const redactDecision = await toolAccessPolicyService(db).decide({
       companyId: company.id,
       actor: { actorType: "agent", actorId: agent.id, agentId: agent.id },
       request: { connectionId: connection.id, catalogEntryId: catalogEntry.id, toolName: "send_email" },
     });
     await db.update(toolPolicies).set({ enabled: false }).where(eq(toolPolicies.id, redactPolicy!.id));
+    // myrmidon(DB-PERF-C-P4): the update above bypasses the service's own invalidation.
+    invalidateToolPolicyCache(db, company.id);
     const validateDecision = await toolAccessPolicyService(db).decide({
       companyId: company.id,
       actor: { actorType: "agent", actorId: agent.id, agentId: agent.id },
