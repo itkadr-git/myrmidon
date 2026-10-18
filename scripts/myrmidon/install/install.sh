@@ -487,7 +487,7 @@ db_profile() {
   # image under an existing PG17 data volume is a migration the operator runs
   # deliberately — the installer keeps the file untouched instead.
   if [[ -z "$DATABASE_URL" && -z "${MYRMIDON_DB_PROFILE:-}" && -r "$DIR/compose.yml" ]] \
-     && grep -q '^[[:space:]]*image: postgres' "$DIR/compose.yml"; then
+     && grep -Eq '^[[:space:]]*image:[[:space:]]*[^[:space:]]*postgres[^[:space:]]*([[:space:]]|$)' "$DIR/compose.yml"; then
     DB_PROFILE="keep"
     return 0
   fi
