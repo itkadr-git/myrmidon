@@ -18,7 +18,8 @@ const require = createRequire(import.meta.url);
 const ws = require(path.join(ROOT, "docker/bot-runtime/myr-ws/lib/open.js"));
 const FIXTURES = path.join(ROOT, "docs/myrmidon/bot-disk-contract");
 
-const hasGit = spawnSync("git", ["--version"]).status === 0;
+const GIT = process.env.GIT_TEST_EXECUTABLE || "git";
+const hasGit = spawnSync(GIT, ["--version"]).status === 0;
 
 // The contract schemas are zod over TypeScript; Node strips the types itself.
 // Without an installed workspace (no zod) the schema checks fall back to the
@@ -37,7 +38,7 @@ let n = 0;
 let ctx; // per-test: home, workspaceRoot, scratchRoot, ensureBase, calls
 
 function git(cwd, ...args) {
-  const r = spawnSync("/opt/paperclip/libexec/git", ["-c", "user.name=t", "-c", "user.email=t@example.com", ...args], {
+  const r = spawnSync(GIT, ["-c", "user.name=t", "-c", "user.email=t@example.com", ...args], {
     cwd,
     encoding: "utf8",
     env: {
@@ -83,7 +84,7 @@ beforeEach(() => {
     env: {
       ...process.env,
       PATH: process.env.PATH.split(":").filter((p) => !p.includes("paperclip-github-runtime")).join(":"),
-      MYRMIDON_GIT_REAL: "/opt/paperclip/libexec/git",
+      MYRMIDON_GIT_REAL: GIT,
       GIT_CONFIG_GLOBAL: "/dev/null",
       GIT_CONFIG_SYSTEM: "/dev/null",
       GIT_CONFIG_COUNT: "6",
@@ -116,6 +117,7 @@ beforeEach(() => {
         git(base, "fetch", "-q", "origin");
         git(base, "config", "remote.origin.url", `https://github.com/${repo}.git`);
       }
+      git(base, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main");
       return base;
     },
   };
@@ -226,7 +228,7 @@ describe("myr-ws open — task copy", { skip: !hasGit }, () => {
     const dir = path.join(ctx.workspaceRoot, "ABC-119");
     fs.mkdirSync(path.dirname(dir), { recursive: true });
     git(tmp, "clone", "-q", originDir, dir);
-    git(dir, "remote", "set-url", "origin", "https://github.com/acme/widgets.git");
+    git(dir, "remote", "set-url", "origin", `https://github.com/${REPO}.git`);
     const first = await run(["ABC-119", REPO, "--json"]);
     assert.equal(first.exitCode, 0, first.stderr);
     const out = copyOf(first);
@@ -245,7 +247,7 @@ describe("myr-ws open — task copy", { skip: !hasGit }, () => {
     const dir = path.join(ctx.workspaceRoot, "ABC-120");
     fs.mkdirSync(path.dirname(dir), { recursive: true });
     git(tmp, "clone", "-q", originDir, dir);
-    git(dir, "remote", "set-url", "origin", "https://github.com/acme/widgets.git");
+    git(dir, "remote", "set-url", "origin", `https://github.com/${REPO}.git`);
     fs.writeFileSync(path.join(dir, "staged.txt"), "staged\n");
     git(dir, "add", "staged.txt");
     fs.writeFileSync(path.join(dir, "commit.txt"), "local commit\n");
