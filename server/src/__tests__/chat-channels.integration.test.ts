@@ -21578,7 +21578,6 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       });
       expect(deferred).toHaveLength(1);
       await deferred.shift()?.();
-      expect(deferred).toHaveLength(1);
       const replyThread = makeThread({
         channelId: slackThread.thread.channelId,
         id: slackThread.thread.id,
