@@ -322,7 +322,7 @@ function RevisionsPanel({
 
   const leftId = from ?? (revisions.length > 1 ? revisions[0]?.id ?? null : null);
   const rightId = to ?? latest?.id ?? null;
-  const leftRevision = revisions.find((revision) => revision.id === leftId)?.revision ?? null;
+  const leftRevision = revisions.find((revision) => revision.id === leftId)?.id ?? null;
   const rightRevision = revisions.find((revision) => revision.id === rightId)?.revision ?? null;
   const olderQuery = useQuery({
     queryKey: knowledgeQueryKeys.item(companyId, item.spaceKey, item.slug, leftId),
