@@ -315,7 +315,7 @@ export async function runImport(options: ImportOptions): Promise<ImportReport> {
         if (sourceRefs.has(key)) return false;
         sourceRefs.add(key);
         return true;
-      }).map((source) => ({ ...source, note: source.note ?? null }));
+      }).map((source) => ({ ...source }));
       const input: CreateKnowledgeInput = {
         companyId,
         nestId,
@@ -347,9 +347,10 @@ export async function runImport(options: ImportOptions): Promise<ImportReport> {
             const sameContent = currentContent === content;
             const appendedContent = !sameContent && currentContent.includes(content);
             const preservedPartial = !sameContent && revisions.length > 1 && !appendedContent;
-            if ((!sameContent && !appendedContent) || newSources.length > 0) {
+            const needsContentUpdate = !sameContent && !appendedContent && !preservedPartial;
+            if (needsContentUpdate || newSources.length > 0) {
               await service.draft(nestId, target, {
-                content: sameContent || appendedContent || preservedPartial ? currentContent : content,
+                content: needsContentUpdate ? content : currentContent,
                 changeSummary: "re-imported from plugin export",
                 sources: [...preservedSources, ...newSources.map((source) => ({ ...source, note: source.note ?? null }))].filter((source, index, all) =>
                   all.findIndex((candidate) => candidate.kind === source.kind && candidate.ref === source.ref) === index,
@@ -357,10 +358,10 @@ export async function runImport(options: ImportOptions): Promise<ImportReport> {
               }, actor);
               revisionsWritten += 1;
               sourcesWritten += newSources.length;
-              bytesWritten += sameContent || appendedContent || preservedPartial ? 0 : Buffer.byteLength(content, "utf8");
+              bytesWritten += needsContentUpdate ? Buffer.byteLength(content, "utf8") : 0;
               appended += 1;
             }
-            created.set(target, { id: "existing", slug: target, content: currentContent, sources: [...preservedSources, ...newSources.map((source) => ({ ...source, note: source.note ?? null }))] });
+            created.set(target, { id: "existing", slug: target, content: currentContent, sources: [...preservedSources, ...newSources.map((source) => ({ ...source }))] });
           }
         } catch (error) {
           failed.push({ path: page.path, code: (error as { code?: string }).code ?? "error" });
@@ -370,7 +371,7 @@ export async function runImport(options: ImportOptions): Promise<ImportReport> {
         created.set(target, { id: `dry-run:${target}`, slug: target, content, sources: uniqueSources });
       }
       if (!dryRun && created.get(target)?.id === "existing") continue;
-      createdCount += 1;
+      if (created.get(target)?.id !== "existing") createdCount += 1;
       bytesWritten += Buffer.byteLength(content, "utf8");
       sourcesWritten += uniqueSources.length;
       revisionsWritten += 1;
