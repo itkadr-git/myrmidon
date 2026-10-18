@@ -101,5 +101,3 @@ export { chatReconcileMinimumSpacingMs, getChatReconcileFallbackIntervalMs, crea
 export { createChatReconciliationWorkGates, type ChatReconciliationWorkGates } from "./chat-reconciliation/work-gates.js";
 export { myrmidonCasteRoutes } from "./castes/wiring.js";
 export { myrmidonGuardrailsRoutes } from "./guardrails/index.js";
-export { bindModelProviderPluginLifecycle } from "./model-providers/plugin-lifecycle.js";
-export { createTelegramVoiceSttWiring } from "./channel-connectors/bridge/voice-stt.js";
