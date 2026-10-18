@@ -83,6 +83,8 @@ WITH sized AS (
 card_body AS (
   SELECT
     sized.*,
+    gen_random_uuid() AS card_item_id,
+    gen_random_uuid() AS card_revision_id,
     ('# ' || regexp_replace(sized."skill_name", '\s+', ' ', 'g') || E'\n\n' ||
      COALESCE(NULLIF(btrim(sized."skill_description"), ''), '(no description)') || E'\n\n' ||
      '## Skill card' || E'\n\n' ||
@@ -108,12 +110,12 @@ card_body AS (
 ),
 ins_items AS (
   INSERT INTO "knowledge_items" (
-    "company_id", "nest_id", "kind", "slug", "title", "summary", "status", "folder_path",
-    "tags", "approval_required", "current_revision_number",
+    "id", "company_id", "nest_id", "kind", "slug", "title", "summary", "status", "folder_path",
+    "tags", "approval_required", "current_revision_number", "delivered_revision_id",
     "created_by_agent_id", "created_by_user_id", "created_at", "updated_at"
   )
   SELECT
-    cb."company_id", cb."company_id", 'skill_card', cb."card_slug",
+    cb."card_item_id", cb."company_id", cb."company_id", 'skill_card', cb."card_slug",
     left(regexp_replace(cb."skill_name", '\s+', ' ', 'g'), 300),
     CASE
       WHEN btrim(COALESCE(cb."skill_description", '')) = '' THEN NULL
@@ -126,31 +128,24 @@ ins_items AS (
        ) t),
       '[]'::jsonb
     ),
-    false, 1,
-    'system:skill-lifecycle-backfill', NULL, now(), now()
+    false, 1, cb."card_revision_id",
+    NULL, 'system:skill-lifecycle-backfill', now(), now()
   FROM card_body cb
   ON CONFLICT DO NOTHING
-  RETURNING "knowledge_items".*
-),
-ins_revisions AS (
-  INSERT INTO "knowledge_revisions" (
-    "company_id", "nest_id", "item_id", "revision_number", "status", "content",
-    "change_summary", "approved_by", "approved_at",
-    "created_by_agent_id", "created_by_user_id", "created_at"
-  )
-  SELECT
-    i."company_id", i."nest_id", i."id", 1, 'approved', cb."content",
-    'skill card created by the legacy-2026-10 backfill (OPE-5960)',
-    'system:skill-lifecycle-backfill', now(),
-    NULL, 'system:skill-lifecycle-backfill', now()
-  FROM ins_items i
-  JOIN card_body cb ON cb."card_slug" = i."slug" AND cb."company_id" = i."company_id"
-  RETURNING "knowledge_revisions"."id", "knowledge_revisions"."item_id"
+  RETURNING "knowledge_items"."id", "knowledge_items"."slug", "knowledge_items"."company_id"
 )
-UPDATE "knowledge_items" k
-SET "delivered_revision_id" = r."id"
-FROM ins_revisions r
-WHERE r."item_id" = k."id";
+INSERT INTO "knowledge_revisions" (
+  "id", "company_id", "nest_id", "item_id", "revision_number", "status", "content",
+  "change_summary", "approved_by", "approved_at",
+  "created_by_agent_id", "created_by_user_id", "created_at"
+)
+SELECT
+  cb."card_revision_id", cb."company_id", cb."company_id", i."id", 1, 'approved', cb."content",
+  'skill card created by the legacy-2026-10 backfill (OPE-5960)',
+  'system:skill-lifecycle-backfill', now(),
+  NULL, 'system:skill-lifecycle-backfill', now()
+FROM ins_items i
+JOIN card_body cb ON cb."card_slug" = i."slug" AND cb."company_id" = i."company_id";
 --> statement-breakpoint
 -- Search mirror: a `knowledge_search` row for every card created above, with
 -- the body copied from the item's delivered revision — the same content, so
