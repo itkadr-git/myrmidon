@@ -31538,6 +31538,7 @@ export function heartbeatService(
     // myrmidon(IDLE-PICKUP): periodic idle-pickup pass, exposed for the
     // scheduler tick in index.ts and for tests and operators
     sweepIdlePickup: (now?: Date) => idlePickupSweeper.sweep(now),
+    resetIdlePickupForTest: () => idlePickupSweeper.resetForTest(),
 
     // myrmidon(AUTO-RESUME): resumes an agent left in `error` once its backoff
     // step is due; logic in myrmidon/auto-resume.ts. Called by the scheduler
