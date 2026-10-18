@@ -271,6 +271,9 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
     await db.insert(instanceSettings).values({
       singletonKey: "default",
       general: { teamLiveness: { idlePickupEnabled: true } },
+    }).onConflictDoUpdate({
+      target: [instanceSettings.singletonKey],
+      set: { general: { teamLiveness: { idlePickupEnabled: true } } },
     });
     const companyId = randomUUID();
     const agentId = randomUUID();
