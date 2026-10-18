@@ -109,7 +109,7 @@ card_body AS (
 ins_items AS (
   INSERT INTO "knowledge_items" (
     "company_id", "nest_id", "kind", "slug", "title", "summary", "status", "folder_path",
-    "tags", "approval_required", "current_revision_number", "delivered_revision_id",
+    "tags", "approval_required", "current_revision_number",
     "created_by_agent_id", "created_by_user_id", "created_at", "updated_at"
   )
   SELECT
@@ -127,7 +127,7 @@ ins_items AS (
       '[]'::jsonb
     ),
     false, 1,
-    NULL, 'system:skill-lifecycle-backfill', now(), now()
+    'system:skill-lifecycle-backfill', NULL, now(), now()
   FROM card_body cb
   ON CONFLICT DO NOTHING
   RETURNING "knowledge_items".*
