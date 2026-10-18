@@ -368,16 +368,28 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
         .select({
           status: agentWakeupRequests.status,
           reason: agentWakeupRequests.reason,
+          payload: agentWakeupRequests.payload,
+          runContextSnapshot: heartbeatRuns.contextSnapshot,
         })
         .from(agentWakeupRequests)
+        .leftJoin(heartbeatRuns, eq(heartbeatRuns.id, agentWakeupRequests.runId))
         .where(
           and(
             eq(agentWakeupRequests.agentId, agentId),
-            sql`${agentWakeupRequests.payload} ->> 'issueId' = ${readyIssueId}`,
+            eq(agentWakeupRequests.reason, "idle_pickup"),
           ),
         )
         .orderBy(agentWakeupRequests.requestedAt);
-      return rows.some((row) => row.status !== "skipped" && row.reason === "idle_pickup");
+      return rows.some((row) => {
+        const payload = row.payload && typeof row.payload === "object" && !Array.isArray(row.payload)
+          ? row.payload as Record<string, unknown>
+          : {};
+        const runContext = row.runContextSnapshot && typeof row.runContextSnapshot === "object" && !Array.isArray(row.runContextSnapshot)
+          ? row.runContextSnapshot as Record<string, unknown>
+          : {};
+        return row.status !== "skipped" &&
+          (payload.issueId === readyIssueId || runContext.issueId === readyIssueId);
+      });
     });
     expect(readyWakeRequest).toBe(true);
 
