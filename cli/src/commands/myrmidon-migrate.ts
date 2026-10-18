@@ -583,13 +583,31 @@ export async function checkNarrowing(
 }
 
 /** The analysis as it applies to this target: what the target cannot take is left out of the copy and its checks. */
-async function withoutVendorOnly(src: Q, analysis: SourceAnalysis, found: VendorOnlyFinding[]): Promise<SourceAnalysis> {
-  if (found.length === 0) return analysis;
+export async function withoutVendorOnly(
+  src: Q,
+  analysis: SourceAnalysis,
+  found: VendorOnlyFinding[],
+  exclusions: Exclusion[] = [],
+): Promise<SourceAnalysis> {
   const dropTables = new Set(found.filter((f) => f.kind === "table").map((f) => f.table));
+  for (const e of exclusions) {
+    if (e.kind === "table") dropTables.add(e.name);
+  }
   const dropCols = new Map<string, Set<string>>();
   for (const f of found) {
     if (f.kind === "column") dropCols.set(f.table, (dropCols.get(f.table) ?? new Set()).add(f.column!));
   }
+  for (const e of exclusions) {
+    if (e.kind === "column") {
+      const dot = e.name.indexOf(".");
+      if (dot > 0) {
+        const table = e.name.slice(0, dot);
+        const col = e.name.slice(dot + 1);
+        dropCols.set(table, (dropCols.get(table) ?? new Set()).add(col));
+      }
+    }
+  }
+  if (dropTables.size === 0 && dropCols.size === 0) return analysis;
   const tables = new Map<string, TableInfo>();
   const digests = new Map<string, TableDigest>();
   for (const [name, info] of analysis.tables) {
@@ -1038,7 +1056,7 @@ async function realRun(ctx: Context, input: RealRunInput): Promise<MigrationResu
       throw new Error(`Target schema cannot take the source data: ${problems.slice(0, 8).join(", ")}${problems.length > 8 ? ", ..." : ""}. Roll back (--rollback) the schema and report this.`);
     }
     // What the target cannot take stays out of the copy and out of the checks below.
-    const eff = await withoutVendorOnly(src, analysis, compat.vendorOnly);
+    const eff = await withoutVendorOnly(src, analysis, compat.vendorOnly, compat.exclusions);
 
     if (plan.mode !== "complete") {
       // 2. data: one transaction; either all rows land or none.
