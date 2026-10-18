@@ -7,6 +7,7 @@
 
 import { randomUUID } from "node:crypto";
 import os from "node:os";
+import { readProductEnvFrom } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
 
 /** Roles of the split layout (design §2.1): `all` is today's single process
  * (`mode=single`), `worker` runs the backend work, `api` only serves HTTP. */
@@ -31,7 +32,7 @@ export const boardProcessBootId = randomUUID();
 /** `MYRMIDON_PROCESS_ROLE` (legacy alias: `PAPERCLIP_PROCESS_ROLE`) when split layout sets it, `all` otherwise —
  * the T0.1 default is byte-for-byte today's behaviour (one process, one row). */
 export function resolveBoardProcessRole(
-  raw: string | undefined = process.env.MYRMIDON_PROCESS_ROLE ?? process.env.PAPERCLIP_PROCESS_ROLE,
+  raw: string | undefined = readProductEnvFrom(process.env, "PROCESS_ROLE"),
 ): BoardProcessRole {
   const value = (raw ?? "").trim().toLowerCase();
   return (BOARD_PROCESS_ROLES as readonly string[]).includes(value)

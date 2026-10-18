@@ -24,7 +24,6 @@ export const PROCESSES_SETTINGS_KEY = "processes" as const;
  * down cannot lock the operator out of the board that would fix it.
  */
 export const PROCESSES_MODE_ENV = "MYRMIDON_PROCESS_MODE" as const;
-const LEGACY_PROCESSES_MODE_ENV = "PAPERCLIP_PROCESS_MODE";
 
 export const PROCESSES_MODES = ["single", "split"] as const;
 export type ProcessesMode = (typeof PROCESSES_MODES)[number];
@@ -163,9 +162,7 @@ export function resolveProcessesSettings(
     sources[key] = saved[key] === undefined ? "default" : "settings";
   }
   const sourceEnv = (env ?? ambientProcessEnv()) as NodeJS.ProcessEnv;
-  const forced = parseProcessesModeEnv(
-    readProductEnvFrom(sourceEnv, "PROCESS_MODE") ?? sourceEnv[LEGACY_PROCESSES_MODE_ENV],
-  );
+  const forced = parseProcessesModeEnv(readProductEnvFrom(sourceEnv, "PROCESS_MODE"));
   if (forced) {
     settings.mode = forced;
     sources.mode = "env";
