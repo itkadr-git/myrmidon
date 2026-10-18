@@ -3,7 +3,8 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, syml
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-// Disable optional observability SDKs before importing the startup module.
+// Keep startServer wiring tests independent of optional observability bootstrap
+// endpoints inherited from the runner; startServer awaits both modules at entry.
 const ORIGINAL_OTEL_EXPORTER_OTLP_ENDPOINT = process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
 const ORIGINAL_SENTRY_DSN_BACKEND = process.env.SENTRY_DSN_BACKEND;
 const ORIGINAL_SENTRY_DSN = process.env.SENTRY_DSN;
@@ -215,6 +216,10 @@ function buildTestConfig(overrides: Record<string, unknown> = {}) {
 
 vi.mock("node:http", () => ({
   createServer: vi.fn(() => fakeServer),
+}));
+
+vi.mock("embedded-postgres", () => ({
+  default: vi.fn(),
 }));
 
 vi.mock("detect-port", () => ({
@@ -461,6 +466,10 @@ import { EXECUTION_RECONCILIATION_INTERVAL_MS } from "../services/execution-cont
 describe("startServer feedback export wiring", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    delete process.env.PAPERCLIP_PROCESS_ROLE;
+    delete process.env.DATABASE_URL;
+    delete process.env.MYRMIDON_DATABASE_URL;
+    delete process.env.PAPERCLIP_DECISION_SIGNING_SECRET;
     process.env.PAPERCLIP_DECISION_SIGNING_SECRET = "fedcba9876543210fedcba9876543210";
     process.env.PAPERCLIP_AGENT_JWT_SECRET = "0123456789abcdef0123456789abcdef";
     loadConfigMock.mockReturnValue(buildTestConfig());
@@ -801,6 +810,9 @@ describe("startServer feedback export wiring", () => {
 describe("startServer authenticated auth origin setup", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    delete process.env.PAPERCLIP_PROCESS_ROLE;
+    delete process.env.DATABASE_URL;
+    delete process.env.MYRMIDON_DATABASE_URL;
     process.env.PAPERCLIP_DECISION_SIGNING_SECRET = "fedcba9876543210fedcba9876543210";
     loadConfigMock.mockReturnValue(buildTestConfig());
     createBetterAuthInstanceMock.mockReturnValue({});
