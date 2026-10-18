@@ -150,6 +150,10 @@ export const myrWsOpenResultSchema = z.object({
   base: z.string().min(1).optional(),
   /** True when the copy already existed (`open` is idempotent). */
   reused: z.boolean(),
+  /** Original full clone retained here after safe legacy conversion. */
+  recoveryPath: z.string().min(1).optional(),
+  /** Original HEAD retained in this ref in the class-D base. */
+  recoveryRef: z.string().min(1).optional(),
 });
 export type MyrWsOpenResult = z.infer<typeof myrWsOpenResultSchema>;
 
