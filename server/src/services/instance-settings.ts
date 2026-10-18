@@ -1,5 +1,6 @@
 import type { Db } from "@paperclipai/db";
 import { companies, instanceSettings } from "@paperclipai/db";
+import { readProductEnvFrom } from "@paperclipai/shared/env-alias";
 
 /**
  * A `Db` or an open transaction handle — the subset of query builders the
@@ -132,7 +133,7 @@ export function isTruthyRuntimeEnvValue(value: string | undefined) {
 }
 
 function getRuntimeInstanceId(env: Record<string, string | undefined>) {
-  const instanceId = env.PAPERCLIP_INSTANCE_ID?.trim();
+  const instanceId = readProductEnvFrom(env, "INSTANCE_ID")?.trim();
   return instanceId ? instanceId : null;
 }
 
