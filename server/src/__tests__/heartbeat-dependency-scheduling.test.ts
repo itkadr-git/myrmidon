@@ -16,6 +16,7 @@ import {
   executionWorkspaces,
   heartbeatRunEvents,
   heartbeatRuns,
+  instanceSettings,
   issueComments,
   issueDocuments,
   issueRelations,
@@ -267,6 +268,10 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
   });
 
   it("keeps blocked descendants idle until their blockers resolve", async () => {
+    await db.insert(instanceSettings).values({
+      singletonKey: "default",
+      general: { teamLiveness: { idlePickupEnabled: true } },
+    });
     const companyId = randomUUID();
     const agentId = randomUUID();
     const blockerId = randomUUID();
