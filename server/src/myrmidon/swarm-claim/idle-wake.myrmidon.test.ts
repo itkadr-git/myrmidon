@@ -200,6 +200,9 @@ describe("myrmidon(1.6.1 SWARM-IDLE-WAKE) sweep pass", () => {
               }
               if (table === issueClaims) {
                 if (projection && "agentId" in projection) return Promise.resolve([]);
+                // The matcher's ready-queue projection comes from issues (the
+                // outer table), not issue_claims; claim reads with { id } are
+                // the live-claim guard used before inserting the new lease.
                 if (projection && "id" in projection) return { limit: () => Promise.resolve(claimState && !claimState.releasedAt ? [{ id: claimState.id }] : []) };
                 // listExpiredClaims selects the complete table row before the
                 // release write; later claim reads must observe claimState.
@@ -226,6 +229,20 @@ describe("myrmidon(1.6.1 SWARM-IDLE-WAKE) sweep pass", () => {
               }
               if (table === agents && projection && "reportsTo" in projection) {
                 return { then: (resolve: (rows: unknown[]) => unknown) => Promise.resolve([idleAgent]).then(resolve) };
+              }
+              if (table === issues && projection && "issueId" in projection) {
+                // Queue candidates are selected from issues and must reflect
+                // the state changed by the normal release/clear-assignee path.
+                return { orderBy: () => ({ limit: (limit: number) => Promise.resolve([{
+                  issueId: issueState.id,
+                  identifier: "ENG-42",
+                  priority: "medium",
+                  pheromoneStrength: 0,
+                  failedRunsSinceLastChange: 0,
+                  queuedAt: NOW,
+                  assigneeAgentId: issueState.assigneeAgentId,
+                  projectId: null,
+                }].filter(() => issueState.assigneeAgentId === null).slice(0, limit)) }) };
               }
               if (table === issues && projection && "companyId" in projection && "assigneeAgentId" in projection) {
                 // matchIssue re-reads the task after clearExpiredAssignee has
