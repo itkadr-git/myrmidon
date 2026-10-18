@@ -41,6 +41,12 @@ A review that stays without a verdict past the configured hours is signalled
 and moved to another reviewer. With no eligible reviewer at all, the task is
 signalled on the attention desk.
 
+When an issue enters `in_review` or its reviewer is reassigned, the issue update
+and the durable reviewer wake request are committed in one database transaction.
+Execution-stage reviewer wake requests use that same transaction path. If the
+wake request cannot be persisted, the issue update does not leave the task in
+review without a durable wake receipt.
+
 ## Planning from a chat message
 
 The Commander chat is the board's planning entry: the owner writes what is
