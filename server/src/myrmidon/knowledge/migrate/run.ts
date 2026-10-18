@@ -260,7 +260,7 @@ interface CreatedTarget {
   slug: string;
   /** Accumulated content (in memory only) so a shared target keeps all pages. */
   content: string;
-  sources: Array<{ kind: KnowledgeSourceKind; ref: string; note: string | null }>;
+  sources: Array<{ kind: KnowledgeSourceKind; ref: string; note?: string | null }>;
 }
 
 /** Writes the plan through the K-1 service. Dry-run computes, writes nothing. */
@@ -360,7 +360,7 @@ export async function runImport(options: ImportOptions): Promise<ImportReport> {
               bytesWritten += sameContent || appendedContent || preservedPartial ? 0 : Buffer.byteLength(content, "utf8");
               appended += 1;
             }
-            created.set(target, { id: "existing", slug: target, content: currentContent, sources: revisions.flatMap((revision) => revision.sources) });
+            created.set(target, { id: "existing", slug: target, content: currentContent, sources: [...preservedSources, ...newSources.map((source) => ({ ...source, note: source.note ?? null }))] });
           }
         } catch (error) {
           failed.push({ path: page.path, code: (error as { code?: string }).code ?? "error" });
@@ -370,8 +370,9 @@ export async function runImport(options: ImportOptions): Promise<ImportReport> {
         created.set(target, { id: `dry-run:${target}`, slug: target, content, sources: uniqueSources });
       }
       if (!dryRun && created.get(target)?.id === "existing") continue;
+      createdCount += 1;
       bytesWritten += Buffer.byteLength(content, "utf8");
-      sourcesWritten += sources.length;
+      sourcesWritten += uniqueSources.length;
       revisionsWritten += 1;
     } else {
       // A second source page for the same target is knowledge, not noise:
