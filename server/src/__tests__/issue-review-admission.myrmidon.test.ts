@@ -47,6 +47,17 @@ describeEmbeddedPostgres("myrmidon review admission atomic wake persistence", ()
       permissions: {},
     });
 
+    const stageId = randomUUID();
+    const policy = {
+      stages: [
+        {
+          id: stageId,
+          type: "review" as const,
+          participants: [{ type: "agent" as const, agentId: reviewerAgentId }],
+        },
+      ],
+    };
+
     const issueId = randomUUID();
     await ctx.db.insert(issues).values({
       id: issueId,
@@ -54,25 +65,22 @@ describeEmbeddedPostgres("myrmidon review admission atomic wake persistence", ()
       title: "Atomic review admission positive path",
       status: "todo",
       priority: "medium",
+      executionPolicy: policy,
     });
 
     const res = await request(routeApp(ctx.db, actor, issueRoutes))
       .patch(`/api/issues/${issueId}`)
       .send({
         status: "in_review",
-        executionState: {
-          status: "pending",
-          currentStageId: "stage-review",
-          currentStageType: "review",
-          currentParticipant: {
-            type: "agent",
-            agentId: reviewerAgentId,
-          },
-        },
+        executionPolicy: policy,
       });
 
     expect(res.status).toBe(200);
     expect(res.body.status).toBe("in_review");
+    expect(res.body.executionState?.currentParticipant).toMatchObject({
+      type: "agent",
+      agentId: reviewerAgentId,
+    });
 
     const [issueRow] = await ctx.db
       .select({ status: issues.status })
@@ -112,6 +120,17 @@ describeEmbeddedPostgres("myrmidon review admission atomic wake persistence", ()
       permissions: {},
     });
 
+    const stageId = randomUUID();
+    const policy = {
+      stages: [
+        {
+          id: stageId,
+          type: "review" as const,
+          participants: [{ type: "agent" as const, agentId: reviewerAgentId }],
+        },
+      ],
+    };
+
     const issueId = randomUUID();
     await ctx.db.insert(issues).values({
       id: issueId,
@@ -119,6 +138,7 @@ describeEmbeddedPostgres("myrmidon review admission atomic wake persistence", ()
       title: "Atomic review admission rollback path",
       status: "todo",
       priority: "medium",
+      executionPolicy: policy,
     });
 
     const failingIssueRoutes = (db: any, storage: any) =>
@@ -132,15 +152,7 @@ describeEmbeddedPostgres("myrmidon review admission atomic wake persistence", ()
       .patch(`/api/issues/${issueId}`)
       .send({
         status: "in_review",
-        executionState: {
-          status: "pending",
-          currentStageId: "stage-review",
-          currentStageType: "review",
-          currentParticipant: {
-            type: "agent",
-            agentId: reviewerAgentId,
-          },
-        },
+        executionPolicy: policy,
       });
 
     expect(res.status).toBe(500);
