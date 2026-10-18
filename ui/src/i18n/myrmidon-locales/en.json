@@ -1050,7 +1050,8 @@
     "weightOff": "off",
     "source": {
       "settings": "Saved here",
-      "env": "From the server environment"
+      "env": "From the server environment",
+      "default": "Default"
     },
     "currentRelease": "Current release",
     "currentReleaseOff": "off",
@@ -1064,8 +1065,7 @@
     "loadFailed": "Failed to load the queue priority settings.",
     "saveFailed": "Saving the queue priority settings failed.",
     "error": {
-      "wholeNumber": "Enter a whole number of 0 or more",
-      "range": "Enter a whole number from 0 to {{max}}"
+      "wholeNumber": "Enter a whole number of 0 or more, or leave it empty"
     },
     "position": {
       "of": "Queue position {{position}} of {{total}}",
