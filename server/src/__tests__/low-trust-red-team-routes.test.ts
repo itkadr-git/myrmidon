@@ -603,29 +603,6 @@ async function seedLowTrustFixture(db: Db) {
     .where(eq(issues.id, assignedReview!.id));
   assignedReview!.assigneeAgentId = lowTrust!.id;
 
-  // The standard actor used by owner-gate regression requests needs the same
-  // project visibility boundary as the low-trust run, without inheriting its
-  // low-trust control-plane restrictions.
-  await db
-    .update(agents)
-    .set({
-      permissions: {
-        authorizationPolicy: {
-          trustBoundary: {
-            mode: LOW_TRUST_REVIEW_PRESET,
-            companyId: company!.id,
-            projectIds: [allowedProject!.id],
-            rootIssueId: reviewRoot!.id,
-            issueIds: [
-              reviewRoot!.id,
-              assignedReview!.id,
-              sameBoundaryChild!.id,
-            ],
-          },
-        },
-      },
-    })
-    .where(eq(agents.id, standard!.id));
 
   const executionPolicy = {
     authorizationPolicy: {
@@ -948,7 +925,7 @@ describeEmbeddedPostgres(
           },
         })
         .where(eq(projects.id, fixture.projects.allowed.id));
-      const app = createApp(db, standardReportActor(fixture));
+      const app = createApp(db, boardActor(fixture));
       const createWithoutOwner = await request(app)
         .post(`/api/companies/${fixture.company.id}/issues`)
         .send({
@@ -957,6 +934,10 @@ describeEmbeddedPostgres(
         });
       expect(createWithoutOwner.status, JSON.stringify(createWithoutOwner.body)).toBe(422);
       expect(createWithoutOwner.body.error).toContain("without a promotion owner");
+      expect(createWithoutOwner.body.sourceTrust).toMatchObject({
+        disposition: "quarantined",
+        promotionOwnerUserId: null,
+      });
       const childWithoutOwner = await request(app)
         .post(`/api/issues/${fixture.issues.reviewRoot.id}/children`)
         .send({ title: `child ${fixture.canaries.raw}` });
@@ -1253,7 +1234,7 @@ describeEmbeddedPostgres(
             eq(issueComments.authorType, "system"),
           ),
         );
-      expect(relayComments).toHaveLength(3);
+      expect(relayComments).toHaveLength(2);
       expect(relayComments.map((comment) => comment.body)).toEqual(
         expect.arrayContaining([
           expect.stringContaining(`transitioned to \`blocked\``),
@@ -1271,6 +1252,9 @@ describeEmbeddedPostgres(
         expect(relay.body).not.toContain("done");
         expect(relay.body).not.toContain(
           fixture.issues.standardChild.identifier,
+        );
+        expect(relay.body).not.toContain(
+          fixture.issues.assignedReview.identifier,
         );
       }
 
@@ -1990,6 +1974,7 @@ describeEmbeddedPostgres(
               sourceIssueId: fixture.issues.assignedReview.id,
               sourceRunId: fixture.runs.lowTrust.id,
               sourceAgentId: fixture.agents.lowTrust.id,
+              promotionOwnerUserId: "board-user",
             },
           })
           .returning()
@@ -2013,6 +1998,7 @@ describeEmbeddedPostgres(
           },
         });
         expectNoCanary(higherTrustContext.body, fixture.canaries.raw);
+        expectNoCanary(higherTrustContext.body, fixture.canaries.agentConfig);
 
         const bogusRunStandardApp = createApp(db, {
           ...agentActor(fixture, fixture.agents.standard.id),
@@ -2033,6 +2019,7 @@ describeEmbeddedPostgres(
           },
         });
         expectNoCanary(bogusRunContext.body, fixture.canaries.raw);
+        expectNoCanary(bogusRunContext.body, fixture.canaries.agentConfig);
 
         await db
           .update(heartbeatRuns)
