@@ -136,6 +136,9 @@ describe("myrmidon(1.6.1 SWARM-IDLE-WAKE) sweep pass", () => {
                   orderBy: () => Promise.resolve([
                     { id: "idle-agent", companyId: "company-1", name: "Idle agent", reportsTo: null, role: "engineer", status: "idle", metadata: {} },
                   ]),
+                  then: (resolve: (rows: unknown[]) => unknown) => Promise.resolve([
+                    { id: "idle-agent", companyId: "company-1", name: "Idle agent", reportsTo: null, role: "engineer", status: "idle", metadata: {} },
+                  ]).then(resolve),
                 };
               },
             }),
