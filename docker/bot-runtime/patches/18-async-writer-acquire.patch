@@ -351,7 +351,7 @@
  import contextlib
  import threading
  import time
-@@ -65,3 +66,6 @@
+@@ -65,4 +66,7 @@
          self._health_source = _HealthSource()
          self._generation = 0
          self._close_rejected: Callable[[Any], None] | None = None
