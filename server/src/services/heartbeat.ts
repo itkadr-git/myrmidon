@@ -9261,6 +9261,8 @@ export interface HeartbeatServiceOptions {
     runId: string;
     reason: string;
   }) => Promise<{ closed: number; busy: number; failed: number }>;
+  /** Test seam to exercise dependency-blocked admission without its immediate pickup side effect. */
+  suppressDependencyBlockedIdlePickup?: boolean;
   /** Test seam for changing a continuation issue at the final pre-dispatch boundary. */
   beforeResolvedInteractionContinuationDispatchCheck?: (input: {
     runId: string;
@@ -29971,6 +29973,7 @@ export function heartbeatService(
       }
       if (outcome.kind === "skipped") {
         if (
+          !options.suppressDependencyBlockedIdlePickup &&
           "dependencyBlockedAgent" in outcome &&
           outcome.dependencyBlockedReadyForPickup
         ) {

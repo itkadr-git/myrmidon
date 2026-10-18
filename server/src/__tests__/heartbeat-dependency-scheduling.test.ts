@@ -96,7 +96,7 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-heartbeat-dependency-scheduling-");
     db = createDb(tempDb.connectionString);
-    heartbeat = heartbeatService(db);
+    heartbeat = heartbeatService(db, { suppressDependencyBlockedIdlePickup: true });
     await ensureIssueRelationsTable(db);
   }, 120_000);
 
