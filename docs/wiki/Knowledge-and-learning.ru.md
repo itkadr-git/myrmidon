@@ -59,14 +59,6 @@
 
 ## Подробнее
 
-Ночной экспорт в Git запускается только при заданном
-`MYRMIDON_KNOWLEDGE_EXPORT_REPO`. Он выгружает доставленные знания файлами
-Markdown, исключая черновики и приватные страницы `life`; если содержимое не
-изменилось, коммит не создаётся. Ветка задаётся через
-`MYRMIDON_KNOWLEDGE_EXPORT_BRANCH` (по умолчанию `knowledge-export`), интервал
-через `MYRMIDON_KNOWLEDGE_EXPORT_INTERVAL_HOURS` (24 часа по умолчанию,
-допустимо 1–168). Источником истины остаётся база данных.
-
 - [Форажинг: сбор знаний из одобренных источников](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/foraging.md)
 - [Эталонные задачи и LLM-судья](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/reference-task-evals.md)
 - [Оценки: выбор судьи из другого семейства](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/evals-judge-family-selection.md)
