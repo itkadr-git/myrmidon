@@ -3989,7 +3989,10 @@ export function recoveryService(
     if (isStrandedIssueRecoveryIssue(input.issue)) {
       if (
         input.rerouteToSharedQueue &&
-        isInfraInterruptErrorCode(input.latestRun.errorCode)
+        input.issue.originKind !== "stranded_issue_recovery" &&
+        input.latestRun.contextSnapshot &&
+        typeof input.latestRun.contextSnapshot === "object" &&
+        "retryReason" in input.latestRun.contextSnapshot
       ) {
         const rerouted = await rerouteStrandedIssueToSharedQueue({
           issue: input.issue,
