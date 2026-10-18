@@ -13,12 +13,12 @@ curl -fsSL https://github.com/itkadr-git/myrmidon/releases/download/myr-v1.6.6-r
 
 The current published candidate is 1.6.6-rc.7. The installer is available
 from release 1.6.5 onward; `releases/latest/download/install.sh` follows the
-latest stable release, so use the exact RC tag to install a candidate. The installer resolves the
-release, **dumps the database before anything changes**, switches to it and
+latest stable release, so use the exact RC tag to install a candidate. The
+installer resolves the release, **dumps the database before anything changes**, switches to it and
 waits for the board to answer. If the new board does not come up healthy,
 it **rolls back to the previous release on its own** and keeps the dump. A
 specific release: `install.sh --version myr-vX.Y.Z`. Once the short
-`latest` link is back it still follows only the newest **stable** release;
+`latest` link follows the newest **stable** release;
 an RC installs only when asked for by its exact tag.
 
 ## Upgrading with deploy.sh (manual flow)
