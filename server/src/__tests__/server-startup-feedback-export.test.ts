@@ -3,11 +3,22 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, syml
 import { tmpdir } from "node:os";
 import path from "node:path";
 
+// Disable optional observability SDKs before importing the startup module.
+const ORIGINAL_OTEL_EXPORTER_OTLP_ENDPOINT = process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
+const ORIGINAL_SENTRY_DSN_BACKEND = process.env.SENTRY_DSN_BACKEND;
+const ORIGINAL_SENTRY_DSN = process.env.SENTRY_DSN;
+const ORIGINAL_SENTRY_DSN_FRONTEND = process.env.SENTRY_DSN_FRONTEND;
+delete process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
+delete process.env.SENTRY_DSN_BACKEND;
+delete process.env.SENTRY_DSN;
+delete process.env.SENTRY_DSN_FRONTEND;
+
 const ORIGINAL_PAPERCLIP_API_URL = process.env.PAPERCLIP_API_URL;
 const ORIGINAL_PAPERCLIP_RUNTIME_API_URL = process.env.PAPERCLIP_RUNTIME_API_URL;
 const ORIGINAL_PAPERCLIP_RUNTIME_API_CANDIDATES_JSON = process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON;
 const ORIGINAL_PAPERCLIP_LISTEN_HOST = process.env.PAPERCLIP_LISTEN_HOST;
 const ORIGINAL_PAPERCLIP_LISTEN_PORT = process.env.PAPERCLIP_LISTEN_PORT;
+const ORIGINAL_PAPERCLIP_PROCESS_ROLE = process.env.PAPERCLIP_PROCESS_ROLE;
 
 const {
   createAppMock,
@@ -864,10 +875,20 @@ describe("startServer PAPERCLIP_API_URL handling", () => {
     loadConfigMock.mockReturnValue(buildTestConfig());
     process.env.BETTER_AUTH_SECRET = "test-secret";
     delete process.env.PAPERCLIP_API_URL;
+    delete process.env.PAPERCLIP_PROCESS_ROLE;
     clearMyrmidonStartupEnv();
   });
 
   afterEach(() => {
+    if (ORIGINAL_OTEL_EXPORTER_OTLP_ENDPOINT === undefined) delete process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
+    else process.env.OTEL_EXPORTER_OTLP_ENDPOINT = ORIGINAL_OTEL_EXPORTER_OTLP_ENDPOINT;
+    if (ORIGINAL_SENTRY_DSN_BACKEND === undefined) delete process.env.SENTRY_DSN_BACKEND;
+    else process.env.SENTRY_DSN_BACKEND = ORIGINAL_SENTRY_DSN_BACKEND;
+    if (ORIGINAL_SENTRY_DSN === undefined) delete process.env.SENTRY_DSN;
+    else process.env.SENTRY_DSN = ORIGINAL_SENTRY_DSN;
+    if (ORIGINAL_SENTRY_DSN_FRONTEND === undefined) delete process.env.SENTRY_DSN_FRONTEND;
+    else process.env.SENTRY_DSN_FRONTEND = ORIGINAL_SENTRY_DSN_FRONTEND;
+
     clearMyrmidonStartupEnv();
     if (ORIGINAL_PAPERCLIP_API_URL === undefined) delete process.env.PAPERCLIP_API_URL;
     else process.env.PAPERCLIP_API_URL = ORIGINAL_PAPERCLIP_API_URL;
@@ -886,6 +907,8 @@ describe("startServer PAPERCLIP_API_URL handling", () => {
 
     if (ORIGINAL_PAPERCLIP_LISTEN_PORT === undefined) delete process.env.PAPERCLIP_LISTEN_PORT;
     else process.env.PAPERCLIP_LISTEN_PORT = ORIGINAL_PAPERCLIP_LISTEN_PORT;
+    if (ORIGINAL_PAPERCLIP_PROCESS_ROLE === undefined) delete process.env.PAPERCLIP_PROCESS_ROLE;
+    else process.env.PAPERCLIP_PROCESS_ROLE = ORIGINAL_PAPERCLIP_PROCESS_ROLE;
   });
 
   it("uses the externally set PAPERCLIP_API_URL when provided", async () => {
