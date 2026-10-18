@@ -32031,6 +32031,7 @@ export function heartbeatService(
         ),
       });
     },
+    enqueueWakeup,
     insertReviewAdmissionWakeup,
     dispatchPendingNativeStatusWakeups,
     triggerIssueMonitor,
