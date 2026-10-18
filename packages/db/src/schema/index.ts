@@ -17,6 +17,7 @@ export { companyMemberships } from "./company_memberships.js";
 export { companyUserSidebarPreferences } from "./company_user_sidebar_preferences.js";
 export { principalPermissionGrants } from "./principal_permission_grants.js";
 export { poolChatModuleInstances } from "./pool_chat_module_instances.js";
+export { poolChatRequests } from "./pool_chat_requests.js";
 export { companySkillPolicies } from "./company_skill_policies.js";
 export { invites } from "./invites.js";
 export { joinRequests } from "./join_requests.js";
