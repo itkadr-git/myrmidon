@@ -400,6 +400,18 @@ async function scopeAllows(
   const requestedUserId = typeof requestedScope.userId === "string" ? requestedScope.userId : null;
   let constrained = false;
 
+  // myrmidon(1.6.6 POOL-CHAT): chat grants are scoped to the exact router
+  // identity tuple; never treat these metadata keys as informational.
+  for (const key of ["moduleId", "channelId", "subjectId"] as const) {
+    const allowedValues = scopeValueList(grantScope[key]);
+    if (allowedValues.length > 0) {
+      constrained = true;
+      if (!scopeIncludesId(allowedValues, typeof requestedScope[key] === "string" ? requestedScope[key] : null)) {
+        return false;
+      }
+    }
+  }
+
   const projectIds = [
     ...scopeValueList(grantScope.projectId),
     ...scopeValueList(grantScope.projectIds),
