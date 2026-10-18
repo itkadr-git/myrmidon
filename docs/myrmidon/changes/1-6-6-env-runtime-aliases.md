@@ -27,6 +27,8 @@ settings-section: Track 1 — platform
 | `MYRMIDON_PROCESS_ROLE` | 1.6.6 DEBRAND | `all` | API, worker, or combined server process role | Unset defaults to `all`; accepted values are `all`, `worker`, and `api` |
 | `MYRMIDON_RUN_SCRATCH_DIR` | 1.6.6 DEBRAND | TMPDIR or OS temp directory | Directory for ephemeral SSH operation files | Unset falls back to TMPDIR then OS temp directory |
 | `MYRMIDON_SCRATCH_DIR` | 1.6.6 DEBRAND | home scratch fallback | Approved directory for ephemeral site-agent PKI files | Unset uses MYRMIDON_RUN_SCRATCH_DIR then home scratch |
+| `MYRMIDON_RUNNER_API_TOOLS_ENABLED` | 1.6.6 DEBRAND | `false` | Operator opt-in for native runner API tools | Unset disables the API tools; canonical name takes precedence over legacy alias |
+| `MYRMIDON_RUNNER_API_TOOLS_COMPANY_IDS` | 1.6.6 DEBRAND | unset | Optional comma-separated company allowlist for native runner API tools | Unset allows all companies only after explicit operator opt-in |
 
 ## settings-ru
 
@@ -34,3 +36,5 @@ settings-section: Track 1 — platform
 | `MYRMIDON_PROCESS_ROLE` | 1.6.6 DEBRAND | `all` | Роль процесса API, worker или совмещённого сервера | Без значения используется `all`; допустимы `all`, `worker`, `api` |
 | `MYRMIDON_RUN_SCRATCH_DIR` | 1.6.6 DEBRAND | TMPDIR или системный временный каталог | Каталог временных SSH-файлов | Без значения используется TMPDIR, затем системный каталог |
 | `MYRMIDON_SCRATCH_DIR` | 1.6.6 DEBRAND | резервный каталог в HOME | Разрешённый каталог файлов PKI site-agent | Без значения используется MYRMIDON_RUN_SCRATCH_DIR, затем HOME-каталог |
+| `MYRMIDON_RUNNER_API_TOOLS_ENABLED` | 1.6.6 DEBRAND | `false` | Явное включение оператором API-инструментов native runner | Без значения API-инструменты отключены; каноническое имя важнее legacy-синонима |
+| `MYRMIDON_RUNNER_API_TOOLS_COMPANY_IDS` | 1.6.6 DEBRAND | не задано | Необязательный allowlist компаний через запятую | Не задано = все компании лишь после явного включения оператором |
