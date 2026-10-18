@@ -21577,12 +21577,21 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           .select({ id: chatEndpoints.id })
           .from(chatEndpoints)
           .where(eq(chatEndpoints.id, endpoint.id))
-          .for("update");
+          .for("no key update");
         lockEntered();
         await holdLock;
       });
       await entered;
-      deferred.shift()?.();
+      const lockObserved = await db.execute<{ waiting: boolean }>(sql`
+        SELECT EXISTS (
+          SELECT 1
+          FROM pg_stat_activity
+          WHERE state = 'active'
+            AND wait_event_type = 'Lock'
+            AND query ILIKE '%chat_endpoint_leases%'
+        ) AS waiting
+      `);
+      expect(lockObserved[0]?.waiting).toBe(true);
       await vi.waitFor(
         async () => {
           const [delivery] = await db
