@@ -1,0 +1,48 @@
+{
+  "leases": [
+    {
+      "name": "scheduler",
+      "holderBootId": "boot-aaa111",
+      "epoch": 12,
+      "acquiredAt": "2026-10-08T21:00:00.000Z",
+      "expiresAt": "2026-10-08T21:00:30.000Z",
+      "expired": false,
+      "isSelf": true,
+      "holder": {
+        "bootId": "boot-aaa111",
+        "role": "worker",
+        "pid": 4242,
+        "hostname": "board-1",
+        "container": "myrmidon-api-1",
+        "version": "1.6.5",
+        "lastSeenAt": "2026-10-08T21:00:28.000Z"
+      }
+    },
+    {
+      "name": "backup",
+      "holderBootId": "boot-bbb222",
+      "epoch": 3,
+      "acquiredAt": "2026-10-08T20:59:00.000Z",
+      "expiresAt": "2026-10-08T20:59:30.000Z",
+      "holder": {
+        "bootId": "boot-bbb222",
+        "role": "api",
+        "pid": 4243,
+        "hostname": "board-1",
+        "container": "myrmidon-api-2",
+        "version": "1.6.5",
+        "lastSeenAt": "2026-10-08T20:59:55.000Z"
+      }
+    },
+    {
+      "name": "botops",
+      "holderBootId": null,
+      "epoch": 0,
+      "acquiredAt": null,
+      "expiresAt": null,
+      "holder": null
+    }
+  ],
+  "selfBootId": "boot-aaa111",
+  "serverTime": "2026-10-08T21:00:29.000Z"
+}

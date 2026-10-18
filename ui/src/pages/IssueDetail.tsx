@@ -1,3 +1,4 @@
+// myrmidon(DEBRAND-c): persist browser state under the Myrmidon namespace.
 import { clearLegacyChatMessageRequests } from "@/lib/chat-message-request";
 import { agentChatDraft } from "@/lib/agent-chat-draft";
 // myrmidon(UI-RU): task detail copy runs through the fork i18n catalog.
@@ -4340,7 +4341,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
           projects={projects}
           liveIssueIds={liveIssueIds}
           projectId={issue.projectId ?? undefined}
-          viewStateKey={`paperclip:issue-detail:${issue.id}:subissues-view`}
+          viewStateKey={`myrmidon:issue-detail:${issue.id}:subissues-view`}
           issueLinkState={resolvedIssueDetailState ?? location.state}
           searchFilters={{ descendantOf: issue.id, includeBlockedBy: true }}
           searchWithinLoadedIssues
@@ -7488,7 +7489,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
                 mutedIssueIds={mutedChildIssueIds}
                 issueBadgeById={childPauseBadgeById}
                 projectId={issue.projectId ?? undefined}
-                viewStateKey={`paperclip:issue-detail:${issue.id}:subissues-view`}
+                viewStateKey={`myrmidon:issue-detail:${issue.id}:subissues-view`}
                 issueLinkState={resolvedIssueDetailState ?? location.state}
                 searchFilters={{
                   descendantOf: issue.id,
@@ -7873,7 +7874,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
                   currentUserId={currentUserId}
                   userLabelMap={userLabelMap}
                   userProfileMap={userProfileMap}
-                  draftKey={conversationAgent ? `paperclip:agent-chat-draft:${issue.companyId}:${currentUserId}:${conversationAgent.id}` : `paperclip:issue-comment-draft:${issue.id}`}
+                  draftKey={conversationAgent ? `myrmidon:agent-chat-draft:${issue.companyId}:${currentUserId}:${conversationAgent.id}` : `myrmidon:issue-comment-draft:${issue.id}`}
                   reassignOptions={commentReassignOptions}
                   currentAssigneeValue={actualAssigneeValue}
                   suggestedAssigneeValue={suggestedAssigneeValue}

@@ -1,0 +1,29 @@
+diff --git a/agent/redact.py b/agent/redact.py
+index cab7396ea7..d5866d0f55 100644
+--- a/agent/redact.py
++++ b/agent/redact.py
+@@ -206,6 +206,24 @@ _PREFIX_PATTERNS = [
+     r"glwt-[A-Za-z0-9_\-]{10,}",        # GitLab workspace token
+     r"GR1348941[A-Za-z0-9_\-]{10,}",    # GitLab legacy runner registration token
+     r"pk-lf-[A-Za-z0-9\-]{8,}",         # Langfuse public key (sk-lf- already covered by sk- pattern)
++    # myrmidon(G1): Paperclip board-issued keys (``pcp_`` + family + an
++    # opaque body) reached a delegation live transcript verbatim — the writer's
++    # context carried no ``KEY=``/header shape for the assignment passes, so only a
++    # bare-token prefix pattern closes the leak. One pattern per family: the engine's
++    # validator rejects top-level alternation outright, and one grouped alternative
++    # would force a single body class on every family — a shared [A-Za-z0-9_-] body
++    # lets the bare short form swallow legitimate pcp_board-style config slugs — so
++    # bodies stay controlled per family: invite tokens are base64url (hyphens and
++    # underscores), the rest are alphanumeric, and a family underscore outside
++    # [A-Za-z0-9] keeps the short form from shadowing a prefixed key. Every pattern
++    # keeps a literal prefix well above the 2-char pre-screen floor and has no
++    # nested unbounded quantifier.
++    r"pcp_[A-Za-z0-9]{20,}",              # Paperclip generic key (short form)
++    r"pcp_board_[A-Za-z0-9]{20,}",        # Paperclip board API key
++    r"pcp_cli_auth_[A-Za-z0-9]{20,}",     # Paperclip CLI auth token
++    r"pcp_invite_[A-Za-z0-9_-]{20,}",    # Paperclip invite token (base64url body)
++    r"pcp_bootstrap_[A-Za-z0-9]{20,}",     # Paperclip bootstrap invite key
++    r"pcp_claim_[A-Za-z0-9]{20,}",        # Paperclip claim token
+ ]
+ 
+ # ENV assignment: KEY=value where KEY carries a secret-like name. Uppercase keys

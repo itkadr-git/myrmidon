@@ -437,7 +437,7 @@ describe("SidebarProjects", () => {
     await chooseSortMode("Alphabetical");
 
     expect(projectLinkLabels(container)).toEqual(["Alpha", "Bravo", "Charlie"]);
-    expect(localStorage.getItem("paperclip.projectSortMode:company-1:user-1")).toBe("alphabetical");
+    expect(localStorage.getItem("myrmidon.projectSortMode:company-1:user-1")).toBe("alphabetical");
   });
 
   it("sorts recent projects by updated time descending", async () => {

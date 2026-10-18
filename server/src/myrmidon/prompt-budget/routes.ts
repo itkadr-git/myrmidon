@@ -19,7 +19,6 @@ import type { Db } from "@paperclipai/db";
 import { promptBudgetSettingsSchema, type PromptBudgetSettings } from "@paperclipai/shared";
 import { validate } from "../../middleware/validate.js";
 import { assertCompanyAccess, assertInstanceAdmin } from "../../routes/authz.js";
-import { issueService } from "../../services/issues.js";
 import { instanceSettingsService } from "../../services/instance-settings.js";
 import { readPromptBudgetSettings, writePromptBudgetSettings } from "./settings.js";
 import { buildPromptBudgetStatus } from "./status.js";
@@ -53,19 +52,4 @@ export function promptBudgetRoutes(db: Db) {
   });
 
   return router;
-}
-
-/** The sweep's comment port, bound to the issue service (index.ts uses this). */
-export function promptBudgetAddCommentPort(db: Db) {
-  const svc = issueService(db);
-  return (
-    issueId: string,
-    body: string,
-    options: Parameters<typeof svc.addComment>[3],
-  ) =>
-    svc.addComment(issueId, body, {}, {
-      authorType: "system",
-      presentation: options?.presentation,
-      metadata: options?.metadata,
-    });
 }

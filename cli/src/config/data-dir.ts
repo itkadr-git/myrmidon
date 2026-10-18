@@ -5,6 +5,7 @@ import {
   resolveDefaultContextPath,
   resolvePaperclipInstanceId,
 } from "./home.js";
+import { readProductEnv, writeProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
 
 export interface DataDirOptionLike {
   dataDir?: string;
@@ -26,21 +27,21 @@ export function applyDataDirOverride(
   if (!rawDataDir) return null;
 
   const resolvedDataDir = path.resolve(expandHomePrefix(rawDataDir));
-  process.env.PAPERCLIP_HOME = resolvedDataDir;
+  writeProductEnv(process.env, "HOME", resolvedDataDir); // myrmidon(REBRAND-C)
 
   if (support.hasConfigOption) {
-    const hasConfigOverride = Boolean(options.config?.trim()) || Boolean(process.env.PAPERCLIP_CONFIG?.trim());
+    const hasConfigOverride = Boolean(options.config?.trim()) || Boolean(readProductEnv("CONFIG")?.trim());
     if (!hasConfigOverride) {
       const instanceId = resolvePaperclipInstanceId(options.instance);
-      process.env.PAPERCLIP_INSTANCE_ID = instanceId;
-      process.env.PAPERCLIP_CONFIG = resolveDefaultConfigPath(instanceId);
+      writeProductEnv(process.env, "INSTANCE_ID", instanceId); // myrmidon(REBRAND-C)
+      writeProductEnv(process.env, "CONFIG", resolveDefaultConfigPath(instanceId)); // myrmidon(REBRAND-C)
     }
   }
 
   if (support.hasContextOption) {
-    const hasContextOverride = Boolean(options.context?.trim()) || Boolean(process.env.PAPERCLIP_CONTEXT?.trim());
+    const hasContextOverride = Boolean(options.context?.trim()) || Boolean(readProductEnv("CONTEXT")?.trim());
     if (!hasContextOverride) {
-      process.env.PAPERCLIP_CONTEXT = resolveDefaultContextPath();
+      writeProductEnv(process.env, "CONTEXT", resolveDefaultContextPath()); // myrmidon(REBRAND-C)
     }
   }
 

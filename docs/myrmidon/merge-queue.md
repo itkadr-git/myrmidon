@@ -95,20 +95,18 @@ three parts.
    - in conflict (`mergeable_state=dirty`): not touched. The label `needs-rebase` (created if it
      does not exist) and one comment with a hidden marker are set; when the conflict is gone, the
      label is removed and the comment is marked resolved.
-3. **Checks on the new head.** A push made with `GITHUB_TOKEN` does not start `pull_request`
-   workflows (GitHub rule against recursive runs; only `workflow_dispatch` and
-   `repository_dispatch` are exempt). The repository has no PAT or App token (`gh secret list`
-   shows only workflow secrets), and a stored PAT would be a new long-lived credential with write
-   access. So the workflow dispatches the required checks itself after each update:
-   - `myrmidon-ci.yml` on the PR branch (`workflow_dispatch`). It reports `CI result` on the new
-     head under the same name, so the ruleset requirement is met. Note: a manual run is the
-     **full** tier, heavier than the `fast` PR tier;
-   - `myrmidon-hot-files-review.yml` with the PR number (a new `workflow_dispatch` trigger). It
-     posts the `hot-files-review` status on the new head. This is not a `synchronize`, so the
-     `review-approved` label stays: merging `main` in does not change the code the reviewer saw.
-
-   If an update ever has to run with a PAT or an App token instead, replace `github.token` and the
-   two dispatch calls with that token; `pull_request` workflows then start by themselves.
+3. **Checks on the new head.** The update is pushed by a GitHub App (repository secrets
+   `MYR_AUTOUPDATE_APP_ID` and `MYR_AUTOUPDATE_APP_KEY`; the workflow mints an installation token
+   with `actions/create-github-app-token`). Observed with `GITHUB_TOKEN` (PRs #750, #839 and
+   others): the `pull_request` runs for the bot's merge commit have actor `github-actions[bot]`
+   and the approval policy (`first_time_contributors`) parks them as `action_required`; a
+   hand-dispatched CI run produced a green `CI result` that was not shown in the PR rollup, so the
+   PR stayed BLOCKED. A push by the App starts `pull_request` workflows normally and they report
+   `CI result` and `hot-files-review` themselves, so there is no approval step and no dispatched
+   duplicate. If the token cannot be created (secrets missing, App not installed) the run fails;
+   it never falls back to `GITHUB_TOKEN`. `myrmidon-hot-files-review.yml` keeps the
+   `review-approved` label on a `synchronize` whose head is a `Merge branch 'main' into ...`
+   commit made by a `[bot]` through `update-branch` (the reviewed code did not change).
 
 If `update-branch` fails (for example, `main` brought a workflow file change that `GITHUB_TOKEN`
 may not push), the run logs a warning and the summary names the PR; the author or steward updates

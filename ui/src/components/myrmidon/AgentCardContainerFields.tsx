@@ -1,13 +1,24 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Loader2 } from "lucide-react";
+import { ApiError } from "@/api/client";
 import { Button } from "@/components/ui/button";
 import { CollapsibleSection, DraftInput, Field, ToggleField } from "../agent-config-primitives";
 import {
+  APPLY_POLL_INTERVAL_MS,
+  APPLY_POLL_TIMEOUT_MS,
+  APPLY_PROGRESS_TEXT,
+  APPLY_TIMEOUT_TEXT,
   botContainerApi,
   botContainerStatusKey,
+  clearStoredApplyJob,
   describeApplyError,
+  describeApplyJobStatus,
   describeApplyOutcome,
+  readStoredApplyJob,
+  storeApplyJob,
   type ApplyFeedback,
+  type BotApplyAccepted,
   type BotContainerStatus,
 } from "./botContainerApi";
 import {
@@ -145,6 +156,9 @@ export interface AgentCardContainerFieldsViewProps {
   status: BotContainerStatus | null;
   statusError: string | null;
   applying: boolean;
+  /** myrmidon(1.6.5 ASYNC-BOT-APPLY-UI): an apply job is live and being polled —
+   *  the progress line under the buttons says so while no outcome exists yet. */
+  progress: boolean;
   feedback: ApplyFeedback | null;
   onApply: () => void;
   onRefresh: () => void;
@@ -193,6 +207,7 @@ export function AgentCardContainerFieldsView({
   status,
   statusError,
   applying,
+  progress,
   feedback,
   onApply,
   onRefresh,
@@ -334,6 +349,7 @@ export function AgentCardContainerFieldsView({
                 title={blocked ?? undefined}
                 data-testid="myrmidon-bot-container-apply"
               >
+                {applying && <Loader2 className="mr-1.5 size-3 animate-spin" aria-hidden="true" />}
                 {applying ? "Applying..." : "Apply now"}
               </Button>
             </div>
@@ -341,6 +357,11 @@ export function AgentCardContainerFieldsView({
           {blocked && (
             <p className="text-xs text-muted-foreground" data-testid="myrmidon-bot-container-apply-hint">
               {blocked}
+            </p>
+          )}
+          {progress && (
+            <p className="text-xs text-muted-foreground" data-testid="myrmidon-bot-container-apply-progress">
+              {APPLY_PROGRESS_TEXT}
             </p>
           )}
           {feedback && (
@@ -396,7 +417,17 @@ export function AgentCardContainerFieldsView({
   );
 }
 
-/** The connected section: reads the status, runs "Apply now". */
+/** The connected section: reads the status, runs "Apply now".
+ *
+ *  myrmidon(1.6.5 ASYNC-BOT-APPLY-UI): pressing the button queues the pass
+ *  (POST answers 202 + applyId, part A ASYNC-BOT-APPLY) instead of holding the
+ *  request for the whole reconcile. The section then polls
+ *  GET .../apply/:applyId every 2 s until the job leaves pending/running, at
+ *  most ~2 min per round, and shows the outcome — "applied (time)" or the
+ *  server's failure text — on the card. While a job is live the button is
+ *  disabled and a progress line explains what is happening. The live apply id
+ *  lives in sessionStorage, so a page reload in the first minutes resumes the
+ *  same job: the outcome, error included, is not lost with the component. */
 export function AgentCardContainerFields({
   agentId,
   value,
@@ -420,18 +451,114 @@ export function AgentCardContainerFields({
     retry: false,
   });
   const [feedback, setFeedback] = useState<ApplyFeedback | null>(null);
+  // The job whose outcome the section waits for. Null when nothing is live.
+  const [activeApplyId, setActiveApplyId] = useState<string | null>(null);
+  // Set when a poll round ran out without an outcome — the "check later" hint.
+  const [pollTimedOut, setPollTimedOut] = useState(false);
+  const deadlineRef = useRef(0);
+  // A POST in flight (its answer has not been folded into state yet).
+  const [posting, setPosting] = useState(false);
+
   const refresh = () => queryClient.invalidateQueries({ queryKey: botContainerStatusKey(agentId) });
+
+  // Resume a job that survived a page reload: the stored id is only taken
+  // while it is inside the resume window (readStoredApplyJob drops stale or
+  // corrupt entries). Runs once per agent — a reload must not re-drop a job
+  // the previous mount already resumed.
+  useEffect(() => {
+    const stored = readStoredApplyJob(agentId, Date.now());
+    if (!stored) return;
+    // One final check on resume is what catches an outcome that landed while
+    // the page was closed; after the original two-minute round ran out the
+    // poll gives up again with the "check later" hint rather than running an
+    // open-ended loop for an old job.
+    deadlineRef.current = stored.startedAtMs + APPLY_POLL_TIMEOUT_MS;
+    setActiveApplyId(stored.applyId);
+  }, [agentId]);
+
+  // The polling loop: one GET per interval while a job is live. Every read is
+  // database-only on the server, so it is cheap and answers during a pass.
+  useEffect(() => {
+    if (!activeApplyId) return;
+    let cancelled = false;
+
+    const poll = async () => {
+      try {
+        const job = await botContainerApi.applyStatus(agentId, activeApplyId);
+        if (cancelled) return;
+        const outcome = describeApplyJobStatus(job);
+        if (outcome) {
+          clearStoredApplyJob(agentId);
+          setFeedback(outcome);
+          setActiveApplyId(null);
+          setPollTimedOut(false);
+          void refresh();
+          return;
+        }
+      } catch (error) {
+        if (cancelled) return;
+        // 404: the job is gone (unknown id — the server may have been
+        // rebuilt/migrated while the page was open). Nothing left to wait for:
+        // stop rather than poll a dead id forever; a transient failure stays
+        // live and the next tick retries it.
+        if (error instanceof ApiError && error.status === 404) {
+          clearStoredApplyJob(agentId);
+          setFeedback(describeApplyError(error));
+          setActiveApplyId(null);
+          void refresh();
+          return;
+        }
+      }
+      if (!cancelled && Date.now() >= deadlineRef.current) {
+        // Keep the stored id: the next reload (or this page's next round) can
+        // still pick the outcome up — the hint only says the poll gave up.
+        setPollTimedOut(true);
+        setActiveApplyId(null);
+      }
+    };
+
+    void poll();
+    const timer = window.setInterval(() => void poll(), APPLY_POLL_INTERVAL_MS);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+    // `refresh` only closes over the stable queryClient.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeApplyId, agentId]);
+
   const apply = useMutation({
     mutationFn: () => botContainerApi.apply(agentId),
-    onSuccess: (result) => {
-      setFeedback(describeApplyOutcome(result.outcome));
+    onSuccess: (result: BotApplyAccepted) => {
+      if (result.applyId) {
+        // The async answer (202): watch the job instead of trusting the body.
+        // A POST that came back with an already-live job (the previous round
+        // timed out and the user pressed again, or another tab queued it)
+        // simply starts a fresh two-minute round for the same id.
+        deadlineRef.current = Date.now() + APPLY_POLL_TIMEOUT_MS;
+        storeApplyJob(agentId, result.applyId, Date.now());
+        setPollTimedOut(false);
+        setActiveApplyId(result.applyId);
+        return;
+      }
+      // A pre-ASYNC-BOT-APPLY server answered synchronously with the outcome;
+      // keep that path working (UI ships against both server generations).
+      setFeedback(describeApplyOutcome(result.outcome ?? { kind: "error", message: "the server answered neither applyId nor outcome." }));
       void refresh();
     },
     onError: (error) => {
       setFeedback(describeApplyError(error));
       void refresh();
     },
+    onSettled: () => setPosting(false),
   });
+
+  const startApply = () => {
+    setFeedback(null);
+    setPollTimedOut(false);
+    setPosting(true);
+    apply.mutate();
+  };
 
   return (
     <AgentCardContainerFieldsView
@@ -446,12 +573,10 @@ export function AgentCardContainerFields({
             : "The status request failed."
           : null
       }
-      applying={apply.isPending}
-      feedback={feedback}
-      onApply={() => {
-        setFeedback(null);
-        apply.mutate();
-      }}
+      applying={posting || activeApplyId !== null}
+      progress={posting || activeApplyId !== null}
+      feedback={pollTimedOut && feedback === null ? { kind: "warn", message: APPLY_TIMEOUT_TEXT } : feedback}
+      onApply={() => void startApply()}
       onRefresh={() => void refresh()}
     />
   );

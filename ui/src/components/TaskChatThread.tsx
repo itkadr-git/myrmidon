@@ -1,3 +1,4 @@
+// myrmidon(DEBRAND-c): persist browser state under the Myrmidon namespace.
 import type { ActivityEvent } from "@paperclipai/shared";
 import { useProjectCreatedItems } from "@/hooks/useProjectCreatedItems";
 import { requiresExecutionReconciliation } from "@paperclipai/shared";
@@ -557,7 +558,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
         run.execution.cause === "legacy_execution_requires_reconciliation" &&
         [
           "claude_local", "codex_local", "cursor", "gemini_local", "opencode_local",
-          "pi_local", "grok_local", "kimi_local", "hermes_local",
+          "pi_local", "omp_local", "grok_local", "kimi_local", "hermes_local",
         ].includes(run.adapterType ?? "")
       ) return false;
       return [
@@ -2370,7 +2371,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     pendingComposerInputs[0] ??
     null;
   const interactionDraftKey = selectedPendingInput
-    ? `paperclip:task-input:${issueId ?? "unknown"}:${selectedPendingInput.key}`
+    ? `myrmidon:task-input:${issueId ?? "unknown"}:${selectedPendingInput.key}`
     : undefined;
   const openPendingTakeover = useCallback(() => {
     setTakeoverMode("open");

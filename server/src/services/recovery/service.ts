@@ -1,6 +1,14 @@
 import { hasLiveLegacyController } from "../legacy-controller-lease.js";
 // myrmidon(B1): product name in the notice bodies below; see product.ts.
 import { productSaid } from "../../myrmidon/product.js";
+// myrmidon(1.6.6 RUN-RETRY-POLICY): transient/permanent classification, the
+// exponential backoff and the attempt ceiling of a failed run's retry.
+import {
+  classifyRunFailureForRetry,
+  computeRunRetryBackoff,
+  readRunRetryPolicySettings,
+  resolveRunRetryMaxAttempts,
+} from "../../myrmidon/run-retry-policy/index.js";
 import { instanceSettingsService } from "../instance-settings.js";
 import { isWaitingConversation, settleConversationTurn, deliverConversationComments } from "../agent-conversations.js";
 import {
@@ -52,6 +60,7 @@ import {
   nativeRunResults,
   statusDecisions,
   workAssessments,
+  runContextPersistenceFields,
 } from "@paperclipai/db";
 import { parseObject, asBoolean, asNumber } from "../../adapters/utils.js";
 import { runningProcesses } from "../../adapters/index.js";
@@ -60,7 +69,7 @@ import {
   nativeRunnerOwnershipNotHeldCondition,
 } from "../native-runtime/native-runner-ownership.js";
 import { visibleIssueCondition } from "../issue-visibility.js";
-import { forbidden, notFound } from "../../errors.js";
+import { forbidden, HttpError, notFound } from "../../errors.js";
 import { logger } from "../../middleware/logger.js";
 import {
   isPidAlive,
@@ -504,40 +513,13 @@ function isTerminalIssueRun(latestRun: LatestIssueRun) {
   return TERMINAL_HEARTBEAT_RUN_STATUSES.has(latestRun.status);
 }
 
-const TRANSIENT_INFRA_CONTINUATION_ERROR_CODES = new Set<string>([
-  "adapter_failed",
-  "codex_transient_upstream",
-  "codex_harness_crash",
-  "claude_transient_upstream",
-  "provider_quota",
-  "timeout",
-]);
-
-const NON_RETRYABLE_CONTINUATION_ERROR_CODES = new Set<string>([
-  "adapter_engine_unavailable",
-  "agent_not_invokable",
-  "agent_not_found",
-  "budget_blocked",
-  "budget_exhausted",
-  "issue_paused",
-  "issue_dependencies_blocked",
-  // This is the fail-closed fallback for exceptions raised before an adapter
-  // process starts. Known transient preflight failures use dedicated bounded
-  // retry paths instead of generic issue continuation recovery.
-  "setup_failed",
-  // Setup owns the shared durable retry budget for temporary Git scans.
-  // Generic continuation must not retry permanent failures or reset that budget.
-  "workspace_git_scan_timeout",
-  "workspace_git_scan_saturated",
-  "workspace_git_scan_cancelled",
-  "workspace_git_scan_output_limit",
-  "workspace_git_scan_failed",
-  "low_trust_isolation_unavailable",
-  "low_trust_requires_isolated_workspace",
-  "low_trust_boundary_mismatch",
-  "low_trust_requires_sandbox_environment",
-  "low_trust_runtime_services_denied",
-]);
+// myrmidon(1.6.6 RUN-RETRY-POLICY): the transient/permanent taxonomy of a
+// failed run now lives in exactly one place —
+// server/src/myrmidon/run-retry-policy — next to the attempt ceilings and the
+// exponential backoff that use it. The two code sets that used to sit here
+// moved there unchanged (TRANSIENT_RUN_FAILURE_ERROR_CODES, which is the six
+// codes listed before, and PERMANENT_RUN_FAILURE_ERROR_CODES, which kept every
+// rationale comment of the set below).
 
 // A continuation cancelled with this code is a *deliberate wait* (the latest run
 // reported it was parked for review/approval), not a lost execution path. When the
@@ -547,9 +529,6 @@ const CONTINUATION_WAITING_ON_REVIEW_ERROR_CODE =
   "issue_continuation_waiting_on_review";
 const INTERACTION_CONTINUATION_REQUEUE_MAX_ATTEMPTS = 3;
 
-const CONTINUATION_RECOVERY_TRANSIENT_MAX_ATTEMPTS = 3;
-const CONTINUATION_RECOVERY_DEFAULT_MAX_ATTEMPTS = 1;
-const CONTINUATION_RECOVERY_TRANSIENT_BASE_BACKOFF_MS = 60_000;
 export const PROVIDER_QUOTA_RECOVERY_DEFAULT_BACKOFF_MS = 60 * 60 * 1000;
 
 const PROVIDER_QUOTA_ERROR_RE =
@@ -742,6 +721,18 @@ type ContinuationRetryClassification = {
   errorCode: string | null;
 };
 
+/**
+ * The adapter error family a failed run persisted, when it carries one. It is
+ * the adapter's own verdict about *why* the run failed, which is why the retry
+ * policy prefers it to the generic error code.
+ */
+function readContinuationFailureErrorFamily(
+  latestRun: LatestIssueRun,
+): string | null {
+  const result = parseObject(latestRun?.resultJson);
+  return readNonEmptyString(result.errorFamily);
+}
+
 export function classifyContinuationFailure(
   latestRun: LatestIssueRun,
 ): ContinuationRetryClassification {
@@ -750,29 +741,36 @@ export function classifyContinuationFailure(
     return {
       kind: "deliberate_wait_without_target",
       maxAttempts: DISPOSITION_REPAIR_MAX_ATTEMPTS,
-      baseBackoffMs: CONTINUATION_RECOVERY_TRANSIENT_BASE_BACKOFF_MS,
+      baseBackoffMs: readRunRetryPolicySettings().baseDelayMs,
       errorCode,
     };
   }
-  if (errorCode && NON_RETRYABLE_CONTINUATION_ERROR_CODES.has(errorCode)) {
-    return {
-      kind: "non_retryable",
-      maxAttempts: 0,
-      baseBackoffMs: 0,
-      errorCode,
-    };
+
+  // myrmidon(1.6.6 RUN-RETRY-POLICY): whether the failure is transient or
+  // permanent, and how many attempts that class is worth, come from the retry
+  // policy module. The verdict is unchanged for every error code that used to
+  // be listed above; the adapter error family is the one signal the policy
+  // adds (a run that failed with `permanent_config_error` is terminal even when
+  // its code is a generic one).
+  const policy = readRunRetryPolicySettings();
+  const failure = classifyRunFailureForRetry({
+    errorCode,
+    errorFamily: readContinuationFailureErrorFamily(latestRun),
+  });
+  if (failure.classification === "permanent") {
+    return { kind: "non_retryable", maxAttempts: 0, baseBackoffMs: 0, errorCode };
   }
-  if (errorCode && TRANSIENT_INFRA_CONTINUATION_ERROR_CODES.has(errorCode)) {
+  if (failure.classification === "transient") {
     return {
       kind: "transient_infra",
-      maxAttempts: CONTINUATION_RECOVERY_TRANSIENT_MAX_ATTEMPTS,
-      baseBackoffMs: CONTINUATION_RECOVERY_TRANSIENT_BASE_BACKOFF_MS,
+      maxAttempts: resolveRunRetryMaxAttempts(failure.classification, policy),
+      baseBackoffMs: policy.baseDelayMs,
       errorCode,
     };
   }
   return {
     kind: "default",
-    maxAttempts: CONTINUATION_RECOVERY_DEFAULT_MAX_ATTEMPTS,
+    maxAttempts: resolveRunRetryMaxAttempts(failure.classification, policy),
     baseBackoffMs: 0,
     errorCode,
   };
@@ -2736,7 +2734,7 @@ export function recoveryService(
           scheduledRetryAt: retryAt,
           scheduledRetryAttempt: 1,
           scheduledRetryReason: "provider_quota_recovery",
-          contextSnapshot: withRecoveryContext(
+          ...runContextPersistenceFields(withRecoveryContext(
             {
               issueId: input.issue.id,
               taskId: input.issue.id,
@@ -2745,7 +2743,7 @@ export function recoveryService(
               providerQuotaRetryNotBefore: retryAt.toISOString(),
             },
             "normal_model",
-          ),
+          )),
           updatedAt: now,
         })
         .returning()
@@ -2980,6 +2978,32 @@ export function recoveryService(
     return openChildren;
   }
 
+  /**
+   * myrmidon: issuesSvc.update for a recovery dependency wait. The board refuses a
+   * wait that would close a blocking cycle (422 — e.g. the issue itself blocks the
+   * open child it would wait on; 17.10: OPE-5963 -> OPE-7915). One such issue must
+   * not fail the whole recovery pass: at startup that error exited the board. The
+   * refusal is logged and the issue is left as it is (null).
+   */
+  async function updateDependencyWait(
+    issueId: string,
+    patch: Parameters<typeof issuesSvc.update>[1],
+    source: string,
+  ) {
+    try {
+      return await issuesSvc.update(issueId, patch);
+    } catch (err) {
+      if (err instanceof HttpError && err.status === 422) {
+        logger.warn(
+          { err, issueId, source, blockedByIssueIds: patch.blockedByIssueIds },
+          "recovery: dependency wait refused by the board; issue left as it is",
+        );
+        return null;
+      }
+      throw err;
+    }
+  }
+
   async function resolveContinuationWaitingOnReview(
     issue: typeof issues.$inferSelect,
   ) {
@@ -2995,10 +3019,11 @@ export function recoveryService(
     ];
     if (blockedByIssueIds.length === 0) return null;
 
-    const updated = await issuesSvc.update(issue.id, {
-      status: "blocked",
-      blockedByIssueIds,
-    });
+    const updated = await updateDependencyWait(
+      issue.id,
+      { status: "blocked", blockedByIssueIds },
+      "continuation_waiting_on_review",
+    );
     if (!updated) return null;
 
     const waitingOn = formatIssueLinksForComment([
@@ -3311,7 +3336,7 @@ export function recoveryService(
                 scheduledRetryAt: retryAt,
                 scheduledRetryAttempt: input.attempt,
                 scheduledRetryReason: ISSUE_DISPOSITION_REPAIR_RETRY_REASON,
-                contextSnapshot: context,
+                ...runContextPersistenceFields(context),
                 updatedAt: now,
               })
               .returning()
@@ -3517,15 +3542,19 @@ export function recoveryService(
             issue.companyId,
             issue.id,
           );
-          await issuesSvc.update(issue.id, {
-            status: "blocked",
-            blockedByIssueIds: [
-              ...new Set([
-                ...blockerIds,
-                ...healthyChildren.map((child) => child.id),
-              ]),
-            ],
-          });
+          await updateDependencyWait(
+            issue.id,
+            {
+              status: "blocked",
+              blockedByIssueIds: [
+                ...new Set([
+                  ...blockerIds,
+                  ...healthyChildren.map((child) => child.id),
+                ]),
+              ],
+            },
+            "active_recovery_action_healthy_child",
+          );
         }
         const resolved = await recoveryActionsSvc.resolveActiveForIssue({
           companyId: action.companyId,
@@ -5749,9 +5778,15 @@ export function recoveryService(
 
           if (classification.baseBackoffMs > 0 && latestFinishedAt) {
             const elapsed = Date.now() - latestFinishedAt.getTime();
-            const requiredDelay =
-              classification.baseBackoffMs *
-              Math.pow(2, Math.max(0, consecutive - 1));
+            // myrmidon(1.6.6 RUN-RETRY-POLICY): the wait before the next
+            // continuation attempt is the policy's exponential backoff — the
+            // same base and factor as before, now with a ceiling and an
+            // optional spread from MYRMIDON_RUN_RETRY_* (see SETTINGS.md).
+            const { delayMs: requiredDelay } = computeRunRetryBackoff({
+              attempt: consecutive,
+              now: latestFinishedAt,
+              settings: readRunRetryPolicySettings(),
+            });
             if (elapsed < requiredDelay) {
               result.skipped += 1;
               continue;
@@ -5826,7 +5861,7 @@ export function recoveryService(
 
     const queryCandidates = (afterIssueId: string | null) => {
       const filters = [
-        eq(issues.status, "blocked"),
+        inArray(issues.status, ["blocked", "in_progress", "in_review"]),
         isNull(issues.conversationAgentId),
         visibleIssueCondition(),
         sql`${issues.assigneeAgentId} is not null`,

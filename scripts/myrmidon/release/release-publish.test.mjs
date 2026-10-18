@@ -173,12 +173,15 @@ function writeFakeGh(dir) {
   return bin;
 }
 
-function sandbox({ runs = [], releases = {}, changelog = CHANGELOG } = {}) {
+function sandbox({ runs = [], releases = {}, changelog = CHANGELOG, auditReport = "# DB audit\n\nDone.\n" } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "myrmidon-release-publish-"));
   const bin = writeFakeGh(dir);
-  // The checkout the script runs in (cwd): the changelog at its repo path.
-  fs.mkdirSync(path.join(dir, "docs/myrmidon"), { recursive: true });
+  // The checkout the script runs in (cwd): the changelog and release docs.
+  fs.mkdirSync(path.join(dir, "docs/myrmidon/releases"), { recursive: true });
   fs.writeFileSync(path.join(dir, "docs/myrmidon/CHANGELOG.md"), changelog);
+  if (auditReport !== null) {
+    fs.writeFileSync(path.join(dir, "docs/myrmidon/releases/1.6.0-db-audit.md"), auditReport);
+  }
   fs.writeFileSync(path.join(dir, "ref-tag.json"),
     JSON.stringify({ object: { sha: TAG_OBJECT, type: "tag" } }));
   fs.writeFileSync(path.join(dir, "tag-object.json"),
@@ -415,6 +418,29 @@ describe("publish-github-release.sh: the CI gate", () => {
     assert.notEqual(code, 0, out);
     assert.match(out, /tag must look like myr-vX\.Y\.Z/);
     assert.equal(mutations(sb), "");
+  });
+});
+
+describe("publish-github-release.sh: the DB audit gate", () => {
+  it("refuses a final tag without its versioned audit report before waiting for CI", () => {
+    const sb = sandbox({ runs: GREEN_RUNS, auditReport: null });
+    const { code, out } = runScript(sb, "myr-v1.6.0");
+    assert.notEqual(code, 0, out);
+    assert.match(out, /docs\/myrmidon\/releases\/1\.6\.0-db-audit\.md is missing/);
+    assert.match(out, /OPE-401 decision registry/);
+    assert.equal(mutations(sb), "");
+    assert.doesNotMatch(out, /gate: Myrmidon CI/);
+  });
+
+  it("does not require an audit report for an rc tag", () => {
+    const rcTag = "myr-v1.6.0-rc.1";
+    const sb = sandbox({ runs: [
+      run(COMMIT, ".github/workflows/myrmidon-ci-tag.yml", "success", "completed", rcTag),
+      run(COMMIT, ".github/workflows/myrmidon-image.yml", "success", "completed", rcTag),
+    ], auditReport: null });
+    const { out } = runScript(sb, rcTag);
+    assert.match(out, /gate: rc tag/);
+    assert.doesNotMatch(out, /audit report .* is missing/);
   });
 });
 
@@ -878,6 +904,31 @@ describe("release-body.mjs: body construction", () => {
     assert.doesNotMatch(body, /(?<!\d)(?:10|192|172)\.\d+\.\d+\.\d+(?!\d)/);
   });
 
+  it("condenses a notes section over GitHub's limit to its entry headings (the 1.6.6-rc.1 publish)", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "release-body-condense-"));
+    fs.mkdirSync(path.join(dir, "docs/myrmidon/changes"), { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, "docs/myrmidon/changes/huge.md"),
+      `## changelog-en\n\n### Huge entry\n\n- ${"x".repeat(130000)}\n`,
+    );
+    const registryState = {
+      myrmidon: "sha256:a", "myrmidon-dockergate": "sha256:b",
+      "myrmidon-fleetd": "sha256:c", "myrmidon-hermes": "sha256:d",
+    };
+    fs.writeFileSync(path.join(dir, "registry-state.json"), JSON.stringify(registryState));
+    fs.writeFileSync(path.join(dir, "docs/myrmidon/CHANGELOG.md"), "# Changelog\n");
+    const r = spawnSync("node", [BUILDER, "--registry-state", path.join(dir, "registry-state.json"), "1.6.5-rc.6"], {
+      cwd: dir,
+      encoding: "utf8",
+    });
+    assert.equal(r.status, 0, r.stderr);
+    assert.ok(r.stdout.length <= 125000);
+    assert.match(r.stdout, /^- Huge entry$/m);
+    assert.match(r.stdout, /docs\/myrmidon\/CHANGELOG\.md/);
+    assert.doesNotMatch(r.stdout, /x{1000}/);
+    assert.match(r.stderr, /publishing the entry headings/);
+  });
+
   it("refuses a body over GitHub's 125000-character limit before publish (the 1.6.5-rc.6 422)", () => {
     // An rc body collects every pending change fragment; a long release
     // window overruns GitHub's release-body limit and `gh release create`
@@ -887,7 +938,7 @@ describe("release-body.mjs: body construction", () => {
     fs.mkdirSync(path.join(dir, "docs/myrmidon/changes"), { recursive: true });
     fs.writeFileSync(
       path.join(dir, "docs/myrmidon/changes/huge.md"),
-      `## changelog-en\n\n### Huge entry\n\n- ${"x".repeat(130000)}\n`,
+      `## changelog-en\n\n### ${"Huge heading ".repeat(11000)}\n\n- entry\n`,
     );
     const registryState = {
       myrmidon: "sha256:a", "myrmidon-dockergate": "sha256:b",

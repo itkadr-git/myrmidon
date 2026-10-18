@@ -167,7 +167,7 @@ export function Connections() {
       if (status.verificationUrl) window.location.assign(status.verificationUrl);
     },
     onError: (error) => pushToast({
-      title: "Couldn’t reach Paperclip Cloud",
+      title: "Couldn’t reach Myrmidon Cloud",
       body: error instanceof Error ? error.message : "Try again in a moment.",
       tone: "error",
     }),
@@ -605,7 +605,7 @@ function CloudConnectorEnrollmentBanner({
     return (
       <div className="flex items-center gap-3 rounded-lg border border-border bg-card px-4 py-3">
         <Cloud className="h-5 w-5 text-muted-foreground" />
-        <div className="text-sm text-muted-foreground">Paperclip Cloud enrollment status is unavailable.</div>
+        <div className="text-sm text-muted-foreground">Myrmidon Cloud enrollment status is unavailable.</div>
       </div>
     );
   }
@@ -614,8 +614,8 @@ function CloudConnectorEnrollmentBanner({
       <Cloud className="h-5 w-5 text-muted-foreground" />
       <div className="min-w-0 flex-1">
         <div className="text-sm font-semibold text-foreground">
-          {/* myrmidon(B1a): user-visible text; "Paperclip Cloud" stays (real external product) */}
-          {status?.status === "pending" ? "Finish Paperclip Cloud enrollment" : "Enable Myrmidon-managed sign-in"}
+          {/* myrmidon(DB1): DEBRAND 1.6.6-a — the enrollment surface copy follows the product rename. */}
+          {status?.status === "pending" ? "Finish Myrmidon Cloud enrollment" : "Enable Myrmidon-managed sign-in"}
         </div>
         <div className="text-xs text-muted-foreground">
           Confirm this server’s exact address before Cloud can return encrypted Google credentials to it.

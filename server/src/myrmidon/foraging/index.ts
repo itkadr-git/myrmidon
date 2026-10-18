@@ -29,6 +29,16 @@ import { createDbForagingStore, type ForagingStore } from "./store.js";
 import { createDbForagingSkillStore, createForagingCandidatePort } from "./candidate-port.js";
 import { skillLifecycleService } from "../skill-lifecycle/index.js";
 import { foragingRoutes } from "./routes.js";
+import {
+  foragingIdleGateService,
+  readForagingIdleGate,
+  FORAGING_IDLE_GATE_ENABLED_ENV,
+  FORAGING_IDLE_GATE_SETTINGS_KEY,
+} from "./idle-gate-settings.js";
+import { foragingIdleGateRoutes } from "./idle-gate-routes.js";
+// myrmidon(1.6.3-FORAGING-IDLE-GATE, UI half): the pass journal and its route.
+import { foragingPassJournalService } from "./pass-journal.js";
+import { foragingPassRoutes } from "./pass-routes.js";
 
 export {
   FORAGING_BUDGET_CENTS_ENV,
@@ -43,6 +53,21 @@ export {
 } from "./domain.js";
 export type { ForagingCandidatePort, ForagingSweepResult, ForagingSourceRef } from "./domain.js";
 export { readForagingSettings, FORAGING_ENABLED_ENV, foragingSettingsService, resolveForagingEffectiveSettings } from "./settings.js";
+export {
+  FORAGING_IDLE_GATE_ENABLED_ENV,
+  FORAGING_IDLE_GATE_SETTINGS_KEY,
+  foragingIdleGateService,
+  readForagingIdleGate,
+} from "./idle-gate-settings.js";
+export { foragingIdleGateRoutes } from "./idle-gate-routes.js";
+// myrmidon(1.6.3-FORAGING-IDLE-GATE, UI half): the pass journal of a company.
+export {
+  foragingPassJournalService,
+  FORAGING_PASS_JOURNAL_KEY,
+  type ForagingPassJournalService,
+  type ForagingPassSummary,
+} from "./pass-journal.js";
+export { foragingPassRoutes } from "./pass-routes.js";
 export { createForagingService } from "./service.js";
 export { createDbForagingStore } from "./store.js";
 export { createForagingReader } from "./reader.js";
@@ -98,6 +123,18 @@ export function foragingWiring(db: Db, env: NodeJS.ProcessEnv = process.env): Fo
       },
     }),
     candidatePort: foragingCandidatePort(db),
+    // myrmidon(1.6.3-FORAGING-IDLE-GATE): the per-role idle check reads the
+    // swarm-claim queue and the agents of the role from this database.
+    db,
+    // myrmidon(1.6.3-FORAGING-IDLE-GATE): the toggle is re-read on every pass
+    // from instance_settings.general (the env stays the forced override).
+    idleGate: {
+      getGeneral: () => settings.getGeneral(),
+      env,
+    },
+    // myrmidon(1.6.3-FORAGING-IDLE-GATE, UI half): every pass appends itself
+    // to the journal, so the "Foraging" page can show the pass history.
+    journal: foragingPassJournalService(db),
     // 1.6.1: live settings — the row is read on every pass, no restart.
     resolveSettings: async () => {
       const effective = await resolveForagingEffectiveSettings(settings, env);
@@ -135,7 +172,7 @@ export function foragingWiring(db: Db, env: NodeJS.ProcessEnv = process.env): Fo
 export function myrmidonForagingRoutes(db: Db, env: NodeJS.ProcessEnv = process.env) {
   const wiring = foragingWiring(db, env);
   const settings = instanceSettingsService(db);
-  return foragingRoutes({
+  const router = foragingRoutes({
     db,
     store: wiring.store,
     service: wiring.service,
@@ -143,4 +180,22 @@ export function myrmidonForagingRoutes(db: Db, env: NodeJS.ProcessEnv = process.
     settingsService: foragingSettingsService(db, { settings, env }),
     env: wiring.env,
   });
+  return router;
+}
+
+/**
+ * Router for app.ts: GET/PATCH /api/myrmidon/foraging/idle-gate —
+ * the settings-page toggle of the idle gate (myrmidon 1.6.3).
+ */
+export function myrmidonForagingIdleGateRoutes(db: Db) {
+  return foragingIdleGateRoutes(db, foragingIdleGateService(db));
+}
+
+/**
+ * Router for app.ts: GET /api/myrmidon/companies/:id/foraging/passes — the
+ * pass history of a company: what each pass read and which roles it left
+ * alone, with the reason (myrmidon 1.6.3-FORAGING-IDLE-GATE, UI half).
+ */
+export function myrmidonForagingPassRoutes(db: Db) {
+  return foragingPassRoutes(db, foragingPassJournalService(db));
 }

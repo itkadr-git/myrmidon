@@ -1,4 +1,7 @@
 import fs from "node:fs/promises";
+// myrmidon(1.6.6-HERMES-SKILLS-A): moduleDir for the skills-source resolver.
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 import type {
   AdapterExecutionContext,
@@ -9,6 +12,13 @@ import type {
 } from "@paperclipai/adapter-utils";
 import { githubLauncherPayload } from "@paperclipai/adapter-utils/github-launcher";
 import { measureSections } from "@paperclipai/adapter-utils/prompt-meter";
+import { classifyInputOverflow } from "@paperclipai/adapter-utils/input-overflow";
+import {
+  INPUT_LIMIT_CONFIG_KEY,
+  decideInputLimit,
+  readInputLimitHint,
+  trimTextToChars,
+} from "@paperclipai/adapter-utils/input-limit";
 import {
   asNumber,
   asString,
@@ -56,6 +66,13 @@ import {
   readCentralHistorySettings,
   type CentralHistoryClient,
 } from "./central-history.js";
+// myrmidon(1.6.6-HERMES-SKILLS-A): gateway-side delivery of Paperclip-managed
+// skills (see ./myrmidon-skills-reconcile.ts for the route decision).
+import {
+  buildPaperclipSkillsField,
+  factCheckGatewayPaperclipSkills,
+  reconcileGatewayPaperclipSkills,
+} from "./myrmidon-skills-reconcile.js";
 
 type SessionKeyStrategy = "issue" | "agent" | "run" | "none";
 
@@ -258,13 +275,11 @@ export function resolveSessionKey(input: {
   runId: string;
   issueId: string | null;
   /**
-   * myrmidon(PERF-DIET-K): the issue-scoped session generation. The board's
-   * session-generations module raises it once the session passes its
-   * age/activity threshold, so the whole conversation of one task stays
-   * bounded instead of growing for the task's whole life. Only the issue
-   * strategy carries it: agent-, run- and none-scoped keys keep the vendor's
-   * shape, and generation 1 (the first generation) keeps the key without a
-   * suffix too, so nothing changes until a threshold is actually crossed.
+   * myrmidon(PERF-DIET-K): the issue-scoped session generation. The board
+   * raises it once the session passes its age/activity threshold (and, since
+   * OPE-6168, after a provider input-overflow failure), so a task's
+   * conversation stays bounded. Only the issue strategy carries it; generation
+   * 1 keeps the key without a suffix, so nothing changes until it is crossed.
    */
   generation?: number | null;
 }): string | null {
@@ -417,7 +432,11 @@ function buildInput(ctx: AdapterExecutionContext, paperclipApiUrl: string | null
     // idempotencyRunId) — see the idempotencyKey comment in execute() for
     // why it is never ctx.context.retryOfRunId.
     `- Run ID: ${idempotencyRunId}`,
-    ...(paperclipApiUrl ? [`- Paperclip API URL: ${paperclipApiUrl}`] : []),
+    ...(paperclipApiUrl
+      ? [
+          `- Paperclip API URL: ${paperclipApiUrl} (as configured for the Hermes host; if curl from inside this run fails with empty reply/403, fall back to the \`$PAPERCLIP_API_URL\` env var instead of treating the board as down)`,
+        ]
+      : []),
     ...(issueWorkMode ? [`- Issue work mode: ${issueWorkMode}`] : []),
     "",
     ...(ctx.context.conversationMode === true || isPaperclipRecoveryWakePayload(ctx.context.paperclipWake)
@@ -494,6 +513,9 @@ function buildGitHubBrokerField(
 // form, userinfo/.git stripped); baseRef: the workspace's repoRef when it is a
 // valid git ref. A task without a usable repository or issue key yields
 // undefined — the field is then absent and the bot works in /scratch.
+// myrmidon(1.6.5-BOT-DISK-H4b): when the project workspace gives no usable
+// repository, `context.paperclipBotDiskDefaultRepo` (the server copies
+// general.botDisk.defaultRepo there, `owner/name`) is the fallback.
 const WS_ISSUE_KEY_RE = /^[A-Z][A-Z0-9]*-[0-9]+$/;
 const WS_REPO_NAME_RE = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 const WS_GIT_REF_RE = /^[^\s~^:?*[\]\\]+$/;
@@ -531,9 +553,18 @@ function buildWorkspaceField(
   if (!WS_ISSUE_KEY_RE.test(key)) return undefined;
   const workspace = parseObject(context.paperclipWorkspace);
   const repoUrl = asString(workspace.repoUrl, "").trim();
-  const repo = repoUrl ? deriveWorkspaceRepoName(repoUrl) : null;
+  let repo = repoUrl ? deriveWorkspaceRepoName(repoUrl) : null;
+  let usedDefault = false;
+  if (!repo) {
+    const fallback = asString(context.paperclipBotDiskDefaultRepo, "").trim();
+    if (fallback && WS_REPO_NAME_RE.test(fallback)) {
+      repo = fallback;
+      usedDefault = true;
+    }
+  }
   if (!repo) return undefined;
-  const baseRef = asString(workspace.repoRef, "").trim();
+  // The ref belongs to the project workspace's own repository, not to the fallback one.
+  const baseRef = usedDefault ? "" : asString(workspace.repoRef, "").trim();
   return {
     key,
     repo,
@@ -568,6 +599,11 @@ function buildRunBody(
   sessionKey: string | null,
   agentInstructionsBundle: string,
   idempotencyRunId: string,
+  // myrmidon(1.6.6-HERMES-SKILLS-A): the skills field is computed by the
+  // reconcile step (execute) and handed in, so a card cannot forge it through
+  // payloadTemplate — same rule as github_broker (set after the spread;
+  // `undefined` deletes a forged value and is dropped by JSON serialization).
+  paperclipSkillsField: ReturnType<typeof buildPaperclipSkillsField> = undefined,
 ): { body: Record<string, unknown>; promptBreakdown: PromptBreakdown } {
   const paperclipApiUrl = nonEmpty(ctx.config.paperclipApiUrl);
   const payloadTemplate = parseObject(ctx.config.payloadTemplate);
@@ -621,6 +657,10 @@ function buildRunBody(
     github_broker: githubBroker,
     workspace: workspaceField,
     github_launcher: githubLauncher,
+    // myrmidon(1.6.6-HERMES-SKILLS-A): Paperclip-managed skills for the run's
+    // profile (see the buildRunBody signature note); the gateway image's
+    // run-scoped-skills patch materializes them before the agent starts.
+    paperclip_skills: paperclipSkillsField,
   };
   // myrmidon(1.6.5 PROMPT-BUDGET A): extend buildInput's per-section
   // breakdown with the sections buildRunBody owns. `instructionsBundle` and
@@ -1297,9 +1337,29 @@ function extractSessionId(value: unknown): string | null {
   return nonEmpty(record?.session_id) ?? nonEmpty(record?.sessionId) ?? nonEmpty(asRecord(record?.data)?.session_id);
 }
 
+// myrmidon(F06-MODEL-TELEMETRY): a payload that echoes the run journal's own
+// sentinel back ("unknown") is not naming a model, so it falls through to the
+// next source exactly like an absent field does.
+function nonEmptyModel(value: unknown): string | null {
+  const text = nonEmpty(value);
+  return text !== null && text.toLowerCase() !== "unknown" ? text : null;
+}
+
+// myrmidon(F06-MODEL-TELEMETRY): the terminal payload of the gateway does not
+// always carry the model, so most runs landed in heartbeat_runs.usageJson.model
+// as "unknown". Sources, in order: the `model` the gateway reports (top level,
+// then inside `usage`), then the LiteLLM route name `model_group` (the name
+// LiteLLM writes into its own spend log — top level, then inside `usage`); the
+// caller supplies the run's configured model as the final fallback.
 function extractModel(value: unknown): string | null {
   const record = asRecord(value);
-  return nonEmpty(record?.model) ?? nonEmpty(asRecord(record?.usage)?.model);
+  const usage = asRecord(record?.usage);
+  return (
+    nonEmptyModel(record?.model) ??
+    nonEmptyModel(usage?.model) ??
+    nonEmptyModel(record?.model_group) ??
+    nonEmptyModel(usage?.model_group)
+  );
 }
 
 function extractErrorMessage(value: unknown): string | null {
@@ -1342,6 +1402,12 @@ export function mapFinalResultForTest(input: {
    * into heartbeat_runs.usageJson.promptBreakdown. Optional so existing test
    * callers that exercise only the result mapping keep their shape. */
   promptBreakdown?: PromptBreakdown;
+  /** myrmidon(F06-MODEL-TELEMETRY): the model the run was configured with
+   * (ctx.config.model). Used only as the last resort when the terminal payload
+   * names no model, so usageJson.model stops reading "unknown" for runs whose
+   * gateway answer omits it. Optional so existing test callers that exercise
+   * only the result mapping keep their shape. */
+  configuredModel?: string | null;
 }): AdapterExecutionResult {
   const redactText = input.redactText ?? sanitizeSensitiveText;
   const payload = input.terminal.payload ?? {};
@@ -1375,13 +1441,18 @@ export function mapFinalResultForTest(input: {
             .toLowerCase()
             .includes(HERMES_GATEWAY_KEY_NOT_ALLOWED_SIGNATURE)
         ? "permanent_config_error"
-        : null;
+        : mapped.errorCode === "hermes_gateway_run_failed" &&
+            classifyInputOverflow(errorMessage)
+          ? "input_overflow"
+          : null;
   return {
     exitCode: mapped.exitCode,
     signal: mapped.signal,
     timedOut: false,
     provider: "hermes_gateway",
-    model: extractModel(payload),
+    // myrmidon(F06-MODEL-TELEMETRY): payload first, configured model last —
+    // see extractModel().
+    model: extractModel(payload) ?? nonEmptyModel(input.configuredModel),
     ...(input.promptBreakdown ? { promptBreakdown: input.promptBreakdown } : {}),
     ...(mapped.errorCode ? { errorCode: mapped.errorCode } : {}),
     ...(errorMessage ? { errorMessage } : {}),
@@ -1856,7 +1927,62 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     }
   }
 
-  const body = buildRunBody(ctx, sessionKey, agentInstructionsBundle, idempotencyKey);
+  // myrmidon(1.6.6-HERMES-SKILLS-A): deliver the Paperclip-managed skills
+  // before POST /v1/runs, at the same boundary hermes_local reconcile skills
+  // (execute.ts:372-389). The preferred route — reading/writing the gateway
+  // profile's skills.external_dirs over the API — does not exist on the
+  // pinned image (no profile/skills write endpoint in api_server.py's route
+  // table), so the skills ride the run body as paperclip_skills and the
+  // image's run-scoped-skills patch materializes them into the run profile's
+  // skills root before the agent starts. Without the key in ctx.config the
+  // whole block is a no-op (a developer outside the board is unaffected) —
+  // buildPaperclipSkillsField returns undefined and JSON drops the field.
+  // Any reconcile/fact-check failure aborts before the run is created, with
+  // the same "Cannot start without the required Paperclip-managed skills"
+  // message as hermes_local; the redactor is applied defensively even though
+  // the module's own messages never carry secrets.
+  let paperclipSkillsField: ReturnType<typeof buildPaperclipSkillsField> = undefined;
+  if (Object.prototype.hasOwnProperty.call(ctx.config, "paperclipRuntimeSkills")) {
+    try {
+      const skillsReconcile = await reconcileGatewayPaperclipSkills(ctx.config, {
+        moduleDir: path.dirname(fileURLToPath(import.meta.url)),
+        onLog: (line) => ctx.onLog("stdout", line),
+      });
+      paperclipSkillsField = buildPaperclipSkillsField(skillsReconcile);
+      if (skillsReconcile && paperclipSkillsField) {
+        // The fact-check verifies the assembled field carries every desired
+        // entry before the POST sends it; the image patch re-verifies by
+        // reading the profile's skills root after materialization and fails
+        // the run loudly when an entry did not land.
+        factCheckGatewayPaperclipSkills({
+          skills: paperclipSkillsField,
+          expected: skillsReconcile.expected,
+        });
+        await ctx.onLog(
+          "stdout",
+          `[hermes-gateway] skills fact-check: ${paperclipSkillsField.length} Paperclip-managed skill(s) verified in the run-body field\n`,
+        );
+      }
+    } catch (err) {
+      const reason = redactErrorMessage(err, redactText);
+      await ctx.onLog(
+        "stderr",
+        `[hermes-gateway] Cannot start without the required Paperclip-managed skills: ${reason}\n`,
+      );
+      return {
+        exitCode: 1,
+        signal: null,
+        timedOut: false,
+        errorCode: "paperclip_skills_unavailable",
+        errorMessage: `Cannot start without the required Paperclip-managed skills: ${reason}`,
+        provider: "hermes_gateway",
+        sessionParams: { strategy },
+        sessionDisplayId: sessionKey ? redactText(sessionKey) : null,
+      };
+    }
+  }
+
+  const body = buildRunBody(ctx, sessionKey, agentInstructionsBundle, idempotencyKey, paperclipSkillsField);
   // myrmidon(1.6.5 PROMPT-BUDGET A): the per-section prompt-token breakdown
   // of the request body. Recorded on every return path's resultJson so the
   // server can persist it into heartbeat_runs.usageJson.promptBreakdown even
@@ -1887,6 +2013,31 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       await ctx.onLog(
         "stderr",
         `[hermes-gateway] central history: read failed (${redactErrorMessage(err, redactText)}); continuing without restored turns\n`,
+      );
+    }
+  }
+  // myrmidon(OPE-6168): the model input limit, checked before the request is
+  // sent. The board puts the limit of the agent's model (catalog or override)
+  // into config.inputLimit; a request over its budget is trimmed here (head and
+  // tail of the input kept, the cut named in the middle) instead of being sent
+  // to a provider that rejects it. Whether the session itself still has room
+  // is the board's decision (it starts a fresh session generation).
+  const inputLimitHint = readInputLimitHint(ctx.config[INPUT_LIMIT_CONFIG_KEY]);
+  if (inputLimitHint) {
+    const requestBody = body.body;
+    const inputText = typeof requestBody.input === "string" ? requestBody.input : "";
+    const instructionsText = typeof requestBody.instructions === "string" ? requestBody.instructions : "";
+    const decision = decideInputLimit({
+      hint: inputLimitHint,
+      instructionsChars: instructionsText.length,
+      inputChars: inputText.length,
+    });
+    if (decision.action === "trim") {
+      const trimmed = trimTextToChars(inputText, decision.targetInputChars);
+      requestBody.input = trimmed.text;
+      await ctx.onLog(
+        "stdout",
+        `[hermes-gateway] input limit: the request (${decision.promptChars} chars) exceeds the budget of ${decision.budgetChars} chars for model ${inputLimitHint.model ?? "(unknown)"}; trimmed ${trimmed.removedChars} chars from the input before sending\n`,
       );
     }
   }
@@ -2305,6 +2456,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     strategy,
     redactText,
     promptBreakdown,
+    // myrmidon(F06-MODEL-TELEMETRY): the run's own model from the agent card,
+    // used when the gateway's terminal payload names none.
+    configuredModel: nonEmpty(ctx.config.model),
   });
   // myrmidon(MEMORY-CENTRAL-B): remember this turn in the central store once
   // the run reached a terminal outcome (whatever it was — a failed turn's

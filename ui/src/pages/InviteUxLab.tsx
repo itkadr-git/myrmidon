@@ -56,7 +56,7 @@ const inviteHistory = [
     state: "Active",
     humanRole: "operator",
     invitedBy: "Board User 25",
-    email: "board25@paperclip.local",
+    email: "board25@myrmidon.local",
     createdAt: "Apr 25, 2026, 9:00 AM",
     action: "Revoke",
     relatedLabel: "Review request",
@@ -66,7 +66,7 @@ const inviteHistory = [
     state: "Accepted",
     humanRole: "viewer",
     invitedBy: "Board User 24",
-    email: "board24@paperclip.local",
+    email: "board24@myrmidon.local",
     createdAt: "Apr 24, 2026, 8:15 AM",
     action: "Inactive",
     relatedLabel: "—",
@@ -76,7 +76,7 @@ const inviteHistory = [
     state: "Revoked",
     humanRole: "admin",
     invitedBy: "Board User 20",
-    email: "board20@paperclip.local",
+    email: "board20@myrmidon.local",
     createdAt: "Apr 20, 2026, 2:45 PM",
     action: "Inactive",
     relatedLabel: "—",
@@ -86,7 +86,7 @@ const inviteHistory = [
     state: "Expired",
     humanRole: "owner",
     invitedBy: "Board User 19",
-    email: "board19@paperclip.local",
+    email: "board19@myrmidon.local",
     createdAt: "Apr 19, 2026, 7:10 PM",
     action: "Inactive",
     relatedLabel: "—",
@@ -599,7 +599,7 @@ function CompanyInvitesPreview() {
               type="button"
               className="w-full rounded-md border border-border bg-muted/60 px-3 py-2 text-left text-sm break-all"
             >
-              https://paperclip.local/invite/new-token
+              https://myrmidon.local/invite/new-token
             </button>
             <div className="flex flex-wrap gap-2">
               <Button type="button" size="sm" variant="outline">
