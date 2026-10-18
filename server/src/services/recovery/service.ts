@@ -2593,15 +2593,9 @@ export function recoveryService(
       await issuesSvc.update(reblockedIssue.id, { status: "blocked", blockedByIssueIds });
       return false;
     }
-    const action = await ensureSourceScopedStrandedRecoveryAction({
-      issue: input.issue,
-      latestRun,
-      previousStatus: input.previousStatus,
-      recoveryCause: input.recoveryCause,
-      successfulRunHandoffEvidence: input.successfulRunHandoffEvidence,
-      rerouteToSharedQueue: true,
-    });
-    if (!action) return false;
+    // A shared-queue reroute is the recovery disposition itself. Do not create
+    // a board-owned recovery action first: that action would reclassify the
+    // issue as blocked and prevent the todo handoff below.
     const [updatedIssue] = await db
       .update(issues)
       .set({
