@@ -1,5 +1,5 @@
 import { and, eq, sql } from "drizzle-orm";
-import { issueWorkProducts, type Db } from "@paperclipai/db";
+import { issues, issueWorkProducts, type Db } from "@paperclipai/db";
 import { conflict } from "../../errors.js";
 import {
   createPullRequestMergeDetailsResolver,
@@ -107,8 +107,15 @@ export function assertStoredIssueDonePullRequestsSettled(products: GateProduct[]
 }
 
 /** A short serialized validation/write window prevents a PR being attached between check and close. */
-export async function assertIssueDoneSnapshotUnchanged(tx: Db, issueId: string, snapshot: Awaited<ReturnType<typeof inspectIssueDonePullRequests>>) {
+export async function assertIssueDoneSnapshotUnchanged(tx: Db, companyId: string, issueId: string, snapshot: Awaited<ReturnType<typeof inspectIssueDonePullRequests>>) {
   await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`issue-done-gate:${issueId}`}, 0))`);
+  const currentIssue = await tx.select({ companyId: issues.companyId }).from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+  if (!currentIssue || currentIssue.companyId !== companyId) {
+    throw conflict("Issue changed during completion validation. Retry marking the task done.", {
+      code: ISSUE_DONE_PULL_REQUEST_GATE,
+      retryable: true,
+    });
+  }
   const current = await tx.select({
     id: issueWorkProducts.id,
     companyId: issueWorkProducts.companyId,
@@ -117,6 +124,7 @@ export async function assertIssueDoneSnapshotUnchanged(tx: Db, issueId: string, 
     url: issueWorkProducts.url,
     metadata: issueWorkProducts.metadata,
   }).from(issueWorkProducts).where(and(
+    eq(issueWorkProducts.companyId, companyId),
     eq(issueWorkProducts.issueId, issueId),
     eq(issueWorkProducts.type, "pull_request"),
   ));

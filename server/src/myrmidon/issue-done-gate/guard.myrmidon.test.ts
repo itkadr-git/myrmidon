@@ -67,6 +67,27 @@ describe("issue done pull-request gate", () => {
     }
   });
 
+  it("returns a retryable gate conflict if the issue company changed during validation", async () => {
+    const { assertIssueDoneSnapshotUnchanged } = await import("./guard.js");
+    const snapshot = await inspectIssueDonePullRequests(
+      fakeDb([product({ id: "wp-1", number: 12 })]), companyId, issueId,
+      resolver({ 12: "merged" }),
+    );
+    const currentWhere = vi.fn(async () => [{ companyId: "other-company" }]);
+    const companyQuery = vi.fn(() => ({ where: currentWhere }));
+    const productQuery = vi.fn(() => ({ from: vi.fn(() => ({ where: vi.fn(async () => []) })) }));
+    const tx = {
+      execute: vi.fn(async () => undefined),
+      select: vi.fn()
+        .mockReturnValueOnce({ where: currentWhere })
+        .mockReturnValueOnce(productQuery()),
+    } as never;
+    await expect(assertIssueDoneSnapshotUnchanged(tx, companyId, issueId, snapshot)).rejects.toMatchObject({
+      status: 409,
+      details: { code: ISSUE_DONE_PULL_REQUEST_GATE, retryable: true },
+    });
+  });
+
   it("allows only verified merged PRs", async () => {
     const snapshot = await inspectIssueDonePullRequests(
       fakeDb([product({ id: "wp-1", number: 12 })]),

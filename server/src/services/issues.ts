@@ -10860,7 +10860,7 @@ export function issueService(db: Db) {
         if (!receiptExisting) return null;
         if (receiptExisting.status !== "done" && patch.status === "done" && donePullRequestSnapshot) {
           const { assertIssueDoneSnapshotUnchanged } = await import("../myrmidon/issue-done-gate/guard.js");
-          await assertIssueDoneSnapshotUnchanged(tx as Db, id, donePullRequestSnapshot);
+          await assertIssueDoneSnapshotUnchanged(tx as Db, existing.companyId, id, donePullRequestSnapshot);
         } else if (receiptExisting.status !== "done" && patch.status === "done") {
           // External transaction callers cannot perform provider requests without
           // holding their transaction open; fail closed unless the stored facts
