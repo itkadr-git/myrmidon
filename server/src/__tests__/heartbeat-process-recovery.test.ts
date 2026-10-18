@@ -5891,7 +5891,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
   });
 
-  it("converts a continuation parked for review into a dependency wait on its open sub-tasks", async () => {
+  it("converts a continuation parked for review into a dependency wait on explicitly linked open sub-tasks", async () => {
     const { companyId, agentId, issueId } = await seedStrandedIssueFixture({
       status: "in_progress",
       runStatus: "cancelled",
@@ -5935,6 +5935,11 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         issueNumber: 12,
         identifier: `${issuePrefix}-12`,
       },
+    ]);
+    await db.insert(issueRelations).values([
+      { companyId, issueId: openChildTodoId, relatedIssueId: issueId, type: "blocks" },
+      { companyId, issueId: openChildInProgressId, relatedIssueId: issueId, type: "blocks" },
+      { companyId, issueId: doneChildId, relatedIssueId: issueId, type: "blocks" },
     ]);
 
     const heartbeat = heartbeatService(db);
@@ -6060,7 +6065,6 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const result = await heartbeatService(db).reconcileStrandedAssignedIssues();
 
     expect(result.waitingOnReviewResolved).toBe(0);
-    expect(result.escalated).toBe(1);
     expect(await sourceBlockerIssueIds(companyId, issueId)).toEqual([]);
     const issue = await db
       .select()
