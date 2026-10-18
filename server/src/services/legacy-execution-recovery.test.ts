@@ -13,7 +13,8 @@ const stopped = {
 it("does not hold maintenance-interrupted runs scheduled for retry", () => {
   expect(legacyExecutionNeedsReconciliation({
     runtimeMode: "legacy", status: "cancelled", errorCode: MAINTENANCE_INTERRUPT_ERROR_CODE,
-    scheduledRetryAttempt: 50, scheduledRetryReason: "myrmidon_maintenance", resultJson: {},
+    scheduledRetryAttempt: 50, scheduledRetryReason: "myrmidon_maintenance",
+    contextSnapshot: { issueId: "issue-1", retryReason: "myrmidon_maintenance" }, resultJson: {},
   })).toBe(false);
 });
 
