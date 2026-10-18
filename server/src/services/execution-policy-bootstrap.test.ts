@@ -75,7 +75,7 @@ describe("parseExecutionPolicyBootstrapEnv", () => {
         MYRMIDON_K8S_RUNTIME_CLASS_NAME: "gvisor",
         MYRMIDON_K8S_EGRESS_MODE: "cilium",
         MYRMIDON_K8S_EGRESS_ALLOW_FQDNS: "api.anthropic.com, api.openai.com",
-        MYRMIDON_K8S_EGRESS_ALLOW_CIDRS: "10.0.0.0/8",
+        MYRMIDON_K8S_EGRESS_ALLOW_CIDRS: "192.0.2.0/24",
       }),
     );
     expect(parsed).not.toBeNull();
@@ -86,7 +86,7 @@ describe("parseExecutionPolicyBootstrapEnv", () => {
       runtimeClassName: "gvisor",
       egressMode: "cilium",
       egressAllowFqdns: ["api.anthropic.com", "api.openai.com"],
-      egressAllowCidrs: ["10.0.0.0/8"],
+      egressAllowCidrs: ["192.0.2.0/24"],
     });
   });
 
