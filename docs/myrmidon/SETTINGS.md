@@ -4,15 +4,7 @@
 
 Our settings are environment variables `MYRMIDON_<AREA>_<NAME>`. Vendor `PAPERCLIP_*`
 variables remain as they are and are not described here, except where we change their
-meaning or default value. The four MYRMIDON aliases below replace runtime reads from their
-legacy counterparts during the 1.6.6 compatibility window.
-
-| Variable | Function | Default | What it does | How to disable / special |
-|---|---|---|---|---|
-| `MYRMIDON_KNOWLEDGE_EXPORT_BRANCH` | 1.6.6 DEBRAND | vendor default | Branch used by the scheduled knowledge export | Unset uses the exporter default |
-| `MYRMIDON_KNOWLEDGE_EXPORT_INTERVAL_HOURS` | 1.6.6 DEBRAND | vendor default | Interval in hours between knowledge exports | Unset uses the exporter default |
-| `MYRMIDON_KNOWLEDGE_EXPORT_REPO` | 1.6.6 DEBRAND | vendor default | Repository target for the scheduled knowledge export | Unset uses the exporter default |
-| `MYRMIDON_PROCESS_ROLE` | 1.6.6 DEBRAND | `all` | Restricts which process role this server instance runs | `all`, `worker`, or `api`; unset defaults to `all` |
+meaning or default value.
 
 **Default values:**
 
