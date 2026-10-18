@@ -186,6 +186,7 @@ describe("myrmidon(1.6.1 SWARM-IDLE-WAKE) sweep pass", () => {
                 return Promise.resolve([]);
               }
               if (table === heartbeatRuns) {
+                if (projection && "id" in projection) return { limit: () => Promise.resolve([]) };
                 return {
                   limit: () => Promise.resolve([]),
                   groupBy: empty,
