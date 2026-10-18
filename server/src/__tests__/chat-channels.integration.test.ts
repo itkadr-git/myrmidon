@@ -21538,21 +21538,26 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
 
   it("retries a durable wakeup after deferred drain hits NOWAIT contention", async () => {
     const fixture = await seedCompany();
-    const deferred: Array<() => void> = [];
+    const deferred: Array<() => void | Promise<void>> = [];
     const { callbacks, endpoint, runtime, service, wakeup } =
       await configuredSlackEndpoint(fixture, {
         deferWebhookProcessing: true,
         scheduleDeferredWork: (task) => deferred.push(task),
       });
-    const thread = makeThread({
+    const slackThread = makeThread({
       channelId: "C-DURABLE-RETRY",
       id: "slack:C-DURABLE-RETRY:1000.1",
       name: "durable-retry",
     });
-    const message = makeMessage({
+    const subscribedMessage = makeMessage({
       id: "1000.1",
       text: "@maya retry this durable wakeup",
       mentioned: true,
+    });
+    const reply = makeMessage({
+      id: "1000.2",
+      threadId: "1000.1",
+      text: "retry this durable wakeup",
     });
     let releaseLock!: () => void;
     let lockEntered!: () => void;
@@ -21567,44 +21572,73 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       await deliverMessage({
         callbacks,
         endpointId: endpoint.id,
-        thread: thread.thread,
-        message,
+        thread: slackThread.thread,
+        message: subscribedMessage,
         trigger: "mention",
       });
       expect(deferred).toHaveLength(1);
-      lockTransaction = db.transaction(async (tx) => {
-        await tx
-          .select({ id: chatEndpoints.id })
-          .from(chatEndpoints)
-          .where(eq(chatEndpoints.id, endpoint.id))
-          .for("no key update");
-        lockEntered();
-        await holdLock;
+      await deferred.shift()?.();
+      expect(deferred).toHaveLength(1);
+      const replyThread = makeThread({
+        channelId: slackThread.thread.channelId,
+        id: slackThread.thread.id,
+        name: slackThread.thread.channel.name,
       });
-      await entered;
+      const conversation = await db
+        .select()
+        .from(chatConversations)
+        .where(eq(chatConversations.endpointId, endpoint.id))
+        .then((rows) => rows[0]);
+      expect(conversation?.issueId).toBeTruthy();
+      const holdEndpointLock = () =>
+        db.transaction(async (tx) => {
+          await tx
+            .select({ id: chatEndpoints.id })
+            .from(chatEndpoints)
+            .where(eq(chatEndpoints.id, endpoint.id))
+            .for("no key update");
+          lockEntered();
+          await holdLock;
+        });
+      replyThread.subscribe.mockImplementationOnce(async () => {
+        lockTransaction = holdEndpointLock();
+        await entered;
+      });
+      await deliverMessage({
+        callbacks,
+        endpointId: endpoint.id,
+        thread: replyThread.thread,
+        message: reply,
+        trigger: "subscribed_message",
+      });
+      expect(deferred).toHaveLength(1);
+      const drain = deferred.shift()?.();
+      expect(drain).toBeDefined();
+      await vi.waitFor(async () => {
+        const [delivery] = await db
+          .select()
+          .from(chatDeliveries)
+          .where(eq(chatDeliveries.endpointId, endpoint.id));
+        expect(delivery).toMatchObject({ state: "retry", attempts: 1 });
+      });
       const lockObserved = await db.execute<{ waiting: boolean }>(sql`
         SELECT EXISTS (
           SELECT 1
           FROM pg_stat_activity
           WHERE state = 'active'
             AND wait_event_type = 'Lock'
-            AND query ILIKE '%chat_endpoint_leases%'
+            AND query ILIKE '%FOR NO KEY UPDATE%'
+            AND pid <> pg_backend_pid()
         ) AS waiting
       `);
       expect(lockObserved[0]?.waiting).toBe(true);
-      await vi.waitFor(
-        async () => {
-          const [delivery] = await db
-            .select()
-            .from(chatDeliveries)
-            .where(eq(chatDeliveries.endpointId, endpoint.id));
-          expect(delivery).toMatchObject({ state: "retry", attempts: 1 });
-        },
-        { timeout: 10_000 },
-      );
-    } finally {
       releaseLock();
       await lockTransaction;
+      await drain;
+    } catch (error) {
+      releaseLock();
+      await lockTransaction;
+      throw error;
     }
 
     const [firstAttempt] = await db
