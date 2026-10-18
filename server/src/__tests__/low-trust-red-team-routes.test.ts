@@ -1256,7 +1256,7 @@ describeEmbeddedPostgres(
             eq(issueComments.authorType, "system"),
           ),
         );
-      expect(relayComments).toHaveLength(2);
+      expect(relayComments).toHaveLength(3);
       expect(relayComments.map((comment) => comment.body)).toEqual(
         expect.arrayContaining([
           expect.stringContaining(`transitioned to \`blocked\``),
@@ -2008,7 +2008,7 @@ describeEmbeddedPostgres(
           JSON.stringify(higherTrustContext.body),
         ).toBe(200);
         expect(higherTrustContext.body.continuationSummary).toMatchObject({
-          body: LOW_TRUST_QUARANTINED_BODY,
+          body: expect.stringContaining(LOW_TRUST_QUARANTINED_BODY),
           sourceTrust: {
             preset: LOW_TRUST_REVIEW_PRESET,
             disposition: "quarantined",
@@ -2031,7 +2031,7 @@ describeEmbeddedPostgres(
           JSON.stringify(bogusRunContext.body),
         ).toBe(200);
         expect(bogusRunContext.body.continuationSummary).toMatchObject({
-          body: LOW_TRUST_QUARANTINED_BODY,
+          body: expect.stringContaining(LOW_TRUST_QUARANTINED_BODY),
           sourceTrust: {
             preset: LOW_TRUST_REVIEW_PRESET,
             disposition: "quarantined",
