@@ -356,10 +356,10 @@ export function createSwarmClaimSweeper(deps: SwarmClaimSweeperDeps): SwarmClaim
             "swarm matcher paired ready tasks with free agents of their caste",
           );
         }
-      } catch (err) {
-        // CONSTANT errorKind only (the exception can carry a credential).
+      } catch {
+        // Keep exception details out of logs; errors may carry credentials.
         logger.warn(
-          { errorKind: "swarm_match_failed", errorName: err instanceof Error ? err.name : typeof err },
+          { errorKind: "swarm_match_failed" },
           "swarm matcher pass failed; the next tick retries",
         );
       }
