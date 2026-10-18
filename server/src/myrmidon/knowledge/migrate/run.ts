@@ -13,7 +13,7 @@
 import { Buffer } from "node:buffer";
 import { classifyPath, slugFor } from "./classify.js";
 import { rewriteLinks } from "./links.js";
-import { parseSlugMap, serializeSlugMap, type MigrateMap, type MigratePagePlan } from "./map.js";
+import { parseSlugMap, serializeSlugMap, MigrateInputError, type MigrateMap, type MigratePagePlan } from "./map.js";
 import { buildClassifyReport, classesOf, type ClassifyReport, type ImportReport, type PlannedPage } from "./report.js";
 import { readSourceTree, type ReadSourceTreeOptions, type SourceTree } from "./source.js";
 import { type KnowledgeSourceKind } from "../domain.js";
