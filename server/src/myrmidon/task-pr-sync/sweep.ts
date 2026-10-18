@@ -320,6 +320,29 @@ export function createTaskPrSyncSweep(deps: TaskPrSyncSweepDeps) {
         .then((rows) => rows[0] ?? null);
       if (!locked) return false;
       if (TERMINAL_ISSUE_STATUSES.has(locked.status)) return false;
+      // Transaction callers cannot perform provider I/O. Persist freshly verified
+      // merge state before issueService enforces the completion guard.
+      for (const pr of prFacts) {
+        if (pr.state !== "merged") continue;
+        const [product] = await tx
+          .select({ id: issueWorkProducts.id, metadata: issueWorkProducts.metadata })
+          .from(issueWorkProducts)
+          .where(and(eq(issueWorkProducts.id, pr.workProductId), eq(issueWorkProducts.issueId, locked.id)))
+          .limit(1);
+        if (!product) continue;
+        await tx
+          .update(issueWorkProducts)
+          .set({
+            status: "merged",
+            metadata: {
+              ...((product.metadata && typeof product.metadata === "object") ? product.metadata as Record<string, unknown> : {}),
+              state: "merged",
+              draft: false,
+              ...(pr.mergedSha ? { lastMergedSha: pr.mergedSha } : {}),
+            },
+          })
+          .where(and(eq(issueWorkProducts.id, pr.workProductId), eq(issueWorkProducts.issueId, locked.id)));
+      }
       const svc = services.issueService(txDb);
       const comment = await svc.addComment(locked.id, body, { runId: null }, { authorType: "system" }, tx);
       // The settle mirrors the board's manual PATCH: status `done` and the task's
