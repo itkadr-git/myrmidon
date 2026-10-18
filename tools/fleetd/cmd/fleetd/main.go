@@ -12,6 +12,8 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"crypto/tls"
+	"crypto/x509"
 	"strings"
 	"syscall"
 )
@@ -23,6 +25,7 @@ type botStatus struct {
 	Image       string  `json:"image,omitempty"`
 	RestartHash *string `json:"restartHash"`
 	FilesHash   *string `json:"filesHash"`
+	GatewayPort *int    `json:"gatewayPort,omitempty"`
 }
 
 // spec is the driver contract's BotContainerSpec.
@@ -34,7 +37,12 @@ type spec struct {
 	PidsLimit int64             `json:"pidsLimit"`
 	Network   string            `json:"network"`
 	Labels    map[string]string `json:"labels,omitempty"`
+	ExtraMounts []extraMount `json:"extraMounts,omitempty"`
+	SharedMount *sharedMount `json:"sharedMount,omitempty"`
 }
+
+type extraMount struct { Source string `json:"source"`; ContainerPath string `json:"containerPath"`; ReadOnly bool `json:"readOnly"` }
+type sharedMount struct { HostPath string `json:"hostPath,omitempty"`; Writable bool `json:"writable"` }
 
 // profileFile is one file of the compiled profile.
 type profileFile struct {
@@ -59,6 +67,18 @@ type config struct {
 	Token    string `json:"token"`
 	Upstream string `json:"upstream"`
 	Bots     []bot  `json:"bots"`
+	VolumeRoot string `json:"volumeRoot"`
+	Network string `json:"network"`
+	BoardAddress string `json:"boardAddress"`
+	BoardExtraHost string `json:"boardExtraHost"`
+	ImageAllowlist []string `json:"imageAllowlist"`
+	MountSources []string `json:"mountSources"`
+	GatewayPortStart int `json:"gatewayPortStart"`
+	GatewayPortEnd int `json:"gatewayPortEnd"`
+	TLSCert string `json:"tlsCert"`
+	TLSKey string `json:"tlsKey"`
+	TLSClientCA string `json:"tlsClientCA"`
+	EgressIP string `json:"egressIp"`
 }
 
 type bot struct {
@@ -66,6 +86,7 @@ type bot struct {
 	MaxMemoryMb int64   `json:"maxMemoryMb"`
 	MaxCpus     float64 `json:"maxCpus"`
 	MaxPids     int64   `json:"maxPids"`
+	GatewayPort int `json:"gatewayPort,omitempty"`
 }
 
 // strictDecode decodes data into out and rejects unknown keys.
@@ -103,7 +124,9 @@ func main() {
 		fmt.Println("configuration is valid")
 		return
 	}
-	srv := &server{cfg: &cfg}
+	docker := newSocketDocker(cfg.Upstream)
+	defer docker.close()
+	srv := &server{cfg: &cfg, docker: docker}
 	http.HandleFunc("/v1/bots", srv.requireAuth(srv.list))
 	http.HandleFunc("/v1/bots/", srv.requireAuth(srv.route))
 	http.HandleFunc("/v1/health", srv.requireAuth(func(w http.ResponseWriter, r *http.Request) {
@@ -116,10 +139,18 @@ func main() {
 			http.Error(w, "resources_unavailable", 503)
 			return
 		}
-		writeJSON(w, map[string]any{"resources": map[string]uint64{"diskFree": stat.Bavail * uint64(stat.Bsize)}, "egressCheck": map[string]string{"ifconfigIp": "", "expected": "NL"}})
+		writeJSON(w, map[string]any{"resources": map[string]uint64{"diskFree": stat.Bavail * uint64(stat.Bsize)}, "egressCheck": map[string]string{"ifconfigIp": cfg.EgressIP, "expected": "NL"}})
 	}))
 	log.Printf("fleetd listening on %s", cfg.Listen)
-	log.Fatal(http.ListenAndServe(cfg.Listen, nil))
+	log.Fatal(http.ListenAndServeTLS(cfg.Listen, cfg.TLSCert, cfg.TLSKey, tlsConfig(cfg.TLSClientCA)))
+}
+
+func tlsConfig(caPath string) *tls.Config {
+	caPEM, err := os.ReadFile(caPath)
+	if err != nil { log.Fatalf("read client CA: %v", err) }
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(caPEM) { log.Fatal("client CA contains no certificates") }
+	return &tls.Config{MinVersion:tls.VersionTLS12, ClientAuth:tls.RequireAndVerifyClientCert, ClientCAs:pool}
 }
 
 func validate(cfg *config) error {
@@ -143,7 +174,13 @@ func validate(cfg *config) error {
 		if b.MaxMemoryMb <= 0 || b.MaxCpus <= 0 || b.MaxPids <= 0 {
 			return fmt.Errorf("bots[%d] limits must be positive", i)
 		}
+		for j:=0;j<i;j++ { if cfg.Bots[j].BotKey==b.BotKey{return fmt.Errorf("duplicate bot key %q",b.BotKey)} }
 	}
+	if cfg.VolumeRoot==""||!safeAbs(cfg.VolumeRoot){return fmt.Errorf("volumeRoot must be a safe absolute path")}
+	if cfg.Network==""||len(cfg.ImageAllowlist)==0{return fmt.Errorf("network and imageAllowlist are required")}
+	if cfg.GatewayPortStart<1024||cfg.GatewayPortEnd<cfg.GatewayPortStart||cfg.GatewayPortEnd>65535{return fmt.Errorf("gateway port range is invalid")}
+	if cfg.TLSCert==""||cfg.TLSKey==""||cfg.TLSClientCA==""{return fmt.Errorf("tlsCert, tlsKey and tlsClientCA are required")}
+	for i:=range cfg.Bots { if cfg.Bots[i].GatewayPort!=0 { if cfg.Bots[i].GatewayPort<cfg.GatewayPortStart||cfg.Bots[i].GatewayPort>cfg.GatewayPortEnd{return fmt.Errorf("bots[%d].gatewayPort is outside range",i)};for j:=0;j<i;j++{if cfg.Bots[j].GatewayPort==cfg.Bots[i].GatewayPort{return fmt.Errorf("duplicate gateway port")}} } }
 	return nil
 }
 
@@ -169,6 +206,7 @@ func (c c) in(set string) bool { return strings.ContainsRune(set, rune(c)) }
 // the auth gate).
 type server struct {
 	cfg *config
+	docker dockerEngine
 }
 
 func (s *server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
@@ -191,7 +229,7 @@ func (s *server) list(w http.ResponseWriter, r *http.Request) {
 	}
 	bots := make([]botStatus, 0, len(s.cfg.Bots))
 	for _, b := range s.cfg.Bots {
-		bots = append(bots, botStatus{BotKey: b.BotKey, State: "missing"})
+		x,ok,err:=s.inspect(r.Context(),b.BotKey);if err!=nil{http.Error(w,"docker_unavailable",503);return};if ok{bots=append(bots,s.toStatus(b.BotKey,x))}else{bots=append(bots,botStatus{BotKey:b.BotKey,State:"missing"})}
 	}
 	writeJSON(w, map[string]any{"bots": bots})
 }
@@ -216,9 +254,15 @@ func (s *server) route(w http.ResponseWriter, r *http.Request) {
 	}
 	switch {
 	case action == "status" && r.Method == http.MethodGet:
-		writeJSON(w, botStatus{BotKey: botKey, State: "missing"})
-	case action == "start" && r.Method == http.MethodPost, action == "restart" && r.Method == http.MethodPost, action == "stop" && r.Method == http.MethodPost, action == "recreate" && r.Method == http.MethodPost, action == "profile" && r.Method == http.MethodPut:
-		http.Error(w, "docker_backend_unavailable", http.StatusServiceUnavailable)
+		x,ok,err:=s.inspect(r.Context(),botKey);if err!=nil{http.Error(w,"docker_unavailable",503)}else if !ok{writeJSON(w,botStatus{BotKey:botKey,State:"missing"})}else{writeJSON(w,s.toStatus(botKey,x))}
+	case action == "recreate" && r.Method == http.MethodPost:
+		var body struct{Spec spec `json:"spec"`};if decodeBody(r,&body)!=nil||s.checkSpec(botKey,&body.Spec)!=nil{http.Error(w,"invalid_spec",400);return};if err:=s.validateCreate(body.Spec);err!=nil{writeAPIError(w,err);return};if _,ok,err:=s.inspect(r.Context(),botKey);err!=nil{http.Error(w,"docker_unavailable",503);return}else if ok{s.docker.call(r.Context(),http.MethodDelete,dockerAPIPrefix+"/containers/"+encodedName(botKey)+"?force=true",nil)};if err:=s.createContainer(r.Context(),body.Spec);err!=nil{writeAPIError(w,err);return};writeJSON(w,map[string]bool{"ok":true})
+	case action == "start" && r.Method == http.MethodPost, action == "restart" && r.Method == http.MethodPost, action == "stop" && r.Method == http.MethodPost:
+		verb:=map[string]string{"start":"start","restart":"restart?t=10","stop":"stop?t=10"}[action];status,_,err:=s.docker.call(r.Context(),http.MethodPost,dockerAPIPrefix+"/containers/"+encodedName(botKey)+"/"+verb,nil);if err!=nil{http.Error(w,"docker_unavailable",503)}else if status==404{http.Error(w,"container_missing",404)}else if status!=204&&status!=304{http.Error(w,"docker_operation_failed",502)}else{writeJSON(w,map[string]bool{"ok":true})}
+	case action == "profile" && r.Method == http.MethodPut:
+		var body struct{Profile profile `json:"profile"`};if decodeBody(r,&body)!=nil||body.Profile.BotKey!=botKey{http.Error(w,"invalid_profile",400);return};if err:=s.writeProfile(body.Profile);err!=nil{writeAPIError(w,err);return};writeJSON(w,map[string]bool{"ok":true})
+	case action == "logs" && r.Method == http.MethodGet:
+		tail:=r.URL.Query().Get("tail");if tail==""{tail="100"};status,b,err:=s.docker.call(r.Context(),http.MethodGet,dockerAPIPrefix+"/containers/"+encodedName(botKey)+"/logs?stdout=1&stderr=1&tail="+url.QueryEscape(tail)+"&timestamps=1",nil);if err!=nil||!dockerOK(status){http.Error(w,"logs_unavailable",502);return};w.Header().Set("Content-Type","text/plain; charset=utf-8");_,_=w.Write(redactLogs(b))
 	case action == "template-drift" && r.Method == http.MethodPost:
 		var body struct {
 			Spec spec `json:"spec"`
@@ -231,7 +275,7 @@ func (s *server) route(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusForbidden)
 			return
 		}
-		writeJSON(w, map[string]bool{"drift": false})
+		x,ok,err:=s.inspect(r.Context(),botKey);if err!=nil{http.Error(w,"docker_unavailable",503)}else if !ok{writeJSON(w,map[string]any{"drift":true,"fields":[]string{"missing"}})}else{fields:=driftFields(body.Spec,x);writeJSON(w,map[string]any{"drift":len(fields)>0,"fields":fields})}
 	default:
 		if r.Method == http.MethodPost || r.Method == http.MethodPut {
 			http.Error(w, "route_not_allowed", http.StatusForbidden)
