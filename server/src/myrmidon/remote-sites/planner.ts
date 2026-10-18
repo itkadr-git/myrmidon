@@ -2,12 +2,39 @@ export type SiteStatus = "available" | "draining" | "quarantined" | "disabled" |
 export type Priority = "P0" | "high" | "medium" | "low" | (string & {});
 
 export interface BotPlacementRequest {
-  bot: { host?: string | null; hostPinned: boolean; cpus: number; memoryMb: number; pids: number; priority: Priority };
+  bot: {
+    host?: string | null;
+    hostPinned: boolean;
+    cpus: number;
+    memoryMb: number;
+    pids: number;
+    priority: Priority;
+    /** Hard per-container disk quota in MB. */
+    diskQuotaMb?: number;
+    /** Reserved run-token budget for the site's aggregate limit. */
+    runTokensMin?: number;
+  };
   sites: Array<{
     name: string;
     status: SiteStatus;
-    capacity: { cpus: number; memoryMb: number; pids: number; maxBots: number };
-    allocated: { cpus: number; memoryMb: number; pids: number; bots: number };
+    capacity: {
+      cpus: number;
+      memoryMb: number;
+      pids: number;
+      maxBots: number;
+      /** Aggregate run-token budget per minute. */
+      maxRunTokensMin?: number;
+      /** Maximum disk quota admitted for one container, in MB. */
+      maxDiskQuotaMb?: number;
+    };
+    allocated: {
+      cpus: number;
+      memoryMb: number;
+      pids: number;
+      bots: number;
+      runTokensMin?: number;
+      diskQuotaMb?: number;
+    };
   }>;
   affinity: Array<{ scope: "project" | "company" | "agent"; targetId: string; siteName: string; weight: number }>;
   targets?: { projectId?: string; companyId?: string; agentId?: string };
@@ -19,12 +46,18 @@ export type PlacementDecision =
   | { kind: "pending"; reason: string };
 
 const numeric = (value: number) => Number.isFinite(value) && value >= 0;
-const fits = (site: BotPlacementRequest["sites"][number], bot: BotPlacementRequest["bot"]) =>
-  numeric(bot.cpus) && numeric(bot.memoryMb) && numeric(bot.pids) &&
-  site.allocated.cpus + bot.cpus <= site.capacity.cpus &&
-  site.allocated.memoryMb + bot.memoryMb <= site.capacity.memoryMb &&
-  site.allocated.pids + bot.pids <= site.capacity.pids &&
-  site.allocated.bots + 1 <= site.capacity.maxBots;
+const fits = (site: BotPlacementRequest["sites"][number], bot: BotPlacementRequest["bot"]) => {
+  if (!numeric(bot.cpus) || !numeric(bot.memoryMb) || !numeric(bot.pids)) return false;
+  if (bot.diskQuotaMb !== undefined && (!numeric(bot.diskQuotaMb) ||
+      (site.capacity.maxDiskQuotaMb !== undefined && bot.diskQuotaMb > site.capacity.maxDiskQuotaMb))) return false;
+  if (bot.runTokensMin !== undefined && (!numeric(bot.runTokensMin) ||
+      (site.capacity.maxRunTokensMin !== undefined &&
+        (site.allocated.runTokensMin ?? 0) + bot.runTokensMin > site.capacity.maxRunTokensMin))) return false;
+  return site.allocated.cpus + bot.cpus <= site.capacity.cpus &&
+    site.allocated.memoryMb + bot.memoryMb <= site.capacity.memoryMb &&
+    site.allocated.pids + bot.pids <= site.capacity.pids &&
+    site.allocated.bots + 1 <= site.capacity.maxBots;
+};
 
 export function planBotPlacement(input: BotPlacementRequest): PlacementDecision {
   const { bot, sites } = input;

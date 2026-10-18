@@ -40,10 +40,18 @@ describe("planBotPlacement", () => {
   it.each(["draining", "quarantined", "disabled"])("excludes %s sites", (status) => {
     expect(decide({ sites: base.sites.map((s) => ({ ...s, status })) })).toEqual({ kind: "pending", reason: "no_available_sites" });
   });
+  it("rejects a disk quota above the site's hard per-container limit", () => {
+    expect(decide({ bot: { ...base.bot, diskQuotaMb: 1025 }, sites: base.sites.map((s) => ({ ...s, capacity: { ...s.capacity, maxDiskQuotaMb: 1024 } })) })).toEqual({ kind: "pending", reason: "capacity_exceeded" });
+  });
+  it("enforces the site's aggregate run-token budget", () => {
+    expect(decide({ bot: { ...base.bot, runTokensMin: 101 }, sites: base.sites.map((s) => ({ ...s, capacity: { ...s.capacity, maxRunTokensMin: 100 }, allocated: { ...s.allocated, runTokensMin: 0 } })) })).toEqual({ kind: "pending", reason: "capacity_exceeded" });
+    expect(decide({ bot: { ...base.bot, runTokensMin: 60 }, sites: base.sites.map((s) => ({ ...s, capacity: { ...s.capacity, maxRunTokensMin: 100 }, allocated: { ...s.allocated, runTokensMin: 50 } })) })).toEqual({ kind: "selected", siteName: "east", preempt: false });
+  });
   it("does not preempt by default and limits enabled preemption to P0", () => {
     const full = base.sites.map((s) => ({ ...s, capacity: { ...s.capacity, cpus: 0 } }));
     expect(decide({ sites: full })).toEqual({ kind: "pending", reason: "capacity_exceeded" });
     expect(decide({ sites: full, allowPreemption: true })).toEqual({ kind: "pending", reason: "capacity_exceeded" });
     expect(decide({ sites: full, allowPreemption: true, bot: { ...base.bot, priority: "P0" } })).toEqual({ kind: "selected", siteName: "east", preempt: true });
   });
+
 });
