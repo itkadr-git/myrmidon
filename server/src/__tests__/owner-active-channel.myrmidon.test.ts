@@ -30,7 +30,11 @@ import {
   toolApplications,
   toolConnections,
 } from "@paperclipai/db";
-import type { ChatProvider } from "@paperclipai/shared";
+import {
+  OWNER_DELIVERY_SETTINGS_KEY,
+  type ChatProvider,
+} from "@paperclipai/shared";
+import { instanceSettingsService } from "../services/instance-settings.js";
 import { issueThreadInteractionService } from "../services/issue-thread-interactions.js";
 import { telegramConversationUserId } from "../myrmidon/agent-chat-bridge/identity.js";
 import { markOwnerActivity } from "../myrmidon/owner-active-channel/store.js";
@@ -71,6 +75,12 @@ describeEmbeddedPostgres(
         "paperclip-active-channel-",
       );
       db = createDb(tempDb.connectionString);
+      // myrmidon(1.6.5-OWNER-VIA-BOT): the default mode is now "via_bot" (no card
+      // at all, see owner-via-bot.myrmidon.test.ts). This file covers the card
+      // delivery gated by active channel, which "owner_decisions_only" keeps.
+      await instanceSettingsService(db).updateGeneral({
+        [OWNER_DELIVERY_SETTINGS_KEY]: { mode: "owner_decisions_only" },
+      });
     }, 30_000);
 
     afterAll(async () => {
@@ -246,6 +256,9 @@ describeEmbeddedPostgres(
         {
           kind: "ask_user_questions" as const,
           continuationPolicy: "wake_assignee" as const,
+          // myrmidon(1.6.5-OWNER-DM-FILTER): human-decision card so it passes
+          // the owner-DM filter in owner_decisions_only mode.
+          resolverPolicy: "human_only" as const,
           payload: {
             version: 1 as const,
             questions: [
