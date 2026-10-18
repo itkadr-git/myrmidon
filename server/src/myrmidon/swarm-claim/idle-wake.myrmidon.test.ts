@@ -150,7 +150,15 @@ describe("myrmidon(1.6.1 SWARM-IDLE-WAKE) sweep pass", () => {
             }),
             where: () => {
               if (table === companies) {
-                return { limit: (limit: number) => Promise.resolve([{ id: "company-1" }].slice(0, limit)) };
+                return {
+                  limit: (limit: number) => Promise.resolve([{ id: "company-1" }].slice(0, limit)),
+                  // resolveResponsibleUserIdForActivity ends with an unchained
+                  // `.where()` + `.then()` read of the company's default
+                  // responsible user (activity-log.ts); a bare { limit } object
+                  // made `.then` a TypeError that the matcher pass swallowed.
+                  then: (resolve: (rows: unknown[]) => unknown) =>
+                    Promise.resolve([{ id: "company-1", defaultResponsibleUserId: null }]).then(resolve),
+                };
               }
               if (table === instanceSettings) {
                 return { then: (resolve: (rows: unknown[]) => unknown) => Promise.resolve([{ id: "settings-1", general: {}, experimental: {}, createdAt: NOW, updatedAt: NOW }]).then(resolve) };
