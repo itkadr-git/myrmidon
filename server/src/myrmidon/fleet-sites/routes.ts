@@ -15,7 +15,7 @@ function assertOperator(req: Request, companyId: string): void {
   throw new HttpError(403, "Company owner access required");
 }
 
-const patchSchema = fleetSitePatchSchema.extend({ slug: z.string().trim().min(1).max(63) });
+const patchSchema = fleetSitePatchSchema.extend({ slug: z.string().trim().regex(/^[a-z0-9][a-z0-9-]{0,62}$/) });
 
 export function fleetSiteRoutes(deps: { store: FleetSiteStore }) {
   const router = Router();

@@ -7,7 +7,7 @@ export const FLEET_SITE_SLUG_PATTERN = /^[a-z0-9][a-z0-9-]{0,62}$/;
 export const fleetSiteSchema = z.object({
   companyId: z.string().uuid(),
   slug: z.string().trim().regex(FLEET_SITE_SLUG_PATTERN),
-  fleetdUrl: z.string().url(),
+  fleetdUrl: z.string().url().refine((value) => new URL(value).protocol === "https:", "fleetdUrl must use https"),
   label: z.string().trim().min(1).max(120),
   siteCaFingerprint: z.string().trim().max(255).nullable().optional(),
   region: z.string().trim().max(120).nullable().optional(),
