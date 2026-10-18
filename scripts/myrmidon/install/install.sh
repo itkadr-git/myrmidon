@@ -298,6 +298,9 @@ preflight() {
 
 # ----------------------------------------------------------------- docker -----
 install_docker() {
+  if [[ "${MYRMIDON_INSTALL_SKIP_DOCKER_INSTALL:-0}" == "1" ]]; then
+    return 0
+  fi
   if have docker && docker compose version >/dev/null 2>&1; then
     say "Docker and the compose plugin are already installed." \
         "Docker и плагин compose уже установлены."
@@ -487,7 +490,7 @@ db_profile() {
   # image under an existing PG17 data volume is a migration the operator runs
   # deliberately — the installer keeps the file untouched instead.
   if [[ -z "$DATABASE_URL" && -z "${MYRMIDON_DB_PROFILE:-}" && -r "$DIR/compose.yml" ]] \
-     && grep -Eq '^[[:space:]]*image:[[:space:]]*[^[:space:]]*postgres[^[:space:]]*([[:space:]]|$)' "$DIR/compose.yml"; then
+     && grep -Eiq '^[[:space:]]*image:[[:space:]]*[^[:space:]]*postgres[^[:space:]]*([[:space:]]|$)' "$DIR/compose.yml"; then
     DB_PROFILE="keep"
     return 0
   fi
@@ -707,7 +710,7 @@ services:
       HOST: "0.0.0.0"
       PORT: "3100"
       SERVE_UI: "true"
-      PAPERCLIP_HOME: "/paperclip"
+      PAPERCLIP_HOME: "/myrmidon"
       PAPERCLIP_DEPLOYMENT_MODE: "authenticated"
       PAPERCLIP_DEPLOYMENT_EXPOSURE: "private"
       PAPERCLIP_PUBLIC_URL: "${MYRMIDON_PUBLIC_URL}"
@@ -716,7 +719,7 @@ services:
 %%BOARD_DATABASE_URL%%
       MYRMIDON_BOT_DOCKER_SOCKET: "/run/myrmidon-dockergate/engine.sock"
     volumes:
-      - paperclip-data:/paperclip
+      - myrmidon-data:/myrmidon
       - ./run:/run/myrmidon-dockergate
 
   dockergate:
@@ -756,7 +759,7 @@ services:
 
 volumes:
 %%PGDATA_VOLUME%%
-  paperclip-data:
+  myrmidon-data:
 COMPOSE
 )"
   content="${content//%%DB_SERVICE%%/$db_service}"
@@ -973,7 +976,7 @@ do_uninstall() {
   ( cd "$DIR" && compose down ) || die "docker compose down failed"
   if (( PURGE )); then
     load_env
-    docker volume rm "${MYR_PROJECT}_pgdata" "${MYR_PROJECT}_paperclip-data" >/dev/null 2>&1 || true
+    docker volume rm "${MYR_PROJECT}_pgdata" "${MYR_PROJECT}_myrmidon-data" "${MYR_PROJECT}_paperclip-data" >/dev/null 2>&1 || true
     rm -rf "$DIR"
     say "The stack, its data volume and $DIR were removed." \
         "Стек, том с данными и каталог $DIR удалены."
