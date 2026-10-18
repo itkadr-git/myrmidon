@@ -69,3 +69,7 @@ pull-запросы вливаются, задача движется дальш
 - [Чат Commander](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/commander-chat.md)
 - [Комнаты обсуждений](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/agent-exchange.md)
 - Маршрутизация ревью: [SETTINGS.md](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/SETTINGS.md), раздел «REVIEW-ROUTING»
+
+## Допуск к ревью
+
+При переходе задачи в `in_review` или смене ревьюера Myrmidon сохраняет запрос на его пробуждение в той же транзакции, что и изменение задачи. Запросы пробуждения на этапе ревью сохраняются тем же путём. Так изменение задачи и запрос на пробуждение ревьюера остаются атомарными.

@@ -69,3 +69,7 @@ an optional finisher summarizes the outcome.
 - [Commander chat](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/commander-chat.md)
 - [Discussion rooms](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/agent-exchange.md)
 - Review routing: [SETTINGS.md](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/SETTINGS.md), section «REVIEW-ROUTING»
+
+## Review admission
+
+When a task enters `in_review` or its reviewer changes, Myrmidon persists the reviewer wake request in the same transaction as the task update. Review-stage wake requests are persisted through that transaction path as well. This keeps the task update and the request to wake its reviewer atomic.
