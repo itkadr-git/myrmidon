@@ -103,6 +103,10 @@ const mockHeartbeatService = vi.hoisted(() => ({
   cancelInvocationsForAgents: vi.fn(),
 }));
 
+const mockRunRedactions = vi.hoisted(() => ({
+  redactForRuns: vi.fn(async (_companyId: string, runs: Array<Record<string, unknown>>) => runs),
+}));
+
 const mockIssueApprovalService = vi.hoisted(() => ({
   linkManyForApproval: vi.fn(),
 }));
@@ -177,6 +181,10 @@ function registerModuleMocks() {
 
   vi.doMock("../services/heartbeat.js", () => ({
     heartbeatService: () => mockHeartbeatService,
+  }));
+
+  vi.doMock("../services/run-secret-redaction.js", () => ({
+    createRunSecretRedactionRegistry: () => mockRunRedactions,
   }));
 
   vi.doMock("../services/issue-approvals.js", () => ({
@@ -308,6 +316,7 @@ describe.sequential("agent permission routes", () => {
 
   beforeEach(() => {
     vi.resetAllMocks();
+    mockRunRedactions.redactForRuns.mockImplementation(async (_companyId, runs) => runs);
     mockAgentService.getById.mockReset();
     mockAgentService.getConfigRevision.mockReset();
     mockAgentService.listConfigRevisions.mockReset();
@@ -367,9 +376,10 @@ describe.sequential("agent permission routes", () => {
     mockAgentService.listSummariesVersionKey.mockImplementation(async (_companyId: string, actorShape: string) =>
       actorShape.includes("Builder") ? '"authorized-agent-list"' : '"agents-list:test"',
     );
+    mockHeartbeatService.list.mockResolvedValue([{ id: "run-1", summary: "initial" }]);
+    mockHeartbeatService.listVersionKey.mockResolvedValue('"heartbeat-runs:v1"');
     mockHeartbeatService.listVersionKey.mockImplementation(async (_companyId, _agentId, _limit, _summary, actorShape) => {
-      const runSummary = actorShape.match(/"summary":"([^"]+)"/)?.[1] ?? "unknown";
-      return runSummary === "redacted" ? '"redacted-run-list"' : '"runs-v1"';
+      return actorShape.includes("REDACTED_SECRET") ? '"redacted-run-list"' : '"runs-v1"';
     });
     mockAgentService.getChainOfCommand.mockResolvedValue([]);
     mockAgentService.resolveByReference.mockResolvedValue({ ambiguous: false, agent: baseAgent });
@@ -587,27 +597,34 @@ describe.sequential("agent permission routes", () => {
   }, 20_000);
 
   it("does not return a stale 304 when company access is revoked", async () => {
+    let hasCompanyAccess = true;
+    mockAccessService.decide.mockImplementation(async (input: { action?: string }) => ({
+      allowed: input.action === "company_scope:read" ? hasCompanyAccess : true,
+      reason: hasCompanyAccess ? "allow_explicit_grant" : "deny_missing_grant",
+      explanation: hasCompanyAccess ? "Allowed by test grant" : "Company access revoked in test",
+    }));
     const app = await createApp({
       type: "board",
       userId: "board-user",
       source: "local_implicit",
-      isInstanceAdmin: true,
       companyIds: [companyId],
     });
-    mockAccessService.decide.mockResolvedValue({
-      allowed: false,
-      reason: "deny_missing_grant",
-      explanation: "Company access revoked in test",
-    });
 
-    const res = await requestApp(app, (baseUrl) =>
+    const first = await requestApp(app, (baseUrl) =>
+      request(baseUrl).get(`/api/companies/${companyId}/agents`),
+    );
+    expect(first.status).toBe(200);
+    expect(first.headers.etag).toBeTruthy();
+
+    hasCompanyAccess = false;
+    const afterRevocation = await requestApp(app, (baseUrl) =>
       request(baseUrl)
         .get(`/api/companies/${companyId}/agents`)
-        .set("If-None-Match", '"agents-list:test"'),
+        .set("If-None-Match", first.headers.etag),
     );
 
-    expect(res.status).toBe(403);
-    expect(mockAgentService.listSummariesVersionKey).not.toHaveBeenCalled();
+    expect(afterRevocation.status).toBe(403);
+    expect(mockAgentService.listSummariesVersionKey).toHaveBeenCalledOnce();
   }, 20_000);
 
   it("does not reuse an agent-list ETag when agent visibility changes", async () => {
@@ -651,18 +668,21 @@ describe.sequential("agent permission routes", () => {
   // Mutation routes echo the stored row back, so they leak the same values the
   // GET paths redact.
   it("does not reuse a heartbeat-runs ETag when redaction changes", async () => {
+    let redactionEnabled = false;
     mockHeartbeatService.listVersionKey.mockImplementation(async (_companyId, _agentId, _limit, _summary, actorShape) => {
-      const runSummary = actorShape.match(/"summary":"([^"]+)"/)?.[1] ?? "unknown";
-      return runSummary === "redacted" ? '"redacted-run-list"' : '"runs-v1"';
+      return actorShape.includes("REDACTED_SECRET") ? '"redacted-run-list"' : '"runs-v1"';
     });
+    mockHeartbeatService.list.mockResolvedValue([{ id: "run-1", summary: "visible secret" }]);
+    mockRunRedactions.redactForRuns.mockImplementation(async (_companyId, runs) => runs.map((run) => ({
+      ...run,
+      summary: redactionEnabled && run.summary === "visible secret" ? "REDACTED_SECRET" : run.summary,
+    })));
     const app = await createApp({
       type: "board",
       userId: "board-user",
       source: "local_implicit",
-      isInstanceAdmin: true,
       companyIds: [companyId],
     });
-    mockHeartbeatService.list.mockResolvedValue([{ id: "run-1", summary: "initial" }]);
     const first = await requestApp(app, (baseUrl) =>
       request(baseUrl).get(`/api/companies/${companyId}/heartbeat-runs`),
     );
@@ -676,7 +696,7 @@ describe.sequential("agent permission routes", () => {
       expect.stringContaining('"summary":"initial"'),
     );
 
-    mockHeartbeatService.list.mockResolvedValue([{ id: "run-1", summary: "redacted" }]);
+    redactionEnabled = true;
     const afterRedactionChange = await requestApp(app, (baseUrl) =>
       request(baseUrl)
         .get(`/api/companies/${companyId}/heartbeat-runs`)
@@ -684,13 +704,13 @@ describe.sequential("agent permission routes", () => {
     );
 
     expect(afterRedactionChange.status).toBe(200);
-    expect(afterRedactionChange.body).toEqual([{ id: "run-1", summary: "redacted" }]);
+    expect(afterRedactionChange.body).toEqual([{ id: "run-1", summary: "REDACTED_SECRET" }]);
     expect(mockHeartbeatService.listVersionKey).toHaveBeenLastCalledWith(
       companyId,
       undefined,
       undefined,
       false,
-      expect.stringContaining('"summary":"redacted"'),
+      expect.stringContaining('"summary":"REDACTED_SECRET"'),
     );
   }, 20_000);
 
