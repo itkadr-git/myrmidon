@@ -213,7 +213,7 @@ describeEmbeddedPostgres("maintenance service and API", () => {
     clock = new Date(clock.getTime() + 1_000);
     await svc.tick();
     expect((await svc.status()).instance?.state).toBe("entering");
-    expect(await runStatuses(agentId)).toEqual(["scheduled_retry"]);
+    expect((await runStatuses(agentId)).sort()).toEqual(["cancelled", "scheduled_retry"]);
   }, 30_000);
 
   it("reports a drain timeout once and keeps waiting with onTimeout=wait", async () => {
