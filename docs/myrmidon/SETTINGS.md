@@ -159,6 +159,20 @@ default and is re-read on every pass (a PATCH applies without restart):
 
 ## Track 3 — tool gateway and Hermes adapter
 
+### `hermes_local` process isolation
+
+Isolation is opt-in per agent in the Hermes adapter configuration (`adapterConfig`);
+it is not an instance-wide environment switch. With no `filesystemScope` and no
+`networkScope`, execution keeps the existing unsandboxed behavior. Set
+`filesystemScope: "workspace"` to run the child process with a Bubblewrap
+workspace-only filesystem boundary. `filesystemSandboxCommand` selects the
+Bubblewrap executable (default `bwrap`), and `filesystemExtraPaths` lists
+additional paths the sandbox may expose. For network control, set
+`networkScope: "deny"` to disable networking, or `"allowlist"` and provide
+`networkAllowlist` with permitted hosts/origins. The Paperclip API URL is trusted
+for the adapter's runtime connection. These settings affect `hermes_local`
+execution only; Bubblewrap must be installed where the agent process runs.
+
 | Variable | Function | Default | What it does | How to disable / special |
 |---|---|---|---|---|
 | `MYRMIDON_HERMES_RUNTIME_MCP_URL_BASE` | P4 | unset — the gateway address is not changed (as with the vendor) | The origin of the `hermes_local` run MCP gateway address is replaced with this base address (e.g. `http://127.0.0.1:3100`), path, query and token are preserved; only the origin pair is written to the log | Do not set. Per agent: `adapterConfig.runtimeMcpUrlBase` — its own base address, `adapterConfig.runtimeMcpUrlRewrite: false` — no rewriting. The field `adapterConfig.includeConfiguredMcpServers: false` — do not append servers from the profile into `-t` |

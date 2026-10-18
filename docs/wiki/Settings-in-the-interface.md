@@ -35,6 +35,18 @@ environment variable, or built-in default.
 
 ## Per-agent parallelism
 
+### `hermes_local` isolation
+
+Isolation is configured on the agent card in the Hermes adapter's
+`adapterConfig`, not in the instance settings UI. It is off unless explicitly
+configured. Set `filesystemScope: "workspace"` for a Bubblewrap workspace-only
+filesystem boundary; optionally set `filesystemSandboxCommand` (default
+`bwrap`) and `filesystemExtraPaths`. Network isolation is independent:
+`networkScope: "deny"` disables networking, while `"allowlist"` uses
+`networkAllowlist` for permitted hosts/origins. Bubblewrap must be installed on
+the agent host. See the operator reference in
+[SETTINGS.md](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/SETTINGS.md#hermes_local-process-isolation).
+
 On the agent card, the **Container** section: the scheduling policy
 (`runtimeConfig.heartbeat.maxConcurrentRuns`) sets how many runs of this
 agent may be active at once; the board normalizes the value into the 1–50
