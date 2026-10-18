@@ -54,10 +54,11 @@ type profile struct {
 // config is the JSON configuration (see docs/myrmidon/fleetd-vmexec.md).
 // Unknown keys are rejected at load time, the same discipline as dockergate.
 type config struct {
-	Listen   string `json:"listen"`
-	Token    string `json:"token"`
-	Upstream string `json:"upstream"`
-	Bots     []bot  `json:"bots"`
+	Listen   string        `json:"listen"`
+	Token    string        `json:"token"`
+	Upstream string        `json:"upstream"`
+	Bots     []bot         `json:"bots"`
+	Memory   *memoryConfig `json:"memory,omitempty"`
 }
 
 type bot struct {
@@ -102,9 +103,15 @@ func main() {
 		fmt.Println("configuration is valid")
 		return
 	}
-	srv := &server{cfg: &cfg}
+	memory, err := newMemoryClient(cfg.Memory)
+	if cfg.Memory != nil && cfg.Memory.Enabled && err != nil {
+		log.Fatalf("config is invalid: %v", err)
+	}
+	srv := &server{cfg: &cfg, memory: memory}
 	http.HandleFunc("/v1/bots", srv.requireAuth(srv.list))
 	http.HandleFunc("/v1/bots/", srv.requireAuth(srv.route))
+	http.HandleFunc("/v1/memory/recall", srv.requireAuth(srv.memoryRecall))
+	http.HandleFunc("/v1/memory/retain", srv.requireAuth(srv.memoryRetain))
 	log.Printf("fleetd listening on %s", cfg.Listen)
 	log.Fatal(http.ListenAndServe(cfg.Listen, nil))
 }
@@ -131,6 +138,11 @@ func validate(cfg *config) error {
 			return fmt.Errorf("bots[%d] limits must be positive", i)
 		}
 	}
+	if cfg.Memory != nil && cfg.Memory.Enabled {
+		if _, err := newMemoryClient(cfg.Memory); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -151,11 +163,61 @@ type c byte
 
 func (c c) in(set string) bool { return strings.ContainsRune(set, rune(c)) }
 
-// server holds the per-request state; the Docker backend wiring is added by
-// later commits (this one establishes the service skeleton, config check and
-// the auth gate).
+// server holds the per-request state. The memory client is optional and has
+// no host filesystem dependency.
 type server struct {
-	cfg *config
+	cfg    *config
+	memory *memoryClient
+}
+
+func (s *server) memoryRecall(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method_not_allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.memory == nil {
+		http.Error(w, "centralized_memory_disabled", http.StatusServiceUnavailable)
+		return
+	}
+	var req memoryRecallRequest
+	if err := decodeMemoryBody(r, &req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	data, err := s.memory.recall(r.Context(), req.Query, req.Budget, req.MaxTokens)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	writeRawJSON(w, data)
+}
+
+func (s *server) memoryRetain(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method_not_allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.memory == nil {
+		http.Error(w, "centralized_memory_disabled", http.StatusServiceUnavailable)
+		return
+	}
+	var req memoryRetainRequest
+	if err := decodeMemoryBody(r, &req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	data, err := s.memory.retain(r.Context(), req.Content, req.Context, req.DocumentID, req.Metadata)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	writeRawJSON(w, data)
+}
+
+func writeRawJSON(w http.ResponseWriter, data []byte) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(data)
 }
 
 // requireAuth wraps a handler with the static bearer token check.

@@ -246,7 +246,12 @@
     "agentView": "Вид агентов",
     "live": "В работе",
     "liveCount": "В работе ({{count}})",
-    "sandbox": "Песочница"
+    "sandbox": "Песочница",
+    "scopeCompany": "Компания",
+    "scopeCompanyNamed": "Компания: {{name}}",
+    "filterRole": "Роль",
+    "filterModel": "Модель",
+    "filterAll": "Все"
   },
   "inbox": {
     "title": "Входящие",
@@ -1050,7 +1055,8 @@
     "weightOff": "выкл",
     "source": {
       "settings": "Сохранено здесь",
-      "env": "Задано окружением сервера"
+      "env": "Задано окружением сервера",
+      "default": "По умолчанию"
     },
     "currentRelease": "Текущий релиз",
     "currentReleaseOff": "выкл",
@@ -1064,8 +1070,7 @@
     "loadFailed": "Не удалось загрузить настройки приоритета очереди.",
     "saveFailed": "Не удалось сохранить настройки приоритета очереди.",
     "error": {
-      "wholeNumber": "Введите целое число от 0",
-      "range": "Введите целое число от 0 до {{max}}"
+      "wholeNumber": "Введите целое число от 0 или оставьте пустым"
     },
     "position": {
       "of": "Позиция в очереди {{position}} из {{total}}",
@@ -1120,7 +1125,13 @@
     "ageSeconds": "{{seconds}} с назад",
     "ageMinutes": "{{minutes}} мин назад",
     "ageHours": "{{hours}} ч назад",
-    "cadence": "Пульс раз в {{pulse}} с; строка старше {{stale}} с считается устаревшей."
+    "cadence": "Пульс раз в {{pulse}} с; строка старше {{stale}} с считается устаревшей.",
+    "colReady": "Готов",
+    "colRestarts": "Перезапуски",
+    "readyYes": "готов",
+    "readyNo": "не готов",
+    "restartCount": "{{count}}",
+    "groupSummary": "{{role}} — готовы {{ready}} из {{count}}"
   },
   "boardLeases": {
     "title": "Аренда лидера",
@@ -1225,5 +1236,41 @@
     "issuedTitle": "Выпущенные лицензии",
     "issuedEmpty": "Лицензии ещё не выпускались.",
     "until": "до {{date}}"
+  },
+  "remoteSites": {
+    "title": "Удалённые площадки",
+    "loading": "Загрузка площадок…",
+    "error": "Не удалось загрузить площадки: {{error}}",
+    "empty": "Площадки не настроены",
+    "fixture": "Предпросмотр на фикстурах — не рабочие данные",
+    "stale": "Данные здоровья устарели",
+    "expired": "Сертификат клиента истёк",
+    "capacity": "Ёмкость: {{used}}/{{total}}",
+    "botsCount": "Боты: {{count}}",
+    "driftCount": "Расхождения: {{count}}",
+    "showBots": "Показать ботов площадки {{name}}",
+    "hideBots": "Скрыть ботов площадки {{name}}",
+    "showBotsLabel": "Боты",
+    "hideBotsLabel": "Скрыть ботов",
+    "image": "Образ:",
+    "state": "Состояние:",
+    "api": "API:",
+    "drift": "Расхождение",
+    "noBots": "Ботов нет",
+    "status": {
+      "reachable": "Доступна",
+      "degraded": "Сниженная доступность",
+      "unreachable": "Недоступна",
+      "draining": "Выводится",
+      "quarantined": "Карантин",
+      "disabled": "Отключена"
+    },
+    "action": {
+      "restart": "Перезапустить",
+      "stop": "Остановить",
+      "move": "Переместить",
+      "drain": "Вывести",
+      "resume": "Возобновить"
+    }
   }
 }
