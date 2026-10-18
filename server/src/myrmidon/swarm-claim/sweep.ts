@@ -359,12 +359,9 @@ export function createSwarmClaimSweeper(deps: SwarmClaimSweeperDeps): SwarmClaim
       } catch (err) {
         // CONSTANT errorKind only (the exception can carry a credential).
         logger.warn(
-          { errorKind: "swarm_match_failed" },
+          { errorKind: "swarm_match_failed", errorName: err instanceof Error ? err.name : typeof err },
           "swarm matcher pass failed; the next tick retries",
         );
-        // OPE-7780 DIAG (temporary): surface the hidden matcher error shape.
-        const diag = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
-        process.stdout.write(`OPE7780-DIAG matcher pass failed: ${diag.slice(0, 500)}\n`);
       }
       return result;
     },
@@ -613,6 +610,13 @@ function matcherDeps(
     hostGateOpen,
     now,
     casteDirectory: deps.castes,
+    resolveTaskCaste: deps.resolveTaskCaste,
+    agentNests: deps.agentNests,
+    isIssueCoolingDown: deps.isIssueCoolingDown,
+    coolingSettings: deps.coolingSettings,
+    isAgentAvailable: deps.isAgentAvailable,
+    isTaskBudgetBlocked: deps.isTaskBudgetBlocked,
+    pickAgentForTask: deps.pickAgentForTask,
     logActivity: deps.logActivity,
   };
 }

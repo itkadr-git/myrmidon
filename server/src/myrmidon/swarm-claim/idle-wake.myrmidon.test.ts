@@ -62,6 +62,45 @@ describe("myrmidon(1.6.1 SWARM-IDLE-WAKE) sweep pass", () => {
   it("E2-E5: the next sweep hands released work to its new owner", async () => {
     const wakes: Array<{ agentId: string; opts: Record<string, unknown> }> = [];
     const empty = <T>() => Promise.resolve([] as T[]);
+    const updates: Array<{ table: unknown; patch: Record<string, unknown> }> = [];
+    const expiredClaim = {
+      id: "claim-old",
+      issueId: "released-issue",
+      agentId: "former-agent",
+      heartbeatAt: NOW,
+      expiresAt: new Date(NOW.getTime() - 60_000),
+      releasedAt: null,
+    };
+    const idleAgent = {
+      id: "idle-agent",
+      companyId: "company-1",
+      name: "Idle agent",
+      reportsTo: null,
+      role: "engineer",
+      status: "idle",
+      metadata: {},
+    };
+    const issue = {
+      id: "released-issue",
+      companyId: "company-1",
+      identifier: "ENG-42",
+      priority: "medium",
+      createdAt: NOW,
+      status: "todo",
+      assigneeAgentId: null,
+      assigneeUserId: null,
+      hiddenAt: null,
+      conversationAgentId: null,
+      conversationUserId: null,
+      parentId: null,
+      projectId: null,
+      casteKey: null,
+      executionWorkspaceId: null,
+      executionWorkspacePreference: null,
+      executionWorkspaceSettings: null,
+      responsibleUserId: null,
+      createdByUserId: null,
+    };
     const issueTable = {
       findMany: vi.fn(async () => [{
         id: "released-issue",
@@ -110,44 +149,6 @@ describe("myrmidon(1.6.1 SWARM-IDLE-WAKE) sweep pass", () => {
               }),
             }),
             where: () => {
-              const expiredClaim = {
-                id: "claim-old",
-                issueId: "released-issue",
-                agentId: "former-agent",
-                heartbeatAt: NOW,
-                expiresAt: new Date(NOW.getTime() - 60_000),
-                releasedAt: null,
-              };
-              const idleAgent = {
-                id: "idle-agent",
-                companyId: "company-1",
-                name: "Idle agent",
-                reportsTo: null,
-                role: "engineer",
-                status: "idle",
-                metadata: {},
-              };
-              const issue = {
-                id: "released-issue",
-                companyId: "company-1",
-                identifier: "ENG-42",
-                priority: "medium",
-                createdAt: NOW,
-                status: "todo",
-                assigneeAgentId: null,
-                assigneeUserId: null,
-                hiddenAt: null,
-                conversationAgentId: null,
-                conversationUserId: null,
-                parentId: null,
-                projectId: null,
-                casteKey: null,
-                executionWorkspaceId: null,
-                executionWorkspacePreference: null,
-                executionWorkspaceSettings: null,
-                responsibleUserId: null,
-                createdByUserId: null,
-              };
               if (table === companies) {
                 return { limit: (limit: number) => Promise.resolve([{ id: "company-1" }].slice(0, limit)) };
               }
@@ -187,7 +188,12 @@ describe("myrmidon(1.6.1 SWARM-IDLE-WAKE) sweep pass", () => {
                 return { then: (resolve: (rows: unknown[]) => unknown) => Promise.resolve([idleAgent]).then(resolve) };
               }
               if (table === issues && projection && "companyId" in projection && "assigneeAgentId" in projection) {
-                return { limit: (limit: number) => Promise.resolve([{ id: issue.id, companyId: issue.companyId, status: issue.status, assigneeAgentId: issue.assigneeAgentId }].slice(0, limit)) };
+                // matchIssue re-reads the task to re-own it. The fixture keeps
+                // the assignee set on this read (the mock clearExpiredAssignee
+                // does not mutate the read row), so matchIssue returns null and
+                // the periodic matchCompany pass is the one that claims it —
+                // which is what result.idleClaimed counts.
+                return { limit: (limit: number) => Promise.resolve([{ id: issue.id, companyId: issue.companyId, status: issue.status, assigneeAgentId: "former-agent" }].slice(0, limit)) };
               }
               if (projection && "agentId" in projection) return Promise.resolve([]);
               if (projection && "activeClaims" in projection) return Promise.resolve([]);
@@ -225,12 +231,22 @@ describe("myrmidon(1.6.1 SWARM-IDLE-WAKE) sweep pass", () => {
         }),
       }),
       update: (table?: unknown) => ({
-        set: () => ({
+        set: (patch: Record<string, unknown>) => ({
           where: () => ({
             // Ownership changes expire pending connection intents; an empty
             // expiry skips the follow-up delete (production: only when expired
-            // rows exist).
-            returning: () => Promise.resolve(table === issueThreadInteractions ? [] : [{ id: "released-issue" }]),
+            // rows exist). The issues write returns the updated row the service
+            // then enriches — it must carry the fields the matcher reads back.
+            returning: () => {
+              updates.push({ table, patch: patch ?? {} });
+              return Promise.resolve(
+                table === issueThreadInteractions
+                  ? []
+                  : table === issues
+                    ? [{ ...issue, ...(patch ?? {}), updatedAt: NOW }]
+                    : [{ id: "released-issue" }],
+              );
+            },
           }),
         }),
       }),
@@ -271,9 +287,15 @@ describe("myrmidon(1.6.1 SWARM-IDLE-WAKE) sweep pass", () => {
     sweeper.resetForTest();
     const result = await sweeper.sweep(NOW);
     expect(result.idleClaimed).toBe(1);
-    expect(issueTable.update).toHaveBeenCalledWith(expect.objectContaining({
-      set: expect.objectContaining({ assigneeAgentId: expect.any(String) }),
-    }));
+    // The assignment lands through the issues service's conditional write (the
+    // matcher claims via issueService.update, not the relational query API), so
+    // the assertion reads the patch the fixture's update() recorded for the
+    // issues table.
+    expect(
+      updates.some(
+        (u) => u.table === issues && typeof u.patch.assigneeAgentId === "string",
+      ),
+    ).toBe(true);
     expect(wakes).toHaveLength(1);
     expect(wakes[0]!.agentId).toBe("idle-agent");
     expect(wakes[0]!.opts).toMatchObject({
