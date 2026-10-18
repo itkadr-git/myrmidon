@@ -6,15 +6,15 @@ The LLM Wiki plugin (`@paperclipai/plugin-llm-wiki`) provides local-file LLM Wik
 ## Installation
 
 ### Prerequisites
-- Paperclip instance running version 1.4 or later
-- Operator access to the Paperclip instance
+- Myrmidon instance running version 1.4 or later
+- Operator access to the Myrmidon instance
 - Network access to GitHub Package Registry (for plugin installation)
 
 ### Automatic Installation (Recommended)
 The plugin is installed automatically as part of the standard Myrmidon deployment when using version 1.6 or later.
 
 ### Manual Installation
-1. Navigate to the Plugins section in your Paperclip instance
+1. Navigate to the Plugins section in your Myrmidon instance
 2. Click "Install Plugin" 
 3. Search for `@paperclipai/plugin-llm-wiki`
 4. Click "Install" and follow the configuration prompts
@@ -38,7 +38,7 @@ After installation:
 Starting with version 1.6, the plugin will be upgraded automatically when you upgrade your Myrmidon instance to a newer version that includes a newer version of the LLM Wiki plugin.
 
 ### Manual Upgrades
-1. Go to the Plugins section in your Paperclip instance
+1. Go to the Plugins section in your Myrmidon instance
 2. Find the LLM Wiki plugin in the installed plugins list
 3. Click "Upgrade" if a newer version is available
 4. Restart the plugin service if prompted
@@ -52,4 +52,4 @@ Starting with version 1.6, the plugin will be upgraded automatically when you up
 - Check the plugin logs for detailed error information
 
 ## Support
-For support issues, please contact the Paperclip team or refer to the documentation at `packages/plugins/plugin-llm-wiki/README.md`.
+For support issues, please contact the Myrmidon team or refer to the documentation at `packages/plugins/plugin-llm-wiki/README.md`.

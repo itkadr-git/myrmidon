@@ -48,6 +48,32 @@ Access hub — раздел настроек (Настройки → Access hub,
   SSH-подключения не делает (настоящий клиент — следующая часть). На хост
   вообще должна попадать только публичная половина ключа.
 
+## SSH-операции на хостах
+
+`POST /hosts/:hostId/deploy/:secretId`, `/revoke/` и `/dry-run/` вызывают
+настоящий ssh-клиент с админским ключом из секрета, заданного
+`MYRMIDON_ACCESS_HUB_SSH_ADMIN_KEY_SECRET` (см.
+[SETTINGS.md](../SETTINGS.md)): deploy добавляет строку ключа в
+`authorized_keys` на хосте, revoke убирает её, dry-run сообщает, что сделал
+бы deploy, ничего не записывая. Каждый вызов отвечает `{ outcome, note }` и
+пишет одну строку журнала (`access_hub.ssh.deployed`,
+`access_hub.ssh.revoked` или `access_hub.ssh.dry_run`) с теми же outcome и
+note.
+
+Исходы: `deployed` (файл на хосте изменился), `already_present` / `dry_run`
+и `not_deployed` — на хосте ничего не тронуто, а note говорит почему. Note
+намеренно грубая: упавший ssh-шаг сообщает только `ssh command timed out`
+или `ssh command failed (exit <code>)` — никогда адрес хоста, логин, путь к
+файлу ключа или удалённую команду; всё это не попадает ни в ответ API, ни в
+журнал. Другие причины `not_deployed`: админский ключ не задан
+(`admin ssh key secret is not configured`), файл ключей на хосте слишком
+велик для обработки (`authorized_keys on the host is too large to process`),
+недопустимое поле ввода (`invalid <field>`) и — до любой попытки ssh —
+нераспознаваемая публичная половина ключа
+(`the secret has no parseable public key half`), когда у секрета нет
+сохранённой публичной половины или она не похожа на публичный ключ SSH.
+Исправьте секрет (ротируйте его на свежую пару) и повторите.
+
 ## Единственное правило секретности
 
 Значения секретов не отображаются никогда. Список, карточка и журнал
@@ -169,7 +195,7 @@ SSH-ключей (`POST /secrets/:id/rotate-ssh-key` — генерируетс�
 | `PUT /accesses/:id/hosts` | Задать набор хостов секрета-ключа SSH (раскладка/снятие — одна set-запись) |
 | `GET /journal` | Записи журнала, новые сначала (параметр `limit`, по умолчанию 100, максимум 500) |
 | `GET /hosts`, `POST /hosts`, `PATCH /hosts/:hostId`, `DELETE /hosts/:hostId` | Реестр хостов парка (общий на инсталляцию, не более 200 хостов) |
-| `POST /hosts/:hostId/deploy/:secretId` | Разложить один SSH-ключ на один хост (пока фиктивный порт деплоя) |
+| `POST /hosts/:hostId/deploy/:secretId` | Разложить один SSH-ключ на один хост (также `/revoke/`, `/dry-run/`) |
 
 Пути не несут `:companyId`: компания берётся сначала из параметра запроса
 `companyId`, затем из единственного активного членства вызывающего; ноль или

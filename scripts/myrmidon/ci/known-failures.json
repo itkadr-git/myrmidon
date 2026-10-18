@@ -20,16 +20,6 @@
       "file": "packages/plugins/paperclip-plugin-fake-sandbox/src/plugin.test.ts",
       "name": "fake sandbox provider plugin does not expose host-only environment variables to executed commands",
       "reason": "Fails on the vendor base; the vendor CI does not run this package."
-    },
-    {
-      "file": "packages/plugins/plugin-llm-wiki/tests/plugin.spec.ts",
-      "name": "(suite failed to load)",
-      "reason": "Fails on the vendor base: imports react, which the package does not declare; the vendor CI does not run this package."
-    },
-    {
-      "file": "packages/plugins/plugin-llm-wiki/tests/wiki-route-sidebar-ui.spec.ts",
-      "name": "(suite failed to load)",
-      "reason": "Fails on the vendor base: imports react, which the package does not declare; the vendor CI does not run this package."
     }
   ]
 }

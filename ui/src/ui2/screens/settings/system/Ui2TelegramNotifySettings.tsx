@@ -432,8 +432,11 @@ export function Ui2TelegramNotifySettings() {
             <span className="ui2-tn-field-name text-sm">{t("ui2.settings.tgNotify.proactivity.rarelyMaxPerDay")}</span>
             <input
               type="number"
-              min={0}
-              max={1000}
+              // myrmidon(1.6.1-TG-NOTIFY): the single 1–50 range of the merged
+              // proactivity contract (pull request 397); see the shared
+              // contract module for the provenance note.
+              min={1}
+              max={50}
               className="ui2-tn-number-input w-32 rounded-md border border-input bg-background px-2 py-1 text-right font-mono text-sm tabular-nums"
               value={effective("proactivity", "rarelyMaxPerDay")}
               disabled={effective("proactivity", "mode") !== "rarely"}

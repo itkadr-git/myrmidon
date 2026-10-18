@@ -246,7 +246,8 @@ describeEmbeddedPostgres("maintenance service and API", () => {
 
     const admin = { type: "board", source: "session", userId: "admin-user", isInstanceAdmin: true, companyIds: [] };
     const member = { type: "board", source: "session", userId: "user-a", isInstanceAdmin: false, companyIds: ["c"] };
-    const agentActor = { type: "agent", source: "agent_key", agentId: "a", companyId: "c", keyId: "k" };
+    // A uuid: the deploy-class gate looks the caller's role up by agent id before the admin check.
+    const agentActor = { type: "agent", source: "agent_key", agentId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", companyId: "c", keyId: "k" };
     const enterBody = { action: "enter", scope: { type: "instance" }, reason: "deploy" };
 
     it("allows only instance admins to change the mode", async () => {

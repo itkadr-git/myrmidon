@@ -243,6 +243,49 @@ describe("myrmidon(1.6-SKILL-LIFE): delivery by state", () => {
     expect(pilot.pinnedVersions.get("example-skill")).toBe(V1);
   });
 
+  it("delivers a candidate to its author (back-import origin) outside the pilot set, and only to it", async () => {
+    // myrmidon(1.6.5-BOT-SKILL-BACKIMPORT): a bot-written candidate must come
+    // back to the bot that wrote it after a volume recreation, though the bot
+    // is not in MYRMIDON_SKILL_PILOT_AGENTS. Anyone else still waits for the pilot.
+    const harness = fakeStore({
+      skills: [{ ...SKILL_REF, originAgentId: AGENT_OTHER }],
+      versions: { [V1]: version(V1, 1, "bot-written content") },
+      records: [
+        {
+          skillId: SKILL,
+          companyId: COMPANY,
+          state: "candidate",
+          verifiedVersionId: V1,
+          previousVerifiedVersionId: null,
+          approvedBy: null,
+          approvedAt: null,
+          reason: null,
+          updatedAt: "2026-10-01T00:00:00.000Z",
+        },
+      ],
+    });
+    const service = serviceWith(harness.store, { [SKILL_PILOT_AGENTS_ENV]: AGENT_PILOT });
+
+    const author = await service.resolveDelivery(COMPANY, AGENT_OTHER);
+    expect(author.blockedKeys.size).toBe(0);
+    expect(author.pinnedVersions.get("example-skill")).toBe(V1);
+
+    const stranger = await service.resolveDelivery(COMPANY, "10000000-0000-4000-8000-0000000000b9");
+    expect(stranger.blockedKeys.has("example-skill")).toBe(true);
+    const pilot = await service.resolveDelivery(COMPANY, AGENT_PILOT);
+    expect(pilot.blockedKeys.size).toBe(0);
+  });
+
+  it("does not deliver a deprecated skill to its author", () => {
+    const decision = decideSkillDelivery({
+      skillKey: "k",
+      agentId: AGENT_OTHER,
+      lifecycle: { state: "deprecated", verifiedVersionId: V1, authorAgentId: AGENT_OTHER },
+      pilotAgentIds: new Set(),
+    });
+    expect(decision.blocked).toBe(true);
+  });
+
   it("withholds a deprecated skill from everyone", async () => {
     const harness = fakeStore({
       skills: [{ ...SKILL_REF }],

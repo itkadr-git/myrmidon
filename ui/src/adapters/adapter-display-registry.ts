@@ -122,6 +122,11 @@ const adapterDisplayMap: Record<string, AdapterDisplayInfo> = {
     description: "Pi harness",
     icon: Terminal,
   },
+  omp_local: {
+    label: "Oh My Pi",
+    description: "Oh My Pi harness",
+    icon: Terminal,
+  },
   cursor: {
     label: "Cursor",
     description: "Cursor CLI harness",

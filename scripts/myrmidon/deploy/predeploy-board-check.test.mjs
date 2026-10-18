@@ -45,6 +45,20 @@ case "$1" in
     echo "0123456789ab"
     exit 0 ;;
   exec)
+    case "$*" in *psql*ANALYZE*)
+      [ -e "$SANDBOX/analyze-fails" ] && { echo "psql: error: analyze failed" >&2; exit 1; }
+      exit 0 ;;
+    esac
+    # myrmidon(PREDEPLOY-PG-COMPAT): the copy's answers for the compatibility
+    # check. The dump's TOC is read from a sandbox file when present (pg_restore
+    # --list < dump) — this branch comes BEFORE the plain restore branch, case
+    # matches in order; the psql probes answer from sandbox files (missing file
+    # = the fake answers nothing, the same no-output path the real probes take
+    # on an unexpected server).
+    case "$*" in *pg_restore*--list*)
+      if [ -f "$SANDBOX/dump-toc.txt" ]; then cat "$SANDBOX/dump-toc.txt"; fi
+      exit 0 ;;
+    esac
     case "$*" in *pg_restore*)
       # myrmidon(PREDEPLOY-NO-ACL): models a dump with GRANTs to production-only
       # roles. Such a dump restores only when pg_restore skips privileges:
@@ -55,6 +69,29 @@ case "$1" in
         exit 1
       fi
       [ -e "$SANDBOX/restore-fails" ] && exit 1 ;;
+    esac
+    case "$*" in *SHOW*server_version*)
+      if [ -e "$SANDBOX/version-probe-fails" ]; then
+        echo 'psql: error: connection to server failed: FATAL: the database system is starting up' >&2
+        exit 2
+      fi
+      if [ -f "$SANDBOX/copy-version.txt" ]; then cat "$SANDBOX/copy-version.txt"; fi
+      exit 0 ;;
+    esac
+    case "$*" in *pg_available_extensions*)
+      # myrmidon(PREDEPLOY-PG-COMPAT): models the production failure mode —
+      # the copy answers the version probe but the extension probe aborts
+      # (auth/role/timing). The caller must retry and name this error.
+      if [ -e "$SANDBOX/available-fails" ]; then
+        echo 'psql: error: connection to server: FATAL: role "myrmidon" does not exist' >&2
+        exit 2
+      fi
+      if [ -f "$SANDBOX/copy-available.txt" ]; then cat "$SANDBOX/copy-available.txt"; fi
+      exit 0 ;;
+    esac
+    case "$*" in *pg_extension*)
+      if [ -f "$SANDBOX/copy-installed.txt" ]; then cat "$SANDBOX/copy-installed.txt"; fi
+      exit 0 ;;
     esac
     exit 0 ;;
   logs)
@@ -269,6 +306,43 @@ describe("predeploy-board-check.sh (PREDEPLOY-DB-CHECK: the 05.10 incident)", ()
     assert.match(tokenRun.out, /refused the configured credentials \(HTTP 403\)/);
   });
 
+  it("mounts only the production master key file read-only into the copy's board; without it a WARNING", () => {
+    const withKey = sandbox();
+    const keyFile = path.join(withKey.dir, "master.key");
+    const secretValue = "super-secret-key-material-0123456789";
+    fs.writeFileSync(keyFile, `${secretValue}\n`);
+    fs.appendFileSync(withKey.config, `MYRMIDON_PREDEPLOY_MASTER_KEY_FILE=${keyFile}\n`);
+    const keyRun = full(withKey);
+    assert.equal(keyRun.code, 0, keyRun.out);
+    const log = calls(withKey);
+    const boardRun = log.split("\n").find((l) => l.startsWith("docker run -d --name myr-predeploy-board-"));
+    assert.ok(boardRun, log);
+    assert.ok(boardRun.includes(`-v ${keyFile}:/run/myrmidon-predeploy/master.key:ro`), boardRun);
+    assert.ok(boardRun.includes("-e PAPERCLIP_SECRETS_MASTER_KEY_FILE=/run/myrmidon-predeploy/master.key"), boardRun);
+    assert.doesNotMatch(keyRun.out, /no MYRMIDON_PREDEPLOY_MASTER_KEY_FILE/);
+    // the key material is never printed or passed on a command line
+    assert.ok(!keyRun.out.includes(secretValue));
+    assert.ok(!log.includes(secretValue));
+    // no other docker run gets the key
+    for (const l of log.split("\n")) {
+      if (l.startsWith("docker run") && !l.includes("myr-predeploy-board-")) assert.ok(!l.includes("master.key"), l);
+    }
+
+    const without = sandbox();
+    const noKeyRun = full(without);
+    assert.equal(noKeyRun.code, 0, noKeyRun.out);
+    assert.match(noKeyRun.out, /WARNING: no MYRMIDON_PREDEPLOY_MASTER_KEY_FILE/);
+    assert.doesNotMatch(calls(without), /PAPERCLIP_SECRETS_MASTER_KEY_FILE/);
+
+    // set but unusable: stops before the first docker call
+    const missing = sandbox();
+    fs.appendFileSync(missing.config, `MYRMIDON_PREDEPLOY_MASTER_KEY_FILE=${path.join(missing.dir, "absent.key")}\n`);
+    const missingRun = full(missing);
+    assert.notEqual(missingRun.code, 0, missingRun.out);
+    assert.match(missingRun.out, /MYRMIDON_PREDEPLOY_MASTER_KEY_FILE is set but is not a file/);
+    assert.doesNotMatch(calls(missing), /docker /);
+  });
+
   it("a token file that is set but unusable stops the check before the first docker call", () => {
     // The token stays optional (without it a 401/403 is a warning), but a file
     // that IS configured is an input of this step: a missing, unreadable or
@@ -422,6 +496,33 @@ describe("predeploy-board-check.sh (PREDEPLOY-DB-CHECK: the 05.10 incident)", ()
     assert.match(calls(sb), /docker exec -i custom-db pg_restore -U custom --no-acl/);
   });
 
+  it("ANALYZE runs on the copy after the restore and before the board starts (PREDEPLOY-ANALYZE)", () => {
+    const sb = sandbox();
+    const { code, out } = full(sb);
+    assert.equal(code, 0, out);
+    assert.match(out, /analyze: collecting planner statistics/);
+    const c = calls(sb);
+    const restoreAt = c.indexOf("pg_restore");
+    const analyzeAt = c.search(/psql .*-c ANALYZE/);
+    const boardAt = c.indexOf("--name myr-predeploy-board-");
+    assert.ok(restoreAt >= 0 && analyzeAt > restoreAt && boardAt > analyzeAt, c);
+  });
+
+  it("ANALYZE also runs when the restore command is overridden", () => {
+    const sb = sandbox({ extraConfig: "MYRMIDON_PREDEPLOY_RESTORE_COMMAND='docker exec -i custom-db pg_restore -U custom --no-acl < \"$DUMP_FILE\"'\n" });
+    const { code, out } = full(sb);
+    assert.equal(code, 0, out);
+    assert.match(calls(sb), /custom-db pg_restore[\s\S]*psql .*-c ANALYZE/);
+  });
+
+  it("a failed ANALYZE is a warning, not a stop", () => {
+    const sb = sandbox();
+    fs.writeFileSync(path.join(sb.dir, "analyze-fails"), "");
+    const { code, out } = full(sb);
+    assert.equal(code, 0, out);
+    assert.match(out, /WARNING: analyze failed on the copy/);
+  });
+
   it("MYRMIDON_PREDEPLOY_KEEP=1 keeps the stack and names it for the operator", () => {
     const sb = sandbox({ extraConfig: "MYRMIDON_PREDEPLOY_KEEP=1\n" });
     const { code, out } = full(sb, "--dockergate-digest", DG);
@@ -431,5 +532,220 @@ describe("predeploy-board-check.sh (PREDEPLOY-DB-CHECK: the 05.10 incident)", ()
     assert.match(out, /volume=myr-predeploy-dbvol-/);
     assert.doesNotMatch(calls(sb), /docker rm -f/);
     assert.doesNotMatch(calls(sb), /docker volume rm/);
+  });
+});
+
+// myrmidon(PREDEPLOY-PG-COMPAT, OPE-5793 A): the board database may live on a
+// shared PostgreSQL 18 server, so the throwaway copy must be proven compatible
+// with the production dump BEFORE the restore: the server major recorded in
+// the dump header equals the copy's major, and every extension the dump
+// restores exists in the copy image (a stock postgres image has no pgvector —
+// the board needs `vector` since migration 0051). The TOC strings below are
+// verbatim shapes from pg_backup_archiver.c (REL_18): the header line
+// `;     Dumped from database version: 18.0` (the server line wins) and the
+// entry line
+// `%d; %u %u EXTENSION %s %s %s` (dumpId; tableoid oid tag schema name owner).
+describe("predeploy-board-check.sh (PREDEPLOY-PG-COMPAT: the copy matches the dump's server)", () => {
+  const toc = (major, ...extensions) => [
+    ";",
+    "; Archive created at Wed Oct 07 00:00:00 2026",
+    ";     dbname: myrmidon",
+    `;     Dumped from database version: ${major}`,
+    `;     Dumped by pg_dump version: ${major}`,
+    ";",
+    "; Selected TOC Entries:",
+    ";",
+    "209; 1259 16390 TABLE - companies board_owner",
+    ...extensions.map((e, i) => `${170 + i}; 3079 ${20000 + i} EXTENSION - ${e} -`),
+    "",
+  ].join("\n");
+
+  const withToc = (sb, text) => fs.writeFileSync(path.join(sb.dir, "dump-toc.txt"), text);
+  const answer = (sb, file, text) => fs.writeFileSync(path.join(sb.dir, file), text);
+
+  it("refuses a copy image without the extension the dump restores and never restores", () => {
+    const sb = sandbox();
+    withToc(sb, toc("18.0", "plpgsql", "vector"));
+    answer(sb, "copy-version.txt", "18.0\n");
+    // stock postgres:18 answers: plpgsql exists, pgvector does not
+    answer(sb, "copy-available.txt", "plpgsql\nfuzzystrmatch\n");
+    const { code, out } = full(sb, "--dockergate-digest", DG);
+    assert.notEqual(code, 0);
+    assert.match(out, /PREDEPLOY-PG-COMPAT/);
+    assert.match(out, /does not provide them/);
+    assert.match(out, /\bvector\b/);
+    assert.match(out, /pgvector\/pgvector:pg18/);
+    assert.match(out, /nothing was restored/);
+    // the refusal stops the check BEFORE the dump is restored into the copy
+    assert.doesNotMatch(calls(sb), /pg_restore -U/);
+  });
+
+  it("accepts a copy that provides every extension of the dump and proves them live after the restore", () => {
+    const sb = sandbox();
+    withToc(sb, toc("18.0", "plpgsql", "vector", "fuzzystrmatch"));
+    answer(sb, "copy-version.txt", "18.0\n");
+    answer(sb, "copy-available.txt", "plpgsql\nvector\nfuzzystrmatch\n");
+    answer(sb, "copy-installed.txt", "plpgsql\nvector\nfuzzystrmatch\n");
+    const { code, out } = full(sb, "--dockergate-digest", DG);
+    assert.equal(code, 0, out);
+    assert.match(out, /the same major the production dump came from/);
+    assert.match(out, /provides every extension the dump restores/);
+    assert.match(out, /extensions installed/);
+    // pg_extension is probed AFTER the restore, before ANALYZE and the board
+    const c = calls(sb);
+    const restoreAt = c.search(/pg_restore -U/);
+    const extAt = c.search(/SELECT extname FROM pg_extension/);
+    const analyzeAt = c.search(/-c ANALYZE/);
+    assert.ok(restoreAt >= 0 && extAt > restoreAt && analyzeAt > extAt, c);
+  });
+
+  it("refuses a copy older than the dump's server: pg_restore cannot read a newer dump", () => {
+    const sb = sandbox();
+    withToc(sb, toc("18.0", "vector"));
+    answer(sb, "copy-version.txt", "17.4\n");
+    answer(sb, "copy-available.txt", "vector\n");
+    const { code, out } = full(sb);
+    assert.notEqual(code, 0);
+    assert.match(out, /written by pg_dump 18, the copy runs 17/);
+    assert.match(out, /pgvector\/pgvector:pg18/);
+    assert.match(out, /nothing was restored/);
+    assert.doesNotMatch(calls(sb), /pg_restore -U/);
+  });
+
+  it("warns but does not refuse a copy newer than the dump: the migration window onto 18", () => {
+    const sb = sandbox();
+    withToc(sb, toc("17.0", "vector"));
+    answer(sb, "copy-version.txt", "18.0\n");
+    answer(sb, "copy-available.txt", "vector\n");
+    answer(sb, "copy-installed.txt", "vector\n");
+    const { code, out } = full(sb, "--dockergate-digest", DG);
+    assert.equal(code, 0, out);
+    assert.match(out, /WARNING: the copy runs 18 but the dump came from 17/);
+    assert.match(out, /acceptable only while the board migrates/);
+  });
+
+  it("falls back to the plain-SQL dump's own header and CREATE EXTENSION lines", () => {
+    const sb = sandbox();
+    fs.writeFileSync(
+      sb.dump,
+      "--\n-- PostgreSQL database dump\n--\n-- Dumped from database version 18.0\n-- Dumped by pg_dump version 18.0\nCREATE EXTENSION IF NOT EXISTS vector WITH SCHEMA public;\nCREATE EXTENSION IF NOT EXISTS fuzzystrmatch;\n",
+    );
+    answer(sb, "copy-version.txt", "18.0\n");
+    answer(sb, "copy-available.txt", "plpgsql\nfuzzystrmatch\n");
+    const { code, out } = full(sb);
+    assert.notEqual(code, 0);
+    assert.match(out, /does not provide them/);
+    assert.match(out, /\bvector\b/);
+  });
+
+  it("MYRMIDON_PREDEPLOY_PG_COMPAT=off skips the comparison and says so", () => {
+    const sb = sandbox({ extraConfig: "MYRMIDON_PREDEPLOY_PG_COMPAT=off\n" });
+    withToc(sb, toc("18.0", "vector"));
+    const { code, out } = full(sb, "--dockergate-digest", DG);
+    assert.equal(code, 0, out);
+    assert.match(out, /PREDEPLOY-PG-COMPAT: disabled/);
+    // ANALYZE (PREDEPLOY-ANALYZE) is unaffected by the switch
+    assert.match(out, /analyze: collecting planner statistics/);
+  });
+
+  it("an invalid MYRMIDON_PREDEPLOY_PG_COMPAT value refuses with the accepted set", () => {
+    const sb = sandbox({ extraConfig: "MYRMIDON_PREDEPLOY_PG_COMPAT=ture\n" });
+    const { code, out } = full(sb);
+    assert.notEqual(code, 0);
+    assert.match(out, /must be 'check' or 'off'/);
+  });
+
+  // myrmidon(PREDEPLOY-PG-COMPAT, OPE-6306): the rc.11/rc.12 deploys (08.10)
+  // showed the real headers carry the package tail — a Debian/PGDG server
+  // writes `; Dumped from database version: 18 (Debian 18.6-1.pgdg12+2)` into
+  // the dump and answers `18.6 (Debian 18.6-1.pgdg12+2)` to SHOW
+  // server_version. The old unanchored sed kept the WHOLE tail in dump_major
+  // and `((copy_major < dump_major))` died with
+  // `((: 18 (Debian 18.6-1.pgdg12+2): syntax error in expression`, so the
+  // comparison was silently skipped. These tests pin the robust parse.
+
+  it("parses a Debian-packaged dump header tail and refuses a younger copy (no syntax error)", () => {
+    const sb = sandbox();
+    // server line 18 (Debian tail), client line 16.14: the server line wins
+    // and only its leading digits may reach the comparison
+    withToc(sb, [
+      ";",
+      "; Archive created at Wed Oct 07 00:00:00 2026",
+      ";     dbname: myrmidon",
+      ";     Dumped from database version: 18 (Debian 18.6-1.pgdg12+2)",
+      ";     Dumped by pg_dump version: 16.14",
+      ";",
+      "; Selected TOC Entries:",
+      ";",
+      "170; 3079 20000 EXTENSION - vector -",
+      "",
+    ].join("\n"));
+    answer(sb, "copy-version.txt", "17.2 (Ubuntu 17.2-1.pgdg22.04+1)\n");
+    answer(sb, "copy-available.txt", "plpgsql\nvector\n");
+    const { code, out } = full(sb);
+    assert.notEqual(code, 0, out);
+    assert.match(out, /written by pg_dump 18, the copy runs 17/);
+    assert.match(out, /nothing was restored/);
+    assert.doesNotMatch(out, /syntax error in expression/);
+    assert.doesNotMatch(out, /could not be read/);
+    assert.doesNotMatch(calls(sb), /pg_restore -U/);
+  });
+
+  it("a Debian-tailed dump header and a Debian-tailed copy answer of the same major pass the comparison", () => {
+    const sb = sandbox();
+    withToc(sb, toc("18 (Debian 18.6-1.pgdg12+2)", "vector"));
+    answer(sb, "copy-version.txt", "18.6 (Debian 18.6-1.pgdg12+2)\n");
+    answer(sb, "copy-available.txt", "plpgsql\nvector\n");
+    answer(sb, "copy-installed.txt", "vector\n");
+    const { code, out } = full(sb, "--dockergate-digest", DG);
+    assert.equal(code, 0, out);
+    assert.match(out, /the copy is Postgres 18, the same major the production dump came from/);
+    assert.doesNotMatch(out, /syntax error in expression/);
+  });
+
+  it("reads the copy's extension list and dies when the dump's extension is missing from it", () => {
+    const sb = sandbox();
+    withToc(sb, toc("18 (Debian 18.6-1.pgdg12+2)", "vector", "fuzzystrmatch"));
+    answer(sb, "copy-version.txt", "18.6 (Debian 18.6-1.pgdg12+2)\n");
+    answer(sb, "copy-available.txt", "plpgsql\nfuzzystrmatch\n");
+    const { code, out } = full(sb);
+    assert.notEqual(code, 0, out);
+    // the list was really read: the refusal names exactly the missing one
+    assert.match(out, /does not provide them/);
+    assert.match(out, /\bvector\b/);
+    assert.doesNotMatch(out, /could not be read/);
+    assert.doesNotMatch(out, /syntax error in expression/);
+    assert.doesNotMatch(calls(sb), /pg_restore -U/);
+  });
+
+  it("retries a failing extension probe and names the captured psql error in the WARNING", () => {
+    const sb = sandbox();
+    withToc(sb, toc("18 (Debian 18.6-1.pgdg12+2)", "vector"));
+    answer(sb, "copy-version.txt", "18.6 (Debian 18.6-1.pgdg12+2)\n");
+    fs.writeFileSync(path.join(sb.dir, "available-fails"), "");
+    answer(sb, "copy-installed.txt", "vector\n");
+    const { code, out } = full(sb, "--dockergate-digest", DG);
+    assert.equal(code, 0, out);
+    // the probe is retried, not swallowed once; when it still fails the
+    // WARNING carries the psql error instead of /dev/null silence
+    const probeCalls = calls(sb).split("\n").filter((l) => l.includes("pg_available_extensions")).length;
+    assert.ok(probeCalls >= 3, `expected >=3 retries of the extension probe, got ${probeCalls}:\n${calls(sb)}`);
+    assert.match(out, /the copy's extension list could not be read \(psql probe failed: .*role "myrmidon" does not exist/);
+    assert.doesNotMatch(out, /syntax error in expression/);
+  });
+
+  it("names the version probe error in the WARNING when the copy's major cannot be read", () => {
+    const sb = sandbox();
+    withToc(sb, toc("18.0", "vector"));
+    fs.writeFileSync(path.join(sb.dir, "version-probe-fails"), "");
+    answer(sb, "copy-available.txt", "plpgsql\nvector\n");
+    answer(sb, "copy-installed.txt", "vector\n");
+    const { code, out } = full(sb, "--dockergate-digest", DG);
+    assert.equal(code, 0, out);
+    // the version comparison is skipped (nothing to compare) but the WARNING
+    // says WHY: the captured psql error, not silence
+    assert.match(out, /the dump's or the copy's server major could not be read.*copy probe error: .*the database system is starting up/);
+    assert.match(out, /the copy provides every extension the dump restores/);
+    assert.doesNotMatch(out, /syntax error in expression/);
   });
 });

@@ -960,6 +960,30 @@ async function discoverMigrationTableSchema(sql: ReturnType<typeof postgres>): P
   return rows[0]?.schemaName ?? null;
 }
 
+export type MigrationChainEntry = { idx: number; tag: string; hash: string; when: number };
+
+/**
+ * myrmidon(MIGRATE-A): the migration chain as drizzle records it in the
+ * migrations table: journal order, tag, journal millis, and the sha256 of each
+ * SQL file. Read-only; used to prove a source database's applied history.
+ */
+export async function listMigrationChain(): Promise<MigrationChainEntry[]> {
+  const raw = await readFile(MIGRATIONS_JOURNAL_JSON, "utf8");
+  const parsed = JSON.parse(raw) as MigrationJournalFile;
+  const out: MigrationChainEntry[] = [];
+  for (const [position, entry] of (parsed.entries ?? []).entries()) {
+    if (typeof entry?.tag !== "string" || typeof entry?.when !== "number") continue;
+    const content = await readMigrationFileContent(`${entry.tag}.sql`);
+    out.push({
+      idx: Number.isInteger(entry.idx) ? Number(entry.idx) : position,
+      tag: entry.tag,
+      hash: createHash("sha256").update(content).digest("hex"),
+      when: entry.when,
+    });
+  }
+  return out;
+}
+
 export async function inspectMigrations(url: string): Promise<MigrationState> {
   const sql = createUtilitySql(url);
 
