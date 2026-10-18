@@ -1050,7 +1050,8 @@
     "weightOff": "off",
     "source": {
       "settings": "Saved here",
-      "env": "From the server environment"
+      "env": "From the server environment",
+      "default": "Default"
     },
     "currentRelease": "Current release",
     "currentReleaseOff": "off",
