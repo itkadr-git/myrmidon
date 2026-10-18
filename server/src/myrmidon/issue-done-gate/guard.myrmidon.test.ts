@@ -33,7 +33,7 @@ function fakeDb(products: ReturnType<typeof product>[]) {
 }
 
 function resolver(states: Record<number, "open" | "draft" | "merged" | "closed" | "unknown">): PullRequestMergeDetailsResolver {
-  return vi.fn(async (_companyId, reference) => {
+  return vi.fn<PullRequestMergeDetailsResolver>(async (_companyId, reference) => {
     const state = states[reference.number] ?? "unknown";
     return {
       state: state === "merged" ? "merged" : state === "unknown" ? "unknown" : "open",
