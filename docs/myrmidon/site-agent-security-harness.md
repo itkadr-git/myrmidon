@@ -75,7 +75,7 @@
 import { createSiteAgentTestAdapter } from "./server/src/myrmidon/bot-containers/site-agent-test-adapter.js";
 
 const client = createSiteAgentTestAdapter({
-  baseUrl: "https://10.10.0.110:8444",
+  baseUrl: "https://127.0.0.1:8444",
   token: process.env.MYRMIDON_FLEET_HOST_TOKEN,
   caCert: siteCaPem,
   clientCert: boardClientCertPem,

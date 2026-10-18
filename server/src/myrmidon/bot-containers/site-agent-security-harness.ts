@@ -569,13 +569,13 @@ export async function runSecurityRegressionHarness(scratchDir?: string): Promise
     // -------------------------------------------------------------------------
     // Scenario 9: Secret Markers - Leak Prevention in Status/Errors/Logs
     // -------------------------------------------------------------------------
-    const secretMarker = "OPE8109_SECRET_MARKER_998877665544";
+    const canaryMarker = "canary-marker-payload";
     const cleanProfile: CompiledProfile = {
       botKey: "bot-sec-test",
       files: [
         {
           path: "hermes/.env",
-          content: `MARKER_SECRET="${secretMarker}"\n`,
+          content: `MARKER_SECRET="${canaryMarker}"\n`,
           mode: 0o600,
           secret: true,
         },
@@ -584,7 +584,7 @@ export async function runSecurityRegressionHarness(scratchDir?: string): Promise
       filesHash: "fh1",
     };
 
-    let secretMarkerLeaked = false;
+    let markerLeaked = false;
     let leakDetails = "";
 
     // Apply clean profile via test adapter over mTLS
@@ -593,15 +593,15 @@ export async function runSecurityRegressionHarness(scratchDir?: string): Promise
     // Fetch status
     const botStatus = await validAdapter.status("bot-sec-test");
     const serializedStatus = JSON.stringify(botStatus);
-    if (serializedStatus.includes(secretMarker)) {
-      secretMarkerLeaked = true;
+    if (serializedStatus.includes(canaryMarker)) {
+      markerLeaked = true;
       leakDetails = "Marker found in status output";
     }
 
     // Inspect server logs
     const joinedLogs = mockServer.logs.join("\n");
-    if (joinedLogs.includes(secretMarker)) {
-      secretMarkerLeaked = true;
+    if (joinedLogs.includes(canaryMarker)) {
+      markerLeaked = true;
       leakDetails = "Marker found in server logs";
     }
 
@@ -611,8 +611,8 @@ export async function runSecurityRegressionHarness(scratchDir?: string): Promise
       name: "Secret Marker Leak Prevention",
       description: "Assert secret test marker is stored with mode 0600 and never exposed in status or logs",
       expectedBehavior: "Secret marker absent from all status responses, audit, and error logs",
-      actualBehavior: secretMarkerLeaked ? `LEAK DETECTED: ${leakDetails}` : "Clean: 0 occurrences in status and logs",
-      passed: !secretMarkerLeaked,
+      actualBehavior: markerLeaked ? `LEAK DETECTED: ${leakDetails}` : "Clean: 0 occurrences in status and logs",
+      passed: !markerLeaked,
     });
 
     // -------------------------------------------------------------------------
@@ -657,10 +657,10 @@ export async function runSecurityRegressionHarness(scratchDir?: string): Promise
     // Scenario 12: Directionality - Prohibition of Site->Core Credentials
     // -------------------------------------------------------------------------
     const configWithReverseCreds = {
-      listen: "10.10.0.110:8444",
+      listen: "127.0.0.1:8444",
       token: testToken,
-      boardApiKey: "pcp_live_secret_key_should_not_exist_on_site",
-      coreSshKey: "-----BEGIN OPENSSH PRIVATE KEY-----\n...",
+      boardApiKey: "reverse-sample-key",
+      coreSshKey: "reverse-ssh-key",
     };
     const credCheck = validateNoSiteToCoreCredentials(configWithReverseCreds);
     scenarios.push({

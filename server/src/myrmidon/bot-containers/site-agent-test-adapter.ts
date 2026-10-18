@@ -84,9 +84,9 @@ export function createSiteAgentTestAdapter(config: SiteAgentTestAdapterConfig): 
     clientKey?: string;
     timeoutMs?: number;
   }): Promise<RawResponse> {
-    const ca = opts.caCert ?? config.caCert;
-    const cert = opts.clientCert ?? config.clientCert;
-    const key = opts.clientKey ?? config.clientKey;
+    const ca = "caCert" in opts ? opts.caCert : config.caCert;
+    const cert = "clientCert" in opts ? opts.clientCert : config.clientCert;
+    const key = "clientKey" in opts ? opts.clientKey : config.clientKey;
     const transport = isHttps ? https : http;
 
     let payload: Buffer | undefined;

@@ -364,7 +364,7 @@ async function main() {
   });
 
   // NEG-09: Secret Marker Leak Prevention
-  const marker = "OPE8109_SECRET_MARKER_AA11BB22";
+  const marker = "canary-marker-payload";
   await requestTls(srv.port, "/v1/bots/bot-sec-test/profile", {
     caCert: pki.caCert,
     clientCert: pki.clientCert,
@@ -419,7 +419,7 @@ async function main() {
   });
 
   // NEG-12: Directionality No Core Credentials
-  const configWithBoardKey = { listen: "10.10.0.110:8444", boardApiKey: "pcp_live_key", coreSshKey: "id_rsa" };
+  const configWithBoardKey = { listen: "127.0.0.1:8444", boardApiKey: "sample_val", coreSshKey: "id_rsa" };
   const credsForbidden = "boardApiKey" in configWithBoardKey || "coreSshKey" in configWithBoardKey;
   scenarios.push({
     id: "NEG-12",

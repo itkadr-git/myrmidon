@@ -156,8 +156,8 @@ describe("myrmidon(1.6.6 T10-A) site-agent security regression harness", () => {
 
     it("rejects reverse credentials from site to core board", () => {
       const configWithCoreKey = {
-        listen: "10.10.0.110:8444",
-        boardApiKey: "pcp_secret_key",
+        listen: "127.0.0.1:8444",
+        boardApiKey: "reverse-sample-key",
       };
       const check = validateNoSiteToCoreCredentials(configWithCoreKey);
       expect(check.valid).toBe(false);
