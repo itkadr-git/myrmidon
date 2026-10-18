@@ -45,6 +45,7 @@ import {
 } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import type { ChatChannelService } from "../services/chat-channels.js";
+import type { WakeupOptions } from "../services/heartbeat.js";
 import {
   activityLog,
   agentWakeupRequests,
@@ -2976,6 +2977,10 @@ function buildExecutionStageWakeup(input: {
         },
         requestedByActorType: input.requestedByActorType,
         requestedByActorId: input.requestedByActorId,
+        idempotencyKey:
+          nextState.currentStageType === "review"
+            ? `issue-review-admission:${issueId}:${agentId}`
+            : undefined,
         contextSnapshot: {
           issueId,
           taskId: issueId,
@@ -3578,6 +3583,12 @@ export function issueRoutes(
       proposalId: string;
       actor: { agentId?: string | null; userId?: string | null };
     }) => Promise<unknown>;
+    insertReviewAdmissionWakeup?: (
+      agentId: string,
+      options: WakeupOptions,
+      tx: Db,
+      companyId?: string,
+    ) => Promise<{ created: boolean }>;
   } = {},
 ) {
   const router = Router();
@@ -3588,6 +3599,12 @@ export function issueRoutes(
   const heartbeat = heartbeatService(db, {
     pluginWorkerManager: opts.pluginWorkerManager,
   });
+  const insertReviewAdmissionWakeup =
+    opts.insertReviewAdmissionWakeup ??
+    (typeof heartbeat?.insertReviewAdmissionWakeup === "function"
+      ? heartbeat.insertReviewAdmissionWakeup.bind(heartbeat)
+      : async () => ({ created: false }));
+
   const commentWasCreatedByAssigneeRun = async (
     comment: { companyId: string; createdByRunId?: string | null },
     assigneeAgentId: string | null | undefined,
@@ -14050,6 +14067,12 @@ export function issueRoutes(
           assigneeChangeRequested:
             normalizedAssigneeAgentId !== undefined ||
             req.body.assigneeUserId !== undefined,
+          // myrmidon(OPE-6954): a person moving the issue into a workable
+          // status is the same "carry on" as moving it out of `blocked`.
+          // Since REQUEUE-HOLD the settle leaves a re-queued task in its own
+          // status, so this is the action an operator has left.
+          statusChangeRequested:
+            updateFields.status !== undefined && updateFields.status !== existing.status,
         }) &&
         (await issueHasSettledReplayHold(db, existing.companyId, existing.id));
       let humanUnblock: HumanUnblockResult | null = null;
@@ -14195,7 +14218,10 @@ export function issueRoutes(
         Boolean(commentAttachmentIds?.length) ||
         Boolean(decision) ||
         shouldRelayStop ||
+        enteringReviewRequested || // myrmidon(REVIEW-ADMISSION): require one transaction for issue state and reviewer receipt.
         persistReviewActivityTransactionally ||
+        ((updateFields.status === "in_review" || existing.status === "in_review") &&
+          assigneeWillChange) ||
         reviewPolicySensitiveMutationRequested ||
         humanUnblockPossible;
       try {
@@ -14208,6 +14234,59 @@ export function issueRoutes(
               return null;
             const updated = await updateIssue(tx);
             if (!updated) return null;
+            if (
+              updated.status === "in_review" &&
+              (enteringReviewRequested || assigneeWillChange)
+            ) {
+              const stageWake = buildExecutionStageWakeup({
+                issueId: updated.id,
+                previousState: parseIssueExecutionState(existing.executionState),
+                nextState: parseIssueExecutionState(updated.executionState),
+                interruptedRunId,
+                requestedByActorType: actor.actorType === "user" ? "user" : "agent",
+                requestedByActorId: actor.actorId,
+              });
+              if (stageWake?.agentId) {
+                const admission = await insertReviewAdmissionWakeup(
+                  stageWake.agentId,
+                  stageWake.wakeup,
+                  tx as unknown as Db,
+                  updated.companyId,
+                );
+                if (admission && admission.created === false) {
+                  throw new Error(
+                    `Failed to persist review admission wakeup for agent ${stageWake.agentId}`,
+                  );
+                }
+              }
+              if (
+                assigneeWillChange &&
+                updated.assigneeAgentId &&
+                (!stageWake || stageWake.agentId !== updated.assigneeAgentId)
+              ) {
+                const wakeup: WakeupOptions = {
+                  source: "assignment",
+                  triggerDetail: "system",
+                  reason: enteringReviewRequested ? "issue_entered_review" : "issue_review_reassigned",
+                  payload: { issueId: updated.id, mutation: "review_admission" },
+                  idempotencyKey: `issue-review-admission:${updated.id}:${updated.assigneeAgentId}`,
+                  requestedByActorType: actor.actorType,
+                  requestedByActorId: actor.actorId,
+                  contextSnapshot: { issueId: updated.id, taskId: updated.id },
+                };
+                const admission = await insertReviewAdmissionWakeup(
+                  updated.assigneeAgentId,
+                  wakeup,
+                  tx as unknown as Db,
+                  updated.companyId,
+                );
+                if (admission && admission.created === false) {
+                  throw new Error(
+                    `Failed to persist review admission wakeup for assignee ${updated.assigneeAgentId}`,
+                  );
+                }
+              }
+            }
             // myrmidon(HOLD-READY): an explicit human unblock is an operator
             // resolve of the settled "do not replay" hold.
             if (
@@ -15155,6 +15234,11 @@ export function issueRoutes(
             source: "assignment",
             triggerDetail: "system",
             reason: "issue_assigned",
+            ...(issue.status === "in_review"
+              ? {
+                  idempotencyKey: `issue-review-admission:${issue.id}:${issue.assigneeAgentId}`,
+                }
+              : {}),
             payload: {
               issueId: issue.id,
               ...(comment ? { commentId: comment.id } : {}),

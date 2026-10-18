@@ -8,14 +8,17 @@
 // PATCH sends — the status-change wake and the comment wake — are not explicit
 // (settled-holds/wake-classification.ts), so they were parked too. Moving the
 // issue out of `blocked` or reassigning it is exactly the operator's "carry
-// on"; it now acts as the operator resolve it is (the same
-// `clearSettledReplayBlock` the board's `recovery-actions/resolve` uses),
+// on". REQUEUE-HOLD (myrmidon(OPE-6954)) leaves a re-queued task in
+// `todo`/`backlog` instead, so a move into a workable status from any other
+// status counts as well. Either way it acts as the operator resolve it is
+// (the same `clearSettledReplayBlock` the board's `recovery-actions/resolve`
+// uses),
 // inside the PATCH's own transaction. The wakes parked on the hold are
 // re-planned after commit: one fresh wake for the assignee re-enters the
 // ordinary admission, which (with no hold left) adopts the parked comment
 // wakes into the new run (heartbeat.ts `adoptedComments`); any other parked
 // wake is drained behind that run by the vendor release path.
-// See docs/myrmidon/DIVERGENCE.md "HOLD-READY".
+// See docs/myrmidon/DIVERGENCE.md "HOLD-READY" and "REQUEUE-HOLD".
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { agentWakeupRequests, issueRecoveryActions, type Db } from "@paperclipai/db";
 import { logger } from "../../middleware/logger.js";
@@ -51,15 +54,26 @@ interface UnblockActor {
 export function mayBeHumanUnblock(input: UnblockActor & {
   existingStatus: string;
   assigneeChangeRequested: boolean;
+  /** myrmidon(OPE-6954): the PATCH asks for a different status (see below). */
+  statusChangeRequested?: boolean;
 }): boolean {
   if (input.requestActorType !== "board" || input.runId) return false;
-  return input.existingStatus === "blocked" || input.assigneeChangeRequested;
+  // myrmidon(OPE-6954): a status change is what a person has left to lift a
+  // hold the settle no longer parks behind `blocked` (REQUEUE-HOLD leaves a
+  // re-queued task in `todo`/`backlog`).
+  return (
+    input.existingStatus === "blocked" ||
+    input.assigneeChangeRequested ||
+    input.statusChangeRequested === true
+  );
 }
 
 /**
  * The decision on the committed row: a board person (no run) moved the issue
- * out of `blocked` into a workable status, or reassigned a workable issue to
- * another agent. Either way the issue ends assigned to an agent.
+ * into a workable status — out of `blocked` (HOLD-READY) or from any other
+ * status (myrmidon(OPE-6954): the state a re-queued task now sits in), or
+ * reassigned a workable issue to another agent. Either way the issue ends
+ * assigned to an agent.
  */
 export function isHumanUnblock(input: UnblockActor & { before: IssueSide; after: IssueSide }): boolean {
   if (input.requestActorType !== "board" || input.runId) return false;
@@ -68,7 +82,10 @@ export function isHumanUnblock(input: UnblockActor & { before: IssueSide; after:
   if (!(WORKABLE_STATUSES as readonly string[]).includes(after.status)) return false;
   const leftBlocked = before.status === "blocked";
   const reassigned = before.assigneeAgentId !== after.assigneeAgentId;
-  return leftBlocked || reassigned;
+  // myrmidon(OPE-6954): a person who put the task into a workable status it
+  // was not in is carrying on with it, whichever status it came from.
+  const startedWork = before.status !== after.status;
+  return leftBlocked || reassigned || startedWork;
 }
 
 /**
