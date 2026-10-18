@@ -161,7 +161,7 @@ export function resolveProcessesSettings(
   for (const key of PROCESSES_SETTING_KEYS) {
     sources[key] = saved[key] === undefined ? "default" : "settings";
   }
-  const sourceEnv = (env ?? ambientProcessEnv()) as NodeJS.ProcessEnv;
+  const sourceEnv = (env ?? ambientProcessEnv()) as Record<string, string | undefined>;
   const forced = parseProcessesModeEnv(readProductEnvFrom(sourceEnv, "PROCESS_MODE"));
   if (forced) {
     settings.mode = forced;
