@@ -924,7 +924,8 @@ describeEmbeddedPostgres(
         .post(`/api/issues/${fixture.issues.reviewRoot.id}/children`)
         .send({ title: `child ${fixture.canaries.raw}` });
       expect(childWithoutOwner.status, JSON.stringify(childWithoutOwner.body)).toBe(403);
-      expect(childWithoutOwner.body.error).toContain("control-plane surface");
+      // The actor cannot see the root issue, so visibility rejects before the control-plane gate.
+      expect(childWithoutOwner.body.error).toContain("outside this actor's visibility");
     });
 
     it("allows bounded same-issue reads and writes while quarantining low-trust output", async () => {
