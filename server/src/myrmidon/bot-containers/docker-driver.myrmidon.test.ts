@@ -671,7 +671,7 @@ interface FakeContainer {
     Labels?: Record<string, string>;
     HostConfig: { Binds: string[]; ReadonlyRootfs?: boolean; Memory?: number; NanoCpus?: number; PidsLimit?: number; NetworkMode?: string };
   };
-  state: "created" | "running" | "exited";
+  state: "created" | "running" | "exited" | "dead";
   health?: "starting" | "healthy" | "unhealthy";
   exitCode: number;
   logs: string;
