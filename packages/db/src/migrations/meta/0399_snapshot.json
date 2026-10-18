@@ -55917,7 +55917,7 @@
     },
     "public.myrmidon_fleet_sites": {
       "name": "myrmidon_fleet_sites",
-      "schema": "public",
+      "schema": "",
       "columns": {
         "id": {
           "name": "id",
@@ -56045,7 +56045,6 @@
           "name": "myrmidon_fleet_sites_company_id_companies_id_fk",
           "tableFrom": "myrmidon_fleet_sites",
           "tableTo": "companies",
-          "schemaTo": "public",
           "columnsFrom": [
             "company_id"
           ],
