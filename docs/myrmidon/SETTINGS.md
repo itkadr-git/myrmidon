@@ -23,10 +23,6 @@ A track writes only into its own section. A row is added in the same PR as the s
 - **What it does** — in one phrase.
 - **How to disable / special** — for example, "`0` — no limit".
 
-## Security harness test input
-
-`MYRMIDON_ADMIN_TOKEN` appears only as a synthetic forbidden environment key in the site-agent security harness; it is not read as a server setting and must never be configured or supplied to agents.
-
 ## Track 1 — platform
 
 | Variable | Function | Default | What it does | How to disable / special |
