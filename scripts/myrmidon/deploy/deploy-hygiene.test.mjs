@@ -63,7 +63,8 @@ case "$1" in
         case "$*" in
           *'{{json .Manifest}}'*) echo '{"Layers":[{"size":2097152},{"size":4194304}]}' ;;
           *'{{json .Manifest.Layers}}'*) echo '[{"size":2097152},{"size":4194304}]' ;;
-          *) echo '{"Labels":{}}' ;;
+          *'{{json .Manifest.Digest}}'*) echo '"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"' ;;
+          *) echo '{"architecture":"amd64","os":"linux","config":{"Labels":{}},"manifest":{"digest":"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"}}' ;;
         esac
         exit 0 ;;
     esac
