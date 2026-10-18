@@ -226,6 +226,8 @@ export interface DockerDriverOptions {
    */
   clock?: () => number;
   rng?: () => number;
+  /** Monotonic source for startup-health elapsed time and deadlines. */
+  monotonicClock?: () => number;
   /**
    * myrmidon(1.6.1-BOT-DISK-B): the shared package cache path from the
    * instance settings (`general.botDisk`), or undefined when none is set. Read
@@ -1123,6 +1125,7 @@ export function dockerBotContainerDriver(
   // myrmidon(1.6.5-DOCKERGATE-A2A3-STORM): the clock and jitter source of the
   // pacing layer (dockergate-pacing.ts); tests drive them to assert the schedule.
   const clock = options.clock ?? (() => Date.now());
+  const monotonicClock = options.monotonicClock ?? (() => performance.now());
   const rng = options.rng ?? Math.random;
   const limiter: RateLimiter = createRateLimiter({ ratePerSec: config.maxRps ?? 0, clock, sleep });
   const readSharedPackageCachePath = options.readSharedPackageCachePath ?? (async () => undefined);
@@ -1665,7 +1668,7 @@ export function dockerBotContainerDriver(
 
   async function waitForHealthy(botKey: string): Promise<void> {
     const name = containerNameFor(botKey);
-    const startedAt = clock();
+    const startedAt = monotonicClock();
     const deadline = startedAt + startHealthTimeoutMs;
     let unhealthySince: number | undefined;
     for (;;) {
@@ -1673,14 +1676,10 @@ export function dockerBotContainerDriver(
       if (!info) throw new Error(`${name} disappeared while waiting for it to become healthy`);
       const state = info.State?.Status ?? "unknown";
       const health = info.State?.Health?.Status;
-      if (state === "running" && (health === undefined || health === "healthy")) return;
+      if (state === "running" && health === "healthy") return;
       if (state === "running" && health === "unhealthy") {
-        const isDeveloperContainer = (info.Config?.Env ?? []).some((entry) => entry.startsWith("DEVBUILD_BOT_NAME="));
-        const healthGrace = isDeveloperContainer ? Math.min(startHealthTimeoutMs, DEFAULT_HEALTH_START_GRACE_MS) : 0;
-        if (healthGrace > 0) {
-          unhealthySince ??= clock();
-          if (clock() - unhealthySince >= healthGrace) throw new Error(`${name} reports unhealthy after start`);
-        } else {
+        unhealthySince ??= monotonicClock();
+        if (monotonicClock() - unhealthySince >= startHealthTimeoutMs) {
           throw new Error(`${name} reports unhealthy after start`);
         }
       } else {
@@ -1689,12 +1688,12 @@ export function dockerBotContainerDriver(
       if (state === "exited" || state === "dead") {
         throw new Error(`${name} ${state} (exit code ${info.State?.ExitCode ?? "unknown"}) instead of becoming healthy`);
       }
-      if (clock() >= deadline) {
+      if (monotonicClock() >= deadline) {
         throw new Error(
           `${name} did not become healthy within ${startHealthTimeoutMs}ms (last state: ${health ? `${state}/${health}` : state})`,
         );
       }
-      await sleep(healthPollIntervalMs);
+      await sleep(Math.min(healthPollIntervalMs, Math.max(0, deadline - monotonicClock())));
     }
   }
 

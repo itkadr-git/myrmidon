@@ -1369,6 +1369,7 @@ describe("dockerBotContainerDriver against a fake Docker daemon", () => {
             if (clock >= 60_000) bot()!.health = "healthy";
           },
           clock: () => clock,
+          monotonicClock: () => clock,
         },
       );
       const devSpec = spec({ image: "myrmidon-hermes-dev:latest" });
@@ -1386,6 +1387,47 @@ describe("dockerBotContainerDriver against a fake Docker daemon", () => {
       await driver.writeProfile("agent-a", testProfile());
       daemon.options.healthOnStart = "unhealthy";
       await expect(driver.start("agent-a")).rejects.toThrow(/reports unhealthy/);
+    });
+
+    it("waits through transient unhealthy until the configured gateway health check is healthy", async () => {
+      let elapsed = 0;
+      daemon.options.healthOnStart = "unhealthy";
+      await driver.create(spec());
+      await driver.writeProfile("agent-a", testProfile());
+      const pollingDriver = dockerBotContainerDriver(
+        { ...CONFIG, socketPath: daemon.socketPath, volumeRoot: path.join(tmp, "bots") },
+        {
+          startHealthTimeoutMs: 30_000,
+          healthPollIntervalMs: 5_000,
+          monotonicClock: () => elapsed,
+          sleep: async (ms) => {
+            elapsed += ms;
+            if (elapsed >= 10_000) bot()!.health = "healthy";
+          },
+        },
+      );
+      await pollingDriver.start("agent-a");
+      expect(elapsed).toBe(10_000);
+      expect(bot()?.state).toBe("running");
+    });
+
+    it("caps health polling at the monotonic startup deadline", async () => {
+      let elapsed = 0;
+      daemon.options.healthOnStart = "starting";
+      const boundedDriver = dockerBotContainerDriver(
+        { ...CONFIG, socketPath: daemon.socketPath, volumeRoot: path.join(tmp, "bots") },
+        {
+          startHealthTimeoutMs: 12_000,
+          healthPollIntervalMs: 5_000,
+          monotonicClock: () => elapsed,
+          sleep: async (ms) => { elapsed += ms; },
+        },
+      );
+      await boundedDriver.create(spec());
+      await boundedDriver.writeProfile("agent-a", testProfile());
+      await expect(boundedDriver.start("agent-a")).rejects.toThrow(/did not become healthy within 12000ms/);
+      expect(elapsed).toBe(12_000);
+      expect(bot()?.state).toBe("running");
     });
 
     it("reports Docker's health verdict", async () => {
