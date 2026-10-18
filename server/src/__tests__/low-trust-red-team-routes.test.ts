@@ -603,6 +603,30 @@ async function seedLowTrustFixture(db: Db) {
     .where(eq(issues.id, assignedReview!.id));
   assignedReview!.assigneeAgentId = lowTrust!.id;
 
+  // The standard actor used by owner-gate regression requests needs the same
+  // project visibility boundary as the low-trust run, without inheriting its
+  // low-trust control-plane restrictions.
+  await db
+    .update(agents)
+    .set({
+      permissions: {
+        authorizationPolicy: {
+          trustBoundary: {
+            mode: LOW_TRUST_REVIEW_PRESET,
+            companyId: company!.id,
+            projectIds: [allowedProject!.id],
+            rootIssueId: reviewRoot!.id,
+            issueIds: [
+              reviewRoot!.id,
+              assignedReview!.id,
+              sameBoundaryChild!.id,
+            ],
+          },
+        },
+      },
+    })
+    .where(eq(agents.id, standard!.id));
+
   const executionPolicy = {
     authorizationPolicy: {
       trustBoundary: (lowTrust!.permissions as any).authorizationPolicy
