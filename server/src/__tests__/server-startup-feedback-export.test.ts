@@ -70,7 +70,9 @@ const {
   const createDbMock = vi.fn(() => {
     const db = {
       select: vi.fn(() => ({
-        from: vi.fn(() => ({ where: vi.fn(async () => existingSettingsRows) })),
+        from: vi.fn(() => ({
+          where: vi.fn(() => ({ then: (resolve: (rows: Array<Record<string, unknown>>) => unknown) => resolve(existingSettingsRows) })),
+        })),
       })),
     };
     return db as never;
