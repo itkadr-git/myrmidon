@@ -46,10 +46,16 @@ describe("planBotPlacement", () => {
   it.each(["draining", "quarantined", "disabled"])("excludes %s sites", (status) => {
     expect(decide({ sites: base.sites.map((s) => ({ ...s, status })) })).toEqual({ kind: "pending", reason: "no_available_sites" });
   });
-  it("does not preempt by default and limits enabled preemption to P0", () => {
-    const full = base.sites.map((s) => ({ ...s, capacity: { ...s.capacity, cpus: 0 } }));
+  it("does not preempt by default and requires sufficient low-priority victims for P0", () => {
+    const full = base.sites.map((s) => ({ ...s, allocated: { ...s.allocated, cpus: 8, memoryMb: 8192, pids: 200, bots: 8 } }));
+    const p0 = { ...base.bot, priority: "P0" as const };
     expect(decide({ sites: full })).toEqual({ kind: "pending", reason: "capacity_exceeded" });
-    expect(decide({ sites: full, allowPreemption: true })).toEqual({ kind: "pending", reason: "capacity_exceeded" });
-    expect(decide({ sites: full, allowPreemption: true, bot: { ...base.bot, priority: "P0" } })).toEqual({ kind: "selected", siteName: "east", preempt: true });
+    expect(decide({ sites: full, allowPreemption: true, bot: p0 })).toEqual({ kind: "pending", reason: "capacity_exceeded" });
+    expect(decide({ sites: full, allowPreemption: true, bot: p0, preemptibleBots: [{ siteName: "east", priority: "high", cpus: 8, memoryMb: 8192, pids: 200 }] })).toEqual({ kind: "pending", reason: "capacity_exceeded" });
+    expect(decide({ sites: full, allowPreemption: true, bot: p0, preemptibleBots: [{ siteName: "east", priority: "P0", cpus: 8, memoryMb: 8192, pids: 200 }] })).toEqual({ kind: "pending", reason: "capacity_exceeded" });
+    expect(decide({ sites: full, allowPreemption: true, bot: p0, preemptibleBots: [{ siteName: "east", priority: "low", cpus: 8, memoryMb: 8192, pids: 200 }] })).toEqual({ kind: "selected", siteName: "east", preempt: true });
+    expect(decide({ sites: full, allowPreemption: true, bot: p0, preemptibleBots: [{ siteName: "east", priority: "low", cpus: 0, memoryMb: 8192, pids: 200 }] })).toEqual({ kind: "pending", reason: "capacity_exceeded" });
+    expect(decide({ bot: { ...p0, host: "west", hostPinned: true }, sites: full, allowPreemption: true, preemptibleBots: [{ siteName: "west", priority: "low", cpus: Number.NaN, memoryMb: 8192, pids: 200 }] })).toEqual({ kind: "pending", reason: "pinned_site_capacity_exceeded" });
+    expect(decide({ bot: { ...p0, host: "west", hostPinned: true }, sites: full, allowPreemption: true, preemptibleBots: [{ siteName: "west", priority: "low", cpus: 8, memoryMb: 8192, pids: 200 }] })).toEqual({ kind: "selected", siteName: "west", preempt: true });
   });
 });

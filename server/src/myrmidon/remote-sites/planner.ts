@@ -11,6 +11,8 @@ export interface BotPlacementRequest {
   }>;
   affinity: Array<{ scope: "project" | "company" | "agent"; targetId: string; siteName: string; weight: number }>;
   targets?: { projectId?: string; companyId?: string; agentId?: string };
+  /** Verified low-priority victims and their resources, supplied by the caller. */
+  preemptibleBots?: Array<{ siteName: string; priority: Priority; cpus: number; memoryMb: number; pids: number }>;
   allowPreemption?: boolean;
 }
 
@@ -28,6 +30,21 @@ const fits = (site: BotPlacementRequest["sites"][number], bot: BotPlacementReque
   site.allocated.pids + bot.pids <= site.capacity.pids &&
   site.allocated.bots + 1 <= site.capacity.maxBots;
 
+const canPreempt = (site: BotPlacementRequest["sites"][number], bot: BotPlacementRequest["bot"], input: BotPlacementRequest) => {
+  if (bot.priority !== "P0" || !input.allowPreemption) return false;
+  const victims = input.preemptibleBots?.filter((victim) => victim.siteName === site.name && victim.priority === "low") ?? [];
+  if (!victims.length || victims.some((victim) => !numeric(victim.cpus) || !numeric(victim.memoryMb) || !numeric(victim.pids))) return false;
+  const cpu = victims.reduce((sum, victim) => sum + victim.cpus, 0);
+  const memory = victims.reduce((sum, victim) => sum + victim.memoryMb, 0);
+  const pids = victims.reduce((sum, victim) => sum + victim.pids, 0);
+  return numeric(site.allocated.cpus) && numeric(site.allocated.memoryMb) && numeric(site.allocated.pids) && numeric(site.allocated.bots) &&
+    numeric(site.capacity.cpus) && numeric(site.capacity.memoryMb) && numeric(site.capacity.pids) && numeric(site.capacity.maxBots) &&
+    site.allocated.cpus - cpu + bot.cpus <= site.capacity.cpus &&
+    site.allocated.memoryMb - memory + bot.memoryMb <= site.capacity.memoryMb &&
+    site.allocated.pids - pids + bot.pids <= site.capacity.pids &&
+    site.allocated.bots - victims.length + 1 <= site.capacity.maxBots;
+};
+
 export function planBotPlacement(input: BotPlacementRequest): PlacementDecision {
   const { bot, sites } = input;
   if (bot.hostPinned) {
@@ -36,7 +53,7 @@ export function planBotPlacement(input: BotPlacementRequest): PlacementDecision 
     if (!pinned) return { kind: "pending", reason: "pinned_site_unregistered" };
     if (pinned.status !== "available") return { kind: "pending", reason: "pinned_site_unavailable" };
     if (fits(pinned, bot)) return { kind: "selected", siteName: pinned.name, preempt: false };
-    if (input.allowPreemption && bot.priority === "P0") return { kind: "selected", siteName: pinned.name, preempt: true };
+    if (canPreempt(pinned, bot, input)) return { kind: "selected", siteName: pinned.name, preempt: true };
     return { kind: "pending", reason: "pinned_site_capacity_exceeded" };
   }
 
@@ -44,7 +61,7 @@ export function planBotPlacement(input: BotPlacementRequest): PlacementDecision 
   if (!eligible.length) {
     if (!sites.length) return { kind: "pending", reason: "no_sites_registered" };
     if (input.allowPreemption && bot.priority === "P0") {
-      const possible = sites.filter((site) => site.status === "available").sort((a, b) => a.name.localeCompare(b.name));
+      const possible = sites.filter((site) => site.status === "available" && canPreempt(site, bot, input)).sort((a, b) => a.name.localeCompare(b.name));
       if (possible.length) return { kind: "selected", siteName: possible[0].name, preempt: true };
     }
     return { kind: "pending", reason: sites.some((site) => site.status === "available") ? "capacity_exceeded" : "no_available_sites" };
