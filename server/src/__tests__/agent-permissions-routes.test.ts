@@ -693,7 +693,7 @@ describe.sequential("agent permission routes", () => {
       undefined,
       undefined,
       false,
-      expect.stringContaining('"summary":"initial"'),
+      expect.stringContaining('"summary":"visible secret"'),
     );
 
     redactionEnabled = true;
