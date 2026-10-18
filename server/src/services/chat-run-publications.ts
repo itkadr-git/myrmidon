@@ -39,7 +39,9 @@ import { inboundCommentCandidateIds } from "../myrmidon/chat-reconciliation/inbo
 // the same provider message instead of stacking noise (see the delivery-side
 // replacement in chat-channels.ts).
 import { telegramDmStatusEnabled } from "../myrmidon/telegram-dm-status-settings.js";
-import { parseTelegramConversationUserId } from "../myrmidon/agent-chat-bridge/identity.js";
+// myrmidon(1.6.6 CH-CONNECTOR-D): the conversation identity theme is reached
+// through the bridge seam, so a channel connector can serve it.
+import { parseTelegramConversationUserId } from "../myrmidon/channel-connectors/bridge/identity.js";
 // myrmidon(OPE-3650): live progress text for the editable DM status row.
 import {
   composeDmStatusText,
