@@ -747,8 +747,9 @@ export {
   validateImageReference,
   validateNoSiteToCoreCredentials,
   validateProfileFiles,
+  validateRuntimeTemplate,
   type SecurityHarnessReport,
   type SecurityScenarioResult,
 } from "./site-agent-security-harness.js";
-export { generateEphemeralTestPki, cleanupTestPki, type TestPkiArtifacts } from "./site-agent-pki.js";
+export { generateEphemeralTestPki, cleanupTestPki, resolveAllowedScratchDir, type TestPkiArtifacts } from "./site-agent-pki.js";
 

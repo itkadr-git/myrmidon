@@ -10,7 +10,6 @@
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import https from "node:https";
-import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -262,7 +261,13 @@ async function main() {
   const scratch =
     process.env.PAPERCLIP_SCRATCH_DIR ||
     process.env.PAPERCLIP_RUN_SCRATCH_DIR ||
-    path.join(os.tmpdir(), `myrmidon-sec-harness-${Date.now()}`);
+    (process.env.HOME ? path.join(process.env.HOME, ".myrmidon-scratch") : null);
+
+  if (!scratch) {
+    throw new Error(
+      "Execution failed: No allowed scratch or home directory configured ($PAPERCLIP_SCRATCH_DIR, $PAPERCLIP_RUN_SCRATCH_DIR, or $HOME/.myrmidon-scratch). Fallback to system /tmp or os.tmpdir() is prohibited by OPE-1524 hygiene rules.",
+    );
+  }
 
   const pkiDir = path.join(scratch, `pki-${Math.random().toString(36).slice(2, 8)}`);
   log(`[PKI] Generating ephemeral test CA and certificates in: ${pkiDir}`);
@@ -397,32 +402,11 @@ async function main() {
     detail: markerLeaked ? "LEAK: Marker exposed in status or server logs" : "Clean: 0 occurrences in status/logs; stored with 0600",
   });
 
-  // NEG-10: Readonly Rootfs & CapDrop ALL
-  const tamperedHostConfig = { ReadonlyRootfs: false, CapDrop: [], Privileged: true };
-  const templateEnforced =
-    tamperedHostConfig.ReadonlyRootfs !== true || !tamperedHostConfig.CapDrop.includes("ALL") || tamperedHostConfig.Privileged === true;
-  scenarios.push({
-    id: "NEG-10",
-    name: "Template: Read-only Rootfs & Cap-Drop",
-    passed: templateEnforced,
-    detail: templateEnforced ? "Enforced: tampered rw/cap-add rejected by fixed template" : "Tampering allowed",
-  });
-
-  // NEG-11: UID 10001 Non-root Enforcement
-  const attemptedUser = "0:0";
-  const userEnforced = attemptedUser !== "10001:10001";
-  scenarios.push({
-    id: "NEG-11",
-    name: "Template: UID 10001 Non-root Execution",
-    passed: userEnforced,
-    detail: userEnforced ? "Enforced: non-10001 user (root 0:0) rejected by policy" : "Root user permitted",
-  });
-
-  // NEG-12: Directionality No Core Credentials
+  // NEG-10: Directionality No Core Credentials
   const configWithBoardKey = { listen: "127.0.0.1:8444", boardApiKey: "sample_val", coreSshKey: "id_rsa" };
   const credsForbidden = "boardApiKey" in configWithBoardKey || "coreSshKey" in configWithBoardKey;
   scenarios.push({
-    id: "NEG-12",
+    id: "NEG-10",
     name: "Directionality: Prohibition of Site->Core Creds",
     passed: credsForbidden,
     detail: credsForbidden ? "Rejected: site-agent config strictly disallows reverse core credentials" : "Core creds allowed",
@@ -434,7 +418,7 @@ async function main() {
   } catch {}
 
   log("\n--------------------------------------------------------------------------------");
-  log("Scenario Test Results Matrix (12 Scenarios):");
+  log("Scenario Test Results Matrix (10 Scenarios):");
   log("--------------------------------------------------------------------------------");
   for (const s of scenarios) {
     const statusTag = s.passed ? "[PASS]" : "[FAIL]";
@@ -449,7 +433,7 @@ async function main() {
   log("Production Gaps Recorded for T2 / T10 (no skip-as-pass, no false sign-off):");
   log(" 1. GAP-1: fleetd daemon in origin/main (tools/fleetd/cmd/fleetd/main.go) lacks native TLS listener; mTLS server integration is in branch eng-19/OPE-7649-site-agent-v4 pending T2 merge.");
   log(" 2. GAP-2: Production site-ca distribution and automated 90-day certificate rotation with overlap (T1/T10).");
-  log(" 3. GAP-3: Remote Docker socket execution boundary: live container creation on remote host relies on Go dockergate-equivalent policy in site-agent under T2.");
+  log(" 3. GAP-3: Remote Docker socket execution boundary & runtime template enforcement: live container creation on remote host and enforcement of fixed runtime template (ro-rootfs, CapDrop ALL, UID 10001 non-root) relies on Go dockergate-equivalent policy in site-agent under T2. In origin/main, fleetd only exposes the limits check seam (/template-drift); dockergate policy (tools/dockergate/internal/policy/create.go) runs only on the core host. Negative test cases for remote runtime template tampering cannot be verified against live site-agent until the T2 dockergate integration lands, and are recorded here as production gaps without false PASS (without skip-as-pass).");
   log(" 4. GAP-4: Egress policy verification via /v1/health (sing-box TUN egress checking on myr-vm1) scheduled for T4/T10.");
   log(" 5. GAP-5: T10-A is dedicated engineering preparation and regression harness; final formal security review and sign-off remains with adm-security.");
   log("================================================================================");

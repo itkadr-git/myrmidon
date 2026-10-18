@@ -8,7 +8,6 @@
 
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 
 export interface TestPkiArtifacts {
@@ -28,16 +27,32 @@ export interface TestPkiArtifacts {
 }
 
 /**
+ * Resolves an allowed scratch directory under strict OPE-1524 hygiene rules:
+ * Only explicit custom scratch dir, $PAPERCLIP_SCRATCH_DIR, $PAPERCLIP_RUN_SCRATCH_DIR,
+ * or $HOME/.myrmidon-scratch are permitted. Fallback to shared system /tmp or
+ * os.tmpdir() is strictly prohibited.
+ */
+export function resolveAllowedScratchDir(customScratchDir?: string): string {
+  const candidate =
+    customScratchDir ||
+    process.env.PAPERCLIP_SCRATCH_DIR ||
+    process.env.PAPERCLIP_RUN_SCRATCH_DIR ||
+    (process.env.HOME ? path.join(process.env.HOME, ".myrmidon-scratch") : undefined);
+
+  if (!candidate || candidate.trim().length === 0) {
+    throw new Error(
+      "Ephemeral test PKI requires an allowed scratch directory ($PAPERCLIP_SCRATCH_DIR, $PAPERCLIP_RUN_SCRATCH_DIR, or $HOME/.myrmidon-scratch). Fallback to system /tmp or os.tmpdir() is prohibited by OPE-1524 hygiene rules.",
+    );
+  }
+  return candidate;
+}
+
+/**
  * Generates an ephemeral test PKI environment in the specified or default scratch directory.
- * Never writes to shared system /tmp directly; uses run scratch or sub-scratch.
+ * Never writes to shared system /tmp directly; uses run scratch or home scratch.
  */
 export function generateEphemeralTestPki(customScratchDir?: string): TestPkiArtifacts {
-  const baseScratch =
-    customScratchDir ??
-    process.env.PAPERCLIP_SCRATCH_DIR ??
-    process.env.PAPERCLIP_RUN_SCRATCH_DIR ??
-    process.env.TMPDIR ??
-    path.join(os.tmpdir(), `myrmidon-pki-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
+  const baseScratch = resolveAllowedScratchDir(customScratchDir);
 
   const pkiDir = path.join(baseScratch, `pki-ephemeral-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
   fs.mkdirSync(pkiDir, { recursive: true, mode: 0o700 });

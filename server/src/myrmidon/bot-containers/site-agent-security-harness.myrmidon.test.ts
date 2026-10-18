@@ -1,7 +1,7 @@
 // server/src/myrmidon/bot-containers/site-agent-security-harness.myrmidon.test.ts
 //
 // myrmidon(1.6.6 T10-A): Vitest regression test suite for site-agent security harness.
-// Covers the matrix of 12 negative scenarios:
+// Covers the matrix of 10 negative scenarios:
 //  1. Missing client certificate
 //  2. Foreign / untrusted CA
 //  3. Expired client certificate
@@ -11,9 +11,7 @@
 //  7. Arbitrary environment variable injection
 //  8. Malformed profile path and secret mode
 //  9. Secret marker leak prevention (mode 0600, absent from status/logs)
-// 10. Read-only rootfs & CapDrop ALL enforcement
-// 11. User UID 10001 enforcement
-// 12. Prohibition of site->core credentials
+// 10. Prohibition of site->core credentials
 
 import { describe, expect, it } from "vitest";
 import {
@@ -22,35 +20,37 @@ import {
   validateImageReference,
   validateNoSiteToCoreCredentials,
   validateProfileFiles,
+  validateRuntimeTemplate,
 } from "./site-agent-security-harness.js";
+import { resolveAllowedScratchDir } from "./site-agent-pki.js";
 import { validateExtraMounts } from "./template.js";
 
 describe("myrmidon(1.6.6 T10-A) site-agent security regression harness", () => {
-  it("executes the full security regression harness across all 12 negative scenarios", async () => {
+  it("executes the full security regression harness across all 10 negative scenarios", async () => {
     const report = await runSecurityRegressionHarness();
 
-    expect(report.totalScenarios).toBeGreaterThanOrEqual(10);
+    expect(report.totalScenarios).toBe(10);
     expect(report.failedScenarios).toBe(0);
     expect(report.allPassed).toBe(true);
 
     const scenarioIds = report.scenarios.map((s) => s.id);
-    expect(scenarioIds).toContain("NEG-01-MTLS-NO-CERT");
-    expect(scenarioIds).toContain("NEG-02-MTLS-FOREIGN-CA");
-    expect(scenarioIds).toContain("NEG-03-MTLS-EXPIRED-CERT");
-    expect(scenarioIds).toContain("NEG-04-ALLOWLIST-UNKNOWN-IMAGE");
-    expect(scenarioIds).toContain("NEG-05-ALLOWLIST-TAG-WITHOUT-DIGEST");
-    expect(scenarioIds).toContain("NEG-06-MOUNTS-PATH-TRAVERSAL");
-    expect(scenarioIds).toContain("NEG-07-ENV-ARBITRARY-INJECTION");
-    expect(scenarioIds).toContain("NEG-08-PROFILE-MALFORMED-PATH-MODE");
-    expect(scenarioIds).toContain("NEG-09-SECRET-MARKER-LEAK-PREVENTION");
-    expect(scenarioIds).toContain("NEG-10-TEMPLATE-RO-ROOTFS-CAPDROP");
-    expect(scenarioIds).toContain("NEG-11-TEMPLATE-UID-10001");
-    expect(scenarioIds).toContain("NEG-12-DIRECTIONALITY-NO-CORE-CREDS");
+    expect(scenarioIds).toEqual([
+      "NEG-01-MTLS-NO-CERT",
+      "NEG-02-MTLS-FOREIGN-CA",
+      "NEG-03-MTLS-EXPIRED-CERT",
+      "NEG-04-ALLOWLIST-UNKNOWN-IMAGE",
+      "NEG-05-ALLOWLIST-TAG-WITHOUT-DIGEST",
+      "NEG-06-MOUNTS-PATH-TRAVERSAL",
+      "NEG-07-ENV-ARBITRARY-INJECTION",
+      "NEG-08-PROFILE-MALFORMED-PATH-MODE",
+      "NEG-09-SECRET-MARKER-LEAK-PREVENTION",
+      "NEG-10-DIRECTIONALITY-NO-CORE-CREDS",
+    ]);
 
     expect(report.productionGaps.length).toBeGreaterThan(0);
-    for (const gap of report.productionGaps) {
-      expect(typeof gap).toBe("string");
-    }
+    const gap3 = report.productionGaps.find((g) => g.startsWith("GAP-3"));
+    expect(gap3).toBeDefined();
+    expect(gap3).toMatch(/runtime template enforcement/);
   }, 45_000);
 
   describe("mTLS and Allowlist unit validators", () => {
@@ -162,6 +162,53 @@ describe("myrmidon(1.6.6 T10-A) site-agent security regression harness", () => {
       const check = validateNoSiteToCoreCredentials(configWithCoreKey);
       expect(check.valid).toBe(false);
       expect(check.reason).toMatch(/forbidden_reverse_credential/);
+    });
+
+    it("enforces fixed runtime template specification (ro-rootfs, cap-drop ALL, non-root uid 10001)", () => {
+      // Rejects writable rootfs
+      const roCheck = validateRuntimeTemplate({ readonlyRootfs: false });
+      expect(roCheck.valid).toBe(false);
+      expect(roCheck.reason).toMatch(/readonly_rootfs_required/);
+
+      // Rejects omitted CapDrop ALL
+      const capCheck = validateRuntimeTemplate({ capDrop: [] });
+      expect(capCheck.valid).toBe(false);
+      expect(capCheck.reason).toMatch(/cap_drop_all_required/);
+
+      // Rejects privileged container
+      const privCheck = validateRuntimeTemplate({ privileged: true });
+      expect(privCheck.valid).toBe(false);
+      expect(privCheck.reason).toMatch(/privileged_mode_forbidden/);
+
+      // Rejects root UID 0
+      const rootCheck = validateRuntimeTemplate({ user: "0:0" });
+      expect(rootCheck.valid).toBe(false);
+      expect(rootCheck.reason).toMatch(/non_root_uid_required/);
+
+      // Accepts compliant template
+      const validCheck = validateRuntimeTemplate({
+        readonlyRootfs: true,
+        capDrop: ["ALL"],
+        privileged: false,
+        user: "10001:10001",
+      });
+      expect(validCheck.valid).toBe(true);
+    });
+
+    it("fails with clear error when no allowed scratch directory is configured (prohibiting os.tmpdir fallback)", () => {
+      const origScratch = process.env.PAPERCLIP_SCRATCH_DIR;
+      const origRunScratch = process.env.PAPERCLIP_RUN_SCRATCH_DIR;
+      const origHome = process.env.HOME;
+      try {
+        delete process.env.PAPERCLIP_SCRATCH_DIR;
+        delete process.env.PAPERCLIP_RUN_SCRATCH_DIR;
+        delete process.env.HOME;
+        expect(() => resolveAllowedScratchDir()).toThrow(/Ephemeral test PKI requires an allowed scratch directory/);
+      } finally {
+        if (origScratch) process.env.PAPERCLIP_SCRATCH_DIR = origScratch;
+        if (origRunScratch) process.env.PAPERCLIP_RUN_SCRATCH_DIR = origRunScratch;
+        if (origHome) process.env.HOME = origHome;
+      }
     });
   });
 });

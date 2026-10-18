@@ -141,6 +141,38 @@ export function validateNoSiteToCoreCredentials(
 }
 
 /**
+ * Validates container runtime template parameters against fixed template requirements:
+ * 1. ReadonlyRootfs must be true (writable rootfs is forbidden).
+ * 2. CapDrop must include "ALL" (retaining capabilities is forbidden).
+ * 3. Privileged must be false.
+ * 4. User must strictly be "10001:10001" (UID 10001 non-root execution; root 0:0 is forbidden for runtime).
+ *
+ * Note: In origin/main, fleetd daemon only exposes the limits check seam (/template-drift);
+ * full runtime container template enforcement at the remote Docker daemon boundary is scheduled
+ * for T2 under GAP-3 (dockergate policy). This validator defines the contract specification.
+ */
+export function validateRuntimeTemplate(spec: {
+  readonlyRootfs?: boolean;
+  capDrop?: readonly string[];
+  privileged?: boolean;
+  user?: string;
+}): { valid: boolean; reason?: string } {
+  if (spec.readonlyRootfs === false) {
+    return { valid: false, reason: "readonly_rootfs_required: ReadonlyRootfs cannot be false" };
+  }
+  if (spec.capDrop && !spec.capDrop.includes("ALL")) {
+    return { valid: false, reason: "cap_drop_all_required: CapDrop must include 'ALL'" };
+  }
+  if (spec.privileged === true) {
+    return { valid: false, reason: "privileged_mode_forbidden: Privileged mode cannot be true" };
+  }
+  if (spec.user && spec.user !== "10001:10001") {
+    return { valid: false, reason: `non_root_uid_required: User must be '10001:10001', got '${spec.user}'` };
+  }
+  return { valid: true };
+}
+
+/**
  * Creates an ephemeral mTLS mock server running the site-agent contract.
  * Uses Node's native https with requestCert and rejectUnauthorized to enforce mTLS.
  */
@@ -616,45 +648,7 @@ export async function runSecurityRegressionHarness(scratchDir?: string): Promise
     });
 
     // -------------------------------------------------------------------------
-    // Scenario 10: Template - Readonly Rootfs & CapDrop Tampering
-    // -------------------------------------------------------------------------
-    const tamperedHostConfig = {
-      ReadonlyRootfs: false,
-      CapDrop: [] as string[],
-      Privileged: true,
-    };
-    const isTampered =
-      tamperedHostConfig.ReadonlyRootfs !== true ||
-      !tamperedHostConfig.CapDrop.includes("ALL") ||
-      tamperedHostConfig.Privileged === true;
-
-    scenarios.push({
-      id: "NEG-10-TEMPLATE-RO-ROOTFS-CAPDROP",
-      category: "template",
-      name: "Read-only Rootfs & Cap-Drop Enforcement",
-      description: "Tampered spec attempting ReadonlyRootfs=false or omitting CapDrop ALL",
-      expectedBehavior: "Fixed runtime template enforces ReadonlyRootfs=true, CapDrop=['ALL'], Privileged=false",
-      actualBehavior: isTampered ? "Tampered fields detected and rejected/overridden by fixed template" : "Tampering allowed",
-      passed: isTampered,
-    });
-
-    // -------------------------------------------------------------------------
-    // Scenario 11: Template - UID 10001 Enforcement
-    // -------------------------------------------------------------------------
-    const attemptRunAsRoot = { User: "0:0" };
-    const uidEnforced = attemptRunAsRoot.User !== "10001:10001";
-    scenarios.push({
-      id: "NEG-11-TEMPLATE-UID-10001",
-      category: "template",
-      name: "Fixed User UID 10001 Enforcement",
-      description: "Attempting container or apply execution under UID 0 (root)",
-      expectedBehavior: "Root execution rejected; user must strictly be 10001:10001",
-      actualBehavior: uidEnforced ? "Non-10001 user rejected as expected" : "Root user unexpectedly accepted",
-      passed: uidEnforced,
-    });
-
-    // -------------------------------------------------------------------------
-    // Scenario 12: Directionality - Prohibition of Site->Core Credentials
+    // Scenario 10: Directionality - Prohibition of Site->Core Credentials
     // -------------------------------------------------------------------------
     const configWithReverseCreds = {
       listen: "127.0.0.1:8444",
@@ -664,7 +658,7 @@ export async function runSecurityRegressionHarness(scratchDir?: string): Promise
     };
     const credCheck = validateNoSiteToCoreCredentials(configWithReverseCreds);
     scenarios.push({
-      id: "NEG-12-DIRECTIONALITY-NO-CORE-CREDS",
+      id: "NEG-10-DIRECTIONALITY-NO-CORE-CREDS",
       category: "directionality",
       name: "Prohibition of Site->Core Credentials",
       description: "Site-agent config attempting to store board API keys or core SSH keys",
@@ -683,7 +677,7 @@ export async function runSecurityRegressionHarness(scratchDir?: string): Promise
   const productionGaps: string[] = [
     "GAP-1: fleetd daemon in origin/main (tools/fleetd/cmd/fleetd/main.go) lacks native TLS listener; mTLS server integration is in branch eng-19/OPE-7649-site-agent-v4 pending T2 merge.",
     "GAP-2: Production site-ca distribution and automated 90-day certificate rotation with overlap (T1/T10).",
-    "GAP-3: Remote Docker socket execution boundary: live container creation on remote host relies on Go dockergate-equivalent policy in site-agent under T2.",
+    "GAP-3: Remote Docker socket execution boundary & runtime template enforcement: live container creation on remote host and enforcement of fixed runtime template (ro-rootfs, CapDrop ALL, UID 10001 non-root) relies on Go dockergate-equivalent policy in site-agent under T2. In origin/main, fleetd only exposes the limits check seam (/template-drift); dockergate policy (tools/dockergate/internal/policy/create.go) runs only on the core host. Negative test cases for remote runtime template tampering cannot be verified against live site-agent until the T2 dockergate integration lands, and are recorded here as production gaps without false PASS (without skip-as-pass).",
     "GAP-4: Egress policy verification via /v1/health (sing-box TUN egress checking on myr-vm1) scheduled for T4/T10.",
     "GAP-5: T10-A is dedicated engineering preparation and regression harness; final formal security review and sign-off remains with adm-security.",
   ];
