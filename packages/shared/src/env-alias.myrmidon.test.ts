@@ -90,6 +90,13 @@ describe("readProductEnvFrom", () => {
     expect(readProductEnvFrom({ PAPERCLIP_API_URL: "old" }, "API_URL")).toBe("old");
     expect(readProductEnvFrom({}, "API_URL")).toBeUndefined();
   });
+
+  it("preserves empty values and gives a present canonical value precedence", () => {
+    expect(readProductEnvFrom({ MYRMIDON_API_URL: "", PAPERCLIP_API_URL: "legacy" }, "API_URL")).toBe("legacy");
+    expect(readProductEnvFrom({ PAPERCLIP_API_URL: "" }, "API_URL")).toBeUndefined();
+    expect(readProductEnvFrom({ MYRMIDON_API_URL: "" }, "API_URL")).toBeUndefined();
+  });
+
 });
 
 describe("materializeProductEnv", () => {

@@ -152,7 +152,7 @@ export function myrmidonMetricsRoutes(deps: MetricsRoutesDeps) {
     deps.runSelfCheck ?? runMetricsSelfCheck;
   // myrmidon(1.6.6 OPE-6959): the role of THIS process, stamped on every
   // metric sample and reported by /internal/procs.
-  const role = deps.role ?? resolveBoardProcessRole(env.PAPERCLIP_PROCESS_ROLE);
+  const role = deps.role ?? resolveBoardProcessRole(env.MYRMIDON_PROCESS_ROLE ?? env.PAPERCLIP_PROCESS_ROLE);
   const processStore: BoardProcessStore = deps.processStore ?? createBoardProcessStore(deps.db);
 
   // myrmidon(1.6.5-PROCS-Q3): the process observers (delay histogram +

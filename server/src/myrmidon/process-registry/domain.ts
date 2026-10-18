@@ -28,10 +28,10 @@ export const BOARD_PROCESS_STALE_MS = 120_000;
  * that is still running. */
 export const boardProcessBootId = randomUUID();
 
-/** `PAPERCLIP_PROCESS_ROLE` when the split layout sets it, `all` otherwise —
+/** `MYRMIDON_PROCESS_ROLE` (legacy alias: `PAPERCLIP_PROCESS_ROLE`) when split layout sets it, `all` otherwise —
  * the T0.1 default is byte-for-byte today's behaviour (one process, one row). */
 export function resolveBoardProcessRole(
-  raw: string | undefined = process.env.PAPERCLIP_PROCESS_ROLE,
+  raw: string | undefined = process.env.MYRMIDON_PROCESS_ROLE ?? process.env.PAPERCLIP_PROCESS_ROLE,
 ): BoardProcessRole {
   const value = (raw ?? "").trim().toLowerCase();
   return (BOARD_PROCESS_ROLES as readonly string[]).includes(value)

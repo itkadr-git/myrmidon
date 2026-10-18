@@ -48,11 +48,11 @@ export function readProductEnv(name: string, options: ReadProductEnvOptions = {}
   const env = options.env ?? process.env;
   const canonicalName = `${MYRMIDON_PREFIX}${name}`;
   const value = env[canonicalName];
-  if (value !== undefined && value !== "") return value;
+  if (value !== undefined) return value;
 
   const legacyName = `${PAPERCLIP_PREFIX}${name}`;
   const legacyValue = env[legacyName];
-  if (legacyValue !== undefined && legacyValue !== "") {
+  if (legacyValue !== undefined) {
     if (!warnedAliases.has(legacyName)) {
       warnedAliases.add(legacyName);
       const warn = options.warn ?? defaultWarn;
