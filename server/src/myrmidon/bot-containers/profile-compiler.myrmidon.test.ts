@@ -261,7 +261,9 @@ describe("myrmidon(G2) compileHermesProfile — always-set config.yaml fields", 
     expect(yaml).toContain("platforms:\n  api_server:\n    enabled: true");
     expect(yaml).toContain('terminal:\n  cwd: "/workspace"');
     expect(yaml).toContain('memory:\n  provider: "hindsight"');
-    expect(yaml).toContain("skills:\n  external_dirs: []");
+    // Empty mappings/lists are omitted by the deterministic YAML writer, so
+    // absence of the skills block is the serialized form of no external dirs.
+    expect(yaml).not.toContain("skills:");
   });
 
   it("sets gateway.api_server.max_concurrent_runs from maxConcurrentRuns", () => {
