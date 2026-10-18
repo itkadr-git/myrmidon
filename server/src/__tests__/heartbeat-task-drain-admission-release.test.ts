@@ -258,7 +258,7 @@ describeEmbeddedPostgres("heartbeat task-drain admission release", () => {
         .from(agentWakeupRequests)
         .where(eq(agentWakeupRequests.id, wakeupRequestId))
         .then((rows) => rows[0] ?? null);
-      expect(wakeup?.status).toBe("failed");
+      expect(wakeup?.status).toBe("cancelled");
       const retry = await db
         .select({ status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode })
         .from(heartbeatRuns)
