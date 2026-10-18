@@ -1,4 +1,5 @@
 import { instanceSettingsService } from "../../../services/instance-settings.js";
+import { MAINTENANCE_INTERRUPT_ERROR_CODE } from "../../../myrmidon/maintenance/domain.js";
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
@@ -317,6 +318,32 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
       expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId))).toHaveLength(1);
     });
   }
+
+  it("does not classify a maintenance cancellation as an unknown native execution", async () => {
+    const companyId = await seedCompany();
+    const agentId = await seedAgent({ companyId });
+    const issueId = await seedIssue({ companyId, assigneeAgentId: agentId });
+    const runId = await seedRun({
+      companyId,
+      agentId,
+      status: "cancelled",
+      errorCode: MAINTENANCE_INTERRUPT_ERROR_CODE,
+      runtimeMode: "native",
+      contextSnapshot: { issueId },
+    });
+    await db.update(issues).set({ executionRunId: runId, checkoutRunId: runId }).where(eq(issues.id, issueId));
+    const adapter = createPostgresWakeQueueAdapter(db, stubDeps);
+    let callbackCalled = false;
+    const result = await adapter.withIssueExecutionLock({ companyId, runId, now: new Date() }, async () => {
+      callbackCalled = true;
+      return { outcome: { kind: "released" as const }, postCommitEffects: [] };
+    });
+
+    expect(result.outcome.kind).toBe("released");
+    expect(callbackCalled).toBe(true);
+    expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]?.status).not.toBe("blocked");
+    expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId))).toHaveLength(0);
+  });
 
   it.each(["in_progress", "blocked"])("preserves recovery ownership and queued messages when a native task fails from %s", async (status) => {
     const companyId = await seedCompany();
