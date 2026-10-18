@@ -32,12 +32,17 @@ interface KnowledgeItemDto {
 
 interface KnowledgeRevisionDto {
   id: string;
+  itemId: string;
   revisionNumber: number;
+  status: string;
   content: string;
-  sources: Array<{ kind: string; ref: string; note?: string | null }>;
-  approvedBy?: string | null;
-  createdAt: string;
   changeSummary?: string | null;
+  rolledBackFromRevisionId?: string | null;
+  approvedByKind?: string | null;
+  approvedBy?: string | null;
+  approvedAt?: string | null;
+  createdAt: string;
+  sources: Array<{ kind: string; ref: string; note?: string | null }>;
 }
 
 interface KnowledgeItemListResponse {
