@@ -230,9 +230,9 @@ describe("myrmidon(1.6.1 SWARM-IDLE-WAKE) sweep pass", () => {
               if (table === agents && projection && "reportsTo" in projection) {
                 return { then: (resolve: (rows: unknown[]) => unknown) => Promise.resolve([idleAgent]).then(resolve) };
               }
-              if (table === issues && projection && "issueId" in projection) {
-                // Queue candidates are selected from issues and must reflect
-                // the state changed by the normal release/clear-assignee path.
+              if (table === issueClaims && projection && "issueId" in projection) {
+                // This projection is the ready-queue query's left join on
+                // issue_claims; the base issues table is handled below.
                 return { orderBy: () => ({ limit: (limit: number) => Promise.resolve([{
                   issueId: issueState.id,
                   identifier: "ENG-42",
