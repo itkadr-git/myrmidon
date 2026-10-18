@@ -21,6 +21,8 @@ export type PlacementDecision =
 const numeric = (value: number) => Number.isFinite(value) && value >= 0;
 const fits = (site: BotPlacementRequest["sites"][number], bot: BotPlacementRequest["bot"]) =>
   numeric(bot.cpus) && numeric(bot.memoryMb) && numeric(bot.pids) &&
+  numeric(site.capacity.cpus) && numeric(site.capacity.memoryMb) && numeric(site.capacity.pids) && numeric(site.capacity.maxBots) &&
+  numeric(site.allocated.cpus) && numeric(site.allocated.memoryMb) && numeric(site.allocated.pids) && numeric(site.allocated.bots) &&
   site.allocated.cpus + bot.cpus <= site.capacity.cpus &&
   site.allocated.memoryMb + bot.memoryMb <= site.capacity.memoryMb &&
   site.allocated.pids + bot.pids <= site.capacity.pids &&
@@ -53,6 +55,7 @@ export function planBotPlacement(input: BotPlacementRequest): PlacementDecision 
     ["agent", targets.agentId], ["company", targets.companyId], ["project", targets.projectId],
   ];
   const applicable = input.affinity.flatMap((rule) => {
+    if (!numeric(rule.weight)) return [];
     const target = priorities.find(([scope, id]) => rule.scope === scope && id === rule.targetId);
     return target ? [{ rule, scopeRank: priorities.findIndex(([scope]) => scope === rule.scope) }] : [];
   });

@@ -33,6 +33,12 @@ describe("planBotPlacement", () => {
       expect(decide({ sites: [site] })).toEqual({ kind: "pending", reason: "capacity_exceeded" });
     }
   });
+  it("does not select malformed resource snapshots or use non-finite affinity weights", () => {
+    const site = { ...base.sites[0], allocated: { ...base.sites[0].allocated, cpus: Number.NaN } };
+    expect(decide({ sites: [site] })).toEqual({ kind: "pending", reason: "capacity_exceeded" });
+    expect(decide({ affinity: [{ scope: "agent", targetId: "a", siteName: "east", weight: Number.NaN }], targets: { agentId: "a" } }))
+      .toMatchObject({ kind: "selected", siteName: "east" });
+  });
   it("returns explicit pending for an empty registry and capacity overflow", () => {
     expect(decide({ sites: [] })).toEqual({ kind: "pending", reason: "no_sites_registered" });
     expect(decide({ sites: base.sites.map((s) => ({ ...s, capacity: { ...s.capacity, cpus: 0 } })) })).toEqual({ kind: "pending", reason: "capacity_exceeded" });
