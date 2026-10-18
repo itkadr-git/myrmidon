@@ -333,7 +333,7 @@ function RevisionsPanel({
   const rollback = useMutation({
     mutationFn: (target: KnowledgeRevisionSummary) => {
       if (!target.id) throw new Error("The revision has no rollback identifier.");
-      return knowledgeApi.rollback(companyId, item.spaceKey, item.slug, target.id);
+      return knowledgeApi.rollback(companyId, item.spaceKey, item.slug, String(target.id));
     },
     onSuccess: (_data: unknown, target: KnowledgeRevisionSummary) => setNote(t("ui2.knowledge.revisions.rollbackDone", { revision: target.revision })),
     onError: () => setNote(t("ui2.knowledge.revisions.rollbackFailed")),
