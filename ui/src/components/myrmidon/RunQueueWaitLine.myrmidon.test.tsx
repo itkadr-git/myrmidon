@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 //
 // myrmidon(1.6.5 RUN-PRIORITY B): the wait line under a queued run's chat
-// card. It renders what the server knows (comment metadata or the queued run's wait reason),
+// card. It renders what the server knows (metadata or the part A endpoint),
 // stays silent when the server knows nothing, and never lets a failing
 // position read throw into the thread.
 
@@ -69,26 +69,17 @@ describe("RunQueueWaitLine", () => {
     expect(mockGet).not.toHaveBeenCalled();
   });
 
-  it("reads the wait reason of the queued run when the comment carries none", async () => {
+  it("fills a missing rank from the part A endpoint", async () => {
     mockGet.mockResolvedValueOnce({
-      id: "run-1",
-      status: "queued",
-      createdAt: "2026-10-08T00:00:00Z",
-      contextSnapshot: { waitReason: "priority" },
+      position: { runId: "run-1", position: 5, queueLength: 9, waitReason: "priority", queuedAt: null },
     });
-    await render(<RunQueueWaitLine runId="run-1" metadata={{}} />);
-    expect(mockGet).toHaveBeenCalledWith("/heartbeat-runs/run-1");
-    expect(line()).toBe("waiting: higher-priority runs are ahead");
-  });
-
-  it("shows nothing for a run that already left the queue", async () => {
-    mockGet.mockResolvedValueOnce({ id: "run-1", status: "running", contextSnapshot: { waitReason: "priority" } });
-    await render(<RunQueueWaitLine runId="run-1" metadata={{}} />);
-    expect(line()).toBe(null);
+    await render(<RunQueueWaitLine runId="run-1" metadata={{ waitReason: "priority" }} />);
+    expect(mockGet).toHaveBeenCalledWith("/myrmidon/run-queue/position?runId=run-1");
+    expect(line()).toBe("Queue position 5 of 9, waiting: higher-priority runs are ahead");
   });
 
   it("shows the reason alone on an old server that carries waitReason only", async () => {
-    mockGet.mockResolvedValueOnce(null); // run not readable
+    mockGet.mockResolvedValueOnce(null); // part A endpoint not deployed
     await render(<RunQueueWaitLine runId="run-2" metadata={{ waitReason: "host_memory" }} />);
     expect(line()).toBe("waiting: the host free-memory floor is closed");
   });

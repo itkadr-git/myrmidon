@@ -19,6 +19,7 @@ const mockIssueService = vi.hoisted(() => ({
 
 const mockHeartbeatService = vi.hoisted(() => ({
   wakeup: vi.fn(async () => undefined),
+  insertReviewAdmissionWakeup: vi.fn(async () => ({ created: true })),
   triggerIssueMonitor: vi.fn(async () => ({ outcome: "triggered" as const })),
   reportRunActivity: vi.fn(async () => undefined),
   getRun: vi.fn(async () => null),
@@ -31,32 +32,39 @@ const mockAccessService = vi.hoisted(() => ({
   decide: vi.fn(),
   hasPermission: vi.fn(async () => false),
 }));
+const defaultRow = {
+  id: "55555555-5555-4555-8555-555555555555",
+  companyId: "company-1",
+  agentId: "33333333-3333-4333-8333-333333333333",
+  contextSnapshot: { issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" },
+  permissions: null,
+};
 const mockDbSelectWhere = vi.hoisted(() => vi.fn(() => ({
   for: () => ({
     then: (onFulfilled: (rows: unknown[]) => unknown, onRejected?: (reason: unknown) => unknown) =>
-      Promise.resolve([{
-        id: "55555555-5555-4555-8555-555555555555",
-        companyId: "company-1",
-        agentId: "33333333-3333-4333-8333-333333333333",
-        contextSnapshot: { issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" },
-        permissions: null,
-      }]).then(onFulfilled, onRejected),
+      Promise.resolve([defaultRow]).then(onFulfilled, onRejected),
   }),
   then: (onFulfilled: (rows: unknown[]) => unknown, onRejected?: (reason: unknown) => unknown) =>
-    Promise.resolve([{
-      id: "55555555-5555-4555-8555-555555555555",
-      companyId: "company-1",
-      agentId: "33333333-3333-4333-8333-333333333333",
-      contextSnapshot: { issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" },
-      permissions: null,
-    }]).then(onFulfilled, onRejected),
+    Promise.resolve([defaultRow]).then(onFulfilled, onRejected),
 })));
 const mockDbSelectFrom = vi.hoisted(() => vi.fn(() => ({ where: mockDbSelectWhere })));
 const mockDbSelect = vi.hoisted(() => vi.fn(() => ({ from: mockDbSelectFrom })));
+const mockDbInsert = vi.hoisted(() => vi.fn(() => ({ values: vi.fn(async () => undefined) })));
 const mockDb = vi.hoisted(() => ({
   select: mockDbSelect,
-  transaction: vi.fn(async (callback: (tx: { select: typeof mockDbSelect }) => Promise<unknown>) =>
-    callback({ select: mockDbSelect })),
+  insert: mockDbInsert,
+  // Transaction callbacks in issue PATCH must support downstream external-object sync.
+  update: vi.fn(() => ({
+    set: vi.fn(() => ({
+      where: vi.fn(async () => undefined),
+    })),
+  })),
+  delete: vi.fn(() => ({
+    where: vi.fn(async () => undefined),
+  })),
+  execute: vi.fn(async () => undefined),
+  transaction: vi.fn(async (callback: (tx: typeof mockDb) => Promise<unknown>) =>
+    callback(mockDb)),
 }));
 
 const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
@@ -127,6 +135,10 @@ function registerModuleMocks() {
           censorUsernameInLogs: false,
           feedbackDataSharingPreference: "prompt",
         },
+      })),
+      getExperimental: vi.fn(async () => ({
+        enableExternalObjects: false,
+        enableAgentChat: false,
       })),
       listCompanyIds: vi.fn(async () => ["company-1"]),
     }),
@@ -218,22 +230,10 @@ describe("issue execution policy routes", () => {
     mockDbSelectWhere.mockImplementation(() => ({
       for: () => ({
         then: (onFulfilled: (rows: unknown[]) => unknown, onRejected?: (reason: unknown) => unknown) =>
-          Promise.resolve([{
-            id: "55555555-5555-4555-8555-555555555555",
-            companyId: "company-1",
-            agentId: "33333333-3333-4333-8333-333333333333",
-            contextSnapshot: { issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" },
-            permissions: null,
-          }]).then(onFulfilled, onRejected),
+          Promise.resolve([defaultRow]).then(onFulfilled, onRejected),
       }),
       then: (onFulfilled: (rows: unknown[]) => unknown, onRejected?: (reason: unknown) => unknown) =>
-        Promise.resolve([{
-          id: "55555555-5555-4555-8555-555555555555",
-          companyId: "company-1",
-          agentId: "33333333-3333-4333-8333-333333333333",
-          contextSnapshot: { issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" },
-          permissions: null,
-        }]).then(onFulfilled, onRejected),
+        Promise.resolve([defaultRow]).then(onFulfilled, onRejected),
     }));
     mockIssueService.createChild.mockResolvedValue({
       issue: {
