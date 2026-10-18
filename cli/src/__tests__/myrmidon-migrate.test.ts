@@ -469,7 +469,7 @@ describeEmbeddedPostgres("myrmidon:migrate against a real Postgres", () => {
   afterAll(async () => {
     await cluster?.cleanup();
     for (const dir of tmpDirs) rmSync(dir, { recursive: true, force: true });
-  });
+  }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS * 3);
 
   type Fixture = {
     sourceUrl: string;
