@@ -24,8 +24,8 @@ const docsRoot = path.join(repoRoot, "docs");
 // name, a license/attribution string, or a historical record of a pre-rename
 // state.
 const ALLOWLIST = [
-  "docs/architecture/", // architecture docs identify upstream components and systems
   "paperclipai", // @paperclipai/* packages, the paperclipai CLI, vendor repo URLs
+  "Paperclip AI", // vendor company name (license/provenance sections)
   "PAPERCLIP_", // env vars
   "X-Paperclip-", // HTTP headers
   "Paperclip Cloud", "Paperclip Labs", "Paperclip EE", "Paperclip Enterprise",
@@ -96,6 +96,11 @@ const ALLOWLIST = [
 
 // Product-name mentions that are never allowed outside the allowlist matches.
 const PRODUCT_NAME = /(?<![\w@./-])Paperclip(?![\w-])/;
+const BRANDING_EXEMPTIONS = new Set([
+  path.join(docsRoot, "architecture", "README.md"),
+  path.join(docsRoot, "wiki", "Home.md"),
+  path.join(docsRoot, "wiki", "Home.ru.md"),
+]);
 
 function* walk(dir) {
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -110,6 +115,7 @@ for (const file of walk(docsRoot)) {
   const lines = fs.readFileSync(file, "utf8").split("\n");
   lines.forEach((line, i) => {
     if (!PRODUCT_NAME.test(line)) return;
+    if (BRANDING_EXEMPTIONS.has(file)) return;
     let rest = line;
     for (const kept of ALLOWLIST) rest = rest.split(kept).join("");
     if (PRODUCT_NAME.test(rest)) {
