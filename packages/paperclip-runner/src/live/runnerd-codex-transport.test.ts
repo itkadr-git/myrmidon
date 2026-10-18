@@ -6179,21 +6179,7 @@ it.each(["held-ack", "lost-ack", "rejected-attach"] as const)(
         await within("warm attach after old ACK", attachment, 10_000);
         expect(rotations).toHaveLength(1);
         const retired = rotations[0]!;
-        const archivedState = JSON.parse(
-          await readFile(
-            join(
-              stateDirectory,
-              "authority-epochs",
-              `epoch-${createHash("sha256")
-                .update(JSON.stringify(oldIdentity))
-                .digest("hex")
-                .slice(0, 24)}`,
-              "control-plane/control-plane-state.json",
-            ),
-            "utf8",
-          ),
-        ) as typeof retired;
-        const attachedEvent = archivedState.committedEvents.find(
+        const attachedEvent = retired.committedEvents.find(
           (entry) => entry.sourceEventId === heldEvent!.sourceEventId,
         );
         if (attachedEvent === undefined) {
