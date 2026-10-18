@@ -1,4 +1,5 @@
 import { listOpenRouterModels } from "../services/openrouter-models.js";
+import { notModifiedOrSetEtag } from "../middleware/version-key-etag.js";
 // myrmidon(B1c): product name in user-facing runner errors; see product.ts.
 import { PRODUCT_NAME } from "../myrmidon/product.js";
 import { prepareManagedAiRuntime, assertManagedAiProjectAuth, stripAiAuthBindings } from "../services/ai-connection-runtime.js";
@@ -4122,6 +4123,14 @@ export function agentRoutes(
     },
   );
 
+function getActorIdentityPart(req: Request): string {
+  if (!req.actor) return "none";
+  const type = req.actor.type || "none";
+  const id = req.actor.userId || req.actor.agentId || "none";
+  const isInstanceAdmin = req.actor.isInstanceAdmin ? "admin" : "user";
+  return `${type}:${id}:${isInstanceAdmin}`;
+}
+
   router.get("/companies/:companyId/agents", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
@@ -4132,18 +4141,39 @@ export function agentRoutes(
       });
       return;
     }
-    const result = await filterAgentsForActor(req, await svc.listSummaries(companyId));
+
+    const companyDecision = await access.decide({
+      actor: req.actor,
+      action: "company_scope:read",
+      resource: { type: "company", companyId },
+    });
+    if (!companyDecision.allowed) {
+      res.status(403).json({ error: "Company is outside this actor's authorization boundary" });
+      return;
+    }
+    const sourceRows = await svc.listSummaries(companyId);
+    const result = await filterAgentsForActor(req, sourceRows);
     const canReadConfigs = await actorCanReadConfigurationsForCompany(req, companyId);
+    const responseRows = canReadConfigs
+      ? result
+      : result.map((agent) => redactAgentListItemForRestrictedView(agent));
+    const actorShape = JSON.stringify([
+      getActorIdentityPart(req),
+      req.actor.type === "board" ? req.actor.companyIds ?? [] : req.actor.companyId,
+      Array.isArray(req.actor.onBehalfOfMemberships)
+        ? req.actor.onBehalfOfMemberships.map((membership) => ({ companyId: membership.companyId, status: membership.status, membershipRole: membership.membershipRole }))
+        : null,
+      canReadConfigs,
+      responseRows,
+    ]);
+    const vk = await svc.listSummariesVersionKey(companyId, actorShape);
+    if (notModifiedOrSetEtag(req, res, vk)) return;
     // myrmidon(PERF-DIET-G): the list is a slim projection. It carries no
     // adapterConfig (so no per-row env redaction is needed any more) and the
     // model column travels as the SQL-computed `adapterModel`; the full
     // configuration stays behind GET /agents/:id/configuration and
     // GET /companies/:id/agent-configurations.
-    if (canReadConfigs) {
-      res.json(result);
-      return;
-    }
-    res.json(result.map((agent) => redactAgentListItemForRestrictedView(agent)));
+    res.json(responseRows);
   });
 
   router.get("/instance/scheduler-heartbeats", async (req, res) => {
@@ -7017,8 +7047,20 @@ export function agentRoutes(
     const limitParam = req.query.limit as string | undefined;
     const limit = limitParam ? Math.max(1, Math.min(1000, parseInt(limitParam, 10) || 200)) : undefined;
     const summary = req.query.summary === "true" || req.query.summary === "1";
+
     const runs = await heartbeat.list(companyId, agentId, limit, { summary });
-    res.json(await runRedactions.redactForRuns(companyId, runs));
+    const redactedRuns = await runRedactions.redactForRuns(companyId, runs);
+    const actorShape = JSON.stringify([
+      getActorIdentityPart(req),
+      req.actor.type === "board" ? req.actor.companyIds ?? [] : req.actor.companyId,
+      Array.isArray(req.actor.onBehalfOfMemberships)
+        ? req.actor.onBehalfOfMemberships.map((membership) => ({ companyId: membership.companyId, status: membership.status, membershipRole: membership.membershipRole }))
+        : null,
+      redactedRuns,
+    ]);
+    const vk = await heartbeat.listVersionKey(companyId, agentId, limit, summary, actorShape);
+    if (notModifiedOrSetEtag(req, res, vk)) return;
+    res.json(redactedRuns);
   });
 
   router.get("/companies/:companyId/provider-traces", async (req, res) => {

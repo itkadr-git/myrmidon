@@ -557,7 +557,7 @@ export async function runSecurityRegressionHarness(scratchDir?: string): Promise
     // -------------------------------------------------------------------------
     const arbitraryEnv = {
       LD_PRELOAD: "/tmp/malicious.so",
-      MYRMIDON_ADMIN_TOKEN: "injected-token",
+      EVIL_ADMIN_TOKEN: "injected-token",
     };
     const envCheck = validateContainerEnv(arbitraryEnv);
     scenarios.push({

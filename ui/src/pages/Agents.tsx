@@ -324,7 +324,7 @@ export function Agents({ initialView = "list" }: { initialView?: AgentsView } = 
     resourceKey: "live-runs:agents-page",
     queryKey: runsQueryKey,
     enabled: !!selectedCompanyId,
-    refetchInterval: 15_000,
+    refetchInterval: 60_000,
     leaderOnly: true,
   });
   const { data: runs, dataUpdatedAt: runsUpdatedAt } = useQuery({

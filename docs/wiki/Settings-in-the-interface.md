@@ -177,3 +177,6 @@ model the gateway returns in its response, then the LiteLLM `model_group`
 the request was routed to, then the model configured on the launch. Empty
 strings and the sentinel `unknown` are dropped at each step, so the field is
 either a real model name or absent.
+# Agents page live-run refresh
+
+The Agents page refreshes live-run data every 60 seconds. Use the page's manual refresh when an immediate update is needed.
