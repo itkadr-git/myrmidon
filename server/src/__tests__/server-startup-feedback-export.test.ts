@@ -64,11 +64,15 @@ const {
     },
   }) as never);
   const createBetterAuthInstanceMock = vi.fn(() => ({}));
-  const createDbMock = vi.fn(() => ({
-    select: vi.fn(() => ({
-      from: vi.fn(() => ({ where: vi.fn(async () => []) })),
-    })),
-  }) as never);
+  const existingSettingsRows: Array<Record<string, unknown>> = [];
+  const createDbMock = vi.fn(() => {
+    const db = {
+      select: vi.fn(() => ({
+        from: vi.fn(() => ({ where: vi.fn(async () => existingSettingsRows) })),
+      })),
+    };
+    return db as never;
+  });
   const detectPortMock = vi.fn(async ({ port }: { port: number; hostname: string }) => port);
   const deriveAuthTrustedOriginsMock = vi.fn(() => []);
   const resolveHeartbeatSchedulingSuppressionMock = vi.fn(() => ({
@@ -654,6 +658,17 @@ describe("startServer feedback export wiring", () => {
     const originalRole = process.env.PAPERCLIP_PROCESS_ROLE;
     process.env.PAPERCLIP_PROCESS_ROLE = "api";
     loadConfigMock.mockReturnValue(buildTestConfig({ heartbeatSchedulerEnabled: true }));
+    createDbMock.mock.results[0]?.value.select.mockReturnValue({
+      from: vi.fn(() => ({ where: vi.fn(async () => [
+        {
+          singletonKey: "default",
+          general: {},
+          experimental: {},
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        },
+      ]) })),
+    });
     const intervals: number[] = [];
     const setIntervalSpy = vi.spyOn(globalThis, "setInterval").mockImplementation(((
       callback: () => void,
