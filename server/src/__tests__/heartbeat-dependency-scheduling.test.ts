@@ -276,6 +276,7 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
       set: { general: { teamLiveness: { idlePickupEnabled: true } } },
     });
     await heartbeat.resetIdlePickupForTest();
+    await heartbeat.sweepIdlePickup(new Date(0));
     const companyId = randomUUID();
     const agentId = randomUUID();
     const blockerId = randomUUID();
