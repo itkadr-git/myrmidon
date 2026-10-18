@@ -58,6 +58,13 @@ rate is visible as a number, not a feeling.
 
 ## In detail
 
+The nightly export runs only when `MYRMIDON_KNOWLEDGE_EXPORT_REPO` is
+configured. It writes delivered knowledge as Markdown, excludes drafts and
+the private `life` pages, and avoids a commit when output has not changed.
+`MYRMIDON_KNOWLEDGE_EXPORT_BRANCH` selects the branch (default
+`knowledge-export`); `MYRMIDON_KNOWLEDGE_EXPORT_INTERVAL_HOURS` sets the
+interval (default 24 hours, range 1–168). The database remains authoritative.
+
 - [Foraging: knowledge gathering from approved sources](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/foraging.md)
 - [Reference-task evals and the LLM judge](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/reference-task-evals.md)
 - [Evals: cross-family judge selection](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/evals-judge-family-selection.md)

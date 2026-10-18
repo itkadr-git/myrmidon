@@ -24,6 +24,11 @@ The agent card is the operator's window into all of this: the card's tabs
 show the state, the memory, the instructions, the container and the cost of
 recent runs.
 
+The Agents page offers company-wide and per-project scopes. Choose a scope
+with the company/project tabs; the selected project is kept in the URL and the
+list and organization tree are filtered to its members. Role and model filters
+can further narrow the results.
+
 ## The container runtime
 
 An agent with the `hermes_gateway` adapter can run inside a Docker container
