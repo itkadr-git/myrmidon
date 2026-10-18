@@ -14,6 +14,16 @@ draft → approved revisions and a change log. An approved regulation is what
 agents of that role are expected to follow; editing one is a deliberate,
 reviewed act, not a quiet file change.
 
+## Knowledge revision translations
+
+Knowledge revisions can carry a language tag and link to a canonical revision.
+When reading or searching for an approved revision in a requested language,
+Myrmidon selects the approved translation of the canonical revision when one
+exists; otherwise it falls back to the canonical revision. A translation must
+use a different language from its canonical revision. Translations are stored
+and selected by the server; the current interface and import flow do not
+provide translation editing.
+
 ## Foraging: gathering fresh knowledge
 
 Foraging lets the colony collect fresh knowledge from approved external
