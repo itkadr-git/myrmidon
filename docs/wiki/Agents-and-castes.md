@@ -37,6 +37,28 @@ settings and shows the live state. A bot container:
 - reaches the board through its own gateway key, and reaches the outside
   through the fleet proxy (see [Operations and maintenance](Server-maintenance)).
 
+### Protecting bot-disk archives
+
+The host-side `botd` archive writer creates bundle and tar files with mode
+`0640`, private patches and manifests with `0600`, and archive directories
+with `0750`, regardless of the process's inherited umask. Disk-state and
+attention/cooldown cache files are created as `0640`. This protects the only
+copy of unpushed bot work from other processes sharing the host. Existing
+archives are not rewritten; their retention and layout are unchanged.
+
+### Optional centralized memory for fleetd
+
+The site-level `fleetd` daemon can optionally proxy centralized-memory
+requests when its JSON config has a `memory` block with `enabled: true`, an
+HTTP(S) `url`, and a non-empty `bank`. An optional bearer `token` and
+`timeoutMs` (100–120000; default 15000) configure upstream requests. The
+memory routes remain disabled by default; without an enabled block they
+return `503 centralized_memory_disabled` and make no upstream request.
+`--check-config` rejects missing banks, non-HTTP(S) URLs and URLs containing
+credentials. The client uses only HTTP(S), not a host path or Docker socket.
+These routes require fleetd's normal bearer authentication. See the
+[fleetd change note](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/changes/fleetd-centralized-memory-client.md).
+
 ## Instructions with history
 
 Every change to an agent's instructions bundle — a file put, a delete, a
