@@ -4,9 +4,11 @@
 
 Scheduled issue monitors now wake their assignee for `blocked` tasks as well as active/review tasks. Terminal tasks clear schedules; overdue schedules surface as `issue_monitor_overdue` in the operator Attention feed. Every skipped monitor is journaled with its reason, and existing terminal-task schedules are cleared by migration.
 
-## settings-en-append
+## settings-en-new
 
-<!-- section: Track 2 — wake and run core -->
+### Security harness test input
+
+| Variable | Function | Default | What it does | How to disable / special |
 | `MYRMIDON_ADMIN_TOKEN` | Security harness fixture | unset | Synthetic forbidden environment key used only by the site-agent security harness; it is not read as a server setting | Never configure or supply this key to agents |
 
 ## changelog-ru
