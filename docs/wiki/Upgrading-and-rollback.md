@@ -8,18 +8,17 @@ On a server installed with the one-line command, updating is the same
 command again:
 
 ```sh
-curl -fsSL https://github.com/itkadr-git/myrmidon/releases/download/myr-v1.6.5-rc.5/install.sh | sudo bash
+curl -fsSL https://github.com/itkadr-git/myrmidon/releases/download/myr-v1.6.6-rc.7/install.sh | sudo bash
 ```
 
-Until the 1.6.5 final ships, the command installs the current release
-candidate — the installer reaches the release assets only from 1.6.5
-onwards, so the permanent `releases/latest/download/install.sh` link
-answers 404 for now and returns with the final. The installer resolves the
-release, **dumps the database before anything changes**, switches to it and
+The current published candidate is 1.6.6-rc.7. The installer is available
+from release 1.6.5 onward; `releases/latest/download/install.sh` follows the
+latest stable release, so use the exact RC tag to install a candidate. The
+installer resolves the release, **dumps the database before anything changes**, switches to it and
 waits for the board to answer. If the new board does not come up healthy,
 it **rolls back to the previous release on its own** and keeps the dump. A
 specific release: `install.sh --version myr-vX.Y.Z`. Once the short
-`latest` link is back it still follows only the newest **stable** release;
+`latest` link follows the newest **stable** release;
 an RC installs only when asked for by its exact tag.
 
 ## Upgrading with deploy.sh (manual flow)

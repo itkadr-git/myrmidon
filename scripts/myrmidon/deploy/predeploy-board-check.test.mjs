@@ -86,8 +86,12 @@ case "$1" in
         echo 'psql: error: connection to server: FATAL: role "myrmidon" does not exist' >&2
         exit 2
       fi
-      if [ -f "$SANDBOX/copy-available.txt" ]; then cat "$SANDBOX/copy-available.txt"; fi
-      exit 0 ;;
+      case "$*" in *"SELECT name FROM pg_available_extensions"*)
+        if [ -f "$SANDBOX/copy-available.txt" ]; then cat "$SANDBOX/copy-available.txt"; fi
+        exit 0 ;;
+      esac
+      echo 'psql: error: unexpected pg_available_extensions query' >&2
+      exit 2 ;;
     esac
     case "$*" in *pg_extension*)
       if [ -f "$SANDBOX/copy-installed.txt" ]; then cat "$SANDBOX/copy-installed.txt"; fi
@@ -158,7 +162,7 @@ function sandbox({
   fs.mkdirSync(composeDir);
   fs.writeFileSync(path.join(bin, "docker"), FAKE_DOCKER, { mode: 0o755 });
   fs.writeFileSync(path.join(bin, "curl"), FAKE_CURL, { mode: 0o755 });
-  fs.writeFileSync(path.join(dir, "calls.log"), "");
+  fs.writeFileSync(path.join(bin, "calls.log"), "");
   fs.writeFileSync(path.join(dir, "health.json"), JSON.stringify(health));
   fs.writeFileSync(path.join(dir, "label-version"), `${labelVersion}\n`);
   fs.writeFileSync(path.join(dir, "label-revision"), `${labelRevision}\n`);
@@ -201,6 +205,11 @@ const calls = (sb) => read(path.join(sb.dir, "calls.log"));
 const full = (sb, ...args) => run(sb, ["--digest", NEW, "--dump", sb.dump, ...args]);
 
 describe("predeploy-board-check.sh (PREDEPLOY-DB-CHECK: the 05.10 incident)", () => {
+  it("requires docker before running the predeploy probe", () => {
+    const script = fs.readFileSync(path.join(HERE, "predeploy-board-check.sh"), "utf8");
+    assert.match(script, /require_cmd docker curl jq/);
+  });
+
   it("proves the image on a copy of the production database: own network, the new dockergate, the attention list, teardown", () => {
     const sb = sandbox();
     const { code, out } = full(sb, "--dockergate-digest", DG);
