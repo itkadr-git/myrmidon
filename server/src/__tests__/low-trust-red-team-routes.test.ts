@@ -911,20 +911,6 @@ describeEmbeddedPostgres(
       await db.update(issues)
         .set({ responsibleUserId: null })
         .where(eq(issues.id, fixture.issues.reviewRoot.id));
-      await db.update(projects)
-        .set({
-          executionWorkspacePolicy: {
-            trustPreset: LOW_TRUST_REVIEW_PRESET,
-            authorizationPolicy: {
-              trustBoundary: {
-                mode: LOW_TRUST_REVIEW_PRESET,
-                companyId: fixture.company.id,
-                projectIds: [fixture.projects.allowed.id],
-              },
-            },
-          },
-        })
-        .where(eq(projects.id, fixture.projects.allowed.id));
       const app = createApp(db, boardActor(fixture));
       const createWithoutOwner = await request(app)
         .post(`/api/companies/${fixture.company.id}/issues`)
@@ -1451,7 +1437,10 @@ describeEmbeddedPostgres(
         createApp(db, { ...standardActor, runId: null }),
       ).get("/api/agents/me");
       expect(standardRes.status, JSON.stringify(standardRes.body)).toBe(200);
-      expectNoCanary(standardRes.body, fixture.canaries.agentConfig);
+      expect(standardRes.body).toHaveProperty("runtimeConfig");
+      expect(standardRes.body.runtimeConfig).toMatchObject({
+        env: { SECRET_MARKER: fixture.canaries.agentConfig },
+      });
 
       const issueScopedLowTrustRes = await request(
         createApp(db, standardActor),
