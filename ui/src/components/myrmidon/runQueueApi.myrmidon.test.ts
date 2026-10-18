@@ -1,5 +1,6 @@
-// myrmidon(1.6.5 RUN-PRIORITY B): the run-queue client contract — the wait
-// reason read answers with null (never a throw, never a made-up number), the line formatter renders "position N of M,
+// myrmidon(1.6.5 RUN-PRIORITY B): the run-queue client contract — the position
+// endpoint answers with null (never a throw, never a made-up number) while
+// part A is not deployed, the line formatter renders "position N of M,
 // waiting: <reason>" from either source, and the metadata parse accepts only
 // the shape the server carries.
 import { describe, it, expect, vi } from "vitest";
@@ -49,8 +50,8 @@ function enT(key: string, options?: Record<string, unknown>) {
   return text;
 }
 
-describe("runQueueApi.position — the queued run's wait reason", () => {
-  it("returns null when the run cannot be read (404/405)", async () => {
+describe("runQueueApi.position — degrades before part A is deployed", () => {
+  it("returns null on 404/405 (endpoint not served yet)", async () => {
     mockGet.mockRejectedValueOnce(new ApiError("not found", 404, undefined));
     await expect(runQueueApi.position("run-1")).resolves.toBeNull();
     mockGet.mockRejectedValueOnce(new ApiError("method not allowed", 405, undefined));
@@ -62,63 +63,22 @@ describe("runQueueApi.position — the queued run's wait reason", () => {
     await expect(runQueueApi.position("run-1")).rejects.toBeInstanceOf(ApiError);
   });
 
-  it("reads the wait reason and the rank the server publishes on the queued run", async () => {
+  it("reads the position envelope", async () => {
     mockGet.mockResolvedValueOnce({
-      id: "run-1",
-      status: "queued",
-      createdAt: "2026-10-08T00:00:00Z",
-      contextSnapshot: { waitReason: "host_cpu", queuePosition: 3, queueLength: 12 },
+      position: { runId: "run-1", position: 3, queueLength: 12, waitReason: "host_cpu", queuedAt: null },
     });
-    await expect(runQueueApi.position("run-1")).resolves.toEqual({
-      runId: "run-1",
-      position: 3,
-      queueLength: 12,
-      waitReason: "host_cpu",
-      queuedAt: "2026-10-08T00:00:00Z",
-    });
-    expect(mockGet).toHaveBeenLastCalledWith("/heartbeat-runs/run-1");
-  });
-
-  it("keeps the rank null for a server that publishes no rank, and ignores a foreign shape", async () => {
-    mockGet.mockResolvedValueOnce({
-      id: "run-1",
-      status: "queued",
-      createdAt: "2026-10-08T00:00:00Z",
-      contextSnapshot: { waitReason: "host_cpu" },
-    });
-    await expect(runQueueApi.position("run-1")).resolves.toEqual({
-      runId: "run-1",
-      position: null,
-      queueLength: null,
-      waitReason: "host_cpu",
-      queuedAt: "2026-10-08T00:00:00Z",
-    });
-    mockGet.mockResolvedValueOnce({
-      id: "run-1",
-      status: "queued",
-      contextSnapshot: { waitReason: "priority", queuePosition: "2", queueLength: null },
-    });
-    await expect(runQueueApi.position("run-1")).resolves.toMatchObject({
-      position: null,
-      queueLength: null,
-      waitReason: "priority",
-    });
-  });
-
-  it("answers null for a run that is no longer queued", async () => {
-    mockGet.mockResolvedValueOnce({ id: "run-1", status: "running", contextSnapshot: { waitReason: "host_cpu" } });
-    await expect(runQueueApi.position("run-1")).resolves.toBeNull();
+    await expect(runQueueApi.position("run-1")).resolves.toMatchObject({ position: 3, queueLength: 12, waitReason: "host_cpu" });
+    expect(mockGet).toHaveBeenLastCalledWith("/myrmidon/run-queue/position?runId=run-1");
   });
 });
 
 describe("runQueueApi.priority — same degradation, settings round-trip", () => {
-  it("null on 404; GET and PATCH go to the core's run-priority endpoint", async () => {
+  it("null on 404; PATCH goes to the settings endpoint", async () => {
     mockGet.mockRejectedValueOnce(new ApiError("not found", 404, undefined));
     await expect(runQueueApi.priority()).resolves.toBeNull();
-    expect(mockGet).toHaveBeenLastCalledWith("/myrmidon/run-priority");
-    mockPatch.mockResolvedValueOnce({ settings: {}, source: "settings" });
-    await runQueueApi.updatePriority({ agingStepMinutes: 1 });
-    expect(mockPatch).toHaveBeenCalledWith("/myrmidon/run-priority", { agingStepMinutes: 1 });
+    mockPatch.mockResolvedValueOnce({ settings: {}, sources: {} });
+    await runQueueApi.updatePriority({ agingStepPerHour: 1 });
+    expect(mockPatch).toHaveBeenCalledWith("/myrmidon/run-queue/priority", { agingStepPerHour: 1 });
   });
 });
 
