@@ -70,6 +70,22 @@ an optional finisher summarizes the outcome.
 - [Discussion rooms](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/agent-exchange.md)
 - Review routing: [SETTINGS.md](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/SETTINGS.md), section «REVIEW-ROUTING»
 
+## Recovery and requeue holds
+
+If a failed run is reconciled after an operator has already returned its task
+to `todo` or `backlog`, the recovery sweep preserves that chosen status rather
+than changing it to `blocked`. It records a closed hold (`outcome = "cancelled"`)
+so the task is not automatically replayed. An operator can explicitly resume
+the held task by moving it to a working status; normal recovery of tasks that
+were not requeued remains unchanged.
+
+## Concurrent settings edits
+
+General and experimental instance-settings updates are serialized on the
+`instance_settings` row. Concurrent PATCH requests therefore merge against the
+latest stored document instead of overwriting one another's edits. This also
+covers creation of the first settings row.
+
 ## Review admission
 
 When a task enters `in_review` or its reviewer changes, Myrmidon persists the reviewer wake request in the same transaction as the task update. Review-stage wake requests are persisted through that transaction path as well. This keeps the task update and the request to wake its reviewer atomic.
