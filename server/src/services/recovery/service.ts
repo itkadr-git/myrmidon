@@ -3987,7 +3987,10 @@ export function recoveryService(
     rerouteToSharedQueue?: boolean;
   }) {
     if (isStrandedIssueRecoveryIssue(input.issue)) {
-      if (input.rerouteToSharedQueue) {
+      if (
+        input.rerouteToSharedQueue &&
+        isInfraInterruptErrorCode(input.latestRun.errorCode)
+      ) {
         const rerouted = await rerouteStrandedIssueToSharedQueue({
           issue: input.issue,
           reason: input.notice?.title ?? "stranded recovery issue",
@@ -4410,7 +4413,11 @@ export function recoveryService(
 
     // L1 infrastructure reroutes must happen before the board recovery action;
     // generic escalation callers still need the action to establish `blocked`.
-    if (input.rerouteToSharedQueue && isInfraInterruptErrorCode(input.latestRun.errorCode)) {
+    if (
+      input.rerouteToSharedQueue &&
+      input.latestRun &&
+      isInfraInterruptErrorCode(input.latestRun.errorCode)
+    ) {
       // Rerouting is the recovery disposition itself. Apply it before creating
       // a board action, which would otherwise turn the issue blocked first.
       const rerouted = await rerouteStrandedIssueToSharedQueue({
