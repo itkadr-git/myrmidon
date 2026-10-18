@@ -156,6 +156,26 @@ describe("archive()", () => {
     assert.match(verifyEntry(entry, { repoPath: copy }).reason, /missing/);
   });
 
+  it("all archive files are born 0600/0640 (dirs 0750), even under a permissive umask", () => {
+    dirtyCopy();
+    const previous = process.umask(0o022); // production finding: botd ran with 0022 -> 0644 archives
+    try {
+      const r = archive(copy, KEY, { archiveRoot, now: at("2026-10-06T14:01:00Z") });
+      assert.equal(r.ok, true, r.reason);
+      // child-tool outputs (git bundle create, tar -cf) land 0640 inside the umask window;
+      // direct writes (patch, manifest.json) are explicit 0600; the archive dir 0750.
+      for (const f of [r.entry.bundle, r.entry.untrackedTar]) {
+        assert.equal(fs.statSync(f).mode & 0o777, 0o640, `${path.basename(f)} must be 0640`);
+      }
+      for (const f of [r.entry.patch, path.join(archiveRoot, "manifest.json")]) {
+        assert.equal(fs.statSync(f).mode & 0o777, 0o600, `${path.basename(f)} must be 0600`);
+      }
+      assert.equal(fs.statSync(archiveRoot).mode & 0o777, 0o750, "archiveRoot must be 0750");
+    } finally {
+      process.umask(previous);
+    }
+  });
+
   it("two archives of one key in the same second get distinct names", () => {
     dirtyCopy();
     const a = archive(copy, KEY, { archiveRoot, now: at("2026-10-06T14:01:00Z") });

@@ -113,7 +113,10 @@ function readJson(file, fallback) {
 function writeDiskState(state) {
   fs.mkdirSync(HOME, { recursive: true });
   const tmp = `${DISK_STATE_PATH}.${process.pid}.tmp`;
-  fs.writeFileSync(tmp, `${JSON.stringify(state, null, 2)}\n`, { mode: 0o644 });
+  // myrmidon(BOT-UMASK): botd may outlive an entrypoint without the umask 077
+  // prologue (rolling image updates); the state file is born group-readable,
+  // never world-readable, regardless of the process umask.
+  fs.writeFileSync(tmp, `${JSON.stringify(state, null, 2)}\n`, { mode: 0o640 });
   fs.renameSync(tmp, DISK_STATE_PATH);
 }
 
