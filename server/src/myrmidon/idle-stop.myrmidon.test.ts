@@ -187,7 +187,7 @@ describe('IdleStopService', () => {
 
       await idleStopService.performSweep();
 
-      expect(mockDriver.stop).toHaveBeenCalledWith(botKey);
+      expect(mockDriver.stopIdle).toHaveBeenCalledWith(botKey);
     });
 
     it('should not stop container that was recently active', async () => {

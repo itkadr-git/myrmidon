@@ -1160,6 +1160,8 @@ describe("dockerBotContainerDriver against a fake Docker daemon", () => {
     expect({ ...status, inspect: undefined }).toEqual({
       botKey: "agent-a",
       state: "running",
+      idleStopped: false,
+      maxConcurrentRuns: undefined,
       image: "myrmidon-hermes:1.1.0",
       restartHash: "restart-1",
       filesHash: "files-1",
