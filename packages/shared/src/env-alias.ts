@@ -6,9 +6,8 @@
  * warning per variable name is written to the log, so an operator with an
  * existing installation sees the rename before the alias is removed.
  *
- * Precedence: MYRMIDON_<NAME> wins when both names are set; PAPERCLIP_<NAME>
- * is consulted only when MYRMIDON_<NAME> is unset (undefined or empty
- * string, matching the dotenv convention where an empty value is "not set").
+ * Precedence: MYRMIDON_<NAME> wins whenever it is present (including the
+ * empty string); PAPERCLIP_<NAME> is consulted only when it is undefined.
  *
  * Every variable name the product recognizes is listed in
  * docs/myrmidon/SETTINGS.md (the mapping table section).
