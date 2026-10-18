@@ -68,7 +68,7 @@ interface WriterLog {
 function stubWriter(log: WriterLog, options: { failOn?: string } = {}): KnowledgeWriter {
   return {
     async create(input, actor) {
-      if (options.failOn === input.slug) {
+      if (options.failOn === input.slug || log.create.some((call) => call.input.slug === input.slug)) {
         throw Object.assign(new Error("slug taken"), { code: "knowledge_slug_taken" });
       }
       log.create.push({ input, actor });
@@ -102,7 +102,8 @@ function stubWriter(log: WriterLog, options: { failOn?: string } = {}): Knowledg
     },
     async listRevisions(_nestId, slug) {
       log.listRevisions.push(slug);
-      return log.revisions.get(slug) ?? [];
+      const current = log.revisions.get(slug)?.at(-1);
+      return current ? [current] : [];
     },
     async search(_nestId, query) {
       log.search.push(query);
@@ -381,6 +382,7 @@ describe("import run", () => {
     expect(second.failed).toEqual([]);
     expect(revisions.at(-1)?.content).toContain("Adm caste roles");
     expect(revisions.at(-1)?.content).toContain("Bbq caste roles");
+    expect(firstRevisionCount).toBe(1);
     expect(revisions.length).toBe((firstRevisionCount ?? 0) + 1);
     expect(revisions.at(-1)?.sources.map((source) => source.ref)).toEqual(expect.arrayContaining([
       "wiki/company/roles-adm.md",
@@ -420,6 +422,7 @@ describe("import run", () => {
     expect(log.create.length).toBe(createsAfterFirst);
     expect(log.draft.length).toBe(draftsAfterFirst);
     expect(second.failed).toEqual([]);
+    expect(second.created).toBe(0);
   });
 
 });

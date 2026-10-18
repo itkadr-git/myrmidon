@@ -307,7 +307,7 @@ export async function runImport(options: ImportOptions): Promise<ImportReport> {
     const content = plan.contents.get(page.path) ?? "";
     const source = sourceByPath.get(page.path);
     const sources = sourcesFor(page, page.plan.sources ?? source?.fields.sources ?? [], plan.map.defaultSources);
-    const existing = created.get(target);
+    let existing = created.get(target);
     if (existing === undefined) {
       const sourceRefs = new Set<string>();
       const uniqueSources = sources.filter((source) => {
@@ -331,6 +331,7 @@ export async function runImport(options: ImportOptions): Promise<ImportReport> {
         sources: uniqueSources,
       };
       if (page.plan.publish === true) publishIntent.push(target);
+      let createdNow = false;
       if (!dryRun) {
         try {
           const alreadyThere = await service.get(nestId, target);
@@ -338,6 +339,7 @@ export async function runImport(options: ImportOptions): Promise<ImportReport> {
             const item = await service.create(input, actor);
             created.set(target, { id: item.id, slug: item.slug, content, sources: uniqueSources });
             createdCount += 1;
+            createdNow = true;
           } else {
             const revisions = await service.listRevisions(nestId, target);
             const currentContent = revisions.at(-1)?.content ?? alreadyThere.deliveredContent ?? "";
@@ -361,20 +363,30 @@ export async function runImport(options: ImportOptions): Promise<ImportReport> {
               bytesWritten += needsContentUpdate ? Buffer.byteLength(content, "utf8") : 0;
               appended += 1;
             }
-            created.set(target, { id: "existing", slug: target, content: currentContent, sources: [...preservedSources, ...newSources.map((source) => ({ ...source }))] });
+            const allSources = [...preservedSources, ...newSources.map((source) => ({ ...source, note: source.note ?? null }))].filter((source, index, all) =>
+              all.findIndex((candidate) => candidate.kind === source.kind && candidate.ref === source.ref) === index,
+            );
+            created.set(target, { id: "existing", slug: target, content: needsContentUpdate ? content : currentContent, sources: allSources });
           }
         } catch (error) {
           failed.push({ path: page.path, code: (error as { code?: string }).code ?? "error" });
           continue;
         }
-      } else {
-        created.set(target, { id: `dry-run:${target}`, slug: target, content, sources: uniqueSources });
       }
-      if (!dryRun && created.get(target)?.id === "existing") continue;
-      if (created.get(target)?.id !== "existing") createdCount += 1;
-      bytesWritten += Buffer.byteLength(content, "utf8");
-      sourcesWritten += uniqueSources.length;
-      revisionsWritten += 1;
+      if (!dryRun && created.get(target)?.id === "existing") {
+        const existingItem = created.get(target)!;
+        existing = { ...existingItem, sources: [...(existingItem.sources ?? [])] };
+      } else if (dryRun) {
+        created.set(target, { id: `dry-run:${target}`, slug: target, content, sources: uniqueSources });
+        createdCount += 1;
+        bytesWritten += Buffer.byteLength(content, "utf8");
+        sourcesWritten += uniqueSources.length;
+        revisionsWritten += 1;
+      } else if (createdNow) {
+        bytesWritten += Buffer.byteLength(content, "utf8");
+        sourcesWritten += uniqueSources.length;
+        revisionsWritten += 1;
+      }
     } else {
       // A second source page for the same target is knowledge, not noise:
       // its text is appended as a new revision so nothing is lost (§5.3).
