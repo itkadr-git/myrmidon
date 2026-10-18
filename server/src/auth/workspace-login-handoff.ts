@@ -22,7 +22,7 @@
  *    exchanged a second time even inside that window.
  */
 
-import { createHmac, timingSafeEqual } from "node:crypto";
+import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { readProductEnvFrom } from "@paperclipai/shared/env-alias";
 
 /** Ticket envelope version. Bumped whenever the signed payload shape changes. */
