@@ -104,40 +104,48 @@ is_in_use() {
     return 0
   fi
 
+  local canon_target
+  canon_target="$(realpath "$path" 2>/dev/null || readlink -f "$path" 2>/dev/null || echo "$path")"
+
+  local checked=0
+
   # Primary guaranteed tool: lsof with recursive directory inspection (+D)
   if command -v lsof >/dev/null 2>&1; then
+    checked=1
     local lsof_code=0
     if [[ -d "$path" ]]; then
       lsof -w +D "$path" >/dev/null 2>&1 || lsof_code=$?
+      if [[ $lsof_code -ne 0 && "$canon_target" != "$path" && -d "$canon_target" ]]; then
+        lsof_code=0
+        lsof -w +D "$canon_target" >/dev/null 2>&1 || lsof_code=$?
+      fi
     else
       lsof -w "$path" >/dev/null 2>&1 || lsof_code=$?
+      if [[ $lsof_code -ne 0 && "$canon_target" != "$path" ]]; then
+        lsof_code=0
+        lsof -w "$canon_target" >/dev/null 2>&1 || lsof_code=$?
+      fi
     fi
     if [[ $lsof_code -eq 0 ]]; then
       return 0 # Open file found: in use
-    elif [[ $lsof_code -eq 1 ]]; then
-      return 1 # Verified not in use
-    else
+    elif [[ $lsof_code -gt 1 ]]; then
       # Unexpected error from lsof (e.g. status > 1): fail closed
       log "WARN" "lsof returned code $lsof_code on $path; failing closed"
       return 0
     fi
   fi
 
-  # Native Linux fallback: inspect /proc for open file descriptors, cwd, and exe
+  # Native Linux fallback / complementary inspection: inspect /proc for open file descriptors, cwd, and exe
   if [[ -d /proc && -d "/proc/$$" ]]; then
-    local canon_target
-    canon_target="$(readlink -f "$path" 2>/dev/null || echo "$path")"
-
-    local pids_inspected=0
+    checked=1
     for proc_dir in /proc/[0-9]*; do
       [[ -d "$proc_dir" ]] || continue
-      pids_inspected=1
 
       # Check process current working directory
       local cwd_link
       cwd_link="$(readlink "$proc_dir/cwd" 2>/dev/null || true)"
       if [[ -n "$cwd_link" ]]; then
-        if [[ "$cwd_link" == "$canon_target" || "$cwd_link" == "$canon_target"/* ]]; then
+        if [[ "$cwd_link" == "$canon_target" || "$cwd_link" == "$canon_target"/* || "$cwd_link" == "$path" || "$cwd_link" == "$path"/* ]]; then
           return 0
         fi
       fi
@@ -146,7 +154,7 @@ is_in_use() {
       local exe_link
       exe_link="$(readlink "$proc_dir/exe" 2>/dev/null || true)"
       if [[ -n "$exe_link" ]]; then
-        if [[ "$exe_link" == "$canon_target" || "$exe_link" == "$canon_target"/* ]]; then
+        if [[ "$exe_link" == "$canon_target" || "$exe_link" == "$canon_target"/* || "$exe_link" == "$path" || "$exe_link" == "$path"/* ]]; then
           return 0
         fi
       fi
@@ -158,17 +166,17 @@ is_in_use() {
           local fd_link
           fd_link="$(readlink "$fd" 2>/dev/null || true)"
           if [[ -n "$fd_link" ]]; then
-            if [[ "$fd_link" == "$canon_target" || "$fd_link" == "$canon_target"/* ]]; then
+            if [[ "$fd_link" == "$canon_target" || "$fd_link" == "$canon_target"/* || "$fd_link" == "$path" || "$fd_link" == "$path"/* ]]; then
               return 0
             fi
           fi
         done
       fi
     done
+  fi
 
-    if [[ $pids_inspected -eq 1 ]]; then
-      return 1 # Verified no active process holds files open
-    fi
+  if [[ $checked -eq 1 ]]; then
+    return 1 # Verified not in use by any available inspection tool
   fi
 
   # Fail-closed: No reliable inspection tool available

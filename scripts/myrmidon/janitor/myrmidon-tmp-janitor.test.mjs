@@ -174,16 +174,38 @@ describe("tmp-janitor", () => {
     fs.writeFileSync(lockFile, "lock");
     setOldMtime(activeDir, 120);
 
-    // Keep lockFile open in a child process
+    // Keep lockFile open in a child process with deterministic readiness handshake
     const holder = spawn(
       process.execPath,
-      ["-e", "const fs = require('fs'); const fd = fs.openSync(process.argv[1], 'r'); setInterval(() => {}, 1000);", lockFile],
-      { stdio: "ignore" }
+      [
+        "-e",
+        "const fs = require('fs'); const fd = fs.openSync(process.argv[1], 'r'); process.stdout.write('OPENED\\n'); setInterval(() => {}, 1000);",
+        lockFile,
+      ],
+      { stdio: ["ignore", "pipe", "pipe"] }
     );
 
+    let holderStderr = "";
+    holder.stderr.on("data", (chunk) => {
+      holderStderr += chunk;
+    });
+
     try {
-      // Give child process time to open file
-      await new Promise((resolve) => setTimeout(resolve, 300));
+      await new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error("Timeout waiting for child process to open file")), 5000);
+        holder.stdout.once("data", () => {
+          clearTimeout(timer);
+          resolve();
+        });
+        holder.on("error", (err) => {
+          clearTimeout(timer);
+          reject(err);
+        });
+        holder.on("exit", (code) => {
+          clearTimeout(timer);
+          reject(new Error(`Child process exited prematurely with code ${code}: ${holderStderr}`));
+        });
+      });
 
       const resActive = runJanitor(["--target", sandbox, "--ttl-minutes", "60"]);
       assert.equal(resActive.status, 0, resActive.stderr);
@@ -191,8 +213,11 @@ describe("tmp-janitor", () => {
       assert.match(resActive.stdout, /skipped active: 1/);
     } finally {
       holder.kill();
-      // Wait for process to exit and release file
-      await new Promise((resolve) => setTimeout(resolve, 300));
+      await new Promise((resolve) => {
+        if (holder.exitCode !== null) return resolve();
+        holder.on("exit", resolve);
+        setTimeout(resolve, 1000);
+      });
     }
 
     const resClean = runJanitor(["--target", sandbox, "--ttl-minutes", "60"]);
@@ -208,13 +233,36 @@ describe("tmp-janitor", () => {
     fs.mkdirSync(subDir, { recursive: true });
     setOldMtime(activeDir, 120);
 
-    const holder = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000);"], {
-      cwd: subDir,
-      stdio: "ignore",
+    const holder = spawn(
+      process.execPath,
+      ["-e", "process.stdout.write('READY\\n'); setInterval(() => {}, 1000);"],
+      {
+        cwd: subDir,
+        stdio: ["ignore", "pipe", "pipe"],
+      }
+    );
+
+    let holderStderr = "";
+    holder.stderr.on("data", (chunk) => {
+      holderStderr += chunk;
     });
 
     try {
-      await new Promise((resolve) => setTimeout(resolve, 300));
+      await new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error("Timeout waiting for child process to start")), 5000);
+        holder.stdout.once("data", () => {
+          clearTimeout(timer);
+          resolve();
+        });
+        holder.on("error", (err) => {
+          clearTimeout(timer);
+          reject(err);
+        });
+        holder.on("exit", (code) => {
+          clearTimeout(timer);
+          reject(new Error(`Child process exited prematurely with code ${code}: ${holderStderr}`));
+        });
+      });
 
       const resActive = runJanitor(["--target", sandbox, "--ttl-minutes", "60"]);
       assert.equal(resActive.status, 0, resActive.stderr);
@@ -222,7 +270,11 @@ describe("tmp-janitor", () => {
       assert.match(resActive.stdout, /skipped active: 1/);
     } finally {
       holder.kill();
-      await new Promise((resolve) => setTimeout(resolve, 300));
+      await new Promise((resolve) => {
+        if (holder.exitCode !== null) return resolve();
+        holder.on("exit", resolve);
+        setTimeout(resolve, 1000);
+      });
     }
 
     const resClean = runJanitor(["--target", sandbox, "--ttl-minutes", "60"]);
