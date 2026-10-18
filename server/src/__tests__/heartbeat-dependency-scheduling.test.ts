@@ -371,26 +371,9 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
     });
     expect(blockedWakeRequest).toBe(true);
 
-    const readyWakeRequest = await waitForCondition(async () => {
-      const rows = await db
-        .select({
-          status: agentWakeupRequests.status,
-          reason: agentWakeupRequests.reason,
-          idempotencyKey: agentWakeupRequests.idempotencyKey,
-          payload: agentWakeupRequests.payload,
-        })
-        .from(agentWakeupRequests)
-        .where(
-          and(
-            eq(agentWakeupRequests.agentId, agentId),
-            eq(agentWakeupRequests.reason, "idle_pickup"),
-            sql`${agentWakeupRequests.idempotencyKey} IN (${`idle_pickup:${readyIssueId}`}, ${`idle_pickup:${blockedIssueId}`})`,
-          ),
-        )
-        .orderBy(agentWakeupRequests.requestedAt);
-      return rows.some((row) => row.status !== "skipped");
-    });
-    expect(readyWakeRequest).toBe(true);
+    const idlePickupSweep = await heartbeat.sweepIdlePickup(new Date(Date.now() + 60_000));
+    expect(idlePickupSweep.issueIds).toContain(readyIssueId);
+    expect(idlePickupSweep.issueIds).not.toContain(blockedIssueId);
 
     const readyRunsStarted = await waitForCondition(async () => {
       const rows = await db
