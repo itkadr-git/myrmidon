@@ -766,6 +766,7 @@ import {
   listAgentsWithQueuedRunsAndNoRunningRun,
   queuedResweepArmDecision,
   startQueuedResweepTimer,
+  type RunStartDispatchOptions,
 } from "../myrmidon/run-dispatch/index.js";
 import { loadRunDispatchSettings } from "../myrmidon/run-dispatch/settings.js";
 // myrmidon(PERF-DIET-K): issue-scoped session generations for the container
@@ -9768,7 +9769,7 @@ export function heartbeatService(
             wakeupRequestId: effect.run.wakeupRequestId,
           },
         });
-        await startNextQueuedRunForAgent(effect.run.agentId);
+        await dispatchRunStart(effect.run.agentId);
       } else {
         await logActivity(db, {
           companyId: effect.companyId,
@@ -18557,7 +18558,7 @@ export function heartbeatService(
   const autoResumeSweeper = createAutoResumeSweeper({
     db,
     readLiveness: teamLivenessRead,
-    resumeWake: (agentId) => pauseResumeWakeAgent({ db, startNextQueuedRunForAgent, enqueueWakeup }, agentId),
+    resumeWake: (agentId) => pauseResumeWakeAgent({ db, startNextQueuedRunForAgent: dispatchRunStart, enqueueWakeup }, agentId),
     logActivity: async (input) => {
       await logActivity(db, {
         companyId: input.companyId,
@@ -19425,7 +19426,7 @@ export function heartbeatService(
       await finalizeAgentStatus(run.agentId, "failed", baseMessage, {
         wasFirstHeartbeat: timerClaimWasFirstHeartbeat(run),
       });
-      await startNextQueuedRunForAgent(run.agentId);
+      await dispatchRunStart(run.agentId);
       runningProcesses.delete(run.id);
       reaped.push(run.id);
     }
@@ -20027,7 +20028,7 @@ export function heartbeatService(
         if (await pickHigherPriorityReadyTaskForAgent(agentId, keyedQueuedRuns, prioritySettings)) {
           continue;
         }
-        await startNextQueuedRunForAgent(
+        await dispatchRunStart(
           agentId,
           // myrmidon(1.6.5 RUN-FAIRNESS): the share gate holds an agent only
           // while OTHER agents wait — a lone queue is never throttled.
@@ -21008,6 +21009,8 @@ export function heartbeatService(
     readCutoff: () => getWorktreeExecutionCutoff(),
     log: runDispatchLog,
   });
+  const dispatchRunStart = (agentId: string, options?: RunStartDispatchOptions) =>
+    runStartDispatcher.dispatchRunStart(agentId, options);
   // The worker timer of the pass. Part B swaps this local arming rule for the role
   // gate of T1.1 (`role.executesRuns` plus the background-work gate); until then it
   // is off under a test runner and can be switched off with
@@ -27625,7 +27628,7 @@ export function heartbeatService(
         if (latestRun) await resumeRemoteStopComments(latestRun).catch(err => {
           logger.warn({ err, runId: run.id }, "failed to resume user messages after remote Stop");
         });
-        await startNextQueuedRunForAgent(run.agentId);
+        await dispatchRunStart(run.agentId);
       }
     }
   }
@@ -30103,12 +30106,12 @@ export function heartbeatService(
       }
       if (outcome.kind === "deferred") return null;
       if (outcome.kind === "coalesced") {
-        await startNextQueuedRunForAgent(agent.id);
+        await dispatchRunStart(agent.id);
         return outcome.run;
       }
       if (outcome.kind === "replayed") {
         if (outcome.run.status === "queued")
-          await startNextQueuedRunForAgent(agent.id);
+          await dispatchRunStart(agent.id);
         return outcome.run;
       }
 
@@ -30125,7 +30128,7 @@ export function heartbeatService(
         },
       });
 
-      await startNextQueuedRunForAgent(agent.id);
+      await dispatchRunStart(agent.id);
       return newRun;
     }
 
@@ -30347,7 +30350,7 @@ export function heartbeatService(
       },
     });
 
-    await startNextQueuedRunForAgent(agent.id);
+    await dispatchRunStart(agent.id);
 
     return newRun;
   }
@@ -31098,7 +31101,7 @@ export function heartbeatService(
         await finalizeAgentStatus(run.agentId, "cancelled", undefined, {
           wasFirstHeartbeat: timerClaimWasFirstHeartbeat(run),
         });
-        await startNextQueuedRunForAgent(run.agentId);
+        await dispatchRunStart(run.agentId);
       }
       return cancelled;
     } finally {
@@ -31647,7 +31650,7 @@ export function heartbeatService(
     // issues a drained pause left idle; logic in myrmidon/pause-drain.ts.
     // Its sole caller is the agent resume route.
     resumeAgentAfterPause: async (agentId: string) => {
-      const resumed = await pauseResumeWakeAgent({ db, startNextQueuedRunForAgent, enqueueWakeup }, agentId);
+      const resumed = await pauseResumeWakeAgent({ db, startNextQueuedRunForAgent: dispatchRunStart, enqueueWakeup }, agentId);
       // myrmidon(1.6.5 OPE-6608, review item 2): a lifted pause frees the agent
       // — the board matcher gives it its own ready task, else a ready task of
       // its caste (design §3.5). Fire-and-forget: it never fails the resume.
