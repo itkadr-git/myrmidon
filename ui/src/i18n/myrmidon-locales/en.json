@@ -1051,16 +1051,12 @@
     "source": {
       "settings": "Saved here",
       "env": "From the server environment"
-      "env": "From the server environment",
-      "default": "Default"
     },
     "currentRelease": "Current release",
     "currentReleaseOff": "off",
     "currentReleaseHint": "Release tag or string tasks are matched against (label or branch marker); leave it empty for no release bonus.",
     "currentReleaseBonus": "Current-release bonus",
     "currentReleaseBonusHint": "Weight added on top of the role weight for tasks of the current release.",
-    "agingStep": "Aging step (weight per hour)",
-    "agingStepHint": "Weight a waiting run gains for every full hour in the queue — keeps low-priority runs from starving.",
     "agingMax": "Aging cap",
     "agingMaxHint": "Maximum weight the aging can add on top of the base weight.",
     "save": "Save queue priority",
@@ -1068,8 +1064,6 @@
     "loadFailed": "Failed to load the queue priority settings.",
     "saveFailed": "Saving the queue priority settings failed.",
     "error": {
-      "wholeNumber": "Enter a whole number of 0 or more",
-      "range": "Enter a whole number from 0 to {{max}}"
       "wholeNumber": "Enter a whole number of 0 or more, or leave it empty"
     },
     "position": {
@@ -1120,11 +1114,13 @@
       "all": "board (single)",
       "worker": "worker",
       "api": "API"
+    },
     "pidHost": "{{pid}} on {{host}}",
     "ageSeconds": "{{seconds}} s ago",
     "ageMinutes": "{{minutes}} min ago",
     "ageHours": "{{hours}} h ago",
     "cadence": "Pulse every {{pulse}} s; a row older than {{stale}} s is stale."
+  },
   "boardLeases": {
     "title": "Leader leases",
     "description": "Which process holds each board lease. Refreshed every 10 seconds, so a handover shows up without restarting the board.",
@@ -1156,10 +1152,12 @@
     "noAcquired": "—",
     "noExpires": "—",
     "updatedAt": "Refreshed {{time}}"
+  },
   "litellmWorkers": {
     "unknown": "unknown",
     "runningNow": "Running now: {{value}}",
     "statusUnknown": "Running now is unknown: the gateway did not report its pool size."
+  },
   "attentionFeed": {
     "title": "Attention feed",
     "hint": "How far back the feed looks for an unresolved failed or timed-out run, and how long it keeps the feed it built per company. Saving applies at once — the feed re-reads the settings row on its next build, no restart.",
@@ -1175,6 +1173,7 @@
     "save": "Save",
     "reset": "Use defaults",
     "note": "Stored in the instance settings; there is no environment variable behind either value."
+  },
   "telegramCard": {
     "title": "Telegram",
     "intro": "The Telegram bridge addresses this agent by these aliases and files its card under the group title in /agents.",
@@ -1194,6 +1193,7 @@
     "saving": "Saving…",
     "saved": "Saved",
     "saveFailed": "Could not save"
+  },
   "licensing": {
     "title": "Licensing",
     "description": "Installation id and licenses of the closed connector modules. A client copies the license request and sends it to the owner; the owner signs a license here. The signing key stays on the server.",
@@ -1224,6 +1224,5 @@
     "issuedTitle": "Issued licenses",
     "issuedEmpty": "No licenses issued yet.",
     "until": "until {{date}}"
-    }
   }
 }
