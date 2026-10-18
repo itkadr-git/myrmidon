@@ -179,10 +179,6 @@ default and is re-read on every pass (a PATCH applies without restart):
 
 | Variable | Function | Default | What it does | How to disable / special |
 |---|---|---|---|---|
-| `MYRMIDON_KNOWLEDGE_EXPORT_REPO` | L-8 | unset (disabled) | Enables the nightly deterministic Git export of the knowledge tree to this repository. | Unset disables export; configure a repository URL explicitly. |
-| `MYRMIDON_KNOWLEDGE_EXPORT_BRANCH` | L-8 | `knowledge-export` | Branch used for the exported knowledge snapshot. | Invalid branch names fall back to the default. |
-| `MYRMIDON_KNOWLEDGE_EXPORT_INTERVAL_HOURS` | L-8 | `24` | Hours between nightly knowledge export runs. | Invalid or non-positive values fall back to 24 hours. |
-
 | Variable | Function | Default | What it does | How to disable / special |
 |---|---|---|---|---|
 | `MYRMIDON_TELEGRAM_DM_STATUS` | U1 | off | For a bridged Telegram DM (`MYRMIDON_TELEGRAM_DM_CONVERSATIONS`, X8b): the run gets one editable status message instead of milestone silence. `queued` and `working` coalesce into one durable status row (`run:<id>:dmstatus:<endpoint>`) — the delivery lane posts it once and edits the same provider message in place as the phase changes; the run's final answer replaces that message (the vendor's existing replace lane). Failure, admin-attention and completion milestones still publish as before, and the `/stop` terminal milestone stays suppressed (X8h) | Any value other than `1`/`true`/`yes`/`on` — the vendor path unchanged: routine milestones stay suppressed in the bridged DM (X8h). Read on every sweep, no restart. Groups and topics are unaffected |
