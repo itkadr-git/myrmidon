@@ -5,6 +5,7 @@ import { fleetRoutingDriver } from "./fleetd-routing.js";
 import type { BotContainerDriver, BotContainerSpec, BotContainerStatus } from "./driver.js";
 import { compileHermesProfile, type HermesProfileInput } from "./profile-compiler.js";
 import { buildCreateContainerRequestBody, templateDriftFields } from "./docker-driver.js";
+import { isImageAllowed } from "./template.js";
 
 import { T3_A_FIXTURE } from "./remote-site-t3-fixtures.js";
 type Driver = BotContainerDriver & { calls: string[] };
@@ -49,13 +50,15 @@ describe("T3 regressions against production profile, placement, routing and drif
   });
   it("uses the site hostname with the allocated gateway port", () => expect(fleetGatewayApiBaseUrl(T3_A_FIXTURE.url, 18642)).toBe("http://t3-a.example.test:18642"));
   it("rejects missing and invalid gateway ports", () => {
-    expect(() => fleetGatewayApiBaseUrl(T3_A_FIXTURE.url, undefined)).toThrow(/did not report/); expect(() => fleetGatewayApiBaseUrl(T3_A_FIXTURE.url, 70000)).toThrow(/invalid gateway port/);
+    expect(() => fleetGatewayApiBaseUrl(T3_A_FIXTURE.url, undefined)).toThrow(/did not report/);
+    expect(() => fleetGatewayApiBaseUrl(T3_A_FIXTURE.url, 70000)).toThrow(/invalid gateway port/);
   });
   it("changes compiled restart hash when the model changes", () => expect(compileHermesProfile(profileInput).restartHash).not.toBe(compileHermesProfile({ ...profileInput, adapterConfig: { ...profileInput.adapterConfig, model: "fixture-model-next" } }).restartHash));
   it("changes compiled restart hash when the key reference changes", () => expect(compileHermesProfile(profileInput).restartHash).not.toBe(compileHermesProfile({ ...profileInput, llm: { ...profileInput.llm, apiKeyEnv: "FIXTURE_LLM_KEY_NEXT" } }).restartHash));
   it("changes compiled restart hash when the MCP endpoint changes", () => expect(compileHermesProfile(profileInput).restartHash).not.toBe(compileHermesProfile({ ...profileInput, mcpServers: [{ name: "fixture-mcp", url: "http://mcp.t3-a.example.test/next" }] }).restartHash));
-  it("rejects latest image tags without a digest at container request construction", () => {
-    expect(() => buildCreateContainerRequestBody({ botKey: "fixture-bot", image: "ghcr.io/example/bot:latest", memoryMb: 1024, cpus: 1, pidsLimit: 128, network: T3_A_FIXTURE.network }, { volumeRoot: T3_A_FIXTURE.volumeRoot, network: T3_A_FIXTURE.network, allowlist: ["ghcr.io/example/bot:*"], mountSources: [], devbuild: { host: null, user: "", base: "" } })).toThrow();
+  it("rejects latest image tags through the production image allowlist helper", () => {
+    expect(isImageAllowed("ghcr.io/example/bot:latest", T3_A_FIXTURE.imageAllowlist)).toBe(false);
+    expect(isImageAllowed("ghcr.io/example/bot@sha256:abc123", T3_A_FIXTURE.imageAllowlist)).toBe(true);
   });
   it("detects image digest and resource-limit drift through Docker production helpers", () => {
     const body = buildCreateContainerRequestBody({ botKey: "fixture-bot", image: "ghcr.io/example/bot@sha256:aaa", memoryMb: 1024, cpus: 1, pidsLimit: 128, network: T3_A_FIXTURE.network }, { volumeRoot: T3_A_FIXTURE.volumeRoot, network: T3_A_FIXTURE.network, allowlist: ["ghcr.io/example/bot@sha256:*"], mountSources: [], devbuild: { host: null, user: "", base: "" } });
