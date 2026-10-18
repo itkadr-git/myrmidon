@@ -12,6 +12,8 @@ Scheduled issue monitors now wake their assignee for `blocked` tasks as well as 
 
 ## settings-en-append
 
+<!-- section: Environment variables -->
+
 | Variable | Function | Default | What it does | How to disable / special |
 |---|---|---|---|---|
 | `MYRMIDON_ADMIN_TOKEN` (synthetic test input only) | Security harness | Not a server setting | A synthetic forbidden environment key used only by the site-agent security harness; it is not read as a server setting. | Never configure it or supply it to agents. |
