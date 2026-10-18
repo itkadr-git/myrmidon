@@ -134,8 +134,10 @@ export function createLoop(deps) {
       results.push({ at: at(), action: "skip", path: action.path, result: "skipped", detail: detail("no executor for this op") });
       return;
     }
-    // rhythm: this op on this path already ran within the window — skip silently
-    if (cooldown && cooldown.recent(action.path, action.op)) {
+    // A foreign-owner failure must be retried after repair; do not suppress the
+    // next attempt behind the ordinary successful-action cooldown.
+    const foreignUidRecent = cooldown && cooldown.recent(action.path, action.op);
+    if (foreignUidRecent && !cooldown.deferredRecent?.(action.path, action.op)) {
       tally.silent += 1;
       return;
     }
@@ -283,6 +285,10 @@ export function createLoop(deps) {
         copies: g.parts.copies,
         archives: g.parts.archives,
         foreign: g.parts.foreign,
+        foreignUid: g.parts.foreignUid ?? (() => {
+          const action = [...results].reverse().find((item) => /foreign-uid|EACCES|EPERM/i.test(item.detail || ""));
+          return action ? { path: action.path, reason: action.detail || "foreign-uid" } : null;
+        })(),
         actions: results,
       });
       sent = await deps.report.send(report);

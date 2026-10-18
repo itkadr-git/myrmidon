@@ -3,10 +3,9 @@
 //   * attention  — `$MYRMIDON_WS_HOME/botd-attention.json`, {path: {reason, uid, at}}:
 //     a deferred path is announced once per TTL (default 1 h); repeated passes stay
 //     silent while the entry is fresh;
-//   * cooldown   — `$MYRMIDON_WS_HOME/botd-cooldown.json`, {path|op: {op, result, at}}:
-//     the same op on the same path is not attempted again within the TTL (< 1 h is a
-//     silent skip, no log line, no report row). The key is path+op: a different op on
-//     the same path must not overwrite (or read) the entry of its neighbour op.
+//   * cooldown  — `$MYRMIDON_WS_HOME/botd-cooldown.json`, {path|op: {op, result, at}}:
+//     success/error actions are silent inside the TTL; deferred foreign-owner actions
+//     are retried each pass so a repaired workspace can be cleaned promptly.
 // Both files are best-effort state: a broken or unwritable cache makes every entry
 // look fresh (the rule runs again, loudly once) and never breaks the pass. Stale
 // entries are swept on write, so the files do not grow without bound.
@@ -86,7 +85,8 @@ export function createAttention(file, opts = {}) {
 }
 
 /**
- * Not the same op on the same path more than once per TTL.
+ * Successful/error actions run at most once per TTL. A deferred foreign-owner
+ * action is deliberately retried each pass after emitting its attention signal.
  * @param {string} file botd-cooldown.json
  * @param {{now?:() => Date, ttlMs?:number}} [opts]
  */
@@ -101,6 +101,11 @@ export function createCooldown(file, opts = {}) {
     recent(p, op) {
       const entry = loadCache(file)[keyOf(p, op)];
       return !!(entry && entry.op === op && fresh(entry, now().getTime(), ttlMs));
+    },
+    /** True when the last attempt was a deferred foreign-owner failure. */
+    deferredRecent(p, op) {
+      const entry = loadCache(file)[keyOf(p, op)];
+      return !!(entry && entry.op === op && entry.result === "deferred" && fresh(entry, now().getTime(), ttlMs));
     },
     /** Remembers the attempt so the next pass within the TTL stays silent. */
     record(p, op, result) {
