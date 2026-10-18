@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"syscall"
 )
 
 // botStatus is the driver contract's BotContainerStatus.
@@ -59,6 +60,8 @@ type config struct {
 	Upstream string `json:"upstream"`
 	Bots     []bot  `json:"bots"`
 }
+
+type server struct{ cfg *config }
 
 type bot struct {
 	BotKey      string  `json:"botKey"`
@@ -177,7 +180,11 @@ func (s *server) list(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method_not_allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	writeJSON(w, map[string]any{"bots": []botStatus{}})
+	bots := make([]botStatus, 0, len(s.cfg.Bots))
+	for _, b := range s.cfg.Bots {
+		bots = append(bots, botStatus{BotKey: b.BotKey, State: "missing"})
+	}
+	writeJSON(w, map[string]any{"bots": bots})
 }
 
 // route dispatches /v1/bots/{botKey}/... by method and suffix.
@@ -201,6 +208,8 @@ func (s *server) route(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case action == "status" && r.Method == http.MethodGet:
 		writeJSON(w, botStatus{BotKey: botKey, State: "missing"})
+	case action == "start" && r.Method == http.MethodPost, action == "restart" && r.Method == http.MethodPost, action == "stop" && r.Method == http.MethodPost, action == "recreate" && r.Method == http.MethodPost, action == "profile" && r.Method == http.MethodPut:
+		http.Error(w, "docker_backend_unavailable", http.StatusServiceUnavailable)
 	case action == "template-drift" && r.Method == http.MethodPost:
 		var body struct {
 			Spec spec `json:"spec"`
