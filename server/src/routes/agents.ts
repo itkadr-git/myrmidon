@@ -4142,22 +4142,38 @@ function getActorIdentityPart(req: Request): string {
       return;
     }
 
-    const actorPart = getActorIdentityPart(req);
-    const vk = await svc.listSummariesVersionKey(companyId, actorPart);
-    if (notModifiedOrSetEtag(req, res, vk)) return;
-
-    const result = await filterAgentsForActor(req, await svc.listSummaries(companyId));
+    const companyDecision = await access.decide({
+      actor: req.actor,
+      action: "company_scope:read",
+      resource: { type: "company", companyId },
+    });
+    if (!companyDecision.allowed) {
+      res.status(403).json({ error: "Company is outside this actor's authorization boundary" });
+      return;
+    }
+    const sourceRows = await svc.listSummaries(companyId);
+    const result = await filterAgentsForActor(req, sourceRows);
     const canReadConfigs = await actorCanReadConfigurationsForCompany(req, companyId);
+    const responseRows = canReadConfigs
+      ? result
+      : result.map((agent) => redactAgentListItemForRestrictedView(agent));
+    const actorShape = JSON.stringify([
+      getActorIdentityPart(req),
+      req.actor.type === "board" ? req.actor.companyIds ?? [] : req.actor.companyId,
+      Array.isArray(req.actor.onBehalfOfMemberships)
+        ? req.actor.onBehalfOfMemberships.map((membership) => ({ companyId: membership.companyId, status: membership.status, membershipRole: membership.membershipRole }))
+        : null,
+      canReadConfigs,
+      responseRows,
+    ]);
+    const vk = await svc.listSummariesVersionKey(companyId, actorShape);
+    if (notModifiedOrSetEtag(req, res, vk)) return;
     // myrmidon(PERF-DIET-G): the list is a slim projection. It carries no
     // adapterConfig (so no per-row env redaction is needed any more) and the
     // model column travels as the SQL-computed `adapterModel`; the full
     // configuration stays behind GET /agents/:id/configuration and
     // GET /companies/:id/agent-configurations.
-    if (canReadConfigs) {
-      res.json(result);
-      return;
-    }
-    res.json(result.map((agent) => redactAgentListItemForRestrictedView(agent)));
+    res.json(responseRows);
   });
 
   router.get("/instance/scheduler-heartbeats", async (req, res) => {
@@ -7032,12 +7048,19 @@ function getActorIdentityPart(req: Request): string {
     const limit = limitParam ? Math.max(1, Math.min(1000, parseInt(limitParam, 10) || 200)) : undefined;
     const summary = req.query.summary === "true" || req.query.summary === "1";
 
-    const actorPart = getActorIdentityPart(req);
-    const vk = await heartbeat.listVersionKey(companyId, agentId, limit, summary, actorPart);
-    if (notModifiedOrSetEtag(req, res, vk)) return;
-
     const runs = await heartbeat.list(companyId, agentId, limit, { summary });
-    res.json(await runRedactions.redactForRuns(companyId, runs));
+    const redactedRuns = await runRedactions.redactForRuns(companyId, runs);
+    const actorShape = JSON.stringify([
+      getActorIdentityPart(req),
+      req.actor.type === "board" ? req.actor.companyIds ?? [] : req.actor.companyId,
+      Array.isArray(req.actor.onBehalfOfMemberships)
+        ? req.actor.onBehalfOfMemberships.map((membership) => ({ companyId: membership.companyId, status: membership.status, membershipRole: membership.membershipRole }))
+        : null,
+      redactedRuns,
+    ]);
+    const vk = await heartbeat.listVersionKey(companyId, agentId, limit, summary, actorShape);
+    if (notModifiedOrSetEtag(req, res, vk)) return;
+    res.json(redactedRuns);
   });
 
   router.get("/companies/:companyId/provider-traces", async (req, res) => {

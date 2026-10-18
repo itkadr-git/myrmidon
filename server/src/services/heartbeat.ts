@@ -31237,8 +31237,8 @@ export function heartbeatService(
     // myrmidon(PERF-DIET-T): cheap version aggregate for the heartbeat-runs
     // list ETag. Same predicate shapes as `list` (company, optional agent) but
     // only aggregates, so an If-None-Match hit answers 304 without fetching
-    // the body. Uses the (companyId, status, updatedAt) index prefix. Redaction
-    // registration bumps updatedAt, so redaction changes rotate the key too.
+    // the body. Uses the (companyId, status, updatedAt) index prefix. The
+    // route adds the authorized actor and redacted response shape to this key.
     listVersionKey: async (
       companyId: string,
       agentId?: string,
