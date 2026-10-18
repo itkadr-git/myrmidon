@@ -911,7 +911,7 @@ describeEmbeddedPostgres(
       await db.update(issues)
         .set({ responsibleUserId: null })
         .where(eq(issues.id, fixture.issues.reviewRoot.id));
-      const app = createApp(db, boardActor(fixture));
+      const app = createApp(db, agentActor(fixture));
       const createWithoutOwner = await request(app)
         .post(`/api/companies/${fixture.company.id}/issues`)
         .send({
