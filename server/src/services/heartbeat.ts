@@ -29992,8 +29992,16 @@ export function heartbeatService(
                 {
                   db,
                   budget: idleWakeBudget,
+                  // Bind the idle pickup to the task whose dependency release
+                  // made the agent eligible, so this automatic wake is auditable.
                   enqueueWakeup: (nextAgentId, wakeOptions) =>
-                    enqueueWakeup(nextAgentId, wakeOptions),
+                    enqueueWakeup(nextAgentId, {
+                      ...wakeOptions,
+                      contextSnapshot: {
+                        ...wakeOptions.contextSnapshot,
+                        issueId: outcome.dependencyBlockedIssueId,
+                      },
+                    }),
                 },
                 outcome.dependencyBlockedAgent,
                 { excludeIssueId: outcome.dependencyBlockedIssueId, behaviorEnabled: true },
