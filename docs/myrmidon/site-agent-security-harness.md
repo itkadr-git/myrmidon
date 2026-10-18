@@ -40,7 +40,7 @@
 | **NEG-04** | Allowlist | **Unknown Image Reference** | Образ вне allowlist (например, `docker.io/untrusted/agent@sha256:...`) отклоняется валидатором `image_not_in_allowlist`. | **PASS** |
 | **NEG-05** | Allowlist | **Tag Without Digest** | Образ с тегом без дайджеста (например, `:latest`) отклоняется: требуется `@sha256:...`. | **PASS** |
 | **NEG-06** | Mounts | **Arbitrary Mount & Traversal** | Монтирование неразрешённых путей (`/etc/shadow`) или путей с `..` отклоняется `validateExtraMounts`. | **PASS** |
-| **NEG-07** | Env | **Arbitrary Env Injection** | Попытка передать произвольные переменные окружения (`LD_PRELOAD`, `MYRMIDON_ADMIN_TOKEN`) отклоняется шаблоном. | **PASS** |
+| **NEG-07** | Env | **Arbitrary Env Injection** | Попытка передать произвольные переменные окружения (`LD_PRELOAD`, `EVIL_ADMIN_TOKEN`) отклоняется шаблоном. | **PASS** |
 | **NEG-08** | Profile | **Malformed Path & Secret Mode** | Пути с traversal (`hermes/../escape`) или секретные файлы с правами, отличными от `0600`, отклоняются. | **PASS** |
 | **NEG-09** | Secrets | **Secret Marker Leak Prevention** | Секретный маркер (`OPE8109_SECRET_MARKER_...`) пишется с правами `0600` и отсутствует в `status`, drift и логах. | **PASS** |
 | **NEG-10** | Invariants | **Prohibition of Site→Core Creds** | Конфигурация site-agent отклоняет любые обратные ключи/токены доски (нет SSH-ключей ядра, нет токенов доски). | **PASS** |
