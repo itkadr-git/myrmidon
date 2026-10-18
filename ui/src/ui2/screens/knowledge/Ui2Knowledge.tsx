@@ -262,10 +262,10 @@ function RevisionPicker({
   t,
 }: {
   revisions: KnowledgeRevisionSummary[];
-  from: number | null;
-  to: number | null;
-  onFrom: (revision: number) => void;
-  onTo: (revision: number) => void;
+  from: string | number | null;
+  to: string | number | null;
+  onFrom: (revision: string | number) => void;
+  onTo: (revision: string | number) => void;
   t: Translate;
 }) {
   return (
@@ -275,10 +275,10 @@ function RevisionPicker({
         <select
           className="rounded-md border border-input bg-background px-2 py-1"
           value={from ?? ""}
-          onChange={(event) => onFrom(Number(event.target.value))}
+          onChange={(event) => onFrom(event.target.value)}
         >
           {revisions.map((revision) => (
-            <option key={`from-${revision.revision}`} value={revision.revision}>
+            <option key={revision.id ?? revision.revision} value={revision.id ?? revision.revision}>
               {revision.revision}
             </option>
           ))}
@@ -289,10 +289,10 @@ function RevisionPicker({
         <select
           className="rounded-md border border-input bg-background px-2 py-1"
           value={to ?? ""}
-          onChange={(event) => onTo(Number(event.target.value))}
+          onChange={(event) => onTo(event.target.value)}
         >
           {revisions.map((revision) => (
-            <option key={`to-${revision.revision}`} value={revision.revision}>
+            <option key={`to-${revision.id ?? revision.revision}`} value={revision.id ?? revision.revision}>
               {revision.revision}
             </option>
           ))}
@@ -316,12 +316,12 @@ function RevisionsPanel({
     [item.revisions],
   );
   const latest = revisions.length > 0 ? revisions[revisions.length - 1] : undefined;
-  const [from, setFrom] = useState<number | null>(null);
-  const [to, setTo] = useState<number | null>(null);
+  const [from, setFrom] = useState<string | number | null>(null);
+  const [to, setTo] = useState<string | number | null>(null);
   const [note, setNote] = useState<string | null>(null);
 
-  const left = from ?? (revisions.length > 1 ? revisions[0]?.revision ?? null : null);
-  const right = to ?? latest?.revision ?? null;
+  const left = from ?? (revisions.length > 1 ? revisions[0]?.id ?? revisions[0]?.revision ?? null : null);
+  const right = to ?? latest?.id ?? latest?.revision ?? null;
   const olderQuery = useQuery({
     queryKey: knowledgeQueryKeys.item(companyId, item.spaceKey, item.slug, left),
     queryFn: () => knowledgeApi.item(companyId, item.spaceKey, item.slug, { revision: left }),
@@ -329,8 +329,11 @@ function RevisionsPanel({
   });
 
   const rollback = useMutation({
-    mutationFn: (target: number) => knowledgeApi.rollback(companyId, item.spaceKey, item.slug, target),
-    onSuccess: (_data, target) => setNote(t("ui2.knowledge.revisions.rollbackDone", { revision: target })),
+    mutationFn: (target: KnowledgeRevisionSummary) => {
+      if (!target.id) throw new Error("The revision has no rollback identifier.");
+      return knowledgeApi.rollback(companyId, item.spaceKey, item.slug, target.id);
+    },
+    onSuccess: (_data: unknown, target: KnowledgeRevisionSummary) => setNote(t("ui2.knowledge.revisions.rollbackDone", { revision: target.revision })),
     onError: () => setNote(t("ui2.knowledge.revisions.rollbackFailed")),
   });
 
@@ -383,7 +386,7 @@ function RevisionsPanel({
                 className="ui2-knowledge-rollback rounded-md border border-border px-2 py-0.5 hover:bg-accent disabled:opacity-50"
                 disabled={!gate.allowed || rollback.isPending}
                 title={t("ui2.knowledge.revisions.rollbackTo", { revision: revision.revision })}
-                onClick={() => rollback.mutate(revision.revision)}
+                onClick={() => rollback.mutate(revision)}
               >
                 {t("ui2.knowledge.revisions.rollback")}
               </button>
@@ -398,7 +401,7 @@ function RevisionsPanel({
             revisions={revisions}
             from={left}
             to={right}
-            onFrom={setFrom}
+            onFrom={(revision) => setFrom(revision)}
             onTo={setTo}
             t={t}
           />

@@ -38,6 +38,7 @@ export interface KnowledgeSourceRef {
 
 /** One row of the per-item revision history. */
 export interface KnowledgeRevisionSummary {
+  id?: string | number;
   revision: number;
   at: string;
   by: string;
@@ -46,6 +47,7 @@ export interface KnowledgeRevisionSummary {
 
 /** A list-level knowledge item (no body: the tree query stays cheap). */
 export interface KnowledgeItemSummary {
+  /** A list-level item is identified by its slug; folderPath provides its space. */
   id: string;
   spaceKey: string;
   slug: string;
