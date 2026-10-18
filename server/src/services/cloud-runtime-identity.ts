@@ -78,7 +78,8 @@ function exactHttpsOrigin(value: unknown): string | null {
 }
 
 function configuredStartupOrigin(): string | null {
-  const candidate = nonEmpty(readProductEnv("PUBLIC_URL"))
+  const candidate = nonEmpty(readProductEnv("CLOUD_API_ORIGIN"))
+    ?? nonEmpty(readProductEnv("PUBLIC_URL"))
     ?? nonEmpty(readProductEnv("AUTH_PUBLIC_BASE_URL"))
     ?? nonEmpty(readProductEnv("API_URL"));
   return candidate ? exactHttpsOrigin(candidate) : null;

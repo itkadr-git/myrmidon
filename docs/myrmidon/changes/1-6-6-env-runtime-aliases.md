@@ -24,11 +24,13 @@ settings-section: Track 1 — platform
 ## settings-en
 
 | `MYRMIDON_CLOUD_TENANT_SERVER_TOKEN` | 1.6.6 DEBRAND | unset | Credential used by cloud tenant routes | Unset disables token-authenticated tenant routes |
+| `MYRMIDON_PROCESS_ROLE` | 1.6.6 DEBRAND | `all` | API, worker, or combined server process role | Unset defaults to `all`; accepted values are `all`, `worker`, and `api` |
 | `MYRMIDON_RUN_SCRATCH_DIR` | 1.6.6 DEBRAND | TMPDIR or OS temp directory | Directory for ephemeral SSH operation files | Unset falls back to TMPDIR then OS temp directory |
 | `MYRMIDON_SCRATCH_DIR` | 1.6.6 DEBRAND | home scratch fallback | Approved directory for ephemeral site-agent PKI files | Unset uses MYRMIDON_RUN_SCRATCH_DIR then home scratch |
 
 ## settings-ru
 
 | `MYRMIDON_CLOUD_TENANT_SERVER_TOKEN` | 1.6.6 DEBRAND | не задано | Токен аутентификации cloud tenant routes | Без значения маршруты с токен-аутентификацией отключены |
+| `MYRMIDON_PROCESS_ROLE` | 1.6.6 DEBRAND | `all` | Роль процесса API, worker или совмещённого сервера | Без значения используется `all`; допустимы `all`, `worker`, `api` |
 | `MYRMIDON_RUN_SCRATCH_DIR` | 1.6.6 DEBRAND | TMPDIR или системный временный каталог | Каталог временных SSH-файлов | Без значения используется TMPDIR, затем системный каталог |
 | `MYRMIDON_SCRATCH_DIR` | 1.6.6 DEBRAND | резервный каталог в HOME | Разрешённый каталог файлов PKI site-agent | Без значения используется MYRMIDON_RUN_SCRATCH_DIR, затем HOME-каталог |
