@@ -91,10 +91,10 @@ describe("readProductEnvFrom", () => {
     expect(readProductEnvFrom({}, "API_URL")).toBeUndefined();
   });
 
-  it("preserves empty values and gives a present canonical value precedence", () => {
-    expect(readProductEnvFrom({ MYRMIDON_API_URL: "", PAPERCLIP_API_URL: "legacy" }, "API_URL")).toBe("legacy");
-    expect(readProductEnvFrom({ PAPERCLIP_API_URL: "" }, "API_URL")).toBeUndefined();
-    expect(readProductEnvFrom({ MYRMIDON_API_URL: "" }, "API_URL")).toBeUndefined();
+  it("preserves empty canonical values and does not fall back", () => {
+    expect(readProductEnvFrom({ MYRMIDON_API_URL: "", PAPERCLIP_API_URL: "legacy" }, "API_URL")).toBe("");
+    expect(readProductEnvFrom({ PAPERCLIP_API_URL: "" }, "API_URL")).toBe("");
+    expect(readProductEnvFrom({ MYRMIDON_API_URL: "" }, "API_URL")).toBe("");
   });
 
 });

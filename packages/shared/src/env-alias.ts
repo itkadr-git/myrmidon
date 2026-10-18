@@ -72,9 +72,9 @@ export function readProductEnv(name: string, options: ReadProductEnvOptions = {}
  */
 export function readProductEnvFrom(env: NodeJS.ProcessEnv, name: string): string | undefined {
   const canonical = env[`${MYRMIDON_PREFIX}${name}`];
-  if (canonical !== undefined && canonical !== "") return canonical;
+  if (canonical !== undefined) return canonical;
   const legacy = env[`${PAPERCLIP_PREFIX}${name}`];
-  if (legacy !== undefined && legacy !== "") return legacy;
+  if (legacy !== undefined) return legacy;
   return undefined;
 }
 
