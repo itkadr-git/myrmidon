@@ -2977,6 +2977,10 @@ function buildExecutionStageWakeup(input: {
         },
         requestedByActorType: input.requestedByActorType,
         requestedByActorId: input.requestedByActorId,
+        idempotencyKey:
+          nextState.currentStageType === "review"
+            ? `issue-review-admission:${issueId}:${agentId}`
+            : undefined,
         contextSnapshot: {
           issueId,
           taskId: issueId,
@@ -15195,31 +15199,23 @@ export function issueRoutes(
           });
         };
 
-        const reviewAdmissionStageWakePersisted =
-          issue.status === "in_review" &&
-          (enteringReviewRequested || assigneeWillChange) &&
-          Boolean(executionStageWakeup);
-        const reviewAdmissionAssigneeWakePersisted =
-          issue.status === "in_review" &&
-          (enteringReviewRequested || assigneeWillChange) &&
-          assigneeChanged;
-        if (
-          executionStageWakeup &&
-          deferWakeForGoal !== true &&
-          !reviewAdmissionStageWakePersisted
-        ) {
+        if (executionStageWakeup && deferWakeForGoal !== true) {
           addWakeup(executionStageWakeup.agentId, executionStageWakeup.wakeup);
         } else if (
           assigneeChanged &&
           issue.assigneeAgentId &&
           issue.status !== "backlog" &&
-          deferWakeForGoal !== true &&
-          !reviewAdmissionAssigneeWakePersisted
+          deferWakeForGoal !== true
         ) {
           addWakeup(issue.assigneeAgentId, {
             source: "assignment",
             triggerDetail: "system",
             reason: "issue_assigned",
+            ...(issue.status === "in_review"
+              ? {
+                  idempotencyKey: `issue-review-admission:${issue.id}:${issue.assigneeAgentId}`,
+                }
+              : {}),
             payload: {
               issueId: issue.id,
               ...(comment ? { commentId: comment.id } : {}),
