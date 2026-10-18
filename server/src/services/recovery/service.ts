@@ -2571,6 +2571,25 @@ export function recoveryService(
       : null;
     const targetAssigneeId = invokability?.invokable ? input.issue.assigneeAgentId : null;
     const stillAssigned = targetAssigneeId !== null;
+    const [retryColumns] = await db
+      .select({
+        scheduledRetryAttempt: heartbeatRuns.scheduledRetryAttempt,
+        scheduledRetryReason: heartbeatRuns.scheduledRetryReason,
+      })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, latestRun.id))
+      .limit(1);
+    if (
+      latestRun.errorCode &&
+      isInfraInterruptErrorCode(latestRun.errorCode) &&
+      infraInterruptRetryBudgetExhausted({
+        scheduledRetryAttempt: retryColumns?.scheduledRetryAttempt ?? null,
+        scheduledRetryReason: retryColumns?.scheduledRetryReason ?? null,
+        contextSnapshot: latestRun.contextSnapshot,
+      })
+    ) {
+      return false;
+    }
     const [existingIssue] = await db
       .select({
         id: issues.id,
