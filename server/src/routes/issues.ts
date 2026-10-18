@@ -3583,6 +3583,12 @@ export function issueRoutes(
       proposalId: string;
       actor: { agentId?: string | null; userId?: string | null };
     }) => Promise<unknown>;
+    insertReviewAdmissionWakeup?: (
+      agentId: string,
+      options: WakeupOptions,
+      tx: Db,
+      companyId?: string,
+    ) => Promise<{ created: boolean }>;
   } = {},
 ) {
   const router = Router();
@@ -3594,9 +3600,10 @@ export function issueRoutes(
     pluginWorkerManager: opts.pluginWorkerManager,
   });
   const insertReviewAdmissionWakeup =
-    typeof heartbeat?.insertReviewAdmissionWakeup === "function"
+    opts.insertReviewAdmissionWakeup ??
+    (typeof heartbeat?.insertReviewAdmissionWakeup === "function"
       ? heartbeat.insertReviewAdmissionWakeup.bind(heartbeat)
-      : async () => ({ created: false });
+      : async () => ({ created: false }));
 
   const commentWasCreatedByAssigneeRun = async (
     comment: { companyId: string; createdByRunId?: string | null },
@@ -14234,12 +14241,17 @@ export function issueRoutes(
                 requestedByActorId: actor.actorId,
               });
               if (stageWake?.agentId) {
-                await insertReviewAdmissionWakeup(
+                const admission = await insertReviewAdmissionWakeup(
                   stageWake.agentId,
                   stageWake.wakeup,
                   tx as unknown as Db,
                   updated.companyId,
                 );
+                if (admission && admission.created === false) {
+                  throw new Error(
+                    `Failed to persist review admission wakeup for agent ${stageWake.agentId}`,
+                  );
+                }
               }
               if (
                 assigneeWillChange &&
@@ -14256,12 +14268,17 @@ export function issueRoutes(
                   requestedByActorId: actor.actorId,
                   contextSnapshot: { issueId: updated.id, taskId: updated.id },
                 };
-                await insertReviewAdmissionWakeup(
+                const admission = await insertReviewAdmissionWakeup(
                   updated.assigneeAgentId,
                   wakeup,
                   tx as unknown as Db,
                   updated.companyId,
                 );
+                if (admission && admission.created === false) {
+                  throw new Error(
+                    `Failed to persist review admission wakeup for assignee ${updated.assigneeAgentId}`,
+                  );
+                }
               }
             }
             // myrmidon(HOLD-READY): an explicit human unblock is an operator

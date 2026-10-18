@@ -21056,23 +21056,19 @@ export function heartbeatService(
     if (!resolvedCompanyId) {
       return { created: false };
     }
-    try {
-      await tx.insert(agentWakeupRequests).values({
-        companyId: resolvedCompanyId,
-        agentId,
-        source,
-        triggerDetail: opts.triggerDetail ?? null,
-        reason,
-        payload: resolvedIssueId ? { ...(payload ?? {}), issueId: resolvedIssueId } : payload,
-        status: "queued",
-        requestedByActorType: opts.requestedByActorType ?? null,
-        requestedByActorId: opts.requestedByActorId ?? null,
-        idempotencyKey: key,
-      });
-      return { created: true };
-    } catch {
-      return { created: false };
-    }
+    await tx.insert(agentWakeupRequests).values({
+      companyId: resolvedCompanyId,
+      agentId,
+      source,
+      triggerDetail: opts.triggerDetail ?? null,
+      reason,
+      payload: resolvedIssueId ? { ...(payload ?? {}), issueId: resolvedIssueId } : payload,
+      status: "queued",
+      requestedByActorType: opts.requestedByActorType ?? null,
+      requestedByActorId: opts.requestedByActorId ?? null,
+      idempotencyKey: key,
+    });
+    return { created: true };
   }
 
   function trackWakeup(

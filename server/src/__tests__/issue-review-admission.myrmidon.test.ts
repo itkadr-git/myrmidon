@@ -1,119 +1,222 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { and, eq } from "drizzle-orm";
-import { agents, agentWakeupRequests, companies, createDb, issues } from "@paperclipai/db";
+import request from "supertest";
+import { describe, expect, it } from "vitest";
+import { eq } from "drizzle-orm";
 import {
-  getEmbeddedPostgresTestSupport,
-  startEmbeddedPostgresTestDatabase,
-} from "./helpers/embedded-postgres.js";
+  activityLog,
+  agents,
+  agentWakeupRequests,
+  issues,
+} from "@paperclipai/db";
+import {
+  describeEmbeddedPostgres,
+  resetCompanyIssueFixtures,
+  routeApp,
+  seedCompanyWithBoardAccess,
+  useEmbeddedPostgres,
+} from "./helpers/route-test-harness.js";
+import { issueRoutes } from "../routes/issues.js";
+import { heartbeatService } from "../services/heartbeat.js";
 
-const support = await getEmbeddedPostgresTestSupport();
-const describeEmbeddedPostgres = support.supported ? describe : describe.skip;
+// myrmidon(REVIEW-ADMISSION): issue transition to in_review and reviewer wake
+// must be written in the same database transaction via PATCH /api/issues/:id.
 
-describeEmbeddedPostgres("myrmidon review admission wake persistence", () => {
-  let db!: ReturnType<typeof createDb>;
-  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
-  const companyId = randomUUID();
-  const agentId = randomUUID();
-  const issueId = randomUUID();
+const ctx = useEmbeddedPostgres("myrmidon-review-admission-", {
+  resetEach: async (db) => {
+    await db.delete(agentWakeupRequests);
+    await db.delete(activityLog);
+    await db.delete(issues);
+    await db.delete(agents);
+    await resetCompanyIssueFixtures(db);
+  },
+});
 
-  beforeAll(async () => {
-    tempDb = await startEmbeddedPostgresTestDatabase("review-admission-");
-    db = createDb(tempDb.connectionString);
-    await db.insert(companies).values({
-      id: companyId,
-      name: "Review Admission Test Co",
-      issuePrefix: `R${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
-      requireBoardApprovalForNewAgents: false,
-    });
-    await db.insert(agents).values({
-      id: agentId,
+describeEmbeddedPostgres("myrmidon review admission atomic wake persistence", () => {
+  it("transitions to in_review and writes reviewer wake atomically via real PATCH route", async () => {
+    const { companyId, actor } = await seedCompanyWithBoardAccess(ctx.db, "Review admission atomic");
+    const reviewerAgentId = randomUUID();
+    await ctx.db.insert(agents).values({
+      id: reviewerAgentId,
       companyId,
-      name: "Review Admission Agent",
-      role: "engineer",
+      name: "Reviewer Agent",
+      role: "reviewer",
       status: "idle",
       adapterType: "codex_local",
       adapterConfig: {},
       runtimeConfig: {},
       permissions: {},
     });
-  }, 20_000);
 
-  afterAll(async () => {
-    await db.delete(issues);
-    await db.delete(agentWakeupRequests);
-    await db.delete(agents);
-    await db.delete(companies);
-    await tempDb?.cleanup();
-  });
-
-  it("rolls back a review status change if persisting its wake receipt fails", async () => {
-    const idempotencyKey = `issue-review-admission:${issueId}:${agentId}`;
-    await db.insert(issues).values({
+    const issueId = randomUUID();
+    await ctx.db.insert(issues).values({
       id: issueId,
       companyId,
-      title: "Atomic review admission",
+      title: "Atomic review admission positive path",
       status: "todo",
-      assigneeAgentId: agentId,
+      priority: "medium",
     });
 
-    await expect(db.transaction(async (tx) => {
-      await tx.update(issues).set({ status: "in_review" }).where(eq(issues.id, issueId));
-      await tx.insert(agentWakeupRequests).values({
-        companyId, agentId, source: "assignment", triggerDetail: "system",
-        reason: "issue_entered_review", payload: { issueId },
-        idempotencyKey,
+    const res = await request(routeApp(ctx.db, actor, issueRoutes))
+      .patch(`/api/issues/${issueId}`)
+      .send({
+        status: "in_review",
+        executionState: {
+          status: "pending",
+          currentStageId: "stage-review",
+          currentStageType: "review",
+          currentParticipant: {
+            type: "agent",
+            agentId: reviewerAgentId,
+          },
+        },
       });
-      throw new Error("simulated wake insert failure");
-    })).rejects.toThrow("simulated wake insert failure");
 
-    const [issue] = await db.select({ status: issues.status }).from(issues).where(eq(issues.id, issueId));
-    expect(issue?.status).toBe("todo");
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe("in_review");
 
-    await db.transaction(async (tx) => {
-      await tx.update(issues).set({ status: "in_review" }).where(eq(issues.id, issueId));
-      await tx.insert(agentWakeupRequests).values({
-        companyId, agentId, source: "assignment", triggerDetail: "system",
-        reason: "issue_entered_review", payload: { issueId }, idempotencyKey,
-      });
-    });
+    const [issueRow] = await ctx.db
+      .select({ status: issues.status })
+      .from(issues)
+      .where(eq(issues.id, issueId));
+    expect(issueRow?.status).toBe("in_review");
 
-    const [reviewIssue] = await db.select({ status: issues.status }).from(issues).where(eq(issues.id, issueId));
-    expect(reviewIssue?.status).toBe("in_review");
-    const rows = await db
-      .select({ id: agentWakeupRequests.id, payload: agentWakeupRequests.payload })
+    const wakes = await ctx.db
+      .select()
       .from(agentWakeupRequests)
-      .where(and(
-        eq(agentWakeupRequests.companyId, companyId),
-        eq(agentWakeupRequests.idempotencyKey, idempotencyKey),
-      ));
-    expect(rows).toHaveLength(1);
-    expect(rows[0]?.payload).toMatchObject({ issueId });
+      .where(
+        eq(
+          agentWakeupRequests.idempotencyKey,
+          `issue-review-admission:${issueId}:${reviewerAgentId}`,
+        ),
+      );
+    expect(wakes).toHaveLength(1);
+    expect(wakes[0]?.companyId).toBe(companyId);
+    expect(wakes[0]?.agentId).toBe(reviewerAgentId);
+    expect(wakes[0]?.reason).toBe("execution_review_requested");
+    expect(wakes[0]?.status).toBe("queued");
+    expect(wakes[0]?.payload).toMatchObject({ issueId });
   });
 
-  it("writes the issue change and reviewer wake in one transaction", async () => {
-    const secondIssueId = randomUUID();
-    const idempotencyKey = `issue-review-admission:${secondIssueId}:${agentId}`;
-    await db.insert(issues).values({
-      id: secondIssueId,
+  it("rolls back review transition and does not leave issue in_review when wake persistence fails", async () => {
+    const { companyId, actor } = await seedCompanyWithBoardAccess(ctx.db, "Review admission rollback");
+    const reviewerAgentId = randomUUID();
+    await ctx.db.insert(agents).values({
+      id: reviewerAgentId,
       companyId,
-      title: "Atomic positive path",
+      name: "Reviewer Agent",
+      role: "reviewer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    const issueId = randomUUID();
+    await ctx.db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Atomic review admission rollback path",
       status: "todo",
-      assigneeAgentId: agentId,
+      priority: "medium",
     });
 
-    await db.transaction(async (tx) => {
-      await tx.update(issues).set({ status: "in_review" }).where(eq(issues.id, secondIssueId));
-      await tx.insert(agentWakeupRequests).values({
-        companyId, agentId, source: "assignment", triggerDetail: "system",
-        reason: "issue_entered_review", payload: { issueId: secondIssueId }, idempotencyKey,
+    const failingIssueRoutes = (db: any, storage: any) =>
+      issueRoutes(db, storage, {
+        insertReviewAdmissionWakeup: async () => {
+          throw new Error("simulated wake persistence failure during PATCH");
+        },
       });
+
+    const res = await request(routeApp(ctx.db, actor, failingIssueRoutes as any))
+      .patch(`/api/issues/${issueId}`)
+      .send({
+        status: "in_review",
+        executionState: {
+          status: "pending",
+          currentStageId: "stage-review",
+          currentStageType: "review",
+          currentParticipant: {
+            type: "agent",
+            agentId: reviewerAgentId,
+          },
+        },
+      });
+
+    expect(res.status).toBe(500);
+
+    const [issueRow] = await ctx.db
+      .select({ status: issues.status })
+      .from(issues)
+      .where(eq(issues.id, issueId));
+    expect(issueRow?.status).toBe("todo");
+
+    const wakes = await ctx.db
+      .select()
+      .from(agentWakeupRequests)
+      .where(
+        eq(
+          agentWakeupRequests.idempotencyKey,
+          `issue-review-admission:${issueId}:${reviewerAgentId}`,
+        ),
+      );
+    expect(wakes).toHaveLength(0);
+  });
+
+  it("directly verifies production helper insertReviewAdmissionWakeup commits atomically with tx", async () => {
+    const { companyId } = await seedCompanyWithBoardAccess(ctx.db, "Direct helper test");
+    const reviewerAgentId = randomUUID();
+    await ctx.db.insert(agents).values({
+      id: reviewerAgentId,
+      companyId,
+      name: "Direct Helper Reviewer",
+      role: "reviewer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
     });
 
-    const [reviewIssue] = await db.select({ status: issues.status }).from(issues).where(eq(issues.id, secondIssueId));
-    const rows = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.idempotencyKey, idempotencyKey));
-    expect(reviewIssue?.status).toBe("in_review");
-    expect(rows).toHaveLength(1);
-    expect(rows[0]?.payload).toMatchObject({ issueId: secondIssueId });
+    const issueId = randomUUID();
+    await ctx.db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Direct helper issue",
+      status: "todo",
+      priority: "medium",
+    });
+
+    const heartbeat = heartbeatService(ctx.db);
+    const key = `issue-review-admission:${issueId}:${reviewerAgentId}`;
+
+    await ctx.db.transaction(async (tx) => {
+      await tx.update(issues).set({ status: "in_review" }).where(eq(issues.id, issueId));
+      const res = await heartbeat.insertReviewAdmissionWakeup(
+        reviewerAgentId,
+        {
+          source: "assignment",
+          reason: "execution_review_requested",
+          payload: { issueId },
+          idempotencyKey: key,
+        },
+        tx as any,
+        companyId,
+      );
+      expect(res.created).toBe(true);
+    });
+
+    const [issueRow] = await ctx.db
+      .select({ status: issues.status })
+      .from(issues)
+      .where(eq(issues.id, issueId));
+    expect(issueRow?.status).toBe("in_review");
+
+    const wakes = await ctx.db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.idempotencyKey, key));
+    expect(wakes).toHaveLength(1);
+    expect(wakes[0]?.status).toBe("queued");
   });
 });
