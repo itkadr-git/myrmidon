@@ -30,14 +30,38 @@ curl -sS -X POST "$PAPERCLIP_API_URL/api/myrmidon/owner-message" \
 ```
 
 The method is `POST` and the exact path is `/api/myrmidon/owner-message` (not an issue interaction URL).
-Use the same run's identity; never borrow another agent's key or impersonate the owner. If the runtime does not
-expose a needed credential or run ID, stop and report that precise limitation to the operator. Do not bypass
-`human_only` by changing the resolver or resolving the interaction yourself.
+Save the JSON response and its `publicationId`:
 
-A successful response alone does not prove delivery. Read back the returned publication using the documented
-publication/read endpoint and confirm its status is delivered (or the equivalent transport evidence); if the
-response contains only a pending publication, the owner has not yet been reached. Do not claim delivery without
-that evidence. Never send a real owner message as a test.
+```sh
+response="$(curl -sS -X POST "$PAPERCLIP_API_URL/api/myrmidon/owner-message" \\
+  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \\
+  -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID" \\
+  -H 'Content-Type: application/json' \\
+  --data '{"interactionIds":["<interaction-id>"],"text":"<plain-language explanation>"}')"
+printf '%s\n' "$response"
+publication_id="$(printf '%s' "$response" | jq -r '.publicationId')"
+```
+
+The owner-message response intentionally returns `publicationId` but not `endpointId` or `conversationId`.
+The current agent transport has no supported read endpoint that resolves those two IDs. Do not guess them.
+The operator must perform the read-back with board access: first resolve the binding for the task, then query
+its publication status (replace `<task-id>` and `<publication-id>` literally):
+
+```sh
+binding="$(curl -sS "$PAPERCLIP_API_URL/api/issues/<task-id>/chat-binding" \\
+  -H "Authorization: Bearer $PAPERCLIP_API_KEY")"
+endpoint_id="$(printf '%s' "$binding" | jq -r '.endpointId')"
+conversation_id="$(printf '%s' "$binding" | jq -r '.conversationId')"
+curl -sS "$PAPERCLIP_API_URL/api/chat-endpoints/$endpoint_id/conversations/$conversation_id/publications/<publication-id>/status" \\
+  -H "Authorization: Bearer $PAPERCLIP_API_KEY"
+```
+
+Use the same run's identity for the POST; never borrow another agent's key or impersonate the owner. The
+binding lookup and status GET may require the operator's board-authorized key because the owner-message response
+does not expose the binding IDs. If the runtime does not expose a needed credential or run ID, stop and report
+that precise limitation. A successful POST or a `pending` status does not prove delivery: accept only a status
+whose `publication.state` is `published` and whose `publishedAt` is non-null (or the equivalent provider delivery
+receipt). Never send a real owner message as a test.
 
 ## Errors and safe recovery
 
