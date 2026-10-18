@@ -108,6 +108,18 @@ func main() {
 	srv := &server{cfg: &cfg}
 	http.HandleFunc("/v1/bots", srv.requireAuth(srv.list))
 	http.HandleFunc("/v1/bots/", srv.requireAuth(srv.route))
+	http.HandleFunc("/v1/health", srv.requireAuth(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method_not_allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		var stat syscall.Statfs_t
+		if err := syscall.Statfs("/", &stat); err != nil {
+			http.Error(w, "resources_unavailable", 503)
+			return
+		}
+		writeJSON(w, map[string]any{"resources": map[string]uint64{"diskFree": stat.Bavail * uint64(stat.Bsize)}, "egressCheck": map[string]string{"ifconfigIp": "", "expected": "NL"}})
+	}))
 	log.Printf("fleetd listening on %s", cfg.Listen)
 	log.Fatal(http.ListenAndServe(cfg.Listen, nil))
 }
