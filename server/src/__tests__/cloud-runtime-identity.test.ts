@@ -90,7 +90,7 @@ describeEmbeddedPostgres("Cloud runtime identity", () => {
     resetCloudRuntimeIdentityForTests();
     process.env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN = "test-tenant-server-token";
     process.env.PAPERCLIP_CLOUD_STACK_ID = STACK_ID;
-    process.env.MYRMIDON_CLOUD_API_ORIGIN = "https://my-staging.paperclip.app";
+    process.env.MYRMIDON_CLOUD_API_ORIGIN = POOL_ORIGIN;
     process.env.PAPERCLIP_PUBLIC_URL = POOL_ORIGIN;
     process.env.PAPERCLIP_AUTH_PUBLIC_BASE_URL = POOL_ORIGIN;
     process.env.PAPERCLIP_API_URL = POOL_ORIGIN;
