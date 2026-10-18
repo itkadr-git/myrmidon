@@ -34,6 +34,9 @@ import {
 import { KnowledgeDomainError, createMemorySearchIndex } from "./domain.js";
 import { createKnowledgeService, type KnowledgeActor } from "./store.js";
 import { createKnowledgeModule } from "./service.js";
+import { createDbRegulationStore } from "../wiki-cortex/store.js";
+import { createKnowledgeAutonomyRegulationsBackend } from "../autonomy/knowledge-regulations.js";
+import { resolvedRules } from "./rules.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -355,6 +358,204 @@ describeEmbeddedPostgres("myrmidon(1.6.6 KNOWLEDGE-2.0 K-1) knowledge store over
     expect(revsSecond).toHaveLength(2);
     const sourcesSecond = await db.select().from(knowledgeSources).where(eq(knowledgeSources.companyId, companyId));
     expect(sourcesSecond).toHaveLength(2);
+  });
+
+  it("wiki-cortex store reads and writes knowledge rules without touching myrmidon_wiki_regulations", async () => {
+    companyId = await makeCompany();
+    const wikiStore = createDbRegulationStore(db);
+
+    // Save draft
+    const saved = await wikiStore.put({
+      id: randomUUID(),
+      companyId,
+      slug: "deploy/pipeline",
+      title: "Deployment Pipeline",
+      roles: ["devops"],
+      status: "draft",
+      revisionNumber: 1,
+      content: "Pipeline draft content",
+      revisions: [
+        {
+          revisionNumber: 1,
+          title: "Deployment Pipeline",
+          roles: ["devops"],
+          content: "Pipeline draft content",
+          status: "draft",
+          changeSummary: "initial draft",
+          createdByAgentId: null,
+          createdByUserId: "user-1",
+          createdAt: new Date().toISOString(),
+        },
+      ],
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+    expect(saved.slug).toBe("deploy/pipeline");
+    expect(saved.status).toBe("draft");
+
+    // Verify knowledge_items has it as kind="rule"
+    const items = await db.select().from(knowledgeItems).where(and(eq(knowledgeItems.companyId, companyId), eq(knowledgeItems.slug, "deploy/pipeline")));
+    expect(items).toHaveLength(1);
+    expect(items[0]!.kind).toBe("rule");
+    expect(items[0]!.status).toBe("draft");
+    expect(items[0]!.deliveredRevisionId).toBeNull();
+
+    // Verify myrmidon_wiki_regulations table is untouched (0 rows)
+    const legacyRows = await db.select().from(myrmidonWikiRegulations).where(eq(myrmidonWikiRegulations.companyId, companyId));
+    expect(legacyRows).toHaveLength(0);
+
+    // Approve the regulation
+    const approved = await wikiStore.put({
+      ...saved,
+      status: "approved",
+      revisions: [
+        {
+          ...saved.revisions[0]!,
+          status: "approved",
+        },
+      ],
+      updatedAt: new Date(),
+    });
+    expect(approved.status).toBe("approved");
+
+    // Verify knowledge_items deliveredRevisionId is now set
+    const [approvedItem] = await db.select().from(knowledgeItems).where(and(eq(knowledgeItems.companyId, companyId), eq(knowledgeItems.slug, "deploy/pipeline")));
+    expect(approvedItem!.status).toBe("published");
+    expect(approvedItem!.deliveredRevisionId).not.toBeNull();
+
+    // Verify get and list
+    const fetched = await wikiStore.get(companyId, "deploy/pipeline");
+    expect(fetched).not.toBeNull();
+    expect(fetched!.title).toBe("Deployment Pipeline");
+    expect(fetched!.status).toBe("approved");
+
+    const list = await wikiStore.list(companyId);
+    expect(list.some((r) => r.slug === "deploy/pipeline")).toBe(true);
+
+    // Verify myrmidon_wiki_regulations table remains untouched (0 rows)
+    const legacyRowsAfter = await db.select().from(myrmidonWikiRegulations).where(eq(myrmidonWikiRegulations.companyId, companyId));
+    expect(legacyRowsAfter).toHaveLength(0);
+  });
+
+  it("autonomy regulations CRUD reads and writes knowledge rules with change log and without touching myrmidon_wiki_regulations", async () => {
+    companyId = await makeCompany();
+    await db.insert(agentCastes).values({
+      companyId,
+      key: "cmo",
+      nameEn: "CMO",
+      color: "purple",
+      sensitive: true,
+    });
+
+    const activityLogs: any[] = [];
+    const logActivity = async (entry: any) => {
+      activityLogs.push(entry);
+    };
+    const backend = createKnowledgeAutonomyRegulationsBackend(db, logActivity);
+
+    // Create
+    const createdRes = await backend.create(
+      companyId,
+      { type: "board", id: "user-1" },
+      { role: "cmo", title: "Marketing Strategy", bodyMarkdown: "Draft v1" },
+    );
+    expect(createdRes.ok).toBe(true);
+    if (!createdRes.ok) return;
+    const reg = createdRes.value;
+    expect(reg.role).toBe("cmo");
+    expect(reg.title).toBe("Marketing Strategy");
+    expect(reg.status).toBe("draft");
+    expect(reg.revision).toBe(1);
+    expect(reg.wikiPageId).toBe("rules/cmo/marketing-strategy");
+
+    // Check knowledgeItems
+    const [item] = await db.select().from(knowledgeItems).where(eq(knowledgeItems.id, reg.id));
+    expect(item).toBeDefined();
+    expect(item!.kind).toBe("rule");
+    expect(item!.approverKind).toBe("owner"); // cmo is sensitive -> owner
+    expect(item!.status).toBe("draft");
+
+    // myrmidon_wiki_regulations untouched
+    expect(await db.select().from(myrmidonWikiRegulations).where(eq(myrmidonWikiRegulations.companyId, companyId))).toHaveLength(0);
+
+    // Update
+    const updatedRes = await backend.update(
+      companyId,
+      { type: "board", id: "user-1" },
+      { id: reg.id, bodyMarkdown: "Draft v2" },
+    );
+    expect(updatedRes.ok).toBe(true);
+    if (!updatedRes.ok) return;
+    expect(updatedRes.value.revision).toBe(2);
+    expect(updatedRes.value.bodyMarkdown).toBe("Draft v2");
+    expect(updatedRes.value.status).toBe("draft");
+
+    // Approve
+    const approvedRes = await backend.approve(companyId, { type: "board", id: "user-1" }, reg.id);
+    expect(approvedRes.ok).toBe(true);
+    if (!approvedRes.ok) return;
+    expect(approvedRes.value.status).toBe("approved");
+
+    const [approvedItem] = await db.select().from(knowledgeItems).where(eq(knowledgeItems.id, reg.id));
+    expect(approvedItem!.status).toBe("published");
+    expect(approvedItem!.deliveredRevisionId).not.toBeNull();
+
+    // Restore to revision 1
+    const restoredRes = await backend.restore(companyId, { type: "board", id: "user-1" }, { id: reg.id, toRevision: 1 });
+    expect(restoredRes.ok).toBe(true);
+    if (!restoredRes.ok) return;
+    expect(restoredRes.value.revision).toBe(3);
+    expect(restoredRes.value.bodyMarkdown).toBe("Draft v1");
+    expect(restoredRes.value.status).toBe("approved");
+
+    // List
+    const all = await backend.list(companyId);
+    expect(all).toHaveLength(1);
+    expect(all[0]!.id).toBe(reg.id);
+
+    // Delete
+    const deletedRes = await backend.delete(companyId, { type: "board", id: "user-1" }, reg.id);
+    expect(deletedRes.ok).toBe(true);
+    expect(await backend.list(companyId)).toHaveLength(0);
+
+    // myrmidon_wiki_regulations still untouched
+    expect(await db.select().from(myrmidonWikiRegulations).where(eq(myrmidonWikiRegulations.companyId, companyId))).toHaveLength(0);
+
+    // Activity log captured mutations
+    expect(activityLogs.map((l) => l.action)).toEqual([
+      "myrmidon.autonomy.regulation_created",
+      "myrmidon.autonomy.regulation_edited",
+      "myrmidon.autonomy.regulation_approved",
+      "myrmidon.autonomy.regulation_rolled_back",
+      "myrmidon.autonomy.regulation_deleted",
+    ]);
+  });
+
+  it("unified carrier: rules created by autonomy are visible in wiki-cortex and delivery resolver", async () => {
+    companyId = await makeCompany();
+    const backend = createKnowledgeAutonomyRegulationsBackend(db);
+    const created = await backend.create(
+      companyId,
+      { type: "board", id: "user-1" },
+      { role: "engineer", title: "Git Workflow", bodyMarkdown: "Squash before merge." },
+    );
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+    await backend.approve(companyId, { type: "board", id: "user-1" }, created.value.id);
+
+    // Read via wiki-cortex store
+    const wikiStore = createDbRegulationStore(db);
+    const wikiPages = await wikiStore.list(companyId);
+    expect(wikiPages.some((p) => p.title === "Git Workflow")).toBe(true);
+    const page = await wikiStore.get(companyId, created.value.wikiPageId!);
+    expect(page).not.toBeNull();
+    expect(page!.content).toBe("Squash before merge.");
+
+    // Read via knowledge delivery resolver
+    const mod = createKnowledgeModule(db, companyId);
+    const delivered = await resolvedRules(mod, "engineer");
+    expect(delivered.some((r) => r.title === "Git Workflow" && r.content === "Squash before merge.")).toBe(true);
   });
 
   it("rollback copies the target revision and moves the pointer (S5)", async () => {

@@ -42,7 +42,11 @@ import {
   type AutonomyServiceDeps,
 } from "./service.js";
 import { dbAutonomyStore } from "./store.js";
-import { listKnowledgeAutonomyRegulations } from "./knowledge-regulations.js";
+import {
+  listKnowledgeAutonomyRegulations,
+  createKnowledgeAutonomyRegulationsBackend,
+  type AutonomyRegulationsBackend,
+} from "./knowledge-regulations.js";
 
 const regulationCreateSchema = z.object({
   role: z.string().min(1).max(120),
@@ -114,19 +118,23 @@ export interface AutonomyRoutesDeps {
   logActivity: AutonomyServiceDeps["logActivity"];
   /** The knowledge-backed compatibility projection for rule reads. */
   listRegulations?: (companyId: string) => ReturnType<typeof listKnowledgeAutonomyRegulations>;
+  /** The knowledge-backed compatibility operations for rule writes and reads. */
+  regulationsBackend?: AutonomyRegulationsBackend;
   now?: () => Date;
   newId?: () => string;
 }
 
 /** Wire the routes with the default (database-backed) dependencies. */
 export function myrmidonAutonomyRoutes(db: Db) {
+  const logActivityFn = async (input: Parameters<AutonomyRoutesDeps["logActivity"]>[0]) => {
+    await logActivity(db, input);
+  };
   return autonomyRoutes({
     store: dbAutonomyStore(db),
     listChangeLog: dbAutonomyChangeLog(db),
-    logActivity: async (input) => {
-      await logActivity(db, input);
-    },
+    logActivity: logActivityFn,
     listRegulations: (companyId) => listKnowledgeAutonomyRegulations(db, companyId),
+    regulationsBackend: createKnowledgeAutonomyRegulationsBackend(db, logActivityFn),
   });
 }
 
@@ -154,13 +162,21 @@ export function autonomyRoutes(deps: AutonomyRoutesDeps) {
   router.get("/myrmidon/autonomy", async (req, res) => {
     const companyId = companyOf(req);
     const snapshot = await service.snapshot(companyId);
-    const regulations = deps.listRegulations ? await deps.listRegulations(companyId) : snapshot.regulations;
+    const regulations = deps.regulationsBackend
+      ? await deps.regulationsBackend.list(companyId)
+      : deps.listRegulations
+        ? await deps.listRegulations(companyId)
+        : snapshot.regulations;
     res.json({ ...snapshot, regulations });
   });
 
   router.get("/myrmidon/autonomy.regulations", async (req, res) => {
     const companyId = companyOf(req);
-    const regulations = deps.listRegulations ? await deps.listRegulations(companyId) : (await service.snapshot(companyId)).regulations;
+    const regulations = deps.regulationsBackend
+      ? await deps.regulationsBackend.list(companyId)
+      : deps.listRegulations
+        ? await deps.listRegulations(companyId)
+        : (await service.snapshot(companyId)).regulations;
     res.json({ regulations });
   });
 
@@ -182,11 +198,11 @@ export function autonomyRoutes(deps: AutonomyRoutesDeps) {
   router.post("/myrmidon/autonomy/regulations", validate(regulationCreateSchema), async (req, res) => {
     const companyId = companyOf(req);
     assertBoard(req);
-    const result = await service.createRegulation(
-      companyId,
-      actorFromRequest(req),
-      req.body as z.infer<typeof regulationCreateSchema>,
-    );
+    const actor = actorFromRequest(req);
+    const body = req.body as z.infer<typeof regulationCreateSchema>;
+    const result = deps.regulationsBackend
+      ? await deps.regulationsBackend.create(companyId, actor, body)
+      : await service.createRegulation(companyId, actor, body);
     if (!result.ok) {
       respondFailure(res, result.failure);
       return;
@@ -199,10 +215,11 @@ export function autonomyRoutes(deps: AutonomyRoutesDeps) {
     assertBoard(req);
     const id = String(req.params.id ?? "");
     if (!id) throw badRequest("Regulation id is required");
-    const result = await service.updateRegulation(companyId, actorFromRequest(req), {
-      id,
-      ...(req.body as z.infer<typeof regulationUpdateSchema>),
-    });
+    const actor = actorFromRequest(req);
+    const body = req.body as z.infer<typeof regulationUpdateSchema>;
+    const result = deps.regulationsBackend
+      ? await deps.regulationsBackend.update(companyId, actor, { id, ...body })
+      : await service.updateRegulation(companyId, actor, { id, ...body });
     if (!result.ok) {
       respondFailure(res, result.failure);
       return;
@@ -213,7 +230,11 @@ export function autonomyRoutes(deps: AutonomyRoutesDeps) {
   router.post("/myrmidon/autonomy/regulations/:id/approve", async (req, res) => {
     const companyId = companyOf(req);
     assertBoard(req);
-    const result = await service.approveRegulation(companyId, actorFromRequest(req), String(req.params.id ?? ""));
+    const actor = actorFromRequest(req);
+    const id = String(req.params.id ?? "");
+    const result = deps.regulationsBackend
+      ? await deps.regulationsBackend.approve(companyId, actor, id)
+      : await service.approveRegulation(companyId, actor, id);
     if (!result.ok) {
       respondFailure(res, result.failure);
       return;
@@ -226,10 +247,11 @@ export function autonomyRoutes(deps: AutonomyRoutesDeps) {
     assertBoard(req);
     const revision = Number(req.params.rev);
     if (!Number.isInteger(revision) || revision <= 0) throw badRequest("Revision must be a positive integer");
-    const result = await service.restoreRegulationRevision(companyId, actorFromRequest(req), {
-      id: String(req.params.id ?? ""),
-      toRevision: revision,
-    });
+    const actor = actorFromRequest(req);
+    const id = String(req.params.id ?? "");
+    const result = deps.regulationsBackend
+      ? await deps.regulationsBackend.restore(companyId, actor, { id, toRevision: revision })
+      : await service.restoreRegulationRevision(companyId, actor, { id, toRevision: revision });
     if (!result.ok) {
       respondFailure(res, result.failure);
       return;
@@ -240,7 +262,11 @@ export function autonomyRoutes(deps: AutonomyRoutesDeps) {
   router.delete("/myrmidon/autonomy/regulations/:id", async (req, res) => {
     const companyId = companyOf(req);
     assertBoard(req);
-    const result = await service.deleteRegulation(companyId, actorFromRequest(req), String(req.params.id ?? ""));
+    const actor = actorFromRequest(req);
+    const id = String(req.params.id ?? "");
+    const result = deps.regulationsBackend
+      ? await deps.regulationsBackend.delete(companyId, actor, id)
+      : await service.deleteRegulation(companyId, actor, id);
     if (!result.ok) {
       respondFailure(res, result.failure);
       return;
