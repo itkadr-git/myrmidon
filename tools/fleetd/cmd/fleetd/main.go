@@ -160,8 +160,6 @@ func (c c) in(set string) bool { return strings.ContainsRune(set, rune(c)) }
 type server struct {
 	cfg *config
 }
-
-// requireAuth wraps a handler with the static bearer token check.
 func (s *server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		auth := r.Header.Get("Authorization")
