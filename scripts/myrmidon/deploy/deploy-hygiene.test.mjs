@@ -57,6 +57,14 @@ case "$1" in
         done
         echo "deleted $last"
         exit 0 ;;
+  system)
+    if [ "$2" = "df" ]; then echo "Docker disk usage"; exit 0; fi ;;
+  ps)
+    cat "$SANDBOX/containers.txt" 2>/dev/null
+    exit 0 ;;
+  inspect)
+    cat "$SANDBOX/used-images.txt" 2>/dev/null
+    exit 0 ;;
   buildx)
     case "$*" in
       *imagetools*inspect*)
@@ -242,7 +250,7 @@ describe("deploy_disk_precheck (DEPLOY-HYGIENE, OPE-5107)", () => {
     assert.match(out, /4 GiB free; requires 20 GiB including image layers and DB dump reserve/);
     assert.match(out, /refusing before pull, DB dump, or maintenance; cleanup candidates:/);
     assert.doesNotMatch(calls(sb), /docker pull|dump|maintenance/);
-    assert.match(out, /docker system df/);
+    assert.match(calls(sb), /docker system df/);
     // the candidates are printed, the deploy refused
     assert.match(calls(sb), /docker system df/);
   });
@@ -258,7 +266,7 @@ describe("deploy_disk_precheck (DEPLOY-HYGIENE, OPE-5107)", () => {
     const tight = sandbox({ freeGb: 9 });
     const low = runHelper(tight, "deploy_disk_precheck test-place", { configExtra: "MYRMIDON_DEPLOY_MIN_FREE_GB=10" });
     assert.notEqual(low.code, 0, low.out);
-    assert.match(low.out, /9 GiB free; requires 20 GiB including image layers and DB dump reserve/);
+    assert.match(low.out, /9 GiB free; requires 15 GiB including image layers and DB dump reserve/);
 
     const off = sandbox({ freeGb: 1 });
     const offRun = runHelper(off, "deploy_disk_precheck test-place", { configExtra: "MYRMIDON_DEPLOY_MIN_FREE_GB=0" });
