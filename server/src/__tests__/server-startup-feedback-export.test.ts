@@ -482,6 +482,7 @@ import { EXECUTION_RECONCILIATION_INTERVAL_MS } from "../services/execution-cont
 describe("startServer feedback export wiring", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    existingSettingsRows.length = 0;
     delete process.env.PAPERCLIP_PROCESS_ROLE;
     delete process.env.DATABASE_URL;
     delete process.env.MYRMIDON_DATABASE_URL;
@@ -658,16 +659,12 @@ describe("startServer feedback export wiring", () => {
     const originalRole = process.env.PAPERCLIP_PROCESS_ROLE;
     process.env.PAPERCLIP_PROCESS_ROLE = "api";
     loadConfigMock.mockReturnValue(buildTestConfig({ heartbeatSchedulerEnabled: true }));
-    createDbMock.mock.results[0]?.value.select.mockReturnValue({
-      from: vi.fn(() => ({ where: vi.fn(async () => [
-        {
-          singletonKey: "default",
-          general: {},
-          experimental: {},
-          createdAt: new Date(),
-          updatedAt: new Date(),
-        },
-      ]) })),
+    existingSettingsRows.push({
+      singletonKey: "default",
+      general: {},
+      experimental: {},
+      createdAt: new Date(),
+      updatedAt: new Date(),
     });
     const intervals: number[] = [];
     const setIntervalSpy = vi.spyOn(globalThis, "setInterval").mockImplementation(((
