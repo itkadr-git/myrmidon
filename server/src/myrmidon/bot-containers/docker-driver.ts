@@ -126,7 +126,9 @@ export const BOT_CONTAINER_UID = 10001;
 const DOCKER_API_VERSION = "v1.45";
 /** Seconds Docker waits after SIGTERM before SIGKILL on stop/restart. */
 export const BOT_STOP_TIMEOUT_SEC = 30;
-const DEFAULT_START_HEALTH_TIMEOUT_MS = 120_000;
+const DEFAULT_START_HEALTH_TIMEOUT_MS = 180_000;
+// Developer images run slow cache/devbuild diagnostics during container init.
+const DEFAULT_HEALTH_START_GRACE_MS = 90_000;
 // myrmidon(1.6.5-DOCKERGATE-A2A3-STORM): 1 s polling of a container's health was
 // the rollout's second storm source — a 120 s wait meant up to 120 A2 inspects
 // per bot, and dockergate bills every one against the per-bot inspect bucket and
@@ -224,6 +226,8 @@ export interface DockerDriverOptions {
    */
   clock?: () => number;
   rng?: () => number;
+  /** Monotonic source for startup-health elapsed time and deadlines. */
+  monotonicClock?: () => number;
   /**
    * myrmidon(1.6.1-BOT-DISK-B): the shared package cache path from the
    * instance settings (`general.botDisk`), or undefined when none is set. Read
@@ -811,7 +815,7 @@ interface DockerInspect {
   Id: string;
   /** Image id the container runs (sha256:…). */
   Image: string;
-  Config?: { Image?: string; Labels?: Record<string, string> };
+  Config?: { Image?: string; Labels?: Record<string, string>; Env?: string[] };
   State?: { Status?: string; ExitCode?: number; Health?: { Status?: string } };
   HostConfig?: { Memory?: number; NanoCpus?: number; PidsLimit?: number; NetworkMode?: string; Binds?: string[] };
 }
@@ -1121,6 +1125,7 @@ export function dockerBotContainerDriver(
   // myrmidon(1.6.5-DOCKERGATE-A2A3-STORM): the clock and jitter source of the
   // pacing layer (dockergate-pacing.ts); tests drive them to assert the schedule.
   const clock = options.clock ?? (() => Date.now());
+  const monotonicClock = options.monotonicClock ?? options.clock ?? (() => performance.now());
   const rng = options.rng ?? Math.random;
   const limiter: RateLimiter = createRateLimiter({ ratePerSec: config.maxRps ?? 0, clock, sleep });
   const readSharedPackageCachePath = options.readSharedPackageCachePath ?? (async () => undefined);
@@ -1663,23 +1668,36 @@ export function dockerBotContainerDriver(
 
   async function waitForHealthy(botKey: string): Promise<void> {
     const name = containerNameFor(botKey);
-    const deadline = clock() + startHealthTimeoutMs;
+    const startedAt = monotonicClock();
+    const deadline = startedAt + startHealthTimeoutMs;
+    let unhealthySince: number | undefined;
     for (;;) {
       const info = await inspectByName(name);
       if (!info) throw new Error(`${name} disappeared while waiting for it to become healthy`);
       const state = info.State?.Status ?? "unknown";
       const health = info.State?.Health?.Status;
-      if (state === "running" && (health === undefined || health === "healthy")) return;
-      if (state === "running" && health === "unhealthy") throw new Error(`${name} reports unhealthy after start`);
+      if (state === "running" && health === "healthy") return;
+      if (state === "running" && health === "unhealthy") {
+        const isDeveloperContainer = (info.Config?.Env ?? []).some((entry) => entry.startsWith("DEVBUILD_BOT_NAME="));
+        const healthGrace = isDeveloperContainer ? Math.min(startHealthTimeoutMs, DEFAULT_HEALTH_START_GRACE_MS) : 0;
+        if (healthGrace > 0) {
+          unhealthySince ??= monotonicClock();
+          if (monotonicClock() - unhealthySince >= healthGrace) throw new Error(`${name} reports unhealthy after start`);
+        } else {
+          throw new Error(`${name} reports unhealthy after start`);
+        }
+      } else {
+        unhealthySince = undefined;
+      }
       if (state === "exited" || state === "dead") {
         throw new Error(`${name} ${state} (exit code ${info.State?.ExitCode ?? "unknown"}) instead of becoming healthy`);
       }
-      if (clock() >= deadline) {
+      if (monotonicClock() >= deadline) {
         throw new Error(
           `${name} did not become healthy within ${startHealthTimeoutMs}ms (last state: ${health ? `${state}/${health}` : state})`,
         );
       }
-      await sleep(healthPollIntervalMs);
+      await sleep(Math.min(healthPollIntervalMs, Math.max(0, deadline - monotonicClock())));
     }
   }
 

@@ -2351,8 +2351,15 @@
     {
       "idx": 398,
       "version": "7",
-      "when": 1791711000001,
-      "tag": "0398_skill_lifecycle_backfill",
+      "when": 1792195200000,
+      "tag": "0398_knowledge_revision_language",
+      "breakpoints": true
+    },
+    {
+      "idx": 399,
+      "version": "7",
+      "when": 1792195200001,
+      "tag": "0399_skill_lifecycle_backfill",
       "breakpoints": true
     }
   ]
