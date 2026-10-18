@@ -163,6 +163,7 @@ import { boardLoadApp, boardLoadRequestMiddleware } from "./myrmidon/monitoring/
 import { myrmidonMonitoringAlertsRoutes } from "./myrmidon/monitoring/alerts/index.js"; // myrmidon(1.6.6-ALERTS)
 import { swarmClaimApp } from "./myrmidon/swarm-claim/index.js"; // myrmidon(1.6-SWARM)
 import { createCasteDirectoryReader } from "./myrmidon/castes/directory.js"; // myrmidon(1.6.5 OPE-6608)
+
 // myrmidon(EMERGENCY-STOP): immediate stop of the runs a draining pause left running
 import { myrmidonEmergencyStopRoutes } from "./myrmidon/emergency-stop.js";
 import { myrmidonWakeTaskGuardRoutes } from "./myrmidon/wake-task-guard-routes.js"; // myrmidon(1.6.5 F-26 T5)
@@ -1154,6 +1155,7 @@ export async function createApp(
   api.use(myrmidonLitellmWorkersRoutes(db)); // myrmidon(1.6.5 LITELLM-WORKERS A): LiteLLM worker-process target, live pool size and TTIN/TTOU resize
   api.use(agentInstructionsRevisionsRoutes(db)); // myrmidon(H2)
   api.use(myrmidonFleetConsoleRoutes(db)); // myrmidon(SC1)
+  api.use(myrmidonFleetSiteRoutes(db)); // myrmidon(1.6.6)
   api.use(myrmidonCloudConnectorRoutes(db)); // myrmidon(CLOUD-CONNECTOR)
   api.use(myrmidonPromptBudgetAdviceRoutes(db)); // myrmidon(1.6.3 PROMPT-BUDGET C): prompt-budget advice and deep analysis
   api.use(myrmidonMonitoringLinkRoutes(db)); // myrmidon(1.6.6 MONITORING E): link liveness feed and the link pulse endpoint

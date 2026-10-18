@@ -232,6 +232,7 @@ export {
   myrmidonScopeAgentPrefs,
 } from "./myrmidon_bot_scope.js";
 export { myrmidonFleetServers } from "./myrmidon_fleet_servers.js"; // myrmidon(SC1): fleet-server registry for the browser console
+export { myrmidonFleetSites } from "./myrmidon_fleet_sites.js"; // myrmidon(1.6.6): remote fleet-site registry
 // myrmidon(1.6-SWARM): leases of the per-role task queues.
 export { issueClaims } from "./issue_claims.js";
 // myrmidon(1.7-AGENT-EXCHANGE-A): discussion rooms on issue cards and the round grid of answers.

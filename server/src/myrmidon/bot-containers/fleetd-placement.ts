@@ -16,6 +16,14 @@
 
 import type { FleetHostConfig } from "./fleetd-hosts.js";
 
+export interface FleetSiteGateway {
+  fleetdUrl: string;
+}
+
+export function fleetSiteGatewayApiBaseUrl(site: FleetSiteGateway, gatewayPort: number | undefined): string {
+  return fleetGatewayApiBaseUrl(site, gatewayPort);
+}
+
 /** The instance-wide bot container settings a host entry may override. */
 export interface InstanceBotSettings {
   /** Base URL bots use to reach the central hindsight service. */
@@ -67,7 +75,11 @@ export function effectiveBotSettings(
  * allocated. A missing port is an error, never a guessed default: pointing the
  * card at the wrong port would silently break the bot's runs.
  */
-export function fleetGatewayApiBaseUrl(fleetdUrl: string, gatewayPort: number | undefined): string {
+export function fleetGatewayApiBaseUrl(
+  fleetdUrlOrSite: string | FleetSiteGateway,
+  gatewayPort: number | undefined,
+): string {
+  const fleetdUrl = typeof fleetdUrlOrSite === "string" ? fleetdUrlOrSite : fleetdUrlOrSite.fleetdUrl;
   if (gatewayPort === undefined) {
     throw new Error("fleetd did not report a gateway port for this bot; the card cannot be pointed at it");
   }
