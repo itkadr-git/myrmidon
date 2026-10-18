@@ -4408,7 +4408,9 @@ export function recoveryService(
       // autoPolicyDecision.kind === "vendor_default" falls through as-is.
     }
 
-    if (input.rerouteToSharedQueue) {
+    // L1 infrastructure reroutes must happen before the board recovery action;
+    // generic escalation callers still need the action to establish `blocked`.
+    if (input.rerouteToSharedQueue && isInfraInterruptErrorCode(input.latestRun.errorCode)) {
       // Rerouting is the recovery disposition itself. Apply it before creating
       // a board action, which would otherwise turn the issue blocked first.
       const rerouted = await rerouteStrandedIssueToSharedQueue({
@@ -4469,6 +4471,22 @@ export function recoveryService(
       input.issue.companyId,
       input.issue.id,
     );
+    if (input.rerouteToSharedQueue && blockerIds.length === 0) {
+      const rerouted = await rerouteStrandedIssueToSharedQueue({
+        issue: input.issue,
+        reason: input.notice?.title ?? recoveryCause,
+        latestRun: input.latestRun,
+        previousStatus: input.previousStatus,
+        recoveryCause,
+        successfulRunHandoffEvidence: input.successfulRunHandoffEvidence,
+      });
+      if (rerouted) {
+        return (await db.query.issues.findFirst({
+          where: and(eq(issues.id, input.issue.id), eq(issues.companyId, input.issue.companyId)),
+        })) ?? null;
+      }
+      return input.issue;
+    }
     const updated = await issuesSvc.update(input.issue.id, {
       status: "blocked",
       blockedByIssueIds: blockerIds,
