@@ -65,8 +65,10 @@ describe("myrmidon(1.6.1 SWARM-IDLE-WAKE) sweep pass", () => {
     const updates: Array<{ table: unknown; patch: Record<string, unknown>; where?: unknown }> = [];
     const expiredClaim = {
       id: "claim-old",
+      companyId: "company-1",
       issueId: "released-issue",
       agentId: "former-agent",
+      runId: null,
       heartbeatAt: NOW,
       expiresAt: new Date(NOW.getTime() - 60_000),
       releasedAt: null,
