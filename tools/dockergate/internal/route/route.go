@@ -57,8 +57,8 @@ const A15 = "A15"
 // The gate allows it on the main container only, like A3/A13; the flag itself
 // (MYRMIDON_BOT_SKILL_BACKIMPORT) is read by the board, not by the gate.
 const (
- A16 = "A16"
- A17 = "A17"
+	A16 = "A16"
+	A17 = "A17"
 )
 
 // skillsReadQuery is the skills directory the gate serves for A16, in the same

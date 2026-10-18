@@ -481,13 +481,17 @@ func (rs *reqState) stopMain(ctx context.Context, rt *route.Route, bs *botState,
 			return deny.New(deny.IdleStopDenied).WithDetail("active_helper")
 		}
 	} else {
-		if derr := rs.requireNextCreated(ctx, rt.BotKey); derr != nil { return derr }
+		if derr := rs.requireNextCreated(ctx, rt.BotKey); derr != nil {
+			return derr
+		}
 	}
 	if derr := rs.g.allow(bs, rateStop); derr != nil {
 		return derr
 	}
 	target := "/stop?t=30"
-	if idle { target += "&myrmidon-idle=true" }
+	if idle {
+		target += "&myrmidon-idle=true"
+	}
 	ans, derr := rs.call(ctx, upstream.Request{Method: "POST", Target: containerPath(ct.ID, target)},
 		stop, maxErrBody, deny.ResponseTooLarge)
 	if derr != nil {
