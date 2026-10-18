@@ -13,7 +13,7 @@ cut over.
 
 | Item | Supported |
 |---|---|
-| Source | One of these Paperclip releases: `v2026.916.1` (278 migrations), `v2026.1001.0` (282), `v2026.1005.0` (292), `v2026.1012.0` (304, the newest at the time of writing). Compatibility is decided by the **hashes** of the applied migrations: the source list must equal, in order, the list of exactly one of these releases. Version strings and the number of the last migration decide nothing. The dry run names the release it recognised (`source.vendorRelease`). |
+| Source | One of these Paperclip releases: `v2026.916.1` (278 migrations), `v2026.1001.0` (282), `v2026.1005.0` (292), `v2026.1012.0` (304). Compatibility is decided by the **hashes** of the applied migrations: the source list must equal, in order, the list of exactly one of these releases. Version strings and the number of the last migration decide nothing. The dry run names the release it recognised (`source.vendorRelease`). |
 | Older, newer or unknown source | Rejected before any target write, with the reason (`older-than-supported-release`, `newer-than-supported-release`, `hash-mismatch`) and the list of supported releases. Bring the source to one of them first. No adapter exists. |
 | Data of Paperclip features that Myrmidon lacks | Not transferred; see the next section. Needs `--accept-vendor-only-data` when it is not empty. |
 | Source access | A PostgreSQL URL (read-only snapshot), or a **plain-format** `pg_dump` file. |
