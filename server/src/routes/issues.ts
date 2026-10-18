@@ -40,11 +40,14 @@ import {
   eq,
   inArray,
   isNull,
+  ne,
   notInArray,
+  or,
   sql,
 } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import type { ChatChannelService } from "../services/chat-channels.js";
+import type { WakeupOptions } from "../services/heartbeat.js";
 import {
   companies,
   activityLog,
@@ -2978,6 +2981,10 @@ function buildExecutionStageWakeup(input: {
         },
         requestedByActorType: input.requestedByActorType,
         requestedByActorId: input.requestedByActorId,
+        idempotencyKey:
+          nextState.currentStageType === "review"
+            ? `issue-review-admission:${issueId}:${agentId}`
+            : undefined,
         contextSnapshot: {
           issueId,
           taskId: issueId,
@@ -3580,6 +3587,12 @@ export function issueRoutes(
       proposalId: string;
       actor: { agentId?: string | null; userId?: string | null };
     }) => Promise<unknown>;
+    insertReviewAdmissionWakeup?: (
+      agentId: string,
+      options: WakeupOptions,
+      tx: Db,
+      companyId?: string,
+    ) => Promise<{ created: boolean }>;
   } = {},
 ) {
   const router = Router();
@@ -3590,6 +3603,12 @@ export function issueRoutes(
   const heartbeat = heartbeatService(db, {
     pluginWorkerManager: opts.pluginWorkerManager,
   });
+  const insertReviewAdmissionWakeup =
+    opts.insertReviewAdmissionWakeup ??
+    (typeof heartbeat?.insertReviewAdmissionWakeup === "function"
+      ? heartbeat.insertReviewAdmissionWakeup.bind(heartbeat)
+      : async () => ({ created: false }));
+
   const commentWasCreatedByAssigneeRun = async (
     comment: { companyId: string; createdByRunId?: string | null },
     assigneeAgentId: string | null | undefined,
@@ -6262,10 +6281,18 @@ export function issueRoutes(
       : [...new Set(current)];
   }
 
-  async function findCurrentSerializedWatchdogChild(parent: {
-    id: string;
-    companyId: string;
-  }) {
+  async function findCurrentSerializedWatchdogChild(
+    parent: {
+      id: string;
+      companyId: string;
+    },
+    options?: {
+      excludeIssueIds?: (string | null | undefined)[];
+    },
+  ) {
+    const excludedIssueIds = (options?.excludeIssueIds ?? []).filter(
+      (id): id is string => typeof id === "string" && id.trim().length > 0,
+    );
     const children = await db
       .select({
         id: issueRows.id,
@@ -6276,6 +6303,10 @@ export function issueRoutes(
         and(
           eq(issueRows.companyId, parent.companyId),
           eq(issueRows.parentId, parent.id),
+          or(
+            isNull(issueRows.originKind),
+            ne(issueRows.originKind, TASK_WATCHDOG_ORIGIN_KIND),
+          ),
           inArray(issueRows.status, [
             "todo",
             "in_progress",
@@ -6283,6 +6314,9 @@ export function issueRoutes(
             "blocked",
           ]),
           isNull(issueRows.hiddenAt),
+          ...(excludedIssueIds.length > 0
+            ? [notInArray(issueRows.id, excludedIssueIds)]
+            : []),
         ),
       )
       .orderBy(
@@ -6299,6 +6333,7 @@ export function issueRoutes(
     currentChildIssueId: string | null | undefined;
   }) {
     if (!input.watchdogParentIssueId || !input.currentChildIssueId) return;
+    if (input.watchdogParentIssueId === input.currentChildIssueId) return;
     const watchdogParent = await svc.getById(input.watchdogParentIssueId);
     if (
       !watchdogParent ||
@@ -6310,12 +6345,21 @@ export function issueRoutes(
       watchdogParent.status !== "blocked"
     )
       return;
+    if (watchdogParent.id === input.currentChildIssueId) return;
 
     const relations = await svc.getRelationSummaries(watchdogParent.id);
     const nextBlockedByIssueIds = mergeIssueBlockerIds(
       relations.blockedBy?.map((relation) => relation.id) ?? [],
       input.currentChildIssueId,
-    );
+    ).filter((id) => id !== watchdogParent.id);
+
+    if (
+      nextBlockedByIssueIds.length === (relations.blockedBy?.length ?? 0) &&
+      watchdogParent.status === "blocked"
+    ) {
+      return;
+    }
+
     await svc.update(watchdogParent.id, {
       status: "blocked",
       blockedByIssueIds: nextBlockedByIssueIds,
@@ -12595,7 +12639,9 @@ export function issueRoutes(
       const serializationContext =
         await resolveWatchdogFollowUpSerializationContext(req, parent);
       const currentSerializedChild = serializationContext
-        ? await findCurrentSerializedWatchdogChild(parent)
+        ? await findCurrentSerializedWatchdogChild(parent, {
+            excludeIssueIds: [serializationContext.watchdogParentIssueId],
+          })
         : null;
       const executionPolicy = applyActorMonitorScheduledBy(
         normalizeIssueExecutionPolicy(createBody.executionPolicy),
@@ -12881,7 +12927,9 @@ export function issueRoutes(
       const serializationContext =
         await resolveWatchdogFollowUpSerializationContext(req, sourceIssue);
       const existingSerializedChild = serializationContext
-        ? await findCurrentSerializedWatchdogChild(sourceIssue)
+        ? await findCurrentSerializedWatchdogChild(sourceIssue, {
+            excludeIssueIds: [serializationContext.watchdogParentIssueId],
+          })
         : null;
       const serializedBlockedChildIds = new Set<string>();
       if (serializationContext) {
@@ -14107,6 +14155,12 @@ export function issueRoutes(
           assigneeChangeRequested:
             normalizedAssigneeAgentId !== undefined ||
             req.body.assigneeUserId !== undefined,
+          // myrmidon(OPE-6954): a person moving the issue into a workable
+          // status is the same "carry on" as moving it out of `blocked`.
+          // Since REQUEUE-HOLD the settle leaves a re-queued task in its own
+          // status, so this is the action an operator has left.
+          statusChangeRequested:
+            updateFields.status !== undefined && updateFields.status !== existing.status,
         }) &&
         (await issueHasSettledReplayHold(db, existing.companyId, existing.id));
       let humanUnblock: HumanUnblockResult | null = null;
@@ -14252,7 +14306,10 @@ export function issueRoutes(
         Boolean(commentAttachmentIds?.length) ||
         Boolean(decision) ||
         shouldRelayStop ||
+        enteringReviewRequested || // myrmidon(REVIEW-ADMISSION): require one transaction for issue state and reviewer receipt.
         persistReviewActivityTransactionally ||
+        ((updateFields.status === "in_review" || existing.status === "in_review") &&
+          assigneeWillChange) ||
         reviewPolicySensitiveMutationRequested ||
         humanUnblockPossible;
       try {
@@ -14265,6 +14322,59 @@ export function issueRoutes(
               return null;
             const updated = await updateIssue(tx);
             if (!updated) return null;
+            if (
+              updated.status === "in_review" &&
+              (enteringReviewRequested || assigneeWillChange)
+            ) {
+              const stageWake = buildExecutionStageWakeup({
+                issueId: updated.id,
+                previousState: parseIssueExecutionState(existing.executionState),
+                nextState: parseIssueExecutionState(updated.executionState),
+                interruptedRunId,
+                requestedByActorType: actor.actorType === "user" ? "user" : "agent",
+                requestedByActorId: actor.actorId,
+              });
+              if (stageWake?.agentId) {
+                const admission = await insertReviewAdmissionWakeup(
+                  stageWake.agentId,
+                  stageWake.wakeup,
+                  tx as unknown as Db,
+                  updated.companyId,
+                );
+                if (admission && admission.created === false) {
+                  throw new Error(
+                    `Failed to persist review admission wakeup for agent ${stageWake.agentId}`,
+                  );
+                }
+              }
+              if (
+                assigneeWillChange &&
+                updated.assigneeAgentId &&
+                (!stageWake || stageWake.agentId !== updated.assigneeAgentId)
+              ) {
+                const wakeup: WakeupOptions = {
+                  source: "assignment",
+                  triggerDetail: "system",
+                  reason: enteringReviewRequested ? "issue_entered_review" : "issue_review_reassigned",
+                  payload: { issueId: updated.id, mutation: "review_admission" },
+                  idempotencyKey: `issue-review-admission:${updated.id}:${updated.assigneeAgentId}`,
+                  requestedByActorType: actor.actorType,
+                  requestedByActorId: actor.actorId,
+                  contextSnapshot: { issueId: updated.id, taskId: updated.id },
+                };
+                const admission = await insertReviewAdmissionWakeup(
+                  updated.assigneeAgentId,
+                  wakeup,
+                  tx as unknown as Db,
+                  updated.companyId,
+                );
+                if (admission && admission.created === false) {
+                  throw new Error(
+                    `Failed to persist review admission wakeup for assignee ${updated.assigneeAgentId}`,
+                  );
+                }
+              }
+            }
             // myrmidon(HOLD-READY): an explicit human unblock is an operator
             // resolve of the settled "do not replay" hold.
             if (
@@ -15212,6 +15322,11 @@ export function issueRoutes(
             source: "assignment",
             triggerDetail: "system",
             reason: "issue_assigned",
+            ...(issue.status === "in_review"
+              ? {
+                  idempotencyKey: `issue-review-admission:${issue.id}:${issue.assigneeAgentId}`,
+                }
+              : {}),
             payload: {
               issueId: issue.id,
               ...(comment ? { commentId: comment.id } : {}),
