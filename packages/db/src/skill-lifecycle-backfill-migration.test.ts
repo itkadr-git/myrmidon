@@ -192,7 +192,7 @@ describeEmbeddedPostgres("skill lifecycle backfill migration", () => {
     // Search == delivery: every published card is in the read model.
     const searchRows = await sql<{ item_id: string }[]>`
       SELECT "item_id" FROM "knowledge_search"
-      WHERE "item_id" IN (${sql.array(cards.map((card) => card.id))})
+      WHERE "item_id" IN ${sql(cards.map((card) => card.id))}
     `;
     expect(searchRows).toHaveLength(cards.length);
 
