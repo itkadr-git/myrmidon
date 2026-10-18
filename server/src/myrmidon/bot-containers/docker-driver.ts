@@ -1530,6 +1530,7 @@ export function dockerBotContainerDriver(
       // already asked for the status (the reconciler, once per bot per pass)
       // can hand it to templateDrift instead of paying a second inspect.
       inspect: info,
+      idleStopped: info.Config?.Labels?.[BOT_LABEL_KEYS.idleStopped] === "true",
     };
   }
 
@@ -1721,5 +1722,11 @@ export function dockerBotContainerDriver(
     await stopByName(containerNameFor(botKey));
   }
 
-  return { status, list, listRunning, templateDrift, statusWithDrift, create, recreate, writeProfile, start, restart, stop, readCloneReport, readBotSkills };
+  async function stopIdle(botKey: string): Promise<void> {
+    const name = containerNameFor(botKey);
+    const res = await requestWithRateLimitRetry({ method: "POST", path: `/containers/${nameSegment(name)}/stop?t=${BOT_STOP_TIMEOUT_SEC}&myrmidon-idle=true` });
+    if (res.status >= 400) throw describeFailure(`docker idle stop ${name}`, res);
+  }
+
+  return { status, list, listRunning, templateDrift, statusWithDrift, create, recreate, writeProfile, start, restart, stop, stopIdle, readCloneReport, readBotSkills };
 }
