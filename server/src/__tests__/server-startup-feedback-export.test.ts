@@ -22,8 +22,14 @@ const ORIGINAL_PAPERCLIP_LISTEN_PORT = process.env.PAPERCLIP_LISTEN_PORT;
 const ORIGINAL_PAPERCLIP_PROCESS_ROLE = process.env.PAPERCLIP_PROCESS_ROLE;
 const ORIGINAL_PAPERCLIP_CONFIG = process.env.PAPERCLIP_CONFIG;
 const ORIGINAL_MYRMIDON_CONFIG = process.env.MYRMIDON_CONFIG;
+const ORIGINAL_MYRMIDON_HOME = process.env.MYRMIDON_HOME;
+const ORIGINAL_PAPERCLIP_HOME = process.env.PAPERCLIP_HOME;
+const isolatedConfigPath = path.join(tmpdir(), `myrmidon-startup-${process.pid}-${Date.now()}.json`);
 delete process.env.PAPERCLIP_CONFIG;
 delete process.env.MYRMIDON_CONFIG;
+delete process.env.PAPERCLIP_HOME;
+delete process.env.MYRMIDON_HOME;
+process.env.PAPERCLIP_CONFIG = isolatedConfigPath;
 
 const {
   createAppMock,
@@ -929,6 +935,10 @@ describe("startServer PAPERCLIP_API_URL handling", () => {
     else process.env.PAPERCLIP_CONFIG = ORIGINAL_PAPERCLIP_CONFIG;
     if (ORIGINAL_MYRMIDON_CONFIG === undefined) delete process.env.MYRMIDON_CONFIG;
     else process.env.MYRMIDON_CONFIG = ORIGINAL_MYRMIDON_CONFIG;
+    if (ORIGINAL_PAPERCLIP_HOME === undefined) delete process.env.PAPERCLIP_HOME;
+    else process.env.PAPERCLIP_HOME = ORIGINAL_PAPERCLIP_HOME;
+    if (ORIGINAL_MYRMIDON_HOME === undefined) delete process.env.MYRMIDON_HOME;
+    else process.env.MYRMIDON_HOME = ORIGINAL_MYRMIDON_HOME;
   });
 
   it("uses the externally set PAPERCLIP_API_URL when provided", async () => {
