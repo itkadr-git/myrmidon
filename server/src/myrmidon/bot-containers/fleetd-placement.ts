@@ -68,6 +68,7 @@ export function effectiveBotSettings(
  * card at the wrong port would silently break the bot's runs.
  */
 export function fleetGatewayApiBaseUrl(fleetdUrl: string, gatewayPort: number | undefined): string {
+  if (!fleetdUrl) throw new Error("fleet host URL is required for gateway routing");
   if (gatewayPort === undefined) {
     throw new Error("fleetd did not report a gateway port for this bot; the card cannot be pointed at it");
   }
