@@ -365,12 +365,15 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
 
     const readyWakeRequest = await waitForCondition(async () => {
       const rows = await db
-        .select({ status: agentWakeupRequests.status, reason: agentWakeupRequests.reason })
+        .select({
+          status: agentWakeupRequests.status,
+          reason: agentWakeupRequests.reason,
+        })
         .from(agentWakeupRequests)
         .where(
           and(
             eq(agentWakeupRequests.agentId, agentId),
-            sql`${agentWakeupRequests.payload} ->> 'issueId' = ${readyIssueId}`,
+            sql`${agentWakeupRequests.contextSnapshot} ->> 'issueId' = ${readyIssueId}`,
           ),
         )
         .orderBy(agentWakeupRequests.requestedAt);
