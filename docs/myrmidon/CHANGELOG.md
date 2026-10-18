@@ -10,13 +10,6 @@ version file to edit. Base Paperclip version is in the image label
 
 ## Unreleased
 
-### Agent list and live-run validators follow the authorized response
-
-- The company agent list checks company authorization and filters rows by agent-read access before response construction. Its ETag includes the authorized scope, configuration-redaction decision, and visible response rows.
-- The live-runs endpoint checks telemetry access and redacts run data before deriving its ETag; authorization context and redacted rows are part of the response variant.
-- The Agents pages refresh live-run data every 60 seconds (previously 15 seconds).
-- Validation: route regressions exercise the same `If-None-Match` across changed agent visibility and run redaction. Validators intentionally over-invalidate when authorization or redaction context changes.
-
 ## 1.6.6
 
 ### The company agent list ships without adapter_config; the config stays one request away (PERF-DIET G2)
