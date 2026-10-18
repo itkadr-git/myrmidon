@@ -807,11 +807,13 @@ import {
 import { shouldRetryOriginalExecutorForInfraInterrupt } from "../myrmidon/infra-interrupts.js";
 // myrmidon(X8d): quote the same person's other conversation (web <-> Telegram)
 // myrmidon(X9b): quoted context of the Telegram chat an @<alias> mention arrived in
+// myrmidon(1.6.6 CH-CONNECTOR-D): the cross-channel theme is reached through the
+// bridge seam, so a channel connector can serve it.
 import {
   appendCrossChannelDelta,
   buildCrossChannelContext,
   buildMentionedChatContext,
-} from "../myrmidon/agent-chat-bridge/cross-channel.js";
+} from "../myrmidon/channel-connectors/bridge/cross-channel.js";
 // myrmidon(1.6.5-OWNER-VIA-BOT): the owner dialogue block of a run prompt (explain a decision / owner's DM answer)
 import {
   appendOwnerViaBotBlock,
@@ -3853,7 +3855,7 @@ function normalizeMaxConcurrentRuns(value: unknown) {
   );
 }
 
-interface WakeupOptions {
+export interface WakeupOptions {
   /** Set only by authenticated board wake routes; never copied from caller payloads. */
   manualUserWake?: boolean;
   /** Internal resume of a queue with persisted board interruption intent. */
@@ -21105,6 +21107,60 @@ export function heartbeatService(
   // prologue. drainActiveRunExecutions can then await a wake that is still before
   // run registration. Internal callers reference enqueueWakeup directly and
   // already await it, so they do not need this registration.
+  async function insertReviewAdmissionWakeup(
+    agentId: string,
+    opts: WakeupOptions,
+    tx: Db,
+    companyId?: string,
+  ) {
+    if (!tx || typeof tx.insert !== "function") {
+      return { created: false };
+    }
+    const source = opts.source ?? "on_demand";
+    const reason = opts.reason ?? null;
+    const payload = opts.payload ? { ...opts.payload } : null;
+    if (payload) {
+      delete payload.queuedCommentInterrupt;
+      delete payload.manualUserWake;
+    }
+    const contextSnapshot = { ...(opts.contextSnapshot ?? {}) };
+    const resolvedIssueId =
+      readNonEmptyString(contextSnapshot.issueId) ??
+      readNonEmptyString(payload?.issueId) ??
+      readNonEmptyString(payload?.taskId);
+    const key = opts.idempotencyKey ??
+      `issue-review-admission:${resolvedIssueId ?? "unknown"}:${agentId}`;
+    let resolvedCompanyId = companyId;
+    if (!resolvedCompanyId && typeof tx.select === "function") {
+      try {
+        const agent = await tx
+          .select()
+          .from(agents)
+          .where(eq(agents.id, agentId))
+          .then((rows) => rows[0] ?? null);
+        resolvedCompanyId = agent?.companyId;
+      } catch {
+        // Query failed on mock tx
+      }
+    }
+    if (!resolvedCompanyId) {
+      return { created: false };
+    }
+    await tx.insert(agentWakeupRequests).values({
+      companyId: resolvedCompanyId,
+      agentId,
+      source,
+      triggerDetail: opts.triggerDetail ?? null,
+      reason,
+      payload: resolvedIssueId ? { ...(payload ?? {}), issueId: resolvedIssueId } : payload,
+      status: "queued",
+      requestedByActorType: opts.requestedByActorType ?? null,
+      requestedByActorId: opts.requestedByActorId ?? null,
+      idempotencyKey: key,
+    });
+    return { created: true };
+  }
+
   function trackWakeup(
     agentId: string,
     opts: WakeupOptions = {},
@@ -30212,23 +30268,42 @@ export function heartbeatService(
         return { kind: "skipped" as const };
       }
 
-      const wakeupRequest = await tx
-        .insert(agentWakeupRequests)
-        .values({
-          ...durableReceiptFields,
-          companyId: agent.companyId,
-          agentId,
-          source,
-          triggerDetail,
-          reason,
-          payload,
-          status: "queued",
-          requestedByActorType: opts.requestedByActorType ?? null,
-          requestedByActorId: opts.requestedByActorId ?? null,
-          idempotencyKey: opts.idempotencyKey ?? null,
-        })
-        .returning()
-        .then((rows) => rows[0]);
+      let wakeupRequest = null;
+      if (opts.idempotencyKey) {
+        const [existing] = await tx
+          .select()
+          .from(agentWakeupRequests)
+          .where(
+            and(
+              eq(agentWakeupRequests.companyId, agent.companyId),
+              eq(agentWakeupRequests.agentId, agentId),
+              eq(agentWakeupRequests.idempotencyKey, opts.idempotencyKey),
+              eq(agentWakeupRequests.status, "queued"),
+              isNull(agentWakeupRequests.runId),
+            ),
+          )
+          .limit(1);
+        wakeupRequest = existing ?? null;
+      }
+      if (!wakeupRequest) {
+        wakeupRequest = await tx
+          .insert(agentWakeupRequests)
+          .values({
+            ...durableReceiptFields,
+            companyId: agent.companyId,
+            agentId,
+            source,
+            triggerDetail,
+            reason,
+            payload,
+            status: "queued",
+            requestedByActorType: opts.requestedByActorType ?? null,
+            requestedByActorId: opts.requestedByActorId ?? null,
+            idempotencyKey: opts.idempotencyKey ?? null,
+          })
+          .returning()
+          .then((rows) => rows[0]);
+      }
 
       const newRun = await tx
         .insert(heartbeatRuns)
@@ -31527,6 +31602,7 @@ export function heartbeatService(
       }),
 
     wakeup: trackWakeup,
+    insertReviewAdmissionWakeup,
     dispatchPendingNativeStatusWakeups,
     triggerIssueMonitor,
 
