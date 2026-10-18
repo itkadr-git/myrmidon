@@ -1,5 +1,5 @@
 {
-  "id": "f1d852f8-a16d-4f70-9e52-529ebfaf0da2",
+  "id": "07e3ffc6-5a67-47ff-824f-d59046b267e8",
   "prevId": "95aa876a-3470-5183-a3d1-42b260ec6674",
   "version": "7",
   "dialect": "postgresql",
@@ -820,13 +820,6 @@
           "primaryKey": false,
           "notNull": true,
           "default": "'light'"
-        },
-        "sensitive": {
-          "name": "sensitive",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": true,
-          "default": false
         }
       },
       "indexes": {
@@ -54893,13 +54886,6 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
-        },
-        "roles": {
-          "name": "roles",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'[]'::jsonb"
         }
       },
       "indexes": {
@@ -55006,21 +54992,6 @@
           "isUnique": false,
           "concurrently": false,
           "method": "btree",
-          "with": {}
-        },
-        "knowledge_items_roles_idx": {
-          "name": "knowledge_items_roles_idx",
-          "columns": [
-            {
-              "expression": "roles",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "gin",
           "with": {}
         }
       },
@@ -55315,6 +55286,19 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
+        },
+        "lang": {
+          "name": "lang",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'en'"
+        },
+        "translation_of": {
+          "name": "translation_of",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {
@@ -55368,6 +55352,21 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
+        },
+        "knowledge_revisions_translation_idx": {
+          "name": "knowledge_revisions_translation_idx",
+          "columns": [
+            {
+              "expression": "translation_of",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         }
       },
       "foreignKeys": {
@@ -55408,6 +55407,20 @@
             "id"
           ],
           "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "knowledge_revisions_translation_of_knowledge_revisions_id_fk": {
+          "name": "knowledge_revisions_translation_of_knowledge_revisions_id_fk",
+          "tableFrom": "knowledge_revisions",
+          "tableTo": "knowledge_revisions",
+          "schemaTo": "public",
+          "columnsFrom": [
+            "translation_of"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
           "onUpdate": "no action"
         }
       },
