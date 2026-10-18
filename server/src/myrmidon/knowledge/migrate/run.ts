@@ -16,7 +16,7 @@ import { rewriteLinks } from "./links.js";
 import { parseSlugMap, serializeSlugMap, MigrateInputError, type MigrateMap, type MigratePagePlan } from "./map.js";
 import { buildClassifyReport, classesOf, type ClassifyReport, type ImportReport, type PlannedPage } from "./report.js";
 import { readSourceTree, type ReadSourceTreeOptions, type SourceTree } from "./source.js";
-import { type KnowledgeSourceKind } from "../domain.js";
+import { serializeKnowledgeTree, type KnowledgeSourceKind } from "../domain.js";
 import { type CreateKnowledgeInput, type DraftKnowledgeInput, type KnowledgeActor } from "../store.js";
 
 /** The slice of the K-1 service the migration uses (structural type). */
@@ -26,10 +26,19 @@ export interface KnowledgeWriter {
   supersede(nestId: string, idOrSlug: string, actor: KnowledgeActor, input: { bySlug: string }): Promise<unknown>;
   search(nestId: string, query: string, limit?: number): Promise<Array<{ itemId: string; slug: string; title: string }>>;
   get(nestId: string, idOrSlug: string): Promise<{
+    id?: string;
+    title?: string;
+    kind?: string;
+    summary?: string | null;
+    folderPath?: string;
+    tags?: string[];
+    approvalRequired?: boolean;
+    approverKind?: string | null;
     deliveredContent: string | null;
     status: string;
     supersededByItemId: string | null;
   } | null>;
+  importTree(companyId: string, nestId: string, buf: Buffer, actor: KnowledgeActor, options?: { publishOnImport?: boolean }): Promise<{ created: number; updated: number; pages: number }>;
   listRevisions(nestId: string, idOrSlug: string): Promise<Array<{ content: string; sources: Array<{ kind: KnowledgeSourceKind; ref: string; note: string | null }> }>>;
 }
 
@@ -342,31 +351,50 @@ export async function runImport(options: ImportOptions): Promise<ImportReport> {
             createdNow = true;
           } else {
             const revisions = await service.listRevisions(nestId, target);
-            const currentContent = revisions.at(-1)?.content ?? alreadyThere.deliveredContent ?? "";
-            const knownRefs = new Set(revisions.flatMap((revision) => revision.sources.map((source) => `${source.kind}:${source.ref}`)));
+            const currentRevision = revisions.at(-1);
+            const currentContent = currentRevision?.content ?? alreadyThere.deliveredContent ?? "";
+            const currentSources = currentRevision?.sources ?? [];
+            const knownRefs = new Set(currentSources.map((source) => `${source.kind}:${source.ref}`));
             const newSources = sources.filter((source) => !knownRefs.has(`${source.kind}:${source.ref}`));
-            const preservedSources = revisions.flatMap((revision) => revision.sources).map((source) => ({ ...source, note: source.note ?? null }));
-            const sameContent = currentContent === content;
-            const appendedContent = !sameContent && currentContent.includes(content);
-            const preservedPartial = !sameContent && revisions.length > 1 && !appendedContent;
-            const needsContentUpdate = !sameContent && !appendedContent && !preservedPartial;
-            if (needsContentUpdate || newSources.length > 0) {
+            const allSources = [...currentSources, ...newSources.map((source) => ({ ...source, note: source.note ?? null }))].filter((source, index, all) =>
+              all.findIndex((candidate) => candidate.kind === source.kind && candidate.ref === source.ref) === index,
+            );
+            const needsContentUpdate = currentContent !== content;
+            const needsMetadataUpdate = alreadyThere.title !== input.title || alreadyThere.kind !== input.kind ||
+              alreadyThere.summary !== input.summary || alreadyThere.folderPath !== input.folderPath ||
+              alreadyThere.approvalRequired !== input.approvalRequired || alreadyThere.approverKind !== input.approverKind ||
+              JSON.stringify(alreadyThere.tags) !== JSON.stringify(input.tags ?? []);
+            if (needsContentUpdate || newSources.length > 0 || needsMetadataUpdate) {
+              const tree = serializeKnowledgeTree({
+                nestId,
+                pages: [{
+                  slug: target,
+                  title: input.title,
+                  kind: input.kind ?? "wiki",
+                  summary: input.summary ?? null,
+                  folder: input.folderPath ?? "",
+                  tags: input.tags ?? [],
+                  approvalRequired: input.approvalRequired ?? false,
+                  approverKind: input.approverKind ?? null,
+                  status: alreadyThere.status as "draft" | "in_review" | "published" | "archived" | "superseded",
+                  content: needsContentUpdate ? content : currentContent,
+                }],
+              });
+              await service.importTree(companyId, nestId, tree, actor, { publishOnImport: page.plan.publish === true });
               await service.draft(nestId, target, {
                 content: needsContentUpdate ? content : currentContent,
-                changeSummary: "re-imported from plugin export",
-                sources: [...preservedSources, ...newSources.map((source) => ({ ...source, note: source.note ?? null }))].filter((source, index, all) =>
-                  all.findIndex((candidate) => candidate.kind === source.kind && candidate.ref === source.ref) === index,
-                ),
+                changeSummary: needsContentUpdate ? "re-imported from plugin export" : "preserved knowledge migration sources",
+                sources: allSources,
               }, actor);
-              revisionsWritten += 1;
+              const refreshed = await service.get(nestId, target);
+              revisionsWritten += needsContentUpdate ? 1 : 0;
               sourcesWritten += newSources.length;
               bytesWritten += needsContentUpdate ? Buffer.byteLength(content, "utf8") : 0;
               appended += 1;
+              created.set(target, { id: refreshed?.id ?? alreadyThere.id ?? target, slug: target, content: needsContentUpdate ? content : currentContent, sources: allSources });
+            } else {
+              created.set(target, { id: alreadyThere.id, slug: target, content: currentContent, sources: allSources });
             }
-            const allSources = [...preservedSources, ...newSources.map((source) => ({ ...source, note: source.note ?? null }))].filter((source, index, all) =>
-              all.findIndex((candidate) => candidate.kind === source.kind && candidate.ref === source.ref) === index,
-            );
-            created.set(target, { id: "existing", slug: target, content: needsContentUpdate ? content : currentContent, sources: allSources });
           }
         } catch (error) {
           failed.push({ path: page.path, code: (error as { code?: string }).code ?? "error" });

@@ -348,6 +348,24 @@ describe("import run", () => {
     expect(log.search).toEqual([]);
   });
 
+  it("does not skip changed content when an existing target has several revisions", async () => {
+    const root = makeExport({ "myrmidon/foo.md": long("Expected exported body") });
+    const plan = planMigration({ root, map: emptyMap({ expectedTotal: 1 }), expectedTotal: 1 });
+    const log = emptyLog();
+    log.revisions.set("myrmidon/foo", [
+      { content: "Earlier body", sources: [{ kind: "document", ref: "earlier", note: null }] },
+      { content: "Unrelated later revision", sources: [{ kind: "issue", ref: "OPE-999", note: null }] },
+    ]);
+    log.items.set("myrmidon/foo", {
+      id: "item-1", slug: "myrmidon/foo", kind: "wiki", title: "Old title", summary: null,
+      folderPath: "", tags: [], approvalRequired: false, approverKind: null,
+      deliveredContent: "Unrelated later revision", status: "draft", supersededByItemId: null,
+    });
+    const report = await runImport({ plan, service: stubWriter(log), companyId: "company-1", nestId: "nest-1", actor: AGENT, dryRun: false });
+    expect(report.failed).toEqual([]);
+    expect(log.draft.at(-1)?.input.content).toContain("Expected exported body");
+  });
+
   it("writes nothing in dry-run but reports the same numbers", async () => {
     const root = makeExport(files);
     const plan = planMigration({ root, map: map(), expectedTotal: 5, dryRun: true });
