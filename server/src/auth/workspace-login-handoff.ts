@@ -22,7 +22,8 @@
  *    exchanged a second time even inside that window.
  */
 
-import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import { createHmac, timingSafeEqual } from "node:crypto";
+import { readProductEnvFrom } from "@paperclipai/shared/env-alias";
 
 /** Ticket envelope version. Bumped whenever the signed payload shape changes. */
 export const WORKSPACE_HANDOFF_TICKET_VERSION = "wh1";
@@ -215,7 +216,7 @@ export function resolveWorkspaceHandoffRootSecret(
   const dedicated = env[HANDOFF_ROOT_SECRET_ENV]?.trim();
   if (dedicated) return { secret: dedicated, source: "dedicated" };
 
-  const fallback = env.BETTER_AUTH_SECRET?.trim() || env.PAPERCLIP_AGENT_JWT_SECRET?.trim();
+  const fallback = env.BETTER_AUTH_SECRET?.trim() || readProductEnvFrom(env, "AGENT_JWT_SECRET")?.trim();
   if (!fallback) return null;
   return {
     secret: createHmac("sha256", fallback)
