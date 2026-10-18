@@ -62,7 +62,7 @@ describe("myrmidon(1.6.1 SWARM-IDLE-WAKE) sweep pass", () => {
   it("E2-E5: the next sweep hands released work to its new owner", async () => {
     const wakes: Array<{ agentId: string; opts: Record<string, unknown> }> = [];
     const empty = <T>() => Promise.resolve([] as T[]);
-    const updates: Array<{ table: unknown; patch: Record<string, unknown> }> = [];
+    const updates: Array<{ table: unknown; patch: Record<string, unknown>; where?: unknown }> = [];
     const expiredClaim = {
       id: "claim-old",
       issueId: "released-issue",
@@ -113,7 +113,10 @@ describe("myrmidon(1.6.1 SWARM-IDLE-WAKE) sweep pass", () => {
         assigneeAgentId: issueState.assigneeAgentId,
         projectId: null,
       }]),
-      update: vi.fn(async () => [{ id: "released-issue" }]),
+      update: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
+        issueState = { ...issueState, ...data, updatedAt: NOW };
+        return [{ ...issueState }];
+      }),
     };
     const db = {
       query: { issues: issueTable },
@@ -247,18 +250,23 @@ describe("myrmidon(1.6.1 SWARM-IDLE-WAKE) sweep pass", () => {
       }),
       update: (table?: unknown) => ({
         set: (patch: Record<string, unknown>) => ({
-          where: () => ({
+          where: (condition: unknown) => ({
             // Ownership changes expire pending connection intents; an empty
             // expiry skips the follow-up delete (production: only when expired
             // rows exist). The issues write returns the updated row the service
             // then enriches — it must carry the fields the matcher reads back.
             returning: () => {
-              updates.push({ table, patch: patch ?? {} });
+              updates.push({ table, patch: patch ?? {}, where: condition });
               if (table === issueClaims && patch?.releasedAt) {
                 claimState = { ...claimState, ...patch };
               }
               if (table === issues && patch) {
-                issueState = { ...issueState, ...patch, updatedAt: NOW };
+                // Only the guarded clear/reassign update may mutate fixture state.
+                if (patch.assigneeAgentId === null && issueState.assigneeAgentId === "former-agent") {
+                  issueState = { ...issueState, ...patch, updatedAt: NOW };
+                } else if (patch.assigneeAgentId === "idle-agent" && issueState.assigneeAgentId === null) {
+                  issueState = { ...issueState, ...patch, updatedAt: NOW };
+                }
               }
               return Promise.resolve(
                 table === issueThreadInteractions
