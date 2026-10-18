@@ -948,10 +948,7 @@ describeEmbeddedPostgres(
           },
         })
         .where(eq(projects.id, fixture.projects.allowed.id));
-      const app = createApp(
-        db,
-        agentActor(fixture, fixture.agents.standard.id),
-      );
+      const app = createApp(db, standardReportActor(fixture));
       const createWithoutOwner = await request(app)
         .post(`/api/companies/${fixture.company.id}/issues`)
         .send({
@@ -1470,9 +1467,7 @@ describeEmbeddedPostgres(
         createApp(db, { ...standardActor, runId: null }),
       ).get("/api/agents/me");
       expect(standardRes.status, JSON.stringify(standardRes.body)).toBe(200);
-      expect(JSON.stringify(standardRes.body)).toContain(
-        fixture.canaries.agentConfig,
-      );
+      expectNoCanary(standardRes.body, fixture.canaries.agentConfig);
 
       const issueScopedLowTrustRes = await request(
         createApp(db, standardActor),
