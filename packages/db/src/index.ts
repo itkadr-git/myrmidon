@@ -5,6 +5,8 @@ export {
   ensurePostgresDatabase,
   resetPostgresDatabase,
   inspectMigrations,
+  listMigrationChain,
+  type MigrationChainEntry,
   applyPendingMigrations,
   reconcilePendingMigrationHistory,
   type MigrationState,
