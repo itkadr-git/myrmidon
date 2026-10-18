@@ -814,6 +814,15 @@ describe("startServer authenticated auth origin setup", () => {
   });
 });
 
+// myrmidon(REBRAND-C): startServer writes each of these under BOTH names (MYRMIDON_* and
+// PAPERCLIP_*), and readProductEnv gives MYRMIDON_* precedence, so a test that clears only
+// the PAPERCLIP_* spelling would inherit the previous test's MYRMIDON_* value.
+function clearMyrmidonStartupEnv() {
+  for (const name of ["API_URL", "RUNTIME_API_URL", "RUNTIME_API_CANDIDATES_JSON", "LISTEN_HOST", "LISTEN_PORT"]) {
+    delete process.env[`MYRMIDON_${name}`];
+  }
+}
+
 describe("startServer PAPERCLIP_API_URL handling", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -821,9 +830,11 @@ describe("startServer PAPERCLIP_API_URL handling", () => {
     loadConfigMock.mockReturnValue(buildTestConfig());
     process.env.BETTER_AUTH_SECRET = "test-secret";
     delete process.env.PAPERCLIP_API_URL;
+    clearMyrmidonStartupEnv();
   });
 
   afterEach(() => {
+    clearMyrmidonStartupEnv();
     if (ORIGINAL_PAPERCLIP_API_URL === undefined) delete process.env.PAPERCLIP_API_URL;
     else process.env.PAPERCLIP_API_URL = ORIGINAL_PAPERCLIP_API_URL;
 

@@ -20,18 +20,25 @@ import { z } from "zod";
 /** Prefix of a model-provider credential name in the company secret store. */
 export const MODEL_PROVIDER_SECRET_PREFIX = "model-provider-key-";
 
-/** The provider kinds a company may register. */
-export const MODEL_PROVIDER_TYPES = [
+/** Built-in provider kinds supported out of the box without external connectors. */
+export const BUILTIN_MODEL_PROVIDER_TYPES = [
   "openai",
   "dashscope",
   "google",
   "openai-compatible",
 ] as const;
+export type BuiltinModelProviderType = (typeof BUILTIN_MODEL_PROVIDER_TYPES)[number];
+
+/** Statically known provider kinds for type safety. */
+export const MODEL_PROVIDER_TYPES = [
+  ...BUILTIN_MODEL_PROVIDER_TYPES,
+  "chatgpt-pool",
+] as const;
 export type ModelProviderType = (typeof MODEL_PROVIDER_TYPES)[number];
 
-/** Default base URL per provider type; null means the provider's own default. */
+/** Default base URL per built-in provider type; null means the provider's own default. */
 export const MODEL_PROVIDER_DEFAULT_BASE_URLS: Readonly<
-  Record<ModelProviderType, string | null>
+  Record<string, string | null>
 > = {
   openai: "https://api.openai.com/v1",
   dashscope: "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
@@ -39,8 +46,137 @@ export const MODEL_PROVIDER_DEFAULT_BASE_URLS: Readonly<
   "openai-compatible": null,
 };
 
+/** Connector specification for closed/paid or plugin-based model providers. */
+export interface ModelProviderConnectorRegistration {
+  type: string;
+  name?: string;
+  pluginKey?: string;
+  defaultBaseUrl?: string | null;
+  defaultModels?: readonly string[];
+  supportsChannels?: boolean;
+}
+
+const registeredModelProviderConnectors = new Map<string, ModelProviderConnectorRegistration>();
+
+export function registerModelProviderConnector(reg: ModelProviderConnectorRegistration): void {
+  registeredModelProviderConnectors.set(reg.type, reg);
+}
+
+export function unregisterModelProviderConnector(type: string): void {
+  registeredModelProviderConnectors.delete(type);
+}
+
+export function unregisterModelProviderConnectorsByPlugin(pluginKey: string): void {
+  for (const [type, reg] of registeredModelProviderConnectors.entries()) {
+    if (reg.pluginKey === pluginKey) {
+      registeredModelProviderConnectors.delete(type);
+    }
+  }
+}
+
+export function getModelProviderConnector(type: string): ModelProviderConnectorRegistration | null {
+  return registeredModelProviderConnectors.get(type) ?? null;
+}
+
+export function clearModelProviderConnectors(): void {
+  registeredModelProviderConnectors.clear();
+}
+
+/** Lists provider types currently available (built-in + active registered connectors). */
+export function listAvailableModelProviderTypes(): string[] {
+  return [...BUILTIN_MODEL_PROVIDER_TYPES, ...registeredModelProviderConnectors.keys()];
+}
+
+export function isModelProviderTypeAvailable(type: string): boolean {
+  return listAvailableModelProviderTypes().includes(type);
+}
+
+/** Default models for the closed chatgpt-pool connector (provided on registration). */
+export const DEFAULT_CHATGPT_POOL_MODELS = [
+  "gpt-6.1-sol",
+  "gpt-6-sol",
+  "gpt-6-luna",
+  "gpt-5.6-sol",
+  "gpt-5.6-terra",
+  "gpt-5.6-luna",
+] as const;
+
 /** The models-list path every supported provider speaks (OpenAI-compatible). */
 export const MODEL_PROVIDER_MODELS_PATH = "/models";
+
+/** Account state in the Codex / ChatGPT subscription pool. */
+export type PoolAccountState =
+  | "active"
+  | "rate_limited"
+  | "token_expired"
+  | "banned"
+  | "login_pending"
+  | "login_expired"
+  | "not_logged_in";
+
+/** A quota window on a subscription account (e.g. 5-hour rolling or weekly). */
+export interface PoolAccountLimitWindow {
+  usedPct: number | null;
+  windowMin: number | null;
+  resetsAt: number | null;
+}
+
+/** Usage metrics observed on a subscription account. */
+export interface PoolAccountUsage {
+  primary: PoolAccountLimitWindow | null;
+  secondary: PoolAccountLimitWindow | null;
+  plan?: string | null;
+  limitReached?: boolean;
+  requests24h?: number;
+  requests7d?: number;
+  tokens24h?: { input: number; output: number };
+  tokens7d?: { input: number; output: number };
+  lastLimitAt?: number | null;
+  recentErrors?: Array<{ at: number; status: number; message: string }>;
+}
+
+/** One account in the provider's channel registry (OPE-7189 ч.A). */
+export interface PoolAccountChannelView {
+  n: number;
+  label: string;
+  email?: string | null;
+  state: PoolAccountState | string;
+  stateRu?: string;
+  plan?: string | null;
+  limitedUntil: number | null;
+  lastOk: number | null;
+  windows: {
+    primary: PoolAccountLimitWindow | null;
+    secondary: PoolAccountLimitWindow | null;
+  };
+  usage?: PoolAccountUsage;
+  isBanned: boolean;
+  isExhausted: boolean;
+  error?: string | null;
+}
+
+/** Role notification signal when an account is banned or limit-exhausted. */
+export interface PoolAccountRoleSignal {
+  dedupKey: string;
+  providerId?: string;
+  accountNumber: number;
+  label: string;
+  kind: "banned" | "exhausted";
+  severity: "critical" | "high" | "medium";
+  title: string;
+  whyNow: string;
+  summaryExcerpt: string;
+  resetsAt: number | null;
+  activityAt: string;
+}
+
+/** Channels and active signals of a model provider. */
+export interface ModelProviderChannelsView {
+  providerId: string;
+  providerType: ModelProviderType;
+  channels: PoolAccountChannelView[];
+  signals: PoolAccountRoleSignal[];
+}
 
 /**
  * The secret-store name that carries one provider's credential.

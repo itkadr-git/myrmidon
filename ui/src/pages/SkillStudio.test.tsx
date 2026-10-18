@@ -1,3 +1,4 @@
+// myrmidon(DEBRAND-c): persist browser state under the Myrmidon namespace.
 // @vitest-environment jsdom
 
 import type { ReactNode } from "react";
@@ -248,6 +249,7 @@ function makeSkill(overrides: Partial<CompanySkillDetail> = {}): CompanySkillDet
     sourcePath: null,
     currentVersion: null,
     starredByCurrentActor: false,
+    requiredEnv: [],
     existingForks: [],
     ...overrides,
   };
@@ -480,7 +482,7 @@ describe("SkillStudio landing", () => {
   });
 
   it("renders recently-visited and recently-updated sections, gating avatars to humans", async () => {
-    localStorage.setItem("paperclip:recent-studio-skills", JSON.stringify(["visited-1"]));
+    localStorage.setItem("myrmidon:recent-studio-skills", JSON.stringify(["visited-1"]));
     mockCompanySkillsApi.list.mockResolvedValue([
       makeListItem({
         id: "visited-1",

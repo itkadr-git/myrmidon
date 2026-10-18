@@ -10,6 +10,7 @@ import {
   heartbeatRuns,
   issues,
 } from "@paperclipai/db";
+import { resolveTeamLivenessSettings } from "@paperclipai/shared";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -375,5 +376,95 @@ describeEmbeddedPostgres("run stall sweep", () => {
     expect(result).toMatchObject({ scanned: 2, interrupted: 1, failed: 1 });
     expect(result.runIds).toEqual([good.runId]);
     expect(injected.returnIssueToTodo).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * myrmidon(RUN-STALL-SETTINGS, 1.6.5): the switch and the silence threshold
+   * live in `instance_settings.general.teamLiveness` and reach every pass
+   * through the reader production wires (`resolveTeamLivenessSettings({ stored,
+   * env })` over the stored row). These cases drive that reader over a row the
+   * test mutates between passes, with one sweep instance alive the whole time —
+   * the "no restart" half of what the settings page sells. Without the live
+   * read the first case fails (an off switch would still interrupt) and without
+   * the per-pass read the second one does (turning it back on would do nothing).
+   */
+  describe("myrmidon(RUN-STALL-SETTINGS): the panel switch decides every pass", () => {
+    const ENV = { MYRMIDON_RUN_STALL_THRESHOLD_SEC: String(THRESHOLD_SEC) } as NodeJS.ProcessEnv;
+
+    /** The live sweep plus the stored row its reader resolves on every pass. */
+    function sweepOverStoredRow(initial: Record<string, unknown>) {
+      const row: { stored: unknown } = { stored: initial };
+      const injected = deps({
+        env: ENV,
+        readLiveness: async () => resolveTeamLivenessSettings({ stored: row.stored, env: ENV }),
+      });
+      return { row, injected, sweep: createRunStallSweep(injected) };
+    }
+
+    it("stops the guard when the switch is off and starts it again when it is on, without a restart", async () => {
+      const first = await seed({ staleMinutes: 45, identifier: "RSSW0001" });
+      const { row, injected, sweep } = sweepOverStoredRow({ runStallEnabled: false });
+
+      // Off in the panel: a run silent for 45 minutes is left alone.
+      const off = await sweep.sweep({ force: true });
+      expect(off).toMatchObject({ scanned: 0, interrupted: 0, returnedToTodo: 0, woken: 0 });
+      expect(injected.interruptRun).not.toHaveBeenCalled();
+      let [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, first.runId));
+      expect(run!.status).toBe("running");
+      const [issue] = await db.select().from(issues).where(eq(issues.id, first.issueId));
+      expect(issue!.status).toBe("in_progress");
+
+      // The operator flips it on: the same sweep instance, no restart.
+      row.stored = { runStallEnabled: true };
+      const on = await sweep.sweep({ force: true });
+      expect(on).toMatchObject({ scanned: 1, interrupted: 1, returnedToTodo: 1, woken: 1 });
+
+      // And back off: the very next pass stands the guard down again.
+      const second = await seed({ staleMinutes: 45, identifier: "RSSW0002" });
+      row.stored = { runStallEnabled: false };
+      const offAgain = await sweep.sweep({ force: true });
+      expect(offAgain).toMatchObject({ scanned: 0, interrupted: 0, woken: 0 });
+      expect(injected.interruptRun).toHaveBeenCalledTimes(1);
+      [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, second.runId));
+      expect(run!.status).toBe("running");
+    });
+
+    it("applies a silence threshold saved in the panel to the very next pass", async () => {
+      const seeded = await seed({ staleMinutes: 45 });
+      const { row, injected, sweep } = sweepOverStoredRow({
+        runStallEnabled: true,
+        runStallThresholdSec: 60 * 60,
+      });
+
+      // 45 minutes of silence is still inside the hour the operator asked for.
+      const waiting = await sweep.sweep({ force: true });
+      expect(waiting).toMatchObject({ scanned: 0, interrupted: 0 });
+      const [stillRunning] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, seeded.runId));
+      expect(stillRunning!.status).toBe("running");
+
+      // Lower it to 20 minutes: the same run is overdue on the next pass.
+      row.stored = { runStallEnabled: true, runStallThresholdSec: THRESHOLD_SEC };
+      const overdue = await sweep.sweep({ force: true });
+      expect(overdue).toMatchObject({ scanned: 1, interrupted: 1, woken: 1 });
+      expect(injected.interruptRun).toHaveBeenCalledTimes(1);
+    });
+
+    it("leaves a run alone whose own agent card switched progress liveness off", async () => {
+      const seeded = await seed({ staleMinutes: 45 });
+      await db
+        .update(agents)
+        .set({ adapterConfig: { teamLiveness: { runStall: false } } })
+        .where(eq(agents.id, seeded.agentId));
+      const { injected, sweep } = sweepOverStoredRow({ runStallEnabled: true });
+
+      // The instance switch is on, but this agent's own card says no: its silent
+      // run keeps going until the hard run timeout.
+      const result = await sweep.sweep({ force: true });
+
+      expect(result).toMatchObject({ scanned: 1, interrupted: 0, skippedExempt: 1 });
+      expect(injected.interruptRun).not.toHaveBeenCalled();
+      const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, seeded.runId));
+      expect(run!.status).toBe("running");
+    });
   });
 });

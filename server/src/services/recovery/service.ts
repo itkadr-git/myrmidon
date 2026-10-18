@@ -60,6 +60,7 @@ import {
   nativeRunResults,
   statusDecisions,
   workAssessments,
+  runContextPersistenceFields,
 } from "@paperclipai/db";
 import { parseObject, asBoolean, asNumber } from "../../adapters/utils.js";
 import { runningProcesses } from "../../adapters/index.js";
@@ -68,7 +69,7 @@ import {
   nativeRunnerOwnershipNotHeldCondition,
 } from "../native-runtime/native-runner-ownership.js";
 import { visibleIssueCondition } from "../issue-visibility.js";
-import { forbidden, notFound } from "../../errors.js";
+import { forbidden, HttpError, notFound } from "../../errors.js";
 import { logger } from "../../middleware/logger.js";
 import {
   isPidAlive,
@@ -2733,7 +2734,7 @@ export function recoveryService(
           scheduledRetryAt: retryAt,
           scheduledRetryAttempt: 1,
           scheduledRetryReason: "provider_quota_recovery",
-          contextSnapshot: withRecoveryContext(
+          ...runContextPersistenceFields(withRecoveryContext(
             {
               issueId: input.issue.id,
               taskId: input.issue.id,
@@ -2742,7 +2743,7 @@ export function recoveryService(
               providerQuotaRetryNotBefore: retryAt.toISOString(),
             },
             "normal_model",
-          ),
+          )),
           updatedAt: now,
         })
         .returning()
@@ -2977,6 +2978,32 @@ export function recoveryService(
     return openChildren;
   }
 
+  /**
+   * myrmidon: issuesSvc.update for a recovery dependency wait. The board refuses a
+   * wait that would close a blocking cycle (422 — e.g. the issue itself blocks the
+   * open child it would wait on; 17.10: OPE-5963 -> OPE-7915). One such issue must
+   * not fail the whole recovery pass: at startup that error exited the board. The
+   * refusal is logged and the issue is left as it is (null).
+   */
+  async function updateDependencyWait(
+    issueId: string,
+    patch: Parameters<typeof issuesSvc.update>[1],
+    source: string,
+  ) {
+    try {
+      return await issuesSvc.update(issueId, patch);
+    } catch (err) {
+      if (err instanceof HttpError && err.status === 422) {
+        logger.warn(
+          { err, issueId, source, blockedByIssueIds: patch.blockedByIssueIds },
+          "recovery: dependency wait refused by the board; issue left as it is",
+        );
+        return null;
+      }
+      throw err;
+    }
+  }
+
   async function resolveContinuationWaitingOnReview(
     issue: typeof issues.$inferSelect,
   ) {
@@ -2992,10 +3019,11 @@ export function recoveryService(
     ];
     if (blockedByIssueIds.length === 0) return null;
 
-    const updated = await issuesSvc.update(issue.id, {
-      status: "blocked",
-      blockedByIssueIds,
-    });
+    const updated = await updateDependencyWait(
+      issue.id,
+      { status: "blocked", blockedByIssueIds },
+      "continuation_waiting_on_review",
+    );
     if (!updated) return null;
 
     const waitingOn = formatIssueLinksForComment([
@@ -3308,7 +3336,7 @@ export function recoveryService(
                 scheduledRetryAt: retryAt,
                 scheduledRetryAttempt: input.attempt,
                 scheduledRetryReason: ISSUE_DISPOSITION_REPAIR_RETRY_REASON,
-                contextSnapshot: context,
+                ...runContextPersistenceFields(context),
                 updatedAt: now,
               })
               .returning()
@@ -3514,15 +3542,19 @@ export function recoveryService(
             issue.companyId,
             issue.id,
           );
-          await issuesSvc.update(issue.id, {
-            status: "blocked",
-            blockedByIssueIds: [
-              ...new Set([
-                ...blockerIds,
-                ...healthyChildren.map((child) => child.id),
-              ]),
-            ],
-          });
+          await updateDependencyWait(
+            issue.id,
+            {
+              status: "blocked",
+              blockedByIssueIds: [
+                ...new Set([
+                  ...blockerIds,
+                  ...healthyChildren.map((child) => child.id),
+                ]),
+              ],
+            },
+            "active_recovery_action_healthy_child",
+          );
         }
         const resolved = await recoveryActionsSvc.resolveActiveForIssue({
           companyId: action.companyId,
@@ -5829,7 +5861,7 @@ export function recoveryService(
 
     const queryCandidates = (afterIssueId: string | null) => {
       const filters = [
-        eq(issues.status, "blocked"),
+        inArray(issues.status, ["blocked", "in_progress", "in_review"]),
         isNull(issues.conversationAgentId),
         visibleIssueCondition(),
         sql`${issues.assigneeAgentId} is not null`,

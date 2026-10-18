@@ -39,7 +39,8 @@ case "$1" in
 esac
 `;
 
-// Fake curl: answers every URL from health.json unless the url is marked down.
+// Fake curl: answers every URL from health.json (host-disk from
+// host-disk.json) unless the url is marked down.
 const FAKE_CURL = `#!/usr/bin/env bash
 echo "curl $*" >> "$SANDBOX/calls.log"
 url="$3"
@@ -47,7 +48,10 @@ for a in "$@"; do case "$a" in http*) url="$a" ;; esac; done
 for a in "$@"; do case "$a" in http*) url="$a" ;; esac; done
 for a in "$@"; do case "$a" in (http*|/*) ;; esac; done
 if [ -e "$SANDBOX/down-urls" ] && grep -qF "$url" "$SANDBOX/down-urls"; then exit 7; fi
-cat "$SANDBOX/health.json"
+case "$url" in
+  */api/myrmidon/host-disk) cat "$SANDBOX/host-disk.json" ;;
+  *) cat "$SANDBOX/health.json" ;;
+esac
 `;
 
 // Fake systemctl: --failed reads a sandbox file; everything else succeeds.
@@ -61,6 +65,14 @@ esac
 
 function sandbox({
   health = { status: "ok", version: VERSION, commit: COMMIT },
+  hostDisk = {
+    status: {
+      usage: { measuredPath: "/paperclip", usedPercent: 41 },
+      state: "measured",
+      error: null,
+      measurements: [{ path: "/paperclip", usedPercent: 41 }],
+    },
+  },
   boardImage = PINNED,
   dockergate = DOCKERGATE,
   dockergateExpect = DOCKERGATE,
@@ -83,6 +95,7 @@ function sandbox({
   fs.writeFileSync(path.join(dir, "calls.log"), "");
   fs.writeFileSync(path.join(composeDir, "docker-compose.myrmidon-image.yml"), `services:\n  server:\n    image: ${PINNED}\n`);
   fs.writeFileSync(path.join(dir, "health.json"), JSON.stringify(health));
+  fs.writeFileSync(path.join(dir, "host-disk.json"), JSON.stringify(hostDisk));
   fs.writeFileSync(path.join(dir, "bots-running"), botsRunning.join("\n") + "\n");
   fs.writeFileSync(path.join(dir, "bots-a"), botsRunning.join("\n") + "\n");
   fs.writeFileSync(path.join(dir, "board-image"), `${boardImage}\n`);
@@ -219,5 +232,45 @@ describe("post-boot-check.sh (POST-BOOT)", () => {
     const { code, out } = run(sb);
     assert.equal(code, 0, out);
     assert.match(out, /DOCKERGATE_EXPECT_IMAGE not set, check off/);
+  });
+
+  // myrmidon(1.6.5 F-03): a boot whose sweep cannot see the data root must be
+  // red — otherwise the board deploys blind and the BOT-DISK E threshold
+  // never fires.
+  it("fails when the host-disk sweep reports measuredPath null (the blind board container)", () => {
+    const sb = sandbox({
+      hostDisk: {
+        status: {
+          usage: { measuredPath: null, usedPercent: null },
+          state: "unmeasured",
+          error: "host disk data root is missing or unreadable: /data — point MYRMIDON_HOST_DISK_DATA_ROOT",
+          measurements: [],
+        },
+      },
+    });
+    const { code, out } = run(sb, ["--json-out", path.join(sb.dir, "r.json")]);
+    assert.notEqual(code, 0, out);
+    assert.match(out, /host disk sweep measures a real path FAILED/);
+    assert.match(out, /MYRMIDON_HOST_DISK_DATA_ROOT/);
+    const json = JSON.parse(read(path.join(sb.dir, "r.json")));
+    assert.equal(json.ok, false);
+    assert.ok(json.failed.includes("host disk sweep measures a real path"));
+  });
+
+  it("passes the host-disk check when the sweep measures a real path", () => {
+    const sb = sandbox();
+    const { code, out } = run(sb);
+    assert.equal(code, 0, out);
+    assert.match(out, /host disk sweep measures a real path ok/);
+  });
+
+  it("POST_BOOT_CHECK_HOST_DISK=off switches the host-disk check off with a log line", () => {
+    const sb = sandbox({
+      hostDisk: { status: { usage: { measuredPath: null }, state: "unmeasured", error: "x", measurements: [] } },
+      extraConfig: "POST_BOOT_CHECK_HOST_DISK=off",
+    });
+    const { code, out } = run(sb);
+    assert.equal(code, 0, out);
+    assert.match(out, /POST_BOOT_CHECK_HOST_DISK=off, check off/);
   });
 });

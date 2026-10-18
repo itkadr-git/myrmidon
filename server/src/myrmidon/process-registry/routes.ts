@@ -14,10 +14,16 @@ import {
   boardProcessBootId,
   boardProcessStatus,
 } from "./domain.js";
+import {
+  createBoardLeaseStore,
+  serializeBoardLeases,
+  type BoardLeaseStore,
+} from "./leases.js";
 import { createBoardProcessStore, type BoardProcessRow, type BoardProcessStore } from "./store.js";
 
 export type BoardProcessRegistryRoutesDeps = {
   store?: BoardProcessStore;
+  leaseStore?: BoardLeaseStore;
   /** Identity of the process serving this request; defaults to this process. */
   bootId?: string;
   staleMs?: number;
@@ -73,6 +79,7 @@ export function myrmidonBoardProcessRegistryRoutes(
 ) {
   const router = Router();
   const store = deps.store ?? createBoardProcessStore(db);
+  const leaseStore = deps.leaseStore ?? createBoardLeaseStore(db);
   const bootId = deps.bootId ?? boardProcessBootId;
   const staleMs = deps.staleMs ?? BOARD_PROCESS_STALE_MS;
   const now = deps.now ?? (() => new Date());
@@ -88,6 +95,22 @@ export function myrmidonBoardProcessRegistryRoutes(
         pulseSeconds: Math.round(BOARD_PROCESS_PULSE_MS / 1000),
         processes: rows.map((row) => serializeBoardProcess(row, { at, bootId, staleMs })),
       });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // The lease block of the panel: which process holds which named lease right
+  // now. A single-process board holds none, so the list is empty.
+  router.get("/myrmidon/processes/leases", async (req, res, next) => {
+    try {
+      assertBoardOrgAccess(req);
+      const at = now();
+      const [leases, processes] = await Promise.all([
+        leaseStore.listLeases(),
+        store.listProcesses(),
+      ]);
+      res.json(serializeBoardLeases({ leases, processes, bootId, at }));
     } catch (error) {
       next(error);
     }

@@ -15,6 +15,8 @@ import {
 import { fileURLToPath } from "node:url";
 import {
   moveOccupiedSkillTargetAside,
+  moveSkillTargetLinkAside,
+  pointsIntoVendorSkillsHome,
   resolveHermesSkillsHome,
   SKILL_BACKUP_DIR,
 } from "./myrmidon-skills-home.js";
@@ -207,6 +209,82 @@ export async function listHermesSkills(
   return buildHermesSkillSnapshot(ctx.config);
 }
 
+// ---------------------------------------------------------------------------
+// Skill links inside the agent's skills directory
+// ---------------------------------------------------------------------------
+
+type ManagedSkillEntry = Awaited<ReturnType<typeof readPaperclipRuntimeSkillEntries>>[number];
+
+/** Destination a skill link names, resolved but never followed. */
+async function readSkillLinkDestination(target: string): Promise<string | null> {
+  const linkedPath = await fs.readlink(target).catch(() => null);
+  return linkedPath ? path.resolve(path.dirname(target), linkedPath) : null;
+}
+
+async function linkDestinationIsReachable(target: string): Promise<boolean> {
+  return fs
+    .stat(target)
+    .then(() => true)
+    .catch(() => false);
+}
+
+/**
+ * myrmidon(H1): the proof that the desired skills arrived. reconcile() trusts
+ * what the shared install helper reported; this pass reads the agent's skills
+ * directory again and names every desired skill whose link is absent, broken,
+ * foreign or pointed at the wrong source. One readdir plus one readlink per
+ * desired skill — no re-scan of the skill sources.
+ */
+export async function verifyHermesPaperclipSkillLinks(
+  config: Record<string, unknown>,
+  desiredSkills: string[],
+  availableEntries: ManagedSkillEntry[],
+): Promise<string[]> {
+  const problems: string[] = [];
+  if (desiredSkills.length === 0) return problems;
+
+  const { skillsHome } = resolveHermesSkillsHome(config);
+  const availableByKey = new Map(availableEntries.map((entry) => [entry.key, entry]));
+  const dirents = await fs
+    .readdir(skillsHome, { withFileTypes: true })
+    .catch(() => [] as Array<{ name: string; isSymbolicLink(): boolean }>);
+  const direntsByName = new Map(dirents.map((dirent) => [dirent.name, dirent]));
+
+  for (const key of desiredSkills) {
+    const entry = availableByKey.get(key);
+    if (!entry) {
+      problems.push(`"${key}" has no Paperclip-managed source to link`);
+      continue;
+    }
+    if (isPaperclipSkillSourceMissing(entry)) {
+      problems.push(`"${key}" files are unavailable (${entry.source})`);
+      continue;
+    }
+    const target = path.join(skillsHome, entry.runtimeName);
+    const dirent = direntsByName.get(entry.runtimeName);
+    if (!dirent) {
+      problems.push(`"${key}" is missing from ${skillsHome}`);
+      continue;
+    }
+    if (!dirent.isSymbolicLink()) {
+      problems.push(`"${key}" at ${target} is not a Paperclip-managed link`);
+      continue;
+    }
+    const destination = await readSkillLinkDestination(target);
+    if (destination !== path.resolve(entry.source)) {
+      problems.push(
+        `"${key}" at ${target} points at ${destination ?? "an unreadable target"} instead of ${entry.source}`,
+      );
+      continue;
+    }
+    if (!(await linkDestinationIsReachable(target))) {
+      problems.push(`"${key}" at ${target} is a dangling link`);
+    }
+  }
+
+  return problems;
+}
+
 export async function reconcileHermesPaperclipSkills(
   config: Record<string, unknown>,
   requestedDesiredSkills?: string[],
@@ -222,7 +300,7 @@ export async function reconcileHermesPaperclipSkills(
     : resolveLegacyPaperclipDesiredSkillNames(config, availableEntries);
   const desiredSet = new Set(desiredSkills);
   // myrmidon(H1): install into the agent's own profile when HERMES_HOME is set
-  const { skillsHome, backupRoot } = resolveHermesSkillsHome(config);
+  const { skillsHome, backupRoot, vendorSkillsHome } = resolveHermesSkillsHome(config);
   await fs.mkdir(skillsHome, { recursive: true });
   const installed = await readInstalledSkillTargets(skillsHome);
   const availableByRuntimeName = new Map(availableEntries.map((entry) => [entry.runtimeName, entry]));
@@ -230,6 +308,32 @@ export async function reconcileHermesPaperclipSkills(
   for (const entry of availableEntries) {
     if (!desiredSet.has(entry.key) || isPaperclipSkillSourceMissing(entry)) continue;
     const target = path.join(skillsHome, entry.runtimeName);
+    // myrmidon(H1): links the early rollout left in a profile. A link into the
+    // shared vendor skills home is relinked to the managed source; a link whose
+    // destination is gone is moved aside (never deleted) instead of letting the
+    // shared helper repair it in place. Only profiles: without HERMES_HOME the
+    // agent works in the vendor scope and its links stay as they are.
+    if (backupRoot) {
+      const occupant = await fs.lstat(target).catch(() => null);
+      if (occupant?.isSymbolicLink()) {
+        const destination = await readSkillLinkDestination(target);
+        if (destination && destination !== path.resolve(entry.source)) {
+          if (!(await linkDestinationIsReachable(target))) {
+            const movedLink = await moveSkillTargetLinkAside(target, backupRoot);
+            if (movedLink) {
+              await options.onLog?.(
+                `[hermes] Moved the profile's broken "${entry.runtimeName}" skill link to ${SKILL_BACKUP_DIR}/${movedLink} and linked the managed skill.\n`,
+              );
+            }
+          } else if (pointsIntoVendorSkillsHome(destination, vendorSkillsHome)) {
+            await fs.unlink(target);
+            await options.onLog?.(
+              `[hermes] Relinked the profile's "${entry.runtimeName}" skill from the shared Hermes skills home to the managed skill.\n`,
+            );
+          }
+        }
+      }
+    }
     // myrmidon(H1): a real directory in the profile is kept under a backup name, never deleted
     const movedAside = backupRoot ? await moveOccupiedSkillTargetAside(target, backupRoot) : null;
     if (movedAside) {
@@ -254,6 +358,16 @@ export async function reconcileHermesPaperclipSkills(
     if (!available || desiredSet.has(available.key)) continue;
     if (installedEntry.targetPath !== available.source) continue;
     await fs.unlink(path.join(skillsHome, name)).catch(() => {});
+  }
+
+  // myrmidon(H1): proof of delivery — a linked skill is only "delivered" if the
+  // link is really in the agent's skills directory and points at its source.
+  // Check the result instead of trusting what the install calls reported.
+  const problems = await verifyHermesPaperclipSkillLinks(config, desiredSkills, availableEntries);
+  if (problems.length > 0) {
+    throw new Error(
+      `Hermes skill delivery check failed for ${skillsHome}: ${problems.join("; ")}.`,
+    );
   }
 
   return desiredSkills;

@@ -19,6 +19,13 @@ import {
   botContainerApi,
   describeApplyError,
   describeApplyOutcome,
+  describeApplyJobStatus,
+  applyJobStorageKey,
+  readStoredApplyJob,
+  storeApplyJob,
+  clearStoredApplyJob,
+  APPLY_JOB_RESUME_WINDOW_MS,
+  APPLY_TIMEOUT_TEXT,
   type BotContainerStatus,
 } from "./botContainerApi";
 import {
@@ -102,6 +109,7 @@ function renderView(overrides: Partial<AgentCardContainerFieldsViewProps> = {}) 
     status: STATUS,
     statusError: null,
     applying: false,
+    progress: false,
     feedback: null,
     onApply,
     onRefresh,
@@ -658,5 +666,231 @@ describe("imageRolloutText (BOT-ROLLOUT)", () => {
         },
       }),
     ).toContain("Not on the current release image: agent busy (status running)");
+  });
+});
+
+describe("myrmidon(1.6.5 ASYNC-BOT-APPLY-UI) async apply", () => {
+  const LIVE = { status: "running" as const, error: null, startedAt: null, finishedAt: null };
+
+  function renderConnectedAsync() {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    act(() =>
+      root.render(
+        <QueryClientProvider client={client}>
+          <TooltipProvider>
+            <AgentCardContainerFields
+              agentId="agent-a"
+              value={CARD}
+              savedValue={CARD}
+              unsaved={false}
+              onChange={vi.fn()}
+            />
+          </TooltipProvider>
+        </QueryClientProvider>,
+      ),
+    );
+  }
+
+  async function tick(ms: number) {
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(ms);
+    });
+  }
+
+  beforeEach(() => {
+    sessionStorage.clear();
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("words a succeeded job with its finish time", () => {
+    expect(
+      describeApplyJobStatus({
+        status: "succeeded",
+        error: null,
+        startedAt: "2026-10-06T10:00:00.000Z",
+        finishedAt: "2026-10-06T10:00:36.000Z",
+      })?.kind,
+    ).toBe("ok");
+    expect(
+      describeApplyJobStatus({ status: "succeeded", error: null, startedAt: null, finishedAt: null })?.message,
+    ).toBe("Applied.");
+  });
+
+  it("words a failed job with the server's error text", () => {
+    expect(
+      describeApplyJobStatus({ status: "failed", error: "image pull failed", startedAt: null, finishedAt: null }),
+    ).toEqual({ kind: "error", message: "Apply failed: image pull failed" });
+    expect(
+      describeApplyJobStatus({ status: "failed", error: null, startedAt: null, finishedAt: null })?.message,
+    ).toContain("did not record a reason");
+  });
+
+  it("says nothing while the pass is still live", () => {
+    expect(describeApplyJobStatus({ ...LIVE, status: "pending" })).toBeNull();
+    expect(describeApplyJobStatus(LIVE)).toBeNull();
+  });
+
+  it("resumes only a well-formed job inside the window", () => {
+    const now = 1_000_000_000_000;
+    storeApplyJob("agent-x", "job-1", now - 60_000);
+    expect(readStoredApplyJob("agent-x", now)).toEqual({ applyId: "job-1", startedAtMs: now - 60_000 });
+    storeApplyJob("agent-x", "job-old", now - APPLY_JOB_RESUME_WINDOW_MS - 1);
+    expect(readStoredApplyJob("agent-x", now)).toBeNull();
+    window.sessionStorage.setItem(applyJobStorageKey("agent-x"), "{oops");
+    expect(readStoredApplyJob("agent-x", now)).toBeNull();
+    window.sessionStorage.setItem(applyJobStorageKey("agent-x"), JSON.stringify({ applyId: 42, startedAtMs: now }));
+    expect(readStoredApplyJob("agent-x", now)).toBeNull();
+    clearStoredApplyJob("agent-x");
+    expect(readStoredApplyJob("agent-x", now)).toBeNull();
+  });
+
+  it("queues the apply, shows progress while the job runs, then shows the applied time", async () => {
+    vi.spyOn(botContainerApi, "status").mockResolvedValue(STATUS);
+    const apply = vi.spyOn(botContainerApi, "apply").mockResolvedValue({ applyId: "job-1", status: "pending" });
+    const applyStatus = vi
+      .spyOn(botContainerApi, "applyStatus")
+      .mockResolvedValue({ ...LIVE, status: "running" });
+
+    renderConnectedAsync();
+    await tick(10);
+
+    click(byId("apply"));
+    await tick(10);
+    expect(apply).toHaveBeenCalledWith("agent-a");
+    // the button is out of reach while the job is live, with the progress line
+    expect((byId("apply") as HTMLButtonElement).disabled).toBe(true);
+    expect(byId("apply")?.textContent).toBe("Applying...");
+    expect(byId("apply-progress")).not.toBeNull();
+    expect(byId("feedback")).toBeNull();
+    // the id survives a reload
+    expect(readStoredApplyJob("agent-a", Date.now())?.applyId).toBe("job-1");
+
+    applyStatus.mockResolvedValue({
+      status: "succeeded",
+      error: null,
+      startedAt: new Date().toISOString(),
+      finishedAt: new Date().toISOString(),
+    });
+    await tick(2_000);
+    expect(applyStatus).toHaveBeenCalledWith("agent-a", "job-1");
+    expect(text("feedback")).toContain("Applied at");
+    expect(byId("apply-progress")).toBeNull();
+    expect((byId("apply") as HTMLButtonElement).disabled).toBe(false);
+    // the outcome is in — nothing left to resume
+    expect(readStoredApplyJob("agent-a", Date.now())).toBeNull();
+  });
+
+  it("shows the failure text on screen when the job fails", async () => {
+    vi.spyOn(botContainerApi, "status").mockResolvedValue(STATUS);
+    vi.spyOn(botContainerApi, "apply").mockResolvedValue({ applyId: "job-2", status: "pending" });
+    const applyStatus = vi
+      .spyOn(botContainerApi, "applyStatus")
+      .mockResolvedValue({ ...LIVE, status: "running" });
+
+    renderConnectedAsync();
+    await tick(10);
+    click(byId("apply"));
+    await tick(10);
+
+    applyStatus.mockResolvedValue({
+      status: "failed",
+      error: "docker network not found",
+      startedAt: null,
+      finishedAt: new Date().toISOString(),
+    });
+    await tick(2_000);
+    expect(text("feedback")).toBe("Apply failed: docker network not found");
+    expect(byId("feedback")?.getAttribute("role")).toBe("status");
+    expect(readStoredApplyJob("agent-a", Date.now())).toBeNull();
+  });
+
+  it("catches an outcome that landed while the page was closed (reload resume)", async () => {
+    storeApplyJob("agent-a", "job-3", Date.now() - 30_000);
+    vi.spyOn(botContainerApi, "status").mockResolvedValue(STATUS);
+    const applyStatus = vi.spyOn(botContainerApi, "applyStatus").mockResolvedValue({
+      status: "failed",
+      error: "image pull failed",
+      startedAt: null,
+      finishedAt: new Date().toISOString(),
+    });
+
+    renderConnectedAsync();
+    await tick(10);
+    expect(applyStatus).toHaveBeenCalledWith("agent-a", "job-3");
+    expect(text("feedback")).toBe("Apply failed: image pull failed");
+    expect(readStoredApplyJob("agent-a", Date.now())).toBeNull();
+  });
+
+  it("gives up after two minutes and says to check later, keeping the job for a reload", async () => {
+    vi.spyOn(botContainerApi, "status").mockResolvedValue(STATUS);
+    vi.spyOn(botContainerApi, "apply").mockResolvedValue({ applyId: "job-4", status: "pending" });
+    vi.spyOn(botContainerApi, "applyStatus").mockResolvedValue(LIVE);
+
+    renderConnectedAsync();
+    await tick(10);
+    click(byId("apply"));
+    await tick(10);
+
+    await tick(121_000);
+    expect(text("feedback")).toBe(APPLY_TIMEOUT_TEXT);
+    expect((byId("apply") as HTMLButtonElement).disabled).toBe(false);
+    // the pass may still finish server-side; a reload can pick its outcome up
+    expect(readStoredApplyJob("agent-a", Date.now())?.applyId).toBe("job-4");
+  });
+
+  it("still words a synchronous answer from an older server", async () => {
+    vi.spyOn(botContainerApi, "status").mockResolvedValue(STATUS);
+    vi.spyOn(botContainerApi, "apply").mockResolvedValue({ outcome: { kind: "applied_restart" } });
+    const applyStatus = vi.spyOn(botContainerApi, "applyStatus");
+
+    renderConnectedAsync();
+    await tick(10);
+    click(byId("apply"));
+    await tick(10);
+    expect(text("feedback")).toBe("Profile updated and the gateway restarted.");
+    expect(applyStatus).not.toHaveBeenCalled();
+    expect(byId("apply-progress")).toBeNull();
+  });
+
+  it("stops polling when the job id turns out to be unknown (404)", async () => {
+    vi.spyOn(botContainerApi, "status").mockResolvedValue(STATUS);
+    vi.spyOn(botContainerApi, "apply").mockResolvedValue({ applyId: "job-5", status: "pending" });
+    // The first read still finds the job live; the next one answers 404 — the
+    // id went unknown while the page was open (e.g. the instance was rebuilt).
+    const applyStatus = vi
+      .spyOn(botContainerApi, "applyStatus")
+      .mockResolvedValueOnce({ ...LIVE, status: "pending" })
+      .mockRejectedValueOnce(new ApiError("Apply job not found", 404, {}));
+
+    renderConnectedAsync();
+    await tick(10);
+    click(byId("apply"));
+    await tick(10);
+    expect((byId("apply") as HTMLButtonElement).disabled).toBe(true);
+    await tick(2_000);
+    expect(text("feedback")).toBe("Apply job not found");
+    expect((byId("apply") as HTMLButtonElement).disabled).toBe(false);
+    expect(applyStatus).toHaveBeenCalledTimes(2);
+    expect(readStoredApplyJob("agent-a", Date.now())).toBeNull();
+  });
+
+  it("a POST refusal shows its reason and never starts a poll", async () => {
+    vi.spyOn(botContainerApi, "status").mockResolvedValue(STATUS);
+    vi.spyOn(botContainerApi, "apply").mockRejectedValue(
+      new ApiError("x", 503, { code: "bot_container_runtime_unavailable" }),
+    );
+    const applyStatus = vi.spyOn(botContainerApi, "applyStatus");
+
+    renderConnectedAsync();
+    await tick(10);
+    click(byId("apply"));
+    await tick(10);
+    expect(text("feedback")).toBe("The bot container runtime is not configured on this instance.");
+    expect(applyStatus).not.toHaveBeenCalled();
+    expect(byId("apply-progress")).toBeNull();
   });
 });

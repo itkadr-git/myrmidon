@@ -13,7 +13,8 @@ import type {
   RunnerAcceptanceProfile,
 } from "./types.js";
 
-const excludedBuiltInAdapterTypes = new Set(["paperclip_runner", "pi_local"]);
+// myrmidon(OMP-LOCAL): omp_local is excluded from the runner-acceptance boundary
+const excludedBuiltInAdapterTypes = new Set(["paperclip_runner", "pi_local", "omp_local"]);
 
 const directBuiltInAdapterTypes = [
   "acpx_local",
@@ -305,8 +306,8 @@ export function validateRunnerAcceptanceCatalog() {
 
   for (const profile of runnerAcceptanceProfiles) {
     assertSafeConfig(profile.adapterConfig);
-    if (profile.adapterType === "pi_local") {
-      throw new Error("Pi is outside the acceptance foundation boundary");
+    if (profile.adapterType === "pi_local" || profile.adapterType === "omp_local") {
+      throw new Error("Pi and Omp are outside the acceptance foundation boundary");
     }
     if (
       profile.provider === "acpx"

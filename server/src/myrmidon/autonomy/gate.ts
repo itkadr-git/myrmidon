@@ -97,6 +97,32 @@ export function autonomyGate(deps: AutonomyGateDeps) {
 
 export type AutonomyGate = ReturnType<typeof autonomyGate>;
 
+/**
+ * myrmidon(1.6-AUTONOMY-GW): resolve the matrix verdict for a caller the
+ * gateway already authenticated — an agent id, not an express request. Same
+ * resolution order as `decide` (agent override > role rule > class default);
+ * a null agent id (non-agent caller) is not subject to the matrix, so it
+ * reads as `allowed`, matching `decide`.
+ */
+export async function dbAutonomyVerdictForAgent(
+  db: Db,
+  agentId: string | null,
+  actionClass: AutonomyActionClass,
+): Promise<AutonomyDecision> {
+  if (!agentId) return { verdict: "allowed", role: null, actionClass };
+  const store = dbAutonomyStore(db);
+  const roleOf = agentRoleFromDb(db);
+  const [role, matrix] = await Promise.all([
+    roleOf(agentId),
+    store.read().then((doc) => doc.matrix),
+  ]);
+  return {
+    verdict: resolveAutonomy(role, actionClass, matrix, agentId),
+    role,
+    actionClass,
+  };
+}
+
 /** The production gate: matrix from instance_settings, role from agents.role. */
 export function dbAutonomyGate(db: Db): AutonomyGate {
   return autonomyGate({ store: dbAutonomyStore(db), roleOf: agentRoleFromDb(db) });

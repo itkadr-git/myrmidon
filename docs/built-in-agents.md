@@ -1,6 +1,6 @@
 # Built-in Agents
 
-Built-in agents are first-party, company-scoped agents that Paperclip can resolve by a stable registry key. They are normal rows in `agents`, but they carry immutable metadata under `metadata.paperclipBuiltInAgent` so services can find them without hardcoding a database id.
+Built-in agents are first-party, company-scoped agents that Myrmidon can resolve by a stable registry key. They are normal rows in `agents`, but they carry immutable metadata under `metadata.paperclipBuiltInAgent` so services can find them without hardcoding a database id.
 
 The first built-ins are `briefs` and `learning`. Operators can provision them from the API without going through board hire approval, but the route still requires the same `agents:create` permission as normal agent creation.
 
@@ -60,7 +60,7 @@ Hypothetical registry diff:
      featureKeys: ["learning"],
      shortPurpose: "Maintains reusable company learning from completed work and recurring patterns.",
      defaultInstructions:
-       "You are Paperclip's built-in Learning agent. Extract durable lessons from completed work, preserve useful patterns, and keep learning artifacts grounded in source context.",
+       "You are Myrmidon's built-in Learning agent. Extract durable lessons from completed work, preserve useful patterns, and keep learning artifacts grounded in source context.",
      defaultRole: "general",
      allowedAdapterTypes: ["codex_local", "claude_local", "gemini_local", "opencode_local", "process"],
      defaultBudgetMonthlyCents: 0,
@@ -71,7 +71,7 @@ Hypothetical registry diff:
 +    featureKeys: ["digest"],
 +    shortPurpose: "Summarizes recent company activity into a board-readable digest.",
 +    defaultInstructions:
-+      "You are Paperclip's built-in Digest agent. Produce short, sourced summaries of recent company activity, decisions, blockers, and next actions.",
++      "You are Myrmidon's built-in Digest agent. Produce short, sourced summaries of recent company activity, decisions, blockers, and next actions.",
 +    defaultRole: "general",
 +    allowedAdapterTypes: ["codex_local", "claude_local", "process"],
 +    defaultBudgetMonthlyCents: 0,

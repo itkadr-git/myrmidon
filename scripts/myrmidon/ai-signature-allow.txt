@@ -1,0 +1,12 @@
+# Commits of the frozen tag myr-v1.6.5 whose messages carry an AI co-author
+# trailer. They are history that cannot be rewritten (the tag is published); the
+# forward-merge PR re-scans them because they are not in main yet. Full shas
+# only; one per line. Do not add commits that are not in a published tag.
+b1b254fdb3c2c6cc35fc1ee5674ff02c12aae847
+f7dfa0464f29fcc8681dac99d143c9b5177fd92a
+aef212807c2b1e0f18c71d7805913b68647387ee
+5cae9a530672b8aa2d2b389e1d685f9ca40d60ba
+1d409f5235acec42d8a3d29cafe08d7c7bf08500
+0708d147e9f1d8ff4679422e57e54cdc62429879
+9adbfed217db55c1599a5fa40e1529480a72b3ff
+c2aa00378331e6c45e41a91d97f1ddf0a5ff1db2

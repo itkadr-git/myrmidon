@@ -14,6 +14,7 @@ import { budgetsApi } from "../api/budgets";
 import { costsApi } from "../api/costs";
 import { GatewayCostsTab } from "../components/myrmidon/litellm-costs/GatewayCostsTab"; // myrmidon(M2-A)
 import { GatewayKeysTab } from "../components/myrmidon/litellm-costs/GatewayKeysTab"; // myrmidon(M2-B)
+import { GatewayWorkersTab } from "../components/myrmidon/litellm-costs/GatewayWorkersTab"; // myrmidon(1.6.6-LITELLM-WORKERS-UI)
 import { BillerSpendCard } from "../components/BillerSpendCard";
 import { BudgetIncidentCard } from "../components/BudgetIncidentCard";
 import { BudgetPolicyCard } from "../components/BudgetPolicyCard";
@@ -36,7 +37,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 const NO_COMPANY = "__none__";
-export type CostsMainTab = "overview" | "budgets" | "providers" | "billers" | "finance" | "gateway"; // myrmidon(M2-A): gateway tab | "gateway-keys"
+export type CostsMainTab = "overview" | "budgets" | "providers" | "billers" | "finance" | "gateway" | "gateway-keys" | "gateway-workers"; // myrmidon(M2-A): gateway tab; myrmidon(1.6.6-LITELLM-WORKERS-UI): gateway-workers
 
 export interface CostsProps {
   /** Render inside Audit without a second page-level title or breadcrumb. */
@@ -656,6 +657,7 @@ export function Costs({
             <TabsTrigger value="finance">Finance</TabsTrigger>
             <TabsTrigger value="gateway">Gateway</TabsTrigger> {/* myrmidon(M2-A) */}
             <TabsTrigger value="gateway-keys">Gateway keys</TabsTrigger> {/* myrmidon(M2-B) */}
+            <TabsTrigger value="gateway-workers">Gateway workers</TabsTrigger> {/* myrmidon(1.6.6-LITELLM-WORKERS-UI) */}
           </TabsList>
         ) : null}
 
@@ -1095,6 +1097,10 @@ export function Costs({
 
         <TabsContent value="gateway-keys" className="mt-4 space-y-4"> {/* myrmidon(M2-B) */}
           <GatewayKeysTab companyId={companyId} />
+        </TabsContent>
+
+        <TabsContent value="gateway-workers" className="mt-4 space-y-4"> {/* myrmidon(1.6.6-LITELLM-WORKERS-UI) */}
+          <GatewayWorkersTab companyId={companyId} />
         </TabsContent>
 
         <TabsContent value="finance" className="mt-4 space-y-4">

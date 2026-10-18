@@ -57,6 +57,9 @@ export const MYRMIDON_RUN_ENV_TOOL_HOME_ALLOW: readonly string[] = [
   "HERMES_HOME",
   "KIMI_CODE_HOME",
   "PI_CODING_AGENT_DIR",
+  // myrmidon(OMP-LOCAL): OMP agent and profile directory pointers
+  "OMP_HOME",
+  "OMP_CODING_AGENT_DIR",
   "GH_CONFIG_DIR",
   "XDG_CONFIG_HOME",
   "XDG_DATA_HOME",
@@ -79,6 +82,8 @@ export const MYRMIDON_RUN_ENV_PROVIDER_ALLOW: Readonly<Record<string, readonly s
   kimi_local: ["KIMI_API_KEY", "KIMI_MODEL_API_KEY"],
   opencode_local: ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "OPENROUTER_API_KEY"],
   pi_local: ["ANTHROPIC_API_KEY", "XAI_API_KEY"],
+  // myrmidon(OMP-LOCAL): OMP model provider credentials
+  omp_local: ["ANTHROPIC_API_KEY", "XAI_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY"],
   hermes_local: [
     "OPENROUTER_API_KEY",
     "ANTHROPIC_API_KEY",
@@ -214,7 +219,7 @@ export function filterMyrmidonInheritedEnv(
     const env: NodeJS.ProcessEnv = { ...processEnv };
     delete env.PAPERCLIPAI_CMD;
     for (const key of Object.keys(env)) {
-      if (!key.startsWith("PAPERCLIP_")) continue;
+      if (!(key.startsWith("PAPERCLIP_") || key.startsWith("MYRMIDON_"))) continue; // myrmidon(REBRAND-C)
       if (MYRMIDON_RUN_ENV_VENDOR_RUNTIME_KEYS.includes(key)) continue;
       delete env[key];
     }

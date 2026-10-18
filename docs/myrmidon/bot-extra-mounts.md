@@ -1,9 +1,15 @@
 # Bot containers: extra read-only mounts
 
-A bot container gets exactly three volumes from the driver: `/data/hermes`,
-`/workspace` and `/scratch`. Everything a bot needs beyond that — shared source
-trees, templates, common tools — used to be copied into each bot's
-`/workspace/shared`, so every source update had to be pushed to every bot again.
+A bot container gets its volumes from the driver in the layout its image's
+runtime contract pins: the current contract mounts the bot's whole writable
+tree as **one** bind at `/bot` (the image links `/data/hermes`, `/workspace`
+and `/scratch` into it — see
+[bot-disk-cache.md](bot-disk-cache.md#the-bots-single-mount)); an image that
+declares the legacy contract keeps the **three** separate binds `/data/hermes`,
+`/workspace` and `/scratch` it was built for. Everything a bot needs beyond
+that — shared source trees, templates, common tools — used to be copied into
+each bot's `/workspace/shared`, so every source update had to be pushed to
+every bot again.
 
 This feature lets a card mount an operator-approved host directory into the
 container as an extra **read-only** volume. The bot sees the files where they
@@ -51,11 +57,12 @@ MYRMIDON_BOT_MOUNT_SOURCES=/srv/shared/sources,/srv/shared/tools
 * `path` — the absolute mount point inside the container.
 * `readOnly` — optional, defaults to `true`. `false` is refused: a shared
   directory is never mounted writable.
-* A missing `extraMounts` means the bot keeps its three fixed volumes only.
+* A missing `extraMounts` means the bot keeps its fixed volumes only.
 
-The driver builds the bind as `host:container:ro` and appends it after the three
-fixed binds. The helper containers that prepare the volumes and apply the profile
-never get an extra mount — they only touch the three bot volumes.
+The driver builds the bind as `host:container:ro` and appends it after the
+fixed binds — three under the legacy layout, one under the single-mount layout.
+The helper containers that prepare the volumes and apply the profile never get
+an extra mount — they only touch the three bot volume directories.
 
 ## A mount point inside the bot's own volume (1.6.5-BOT-DISK-H, class J)
 
@@ -92,7 +99,7 @@ are in
 | source is not in `MYRMIDON_BOT_MOUNT_SOURCES` | the card must not reach a host directory the operator did not name |
 | source is relative, has `..`, `//`, a trailing `/`, a backslash, a control character, or is `/` | two spellings of one directory would compare unequal, and `/` would hand over the host |
 | `readOnly` is `false` | extra mounts are read-only by design |
-| `path` is relative, unsafe, or is `/workspace`, `/scratch`, `/tmp`, `/data/hermes` itself, or a path inside one of them | the driver's own mounts and the image's tmpfs must not be shadowed — the three owner-data subtrees of `/data/hermes` are the exception above |
+| `path` is relative, unsafe, or is `/workspace`, `/scratch`, `/tmp`, `/bot`, `/data/hermes` itself, or a path inside one of them | the driver's own mounts and the image's tmpfs must not be shadowed (`/bot` is reserved by the image contract, see bot-disk-cache.md) — the three owner-data subtrees of `/data/hermes` are the exception above |
 | the same `path` is used twice | Docker would refuse the create anyway |
 
 A refused mount is an error of the reconcile pass (visible in the activity log);
