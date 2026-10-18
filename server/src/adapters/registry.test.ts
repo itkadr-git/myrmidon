@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { assertValidAdapterLoginCapability } from "@paperclipai/adapter-utils";
-import { listServerAdapters, requireServerAdapter } from "./registry.js";
+import { listEnabledServerAdapters, listServerAdapters, requireServerAdapter } from "./registry.js";
 import * as executionTarget from "@paperclipai/adapter-utils/execution-target";
 import { BUILTIN_ADAPTER_TYPES } from "./builtin-adapter-types.js";
 
@@ -48,6 +48,23 @@ describe("built-in adapter login capabilities", () => {
     expect(typeof capability.parsePrompt).toBe("function");
     expect(typeof capability.captureCredential).toBe("function");
     expect(() => assertValidAdapterLoginCapability(capability, "claude_local")).not.toThrow();
+  });
+});
+
+describe("hermes_local availability kill switch", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it("keeps hermes_local enabled by default", () => {
+    vi.stubEnv("MYRMIDON_DISABLE_HERMES_LOCAL", "");
+    expect(listEnabledServerAdapters().some((adapter) => adapter.type === "hermes_local")).toBe(true);
+  });
+
+  it("hides hermes_local from enabled selection when the flag is set", () => {
+    vi.stubEnv("MYRMIDON_DISABLE_HERMES_LOCAL", "1");
+    expect(listEnabledServerAdapters().some((adapter) => adapter.type === "hermes_local")).toBe(false);
+    expect(listServerAdapters().some((adapter) => adapter.type === "hermes_local")).toBe(true);
   });
 });
 

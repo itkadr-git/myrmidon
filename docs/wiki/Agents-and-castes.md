@@ -65,7 +65,20 @@ The board watches its agents and repairs what breaks:
   assignee is woken — the board does not wait for a hard timeout to notice
   a stuck run.
 
-## In detail
+## The OMP runtime image
+
+The standalone `agent-runtime-omp` image runs `omp` directly on Bun 1.4.3 with
+`@oh-my-pi/pi-coding-agent` pinned to 18.9.2. It uses uid/gid 1000, its own
+`HOME` and XDG/session directories, and does not use the base image's agent
+shim. The image build smoke-checks the exact Bun and OMP versions, `omp` on
+`PATH`, `omp --help`, and `omp models ls` without calling a model provider.
+
+The `omp` bake target is `linux/amd64`; CI is configured to build, publish and
+cosign-sign the pushed digest using keyless OIDC. Check the workflow run and
+registry digest before treating a tag as available; configuration alone does
+not prove a successful publication. Build/run instructions and the CI scope
+are in the [Agent Runtime Image Family](../../docker/agent-runtime/README.md).
+
 
 - [Bot container: the Container section](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/bot-container-card.md)
 - [Agent memory card](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/agent-memory-card.md)

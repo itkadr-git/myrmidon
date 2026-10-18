@@ -415,6 +415,7 @@ import {
 // task whose delivering PRs are all merged and settles it instead.
 import {
   createTaskPrSyncWakeGuard,
+  isTaskPrSyncWakeGuardCandidate,
   readTaskPrSyncWakeGuardEnabled,
   TASK_PR_SYNC_WAKE_SKIP_REASON,
 } from "../myrmidon/task-pr-sync/wake-guard.js";
@@ -859,7 +860,7 @@ const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
 const EXTERNAL_ATTACHMENT_OMISSIONS_KEY = "externalAttachmentOmissions";
 const PAPERCLIP_WAKE_PAYLOAD_KEY = "paperclipWake";
 const ACCEPTED_PLAN_CONVERSION_SKILL_KEY =
-  "paperclipai/paperclip/paperclip-converting-plans-to-tasks";
+  "paperclipai/paperclip/myrmidon-converting-plans-to-tasks";
 const PAPERCLIP_AGENT_MESSAGE_KEY = "paperclipAgentMessage";
 const PAPERCLIP_HARNESS_CHECKOUT_KEY = "paperclipHarnessCheckedOut";
 const PAPERCLIP_EXTERNAL_CHAT_EXECUTION_BOUND_KEY =
@@ -3836,7 +3837,7 @@ function normalizeMaxConcurrentRuns(value: unknown) {
   );
 }
 
-interface WakeupOptions {
+export interface WakeupOptions {
   /** Set only by authenticated board wake routes; never copied from caller payloads. */
   manualUserWake?: boolean;
   /** Internal resume of a queue with persisted board interruption intent. */
@@ -21016,6 +21017,60 @@ export function heartbeatService(
   // prologue. drainActiveRunExecutions can then await a wake that is still before
   // run registration. Internal callers reference enqueueWakeup directly and
   // already await it, so they do not need this registration.
+  async function insertReviewAdmissionWakeup(
+    agentId: string,
+    opts: WakeupOptions,
+    tx: Db,
+    companyId?: string,
+  ) {
+    if (!tx || typeof tx.insert !== "function") {
+      return { created: false };
+    }
+    const source = opts.source ?? "on_demand";
+    const reason = opts.reason ?? null;
+    const payload = opts.payload ? { ...opts.payload } : null;
+    if (payload) {
+      delete payload.queuedCommentInterrupt;
+      delete payload.manualUserWake;
+    }
+    const contextSnapshot = { ...(opts.contextSnapshot ?? {}) };
+    const resolvedIssueId =
+      readNonEmptyString(contextSnapshot.issueId) ??
+      readNonEmptyString(payload?.issueId) ??
+      readNonEmptyString(payload?.taskId);
+    const key = opts.idempotencyKey ??
+      `issue-review-admission:${resolvedIssueId ?? "unknown"}:${agentId}`;
+    let resolvedCompanyId = companyId;
+    if (!resolvedCompanyId && typeof tx.select === "function") {
+      try {
+        const agent = await tx
+          .select()
+          .from(agents)
+          .where(eq(agents.id, agentId))
+          .then((rows) => rows[0] ?? null);
+        resolvedCompanyId = agent?.companyId;
+      } catch {
+        // Query failed on mock tx
+      }
+    }
+    if (!resolvedCompanyId) {
+      return { created: false };
+    }
+    await tx.insert(agentWakeupRequests).values({
+      companyId: resolvedCompanyId,
+      agentId,
+      source,
+      triggerDetail: opts.triggerDetail ?? null,
+      reason,
+      payload: resolvedIssueId ? { ...(payload ?? {}), issueId: resolvedIssueId } : payload,
+      status: "queued",
+      requestedByActorType: opts.requestedByActorType ?? null,
+      requestedByActorId: opts.requestedByActorId ?? null,
+      idempotencyKey: key,
+    });
+    return { created: true };
+  }
+
   function trackWakeup(
     agentId: string,
     opts: WakeupOptions = {},
@@ -29245,7 +29300,12 @@ export function heartbeatService(
                 finishedAt: new Date(),
               },
             });
-            return { kind: "skipped" as const };
+            return {
+              kind: "skipped" as const,
+              dependencyBlockedAgent: agent,
+              dependencyBlockedIssueId: issue.id,
+              dependencyBlockedReadyForPickup: !activeExecutionRun,
+            };
           }
 
           if (
@@ -29455,12 +29515,13 @@ export function heartbeatService(
           // would only race the settle sweep (TASK-PR-SYNC part C). Skip it
           // with the vendor's skipped-wakeup-request mechanism and let the
           // sweep close the task; human comment and interaction wakes carry
-          // events and are never suppressed. Guarded by the same event-free
-          // predicate the vendor's rewake throttle applies, so a wake that
-          // bypasses the throttle can never be skipped here.
+          // events and are never suppressed. Guarded by the vendor rewake
+          // throttle's event-free predicate, plus `issue_assigned` (which the
+          // throttle lets through since #1267 but which would still race the
+          // settle sweep).
           if (
             readTaskPrSyncWakeGuardEnabled() &&
-            isThrottleCandidateIssueRewake({
+            isTaskPrSyncWakeGuardCandidate({
               reason,
               wakeCommentId: wakeCommentId ?? null,
               requestedByActorType: opts.requestedByActorType ?? null,
@@ -29906,9 +29967,52 @@ export function heartbeatService(
       if (outcome.kind === "durable") {
         return outcome.receipt.runId ? getRun(outcome.receipt.runId) : null;
       }
-      if (outcome.kind === "deferred" || outcome.kind === "skipped") {
+      if (outcome.kind === "skipped") {
+        if (
+          "dependencyBlockedAgent" in outcome &&
+          outcome.dependencyBlockedReadyForPickup
+        ) {
+          try {
+            const releaseLiveness = await teamLivenessRead();
+            const pickupAllowed =
+              releaseLiveness.settings.idlePickupEnabled &&
+              resolveAgentTeamLiveness(
+                readAgentCard(outcome.dependencyBlockedAgent.adapterConfig),
+                releaseLiveness.settings,
+              ).idlePickupEnabled;
+            if (pickupAllowed) {
+              idleWakeBudget.configure({
+                perMinute: releaseLiveness.settings.idlePickupWakeBudgetPerMin,
+                batch: Math.min(
+                  releaseLiveness.settings.idlePickupWakeBatch,
+                  releaseLiveness.settings.idlePickupWakeBudgetPerMin,
+                ),
+              });
+              await idlePickupForAgent(
+                {
+                  db,
+                  budget: idleWakeBudget,
+                  enqueueWakeup: (nextAgentId, wakeOptions) =>
+                    enqueueWakeup(nextAgentId, wakeOptions),
+                },
+                outcome.dependencyBlockedAgent,
+                { excludeIssueId: outcome.dependencyBlockedIssueId, behaviorEnabled: true },
+              );
+            }
+          } catch (err) {
+            logger.warn(
+              {
+                err,
+                agentId: outcome.dependencyBlockedAgent.id,
+                issueId: outcome.dependencyBlockedIssueId,
+              },
+              "idle pickup after dependency-blocked wake failed",
+            );
+          }
+        }
         return null;
       }
+      if (outcome.kind === "deferred") return null;
       if (outcome.kind === "coalesced") {
         await startNextQueuedRunForAgent(agent.id);
         return outcome.run;
@@ -30074,23 +30178,42 @@ export function heartbeatService(
         return { kind: "skipped" as const };
       }
 
-      const wakeupRequest = await tx
-        .insert(agentWakeupRequests)
-        .values({
-          ...durableReceiptFields,
-          companyId: agent.companyId,
-          agentId,
-          source,
-          triggerDetail,
-          reason,
-          payload,
-          status: "queued",
-          requestedByActorType: opts.requestedByActorType ?? null,
-          requestedByActorId: opts.requestedByActorId ?? null,
-          idempotencyKey: opts.idempotencyKey ?? null,
-        })
-        .returning()
-        .then((rows) => rows[0]);
+      let wakeupRequest = null;
+      if (opts.idempotencyKey) {
+        const [existing] = await tx
+          .select()
+          .from(agentWakeupRequests)
+          .where(
+            and(
+              eq(agentWakeupRequests.companyId, agent.companyId),
+              eq(agentWakeupRequests.agentId, agentId),
+              eq(agentWakeupRequests.idempotencyKey, opts.idempotencyKey),
+              eq(agentWakeupRequests.status, "queued"),
+              isNull(agentWakeupRequests.runId),
+            ),
+          )
+          .limit(1);
+        wakeupRequest = existing ?? null;
+      }
+      if (!wakeupRequest) {
+        wakeupRequest = await tx
+          .insert(agentWakeupRequests)
+          .values({
+            ...durableReceiptFields,
+            companyId: agent.companyId,
+            agentId,
+            source,
+            triggerDetail,
+            reason,
+            payload,
+            status: "queued",
+            requestedByActorType: opts.requestedByActorType ?? null,
+            requestedByActorId: opts.requestedByActorId ?? null,
+            idempotencyKey: opts.idempotencyKey ?? null,
+          })
+          .returning()
+          .then((rows) => rows[0]);
+      }
 
       const newRun = await tx
         .insert(heartbeatRuns)
@@ -31389,6 +31512,7 @@ export function heartbeatService(
       }),
 
     wakeup: trackWakeup,
+    insertReviewAdmissionWakeup,
     dispatchPendingNativeStatusWakeups,
     triggerIssueMonitor,
 

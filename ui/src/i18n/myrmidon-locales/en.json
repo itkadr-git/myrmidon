@@ -330,7 +330,8 @@
     "models": "Models & providers",
     "wipLimit": "WIP limit",
     "reviewRouting": "Review routing",
-    "corpus": "Knowledge corpus"
+    "corpus": "Knowledge corpus",
+    "agentExchange": "Agent exchanges"
   },
   "corpus": {
     "title": "Knowledge corpus",
@@ -1172,7 +1173,8 @@
     "saved": "Saved. The feed uses the new windows from its next build.",
     "save": "Save",
     "reset": "Use defaults",
-    "note": "Stored in the instance settings; there is no environment variable behind either value."  },
+    "note": "Stored in the instance settings; there is no environment variable behind either value."
+  },
   "telegramCard": {
     "title": "Telegram",
     "intro": "The Telegram bridge addresses this agent by these aliases and files its card under the group title in /agents.",
@@ -1192,5 +1194,36 @@
     "saving": "Saving…",
     "saved": "Saved",
     "saveFailed": "Could not save"
+  },
+  "licensing": {
+    "title": "Licensing",
+    "description": "Installation id and licenses of the closed connector modules. A client copies the license request and sends it to the owner; the owner signs a license here. The signing key stays on the server.",
+    "loading": "Loading licensing…",
+    "installId": "Installation id:",
+    "sourceEnv": "The id is set by an environment override, not derived from the machine id. Make sure the modules use the same value.",
+    "sourceGenerated": "No machine id found: the id was generated and cached. Mount the host machine id read-only, otherwise a new install may get a new id and its license stops matching.",
+    "requestModules": "Modules in the request",
+    "requestLabel": "License request",
+    "copyRequest": "Copy license request",
+    "copied": "Copied",
+    "issueTitle": "Issue a license",
+    "issuerNotConfigured": "The license signing key is not configured on this server (MYRMIDON_LICENSE_ISSUER_KEY_FILE). Issuing is unavailable.",
+    "pasteLabel": "License request from the client",
+    "notARequest": "This does not look like a license request. Ask the client to press \"Copy license request\" again.",
+    "manualId": "Or enter the installation id manually",
+    "modules": "Modules",
+    "days": "Term, days",
+    "noExpiry": "No expiry",
+    "client": "Client / watermark",
+    "issue": "Issue license",
+    "issuing": "Issuing…",
+    "issueFailed": "Could not issue the license. Check the fields and try again.",
+    "resultLabel": "License",
+    "copyLicense": "Copy license",
+    "download": "Download file",
+    "installHint": "Place the text into the license file of the modules on that installation.",
+    "issuedTitle": "Issued licenses",
+    "issuedEmpty": "No licenses issued yet.",
+    "until": "until {{date}}"
   }
 }

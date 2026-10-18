@@ -154,6 +154,7 @@ describe("CompanySettingsNav", () => {
           { value: "owner-delivery", label: "Owner Telegram delivery" }, // myrmidon(1.6.5-OWNER-DM-FILTER)
           { value: "corpus", label: "Knowledge corpus" }, // myrmidon(1.6.6 CORPUS E)
           { value: "voice-stt", label: "Speech" }, // myrmidon(1.6.1 VOICE-STT C)
+          { value: "agent-exchange", label: "Agent exchanges" }, // myrmidon(1.7-AGENT-EXCHANGE-B)
         ],
       }),
     );
@@ -207,6 +208,7 @@ describe("CompanySettingsNav", () => {
       "owner-delivery", // myrmidon(1.6.5-OWNER-DM-FILTER)
       "corpus", // myrmidon(1.6.6 CORPUS E)
       "voice-stt", // myrmidon(1.6.1 VOICE-STT C)
+      "agent-exchange", // myrmidon(1.7-AGENT-EXCHANGE-B)
     ]);
 
     await act(async () => {
