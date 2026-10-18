@@ -1,6 +1,6 @@
 --- a/hermes_state_dbfile.py
 +++ b/hermes_state_dbfile.py
-@@ -24,6 +24,9 @@
+@@ -24,5 +24,8 @@
  from pathlib import Path
  from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -10,7 +10,7 @@
  from hermes_state_holders import canonical_sqlite_path, read_only_db_uri
  from hermes_state_common import (
      FTS_REBUILD_DEFERRAL_KEY, stat_db_file_identity as _stat_db_file_identity
-@@ -191,20 +194,43 @@
+@@ -191,16 +194,39 @@
      return _identity_is_truly_unlinked((fd_stat.st_dev, fd_stat.st_ino), watched_path)
 
 
@@ -61,7 +61,7 @@
 
 
  # ── macOS fd enumeration (libproc) ──────────────────────────────────────────────────────────────
-@@ -338,27 +364,40 @@
+@@ -338,25 +364,38 @@
      if sys.platform == "win32":
          return []
      holders: List[Tuple[int, str]] = []
@@ -117,7 +117,7 @@
      raise DeletedWalGenerationError(_DELETED_WAL_GENERATION_MSG)
 --- a/hermes_state_errors.py
 +++ b/hermes_state_errors.py
-@@ -186,6 +186,10 @@
+@@ -186,4 +186,8 @@
      transcripts on a replaced store handles this identically."""
 
 
@@ -130,7 +130,7 @@
  _STATE_DB_APPLICATION_ID_OFFSET = 68
 --- a/hermes_state.py
 +++ b/hermes_state.py
-@@ -544,8 +544,10 @@
+@@ -544,7 +544,9 @@
          except Exception as exc:
              logger.warning("%s close failed for %s: %s", label, self.db_path, exc)
 
@@ -160,7 +160,7 @@
              if read_only:
                  self._open_read_only()
              else:
-@@ -641,11 +647,21 @@
+@@ -641,10 +647,20 @@
                  # for the suite-level leak sweep in tests/conftest.py.
                  _register_test_instance(self)
 
@@ -182,7 +182,7 @@
          mkdir_under_hermes_home(self.db_path.parent)
          # Read-only file/sidecar preflight BEFORE the first connection: an actionable message
          # instead of an opaque "attempt to write a readonly database" from inside _init_schema.
-@@ -779,6 +795,10 @@
+@@ -779,5 +795,9 @@
          return conn
 
      def _connect_and_init(self) -> None:
@@ -195,7 +195,7 @@
          refuse_deleted_wal_generation(self.db_path)
 --- a/hermes_state_registry.py
 +++ b/hermes_state_registry.py
-@@ -30,6 +30,7 @@
+@@ -30,4 +30,5 @@
 
  from __future__ import annotations
 
@@ -203,7 +203,7 @@
  import contextlib
  import logging
  import os
-@@ -192,7 +193,7 @@
+@@ -192,5 +193,5 @@
      opening.set()
 
 
@@ -212,7 +212,7 @@
      """Return the shared SessionDB for *db_path*, incrementing its refcount. If the file was
      replaced (different inode) since the generation opened, that generation is RETIRED
      but stays alive for its holders, and a fresh one is opened in its place. Raises
-@@ -233,8 +234,6 @@
+@@ -233,7 +234,5 @@
                  else:
                      wait_for = opening
          if wait_for is not None:
@@ -221,7 +221,7 @@
              wait_for.wait()
              continue
 
-@@ -273,6 +272,102 @@
+@@ -273,4 +272,100 @@
          return winner
 
 
@@ -343,7 +343,7 @@
          for generation in generations:
 --- a/gateway/session_db_recovery.py
 +++ b/gateway/session_db_recovery.py
-@@ -2,5 +2,6 @@
+@@ -2,4 +2,5 @@
 
  from __future__ import annotations
 
@@ -351,7 +351,7 @@
  import contextlib
  import threading
  import time
-@@ -65,4 +66,7 @@
+@@ -65,9 +66,127 @@
          self._health_source = _HealthSource()
          self._generation = 0
          self._close_rejected: Callable[[Any], None] | None = None
@@ -481,7 +481,7 @@
      def get(
          self, path: Path, opener: Callable[[], Any], *, raise_on_error: bool = False,
          on_recovered: Callable[[], None] | None = None,
-@@ -128,2 +244,2 @@
+@@ -128,8 +244,26 @@
              on_recovered()
          return handle
 
@@ -511,7 +511,7 @@
              handles = list(self.handles.values())
 --- a/gateway/session.py
 +++ b/gateway/session.py
-@@ -758,2 +758,2 @@
+@@ -758,5 +758,21 @@
      def __init__(self, store: "SessionStore") -> None:
          self._store = store
 
@@ -534,7 +534,7 @@
      def __getattr__(self, name: str):
          attr = getattr(self._store, name)
          if not callable(attr):
-@@ -775,1 +791,1 @@
+@@ -775,5 +791,17 @@
      """Session routing index + transcripts: SQLite (SessionDB), legacy JSONL fallback."""
 
      def __init__(self, sessions_dir: Path, config: GatewayConfig, has_active_processes_fn=None):
@@ -553,7 +553,7 @@
          self.sessions_dir = sessions_dir
          self.config = config
          self._entries: Dict[str, SessionEntry] = {}
-@@ -807,2 +835,2 @@
+@@ -807,38 +835,16 @@
          self._has_active_processes_fn = has_active_processes_fn
          self._write_sessions_json = bool(getattr(config, "write_sessions_json", True))
 
@@ -599,7 +599,7 @@
          """``self.<name>``, created via *factory* when missing/None (suites build bare stores via
 --- a/gateway/session_persistence.py
 +++ b/gateway/session_persistence.py
-@@ -4,0 +4,0 @@
+@@ -4,4 +4,5 @@
 
  from __future__ import annotations
 
@@ -607,7 +607,7 @@
  import contextlib
  import logging
  import json
-@@ -40,2 +41,2 @@
+@@ -40,5 +41,11 @@
  class SessionPersistenceMixin:
      """SessionStore storage plumbing: SessionDB handle resolution and routing-index load/save."""
 
@@ -620,7 +620,7 @@
      def _open_session_db_for_active_scope(self, db_path: Optional[Path] = None):
          """SessionDB for the active profile scope. ``db_path`` pins the store; otherwise
          ``_default_db_path()`` follows the context-local HERMES_HOME (resolved per call so
-@@ -62,2 +69,2 @@
+@@ -62,5 +69,11 @@
                      print(f"[gateway] Warning: SQLite session store unavailable, falling back to JSONL: {e}")
                  raise
 
@@ -635,7 +635,7 @@
 
      def _pinned_db(self):
          """Return the explicitly pinned DB (``store._db = x``), else ``_DB_UNPINNED``."""
-@@ -137,2 +150,2 @@
+@@ -137,5 +150,29 @@
              cache[profile] = home
          return home
 
@@ -666,7 +666,7 @@
      def _db_for_key(self, session_key: Optional[str]):
          """The SessionDB holding *session_key*'s rows, whatever scope is active (the owning profile
          is encoded in the key). ``_db`` follows the ambient HERMES_HOME that only the inbound message
-@@ -191,2 +228,2 @@
+@@ -191,5 +228,11 @@
              pass  # bare stores / foreign entry objects in suites
          return (getattr(self, "_session_owner_hints", None) or {}).get(session_id)
 
@@ -679,7 +679,7 @@
      def _db_for_session_id(self, session_id: Optional[str]):
          """The SessionDB holding *session_id*'s row (owner from the index or a pre-published hint;
          unknown ids fall back to the ambient store)."""
-@@ -198,2 +241,2 @@
+@@ -198,5 +241,10 @@
              return self._db
          return self._db_for_key(self._owner_key_for_session_id(session_id))
 
@@ -691,7 +691,7 @@
      def close_all_db_handles(self) -> None:
          """Close every SessionDB handle this store opened (one per path). Closing only ``store._db``
          would strand secondary profiles' handles with their WAL lock held ('database is locked' on
-@@ -229,2 +277,2 @@
+@@ -229,5 +277,26 @@
          except Exception:
              return str(self.sessions_dir)
 
@@ -721,7 +721,7 @@
          method = getattr(self._routing_db or None, name, None)
 --- a/gateway/session_recovery.py
 +++ b/gateway/session_recovery.py
-@@ -4,0 +4,0 @@
+@@ -4,4 +4,5 @@
 
  from __future__ import annotations
 
@@ -729,7 +729,7 @@
  import logging
  import json
  import math
-@@ -193,2 +194,2 @@
+@@ -193,5 +194,14 @@
                  raise
              return None
 
@@ -747,7 +747,7 @@
      ) -> Optional[tuple[str, Any]]:
 --- a/gateway/run.py
 +++ b/gateway/run.py
-@@ -3518,1 +3518,1 @@
+@@ -3518,6 +3518,8 @@
          _gateway_runner_ref = _weakref.ref(self)
 
          self._init_runtime_settings()
@@ -758,7 +758,7 @@
          self._init_lifecycle_state()
          self._init_runtime_caches()
          self._init_startup_checks()
-@@ -3552,2 +3554,2 @@
+@@ -3552,16 +3554,5 @@
          self._provider_routing = self._load_provider_routing()
          self._fallback_model = self._load_fallback_model()
 
@@ -776,7 +776,7 @@
      def _init_lifecycle_state(self) -> None:
          """Initialise run/exit/restart flags, per-session state, and completion-delivery bookkeeping."""
          self._running = self._exit_cleanly = self._exit_with_failure = self._draining = False
-@@ -3702,1 +3693,1 @@
+@@ -3702,45 +3693,12 @@
              logger.debug("approvals.mode startup check skipped", exc_info=True)
 
      def _init_session_db(self) -> None:
@@ -826,7 +826,7 @@
 
      def _init_registries_and_clocks(self) -> None:
          """Pairing stores, hook registry, voice modes, background-task set, liveness and idle clocks."""
-@@ -3776,1 +3734,1 @@
+@@ -3776,91 +3734,88 @@
          self._scale_to_zero_direct_platform_logged: bool = False
 
      def _open_session_db_for_active_scope(self, raise_on_error: bool = False) -> Any:
@@ -1003,7 +1003,7 @@
              logger.info("Recovered %d pending message(s) from shutdown flush", recovered)
 --- a/gateway/run_startup.py
 +++ b/gateway/run_startup.py
-@@ -1544,2 +1544,2 @@
+@@ -1544,5 +1544,15 @@
              # diagnostic snapshot once, instead of flushing at each return.
              await self._start_flush_runtime_status()
 
@@ -1059,7 +1059,7 @@
  from tests.hermes_state._wal_generation_harness import (
      gateway_writer, integrity_ok_path, lose_sidecars, make_db, message_count, pin_wal, require_wal,
      write_second_generation,
-@@ -158,1 +160,1 @@
+@@ -158,4 +160,33 @@
          conn.close()
 
 
