@@ -5013,16 +5013,17 @@ export function recoveryService(
           .from(heartbeatRuns)
           .where(eq(heartbeatRuns.id, latestRun!.id))
           .then((rows) => rows[0] ?? null);
-        if (
-          !infraInterruptRetryBudgetExhausted({
+        const retryBudgetExhausted = infraInterruptRetryBudgetExhausted({
             scheduledRetryAttempt: scheduledRetryColumns?.scheduledRetryAttempt ?? null,
             scheduledRetryReason: scheduledRetryColumns?.scheduledRetryReason ?? null,
             contextSnapshot: latestRun!.contextSnapshot,
-          })
-        ) {
+          });
+        if (!retryBudgetExhausted) {
           result.skipped += 1;
           continue;
         }
+        // ADM decision: once the bounded infra retry budget is spent, keep
+        // the existing escalation path below; do not hand back to todo.
       }
       if (issue.status !== "in_review" && !agentInvokable) {
         const classification = classifyContinuationFailure(latestRun);
