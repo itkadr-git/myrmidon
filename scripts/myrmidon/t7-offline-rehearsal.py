@@ -11,6 +11,7 @@ import sys
 from pathlib import Path
 
 MARKER = ".t7-offline-rehearsal"
+TARGET_MARKER = ".t7-offline-rehearsal-target"
 
 
 def digest(path: Path) -> str:
@@ -18,11 +19,16 @@ def digest(path: Path) -> str:
 
 
 def tree_manifest(root: Path) -> dict[str, str]:
-    return {
-        p.relative_to(root).as_posix(): digest(p)
-        for p in sorted(root.rglob("*"))
-        if p.is_file() and p.name != "manifest.json"
-    }
+    manifest = {}
+    if root.is_symlink():
+        raise ValueError(f"symlink is not allowed as tree root: {root}")
+    for path in sorted(root.rglob("*")):
+        relative = path.relative_to(root)
+        if path.is_symlink():
+            raise ValueError(f"symlink is not allowed in fixture tree: {relative}")
+        if path.is_file() and path.name not in {"manifest.json", TARGET_MARKER}:
+            manifest[relative.as_posix()] = digest(path)
+    return manifest
 
 
 def continuity(db: Path) -> tuple[int, str]:
@@ -42,7 +48,7 @@ def safe_root(path: Path) -> Path:
 def run(root: Path, execute: bool, interrupt: bool) -> None:
     root = safe_root(root)
     source, adopted = root / "hermes", root / "adopted" / "hermes"
-    if source.is_symlink() or adopted.is_symlink():
+    if source.is_symlink() or adopted.parent.is_symlink() or adopted.is_symlink():
         raise ValueError("symlink roots are not allowed")
     before = tree_manifest(source)
     db_rel = "workspace/state/sessions.sqlite"
@@ -57,17 +63,26 @@ def run(root: Path, execute: bool, interrupt: bool) -> None:
         return
     target = adopted.parent
     target.mkdir(parents=True, exist_ok=True)
-    if not adopted.exists():
+    if adopted.exists():
+        if not adopted.is_dir() or adopted.is_symlink() or not (adopted / TARGET_MARKER).is_file():
+            raise ValueError("refusing to overwrite pre-existing rehearsal target")
+    else:
         shutil.copytree(source, adopted)
+        (adopted / TARGET_MARKER).touch()
     copied = tree_manifest(adopted)
     if copied != before or continuity(adopted / db_rel) != session_before:
         raise RuntimeError("adopt verification failed")
     print("ADOPT VERIFIED: path/hash manifest and session continuity match")
     if interrupt:
         print("INTERRUPTED MID-REHEARSAL (simulated); rerun rollback to restore")
-    # A rollback always replaces only this rehearsal's marked synthetic target.
+    # Only remove a target created and marked by this rehearsal.
+    if not (adopted / TARGET_MARKER).is_file():
+        raise ValueError("refusing rollback of an unowned rehearsal target")
+    if tree_manifest(adopted) != before:
+        raise ValueError("refusing rollback of a modified rehearsal target")
     shutil.rmtree(adopted)
     shutil.copytree(source, adopted)
+    (adopted / TARGET_MARKER).touch()
     if tree_manifest(adopted) != before or continuity(adopted / db_rel) != session_before:
         raise RuntimeError("rollback verification failed")
     print("ROLLBACK VERIFIED: manifest and sessions match; repeated rollback creates no duplicate target")

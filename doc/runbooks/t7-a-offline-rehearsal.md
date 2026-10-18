@@ -13,7 +13,7 @@ python3 scripts/myrmidon/t7-offline-rehearsal.py "$PAPERCLIP_SCRATCH_DIR/t7-fixt
 python3 scripts/myrmidon/t7-offline-rehearsal.py "$PAPERCLIP_SCRATCH_DIR/t7-fixture" --execute
 ```
 
-Default is dry-run. Execution validates SHA-256 path manifest and read-only SQLite session continuity before/after synthetic copy/restore. Interruption is simulated at the boundary after adoption verification; rollback then restores from the synthetic source. Repeating execution replaces the single fixture target rather than accumulating copies. Never point the tool at non-synthetic data.
+Default is dry-run. Execution validates SHA-256 path manifest and read-only SQLite session continuity before/after synthetic copy/restore. Interruption is simulated at the boundary after adoption verification; rollback then restores from the synthetic source. Existing `adopted/hermes` is refused unless it contains the rehearsal-owned `.t7-offline-rehearsal-target` marker. A copied target gets that marker; rollback removes only this marked target and recreates it from the fixture, making repeated rollback idempotent. The marker is ownership evidence for this disposable synthetic test only; never point the tool at non-synthetic data. Manifest traversal rejects symlinks.
 
 ## Live runbook (separate owner authorization required)
 
