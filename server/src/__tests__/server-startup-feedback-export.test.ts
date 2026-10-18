@@ -25,11 +25,13 @@ const ORIGINAL_MYRMIDON_CONFIG = process.env.MYRMIDON_CONFIG;
 const ORIGINAL_MYRMIDON_HOME = process.env.MYRMIDON_HOME;
 const ORIGINAL_PAPERCLIP_HOME = process.env.PAPERCLIP_HOME;
 const isolatedConfigPath = path.join(tmpdir(), `myrmidon-startup-${process.pid}-${Date.now()}.json`);
+const isolatedHome = path.join(tmpdir(), `myrmidon-startup-home-${process.pid}-${Date.now()}`);
 delete process.env.PAPERCLIP_CONFIG;
 delete process.env.MYRMIDON_CONFIG;
 delete process.env.PAPERCLIP_HOME;
 delete process.env.MYRMIDON_HOME;
 process.env.PAPERCLIP_CONFIG = isolatedConfigPath;
+process.env.PAPERCLIP_HOME = isolatedHome;
 
 const {
   createAppMock,
