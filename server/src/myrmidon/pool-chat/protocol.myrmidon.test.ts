@@ -20,7 +20,7 @@ describe("pool-chat protocol validation", () => {
   });
 
   it("hashes validated payloads deterministically", () => {
-    const a = { conversationId: "c", clientMessageId: "m", model: "x", messages: [{ role: "user", content: "hi" }], maxOutputTokens: 32 };
+    const a = { conversationId: "c", clientMessageId: "m", model: "x", messages: [{ role: "user" as const, content: "hi" }], maxOutputTokens: 32 };
     expect(canonicalRequestHash(a)).toBe(canonicalRequestHash({ ...a, messages: [...a.messages] }));
     expect(canonicalRequestHash(a)).not.toBe(canonicalRequestHash({ ...a, model: "y" }));
   });
