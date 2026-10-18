@@ -11,7 +11,7 @@ Isolation is opt-in per agent in the Hermes adapter configuration (`adapterConfi
 
 ## settings-ru-append
 
-<!-- section: Трек 3 — шлюз инструментов и адаптер Hermes -->
+<!-- section: Track 3 — tool gateway and Hermes adapter -->
 ### Изоляция процесса `hermes_local`
 
 Изоляция включается отдельно для агента в конфигурации адаптера Hermes (`adapterConfig`), а не переменной окружения инстанса. Если не заданы `filesystemScope` и `networkScope`, выполнение остаётся без песочницы. Задайте `filesystemScope: "workspace"` для границы Bubblewrap только на workspace. `filesystemSandboxCommand` выбирает исполняемый файл (по умолчанию `bwrap`), а `filesystemExtraPaths` перечисляет дополнительные доступные песочнице пути. Для сети задайте `networkScope: "deny"` или `"allowlist"` вместе с `networkAllowlist`, содержащим разрешённые хосты/origin. URL API Paperclip доверен для runtime-соединения адаптера. Эти настройки действуют только на `hermes_local`; Bubblewrap должен быть установлен на хосте агента.
