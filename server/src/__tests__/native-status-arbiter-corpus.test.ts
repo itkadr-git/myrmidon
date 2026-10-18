@@ -2199,7 +2199,7 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
   });
 
   // myrmidon(DB-PERF-P7): last_activity_at is maintained by the triggers of
-  // migration 0307, so any write touching the row (or its comment/activity
+  // migration 0355, so any write touching the row (or its comment/activity
   // rows) moves it by milliseconds. Whole-row "nothing else changed"
   // assertions must drop this derived stamp, or they go flaky.
   const withoutLastActivityStamp = (rows: Array<Record<string, unknown>>) =>

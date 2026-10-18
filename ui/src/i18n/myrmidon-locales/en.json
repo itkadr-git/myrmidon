@@ -246,7 +246,12 @@
     "agentView": "Agent view",
     "live": "Live",
     "liveCount": "Live ({{count}})",
-    "sandbox": "Sandbox"
+    "sandbox": "Sandbox",
+    "scopeCompany": "Company",
+    "scopeCompanyNamed": "Company: {{name}}",
+    "filterRole": "Role",
+    "filterModel": "Model",
+    "filterAll": "All"
   },
   "inbox": {
     "title": "Inbox",
@@ -1225,5 +1230,41 @@
     "issuedTitle": "Issued licenses",
     "issuedEmpty": "No licenses issued yet.",
     "until": "until {{date}}"
+  },
+  "remoteSites": {
+    "title": "Remote sites",
+    "loading": "Loading sites…",
+    "error": "Unable to load sites: {{error}}",
+    "empty": "No sites configured",
+    "fixture": "Fixture preview — not production data",
+    "stale": "Stale health",
+    "expired": "Client certificate expired",
+    "capacity": "Capacity: {{used}}/{{total}}",
+    "botsCount": "Bots: {{count}}",
+    "driftCount": "Drift: {{count}}",
+    "showBots": "Show bots for {{name}}",
+    "hideBots": "Hide bots for {{name}}",
+    "showBotsLabel": "Show bots",
+    "hideBotsLabel": "Hide bots",
+    "image": "Image:",
+    "state": "State:",
+    "api": "API:",
+    "drift": "Drift",
+    "noBots": "No bots",
+    "status": {
+      "reachable": "Reachable",
+      "degraded": "Degraded",
+      "unreachable": "Unreachable",
+      "draining": "Draining",
+      "quarantined": "Quarantined",
+      "disabled": "Disabled"
+    },
+    "action": {
+      "restart": "Restart",
+      "stop": "Stop",
+      "move": "Move",
+      "drain": "Drain",
+      "resume": "Resume"
+    }
   }
 }
