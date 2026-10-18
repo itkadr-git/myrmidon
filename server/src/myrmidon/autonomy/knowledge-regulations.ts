@@ -86,7 +86,7 @@ function mapToAutonomyRegulation(
     at: rev.createdAt instanceof Date ? rev.createdAt.toISOString() : String(rev.createdAt),
   }));
   const current =
-    mappedRevs.find((r) => r.revisionNumber === item.currentRevisionNumber) ?? mappedRevs.at(-1);
+    mappedRevs.find((r) => r.revision === item.currentRevisionNumber) ?? mappedRevs.at(-1);
   return {
     id: item.id,
     role: (item.roles as string[])?.[0] ?? "*",
