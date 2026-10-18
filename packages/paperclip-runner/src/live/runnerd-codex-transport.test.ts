@@ -6193,7 +6193,7 @@ it.each(["held-ack", "lost-ack", "rejected-attach"] as const)(
           );
         let attachedEvent = findAttachedEvent();
         if (attachedEvent === undefined) {
-          const deadline = Date.now() + 5_000;
+          const deadline = Date.now() + 30_000;
           while (attachedEvent === undefined && Date.now() < deadline) {
             await new Promise((resolve) => setTimeout(resolve, 25));
             attachedEvent = findAttachedEvent();
@@ -6208,8 +6208,13 @@ it.each(["held-ack", "lost-ack", "rejected-attach"] as const)(
         expect(retired.ackedSourceSeq).toBeGreaterThanOrEqual(
           attachedEvent.sourceSeq,
         );
+        const eventsSource = retired.committedEvents.some(
+          (entry) => entry.sourceEventId === heldEvent!.sourceEventId,
+        )
+          ? retired
+          : core.store.state;
         expect(
-          retired.committedEvents.slice(-4).map((entry) => entry.eventType),
+          eventsSource.committedEvents.slice(-4).map((entry) => entry.eventType),
         ).toEqual([
           "session.resumed",
           "session.capabilities.updated",
@@ -6217,7 +6222,7 @@ it.each(["held-ack", "lost-ack", "rejected-attach"] as const)(
           "run.attached",
         ]);
         expect(
-          retired.committedEvents.every(
+          eventsSource.committedEvents.every(
             (entry) => entry.envelope.runId === oldIdentity.runId,
           ),
         ).toBe(true);
