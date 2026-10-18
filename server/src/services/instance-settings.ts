@@ -181,7 +181,7 @@ export function applyExperimentalSettingsPatch(
   }
 
   const runtimeEnv = options.runtimeEnv ?? process.env;
-  if (!isTruthyRuntimeEnvValue(runtimeEnv.PAPERCLIP_IN_WORKTREE)) {
+  if (!isTruthyRuntimeEnvValue(readProductEnvFrom(runtimeEnv, "IN_WORKTREE"))) {
     return nextExperimental;
   }
 
@@ -245,7 +245,7 @@ export async function resolveWorktreeRunExecutionActivationState(options: {
   runtimeEnv?: Record<string, string | undefined>;
 }): Promise<WorktreeRunExecutionActivationState> {
   const runtimeEnv = options.runtimeEnv ?? process.env;
-  if (!isTruthyRuntimeEnvValue(runtimeEnv.PAPERCLIP_IN_WORKTREE)) {
+  if (!isTruthyRuntimeEnvValue(readProductEnvFrom(runtimeEnv, "IN_WORKTREE"))) {
     return suppressWorktreeRunExecution("not_worktree_runtime");
   }
   try {
