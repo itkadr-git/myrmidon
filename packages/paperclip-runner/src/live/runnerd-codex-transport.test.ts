@@ -6178,7 +6178,6 @@ it.each(["held-ack", "lost-ack", "rejected-attach"] as const)(
         releaseCommit();
         await within("warm attach after old ACK", attachment, 10_000);
         expect(rotations).toHaveLength(1);
-        const retired = rotations[0]!;
         // The rotation snapshot is cloned when rotating run identity, so
         // the warm run.attached effect must be committed into it under the old run.
         const attachedEvent = retired.committedEvents.find(
@@ -6186,7 +6185,7 @@ it.each(["held-ack", "lost-ack", "rejected-attach"] as const)(
         );
         if (attachedEvent === undefined) {
           throw new Error(
-            `warm-attach rotation snapshot missing committed run.attached event ${heldEvent!.sourceEventId}`,
+            `warm-attach rotation archive missing committed run.attached event ${heldEvent!.sourceEventId}`,
           );
         }
         expect(attachedEvent.logicalEffectCount).toBe(1);
