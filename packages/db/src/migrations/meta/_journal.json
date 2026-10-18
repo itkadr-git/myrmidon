@@ -2347,6 +2347,13 @@
       "when": 1791711000000,
       "tag": "0397_knowledge_unaccent_qualified",
       "breakpoints": true
+    },
+    {
+      "idx": 398,
+      "version": "7",
+      "when": 1792320000000,
+      "tag": "0398_wakeup_key_partial_unique_indexes",
+      "breakpoints": true
     }
   ]
 }
