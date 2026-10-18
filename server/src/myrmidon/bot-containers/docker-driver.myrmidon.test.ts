@@ -1392,10 +1392,15 @@ describe("dockerBotContainerDriver against a fake Docker daemon", () => {
     it("waits through transient unhealthy until the configured gateway health check is healthy", async () => {
       let elapsed = 0;
       daemon.options.healthOnStart = "unhealthy";
-      await driver.create(spec());
-      await driver.writeProfile("agent-a", testProfile());
-      const pollingDriver = dockerBotContainerDriver(
-        { ...CONFIG, socketPath: daemon.socketPath, volumeRoot: path.join(tmp, "bots") },
+      const devbuild = { host: "devbuild.internal", user: "worker", base: "/build" };
+      const devDriver = dockerBotContainerDriver(
+        {
+          ...CONFIG,
+          socketPath: daemon.socketPath,
+          volumeRoot: path.join(tmp, "bots"),
+          allowlist: ["myrmidon-hermes-dev:*"],
+          devbuild,
+        },
         {
           startHealthTimeoutMs: 30_000,
           healthPollIntervalMs: 5_000,
@@ -1406,9 +1411,32 @@ describe("dockerBotContainerDriver against a fake Docker daemon", () => {
           },
         },
       );
-      await pollingDriver.start("agent-a");
+      const devSpec = spec({ image: "myrmidon-hermes-dev:latest" });
+      await devDriver.create(devSpec);
+      await devDriver.writeProfile("agent-a", testProfile());
+      await devDriver.start("agent-a");
       expect(elapsed).toBe(10_000);
       expect(bot()?.state).toBe("running");
+    });
+
+    it("rejects when the container dies during startup", async () => {
+      let elapsed = 0;
+      daemon.options.healthOnStart = "starting";
+      const deadDriver = dockerBotContainerDriver(
+        { ...CONFIG, socketPath: daemon.socketPath, volumeRoot: path.join(tmp, "bots") },
+        {
+          startHealthTimeoutMs: 12_000,
+          healthPollIntervalMs: 1_000,
+          monotonicClock: () => elapsed,
+          sleep: async (ms) => {
+            elapsed += ms;
+            bot()!.state = "dead";
+          },
+        },
+      );
+      await deadDriver.create(spec());
+      await deadDriver.writeProfile("agent-a", testProfile());
+      await expect(deadDriver.start("agent-a")).rejects.toThrow(/dead \(exit code 0\) instead of becoming healthy/);
     });
 
     it("caps health polling at the monotonic startup deadline", async () => {

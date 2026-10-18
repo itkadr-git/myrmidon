@@ -821,8 +821,19 @@ fi
 
 # These checks may touch mounts, probe reflink/shared-object support, or wait
 # on remote SSH/rsync. Run them after the gateway is live and cap each probe.
+now_monotonic_ms() {
+  if [ -r /proc/uptime ]; then
+    read -r up _ < /proc/uptime
+    awk -v u="$up" 'BEGIN { printf "%.0f\n", u * 1000 }' 2>/dev/null || date +%s%3N
+  else
+    date +%s%3N
+  fi
+}
+
 run_bounded_diagnostic() {
-  local check="$1" pid watchdog rc=0
+  local check="$1" pid watchdog rc=0 t0 t1 duration_ms
+  t0="$(now_monotonic_ms)"
+  log "phase ${check} starting"
   ( "$check" ) &
   pid=$!
   ( sleep "${MYRMIDON_DIAGNOSTIC_TIMEOUT_SEC:-120}"; kill "$pid" 2>/dev/null || true ) &
@@ -830,27 +841,37 @@ run_bounded_diagnostic() {
   wait "$pid" || rc=$?
   kill "$watchdog" 2>/dev/null || true
   wait "$watchdog" 2>/dev/null || true
+  t1="$(now_monotonic_ms)"
+  duration_ms=$(( t1 - t0 ))
+  log "phase ${check} finished in ${duration_ms}ms (rc=${rc})"
   return "$rc"
 }
 
 run_startup_diagnostics() {
+  local t_diag_0 t_diag_1
+  t_diag_0="$(now_monotonic_ms)"
+  log "phase startup_diagnostics starting in background"
   if [ "${MYRMIDON_REFLINK_CHECK:-1}" != "0" ]; then run_bounded_diagnostic reflink_self_check || log "WARNING: reflink self-check timed out or failed"; fi
   if [ "${MYRMIDON_UV_CHECK:-1}" != "0" ]; then run_bounded_diagnostic uv_cache_self_check || log "WARNING: uv cache self-check timed out or failed"; fi
   if [ "${MYRMIDON_GIT_OBJECTS_CHECK:-1}" != "0" ]; then run_bounded_diagnostic git_objects_self_check || log "WARNING: shared-objects self-check timed out or failed"; fi
   if [ "${MYRMIDON_DEVBUILD_CHECK:-1}" != "0" ] && [ -n "${DEVBUILD_BOT_NAME:-}" ] && [ -n "${DEVBUILD_HOST:-}" ]; then
     run_bounded_diagnostic devbuild_self_check || log "WARNING: devbuild self-check timed out or failed"
   fi
+  t_diag_1="$(now_monotonic_ms)"
+  log "phase startup_diagnostics completed in $(( t_diag_1 - t_diag_0 ))ms"
 }
 
 # --replace: a previous instance's lock (from a hard container restart) does
 # not block this one — the fleet manager, not hermes, decides whether two
 # instances should ever coexist. --accept-hooks: no TTY to answer a shell
 # hook consent prompt (equivalent to hooks_auto_accept: true).
+log "phase gateway_launch starting"
 hermes gateway run --replace --accept-hooks "$@" &
 # Waiting for startup self-checks to execute synchronously can delay the Docker
 # healthcheck until the rollout times out. Attach the gateway first, then run
 # bounded diagnostics concurrently, keeping Docker stop signals handled here.
 gateway_pid=$!
+log "phase gateway_launch pid=${gateway_pid} running"
 run_startup_diagnostics &
 diagnostics_pid=$!
 cleanup_diagnostics() {
@@ -863,7 +884,9 @@ set +e
 wait "$gateway_pid"
 gateway_status=$?
 set -e
-kill "$diagnostics_pid" 2>/dev/null || true
+if [ "$gateway_status" -ne 0 ]; then
+  kill "$diagnostics_pid" 2>/dev/null || true
+fi
 wait "$diagnostics_pid" 2>/dev/null || true
 trap - TERM INT HUP
 exit "$gateway_status"

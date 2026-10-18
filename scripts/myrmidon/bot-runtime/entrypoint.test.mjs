@@ -47,6 +47,9 @@ describe("docker/bot-runtime/entrypoint.sh", () => {
     assert.match(source, /run_bounded_diagnostic uv_cache_self_check/);
     assert.match(source, /run_bounded_diagnostic git_objects_self_check/);
     assert.match(source, /DEVBUILD_BOT_NAME:-.*DEVBUILD_HOST:-.*devbuild/s);
+    assert.match(source, /log "phase \$\{check\} starting"/);
+    assert.match(source, /log "phase \$\{check\} finished in \$\{duration_ms\}ms/);
+    assert.match(source, /log "phase gateway_launch starting"/);
   });
 
   it("fails when HERMES_HOME is unset, before even looking at API_SERVER_KEY", () => {

@@ -1125,7 +1125,7 @@ export function dockerBotContainerDriver(
   // myrmidon(1.6.5-DOCKERGATE-A2A3-STORM): the clock and jitter source of the
   // pacing layer (dockergate-pacing.ts); tests drive them to assert the schedule.
   const clock = options.clock ?? (() => Date.now());
-  const monotonicClock = options.monotonicClock ?? (() => performance.now());
+  const monotonicClock = options.monotonicClock ?? options.clock ?? (() => performance.now());
   const rng = options.rng ?? Math.random;
   const limiter: RateLimiter = createRateLimiter({ ratePerSec: config.maxRps ?? 0, clock, sleep });
   const readSharedPackageCachePath = options.readSharedPackageCachePath ?? (async () => undefined);
@@ -1678,8 +1678,12 @@ export function dockerBotContainerDriver(
       const health = info.State?.Health?.Status;
       if (state === "running" && health === "healthy") return;
       if (state === "running" && health === "unhealthy") {
-        unhealthySince ??= monotonicClock();
-        if (monotonicClock() - unhealthySince >= startHealthTimeoutMs) {
+        const isDeveloperContainer = (info.Config?.Env ?? []).some((entry) => entry.startsWith("DEVBUILD_BOT_NAME="));
+        const healthGrace = isDeveloperContainer ? Math.min(startHealthTimeoutMs, DEFAULT_HEALTH_START_GRACE_MS) : 0;
+        if (healthGrace > 0) {
+          unhealthySince ??= monotonicClock();
+          if (monotonicClock() - unhealthySince >= healthGrace) throw new Error(`${name} reports unhealthy after start`);
+        } else {
           throw new Error(`${name} reports unhealthy after start`);
         }
       } else {
