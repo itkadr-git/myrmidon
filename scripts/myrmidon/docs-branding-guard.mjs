@@ -24,7 +24,7 @@ const docsRoot = path.join(repoRoot, "docs");
 // name, a license/attribution string, or a historical record of a pre-rename
 // state.
 const ALLOWLIST = [
-  "[Paperclip](https://github.com/paperclipai/paperclip)",
+  "docs/architecture/", // architecture docs identify upstream components and systems
   "paperclipai", // @paperclipai/* packages, the paperclipai CLI, vendor repo URLs
   "PAPERCLIP_", // env vars
   "X-Paperclip-", // HTTP headers

@@ -122,10 +122,11 @@ export function checkWakeTaskBinding(root) {
           const forwards = /=>\s*$/.test(beforeCall) || /function\s+enqueueWakeup|opts:\s*WakeupOptions/.test(line) || /function\s+trackWakeup/.test(lines.slice(Math.max(0, i - 10), i + 1).join("\n"));
           const manual = /source:\s*"on_demand"|source:\s*\w+\.source/.test(window.text);
           const explicitTask = /(?:issueId|taskId|taskKey|childId)\s*:\s*(?!undefined\b|null\b|void\s+0\b)(?:\"[^\"]+\"|'[^']+'|[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)(?![\w$])/.test(window.text);
+          const contextSnapshotTask = /contextSnapshot\s*:\s*\{[\s\S]{0,500}?\b(?:issueId|taskId|taskKey|childId)\s*:\s*(?!undefined\b|null\b|void\s+0\b)(?:\"[^\"]+\"|'[^']+'|[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)/.test(window.text);
           const contextSpread = /\.\.\.(?:payload|contextSnapshot)\b/.test(window.text);
           const variableContext = /(?:payload|contextSnapshot)\s*:\s*[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*/.test(window.text);
           const schedulerTick = /source:\s*"timer"/.test(window.text) && /reason:\s*"heartbeat_timer"/.test(window.text);
-          if (!explicitTask && !contextSpread && !variableContext && !manual && !schedulerTick && !forwards) findings.push(`${site}: automatic enqueueWakeup without issue/task context (INV-10)`);
+          if (!explicitTask && !contextSnapshotTask && !contextSpread && !variableContext && !manual && !schedulerTick && !forwards) findings.push(`${site}: automatic enqueueWakeup without issue/task context (INV-10)`);
         }
       });
     }

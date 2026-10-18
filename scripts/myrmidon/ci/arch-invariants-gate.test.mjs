@@ -62,6 +62,26 @@ describe("INV-10: no automatic wake without a task", () => {
     assert.deepEqual(checkWakeTaskBinding(dir), []);
   });
 
+  it("task binding inside contextSnapshot passes", () => {
+    const dir = sandbox({
+      "server/src/services/ok.ts": `await enqueueWakeup(agent.id, {
+  source: "automation",
+  contextSnapshot: { issueId: task.id },
+});\n`,
+    });
+    assert.deepEqual(checkWakeTaskBinding(dir), []);
+  });
+
+  it("RED: nested contextSnapshot without a task fails", () => {
+    const dir = sandbox({
+      "server/src/services/bad.ts": `await enqueueWakeup(agent.id, {
+  source: "automation",
+  contextSnapshot: { issueId: undefined },
+});\n`,
+    });
+    assert.match(checkWakeTaskBinding(dir)[0], /INV-10/);
+  });
+
   it("RED: taskless automation wake fails", () => {
     const dir = sandbox({
       "server/src/services/bad.ts": `await enqueueWakeup(agent.id, {
