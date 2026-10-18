@@ -50,6 +50,7 @@ const {
   fakeServer,
   heartbeatServiceFactoryMock,
   heartbeatServiceMock,
+  inspectMigrationsMock,
   issueThreadInteractionServiceFactoryMock,
   issueThreadInteractionServiceMock,
   loadConfigMock,
@@ -112,6 +113,7 @@ const {
     sweepExpiredRuntimeStatuses: vi.fn(() => 0),
     tickTimers: vi.fn(async () => ({ checked: 0, enqueued: 0, skipped: 0 })),
   };
+  const inspectMigrationsMock = vi.fn(async () => ({ status: "upToDate" }));
   const heartbeatServiceFactoryMock = vi.fn(() => heartbeatServiceMock);
   const issueThreadInteractionServiceMock = {
     sweepSupersededPendingRequestConfirmations: vi.fn(async () => ({ expired: 0 })),
@@ -181,6 +183,7 @@ const {
     fakeServer,
     heartbeatServiceFactoryMock,
     heartbeatServiceMock,
+    inspectMigrationsMock,
     issueThreadInteractionServiceFactoryMock,
     issueThreadInteractionServiceMock,
     loadConfigMock,
@@ -253,7 +256,7 @@ vi.mock("@paperclipai/db", async (importOriginal) => ({
   createDb: createDbMock,
   ensurePostgresDatabase: vi.fn(),
   getPostgresDataDirectory: vi.fn(),
-  inspectMigrations: vi.fn(async () => ({ status: "upToDate" })),
+  inspectMigrations: inspectMigrationsMock,
   applyPendingMigrations: vi.fn(),
   reconcilePendingMigrationHistory: vi.fn(async () => ({ repairedMigrations: [] })),
   formatDatabaseBackupResult: vi.fn(() => "ok"),
@@ -659,8 +662,6 @@ describe("startServer feedback export wiring", () => {
 
   it("does not create heartbeat recovery, execution-control interval, or background sweeps in the api role", async () => {
     const originalRole = process.env.PAPERCLIP_PROCESS_ROLE;
-    const originalMigrations = inspectMigrationsMock.getMockImplementation();
-    inspectMigrationsMock.mockResolvedValue({ status: "upToDate", appliedMigrations: [] });
     process.env.PAPERCLIP_PROCESS_ROLE = "api";
     loadConfigMock.mockReturnValue(buildTestConfig({ heartbeatSchedulerEnabled: true }));
     existingSettingsRows.push({
@@ -697,8 +698,6 @@ describe("startServer feedback export wiring", () => {
       setIntervalSpy.mockRestore();
       if (originalRole === undefined) delete process.env.PAPERCLIP_PROCESS_ROLE;
       else process.env.PAPERCLIP_PROCESS_ROLE = originalRole;
-      if (originalMigrations) inspectMigrationsMock.mockImplementation(originalMigrations);
-      else inspectMigrationsMock.mockReset();
     }
   });
 
