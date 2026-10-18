@@ -36,10 +36,12 @@ import {
   resolveBotDiskQuotaMb,
   type BotDiskQuotaSettings,
   type BotDiskQuotaSignal,
+  type WsDiskApiResponse,
 } from "@paperclipai/shared";
 import { logger } from "../../middleware/logger.js";
 import { instanceSettingsService } from "../../services/instance-settings.js";
 import { botKeyForAgent, readBotContainerAgentConfig } from "./agent-config.js";
+import { dockergateDiskClientFromEnv, type DockergateDiskClient } from "./dockergate-disk-client.js";
 
 /** The env var naming the host directory that holds one subdirectory per bot. */
 export const BOT_VOLUME_ROOT_ENV = "MYRMIDON_BOT_VOLUME_ROOT";
@@ -135,6 +137,47 @@ export async function measureBotVolumeSize(botVolumePath: string): Promise<BotVo
   return { sizeBytes, truncated };
 }
 
+/** What a bot uses on disk, and how well that is known. */
+export interface BotDiskUsage {
+  sizeBytes: number;
+  /** `physical`: the xfs project of dockergate (GET /myrmidon/disk); `estimate`: the du walk. */
+  source: "physical" | "estimate";
+  /** An estimate that stopped at a walk cap is a lower bound. */
+  truncated: boolean;
+}
+
+/**
+ * myrmidon(1.6.5-BOT-DISK-H9c): the usage of one bot. The physical number of
+ * dockergate wins whenever the gate reports quotas enabled and knows the bot's
+ * project. Otherwise (quotaEnabled=false, the bot has no project yet, the gate
+ * did not answer) the old du walk of the volume is the estimate, marked as such;
+ * with no volume root either, the usage is unknown (null).
+ */
+export async function measureBotDiskUsage(input: {
+  botKey: string;
+  /** The answer of GET /myrmidon/disk, or null when the gate gave none. */
+  disk: WsDiskApiResponse | null;
+  volumeRoot: string | null | undefined;
+}): Promise<BotDiskUsage | null> {
+  if (input.disk?.quotaEnabled) {
+    const project = input.disk.projects.find((candidate) => candidate.botKey === input.botKey);
+    if (project) return { sizeBytes: project.usedBytes, source: "physical", truncated: false };
+  }
+  if (!input.volumeRoot) return null;
+  const { sizeBytes, truncated } = await measureBotVolumeSize(path.join(input.volumeRoot, input.botKey));
+  return { sizeBytes, source: "estimate", truncated };
+}
+
+/** The gate's disk answer, or null when it is unreachable or off-contract (never throws). */
+export async function readDockergateDiskOrNull(gate: Pick<DockergateDiskClient, "getDisk">): Promise<WsDiskApiResponse | null> {
+  try {
+    return await gate.getDisk();
+  } catch (error) {
+    logger.warn({ err: error }, "dockergate disk state unavailable; bot disk usage falls back to the du estimate");
+    return null;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // The admission check (refuse a NEW clone before the directory is created)
 // ---------------------------------------------------------------------------
@@ -160,6 +203,7 @@ export async function botDiskQuotaRejection(
   db: Db | null | undefined,
   agentId: string | null | undefined,
   env: NodeJS.ProcessEnv = process.env,
+  gate: Pick<DockergateDiskClient, "getDisk"> = dockergateDiskClientFromEnv(env),
 ): Promise<string | null> {
   if (!db || !agentId) return null;
   const volumeRoot = env[BOT_VOLUME_ROOT_ENV]?.trim();
@@ -197,7 +241,13 @@ export async function botDiskQuotaRejection(
     }
     if (quotaMb === null) return null;
 
-    const { sizeBytes } = await measureBotVolumeSize(path.join(volumeRoot, botKey));
+    const usage = await measureBotDiskUsage({
+      botKey,
+      disk: await readDockergateDiskOrNull(gate),
+      volumeRoot,
+    });
+    if (!usage) return null;
+    const sizeBytes = usage.sizeBytes;
     if (!isBotOverQuota(sizeBytes, quotaMb)) return null;
     return botDiskQuotaRejectionMessage({ agentName: agent.name, usageBytes: sizeBytes, quotaMb });
   } catch (error) {

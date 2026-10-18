@@ -89,6 +89,8 @@ export interface AgentPermissionUpdate {
   // myrmidon(ADMIN-AGENT): board administrator state, patched through the same
   // permissions endpoint.
   boardAdmin?: boolean;
+  // myrmidon(1.6.5-F-23): off-run self-secret read grant toggle.
+  offRunSecretRead?: boolean;
 }
 
 export interface AgentWakeRequest {

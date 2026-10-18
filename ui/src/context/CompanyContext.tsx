@@ -1,3 +1,4 @@
+// myrmidon(DEBRAND-c): persist browser state under the Myrmidon namespace.
 import {
   createContext,
   useCallback,
@@ -44,7 +45,7 @@ interface CompanyContextValue {
   }) => Promise<Company>;
 }
 
-const STORAGE_KEY = "paperclip.selectedCompanyId";
+const STORAGE_KEY = "myrmidon.selectedCompanyId";
 
 const CompanyContext = createContext<CompanyContextValue | null>(null);
 

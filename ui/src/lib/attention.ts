@@ -1,3 +1,4 @@
+// myrmidon(DEBRAND-c): persist browser state under the Myrmidon namespace.
 import type {
   AttentionDetailImage,
   AttentionFeed,
@@ -64,6 +65,8 @@ const SOURCE_META: Record<AttentionSourceKind, SourceMeta> = {
   stack_update: { label: "Stack update" },
   // myrmidon(BOT-RUNTIME-TUNING D): label for the model fallback signal source.
   model_fallback_alert: { label: "Model fallback" },
+  // myrmidon(1.6.5-F11-A): label for the «media not connected» source.
+  bot_media_mcp: { label: "Media not connected" },
   // myrmidon(STALE-BLOCK): label for the lifted-stale-block source.
   stale_block: { label: "Stale block lifted" },
   host_disk_alert: { label: "Host disk" },
@@ -80,8 +83,24 @@ const SOURCE_META: Record<AttentionSourceKind, SourceMeta> = {
   review_routing: { label: "Review routing" },
   // myrmidon(1.6.3 PROMPT-BUDGET B): label for the prompt-budget threshold source.
   prompt_budget_alert: { label: "Prompt budget" },
+  // myrmidon(1.6.5-PAUSE-GUARD): label for the leftover-operator-pauses source.
+  pause_guard: { label: "Forgotten pauses" },
   // myrmidon(1.6.1-FORAGING-LIMITS-UI): label for the learning-spend source.
   foraging_limit: { label: "Learning limit" },
+  // myrmidon(OPE-6011): label for the execution hold source.
+  execution_hold: { label: "Execution hold" },
+  // myrmidon(1.6.5-F21-B): label for the owner pending-card source.
+  owner_pending_card: { label: "Owner card" },
+  // myrmidon(1.6.5-F-23): labels for the off-run secret read sources.
+  secret_off_run_reads: { label: "Off-run secret reads" },
+  secret_off_run_grant_expiring: { label: "Off-run secret grant expiring" },
+  // myrmidon(1.6.5-F-18): label for the empty gateway model catalog signal.
+  empty_model_catalog: { label: "Model catalog" },
+  // myrmidon(1.6.5 F-09): label for the queue_stall source — a queued run
+  // older than the stall threshold without a waitReason.
+  queue_stall: { label: "Queue stall" },
+  // myrmidon(1.6.6 OPE-7198): label for the codex_pool_alert attention card.
+  codex_pool_alert: { label: "Codex pool alert" },
 };
 
 export function sourceMeta(kind: AttentionSourceKind): SourceMeta {
@@ -606,10 +625,10 @@ export interface AttentionFilterOptions {
   hasNoWorkspace: boolean;
 }
 
-export const ATTENTION_GROUP_BY_KEY = "paperclip:attention:group-by";
-export const ATTENTION_SORT_KEY = "paperclip:attention:sort";
-export const ATTENTION_FILTERS_KEY_PREFIX = "paperclip:attention:filters";
-export const ATTENTION_COLLAPSED_GROUPS_KEY_PREFIX = "paperclip:attention:collapsed-groups";
+export const ATTENTION_GROUP_BY_KEY = "myrmidon:attention:group-by";
+export const ATTENTION_SORT_KEY = "myrmidon:attention:sort";
+export const ATTENTION_FILTERS_KEY_PREFIX = "myrmidon:attention:filters";
+export const ATTENTION_COLLAPSED_GROUPS_KEY_PREFIX = "myrmidon:attention:collapsed-groups";
 
 function isAttentionGroupBy(value: unknown): value is AttentionGroupBy {
   return value === "none" || value === "date" || value === "type" || value === "project" || value === "severity";

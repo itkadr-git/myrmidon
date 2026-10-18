@@ -6,6 +6,7 @@ import { getExecutionBlocker } from "../services/execution-blocker.js";
 // myrmidon(L2): clears a closed "do not replay" hold on plain resolve;
 // see docs/myrmidon/DIVERGENCE.md "L2".
 import { clearSettledReplayBlock } from "../myrmidon/settled-holds/clear.js";
+import { supersedeExplicitWakeSettledHold } from "../myrmidon/settled-holds/supersede-explicit-wake.js";
 // myrmidon(HOLD-READY): a board unblock (out of blocked, or a reassignment)
 // clears the issue's settled replay hold and re-plans its parked wakes.
 import {
@@ -16,7 +17,7 @@ import {
   replanParkedWakesAfterUnblock,
   type HumanUnblockResult,
 } from "../myrmidon/settled-holds/human-unblock.js";
-import { extractIssueReferenceIdentifiers, requiresExecutionReconciliation } from "@paperclipai/shared";
+import { extractIssueReferenceIdentifiers, requiresExecutionReconciliation, EXECUTION_RECONCILIATION_CAUSES } from "@paperclipai/shared";
 import {
   validateExecutionReconciliation,
   markExecutionReconciliation,
@@ -44,6 +45,7 @@ import {
 } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import type { ChatChannelService } from "../services/chat-channels.js";
+import type { WakeupOptions } from "../services/heartbeat.js";
 import {
   activityLog,
   agentWakeupRequests,
@@ -119,6 +121,12 @@ import {
   isMarkdownAttachmentContent,
   isUuidLike,
   normalizeIssueIdentifier as normalizeIssueReferenceIdentifier,
+  // myrmidon(F16): the agent issue-list defaults (compact by default,
+  // limit 200/500, description omitted in compact) from the shared contract.
+  ISSUE_LIST_AGENT_DEFAULT_LIMIT,
+  ISSUE_LIST_AGENT_FULL_VIEW_MAX_LIMIT,
+  ISSUE_LIST_AGENT_MAX_LIMIT,
+  issueListAgentDefaultsEnabled,
   type CompactIssue,
   type CompanySearchExtractQuery,
   type CompanySearchExtractResponse,
@@ -161,6 +169,9 @@ import { isUniqueViolation } from "../db-errors.js";
 import type { StorageService } from "../storage/types.js";
 import { validate, validateIssueMutationBody } from "../middleware/validate.js";
 import * as serviceIndex from "../services/index.js";
+// myrmidon(1.6.5-BOT-DISK-H4a-INVALIDATE): drop the desired-state cache on
+// status/assignee changes so a reopened or reassigned task is not stale.
+import { invalidateDesiredStateForIssueChange } from "../myrmidon/bot-containers/bot-workspaces-invalidation.js";
 import {
   accessService,
   agentService,
@@ -261,6 +272,9 @@ import {
 } from "../attachment-types.js";
 import { queueIssueAssignmentWakeup } from "../services/issue-assignment-wakeup.js";
 import { shouldWakeAssigneeForIssueComment } from "../services/issue-comment-wakeup.js";
+// myrmidon(1.6.5 PROMPT-BUDGET-SIGNAL): recognising the signal comments the
+// board left in agent tasks, so none of them wakes an agent.
+import { isPromptBudgetSignalNotice } from "../myrmidon/prompt-budget/notice.js";
 import { createSecretProposalsService } from "../services/secret-proposals.js";
 import { notifySecretProposalResolution } from "../services/secret-proposal-notifications.js";
 import {
@@ -332,6 +346,16 @@ import { externalObjectService } from "../services/external-objects.js";
 import { getExternalChannelBindingSummary } from "../services/chat-channel-binding.js";
 import { deliverAgentUnblockNotification, isStaleBlockGuardedTransition } from "../services/routable-blocked.js";
 import {
+  BLOCKED_LOOP_SIGNATURE_KEY,
+  blockedLoopMessage,
+  blockerSetKeyOf,
+  descriptorKeyOf,
+  judgeBlockedLoop,
+  loadBlockedLoopEvents,
+  readBlockedLoopMaxReturns,
+  type BlockedLoopSignature,
+} from "../myrmidon/blocked-loop/index.js";
+import {
   assertIssueReviewVerdictActorAllowed,
   isIssueReviewVerdictInteraction,
   resolveIssueReviewRequester,
@@ -352,6 +376,14 @@ import {
 import { assertRunHasTaskSourceContext } from "../myrmidon/issue-checkout-guard.js";
 // myrmidon(L5): issue write lock only blocks while the assignee's run is live
 import { resolveIssueWriteAssigneeRunLock } from "../myrmidon/issue-write-run-lock.js";
+// myrmidon(1.6.5-OWNER-VIA-BOT): wake the author of an owner decision to explain it in a DM
+import { scheduleOwnerExplainWake } from "../myrmidon/owner-delivery/owner-message.js";
+// myrmidon(1.6.5-F21-A): the owner's own comment on a task closes the freshest
+// pending owner card of that task, without an agent run in between.
+import {
+  createOwnerReplyDeps,
+  handleOwnerTextReply,
+} from "../myrmidon/owner-reply/index.js";
 import {
   crossIssueInfluenceLimitError,
   crossIssueInfluenceRunContextError,
@@ -2945,6 +2977,10 @@ function buildExecutionStageWakeup(input: {
         },
         requestedByActorType: input.requestedByActorType,
         requestedByActorId: input.requestedByActorId,
+        idempotencyKey:
+          nextState.currentStageType === "review"
+            ? `issue-review-admission:${issueId}:${agentId}`
+            : undefined,
         contextSnapshot: {
           issueId,
           taskId: issueId,
@@ -3026,6 +3062,11 @@ function toCompactIssue(issue: any): CompactIssue {
     status: issue.status,
     workMode: issue.workMode,
     priority: issue.priority,
+    // 1.6.5 (F-27 PHEROMONE): the list API carries the strength so the list UI
+    // can show and edit it without loading each card.
+    pheromoneStrength: issue.pheromoneStrength,
+    // 1.6.5 (F-27 rework 09.10): the caste key (design §2.1).
+    casteKey: issue.casteKey ?? null,
     reviewPolicy: issue.reviewPolicy,
     assigneeAgentId: issue.assigneeAgentId,
     assigneeUserId: issue.assigneeUserId,
@@ -3542,6 +3583,12 @@ export function issueRoutes(
       proposalId: string;
       actor: { agentId?: string | null; userId?: string | null };
     }) => Promise<unknown>;
+    insertReviewAdmissionWakeup?: (
+      agentId: string,
+      options: WakeupOptions,
+      tx: Db,
+      companyId?: string,
+    ) => Promise<{ created: boolean }>;
   } = {},
 ) {
   const router = Router();
@@ -3552,6 +3599,12 @@ export function issueRoutes(
   const heartbeat = heartbeatService(db, {
     pluginWorkerManager: opts.pluginWorkerManager,
   });
+  const insertReviewAdmissionWakeup =
+    opts.insertReviewAdmissionWakeup ??
+    (typeof heartbeat?.insertReviewAdmissionWakeup === "function"
+      ? heartbeat.insertReviewAdmissionWakeup.bind(heartbeat)
+      : async () => ({ created: false }));
+
   const commentWasCreatedByAssigneeRun = async (
     comment: { companyId: string; createdByRunId?: string | null },
     assigneeAgentId: string | null | undefined,
@@ -5619,6 +5672,13 @@ export function issueRoutes(
       id: string;
       companyId: string;
     },
+    // myrmidon(OPE-6241): withdraw of the actor's own interaction tolerates a
+    // responsible-user mismatch (automation runs carry a service account, not
+    // the key owner's user id). myrmidon(OPE-6547): resolution routes
+    // (accept/reject/respond/verdicts) tolerate it unconditionally for the same
+    // reason — the key owner is never the run's responsible user, and the
+    // resolver-audience decision remains the authorization boundary there.
+    opts?: { allowResponsibleUserMismatch?: boolean },
   ) {
     if (req.actor.type !== "agent") return null;
     const runId = req.actor.runId?.trim();
@@ -5651,7 +5711,8 @@ export function issueRoutes(
       !run ||
       run.companyId !== issue.companyId ||
       run.agentId !== req.actor.agentId ||
-      (actorResponsibleUserId !== null &&
+      (!opts?.allowResponsibleUserMismatch &&
+        actorResponsibleUserId !== null &&
         run.responsibleUserId !== undefined &&
         run.responsibleUserId !== actorResponsibleUserId)
     ) {
@@ -5829,7 +5890,22 @@ export function issueRoutes(
     // Actor-only gates deliberately precede the interaction lookup. An actor
     // outside the issue's trusted/watchdog scope must not learn whether an
     // interaction id exists on that issue.
-    const runId = await assertAgentInteractionRunAttribution(req, res, issue);
+    //
+    // myrmidon(OPE-6547): an agent API key authenticates the call as its
+    // *owner*, while the run carrying the mutation records the run's own
+    // responsible user — the issue's responsible user, a steering comment
+    // author, or the company default for an automation/heartbeat run. Those are
+    // routinely different users, so requiring them to match rejected every
+    // key-authenticated resolution with `interaction_run_attribution_required`
+    // (accept/reject/respond/verdicts) and left agent request confirmations
+    // pending forever. The gate keeps its real work: the run must exist, belong
+    // to this company and to the authenticated agent, and the resolver-audience
+    // decision plus containment below still decide who may resolve (addressee,
+    // creator exclusion, human-only, governed actions). The key owner's user id
+    // never carried authority over the interaction here.
+    const runId = await assertAgentInteractionRunAttribution(req, res, issue, {
+      allowResponsibleUserMismatch: true,
+    });
     if (runId === false) return false;
     if (
       !(await assertIssueThreadInteractionContainmentAllowed(req, res, issue))
@@ -6048,9 +6124,18 @@ export function issueRoutes(
       return true;
     }
     const actorAgentId = req.actor.agentId;
+    // myrmidon(OPE-6241): the creator/assignee check is computed before the
+    // run-attribution gate so withdrawing one's OWN card can tolerate a
+    // responsible-user mismatch. That check is redundant here: the run is
+    // already bound to the same agent, company and issue scope, and the
+    // creator/assignee authorization below still decides who may withdraw.
+    const isCreator = interaction.createdByAgentId === actorAgentId;
+    const isAssignee = issue.assigneeAgentId === actorAgentId;
     if (
       !actorAgentId ||
-      (await assertAgentInteractionRunAttribution(req, res, issue)) === false
+      (await assertAgentInteractionRunAttribution(req, res, issue, {
+        allowResponsibleUserMismatch: isCreator || isAssignee,
+      })) === false
     )
       return false;
     if (
@@ -6058,8 +6143,6 @@ export function issueRoutes(
     )
       return false;
 
-    const isCreator = interaction.createdByAgentId === actorAgentId;
-    const isAssignee = issue.assigneeAgentId === actorAgentId;
     if (!isCreator && !isAssignee) {
       res.status(403).json({
         error:
@@ -8039,9 +8122,20 @@ export function issueRoutes(
       rawLimit !== undefined && /^\d+$/.test(rawLimit)
         ? Number.parseInt(rawLimit, 10)
         : null;
+    // myrmidon(F16): agent actors get the defect-fix defaults (compact view,
+    // limit 200, max 500, description omitted in compact) behind the instance
+    // setting `issuesListAgentDefaults`; absent means ON, `{enabled: false}`
+    // restores the pre-feature behaviour byte-for-byte.
+    const agentDefaultsEnabled =
+      req.actor.type === "agent" &&
+      issueListAgentDefaultsEnabled(
+        (await instanceSettings.getGeneral()).issuesListAgentDefaults,
+      );
     const limit =
       parsedLimit === null
-        ? ISSUE_LIST_DEFAULT_LIMIT
+        ? agentDefaultsEnabled
+          ? ISSUE_LIST_AGENT_DEFAULT_LIMIT
+          : ISSUE_LIST_DEFAULT_LIMIT
         : clampIssueListLimit(parsedLimit);
     const rawOffset = req.query.offset as string | undefined;
     const parsedOffset =
@@ -8052,7 +8146,12 @@ export function issueRoutes(
     const sortField = req.query.sortField as string | undefined;
     const sortDir = req.query.sortDir as string | undefined;
     const view = req.query.view as string | undefined;
-    const compactView = view === "compact";
+    // myrmidon(F16): with the agent defaults on, a bare agent request is the
+    // compact view; the full view stays reachable through an explicit
+    // `view=full` with an explicit `limit <= 100`.
+    const compactView = agentDefaultsEnabled
+      ? view === undefined || view === "compact"
+      : view === "compact";
     const hasPlanDocument = parseOptionalBooleanQuery(
       req.query.hasPlanDocument,
     );
@@ -8105,8 +8204,27 @@ export function issueRoutes(
         .json({ error: "attention must be 'blocked' when provided" });
       return;
     }
-    if (view !== undefined && view !== "compact") {
+    // myrmidon(F16): an agent with the defaults on may also pass `view=full`,
+    // and only then — the full response stays small by the limit gate below.
+    if (
+      view !== undefined &&
+      view !== "compact" &&
+      !(agentDefaultsEnabled && view === "full")
+    ) {
       res.status(400).json({ error: "view must be 'compact' when provided" });
+      return;
+    }
+    // myrmidon(F16): an agent's `view=full` is capped at an explicit
+    // `limit <= 100`; without `limit` the agent default (200) already exceeds
+    // the cap, so the request is refused with the pagination hint.
+    if (
+      agentDefaultsEnabled &&
+      view === "full" &&
+      (parsedLimit === null || parsedLimit > ISSUE_LIST_AGENT_FULL_VIEW_MAX_LIMIT)
+    ) {
+      res.status(400).json({
+        error: `view=full for agent actors requires an explicit limit up to ${ISSUE_LIST_AGENT_FULL_VIEW_MAX_LIMIT}; for larger windows paginate the default compact view with offset or afterId`,
+      });
       return;
     }
     if (
@@ -8117,6 +8235,15 @@ export function issueRoutes(
     ) {
       res.status(400).json({
         error: `limit must be a positive integer up to ${ISSUE_LIST_MAX_LIMIT}`,
+      });
+      return;
+    }
+    // myrmidon(F16): an agent's explicit limit above the agent maximum is a
+    // 400 (not a silent clamp) with the pagination hint — a bot should page
+    // through the list instead of fetching it whole.
+    if (agentDefaultsEnabled && parsedLimit !== null && parsedLimit > ISSUE_LIST_AGENT_MAX_LIMIT) {
+      res.status(400).json({
+        error: `limit must be a positive integer up to ${ISSUE_LIST_AGENT_MAX_LIMIT} for agent actors; paginate with offset or afterId for larger windows`,
       });
       return;
     }
@@ -8238,6 +8365,10 @@ export function issueRoutes(
       normalizedQuery: {
         ...listFilters,
         view: compactView ? "compact" : undefined,
+        // myrmidon(F16): the settings toggle changes the response body at an
+        // identical query (description present or omitted, default limit
+        // 500 or 200) — the cache key must not mix the two bodies.
+        issuesListAgentDefaultsEnabled: agentDefaultsEnabled || undefined,
       },
     });
     const coordinated = await coordinateIssueListGet({
@@ -8273,13 +8404,24 @@ export function issueRoutes(
               else recoveryActionByIssue.delete(issue.id);
             }),
           );
-          const compactResult = result.map((issue) =>
+          let compactResult = result.map((issue) =>
             toCompactIssue({
               ...issue,
               activeRecoveryAction: recoveryActionByIssue.get(issue.id) ?? null,
               successfulRunHandoff: handoffStates.get(issue.id) ?? null,
             }),
           );
+          // myrmidon(F16): the agent compact row omits `description` — the
+          // field that makes the bare agent list response megabyte-sized;
+          // the agent fetches the body via the detail endpoint. The ETag is
+          // computed from this already-trimmed body (and the trim flag is in
+          // the request key), so agent/board bodies never share an ETag.
+          if (agentDefaultsEnabled) {
+            compactResult = compactResult.map((row) => {
+              const { description: _omitted, ...trimmed } = row;
+              return trimmed as CompactIssue;
+            });
+          }
           return {
             kind: "compact",
             body: compactResult,
@@ -9740,6 +9882,179 @@ export function issueRoutes(
           activeRecoveryAction: null,
         },
         recoveryAction: result.recoveryAction,
+      });
+    },
+  );
+
+  // myrmidon(OPE-6011): the explicit-exit route for a settled
+  // execution-reconciliation hold ("execution_reconciliation_required"). A
+  // person (or the task's own assignee) attests the failed run performed no
+  // external action, the blocking "do not replay" record is superseded, and
+  // the assignee is woken explicitly so the held task can resume. Called
+  // from the attention feed's execution_hold card and from the task's own
+  // hold banner; see server/src/myrmidon/execution-hold/attention.ts.
+  router.post(
+    "/issues/:id/execution-hold/confirm-continue",
+    async (req, res) => {
+      const id = req.params.id as string;
+      const existing = await getAccessibleResource(
+        req,
+        res,
+        svc.getById(id),
+        "Issue not found",
+      );
+      if (!existing) return;
+      if (!(await assertIssueReadAllowed(req, res, existing))) return;
+      if (
+        await assertLowTrustControlPlaneDenied(
+          req,
+          res,
+          existing.companyId,
+          existing,
+        )
+      )
+        return;
+
+      const actor = getActorInfo(req);
+      // A person (the operator or the task's owner) is always allowed. An
+      // agent may confirm only for the task assigned to it — the agent is
+      // attesting about *its own* failed run, never about another agent's.
+      if (req.actor.type === "agent") {
+        if (!req.actor.agentId || existing.assigneeAgentId !== req.actor.agentId) {
+          throw forbidden("Only the assignee can confirm an execution hold for this task", {
+            issueId: existing.id,
+            assigneeAgentId: existing.assigneeAgentId,
+            actorAgentId: req.actor.agentId ?? null,
+            source: "execution_hold_confirm_continue",
+            securityPrinciples: [
+              "Least Privilege",
+              "Complete Mediation",
+              "Secure Defaults",
+            ],
+          });
+        }
+      }
+
+      const result = await db.transaction(async (tx) => {
+        const lockedIssue = await tx
+          .select()
+          .from(issueRows)
+          .where(
+            and(
+              eq(issueRows.companyId, existing.companyId),
+              eq(issueRows.id, existing.id),
+            ),
+          )
+          .for("update")
+          .then((rows) => rows[0] ?? null);
+        if (!lockedIssue) throw notFound("Issue not found");
+
+        // Newest effective settled blocker — the same record
+        // execution-blocker.ts's non-explicit read would hold on.
+        const [blocker] = await tx
+          .select()
+          .from(issueRecoveryActions)
+          .where(
+            and(
+              eq(issueRecoveryActions.companyId, lockedIssue.companyId),
+              eq(issueRecoveryActions.sourceIssueId, lockedIssue.id),
+              inArray(issueRecoveryActions.cause, [...EXECUTION_RECONCILIATION_CAUSES]),
+              inArray(issueRecoveryActions.status, ["resolved", "cancelled"]),
+            ),
+          )
+          .orderBy(desc(issueRecoveryActions.updatedAt), desc(issueRecoveryActions.id))
+          .limit(1);
+        const blockerRecovery = blocker
+          ? ((blocker.evidence.automaticRecovery ?? null) as Record<string, unknown> | null)
+          : null;
+        if (!blocker || blockerRecovery?.replay !== "blocked") {
+          throw notFound("No execution hold on this task", {
+            issueId: lockedIssue.id,
+          });
+        }
+
+        const supersededAction = await supersedeExplicitWakeSettledHold({
+          db: tx as unknown as Db,
+          issueId: lockedIssue.id,
+          companyId: lockedIssue.companyId,
+          successorRunId: null,
+          requestedByActorType: req.actor.type === "agent" ? "agent" : "user",
+          requestedByActorId: actor.actorId,
+        });
+        if (!supersededAction) {
+          throw conflict("The failed run has not released its execution claim yet; the hold cannot be confirmed", {
+            issueId: lockedIssue.id,
+          });
+        }
+
+        const postCommitActivityPublications: ActivityPublication[] = [];
+        // The row was just updated inside this same transaction by the
+        // supersede above; the activity must see the final row, so write it
+        // after the supersede's own write (drizzle serialises them).
+        await logActivity(
+          tx as unknown as Db,
+          {
+            companyId: lockedIssue.companyId,
+            actorType: actor.actorType,
+            actorId: actor.actorId,
+            agentId: actor.agentId,
+            runId: actor.runId,
+            action: "issue.execution_hold_confirmed",
+            entityType: "issue",
+            entityId: lockedIssue.id,
+            details: {
+              recoveryActionId: blocker.id,
+              cause: blocker.cause,
+              supersededCount: supersededAction.supersededCount,
+            },
+          },
+          postCommitActivityPublications,
+        );
+        return { issue: lockedIssue, blocker, supersededAction, postCommitActivityPublications };
+      });
+
+      for (const publication of result.postCommitActivityPublications)
+        publishActivity(publication);
+
+      // Wake the assignee explicitly — an on_demand/manual wake with the
+      // confirming person as the requester IS an explicit wake per
+      // wake-classification, so it bypasses any (already-superseded) hold and
+      // starts the run now.
+      if (result.issue.assigneeAgentId) {
+        try {
+          await heartbeat.wakeup(result.issue.assigneeAgentId, {
+            source: "on_demand",
+            triggerDetail: "manual",
+            reason: "issue_execution_hold_confirmed",
+            payload: {
+              issueId: result.issue.id,
+              recoveryActionId: result.blocker.id,
+            },
+            contextSnapshot: {
+              issueId: result.issue.id,
+              taskId: result.issue.id,
+              wakeReason: "issue_execution_hold_confirmed",
+            },
+            requestedByActorType: req.actor.type === "agent" ? "agent" : "user",
+            requestedByActorId: actor.actorId,
+          });
+        } catch (err) {
+          logger.warn(
+            {
+              err,
+              issueId: result.issue.id,
+              agentId: result.issue.assigneeAgentId,
+            },
+            "failed to wake agent after execution hold confirmation",
+          );
+        }
+      }
+
+      res.json({
+        issueId: result.issue.id,
+        recoveryActionId: result.blocker.id,
+        supersededCount: result.supersededAction.supersededCount,
+        assigneeWoken: result.issue.assigneeAgentId != null,
       });
     },
   );
@@ -13380,6 +13695,9 @@ export function issueRoutes(
       }
       const enteringBlocked =
         existing.status !== "blocked" && updateFields.status === "blocked";
+      // myrmidon(BLOCKED-LOOP): signature of an agent return to blocked, kept
+      // in the issue.updated details so the next attempt can compare with it.
+      let blockedLoopSignature: BlockedLoopSignature | null = null;
       if (enteringBlocked) {
         const requestedBlockerIds = Array.isArray(req.body.blockedByIssueIds)
           ? [...new Set(req.body.blockedByIssueIds as string[])]
@@ -13462,6 +13780,65 @@ export function issueRoutes(
               "Entering blocked requires a reason reference: non-empty blockedByIssueIds or unblockDescriptor.reasonRef",
           });
           return;
+        }
+        // myrmidon(BLOCKED-LOOP): an agent may not keep returning the task to
+        // blocked with the same blockers and the same descriptor; the wait must
+        // be expressed as a monitor or a date/event reason instead. Board and
+        // other human actors are not limited.
+        if (req.actor.type === "agent") {
+          const maxReturns = readBlockedLoopMaxReturns();
+          let blockedLoopDecision: ReturnType<typeof judgeBlockedLoop> | null =
+            null;
+          try {
+            const blockerIds = Array.isArray(req.body.blockedByIssueIds)
+              ? (req.body.blockedByIssueIds as string[])
+              : (await svc.getRelationSummaries(existing.id)).blockedBy.map(
+                  (relation) => relation.id,
+                );
+            const signature: BlockedLoopSignature = {
+              blockerSetKey: blockerSetKeyOf(blockerIds),
+              descriptorKey: descriptorKeyOf(descriptor),
+            };
+            blockedLoopDecision = judgeBlockedLoop(
+              await loadBlockedLoopEvents(db, {
+                companyId: existing.companyId,
+                issueId: existing.id,
+                maxReturns,
+              }),
+              signature,
+              maxReturns,
+            );
+            blockedLoopSignature = signature;
+          } catch (err) {
+            // The limiter is a safety net: a failure to read the history must
+            // never stop a legal block, so it fails open.
+            logger.warn(
+              { err, issueId: existing.id },
+              "blocked-loop limiter could not evaluate the return; allowing it",
+            );
+          }
+          if (blockedLoopDecision?.blockedLoop) {
+            await logActivity(db, {
+              companyId: existing.companyId,
+              actorType: actor.actorType,
+              actorId: actor.actorId,
+              agentId: actor.agentId,
+              runId: actor.runId,
+              action: "myrmidon.blocked_loop.rejected",
+              entityType: "issue",
+              entityId: existing.id,
+              details: {
+                streak: blockedLoopDecision.streak,
+                maxReturns,
+                identifier: existing.identifier,
+              },
+            });
+            res.status(422).json({
+              error: blockedLoopMessage(maxReturns),
+              code: "blocked_loop_limit",
+            });
+            return;
+          }
         }
       }
       if (
@@ -13835,7 +14212,10 @@ export function issueRoutes(
         Boolean(commentAttachmentIds?.length) ||
         Boolean(decision) ||
         shouldRelayStop ||
+        enteringReviewRequested || // myrmidon(REVIEW-ADMISSION): require one transaction for issue state and reviewer receipt.
         persistReviewActivityTransactionally ||
+        ((updateFields.status === "in_review" || existing.status === "in_review") &&
+          assigneeWillChange) ||
         reviewPolicySensitiveMutationRequested ||
         humanUnblockPossible;
       try {
@@ -13848,6 +14228,59 @@ export function issueRoutes(
               return null;
             const updated = await updateIssue(tx);
             if (!updated) return null;
+            if (
+              updated.status === "in_review" &&
+              (enteringReviewRequested || assigneeWillChange)
+            ) {
+              const stageWake = buildExecutionStageWakeup({
+                issueId: updated.id,
+                previousState: parseIssueExecutionState(existing.executionState),
+                nextState: parseIssueExecutionState(updated.executionState),
+                interruptedRunId,
+                requestedByActorType: actor.actorType === "user" ? "user" : "agent",
+                requestedByActorId: actor.actorId,
+              });
+              if (stageWake?.agentId) {
+                const admission = await insertReviewAdmissionWakeup(
+                  stageWake.agentId,
+                  stageWake.wakeup,
+                  tx as unknown as Db,
+                  updated.companyId,
+                );
+                if (admission && admission.created === false) {
+                  throw new Error(
+                    `Failed to persist review admission wakeup for agent ${stageWake.agentId}`,
+                  );
+                }
+              }
+              if (
+                assigneeWillChange &&
+                updated.assigneeAgentId &&
+                (!stageWake || stageWake.agentId !== updated.assigneeAgentId)
+              ) {
+                const wakeup: WakeupOptions = {
+                  source: "assignment",
+                  triggerDetail: "system",
+                  reason: enteringReviewRequested ? "issue_entered_review" : "issue_review_reassigned",
+                  payload: { issueId: updated.id, mutation: "review_admission" },
+                  idempotencyKey: `issue-review-admission:${updated.id}:${updated.assigneeAgentId}`,
+                  requestedByActorType: actor.actorType,
+                  requestedByActorId: actor.actorId,
+                  contextSnapshot: { issueId: updated.id, taskId: updated.id },
+                };
+                const admission = await insertReviewAdmissionWakeup(
+                  updated.assigneeAgentId,
+                  wakeup,
+                  tx as unknown as Db,
+                  updated.companyId,
+                );
+                if (admission && admission.created === false) {
+                  throw new Error(
+                    `Failed to persist review admission wakeup for assignee ${updated.assigneeAgentId}`,
+                  );
+                }
+              }
+            }
             // myrmidon(HOLD-READY): an explicit human unblock is an operator
             // resolve of the settled "do not replay" hold.
             if (
@@ -14181,6 +14614,9 @@ export function issueRoutes(
             identifier: issue.identifier,
             authorizationReason: issueMutationAuthorizationReason,
             changes: issueChanges,
+            ...(blockedLoopSignature
+              ? { [BLOCKED_LOOP_SIGNATURE_KEY]: blockedLoopSignature }
+              : {}),
             ...(reviewInteractionId ? { reviewInteractionId } : {}),
             ...(commentBody ? { source: "comment" } : {}),
             ...(resumeRequested === true
@@ -14223,6 +14659,23 @@ export function issueRoutes(
             ),
           },
         });
+
+      // myrmidon(1.6.5-BOT-DISK-H4a-INVALIDATE): a status or assignee change
+      // makes every cached desired-state that still holds this task dangerous:
+      // the old bot may archive-delete the reopened directory, the new bot
+      // would not protect its new task for the rest of the 300 s window. Drop
+      // both bots' entries here so the next poll rebuilds from the store.
+      if (
+        Object.hasOwn(issueChanges, "status") ||
+        Object.hasOwn(issueChanges, "assigneeAgentId")
+      ) {
+        invalidateDesiredStateForIssueChange({
+          companyId: issue.companyId,
+          previousAssigneeAgentId:
+            (previous.assigneeAgentId as string | null | undefined) ?? null,
+          nextAssigneeAgentId: issue.assigneeAgentId,
+        });
+      }
 
       if (
         existing.status === "in_progress" &&
@@ -14775,6 +15228,11 @@ export function issueRoutes(
             source: "assignment",
             triggerDetail: "system",
             reason: "issue_assigned",
+            ...(issue.status === "in_review"
+              ? {
+                  idempotencyKey: `issue-review-admission:${issue.id}:${issue.assigneeAgentId}`,
+                }
+              : {}),
             payload: {
               issueId: issue.id,
               ...(comment ? { commentId: comment.id } : {}),
@@ -14856,6 +15314,11 @@ export function issueRoutes(
               issueAtCommentStart: existing,
               reopened,
               currentStatus: issue.status,
+              // myrmidon(1.6.5 PROMPT-BUDGET-SIGNAL): the prompt-budget notice
+              // is for the owner and the operator — the feed card, not the
+              // agent. The copies already in threads must not wake an agent
+              // either, so the guard reads the rows, not just the writer.
+              suppressesWake: isPromptBudgetSignalNotice(comment),
             });
 
           if (
@@ -16186,7 +16649,40 @@ export function issueRoutes(
           );
       }
 
-      res.status(201).json(interaction);
+      // myrmidon(1.6.5-OWNER-VIA-BOT): an owner decision raised by an agent is
+      // not shown to the owner as a card; its author is woken on this task to
+      // explain it to the owner in a direct message (no-op outside via_bot).
+      // The creation response tells the author it can explain the decision now,
+      // in this very run; the deferred wake then finds it already explained.
+      const ownerExplainOutcome = await scheduleOwnerExplainWake(db, {
+        companyId: issue.companyId,
+        issueId: issue.id,
+        interaction,
+        wakeup: (agentId, options) => heartbeat.wakeup(agentId, options),
+        requestedBy: { actorType: actor.actorType, actorId: actor.actorId },
+      }).catch((err) => {
+        logger.warn(
+          { err, issueId: issue.id, interactionId: interaction.id },
+          "failed to wake the author to explain an owner decision",
+        );
+        return null;
+      });
+
+      res.status(201).json(
+        ownerExplainOutcome === "woken"
+          ? {
+              ...interaction,
+              ownerExplain: {
+                required: true,
+                tool: "myrmidonMessageOwner",
+                interactionIds: [interaction.id],
+                instruction:
+                  "Explain this decision to the owner now with one message via myrmidonMessageOwner " +
+                  `(interactionIds: ["${interaction.id}"]). If you do it in this run, the follow-up wake does nothing.`,
+              },
+            }
+          : interaction,
+      );
     },
   );
 
@@ -18146,6 +18642,32 @@ export function issueRoutes(
         actor,
         source: "issue.comment",
       });
+      // myrmidon(1.6.5-F21-A): owner words close the owner's card.
+      //
+      // A board user answering on the task is the web half of "the owner's own
+      // words are the decision". The handler selects the freshest pending owner
+      // card of this task (created before this comment), resolves it through the
+      // ordinary resolution services with the owner attributed as the resolver,
+      // and asks which card when several are open. It is a no-op in every owner
+      // delivery mode but via_bot, and it never throws: a defect keeps the card
+      // pending instead of failing the comment the owner just wrote.
+      const taskOwnerUserId =
+        currentIssue.responsibleUserId ?? currentIssue.createdByUserId ?? null;
+      if (
+        req.actor.type === "board" &&
+        req.actor.userId &&
+        taskOwnerUserId !== null &&
+        req.actor.userId === taskOwnerUserId
+      ) {
+        await handleOwnerTextReply(createOwnerReplyDeps(db), {
+          companyId: currentIssue.companyId,
+          ownerUserId: req.actor.userId,
+          text: comment.body,
+          issueId: currentIssue.id,
+          replyCommentId: comment.id,
+          sourceRef: `comment:${comment.id}`,
+        });
+      }
       let lostReviewPathRef: string | null = null;
       if (
         currentIssue.status === "in_review" &&
@@ -18293,6 +18815,10 @@ export function issueRoutes(
           issueAtCommentStart: issue,
           reopened,
           currentStatus: wakeIssueSnapshot.status,
+          // myrmidon(1.6.5 PROMPT-BUDGET-SIGNAL): a prompt-budget notice is a
+          // signal for the owner and the operator, never a message for the
+          // agent whose prompt is already over budget.
+          suppressesWake: isPromptBudgetSignalNotice(comment),
         });
         if (assigneeId && !goalCommentSteered && shouldWakeAssigneeForComment) {
           if (reopened) {

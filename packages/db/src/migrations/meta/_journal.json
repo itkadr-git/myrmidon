@@ -2133,15 +2133,219 @@
     {
       "idx": 307,
       "version": "7",
-      "when": 1770000000447,
-      "tag": "0307_foraging_spend",
+      "when": 1791424100000,
+      "tag": "0307_db_care_issue_prev_assignee_index",
       "breakpoints": true
     },
     {
       "idx": 308,
       "version": "7",
+      "when": 1791426688696,
+      "tag": "0308_db_care_audit_indexes",
+      "breakpoints": true
+    },
+    {
+      "idx": 309,
+      "version": "7",
+      "when": 1791426748696,
+      "tag": "0309_db_care_lz4_compression",
+      "breakpoints": true
+    },
+    {
+      "idx": 310,
+      "version": "7",
+      "when": 1791426900000,
+      "tag": "0310_datastore_care",
+      "breakpoints": true
+    },
+    {
+      "idx": 311,
+      "version": "7",
+      "when": 1791433900000,
+      "tag": "0311_guardrail_events",
+      "breakpoints": true
+    },
+    {
+      "idx": 312,
+      "version": "7",
+      "when": 1791433990019,
+      "tag": "0312_budget_limits",
+      "breakpoints": true
+    },
+    {
+      "idx": 313,
+      "version": "7",
+      "when": 1791434000000,
+      "tag": "0313_run_context_columns",
+      "breakpoints": true
+    },
+    {
+      "idx": 314,
+      "version": "7",
+      "when": 1791434100000,
+      "tag": "0314_search_coalesce_trgm_indexes",
+      "breakpoints": true
+    },
+    {
+      "idx": 315,
+      "version": "7",
+      "when": 1791434200000,
+      "tag": "0315_foraging_spend",
+      "breakpoints": true
+    },
+    {
+      "idx": 330,
+      "version": "7",
+      "when": 1791500330000,
+      "tag": "0330_heartbeat_run_continuations",
+      "breakpoints": true
+    },
+    {
+      "idx": 355,
+      "version": "7",
+      "when": 1791500340000,
+      "tag": "0355_issues_last_activity_at",
+      "breakpoints": true
+    },
+    {
+      "idx": 360,
+      "version": "7",
+      "when": 1791500360000,
+      "tag": "0360_issue_claims_active_unique",
+      "breakpoints": true
+    },
+    {
+      "idx": 361,
+      "version": "7",
+      "when": 1791500361000,
+      "tag": "0361_bot_apply_jobs",
+      "breakpoints": true
+    },
+    {
+      "idx": 380,
+      "version": "7",
+      "when": 1791500380000,
+      "tag": "0380_remove_execution_continuation_duplication",
+      "breakpoints": true
+    },
+    {
+      "idx": 381,
+      "version": "7",
+      "when": 1791500381000,
+      "tag": "0381_attention_exhausted_lifecycle_idx",
+      "breakpoints": true
+    },
+    {
+      "idx": 382,
+      "version": "7",
+      "when": 1791500382000,
+      "tag": "0382_secrets_off_run_grant_expiry",
+      "breakpoints": true
+    },
+    {
+      "idx": 383,
+      "version": "7",
+      "when": 1791528256000,
+      "tag": "0383_issues_pheromone_strength",
+      "breakpoints": true
+    },
+    {
+      "idx": 384,
+      "version": "7",
+      "when": 1791528256161,
+      "tag": "0384_issues_caste_key_and_pheromone_backfill",
+      "breakpoints": true
+    },
+    {
+      "idx": 385,
+      "version": "7",
+      "when": 1791528259161,
+      "tag": "0385_agent_castes_default_and_nests",
+      "breakpoints": true
+    },
+    {
+      "idx": 386,
+      "version": "7",
+      "when": 1791528260161,
+      "tag": "0386_swarm_scent",
+      "breakpoints": true
+    },
+    {
+      "idx": 387,
+      "version": "7",
+      "when": 1791528261161,
+      "name": "0387_low_trust_internal_release_candidates",
+      "tag": "0387_low_trust_internal_release_candidates",
+      "breakpoints": true
+    },
+    {
+      "idx": 388,
+      "version": "7",
+      "when": 1791528262161,
+      "tag": "0388_board_processes",
+      "breakpoints": true
+    },
+    {
+      "idx": 389,
+      "version": "7",
       "when": 1791500200000,
-      "tag": "0308_agent_exchange_rooms",
+      "tag": "0389_agent_exchange_rooms",
+      "breakpoints": true
+    },
+    {
+      "idx": 390,
+      "version": "7",
+      "when": 1791700000000,
+      "tag": "0390_corpus_module",
+      "breakpoints": true
+    },
+    {
+      "idx": 391,
+      "version": "7",
+      "when": 1791700000001,
+      "tag": "0391_corpus_pgvector",
+      "breakpoints": true
+    },
+    {
+      "idx": 392,
+      "version": "7",
+      "when": 1791700000002,
+      "tag": "0392_board_processes",
+      "breakpoints": true
+    },
+    {
+      "idx": 393,
+      "version": "7",
+      "when": 1791700000003,
+      "tag": "0393_project_token_quotas",
+      "breakpoints": true
+    },
+    {
+      "idx": 394,
+      "version": "7",
+      "when": 1791700000004,
+      "tag": "0394_knowledge_module",
+      "breakpoints": true
+    },
+    {
+      "idx": 395,
+      "version": "7",
+      "when": 1791700000005,
+      "tag": "0395_evals_knowledge_gate",
+      "breakpoints": true
+    },
+    {
+      "idx": 396,
+      "version": "7",
+      "when": 1791710000000,
+      "tag": "0396_channel_allowed_users",
+      "breakpoints": true
+    },
+    {
+      "idx": 397,
+      "version": "7",
+      "when": 1791711000000,
+      "tag": "0397_knowledge_unaccent_qualified",
       "breakpoints": true
     }
   ]

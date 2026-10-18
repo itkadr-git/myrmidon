@@ -1,7 +1,21 @@
-import { and, asc, desc, eq, inArray, notInArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, notInArray, sql } from "drizzle-orm";
 import { agents, heartbeatRunEvents, heartbeatRuns, type Db } from "@paperclipai/db";
 
-export function listAttentionExhaustedRuns(db: Db, companyId: string) {
+export type AttentionExhaustedRunsOptions = {
+  /**
+   * attention-latency fix (A1): when set, only runs created after this instant are
+   * considered. Without it the query scans every unresolved failed run of the
+   * company since the beginning of time, and the window grows with the age of
+   * the oldest failure (months on production volume).
+   */
+  createdAtAfter?: Date;
+};
+
+export function listAttentionExhaustedRuns(
+  db: Db,
+  companyId: string,
+  options: AttentionExhaustedRunsOptions = {},
+) {
   // Recovery can revisit an exhausted run. Deduplicate its historical events
   // before joining run data so duplicate events never multiply the wire payload.
   const latestExhaustion = db
@@ -28,12 +42,10 @@ export function listAttentionExhaustedRuns(db: Db, companyId: string) {
       status: heartbeatRuns.status,
       error: heartbeatRuns.error,
       errorCode: heartbeatRuns.errorCode,
-      // Preserve JSON types and issueId/taskId fallback semantics without
-      // transferring prompts, transcripts, or the rest of the run context.
-      contextSnapshot: sql<Record<string, unknown>>`jsonb_build_object(
-        'issueId', ${heartbeatRuns.contextSnapshot} -> 'issueId',
-        'taskId', ${heartbeatRuns.contextSnapshot} -> 'taskId'
-      )`,
+      // Thin columns with a snapshot coalesce for historical rows (OPE-5007 П2):
+      // the feed needs the two ids only and must not detoast the run context.
+      runIssueId: sql<string | null>`coalesce(${heartbeatRuns.contextIssueId}, ${heartbeatRuns.contextSnapshot} ->> 'issueId')`,
+      runTaskId: sql<string | null>`coalesce(${heartbeatRuns.contextTaskId}, ${heartbeatRuns.contextSnapshot} ->> 'taskId')`,
       createdAt: heartbeatRuns.createdAt,
       updatedAt: heartbeatRuns.updatedAt,
       finishedAt: heartbeatRuns.finishedAt,
@@ -47,6 +59,8 @@ export function listAttentionExhaustedRuns(db: Db, companyId: string) {
       eq(agents.companyId, companyId),
       notInArray(agents.status, ["terminated"]),
       inArray(heartbeatRuns.status, ["failed", "timed_out"]),
+      // Failures older than the horizon never enter the feed.
+      ...(options.createdAtAfter ? [gt(heartbeatRuns.createdAt, options.createdAtAfter)] : []),
     ))
     .orderBy(desc(heartbeatRuns.createdAt), desc(latestExhaustion.eventId));
 }

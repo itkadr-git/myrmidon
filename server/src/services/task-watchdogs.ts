@@ -16,7 +16,8 @@ import {
   issueWorkProducts,
 } from "@paperclipai/db";
 import type { IssueWatchdog, IssueWatchdogSummary } from "@paperclipai/shared";
-import { conflict, notFound } from "../errors.js";
+import { conflict, HttpError, notFound } from "../errors.js";
+import { logger } from "../middleware/logger.js";
 import { parseObject } from "../adapters/utils.js";
 import { logActivity } from "./activity-log.js";
 import { evaluateAgentInvokabilityFromDb } from "./agent-invokability.js";
@@ -1550,18 +1551,39 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
       sourceIssue,
       classification,
     });
-    const wake = deps.enqueueWakeup
-      ? await deps.enqueueWakeup(watchdog.watchdogAgentId, {
-        source: "automation",
-        triggerDetail: "system",
-        reason: "task_watchdog_stopped_subtree",
-        payload: context,
-        contextSnapshot: context,
-        idempotencyKey: taskWatchdogWakeIdempotencyKey(watchdog.id, classification.stopFingerprint),
-        requestedByActorType: "system",
-        requestedByActorId: null,
-      })
-      : null;
+    let wake: { id: string } | null = null;
+    try {
+      wake = deps.enqueueWakeup
+        ? await deps.enqueueWakeup(watchdog.watchdogAgentId, {
+          source: "automation",
+          triggerDetail: "system",
+          reason: "task_watchdog_stopped_subtree",
+          payload: context,
+          contextSnapshot: context,
+          idempotencyKey: taskWatchdogWakeIdempotencyKey(watchdog.id, classification.stopFingerprint),
+          requestedByActorType: "system",
+          requestedByActorId: null,
+        })
+        : null;
+    } catch (err) {
+      // myrmidon(STARTUP-WATCHDOG-PAUSED): a paused / disabled watchdog agent is
+      // not invokable (409). That is a state of the agent, not a failure of the
+      // board: skip this watchdog with a warning and let the others run. The
+      // watchdog issue stays open for the agent to pick up when it is resumed.
+      if (err instanceof HttpError && err.status === 409) {
+        logger.warn(
+          { watchdogId: watchdog.id, watchdogAgentId: watchdog.watchdogAgentId, watchdogIssueId: watchdogIssue.id, err: err.message },
+          "task watchdog skipped: the watchdog agent is not invokable (paused or disabled)",
+        );
+        return {
+          state: "skipped" as const,
+          reason: "watchdog_agent_not_invokable",
+          classification,
+          watchdogIssueId: watchdogIssue.id,
+        };
+      }
+      throw err;
+    }
 
     return {
       state: "triggered" as const,

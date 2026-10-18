@@ -41,12 +41,16 @@ export const ISSUE_REWAKE_RUN_SAMPLE_LIMIT = 8;
 
 /**
  * Wake reasons that assert issue state rather than deliver a new event.
+ * `issue_assigned` is deliberately excluded: assignment events are an explicit
+ * request to act on that issue, including after a recovery handoff has already
+ * run. Throttling belongs on periodic/recovery polling, not on the direct
+ * assignment path.
+ *
  * These (plus reason-less on-demand invokes) are the only wakes the throttle
  * applies to; every event-shaped reason (comments, mentions, blockers
  * resolved, interactions, approvals, monitors, reviews, …) passes through.
  */
 export const THROTTLED_ISSUE_REWAKE_REASONS: ReadonlySet<string> = new Set([
-  "issue_assigned",
   "issue_continuation_needed",
   "issue_assignment_recovery",
   "issue_graph_liveness_backstop",

@@ -142,6 +142,9 @@ set -euo pipefail
 # shellcheck source=lib.sh source-path=SCRIPTDIR
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
 
+# myrmidon(F-05): the journal opens with the exact version of these scripts.
+log_script_version
+
 config="" digest="" expect_version="" expect_commit="" force=0 release_tag=""
 DRY_RUN=0
 while (($#)); do

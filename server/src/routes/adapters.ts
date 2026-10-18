@@ -437,6 +437,7 @@ export function adapterRoutes(options: {
 
     const externalRecord = getAdapterPluginByType(adapterType);
     const disabledSet = new Set(getDisabledAdapterTypes());
+    if (process.env.MYRMIDON_DISABLE_HERMES_LOCAL === "1") disabledSet.add("hermes_local");
     res.json(buildAdapterInfo(adapter, externalRecord, disabledSet));
   });
 

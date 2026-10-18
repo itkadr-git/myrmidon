@@ -60,6 +60,8 @@ const view: RuntimeLimitsView = {
   },
   // myrmidon(1.6.5 RUN-FAIRNESS): the queue snapshot the endpoint reports.
   queue: null,
+  // myrmidon(1.6.5 C0-ui): the memory snapshot the endpoint reports.
+  memory: null,
 };
 
 function render(value: RuntimeLimitsView | null, onSave = vi.fn(), pending = false, error: string | null = null) {
@@ -183,6 +185,80 @@ describe("myrmidon(C0) run limits panel", () => {
     );
     render({ ...view, queue: null });
     expect(container.querySelector("[data-testid=runtime-limit-queue]")).toBeNull();
+  });
+
+  it("myrmidon(1.6.5 C0-ui): shows the host and container memory next to the queue", () => {
+    render({
+      ...view,
+      memory: {
+        host: { availableMb: 45056, totalMb: 131072 },
+        container: { limitMb: 8192, usedMb: 3000, freeMb: 5192 },
+      },
+    });
+    const line = container.querySelector("[data-testid=runtime-limit-memory]")?.textContent ?? "";
+    expect(line).toContain("Host memory: 45,056 MB available of 131,072 MB");
+    expect(line).toContain("Server container: 3,000 MB used of 8,192 MB (5,192 MB free)");
+  });
+
+  it("myrmidon(1.6.5 C0-ui): a missing memory snapshot or side renders cleanly", () => {
+    render({ ...view, memory: { host: null, container: { limitMb: 8192, usedMb: 3000, freeMb: 5192 } } });
+    const line = container.querySelector("[data-testid=runtime-limit-memory]")?.textContent ?? "";
+    expect(line).not.toContain("Host memory");
+    expect(line).toContain("Server container: 3,000 MB used");
+
+    render({ ...view, memory: null });
+    expect(container.querySelector("[data-testid=runtime-limit-memory]")).toBeNull();
+  });
+
+  it("myrmidon(1.6.5 F-09 B): shows the admission-refusal counter with the breakdown and the last refusal", () => {
+    render({
+      ...view,
+      admissionDenials: {
+        total: 12,
+        // The reason the server counts most comes first, ties in the
+        // admission's own order; a zero count is not a reason and is left out.
+        byReason: { global_cap: 5, start_ramp: 4, host_cpu: 3, memory: 0 },
+        lastReason: "host_cpu",
+        lastAt: new Date(Date.now() - 3 * 60_000).toISOString(),
+      },
+    });
+    const line = container.querySelector("[data-testid=runtime-limit-admission-denials]")?.textContent ?? "";
+    expect(line).toContain("Admission refusals: 12 since the server started.");
+    expect(line).toContain("the concurrency ceiling is full x5");
+    expect(line).toContain("the start ramp paces new starts x4");
+    expect(line).toContain("the host CPU ceiling is closed x3");
+    expect(line).not.toContain("free-memory floor");
+    expect(line.indexOf("x5")).toBeLessThan(line.indexOf("x4"));
+    expect(line).toContain("The last refusal: the host CPU ceiling is closed, at");
+    expect(line).toContain("3 min ago");
+  });
+
+  it("myrmidon(1.6.5 F-09 B): a counter of zero and a half-filled one render cleanly", () => {
+    render({ ...view, admissionDenials: { total: 0, byReason: {}, lastReason: null, lastAt: null } });
+    expect(container.querySelector("[data-testid=runtime-limit-admission-denials]")?.textContent).toBe(
+      "Admission refusals: none yet — every queued run the sweep saw had a free slot.",
+    );
+
+    // A reason this build does not know keeps its raw name; no breakdown and no
+    // timestamp still renders the total.
+    render({
+      ...view,
+      admissionDenials: { total: 1, byReason: { queue_paused: 1 }, lastReason: "queue_paused", lastAt: null },
+    });
+    const line = container.querySelector("[data-testid=runtime-limit-admission-denials]")?.textContent ?? "";
+    expect(line).toContain("Admission refusals: 1 since the server started");
+    expect(line).toContain("the admission refused it (queue_paused) x1");
+    expect(line).toContain("The last refusal: the admission refused it (queue_paused).");
+  });
+
+  it("myrmidon(1.6.5 F-09 B): an older server without the counter shows no block", () => {
+    // The field is optional: the panel does not invent a zero.
+    render({ ...view, admissionDenials: null });
+    expect(container.querySelector("[data-testid=runtime-limit-admission-denials]")).toBeNull();
+    render({ ...view, admissionDenials: undefined });
+    expect(container.querySelector("[data-testid=runtime-limit-admission-denials]")).toBeNull();
+    // And the rest of the panel still renders.
+    expect(field("maxConcurrentRuns").value).toBe("6");
   });
 
   it("myrmidon(1.6.5): edits the host CPU ceiling and switches it off with an empty field", () => {

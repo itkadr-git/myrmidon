@@ -24,6 +24,11 @@ export const ATTENTION_SOURCE_KINDS = [
   // myrmidon(BOT-RUNTIME-TUNING D): a bot's gateway calls were served by a
   // model outside its card more than the configured share of the window.
   "model_fallback_alert",
+  // myrmidon(1.6.6 OPE-7198): a Codex/ChatGPT subscription pool account is banned or limit-exhausted.
+  "codex_pool_alert",
+  // myrmidon(1.6.5-F11-A): the bot has no issued media token, so its profile
+  // carries no media MCP block; media reads «not connected» instead of HTTP 401.
+  "bot_media_mcp",
   // myrmidon(STALE-BLOCK): the watchdog lifted a dead block off a task; the
   // lead and operator must see the routing change the machine made.
   "stale_block",
@@ -39,6 +44,9 @@ export const ATTENTION_SOURCE_KINDS = [
   // myrmidon(REVIEW-ROUTING): a task in review has no reviewer available, or
   // its review has had no verdict for longer than the configured hours.
   "review_routing",
+  // myrmidon(PAUSE-GUARD): a pass resumed its ceiling's worth of forgotten
+  // operator pauses and left the rest for the following passes.
+  "pause_guard",
   // myrmidon(BOT-DISK-A): bot disk lifecycle events.
   "bot_disk_lifecycle",
   // myrmidon(1.6.1-BOT-DISK-C): a bot volume is approaching (>=80%) or over its
@@ -51,6 +59,25 @@ export const ATTENTION_SOURCE_KINDS = [
   // myrmidon(1.6.1-FORAGING-LIMITS-UI): the learning sweep hit a spend limit
   // (or the cost-per-task threshold switched it off); the owner decides.
   "foraging_limit",
+  // myrmidon(OPE-6011): a task's wakes are held by a settled
+  // execution-reconciliation hold ("execution_reconciliation_required") until
+  // a person confirms the failed run left no external action.
+  "execution_hold",
+  // myrmidon(1.6.5-F21-B): owner decision cards are waiting on the owner;
+  // the TTL sweep closes the ones that stay unanswered.
+  "owner_pending_card",
+  // myrmidon(1.6.5-F-23): agents read their own secret metadata outside an
+  // active run (grant secrets:read_off_run); the item counts the reads of the
+  // last 24h, and a per-agent variant warns three days before a grant expires.
+  "secret_off_run_reads",
+  "secret_off_run_grant_expiring",
+  // myrmidon(1.6.5-F-18): the gateway spend sweep completed but the model
+  // catalog (/v1/model/info) is empty — the accounting key is misconfigured.
+  "empty_model_catalog",
+  // myrmidon(1.6.5 F-09): a queued run older than the instance's stall
+  // threshold (default 1 h) still waits without a waitReason.
+  "queue_stall",
+>>>>>>> origin/main
 ] as const;
 
 export type AttentionSourceKind = (typeof ATTENTION_SOURCE_KINDS)[number];
@@ -68,7 +95,10 @@ export type AttentionSubjectKind =
   // myrmidon(SUB): a component of the tracked stack registry.
   | "stack_component"
   // myrmidon(1.6.1-FORAGING-LIMITS-UI): the learning sweep of the company.
-  | "foraging_sweep";
+  | "foraging_sweep"
+  // myrmidon(1.6.5-F-23): a company-scope signal with no narrower subject
+  // (e.g. the 24h counter of off-run secret reads).
+  | "company";
 
 export type AttentionSeverity = "critical" | "high" | "medium" | "low";
 
@@ -311,6 +341,12 @@ export interface AttentionItem {
 
 export interface AttentionFeed {
   companyId: string;
+  /**
+   * ISO timestamp of the snapshot this feed was built from. A read served from
+   * a cached snapshot keeps that snapshot's build time, so the value can trail
+   * the response by up to the attention feed cache windows — it is not the
+   * request time.
+   */
   generatedAt: string;
   totalCount: number;
   /**

@@ -2198,12 +2198,21 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
     }
   });
 
+  // myrmidon(DB-PERF-P7): last_activity_at is maintained by the triggers of
+  // migration 0307, so any write touching the row (or its comment/activity
+  // rows) moves it by milliseconds. Whole-row "nothing else changed"
+  // assertions must drop this derived stamp, or they go flaky.
+  const withoutLastActivityStamp = (rows: Array<Record<string, unknown>>) =>
+    rows.map(({ lastActivityAt, ...rest }) => rest);
+
   it.each(["blocked", "done", "cancelled"])("dismisses the obsolete card without undoing a later %s status", async (status) => {
     const seeded = await seedPolicyReview();
     await issueService(db).update(seeded.issueId, { status });
     const before = await db.select().from(issues).where(eq(issues.id, seeded.issueId));
     await dismissObsoleteNativePolicyReviews(db, [seeded.runId]);
-    expect(await db.select().from(issues).where(eq(issues.id, seeded.issueId))).toEqual(before);
+    const after = await db.select().from(issues).where(eq(issues.id, seeded.issueId));
+    expect(withoutLastActivityStamp(after)).toEqual(withoutLastActivityStamp(before));
+    expect(after[0]!.lastActivityAt >= before[0]!.lastActivityAt).toBe(true);
     const [interaction] = await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, seeded.interaction.id));
     expect(interaction!.status).toBe(status === "blocked" ? "cancelled" : "expired");
   });
@@ -2219,7 +2228,9 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
       }
       const before = await db.select().from(issues).where(eq(issues.id, seeded.issueId));
       await dismissObsoleteNativePolicyReviews(db, [seeded.runId]);
-      expect(await db.select().from(issues).where(eq(issues.id, seeded.issueId))).toEqual(before);
+      const after = await db.select().from(issues).where(eq(issues.id, seeded.issueId));
+      expect(withoutLastActivityStamp(after)).toEqual(withoutLastActivityStamp(before));
+      expect(after[0]!.lastActivityAt >= before[0]!.lastActivityAt).toBe(true);
     }
   });
 

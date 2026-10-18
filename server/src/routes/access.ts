@@ -1703,7 +1703,7 @@ function buildOnboardingDiscoveryDiagnostics(input: {
       // metacharacter span in the host before any CLI receives argv. A
       // direct-exec form such as `npx` does not stop the outer shell. Emit
       // a static `<host>` placeholder and keep the raw host in the message only.
-      hint: `Run npx paperclipai allowed-hostname <host>`
+      hint: `Run npx myrmidon allowed-hostname <host>`
     });
   }
 
@@ -1837,7 +1837,7 @@ function buildInviteOnboardingManifest(
         guidance:
           opts.deploymentMode === "authenticated" &&
           opts.deploymentExposure === "private"
-            ? `If OpenClaw runs on another machine, ensure the ${PRODUCT_NAME} hostname is reachable and allowed via \`npx paperclipai allowed-hostname <host>\`.`
+            ? `If OpenClaw runs on another machine, ensure the ${PRODUCT_NAME} hostname is reachable and allowed via \`npx myrmidon allowed-hostname <host>\`.`
             : `Ensure OpenClaw can reach this ${PRODUCT_NAME} API base URL for invite, claim, and skill bootstrap calls.`
       },
       textInstructions: {
@@ -2060,8 +2060,8 @@ export function buildInviteOnboardingTextDocument(
 
       If none are reachable: ask your human operator for a reachable hostname/address and help them update network configuration.
       For authenticated/private mode, they may need:
-      - npx paperclipai allowed-hostname <host>
-      - then restart Paperclip and retry onboarding.
+      - npx myrmidon allowed-hostname <host>
+      - then restart Myrmidon and retry onboarding.
     `);
   }
 

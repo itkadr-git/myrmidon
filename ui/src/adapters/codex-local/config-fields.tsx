@@ -373,7 +373,7 @@ export function CodexLocalConfigFields({
       {runnerManaged && runnerPermissionCapability.configurable && (runnerPermissionCapability.options.length > 1 || runnerPermissionModeUnsupported) && (
         <Field
           label="Permission mode"
-          hint={`${runnerPermissionCapability.description} The selected mode does not widen Myrmidon's workspace, network, credential, or planning boundaries.`}
+          hint={`${runnerPermissionCapability.description} The selected mode does not widen Myrmidon's workspace, network, credential, or planning boundaries. It also cannot relax the myrmidon(1.6-AUTONOMY) role × action-class gate: that server-side gate is stronger than any mode chosen here and denies or holds actions independently of this setting.`}
         >
           <Select
             value={
