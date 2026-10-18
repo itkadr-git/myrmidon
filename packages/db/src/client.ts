@@ -267,6 +267,17 @@ export function postgresJsOptions(options: DatabaseClientOptions): Record<string
   return driverOptions;
 }
 
+/**
+ * A raw postgres.js client through the shared driver of this package — for the
+ * call sites that need LISTEN/NOTIFY (the PROCS-1.3 process bus) rather than a
+ * drizzle face. Not registered in the client registry: the caller owns the
+ * lifecycle and ends it with its own teardown (the bus `stop` does).
+ */
+export function createPostgresJsClient(url: string, options?: DatabaseClientOptions) {
+  const resolved = resolveDatabaseClientOptions(options ?? databaseClientOptionsFromEnv());
+  return postgres(url, postgresJsOptions(resolved));
+}
+
 export function createDb(url: string, options?: DatabaseClientOptions) {
   const resolved = resolveDatabaseClientOptions(options ?? databaseClientOptionsFromEnv());
   const sql = postgres(url, postgresJsOptions(resolved));
