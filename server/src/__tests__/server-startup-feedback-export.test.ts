@@ -654,12 +654,20 @@ describe("startServer feedback export wiring", () => {
     loadConfigMock.mockReturnValue(buildTestConfig({ heartbeatSchedulerEnabled: true }));
     const intervals: number[] = [];
     const setIntervalSpy = vi.spyOn(globalThis, "setInterval").mockImplementation(((
-      _callback: () => void,
+      callback: () => void,
       interval: number,
     ) => {
       intervals.push(interval);
       return 1 as unknown as ReturnType<typeof setInterval>;
     }) as typeof setInterval);
+    const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout").mockImplementation(((
+      callback: () => void,
+      _delay?: number,
+      ...args: unknown[]
+    ) => {
+      queueMicrotask(() => callback(...args));
+      return 1 as unknown as ReturnType<typeof setTimeout>;
+    }) as typeof setTimeout);
     try {
       await startServer();
       await new Promise<void>((resolve) => setImmediate(resolve));
@@ -677,6 +685,7 @@ describe("startServer feedback export wiring", () => {
       expect(routineServiceMock.tickScheduledTriggers).not.toHaveBeenCalled();
     } finally {
       setIntervalSpy.mockRestore();
+      setTimeoutSpy.mockRestore();
       if (originalRole === undefined) delete process.env.PAPERCLIP_PROCESS_ROLE;
       else process.env.PAPERCLIP_PROCESS_ROLE = originalRole;
     }
