@@ -55991,7 +55991,7 @@
           "type": "text",
           "primaryKey": false,
           "notNull": true,
-          "default": "enabled"
+          "default": "'enabled'"
         },
         "created_at": {
           "name": "created_at",
@@ -56016,7 +56016,7 @@
               "expression": "company_id",
               "isExpression": false,
               "asc": true,
-              "nullsFirst": false
+              "nulls": "last"
             }
           ],
           "isUnique": false,
@@ -56031,7 +56031,7 @@
               "expression": "company_id",
               "isExpression": false,
               "asc": true,
-              "nullsFirst": false
+              "nulls": "last"
             }
           ],
           "isUnique": true,
