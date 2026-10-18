@@ -61,8 +61,6 @@ type config struct {
 	Bots     []bot  `json:"bots"`
 }
 
-type server struct{ cfg *config }
-
 type bot struct {
 	BotKey      string  `json:"botKey"`
 	MaxMemoryMb int64   `json:"maxMemoryMb"`
