@@ -1,5 +1,5 @@
 ---
-settings-section: Track 3 — tool gateway and Hermes adapter
+settings-section: Трек 3 — шлюз инструментов и адаптер Hermes
 ---
 
 ## settings-en-append
