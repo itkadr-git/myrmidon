@@ -153,7 +153,7 @@ export const knowledgeApi = {
     const revisions = revisionsResponse.revisions;
     const selected = options.revision == null
       ? revisions[revisions.length - 1]
-      : revisions.find((revision) => revision.id === options.revision);
+      : revisions.find((revision) => revision.revisionNumber === options.revision || revision.id === options.revision);
     return {
       item: {
         ...toSummary(item),

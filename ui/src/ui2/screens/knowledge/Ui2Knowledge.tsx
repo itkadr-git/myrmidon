@@ -320,12 +320,14 @@ function RevisionsPanel({
   const [to, setTo] = useState<string | number | null>(null);
   const [note, setNote] = useState<string | null>(null);
 
-  const left = from ?? (revisions.length > 1 ? revisions[0]?.id ?? revisions[0]?.revision ?? null : null);
-  const right = to ?? latest?.id ?? latest?.revision ?? null;
+  const leftId = from ?? (revisions.length > 1 ? revisions[0]?.id ?? null : null);
+  const rightId = to ?? latest?.id ?? null;
+  const leftRevision = revisions.find((revision) => revision.id === leftId)?.revision ?? null;
+  const rightRevision = revisions.find((revision) => revision.id === rightId)?.revision ?? null;
   const olderQuery = useQuery({
-    queryKey: knowledgeQueryKeys.item(companyId, item.spaceKey, item.slug, left),
-    queryFn: () => knowledgeApi.item(companyId, item.spaceKey, item.slug, { revision: left }),
-    enabled: Boolean(companyId) && revisions.length > 1 && left !== null,
+    queryKey: knowledgeQueryKeys.item(companyId, item.spaceKey, item.slug, leftId),
+    queryFn: () => knowledgeApi.item(companyId, item.spaceKey, item.slug, { revision: leftRevision }),
+    enabled: Boolean(companyId) && revisions.length > 1 && leftRevision !== null,
   });
 
   const rollback = useMutation({
@@ -339,11 +341,11 @@ function RevisionsPanel({
 
   const gate = itemGate(item);
   const diff = useMemo(() => {
-    if (revisions.length < 2 || left === null) return null;
+    if (revisions.length < 2 || leftRevision === null) return null;
     const older = olderQuery.data?.item.body ?? "";
     const newer = item.body ?? "";
     return diffKnowledgeRevisions(older, newer);
-  }, [olderQuery.data, item.body, left, revisions.length]);
+  }, [olderQuery.data, item.body, leftRevision, revisions.length]);
   const changed = diff ? knowledgeDiffChangeCount(diff) : 0;
 
   if (revisions.length === 0) {
@@ -399,8 +401,8 @@ function RevisionsPanel({
         <div className="ui2-knowledge-diff flex flex-col gap-2">
           <RevisionPicker
             revisions={revisions}
-            from={left}
-            to={right}
+            from={leftId}
+            to={rightId}
             onFrom={(revision) => setFrom(revision)}
             onTo={setTo}
             t={t}
