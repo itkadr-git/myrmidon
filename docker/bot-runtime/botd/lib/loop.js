@@ -49,6 +49,7 @@ const MAX_HELD_IN_REPORT = 40;
 // contract C4 `actions[].action` for each rules op
 const REPORT_ACTION = Object.freeze({
   remove: "remove",
+  "move-aside": "skip",
   "archive-remove": "archive",
   prune: "remove",
   "delete-base": "remove",

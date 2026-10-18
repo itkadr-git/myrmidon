@@ -532,7 +532,8 @@ describe("desired-state cache invalidation (1.6.5-BOT-DISK-H4a-INVALIDATE)", () 
     const newAfter = await request(asNew).get(URL);
     expect(newAfter.body.protectKeys).toContain("ABC-2");
     const oldAfter = await request(asOld).get(URL);
-    expect(oldAfter.body.workspaces[0]).toMatchObject({ key: "ABC-2", state: "closing" });
+    expect(oldAfter.body.workspaces[0]).toMatchObject({ key: "ABC-2", state: "closing", reason: "reassigned" });
+    expect(oldAfter.body.reassignedKeys).toContain("ABC-2");
     expect(h.calls.listIssues).toBe(4); // both bots rebuilt from the store
   });
 });

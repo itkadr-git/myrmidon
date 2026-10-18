@@ -29,6 +29,7 @@
 
 export const OPS = Object.freeze({
   remove: "remove",
+  moveAside: "move-aside",
   archiveRemove: "archive-remove",
   prune: "prune",
   deleteBase: "delete-base",
@@ -167,6 +168,10 @@ export function plan(inventory, desired, now, settings) {
   const pressed = pressure !== "none";
   const byKey = new Map(desired.workspaces.map((w) => [w.key, w]));
   const activeKeys = new Set(desired.workspaces.filter((w) => w.state === "active").map((w) => w.key));
+  const reassignedKeys = new Set([
+    ...arr(desired.reassignedKeys),
+    ...desired.workspaces.filter((w) => w.reason === "reassigned").map((w) => w.key),
+  ]);
   const actions = [];
   const act = (op, path, reason, key) =>
     actions.push(key === undefined ? { op, path, reason } : { op, path, reason, key });
@@ -181,6 +186,17 @@ export function plan(inventory, desired, now, settings) {
       // Drift: the bot removed the directory itself. Prune the record; the
       // copy is re-created only by the next `open`.
       if (wt.dirMissing) act(OPS.prune, wt.path, "active-drift-dir-missing", wt.key);
+      continue;
+    }
+
+    if (reassignedKeys.has(wt.key)) {
+      if (wt.dirMissing) {
+        act(OPS.prune, wt.path, "reassigned-dir-missing", wt.key);
+      } else if (wt.clean === true && wt.pushed === true) {
+        act(OPS.remove, wt.path, "reassigned-clean-pushed", wt.key);
+      } else {
+        act(OPS.moveAside, wt.path, "reassigned-unpushed", wt.key);
+      }
       continue;
     }
 
@@ -259,6 +275,14 @@ export function plan(inventory, desired, now, settings) {
         const graceMs = pressed ? 0 : lim.graceClosingMs;
         if (idle === null || idle < graceMs) continue;
         act(OPS.archiveRemove, sc.path, "legacy-closed", key);
+        continue;
+      }
+      if (key !== null && reassignedKeys.has(key)) {
+        if (sc.clean === true && sc.pushed === true) {
+          act(OPS.remove, sc.path, "reassigned-clean-pushed", key);
+        } else {
+          act(OPS.moveAside, sc.path, "reassigned-unpushed", key);
+        }
         continue;
       }
       if (key !== null && listedKeys.has(key)) {

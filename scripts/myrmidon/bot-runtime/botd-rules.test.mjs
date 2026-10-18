@@ -475,6 +475,34 @@ describe("botd rules: directories under /workspace by the board's word (policy t
     assert.equal(run(fresh, d({ closedKeys: ["OPE-4954"], level: "soft" })).actions.length, 1);
   });
 
+  it("reassigned task (reassignedKeys): clean+pushed is removed immediately; unpushed is moved aside", () => {
+    const cleanPushed = dir("OPE-7946", { clean: true, pushed: true });
+    const unpushed = dir("OPE-7946", { clean: false, pushed: false });
+    const st = d({ reassignedKeys: ["OPE-7946"] });
+
+    const outClean = run(cleanPushed, st);
+    assert.deepEqual(ops(outClean.actions), [[OPS.remove, "/workspace/OPE-7946"]]);
+    assert.equal(outClean.actions[0].reason, "reassigned-clean-pushed");
+
+    const outUnpushed = run(unpushed, st);
+    assert.deepEqual(ops(outUnpushed.actions), [[OPS.moveAside, "/workspace/OPE-7946"]]);
+    assert.equal(outUnpushed.actions[0].reason, "reassigned-unpushed");
+  });
+
+  it("reassigned task in worktrees: clean+pushed removed, unpushed moved aside", () => {
+    const cleanWt = { key: "OPE-7946", path: "/workspace/OPE-7946", clean: true, pushed: true, openedAt: ago(HOUR) };
+    const unpushedWt = { key: "OPE-7946", path: "/workspace/OPE-7946", clean: false, pushed: false, openedAt: ago(HOUR) };
+    const st = d({ reassignedKeys: ["OPE-7946"] });
+
+    const outClean = plan({ worktrees: [cleanWt], scratch: [], bases: [], archives: [] }, st, NOW);
+    assert.deepEqual(ops(outClean.actions), [[OPS.remove, "/workspace/OPE-7946"]]);
+    assert.equal(outClean.actions[0].reason, "reassigned-clean-pushed");
+
+    const outUnpushed = plan({ worktrees: [unpushedWt], scratch: [], bases: [], archives: [] }, st, NOW);
+    assert.deepEqual(ops(outUnpushed.actions), [[OPS.moveAside, "/workspace/OPE-7946"]]);
+    assert.equal(outUnpushed.actions[0].reason, "reassigned-unpushed");
+  });
+
   it("a key the board does not know (nobody's list): kept, reported unknown-key", () => {
     const out = run(dir("ope-4022"), d({ closedKeys: ["OPE-1"], protectKeys: ["OPE-2"] }));
     assert.deepEqual(out.actions, []);

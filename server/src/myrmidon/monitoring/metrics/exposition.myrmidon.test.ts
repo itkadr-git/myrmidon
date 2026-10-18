@@ -30,6 +30,7 @@ function snapshot(overrides: Partial<MetricsSnapshot> = {}): MetricsSnapshot {
     swarmClaimsTotal: 12,
     agentErrorSignals: 1,
     llmCostCentsWindow: 1234,
+    copiesWithoutAssignee: 0,
     process: {
       eventLoop: { p50Seconds: 0.02, p99Seconds: 0.13, maxSeconds: 0.5 },
       eventLoopUtilization: { utilization: 0.42 },
@@ -77,19 +78,21 @@ describe("prometheus exposition format", () => {
     expect(text).toContain("# TYPE myrmidon_agent_error_signals gauge");
     expect(text).toContain("# TYPE myrmidon_llm_cost_cents_total counter");
     expect(text).toContain("# TYPE myrmidon_scrape_errors gauge");
+    expect(text).toContain("# TYPE myrmidon_bot_copies_without_assignee gauge");
     expect(text).toContain("# TYPE myrmidon_board_event_loop_utilization gauge");
   });
 
   it("renders one sample line per family and per role/status pair", () => {
     const text = renderMetricsText(snapshot());
     const sampleLines = text.split("\n").filter((line) => line.startsWith("myrmidon_"));
-    // 9 single-sample families + 2 quantile samples + 3 role pairs = 14,
+    // 10 single-sample families + 2 quantile samples + 3 role pairs = 15,
     // plus the process half (1.6.5-PROCS-Q3): 3 loop quantiles + 1 RSS +
     // 2 heap kinds + 2 live-event counters + 2 live-event byte counters = 10,
-    // plus the utilization gauge (1.6.6 PROCS-0.1) = 25.
-    expect(sampleLines).toHaveLength(25);
+    // plus the utilization gauge (1.6.6 PROCS-0.1) = 26.
+    expect(sampleLines).toHaveLength(26);
     expect(text).toContain('myrmidon_role_queue_tasks{role="all",assignee_role="engineer",status="todo"} 3');
     expect(text).toContain('myrmidon_role_queue_tasks{role="all",assignee_role="reviewer",status="in_review"} 2');
+    expect(text).toContain('myrmidon_bot_copies_without_assignee{role="all"} 0');
     expect(text).toContain('myrmidon_board_event_loop_lag_seconds{role="all",quantile="0.99"} 0.13');
     expect(text).toContain("myrmidon_board_event_loop_utilization{role=\"all\"} 0.42");
     expect(text).toContain('myrmidon_board_heap_bytes{role="all",kind="used"} 120000000');

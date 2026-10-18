@@ -54,6 +54,48 @@ export function findNestedGit(root, maxDepth = NESTED_MAX_DEPTH, isRepo = isUsab
 const safeStem = (s) => String(s).replace(/[^A-Za-z0-9._-]+/g, "_").replace(/^[^A-Za-z0-9]+/, "x").slice(0, 80);
 
 /**
+ * Checks git clean and pushed status for a repository.
+ * Returns { clean: boolean|null, pushed: boolean|null }.
+ */
+export function checkGitStatus(dir, gitBin = process.env.MYRMIDON_BOTD_GIT || "git") {
+  try {
+    const statusRes = spawnSync(gitBin, ["-C", dir, "status", "--porcelain"], {
+      encoding: "utf8",
+      timeout: 10_000,
+      env: { ...process.env, GIT_TERMINAL_PROMPT: "0", GIT_CONFIG_NOSYSTEM: "1", LC_ALL: "C" },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    if (statusRes.error || statusRes.status !== 0) return { clean: null, pushed: null };
+    const clean = statusRes.stdout.trim().length === 0;
+
+    const headRes = spawnSync(gitBin, ["-C", dir, "rev-parse", "--verify", "HEAD"], {
+      encoding: "utf8",
+      timeout: 10_000,
+      env: { ...process.env, GIT_TERMINAL_PROMPT: "0", GIT_CONFIG_NOSYSTEM: "1", LC_ALL: "C" },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    if (headRes.error) return { clean, pushed: null };
+    if (headRes.status !== 0) {
+      // unborn branch: no commit, nothing to push
+      return { clean, pushed: true };
+    }
+
+    const branchRes = spawnSync(gitBin, ["-C", dir, "branch", "-r", "--contains", "HEAD", "--format=%(refname)"], {
+      encoding: "utf8",
+      timeout: 10_000,
+      env: { ...process.env, GIT_TERMINAL_PROMPT: "0", GIT_CONFIG_NOSYSTEM: "1", LC_ALL: "C" },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    if (branchRes.error || branchRes.status !== 0) return { clean, pushed: null };
+    const lines = branchRes.stdout.split("\n").map((l) => l.trim()).filter(Boolean);
+    const pushed = lines.length > 0;
+    return { clean, pushed };
+  } catch {
+    return { clean: null, pushed: null };
+  }
+}
+
+/**
  * Scratch part of the rules inventory: registry class-G copies plus every
  * class-G and class-X directory the classifier saw that the registry does not
  * list. X goes in with G so the rules apply the TTL/grace and the `activeKeys`
@@ -63,8 +105,9 @@ const safeStem = (s) => String(s).replace(/[^A-Za-z0-9._-]+/g, "_").replace(/^[^
  * @param {object[]} items   `classifyAll().items`
  * @param {number} nowMs
  * @param {(p: string) => boolean} hasDotGit
+ * @param {(p: string) => { clean: boolean|null, pushed: boolean|null }} [checkGit]
  */
-export function scratchInventory(entries, items, nowMs, hasDotGit) {
+export function scratchInventory(entries, items, nowMs, hasDotGit, checkGit = checkGitStatus) {
   const known = new Set(entries.map((e) => e.path));
   return [
     ...entries
@@ -72,16 +115,44 @@ export function scratchInventory(entries, items, nowMs, hasDotGit) {
       .map((e) => ({ name: e.key, path: e.path, mtime: e.openedAt, isGit: e.clean !== null, clean: e.clean, pushed: e.pushed })),
     ...items
       .filter((it) => (it.class === "G" || it.class === "X") && !known.has(it.path))
-      .map((it) => ({
-        name: path.basename(it.path),
-        path: it.path,
-        mtime: Number.isFinite(it.mtimeMs) ? it.mtimeMs : nowMs - (it.ageSec || 0) * 1000,
-        isGit: hasDotGit(it.path) || (Array.isArray(it.nestedGit) && it.nestedGit.length > 0),
-        nestedGit: Array.isArray(it.nestedGit) ? it.nestedGit : [],
-        sizeBytes: it.sizeBytes ?? null,
-        clean: null,
-        pushed: null,
-      })),
+      .map((it) => {
+        let clean = null;
+        let pushed = null;
+        const repos = [];
+        if (hasDotGit(it.path)) {
+          repos.push(it.path);
+        } else if (Array.isArray(it.nestedGit) && it.nestedGit.length > 0) {
+          repos.push(...it.nestedGit);
+        }
+        if (repos.length > 0 && typeof checkGit === "function") {
+          let allClean = true;
+          let allPushed = true;
+          let anyFailed = false;
+          for (const r of repos) {
+            const res = checkGit(r);
+            if (!res || res.clean === null || res.pushed === null) {
+              anyFailed = true;
+              break;
+            }
+            if (!res.clean) allClean = false;
+            if (!res.pushed) allPushed = false;
+          }
+          if (!anyFailed) {
+            clean = allClean;
+            pushed = allPushed;
+          }
+        }
+        return {
+          name: path.basename(it.path),
+          path: it.path,
+          mtime: Number.isFinite(it.mtimeMs) ? it.mtimeMs : nowMs - (it.ageSec || 0) * 1000,
+          isGit: hasDotGit(it.path) || (Array.isArray(it.nestedGit) && it.nestedGit.length > 0),
+          nestedGit: Array.isArray(it.nestedGit) ? it.nestedGit : [],
+          sizeBytes: it.sizeBytes ?? null,
+          clean,
+          pushed,
+        };
+      }),
   ];
 }
 

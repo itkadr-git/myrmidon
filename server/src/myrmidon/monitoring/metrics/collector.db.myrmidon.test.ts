@@ -346,6 +346,70 @@ describeEmbeddedPostgres("metrics collector", () => {
     expect(snapshot.roleQueueTasks).toEqual([]);
   });
 
+  it("counts copies on bot disks whose task is not assigned to that bot", async () => {
+    const companyId = await seedCompany();
+    const bot1 = await seedAgent(companyId, "engineer");
+    const bot2 = await seedAgent(companyId, "engineer");
+
+    await db.insert(issues).values({
+      id: randomUUID(),
+      companyId,
+      identifier: "OPE-101",
+      title: "task 101",
+      status: "in_progress",
+      assigneeAgentId: bot1,
+    });
+    await db.insert(issues).values({
+      id: randomUUID(),
+      companyId,
+      identifier: "OPE-102",
+      title: "task 102",
+      status: "in_progress",
+      assigneeAgentId: bot2,
+    });
+    await db.insert(issues).values({
+      id: randomUUID(),
+      companyId,
+      identifier: "OPE-103",
+      title: "task 103",
+      status: "done",
+      assigneeAgentId: bot1,
+    });
+
+    const diskReports = [
+      {
+        botKey: bot1,
+        receivedAt: NOW.toISOString(),
+        report: {
+          schema: 1 as const,
+          botKey: bot1,
+          imageGeneration: "gen-1",
+          at: NOW.toISOString(),
+          selfChecks: { reflink: null, gitref: null, wsCli: true },
+          bases: [],
+          archives: [],
+          actions: [],
+          foreign: [],
+          copies: [
+            { path: "/workspace/OPE-101", class: "G" as const, key: "OPE-101", clean: true, pushed: true, sizeBytes: 100, ageSec: 10 },
+            { path: "/workspace/OPE-102", class: "G" as const, key: "OPE-102", clean: true, pushed: true, sizeBytes: 100, ageSec: 10 },
+            { path: "/workspace/OPE-103", class: "G" as const, key: "OPE-103", clean: true, pushed: true, sizeBytes: 100, ageSec: 10 },
+            { path: "/workspace/.trash-OPE-102-1234", class: "X" as const, key: undefined, clean: false, pushed: false, sizeBytes: 100, ageSec: 10 },
+          ],
+        },
+      },
+    ];
+
+    const snapshot = await collectMetricsSnapshot({
+      db,
+      now: () => NOW,
+      errorWindowSec: 3600,
+      latencyWindowSec: 3600,
+      diskReports,
+    });
+    expect(snapshot.copiesWithoutAssignee).toBe(2);
+  });
+
   it("the self-check probe is green over real rows — the runbook link", async () => {
     // 1.6.6 annex: every link self-checks. The probe scrapes every family
     // once against the real tables; the failures it names are exactly what

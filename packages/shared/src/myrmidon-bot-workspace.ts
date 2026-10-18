@@ -226,6 +226,7 @@ export const wsDesiredWorkspaceSchema = z.object({
   since: z.string().datetime({ offset: false }),
   prState: wsDesiredPrStateSchema,
   branch: z.string().min(1).optional(),
+  reason: z.enum(["terminal", "hidden", "reassigned", "pr_merged"]).optional(),
 });
 export type WsDesiredWorkspace = z.infer<typeof wsDesiredWorkspaceSchema>;
 
@@ -263,6 +264,11 @@ export const wsDesiredStateSchema = z.object({
    * board omits it, and then such directories are never removed.
    */
   closedKeys: z.array(myrWsIssueKeySchema).optional(),
+  /**
+   * Keys of tasks reassigned away from this bot (assigned to another agent or unassigned)
+   * that are NOT done/cancelled.
+   */
+  reassignedKeys: z.array(myrWsIssueKeySchema).optional(),
 });
 export type WsDesiredState = z.infer<typeof wsDesiredStateSchema>;
 

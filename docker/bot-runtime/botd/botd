@@ -303,7 +303,12 @@ async function main() {
     // E: the CLI owns worktree removal and the archive; G: files under a scratch root
     remove: async (a) => {
       if (isWorkspace(a.path)) {
-        if (!owned(a.path)) return legacyRemove(a);
+        if (!owned(a.path)) {
+          if (a.reason === "reassigned-clean-pushed" || /clean-pushed/.test(a.reason || "") || /non-task/.test(a.reason || "")) {
+            return removePath(a.path, roots);
+          }
+          return legacyRemove(a);
+        }
         const force = /pr-merged/.test(a.reason || "");
         const r = await ws(["close", a.key, ...(force ? ["--force"] : [])]);
         return r.archived ? `archived to ${r.archivePath || "archive"}` : "closed";
@@ -320,6 +325,22 @@ async function main() {
         });
       }
       return removePath(a.path, SCRATCH_ROOTS);
+    },
+    "move-aside": async (a) => {
+      const parent = path.dirname(a.path);
+      const base = path.basename(a.path);
+      const target = path.join(parent, `.trash-${base}-${Date.now()}`);
+      try {
+        fs.renameSync(a.path, target);
+      } catch (err) {
+        if (err && (err.code === "EACCES" || err.code === "EPERM")) {
+          attention.signal(a.path, { reason: `${err.code} foreign-uid`, uid: null });
+          return { deferred: "foreign-uid", detail: `${err.code}: ${String(err.message).slice(0, 300)}` };
+        }
+        throw err;
+      }
+      attention.signal(target, { reason: a.reason || "reassigned-unpushed", uid: null });
+      return `moved aside to ${target}`;
     },
     "archive-remove": async (a) => {
       if (isWorkspace(a.path)) {

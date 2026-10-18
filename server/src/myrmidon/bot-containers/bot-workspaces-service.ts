@@ -90,6 +90,11 @@ export interface BotWorkspacesStore {
    * working: without it `closedKeys` comes from the lookback rows only.
    */
   listClosedKeys?(input: { companyId: string; agentId: string }): Promise<string[]>;
+  /**
+   * Keys of open tasks reassigned away from the bot (assigned to another agent or unassigned)
+   * at any time, with no lookback limit.
+   */
+  listReassignedKeys?(input: { companyId: string; agentId: string }): Promise<string[]>;
   /** Repo URL of the primary project workspace per project id. */
   listProjectRepoUrls(input: { projectIds: string[] }): Promise<Map<string, string>>;
   /** Stored `general.botDisk` (raw), for the grace settings. */
@@ -206,6 +211,7 @@ export function botWorkspacesService(deps: BotWorkspacesServiceDeps) {
           since: sinceDate.toISOString(),
           prState: prStateOf(prFacts),
           branch: `${WS_TASK_BRANCH_PREFIX}${key}`,
+          ...(verdict.reason ? { reason: verdict.reason } : {}),
         });
       }
 
@@ -229,6 +235,23 @@ export function botWorkspacesService(deps: BotWorkspacesServiceDeps) {
       for (const key of protectKeys) closedSet.delete(key);
       const closedKeys = [...closedSet].sort();
 
+      // Open tasks reassigned away from this bot: lookback rows plus unbounded store query.
+      const reassignedSet = new Set<string>(
+        keyed
+          .filter(
+            (row) =>
+              row.assigneeAgentId !== input.agentId && row.status !== "done" && row.status !== "cancelled",
+          )
+          .map((row) => row.identifier as string),
+      );
+      const extraReassigned = (await deps.store.listReassignedKeys?.({ companyId: input.companyId, agentId: input.agentId })) ?? [];
+      for (const key of extraReassigned) {
+        if (myrWsIssueKeySchema.safeParse(key).success) reassignedSet.add(key);
+      }
+      for (const key of protectKeys) reassignedSet.delete(key);
+      for (const key of closedKeys) reassignedSet.delete(key);
+      const reassignedKeys = [...reassignedSet].sort();
+
       const settings = wsBotDiskSettingsSchema.safeParse(rawSettings);
       const configured = settings.success ? settings.data : {};
       const pressure = (await deps.readPressure?.({ agentId: input.agentId }).catch(() => null)) ?? NO_PRESSURE;
@@ -245,6 +268,7 @@ export function botWorkspacesService(deps: BotWorkspacesServiceDeps) {
         workspaces,
         protectKeys,
         closedKeys,
+        reassignedKeys,
       };
     },
   };
@@ -369,6 +393,35 @@ export function botWorkspacesStore(db: Db): BotWorkspacesStore {
         .select({ identifier: issues.identifier })
         .from(issues)
         .where(and(eq(issues.companyId, companyId), sql`${issues.status} in ('done', 'cancelled')`, held))
+        .limit(5000);
+      return rows.map((r) => r.identifier).filter((id): id is string => !!id);
+    },
+
+    async listReassignedKeys({ companyId, agentId }) {
+      const reassigned = await db
+        .selectDistinct({ entityId: activityLog.entityId })
+        .from(activityLog)
+        .where(
+          and(
+            eq(activityLog.companyId, companyId),
+            eq(activityLog.entityType, "issue"),
+            eq(activityLog.action, "issue.updated"),
+            sql`${activityLog.details}->'_previous'->>'assigneeAgentId' = ${agentId}`,
+          ),
+        );
+      const reassignedIds = reassigned.map((r) => r.entityId);
+      if (reassignedIds.length === 0) return [];
+      const rows = await db
+        .select({ identifier: issues.identifier })
+        .from(issues)
+        .where(
+          and(
+            eq(issues.companyId, companyId),
+            inArray(sql`${issues.id}::text`, reassignedIds),
+            sql`${issues.status} not in ('done', 'cancelled')`,
+            or(ne(issues.assigneeAgentId, agentId), sql`${issues.assigneeAgentId} is null`),
+          ),
+        )
         .limit(5000);
       return rows.map((r) => r.identifier).filter((id): id is string => !!id);
     },

@@ -17,7 +17,7 @@
 //  - routes.ts — the express router: bearer guard + the endpoint.
 //  - index.ts — the app wiring (app.ts mounts that).
 
-import { and, count, eq, gt, gte, isNotNull, isNull, sql } from "drizzle-orm";
+import { and, count, eq, gt, gte, inArray, isNotNull, isNull, sql } from "drizzle-orm";
 import {
   agents,
   companies,
@@ -27,6 +27,10 @@ import {
   litellmCostEvents,
   type Db,
 } from "@paperclipai/db";
+import {
+  readBotDiskReports,
+  type BotDiskReportEntry,
+} from "../../bot-containers/bot-disk-report-store.js";
 import { readTracingHealthAttentionSignal } from "../../tracing-health/attention.js";
 import { readStaleBlockSignals } from "../../stale-block/attention.js";
 import {
@@ -101,6 +105,9 @@ export const METRIC_FAMILIES = [
   // often the channel adapter did not answer and the direct path took the call
   // back, per reason (design OPE-6985).
   "myrmidon_adapter_fallback_total",
+  // myrmidon(1.6.6-BOT-DISK): working copies on bot disks whose task is not
+  // assigned to that bot (reassigned, unassigned, or terminal).
+  "myrmidon_bot_copies_without_assignee",
 ] as const;
 
 export type MetricFamily = (typeof METRIC_FAMILIES)[number];
@@ -132,6 +139,8 @@ export interface MetricsSnapshotFields {
   agentErrorSignals: number;
   /** Cost spend collected by litellm-costs inside the error window, in cents. */
   llmCostCentsWindow: number;
+  /** Working copies on bot disks whose task is not assigned to that bot. */
+  copiesWithoutAssignee: number;
   /**
    * myrmidon(1.6.5-PROCS-Q3): the process half, read from the in-process
    * source (no DB). null renders HELP/TYPE with no samples — the families
@@ -208,6 +217,11 @@ export interface MetricsCollectorDeps {
    * fake, so no test depends on another test's fallbacks.
    */
   adapterFallbacks?: ChannelBridgeFallbackSource | null;
+  /**
+   * myrmidon(1.6.6-BOT-DISK): where bot disk reports come from. Production
+   * reads the in-process store; tests inject fakes. Absent -> readBotDiskReports().
+   */
+  diskReports?: BotDiskReportEntry[];
 }
 
 /** Reads the run counters — one grouped query, whole instance. */
@@ -334,6 +348,59 @@ async function readCostWindow(db: Db, windowStart: Date): Promise<number> {
   return Number(row?.total ?? 0);
 }
 
+const NAME_PREFIX_RE = /^(?:\.trash-|scratch-|tmp-)+/i;
+const NAME_KEY_HYPHEN_RE = /^([A-Za-z][A-Za-z0-9]*)-([0-9]+)/;
+const NAME_KEY_PLAIN_RE = /^([A-Za-z]+)([0-9]+)/;
+
+function taskKeyOf(name: string | null | undefined): string | null {
+  const stem = String(name ?? "").replace(NAME_PREFIX_RE, "");
+  const m = NAME_KEY_HYPHEN_RE.exec(stem) ?? NAME_KEY_PLAIN_RE.exec(stem);
+  return m ? `${m[1].toUpperCase()}-${m[2]}` : null;
+}
+
+/**
+ * Working copies on bot disks whose task is not assigned to that bot
+ * (reassigned to another agent, unassigned, or terminal).
+ */
+export async function countCopiesWithoutAssignee(
+  db: Db,
+  diskReports: BotDiskReportEntry[] = readBotDiskReports(),
+): Promise<number> {
+  if (!diskReports || diskReports.length === 0) return 0;
+
+  const pairs: Array<{ botKey: string; issueKey: string }> = [];
+  for (const entry of diskReports) {
+    if (!entry.botKey) continue;
+    for (const copy of entry.report?.copies ?? []) {
+      const rawKey = copy.key;
+      if (!rawKey || rawKey.startsWith(".trash-")) continue;
+      const key = taskKeyOf(rawKey) ?? rawKey.toUpperCase();
+      pairs.push({ botKey: entry.botKey, issueKey: key });
+    }
+  }
+  if (pairs.length === 0) return 0;
+
+  const issueKeys = [...new Set(pairs.map((p) => p.issueKey))];
+  const rows = await db
+    .select({
+      identifier: issues.identifier,
+      assigneeAgentId: issues.assigneeAgentId,
+      status: issues.status,
+    })
+    .from(issues)
+    .where(inArray(issues.identifier, issueKeys));
+
+  const byKey = new Map(rows.map((r) => [r.identifier?.toUpperCase(), r]));
+  let orphanCount = 0;
+  for (const pair of pairs) {
+    const issue = byKey.get(pair.issueKey.toUpperCase());
+    if (!issue || issue.assigneeAgentId !== pair.botKey || issue.status === "done" || issue.status === "cancelled") {
+      orphanCount++;
+    }
+  }
+  return orphanCount;
+}
+
 /** One scrape: every family is collected, and one family's failure never kills the rest. */
 export async function collectMetricsSnapshot(deps: MetricsCollectorDeps): Promise<MetricsSnapshot> {
   const collected = await collectMetricsParts(deps);
@@ -447,6 +514,11 @@ export async function collectMetricsParts(deps: MetricsCollectorDeps): Promise<M
     () => Promise.resolve().then(resolveChannelBridgeFallbackSource(deps.adapterFallbacks)),
     null as ChannelBridgeFallbackSample[] | null,
   );
+  const copiesWithoutAssignee = await guarded(
+    "myrmidon_bot_copies_without_assignee",
+    () => countCopiesWithoutAssignee(deps.db, deps.diskReports),
+    0,
+  );
 
   return {
     fields: {
@@ -461,6 +533,7 @@ export async function collectMetricsParts(deps: MetricsCollectorDeps): Promise<M
       swarmClaimsTotal: claimCounters.total,
       agentErrorSignals: errorSignals,
       llmCostCentsWindow: costWindow,
+      copiesWithoutAssignee,
       process: processSample,
       lanes: laneSample,
       adapterFallbacks: fallbackSample,
@@ -672,6 +745,14 @@ export function renderMetricsText(snapshot: MetricsSnapshot): string {
       "Metric families that failed to collect during this scrape.",
       "gauge",
       [`myrmidon_scrape_errors{${R}} ${formatSampleValue(snapshot.scrapeErrors)}`],
+    ),
+  );
+  blocks.push(
+    familyBlock(
+      "myrmidon_bot_copies_without_assignee",
+      "Working copies on bot disks whose task is not assigned to the bot.",
+      "gauge",
+      [`myrmidon_bot_copies_without_assignee{${R}} ${formatSampleValue(snapshot.copiesWithoutAssignee ?? 0)}`],
     ),
   );
 
