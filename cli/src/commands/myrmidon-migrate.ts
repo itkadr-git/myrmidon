@@ -7,6 +7,7 @@ import {
   closeRegisteredClients,
   createDb,
   inspectMigrations,
+  loadMigrationTargetSchema,
   runDatabaseRestore,
 } from "@paperclipai/db";
 import { checkVendorChain, chainStartsWithVendor, type ChainCheck } from "./myrmidon-migrate-chain.js";
@@ -504,6 +505,10 @@ export function checkCompatibility(
     const tgt = target.get(name);
     if (!tgt) {
       if (rows > 0) {
+        if (index.droppedTables?.has(name)) {
+          exclusions.push({ kind: "table", name, reason: "dropped in migration chain; not needed in target" });
+          continue;
+        }
         const introducedIn = index.tables.get(name);
         if (introducedIn !== undefined) vendorOnly.push({ kind: "table", table: name, rows, introducedIn });
         else problems.push(`table-missing-in-target:${name}`);
@@ -514,6 +519,10 @@ export function checkCompatibility(
     for (const col of info.columns) {
       if (tgtCols.has(col.name) || rows === 0) continue;
       const key = `${name}.${col.name}`;
+      if (index.droppedColumns?.has(key)) {
+        exclusions.push({ kind: "column", name: key, reason: "dropped in migration chain; not needed in target" });
+        continue;
+      }
       const introducedIn = index.columns.get(key);
       if (introducedIn !== undefined) {
         vendorOnly.push({ kind: "column", table: name, column: col.name, rows: candidateRows.get(key) ?? rows, introducedIn });
@@ -899,7 +908,8 @@ async function execute(
   const target: Target = { url: targetUrl, db: createDb(targetUrl) };
   try {
     return await withSourceSnapshot(readUrl, async (src) => {
-      const analysis = await analyzeSource(ctx, src, keys, sourceFilesDir);
+      const targetSchema = await loadMigrationTargetSchema();
+      const analysis = await analyzeSource(ctx, src, keys, sourceFilesDir, targetSchema);
       const inventory = buildInventory(analysis);
       const plan = await planTarget(target, stateDir, targetDir);
       if (plan.journal && plan.journal.sourceFingerprint !== analysis.fingerprint) {
@@ -1020,7 +1030,8 @@ async function realRun(ctx: Context, input: RealRunInput): Promise<MigrationResu
     }
 
     const targetInfo = await introspectTables(tq);
-    const compat = checkCompatibility(analysis, targetInfo);
+    const vendorIndex = await loadVendorOnlyIndex();
+    const compat = checkCompatibility(analysis, targetInfo, vendorIndex);
     const narrowing = compat.problems.length === 0 ? await checkNarrowing(src, analysis, targetInfo) : [];
     const problems = [...compat.problems, ...narrowing];
     if (problems.length > 0) {

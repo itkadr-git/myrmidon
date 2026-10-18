@@ -24,6 +24,7 @@ import {
   buildVendorOnlyIndex,
   loadVendorChain,
   loadVendorReleases,
+  type VendorOnlyIndex,
   type VendorRelease,
 } from "../commands/myrmidon-migrate-vendor-chain.js";
 import type { ColumnInfo, TableInfo } from "../commands/myrmidon-migrate-db.js";
@@ -43,10 +44,8 @@ import {
   sha256Hex,
 } from "../commands/myrmidon-migrate-secrets.js";
 import {
-  assertVendorOnlyAccepted,
   checkCompatibility,
   runMigration,
-  vendorOnlyReport,
   type MigrationOptions,
 } from "../commands/myrmidon-migrate.js";
 
@@ -164,16 +163,25 @@ describe("myrmidon:migrate pure guards", () => {
   it("excludes features that exist in the target schema from the vendor-only index", () => {
     const targetSchema = {
       tables: new Set(["mcp_oauth_clients", "routine_webhook_test_receipts"]),
-      columns: new Set(["agents.appearance", "user.keyboard_shortcuts"]),
+      columns: new Set(["agents.appearance"]),
     };
     const index = buildVendorOnlyIndex(undefined, targetSchema);
     expect(index.tables.has("mcp_oauth_clients")).toBe(false);
     expect(index.tables.has("routine_webhook_test_receipts")).toBe(false);
     expect(index.columns.has("agents.appearance")).toBe(false);
-    expect(index.columns.has("user.keyboard_shortcuts")).toBe(false);
-    // Features absent from targetSchema remain vendor-only:
+    // Features absent from targetSchema and not dropped remain vendor-only:
     expect(index.tables.get("chat_github_configurations")).toBe("v2026.1001.0");
     expect(index.columns.get("routine_triggers.archived")).toBe("v2026.1001.0");
+  });
+
+  it("accounts for net migration chain drops such as user.keyboard_shortcuts", () => {
+    // user.keyboard_shortcuts was introduced in 0284, but dropped in 0289_drop_user_keyboard_shortcuts
+    const index = buildVendorOnlyIndex();
+    expect(index.columns.has("user.keyboard_shortcuts")).toBe(false);
+    expect(index.droppedColumns?.has("user.keyboard_shortcuts")).toBe(true);
+    // Features that were not dropped and are not in target remain vendor-only:
+    expect(index.tables.get("chat_github_configurations")).toBe("v2026.1001.0");
+    expect(index.columns.get("agents.appearance")).toBe("v2026.1001.0");
   });
 
   it("loads target schema from our migration tree snapshot", async () => {
@@ -185,90 +193,6 @@ describe("myrmidon:migrate pure guards", () => {
     // Later vendor-only features are not in current Myrmidon schema:
     expect(targetSchema.tables.has("mcp_oauth_clients")).toBe(false);
     expect(targetSchema.columns.has("agents.appearance")).toBe(false);
-  });
-
-  describe("vendor-only pre-check against target schema (MIGRATE-D2)", () => {
-    const dummyAnalysis = (candidates: any[]) => ({
-      vendorOnlyCandidates: candidates,
-    } as any);
-
-    it("requires flag only when data will really not end up in the target", () => {
-      // 1. Data in features that target lacks: flag is required
-      const reportMissing = vendorOnlyReport([
-        { kind: "table", table: "browser_use_runs", rows: 5, introducedIn: "v2026.1012.0" },
-        { kind: "column", table: "user", column: "keyboard_shortcuts", rows: 2, introducedIn: "v2026.1001.0" },
-      ]);
-      expect(reportMissing.withData).toHaveLength(2);
-      expect(reportMissing.withData.length > 0).toBe(true); // requiresFlag is true
-
-      expect(() =>
-        assertVendorOnlyAccepted(
-          { acceptVendorOnlyData: false } as any,
-          dummyAnalysis(reportMissing.withData),
-        ),
-      ).toThrow(/accept-vendor-only-data/);
-
-      // With flag, assertVendorOnlyAccepted passes
-      expect(() =>
-        assertVendorOnlyAccepted(
-          { acceptVendorOnlyData: true } as any,
-          dummyAnalysis(reportMissing.withData),
-        ),
-      ).not.toThrow();
-
-      // 2. Data in features that target HAS in its schema: excluded from vendor-only candidates, so flag is NOT required
-      const targetSchema = {
-        tables: new Set(["browser_use_runs"]),
-        columns: new Set(["agents.appearance"]),
-      };
-      const vendorIndex = buildVendorOnlyIndex(
-        [
-          {
-            release: "v2026.1012.0",
-            extra: [
-              {
-                tag: "0280_mock",
-                sha256: "abc",
-                when: 1,
-                tables: ["browser_use_runs"],
-                columns: ["agents.appearance", "user.keyboard_shortcuts"],
-              },
-            ],
-          },
-        ],
-        targetSchema,
-      );
-      // browser_use_runs and agents.appearance are NOT vendor-only because target schema has them:
-      expect(vendorIndex.tables.has("browser_use_runs")).toBe(false);
-      expect(vendorIndex.columns.has("agents.appearance")).toBe(false);
-      // user.keyboard_shortcuts is vendor-only because target schema lacks it:
-      expect(vendorIndex.columns.get("user.keyboard_shortcuts")).toBe("v2026.1012.0");
-
-      // When source has data only in features that target HAS, candidates with data is empty:
-      const reportTargetHasData = vendorOnlyReport([]);
-      expect(reportTargetHasData.withData.length > 0).toBe(false); // requiresFlag is false
-      expect(() =>
-        assertVendorOnlyAccepted(
-          { acceptVendorOnlyData: false } as any,
-          dummyAnalysis(reportTargetHasData.withData),
-        ),
-      ).not.toThrow();
-
-      // 3. When source has data in both: only the missing feature is in candidates
-      const mixedFindings = [
-        // user.keyboard_shortcuts is absent from target:
-        { kind: "column" as const, table: "user", column: "keyboard_shortcuts", rows: 3, introducedIn: "v2026.1012.0" },
-      ];
-      const mixedReport = vendorOnlyReport(mixedFindings);
-      expect(mixedReport.withData).toHaveLength(1);
-      expect(mixedReport.withData[0]!.column).toBe("keyboard_shortcuts");
-      expect(() =>
-        assertVendorOnlyAccepted(
-          { acceptVendorOnlyData: false } as any,
-          dummyAnalysis(mixedReport.withData),
-        ),
-      ).toThrow(/user\.keyboard_shortcuts/);
-    });
   });
 
   describe("checkCompatibility with features Myrmidon lacks", () => {
@@ -331,6 +255,22 @@ describe("myrmidon:migrate pure guards", () => {
       expect(ok.exclusions).toEqual([{ kind: "table", name: "browser_use_runs", reason: "absent in target and empty in source" }]);
       const required = new Map([["user", table("user", [col("id"), col("keyboard_shortcuts", { nullable: false })])]]);
       expect(checkCompatibility(analysis, required, index).problems).toEqual(["target-column-requires-value:user.keyboard_shortcuts"]);
+    });
+
+    it("treats columns dropped in migration chain as exclusions, not missing errors", () => {
+      const droppedIndex: VendorOnlyIndex = {
+        tables: new Map(),
+        columns: new Map(),
+        droppedColumns: new Set(["user.keyboard_shortcuts"]),
+      };
+      const analysis = analysisOf([table("user", [col("id"), col("keyboard_shortcuts")])], { user: 2 });
+      const target = new Map([["user", table("user", [col("id")])]]);
+      const result = checkCompatibility(analysis, target, droppedIndex);
+      expect(result.problems).toEqual([]);
+      expect(result.vendorOnly).toEqual([]);
+      expect(result.exclusions).toEqual([
+        { kind: "column", name: "user.keyboard_shortcuts", reason: "dropped in migration chain; not needed in target" },
+      ]);
     });
   });
 
@@ -550,6 +490,52 @@ describeEmbeddedPostgres("myrmidon:migrate against a real Postgres", () => {
     await expectZeroWrites(f);
     expect(await sourceFingerprint(f.sourceUrl)).toBe(before);
   }, T);
+
+  it("prechecks vendor-only data against migration tree target schema: ignores dropped columns and requires flag only for truly absent features", async () => {
+    const f = await fixture();
+    // 1. Source database has data in user.keyboard_shortcuts (which was dropped in 0289 in the migration chain)
+    await scalar(f.sourceUrl, 'alter table "user" add column if not exists "keyboard_shortcuts" jsonb');
+    await scalar(
+      f.sourceUrl,
+      "insert into \"user\" (id, name, email, keyboard_shortcuts) values ('88888888-8888-4888-8888-888888888888', 'Shortcuts User', 'sc@test.local', '{\"ctrl_k\": true}')",
+    );
+
+    // Dry-run through production precheck: user.keyboard_shortcuts does NOT require the flag
+    const dry = (await runMigration({ ...f.options, dryRun: true })) as Record<string, any>;
+    expect(dry.status).toBe("ok");
+    expect(dry.vendorOnlyData.requiresFlag).toBe(false);
+    expect(dry.vendorOnlyData.withData).toEqual([]);
+
+    // Real run without --accept-vendor-only-data succeeds without error
+    const runResult = (await runMigration(f.options)) as Record<string, any>;
+    expect(runResult.status).toBe("ok");
+    expect(runResult.phases).toContain("data");
+
+    // 2. Now test with a fresh fixture containing data in a feature that is TRULY absent from the target schema (e.g. agents.appearance)
+    const f2 = await fixture();
+    await scalar(f2.sourceUrl, 'alter table "user" add column if not exists "keyboard_shortcuts" jsonb');
+    await scalar(
+      f2.sourceUrl,
+      "insert into \"user\" (id, name, email, keyboard_shortcuts) values ('88888888-8888-4888-8888-888888888888', 'Shortcuts User', 'sc@test.local', '{\"ctrl_k\": true}')",
+    );
+    await scalar(f2.sourceUrl, 'alter table "agents" add column if not exists "appearance" jsonb');
+    await scalar(f2.sourceUrl, "update \"agents\" set \"appearance\" = '{\"theme\": \"dark\"}'::jsonb");
+
+    // Production precheck dry run detects the truly vendor-only feature and requires the flag
+    const dry2 = (await runMigration({ ...f2.options, dryRun: true })) as Record<string, any>;
+    expect(dry2.status).toBe("ok");
+    expect(dry2.vendorOnlyData.requiresFlag).toBe(true);
+    expect(dry2.vendorOnlyData.withData).toMatchObject([{ table: "agents", column: "appearance" }]);
+    expect(dry2.vendorOnlyData.withData.some((c: any) => c.column === "keyboard_shortcuts")).toBe(false);
+
+    // Real run without --accept-vendor-only-data refuses before any target write
+    await expect(runMigration(f2.options)).rejects.toThrow(/accept-vendor-only-data/);
+    await expectZeroWrites(f2);
+
+    // Real run with --accept-vendor-only-data succeeds
+    const runWithFlag = (await runMigration({ ...f2.options, acceptVendorOnlyData: true })) as Record<string, any>;
+    expect(runWithFlag.status).toBe("ok");
+  }, T * 2);
 
   it("rejects unsupported source histories before any target write", async () => {
     for (const tamper of [
