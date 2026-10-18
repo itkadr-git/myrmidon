@@ -6179,42 +6179,22 @@ it.each(["held-ack", "lost-ack", "rejected-attach"] as const)(
         await within("warm attach after old ACK", attachment, 10_000);
         expect(rotations).toHaveLength(1);
         const retired = rotations[0]!;
-        // The rotation snapshot is cloned before the rotation completes, so
-        // the warm run.attached effect may still be missing from it when the
-        // snapshot was taken on an earlier scheduler tick. Wait for the event
-        // to be observable, then resolve it without a non-null assertion so a
-        // missing event surfaces as a readable error instead of a TypeError.
-        const findAttachedEvent = () =>
-          retired.committedEvents.find(
-            (entry) => entry.sourceEventId === heldEvent!.sourceEventId,
-          ) ??
-          core.store.state.committedEvents.find(
-            (entry) => entry.sourceEventId === heldEvent!.sourceEventId,
-          );
-        let attachedEvent = findAttachedEvent();
-        if (attachedEvent === undefined) {
-          const deadline = Date.now() + 30_000;
-          while (attachedEvent === undefined && Date.now() < deadline) {
-            await new Promise((resolve) => setTimeout(resolve, 25));
-            attachedEvent = findAttachedEvent();
-          }
-        }
+        // The rotation snapshot is cloned when rotating run identity, so
+        // the warm run.attached effect must be committed into it under the old run.
+        const attachedEvent = retired.committedEvents.find(
+          (entry) => entry.sourceEventId === heldEvent!.sourceEventId,
+        );
         if (attachedEvent === undefined) {
           throw new Error(
-            `warm-attach rotation snapshot missing committed run.attached event ${heldEvent!.sourceEventId} after timeout`,
+            `warm-attach rotation snapshot missing committed run.attached event ${heldEvent!.sourceEventId}`,
           );
         }
         expect(attachedEvent.logicalEffectCount).toBe(1);
         expect(retired.ackedSourceSeq).toBeGreaterThanOrEqual(
           attachedEvent.sourceSeq,
         );
-        const eventsSource = retired.committedEvents.some(
-          (entry) => entry.sourceEventId === heldEvent!.sourceEventId,
-        )
-          ? retired
-          : core.store.state;
         expect(
-          eventsSource.committedEvents.slice(-4).map((entry) => entry.eventType),
+          retired.committedEvents.slice(-4).map((entry) => entry.eventType),
         ).toEqual([
           "session.resumed",
           "session.capabilities.updated",
@@ -6222,7 +6202,7 @@ it.each(["held-ack", "lost-ack", "rejected-attach"] as const)(
           "run.attached",
         ]);
         expect(
-          eventsSource.committedEvents.every(
+          retired.committedEvents.every(
             (entry) => entry.envelope.runId === oldIdentity.runId,
           ),
         ).toBe(true);
