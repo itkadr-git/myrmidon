@@ -725,7 +725,8 @@ export function createBufferedTextFileWriter(filePath: string, maxBufferedBytes 
 
   const writeChunk = async (chunk: string | Buffer): Promise<void> => {
     if (gzipStream) {
-      if (!gzipStream.write(chunk)) await new Promise<void>((resolve) => gzipStream.once("drain", resolve));
+      const stream = gzipStream;
+      if (!stream.write(chunk)) await new Promise<void>((resolve) => stream.once("drain", resolve));
       return;
     }
     if (gzip) {
