@@ -3986,12 +3986,14 @@ export function recoveryService(
     successfulRunHandoffEvidence?: SuccessfulRunHandoffRecoveryEvidence | null;
     rerouteToSharedQueue?: boolean;
   }) {
+    // legacy stranded-recovery issues retain their in-place escalation.
     if (
       input.rerouteToSharedQueue &&
       !isStrandedIssueRecoveryIssue(input.issue) &&
       input.latestRun?.contextSnapshot &&
       typeof input.latestRun.contextSnapshot === "object" &&
-      "retryReason" in input.latestRun.contextSnapshot
+      "retryReason" in input.latestRun.contextSnapshot &&
+      input.recoveryCause !== "configuration_incomplete"
     ) {
       const rerouted = await rerouteStrandedIssueToSharedQueue({
         issue: input.issue,
