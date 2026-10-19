@@ -4422,13 +4422,26 @@ export function recoveryService(
       // autoPolicyDecision.kind === "vendor_default" falls through as-is.
     }
 
+    const approvedInfraReroute = Boolean(
+      input.rerouteToSharedQueue &&
+        input.latestRun &&
+        input.latestRun.contextSnapshot &&
+        typeof input.latestRun.contextSnapshot === "object" &&
+        "retryReason" in input.latestRun.contextSnapshot &&
+        input.latestRun.status !== "failed" &&
+        input.recoveryCause !== "configuration_incomplete" &&
+        input.recoveryCause !== SUCCESSFUL_RUN_MISSING_STATE_REASON &&
+        isInfraInterruptErrorCode(input.latestRun.errorCode) &&
+        !infraInterruptRetryBudgetExhausted({
+          contextSnapshot: input.latestRun.contextSnapshot,
+        }),
+    );
+
     // L1 infrastructure reroutes must happen before the board recovery action;
     // generic escalation callers still need the action to establish `blocked`.
     if (
-      input.rerouteToSharedQueue &&
-      input.latestRun &&
-      !isStrandedIssueRecoveryIssue(input.issue) &&
-      isInfraInterruptErrorCode(input.latestRun.errorCode)
+      approvedInfraReroute &&
+      !isStrandedIssueRecoveryIssue(input.issue)
     ) {
       // Rerouting is the recovery disposition itself. Apply it before creating
       // a board action, which would otherwise turn the issue blocked first.
@@ -4465,11 +4478,7 @@ export function recoveryService(
     if (!recoveryAction && input.issue.originKind === "stranded_issue_recovery") {
       // Legacy infra interruptions are intentionally handed back to todo;
       // other reroute causes still require the legacy blocked disposition.
-      if (
-        input.rerouteToSharedQueue &&
-        input.latestRun &&
-        isInfraInterruptErrorCode(input.latestRun.errorCode)
-      ) {
+      if (approvedInfraReroute) {
         return false;
       }
       const blockerIds = await existingUnresolvedBlockerIssueIds(
