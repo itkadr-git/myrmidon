@@ -16,6 +16,7 @@ export interface SiteHealthMonitorDeps {
   save(siteName: string, snapshot: SiteHealthSnapshot): Promise<void>;
   fence(siteName: string): Promise<void>;
   failover(siteName: string): Promise<void>;
+  setStatus?(siteName: string, status: "unreachable" | "draining"): Promise<void>;
   now?: () => number;
   log?: { warn(fields: object, message: string): void; error(fields: object, message: string): void };
 }
@@ -45,12 +46,22 @@ export function createSiteHealthMonitor(deps: SiteHealthMonitorDeps): {
         try {
           const result = await deps.probe(site);
           const next = reduceSiteHealth({ previous, now: now(), result });
+          if (result === "success" && previous.state === "unreachable") {
+            // Recovery is observational only; an operator must re-enable the site.
+            next.state = "unreachable";
+          }
           await deps.save(site.name, next);
 
           // Fence before starting any move. The reducer emits each intent once
           // per outage episode, so retries cannot duplicate failover requests.
-          if (next.intents.includes("drain")) await deps.fence(site.name);
-          if (next.intents.includes("failover")) await deps.failover(site.name);
+          if (next.intents.includes("drain")) {
+            await deps.setStatus?.(site.name, "unreachable");
+            await deps.fence(site.name);
+          }
+          if (next.intents.includes("failover")) {
+            await deps.setStatus?.(site.name, "draining");
+            await deps.failover(site.name);
+          }
           results.push({ siteName: site.name, state: next.state, intents: next.intents });
         } catch (err) {
           deps.log?.error({ siteName: site.name, err }, "remote site health poll failed");
