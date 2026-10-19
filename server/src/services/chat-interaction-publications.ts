@@ -332,15 +332,21 @@ export async function enqueueIssueInteractionChatPublications(
         inArray(chatEndpoints.provider, ["slack", "discord", "microsoft-teams", "imessage-photon"]),
       ),
     );
-  const ownerBindings = await telegramOwnerDeliveryBindings(db, {
-    companyId: interaction.companyId,
-    issueId: interaction.issueId,
-    createdByAgentId: interaction.createdByAgentId,
-  });
-  const ownerOnly = ownerBindings.length > 0;
-  const bindings = ownerOnly
-    ? ownerBindings
-    : vendorBindings.filter(({ endpoint }) => endpoint.provider !== "telegram");
+  // Vendor-bound conversations always keep their existing routing. Only use
+  // the owner DM as a fallback when the issue has no chat-thread binding.
+  const ownerBindings =
+    vendorBindings.length === 0
+      ? await telegramOwnerDeliveryBindings(db, {
+          companyId: interaction.companyId,
+          issueId: interaction.issueId,
+          createdByAgentId: interaction.createdByAgentId,
+          effectiveResolverPolicy: interaction.effectiveResolverPolicy,
+          addresseeAgentId: interaction.addresseeAgentId,
+          addresseeUserId: interaction.addresseeUserId,
+        })
+      : [];
+  const ownerOnly = vendorBindings.length === 0 && ownerBindings.length > 0;
+  const bindings = ownerOnly ? ownerBindings : vendorBindings;
   if (bindings.length === 0) return [];
 
   const taskUrl = publicChatInteractionTaskUrl(interaction.issueId);
