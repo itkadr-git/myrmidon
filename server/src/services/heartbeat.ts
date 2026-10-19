@@ -16837,6 +16837,30 @@ export function heartbeatService(
     return { start, end };
   }
 
+  async function hasDailyCapAssignmentWake(
+    companyId: string,
+    agentId: string,
+    reason: string,
+    client: Pick<Db, "select">,
+  ) {
+    const { start, end } = currentUtcDayWindow();
+    const [priorWake] = await client
+      .select({ id: agentWakeupRequests.id })
+      .from(agentWakeupRequests)
+      .where(and(
+        eq(agentWakeupRequests.companyId, companyId),
+        eq(agentWakeupRequests.agentId, agentId),
+        eq(agentWakeupRequests.source, "assignment"),
+        eq(agentWakeupRequests.triggerDetail, "system"),
+        eq(agentWakeupRequests.reason, reason),
+        eq(agentWakeupRequests.status, "skipped"),
+        gte(agentWakeupRequests.requestedAt, start),
+        lt(agentWakeupRequests.requestedAt, end),
+      ))
+      .limit(1);
+    return Boolean(priorWake);
+  }
+
   async function getHeartbeatDailyCapBlock(
     agent: typeof agents.$inferSelect,
     policy: ReturnType<typeof parseHeartbeatPolicy>,
@@ -30338,6 +30362,13 @@ export function heartbeatService(
         tx,
       );
       if (dailyCapBlock) {
+        if (
+          source === "assignment" &&
+          triggerDetail === "system" &&
+          (await hasDailyCapAssignmentWake(agent.companyId, agentId, dailyCapBlock.reason, tx))
+        ) {
+          return { kind: "skipped" as const };
+        }
         const now = new Date();
         await tx.insert(agentWakeupRequests).values({
           ...durableReceiptFields,
