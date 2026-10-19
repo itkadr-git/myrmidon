@@ -107,12 +107,11 @@ function statusText(status: BotContainerStatus | null, statusError: string | nul
   if (status.containerError) return `Container status unavailable: ${status.containerError}`;
   if (!status.container) return "Container status is not available for this agent.";
   const image = status.container.image ? ` (${status.container.image})` : "";
-  const idleMode = status.idleStopMode === "always_on" ? "Always on" : "On demand";
   const runtime = status.idleStopRuntime;
   const timestamps = runtime?.lastStoppedAt || runtime?.lastStartedAt
     ? `; last stopped ${runtime.lastStoppedAt ? new Date(runtime.lastStoppedAt).toLocaleString() : "never"}; last started ${runtime.lastStartedAt ? new Date(runtime.lastStartedAt).toLocaleString() : "never"}`
     : "";
-  return `${stateLabel(status.container.state)}${image} · IDLE-STOP: ${idleMode}${timestamps}`;
+  return `${stateLabel(status.container.state)}${image}${timestamps}`;
 }
 
 /** One line for the rollout category of the saved card, or null when the server did not say. */

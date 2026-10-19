@@ -256,6 +256,7 @@ describe("myrmidon(W2b) bot container routes: status", () => {
       gatewayConcurrencyNote: APPLIED_LIMIT_PENDING_NOTE,
       gatewayConcurrencyWarning: null,
       idleStopMode: "on_demand",
+      idleStopRuntime: null,
     });
     // No profile hashes leave the server.
     expect(JSON.stringify(res.body)).not.toContain("restartHash");
