@@ -3993,6 +3993,7 @@ export function recoveryService(
       input.latestRun?.contextSnapshot &&
       typeof input.latestRun.contextSnapshot === "object" &&
       "retryReason" in input.latestRun.contextSnapshot &&
+      isInfraInterruptErrorCode(input.latestRun.errorCode) &&
       input.recoveryCause !== "configuration_incomplete" &&
       input.latestRun.status !== "failed" &&
       input.recoveryCause !== SUCCESSFUL_RUN_MISSING_STATE_REASON &&
@@ -5032,6 +5033,16 @@ export function recoveryService(
         result.skipped += 1;
         continue;
       }
+      const scheduledRetryColumns = latestRun
+        ? await db
+            .select({
+              scheduledRetryAttempt: heartbeatRuns.scheduledRetryAttempt,
+              scheduledRetryReason: heartbeatRuns.scheduledRetryReason,
+            })
+            .from(heartbeatRuns)
+            .where(eq(heartbeatRuns.id, latestRun.id))
+            .then((rows) => rows[0] ?? null)
+        : null;
       // myrmidon(L1): the agent is non-invokable only because it is paused
       // (infrastructure), and the terminal run itself ended on an
       // infrastructure interrupt code within its retry budget, on a run
