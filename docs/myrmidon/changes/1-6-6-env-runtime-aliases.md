@@ -7,19 +7,23 @@ settings-section: Track 1 — platform
 
 ### DEBRAND runtime environment aliases (OPE-8124)
 
-- Runtime consumers resolve MYRMIDON_* environment variables first and retain PAPERCLIP_* fallback through the centralized compatibility resolver for the 1.6.6 transition.
+- Managed settings: `MYRMIDON_MANAGED_CONFIG`, `MYRMIDON_SETTING_DEFAULTS`, `MYRMIDON_HIDDEN_SETTINGS` (legacy aliases accepted for one release).
+- Datastore care: `MYRMIDON_HEARTBEAT_RUN_CONTEXT_RETENTION_DAYS` (legacy alias accepted for one release).
+- Migrated product settings include: `API_URL`, `CLOUD_API_ORIGIN`, `IN_WORKTREE`, `PROCESS_ROLE`, `PROCESS_MODE`, `ADAPTER_MODELS`, `RUNNER_API_TOOLS_ENABLED`, `RUNNER_API_TOOLS_COMPANY_IDS`, `MANAGED_CONFIG`, `SETTING_DEFAULTS`, `HIDDEN_SETTINGS`, and `HEARTBEAT_RUN_CONTEXT_RETENTION_DAYS`.
+- Remaining `PAPERCLIP_*` uses inside server/shared are compatibility inputs, generated/public API fields, process/adapter transport contracts, or independent vendor integrations; they were not blindly renamed.
 
 ## changelog-ru
 
 ### DEBRAND: синонимы runtime-переменных окружения (OPE-8124)
 
 - Runtime-потребители в первую очередь разрешают MYRMIDON_* и сохраняют fallback PAPERCLIP_* через централизованный resolver на переходный период 1.6.6.
+- Добавлены канонические имена для managed config/settings и datastore-care retention; старые имена остаются только как совместимые входы.
 
 ## divergence
 
 | ID | Что изменено | Файлы | Зачем | Тесты | Когда снимать | Ссылка |
 |---|---|---|---|---|---|---|
-| OPE-8124 | Runtime consumers use MYRMIDON_* first and legacy PAPERCLIP_* fallback through the centralized resolver | server/src/**, packages/shared/src/** | Standard startup no longer requires old names | Resolver precedence and affected runtime suites | Remove fallback after 1.6.6 compatibility window | PR #1410 |
+| OPE-8124 | Runtime consumers use MYRMIDON_* first and legacy PAPERCLIP_* fallback through the centralized resolver; managed config/settings and datastore-care retention now have canonical names | server/src/**, packages/shared/src/** | Standard startup no longer requires old names | Resolver precedence and affected runtime suites | Remove fallback after 1.6.6 compatibility window | PR #1410 |
 
 ## settings-en
 

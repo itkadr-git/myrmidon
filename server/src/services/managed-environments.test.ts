@@ -8,8 +8,12 @@ import {
 
 const noDb = null as unknown as Db;
 
-function parsedConfig(overrides: Record<string, unknown> = {}) {
+function parsedConfig(
+  overrides: Record<string, unknown> = {},
+  env: Record<string, string | undefined> = {},
+) {
   const config = parseManagedConfigEnv({
+    ...env,
     [MANAGED_CONFIG_ENV_KEY]: JSON.stringify({
       v: 1,
       mode: "cloud",
@@ -22,6 +26,26 @@ function parsedConfig(overrides: Record<string, unknown> = {}) {
   if (!config) throw new Error("expected a parsed managed config");
   return config;
 }
+
+describe("managed config environment aliases", () => {
+  const document = JSON.stringify({ v: 1, mode: "cloud", catalogVersion: "2026.720.0" });
+
+  it("accepts the legacy variable when the canonical variable is absent", () => {
+    expect(parseManagedConfigEnv({ PAPERCLIP_MANAGED_CONFIG: document })).toMatchObject({
+      mode: "cloud",
+      catalogVersion: "2026.720.0",
+    });
+  });
+
+  it("prefers the canonical variable, including an explicitly empty value", () => {
+    expect(() =>
+      parseManagedConfigEnv({
+        MYRMIDON_MANAGED_CONFIG: "",
+        PAPERCLIP_MANAGED_CONFIG: document,
+      }),
+    ).toThrow(/MYRMIDON_MANAGED_CONFIG/);
+  });
+});
 
 function environmentRow(overrides: Record<string, unknown> = {}) {
   const now = new Date();
