@@ -739,6 +739,19 @@ describe("issue activity event routes", () => {
     };
   }
 
+  function makeMonitorRouteDbMock() {
+    return {
+      transaction: async (callback: (tx: unknown) => Promise<unknown>) => callback({}),
+      select: () => ({
+        from: () => ({
+          where: () => ({
+            orderBy: async () => [],
+          }),
+        }),
+      }),
+    };
+  }
+
   it("strips monitor clear notice before persistence and posts one system comment", async () => {
     const issue = makeMonitoredIssue();
     mockIssueService.getById.mockResolvedValue(issue);
@@ -752,7 +765,7 @@ describe("issue activity event routes", () => {
       return issueUpdateWithReceipt(issue, patch);
     });
 
-    const response = await request(await createApp())
+    const response = await request(await createApp(makeMonitorRouteDbMock()))
       .patch(`/api/issues/${issue.id}`)
       .send({ status: "todo" });
 
@@ -776,7 +789,7 @@ describe("issue activity event routes", () => {
       mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) =>
         issueUpdateWithReceipt(issue, patch));
 
-      const response = await request(await createApp())
+      const response = await request(await createApp(makeMonitorRouteDbMock()))
         .patch(`/api/issues/${issue.id}`)
         .send({ status });
 
@@ -792,7 +805,7 @@ describe("issue activity event routes", () => {
     mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) =>
       issueUpdateWithReceipt(issue, patch));
 
-    const response = await request(await createApp())
+    const response = await request(await createApp(makeMonitorRouteDbMock()))
       .patch(`/api/issues/${issue.id}`)
       .send({ status: "todo" });
 
