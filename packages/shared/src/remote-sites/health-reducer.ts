@@ -53,7 +53,11 @@ export function reduceSiteHealth(input: SiteHealthInput): SiteHealthOutput {
     if (!previous.manualDrain && previous.state !== "quarantined") {
       state = resourceDegraded ? "degraded" : "healthy";
     }
-    return { ...previous, state, lastSeenAt, missCount, unavailableSince, failoverIssued: false, intents };
+    // Keep a one-shot failover marker while operator-controlled states persist.
+    const failoverIssued = previous.manualDrain || previous.state === "quarantined"
+      ? previous.failoverIssued
+      : false;
+    return { ...previous, state, lastSeenAt, missCount, unavailableSince, failoverIssued, intents };
   }
 
   unavailableSince ??= now;
@@ -62,7 +66,8 @@ export function reduceSiteHealth(input: SiteHealthInput): SiteHealthOutput {
     state = previous.manualDrain ? "draining" : "unreachable";
     if (!previous.manualDrain && previous.state !== "unreachable" && previous.state !== "draining") intents.push("drain");
   }
-  if (now - unavailableSince >= SITE_HEALTH_FAILOVER_AFTER_MS && previous.pinnedBotCount === 0 && !previous.failoverIssued) {
+  const operatorHold = previous.manualDrain || previous.state === "quarantined";
+  if (!operatorHold && now - unavailableSince >= SITE_HEALTH_FAILOVER_AFTER_MS && previous.pinnedBotCount === 0 && !previous.failoverIssued) {
     intents.push("failover");
   }
   return {
