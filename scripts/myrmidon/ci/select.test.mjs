@@ -60,6 +60,26 @@ describe("classifyChanges", () => {
     assert.equal(classifyChanges(["docs/api/issues.md"]).tier, "fast");
   });
 
+  it("includes shared-source guard suites when app.ts changes", () => {
+    for (const changedFile of ["server/src/app.ts", "server/src/myrmidon/app-plugin.ts"]) {
+      const result = selectTests(
+        [changedFile],
+        [{ name: "@paperclipai/server", dir: "server", vitestProject: true }],
+        [
+          { file: "server/src/__tests__/app-private-hostname-gate.test.ts", source: "" },
+          { file: "server/src/myrmidon/monitoring/dashboard/guard.myrmidon.test.ts", source: "" },
+        ],
+      );
+      assert.deepEqual(result.files, [{
+        package: "@paperclipai/server",
+        files: [
+          "server/src/__tests__/app-private-hostname-gate.test.ts",
+          "server/src/myrmidon/monitoring/dashboard/guard.myrmidon.test.ts",
+        ],
+      }]);
+    }
+  });
+
   it("honours a forced full run", () => {
     assert.equal(classifyChanges(["docs/myrmidon/ci.md"], { forceFull: true }).tier, "full");
   });
