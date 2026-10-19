@@ -268,6 +268,7 @@ describeEmbeddedPostgres(
       const question = {
         kind: "ask_user_questions" as const,
         continuationPolicy: "wake_assignee" as const,
+        resolverPolicy: "human_only" as const,
         payload: {
           version: 1 as const,
           questions: [
@@ -362,6 +363,7 @@ describeEmbeddedPostgres(
         {
           kind: "request_confirmation" as const,
           continuationPolicy: "wake_assignee" as const,
+          resolverPolicy: "human_only" as const,
           payload: {
             version: 1 as const,
             prompt: "Proceed with the deploy?",
