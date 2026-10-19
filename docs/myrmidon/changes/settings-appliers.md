@@ -1,5 +1,17 @@
-## settings-appliers
+---
+divergence-section: Трек 2 — ядро побудок и прогонов
+---
 
-The instance general settings document is the source of truth for every process. A successful PATCH commits the whole document under a row lock, then publishes `settings_changed` with the changed keys. The event is an invalidation hint, not a state carrier: listeners re-read the committed row before applying local effects. Periodic sweeps remain the fallback for processes that were offline or temporarily disconnected.
+## changelog-en
 
-The applier registry currently handles `runLimits`, `teamLiveness`, `myrmidonMaintenance`, and `processes`. Unknown keys are ignored so newer senders can coexist with older processes during a rolling deploy.
+### Processes apply committed instance settings across processes (SETTINGS-APPLIERS)
+
+- A successful PATCH commits the settings document under the row lock, then publishes `settings_changed` with the changed keys. Each process treats the event as an invalidation hint and re-reads the committed row before applying local effects; it never applies request-body values from the event.
+- The applier registry handles `runLimits`, `teamLiveness`, `myrmidonMaintenance`, and `processes`. Applies are serialized per process, and periodic sweeps remain the fallback for processes that were offline or temporarily disconnected.
+
+## changelog-ru
+
+### Процессы применяют сохранённые настройки экземпляра (SETTINGS-APPLIERS)
+
+- Успешный PATCH фиксирует документ настроек под блокировкой строки, затем публикует `settings_changed` с изменёнными ключами. Каждый процесс воспринимает событие как подсказку для инвалидации и перечитывает сохранённую строку перед применением локальных эффектов; значения из тела запроса не используются.
+- Реестр применителей обрабатывает `runLimits`, `teamLiveness`, `myrmidonMaintenance` и `processes`. Применения в каждом процессе сериализованы, а периодические обходы остаются резервом для процессов, которые были отключены или временно потеряли соединение.
