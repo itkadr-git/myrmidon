@@ -14,6 +14,8 @@ export type { InvokableAgentSnapshot, IssueSnapshot, ReleaseRecoveryBlockedNotic
 export type LockedIssueExecution = {
   /** Plan bounded recovery without draining messages while the finishing owner cleans up. */
   recoveryOnly?: boolean;
+  /** The primary release gate already resolved to released; drain only a released sibling. */
+  primaryReleaseOnly?: boolean;
   primaryIssue: IssueSnapshot;
   run: RunSnapshot;
   /** One released sibling to drain after the selected primary's existing path. */

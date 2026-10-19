@@ -145,6 +145,9 @@ async function runReleaseDrain(
   if (locked.recoveryOnly) {
     return runReleaseRecoveryTail(issue, run, ports.host, ports.transaction, input, postCommitEffects);
   }
+  if (locked.primaryReleaseOnly && !siblingIssue) {
+    return { outcome: { kind: "released" }, postCommitEffects };
+  }
   if (siblingIssue && shouldDrainSibling) {
     const claimed = await ports.transaction.claimIssueExecutionLease({
       companyId: run.companyId, issueId: siblingIssue.id, runId: run.id,

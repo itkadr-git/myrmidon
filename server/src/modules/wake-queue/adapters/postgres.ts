@@ -1196,7 +1196,7 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
             sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issueRow.id}`),
           inArray(heartbeatRuns.status, ["queued", "running", "scheduled_retry"]),
         )).limit(1);
-        if (successor || releaseOutcome) {
+        if (successor || (releaseOutcome && !releasedSiblingIssue)) {
           return releaseOutcome ?? { outcome: { kind: "released" }, postCommitEffects: [], run: runSnapshot };
         }
 
@@ -1259,6 +1259,7 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
 
         const locked: LockedIssueExecution = {
           primaryIssue: toIssueSnapshot(issueRow),
+          primaryReleaseOnly: Boolean(releaseOutcome),
           releasedSiblingIssue: releasedSiblingIssue && releasedSiblingIssue.status !== "done" && releasedSiblingIssue.status !== "cancelled"
             ? toIssueSnapshot(releasedSiblingIssue)
             : undefined,
