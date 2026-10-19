@@ -1,4 +1,4 @@
-# Settings appliers and commit ordering
+## settings-appliers
 
 The instance general settings document is the source of truth for every process. A successful PATCH commits the whole document under a row lock, then publishes `settings_changed` with the changed keys. The event is an invalidation hint, not a state carrier: listeners re-read the committed row before applying local effects. Periodic sweeps remain the fallback for processes that were offline or temporarily disconnected.
 
