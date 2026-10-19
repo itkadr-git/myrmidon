@@ -4467,6 +4467,7 @@ export function recoveryService(
       // other reroute causes still require the legacy blocked disposition.
       if (
         input.rerouteToSharedQueue &&
+        input.latestRun &&
         isInfraInterruptErrorCode(input.latestRun.errorCode)
       ) {
         return false;
