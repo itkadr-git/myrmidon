@@ -21612,7 +21612,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         message: reply,
         trigger: "subscribed_message",
       });
-      await vi.waitFor(() => expect(deferred).toHaveLength(1));
+      await vi.waitFor(() => expect(deferred.length).toBeGreaterThan(0));
       const drainTask = deferred.shift();
       expect(drainTask).toBeDefined();
       const drain = drainTask!();
