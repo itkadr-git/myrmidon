@@ -238,7 +238,13 @@ describe("myrmidon(1.6.1 SWARM-IDLE-WAKE) sweep pass", () => {
               if (table === agents && projection && "reportsTo" in projection) {
                 // listIdleRolePairs reads the joined agent/company directory;
                 // later direct agent reads are the assignability lookup.
-                return Promise.resolve([idleAgent]);
+                const directoryRows = [idleAgent];
+                return {
+                  where: () => ({
+                    orderBy: () => Promise.resolve(directoryRows),
+                    limit: (limit: number) => Promise.resolve(directoryRows.slice(0, limit)),
+                  }),
+                };
               }
               if (table === issues && projection && "issueId" in projection) {
                 // Ready-queue candidates are selected from issues and the
