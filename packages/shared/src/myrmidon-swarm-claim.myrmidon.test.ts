@@ -482,6 +482,7 @@ describe("swarm pheromone settings", () => {
       pheromone: { cooldownBaseMin: 30, cooldownCapMin: 720 },
     });
     expect(patched.success).toBe(true);
+    if (!patched.success) throw new Error("expected retired pheromone fields to parse");
     expect(patched.data.pheromone).toEqual({});
     // and the tolerant read path (dropRetiredPheromoneKeys) accepts a stored
     // pre-OPE-6894 row but drops only the dead keys — the real settings stay.
