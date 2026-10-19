@@ -1691,6 +1691,26 @@ describe("dockerBotContainerDriver against a fake Docker daemon", () => {
         });
         expect(pass2.kind).toBe("unchanged");
       });
+
+      it("persists idle-stop outside Docker labels and clears it when work wakes the bot", async () => {
+        await driver.create(spec());
+        await driver.writeProfile("agent-a", testProfile());
+        await driver.start("agent-a");
+        await driver.stopIdle("agent-a");
+
+        expect(await driver.status("agent-a")).toMatchObject({ state: "stopped", idleStopped: true });
+        expect(bot()?.body.Labels?.[BOT_LABEL_KEYS.idleStopped]).toBeUndefined();
+        const stateFile = path.join(path.dirname(path.dirname(volumes.hermes)), ".myrmidon-idle-stopped", "agent-a.json");
+        expect(fs.readFileSync(stateFile, "utf8")).toContain("idleStopped");
+
+        const noMaintenance: BotMaintenancePort = { enter: async () => ({ state: "on", runningRuns: 0, owned: true }), status: async () => ({ state: "on", runningRuns: 0 }), exit: async () => {} };
+        expect(await reconcileBot({ agentId: "agent-a", botKey: "agent-a", spec: spec(), compile: async () => testProfile(), driver, maintenance: noMaintenance })).toEqual({ kind: "unchanged" });
+        expect(daemon.requests.filter((request) => request.path.endsWith("/start"))).toEqual([]);
+
+        await driver.start("agent-a");
+        expect(await driver.status("agent-a")).toMatchObject({ state: "running", idleStopped: false });
+        expect(fs.existsSync(stateFile)).toBe(false);
+      });
     });
   });
 
