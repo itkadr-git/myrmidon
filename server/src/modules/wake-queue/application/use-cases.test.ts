@@ -405,7 +405,7 @@ describe("releaseIssueExecution", () => {
 
     const result = await release({ companyId: RUN.companyId, runId: RUN.id, now: new Date() });
 
-    expect(result.outcome.kind).toBe("released");
+    expect(result.outcome.kind).toBe("promoted");
     expect(claimIssueExecutionLease).toHaveBeenCalledWith({ companyId: RUN.companyId, issueId: sibling.id, runId: RUN.id });
     expect(findNextDeferredWake).toHaveBeenCalledWith({ companyId: RUN.companyId, issueId: sibling.id });
   });
