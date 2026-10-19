@@ -4151,12 +4151,7 @@ function getActorIdentityPart(req: Request): string {
       res.status(403).json({ error: "Company is outside this actor's authorization boundary" });
       return;
     }
-    const sourceRows = await svc.listSummaries(companyId);
-    const result = await filterAgentsForActor(req, sourceRows);
     const canReadConfigs = await actorCanReadConfigurationsForCompany(req, companyId);
-    const responseRows = canReadConfigs
-      ? result
-      : result.map((agent) => redactAgentListItemForRestrictedView(agent));
     const actorShape = JSON.stringify([
       getActorIdentityPart(req),
       req.actor.type === "board" ? req.actor.companyIds ?? [] : req.actor.companyId,
@@ -4164,10 +4159,16 @@ function getActorIdentityPart(req: Request): string {
         ? req.actor.onBehalfOfMemberships.map((membership) => ({ companyId: membership.companyId, status: membership.status, membershipRole: membership.membershipRole }))
         : null,
       canReadConfigs,
-      responseRows,
     ]);
+    // Compute the validator before the response query so a matching ETag
+    // avoids hydrating and filtering the full agent list.
     const vk = await svc.listSummariesVersionKey(companyId, actorShape);
     if (notModifiedOrSetEtag(req, res, vk)) return;
+    const sourceRows = await svc.listSummaries(companyId);
+    const result = await filterAgentsForActor(req, sourceRows);
+    const responseRows = canReadConfigs
+      ? result
+      : result.map((agent) => redactAgentListItemForRestrictedView(agent));
     // myrmidon(PERF-DIET-G): the list is a slim projection. It carries no
     // adapterConfig (so no per-row env redaction is needed any more) and the
     // model column travels as the SQL-computed `adapterModel`; the full
@@ -7048,18 +7049,18 @@ function getActorIdentityPart(req: Request): string {
     const limit = limitParam ? Math.max(1, Math.min(1000, parseInt(limitParam, 10) || 200)) : undefined;
     const summary = req.query.summary === "true" || req.query.summary === "1";
 
-    const runs = await heartbeat.list(companyId, agentId, limit, { summary });
-    const redactedRuns = await runRedactions.redactForRuns(companyId, runs);
     const actorShape = JSON.stringify([
       getActorIdentityPart(req),
       req.actor.type === "board" ? req.actor.companyIds ?? [] : req.actor.companyId,
       Array.isArray(req.actor.onBehalfOfMemberships)
         ? req.actor.onBehalfOfMemberships.map((membership) => ({ companyId: membership.companyId, status: membership.status, membershipRole: membership.membershipRole }))
         : null,
-      redactedRuns,
     ]);
+    // Compute the validator before fetching and redacting the response body.
     const vk = await heartbeat.listVersionKey(companyId, agentId, limit, summary, actorShape);
     if (notModifiedOrSetEtag(req, res, vk)) return;
+    const runs = await heartbeat.list(companyId, agentId, limit, { summary });
+    const redactedRuns = await runRedactions.redactForRuns(companyId, runs);
     res.json(redactedRuns);
   });
 

@@ -376,11 +376,7 @@ describe.sequential("agent permission routes", () => {
     mockAgentService.listSummariesVersionKey.mockImplementation(async (_companyId: string, actorShape: string) =>
       actorShape.includes("Builder") ? '"authorized-agent-list"' : '"agents-list:test"',
     );
-    mockHeartbeatService.list.mockResolvedValue([{ id: "run-1", summary: "initial" }]);
     mockHeartbeatService.listVersionKey.mockResolvedValue('"heartbeat-runs:v1"');
-    mockHeartbeatService.listVersionKey.mockImplementation(async (_companyId, _agentId, _limit, _summary, actorShape) => {
-      return actorShape.includes("REDACTED_SECRET") ? '"redacted-run-list"' : '"runs-v1"';
-    });
     mockAgentService.getChainOfCommand.mockResolvedValue([]);
     mockAgentService.resolveByReference.mockResolvedValue({ ambiguous: false, agent: baseAgent });
     mockAgentService.create.mockResolvedValue(baseAgent);
@@ -571,7 +567,7 @@ describe.sequential("agent permission routes", () => {
     expect(JSON.stringify(res.body)).not.toContain("***REDACTED***");
   }, 20_000);
 
-  it("returns 304 for a matching agent-list ETag after building the authorized response", async () => {
+  it("returns 304 for a matching agent-list ETag without fetching the response body", async () => {
     const app = await createApp({
       type: "board",
       userId: "board-user",
@@ -591,9 +587,8 @@ describe.sequential("agent permission routes", () => {
 
     expect(res.status).toBe(304);
     expect(res.text).toBe("");
-    expect(mockAgentService.listSummaries).toHaveBeenCalledWith(companyId);
-    const firstVersion = await mockAgentService.listSummariesVersionKey.mock.results[0]?.value;
-    expect(firstVersion).toBeDefined();
+    expect(mockAgentService.listSummaries).not.toHaveBeenCalled();
+    expect(mockAgentService.listSummariesVersionKey).toHaveBeenCalledOnce();
   }, 20_000);
 
   it("does not return a stale 304 when company access is revoked", async () => {
@@ -667,11 +662,31 @@ describe.sequential("agent permission routes", () => {
 
   // Mutation routes echo the stored row back, so they leak the same values the
   // GET paths redact.
+  it("returns 304 for a matching heartbeat-runs ETag without fetching or redacting the response body", async () => {
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "local_implicit",
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .get(`/api/companies/${companyId}/heartbeat-runs`)
+        .set("If-None-Match", '"heartbeat-runs:v1"'),
+    );
+
+    expect(res.status).toBe(304);
+    expect(mockHeartbeatService.listVersionKey).toHaveBeenCalledOnce();
+    expect(mockHeartbeatService.list).not.toHaveBeenCalled();
+    expect(mockRunRedactions.redactForRuns).not.toHaveBeenCalled();
+  }, 20_000);
+
   it("does not reuse a heartbeat-runs ETag when redaction changes", async () => {
     let redactionEnabled = false;
-    mockHeartbeatService.listVersionKey.mockImplementation(async (_companyId, _agentId, _limit, _summary, actorShape) => {
-      return actorShape.includes("REDACTED_SECRET") ? '"redacted-run-list"' : '"runs-v1"';
-    });
+    mockHeartbeatService.listVersionKey.mockImplementation(async () => (
+      redactionEnabled ? '"redacted-run-list"' : '"runs-v1"'
+    ));
     mockHeartbeatService.list.mockResolvedValue([{ id: "run-1", summary: "visible secret" }]);
     mockRunRedactions.redactForRuns.mockImplementation(async (_companyId, runs) => runs.map((run) => ({
       ...run,
@@ -693,7 +708,7 @@ describe.sequential("agent permission routes", () => {
       undefined,
       undefined,
       false,
-      expect.stringContaining('"summary":"visible secret"'),
+      expect.stringContaining('"type":"board"'),
     );
 
     redactionEnabled = true;
@@ -705,12 +720,14 @@ describe.sequential("agent permission routes", () => {
 
     expect(afterRedactionChange.status).toBe(200);
     expect(afterRedactionChange.body).toEqual([{ id: "run-1", summary: "REDACTED_SECRET" }]);
+    expect(mockHeartbeatService.list).toHaveBeenCalledTimes(2);
+    expect(mockRunRedactions.redactForRuns).toHaveBeenCalledTimes(2);
     expect(mockHeartbeatService.listVersionKey).toHaveBeenLastCalledWith(
       companyId,
       undefined,
       undefined,
       false,
-      expect.stringContaining('"summary":"REDACTED_SECRET"'),
+      expect.stringContaining('"type":"board"'),
     );
   }, 20_000);
 
