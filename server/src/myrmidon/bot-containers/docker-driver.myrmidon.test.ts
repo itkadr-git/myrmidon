@@ -1783,10 +1783,10 @@ describe("dockerBotContainerDriver against a fake Docker daemon", () => {
         await customDriver.writeProfile("agent-a", testProfile());
         await customDriver.start("agent-a");
 
-        const startsBefore = daemon.requests.filter((r) => r.path.endsWith("/start")).length;
+        const botStartsBefore = daemon.requests.filter((r) => r.path === "/containers/myrmidon-bot-agent-a/start").length;
         await expect(customDriver.stopIdle!("agent-a")).rejects.toThrow(/Failed to record idle-stopped state/);
         // Container was started back up
-        expect(daemon.requests.filter((r) => r.path.endsWith("/start")).length).toBeGreaterThan(startsBefore);
+        expect(daemon.requests.filter((r) => r.path === "/containers/myrmidon-bot-agent-a/start").length).toBeGreaterThan(botStartsBefore);
         expect(await customDriver.status("agent-a")).toMatchObject({ state: "running", idleStopped: false });
       });
 
@@ -1804,7 +1804,7 @@ describe("dockerBotContainerDriver against a fake Docker daemon", () => {
           status: async () => ({ state: "on", runningRuns: 0 }),
           exit: async () => {},
         };
-        const startsBefore = daemon.requests.filter((r) => r.path.endsWith("/start")).length;
+        const botStartsBefore = daemon.requests.filter((r) => r.path === "/containers/myrmidon-bot-agent-a/start").length;
         const res = await reconcileBot({
           agentId: "agent-a",
           botKey: "agent-a",
@@ -1815,7 +1815,7 @@ describe("dockerBotContainerDriver against a fake Docker daemon", () => {
         });
 
         expect(res.kind).toBe("applied_restart");
-        expect(daemon.requests.filter((r) => r.path.endsWith("/start")).length).toBe(startsBefore);
+        expect(daemon.requests.filter((r) => r.path === "/containers/myrmidon-bot-agent-a/start").length).toBe(botStartsBefore);
         const newStatus = await driver.status("agent-a");
         expect(newStatus).toMatchObject({ state: "stopped", idleStopped: true, image: "myrmidon-hermes:1.2.0" });
       });

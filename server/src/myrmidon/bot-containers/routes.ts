@@ -279,7 +279,11 @@ export function botContainerRoutes(deps: BotContainerRoutesDeps) {
     if (enabled && runtime && botKey && agent.adapterType === "hermes_gateway") {
       try {
         const status = await runtime.driver.status(botKey);
-        body.container = { state: status.state, image: status.image ?? null, idleStopped: status.idleStopped };
+        body.container = {
+          state: status.state,
+          image: status.image ?? null,
+          ...(status.idleStopped ? { idleStopped: true } : {}),
+        };
         // myrmidon(CONCURRENCY-SYNC): the applied limit, as recorded by the last apply's
         // marker. Only a container that exists can carry one.
         if (status.state !== "missing") {

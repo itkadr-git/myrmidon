@@ -1554,7 +1554,9 @@ export function dockerBotContainerDriver(
   async function writeIdleStopped(botKey: string, idleStopped: boolean): Promise<void> {
     const file = await idleStoppedStatePath(botKey);
     if (!idleStopped) {
-      await unlink(file).catch((error: NodeJS.ErrnoException) => { if (error.code !== "ENOENT") throw error; });
+      await unlink(file).catch((error: NodeJS.ErrnoException) => {
+        if (error.code !== "ENOENT" && error.code !== "ENOTDIR") throw error;
+      });
       return;
     }
     await mkdir(stateDir, { recursive: true, mode: 0o700 });
