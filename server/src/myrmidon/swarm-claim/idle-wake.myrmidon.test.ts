@@ -261,7 +261,10 @@ describe("myrmidon(1.6.1 SWARM-IDLE-WAKE) sweep pass", () => {
                 // matchIssue re-reads the task after clearExpiredAssignee has
                 // committed its conditional update, so this read observes the
                 // released assignment as an available queue item.
-                return { limit: (limit: number) => Promise.resolve([{ id: issueState.id, companyId: issueState.companyId, status: issueState.status, assigneeAgentId: issueState.assigneeAgentId }].slice(0, limit)) };
+                return {
+                  limit: (limit: number) => Promise.resolve([{ id: issueState.id, companyId: issueState.companyId, status: issueState.status, assigneeAgentId: issueState.assigneeAgentId }].slice(0, limit)),
+                  for: () => Promise.resolve([{ id: issueState.id, companyId: issueState.companyId, status: issueState.status, assigneeAgentId: issueState.assigneeAgentId }]),
+                };
               }
               if (projection && "agentId" in projection) return Promise.resolve([]);
               if (projection && "activeClaims" in projection) return Promise.resolve([]);
