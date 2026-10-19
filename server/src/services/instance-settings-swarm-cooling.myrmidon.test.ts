@@ -90,7 +90,7 @@ describe("myrmidon(1.6.5 SWARM-PANEL-COOLING) the cooling block through updateGe
       swarm: { cooldownBaseMin: 45, cooldownCeilingHours: 12, runWithoutTaskGate: true },
     });
 
-    const general = (await service.getGeneral()) as Record<string, unknown>;
+    const general = (await service.getGeneral()) as unknown as Record<string, unknown>;
     expect(general.swarm).toEqual({
       cooldownBaseMin: 45,
       cooldownCeilingHours: 12,
@@ -111,13 +111,13 @@ describe("myrmidon(1.6.5 SWARM-PANEL-COOLING) the cooling block through updateGe
     // The swarm route PATCHes through the same general document (merge path):
     // a merge that keeps the stored swarmClaim must also keep general.swarm.
     await service.updateGeneral({ swarmClaim: { ...STORED_SWARM_CLAIM, leaseTtlSec: 600 } });
-    let general = (await service.getGeneral()) as Record<string, unknown>;
+    let general = (await service.getGeneral()) as unknown as Record<string, unknown>;
     expect(general.swarm).toEqual({ cooldownBaseMin: 45 });
-    expect((general.swarmClaim as Record<string, unknown>).leaseTtlSec).toBe(600);
+    expect(((general.swarmClaim as unknown) as Record<string, unknown>).leaseTtlSec).toBe(600);
 
     await service.updateGeneral({ swarm: { cooldownBaseMin: 10, cooldownCeilingHours: 2 } });
-    general = (await service.getGeneral()) as Record<string, unknown>;
+    general = (await service.getGeneral()) as unknown as Record<string, unknown>;
     expect(general.swarm).toEqual({ cooldownBaseMin: 10, cooldownCeilingHours: 2 });
-    expect((general.swarmClaim as Record<string, unknown>).leaseTtlSec).toBe(600);
+    expect(((general.swarmClaim as unknown) as Record<string, unknown>).leaseTtlSec).toBe(600);
   });
 });
