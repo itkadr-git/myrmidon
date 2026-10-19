@@ -3986,10 +3986,16 @@ export function recoveryService(
     successfulRunHandoffEvidence?: SuccessfulRunHandoffRecoveryEvidence | null;
     rerouteToSharedQueue?: boolean;
   }) {
+    const recoveryCause = resolveStrandedRecoveryCause(
+      input.latestRun,
+      input.recoveryCause,
+    );
+
     // legacy stranded-recovery issues retain their in-place escalation.
     if (
       input.rerouteToSharedQueue &&
       !isStrandedIssueRecoveryIssue(input.issue) &&
+      recoveryCause !== SUCCESSFUL_RUN_MISSING_STATE_REASON &&
       input.latestRun?.contextSnapshot &&
       typeof input.latestRun.contextSnapshot === "object" &&
       "retryReason" in input.latestRun.contextSnapshot &&
@@ -4026,11 +4032,6 @@ export function recoveryService(
         .limit(1);
       if (activeActions.length > 0) return null;
     }
-    const recoveryCause = resolveStrandedRecoveryCause(
-      input.latestRun,
-      input.recoveryCause,
-    );
-
     // myrmidon(L4): a successful run that leaves the issue without a
     // disposition resolves by bounded auto-retry, then manager review,
     // instead of escalating straight to an owner card. Only the last-run-
