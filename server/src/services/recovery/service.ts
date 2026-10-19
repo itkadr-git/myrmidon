@@ -262,8 +262,6 @@ type LatestIssueRun =
       | "livenessState"
       | "startedAt"
       | "createdAt"
-      | "scheduledRetryAttempt"
-      | "scheduledRetryReason"
       // myrmidon(L1): claimedAdapterType's input, so the L1 branch below can
       // gate hold suppression on the run's own adapter
       | "runnerProfileJson"
@@ -5112,7 +5110,7 @@ export function recoveryService(
             issue,
             previousStatus: issue.status as StrandedPreviousStatus,
             latestRun,
-            recoveryCause: "dispatch_not_invokable",
+            recoveryCause: "stranded_assigned_issue",
             comment:
               productSaid("cannot safely continue automatic recovery because the original assignee is not invokable. ") +
               "The source assignment is unchanged and the board must choose the next action.",
