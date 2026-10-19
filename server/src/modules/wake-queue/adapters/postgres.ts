@@ -1246,7 +1246,7 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
         const recoveryOnly = Boolean(executionBlocker &&
           executionBlocker.cause === "execution_owner_active" && executionBlocker.runId === run.id &&
           runSnapshot.conversationContinuation && ["failed", "timed_out", "interrupted"].includes(run.status));
-        if (executionBlocker) {
+        if (executionBlocker && !recoveryOnly) {
           return { outcome: { kind: "released" }, postCommitEffects: [], run: runSnapshot };
         }
 
