@@ -9,7 +9,7 @@ write a wireframe, run QA acceptance, draft a release announcement. The Store is
 people (and agents) discover those skills, install them into a company, and manage them
 over time.
 
-If you want to *author* a skill, read [Writing a Skill](writing-a-skill). This page is
+If you want to *author* a skill, read [Writing a Skill](writing-a-skill.md). This page is
 about the **store around** skills: where they come from, how they get into your company,
 and how you keep them current.
 
@@ -324,8 +324,8 @@ manifest.
 
 ## See also
 
-- [Writing a Skill](writing-a-skill) — the `SKILL.md` format and authoring best practices
-- [How Agents Work](how-agents-work) — how skills fit into a heartbeat
+- [Writing a Skill](writing-a-skill.md) — the `SKILL.md` format and authoring best practices
+- [How Agents Work](how-agents-work.md) — how skills fit into a heartbeat
 
 ```
          (o)___(o)
