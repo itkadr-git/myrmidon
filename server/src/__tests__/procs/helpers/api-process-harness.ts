@@ -333,7 +333,7 @@ export async function startApiProcesses(options: {
   baseDir: string;
   connectionString: string;
   role?: string;
-  /** Use one port for every process so Linux SO_REUSEPORT load-balancing is exercised. */
+  /** Bind every API replica to this SO_REUSEPORT port. */
   sharedPort?: number;
   readyTimeoutMs?: number;
 }): Promise<ApiProcessHandle[]> {
@@ -341,17 +341,22 @@ export async function startApiProcesses(options: {
     ? Array.from({ length: options.count }, () => options.sharedPort!)
     : await Promise.all(Array.from({ length: options.count }, () => pickFreePort()));
   const handles: ApiProcessHandle[] = [];
-  for (let index = 0; index < options.count; index += 1) {
-    handles.push(
-      await startApiProcess({
-        baseDir: options.baseDir,
-        index,
-        connectionString: options.connectionString,
-        port: ports[index],
-        role: options.role,
-        readyTimeoutMs: options.readyTimeoutMs,
-      }),
-    );
+  try {
+    for (let index = 0; index < options.count; index += 1) {
+      handles.push(
+        await startApiProcess({
+          baseDir: options.baseDir,
+          index,
+          connectionString: options.connectionString,
+          port: ports[index],
+          role: options.role,
+          readyTimeoutMs: options.readyTimeoutMs,
+        }),
+      );
+    }
+    return handles;
+  } catch (error) {
+    await stopApiProcesses(handles);
+    throw error;
   }
-  return handles;
 }

@@ -295,7 +295,11 @@ describeProcs("two api processes on one test database (PROCS-T1.5 skeleton)", ()
           // Spread source ports across the range: adjacent ports can still
           // collide in the kernel's reuse-port hash bucket.
           const probe = batch * 64 + index;
-          return requestReplica(10_000 + ((probe * 9_973) % 50_000));
+          const candidate = 10_000 + ((probe * 9_973) % 50_000);
+          const localPort = candidate === sharedPort
+            ? 10_000 + ((candidate - 10_000 + 1) % 50_000)
+            : candidate;
+          return requestReplica(localPort);
         }),
       );
       for (const response of responses) {
