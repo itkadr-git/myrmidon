@@ -170,6 +170,16 @@ describe("decideFirstTickDelayMs", () => {
     const decision = decideFirstTickDelayMs({ ...base, now: at("2026-09-01T20:00:00Z"), ageMs: 55 * MINUTE });
     expect(decision).toEqual({ delayMs: 5 * HOUR + 15 * MINUTE, reason: "window_deferred" });
   });
+
+  it("defers past the full Irkutsk hypervisor window", () => {
+    const irkutskWindow: BackupWindow = {
+      timezone: "Asia/Irkutsk",
+      startMinuteOfDay: 4 * 60 + 30,
+      endMinuteOfDay: 6 * 60 + 10,
+    };
+    const now = at("2026-10-19T04:45:00+08:00");
+    expect(windowShiftForTick(now, 0, irkutskWindow)).toBe(85 * MINUTE);
+  });
 });
 
 describe("startBackupCatchUp", () => {

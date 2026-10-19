@@ -2,21 +2,20 @@
 
 > Russian version: [migration-from-paperclip.ru.md](migration-from-paperclip.ru.md)
 
-This guide moves one Paperclip instance — database, stored files and secrets — into a clean
-Myrmidon installation with the `myrmidon:migrate` command of the `paperclipai` CLI. It describes
-what the command does today; where it does not do something, the section says so.
+This guide shows how to copy one Paperclip instance (database, files and secrets) into a clean
+Myrmidon installation with the `myrmidon:migrate` command. The command never changes the source.
+It stops before it writes anything to the target if the source or a key does not fit.
 
-The command never changes the source, never writes into a database or directory it did not
-create, and stops before the first target write when the source history or a key does not fit.
-Read the whole guide once before you start; the rollback section matters most **before** you
-cut over, not after.
+Read the whole guide once before you start: the rollback section matters most **before** you
+cut over.
 
 ## 1. What is supported
 
 | Item | Supported |
 |---|---|
-| Source | Paperclip release `v2026.916.1` exactly. Compatibility is decided by the **hashes** of the applied migrations (278 entries, derived from the migration files of the build), not by version strings or the last migration number. |
-| Older or newer source | Rejected before any target write, with the reason (`older-than-supported-release`, `newer-than-supported-release`, `hash-mismatch`). Upgrade or downgrade the source to the release first. No adapter exists. |
+| Source | One of these Paperclip releases: `v2026.916.0` (alias of `v2026.916.1`; both have the same 278 migrations), `v2026.916.1`, `v2026.1001.0` (282), `v2026.1005.0` (292), or `v2026.1012.0` (304, the newest at the time of writing). Compatibility is decided by the **hashes** of the applied migrations: the source list must equal, in order, the list of exactly one of these releases. Version strings and the number of the last migration decide nothing. For the shared 916.0/916.1 chain, the dry run reports canonical release `v2026.916.1` (`source.vendorRelease`). |
+| Older, newer or unknown source | Rejected before any target write, with the reason (`older-than-supported-release`, `newer-than-supported-release`, `hash-mismatch`) and the list of supported releases. Bring the source to one of them first. No adapter exists. |
+| Data of Paperclip features that Myrmidon lacks | Not transferred; see the next section. Needs `--accept-vendor-only-data` when it is not empty. |
 | Source access | A PostgreSQL URL (read-only snapshot), or a **plain-format** `pg_dump` file. |
 | Secrets | `local_encrypted` secrets (`local_encrypted_v1` envelopes), in any JSON column. |
 | Files | The `local_disk` storage directory. |
@@ -25,9 +24,31 @@ cut over, not after.
 Not covered, by design: secrets kept in an external provider (for example a cloud secret
 manager) are copied as references — the values stay where they are and the Myrmidon target must
 be able to reach them; assets stored in an object store (S3 and similar) are copied as rows, the
-objects are not moved; tables outside the `public` schema are not transferred; the Paperclip
-state that lives outside the database and the storage directory (agent workspaces, adapter
-sessions on disk, environment variables of the service) is yours to carry over.
+objects are not moved; tables outside the `public` schema are not transferred;
+the Paperclip state that lives outside the database and the storage directory
+(agent workspaces, adapter sessions on disk, environment variables of the service)
+is yours to carry over.
+
+### Paperclip features that Myrmidon does not have
+
+Paperclip releases after `v2026.916.1` added tables and columns that Myrmidon does not have (for
+example browser-use runs, MCP OAuth clients, chat endpoints, the appearance of an agent). This is
+not an error, but that data is **not** copied. The dry run lists it under `vendorOnlyData`: the
+table or column, the number of rows that hold data (for a column: not null and not just the
+default value) and the release that introduced it.
+
+- If any of it holds data, a real run stops **before the first write** and tells you so. Look at
+  the list, decide that you can do without it (it stays in the source, which is never changed),
+  and run again with `--accept-vendor-only-data`.
+- Tables and columns that are empty are left out without a flag and are listed in the report.
+- Every other difference between the source and the target schema is still an error.
+- The check before the first write is made from the source release alone, so it may ask for the
+  flag for a table that the target turns out to have. The `vendorOnlyData` field of the final
+  result says what was really left out.
+- A number in a wider column type than the target's (for example the source `assets.byte_size`
+  is `bigint`, the target's is `integer`) is checked for fit before any row is copied; a value
+  that does not fit stops the run with `value-out-of-range-in-target`. A column that the newer
+  Paperclip release dropped (`user.keyboard_shortcuts`) is not needed in the target.
 
 ## 2. Prerequisites
 
@@ -84,8 +105,11 @@ paperclipai myrmidon:migrate --dry-run \
 The dry run proves the source can be migrated and prints a complete JSON inventory. It writes
 nothing to the source, the target database or the target directory. Check these fields:
 
-- `source.chain`: `{ "expected": 278, "applied": 278, "matches": true }`. Anything else ends the
-  run with `Unsupported source schema (<reason>)`.
+- `source.vendorRelease` and `source.chain`: the recognised release, and
+  `{ "expected": 304, "applied": 304, "matches": true }` (the numbers of that release). Anything
+  else ends the run with `Unsupported source schema (<reason>)`.
+- `vendorOnlyData`: data of Paperclip features that Myrmidon lacks (`withData`, `empty`,
+  `requiresFlag`). When `requiresFlag` is true, the real run needs `--accept-vendor-only-data`.
 - `inventory.tables[]`: every table with `rows` and a content `digest`; `secretCarrierColumns`
   lists the columns holding encrypted material.
 - `inventory.secretCarriers`: the total number of encrypted values found, per table and column,
@@ -99,7 +123,7 @@ nothing to the source, the target database or the target directory. Check these 
 - `target.state`: `fresh` for an untouched target.
 
 The command stops with a message, and nothing is written, when: the source history is not the
-supported chain; the source key does not decrypt every encrypted value; an encrypted value sits
+chain of a supported release; the source holds data of features Myrmidon lacks and `--accept-vendor-only-data` is not given; the source key does not decrypt every encrypted value; an encrypted value sits
 in a plain text column (it cannot be re-encrypted safely); asset files are missing; the target
 database or directory is not empty and was not created by an earlier run of this tool.
 
@@ -238,14 +262,15 @@ Flags (`paperclipai myrmidon:migrate --help`):
 | `--dry-run` | Inventory only. |
 | `--rollback` | Undo what an earlier run created. |
 | `--allow-missing-files` | Continue when asset files are missing or modified (reported). |
+| `--accept-vendor-only-data` | Continue when the source holds data of Paperclip features that Myrmidon lacks; it is listed in the report and not transferred. |
 
 Output is always JSON on stdout (`--json` is accepted for compatibility); errors go to stderr with
 a non-zero exit code. The top-level fields are `command`, `contractVersion` (1), `mode`
 (`dry-run`, `migrate`, `rollback`), `status` (`ok`, `already-migrated`, `rolled-back`),
-`writesPerformed`, `source`, `inventory`, `target`, and for a real run `phases`, `load` and
-`verification`.
+`writesPerformed`, `source`, `inventory`, `vendorOnlyData`, `target`, and for a real run `phases`,
+`load` and `verification`.
 
-Known limits: one supported source release; a single run moves one instance; the load is one
+Known limits: the source must be exactly one of the supported releases; a single run moves one instance; the load is one
 transaction, so a very large database needs matching transaction headroom; columns that hold encrypted material are not
 content-compared (they are verified by decrypting every value); data in tables outside
 `public`, in external object stores and in external secret providers is not moved.

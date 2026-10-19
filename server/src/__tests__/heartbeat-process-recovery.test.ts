@@ -6074,6 +6074,41 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(issue?.status).not.toBe("blocked");
   });
 
+  it("does not fail recovery when the dependency wait would close a cycle with a child it blocks", async () => {
+    const { companyId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "cancelled",
+      retryReason: "issue_continuation_needed",
+      runErrorCode: "issue_continuation_waiting_on_review",
+      runError: "Continuation parked: issue is waiting on review/approval",
+    });
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const childId = randomUUID();
+    await db.insert(issues).values({
+      id: childId,
+      companyId,
+      parentId: issueId,
+      title: "Child the parent itself blocks",
+      status: "blocked",
+      priority: "medium",
+      issueNumber: 30,
+      identifier: `${issuePrefix}-30`,
+    });
+    // Parent blocks its own child: waiting on it would create a cycle.
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId,
+      relatedIssueId: childId,
+      type: "blocks",
+    });
+
+    const result = await heartbeatService(db).reconcileStrandedAssignedIssues();
+
+    expect(result.waitingOnReviewResolved).toBe(0);
+    const [parent] = await db.select().from(issues).where(eq(issues.id, issueId));
+    expect(parent?.status).not.toBe("blocked");
+  });
+
   it("converts a continuation parked for review into a dependency wait on its existing blockers", async () => {
     const { companyId, agentId, issueId } = await seedStrandedIssueFixture({
       status: "in_progress",
@@ -14629,7 +14664,16 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       expect.objectContaining({
         status: "blocked",
         assigneeAgentId: agentId,
-        unblockDescriptor: { owner: "board", action: unblockAction },
+        // myrmidon(1.6.1 OPE-3983): the internal blocked path now carries the
+        // recovery-liveness event reasonRef the stale-block sweep judges.
+        unblockDescriptor: expect.objectContaining({
+          owner: "board",
+          action: unblockAction,
+          reasonRef: {
+            kind: "event",
+            eventKey: `recovery.liveness:${issueId}`,
+          },
+        }),
       }),
     ]);
     expect(
