@@ -157,6 +157,7 @@ import {
 } from "@paperclipai/shared"; // myrmidon(1.6.6 PROCS-J): the board's process composition
 import { readResolvedBoardProcesses } from "./myrmidon/board-processes/settings.js"; // myrmidon(1.6.6 PROCS-J)
 import { ProcessBus } from "./services/process-bus.js"; // myrmidon(1.6.6 RUN-DISPATCH-NOTIFY, OPE-6977)
+import { registerSettingsAppliers } from "./myrmidon/settings-appliers/index.js"; // myrmidon(PROCS-1.8)
 import {
   createLeaderLeaseManager,
   type LeaderLeaseManager,
@@ -1122,7 +1123,6 @@ async function startServerWithDatabaseTeardown(
       // failure is logged and the process starts without it.
       logger.error({ err }, "process bus failed to start; notify mode degrades to the resweep");
     }
-  }
   const heartbeat = config.heartbeatSchedulerEnabled && processRoleProfile.executesRuns
     ? heartbeatService(db as any, {
         pluginWorkerManager,
@@ -1195,6 +1195,9 @@ async function startServerWithDatabaseTeardown(
         },
       })
     : null;
+  if (processBus) {
+    registerSettingsAppliers(processBus, { db: db as any, processSupervisor });
+  }
   if (processSupervisor) {
     logger.info("myrmidon(PROCS-1.2): process supervisor wired on the worker");
   }
@@ -1207,6 +1210,7 @@ async function startServerWithDatabaseTeardown(
     // background role.
     backgroundWork: processRoleProfile.runsBackground,
     processSupervisor,
+    processBus,
     storageService,
     feedbackExportService: feedback,
     databaseBackupService: {
