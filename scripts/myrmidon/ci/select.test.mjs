@@ -36,7 +36,18 @@ describe("classifyChanges", () => {
     }
   });
 
-  it("keeps Myrmidon docs and scripts in the docs tier", () => {
+  it("forces the full tier for the predeploy extension compatibility gate", () => {
+    for (const file of [
+      "scripts/myrmidon/deploy/predeploy-board-check.sh",
+      "scripts/myrmidon/deploy/predeploy-board-check.test.mjs",
+    ]) {
+      const result = classifyChanges([file]);
+      assert.equal(result.tier, "full", file);
+      assert.match(result.reasons.join(" "), /predeploy compatibility gate/);
+    }
+  });
+
+  it("keeps Myrmidon docs and non-critical scripts in the docs tier", () => {
     const result = classifyChanges(["docs/myrmidon/tracks/1.md", "scripts/myrmidon/deploy/deploy.sh", "NOTICE"]);
     assert.equal(result.tier, "docs");
   });
