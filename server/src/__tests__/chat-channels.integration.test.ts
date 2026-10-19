@@ -21583,12 +21583,14 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         id: slackThread.thread.id,
         name: slackThread.thread.channel.name,
       });
-      const conversation = await db
-        .select()
-        .from(chatConversations)
-        .where(eq(chatConversations.endpointId, endpoint.id))
-        .then((rows) => rows[0]);
-      expect(conversation?.issueId).toBeTruthy();
+      await vi.waitFor(async () => {
+        const conversation = await db
+          .select()
+          .from(chatConversations)
+          .where(eq(chatConversations.endpointId, endpoint.id))
+          .then((rows) => rows[0]);
+        expect(conversation?.issueId).toBeTruthy();
+      });
       const holdEndpointLock = () =>
         db.transaction(async (tx) => {
           await tx
@@ -21714,6 +21716,11 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       text: "@maya investigate the deploy",
       mentioned: true,
     });
+    const deliveryCountBeforeDuplicates = await db
+      .select({ id: chatDeliveries.id })
+      .from(chatDeliveries)
+      .where(eq(chatDeliveries.endpointId, endpoint.id))
+      .then((rows) => rows.length);
 
     const duplicateResults = await Promise.allSettled(
       Array.from({ length: 12 }, () =>
@@ -21735,20 +21742,19 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         expect(result.reason).toMatchObject({ cause: { code: "55P03" } });
       }
     }
-    await deliverMessage({
-      callbacks,
-      endpointId: endpoint.id,
-      thread: first.thread,
-      message: firstMessage,
-      trigger: "mention",
-    });
+    const pendingDeliveries = await db
+      .select()
+      .from(chatDeliveries)
+      .where(eq(chatDeliveries.endpointId, endpoint.id));
+    expect(pendingDeliveries).toHaveLength(deliveryCountBeforeDuplicates + 1);
     await vi.waitFor(
       async () => {
         await service.processPendingDeliveries();
-        expect(wakeup).toHaveBeenCalledTimes(1);
+        expect(wakeup.mock.calls.length).toBeGreaterThan(0);
       },
       { timeout: 10_000 },
     );
+    expect(wakeup).toHaveBeenCalledTimes(1);
 
     let conversations = await db
       .select()
