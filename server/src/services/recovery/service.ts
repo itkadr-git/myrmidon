@@ -5119,7 +5119,12 @@ export function recoveryService(
         agent?.status === "paused" &&
         isInfraInterruptErrorCode(latestRun?.errorCode ?? null) &&
         adapterQualifiesForInfraInterruptRelief(latestRun ?? {}) &&
-        !infraInterruptStopUnconfirmed(latestRun ?? {})
+        !infraInterruptStopUnconfirmed(latestRun ?? {}) &&
+        !(
+          latestRun?.contextSnapshot &&
+          typeof latestRun.contextSnapshot === "object" &&
+          "retryReason" in latestRun.contextSnapshot
+        )
       ) {
         // getLatestIssueRun's projection omits scheduledRetryAttempt; read it
         // directly for the one run this candidate already resolved.
