@@ -24,6 +24,7 @@ export interface SiteCapacity {
 
 export interface FleetSiteInfo {
   name: string;
+  url?: string;
   status: "active" | "draining" | "quarantined" | "disabled";
   capacity: SiteCapacity;
   labels?: Record<string, string>;

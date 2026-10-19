@@ -10,6 +10,8 @@
 // Handles pending placement on overflow without silent local fallback.
 
 import { laneInterval } from "../monitoring/board-load/lanes.js";
+import { createSiteHealthMonitor, type MonitoredSite } from "./site-health-monitor.js";
+import { createSiteHealthSnapshot, type SiteHealthSnapshot } from "../../../../packages/shared/src/remote-sites/health-reducer.js";
 import {
   scheduleSitePlacements,
   type AgentPlacementInput,
@@ -32,6 +34,11 @@ export interface SiteSchedulerLaneDeps {
   listSites(companyId: string): Promise<FleetSiteInfo[]>;
   listAffinityRules(companyId: string): Promise<AffinityRule[]>;
   saveAdapterConfig(agentId: string, adapterConfig: Record<string, unknown>): Promise<void>;
+  listHealthSites?(): Promise<MonitoredSite[]>;
+  loadSiteHealth?(siteName: string): Promise<SiteHealthSnapshot>;
+  saveSiteHealth?(siteName: string, snapshot: SiteHealthSnapshot): Promise<void>;
+  fenceSite?(siteName: string): Promise<void>;
+  failoverSite?(siteName: string): Promise<void>;
   log?: {
     info(obj: Record<string, unknown>, msg: string): void;
     warn(obj: Record<string, unknown>, msg: string): void;
@@ -205,14 +212,45 @@ export function startSiteSchedulerLane(deps: SiteSchedulerLaneDeps): {
     }
   }
 
+  const healthMonitor = createSiteHealthMonitor({
+    listSites: deps.listHealthSites ?? (async () => {
+      const companyIds = [...new Set((await deps.listAgents()).map((agent) => agent.companyId))];
+      const sites: MonitoredSite[] = [];
+      for (const companyId of companyIds) {
+        for (const site of await deps.listSites(companyId)) {
+          if (site.url) sites.push(site as MonitoredSite);
+        }
+      }
+      return [...new Map(sites.map((site) => [site.name, site])).values()];
+    }),
+    probe: async (site) => {
+      let response: Response;
+      try {
+        response = await fetch(`${site.url.replace(/\/$/, "")}/health`, { signal: AbortSignal.timeout(5_000) });
+      } catch {
+        return "timeout";
+      }
+      return response.ok ? "success" : "timeout";
+    },
+    load: deps.loadSiteHealth ?? (async () => createSiteHealthSnapshot()),
+    save: deps.saveSiteHealth ?? (async () => undefined),
+    fence: deps.fenceSite ?? (async (siteName) => {
+      deps.log?.warn({ siteName }, "remote site fenced after health misses");
+    }),
+    failover: deps.failoverSite ?? (async (siteName) => {
+      deps.log?.warn({ siteName }, "remote site requires operator failover");
+    }),
+    log: deps.log,
+  });
   const timer = laneInterval("bot_reconcile", intervalMs, () => {
+    void healthMonitor.tick().catch((err) => deps.log?.error({ err }, "site health poll failed"));
     void tick().catch((err) => {
       deps.log?.error({ err }, "site-scheduler: sweep error");
     });
   });
 
   return {
-    stop: () => clearInterval(timer),
+    stop: () => { clearInterval(timer); healthMonitor.stop(); },
     tick,
   };
 }
