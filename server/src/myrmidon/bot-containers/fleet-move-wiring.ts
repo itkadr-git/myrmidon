@@ -164,8 +164,14 @@ export function myrmidonFleetMoveRoutes(db: Db): Router {
       return rows.map((agent: FleetAgentRow) => ({
         id: agent.id,
         companyId: agent.companyId,
-        projectId: agent.projectId,
-        priority: agent.priority,
+        // The agents table does not carry placement metadata; these optional
+        // scheduler fields are supplied by the container card when present.
+        projectId: isRecord(agent.metadata) && typeof agent.metadata.projectId === "string"
+          ? agent.metadata.projectId
+          : null,
+        priority: isRecord(agent.adapterConfig.container) && typeof agent.adapterConfig.container.priority === "string"
+          ? agent.adapterConfig.container.priority
+          : null,
         adapterConfig: (isRecord(agent.adapterConfig) ? agent.adapterConfig : {}),
       }));
     },

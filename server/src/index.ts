@@ -142,6 +142,7 @@ import { startBehaviorSettings } from "./myrmidon/behavior-settings/index.js"; /
 import { createPauseGuardSweepFromHeartbeat } from "./myrmidon/pause-guard/index.js";
 import { startRunPriority } from "./myrmidon/run-priority/index.js"; // myrmidon(1.6.5 RUN-PRIORITY A)
 import { startBotContainers, stopBotContainers } from "./myrmidon/bot-containers/startup.js"; // myrmidon(W2a)
+import { stopMyrmidonFleetScheduler } from "./myrmidon/bot-containers/fleet-move-wiring.js"; // myrmidon(1.6.6 REMOTE-SITES-T5)
 import { getBotContainerRuntime } from "./myrmidon/bot-containers/routes-wiring.js";
 import { initializeIdleStopService, shutdownIdleStopService } from "./myrmidon/idle-stop-startup.js";
 import { startLitellmCostSweep, stopLitellmCostSweep } from "./myrmidon/litellm-costs/startup.js"; // myrmidon(M2-A)
@@ -2795,6 +2796,7 @@ async function startServerWithDatabaseTeardown(
     // so it needs its own close.
     workerLoopbackServer?.close();
     stopBotContainers(); // myrmidon(W2a)
+    stopMyrmidonFleetScheduler(); // myrmidon(1.6.6 REMOTE-SITES-T5)
     shutdownIdleStopService(); // myrmidon(IDLE-STOP)
     stopLitellmCostSweep(); // myrmidon(M2-A)
     stopBoardProcessRegistry(); // myrmidon(1.6.6 PROCS-0.1)
