@@ -17,6 +17,7 @@ import {
   DEFAULT_DISTILL_BUDGET,
   filterProposals,
   isAutoAcceptSection,
+  isLifeSource,
   noiseShare,
   validateEvidence,
   withinBudget,
@@ -107,8 +108,8 @@ export async function runDistillPass(opts: DistillServiceOptions): Promise<Disti
     const proposals: DistillProposal[] = [];
     for (const item of parseDistillAnswer(answer.text)) {
       proposalsReturned += 1;
-      const evidenceRefs = [...new Set(item.evidence)].filter((ref) => known.has(ref));
-      const sources = evidenceRefs.map((ref) => ({ kind: "task" as const, ref }));
+      const rawSources = [...new Set(item.evidence)].map((ref) => ({ kind: "task" as const, ref }));
+      const sources = rawSources.filter((source) => known.has(source.ref));
       const proposal: DistillProposal = {
         class: item.class,
         body: item.body,
@@ -117,17 +118,22 @@ export async function runDistillPass(opts: DistillServiceOptions): Promise<Disti
           section: isAutoAcceptSection(item.section) ? item.section : "general",
           slug: item.slug,
         },
-        sources,
+        sources: rawSources,
         evidenceTaskRefs: evidenceRefs,
       };
       const invalid = validateEvidence(proposal);
+      const lifeLeak = rawSources.some((source) => isLifeSource(source));
+      if (proposal.class !== "noise" && lifeLeak) {
+        droppedLife += 1;
+        continue;
+      }
       if (proposal.class !== "noise" && invalid) {
         // evidence that resolves to no window task = unsourced; invalid bodies die silently too.
         droppedInvalid += 1;
         if (sources.length === 0) droppedUnsourced += 1;
         continue;
       }
-      proposals.push(proposal);
+      proposals.push({ ...proposal, sources });
     }
 
     const filtered = filterProposals(proposals);
