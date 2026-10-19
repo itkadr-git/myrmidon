@@ -152,6 +152,7 @@ describeEmbeddedPostgres("reconcileStrandedAssignedIssues: infrastructure interr
     const { issueId } = await seedStrandedIssue({
       errorCode: "agent_paused",
       runtimeMode: "native",
+      adapterType: "hermes_gateway",
       scheduledRetryAttempt: 0,
       contextSnapshotExtra: { retryReason: "issue_continuation_needed" },
     });
