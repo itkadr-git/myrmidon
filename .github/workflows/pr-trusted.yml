@@ -317,6 +317,9 @@ jobs:
       - name: Validate feature module boundaries
         run: pnpm check:module-boundaries
 
+      - name: Validate architecture ADR inventory
+        run: pnpm check:architecture-inventory
+
       - name: Test feature module boundary check
         run: node --test ./scripts/check-module-boundaries.test.mjs
 
