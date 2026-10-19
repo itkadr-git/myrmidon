@@ -31,6 +31,13 @@ flag.
 The flag is supplied by the server for endpoint detail and list responses. The
 UI treats it as optional so older responses remain valid.
 
+## Operator guidance
+
+Use the direct action only after the test dialog has completed its round trip.
+If the endpoint remains in `verifying`, keep the endpoint in service and wait for
+the agent reply before retrying. The stale badge does not require a reconnect,
+traffic interruption, or destructive action.
+
 ## Accessibility and action states
 
 The action uses a real button with a visible label. During mutation it remains
