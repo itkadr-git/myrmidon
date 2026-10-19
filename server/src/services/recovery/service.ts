@@ -5093,6 +5093,14 @@ export function recoveryService(
             result.skipped += 1;
           }
         } else {
+          const recoveryCause = resolveStrandedRecoveryCause(latestRun);
+          const rerouteRequested =
+            latestRun?.contextSnapshot &&
+            typeof latestRun.contextSnapshot === "object" &&
+            "retryReason" in latestRun.contextSnapshot &&
+            recoveryCause !== "configuration_incomplete" &&
+            latestRun.status !== "failed" &&
+            recoveryCause !== SUCCESSFUL_RUN_MISSING_STATE_REASON;
           const updated = await escalateStrandedAssignedIssue({
             issue,
             previousStatus: issue.status as StrandedPreviousStatus,
@@ -5100,6 +5108,7 @@ export function recoveryService(
             comment:
               productSaid("cannot safely continue automatic recovery because the original assignee is not invokable. ") +
               "The source assignment is unchanged and the board must choose the next action.",
+            ...(rerouteRequested ? { rerouteToSharedQueue: true } : {}),
           });
           if (updated) {
             result.escalated += 1;
