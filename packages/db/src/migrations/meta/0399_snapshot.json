@@ -1,5 +1,5 @@
 {
-  "id": "f1d5ef92-709c-4a8e-a9b3-0399e1c1a705",
+  "id": "ad0b1ca3-7a9b-451b-9ec6-52c839eeb9b7",
   "prevId": "07e3ffc6-5a67-47ff-824f-d59046b267e8",
   "version": "7",
   "dialect": "postgresql",
@@ -33053,6 +33053,12 @@
         "caste_source": {
           "name": "caste_source",
           "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "blocker_metadata": {
+          "name": "blocker_metadata",
+          "type": "jsonb",
           "primaryKey": false,
           "notNull": false
         }
