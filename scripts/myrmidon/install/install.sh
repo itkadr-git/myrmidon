@@ -55,6 +55,9 @@ MYR_REPO="${MYRMIDON_INSTALL_REPO:-itkadr-git/myrmidon}"
 # shared NAT address exhausts quickly.
 MYR_WEB="${MYRMIDON_INSTALL_WEB_URL:-https://github.com}"
 MYR_PROJECT=myrmidon
+# Production installs must bind identity to the host; the cached fallback can
+# differ from module hosts and is therefore unsafe for license issuance.
+MYR_LICENSE_INSTANCE_ID="${MYR_LICENSE_INSTANCE_ID:-}"
 
 DIR=""
 PORT=""
@@ -562,6 +565,7 @@ write_env() {
   [[ -n "${BETTER_AUTH_SECRET:-}" ]] || BETTER_AUTH_SECRET="$(rand_hex 32)"
   [[ -n "${PAPERCLIP_TOOL_ACTION_SIGNING_SECRET:-}" ]] || PAPERCLIP_TOOL_ACTION_SIGNING_SECRET="$(rand_hex 32)"
   [[ -n "$PUBLIC_URL" ]] || PUBLIC_URL="http://$(hostname -f 2>/dev/null || hostname):$PORT"
+  [[ -n "$MYR_LICENSE_INSTANCE_ID" ]] || [[ -r /etc/machine-id ]] || die "host /etc/machine-id is required for a stable installation id; repair the host machine-id or explicitly set the same MYR_LICENSE_INSTANCE_ID for the board and every module host"
 
   # SHARED-PG profile parameters, persisted into deploy.env so a re-run (the
   # update path) keeps exactly the shape the first install chose. "keep" marks
@@ -625,6 +629,7 @@ POSTGRES_USER=paperclip
 POSTGRES_PASSWORD=$POSTGRES_PASSWORD
 BETTER_AUTH_SECRET=$BETTER_AUTH_SECRET
 PAPERCLIP_TOOL_ACTION_SIGNING_SECRET=$PAPERCLIP_TOOL_ACTION_SIGNING_SECRET
+MYR_LICENSE_INSTANCE_ID=${MYR_LICENSE_INSTANCE_ID:-}
 $db_profile_env
 ENV
   chmod 600 "$DIR/deploy.env"
@@ -722,10 +727,12 @@ services:
       PAPERCLIP_PUBLIC_URL: "${MYRMIDON_PUBLIC_URL}"
       PAPERCLIP_TOOL_ACTION_SIGNING_SECRET: "${PAPERCLIP_TOOL_ACTION_SIGNING_SECRET:?PAPERCLIP_TOOL_ACTION_SIGNING_SECRET must be set}"
       BETTER_AUTH_SECRET: "${BETTER_AUTH_SECRET:?BETTER_AUTH_SECRET must be set}"
+      MYR_LICENSE_INSTANCE_ID: "${MYR_LICENSE_INSTANCE_ID:-}"
 %%BOARD_DATABASE_URL%%
       MYRMIDON_BOT_DOCKER_SOCKET: "/run/myrmidon-dockergate/engine.sock"
     volumes:
       - myrmidon-data:/myrmidon
+      - /etc/machine-id:/etc/machine-id:ro
       - ./run:/run/myrmidon-dockergate
 
   dockergate:
