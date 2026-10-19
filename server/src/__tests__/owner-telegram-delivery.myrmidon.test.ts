@@ -271,6 +271,7 @@ describeEmbeddedPostgres(
         resolverPolicy: "human_only" as const,
         payload: {
           version: 1 as const,
+          title: "Choose a deploy window",
           questions: [
             {
               id: "deploy-window",
