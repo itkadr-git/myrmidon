@@ -4008,6 +4008,8 @@ export function recoveryService(
       input.latestRun.status !== "failed" &&
       input.recoveryCause !== SUCCESSFUL_RUN_MISSING_STATE_REASON &&
       !infraInterruptRetryBudgetExhausted({
+        scheduledRetryAttempt: input.scheduledRetryAttempt,
+        scheduledRetryReason: input.scheduledRetryReason,
         contextSnapshot: input.latestRun.contextSnapshot,
       })
     ) {
@@ -4493,6 +4495,8 @@ export function recoveryService(
         input.latestRun?.contextSnapshot &&
         typeof input.latestRun.contextSnapshot === "object" &&
         !infraInterruptRetryBudgetExhausted({
+          scheduledRetryAttempt: input.scheduledRetryAttempt,
+          scheduledRetryReason: input.scheduledRetryReason,
           contextSnapshot: input.latestRun.contextSnapshot,
         })
       ) {
@@ -5182,6 +5186,8 @@ export function recoveryService(
               productSaid("cannot safely continue automatic recovery because the original assignee is not invokable. ") +
               "The source assignment is unchanged and the board must choose the next action.",
             ...(rerouteRequested ? { rerouteToSharedQueue: true } : {}),
+            scheduledRetryAttempt: scheduledRetryColumns?.scheduledRetryAttempt ?? null,
+            scheduledRetryReason: scheduledRetryColumns?.scheduledRetryReason ?? null,
           });
           if (updated) {
             result.escalated += 1;
