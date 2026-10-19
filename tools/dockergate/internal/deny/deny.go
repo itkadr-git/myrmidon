@@ -54,6 +54,7 @@ const (
 	TarNotCanonical       = "tar_not_canonical"
 	ForeignContainer      = "foreign_container"
 	StatePrecondition     = "state_precondition"
+	IdleStopDenied        = "idle_stop_denied"
 	VolumeRootInvariant   = "volume_root_invariant"
 	RateLimited           = "rate_limited"
 	ConcurrencyLimited    = "concurrency_limited"
