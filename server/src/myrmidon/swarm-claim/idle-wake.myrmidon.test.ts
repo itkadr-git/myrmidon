@@ -204,6 +204,18 @@ describe("myrmidon(1.6.1 SWARM-IDLE-WAKE) sweep pass", () => {
                 // has no run for the released task, so reclaim may proceed.
                 return { limit: () => Promise.resolve([]) };
               }
+              if (table === issueClaims && projection && "agentId" in projection) {
+                // liveClaimCountsByAgent is a direct select().from().where()
+                // query; reflect claim state when the query is awaited.
+                return {
+                  then: (resolve: (rows: Array<{ agentId: string }>) => unknown) => {
+                    const rows = claimState && !claimState.releasedAt
+                      ? [{ agentId: claimState.agentId }]
+                      : [];
+                    return Promise.resolve(rows).then(resolve);
+                  },
+                };
+              }
               if (table === issueClaims && projection && "id" in projection) {
                 // insertClaim's uniqueness guard must inspect the current live
                 // lease state; after release, this formerly expired row is gone.
