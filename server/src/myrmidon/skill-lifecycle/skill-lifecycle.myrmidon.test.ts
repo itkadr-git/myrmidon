@@ -221,12 +221,23 @@ describe("myrmidon(1.6-SKILL-LIFE): promotion needs an approved approval", () =>
     const harness = fakeStore({
       skills: [{ ...SKILL_REF }],
       versions: { [V1]: version(V1, 1, "first") },
+      records: [{
+        skillId: SKILL,
+        companyId: COMPANY,
+        state: "candidate",
+        verifiedVersionId: V1,
+        previousVerifiedVersionId: null,
+        approvedBy: null,
+        approvedAt: null,
+        reason: null,
+        updatedAt: "2026-10-01T00:00:00.000Z",
+      }],
       approvals: [approved()],
     });
     const service = serviceWith(harness.store);
     await service.promote(COMPANY, SKILL, { approvalId: APPROVAL, actor });
     await expect(service.promote(COMPANY, SKILL, { approvalId: APPROVAL, actor })).rejects.toMatchObject({
-      code: "promotion_requires_approval",
+      code: "promotion_requires_approved_status",
     });
     expect(harness.events).toHaveLength(1);
   });
