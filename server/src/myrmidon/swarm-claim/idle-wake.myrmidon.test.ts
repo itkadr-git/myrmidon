@@ -222,6 +222,18 @@ describe("myrmidon(1.6.1 SWARM-IDLE-WAKE) sweep pass", () => {
                 const rows = claimState && !claimState.releasedAt ? [{ id: claimState.id }] : [];
                 return { limit: () => Promise.resolve(rows) };
               }
+              if (table === issueClaims && (!projection || Object.keys(projection).length === 0)) {
+                // listExpiredClaims selects the complete claim row, then bounds
+                // it after orderBy; keep that route separate from the census
+                // projection so the expired row is visible before release.
+                return {
+                  orderBy: () => ({
+                    limit: (limit: number) => Promise.resolve(
+                      claimState && !claimState.releasedAt ? [claimState].slice(0, limit) : [],
+                    ),
+                  }),
+                };
+              }
               if (table === agents && projection && "reportsTo" in projection) {
                 // listIdleRolePairs reads the company agent directory directly;
                 // the joined agents -> companies route above serves only the
