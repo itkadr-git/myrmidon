@@ -100,6 +100,7 @@ export interface BotContainerStatus {
    * Never set by a driver that answers without inspecting (fleetd).
    */
   inspect?: unknown;
+  idleStopped?: boolean;
 }
 
 /** One template field whose live value (the container's inspect) no longer
@@ -196,6 +197,7 @@ export interface BotContainerDriver {
    *  already written to disk. Resolves once healthy again; throws otherwise. */
   restart(botKey: string): Promise<void>;
   stop(botKey: string): Promise<void>;
+  stopIdle?(botKey: string): Promise<void>;
   /**
    * myrmidon(1.6.2-BOT-DISK-C): the text of the bot's clone-hygiene report
    * (`$HERMES_HOME/.myrmidon/clone-hygiene.json`, written inside the container),
