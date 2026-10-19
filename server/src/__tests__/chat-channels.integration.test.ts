@@ -21597,7 +21597,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
             .select({ id: chatEndpoints.id })
             .from(chatEndpoints)
             .where(eq(chatEndpoints.id, endpoint.id))
-            .for("no key update");
+            .for("update");
           lockEntered();
           await holdLock;
         });
