@@ -563,7 +563,7 @@ export function createTaskPrSyncSweep(deps: TaskPrSyncSweepDeps) {
             result.failed += 1;
             // Constant errorKind only: an exception message can carry a credential.
             logger.warn(
-              { errorKind: "task_pr_sync_issue_failed", issueId: issue.id },
+              { errorKind: "task_pr_sync_issue_failed", issueId: issue.id, errorName: err instanceof Error ? err.name : typeof err },
               "task PR sync failed for one task",
             );
           }
