@@ -45,7 +45,7 @@ describe("planBotPlacement", () => {
   });
   it("enforces the site's aggregate run-token budget", () => {
     expect(decide({ bot: { ...base.bot, runTokensMin: 101 }, sites: base.sites.map((s) => ({ ...s, capacity: { ...s.capacity, maxRunTokensMin: 100 }, allocated: { ...s.allocated, runTokensMin: 0 } })) })).toEqual({ kind: "pending", reason: "capacity_exceeded" });
-    expect(decide({ bot: { ...base.bot, runTokensMin: 60 }, sites: base.sites.map((s) => ({ ...s, capacity: { ...s.capacity, maxRunTokensMin: 100 }, allocated: { ...s.allocated, runTokensMin: 50 } })) })).toEqual({ kind: "selected", siteName: "east", preempt: false });
+    expect(decide({ bot: { ...base.bot, runTokensMin: 40 }, sites: base.sites.map((s) => ({ ...s, capacity: { ...s.capacity, maxRunTokensMin: 100 }, allocated: { ...s.allocated, runTokensMin: 50 } })) })).toEqual({ kind: "selected", siteName: "east", preempt: false });
   });
   it("does not preempt by default and limits enabled preemption to P0", () => {
     const full = base.sites.map((s) => ({ ...s, capacity: { ...s.capacity, cpus: 0 } }));
