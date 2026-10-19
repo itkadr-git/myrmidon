@@ -1172,15 +1172,28 @@ function applyMonitorTransition(input: TransitionInput, stagePatch: Record<strin
       maxAttempts: currentMonitorState.maxAttempts,
       recoveryPolicy: currentMonitorState.recoveryPolicy,
     };
-    patch.executionPolicy = {
-      ...(input.policy ?? previousPolicy ?? { mode: "sequential", commentRequired: false, stages: [] }),
+    // myrmidon(MON-RESTORE): recovery must not bypass monitor bounds.
+    const exhaustedRestoreReason = exhaustedMonitorClearReason({
       monitor: restoredMonitor,
-    };
-    patch.monitorNextCheckAt = new Date(nextCheckAt);
-    patch.monitorWakeRequestedAt = null;
-    patch.monitorNotes = restoredMonitor.notes ?? null;
-    patch.monitorScheduledBy = restoredMonitor.scheduledBy;
-    targetMonitorState = buildScheduledMonitorState(currentMonitorState, restoredMonitor);
+      attemptCount: currentMonitorState.attemptCount,
+      now: new Date(),
+    });
+    if (exhaustedRestoreReason) {
+      targetMonitorState = {
+        ...currentMonitorState,
+        clearReason: exhaustedRestoreReason,
+      };
+    } else {
+      patch.executionPolicy = {
+        ...(input.policy ?? previousPolicy ?? { mode: "sequential", commentRequired: false, stages: [] }),
+        monitor: restoredMonitor,
+      };
+      patch.monitorNextCheckAt = new Date(nextCheckAt);
+      patch.monitorWakeRequestedAt = null;
+      patch.monitorNotes = restoredMonitor.notes ?? null;
+      patch.monitorScheduledBy = restoredMonitor.scheduledBy;
+      targetMonitorState = buildScheduledMonitorState(currentMonitorState, restoredMonitor);
+    }
   }
 
   // myrmidon(MON-RESTORE): send clear details out-of-band; the route strips this transient field.

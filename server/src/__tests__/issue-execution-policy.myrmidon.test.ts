@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { applyIssueExecutionPolicyTransition, normalizeIssueExecutionPolicy, parseIssueExecutionState } from "../services/issue-execution-policy.ts";
 import type { IssueExecutionPolicy, IssueExecutionState } from "@paperclipai/shared";
 
@@ -1677,6 +1677,68 @@ describe("issue execution policy transitions", () => {
       expect(result.patch.executionState).toMatchObject({
         monitor: { status: "scheduled", attemptCount: 2, notes: "Check deployment" },
       });
+    });
+
+    it("does not restore when maxAttempts is exhausted", () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-04-11T14:00:00.000Z"));
+      const result = applyIssueExecutionPolicyTransition({
+        issue: {
+          status: "blocked", assigneeAgentId: coderAgentId, assigneeUserId: null,
+          executionPolicy: null,
+          executionState: {
+            status: "idle", currentStageId: null, currentStageIndex: null,
+            currentStageType: null, currentParticipant: null, returnAssignee: null,
+            completedStageIds: [], lastDecisionId: null, lastDecisionOutcome: null,
+            monitor: {
+              status: "cleared", nextCheckAt: null, nextScheduledAt: "2026-04-11T13:30:00.000Z",
+              lastTriggeredAt: "2026-04-11T12:30:00.000Z", attemptCount: 2, maxAttempts: 2,
+              notes: "bounded", scheduledBy: "assignee", clearedAt: "2026-04-11T12:40:00.000Z",
+              clearReason: "invalid_status",
+            },
+          },
+          monitorAttemptCount: 2, monitorNextCheckAt: null,
+        },
+        policy: null, previousPolicy: null, requestedStatus: "in_progress",
+        requestedAssigneePatch: {}, actor: { agentId: coderAgentId },
+      });
+      expect(result.patch.executionPolicy).toBeUndefined();
+      expect(result.patch.monitorNextCheckAt).toBeUndefined();
+      expect(result.patch.executionState).toMatchObject({
+        monitor: { status: "cleared", clearReason: "max_attempts_exhausted" },
+      });
+      vi.useRealTimers();
+    });
+
+    it("does not restore after timeoutAt expires", () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-04-11T14:00:00.000Z"));
+      const result = applyIssueExecutionPolicyTransition({
+        issue: {
+          status: "blocked", assigneeAgentId: coderAgentId, assigneeUserId: null,
+          executionPolicy: null,
+          executionState: {
+            status: "idle", currentStageId: null, currentStageIndex: null,
+            currentStageType: null, currentParticipant: null, returnAssignee: null,
+            completedStageIds: [], lastDecisionId: null, lastDecisionOutcome: null,
+            monitor: {
+              status: "cleared", nextCheckAt: null, nextScheduledAt: "2026-04-11T15:00:00.000Z",
+              lastTriggeredAt: "2026-04-11T13:00:00.000Z", attemptCount: 1,
+              timeoutAt: "2026-04-11T13:30:00.000Z", notes: "timed", scheduledBy: "assignee",
+              clearedAt: "2026-04-11T13:05:00.000Z", clearReason: "invalid_status",
+            },
+          },
+          monitorAttemptCount: 1, monitorNextCheckAt: null,
+        },
+        policy: null, previousPolicy: null, requestedStatus: "in_review",
+        requestedAssigneePatch: {}, actor: { agentId: coderAgentId },
+      });
+      expect(result.patch.executionPolicy).toBeUndefined();
+      expect(result.patch.monitorNextCheckAt).toBeUndefined();
+      expect(result.patch.executionState).toMatchObject({
+        monitor: { status: "cleared", clearReason: "timeout_exceeded" },
+      });
+      vi.useRealTimers();
     });
 
     it("does not restore a manually cleared monitor and attaches notice data on clear", () => {
