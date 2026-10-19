@@ -44,6 +44,22 @@ const ADR_DIRECTORY = "docs/architecture/adr";
 /** Red-side selftests set this to a sandbox baseline (or "none"). */
 export const TEST_HOOKS = { migrationBaselineOverride: null };
 
+function checkArchitectureInventory(root) {
+  const adrDir = path.join(root, ADR_DIRECTORY);
+  const seedPath = path.join(root, "server/src/myrmidon/knowledge/seed-data.ts");
+  if (!fs.existsSync(adrDir) || !fs.existsSync(seedPath)) return [`${ADR_DIRECTORY}: inventory sources are missing`];
+  const registry = [...fs.readFileSync(seedPath, "utf8").matchAll(/^\s+slug: "(decisions\/[^\"]+)"/gm)].map((m) => m[1]);
+  const files = fs.readdirSync(adrDir).filter((file) => /^ADR-\d{4}-.+\.md$/.test(file));
+  const sources = files.flatMap((file) => [...fs.readFileSync(path.join(adrDir, file), "utf8").matchAll(/Registry: OPE-401 \(`([^`]+)`\)/g)].map((m) => m[1]));
+  const findings = [];
+  if (new Set(registry).size !== registry.length) findings.push("OPE-401 registry contains duplicate decision slugs");
+  if (new Set(sources).size !== sources.length) findings.push("ADR inventory contains duplicate OPE-401 sources");
+  for (const slug of registry) if (!sources.includes(slug)) findings.push(`missing ADR for ${slug}`);
+  for (const slug of sources) if (!registry.includes(slug)) findings.push(`ADR references unknown OPE-401 decision ${slug}`);
+  if (sources.length !== registry.length) findings.push(`ADR inventory count ${sources.length} does not match registry count ${registry.length}`);
+  return findings;
+}
+
 const PILOT_WORD = /pilot/i;
 /** Identifier-ish occurrences (not part of a longer identifier) count; a
  * substring inside another word does not. */
