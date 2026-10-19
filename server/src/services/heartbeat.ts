@@ -17409,6 +17409,15 @@ export function heartbeatService(
     companyAgents?: AgentOrgRow[],
   ) {
     if (run.status !== "queued") return run;
+
+    // PROCS-2/T2.1: when admission is stored in Postgres, the counters and
+    // the queued->running transition must share one transaction lock. This
+    // keeps two worker processes from both observing the last slot.
+    const processSettings = parseObject((await instanceSettings.getGeneral()).processes);
+    const useDatabaseAdmission = processSettings.admissionStore === "db";
+    const dbAdmissionLimits = useDatabaseAdmission
+      ? sharedRunAdmission().limits()
+      : null;
     const agent = await getAgent(run.agentId);
     if (!agent) {
       await cancelRunInternal(
@@ -17884,13 +17893,37 @@ export function heartbeatService(
     }
     const claimed = queuedCommentClaim
       ? queuedCommentClaim.run
-      : await withChatControlRecoveryGate(run, "claim", async (tx) =>
-          tx
+      : await withChatControlRecoveryGate(run, "claim", async (tx) => {
+          if (useDatabaseAdmission) {
+            await tx.execute(
+              sql`select pg_advisory_xact_lock(hashtextextended('myrmidon:run-admission', 0))`,
+            );
+            const [{ running }] = await tx
+              .select({ running: sql<number>`count(*)` })
+              .from(heartbeatRuns)
+              .where(eq(heartbeatRuns.status, "running"));
+            const [{ agentRunning }] = await tx
+              .select({ running: sql<number>`count(*)` })
+              .from(heartbeatRuns)
+              .where(
+                and(
+                  eq(heartbeatRuns.agentId, run.agentId),
+                  eq(heartbeatRuns.status, "running"),
+                ),
+              );
+            const agentLimit = parseHeartbeatPolicy(agent).maxConcurrentRuns;
+            if (
+              dbAdmissionLimits?.maxConcurrentRuns != null &&
+              Number(running ?? 0) >= dbAdmissionLimits.maxConcurrentRuns
+            ) return null;
+            if (Number(agentRunning ?? 0) >= agentLimit) return null;
+          }
+          return tx
             .update(heartbeatRuns)
             .set({
               status: "running",
               runnerProfileJson: sql`(case when jsonb_typeof(${heartbeatRuns.runnerProfileJson}) = 'object' then ${heartbeatRuns.runnerProfileJson} else '{}'::jsonb end) || ${JSON.stringify({ adapterDispatch: { adapterType: agent.adapterType } })}::jsonb`,
-                    ...legacyControllerClaim(run.runtimeMode),
+              ...legacyControllerClaim(run.runtimeMode),
               responsibleUserId,
               startedAt: run.startedAt ?? claimedAt,
               updatedAt: claimedAt,
@@ -17902,8 +17935,8 @@ export function heartbeatService(
               ),
             )
             .returning()
-            .then((rows) => rows[0] ?? null),
-        );
+            .then((rows) => rows[0] ?? null);
+        });
     if (!claimed) return null;
 
     publishLiveEvent({
