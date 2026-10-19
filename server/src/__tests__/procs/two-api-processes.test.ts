@@ -9,6 +9,7 @@
 // that the later scenarios plug into.
 
 import fs from "node:fs";
+import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -263,7 +264,27 @@ describeProcs("two api processes on one test database (PROCS-T1.5 skeleton)", ()
 
     const seenBootIds = new Set<string>();
     for (let request = 0; request < 40 && seenBootIds.size < processes.length; request += 1) {
-      const response = await requestApi(`http://127.0.0.1:${sharedPort}`, "/api/myrmidon/board-processes");
+      const response = await new Promise<{ status: number; text: string; json: unknown }>((resolve, reject) => {
+        const client = http.get(
+          `http://127.0.0.1:${sharedPort}/api/myrmidon/board-processes`,
+          { agent: false },
+          (incoming) => {
+            const chunks: Buffer[] = [];
+            incoming.on("data", (chunk: Buffer) => chunks.push(chunk));
+            incoming.on("end", () => {
+              const text = Buffer.concat(chunks).toString("utf8");
+              let json: unknown = null;
+              try {
+                json = JSON.parse(text) as unknown;
+              } catch {
+                json = null;
+              }
+              resolve({ status: incoming.statusCode ?? 0, text, json });
+            });
+          },
+        );
+        client.on("error", reject);
+      });
       expect(response.status, response.text.slice(0, 400)).toBe(200);
       const body = response.json as BoardProcessesResponse;
       seenBootIds.add(body.selfBootId);
