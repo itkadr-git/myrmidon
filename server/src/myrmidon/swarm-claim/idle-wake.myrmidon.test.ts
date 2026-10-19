@@ -225,7 +225,11 @@ describe("myrmidon(1.6.1 SWARM-IDLE-WAKE) sweep pass", () => {
                 };
               }
               if (table === agents && projection && "reportsTo" in projection) {
-                return { then: (resolve: (rows: unknown[]) => unknown) => Promise.resolve([idleAgent]).then(resolve) };
+                // The production read filters with `.where(...)` but the
+                // assignability helper awaits the query directly (no `.then`).
+                // Return an awaitable array rather than a hand-built thenable,
+                // whose `.then` argument shape differs from Drizzle's chain.
+                return Promise.resolve([idleAgent]);
               }
               if (table === issues && projection && "issueId" in projection) {
                 // Ready-queue candidates are selected from issues and the
