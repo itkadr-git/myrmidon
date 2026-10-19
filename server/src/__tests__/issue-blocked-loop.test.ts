@@ -253,6 +253,33 @@ describeEmbeddedPostgres("blocked loop limiter (route level)", () => {
     expect(res.body.error).toContain("external_wait requires executionPolicy.monitor");
   });
 
+  it("accepts external_wait by moving to in_review with monitor", async () => {
+    const s = await seed();
+    const res = await request(createApp(agentActor(s)))
+      .patch(`/api/issues/${s.issueId}`)
+      .send({
+        status: "blocked",
+        blockerMetadata: {
+          blockReason: "external_wait",
+          owner: { agentId: s.agentId },
+          externalRef: "ci-run-2",
+          nextCheckAt: "2026-10-20T00:00:00.000Z",
+          timeoutAt: "2026-10-21T00:00:00.000Z",
+          escalationPolicy: "agent",
+        },
+        executionPolicy: {
+          monitor: {
+            nextCheckAt: "2026-10-20T00:00:00.000Z",
+            scheduledBy: "assignee",
+            notes: "Wait for external CI.",
+          },
+        },
+      });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.status).toBe("in_review");
+    expect(res.body.monitorNextCheckAt).toEqual(new Date("2026-10-20T00:00:00.000Z").toISOString());
+  });
+
   it("clears blocker metadata when the task leaves blocked", async () => {
     const s = await seed();
     const blocked = await agentBlocks(s, {});
