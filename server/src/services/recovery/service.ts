@@ -4478,7 +4478,14 @@ export function recoveryService(
     if (!recoveryAction && input.issue.originKind === "stranded_issue_recovery") {
       // Approved infra reroutes bypass recovery actions; exhausted retries and
       // legacy recovery cases retain the board escalation disposition.
-      if (approvedInfraReroute && !infraInterruptRetryBudgetExhausted) {
+      if (
+        approvedInfraReroute &&
+        input.latestRun?.contextSnapshot &&
+        typeof input.latestRun.contextSnapshot === "object" &&
+        !infraInterruptRetryBudgetExhausted({
+          contextSnapshot: input.latestRun.contextSnapshot,
+        })
+      ) {
         return false;
       }
       const blockerIds = await existingUnresolvedBlockerIssueIds(
@@ -4507,7 +4514,11 @@ export function recoveryService(
       input.issue.companyId,
       input.issue.id,
     );
-    if (input.rerouteToSharedQueue && blockerIds.length === 0) {
+    if (
+      input.rerouteToSharedQueue &&
+      !isStrandedIssueRecoveryIssue(input.issue) &&
+      blockerIds.length === 0
+    ) {
       const rerouted = await rerouteStrandedIssueToSharedQueue({
         issue: input.issue,
         reason: input.notice?.title ?? recoveryCause,
