@@ -13,6 +13,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   agents,
   authUsers,
+  chatActions,
   chatConversations,
   chatEndpointResources,
   chatEndpoints,
@@ -320,6 +321,21 @@ describeEmbeddedPostgres(
       expect(payload.interactionId).toBe(interaction.id);
       expect(payload).not.toHaveProperty("card");
       expect(payload.text).not.toContain("chat_action");
+      const executableActions = await db
+        .select({ id: chatActions.id })
+        .from(chatActions)
+        .where(
+          and(
+            eq(chatActions.companyId, fixture.companyId),
+            eq(chatActions.conversationId, publications[0]!.conversationId),
+            eq(
+              sql<string>`${chatActions.payload}->>'interactionId'`,
+              interaction.id,
+            ),
+          ),
+        );
+      expect(executableActions).toEqual([]);
+      expect(payload.text!.length).toBeLessThanOrEqual(4_096);
       const [boundConversation] = await db
         .select()
         .from(chatConversations)
