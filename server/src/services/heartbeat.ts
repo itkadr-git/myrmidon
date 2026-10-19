@@ -5,7 +5,10 @@ import { readQueuedInteractionResponse } from "../myrmidon/upstream-steer/queued
 // describeRunRetrySchedule and the issue payload reads it back with
 // readRunRetryPolicySnapshot (see docs/myrmidon/SETTINGS.md).
 import {
+  DEFAULT_RUN_RETRY_MAX_ATTEMPTS,
   describeRunRetrySchedule,
+  isPermanentAgentFailure,
+  isTransientFailure,
   readRunRetryPolicySnapshot,
 } from "../myrmidon/run-retry-policy/index.js";
 import { AGENT_CHAT_DIRECTIVE, conversationReplay, isConversation, isConversationExecutionWake, isWaitingConversation, prepareConversationTurn, settleConversationTurn } from "./agent-conversations.js";
@@ -18069,7 +18072,12 @@ export function heartbeatService(
     agentId: string,
     outcome: "succeeded" | "interrupted" | "failed" | "cancelled" | "timed_out",
     failureReason?: string | null,
-    options?: { keepIdleOnFailure?: boolean; wasFirstHeartbeat?: boolean },
+    options?: {
+      keepIdleOnFailure?: boolean;
+      wasFirstHeartbeat?: boolean;
+      errorCode?: string | null;
+      errorFamily?: string | null;
+    },
   ) {
     const existing = await getAgent(agentId);
     if (!existing) return;
@@ -18082,20 +18090,61 @@ export function heartbeatService(
       options?.wasFirstHeartbeat ?? !existing.lastHeartbeatAt;
 
     const runningCount = await countRunningRunsForAgent(agentId);
-    const nextStatus =
-      runningCount > 0
-        ? "running"
-        : outcome === "succeeded" ||
-            outcome === "interrupted" ||
-            outcome === "cancelled" ||
-            (outcome === "failed" && options?.keepIdleOnFailure)
-          ? "idle"
-          : "error";
+    const metadata = parseObject(existing.metadata);
+    const currentFailures =
+      typeof metadata.consecutiveFailures === "number" &&
+      Number.isFinite(metadata.consecutiveFailures) &&
+      metadata.consecutiveFailures >= 0
+        ? metadata.consecutiveFailures
+        : 0;
+
+    let nextFailures = currentFailures;
+    let nextStatus: "idle" | "running" | "error";
+    if (runningCount > 0) {
+      nextStatus = "running";
+    } else if (
+      outcome === "succeeded" ||
+      outcome === "interrupted" ||
+      outcome === "cancelled"
+    ) {
+      nextFailures = 0;
+      nextStatus = "idle";
+    } else {
+      nextFailures = currentFailures + 1;
+      const failureInput = {
+        errorCode: options?.errorCode,
+        errorFamily: options?.errorFamily,
+        errorMessage: failureReason,
+      };
+      const isPermanent = isPermanentAgentFailure(failureInput);
+      const isTransient =
+        Boolean(options?.keepIdleOnFailure) || isTransientFailure(failureInput);
+      const maxFailures = DEFAULT_RUN_RETRY_MAX_ATTEMPTS;
+      if (isTransient) {
+        nextStatus = nextFailures >= maxFailures ? "error" : "idle";
+        if (nextStatus === "error") {
+          failureReason = `${nextFailures} consecutive runs failed: ${failureReason ?? "transient failure"}`;
+        }
+      } else if (isPermanent || nextFailures >= maxFailures) {
+        nextStatus = "error";
+        if (!isPermanent) {
+          failureReason = `${nextFailures} consecutive runs failed: ${failureReason ?? "failure"}`;
+        }
+      } else {
+        nextStatus = "idle";
+      }
+    }
+
+    const nextMetadata: Record<string, unknown> = {
+      ...metadata,
+      consecutiveFailures: nextFailures,
+    };
 
     const updated = await db
       .update(agents)
       .set({
         status: nextStatus,
+        metadata: nextMetadata,
         // Persist a human-readable reason on the agent record when it enters
         // error so operators see it on the agent page without digging into run
         // events; clear it whenever the agent leaves error.
@@ -19441,6 +19490,7 @@ export function heartbeatService(
       });
 
       await finalizeAgentStatus(run.agentId, "failed", baseMessage, {
+        errorCode: "process_lost",
         wasFirstHeartbeat: timerClaimWasFirstHeartbeat(run),
       });
       await runStartDispatcher.dispatchRunStart(run.agentId);
@@ -26872,6 +26922,8 @@ export function heartbeatService(
                 "transient_upstream" ||
               isWorkspaceSyncConflictFailure(adapterResult.errorMessage) ||
               isContextWindowError(runErrorMessage)),
+          errorCode: runErrorCode,
+          errorFamily: readHeartbeatRunErrorFamily(finalizedRun ?? run),
           wasFirstHeartbeat: timerClaimWasFirstHeartbeat(run),
         });
 
