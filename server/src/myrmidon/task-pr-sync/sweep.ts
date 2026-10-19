@@ -343,7 +343,10 @@ export function createTaskPrSyncSweep(deps: TaskPrSyncSweepDeps) {
           })
           .where(and(eq(issueWorkProducts.id, pr.workProductId), eq(issueWorkProducts.issueId, locked.id)));
       }
-      const svc = services.issueService(txDb);
+      // Keep the service's root DB distinct from the supplied transaction. This
+      // makes issueService.update use its stored-state guard instead of trying
+      // to perform provider I/O while the settle transaction is open.
+      const svc = services.issueService(deps.db);
       const comment = await svc.addComment(locked.id, body, { runId: null }, { authorType: "system" }, tx);
       // The settle mirrors the board's manual PATCH: status `done` and the task's
       // execution workflow dissolved (pending stages and runtime state cleared)
