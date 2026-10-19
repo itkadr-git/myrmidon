@@ -9,7 +9,7 @@ import { mkdirSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { and, eq, inArray, sql } from "drizzle-orm";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import {
   agents,
   authUsers,
@@ -73,6 +73,12 @@ describeEmbeddedPostgres(
     beforeEach(async () => {
       // Each scenario opts into owner delivery explicitly; do not leak the
       // singleton setting from a preceding scenario.
+      await instanceSettingsService(db).updateGeneral({
+        [OWNER_DELIVERY_SETTINGS_KEY]: { mode: "via_bot" },
+      });
+    });
+
+    afterEach(async () => {
       await instanceSettingsService(db).updateGeneral({
         [OWNER_DELIVERY_SETTINGS_KEY]: { mode: "via_bot" },
       });
