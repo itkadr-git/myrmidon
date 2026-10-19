@@ -243,6 +243,7 @@ export interface IssueLockWriter {
       ports: { host: WakeQueueHost; transaction: WakeQueueTransaction },
     ) => Promise<ReleaseTransactionResult>,
   ): Promise<ReleaseTransactionResult & { run: RunSnapshot }>;
+  claimIssueExecutionLease(input: { companyId: string; issueId: string; runId: string }): Promise<boolean>;
 }
 
 export type StrandedAssignedIssueEscalationInput = {

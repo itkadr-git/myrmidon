@@ -1044,8 +1044,24 @@ export function createWakeAdmissionWriter(): WakeAdmissionWriter {
 
 export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAdapterDeps): IssueLockWriter {
   return {
+    async claimIssueExecutionLease({ companyId, issueId, runId }): Promise<boolean> {
+      return db.transaction(async (rawTx: unknown) => {
+        const tx = rawTx as unknown as Db;
+        const [claimed] = await tx.update(issues)
+          .set({ executionRunId: runId })
+          .where(and(
+            eq(issues.companyId, companyId),
+            eq(issues.id, issueId),
+            isNull(issues.executionRunId),
+            isNull(issues.checkoutRunId),
+            notInArray(issues.status, ["done", "cancelled"]),
+          ))
+          .returning({ id: issues.id });
+        return Boolean(claimed);
+      });
+    },
     async withIssueExecutionLock(input, fn): Promise<ReleaseTransactionResult & { run: RunSnapshot }> {
-      return db.transaction(async (rawTx) => {
+      return db.transaction(async (rawTx: unknown) => {
         const tx = rawTx as unknown as Db;
         const run = await tx
           .select()
@@ -1246,11 +1262,6 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
         }
 
         if (issueRow.status === "done" || issueRow.status === "cancelled") {
-          await tx.update(agentWakeupRequests).set({ status: "cancelled", updatedAt: input.now }).where(and(
-            eq(agentWakeupRequests.companyId, input.companyId),
-            eq(agentWakeupRequests.issueId, issueRow.id),
-            eq(agentWakeupRequests.status, DEFERRED_WAKE_STATUS),
-          ));
           return releasedSiblingOutcome() ?? { outcome: { kind: "released" }, postCommitEffects: [], run: runSnapshot };
         }
 
