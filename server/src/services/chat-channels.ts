@@ -251,6 +251,8 @@ import {
   type IssueAssignmentWakeupDeps,
 } from "./issue-assignment-wakeup.js";
 import { issueService } from "./issues.js";
+// myrmidon(1.6.6 CH-CONNECTOR-D): the bridged-DM theme is reached through the
+// bridge seam, so a channel connector can serve it.
 // myrmidon(CA-A): the channel allowlist — the board-decided list of who may
 // write to the bots (channel identity, board account optional), the one-line
 // refusal and the owner's access-request card. Telegram is the first

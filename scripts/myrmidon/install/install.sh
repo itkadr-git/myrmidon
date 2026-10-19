@@ -55,6 +55,9 @@ MYR_REPO="${MYRMIDON_INSTALL_REPO:-itkadr-git/myrmidon}"
 # shared NAT address exhausts quickly.
 MYR_WEB="${MYRMIDON_INSTALL_WEB_URL:-https://github.com}"
 MYR_PROJECT=myrmidon
+# Production installs must bind identity to the host; the cached fallback can
+# differ from module hosts and is therefore unsafe for license issuance.
+MYR_LICENSE_INSTANCE_ID="${MYR_LICENSE_INSTANCE_ID:-}"
 
 DIR=""
 PORT=""
@@ -63,6 +66,7 @@ RELEASE_TAG=""
 LANG_CODE=""
 INTERACTIVE=0
 ASSUME_YES=0
+DRY_RUN=0
 MODE="install"
 PURGE=0
 # DATABASE_URL: when set (--database-url or MYRMIDON_INSTALL_DATABASE_URL), the
@@ -114,6 +118,7 @@ Options:
                          Same as MYRMIDON_INSTALL_DATABASE_URL.
   --interactive          ask the questions instead of answering them silently
   --yes, -y              answer yes to everything
+  --dry-run              render and validate the Compose configuration only
   --uninstall            stop and remove the stack (your data is kept)
   --purge                with --uninstall: also delete the database volume
   -h, --help             print this help
@@ -143,6 +148,7 @@ while (($#)); do
     --database-url) value_for "$@" ; DATABASE_URL="$2"; shift 2 ;;
     --interactive) INTERACTIVE=1; shift ;;
     --yes|-y) ASSUME_YES=1; shift ;;
+    --dry-run) DRY_RUN=1; shift ;;
     --uninstall) MODE="uninstall"; shift ;;
     --purge) PURGE=1; shift ;;
     -h|--help) usage ;;
@@ -169,6 +175,9 @@ require_root() {
   if [[ "${MYRMIDON_INSTALL_SKIP_ROOT_CHECK:-0}" == "1" ]]; then
     say "MYRMIDON_INSTALL_SKIP_ROOT_CHECK=1: the root check is skipped (tests only)." \
         "MYRMIDON_INSTALL_SKIP_ROOT_CHECK=1: проверка root пропущена (только для тестов)."
+    return 0
+  fi
+  if (( DRY_RUN )) && [[ "$(id -u)" != "0" ]]; then
     return 0
   fi
   if [[ "$(id -u)" != "0" ]]; then
@@ -298,6 +307,9 @@ preflight() {
 
 # ----------------------------------------------------------------- docker -----
 install_docker() {
+  if [[ "${MYRMIDON_INSTALL_SKIP_DOCKER_INSTALL:-0}" == "1" ]]; then
+    return 0
+  fi
   if have docker && docker compose version >/dev/null 2>&1; then
     say "Docker and the compose plugin are already installed." \
         "Docker и плагин compose уже установлены."
@@ -487,7 +499,7 @@ db_profile() {
   # image under an existing PG17 data volume is a migration the operator runs
   # deliberately — the installer keeps the file untouched instead.
   if [[ -z "$DATABASE_URL" && -z "${MYRMIDON_DB_PROFILE:-}" && -r "$DIR/compose.yml" ]] \
-     && grep -q '^[[:space:]]*image: postgres' "$DIR/compose.yml"; then
+     && grep -Eiq '^[[:space:]]*image:[[:space:]]*[^[:space:]]*postgres[^[:space:]]*([[:space:]]|$)' "$DIR/compose.yml"; then
     DB_PROFILE="keep"
     return 0
   fi
@@ -553,6 +565,7 @@ write_env() {
   [[ -n "${BETTER_AUTH_SECRET:-}" ]] || BETTER_AUTH_SECRET="$(rand_hex 32)"
   [[ -n "${PAPERCLIP_TOOL_ACTION_SIGNING_SECRET:-}" ]] || PAPERCLIP_TOOL_ACTION_SIGNING_SECRET="$(rand_hex 32)"
   [[ -n "$PUBLIC_URL" ]] || PUBLIC_URL="http://$(hostname -f 2>/dev/null || hostname):$PORT"
+  [[ -n "$MYR_LICENSE_INSTANCE_ID" ]] || [[ -r /etc/machine-id ]] || die "host /etc/machine-id is required for a stable installation id; repair the host machine-id or explicitly set the same MYR_LICENSE_INSTANCE_ID for the board and every module host"
 
   # SHARED-PG profile parameters, persisted into deploy.env so a re-run (the
   # update path) keeps exactly the shape the first install chose. "keep" marks
@@ -616,6 +629,7 @@ POSTGRES_USER=paperclip
 POSTGRES_PASSWORD=$POSTGRES_PASSWORD
 BETTER_AUTH_SECRET=$BETTER_AUTH_SECRET
 PAPERCLIP_TOOL_ACTION_SIGNING_SECRET=$PAPERCLIP_TOOL_ACTION_SIGNING_SECRET
+MYR_LICENSE_INSTANCE_ID=${MYR_LICENSE_INSTANCE_ID:-}
 $db_profile_env
 ENV
   chmod 600 "$DIR/deploy.env"
@@ -707,16 +721,18 @@ services:
       HOST: "0.0.0.0"
       PORT: "3100"
       SERVE_UI: "true"
-      PAPERCLIP_HOME: "/paperclip"
+      PAPERCLIP_HOME: "/myrmidon"
       PAPERCLIP_DEPLOYMENT_MODE: "authenticated"
       PAPERCLIP_DEPLOYMENT_EXPOSURE: "private"
       PAPERCLIP_PUBLIC_URL: "${MYRMIDON_PUBLIC_URL}"
       PAPERCLIP_TOOL_ACTION_SIGNING_SECRET: "${PAPERCLIP_TOOL_ACTION_SIGNING_SECRET:?PAPERCLIP_TOOL_ACTION_SIGNING_SECRET must be set}"
       BETTER_AUTH_SECRET: "${BETTER_AUTH_SECRET:?BETTER_AUTH_SECRET must be set}"
+      MYR_LICENSE_INSTANCE_ID: "${MYR_LICENSE_INSTANCE_ID:-}"
 %%BOARD_DATABASE_URL%%
       MYRMIDON_BOT_DOCKER_SOCKET: "/run/myrmidon-dockergate/engine.sock"
     volumes:
-      - paperclip-data:/paperclip
+      - myrmidon-data:/myrmidon
+      - /etc/machine-id:/etc/machine-id:ro
       - ./run:/run/myrmidon-dockergate
 
   dockergate:
@@ -756,7 +772,7 @@ services:
 
 volumes:
 %%PGDATA_VOLUME%%
-  paperclip-data:
+  myrmidon-data:
 COMPOSE
 )"
   content="${content//%%DB_SERVICE%%/$db_service}"
@@ -892,6 +908,14 @@ do_install() {
   write_env
   write_compose
 
+  if (( DRY_RUN )); then
+    log "validating the generated Compose configuration (dry run)"
+    ( cd "$DIR" && compose config >/dev/null ) || die "generated Compose configuration is invalid"
+    say "Dry run complete: generated files are in $DIR; no images were pulled and no services were changed." \
+        "Пробный запуск завершён: файлы созданы в $DIR; образы не загружались и сервисы не изменялись."
+    return 0
+  fi
+
   log "pulling the images (this may take a few minutes)"
   ( cd "$DIR" && compose pull --quiet ) || die "cannot pull the images of $RELEASE_TAG"
   log "starting the board stack"
@@ -973,7 +997,7 @@ do_uninstall() {
   ( cd "$DIR" && compose down ) || die "docker compose down failed"
   if (( PURGE )); then
     load_env
-    docker volume rm "${MYR_PROJECT}_pgdata" "${MYR_PROJECT}_paperclip-data" >/dev/null 2>&1 || true
+    docker volume rm "${MYR_PROJECT}_pgdata" "${MYR_PROJECT}_myrmidon-data" "${MYR_PROJECT}_paperclip-data" >/dev/null 2>&1 || true
     rm -rf "$DIR"
     say "The stack, its data volume and $DIR were removed." \
         "Стек, том с данными и каталог $DIR удалены."
@@ -1021,7 +1045,7 @@ main() {
     uninstall) do_uninstall ;;
     install)
       interactive_questions
-      install_docker
+      if (( ! DRY_RUN )); then install_docker; fi
       detect_docker_gid
       do_install ;;
   esac

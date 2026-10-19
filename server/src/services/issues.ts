@@ -2895,7 +2895,7 @@ function myLastTouchAtExpr(companyId: string, userId: string) {
 // myrmidon(DB-PERF-P7): the canonical "last activity" of an issue is
 // greatest(updated_at, newest comment, newest activity_log row outside the
 // local-inbox actions). It is denormalized into issues.last_activity_at and kept
-// current by the triggers of migration 0307, so ordering and reporting read one
+// current by the triggers of migration 0355, so ordering and reporting read one
 // column instead of two correlated MAX subqueries per candidate row (the cost
 // that dominated GET /issues before this column existed).
 function issueCanonicalLastActivityAtExpr() {
@@ -4611,6 +4611,7 @@ async function listIssueReviewAttentionMap(
       conversationState: issue.conversationState,
       executionPolicy: issue.executionPolicy,
       executionState: issue.executionState,
+      blockerMetadata: issue.blockerMetadata,
       monitorNextCheckAt: issue.monitorNextCheckAt,
       monitorAttemptCount: issue.monitorAttemptCount,
       // myrmidon(HUMAN-REVIEW-WAIT): the human-review-wait facts.
@@ -5660,6 +5661,7 @@ async function listIssueBlockedInboxAttentionMap(
       conversationState: issue.conversationState,
       executionPolicy: issue.executionPolicy,
       executionState: issue.executionState,
+      blockerMetadata: issue.blockerMetadata,
       monitorNextCheckAt: issue.monitorNextCheckAt,
       monitorAttemptCount: issue.monitorAttemptCount,
       // myrmidon(HUMAN-REVIEW-WAIT): the human-review-wait facts.
@@ -10550,6 +10552,7 @@ export function issueService(db: Db) {
       const {
         labelIds: nextLabelIds,
         blockedByIssueIds,
+        blockerMetadata,
         actorAgentId,
         actorUserId,
         companyGuard,
@@ -10618,6 +10621,7 @@ export function issueService(db: Db) {
 
       const patch: Partial<typeof issues.$inferInsert> = {
         ...issueData,
+        ...(blockerMetadata !== undefined ? { blockerMetadata } : {}),
         // myrmidon(S5): issue descriptions are stored with secret values masked.
         // The single write point for update: every path that PATCHes the
         // description (board edit, agent amend, API) stores the masked text.
