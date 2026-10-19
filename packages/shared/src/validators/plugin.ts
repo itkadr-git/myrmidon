@@ -231,6 +231,18 @@ export type PluginEnvironmentDriverDeclarationInput = z.infer<
   typeof pluginEnvironmentDriverDeclarationSchema
 >;
 
+export const pluginModelProviderDeclarationSchema = z.object({
+  type: z.string().trim().min(1).max(64),
+  name: z.string().trim().max(160).optional(),
+  defaultBaseUrl: z.string().trim().url().max(2048).optional().nullable(),
+  defaultModels: z.array(z.string().trim().min(1).max(512)).optional(),
+  supportsChannels: z.boolean().optional(),
+});
+
+export type PluginModelProviderDeclarationInput = z.infer<
+  typeof pluginModelProviderDeclarationSchema
+>;
+
 export type PluginToolDeclarationInput = z.infer<typeof pluginToolDeclarationSchema>;
 
 export const pluginManagedAgentDeclarationSchema = z.object({
@@ -798,6 +810,7 @@ export const pluginManifestV1Schema = z.object({
   skills: z.array(pluginManagedSkillDeclarationSchema).optional(),
   localFolders: z.array(pluginLocalFolderDeclarationSchema).optional(),
   objectReferences: z.array(pluginObjectReferenceProviderDeclarationSchema).optional(),
+  modelProviders: z.array(pluginModelProviderDeclarationSchema).optional(),
   launchers: z.array(pluginLauncherDeclarationSchema).optional(),
   ui: z.object({
     slots: z.array(pluginUiSlotDeclarationSchema).min(1).optional(),

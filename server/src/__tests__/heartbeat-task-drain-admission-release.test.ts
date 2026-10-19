@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
   agents,
@@ -11,6 +11,7 @@ import {
   createDb,
   heartbeatRunEvents,
   heartbeatRuns,
+  heartbeatRunContinuations,
   issues,
 } from "@paperclipai/db";
 import {
@@ -18,6 +19,8 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { heartbeatService, getTaskDrainStatus, startTaskDrain, stopTaskDrain } from "../services/heartbeat.ts";
+import * as adapterModule from "../adapters/index.ts";
+import * as runTrustPreset from "../services/run-trust-preset.ts";
 import { subscribeCompanyLiveEvents } from "../services/live-events.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -48,6 +51,7 @@ describeEmbeddedPostgres("heartbeat task-drain admission release", () => {
 
   async function deleteHeartbeatRunsWithDependents() {
     for (let attempt = 0; attempt < 5; attempt += 1) {
+      await db.delete(heartbeatRunContinuations);
       await db.delete(heartbeatRunEvents);
       await db.delete(activityLog);
       try {
@@ -141,6 +145,142 @@ describeEmbeddedPostgres("heartbeat task-drain admission release", () => {
 
     return { companyId, agentId, issueId, runId, wakeupRequestId };
   }
+
+  async function waitForRunStatus(runId: string, status: "running", timeoutMs = 5_000) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const run = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0] ?? null);
+      if (run?.status === status) return;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    throw new Error(`run ${runId} did not reach ${status} within ${timeoutMs}ms`);
+  }
+
+  async function waitForActiveRun(runId: string, timeoutMs = 5_000) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const run = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0] ?? null);
+      if (run?.status === "running" && getTaskDrainStatus().activeRuns === 1) return;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    throw new Error(`run ${runId} did not become active within ${timeoutMs}ms`);
+  }
+
+  it("keeps an active adapter run in flight until graceful shutdown records its retry", async () => {
+    expect.assertions(13);
+    const { companyId, agentId, issueId, runId, wakeupRequestId } = await seedQueuedRun();
+    const heartbeat = heartbeatService(db);
+    let activePromise: Promise<unknown> | undefined;
+    let adapterStarted = false;
+    let markAdapterStarted: (() => void) | undefined;
+    const adapterStartedSignal = new Promise<void>((resolve) => {
+      markAdapterStarted = resolve;
+    });
+    let gateAdapter: (() => void) | undefined;
+    const adapterGate = new Promise<void>((resolve) => {
+      gateAdapter = resolve;
+    });
+    const retainTrust = vi.spyOn(runTrustPreset, "resolveAndRetainRunTrustPreset").mockImplementation(async (_db, input) => {
+      const runDb = _db as typeof db;
+      await runDb.insert(heartbeatRuns).values({
+        id: input.runId,
+        companyId,
+        agentId,
+        invocationSource: "assignment",
+        triggerDetail: "system",
+        status: "running",
+        startedAt: new Date(),
+        contextSnapshot: { issueId, wakeReason: "issue_assigned" },
+      }).onConflictDoUpdate({
+        target: heartbeatRuns.id,
+        set: { status: "running", startedAt: new Date() },
+      });
+      await runDb
+        .update(issues)
+        .set({ status: "in_progress", executionRunId: input.runId })
+        .where(eq(issues.id, issueId));
+      return { trustPreset: { kind: "standard" }, executionPolicy: null } as never;
+    });
+    const adapter = vi.spyOn(adapterModule, "getServerAdapter").mockReturnValue({
+      supportsLocalAgentJwt: false,
+      execute: async () => {
+        adapterStarted = true;
+        markAdapterStarted?.();
+        await adapterGate;
+        throw Object.assign(new Error("interrupted by SIGTERM"), { code: "ABORT_ERR" });
+      },
+    } as never);
+    try {
+      activePromise = heartbeat.invoke(agentId, "assignment", { issueId }, "system");
+      await waitForActiveRun(runId);
+      await adapterStartedSignal;
+      expect(adapterStarted).toBe(true);
+      await db
+        .update(heartbeatRuns)
+        .set({ runnerProfileJson: { adapterDispatch: { adapterType: "hermes_gateway" } } })
+        .where(eq(heartbeatRuns.id, runId));
+
+      const activeState = getTaskDrainStatus();
+      expect(activeState.activeRuns).toBe(1);
+      expect(activeState.quiescent).toBe(false);
+
+      startTaskDrain({});
+      const shutdown = await heartbeat.drainRunningRunsForShutdown("SIGTERM", new Date(), [runId]);
+      expect(shutdown.interruptedRunIds).toEqual([runId]);
+      expect(shutdown.retryRunIds).toHaveLength(1);
+      const retryRunId = shutdown.retryRunIds[0]!;
+      expect(retryRunId).not.toBe(runId);
+      expect(retryRunId).toEqual(expect.any(String));
+      expect(getTaskDrainStatus()).toMatchObject({ draining: true, activeRuns: 1, quiescent: false });
+
+      // Keep the adapter blocked until shutdown has durably created the retry.
+      gateAdapter?.();
+      await heartbeat.drainActiveRunExecutions();
+      await activePromise;
+
+      const interrupted = await db
+        .select({ status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0] ?? null);
+      expect(interrupted).toEqual({ status: "interrupted", errorCode: "server_shutdown_interrupted" });
+
+      const wakeup = await db
+        .select({ status: agentWakeupRequests.status })
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.id, wakeupRequestId))
+        .then((rows) => rows[0] ?? null);
+      expect(wakeup?.status).toBe("cancelled");
+      const retry = await db
+        .select({ status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, retryRunId))
+        .then((rows) => rows[0] ?? null);
+      expect(retry?.status).toBe("scheduled_retry");
+      expect(retry?.errorCode).toBeNull();
+      expect(getTaskDrainStatus()).toMatchObject({ draining: true, activeRuns: 0, quiescent: true });
+    } finally {
+      // Always unblock execute before awaiting it; otherwise an earlier DB or
+      // handshake failure would leave the suite hanging on the adapter gate.
+      gateAdapter?.();
+      stopTaskDrain();
+      try {
+        await heartbeat.drainActiveRunExecutions();
+        await activePromise?.catch(() => undefined);
+      } finally {
+        adapter.mockRestore();
+        retainTrust.mockRestore();
+      }
+    }
+  }, 20_000);
 
   it("releases the run, wakeup, and issue lock when a task drain trips right after the run is claimed", async () => {
     const { companyId, issueId, runId, wakeupRequestId } = await seedQueuedRun();

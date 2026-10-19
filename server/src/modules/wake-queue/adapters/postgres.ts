@@ -1,9 +1,12 @@
 import { isAcknowledgedNativeStop } from "../../../services/acknowledged-native-stop.js";
+// myrmidon(1.6.1 OPE-3983): the native-failure block carries the recovery-liveness reasonRef.
+import { recoveryLivenessDescriptor } from "../../../myrmidon/stale-block/event-keys.js";
 import { instanceSettingsService } from "../../../services/instance-settings.js";
 import { currentConversationCommentCondition } from "../../../services/agent-conversations.js";
 import { getExecutionBlocker } from "../../../services/execution-blocker.js";
 import { and, asc, eq, inArray, isNull, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
+import { runContextPersistenceFields } from "@paperclipai/db";
 import { extractIssueReferenceIdentifiers } from "@paperclipai/shared";
 import {
   activityLog,
@@ -453,7 +456,7 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
           retryOfRunId: input.authorizedFailedChatRetry
             ? readNonEmptyString(input.contextSnapshot.retryOfRunId)
             : null,
-          contextSnapshot: input.contextSnapshot,
+          ...runContextPersistenceFields(input.contextSnapshot),
           responsibleUserId: input.responsibleUserId,
           sessionIdBefore: input.sessionBefore,
           continuationAttempt: readContinuationAttempt(input.contextSnapshot.livenessContinuationAttempt),
@@ -606,7 +609,7 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
           triggerDetail: "system",
           status: "queued",
           wakeupRequestId: wakeupRequest.id,
-          contextSnapshot: withRecoveryContext(
+          ...runContextPersistenceFields(withRecoveryContext(
             {
               issueId: issue.id,
               taskId: issue.id,
@@ -620,7 +623,7 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
                 "The previous reviewer run ended while this execution-review stage was still pending. Submit the review decision now, or mark the issue blocked with the exact unblock action.",
             },
             "normal_model",
-          ),
+          )),
           sessionIdBefore: sessionBefore,
           retryOfRunId: finishingRun.id,
           updatedAt: now,
@@ -683,7 +686,7 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
           triggerDetail: "system",
           status: "queued",
           wakeupRequestId: wakeupRequest.id,
-          contextSnapshot,
+          ...runContextPersistenceFields(contextSnapshot),
           responsibleUserId,
           sessionIdBefore: sessionBefore,
           retryOfRunId: finishingRun.id,
@@ -736,7 +739,19 @@ async function recordNativeTerminalRecoveryIfNeeded(tx: Db, run: HeartbeatRunRow
     .limit(1);
   let nativeFailureBlock: { runId: string; statusVersion: number } | undefined;
   if (issue.status !== "blocked") {
-    const projected = await issueService(tx).update(issue.id, { status: "blocked" }, tx);
+    const projected = await issueService(tx).update(
+      issue.id,
+      {
+        status: "blocked",
+        // myrmidon(1.6.1 OPE-3983): the reconciliation incident created alongside
+        // this block is the liveness oracle the stale-block sweep judges.
+        unblockDescriptor: recoveryLivenessDescriptor(
+          issue.id,
+          "Inspect the original failure and reconcile the previous execution before continuing.",
+        ),
+      },
+      tx,
+    );
     if (projected) {
       nativeFailureBlock = { runId: run.id, statusVersion: projected.statusVersion };
       await tx.insert(activityLog).values({
@@ -914,7 +929,7 @@ export function createWakeAdmissionWriter(): WakeAdmissionWriter {
       const now = new Date();
       const mergedRun = await tx
         .update(heartbeatRuns)
-        .set({ contextSnapshot: input.mergedContextSnapshot, updatedAt: now })
+        .set({ ...runContextPersistenceFields(input.mergedContextSnapshot), updatedAt: now })
         .where(
           and(
             eq(heartbeatRuns.id, input.activeExecutionRunId),

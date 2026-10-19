@@ -2,6 +2,7 @@ package gate
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/itkadr-git/myrmidon/tools/dockergate/internal/config"
 	"github.com/itkadr-git/myrmidon/tools/dockergate/internal/deny"
+	"github.com/itkadr-git/myrmidon/tools/dockergate/internal/disk"
 	"github.com/itkadr-git/myrmidon/tools/dockergate/internal/policy"
 	"github.com/itkadr-git/myrmidon/tools/dockergate/internal/route"
 	"github.com/itkadr-git/myrmidon/tools/dockergate/internal/upstream"
@@ -442,6 +444,14 @@ func (rs *reqState) requireNextCreated(ctx context.Context, key string) *deny.Er
 
 // a10: stop, only inside a recreate.
 func (rs *reqState) a10(ctx context.Context, st *runtime, rt *route.Route, bs *botState) *deny.Error {
+	return rs.stopMain(ctx, rt, bs, false)
+}
+
+func (rs *reqState) a17(ctx context.Context, st *runtime, rt *route.Route, bs *botState) *deny.Error {
+	return rs.stopMain(ctx, rt, bs, true)
+}
+
+func (rs *reqState) stopMain(ctx context.Context, rt *route.Route, bs *botState, idle bool) *deny.Error {
 	_, stop, _ := rs.timeouts()
 	unlock, derr := rs.g.lockBot(ctx, bs)
 	if derr != nil {
@@ -456,13 +466,36 @@ func (rs *reqState) a10(ctx context.Context, st *runtime, rt *route.Route, bs *b
 	if ct == nil {
 		return rs.notFound()
 	}
-	if derr := rs.requireNextCreated(ctx, rt.BotKey); derr != nil {
-		return derr
+	if idle {
+		if ct.Config.Labels["myrmidon.bot"] != rt.BotKey {
+			return deny.New(deny.ForeignContainer)
+		}
+		if ct.State.Health != nil && ct.State.Health.Status != nil && *ct.State.Health.Status == "starting" {
+			return deny.New(deny.IdleStopDenied).WithDetail("container_starting")
+		}
+		if next, inspectErr := rs.inspectOurs(ctx, rt.BotKey, route.SuffixNext); inspectErr != nil {
+			return inspectErr
+		} else if next != nil {
+			return statePrecondition("recreate_active")
+		}
+		if active, inspectErr := rs.inspectOurs(ctx, rt.BotKey, route.SuffixHelper); inspectErr != nil {
+			return inspectErr
+		} else if active != nil && active.Status() == "running" {
+			return deny.New(deny.IdleStopDenied).WithDetail("active_helper")
+		}
+	} else {
+		if derr := rs.requireNextCreated(ctx, rt.BotKey); derr != nil {
+			return derr
+		}
 	}
 	if derr := rs.g.allow(bs, rateStop); derr != nil {
 		return derr
 	}
-	ans, derr := rs.call(ctx, upstream.Request{Method: "POST", Target: containerPath(ct.ID, "/stop?t=30")},
+	target := "/stop?t=30"
+	if idle {
+		target += "&myrmidon-idle=true"
+	}
+	ans, derr := rs.call(ctx, upstream.Request{Method: "POST", Target: containerPath(ct.ID, target)},
 		stop, maxErrBody, deny.ResponseTooLarge)
 	if derr != nil {
 		return derr
@@ -536,5 +569,34 @@ func (rs *reqState) a12(ctx context.Context, st *runtime, rt *route.Route, bs *b
 		return derr
 	}
 	rs.respond(ans)
+	return nil
+}
+
+// a14: GET /myrmidon/disk. The partition (statfs of the volume root) and the
+// project quotas (`xfs_quota report`), never a call to the daemon. A partition
+// without prjquota is a normal answer (quotaEnabled=false), not an error; what
+// is an error is a volume root that cannot be read or a report that cannot be
+// understood, and a command that does not finish in time.
+func (rs *reqState) a14(ctx context.Context, st *runtime) *deny.Error {
+	def, _, _ := rs.timeouts()
+	cctx, cancel := context.WithTimeout(ctx, def)
+	defer cancel()
+	resp, err := disk.Collect(cctx, st.cfg.VolumeRoot, rs.g.disk)
+	switch {
+	case err == nil:
+	case errors.Is(err, context.DeadlineExceeded):
+		return deny.New(deny.UpstreamTimeout).WithDetail("xfs_quota")
+	case errors.Is(err, disk.ErrStatfs):
+		return deny.New(deny.UpstreamError).WithDetail("statfs")
+	case errors.Is(err, disk.ErrReport):
+		return deny.New(deny.UpstreamError).WithDetail("xfs_report")
+	default:
+		return deny.New(deny.UpstreamError).WithDetail("disk")
+	}
+	body, err := json.Marshal(resp)
+	if err != nil {
+		return deny.New(deny.UpstreamError).WithDetail("disk_json")
+	}
+	rs.respond(&answer{status: http.StatusOK, ctype: jsonType, body: body})
 	return nil
 }

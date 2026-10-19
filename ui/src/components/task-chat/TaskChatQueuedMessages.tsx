@@ -43,6 +43,8 @@ export function reorderQueuedMessageEntries(
   activeId: string,
   overId: string,
 ) {
+  // myrmidon(UPSTREAM-13539): an immutable interaction response freezes the queue.
+  if (entries.some((entry) => entry.source?.kind === "interaction")) return null;
   const from = entries.findIndex((entry) => entry.comment.id === activeId);
   const to = entries.findIndex((entry) => entry.comment.id === overId);
   if (from < 0 || to < 0 || from === to) return null;
@@ -94,9 +96,13 @@ function SortableQueuedMessage({
   onInterrupt?: () => void;
   onDiscard: () => void;
 }) {
+  // myrmidon(UPSTREAM-13539): interaction-projected responses are immutable —
+  // no drag/reorder, no edit/discard; label is the body's first line.
+  const immutableResponse = entry.source?.kind === "interaction";
+  const label = immutableResponse ? entry.comment.body.split("\n")[0] : entry.comment.body;
   const sortable = useSortable({
     id: entry.comment.id,
-    disabled: queueMutationDisabled,
+    disabled: queueMutationDisabled || immutableResponse,
   });
   const style = {
     transform: CSS.Transform.toString(sortable.transform),
@@ -127,7 +133,7 @@ function SortableQueuedMessage({
         ref={sortable.setActivatorNodeRef}
         {...sortable.attributes}
         {...sortable.listeners}
-        disabled={queueMutationDisabled}
+        disabled={queueMutationDisabled || immutableResponse}
         aria-label={`Reorder queued message: ${entry.comment.body}`}
         className="flex h-7 w-7 shrink-0 cursor-grab items-center justify-center rounded-md text-muted-foreground/70 transition-colors hover:bg-accent hover:text-foreground active:cursor-grabbing disabled:cursor-default disabled:opacity-40"
       >
@@ -139,10 +145,10 @@ function SortableQueuedMessage({
         aria-hidden
       />
       <span className="min-w-0 flex-1 truncate px-1" title={entry.comment.body}>
-        {entry.comment.body}
+        {label}
       </span>
 
-      {queue.protocol === "legacy" ? (
+      {queue.protocol === "legacy" || entry.source?.requiresFreshSession ? (
         <button
           type="button"
           onClick={onInterrupt}
@@ -200,7 +206,7 @@ function SortableQueuedMessage({
         <DropdownMenuTrigger asChild>
           <button
             type="button"
-            disabled={queueMutationDisabled}
+            disabled={queueMutationDisabled || immutableResponse}
             title="Queued message actions"
             aria-label={`Queued message actions: ${entry.comment.body}`}
             className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40"

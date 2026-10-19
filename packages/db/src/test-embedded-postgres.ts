@@ -8,6 +8,7 @@ import {
   formatEmbeddedPostgresError,
 } from "./embedded-postgres-error.js";
 import { prepareEmbeddedPostgresNativeRuntime } from "./embedded-postgres-native.js";
+import { readProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
 
 // Time budget (ms) for a vitest test in the embedded-Postgres cost class: a
 // test that starts an embedded Postgres cluster and runs migrations. Measured
@@ -51,8 +52,8 @@ const DEFAULT_PAPERCLIP_EMBEDDED_POSTGRES_PORT = 54329;
 function getReservedTestPorts(): Set<number> {
   const configuredPorts = [
     DEFAULT_PAPERCLIP_EMBEDDED_POSTGRES_PORT,
-    Number.parseInt(process.env.PAPERCLIP_EMBEDDED_POSTGRES_PORT ?? "", 10),
-    ...String(process.env.PAPERCLIP_TEST_POSTGRES_RESERVED_PORTS ?? "")
+    Number.parseInt(readProductEnv("EMBEDDED_POSTGRES_PORT") ?? "", 10),
+    ...String(readProductEnv("TEST_POSTGRES_RESERVED_PORTS") ?? "")
       .split(",")
       .map((value) => Number.parseInt(value.trim(), 10)),
   ];
@@ -129,6 +130,16 @@ async function createEmbeddedPostgresTestInstance(tempDirPrefix: string) {
     port,
     persistent: true,
     initdbFlags: ["--encoding=UTF8", "--locale=C", "--lc-messages=C"],
+    // Embedded Postgres refuses to initdb/start as OS uid 0 ("Postgres does not
+    // support running as root"), which silently turned the support probe — and
+    // every embedded suite behind it — into a skip inside root-only build
+    // containers (devbuild runs its image as root; CI runners are non-root, so
+    // this branch is inert there). `createPostgresUser` makes embedded-postgres
+    // create a dedicated OS user and drop privileges, which is exactly what
+    // uid-0 bootstrapping needs. Non-root: no flag, behavior unchanged.
+    ...(typeof process.getuid === "function" && process.getuid() === 0
+      ? { createPostgresUser: true }
+      : {}),
     onLog: (message) => logBuffer.append(message),
     onError: (message) => logBuffer.append(message),
   });

@@ -295,7 +295,7 @@ describe("InstanceExperimentalSettings — Conference Room Chat card (PAP-11233)
     )).toBeNull();
   });
 
-  it("keeps Paperclip Runner default-off and exposes an explicit opt-in", async () => {
+  it("keeps Myrmidon Runner default-off and exposes an explicit opt-in", async () => {
     await renderPage();
 
     expect(container.textContent).toContain("Myrmidon Runner");
@@ -734,7 +734,7 @@ describe("InstanceExperimentalSettings — Conference Room Chat card (PAP-11233)
 });
 
 describe("InstanceExperimentalSettings — cloud-managed keys", () => {
-  const MANAGED_BADGE_TEXT = "Managed by Paperclip Cloud";
+  const MANAGED_BADGE_TEXT = "Managed by Myrmidon Cloud";
 
   let container: HTMLDivElement;
   let root: Root | null = null;

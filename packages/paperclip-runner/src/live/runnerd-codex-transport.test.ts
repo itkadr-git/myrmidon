@@ -4508,6 +4508,22 @@ it.each([
     let firstCloseCompletedState: Awaited<
       ReturnType<typeof readCloseDiagnostic>
     > | null = null;
+    const withinCloseDeadline = async <T>(label: string, promise: Promise<T>) => {
+      let timer: NodeJS.Timeout | undefined;
+      try {
+        return await Promise.race([
+          promise,
+          new Promise<never>((_resolve, reject) => {
+            timer = setTimeout(
+              () => reject(new Error(`${label} did not settle within 30s`)),
+              30_000,
+            );
+          }),
+        ]);
+      } finally {
+        if (timer) clearTimeout(timer);
+      }
+    };
     const identity = {
       runnerInstanceId: "runner-close-backlog",
       environmentLeaseId: "lease-close-backlog",
@@ -4611,7 +4627,7 @@ it.each([
       }
       closePhase = "first-close";
       closeStartedAt = Date.now();
-      await first.transport.close();
+      await withinCloseDeadline("first transport close", first.transport.close());
       closePhase = "after-first-close";
       firstCloseCompletedState = await readCloseDiagnostic().catch(() => null);
       // Local transports have no remote checkpoint callback. They must still
@@ -4843,7 +4859,7 @@ it.each([
         expect(secondSemanticResult).toHaveBeenCalledTimes(1);
         closePhase = "second-close";
         closeStartedAt = Date.now();
-        await second.transport.close();
+        await withinCloseDeadline("second transport close", second.transport.close());
         closePhase = "after-second-close";
         expect(await readRunnerState()).toMatchObject({
           lifecycle: "suspended",
@@ -4871,10 +4887,13 @@ it.each([
       }
       throw error;
     } finally {
-      await Promise.allSettled([
-        first.transport.close(),
-        second?.transport.close(),
-      ]);
+      await withinCloseDeadline(
+        "transport close cleanup",
+        Promise.allSettled([
+          first.transport.close(),
+          second?.transport.close(),
+        ]),
+      ).catch(() => undefined);
       if (!preserveFailedState)
         await rm(stateDirectory, { recursive: true, force: true });
     }
@@ -6160,29 +6179,12 @@ it.each(["held-ack", "lost-ack", "rejected-attach"] as const)(
         await within("warm attach after old ACK", attachment, 10_000);
         expect(rotations).toHaveLength(1);
         const retired = rotations[0]!;
-        // The rotation snapshot is cloned before the rotation completes, so
-        // the warm run.attached effect may still be missing from it when the
-        // snapshot was taken on an earlier scheduler tick. Wait for the event
-        // to be observable, then resolve it without a non-null assertion so a
-        // missing event surfaces as a readable error instead of a TypeError.
-        const findAttachedEvent = () =>
-          retired.committedEvents.find(
-            (entry) => entry.sourceEventId === heldEvent!.sourceEventId,
-          ) ??
-          core.store.state.committedEvents.find(
-            (entry) => entry.sourceEventId === heldEvent!.sourceEventId,
-          );
-        let attachedEvent = findAttachedEvent();
-        if (attachedEvent === undefined) {
-          const deadline = Date.now() + 5_000;
-          while (attachedEvent === undefined && Date.now() < deadline) {
-            await new Promise((resolve) => setTimeout(resolve, 25));
-            attachedEvent = findAttachedEvent();
-          }
-        }
+        const attachedEvent = retired.committedEvents.find(
+          (entry) => entry.sourceEventId === heldEvent!.sourceEventId,
+        );
         if (attachedEvent === undefined) {
           throw new Error(
-            `warm-attach rotation snapshot missing committed run.attached event ${heldEvent!.sourceEventId} after timeout`,
+            `warm-attach rotation archive missing committed run.attached event ${heldEvent!.sourceEventId}`,
           );
         }
         expect(attachedEvent.logicalEffectCount).toBe(1);

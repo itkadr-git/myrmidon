@@ -51,8 +51,63 @@ Fix path (cherry-picked candidate):
       full verification ran on the candidate head
 - [ ] after shipping: reconcile the fixes to `master`, delete the branch
 
+## Database audit (required before every final tag)
+
+<!-- myrmidon(DB-AUDIT-STEP): owner rule of 08.10.2026 — a database audit and
+     optimization is mandatory before every final (non-`-rc`) release tag. -->
+
+A final tag (no `-rc` suffix) ships only with an accepted database audit of
+the live board database. Release candidates (`-rc`) do not need one. Without a
+merged audit report for the version, the final tag does not ship.
+
+Run the audit against the production database:
+
+- [ ] reset the counters (`SELECT pg_stat_statements_reset();`), let the board
+      run under normal load (about one working day), then take the "before"
+      slice: the top 20 queries by `total_exec_time` with `calls`, `rows`,
+      `mean_exec_time` and `mean_exec_time + stddev_exec_time` (the p95
+      approximation) — the exact psql command is in
+      [`docs/myrmidon/deploy.md`](../docs/myrmidon/deploy.md).
+- [ ] take the sizes slice: the 20 largest tables with table size, TOAST size
+      and index size:
+
+      ```sql
+      SELECT c.relname,
+             pg_size_pretty(pg_table_size(c.oid))              AS table_size,
+             pg_size_pretty(pg_relation_size(c.reltoastrelid)) AS toast_size,
+             pg_size_pretty(pg_indexes_size(c.oid))            AS indexes_size
+      FROM pg_class c
+      JOIN pg_namespace n ON n.oid = c.relnamespace
+      WHERE c.relkind = 'r' AND n.nspname = 'public'
+      ORDER BY pg_total_relation_size(c.oid) DESC
+      LIMIT 20;
+      ```
+
+- [ ] take `EXPLAIN (ANALYZE, BUFFERS)` plans for the worst audited queries.
+- [ ] test every candidate fix on a copy of the live database and measure the
+      same queries there before and after the change.
+- [ ] ship every accepted positive fix as a migration in the release
+      (`packages/db/src/migrations/…`); rejected fixes stay in the report with
+      the reason.
+- [ ] write the report to `docs/myrmidon/releases/<version>-db-audit.md`
+      (for example `docs/myrmidon/releases/1.6.5-db-audit.md`) and merge it
+      before the final tag. The report must contain:
+      - the "before" and "after" top-query tables (the same slices as above),
+      - the table / TOAST / index sizes,
+      - every adopted change (migration file, index name, server parameter),
+      - the measured before/after effect of every adopted change,
+      - the audit-derived server parameters (they land in
+        `scripts/myrmidon/deploy/db-tuning.sql`).
+- [ ] accept the optimization only when the "after" slice, measured on the
+      live database, shows the audited queries improved. Otherwise iterate.
+
+Sample: the 1.6.5 audit (four heartbeat/issues indexes plus the chat-reconcile
+query rewrites) — `docs/myrmidon/changes/db-audit-indexes.md`.
+
 ## Stable (manual promotion)
 
+- [ ] the final tag's audit report (`docs/myrmidon/releases/<version>-db-audit.md`)
+      is merged — see "Database audit (required before every final tag)"
 - [ ] pick the beta to promote; its source commit is `source_ref`
 - [ ] the beta has soaked ≥ 3 days with no open beta-blocker issues
 - [ ] the beta's notes PR (`releases/beta/v<beta-version>.md`) is merged on

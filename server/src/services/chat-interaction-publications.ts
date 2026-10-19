@@ -22,12 +22,15 @@ import { readConfigFile } from "../config-file.js";
 import { PRODUCT_NAME } from "../myrmidon/product.js";
 // myrmidon(U2): owner-delivery bindings for tasks without their own chat thread.
 import { telegramOwnerDeliveryBindings } from "../myrmidon/owner-delivery/telegram-owner-bindings.js";
+// myrmidon(1.6.5-OWNER-DM-FILTER): human-readable owner-DM card text (U2 branch only).
+import { ownerDeliveryCardText } from "../myrmidon/owner-delivery/owner-card-text.js";
 import { projectSafeChatPublication } from "./chat-publication-projection.js";
 import { safeChatTaskUrl } from "./chat-task-url.js";
 import {
   chatQuestionFormActionRecords,
   createChatQuestionFormDraft,
 } from "./chat-question-forms.js";
+import { readProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
 
 const MAX_NATIVE_QUESTION_OPTIONS = 12;
 const QUESTION_ACTION_PREFIX = "pcq:";
@@ -116,12 +119,12 @@ function terminalNativeInteractionCopy(
 
 export function publicChatInteractionTaskUrl(issueId: string): string | null {
   const configured =
-    process.env.PAPERCLIP_AUTH_PUBLIC_BASE_URL?.trim() ||
+    readProductEnv("AUTH_PUBLIC_BASE_URL")?.trim() ||
     process.env.BETTER_AUTH_URL?.trim() ||
     process.env.BETTER_AUTH_BASE_URL?.trim() ||
-    process.env.PAPERCLIP_PUBLIC_URL?.trim() ||
+    readProductEnv("PUBLIC_URL")?.trim() ||
     readConfigFile()?.auth?.publicBaseUrl?.trim() ||
-    process.env.PAPERCLIP_MANAGED_RUNTIME_PUBLIC_URL?.trim();
+    readProductEnv("MANAGED_RUNTIME_PUBLIC_URL")?.trim();
   return safeChatTaskUrl(configured, issueId);
 }
 
@@ -219,6 +222,42 @@ function textForQuestionInteraction(
   return lines.join("\n");
 }
 
+/**
+ * myrmidon: a native question card shows the full text of every option in its
+ * body and short numbered buttons. Telegram cuts long inline-button labels on
+ * a phone ("Поручить вла…"), so the owner could not read what each button
+ * meant; the body carries the complete options, the help text and the task
+ * link, the buttons only the number and the opening words.
+ */
+export const NATIVE_QUESTION_BUTTON_LABEL_MAX = 24;
+
+export function nativeQuestionButtonLabel(index: number, label: string): string {
+  const prefix = `${index + 1}. `;
+  const text = label.trim().replace(/\s+/g, " ");
+  const room = NATIVE_QUESTION_BUTTON_LABEL_MAX - prefix.length;
+  const chars = Array.from(text);
+  if (chars.length <= room) return prefix + text;
+  return prefix + chars.slice(0, room - 1).join("").trimEnd() + "…";
+}
+
+export function nativeQuestionCardBody(
+  question: AskUserQuestionsQuestion,
+  taskUrl: string | null,
+): string {
+  const lines: string[] = [];
+  if (question.helpText?.trim()) lines.push(question.helpText.trim(), "");
+  question.options.forEach((option, index) => {
+    const description = option.description?.trim();
+    lines.push(
+      description
+        ? `${index + 1}. ${option.label.trim()} — ${description}`
+        : `${index + 1}. ${option.label.trim()}`,
+    );
+  });
+  if (taskUrl) lines.push("", taskUrl);
+  return lines.join("\n");
+}
+
 function genericInteractionText(taskUrl: string | null): string {
   return [
     `This task needs an authorized response in ${PRODUCT_NAME}.`,
@@ -299,12 +338,20 @@ export async function enqueueIssueInteractionChatPublications(
   // authoring agent (the X8b bridge) instead of leaving it board-only. The
   // vendor's own bindings, when present, always win; this is additive.
   if (bindings.length === 0) {
+    // myrmidon(1.6.5-OWNER-DM-FILTER): the filter lives inside
+    // telegramOwnerDeliveryBindings and consumes the interaction's
+    // vendor-computed audience fields; non-human-addressed cards stay
+    // board-only (bindings stay empty) under the default mode.
     bindings = await telegramOwnerDeliveryBindings(db, {
       companyId: interaction.companyId,
       issueId: interaction.issueId,
       createdByAgentId: interaction.createdByAgentId,
+      effectiveResolverPolicy: interaction.effectiveResolverPolicy,
+      addresseeAgentId: interaction.addresseeAgentId,
+      addresseeUserId: interaction.addresseeUserId,
     });
   }
+  const ownerDeliveryBranch = vendorBindings.length === 0 && bindings.length > 0; // myrmidon(1.6.5-OWNER-DM-FILTER): the card reached the owner DM through the U2 fallback, so its text gets the human-readable prefix below.
   if (bindings.length === 0) return [];
 
   const taskUrl = publicChatInteractionTaskUrl(interaction.issueId);
@@ -370,10 +417,10 @@ export async function enqueueIssueInteractionChatPublications(
           },
         ]
       : supportsCallbacks
-        ? questionActionTokens.map(({ actionId, option }) => ({
+        ? questionActionTokens.map(({ actionId, option }, index) => ({
             type: "callback" as const,
             actionId,
-            label: option.label,
+            label: nativeQuestionButtonLabel(index, option.label),
           }))
         : confirmation
           ? confirmationActionTokens.map(({ actionId, decision }) => ({
@@ -397,10 +444,17 @@ export async function enqueueIssueInteractionChatPublications(
                 },
               ]
             : [];
-    const text =
+    // myrmidon(1.6.5-OWNER-DM-FILTER): on the owner-DM branch (U2) the card
+    // speaks to a human owner, so the text gets a short human-readable prefix
+    // built from the interaction's own fields. The vendor text functions stay
+    // untouched — vendor bindings keep the vendor text byte-for-byte.
+    const vendorText =
       interaction.kind === "ask_user_questions"
         ? textForQuestionInteraction(interaction, taskUrl)
         : genericInteractionText(taskUrl);
+    const text = ownerDeliveryBranch
+      ? ownerDeliveryCardText(interaction, vendorText)
+      : vendorText;
     const payload = projectSafeChatPublication({
       classification: "external",
       source: "issue_interaction",
@@ -426,7 +480,9 @@ export async function enqueueIssueInteractionChatPublications(
                 : `Response needed in ${PRODUCT_NAME}`,
           body:
             interaction.kind === "ask_user_questions"
-              ? (question?.helpText ?? undefined)
+              ? supportsCallbacks && question
+                ? nativeQuestionCardBody(question, taskUrl)
+                : (question?.helpText ?? undefined)
               : interaction.kind === "request_confirmation"
                 ? (interaction.payload.detailsMarkdown ?? undefined)
                 : `Open the task in ${PRODUCT_NAME} to review and respond.`,

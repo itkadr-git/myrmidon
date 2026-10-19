@@ -288,7 +288,9 @@ export function boardAuthService(db: Db) {
     const challengeSecret = createCliAuthSecret();
     const pendingBoardToken = createBoardApiToken();
     const expiresAt = cliAuthChallengeExpiresAt();
-    const labelBase = input.clientName?.trim() || "paperclipai cli";
+    // myrmidon(DB2): visible fallback label on the CLI-auth challenge screen;
+    // follows the part-d binary rename (`myrmidon` CLI).
+    const labelBase = input.clientName?.trim() || "myrmidon cli";
     const pendingKeyName =
       input.requestedAccess === "instance_admin_required"
         ? `${labelBase} (instance admin)`

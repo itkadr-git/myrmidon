@@ -103,6 +103,7 @@ import {
   type IssueWorkModeChange,
 } from "../lib/issue-timeline-events";
 import { Button } from "@/components/ui/button";
+import { RunQueueWaitLine } from "./myrmidon/RunQueueWaitLine"; // myrmidon(1.6.5 RUN-PRIORITY B)
 import { InlineBanner } from "@/components/InlineBanner";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -2141,6 +2142,9 @@ function IssueChatUserMessage({
             ) : null}
           </div>
         ) : null}
+        {queued ? (
+          <RunQueueWaitLine runId={queueTargetRunId} metadata={custom} />
+        ) : null}
         {deleted ? (
           <div className="text-sm italic text-muted-foreground">
             Comment deleted
@@ -2924,7 +2928,7 @@ function IssueChatFeedbackButtons({
           <DialogHeader>
             <DialogTitle>Save your feedback sharing preference</DialogTitle>
             <DialogDescription>
-              Choose whether voted AI outputs can be shared with Paperclip Labs.
+              Choose whether voted AI outputs can be shared with Myrmidon Labs.
               This answer becomes the default for future thumbs up and thumbs
               down votes.
             </DialogDescription>

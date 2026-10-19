@@ -12,7 +12,7 @@
 
 import { createPgKnowledgeSearchIndex, type Db } from "@paperclipai/db";
 import { createKnowledgeService, type KnowledgeServiceOptions } from "./store.js";
-import type { SearchIndex } from "./domain.js";
+import type { KnowledgeRevisionLang, SearchIndex } from "./domain.js";
 
 export interface KnowledgeModuleOptions extends KnowledgeServiceOptions {
   /** Override the search index (tests inject the memory one). */
@@ -51,13 +51,20 @@ export function createKnowledgeModule(db: Db, companyId: string, options: Knowle
     archive: (idOrSlug: string, actor: Parameters<typeof service.archive>[2]) => service.archive(nestId, idOrSlug, actor),
     supersede: (idOrSlug: string, actor: Parameters<typeof service.supersede>[2], input: Parameters<typeof service.supersede>[3]) =>
       service.supersede(nestId, idOrSlug, actor, input),
-    get: (idOrSlug: string) => service.get(nestId, idOrSlug),
+    get: (idOrSlug: string, language?: KnowledgeRevisionLang) => service.get(nestId, idOrSlug, language),
     getRevision: (idOrSlug: string, revisionId: string) => service.getRevision(nestId, idOrSlug, revisionId),
-    listRevisions: (idOrSlug: string) => service.listRevisions(nestId, idOrSlug),
+    listRevisions: (idOrSlug: string, language?: KnowledgeRevisionLang) => service.listRevisions(nestId, idOrSlug, language),
     listItems: (filter?: Parameters<typeof service.listItems>[1]) => service.listItems(nestId, filter),
     backlinks: (idOrSlug: string) => service.backlinks(nestId, idOrSlug),
     listEvents: (itemId?: string, limit?: number) => service.listEvents(nestId, itemId, limit),
-    search: (query: string, limit?: number) => service.search(nestId, query, limit),
+    /**
+     * myrmidon(1.6.6 K-9): the evals gate's journal line — `eval_run_id` and
+     * `delta` per judged publication. The gate calls this through the rollback
+     * sink, so the quality journal shows the judge run for every rollout.
+     */
+    recordGateJournal: (idOrSlug: string, actor: Parameters<typeof service.recordGateJournal>[2], input: Parameters<typeof service.recordGateJournal>[3]) =>
+      service.recordGateJournal(nestId, idOrSlug, actor, input),
+    search: (query: string, limit?: number, language?: KnowledgeRevisionLang) => service.search(nestId, query, limit, language),
     suggest: (actor: Parameters<typeof service.suggest>[1], input: Omit<Parameters<typeof service.suggest>[2], "companyId" | "targetSlug"> & { targetSlug?: string }) =>
       service.suggest(nestId, actor, { ...input, companyId }),
     decideSuggestion: (actor: Parameters<typeof service.decideSuggestion>[1], input: Omit<Parameters<typeof service.decideSuggestion>[2], "companyId"> & { suggestionId: string; decision: "accepted" | "declined" }) =>
