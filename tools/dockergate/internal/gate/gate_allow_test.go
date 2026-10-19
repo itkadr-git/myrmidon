@@ -634,6 +634,14 @@ func TestAllow_A17_IdleStopWithoutReplacement(t *testing.T) {
 		"POST /v1.45/containers/"+id+"/stop?t=30&myrmidon-idle=true")
 }
 
+func TestDeny_A17_StartingHealthDenied(t *testing.T) {
+	r := newRig(t)
+	r.seedMain("running")
+	r.d.Modify(r.name(""), func(c *fakedocker.Container) { c.Health = "starting" })
+	res := r.send("POST", r.target("", "/stop?t=30&myrmidon-idle=true"), nil, nil)
+	wantDeny(t, res, deny.IdleStopDenied)
+}
+
 func TestAllow_A12_RenameNextToMain(t *testing.T) {
 	r := newRig(t)
 	r.seedNext("created")

@@ -1056,6 +1056,7 @@ describe("dockerBotContainerDriver against a fake Docker daemon", () => {
   let daemon: FakeDaemon;
   let driver: BotContainerDriver;
   let volumes: { hermes: string; workspace: string; scratch: string };
+  let stateDir: string;
   let nonceSeq = 0;
 
   beforeEach(async () => {
@@ -1071,6 +1072,7 @@ describe("dockerBotContainerDriver against a fake Docker daemon", () => {
       "ghcr.io/itkadr-git/myrmidon-hermes-dev:main": CONTRACT_LABELS,
     });
     const volumeRoot = path.join(tmp, "bots");
+    stateDir = path.join(tmp, "bot-state");
     volumes = {
       hermes: path.join(volumeRoot, "agent-a", "hermes"),
       workspace: path.join(volumeRoot, "agent-a", "workspace"),
@@ -1084,12 +1086,14 @@ describe("dockerBotContainerDriver against a fake Docker daemon", () => {
         allowlist: ["myrmidon-hermes:*"],
         mountSources: [],
         devbuild: { host: null, user: "", base: "" },
+        stateDir,
       },
       {
         sleep: async () => {},
         healthPollIntervalMs: 0,
         startHealthTimeoutMs: 200,
         nonce: () => `${(++nonceSeq).toString(16).padStart(8, "0")}cafef00d`,
+        stateDir,
       },
     );
   });
@@ -1700,7 +1704,7 @@ describe("dockerBotContainerDriver against a fake Docker daemon", () => {
 
         expect(await driver.status("agent-a")).toMatchObject({ state: "stopped", idleStopped: true });
         expect(bot()?.body.Labels?.[BOT_LABEL_KEYS.idleStopped]).toBeUndefined();
-        const stateFile = path.join(path.dirname(path.dirname(volumes.hermes)), ".myrmidon-idle-stopped", "agent-a.json");
+        const stateFile = path.join(stateDir, "agent-a.json");
         expect(fs.readFileSync(stateFile, "utf8")).toContain("idleStopped");
 
         const noMaintenance: BotMaintenancePort = { enter: async () => ({ state: "on", runningRuns: 0, owned: true }), status: async () => ({ state: "on", runningRuns: 0 }), exit: async () => {} };
@@ -1718,6 +1722,102 @@ describe("dockerBotContainerDriver against a fake Docker daemon", () => {
         await driver.start("agent-a");
         expect(await driver.status("agent-a")).toMatchObject({ state: "running", idleStopped: false });
         expect(fs.existsSync(stateFile)).toBe(false);
+      });
+
+      it("persists idle-stop in stateDir even when volumeRoot is unreachable", async () => {
+        const unreachableVolumeRoot = path.join(tmp, "unreachable-nonexistent-root");
+        const customStateDir = path.join(tmp, "custom-state-dir");
+        const customDriver = dockerBotContainerDriver(
+          {
+            socketPath: daemon.socketPath,
+            volumeRoot: unreachableVolumeRoot,
+            network: "myrmidon-bots",
+            allowlist: ["myrmidon-hermes:*"],
+            mountSources: [],
+            devbuild: { host: null, user: "", base: "" },
+            stateDir: customStateDir,
+          },
+          {
+            sleep: async () => {},
+            healthPollIntervalMs: 0,
+            startHealthTimeoutMs: 200,
+            nonce: () => `${(++nonceSeq).toString(16).padStart(8, "0")}cafef00d`,
+            stateDir: customStateDir,
+          },
+        );
+
+        await customDriver.create(spec());
+        await customDriver.writeProfile("agent-a", testProfile());
+        await customDriver.start("agent-a");
+        await customDriver.stopIdle!("agent-a");
+
+        expect(await customDriver.status("agent-a")).toMatchObject({ state: "stopped", idleStopped: true });
+        const customFile = path.join(customStateDir, "agent-a.json");
+        expect(fs.existsSync(customFile)).toBe(true);
+      });
+
+      it("reverts container stop if recording idle-stopped state fails", async () => {
+        const badParent = path.join(tmp, "bad-file-parent");
+        fs.writeFileSync(badParent, "not-a-directory");
+        const badStateDir = path.join(badParent, "sub-dir");
+        const customDriver = dockerBotContainerDriver(
+          {
+            socketPath: daemon.socketPath,
+            volumeRoot: path.join(tmp, "bots"),
+            network: "myrmidon-bots",
+            allowlist: ["myrmidon-hermes:*"],
+            mountSources: [],
+            devbuild: { host: null, user: "", base: "" },
+            stateDir: badStateDir,
+          },
+          {
+            sleep: async () => {},
+            healthPollIntervalMs: 0,
+            startHealthTimeoutMs: 200,
+            nonce: () => `${(++nonceSeq).toString(16).padStart(8, "0")}cafef00d`,
+            stateDir: badStateDir,
+          },
+        );
+
+        await customDriver.create(spec());
+        await customDriver.writeProfile("agent-a", testProfile());
+        await customDriver.start("agent-a");
+
+        const botStartsBefore = daemon.requests.filter((r) => r.path === "/containers/myrmidon-bot-agent-a/start").length;
+        await expect(customDriver.stopIdle!("agent-a")).rejects.toThrow(/Failed to record idle-stopped state/);
+        // Container was started back up
+        expect(daemon.requests.filter((r) => r.path === "/containers/myrmidon-bot-agent-a/start").length).toBeGreaterThan(botStartsBefore);
+        expect(await customDriver.status("agent-a")).toMatchObject({ state: "running", idleStopped: false });
+      });
+
+      it("reconcileBot updates image of idle-stopped container without starting it", async () => {
+        await driver.create(spec({ image: "myrmidon-hermes:1.1.0" }));
+        await driver.writeProfile("agent-a", testProfile());
+        await driver.start("agent-a");
+        await driver.stopIdle!("agent-a");
+
+        expect(await driver.status("agent-a")).toMatchObject({ state: "stopped", idleStopped: true });
+
+        const newSpec = spec({ image: "myrmidon-hermes:1.2.0" });
+        const noMaintenance: BotMaintenancePort = {
+          enter: async () => ({ state: "on", runningRuns: 0, owned: true }),
+          status: async () => ({ state: "on", runningRuns: 0 }),
+          exit: async () => {},
+        };
+        const botStartsBefore = daemon.requests.filter((r) => r.path === "/containers/myrmidon-bot-agent-a/start").length;
+        const res = await reconcileBot({
+          agentId: "agent-a",
+          botKey: "agent-a",
+          spec: newSpec,
+          compile: async () => testProfile(),
+          driver,
+          maintenance: noMaintenance,
+        });
+
+        expect(res.kind).toBe("applied_restart");
+        expect(daemon.requests.filter((r) => r.path === "/containers/myrmidon-bot-agent-a/start").length).toBe(botStartsBefore);
+        const newStatus = await driver.status("agent-a");
+        expect(newStatus).toMatchObject({ state: "stopped", idleStopped: true, image: "myrmidon-hermes:1.2.0" });
       });
     });
   });
