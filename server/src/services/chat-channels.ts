@@ -3220,6 +3220,10 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
   });
   const backgroundMessageTasks = new Set<Promise<void>>();
   const scheduledConversationDrains = new Map<string, number>();
+  // Reserve a conversation's drain deadline at ingress, before the deferred
+  // scheduler runs. Concurrent callbacks must share the same deadline even
+  // when the first callback has not returned far enough to enqueue its task.
+  const scheduledConversationDrainTasks = new Set<string>();
   const liveInboundMessages = new Map<string, LiveInboundMessage>();
   const discordGatewayOwnerships = new Map<string, DiscordGatewayOwnership>();
   const discordGatewayStopTasks = new Set<Promise<void>>();
@@ -3696,6 +3700,18 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     return `${endpointId}:${createHash("sha256").update(durableExternalThreadIdentity(threadId)).digest("hex")}`;
   }
 
+  function reserveConversationDrain(
+    endpointId: string,
+    threadId: string,
+    drainAt = Date.now(),
+  ) {
+    const key = conversationDrainKey(endpointId, threadId);
+    const scheduledAt = scheduledConversationDrains.get(key);
+    if (scheduledAt !== undefined) return scheduledAt;
+    scheduledConversationDrains.set(key, drainAt);
+    return drainAt;
+  }
+
   function scheduleConversationDrain(
     endpointId: string,
     threadId: string,
@@ -3703,9 +3719,9 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
   ) {
     if (shuttingDown) return;
     const key = conversationDrainKey(endpointId, threadId);
-    const scheduledAt = scheduledConversationDrains.get(key);
-    if (scheduledAt !== undefined) return;
-    scheduledConversationDrains.set(key, drainAt);
+    const scheduledAt = reserveConversationDrain(endpointId, threadId, drainAt);
+    if (scheduledConversationDrainTasks.has(key)) return;
+    scheduledConversationDrainTasks.add(key);
     scheduleMessageProcessing(async () => {
       try {
         while (!shuttingDown) {
@@ -3728,6 +3744,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         }
       } finally {
         scheduledConversationDrains.delete(key);
+        scheduledConversationDrainTasks.delete(key);
       }
     });
   }
@@ -15277,9 +15294,11 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     const reorderWindow = INGRESS_REORDER_WINDOW_MS[endpoint.provider];
     const scheduledAt =
       ingressOnly && reorderWindow
-        ? (scheduledConversationDrains.get(
-            conversationDrainKey(endpoint.id, thread.id),
-          ) ?? Date.now() + reorderWindow)
+        ? reserveConversationDrain(
+            endpoint.id,
+            thread.id,
+            Date.now() + reorderWindow,
+          )
         : null;
     const discordGatewayAdmissionState: {
       lost?: DiscordGatewayOwnership;
@@ -18573,9 +18592,11 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       const reorderWindow = INGRESS_REORDER_WINDOW_MS[endpoint.provider];
       const scheduledAt =
         options.deferWebhookProcessing === true && reorderWindow
-          ? (scheduledConversationDrains.get(
-              conversationDrainKey(input.endpointId, input.threadId),
-            ) ?? Date.now() + reorderWindow)
+          ? reserveConversationDrain(
+              input.endpointId,
+              input.threadId,
+              Date.now() + reorderWindow,
+            )
           : null;
       const [delivery] = await tx
         .insert(chatDeliveries)
@@ -39393,6 +39414,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       await Promise.allSettled([...publicationEndpointTasks.values()]);
       await Promise.allSettled([...backgroundMessageTasks]);
       scheduledConversationDrains.clear();
+      scheduledConversationDrainTasks.clear();
       liveInboundMessages.clear();
       const ownedDiscordGateways = [...discordGatewayOwnerships.values()];
       for (const ownership of ownedDiscordGateways) {
