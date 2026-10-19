@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import request from "supertest";
 import { describe, expect, it } from "vitest";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import {
   activityLog,
   agents,
@@ -23,11 +23,17 @@ import { heartbeatService } from "../services/heartbeat.js";
 
 const ctx = useEmbeddedPostgres("myrmidon-review-admission-", {
   resetEach: async (db) => {
-    await db.delete(agentWakeupRequests);
-    await db.delete(activityLog);
-    await db.delete(issues);
-    await db.delete(agents);
-    await resetCompanyIssueFixtures(db);
+    await db.transaction(async (tx) => {
+      // Bound wake/activity writes to agents with a FK. Acquire the agent table
+      // lock before draining these tables so no concurrent insert can race the
+      // cleanup window. SHARE ROW EXCLUSIVE conflicts with INSERT's ROW EXCLUSIVE.
+      await tx.execute(sql`LOCK TABLE agents IN SHARE ROW EXCLUSIVE MODE`);
+      await tx.delete(agentWakeupRequests);
+      await tx.delete(activityLog);
+      await tx.delete(issues);
+      await tx.delete(agents);
+      await resetCompanyIssueFixtures(tx as typeof db);
+    });
   },
 });
 
