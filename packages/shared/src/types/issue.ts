@@ -46,6 +46,16 @@ import type {
 
 export type { IssueWorkMode };
 
+export interface IssueBlockerMetadata {
+  blockReason: "external_wait" | "dependency" | "recovery" | "human_decision" | "resource";
+  owner: { agentId: string } | { userId: string };
+  blockedByIssueIds?: string[];
+  externalRef?: string;
+  nextCheckAt: string;
+  timeoutAt: string;
+  escalationPolicy: string;
+}
+
 export interface IssueAncestorProject {
   id: string;
   name: string;
@@ -867,6 +877,7 @@ export interface Issue {
   cancelledAt: Date | null;
   hiddenAt: Date | null;
   sourceTrust?: SourceTrustMetadata | null;
+  blockerMetadata?: IssueBlockerMetadata | null;
   labelIds?: string[];
   labels?: IssueLabel[];
   blockedBy?: IssueRelationIssueSummary[];
