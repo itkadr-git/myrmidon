@@ -31,6 +31,8 @@ export interface InstanceBotSettings {
   /** Name a bot container resolves the board by (docker `--add-host` target),
    *  i.e. the hostname the board's own allowlist accepts. */
   boardHost: string;
+  /** MCP endpoints reachable from the bot's host. */
+  mcpEndpoints?: readonly string[];
 }
 
 /** The settings a bot actually gets, after its host's overrides. */
@@ -55,6 +57,7 @@ export function effectiveBotSettings(
     network: host.network ?? instanceWide.network,
     imageAllowlist: host.imageAllowlist ?? instanceWide.imageAllowlist,
     boardHost: host.boardExtraHost ?? instanceWide.boardHost,
+    mcpEndpoints: host.mcpEndpoints ?? instanceWide.mcpEndpoints,
   };
 }
 

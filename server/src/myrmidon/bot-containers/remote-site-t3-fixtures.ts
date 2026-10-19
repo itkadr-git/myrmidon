@@ -13,3 +13,20 @@ export const T3_A_FIXTURE: FleetHostConfig = {
   network: "paperclip-t3-a",
   imageAllowlist: ["ghcr.io/example/bot@sha256:*"],
 };
+
+export interface T3CompositeDriftInput {
+  profileHash: string;
+  imageDigest: string;
+  limits: { memoryMb: number; cpus: number; pidsLimit: number };
+}
+
+/** Test-only contract adapter until the production reconciler owns this composite. */
+export function t3CompositeDriftFields(expected: T3CompositeDriftInput, actual: T3CompositeDriftInput): string[] {
+  const fields: string[] = [];
+  if (expected.profileHash !== actual.profileHash) fields.push("profileHash");
+  if (expected.imageDigest !== actual.imageDigest) fields.push("imageDigest");
+  for (const key of ["memoryMb", "cpus", "pidsLimit"] as const) {
+    if (expected.limits[key] !== actual.limits[key]) fields.push(`limits.${key}`);
+  }
+  return fields;
+}
