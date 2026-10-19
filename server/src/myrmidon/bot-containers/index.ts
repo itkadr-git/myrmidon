@@ -83,17 +83,36 @@ export interface BotMaintenanceServiceSlice {
  * this call opened (`changed: true`) — or one the reconciler's own actor opened
  * on an earlier, interrupted pass — may be used and then exited.
  */
-export function botMaintenancePortFromService(service: BotMaintenanceServiceSlice): BotMaintenancePort {
+export function botMaintenancePortFromService(
+  service: BotMaintenanceServiceSlice,
+  options: { sleep?: (ms: number) => Promise<void> } = {},
+): BotMaintenancePort {
+  const sleep = options.sleep ?? ((ms: number) => new Promise((resolve) => setTimeout(resolve, ms)));
   return {
     async enter(agentId, reason, drainTimeoutSec): Promise<MaintenanceEnterResult> {
-      const view = await service.enter(
-        { scope: { type: "agent", id: agentId }, reason, drainTimeoutSec, onTimeout: "interrupt_and_retry" },
-        BOT_CONTAINER_ACTOR,
-      );
-      const openedByReconciler =
-        view.startedBy?.actorType === BOT_CONTAINER_ACTOR.actorType &&
-        view.startedBy?.actorId === BOT_CONTAINER_ACTOR.actorId;
-      return { state: view.state, runningRuns: view.runningRuns, owned: view.changed || openedByReconciler };
+      const deadline = Date.now() + 60_000;
+      for (;;) {
+        try {
+          const view = await service.enter(
+            { scope: { type: "agent", id: agentId }, reason, drainTimeoutSec, onTimeout: "interrupt_and_retry" },
+            BOT_CONTAINER_ACTOR,
+          );
+          const openedByReconciler =
+            view.startedBy?.actorType === BOT_CONTAINER_ACTOR.actorType &&
+            view.startedBy?.actorId === BOT_CONTAINER_ACTOR.actorId;
+          return { state: view.state, runningRuns: view.runningRuns, owned: view.changed || openedByReconciler };
+        } catch (err) {
+          if (
+            err instanceof Error &&
+            err.message.includes("Maintenance for this scope is still leaving; retry shortly") &&
+            Date.now() < deadline
+          ) {
+            await sleep(1000);
+            continue;
+          }
+          throw err;
+        }
+      }
     },
     async status(agentId): Promise<MaintenanceWindowView> {
       const result = await service.status({ type: "agent", id: agentId });
