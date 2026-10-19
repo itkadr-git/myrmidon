@@ -144,6 +144,7 @@ describe("install.sh", () => {
     assert.match(env, /MYRMIDON_VERSION=1\.6\.6/);
     assert.match(env, /POSTGRES_PASSWORD=[0-9a-f]{48}/);
     assert.match(env, /BETTER_AUTH_SECRET=[0-9a-f]{64}/);
+    assert.match(env, /MYR_LICENSE_INSTANCE_ID=$/m);
     assert.equal(fs.statSync(path.join(sb.opt, "deploy.env")).mode & 0o777, 0o600);
     // The daemon socket is root:docker 0660 and dockergate runs as the nonroot
     // user 65532: without the socket's group the container dies on
