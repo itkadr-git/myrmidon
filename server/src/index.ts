@@ -1123,6 +1123,7 @@ async function startServerWithDatabaseTeardown(
       // failure is logged and the process starts without it.
       logger.error({ err }, "process bus failed to start; notify mode degrades to the resweep");
     }
+  }
   const heartbeat = config.heartbeatSchedulerEnabled && processRoleProfile.executesRuns
     ? heartbeatService(db as any, {
         pluginWorkerManager,
