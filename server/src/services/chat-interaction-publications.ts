@@ -329,7 +329,13 @@ export async function enqueueIssueInteractionChatPublications(
         eq(chatConversations.issueId, interaction.issueId),
         inArray(chatConversations.state, ["active", "waiting"]),
         inArray(chatEndpoints.status, ["active", "verifying"]),
-        inArray(chatEndpoints.provider, ["slack", "discord", "microsoft-teams", "imessage-photon"]),
+        inArray(chatEndpoints.provider, [
+          "slack",
+          "discord",
+          "microsoft-teams",
+          "imessage-photon",
+          "telegram",
+        ]),
       ),
     );
   // Vendor-bound conversations always keep their existing routing. Only use
