@@ -32,17 +32,26 @@ const fits = (site: BotPlacementRequest["sites"][number], bot: BotPlacementReque
 
 const canPreempt = (site: BotPlacementRequest["sites"][number], bot: BotPlacementRequest["bot"], input: BotPlacementRequest) => {
   if (bot.priority !== "P0" || !input.allowPreemption) return false;
+  if (!numeric(bot.cpus) || !numeric(bot.memoryMb) || !numeric(bot.pids)) return false;
+  if (
+    !numeric(site.allocated.cpus) || !numeric(site.allocated.memoryMb) || !numeric(site.allocated.pids) || !numeric(site.allocated.bots) ||
+    !numeric(site.capacity.cpus) || !numeric(site.capacity.memoryMb) || !numeric(site.capacity.pids) || !numeric(site.capacity.maxBots)
+  ) return false;
   const victims = input.preemptibleBots?.filter((victim) => victim.siteName === site.name && victim.priority === "low") ?? [];
   if (!victims.length || victims.some((victim) => !numeric(victim.cpus) || !numeric(victim.memoryMb) || !numeric(victim.pids))) return false;
   const cpu = victims.reduce((sum, victim) => sum + victim.cpus, 0);
   const memory = victims.reduce((sum, victim) => sum + victim.memoryMb, 0);
   const pids = victims.reduce((sum, victim) => sum + victim.pids, 0);
-  return numeric(site.allocated.cpus) && numeric(site.allocated.memoryMb) && numeric(site.allocated.pids) && numeric(site.allocated.bots) &&
-    numeric(site.capacity.cpus) && numeric(site.capacity.memoryMb) && numeric(site.capacity.pids) && numeric(site.capacity.maxBots) &&
+  return (
+    cpu <= site.allocated.cpus &&
+    memory <= site.allocated.memoryMb &&
+    pids <= site.allocated.pids &&
+    victims.length <= site.allocated.bots &&
     site.allocated.cpus - cpu + bot.cpus <= site.capacity.cpus &&
     site.allocated.memoryMb - memory + bot.memoryMb <= site.capacity.memoryMb &&
     site.allocated.pids - pids + bot.pids <= site.capacity.pids &&
-    site.allocated.bots - victims.length + 1 <= site.capacity.maxBots;
+    site.allocated.bots - victims.length + 1 <= site.capacity.maxBots
+  );
 };
 
 export function planBotPlacement(input: BotPlacementRequest): PlacementDecision {
