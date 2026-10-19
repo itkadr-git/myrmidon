@@ -215,6 +215,7 @@ describeEmbeddedPostgres("blocked loop limiter (route level)", () => {
           timeoutAt: "2026-10-21T00:00:00.000Z",
           escalationPolicy: "agent",
         },
+        unblockDescriptor: descriptorFor(s),
         ...body,
       });
   }

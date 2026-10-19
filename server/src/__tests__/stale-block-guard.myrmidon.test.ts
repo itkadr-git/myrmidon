@@ -73,7 +73,22 @@ describe("stale-block reason reference guard (route level)", () => {
     const issueId = await seedTodoIssue(companyId, "Board blocked issue");
     const res = await request(routeApp(ctx.db, actor, issueRoutes))
       .patch(`/api/issues/${issueId}`)
-      .send({ status: "blocked" });
+      .send({
+        status: "blocked",
+        unblockDescriptor: {
+          owner: "board",
+          action: "Waiting for the external check",
+          reasonRef: { kind: "issue", issueId: "00000000-0000-4000-8000-000000000001" },
+        },
+        blockerMetadata: {
+          blockReason: "dependency",
+          owner: { userId: "00000000-0000-4000-8000-000000000001" },
+          externalRef: "stale-block-guard-test",
+          nextCheckAt: "2026-10-20T00:00:00.000Z",
+          timeoutAt: "2026-10-21T00:00:00.000Z",
+          escalationPolicy: "notify_owner",
+        },
+      });
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     const after = await ctx.db
       .select({ status: issues.status })
