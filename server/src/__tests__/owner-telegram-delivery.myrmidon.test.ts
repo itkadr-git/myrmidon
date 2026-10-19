@@ -260,20 +260,6 @@ describeEmbeddedPostgres(
         })
         .returning();
 
-      await db.insert(chatConversations).values({
-        companyId,
-        endpointId,
-        resourceId: dmResourceId,
-        issueId: workIssue.id,
-        externalConversationId: `telegram-dm-${companyId.slice(0, 8)}-work`,
-        externalThreadId: `telegram-dm-${companyId.slice(0, 8)}:work`,
-        sessionGeneration: 1,
-        externalLabel: "Telegram DM",
-        isDirectMessage: true,
-        state: "active",
-        lastActivityAt: new Date(),
-      });
-
       return { companyId, agentId, boardUserId, endpointId, dmIssue, workIssue };
     }
 
