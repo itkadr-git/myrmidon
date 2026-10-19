@@ -1,7 +1,8 @@
-import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, lt, lte, notInArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, gte, inArray, isNotNull, isNull, lt, lte, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
+  agentWakeupRequests,
   approvals,
   assets,
   companies,
@@ -2728,6 +2729,59 @@ async function buildAttentionFeedSnapshot(
             },
           }));
         }
+      }
+
+      const cappedAgents = await db
+        .select({
+          agentId: agentWakeupRequests.agentId,
+          agentName: agents.name,
+          status: agents.status,
+          requestedAt: agentWakeupRequests.requestedAt,
+          payload: agentWakeupRequests.payload,
+        })
+        .from(agentWakeupRequests)
+        .innerJoin(agents, eq(agents.id, agentWakeupRequests.agentId))
+        .where(and(
+          eq(agentWakeupRequests.companyId, companyId),
+          eq(agentWakeupRequests.reason, "heartbeat.daily_run_limit"),
+          eq(agentWakeupRequests.status, "skipped"),
+          gte(agentWakeupRequests.requestedAt, new Date(now - 24 * 60 * 60 * 1000)),
+        ))
+        .orderBy(desc(agentWakeupRequests.requestedAt));
+      const latestCapByAgent = new Map<string, (typeof cappedAgents)[number]>();
+      for (const row of cappedAgents) {
+        if (!latestCapByAgent.has(row.agentId)) latestCapByAgent.set(row.agentId, row);
+      }
+      for (const latest of latestCapByAgent.values()) {
+        const observed = Number((latest.payload as { heartbeatSkip?: { observed?: unknown } } | null)?.heartbeatSkip?.observed ?? 0);
+        const limit = Number((latest.payload as { heartbeatSkip?: { limit?: unknown } } | null)?.heartbeatSkip?.limit ?? 0);
+        const resetAt = new Date(Date.UTC(latest.requestedAt.getUTCFullYear(), latest.requestedAt.getUTCMonth(), latest.requestedAt.getUTCDate() + 1));
+        const whyNow = `Agent ${latest.agentName} exhausted its daily run limit (${observed}/${limit}); resets at ${resetAt.toISOString()}.`;
+        add(createItem({
+          companyId,
+          sourceKind: "agent_error_alert",
+          subject: {
+            kind: "agent", id: latest.agentId, companyId, title: latest.agentName,
+            identifier: null, status: latest.status,
+            href: `/${prefix}/agents/${latest.agentId}`,
+            metadata: { dailyRunLimit: limit, dailyRunsObserved: observed, resetsAt: resetAt.toISOString() },
+          },
+          whyNow,
+          decisionVerbs: decisionVerbs(
+            { id: "inspect", label: "Inspect", description: "Inspect the agent's heartbeat limit." },
+            { id: "dismiss", label: "Dismiss", description: "Dismiss this alert." },
+          ),
+          inlineResolvable: true,
+          entryRule: "An agent wake was skipped because its daily run limit was reached.",
+          exitRule: "The daily run window resets or the alert is dismissed.",
+          dedupKey: `heartbeat_daily_run_limit:${latest.agentId}`,
+          severity: "high",
+          activityAt: toIso(latest.requestedAt),
+          createdAt: toIso(latest.requestedAt),
+          updatedAt: toIso(latest.requestedAt),
+          relatedIssue: null,
+          detail: { kind: "generic", summaryExcerpt: excerpt(whyNow), images: [] },
+        }));
       }
 
       const erroredAgents = await db

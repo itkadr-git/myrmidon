@@ -19,7 +19,7 @@ async function createSkillDir(root: string, name: string) {
 }
 
 describe("cursor local skill sync", () => {
-  const paperclipKey = "paperclipai/paperclip/paperclip";
+  const paperclipKey = "paperclipai/paperclip/myrmidon";
   const cleanupDirs = new Set<string>();
 
   afterEach(async () => {
@@ -49,7 +49,7 @@ describe("cursor local skill sync", () => {
 
     const after = await syncCursorSkills(ctx, [paperclipKey]);
     expect(after.entries.find((entry) => entry.key === paperclipKey)?.state).toBe("installed");
-    expect((await fs.lstat(path.join(home, ".cursor", "skills", "paperclip"))).isSymbolicLink()).toBe(true);
+    expect((await fs.lstat(path.join(home, ".cursor", "skills", "myrmidon"))).isSymbolicLink()).toBe(true);
   });
 
   it("keeps the operational skill installed after an explicit empty replacement", async () => {
@@ -68,7 +68,7 @@ describe("cursor local skill sync", () => {
 
     expect(snapshot.desiredSkills).toEqual([paperclipKey]);
     expect(snapshot.entries.find((entry) => entry.key === paperclipKey)?.state).toBe("installed");
-    expect((await fs.lstat(path.join(home, ".cursor", "skills", "paperclip"))).isSymbolicLink()).toBe(true);
+    expect((await fs.lstat(path.join(home, ".cursor", "skills", "myrmidon"))).isSymbolicLink()).toBe(true);
   });
 
   it("recognizes company-library runtime skills supplied outside the bundled Paperclip directory", async () => {

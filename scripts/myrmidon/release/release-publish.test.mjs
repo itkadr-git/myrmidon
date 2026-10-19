@@ -173,12 +173,15 @@ function writeFakeGh(dir) {
   return bin;
 }
 
-function sandbox({ runs = [], releases = {}, changelog = CHANGELOG } = {}) {
+function sandbox({ runs = [], releases = {}, changelog = CHANGELOG, auditReport = "# DB audit\n\nDone.\n" } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "myrmidon-release-publish-"));
   const bin = writeFakeGh(dir);
-  // The checkout the script runs in (cwd): the changelog at its repo path.
-  fs.mkdirSync(path.join(dir, "docs/myrmidon"), { recursive: true });
+  // The checkout the script runs in (cwd): the changelog and release docs.
+  fs.mkdirSync(path.join(dir, "docs/myrmidon/releases"), { recursive: true });
   fs.writeFileSync(path.join(dir, "docs/myrmidon/CHANGELOG.md"), changelog);
+  if (auditReport !== null) {
+    fs.writeFileSync(path.join(dir, "docs/myrmidon/releases/1.6.0-db-audit.md"), auditReport);
+  }
   fs.writeFileSync(path.join(dir, "ref-tag.json"),
     JSON.stringify({ object: { sha: TAG_OBJECT, type: "tag" } }));
   fs.writeFileSync(path.join(dir, "tag-object.json"),
@@ -415,6 +418,29 @@ describe("publish-github-release.sh: the CI gate", () => {
     assert.notEqual(code, 0, out);
     assert.match(out, /tag must look like myr-vX\.Y\.Z/);
     assert.equal(mutations(sb), "");
+  });
+});
+
+describe("publish-github-release.sh: the DB audit gate", () => {
+  it("refuses a final tag without its versioned audit report before waiting for CI", () => {
+    const sb = sandbox({ runs: GREEN_RUNS, auditReport: null });
+    const { code, out } = runScript(sb, "myr-v1.6.0");
+    assert.notEqual(code, 0, out);
+    assert.match(out, /docs\/myrmidon\/releases\/1\.6\.0-db-audit\.md is missing/);
+    assert.match(out, /OPE-401 decision registry/);
+    assert.equal(mutations(sb), "");
+    assert.doesNotMatch(out, /gate: Myrmidon CI/);
+  });
+
+  it("does not require an audit report for an rc tag", () => {
+    const rcTag = "myr-v1.6.0-rc.1";
+    const sb = sandbox({ runs: [
+      run(COMMIT, ".github/workflows/myrmidon-ci-tag.yml", "success", "completed", rcTag),
+      run(COMMIT, ".github/workflows/myrmidon-image.yml", "success", "completed", rcTag),
+    ], auditReport: null });
+    const { out } = runScript(sb, rcTag);
+    assert.match(out, /gate: rc tag/);
+    assert.doesNotMatch(out, /audit report .* is missing/);
   });
 });
 
