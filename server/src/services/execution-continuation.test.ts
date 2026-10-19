@@ -334,6 +334,47 @@ const support = await getEmbeddedPostgresTestSupport();
         }),
       ).rejects.toThrow("continuation_source_context_missing");
     });
+    it("handles cross-task interactions where sourceRunId belongs to another task without failing", async () => {
+      const otherIssueId = randomUUID();
+      const otherRunId = randomUUID();
+      const crossTaskInteractionId = randomUUID();
+      await db.insert(issues).values({
+        id: otherIssueId,
+        companyId,
+        title: "Parent Coordinator Task",
+        status: "in_progress",
+        assigneeAgentId: agentId,
+      });
+      await db.insert(heartbeatRuns).values({
+        id: otherRunId,
+        companyId,
+        agentId,
+        status: "succeeded",
+        contextSnapshot: { issueId: otherIssueId },
+      });
+      await db.insert(issueThreadInteractions).values({
+        id: crossTaskInteractionId,
+        companyId,
+        issueId,
+        kind: "suggest_tasks",
+        status: "accepted",
+        sourceRunId: otherRunId,
+        originCommentIds: [],
+        payload: {},
+        result: {},
+      });
+      const envelope = await buildExecutionContinuation({
+        db,
+        companyId,
+        issueId,
+        agentId,
+        context: { interactionId: crossTaskInteractionId, wakeReason: "interaction_resolved" },
+        summary: null,
+        exposeLowTrustRaw: false,
+      });
+      expect(envelope).toBeDefined();
+      expect(envelope.issueId).toBe(issueId);
+    });
     it("rejects another company and an invalidated task owner", async () => {
       await expect(
         buildExecutionContinuation({

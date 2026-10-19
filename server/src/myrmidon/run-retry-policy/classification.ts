@@ -28,15 +28,18 @@ export type RunFailureClass = "transient" | "permanent" | "unknown";
 export type RunFailureClassificationReason =
   | "permanent_error_family"
   | "permanent_error_code"
+  | "permanent_error_message"
   | "transient_error_family"
   | "transient_error_code"
+  | "transient_error_message"
   | "unknown_error_code"
   | "missing_error_code";
 
 /**
  * A retry is worth its cost: the failure is a collision with infrastructure
  * that is expected to come back (an upstream 5xx, a quota window, a timeout,
- * a crashed harness), not a property of the work itself.
+ * a crashed harness, a stream drop, a lost lease, or missing continuation context),
+ * not a property of the work itself.
  */
 export const TRANSIENT_RUN_FAILURE_ERROR_CODES: ReadonlySet<string> = new Set([
   "adapter_failed",
@@ -45,6 +48,12 @@ export const TRANSIENT_RUN_FAILURE_ERROR_CODES: ReadonlySet<string> = new Set([
   "claude_transient_upstream",
   "provider_quota",
   "timeout",
+  "continuation_source_context_missing",
+  "controller_lease_lost",
+  "legacy_controller_lease_lost",
+  "native_session_lease_lost",
+  "stream_interrupted",
+  "transient_network_error",
 ]);
 
 /**
@@ -61,6 +70,7 @@ export const PERMANENT_RUN_FAILURE_ERROR_CODES: ReadonlySet<string> = new Set([
   "agent_not_found",
   "budget_blocked",
   "budget_exhausted",
+  "continuation_user_authorization_missing",
   "issue_paused",
   "issue_dependencies_blocked",
   "setup_failed",
@@ -81,7 +91,14 @@ export const PERMANENT_RUN_FAILURE_ERROR_CODES: ReadonlySet<string> = new Set([
  * weather: the same call a minute later can succeed.
  */
 export const TRANSIENT_RUN_FAILURE_ERROR_FAMILIES: ReadonlySet<string> =
-  new Set(["transient_upstream", "provider_quota"]);
+  new Set([
+    "transient_upstream",
+    "provider_quota",
+    "stream_interrupted",
+    "lease_lost",
+    "network_error",
+    "continuation_source_context_missing",
+  ]);
 
 /**
  * Families that are a property of the configuration, not of the moment. A
@@ -101,11 +118,19 @@ export const PERMANENT_RUN_FAILURE_ERROR_FAMILIES: ReadonlySet<string> =
     "refresh_token_invalidated",
   ]);
 
+export const TRANSIENT_ERROR_MESSAGE_RE =
+  /\b(continuation_source_context_missing|stream (?:was )?interrupted|interrupted stream|premature close|response stream|legacy controller lease lost|controller lease lost|native_session_lease_lost|lease lost|econnreset|etimedout|econnrefused|socket hang up|fetch failed|clientnetworkerror|connection error|network error)\b/i;
+
+export const PERMANENT_ERROR_MESSAGE_RE =
+  /\b(continuation_user_authorization_missing|key not allowed to access model|refresh_token_reused|refresh_token_invalidated)\b/i;
+
 export interface RunFailureInput {
   /** `heartbeat_runs.error_code` of the failed run. */
   errorCode?: string | null;
   /** `errorFamily` of the adapter execution result, when the run carries one. */
   errorFamily?: string | null;
+  /** Error message or error text from the run, if available. */
+  errorMessage?: string | null;
 }
 
 export interface RunFailureClassification {
@@ -126,6 +151,7 @@ export function classifyRunFailureForRetry(
 ): RunFailureClassification {
   const errorCode = readToken(input.errorCode);
   const errorFamily = readToken(input.errorFamily);
+  const errorMessage = readToken(input.errorMessage);
 
   if (errorFamily && PERMANENT_RUN_FAILURE_ERROR_FAMILIES.has(errorFamily)) {
     return {
@@ -133,6 +159,20 @@ export function classifyRunFailureForRetry(
       errorCode,
       errorFamily,
       reason: "permanent_error_family",
+    };
+  }
+  // Generic codes (setup_failed, adapter_failed) can be refined by specific transient error messages.
+  if (
+    errorCode &&
+    (errorCode === "setup_failed" || errorCode === "adapter_failed") &&
+    errorMessage &&
+    TRANSIENT_ERROR_MESSAGE_RE.test(errorMessage)
+  ) {
+    return {
+      classification: "transient",
+      errorCode,
+      errorFamily,
+      reason: "transient_error_message",
     };
   }
   if (errorCode && PERMANENT_RUN_FAILURE_ERROR_CODES.has(errorCode)) {
@@ -159,6 +199,22 @@ export function classifyRunFailureForRetry(
       reason: "transient_error_code",
     };
   }
+  if (errorMessage && PERMANENT_ERROR_MESSAGE_RE.test(errorMessage)) {
+    return {
+      classification: "permanent",
+      errorCode,
+      errorFamily,
+      reason: "permanent_error_message",
+    };
+  }
+  if (errorMessage && TRANSIENT_ERROR_MESSAGE_RE.test(errorMessage)) {
+    return {
+      classification: "transient",
+      errorCode,
+      errorFamily,
+      reason: "transient_error_message",
+    };
+  }
   return {
     classification: "unknown",
     errorCode,
@@ -172,4 +228,54 @@ export function isRetryableRunFailure(
   classification: RunFailureClassification,
 ): boolean {
   return classification.classification === "transient";
+}
+
+export function isTransientFailure(input: RunFailureInput): boolean {
+  const classification = classifyRunFailureForRetry(input);
+  return classification.classification === "transient";
+}
+
+/**
+ * Checks whether a failure is a persistent/sustained issue (quota, auth, config)
+ * that warrants immediately placing the agent into status=error rather than retrying.
+ */
+export function isPermanentAgentFailure(input: RunFailureInput): boolean {
+  const errorCode = readToken(input.errorCode);
+  const errorFamily = readToken(input.errorFamily);
+  const errorMessage = input.errorMessage?.trim() ?? "";
+
+  // Quota is a persistent reason for the agent record to enter error
+  if (
+    errorCode === "provider_quota" ||
+    errorCode === "budget_blocked" ||
+    errorCode === "budget_exhausted" ||
+    errorFamily === "provider_quota" ||
+    /quota exceeded|rate limit exceeded|insufficient_quota/i.test(errorMessage)
+  ) {
+    return true;
+  }
+
+  // Auth is a persistent reason
+  if (
+    errorCode === "continuation_user_authorization_missing" ||
+    errorFamily === "refresh_token_reused" ||
+    errorFamily === "refresh_token_invalidated" ||
+    /unauthorized|authentication failed|invalid_api_key|continuation_user_authorization_missing/i.test(errorMessage)
+  ) {
+    return true;
+  }
+
+  // Config is a persistent reason
+  if (
+    errorCode === "configuration_incomplete" ||
+    errorCode === "adapter_engine_unavailable" ||
+    errorCode === "agent_not_found" ||
+    errorFamily === "permanent_config_error" ||
+    errorFamily === "model_refusal" ||
+    /key not allowed to access model|configuration_incomplete|permanent_config_error/i.test(errorMessage)
+  ) {
+    return true;
+  }
+
+  return false;
 }
