@@ -29,8 +29,8 @@ function otherServiceDefinitions(platform: NodeJS.Platform, userHomeDir: string,
     ? systemdServiceName(instanceId)
     : `${launchdServiceName(instanceId)}.plist`;
   const pattern = platform === "linux"
-    ? /^myrmidon(?:-.+)?\.service$/
-    : /^ing\.paperclip\.myrmidon(?:\..+)?\.plist$/;
+    ? /^(?:myrmidon|paperclipai)(?:-.+)?\.service$/
+    : /^ing\.paperclip\.(?:myrmidon|paperclipai)(?:\..+)?\.plist$/;
   return fs.readdirSync(directory)
     .filter((name) => name !== currentName && pattern.test(name))
     .map((name) => path.join(directory, name));
