@@ -61,7 +61,7 @@ import { clearChatHoldsOnOwnerMessage } from "../myrmidon/chat-holds/clear-on-me
 import { cancelWaitingRunDoomedByHold, carryRetryBudgetToSuccessor } from "../myrmidon/settled-holds/cancel-waiting-run.js";
 import { connectionIntentService } from "./connection-intents.js";
 import { prepareManagedAiRuntime, assertManagedAiProjectAuth, stripAiAuthBindings, isAiConnectionBusy, AI_AUTH_ENV_KEYS } from "./ai-connection-runtime.js";
-import { aiConnectionBindingSchema } from "@paperclipai/shared";
+import { aiConnectionBindingSchema, type AiConnectionBinding } from "@paperclipai/shared";
 // myrmidon(TEAM-LIVENESS-SETTINGS): the reader that resolves the stored instance
 // settings against the environment, plus the per-agent card switch, so the three
 // automatic behaviours obey the settings page without a restart.
@@ -3890,6 +3890,7 @@ export interface WakeupOptions {
   requestedByActorType?: "user" | "agent" | "system";
   requestedByActorId?: string | null;
   contextSnapshot?: Record<string, unknown>;
+  externalSession?: { connectionId: string; grantId: string; model: string };
   issueStateGuard?: {
     statuses: string[];
     assigneeAgentId: string;
@@ -7043,6 +7044,14 @@ function enrichWakeContextSnapshot(input: {
   const commentIdFromPayload = readNonEmptyString(payload?.["commentId"]);
   const taskKey = deriveTaskKey(contextSnapshot, payload);
   const wakeCommentId = deriveCommentId(contextSnapshot, payload);
+  const externalSession = parseObject(contextSnapshot.externalSession);
+  if (Object.keys(externalSession).length) {
+    contextSnapshot.externalSession = {
+      connectionId: externalSession.connectionId,
+      grantId: externalSession.grantId,
+      model: externalSession.model,
+    };
+  }
   const wakeCommentIds = mergeWakeCommentIds(
     contextSnapshot,
     commentIdFromPayload,
@@ -21537,6 +21546,7 @@ export function heartbeatService(
       }
       const runtime = await ensureRuntimeState(agent);
       const context = parseObject(run.contextSnapshot);
+      const externalSessionOverride = parseObject(context.externalSession);
       const authorizeFailedChatRetryExecution = () =>
         db.transaction((tx) =>
           authorizeFailedChatRunRetryWake(db, tx as unknown as Db, {
@@ -22634,10 +22644,32 @@ export function heartbeatService(
       // credential choice — host-credential inheritance is off unless the
       // emergency switch is set. See ../myrmidon/host-github-credentials.ts.
       const runHostGitHubCredentials = resolveRunHostGitHubCredentials(useHostGitHub);
+      const externalSession = externalSessionOverride;
       const aiBinding = agent.runtimeConfig?.aiConnection ? aiConnectionBindingSchema.parse(agent.runtimeConfig.aiConnection) : undefined;
+      let runScopedAiBinding: AiConnectionBinding | undefined = aiBinding;
+      if (Object.keys(externalSession).length > 0) {
+        if (
+          typeof externalSession.model !== "string" ||
+          typeof externalSession.connectionId !== "string" ||
+          typeof externalSession.grantId !== "string" ||
+          !aiBinding ||
+          aiBinding.mode !== "shared" ||
+          aiBinding.connectionId !== externalSession.connectionId ||
+          aiBinding.grantId !== externalSession.grantId
+        ) {
+          throw new HttpError(422, "External session binding is no longer valid");
+        }
+        runScopedAiBinding = { ...aiBinding };
+      }
+      const runAdapterConfig: Record<string, unknown> = {
+        ...executionRunConfig,
+        ...(typeof externalSession.model === "string"
+          ? { model: externalSession.model }
+          : {}),
+      };
       const { resolvedConfig, secretKeys, secretManifest } =
         await resolveExecutionRunAdapterConfig({
-          managedAiCredentials: Boolean(aiBinding),
+          managedAiCredentials: Boolean(runScopedAiBinding),
           managedGitHubCredentials: !runHostGitHubCredentials,
           companyId: agent.companyId,
           agentId: agent.id,
@@ -22650,15 +22682,15 @@ export function heartbeatService(
           projectId: projectContext?.id ?? null,
           routineId: routineEnvContext.routineId,
           responsibleUserId,
-          executionRunConfig: aiBinding ? { ...executionRunConfig, env: stripAiAuthBindings(executionRunConfig.env) } : executionRunConfig,
-          projectEnv: aiBinding ? stripAiAuthBindings(projectContext?.env) : projectContext?.env ?? null,
-          routineEnv: aiBinding ? stripAiAuthBindings(routineEnvContext.env) : routineEnvContext.env,
+          executionRunConfig: runScopedAiBinding ? { ...runAdapterConfig, env: stripAiAuthBindings(runAdapterConfig.env) } : runAdapterConfig,
+          projectEnv: runScopedAiBinding ? stripAiAuthBindings(projectContext?.env) : projectContext?.env ?? null,
+          routineEnv: runScopedAiBinding ? stripAiAuthBindings(routineEnvContext.env) : routineEnvContext.env,
           secretsSvc,
           trustPreset,
         });
-      if (aiBinding) {
+      if (runScopedAiBinding) {
         try {
-          managedAiRuntime = await prepareManagedAiRuntime(db, { companyId: agent.companyId, agentId: agent.id, responsibleUserId, adapterType: agent.adapterType, binding: aiBinding, config: resolvedConfig });
+          managedAiRuntime = await prepareManagedAiRuntime(db, { companyId: agent.companyId, agentId: agent.id, responsibleUserId, adapterType: agent.adapterType, binding: runScopedAiBinding, config: { ...resolvedConfig, ...(typeof externalSession.model === "string" ? { model: externalSession.model } : {}) } });
         } catch (error) {
           // Only fresh executions can receive a pre-provider wait receipt. A
           // persisted native input may already have provider effects to recover.
@@ -22672,15 +22704,15 @@ export function heartbeatService(
             await finalizeAiConnectionBusyDeferral(run, error, !authorizedNonAssigneeWake);
             return;
           }
-          if (responsibleUserId && issueId && aiBinding.mode === "responsible_user") {
+          if (responsibleUserId && issueId && aiBinding?.mode === "responsible_user") {
             await connectionIntentService(db).request({ sub: agent.id, company_id: agent.companyId, run_id: run.id, responsible_user_id: responsibleUserId }, aiBinding.provider, { purpose: "ai" }).catch(() => {
               logger.warn({ runId: run.id, agentId: agent.id }, "Could not attach AI connection request; runtime configuration action remains available");
             });
           }
           throw new ConfigurationIncompleteFailure(error instanceof Error ? error.message : "Configure this agent’s AI connection", {
-            configurationIncomplete: { reason: "ai_connection_unavailable", companyId: agent.companyId, agentId: agent.id, responsibleUserId,
+            configurationIncomplete: aiBinding ? { reason: "ai_connection_unavailable", companyId: agent.companyId, agentId: agent.id, responsibleUserId,
               provider: aiBinding.provider, method: aiBinding.method, actionUrl: `/agents/${agent.id}/runtime`,
-              fingerprint: `ai:${agent.id}:${responsibleUserId}:${JSON.stringify(aiBinding)}` },
+              fingerprint: `ai:${agent.id}:${responsibleUserId}:${JSON.stringify(aiBinding)}` } : undefined,
           });
         }
         if (persistedNativeExecutionInput && parseObject(run.contextSnapshot?.aiConnection).identity !== managedAiRuntime.identity) {
@@ -27952,6 +27984,7 @@ export function heartbeatService(
     const triggerDetail = opts.triggerDetail ?? null;
     const contextSnapshot: Record<string, unknown> = {
       ...(opts.contextSnapshot ?? {}),
+      ...(opts.externalSession ? { externalSession: opts.externalSession } : {}),
     };
     const reason = opts.reason ?? null;
     let payload = opts.payload ? { ...opts.payload } : null;
