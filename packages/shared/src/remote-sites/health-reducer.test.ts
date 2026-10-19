@@ -116,6 +116,32 @@ describe("reduceSiteHealth", () => {
     expect(degraded.intents).toEqual([]);
   });
 
+  it("suppresses failover while quarantined or manually drained, including after success", () => {
+    const heldSnapshot = (overrides: Partial<ReturnType<typeof createSiteHealthSnapshot>>) => createSiteHealthSnapshot({
+      state: "unreachable",
+      missCount: 3,
+      unavailableSince: 0,
+      ...overrides,
+    });
+    const cases = [
+      heldSnapshot({ state: "quarantined" }),
+      heldSnapshot({ state: "draining", manualDrain: true }),
+    ];
+
+    for (const held of cases) {
+      const atThreshold = tick(held, SITE_HEALTH_FAILOVER_AFTER_MS);
+      expect(atThreshold.intents).not.toContain("failover");
+      expect(atThreshold.failoverIssued).toBe(false);
+
+      const recovered = tick(atThreshold, SITE_HEALTH_FAILOVER_AFTER_MS + 1, "success");
+      expect(recovered.state).toBe(held.state);
+      expect(recovered.manualDrain).toBe(held.manualDrain);
+      expect(recovered.failoverIssued).toBe(false);
+      const timeoutAgain = tick(recovered, SITE_HEALTH_FAILOVER_AFTER_MS + 2);
+      expect(timeoutAgain.intents).not.toContain("failover");
+    }
+  });
+
   it("never emits failover for a pinned outage after three misses, while unpinned outage does", () => {
     const outage = (pinnedBotCount: number) => {
       let snapshot: ReturnType<typeof reduceSiteHealth> = tick(createSiteHealthSnapshot({ pinnedBotCount }), 0, "success");
