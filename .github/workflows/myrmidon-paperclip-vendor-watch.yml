@@ -1,4 +1,4 @@
-name: Myrmidon Paperclip release watch
+name: Myrmidon Paperclip vendor watch
 
 # Fails when Paperclip has published a release that `myrmidon migrate` does not
 # accept as a source yet. Scheduled on purpose, not part of PR checks: a vendor

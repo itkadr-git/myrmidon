@@ -94,6 +94,9 @@ node scripts/myrmidon/vendor-sync/vendor-sync.mjs --help     # параметр�
 7. Написать в задаче рутины ссылку на PR и краткую выжимку: число коммитов, конфликты, новые
    миграции и workflow.
 
+При появлении нового стабильного выпуска Paperclip создать задачу на поддержку в день выхода.
+В задаче указать ссылку на упавший workflow `Myrmidon Paperclip vendor watch`.
+
 ## Слияние PR переноса
 
 - PR `sync/*` вливается **только merge commit**. Squash и rebase запрещены: они обрывают связь
