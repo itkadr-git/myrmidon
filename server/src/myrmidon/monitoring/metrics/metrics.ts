@@ -167,6 +167,7 @@ export interface MetricsSnapshotFields {
    */
   adapterFallbacks?: ChannelBridgeFallbackSample[] | null;
 
+  /**
    * myrmidon(1.6.6 CONNECTOR-IN): the inbound reads of this process by path,
    * read from the in-process counter of the connector seam (no DB). null
    * renders HELP/TYPE with no samples; both paths render as samples whenever
@@ -233,6 +234,7 @@ export interface MetricsCollectorDeps {
    */
   adapterFallbacks?: ChannelBridgeFallbackSource | null;
 
+  /**
    * myrmidon(1.6.6 CONNECTOR-IN): where the ingress half comes from. Production
    * reads the in-process counter of the connector seam; a test injects its own,
    * so no test depends on another test's reads.
@@ -477,6 +479,7 @@ export async function collectMetricsParts(deps: MetricsCollectorDeps): Promise<M
     "myrmidon_adapter_fallback_total",
     () => Promise.resolve().then(resolveChannelBridgeFallbackSource(deps.adapterFallbacks)),
     null as ChannelBridgeFallbackSample[] | null,
+  );
 
   // myrmidon(1.6.6 CONNECTOR-IN): the ingress half rides the same guarded
   // scrape: an in-process counter that cannot throw today, guarded anyway so a
