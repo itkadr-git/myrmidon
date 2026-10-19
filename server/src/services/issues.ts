@@ -4611,6 +4611,7 @@ async function listIssueReviewAttentionMap(
       conversationState: issue.conversationState,
       executionPolicy: issue.executionPolicy,
       executionState: issue.executionState,
+      blockerMetadata: issue.blockerMetadata,
       monitorNextCheckAt: issue.monitorNextCheckAt,
       monitorAttemptCount: issue.monitorAttemptCount,
       // myrmidon(HUMAN-REVIEW-WAIT): the human-review-wait facts.
@@ -5660,6 +5661,7 @@ async function listIssueBlockedInboxAttentionMap(
       conversationState: issue.conversationState,
       executionPolicy: issue.executionPolicy,
       executionState: issue.executionState,
+      blockerMetadata: issue.blockerMetadata,
       monitorNextCheckAt: issue.monitorNextCheckAt,
       monitorAttemptCount: issue.monitorAttemptCount,
       // myrmidon(HUMAN-REVIEW-WAIT): the human-review-wait facts.
@@ -10550,6 +10552,7 @@ export function issueService(db: Db) {
       const {
         labelIds: nextLabelIds,
         blockedByIssueIds,
+        blockerMetadata,
         actorAgentId,
         actorUserId,
         companyGuard,
@@ -10618,6 +10621,7 @@ export function issueService(db: Db) {
 
       const patch: Partial<typeof issues.$inferInsert> = {
         ...issueData,
+        ...(blockerMetadata !== undefined ? { blockerMetadata } : {}),
         // myrmidon(S5): issue descriptions are stored with secret values masked.
         // The single write point for update: every path that PATCHes the
         // description (board edit, agent amend, API) stores the masked text.
