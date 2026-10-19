@@ -15,6 +15,20 @@ import type { BotContainerDriver, BotContainerSpec } from "./driver.js";
 import type { CompiledProfile } from "./types.js";
 import { secretService } from "../../services/secrets.js";
 import { logger } from "../../middleware/logger.js";
+import { startSiteSchedulerLane, type ScheduledAgentCard } from "./site-scheduler-lane.js";
+import { myrmidonFleetAffinity } from "@paperclipai/db";
+import type { SiteHealthSnapshot } from "../../../../packages/shared/src/remote-sites/health-reducer.js";
+
+type FleetAgentRow = typeof agents.$inferSelect;
+type FleetSiteRow = typeof myrmidonFleetSites.$inferSelect;
+type FleetAffinityRow = typeof myrmidonFleetAffinity.$inferSelect;
+
+let stopFleetScheduler: (() => void) | null = null;
+
+export function stopMyrmidonFleetScheduler(): void {
+  stopFleetScheduler?.();
+  stopFleetScheduler = null;
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -139,6 +153,62 @@ export function myrmidonFleetMoveRoutes(db: Db): Router {
 
     log: logger,
   });
+
+  // Start the scheduler from the same wiring that owns the real move service.
+  // This keeps health/fencing/failover on the production DB and FleetMoveService path.
+  const healthSnapshots = new Map<string, SiteHealthSnapshot>();
+  stopMyrmidonFleetScheduler();
+  stopFleetScheduler = startSiteSchedulerLane({
+    listAgents: async (): Promise<ScheduledAgentCard[]> => {
+      const rows = await db.select().from(agents);
+      return rows.map((agent: FleetAgentRow) => ({
+        id: agent.id,
+        companyId: agent.companyId,
+        projectId: agent.projectId,
+        priority: agent.priority,
+        adapterConfig: (isRecord(agent.adapterConfig) ? agent.adapterConfig : {}),
+      }));
+    },
+    listSites: async (companyId) => {
+      const rows = await db.select().from(myrmidonFleetSites).where(eq(myrmidonFleetSites.companyId, companyId));
+      return rows.map((site: FleetSiteRow) => ({
+        name: site.name,
+        url: site.url,
+        status: site.status as "active" | "draining" | "quarantined" | "disabled",
+        capacity: site.capacity,
+        labels: site.labels ?? {},
+      }));
+    },
+    listAffinityRules: async (companyId) => {
+      const rows = await db.select().from(myrmidonFleetAffinity).where(eq(myrmidonFleetAffinity.companyId, companyId));
+      return rows.map((rule: FleetAffinityRow) => ({
+        scope: rule.scope as "project" | "company" | "agent",
+        targetId: rule.targetId,
+        siteName: rule.siteName,
+        weight: rule.weight,
+      }));
+    },
+    saveAdapterConfig: async (agentId, adapterConfig) => {
+      await db.update(agents).set({ adapterConfig, updatedAt: new Date() }).where(eq(agents.id, agentId));
+    },
+    loadSiteHealth: async (siteName) => healthSnapshots.get(siteName) ?? {
+      state: "unknown", lastSeenAt: null, missCount: 0, unavailableSince: null,
+      manualDrain: false, pinnedBotCount: 0, failoverIssued: false,
+    },
+    saveSiteHealth: async (siteName, snapshot) => { healthSnapshots.set(siteName, snapshot); },
+    updateSiteStatus: async (siteName, status) => {
+      await db.update(myrmidonFleetSites).set({ status, updatedAt: new Date() }).where(eq(myrmidonFleetSites.name, siteName));
+    },
+    moveBot: async ({ companyId, botKey, dstSite }) => { await service.startMove({ companyId, botKey, dstSite }); },
+    markUnavailable: async ({ botKey }) => {
+      const card = await getAgentCard(botKey);
+      if (!card) return;
+      const container = isRecord(card.adapterConfig.container) ? { ...card.adapterConfig.container, unavailable: true } : { unavailable: true };
+      await updateAgentCard(card.agentId, { ...card.adapterConfig, container });
+    },
+    fenceSite: async (siteName) => { logger.warn({ siteName }, "remote site fenced after health misses"); },
+    log: logger,
+  }).stop;
 
   return fleetMoveRoutes({ service, resolveCompanyIdForBot });
 }
