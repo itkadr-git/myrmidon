@@ -40,11 +40,14 @@ import {
   eq,
   inArray,
   isNull,
+  ne,
   notInArray,
+  or,
   sql,
 } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import type { ChatChannelService } from "../services/chat-channels.js";
+import type { WakeupOptions } from "../services/heartbeat.js";
 import {
   activityLog,
   agentWakeupRequests,
@@ -1096,6 +1099,17 @@ function hasExecutionParticipant(value: unknown) {
   return false;
 }
 
+function hasReviewExecutionParticipant(value: unknown) {
+  const state = parseIssueExecutionState(value);
+  return Boolean(
+    state?.status === "pending" &&
+      state.currentStageType === "review" &&
+      state.currentParticipant &&
+      ((state.currentParticipant.type === "agent" && state.currentParticipant.agentId) ||
+        (state.currentParticipant.type === "user" && state.currentParticipant.userId)),
+  );
+}
+
 function hasScheduledMonitor(input: {
   existingMonitorNextCheckAt?: Date | null;
   patchMonitorNextCheckAt?: unknown;
@@ -2079,8 +2093,7 @@ const INVALID_AGENT_IN_REVIEW_DISPOSITION_MESSAGE =
   "invalid_issue_disposition: Agent-authored updates that move an issue to in_review must include a real review path. " +
   "This request would leave the issue in_review without anyone or anything owning the next action. " +
   "Keep working instead of moving to review, create a request_confirmation or ask_user_questions interaction, " +
-  "link or request a pending approval, assign a human reviewer with assigneeUserId, set a typed executionState.currentParticipant through an execution policy, " +
-  "declare reviewPolicy \"human_only\" so the verdict waits on a person, or schedule an issue monitor for an external review/check. After creating one of those review paths, retry the status update.";
+  "link or request a pending approval, assign a human reviewer with assigneeUserId, set a typed executionState.currentParticipant through an execution policy, or schedule an issue monitor for an external review/check. After creating one of those review paths, retry the status update.";
 
 function executionPrincipalsEqual(
   left: ParsedExecutionState["currentParticipant"] | null,
@@ -2976,6 +2989,10 @@ function buildExecutionStageWakeup(input: {
         },
         requestedByActorType: input.requestedByActorType,
         requestedByActorId: input.requestedByActorId,
+        idempotencyKey:
+          nextState.currentStageType === "review"
+            ? `issue-review-admission:${issueId}:${agentId}`
+            : undefined,
         contextSnapshot: {
           issueId,
           taskId: issueId,
@@ -3578,6 +3595,12 @@ export function issueRoutes(
       proposalId: string;
       actor: { agentId?: string | null; userId?: string | null };
     }) => Promise<unknown>;
+    insertReviewAdmissionWakeup?: (
+      agentId: string,
+      options: WakeupOptions,
+      tx: Db,
+      companyId?: string,
+    ) => Promise<{ created: boolean }>;
   } = {},
 ) {
   const router = Router();
@@ -3588,6 +3611,12 @@ export function issueRoutes(
   const heartbeat = heartbeatService(db, {
     pluginWorkerManager: opts.pluginWorkerManager,
   });
+  const insertReviewAdmissionWakeup =
+    opts.insertReviewAdmissionWakeup ??
+    (typeof heartbeat?.insertReviewAdmissionWakeup === "function"
+      ? heartbeat.insertReviewAdmissionWakeup.bind(heartbeat)
+      : async () => ({ created: false }));
+
   const commentWasCreatedByAssigneeRun = async (
     comment: { companyId: string; createdByRunId?: string | null },
     assigneeAgentId: string | null | undefined,
@@ -4785,7 +4814,7 @@ export function issueRoutes(
       input.updateFields.executionState === undefined
         ? input.existing.executionState
         : input.updateFields.executionState;
-    if (hasExecutionParticipant(nextExecutionState)) return null;
+    if (hasReviewExecutionParticipant(nextExecutionState)) return null;
 
     const nextExecutionPolicy = input.updateFields.executionPolicy;
     if (
@@ -4811,17 +4840,47 @@ export function issueRoutes(
     )
       return null;
 
-    // myrmidon(HUMAN-REVIEW-WAIT): declaring `reviewPolicy: "human_only"` when
-    // moving to in_review is itself a real review path — the verdict can only
-    // come from a person, and a human comment wakes the assignee through the
-    // normal comment path. Without this the guard forced agents to fabricate an
-    // interaction/approval just to enter a lawful "waiting for the owner" state
-    // (a human-only review on a board, 05.10).
     const nextReviewPolicy =
       input.updateFields.reviewPolicy === undefined
         ? input.existing.reviewPolicy
         : input.updateFields.reviewPolicy;
-    if (nextReviewPolicy === "human_only") return null;
+    if (
+      nextReviewPolicy === "human_only" &&
+      (input.actorType !== "agent" ||
+        (typeof input.updateFields.assigneeUserId === "string" &&
+          input.updateFields.assigneeUserId.trim().length > 0))
+    ) return null;
+
+    if (nextReviewPolicy === "human_only" && input.actorType === "agent") {
+      throw unprocessable(INVALID_AGENT_IN_REVIEW_DISPOSITION_MESSAGE, {
+        code: "invalid_issue_disposition",
+        missing: "review_path",
+        validReviewPaths: [
+          "pending_issue_thread_interaction",
+          "linked_pending_approval",
+          "human_assignee_user_id",
+          "typed_execution_state_current_participant",
+          "scheduled_issue_monitor",
+        ],
+      });
+    }
+
+    const nextAssigneeAgentId =
+      input.updateFields.assigneeAgentId === undefined
+        ? input.existing.assigneeAgentId
+        : input.updateFields.assigneeAgentId;
+    const executionReviewParticipants = summarizeExecutionParticipants(
+      normalizeIssueExecutionPolicy(input.updateFields.executionPolicy ?? null),
+      "review",
+    );
+    if (
+      input.actorAgentId &&
+      nextAssigneeAgentId &&
+      nextAssigneeAgentId !== input.actorAgentId &&
+      (executionReviewParticipants.some(
+        (participant) => participant.type === "agent" && participant.agentId === nextAssigneeAgentId,
+      ) || (await agentsSvc.getById(String(nextAssigneeAgentId)))?.role === "reviewer")
+    ) return null;
 
     throw unprocessable(INVALID_AGENT_IN_REVIEW_DISPOSITION_MESSAGE, {
       code: "invalid_issue_disposition",
@@ -4832,7 +4891,6 @@ export function issueRoutes(
         "human_assignee_user_id",
         "typed_execution_state_current_participant",
         "scheduled_issue_monitor",
-        "human_only_review_policy",
       ],
     });
   }
@@ -6240,10 +6298,18 @@ export function issueRoutes(
       : [...new Set(current)];
   }
 
-  async function findCurrentSerializedWatchdogChild(parent: {
-    id: string;
-    companyId: string;
-  }) {
+  async function findCurrentSerializedWatchdogChild(
+    parent: {
+      id: string;
+      companyId: string;
+    },
+    options?: {
+      excludeIssueIds?: (string | null | undefined)[];
+    },
+  ) {
+    const excludedIssueIds = (options?.excludeIssueIds ?? []).filter(
+      (id): id is string => typeof id === "string" && id.trim().length > 0,
+    );
     const children = await db
       .select({
         id: issueRows.id,
@@ -6254,6 +6320,10 @@ export function issueRoutes(
         and(
           eq(issueRows.companyId, parent.companyId),
           eq(issueRows.parentId, parent.id),
+          or(
+            isNull(issueRows.originKind),
+            ne(issueRows.originKind, TASK_WATCHDOG_ORIGIN_KIND),
+          ),
           inArray(issueRows.status, [
             "todo",
             "in_progress",
@@ -6261,6 +6331,9 @@ export function issueRoutes(
             "blocked",
           ]),
           isNull(issueRows.hiddenAt),
+          ...(excludedIssueIds.length > 0
+            ? [notInArray(issueRows.id, excludedIssueIds)]
+            : []),
         ),
       )
       .orderBy(
@@ -6277,6 +6350,7 @@ export function issueRoutes(
     currentChildIssueId: string | null | undefined;
   }) {
     if (!input.watchdogParentIssueId || !input.currentChildIssueId) return;
+    if (input.watchdogParentIssueId === input.currentChildIssueId) return;
     const watchdogParent = await svc.getById(input.watchdogParentIssueId);
     if (
       !watchdogParent ||
@@ -6288,12 +6362,21 @@ export function issueRoutes(
       watchdogParent.status !== "blocked"
     )
       return;
+    if (watchdogParent.id === input.currentChildIssueId) return;
 
     const relations = await svc.getRelationSummaries(watchdogParent.id);
     const nextBlockedByIssueIds = mergeIssueBlockerIds(
       relations.blockedBy?.map((relation) => relation.id) ?? [],
       input.currentChildIssueId,
-    );
+    ).filter((id) => id !== watchdogParent.id);
+
+    if (
+      nextBlockedByIssueIds.length === (relations.blockedBy?.length ?? 0) &&
+      watchdogParent.status === "blocked"
+    ) {
+      return;
+    }
+
     await svc.update(watchdogParent.id, {
       status: "blocked",
       blockedByIssueIds: nextBlockedByIssueIds,
@@ -12560,7 +12643,9 @@ export function issueRoutes(
       const serializationContext =
         await resolveWatchdogFollowUpSerializationContext(req, parent);
       const currentSerializedChild = serializationContext
-        ? await findCurrentSerializedWatchdogChild(parent)
+        ? await findCurrentSerializedWatchdogChild(parent, {
+            excludeIssueIds: [serializationContext.watchdogParentIssueId],
+          })
         : null;
       const executionPolicy = applyActorMonitorScheduledBy(
         normalizeIssueExecutionPolicy(createBody.executionPolicy),
@@ -12824,7 +12909,9 @@ export function issueRoutes(
       const serializationContext =
         await resolveWatchdogFollowUpSerializationContext(req, sourceIssue);
       const existingSerializedChild = serializationContext
-        ? await findCurrentSerializedWatchdogChild(sourceIssue)
+        ? await findCurrentSerializedWatchdogChild(sourceIssue, {
+            excludeIssueIds: [serializationContext.watchdogParentIssueId],
+          })
         : null;
       const serializedBlockedChildIds = new Set<string>();
       if (serializationContext) {
@@ -13247,6 +13334,7 @@ export function issueRoutes(
         interrupt: interruptRequested,
         deferWakeForGoal,
         hiddenAt: hiddenAtRaw,
+        blockerMetadata: blockerMetadataRaw,
         onBehalfOfUserId: _requestedOnBehalfOfUserId,
         ...updateFields
       } = req.body;
@@ -13622,6 +13710,14 @@ export function issueRoutes(
         throw unprocessable("unblockDescriptor requires blocked status");
       }
       const descriptor = updateFields.unblockDescriptor ?? null;
+      if (blockerMetadataRaw !== undefined) {
+        updateFields.blockerMetadata = blockerMetadataRaw;
+      }
+      const blockerOwner = blockerMetadataRaw?.owner;
+      if (blockerMetadataRaw && blockerOwner && Object.keys(blockerOwner).length !== 1) {
+        res.status(422).json({ error: "blocker owner must identify exactly one principal" });
+        return;
+      }
       if (descriptor && typeof descriptor === "object") {
         const owner = descriptor.owner;
         if (
@@ -13678,6 +13774,33 @@ export function issueRoutes(
       }
       const enteringBlocked =
         existing.status !== "blocked" && updateFields.status === "blocked";
+      if (
+        enteringBlocked &&
+        req.actor.type === "agent" &&
+        blockerMetadataRaw == null
+      ) {
+        res.status(422).json({ error: "Entering blocked requires blockerMetadata" });
+        return;
+      }
+      // myrmidon(BLOCKED-GUARD P0.6): typed blocker metadata describes the current block only;
+      // a transition out of blocked without new metadata clears it, so no stale reason survives.
+      const leavingBlocked =
+        existing.status === "blocked" &&
+        updateFields.status !== undefined &&
+        updateFields.status !== "blocked";
+      if (leavingBlocked && blockerMetadataRaw === undefined) {
+        updateFields.blockerMetadata = null;
+      }
+      if (blockerMetadataRaw?.blockReason === "external_wait") {
+        const monitor =
+          (updateFields.executionPolicy as { monitor?: unknown } | undefined)?.monitor ??
+          (existing.executionPolicy as { monitor?: unknown } | null)?.monitor;
+        if (!monitor) {
+          res.status(422).json({ error: "external_wait requires executionPolicy.monitor" });
+          return;
+        }
+        updateFields.status = "in_review";
+      }
       // myrmidon(BLOCKED-LOOP): signature of an agent return to blocked, kept
       // in the issue.updated details so the next attempt can compare with it.
       let blockedLoopSignature: BlockedLoopSignature | null = null;
@@ -14050,6 +14173,12 @@ export function issueRoutes(
           assigneeChangeRequested:
             normalizedAssigneeAgentId !== undefined ||
             req.body.assigneeUserId !== undefined,
+          // myrmidon(OPE-6954): a person moving the issue into a workable
+          // status is the same "carry on" as moving it out of `blocked`.
+          // Since REQUEUE-HOLD the settle leaves a re-queued task in its own
+          // status, so this is the action an operator has left.
+          statusChangeRequested:
+            updateFields.status !== undefined && updateFields.status !== existing.status,
         }) &&
         (await issueHasSettledReplayHold(db, existing.companyId, existing.id));
       let humanUnblock: HumanUnblockResult | null = null;
@@ -14195,7 +14324,10 @@ export function issueRoutes(
         Boolean(commentAttachmentIds?.length) ||
         Boolean(decision) ||
         shouldRelayStop ||
+        enteringReviewRequested || // myrmidon(REVIEW-ADMISSION): require one transaction for issue state and reviewer receipt.
         persistReviewActivityTransactionally ||
+        ((updateFields.status === "in_review" || existing.status === "in_review") &&
+          assigneeWillChange) ||
         reviewPolicySensitiveMutationRequested ||
         humanUnblockPossible;
       try {
@@ -14208,6 +14340,59 @@ export function issueRoutes(
               return null;
             const updated = await updateIssue(tx);
             if (!updated) return null;
+            if (
+              updated.status === "in_review" &&
+              (enteringReviewRequested || assigneeWillChange)
+            ) {
+              const stageWake = buildExecutionStageWakeup({
+                issueId: updated.id,
+                previousState: parseIssueExecutionState(existing.executionState),
+                nextState: parseIssueExecutionState(updated.executionState),
+                interruptedRunId,
+                requestedByActorType: actor.actorType === "user" ? "user" : "agent",
+                requestedByActorId: actor.actorId,
+              });
+              if (stageWake?.agentId) {
+                const admission = await insertReviewAdmissionWakeup(
+                  stageWake.agentId,
+                  stageWake.wakeup,
+                  tx as unknown as Db,
+                  updated.companyId,
+                );
+                if (admission && admission.created === false) {
+                  throw new Error(
+                    `Failed to persist review admission wakeup for agent ${stageWake.agentId}`,
+                  );
+                }
+              }
+              if (
+                assigneeWillChange &&
+                updated.assigneeAgentId &&
+                (!stageWake || stageWake.agentId !== updated.assigneeAgentId)
+              ) {
+                const wakeup: WakeupOptions = {
+                  source: "assignment",
+                  triggerDetail: "system",
+                  reason: enteringReviewRequested ? "issue_entered_review" : "issue_review_reassigned",
+                  payload: { issueId: updated.id, mutation: "review_admission" },
+                  idempotencyKey: `issue-review-admission:${updated.id}:${updated.assigneeAgentId}`,
+                  requestedByActorType: actor.actorType,
+                  requestedByActorId: actor.actorId,
+                  contextSnapshot: { issueId: updated.id, taskId: updated.id },
+                };
+                const admission = await insertReviewAdmissionWakeup(
+                  updated.assigneeAgentId,
+                  wakeup,
+                  tx as unknown as Db,
+                  updated.companyId,
+                );
+                if (admission && admission.created === false) {
+                  throw new Error(
+                    `Failed to persist review admission wakeup for assignee ${updated.assigneeAgentId}`,
+                  );
+                }
+              }
+            }
             // myrmidon(HOLD-READY): an explicit human unblock is an operator
             // resolve of the settled "do not replay" hold.
             if (
@@ -15155,6 +15340,11 @@ export function issueRoutes(
             source: "assignment",
             triggerDetail: "system",
             reason: "issue_assigned",
+            ...(issue.status === "in_review"
+              ? {
+                  idempotencyKey: `issue-review-admission:${issue.id}:${issue.assigneeAgentId}`,
+                }
+              : {}),
             payload: {
               issueId: issue.id,
               ...(comment ? { commentId: comment.id } : {}),

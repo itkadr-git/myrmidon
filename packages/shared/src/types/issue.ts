@@ -46,6 +46,16 @@ import type {
 
 export type { IssueWorkMode };
 
+export interface IssueBlockerMetadata {
+  blockReason: "external_wait" | "dependency" | "recovery" | "human_decision" | "resource";
+  owner: { agentId: string } | { userId: string };
+  blockedByIssueIds?: string[];
+  externalRef?: string;
+  nextCheckAt: string;
+  timeoutAt: string;
+  escalationPolicy: string;
+}
+
 export interface IssueAncestorProject {
   id: string;
   name: string;
@@ -599,6 +609,13 @@ export interface SuccessfulRunHandoffState {
 
 export type IssueScheduledRetryStatus = "scheduled_retry" | "queued" | "running" | "cancelled";
 
+/**
+ * myrmidon(1.6.6 RUN-RETRY-POLICY): how the retry policy classified the failure
+ * that queued this run — a transient failure is worth another attempt, a
+ * permanent one is not.
+ */
+export type IssueScheduledRetryClassification = "transient" | "permanent" | "unknown";
+
 export interface IssueScheduledRetry {
   runId: string;
   status: IssueScheduledRetryStatus;
@@ -608,6 +625,14 @@ export interface IssueScheduledRetry {
   scheduledRetryAt: Date | string | null;
   scheduledRetryAttempt: number;
   scheduledRetryReason: string | null;
+  /**
+   * myrmidon(1.6.6 RUN-RETRY-POLICY): the attempt ceiling the scheduler
+   * enforced for this retry, and the class of the failure that caused it. Null
+   * for retries queued before the policy existed; the UI then renders the bare
+   * attempt number.
+   */
+  scheduledRetryMaxAttempts?: number | null;
+  scheduledRetryClassification?: IssueScheduledRetryClassification | null;
   retryExhaustedReason?: string | null;
   error?: string | null;
   errorCode?: string | null;
@@ -852,6 +877,7 @@ export interface Issue {
   cancelledAt: Date | null;
   hiddenAt: Date | null;
   sourceTrust?: SourceTrustMetadata | null;
+  blockerMetadata?: IssueBlockerMetadata | null;
   labelIds?: string[];
   labels?: IssueLabel[];
   blockedBy?: IssueRelationIssueSummary[];

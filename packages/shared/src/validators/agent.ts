@@ -239,6 +239,12 @@ export const wakeAgentSchema = z.object({
    * binds to the agent's top ready task or is refused.
    */
   issueId: z.string().uuid().optional(),
+  /** Run-scoped managed AI account selection; never changes agent defaults. */
+  externalSession: z.object({
+    connectionId: z.string().uuid(),
+    grantId: z.string().uuid(),
+    model: z.string().trim().min(1).max(200),
+  }).strict().optional(),
   payload: z.record(z.string(), z.unknown()).optional().nullable(),
   idempotencyKey: z.string().optional().nullable(),
   forceFreshSession: z.preprocess(
