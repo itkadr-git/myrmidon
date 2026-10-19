@@ -126,11 +126,9 @@ describe("myrmidon(1.6.1 SWARM-IDLE-WAKE) sweep pass", () => {
         from: (table: unknown) => {
           const selectQuery = {
             innerJoin: (joinedTable: unknown) => {
-              if (table === agents && projection && "reportsTo" in projection) {
+              if (table === agents && joinedTable === companies) {
                 const directoryRows = [idleAgent];
-                return {
-                  where: () => ({ orderBy: () => Promise.resolve(directoryRows) }),
-                };
+                return { where: () => ({ orderBy: () => Promise.resolve(directoryRows) }) };
               }
               if (table === issueClaims && projection && "agentId" in projection) {
                 const rows = claimState && !claimState.releasedAt ? [claimState] : [];
@@ -148,6 +146,11 @@ describe("myrmidon(1.6.1 SWARM-IDLE-WAKE) sweep pass", () => {
                   projectId: null,
                 }] : [];
                 return { where: () => ({ orderBy: () => ({ limit: (limit: number) => Promise.resolve(rows.slice(0, limit)) }) }) };
+              }
+              if (joinedTable === companies) {
+                return {
+                  where: () => ({ orderBy: () => Promise.resolve([idleAgent]) }),
+                };
               }
               const rows: unknown[] = [];
               return {
