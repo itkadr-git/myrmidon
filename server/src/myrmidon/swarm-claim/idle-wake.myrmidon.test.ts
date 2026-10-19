@@ -125,25 +125,21 @@ describe("myrmidon(1.6.1 SWARM-IDLE-WAKE) sweep pass", () => {
       select: (projection: Record<string, unknown>) => ({
         from: (table: unknown) => {
           const selectQuery = {
-            innerJoin: (joinedTable: unknown) => ({
-              where: () => {
-                if (joinedTable === issues) {
-                  // listClaimsOnNonQueueIssues uses this join, and the fixture
-                  // issue is still in the ready queue, so it must find no rows.
-                  return {
-                    orderBy: () => ({ limit: () => Promise.resolve([]) }),
-                  };
-                }
-                return {
-                  orderBy: () => Promise.resolve([
-                    { id: "idle-agent", companyId: "company-1", name: "Idle agent", reportsTo: null, role: "engineer", status: "idle", metadata: {} },
-                  ]),
-                  limit: (limit: number) => Promise.resolve([
-                    { id: "idle-agent", companyId: "company-1", name: "Idle agent", reportsTo: null, role: "engineer", status: "idle", metadata: {} },
-                  ].slice(0, limit)),
-                };
-              },
-            }),
+            innerJoin: (joinedTable: unknown) => {
+              const rows = joinedTable === issues ? [] : [
+                { id: "idle-agent", companyId: "company-1", name: "Idle agent", reportsTo: null, role: "engineer", status: "idle", metadata: {} },
+              ];
+              return {
+                where: () => ({
+                  orderBy: () => ({
+                    limit: (limit: number) => Promise.resolve(rows.slice(0, limit)),
+                    then: (resolve: (value: unknown[]) => unknown) => Promise.resolve(rows).then(resolve),
+                  }),
+                  limit: (limit: number) => Promise.resolve(rows.slice(0, limit)),
+                  then: (resolve: (value: unknown[]) => unknown) => Promise.resolve(rows).then(resolve),
+                }),
+              };
+            },
             leftJoin: () => ({
               leftJoin: () => ({
                 where: () => ({
