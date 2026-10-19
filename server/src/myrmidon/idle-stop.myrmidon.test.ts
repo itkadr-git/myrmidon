@@ -44,6 +44,7 @@ describe('IdleStopService', () => {
     mockDriver = {
       status: vi.fn(),
       stop: vi.fn(),
+      stopIdle: vi.fn(),
       start: vi.fn(),
       list: vi.fn(),
       templateDrift: vi.fn(),
@@ -187,7 +188,7 @@ describe('IdleStopService', () => {
 
       await idleStopService.performSweep();
 
-      expect(mockDriver.stop).toHaveBeenCalledWith(botKey);
+      expect(mockDriver.stopIdle).toHaveBeenCalledWith(botKey);
     });
 
     it('should not stop container that was recently active', async () => {
