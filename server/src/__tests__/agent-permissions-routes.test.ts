@@ -373,9 +373,7 @@ describe.sequential("agent permission routes", () => {
     mockAgentService.listConfigRevisions.mockResolvedValue([]);
     mockAgentService.list.mockResolvedValue([baseAgent]);
     mockAgentService.listSummaries.mockResolvedValue([baseAgentListItem]);
-    mockAgentService.listSummariesVersionKey.mockImplementation(async (_companyId: string, actorShape: string) =>
-      actorShape.includes("Builder") ? '"vk-agents-list:authorized"' : '"vk-agents-list:test"',
-    );
+    mockAgentService.listSummariesVersionKey.mockResolvedValue('"vk-agents-list:test"');
     mockHeartbeatService.listVersionKey.mockResolvedValue('"heartbeat-runs:v1"');
     mockAgentService.getChainOfCommand.mockResolvedValue([]);
     mockAgentService.resolveByReference.mockResolvedValue({ ambiguous: false, agent: baseAgent });
@@ -575,14 +573,12 @@ describe.sequential("agent permission routes", () => {
       isInstanceAdmin: true,
       companyIds: [companyId],
     });
-    mockAgentService.listSummariesVersionKey.mockImplementation(async (_companyId: string, actorShape: string) =>
-      actorShape.includes("Builder") ? '"vk-agents-list:authorized"' : '"vk-agents-list:test"',
-    );
+    mockAgentService.listSummariesVersionKey.mockResolvedValue('"vk-agents-list:authorized"');
 
     const res = await requestApp(app, (baseUrl) =>
       request(baseUrl)
         .get(`/api/companies/${companyId}/agents`)
-        .set("If-None-Match", '"authorized-agent-list"'),
+        .set("If-None-Match", '"vk-agents-list:authorized"'),
     );
 
     expect(res.status).toBe(304);
@@ -641,6 +637,11 @@ describe.sequential("agent permission routes", () => {
     mockAgentService.listSummaries.mockResolvedValue([
       { ...baseAgentListItem, id: "builder-agent" },
     ]);
+    mockAgentService.listSummariesVersionKey.mockImplementation(async () => (
+      agentReadDecisions.get("builder-agent")
+        ? '"vk-agents-list:visible"'
+        : '"vk-agents-list:hidden"'
+    ));
     const first = await requestApp(app, (baseUrl) =>
       request(baseUrl).get(`/api/companies/${companyId}/agents`),
     );
@@ -708,7 +709,7 @@ describe.sequential("agent permission routes", () => {
       undefined,
       undefined,
       false,
-      expect.stringContaining('"type":"board"'),
+      '["board:board-user:user",["22222222-2222-4222-8222-222222222222"],null]',
     );
 
     redactionEnabled = true;
@@ -727,7 +728,7 @@ describe.sequential("agent permission routes", () => {
       undefined,
       undefined,
       false,
-      expect.stringContaining('"type":"board"'),
+      '["board:board-user:user",["22222222-2222-4222-8222-222222222222"],null]',
     );
   }, 20_000);
 
