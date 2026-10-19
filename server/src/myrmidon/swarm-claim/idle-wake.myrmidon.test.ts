@@ -203,7 +203,7 @@ describe("myrmidon(1.6.1 SWARM-IDLE-WAKE) sweep pass", () => {
                 // The matcher's ready-queue projection comes from issues (the
                 // outer table), not issue_claims; claim reads with { id } are
                 // the live-claim guard used before inserting the new lease.
-                if (projection && "id" in projection) return { limit: () => Promise.resolve(claimState && !claimState.releasedAt ? [{ id: claimState.id }] : []) };
+                if (projection && "id" in projection) return { limit: () => Promise.resolve([]) };
                 // listExpiredClaims selects the complete table row before the
                 // release write; later claim reads must observe claimState.
                 if (!projection) {
