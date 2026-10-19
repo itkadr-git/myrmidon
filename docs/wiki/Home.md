@@ -22,6 +22,8 @@ needs one. It is an independent product maintained as a fork of
   enforcement, prompt-cost advice, run admission limits.
 - [Knowledge and learning](Knowledge-and-learning) — regulations, foraging
   from approved sources, reference-task evals, quality baselines.
+- [MinerU CORPUS-2.0 pilot](MinerU-CORPUS-2.0-pilot) — the external parser
+  candidate, 30-file evidence and verification commands.
 - [Autonomy and guardrails](Safety-and-guardrails) — the role × action
   matrix, injection flagging, emergency stop.
 - [Connectors and tools](Connectors-and-tools) — the browser bridge, MCP
