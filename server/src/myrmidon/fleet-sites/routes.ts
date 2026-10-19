@@ -28,7 +28,7 @@ export function fleetSiteRoutes(deps: { store: FleetSiteStore }) {
   router.post("/myrmidon/fleet/sites", validate(fleetSiteSchema), async (req, res) => {
     const input = req.body as z.infer<typeof fleetSiteSchema>;
     assertOperator(req, input.companyId);
-    res.status(201).json({ site: await deps.store.create(input) });
+    res.status(200).json({ site: await deps.store.create(input) });
   });
   router.patch("/myrmidon/fleet/sites", validate(patchSchema), async (req, res) => {
     const input = req.body as z.infer<typeof patchSchema>;

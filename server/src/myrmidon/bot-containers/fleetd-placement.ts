@@ -17,7 +17,12 @@
 import type { FleetHostConfig } from "./fleetd-hosts.js";
 
 export interface FleetSiteGateway {
-  fleetdUrl: string;
+  fleetdUrl?: string | null;
+  adapterConfig?: {
+    container?: {
+      host?: string | null;
+    } | null;
+  } | null;
 }
 
 export function fleetSiteGatewayApiBaseUrl(site: FleetSiteGateway, gatewayPort: number | undefined): string {
@@ -80,7 +85,12 @@ export function fleetGatewayApiBaseUrl(
   gatewayPort: number | undefined,
 ): string {
   const isLegacyString = typeof fleetdUrlOrSite === "string";
-  const fleetdUrl = isLegacyString ? fleetdUrlOrSite : fleetdUrlOrSite.fleetdUrl;
+  const fleetdUrl = isLegacyString
+    ? fleetdUrlOrSite
+    : fleetdUrlOrSite.fleetdUrl ?? fleetdUrlOrSite.adapterConfig?.container?.host;
+  if (!fleetdUrl) {
+    throw new Error("fleet site does not provide fleetdUrl or adapterConfig.container.host");
+  }
   if (gatewayPort === undefined) {
     throw new Error("fleetd did not report a gateway port for this bot; the card cannot be pointed at it");
   }
