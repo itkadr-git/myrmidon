@@ -3716,7 +3716,15 @@ export function issueRoutes(
   const documentAnnotationsSvc = documentAnnotationService(db);
   const decisionTrainingSvc = decisionTrainingService(db);
   const issueReferencesSvc = issueReferenceService(db);
-  async function issueRequiresEngineer(issue: typeof issueRows.$inferSelect): Promise<boolean> {
+  async function issueRequiresEngineer(
+    issue: typeof issueRows.$inferSelect,
+    patch?: {
+      labels?: readonly string[] | null;
+      casteKey?: string | null;
+      harnessKind?: string | null;
+      executionWorkspacePreference?: string | null;
+    },
+  ): Promise<boolean> {
     const labelsForIssue = await db
       .select({ name: labels.name })
       .from(issueLabels)
@@ -3732,12 +3740,16 @@ export function issueRoutes(
           columns: { defaultCasteKey: true },
         }).catch(() => null)
       : null;
+    const patchedLabels = patch?.labels
+      ? patch.labels.filter((label) => !labelsForIssue.some((row) => row.name === label))
+      : [];
     return requiresEngineer({
-      labels: labelsForIssue.map((row) => row.name),
-      casteKey: resolvedCaste,
+      labels: [...labelsForIssue.map((row) => row.name), ...patchedLabels],
+      casteKey: patch?.casteKey ?? resolvedCaste,
       projectDefaultCasteKey: projectDefault?.defaultCasteKey,
-      harnessKind: issue.harnessKind,
-      executionWorkspacePreference: issue.executionWorkspacePreference as any,
+      harnessKind: patch?.harnessKind ?? issue.harnessKind,
+      executionWorkspacePreference:
+        patch?.executionWorkspacePreference ?? issue.executionWorkspacePreference as any,
     });
   }
   const issueThreadInteractionsSvc = issueThreadInteractionService(db);
@@ -12335,10 +12347,12 @@ export function issueRoutes(
           rawCreateBody.assigneeAgentId as string | null | undefined,
           { actorType: req.actor.type },
         );
-      if (normalizedAssigneeAgentId && !rawCreateBody.assigneeUserId) {
-        const requestedAgent = await agentsSvc.getById(normalizedAssigneeAgentId);
+      if (normalizedAssigneeAgentId || rawCreateBody.assigneeUserId) {
+        const requestedAgent = normalizedAssigneeAgentId
+          ? await agentsSvc.getById(normalizedAssigneeAgentId)
+          : null;
         const explicitCaste = typeof rawCreateBody.casteKey === "string" ? rawCreateBody.casteKey : null;
-        if (requestedAgent?.role !== "engineer" && requiresEngineer({
+        if ((rawCreateBody.assigneeUserId || requestedAgent?.role !== "engineer") && requiresEngineer({
           labels: Array.isArray(rawCreateBody.labels) ? rawCreateBody.labels as string[] : [],
           casteKey: explicitCaste,
           projectDefaultCasteKey: rawCreateBody.projectId
@@ -13515,12 +13529,25 @@ export function issueRoutes(
           { actorType: req.actor.type },
         );
       if (
-        normalizedAssigneeAgentId &&
-        normalizedAssigneeAgentId !== existing.assigneeAgentId &&
-        !req.body.assigneeUserId
+        (normalizedAssigneeAgentId !== undefined || req.body.assigneeUserId !== undefined) &&
+        (normalizedAssigneeAgentId !== existing.assigneeAgentId ||
+          req.body.assigneeUserId !== undefined)
       ) {
-        const requestedAgent = await agentsSvc.getById(normalizedAssigneeAgentId);
-        if (requestedAgent?.role !== "engineer" && await issueRequiresEngineer(existing)) {
+        const requestedAgent = normalizedAssigneeAgentId
+          ? await agentsSvc.getById(normalizedAssigneeAgentId)
+          : null;
+        if (
+          (req.body.assigneeUserId || requestedAgent?.role !== "engineer") &&
+          await issueRequiresEngineer(existing, {
+            labels: Array.isArray(req.body.labels) ? req.body.labels as string[] : undefined,
+            casteKey: typeof req.body.casteKey === "string" ? req.body.casteKey : undefined,
+            harnessKind: typeof req.body.harnessKind === "string" ? req.body.harnessKind : undefined,
+            executionWorkspacePreference:
+              typeof req.body.executionWorkspacePreference === "string"
+                ? req.body.executionWorkspacePreference
+                : undefined,
+          })
+        ) {
           throw unprocessable("This issue requires an engineer", {
             code: "issue_requires_engineer",
             issueId: existing.id,
@@ -13642,12 +13669,25 @@ export function issueRoutes(
           ? existing.assigneeAgentId
           : normalizedAssigneeAgentId;
       if (
-        requestedAssigneeAgentId &&
-        requestedAssigneeAgentId !== existing.assigneeAgentId &&
-        !req.body.assigneeUserId
+        (requestedAssigneeAgentId || req.body.assigneeUserId) &&
+        (requestedAssigneeAgentId !== existing.assigneeAgentId ||
+          req.body.assigneeUserId !== undefined)
       ) {
-        const assignee = await agentsSvc.getById(requestedAssigneeAgentId);
-        if (assignee?.role !== "engineer" && await issueRequiresEngineer(existing)) {
+        const assignee = requestedAssigneeAgentId
+          ? await agentsSvc.getById(requestedAssigneeAgentId)
+          : null;
+        if (
+          (req.body.assigneeUserId || assignee?.role !== "engineer") &&
+          await issueRequiresEngineer(existing, {
+            labels: Array.isArray(req.body.labels) ? req.body.labels as string[] : undefined,
+            casteKey: typeof req.body.casteKey === "string" ? req.body.casteKey : undefined,
+            harnessKind: typeof req.body.harnessKind === "string" ? req.body.harnessKind : undefined,
+            executionWorkspacePreference:
+              typeof req.body.executionWorkspacePreference === "string"
+                ? req.body.executionWorkspacePreference
+                : undefined,
+          })
+        ) {
           throw unprocessable("This issue requires an engineer", {
             code: "issue_requires_engineer",
             issueId: existing.id,
