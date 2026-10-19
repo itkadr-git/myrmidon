@@ -1533,11 +1533,12 @@ export function dockerBotContainerDriver(
 
   async function writeIdleStopped(botKey: string, idleStopped: boolean): Promise<void> {
     const file = await idleStoppedStatePath(botKey);
-    await mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
+    const stateDir = path.join(config.volumeRoot, ".myrmidon-idle-stopped");
     if (!idleStopped) {
       await unlink(file).catch((error: NodeJS.ErrnoException) => { if (error.code !== "ENOENT") throw error; });
       return;
     }
+    await mkdir(stateDir, { recursive: true, mode: 0o700 });
     const temporary = `${file}.${process.pid}.${newNonce()}.tmp`;
     await writeFile(temporary, JSON.stringify({ botKey, idleStopped: true }), { mode: 0o600 });
     await rename(temporary, file);

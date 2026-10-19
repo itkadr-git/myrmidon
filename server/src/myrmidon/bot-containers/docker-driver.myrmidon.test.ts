@@ -1704,8 +1704,16 @@ describe("dockerBotContainerDriver against a fake Docker daemon", () => {
         expect(fs.readFileSync(stateFile, "utf8")).toContain("idleStopped");
 
         const noMaintenance: BotMaintenancePort = { enter: async () => ({ state: "on", runningRuns: 0, owned: true }), status: async () => ({ state: "on", runningRuns: 0 }), exit: async () => {} };
-        expect(await reconcileBot({ agentId: "agent-a", botKey: "agent-a", spec: spec(), compile: async () => testProfile(), driver, maintenance: noMaintenance })).toEqual({ kind: "unchanged" });
-        expect(daemon.requests.filter((request) => request.path.endsWith("/start"))).toEqual([]);
+        const startsBeforeReconcile = daemon.requests.filter((request) => request.path.endsWith("/start")).length;
+        expect(await reconcileBot({
+          agentId: "agent-a",
+          botKey: "agent-a",
+          spec: spec(),
+          compile: async () => testProfile(),
+          driver,
+          maintenance: noMaintenance,
+        })).toMatchObject({ kind: "unchanged" });
+        expect(daemon.requests.filter((request) => request.path.endsWith("/start"))).toHaveLength(startsBeforeReconcile);
 
         await driver.start("agent-a");
         expect(await driver.status("agent-a")).toMatchObject({ state: "running", idleStopped: false });
