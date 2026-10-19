@@ -5,6 +5,7 @@ import { errorHandler } from "../../middleware/index.js";
 import { fleetSiteRoutes } from "./routes.js";
 import type { FleetSiteStore } from "./store.js";
 import type { FleetSiteInput, FleetSiteView } from "./domain.js";
+import { parseFleetSite } from "./domain.js";
 
 const COMPANY_ID = "22222222-2222-4222-8222-222222222222";
 const SITE_ID = "44444444-4444-4444-8444-444444444444";
@@ -81,6 +82,13 @@ const input = {
 };
 
 describe("fleet-site registry routes", () => {
+  it("parses valid sites and rejects invalid URLs, status, and capacities", () => {
+    expect(parseFleetSite(input).slug).toBe("myr-vm1");
+    expect(() => parseFleetSite({ ...input, fleetdUrl: "http://fleetd.example.test" })).toThrow();
+    expect(() => parseFleetSite({ ...input, status: "paused" })).toThrow();
+    expect(() => parseFleetSite({ ...input, capacityRamGb: 0 })).toThrow();
+  });
+
   it("supports 200 create, list, and operator status patch", async () => {
     const response = await request(app(memoryStore())).post("/myrmidon/fleet/sites").send(input);
     expect(response.status).toBe(200);
