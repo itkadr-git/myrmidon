@@ -754,7 +754,7 @@ describe("issue activity event routes", () => {
 
     const response = await request(await createApp())
       .patch(`/api/issues/${issue.id}`)
-      .send({ status: "blocked" });
+      .send({ status: "todo" });
 
     expect(response.status).toBe(200);
     expect(persistedPatch).toBeDefined();
@@ -794,7 +794,7 @@ describe("issue activity event routes", () => {
 
     const response = await request(await createApp())
       .patch(`/api/issues/${issue.id}`)
-      .send({ status: "blocked" });
+      .send({ status: "todo" });
 
     expect(response.status).toBe(200);
     expect(mockIssueService.addComment).toHaveBeenCalledTimes(1);
