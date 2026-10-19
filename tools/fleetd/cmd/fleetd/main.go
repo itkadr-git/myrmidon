@@ -288,11 +288,50 @@ func (s *server) health(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) list(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodPost {
+		var sp spec
+		if err := decodeBody(r, &sp); err != nil {
+			http.Error(w, "body_not_allowed", http.StatusBadRequest)
+			return
+		}
+		if sp.BotKey == "" {
+			http.Error(w, "bot_key_required", http.StatusBadRequest)
+			return
+		}
+		if !s.enrolled(sp.BotKey) {
+			http.Error(w, "bot_not_enrolled", http.StatusForbidden)
+			return
+		}
+		if err := s.checkSpec(sp.BotKey, &sp); err != nil {
+			http.Error(w, err.Error(), http.StatusForbidden)
+			return
+		}
+		if err := s.applyGatewayPort(&sp); err != nil {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
+		if err := s.docker.create(r.Context(), sp); err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+		writeJSON(w, map[string]string{"botKey": sp.BotKey, "state": "created"})
+		return
+	}
 	if r.Method != http.MethodGet {
 		http.Error(w, "method_not_allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	writeJSON(w, map[string]any{"bots": []botStatus{}})
+	statuses := make([]botStatus, 0, len(s.cfg.Bots))
+	for _, enrolled := range s.cfg.Bots {
+		status, err := s.docker.status(r.Context(), enrolled.BotKey)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+		status.GatewayPort = s.gatewayPort(enrolled.BotKey)
+		statuses = append(statuses, status)
+	}
+	writeJSON(w, map[string]any{"bots": statuses})
 }
 
 // route dispatches /v1/bots/{botKey}/... by method and suffix.
@@ -385,9 +424,18 @@ func (s *server) route(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, map[string]string{"botKey": botKey, "state": "created"})
-	case action == "writeProfile" && r.Method == http.MethodPost:
+	case (action == "profile" && r.Method == http.MethodPut) || (action == "writeProfile" && r.Method == http.MethodPost):
 		var p profile
-		if err := decodeBody(r, &p); err != nil {
+		if action == "profile" {
+			var body struct {
+				Profile profile `json:"profile"`
+			}
+			if err := decodeBody(r, &body); err != nil {
+				http.Error(w, "body_not_allowed", http.StatusBadRequest)
+				return
+			}
+			p = body.Profile
+		} else if err := decodeBody(r, &p); err != nil {
 			http.Error(w, "body_not_allowed", 400)
 			return
 		}
