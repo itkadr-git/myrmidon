@@ -9,7 +9,7 @@ import { mkdirSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { and, eq, inArray, sql } from "drizzle-orm";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import {
   agents,
   authUsers,
