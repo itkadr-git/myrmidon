@@ -249,17 +249,18 @@ describe("myrmidon(1.6.1 SWARM-IDLE-WAKE) sweep pass", () => {
               if (table === issues && projection && "issueId" in projection) {
                 // Ready-queue candidates are selected from issues and the
                 // production query uses left joins only for enrichment.
-                const rows = issueState.assigneeAgentId === null ? [{
-                  issueId: issueState.id,
-                  identifier: "ENG-42",
-                  priority: "medium",
-                  pheromoneStrength: 0,
-                  failedRunsSinceLastChange: 0,
-                  queuedAt: NOW,
-                  assigneeAgentId: issueState.assigneeAgentId,
-                  projectId: null,
-                }] : [];
-                return { orderBy: () => ({ limit: (limit: number) => Promise.resolve(rows.slice(0, limit)) }) };
+                return {
+                  orderBy: () => ({ limit: (limit: number) => Promise.resolve((issueState.assigneeAgentId === null ? [{
+                    issueId: issueState.id,
+                    identifier: "ENG-42",
+                    priority: "medium",
+                    pheromoneStrength: 0,
+                    failedRunsSinceLastChange: 0,
+                    queuedAt: NOW,
+                    assigneeAgentId: issueState.assigneeAgentId,
+                    projectId: null,
+                  }] : []).slice(0, limit)) }),
+                };
               }
               if (table === issues && projection && "companyId" in projection && "assigneeAgentId" in projection) {
                 // matchIssue re-reads the task after clearExpiredAssignee has
