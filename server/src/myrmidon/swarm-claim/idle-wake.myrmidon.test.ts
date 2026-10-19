@@ -193,9 +193,10 @@ describe("myrmidon(1.6.1 SWARM-IDLE-WAKE) sweep pass", () => {
                 return { limit: () => Promise.resolve([]) };
               }
               if (table === issueClaims && projection && "id" in projection) {
-                // insertClaim's uniqueness guard must observe the old lease
-                // after release as inactive, not reuse the expired row.
-                return { limit: () => Promise.resolve([]) };
+                // insertClaim's uniqueness guard must inspect the current live
+                // lease state; after release, this formerly expired row is gone.
+                const rows = claimState && !claimState.releasedAt ? [{ id: claimState.id }] : [];
+                return { limit: () => Promise.resolve(rows) };
               }
               if (table === companies && projection && "id" in projection) {
                 // listActiveCompanies selects directly from companies; the
@@ -250,7 +251,16 @@ describe("myrmidon(1.6.1 SWARM-IDLE-WAKE) sweep pass", () => {
                 // listExpiredClaims selects the complete table row before the
                 // release write; later claim reads must observe claimState.
                 if (!projection) {
-                  return { orderBy: () => ({ limit: (limit: number) => Promise.resolve([expiredClaim].slice(0, limit)) }) };
+                  // The expired-claim scan and later uniqueness guard share the
+                  // same live state; after release, the guard must not see the
+                  // former lease as an active row.
+                  return {
+                    orderBy: () => ({
+                      limit: (limit: number) => Promise.resolve(
+                        claimState && !claimState.releasedAt ? [claimState].slice(0, limit) : [],
+                      ),
+                    }),
+                  };
                 }
                 if ("issueId" in projection) {
                   // matchIssue reads the ready-queue projection for the expired
