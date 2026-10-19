@@ -103,6 +103,10 @@ function fakeDriver(
       calls.push("stop");
       current = { ...current, state: "stopped" };
     },
+    async stopIdle() {
+      calls.push("stopIdle");
+      current = { ...current, state: "stopped", idleStopped: true };
+    },
   };
 }
 
