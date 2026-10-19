@@ -104,6 +104,9 @@ export const DEFAULT_CHATGPT_POOL_MODELS = [
 /** The models-list path every supported provider speaks (OpenAI-compatible). */
 export const MODEL_PROVIDER_MODELS_PATH = "/models";
 
+/** Request body used by the background tool-call compatibility probe. */
+export const MODEL_PROVIDER_PROBE_MODEL = "gpt-4o-mini";
+
 /** Account state in the Codex / ChatGPT subscription pool. */
 export type PoolAccountState =
   | "active"
