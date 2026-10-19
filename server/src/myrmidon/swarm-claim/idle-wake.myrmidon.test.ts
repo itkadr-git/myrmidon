@@ -258,11 +258,13 @@ describe("myrmidon(1.6.1 SWARM-IDLE-WAKE) sweep pass", () => {
                 if (projection && "agentId" in projection) {
                   // liveClaimCountsByAgent reads this direct projection, not an
                   // inner join; keep it aligned with the stateful lease.
-                  return Promise.resolve(
-                    claimState && !claimState.releasedAt
-                      ? [{ agentId: claimState.agentId }]
-                      : [],
-                  );
+                  return {
+                    where: () => Promise.resolve(
+                      claimState && !claimState.releasedAt
+                        ? [{ agentId: claimState.agentId }]
+                        : [],
+                    ),
+                  };
                 }
                 // The matcher's ready-queue projection comes from issues (the
                 // outer table), not issue_claims; claim reads with { id } are
