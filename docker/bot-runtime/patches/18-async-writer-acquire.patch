@@ -1,346 +1,400 @@
---- a/hermes_state_dbfile.py
-+++ b/hermes_state_dbfile.py
-@@ -24,6 +24,9 @@
- from pathlib import Path
- from typing import Any, Callable, Dict, List, Optional, Tuple
+diff --git a/gateway/run.py b/gateway/run.py
+--- a/gateway/run.py
++++ b/gateway/run.py
+@@ -3518,7 +3518,9 @@
+         _gateway_runner_ref = _weakref.ref(self)
 
-+# myrmidon(G1): a failed sidecar scan is never an empty holder list.
-+from hermes_state_errors import SidecarScanIncompleteError
+         self._init_runtime_settings()
+-        self._init_session_store()
++        self.session_store = None
++        self._async_session_store = None
++        self.delivery_router = DeliveryRouter(self.config)
+         self._init_lifecycle_state()
+         self._init_runtime_caches()
+         self._init_startup_checks()
+@@ -3551,17 +3553,6 @@
+         self._signal_interrupt_grace_timeout = self._load_signal_interrupt_grace_timeout()
+         self._provider_routing = self._load_provider_routing()
+         self._fallback_model = self._load_fallback_model()
+-
+-    def _init_session_store(self) -> None:
+-        """Build the SessionStore (with process-registry reset guard), its async facade and the router."""
+-        from tools.process_registry import process_registry
+-        self.session_store = SessionStore(
+-            self.config.sessions_dir, self.config,
+-            has_active_processes_fn=lambda key: process_registry.has_active_for_session(
+-                key))
+-        # Loop-side boundary: sync helpers use ``session_store`` directly; async handlers await this facade.
+-        self._async_session_store = AsyncSessionStore(self.session_store)
+-        self.delivery_router = DeliveryRouter(self.config)
+
+     def _init_lifecycle_state(self) -> None:
+         """Initialise run/exit/restart flags, per-session state, and completion-delivery bookkeeping."""
+@@ -3702,47 +3693,14 @@
+             logger.debug("approvals.mode startup check skipped", exc_info=True)
+
+     def _init_session_db(self) -> None:
+-        """Open the session DB for the active scope and run opportunistic state.db / checkpoint maintenance."""
+-        # Session DB is a property caching one AsyncSessionDB per path (a handle bound here would pin the
+-        # root home under multiplex); priming here keeps startup diagnostics at init.
+-        # Initialize session database for session_search tool support. Same frozen-handle class of bug as
+-        # SessionStore._db (#88532): a handle bound here is pinned to the process's root home, but /resume,
+-        # /title, /history and session search all run inside _profile_runtime_scope on a multiplexed gateway
+-        # and must see that profile's own state.db.
++        """Prepare async-handle ownership; storage is opened explicitly in run_startup."""
++        self._session_db_init_error = None
+         self._session_db_pinned: Any = _SESSION_DB_UNPINNED
+         self._session_db_handles: Dict[Path, Any] = {}
+         self._session_db_handles_lock = threading.Lock()
+         from gateway.session_db_recovery import RecoverableHandleCache
+         self._session_db_handle_cache = RecoverableHandleCache(
+             handles=self._session_db_handles, lock=self._session_db_handles_lock)
+-        try:
+-            self._open_session_db_for_active_scope(raise_on_error=True)
+-        except Exception as e:
+-            # WARNING (not DEBUG) so it lands in errors.log; else an NFS HERMES_HOME silently loses /resume etc.
+-            logger.warning("SQLite session store not available: %s", e)
+-            self._session_db_init_error = str(e)  # surfaced on the home channel(s) once connected
+-
+-        # Opportunistic state.db maintenance (prune + optional VACUUM), at most once per min_interval_hours.
+-        # A few blocking seconds per day is fine for a long-lived gateway; failures log, never raise.
+-        # Surface the failure to the user via their home channel(s) once the gateway connects. Without this,
+-        # state.db corruption or NFS/SMB lock failures silently degrade the entire gateway — messages may
+-        # flow but nothing is persisted, and the user has no indication until they try /resume and find
+-        # nothing (#88235).
+-        # Once per SERVED profile, each under its own scope: both the store and the ``sessions:``
+-        # config that governs it must be the profile's own. Bound to ``self._session_db`` this ran
+-        # against the construction-time launch home only, so a multiplexed secondary profile's
+-        # state.db was never pruned or vacuumed by anybody, and the launch profile's
+-        # retention_days/auto_prune decided whether it happened at all.
+-        from gateway.run_profile_reconcile import _for_each_served_profile
+-        _launch_sessions = _launch_sessions_dir(self.config)  # resolved OUTSIDE any profile scope
+-        _housekeeping_chore(
+-            "state.db startup maintenance",
+-            lambda: _for_each_served_profile(
+-                self, lambda _label: _housekeeping_state_db_maintenance(_launch_sessions)))
+-        # Checkpoint store pruning is a housekeeping chore (``_housekeeping_checkpoint_prune``), not a
+-        # constructor step: its ``git gc`` repacks the whole store (tens of seconds on a GB store) and
+-        # here it ran before the control socket, adapters and the code_sha stamp — so the first
+-        # restart of the day (the ``hermes update`` one) looked hung and failed fleet verification.
+
+     def _init_registries_and_clocks(self) -> None:
+         """Pairing stores, hook registry, voice modes, background-task set, liveness and idle clocks."""
+@@ -3776,99 +3734,96 @@
+         self._scale_to_zero_direct_platform_logged: bool = False
+
+     def _open_session_db_for_active_scope(self, raise_on_error: bool = False) -> Any:
+-        """AsyncSessionDB for the active profile scope, resolved per access (not in ``__init__``) since
+-        ``SessionDB()`` reads the context-local HERMES_HOME; one handle cached per path. Construction
+-        failure enters bounded backoff; ``raise_on_error=True`` (priming) propagates it.
+-
+-        Same per-path cache as ``SessionStore._open_session_db_for_active_scope`` (#88532): ``SessionDB()``
+-        resolves ``_default_db_path()`` at call time through the context-local HERMES_HOME override
+-        installed by ``_profile_runtime_scope``, so resolving per access — instead of once in ``__init__`` —
+-        is what lets /resume, /title, /history and session search on a multiplexed gateway read the *serving
+-        profile's* store rather than the root one.
+-        One ``AsyncSessionDB`` is cached per resolved path, so the wrapper identity is stable per profile
+-        (callers compare and stash it) and two profiles never share a handle. A construction failure enters
+-        bounded backoff; one caller retries after the deadline while concurrent callers continue to see the
+-        unavailable fallback. ``raise_on_error=True`` (construction-time priming) propagates the failure
+-        after recording that recoverable state so ``__init__`` can record ``_session_db_init_error`` for the
+-        #88235 broadcast.
+-        """
++        """Synchronous compatibility path. Async gateway callers use the awaited method below."""
+         from hermes_state import AsyncSessionDB, _default_db_path
++        from gateway.session_db_recovery import RecoverableHandleCache
++        from gateway.session_persistence import _is_live_system_guard
+         from hermes_state_registry import acquire
+-        from gateway.session_db_recovery import RecoverableHandleCache
+         path = Path(_default_db_path())
+         cache = getattr(self, "_session_db_handle_cache", None)
+         if cache is None:
+-            # Test runners built with object.__new__ skip __init__.
+-            cache = RecoverableHandleCache(
+-                handles=self._session_db_handles, lock=self._session_db_handles_lock)
++            cache = RecoverableHandleCache(handles=self._session_db_handles,
++                                           lock=self._session_db_handles_lock)
+             self._session_db_handle_cache = cache
+-
+-        def _open():
+-            # Borrow the SessionStore's handle (same path) so state.db doesn't get two writers/pools.
+-            # The store owns/sweeps it at shutdown; this cache holds only the async wrapper (close_all).
+-            # Both caches resolve the SAME ``_default_db_path()``, so the process was holding two writer
+-            # connections and two read pools against one state.db — the fd budget doubled for nothing, and
+-            # doubled again per profile on a multiplexed gateway (#98573). A borrowed wrapper cannot go
+-            # stale in practice: the store's cache only drops handles in close_all_db_handles() (shutdown),
+-            # and while the store's own open is failing there is nothing to borrow, so nothing is cached
+-            # here either.
++        def open_sync():
++            return AsyncSessionDB(acquire(path))
++        return cache.get(path, open_sync, raise_on_error=raise_on_error,
++                         non_cacheable=_is_live_system_guard)
 +
- from hermes_state_holders import canonical_sqlite_path, read_only_db_uri
- from hermes_state_common import (
-     FTS_REBUILD_DEFERRAL_KEY, stat_db_file_identity as _stat_db_file_identity
-@@ -191,20 +194,43 @@
-     return _identity_is_truly_unlinked((fd_stat.st_dev, fd_stat.st_ino), watched_path)
-
-
-+async def iter_deleted_sqlite_sidecar_holders_async(db_path):
-+    """Return a fail-closed verdict after scanning the full declared domain off-loop."""
-+    import asyncio
-+    try:
-+        holders = await asyncio.to_thread(iter_deleted_sqlite_sidecar_holders, db_path)
-+    except SidecarScanIncompleteError as exc:
-+        return "INDETERMINATE", (), str(exc)
-+    if holders:
-+        return "HOLDERS_PRESENT", tuple(holders), None
-+    return "CLEAN_COMPLETE", (), None
++    async def _open_session_db_for_active_scope_async(self) -> Any:
++        from hermes_state import AsyncSessionDB, _default_db_path
++        from gateway.session_db_recovery import RecoverableHandleCache
++        from gateway.session_persistence import _is_live_system_guard
++        path = Path(_default_db_path())
++        cache = getattr(self, "_session_db_handle_cache", None)
++        if cache is None:
++            cache = RecoverableHandleCache(handles=self._session_db_handles,
++                                           lock=self._session_db_handles_lock)
++            self._session_db_handle_cache = cache
++        async def open_async():
+             store = getattr(self, "session_store", None)
+-            borrowed = getattr(store, "_db", None) if store is not None else None
+-            if borrowed is not None:
+-                wrapper = AsyncSessionDB(borrowed)
+-                # close_all_session_db_handles() must not close what the store owns (its sweep runs first).
++            if store is not None:
++                db = await store._open_session_db_for_active_scope_async()
++                if db is None:
++                    raise RuntimeError("SessionStore SQLite handle unavailable")
++                wrapper = AsyncSessionDB(db)
+                 wrapper.__dict__["_hermes_borrowed_handle"] = True
+                 return wrapper
+-            if store is not None:
+-                # Store handle unavailable: opening our own would resurrect the duplicate borrowed away.
++            return await self._open_session_db_async()
++        return await cache.get_async(path, open_async, raise_on_error=True,
++                                     non_cacheable=_is_live_system_guard)
 +
++    async def _open_session_db_async(self):
++        from hermes_state import AsyncSessionDB, _default_db_path
++        from hermes_state_registry import acquire_async
++        store = getattr(self, "session_store", None)
++        if store is not None:
++            db = await store._open_session_db_for_active_scope_async()
++            if db is None:
+                 raise RuntimeError("SessionStore SQLite handle unavailable")
+-            try:
+-                return AsyncSessionDB(acquire())
+-            except Exception as exc:
+-                logger.warning("SQLite session store not available: %s", exc)
+-                raise
+-
+-        def _recovered() -> None:
+-            self._session_db_init_error = None
+-            logger.info("SQLite session store recovered")
+-
+-        return cache.get(path, _open, raise_on_error=raise_on_error, on_recovered=_recovered)
++            wrapper = AsyncSessionDB(db)
++            wrapper.__dict__["_hermes_borrowed_handle"] = True
++            return wrapper
++        return AsyncSessionDB(await acquire_async(Path(_default_db_path()), deferred=True))
 +
- def _iter_proc_fd_targets():
--    """Yield ``(pid, readlink target, fd path)`` for every readable ``/proc/<pid>/fd`` entry."""
--    for pid_str in os.listdir("/proc"):
-+    """Yield readable proc descriptors; only proven process/FD disappearance is ignored."""
-+    try:
-+        pid_entries = os.listdir("/proc")
-+    except OSError as exc:
-+        raise SidecarScanIncompleteError(f"/proc enumeration failed: {exc.errno}") from exc
-+    for pid_str in pid_entries:
-         if not pid_str.isdigit():
-             continue
-         fd_dir = f"/proc/{pid_str}/fd"
-         try:
-             fds = os.listdir(fd_dir)
--        except OSError:
--            continue  # process gone or not ours
-+        except OSError as exc:
-+            if exc.errno in (errno.ENOENT, errno.ESRCH):
-+                continue
-+            raise SidecarScanIncompleteError(f"fd enumeration failed: {exc.errno}") from exc
-         for fd in fds:
--            with contextlib.suppress(OSError):
--                fd_path = f"{fd_dir}/{fd}"
--                yield int(pid_str), os.readlink(fd_path), fd_path
-+            fd_path = f"{fd_dir}/{fd}"
-+            try:
-+                target = os.readlink(fd_path)
-+            except OSError as exc:
-+                if exc.errno in (errno.ENOENT, errno.ESRCH):
-+                    continue
-+                raise SidecarScanIncompleteError(f"fd readlink failed: {exc.errno}") from exc
-+            yield int(pid_str), target, fd_path
-
-
- # ── macOS fd enumeration (libproc) ──────────────────────────────────────────────────────────────
-@@ -338,27 +364,40 @@
-     if sys.platform == "win32":
-         return []
-     holders: List[Tuple[int, str]] = []
-+    if sys.platform == "darwin":
-+        try:
-+            return _iter_darwin_sidecar_holders(db_path)
-+        except SidecarScanIncompleteError:
-+            raise
-+        except Exception as exc:
-+            raise SidecarScanIncompleteError("Darwin fd scan failed") from exc
-+    if not sys.platform.startswith("linux"):
-+        raise SidecarScanIncompleteError(f"unsupported scan platform: {sys.platform}")
-     try:
--        if sys.platform == "darwin":
--            holders = _iter_darwin_sidecar_holders(db_path)
--        elif sys.platform.startswith("linux"):
--            watched = _watched_sqlite_sidecar_paths(db_path)
--            for pid, target, fd_path in _iter_proc_fd_targets():
--                canonical = canonical_sqlite_path(target)
--                if (" (deleted)" in target and canonical in watched
--                        and _fd_is_truly_unlinked(fd_path, watched[canonical])):
--                    holders.append((pid, target))
-+        watched = _watched_sqlite_sidecar_paths(db_path)
-+        for pid, target, fd_path in _iter_proc_fd_targets():
-+            canonical = canonical_sqlite_path(target)
-+            if (" (deleted)" in target and canonical in watched
-+                    and _fd_is_truly_unlinked(fd_path, watched[canonical])):
-+                holders.append((pid, target))
-+    except SidecarScanIncompleteError:
-+        raise
-+    except OSError as exc:
-+        raise SidecarScanIncompleteError(f"sidecar scan failed: {exc.errno}") from exc
-     except Exception as exc:
--        logger.debug("deleted-WAL holder scan failed for %s: %s", db_path, exc)
-+        raise SidecarScanIncompleteError("sidecar scan failed") from exc
-     return holders
-
-
- def refuse_deleted_wal_generation(db_path) -> None:
--    """Raise if any process holds a deleted WAL/SHM generation for *db_path*; called
--    *before* ``sqlite3.connect`` so a second opener cannot mint a replacement WAL inode."""
-+    """Refuse writer-open if a holder exists or a complete scan is unavailable."""
-     from hermes_state import DeletedWalGenerationError
-     from hermes_state_errors import _DELETED_WAL_GENERATION_MSG
--    if not iter_deleted_sqlite_sidecar_holders(db_path):
-+    try:
-+        holders = iter_deleted_sqlite_sidecar_holders(db_path)
-+    except SidecarScanIncompleteError:
-+        raise
-+    if not holders:
-         return
-     logger.error(_DELETED_WAL_GENERATION_MSG)
-     raise DeletedWalGenerationError(_DELETED_WAL_GENERATION_MSG)
---- a/hermes_state_errors.py
-+++ b/hermes_state_errors.py
-@@ -186,6 +186,10 @@
-     transcripts on a replaced store handles this identically."""
-
-
-+class SidecarScanIncompleteError(RuntimeError):
-+    """The writer-open sidecar scan could not establish complete visibility."""
-+
-+
- # SQLite header application_id (offset 68). Distinct from inode: ``cp`` onto the
- # same path keeps st_ino and truncates+rewrites.
- _STATE_DB_APPLICATION_ID_OFFSET = 68
---- a/hermes_state.py
-+++ b/hermes_state.py
-@@ -544,8 +544,10 @@
-         except Exception as exc:
-             logger.warning("%s close failed for %s: %s", label, self.db_path, exc)
-
--    def __init__(self, db_path: Path = None, read_only: bool = False):
-+    def __init__(self, db_path: Path = None, read_only: bool = False, *, defer_open: bool = False):
-         self.db_path = db_path or _default_db_path()
-+        if defer_open and threading.current_thread() is threading.main_thread() and not read_only:
-+            raise RuntimeError("deferred SessionDB construction must run in a worker")
-         _ensure_test_isolation(self.db_path)  # before any connection/pragma/mkdir
-         self.read_only = read_only
-         # Keep only the opening call site, never a frame (which pins caller locals).
-@@ -602,6 +604,7 @@
-         # is queryable AND not marked stale.
-         self._fts_cjk_loaded = self._fts_cjk_available = self._fts_unavailable_warned = False
-         self._conn = None
-+        self._deferred_open = bool(defer_open and not read_only)
-         # Async token accounting; distinct from self._lock so enqueue/flush never contends with writes.
-         self._token_queue: deque = deque()
-         self._token_queue_cond = threading.Condition(threading.Lock())
-@@ -614,6 +617,9 @@
-         self._shared_registry_owned = False
-         initialization_complete = False
-         try:
-+            if defer_open:
-+                initialization_complete = True
++    def close_all_session_db_handles(self) -> None:
++        cache = getattr(self, "_session_db_handle_cache", None)
++        if cache is None:
++            return
++        def close(wrapper):
++            if getattr(wrapper, "__dict__", {}).get("_hermes_borrowed_handle"):
 +                return
-             if read_only:
-                 self._open_read_only()
-             else:
-@@ -641,11 +647,21 @@
-                 # for the suite-level leak sweep in tests/conftest.py.
-                 _register_test_instance(self)
-
-+    def initialize_writer(self) -> None:
-+        """Complete a deferred writer open; call only from the async acquire worker."""
-+        if not self._deferred_open:
-+            return
-+        self._open_writer()
-+        self._record_db_file_identity()
-+        self._deferred_open = False
++            inner = getattr(wrapper, "_db", wrapper)
++            from hermes_state_registry import release_or_close
++            release_or_close(inner)
++        cache.close_all(close)
 +
-     def _open_writer(self) -> None:
-         """Writable open: preflight, zero-byte quarantine, connect + schema (one in-place repair of a
-         malformed sqlite_master), generation stamp."""
-         # Never materialize a deleted/archived named profile's home: a multiplexer or Desktop backend
-         # still holding the profile's route would otherwise re-scaffold it on the next turn (#94590).
-+        if self._conn is not None:
-+            return
-         mkdir_under_hermes_home(self.db_path.parent)
-         # Read-only file/sidecar preflight BEFORE the first connection: an actionable message
-         # instead of an opaque "attempt to write a readonly database" from inside _init_schema.
-@@ -779,6 +795,10 @@
-         return conn
++    async def close_all_session_db_handles_async(self) -> None:
++        await self._session_db_handle_cache.drain_async(reject_new=True)
++        await asyncio.to_thread(self.close_all_session_db_handles)
++
++    async def _session_db_async(self) -> Any:
++        if self._session_db_pinned is not _SESSION_DB_UNPINNED:
++            return self._session_db_pinned
++        return await self._open_session_db_for_active_scope_async()
 
-     def _connect_and_init(self) -> None:
-+        # myrmidon(G1): scanner, refusal gate, file preparation and connect share one off-loop
-+        # worker transaction; every retry re-enters here and performs a fresh complete scan.
+     @property
+     def _session_db(self) -> Any:
+-        """The AsyncSessionDB for the active profile scope, or a pinned override (assigning
+-        ``runner._session_db`` pins it for every later read — tests install fakes/None this way)."""
++        """Return a sync-safe handle; async cold access goes through _session_db_async."""
+         if self._session_db_pinned is not _SESSION_DB_UNPINNED:
+             return self._session_db_pinned
 +        if threading.current_thread() is threading.main_thread():
-+            raise RuntimeError("state DB writer open must run in a worker thread")
-         # Refuse before sqlite3.connect (under the startup lock) so we cannot mint
-         # a replacement WAL while a live writer still holds a deleted sidecar inode.
-         refuse_deleted_wal_generation(self.db_path)
---- a/hermes_state_registry.py
-+++ b/hermes_state_registry.py
-@@ -30,6 +30,7 @@
++            raise RuntimeError("cold gateway SessionDB access on event loop; await _session_db_async")
+         return self._open_session_db_for_active_scope()
 
- from __future__ import annotations
+     @_session_db.setter
+     def _session_db(self, value) -> None:
+         self._session_db_pinned = value
 
-+import asyncio
- import contextlib
- import logging
- import os
-@@ -192,7 +193,7 @@
-     opening.set()
+-    def close_all_session_db_handles(self) -> None:
+-        """Close every per-profile AsyncSessionDB this runner opened.
+-
+-        Drained under the lock, closed outside it; a pinned handle is the pinner's to close. Wrappers
+-        BORROWED from ``session_store`` are skipped: the store's sweep (runs first) closes them.
+-
+-        See #98573.
+-        """
+-        def _close(db) -> None:
+-            if getattr(db, "__dict__", {}).get("_hermes_borrowed_handle"):
+-                return
+-            inner = getattr(db, "_db", db)
+-            if inner is None or not hasattr(inner, "close"):
+-                return
+-            # Shared instances no-op on close() (the registry owns the lifecycle). Release the refcount
+-            # instead (#90837).
+-            from hermes_state_registry import release_or_close
+-            try:
+-                release_or_close(inner)
+-            except Exception as exc:
+-                logger.debug("SessionDB close error during handle sweep: %s", exc)
+-
+-        self._session_db_handle_cache.close_all(_close)
++    @staticmethod
++    def _quiesce_shared_session_db_registry() -> None:
++        from hermes_state_registry import close_all
++        close_all()
 
+     def _wire_teams_pipeline_runtime(self) -> None:
+         """Bind the Teams meeting pipeline runtime to Graph webhook ingress (no-op if adapter/plugin off)."""
+@@ -5928,7 +5883,7 @@
+     def _recover_pending() -> None:
+         from gateway.shutdown_flush import recover_pending_to_db
+         recovered = recover_pending_to_db(
+-            session_resolver=runner.session_store.resolve_session_id_for_key,
++            session_resolver=runner.async_session_store.resolve_session_id_for_key,
+         )
+         if recovered:
+             logger.info("Recovered %d pending message(s) from shutdown flush", recovered)
+diff --git a/gateway/run_shutdown.py b/gateway/run_shutdown.py
+--- a/gateway/run_shutdown.py
++++ b/gateway/run_shutdown.py
+@@ -2149,7 +2149,13 @@
+                 await GatewayRunner._stop_interrupt_remaining_work(self, ctx)
+             await GatewayRunner._stop_finalize_agents_and_adapters(self, ctx)
+             await GatewayRunner._stop_release_runtime_state(self, ctx)
+-            GatewayRunner._stop_quiesce_and_close_session_dbs(self, timeout, ctx)
++            # Drain executor-backed storage work before fencing async ownership and closing handles.
++            await asyncio.to_thread(GatewayRunner._stop_quiesce_and_close_session_dbs, self, timeout, ctx)
++            store = getattr(self, "session_store", None)
++            if store is not None:
++                await store.close_all_db_handles_async()
++            await self.close_all_session_db_handles_async()
++            await asyncio.to_thread(self._quiesce_shared_session_db_registry)
+             await GatewayRunner._stop_persist_exit_state(self, ctx)
+         finally:
+             _watchdog_done.set()
+diff --git a/gateway/run_startup.py b/gateway/run_startup.py
+--- a/gateway/run_startup.py
++++ b/gateway/run_startup.py
+@@ -1544,6 +1544,16 @@
+             # diagnostic snapshot once, instead of flushing at each return.
+             await self._start_flush_runtime_status()
 
--def acquire(db_path: Optional[Path] = None) -> "SessionDB":
-+def _acquire_sync(db_path: Optional[Path] = None) -> "SessionDB":
-     """Return the shared SessionDB for *db_path*, incrementing its refcount. If the file was
-     replaced (different inode) since the generation opened, that generation is RETIRED
-     but stays alive for its holders, and a fresh one is opened in its place. Raises
-@@ -233,8 +234,6 @@
-                 else:
-                     wait_for = opening
-         if wait_for is not None:
--            # Another caller is constructing or closing this path; wait without holding the
--            # global lock. A failed opener signals too, so a waiter can retry.
-             wait_for.wait()
-             continue
++    def _init_session_store(self) -> None:
++        """Reset storage state on explicit startup/retry without opening SQLite here."""
++        from tools.process_registry import process_registry
++        self.session_store = SessionStore.create_deferred(
++            self.config.sessions_dir, self.config,
++            has_active_processes_fn=lambda key: process_registry.has_active_for_session(key))
++        self.session_store._gateway_runner = self
++        self._async_session_store = AsyncSessionStore(self.session_store)
++        self.delivery_router = DeliveryRouter(self.config)
++
+     async def _start_impl(self) -> bool:
+         logger.info("Starting Hermes Gateway...")
+         self._start_install_faulthandler()
+@@ -1552,6 +1562,8 @@
+             return True
+         if self._start_check_access_policy():
+             return True
++        self._init_session_store()
++        await self.async_session_store.initialize()
+         await self._start_recover_previous_run()
+         # The gateway is a boot owner of the Nous free tier, beside `cmd_chat` and `hermes serve`: every
+         # demand-time site (provider resolution, /login, the connector token) is a read that needs the
+diff --git a/gateway/session.py b/gateway/session.py
+--- a/gateway/session.py
++++ b/gateway/session.py
+@@ -758,6 +758,22 @@
+     def __init__(self, store: "SessionStore") -> None:
+         self._store = store
 
-@@ -273,6 +272,102 @@
-         return winner
++    async def initialize(self) -> None:
++        await self._store._open_session_db_for_active_scope_async()
++        await self._store._ensure_loaded_async()
++        await self._store._prime_runner_db_async()
++
++    async def db_for_key(self, session_key: Optional[str]):
++        return await self._store._db_for_key_async(session_key)
++
++    async def load_transcript(self, session_id: str):
++        await self._store._ensure_loaded_async()
++        return await asyncio.to_thread(self._store.load_transcript, session_id)
++
++    async def resolve_session_id_for_key(self, session_key: str, *, not_after=None):
++        await self._store._ensure_loaded_async()
++        return await self._store.resolve_session_id_for_key_async(session_key, not_after=not_after)
++
+     def __getattr__(self, name: str):
+         attr = getattr(self._store, name)
+         if not callable(attr):
+@@ -775,6 +791,18 @@
+     """Session routing index + transcripts: SQLite (SessionDB), legacy JSONL fallback."""
 
+     def __init__(self, sessions_dir: Path, config: GatewayConfig, has_active_processes_fn=None):
++        self._deferred_storage_init = False
++        self._init_storage(sessions_dir, config, has_active_processes_fn)
++
++    @classmethod
++    def create_deferred(cls, sessions_dir: Path, config: GatewayConfig, has_active_processes_fn=None):
++        """Construct gateway storage metadata without opening SQLite on the event loop."""
++        obj = cls.__new__(cls)
++        obj._deferred_storage_init = True
++        obj._init_storage(sessions_dir, config, has_active_processes_fn)
++        return obj
++
++    def _init_storage(self, sessions_dir: Path, config: GatewayConfig, has_active_processes_fn=None):
+         self.sessions_dir = sessions_dir
+         self.config = config
+         self._entries: Dict[str, SessionEntry] = {}
+@@ -807,40 +835,18 @@
+         self._has_active_processes_fn = has_active_processes_fn
+         self._write_sessions_json = bool(getattr(config, "write_sessions_json", True))
 
-+def acquire(db_path: Optional[Path] = None) -> "SessionDB":
-+    """Synchronous registry API retained for CLI and non-async gateway callers."""
-+    return _acquire_sync(db_path)
-+
-+
-+def _acquire_deferred_sync(db_path: Optional[Path] = None) -> "SessionDB":
-+    """Single-flight deferred construction with shared registry generation accounting."""
-+    from hermes_state import SessionDB, _default_db_path
-+    raw = Path(db_path) if db_path is not None else Path(_default_db_path())
-+    try:
-+        path = raw.resolve()
-+    except OSError:
-+        path = raw
-+    while True:
-+        wait_for = None
-+        with _lock:
-+            generation = _generations.get(path)
-+            if generation is not None:
-+                current = _stat_db_file_identity(path)
-+                if current is None or generation.identity is None or current == generation.identity:
-+                    generation.refcount += 1
-+                    return generation.db
-+                generation.retired = True
-+                del _generations[path]
-+                _retired[id(generation.db)] = generation
-+            barrier = _tearing_down.get(path)
-+            opening = _opening.get(path)
-+            if barrier is not None:
-+                wait_for = barrier.event
-+            elif opening is not None:
-+                wait_for = opening
-+            else:
-+                opening = _opening[path] = threading.Event()
-+                lifecycle = _path_lifecycle_lock_locked(path)
-+        if wait_for is not None:
-+            if threading.current_thread() is threading.main_thread():
-+                raise RuntimeError("registry wait would block the main thread")
-+            wait_for.wait()
-+            continue
-+        db = None
-+        try:
-+            with lifecycle:
-+                db = SessionDB(db_path=path, defer_open=True)
-+                db._shared_registry_owned = True
-+                try:
-+                    db.initialize_writer()
-+                except BaseException:
-+                    db._shared_registry_owned = False
-+                    raise
-+                identity = _stat_db_file_identity(path)
-+        except BaseException:
-+            if db is not None:
-+                _teardown(db)
-+            with _lock:
-+                _finish_opening(path, opening)
-+            raise
-+        with _lock:
-+            barrier = _tearing_down.get(path)
-+            stale = _opening.get(path) is not opening
-+            if barrier is None and not stale:
-+                _generations[path] = _Generation(path, db, identity)
-+            _finish_opening(path, opening)
-+        if barrier is not None or stale:
-+            _teardown_generation(path, db)
-+            if barrier is not None:
-+                barrier.event.wait()
-+            continue
-+        return db
-+
-+
-+async def _run_async_transaction(db_path: Optional[Path], deferred: bool) -> "SessionDB":
-+    """Run the shared transaction on a worker, retaining no loop-specific registry state."""
-+    fn = _acquire_deferred_sync if deferred else _acquire_sync
-+    task = asyncio.create_task(asyncio.to_thread(fn, db_path))
-+    try:
-+        return await asyncio.shield(task)
-+    except asyncio.CancelledError:
-+        try:
-+            db = await task
-+        except BaseException:
-+            pass
-+        else:
-+            await asyncio.to_thread(release, db)
-+        raise
-+
-+
-+async def acquire_async(db_path: Optional[Path] = None, *, deferred: bool = False) -> "SessionDB":
-+    """Await shared registry acquisition without blocking the loop.
-+
-+    The worker executes the same sync API transaction, so sync CLI and async gateway retain one
-+    registry identity, single-flight map, and refcount domain. Cancellation waits for the worker
-+    transaction to settle before propagating, preventing a detached writer open.
-+    """
-+    return await _run_async_transaction(db_path, deferred)
-+
-+
- def release(db: "SessionDB") -> bool:
-     """Decrement the refcount of a shared SessionDB. ``True`` if *db* was shared; ``False``
-     if it is not registry-managed (caller owns close()). The final release tears the
-@@ -350,8 +445,15 @@
-     with _lock:
-         active_teardowns = list(_tearing_down.values())
-         generations = list(_generations.values()) + list(_retired.values())
-+        # A sweep fences an opener that has not published; its event wakes the async worker,
-+        # which observes teardown before transfer and closes the speculative handle.
-+        opening_paths = set(_opening)
-+        for path, opening in list(_opening.items()):
-+            _admit_teardown_locked(path)
-+            _finish_opening(path, opening)
-         for path in {generation.path for generation in generations}:
--            teardown_barriers[path] = _admit_teardown_locked(path)
-+            if path not in opening_paths:
-+                teardown_barriers[path] = _admit_teardown_locked(path)
-         _generations.clear()
-         _retired.clear()
-         for generation in generations:
+-        # SQLite handles are cached per path and resolved through ``_db`` per call, never bound
+-        # once: a multiplexed gateway serves every profile from ONE process and a handle frozen to
+-        # the root home would land every profile's rows in the root state.db.
+-        # Initialize SQLite session database. A multiplexed gateway serves every profile from a SINGLE
+-        # process, so a handle bound during __init__ is frozen to the process's own root home; every
+-        # profile's rows then land in the root state.db even though ``_profile_runtime_scope`` has already
+-        # redirected ``get_hermes_home()`` for the turn (its docstring lists "sessions" among what it
+-        # scopes). The row still carries the right ``profile_name``, so the damage is invisible in the data
+-        # and shows up only as the desktop listing a profile's session under the default bot --
+-        # ``_open_session_db_for_profile`` reads ``profiles/<name>/state.db``, which never received the
+-        # write. See #88532. Priming the handle for the current scope here keeps the startup diagnostics
+-        # exactly where they were: the live-DB isolation guard still raises during construction, and the
+-        # JSONL-fallback warning is still printed once at startup rather than on first use.
+         self._db_pinned = _DB_UNPINNED
+         self._db_handles: Dict[Path, Any] = {}
+         self._db_handles_lock = threading.Lock()
+-        self._profile_home_cache: Dict[str, Optional[Path]] = {}  # profile -> HERMES_HOME (hits)
+-        # session_id -> owning key for ids proven but not yet published in ``_entries`` (a
+-        # compression child row is written before its reroute is published).
+-        self._session_owner_hints: Dict[str, str] = {}
++        self._profile_home_cache: Dict[str, Optional[Path]] = {}
+         from gateway.session_db_recovery import RecoverableHandleCache
+-
+-        self._db_handle_cache = RecoverableHandleCache(
+-            handles=self._db_handles, lock=self._db_handles_lock
+-        )
+-        # The routing index needs exactly one home for its lifetime: the gateway's own, captured
+-        # before any profile scope exists (see ``_routing_db``).
++        self._db_handle_cache = RecoverableHandleCache(handles=self._db_handles,
++                                                       lock=self._db_handles_lock)
+         try:
+             from hermes_constants import get_hermes_home
+-
+             self._routing_home: Optional[Path] = Path(get_hermes_home())
+         except Exception:
+             self._routing_home = None
+-        self._open_session_db_for_active_scope()
+
+     def _lazy(self, name: str, factory):
+         """``self.<name>``, created via *factory* when missing/None (suites build bare stores via
+diff --git a/gateway/session_db_recovery.py b/gateway/session_db_recovery.py
 --- a/gateway/session_db_recovery.py
 +++ b/gateway/session_db_recovery.py
 @@ -2,6 +2,7 @@
@@ -351,7 +405,7 @@
  import contextlib
  import threading
  import time
-@@ -65,11 +66,129 @@
+@@ -65,10 +66,128 @@
          self._health_source = _HealthSource()
          self._generation = 0
          self._close_rejected: Callable[[Any], None] | None = None
@@ -362,7 +416,7 @@
      def _is_stale(self, path: Path, unavailable: _Unavailable, generation: int) -> bool:
          """Caller holds ``lock``: True when close_all ran or the slot was replaced mid-open."""
          return generation != self._generation or self._unavailable.get(path) is not unavailable
-
++
 +    async def get_async(self, path: Path, opener: Callable[[], Any], *, raise_on_error=False,
 +                        on_recovered=None, non_cacheable=None):
 +        """Run existing cache state transitions in a worker with an async, cancellable opener."""
@@ -477,11 +531,22 @@
 +        if on_recovered:
 +            on_recovered()
 +        return handle
-+
+
      def get(
          self, path: Path, opener: Callable[[], Any], *, raise_on_error: bool = False,
-         on_recovered: Callable[[], None] | None = None,
-@@ -128,9 +244,27 @@
+@@ -82,7 +201,10 @@
+         with self.lock:
+             if path in self.handles:
+                 return self.handles[path]
+-            unavailable = self._unavailable.setdefault(path, _Unavailable())
++            unavailable = self._unavailable.get(path)
++            if unavailable is None:
++                # Keep a visible failure slot for synchronous callers that inspect backoff state.
++                unavailable = self._unavailable.setdefault(path, _Unavailable())
+             if unavailable.in_flight or self._clock() < unavailable.next_retry_at:
+                 return None
+             unavailable.in_flight = True
+@@ -128,9 +250,27 @@
              on_recovered()
          return handle
 
@@ -509,94 +574,7 @@
              self._generation += 1
              self._close_rejected = close
              handles = list(self.handles.values())
---- a/gateway/session.py
-+++ b/gateway/session.py
-@@ -758,6 +758,22 @@
-     def __init__(self, store: "SessionStore") -> None:
-         self._store = store
-
-+    async def initialize(self) -> None:
-+        await self._store._open_session_db_for_active_scope_async()
-+        await self._store._ensure_loaded_async()
-+        await self._store._prime_runner_db_async()
-+
-+    async def db_for_key(self, session_key: Optional[str]):
-+        return await self._store._db_for_key_async(session_key)
-+
-+    async def load_transcript(self, session_id: str):
-+        await self._store._ensure_loaded_async()
-+        return await asyncio.to_thread(self._store.load_transcript, session_id)
-+
-+    async def resolve_session_id_for_key(self, session_key: str, *, not_after=None):
-+        await self._store._ensure_loaded_async()
-+        return await self._store.resolve_session_id_for_key_async(session_key, not_after=not_after)
-+
-     def __getattr__(self, name: str):
-         attr = getattr(self._store, name)
-         if not callable(attr):
-@@ -775,6 +791,18 @@
-     """Session routing index + transcripts: SQLite (SessionDB), legacy JSONL fallback."""
-
-     def __init__(self, sessions_dir: Path, config: GatewayConfig, has_active_processes_fn=None):
-+        self._deferred_storage_init = False
-+        self._init_storage(sessions_dir, config, has_active_processes_fn)
-+
-+    @classmethod
-+    def create_deferred(cls, sessions_dir: Path, config: GatewayConfig, has_active_processes_fn=None):
-+        """Construct gateway storage metadata without opening SQLite on the event loop."""
-+        obj = cls.__new__(cls)
-+        obj._deferred_storage_init = True
-+        obj._init_storage(sessions_dir, config, has_active_processes_fn)
-+        return obj
-+
-+    def _init_storage(self, sessions_dir: Path, config: GatewayConfig, has_active_processes_fn=None):
-         self.sessions_dir = sessions_dir
-         self.config = config
-         self._entries: Dict[str, SessionEntry] = {}
-@@ -807,40 +835,18 @@
-         self._has_active_processes_fn = has_active_processes_fn
-         self._write_sessions_json = bool(getattr(config, "write_sessions_json", True))
-
--        # SQLite handles are cached per path and resolved through ``_db`` per call, never bound
--        # once: a multiplexed gateway serves every profile from ONE process and a handle frozen to
--        # the root home would land every profile's rows in the root state.db.
--        # Initialize SQLite session database. A multiplexed gateway serves every profile from a SINGLE
--        # process, so a handle bound during __init__ is frozen to the process's own root home; every
--        # profile's rows then land in the root state.db even though ``_profile_runtime_scope`` has already
--        # redirected ``get_hermes_home()`` for the turn (its docstring lists "sessions" among what it
--        # scopes). The row still carries the right ``profile_name``, so the damage is invisible in the data
--        # and shows up only as the desktop listing a profile's session under the default bot --
--        # ``_open_session_db_for_profile`` reads ``profiles/<name>/state.db``, which never received the
--        # write. See #88532. Priming the handle for the current scope here keeps the startup diagnostics
--        # exactly where they were: the live-DB isolation guard still raises during construction, and the
--        # JSONL-fallback warning is still printed once at startup rather than on first use.
-         self._db_pinned = _DB_UNPINNED
-         self._db_handles: Dict[Path, Any] = {}
-         self._db_handles_lock = threading.Lock()
--        self._profile_home_cache: Dict[str, Optional[Path]] = {}  # profile -> HERMES_HOME (hits)
--        # session_id -> owning key for ids proven but not yet published in ``_entries`` (a
--        # compression child row is written before its reroute is published).
--        self._session_owner_hints: Dict[str, str] = {}
-+        self._profile_home_cache: Dict[str, Optional[Path]] = {}
-         from gateway.session_db_recovery import RecoverableHandleCache
--
--        self._db_handle_cache = RecoverableHandleCache(
--            handles=self._db_handles, lock=self._db_handles_lock
--        )
--        # The routing index needs exactly one home for its lifetime: the gateway's own, captured
--        # before any profile scope exists (see ``_routing_db``).
-+        self._db_handle_cache = RecoverableHandleCache(handles=self._db_handles,
-+                                                       lock=self._db_handles_lock)
-         try:
-             from hermes_constants import get_hermes_home
--
-             self._routing_home: Optional[Path] = Path(get_hermes_home())
-         except Exception:
-             self._routing_home = None
--        self._open_session_db_for_active_scope()
-
-     def _lazy(self, name: str, factory):
-         """``self.<name>``, created via *factory* when missing/None (suites build bare stores via
+diff --git a/gateway/session_persistence.py b/gateway/session_persistence.py
 --- a/gateway/session_persistence.py
 +++ b/gateway/session_persistence.py
 @@ -4,6 +4,7 @@
@@ -635,10 +613,11 @@
 
      def _pinned_db(self):
          """Return the explicitly pinned DB (``store._db = x``), else ``_DB_UNPINNED``."""
-@@ -137,6 +150,30 @@
+@@ -136,6 +149,30 @@
+         if home is not None:
              cache[profile] = home
          return home
-
++
 +    async def _prime_runner_db_async(self) -> None:
 +        runner = getattr(self, "_gateway_runner", None)
 +        if runner is not None:
@@ -662,11 +641,10 @@
 +            return await self._open_session_db_for_path_async(home / "state.db")
 +        except Exception:
 +            return None
-+
+
      def _db_for_key(self, session_key: Optional[str]):
          """The SessionDB holding *session_key*'s rows, whatever scope is active (the owning profile
-         is encoded in the key). ``_db`` follows the ambient HERMES_HOME that only the inbound message
-@@ -191,6 +228,12 @@
+@@ -191,12 +228,23 @@
              pass  # bare stores / foreign entry objects in suites
          return (getattr(self, "_session_owner_hints", None) or {}).get(session_id)
 
@@ -679,22 +657,22 @@
      def _db_for_session_id(self, session_id: Optional[str]):
          """The SessionDB holding *session_id*'s row (owner from the index or a pre-published hint;
          unknown ids fall back to the ambient store)."""
-@@ -198,6 +241,11 @@
+         if not session_id:
              return self._db
          return self._db_for_key(self._owner_key_for_session_id(session_id))
-
++
 +    async def close_all_db_handles_async(self) -> None:
 +        """Await in-flight opens before advancing generation and closing handles."""
 +        await self._db_handle_cache.drain_async(reject_new=True)
 +        await asyncio.to_thread(self.close_all_db_handles)
-+
+
      def close_all_db_handles(self) -> None:
          """Close every SessionDB handle this store opened (one per path). Closing only ``store._db``
-         would strand secondary profiles' handles with their WAL lock held ('database is locked' on
-@@ -229,6 +277,27 @@
+@@ -228,6 +276,27 @@
+             return str(Path(self.sessions_dir).resolve())
          except Exception:
              return str(self.sessions_dir)
-
++
 +    async def _routing_db_async(self):
 +        home = getattr(self, "_routing_home", None)
 +        if home is None:
@@ -715,10 +693,10 @@
 +    async def _ensure_loaded_async(self) -> None:
 +        await self._routing_db_async()
 +        await asyncio.to_thread(self._ensure_loaded)
-+
+
      def _routing_db_method(self, name: str):
          """Bound ``_routing_db.<name>`` if the handle exists and has it, else None."""
-         method = getattr(self._routing_db or None, name, None)
+diff --git a/gateway/session_recovery.py b/gateway/session_recovery.py
 --- a/gateway/session_recovery.py
 +++ b/gateway/session_recovery.py
 @@ -4,6 +4,7 @@
@@ -729,10 +707,11 @@
  import logging
  import json
  import math
-@@ -193,6 +194,15 @@
+@@ -192,6 +193,15 @@
+             if raise_on_lookup_error:
                  raise
              return None
-
++
 +    async def resolve_session_id_for_key_async(
 +        self, session_key: str, *, not_after: Optional[float] = None,
 +    ) -> Optional[tuple[str, Any]]:
@@ -741,311 +720,358 @@
 +            return None
 +        return await asyncio.to_thread(self.resolve_session_id_for_key, session_key,
 +                                       not_after=not_after)
-+
+
      def resolve_session_id_for_key(
          self, session_key: str, *, not_after: Optional[float] = None,
-     ) -> Optional[tuple[str, Any]]:
---- a/gateway/run.py
-+++ b/gateway/run.py
-@@ -3518,7 +3518,9 @@
-         _gateway_runner_ref = _weakref.ref(self)
+diff --git a/hermes_state.py b/hermes_state.py
+--- a/hermes_state.py
++++ b/hermes_state.py
+@@ -544,8 +544,10 @@
+         except Exception as exc:
+             logger.warning("%s close failed for %s: %s", label, self.db_path, exc)
 
-         self._init_runtime_settings()
--        self._init_session_store()
-+        self.session_store = None
-+        self._async_session_store = None
-+        self.delivery_router = DeliveryRouter(self.config)
-         self._init_lifecycle_state()
-         self._init_runtime_caches()
-         self._init_startup_checks()
-@@ -3552,17 +3554,6 @@
-         self._provider_routing = self._load_provider_routing()
-         self._fallback_model = self._load_fallback_model()
-
--    def _init_session_store(self) -> None:
--        """Build the SessionStore (with process-registry reset guard), its async facade and the router."""
--        from tools.process_registry import process_registry
--        self.session_store = SessionStore(
--            self.config.sessions_dir, self.config,
--            has_active_processes_fn=lambda key: process_registry.has_active_for_session(
--                key))
--        # Loop-side boundary: sync helpers use ``session_store`` directly; async handlers await this facade.
--        self._async_session_store = AsyncSessionStore(self.session_store)
--        self.delivery_router = DeliveryRouter(self.config)
--
-     def _init_lifecycle_state(self) -> None:
-         """Initialise run/exit/restart flags, per-session state, and completion-delivery bookkeeping."""
-         self._running = self._exit_cleanly = self._exit_with_failure = self._draining = False
-@@ -3702,47 +3693,14 @@
-             logger.debug("approvals.mode startup check skipped", exc_info=True)
-
-     def _init_session_db(self) -> None:
--        """Open the session DB for the active scope and run opportunistic state.db / checkpoint maintenance."""
--        # Session DB is a property caching one AsyncSessionDB per path (a handle bound here would pin the
--        # root home under multiplex); priming here keeps startup diagnostics at init.
--        # Initialize session database for session_search tool support. Same frozen-handle class of bug as
--        # SessionStore._db (#88532): a handle bound here is pinned to the process's root home, but /resume,
--        # /title, /history and session search all run inside _profile_runtime_scope on a multiplexed gateway
--        # and must see that profile's own state.db.
-+        """Prepare async-handle ownership; storage is opened explicitly in run_startup."""
-+        self._session_db_init_error = None
-         self._session_db_pinned: Any = _SESSION_DB_UNPINNED
-         self._session_db_handles: Dict[Path, Any] = {}
-         self._session_db_handles_lock = threading.Lock()
-         from gateway.session_db_recovery import RecoverableHandleCache
-         self._session_db_handle_cache = RecoverableHandleCache(
-             handles=self._session_db_handles, lock=self._session_db_handles_lock)
--        try:
--            self._open_session_db_for_active_scope(raise_on_error=True)
--        except Exception as e:
--            # WARNING (not DEBUG) so it lands in errors.log; else an NFS HERMES_HOME silently loses /resume etc.
--            logger.warning("SQLite session store not available: %s", e)
--            self._session_db_init_error = str(e)  # surfaced on the home channel(s) once connected
--
--        # Opportunistic state.db maintenance (prune + optional VACUUM), at most once per min_interval_hours.
--        # A few blocking seconds per day is fine for a long-lived gateway; failures log, never raise.
--        # Surface the failure to the user via their home channel(s) once the gateway connects. Without this,
--        # state.db corruption or NFS/SMB lock failures silently degrade the entire gateway — messages may
--        # flow but nothing is persisted, and the user has no indication until they try /resume and find
--        # nothing (#88235).
--        # Once per SERVED profile, each under its own scope: both the store and the ``sessions:``
--        # config that governs it must be the profile's own. Bound to ``self._session_db`` this ran
--        # against the construction-time launch home only, so a multiplexed secondary profile's
--        # state.db was never pruned or vacuumed by anybody, and the launch profile's
--        # retention_days/auto_prune decided whether it happened at all.
--        from gateway.run_profile_reconcile import _for_each_served_profile
--        _launch_sessions = _launch_sessions_dir(self.config)  # resolved OUTSIDE any profile scope
--        _housekeeping_chore(
--            "state.db startup maintenance",
--            lambda: _for_each_served_profile(
--                self, lambda _label: _housekeeping_state_db_maintenance(_launch_sessions)))
--        # Checkpoint store pruning is a housekeeping chore (``_housekeeping_checkpoint_prune``), not a
--        # constructor step: its ``git gc`` repacks the whole store (tens of seconds on a GB store) and
--        # here it ran before the control socket, adapters and the code_sha stamp — so the first
--        # restart of the day (the ``hermes update`` one) looked hung and failed fleet verification.
-
-     def _init_registries_and_clocks(self) -> None:
-         """Pairing stores, hook registry, voice modes, background-task set, liveness and idle clocks."""
-@@ -3776,99 +3734,96 @@
-         self._scale_to_zero_direct_platform_logged: bool = False
-
-     def _open_session_db_for_active_scope(self, raise_on_error: bool = False) -> Any:
--        """AsyncSessionDB for the active profile scope, resolved per access (not in ``__init__``) since
--        ``SessionDB()`` reads the context-local HERMES_HOME; one handle cached per path. Construction
--        failure enters bounded backoff; ``raise_on_error=True`` (priming) propagates it.
--
--        Same per-path cache as ``SessionStore._open_session_db_for_active_scope`` (#88532): ``SessionDB()``
--        resolves ``_default_db_path()`` at call time through the context-local HERMES_HOME override
--        installed by ``_profile_runtime_scope``, so resolving per access — instead of once in ``__init__`` —
--        is what lets /resume, /title, /history and session search on a multiplexed gateway read the *serving
--        profile's* store rather than the root one.
--        One ``AsyncSessionDB`` is cached per resolved path, so the wrapper identity is stable per profile
--        (callers compare and stash it) and two profiles never share a handle. A construction failure enters
--        bounded backoff; one caller retries after the deadline while concurrent callers continue to see the
--        unavailable fallback. ``raise_on_error=True`` (construction-time priming) propagates the failure
--        after recording that recoverable state so ``__init__`` can record ``_session_db_init_error`` for the
--        #88235 broadcast.
--        """
-+        """Synchronous compatibility path. Async gateway callers use the awaited method below."""
-         from hermes_state import AsyncSessionDB, _default_db_path
--        from hermes_state_registry import acquire
-         from gateway.session_db_recovery import RecoverableHandleCache
-+        from gateway.session_persistence import _is_live_system_guard
-+        from hermes_state_registry import acquire
-         path = Path(_default_db_path())
-         cache = getattr(self, "_session_db_handle_cache", None)
-         if cache is None:
--            # Test runners built with object.__new__ skip __init__.
--            cache = RecoverableHandleCache(
--                handles=self._session_db_handles, lock=self._session_db_handles_lock)
-+            cache = RecoverableHandleCache(handles=self._session_db_handles,
-+                                           lock=self._session_db_handles_lock)
-             self._session_db_handle_cache = cache
-+        def open_sync():
-+            return AsyncSessionDB(acquire(path))
-+        return cache.get(path, open_sync, raise_on_error=raise_on_error,
-+                         non_cacheable=_is_live_system_guard)
-
--        def _open():
--            # Borrow the SessionStore's handle (same path) so state.db doesn't get two writers/pools.
--            # The store owns/sweeps it at shutdown; this cache holds only the async wrapper (close_all).
--            # Both caches resolve the SAME ``_default_db_path()``, so the process was holding two writer
--            # connections and two read pools against one state.db — the fd budget doubled for nothing, and
--            # doubled again per profile on a multiplexed gateway (#98573). A borrowed wrapper cannot go
--            # stale in practice: the store's cache only drops handles in close_all_db_handles() (shutdown),
--            # and while the store's own open is failing there is nothing to borrow, so nothing is cached
--            # here either.
-+    async def _open_session_db_for_active_scope_async(self) -> Any:
-+        from hermes_state import AsyncSessionDB, _default_db_path
-+        from gateway.session_db_recovery import RecoverableHandleCache
-+        from gateway.session_persistence import _is_live_system_guard
-+        path = Path(_default_db_path())
-+        cache = getattr(self, "_session_db_handle_cache", None)
-+        if cache is None:
-+            cache = RecoverableHandleCache(handles=self._session_db_handles,
-+                                           lock=self._session_db_handles_lock)
-+            self._session_db_handle_cache = cache
-+        async def open_async():
-             store = getattr(self, "session_store", None)
--            borrowed = getattr(store, "_db", None) if store is not None else None
--            if borrowed is not None:
--                wrapper = AsyncSessionDB(borrowed)
--                # close_all_session_db_handles() must not close what the store owns (its sweep runs first).
-+            if store is not None:
-+                db = await store._open_session_db_for_active_scope_async()
-+                if db is None:
-+                    raise RuntimeError("SessionStore SQLite handle unavailable")
-+                wrapper = AsyncSessionDB(db)
-                 wrapper.__dict__["_hermes_borrowed_handle"] = True
-                 return wrapper
--            if store is not None:
--                # Store handle unavailable: opening our own would resurrect the duplicate borrowed away.
-+            return await self._open_session_db_async()
-+        return await cache.get_async(path, open_async, raise_on_error=True,
-+                                     non_cacheable=_is_live_system_guard)
-+
-+    async def _open_session_db_async(self):
-+        from hermes_state import AsyncSessionDB, _default_db_path
-+        from hermes_state_registry import acquire_async
-+        store = getattr(self, "session_store", None)
-+        if store is not None:
-+            db = await store._open_session_db_for_active_scope_async()
-+            if db is None:
-                 raise RuntimeError("SessionStore SQLite handle unavailable")
--            try:
--                return AsyncSessionDB(acquire())
--            except Exception as exc:
--                logger.warning("SQLite session store not available: %s", exc)
--                raise
-+            wrapper = AsyncSessionDB(db)
-+            wrapper.__dict__["_hermes_borrowed_handle"] = True
-+            return wrapper
-+        return AsyncSessionDB(await acquire_async(Path(_default_db_path()), deferred=True))
-
--        def _recovered() -> None:
--            self._session_db_init_error = None
--            logger.info("SQLite session store recovered")
-+    def close_all_session_db_handles(self) -> None:
-+        cache = getattr(self, "_session_db_handle_cache", None)
-+        if cache is None:
-+            return
-+        def close(wrapper):
-+            if getattr(wrapper, "__dict__", {}).get("_hermes_borrowed_handle"):
+-    def __init__(self, db_path: Path = None, read_only: bool = False):
++    def __init__(self, db_path: Path = None, read_only: bool = False, *, defer_open: bool = False):
+         self.db_path = db_path or _default_db_path()
++        if defer_open and threading.current_thread() is threading.main_thread() and not read_only:
++            raise RuntimeError("deferred SessionDB construction must run in a worker")
+         _ensure_test_isolation(self.db_path)  # before any connection/pragma/mkdir
+         self.read_only = read_only
+         # Keep only the opening call site, never a frame (which pins caller locals).
+@@ -602,6 +604,7 @@
+         # is queryable AND not marked stale.
+         self._fts_cjk_loaded = self._fts_cjk_available = self._fts_unavailable_warned = False
+         self._conn = None
++        self._deferred_open = bool(defer_open and not read_only)
+         # Async token accounting; distinct from self._lock so enqueue/flush never contends with writes.
+         self._token_queue: deque = deque()
+         self._token_queue_cond = threading.Condition(threading.Lock())
+@@ -614,6 +617,9 @@
+         self._shared_registry_owned = False
+         initialization_complete = False
+         try:
++            if defer_open:
++                initialization_complete = True
 +                return
-+            inner = getattr(wrapper, "_db", wrapper)
-+            from hermes_state_registry import release_or_close
-+            release_or_close(inner)
-+        cache.close_all(close)
+             if read_only:
+                 self._open_read_only()
+             else:
+@@ -641,11 +647,21 @@
+                 # for the suite-level leak sweep in tests/conftest.py.
+                 _register_test_instance(self)
 
--        return cache.get(path, _open, raise_on_error=raise_on_error, on_recovered=_recovered)
-+    async def close_all_session_db_handles_async(self) -> None:
-+        await self._session_db_handle_cache.drain_async(reject_new=True)
-+        await asyncio.to_thread(self.close_all_session_db_handles)
++    def initialize_writer(self) -> None:
++        """Complete a deferred writer open; call only from the async acquire worker."""
++        if not self._deferred_open:
++            return
++        self._open_writer()
++        self._record_db_file_identity()
++        self._deferred_open = False
 +
-+    async def _session_db_async(self) -> Any:
-+        if self._session_db_pinned is not _SESSION_DB_UNPINNED:
-+            return self._session_db_pinned
-+        return await self._open_session_db_for_active_scope_async()
+     def _open_writer(self) -> None:
+         """Writable open: preflight, zero-byte quarantine, connect + schema (one in-place repair of a
+         malformed sqlite_master), generation stamp."""
+         # Never materialize a deleted/archived named profile's home: a multiplexer or Desktop backend
+         # still holding the profile's route would otherwise re-scaffold it on the next turn (#94590).
++        if self._conn is not None:
++            return
+         mkdir_under_hermes_home(self.db_path.parent)
+         # Read-only file/sidecar preflight BEFORE the first connection: an actionable message
+         # instead of an opaque "attempt to write a readonly database" from inside _init_schema.
+@@ -779,6 +795,10 @@
+         return conn
 
-     @property
-     def _session_db(self) -> Any:
--        """The AsyncSessionDB for the active profile scope, or a pinned override (assigning
--        ``runner._session_db`` pins it for every later read — tests install fakes/None this way)."""
-+        """Return a sync-safe handle; async cold access goes through _session_db_async."""
-         if self._session_db_pinned is not _SESSION_DB_UNPINNED:
-             return self._session_db_pinned
+     def _connect_and_init(self) -> None:
++        # myrmidon(G1): scanner, refusal gate, file preparation and connect share one off-loop
++        # worker transaction; every retry re-enters here and performs a fresh complete scan.
 +        if threading.current_thread() is threading.main_thread():
-+            raise RuntimeError("cold gateway SessionDB access on event loop; await _session_db_async")
-         return self._open_session_db_for_active_scope()
-
-     @_session_db.setter
-     def _session_db(self, value) -> None:
-         self._session_db_pinned = value
-
--    def close_all_session_db_handles(self) -> None:
--        """Close every per-profile AsyncSessionDB this runner opened.
--
--        Drained under the lock, closed outside it; a pinned handle is the pinner's to close. Wrappers
--        BORROWED from ``session_store`` are skipped: the store's sweep (runs first) closes them.
--
--        See #98573.
--        """
--        def _close(db) -> None:
--            if getattr(db, "__dict__", {}).get("_hermes_borrowed_handle"):
--                return
--            inner = getattr(db, "_db", db)
--            if inner is None or not hasattr(inner, "close"):
--                return
--            # Shared instances no-op on close() (the registry owns the lifecycle). Release the refcount
--            # instead (#90837).
--            from hermes_state_registry import release_or_close
--            try:
--                release_or_close(inner)
--            except Exception as exc:
--                logger.debug("SessionDB close error during handle sweep: %s", exc)
--
--        self._session_db_handle_cache.close_all(_close)
-+    @staticmethod
-+    def _quiesce_shared_session_db_registry() -> None:
-+        from hermes_state_registry import close_all
-+        close_all()
-
-     def _wire_teams_pipeline_runtime(self) -> None:
-         """Bind the Teams meeting pipeline runtime to Graph webhook ingress (no-op if adapter/plugin off)."""
-@@ -5928,7 +5883,7 @@
-     def _recover_pending() -> None:
-         from gateway.shutdown_flush import recover_pending_to_db
-         recovered = recover_pending_to_db(
--            session_resolver=runner.session_store.resolve_session_id_for_key,
-+            session_resolver=runner.async_session_store.resolve_session_id_for_key,
-         )
-         if recovered:
-             logger.info("Recovered %d pending message(s) from shutdown flush", recovered)
---- a/gateway/run_startup.py
-+++ b/gateway/run_startup.py
-@@ -1544,6 +1544,16 @@
-             # diagnostic snapshot once, instead of flushing at each return.
-             await self._start_flush_runtime_status()
-
-+    def _init_session_store(self) -> None:
-+        """Reset storage state on explicit startup/retry without opening SQLite here."""
-+        from tools.process_registry import process_registry
-+        self.session_store = SessionStore.create_deferred(
-+            self.config.sessions_dir, self.config,
-+            has_active_processes_fn=lambda key: process_registry.has_active_for_session(key))
-+        self.session_store._gateway_runner = self
-+        self._async_session_store = AsyncSessionStore(self.session_store)
-+        self.delivery_router = DeliveryRouter(self.config)
++            raise RuntimeError("state DB writer open must run in a worker thread")
+         # Refuse before sqlite3.connect (under the startup lock) so we cannot mint
+         # a replacement WAL while a live writer still holds a deleted sidecar inode.
+         refuse_deleted_wal_generation(self.db_path)
+diff --git a/hermes_state_dbfile.py b/hermes_state_dbfile.py
+--- a/hermes_state_dbfile.py
++++ b/hermes_state_dbfile.py
+@@ -23,6 +23,9 @@
+ import time
+ from pathlib import Path
+ from typing import Any, Callable, Dict, List, Optional, Tuple
 +
-     async def _start_impl(self) -> bool:
-         logger.info("Starting Hermes Gateway...")
-         self._start_install_faulthandler()
-@@ -1552,6 +1562,8 @@
-             return True
-         if self._start_check_access_policy():
-             return True
-+        self._init_session_store()
-+        await self.async_session_store.initialize()
-         await self._start_recover_previous_run()
-         # The gateway is a boot owner of the Nous free tier, beside `cmd_chat` and `hermes serve`: every
-         # demand-time site (provider resolution, /login, the connector token) is a read that needs the
---- a/gateway/run_shutdown.py
-+++ b/gateway/run_shutdown.py
-@@ -2149,7 +2149,13 @@
-                 await GatewayRunner._stop_interrupt_remaining_work(self, ctx)
-             await GatewayRunner._stop_finalize_agents_and_adapters(self, ctx)
-             await GatewayRunner._stop_release_runtime_state(self, ctx)
--            GatewayRunner._stop_quiesce_and_close_session_dbs(self, timeout, ctx)
-+            # Drain executor-backed storage work before fencing async ownership and closing handles.
-+            await asyncio.to_thread(GatewayRunner._stop_quiesce_and_close_session_dbs, self, timeout, ctx)
-+            store = getattr(self, "session_store", None)
-+            if store is not None:
-+                await store.close_all_db_handles_async()
-+            await self.close_all_session_db_handles_async()
-+            await asyncio.to_thread(self._quiesce_shared_session_db_registry)
-             await GatewayRunner._stop_persist_exit_state(self, ctx)
-         finally:
-             _watchdog_done.set()
++# myrmidon(G1): a failed sidecar scan is never an empty holder list.
++from hermes_state_errors import SidecarScanIncompleteError
+
+ from hermes_state_holders import canonical_sqlite_path, read_only_db_uri
+ from hermes_state_common import (
+@@ -191,20 +194,43 @@
+     return _identity_is_truly_unlinked((fd_stat.st_dev, fd_stat.st_ino), watched_path)
+
+
++async def iter_deleted_sqlite_sidecar_holders_async(db_path):
++    """Return a fail-closed verdict after scanning the full declared domain off-loop."""
++    import asyncio
++    try:
++        holders = await asyncio.to_thread(iter_deleted_sqlite_sidecar_holders, db_path)
++    except SidecarScanIncompleteError as exc:
++        return "INDETERMINATE", (), str(exc)
++    if holders:
++        return "HOLDERS_PRESENT", tuple(holders), None
++    return "CLEAN_COMPLETE", (), None
++
++
+ def _iter_proc_fd_targets():
+-    """Yield ``(pid, readlink target, fd path)`` for every readable ``/proc/<pid>/fd`` entry."""
+-    for pid_str in os.listdir("/proc"):
++    """Yield readable proc descriptors; only proven process/FD disappearance is ignored."""
++    try:
++        pid_entries = os.listdir("/proc")
++    except OSError as exc:
++        raise SidecarScanIncompleteError(f"/proc enumeration failed: {exc.errno}") from exc
++    for pid_str in pid_entries:
+         if not pid_str.isdigit():
+             continue
+         fd_dir = f"/proc/{pid_str}/fd"
+         try:
+             fds = os.listdir(fd_dir)
+-        except OSError:
+-            continue  # process gone or not ours
++        except OSError as exc:
++            if exc.errno in (errno.ENOENT, errno.ESRCH):
++                continue
++            raise SidecarScanIncompleteError(f"fd enumeration failed: {exc.errno}") from exc
+         for fd in fds:
+-            with contextlib.suppress(OSError):
+-                fd_path = f"{fd_dir}/{fd}"
+-                yield int(pid_str), os.readlink(fd_path), fd_path
++            fd_path = f"{fd_dir}/{fd}"
++            try:
++                target = os.readlink(fd_path)
++            except OSError as exc:
++                if exc.errno in (errno.ENOENT, errno.ESRCH):
++                    continue
++                raise SidecarScanIncompleteError(f"fd readlink failed: {exc.errno}") from exc
++            yield int(pid_str), target, fd_path
+
+
+ # ── macOS fd enumeration (libproc) ──────────────────────────────────────────────────────────────
+@@ -338,27 +364,40 @@
+     if sys.platform == "win32":
+         return []
+     holders: List[Tuple[int, str]] = []
+-    try:
+-        if sys.platform == "darwin":
+-            holders = _iter_darwin_sidecar_holders(db_path)
+-        elif sys.platform.startswith("linux"):
+-            watched = _watched_sqlite_sidecar_paths(db_path)
+-            for pid, target, fd_path in _iter_proc_fd_targets():
+-                canonical = canonical_sqlite_path(target)
+-                if (" (deleted)" in target and canonical in watched
+-                        and _fd_is_truly_unlinked(fd_path, watched[canonical])):
+-                    holders.append((pid, target))
++    if sys.platform == "darwin":
++        try:
++            return _iter_darwin_sidecar_holders(db_path)
++        except SidecarScanIncompleteError:
++            raise
++        except Exception as exc:
++            raise SidecarScanIncompleteError("Darwin fd scan failed") from exc
++    if not sys.platform.startswith("linux"):
++        raise SidecarScanIncompleteError(f"unsupported scan platform: {sys.platform}")
++    try:
++        watched = _watched_sqlite_sidecar_paths(db_path)
++        for pid, target, fd_path in _iter_proc_fd_targets():
++            canonical = canonical_sqlite_path(target)
++            if (" (deleted)" in target and canonical in watched
++                    and _fd_is_truly_unlinked(fd_path, watched[canonical])):
++                holders.append((pid, target))
++    except SidecarScanIncompleteError:
++        raise
++    except OSError as exc:
++        raise SidecarScanIncompleteError(f"sidecar scan failed: {exc.errno}") from exc
+     except Exception as exc:
+-        logger.debug("deleted-WAL holder scan failed for %s: %s", db_path, exc)
++        raise SidecarScanIncompleteError("sidecar scan failed") from exc
+     return holders
+
+
+ def refuse_deleted_wal_generation(db_path) -> None:
+-    """Raise if any process holds a deleted WAL/SHM generation for *db_path*; called
+-    *before* ``sqlite3.connect`` so a second opener cannot mint a replacement WAL inode."""
++    """Refuse writer-open if a holder exists or a complete scan is unavailable."""
+     from hermes_state import DeletedWalGenerationError
+     from hermes_state_errors import _DELETED_WAL_GENERATION_MSG
+-    if not iter_deleted_sqlite_sidecar_holders(db_path):
++    try:
++        holders = iter_deleted_sqlite_sidecar_holders(db_path)
++    except SidecarScanIncompleteError:
++        raise
++    if not holders:
+         return
+     logger.error(_DELETED_WAL_GENERATION_MSG)
+     raise DeletedWalGenerationError(_DELETED_WAL_GENERATION_MSG)
+diff --git a/hermes_state_errors.py b/hermes_state_errors.py
+--- a/hermes_state_errors.py
++++ b/hermes_state_errors.py
+@@ -184,6 +184,10 @@
+     intermittent SQLITE_CORRUPT / IOERR). Stop the writers; never unlink the WAL
+     yourself. Subclasses StateDbReplacedError so every consumer that diverts
+     transcripts on a replaced store handles this identically."""
++
++
++class SidecarScanIncompleteError(RuntimeError):
++    """The writer-open sidecar scan could not establish complete visibility."""
+
+
+ # SQLite header application_id (offset 68). Distinct from inode: ``cp`` onto the
+diff --git a/hermes_state_registry.py b/hermes_state_registry.py
+--- a/hermes_state_registry.py
++++ b/hermes_state_registry.py
+@@ -30,6 +30,7 @@
+
+ from __future__ import annotations
+
++import asyncio
+ import contextlib
+ import logging
+ import os
+@@ -192,7 +193,7 @@
+     opening.set()
+
+
+-def acquire(db_path: Optional[Path] = None) -> "SessionDB":
++def _acquire_sync(db_path: Optional[Path] = None) -> "SessionDB":
+     """Return the shared SessionDB for *db_path*, incrementing its refcount. If the file was
+     replaced (different inode) since the generation opened, that generation is RETIRED
+     but stays alive for its holders, and a fresh one is opened in its place. Raises
+@@ -233,8 +234,6 @@
+                 else:
+                     wait_for = opening
+         if wait_for is not None:
+-            # Another caller is constructing or closing this path; wait without holding the
+-            # global lock. A failed opener signals too, so a waiter can retry.
+             wait_for.wait()
+             continue
+
+@@ -271,6 +270,102 @@
+         if winner is not db:
+             _teardown_generation(path, db)
+         return winner
++
++
++def acquire(db_path: Optional[Path] = None) -> "SessionDB":
++    """Synchronous registry API retained for CLI and non-async gateway callers."""
++    return _acquire_sync(db_path)
++
++
++def _acquire_deferred_sync(db_path: Optional[Path] = None) -> "SessionDB":
++    """Single-flight deferred construction with shared registry generation accounting."""
++    from hermes_state import SessionDB, _default_db_path
++    raw = Path(db_path) if db_path is not None else Path(_default_db_path())
++    try:
++        path = raw.resolve()
++    except OSError:
++        path = raw
++    while True:
++        wait_for = None
++        with _lock:
++            generation = _generations.get(path)
++            if generation is not None:
++                current = _stat_db_file_identity(path)
++                if current is None or generation.identity is None or current == generation.identity:
++                    generation.refcount += 1
++                    return generation.db
++                generation.retired = True
++                del _generations[path]
++                _retired[id(generation.db)] = generation
++            barrier = _tearing_down.get(path)
++            opening = _opening.get(path)
++            if barrier is not None:
++                wait_for = barrier.event
++            elif opening is not None:
++                wait_for = opening
++            else:
++                opening = _opening[path] = threading.Event()
++                lifecycle = _path_lifecycle_lock_locked(path)
++        if wait_for is not None:
++            if threading.current_thread() is threading.main_thread():
++                raise RuntimeError("registry wait would block the main thread")
++            wait_for.wait()
++            continue
++        db = None
++        try:
++            with lifecycle:
++                db = SessionDB(db_path=path, defer_open=True)
++                db._shared_registry_owned = True
++                try:
++                    db.initialize_writer()
++                except BaseException:
++                    db._shared_registry_owned = False
++                    raise
++                identity = _stat_db_file_identity(path)
++        except BaseException:
++            if db is not None:
++                _teardown(db)
++            with _lock:
++                _finish_opening(path, opening)
++            raise
++        with _lock:
++            barrier = _tearing_down.get(path)
++            stale = _opening.get(path) is not opening
++            if barrier is None and not stale:
++                _generations[path] = _Generation(path, db, identity)
++            _finish_opening(path, opening)
++        if barrier is not None or stale:
++            _teardown_generation(path, db)
++            if barrier is not None:
++                barrier.event.wait()
++            continue
++        return db
++
++
++async def _run_async_transaction(db_path: Optional[Path], deferred: bool) -> "SessionDB":
++    """Run the shared transaction on a worker, retaining no loop-specific registry state."""
++    fn = _acquire_deferred_sync if deferred else _acquire_sync
++    task = asyncio.create_task(asyncio.to_thread(fn, db_path))
++    try:
++        return await asyncio.shield(task)
++    except asyncio.CancelledError:
++        try:
++            db = await task
++        except BaseException:
++            pass
++        else:
++            await asyncio.to_thread(release, db)
++        raise
++
++
++async def acquire_async(db_path: Optional[Path] = None, *, deferred: bool = False) -> "SessionDB":
++    """Await shared registry acquisition without blocking the loop.
++
++    The worker executes the same sync API transaction, so sync CLI and async gateway retain one
++    registry identity, single-flight map, and refcount domain. Cancellation waits for the worker
++    transaction to settle before propagating, preventing a detached writer open.
++    """
++    return await _run_async_transaction(db_path, deferred)
+
+
+ def release(db: "SessionDB") -> bool:
+@@ -350,8 +445,15 @@
+     with _lock:
+         active_teardowns = list(_tearing_down.values())
+         generations = list(_generations.values()) + list(_retired.values())
++        # A sweep fences an opener that has not published; its event wakes the async worker,
++        # which observes teardown before transfer and closes the speculative handle.
++        opening_paths = set(_opening)
++        for path, opening in list(_opening.items()):
++            _admit_teardown_locked(path)
++            _finish_opening(path, opening)
+         for path in {generation.path for generation in generations}:
+-            teardown_barriers[path] = _admit_teardown_locked(path)
++            if path not in opening_paths:
++                teardown_barriers[path] = _admit_teardown_locked(path)
+         _generations.clear()
+         _retired.clear()
+         for generation in generations:
+diff --git a/tests/hermes_state/test_deleted_wal_generation_guard.py b/tests/hermes_state/test_deleted_wal_generation_guard.py
 --- a/tests/hermes_state/test_deleted_wal_generation_guard.py
 +++ b/tests/hermes_state/test_deleted_wal_generation_guard.py
 @@ -23,7 +23,9 @@
@@ -1059,10 +1085,12 @@
  from tests.hermes_state._wal_generation_harness import (
      gateway_writer, integrity_ok_path, lose_sidecars, make_db, message_count, pin_wal, require_wal,
      write_second_generation,
-@@ -158,6 +160,35 @@
+@@ -156,6 +158,35 @@
+         assert holders, "deleted WAL under the resolved target name must be found"
+     finally:
          conn.close()
-
-
++
++
 +@pytest.mark.linux_only
 +@pytest.mark.parametrize("failure", [errno.EACCES, errno.EIO, errno.EPERM])
 +def test_incomplete_proc_fd_scan_fails_closed(tmp_path, monkeypatch, failure):
@@ -1090,8 +1118,6 @@
 +    monkeypatch.setattr(hermes_state_dbfile.os, "listdir", partial)
 +    with pytest.raises(SidecarScanIncompleteError):
 +        iter_deleted_sqlite_sidecar_holders(tmp_path / "state.db")
-+
-+
+
+
  @pytest.mark.skipif(
-     not sys.platform.startswith("linux"),
-     reason="deleted-WAL /proc scan is Linux-only",
