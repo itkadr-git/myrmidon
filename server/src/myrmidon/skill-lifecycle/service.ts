@@ -289,8 +289,19 @@ export function createSkillLifecycleService(deps: SkillLifecycleServiceDeps): Sk
       if (!versionId) {
         throw new SkillLifecycleError("skill_has_no_version", "A skill without a version cannot be promoted.");
       }
-      const approval = await store.consumeApproval(input.approvalId, companyId, skill.id);
-      const approved = assertPromotionApproval(approval, skill.id);
+      // Validate first so pending or malformed approvals report their real gate
+      // error; consume only after the approval is known to be eligible.
+      const pendingApproval = await store.getApproval(input.approvalId);
+      assertPromotionApproval(pendingApproval, skill.id);
+      const approved = await store.consumeApproval(input.approvalId, companyId, skill.id);
+      if (!approved) {
+        // Another promotion may have consumed the approval between the read and
+        // the conditional update. Do not allow the stale read to authorize it.
+        throw new SkillLifecycleError(
+          "promotion_requires_approved_status",
+          "Promotion requires an approved approval of type skill_promotion for this skill.",
+        );
+      }
       const existing = await store.getRecord(companyId, skill.id);
       const timestamp = now();
       const fields = nextPromotionFields(existing, versionId, approved, timestamp);
