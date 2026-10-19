@@ -300,6 +300,7 @@ describeEmbeddedPostgres(
       await instanceSettingsService(db).updateGeneral({ [OWNER_DELIVERY_SETTINGS_KEY]: { mode: "owner_decisions_only" } });
       const mode = await readOwnerDeliveryMode(db);
       expect(mode).toBe("owner_decisions_only");
+      await enqueueIssueInteractionChatPublications(db, interaction);
       const publications = await publicationsForInteraction(
         fixture.companyId,
         interaction.id,
@@ -379,6 +380,7 @@ describeEmbeddedPostgres(
       await instanceSettingsService(db).updateGeneral({ [OWNER_DELIVERY_SETTINGS_KEY]: { mode: "owner_decisions_only" } });
       const mode = await readOwnerDeliveryMode(db);
       expect(mode).toBe("owner_decisions_only");
+      await enqueueIssueInteractionChatPublications(db, interaction);
       const publications = await publicationsForInteraction(
         fixture.companyId,
         interaction.id,
