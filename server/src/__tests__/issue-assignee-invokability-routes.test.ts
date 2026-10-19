@@ -6,11 +6,13 @@ const AGENT_ACTOR_ID = "11111111-1111-4111-8111-111111111111";
 const AGENT_RUN_ID = "44444444-4444-4444-8444-444444444444";
 const PAUSED_AGENT_ID = "22222222-2222-4222-8222-222222222222";
 const IDLE_AGENT_ID = "33333333-3333-4333-8333-333333333333";
+const NON_ENGINEER_AGENT_ID = "55555555-5555-4555-8555-555555555555";
 
 const agentStatusById: Record<string, string> = {
   [AGENT_ACTOR_ID]: "idle",
   [PAUSED_AGENT_ID]: "paused",
   [IDLE_AGENT_ID]: "idle",
+  [NON_ENGINEER_AGENT_ID]: "idle",
 };
 
 const mockIssueService = vi.hoisted(() => ({
@@ -69,6 +71,7 @@ vi.mock("../services/index.js", () => ({
       id,
       companyId: "company-1",
       status: agentStatusById[id] ?? "idle",
+      role: id === NON_ENGINEER_AGENT_ID ? "product-manager" : "engineer",
     })),
     resolveByReference: vi.fn(async (_companyId: string, raw: string) => ({
       ambiguous: false,
@@ -76,6 +79,7 @@ vi.mock("../services/index.js", () => ({
         id: raw,
         companyId: "company-1",
         status: agentStatusById[raw] ?? "idle",
+        role: raw === NON_ENGINEER_AGENT_ID ? "product-manager" : "engineer",
         orgChainHealth: { status: "healthy" },
       },
     })),
@@ -274,6 +278,21 @@ describe("issue assignee invokability guard", () => {
 
     expect(res.status).toBe(200);
     expect(mockIssueService.update).toHaveBeenCalled();
+  });
+
+  it("rejects a PATCH that adds a code-task signal while assigning a non-engineer", async () => {
+    const existing = makeIssue({ assigneeAgentId: null, labels: [] });
+    const updated = { ...existing, labels: ["needs-engineer"], assigneeAgentId: NON_ENGINEER_AGENT_ID };
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueService.update.mockResolvedValue(updated);
+
+    const res = await request(createApp(boardActor()))
+      .patch(`/api/issues/${existing.id}`)
+      .send({ labels: ["needs-engineer"], assigneeAgentId: NON_ENGINEER_AGENT_ID });
+
+    expect(res.status).toBe(422);
+    expect(res.body.details).toMatchObject({ code: "issue_requires_engineer" });
+    expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 });
 

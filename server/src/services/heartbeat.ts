@@ -433,6 +433,7 @@ import {
 import {
   logActivity,
   publishPluginDomainEvent,
+  type ActivityPublication,
   type LogActivityInput,
 } from "./activity-log.js";
 import {
@@ -29841,6 +29842,7 @@ export function heartbeatService(
                 harnessKind: issue.harnessKind,
                 executionWorkspacePreference: issue.executionWorkspacePreference,
               })) {
+                const activityPublications: ActivityPublication[] = [];
                 const requeued = await issuesSvc.update(issue.id, {
                   status: "todo",
                   assigneeAgentId: null,
