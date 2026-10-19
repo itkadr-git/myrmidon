@@ -32,7 +32,7 @@ function parsedConfig(
 }
 
 describe("managed config environment aliases", () => {
-  const document = JSON.stringify({ v: 1, mode: "cloud", catalogVersion: "2026.720.0" });
+  const document = JSON.stringify({ v: 1, mode: "cloud", catalogVersion: "2026.720.0", features: {} });
 
   it("accepts the legacy variable when the canonical variable is absent", () => {
     expect(parseManagedConfigEnv({ PAPERCLIP_MANAGED_CONFIG: document })).toMatchObject({
