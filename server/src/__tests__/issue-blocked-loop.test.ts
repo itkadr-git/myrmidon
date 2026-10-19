@@ -205,8 +205,36 @@ describeEmbeddedPostgres("blocked loop limiter (route level)", () => {
     await backToWork(s);
     return request(createApp(agentActor(s)))
       .patch(`/api/issues/${s.issueId}`)
-      .send({ status: "blocked", ...body });
+      .send({
+        status: "blocked",
+        blockerMetadata: {
+          blockReason: "dependency",
+          owner: { agentId: s.agentId },
+          externalRef: "blocked-loop-test",
+          nextCheckAt: "2026-10-20T00:00:00.000Z",
+          timeoutAt: "2026-10-21T00:00:00.000Z",
+          escalationPolicy: "agent",
+        },
+        ...body,
+      });
   }
+
+  it("rejects an agent-authored blocked transition without blocker metadata", async () => {
+    const s = await seed();
+    await backToWork(s);
+    const res = await request(createApp(agentActor(s)))
+      .patch(`/api/issues/${s.issueId}`)
+      .send({ status: "blocked", unblockDescriptor: descriptorFor(s) });
+    expect(res.status, JSON.stringify(res.body)).toBe(422);
+    expect(res.body.error).toContain("blockerMetadata");
+  });
+
+  it("accepts an agent-authored blocked transition with blocker metadata", async () => {
+    const s = await seed();
+    const res = await agentBlocks(s, {});
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.status).toBe("blocked");
+  });
 
   async function countActivity(s: Seeded, action: string) {
     const rows = await db

@@ -68,6 +68,21 @@ describe("stale-block reason reference guard (route level)", () => {
     expect(after.status).toBe("todo");
   });
 
+  it("accepts a blocked transition without metadata for a board actor", async () => {
+    const { companyId, actor } = await seedCompanyWithBoardAccess(ctx.db, "Board blocked metadata");
+    const issueId = await seedTodoIssue(companyId, "Board blocked issue");
+    const res = await request(routeApp(ctx.db, actor, issueRoutes))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "blocked" });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    const after = await ctx.db
+      .select({ status: issues.status })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]);
+    expect(after.status).toBe("blocked");
+  });
+
   it("accepts a blocked transition with a non-empty blockedByIssueIds list", async () => {
     const { companyId, actor } = await seedCompanyWithBoardAccess(ctx.db, "Stale block guard");
     const issueId = await seedTodoIssue(companyId, "Guarded issue with blockers");

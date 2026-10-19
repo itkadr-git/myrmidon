@@ -13735,7 +13735,11 @@ export function issueRoutes(
       }
       const enteringBlocked =
         existing.status !== "blocked" && updateFields.status === "blocked";
-      if (enteringBlocked && blockerMetadataRaw == null) {
+      if (
+        enteringBlocked &&
+        req.actor.type === "agent" &&
+        blockerMetadataRaw == null
+      ) {
         res.status(422).json({ error: "Entering blocked requires blockerMetadata" });
         return;
       }
