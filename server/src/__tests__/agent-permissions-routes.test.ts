@@ -374,7 +374,7 @@ describe.sequential("agent permission routes", () => {
     mockAgentService.list.mockResolvedValue([baseAgent]);
     mockAgentService.listSummaries.mockResolvedValue([baseAgentListItem]);
     mockAgentService.listSummariesVersionKey.mockImplementation(async (_companyId: string, actorShape: string) =>
-      actorShape.includes("Builder") ? '"authorized-agent-list"' : '"agents-list:test"',
+      actorShape.includes("Builder") ? '"vk-agents-list:authorized"' : '"vk-agents-list:test"',
     );
     mockHeartbeatService.listVersionKey.mockResolvedValue('"heartbeat-runs:v1"');
     mockAgentService.getChainOfCommand.mockResolvedValue([]);
@@ -576,7 +576,7 @@ describe.sequential("agent permission routes", () => {
       companyIds: [companyId],
     });
     mockAgentService.listSummariesVersionKey.mockImplementation(async (_companyId: string, actorShape: string) =>
-      actorShape.includes("Builder") ? '"authorized-agent-list"' : '"agents-list:test"',
+      actorShape.includes("Builder") ? '"vk-agents-list:authorized"' : '"vk-agents-list:test"',
     );
 
     const res = await requestApp(app, (baseUrl) =>
@@ -685,7 +685,7 @@ describe.sequential("agent permission routes", () => {
   it("does not reuse a heartbeat-runs ETag when redaction changes", async () => {
     let redactionEnabled = false;
     mockHeartbeatService.listVersionKey.mockImplementation(async () => (
-      redactionEnabled ? '"redacted-run-list"' : '"runs-v1"'
+      redactionEnabled ? '"vk-heartbeat-runs:redacted"' : '"vk-heartbeat-runs:visible"'
     ));
     mockHeartbeatService.list.mockResolvedValue([{ id: "run-1", summary: "visible secret" }]);
     mockRunRedactions.redactForRuns.mockImplementation(async (_companyId, runs) => runs.map((run) => ({
@@ -702,7 +702,7 @@ describe.sequential("agent permission routes", () => {
       request(baseUrl).get(`/api/companies/${companyId}/heartbeat-runs`),
     );
     expect(first.status).toBe(200);
-    expect(first.headers.etag).toBe('"runs-v1"');
+    expect(first.headers.etag).toBe('"vk-heartbeat-runs:visible"');
     expect(mockHeartbeatService.listVersionKey).toHaveBeenCalledWith(
       companyId,
       undefined,
