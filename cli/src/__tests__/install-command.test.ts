@@ -272,6 +272,7 @@ describe("managed install commands", () => {
 
   it("refuses to remove the shared CLI while another instance service is installed", async () => {
     const paths = resolveInstallStorePaths();
+    initializeInstallStore(paths);
     const otherUnitPath = path.join(process.env.HOME!, ".config", "systemd", "user", systemdServiceName("team-a"));
     fs.mkdirSync(path.dirname(otherUnitPath), { recursive: true });
     fs.writeFileSync(otherUnitPath, "unit");
