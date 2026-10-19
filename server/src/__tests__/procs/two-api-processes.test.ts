@@ -263,8 +263,8 @@ describeProcs("two api processes on one test database (PROCS-T1.5 skeleton)", ()
     });
 
     const seenBootIds = new Set<string>();
-    for (let request = 0; request < 40 && seenBootIds.size < processes.length; request += 1) {
-      const response = await new Promise<{ status: number; text: string; json: unknown }>((resolve, reject) => {
+    const requestReplica = () =>
+      new Promise<{ status: number; text: string; json: unknown }>((resolve, reject) => {
         const client = http.get(
           `http://127.0.0.1:${sharedPort}/api/myrmidon/board-processes`,
           { agent: false },
@@ -285,9 +285,16 @@ describeProcs("two api processes on one test database (PROCS-T1.5 skeleton)", ()
         );
         client.on("error", reject);
       });
-      expect(response.status, response.text.slice(0, 400)).toBe(200);
-      const body = response.json as BoardProcessesResponse;
-      seenBootIds.add(body.selfBootId);
+
+    // Concurrent fresh sockets provide varied source ports for SO_REUSEPORT's
+    // flow hash; serial requests can repeatedly select the same replica.
+    for (let batch = 0; batch < 8 && seenBootIds.size < processes.length; batch += 1) {
+      const responses = await Promise.all(Array.from({ length: 16 }, requestReplica));
+      for (const response of responses) {
+        expect(response.status, response.text.slice(0, 400)).toBe(200);
+        const body = response.json as BoardProcessesResponse;
+        seenBootIds.add(body.selfBootId);
+      }
     }
 
     expect(seenBootIds.size).toBe(processes.length);
