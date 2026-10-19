@@ -259,6 +259,8 @@ describeEmbeddedPostgres(
         state: "active",
         lastActivityAt: new Date(),
       });
+
+      return { companyId, agentId, boardUserId, endpointId, dmIssue, workIssue };
     }
 
     it("delivers owner questions as complete plain text without actions", async () => {
