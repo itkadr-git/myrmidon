@@ -4879,7 +4879,7 @@ export function issueRoutes(
       nextAssigneeAgentId !== input.actorAgentId &&
       (executionReviewParticipants.some(
         (participant) => participant.type === "agent" && participant.agentId === nextAssigneeAgentId,
-      ) || (await agentsSvc.getById(nextAssigneeAgentId))?.role === "reviewer")
+      ) || (await agentsSvc.getById(String(nextAssigneeAgentId)))?.role === "reviewer")
     ) return null;
 
     throw unprocessable(INVALID_AGENT_IN_REVIEW_DISPOSITION_MESSAGE, {
