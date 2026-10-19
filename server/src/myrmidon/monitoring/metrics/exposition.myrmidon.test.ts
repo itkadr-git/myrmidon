@@ -170,6 +170,7 @@ describe("prometheus exposition format", () => {
     expect(text).toContain("# TYPE myrmidon_adapter_fallback_total counter");
     expect(text).toContain("# HELP myrmidon_adapter_fallback_total ");
     expect(text).not.toContain("myrmidon_adapter_fallback_total{");
+  });
 
   // myrmidon(1.6.6 CONNECTOR-IN): the ingress counter rides the same scrape.
   // Both paths render whenever the counter was read — zero included, so the

@@ -37,16 +37,6 @@ describe("metrics self-check probe", () => {
     // PROCS-0.1 as the sixth, the two PROCS-0.3A lane families as the seventh
     // and eighth) are likewise not DB reads — they survive a broken
 
-    // database too, and so does a ninth family: the bridge fallback counters of
-    // myrmidon(1.6.6-CH-CONNECTOR-G), which read the in-process registry of the
-    // seam (design OPE-6985) instead of the database.
-    expect(result.families_ok).toBe(1 + 9);
-    const expectedFailed = METRIC_FAMILIES.filter(
-      (family) =>
-        family !== "myrmidon_scrape_errors" &&
-        family !== "myrmidon_adapter_fallback_total" &&
-        !family.startsWith("myrmidon_board_"),
-
     // database too. The chat-ingress counter of 1.6.6 CONNECTOR-IN is the
     // ninth: an in-process counter of the ingress seam, with no database
     // behind it.

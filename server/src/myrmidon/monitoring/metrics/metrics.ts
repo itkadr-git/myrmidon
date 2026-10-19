@@ -159,7 +159,6 @@ export interface MetricsSnapshotFields {
    */
   lanes?: BoardLaneSample[] | null;
   /**
-
    * myrmidon(1.6.6-CH-CONNECTOR-G): the bridge fallback counters of this
    * process, read from the in-process registry (no DB). null renders HELP/TYPE
    * with no samples; a present sample renders every known reason, zeros
@@ -227,7 +226,6 @@ export interface MetricsCollectorDeps {
    */
   laneMetrics?: BoardLaneMetricsSource | null;
   /**
-
    * myrmidon(1.6.6-CH-CONNECTOR-G): where the bridge fallback counters come
    * from. Production reads the in-process registry of the seam; tests inject a
    * fake, so no test depends on another test's fallbacks.
