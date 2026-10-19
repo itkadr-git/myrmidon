@@ -27,6 +27,7 @@ fi
 printf 'docker %s\\n' "$*" >> "$SANDBOX/calls.log"
 case "$*" in
   "compose version") echo "Docker Compose version v2.30.0"; exit 0 ;;
+  *"config"*) exit 0 ;;
   *"pull --quiet"*) exit 0 ;;
   *"up -d"*) touch "$SANDBOX/up"; exit 0 ;;
   *"down"*) rm -f "$SANDBOX/up"; exit 0 ;;
@@ -121,6 +122,15 @@ function run(sb, args = [], env = {}) {
 
 const calls = (sb) => (fs.existsSync(path.join(sb.dir, "calls.log")) ? fs.readFileSync(path.join(sb.dir, "calls.log"), "utf8") : "");
 const envFile = (sb) => fs.readFileSync(path.join(sb.opt, "deploy.env"), "utf8");
+
+it("dry-run renders and validates without pulling or starting services", () => {
+  const sb = sandbox();
+  const result = run(sb, ["--dry-run"]);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stderr, /Dry run complete/);
+  assert.ok(fs.existsSync(path.join(sb.opt, "compose.yml")));
+  assert.doesNotMatch(calls(sb), /pull|up -d/);
+});
 
 const REPO = path.join(HERE, "..", "..", "..");
 

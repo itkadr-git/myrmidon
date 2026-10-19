@@ -63,6 +63,7 @@ RELEASE_TAG=""
 LANG_CODE=""
 INTERACTIVE=0
 ASSUME_YES=0
+DRY_RUN=0
 MODE="install"
 PURGE=0
 # DATABASE_URL: when set (--database-url or MYRMIDON_INSTALL_DATABASE_URL), the
@@ -114,6 +115,7 @@ Options:
                          Same as MYRMIDON_INSTALL_DATABASE_URL.
   --interactive          ask the questions instead of answering them silently
   --yes, -y              answer yes to everything
+  --dry-run              render and validate the Compose configuration only
   --uninstall            stop and remove the stack (your data is kept)
   --purge                with --uninstall: also delete the database volume
   -h, --help             print this help
@@ -143,6 +145,7 @@ while (($#)); do
     --database-url) value_for "$@" ; DATABASE_URL="$2"; shift 2 ;;
     --interactive) INTERACTIVE=1; shift ;;
     --yes|-y) ASSUME_YES=1; shift ;;
+    --dry-run) DRY_RUN=1; shift ;;
     --uninstall) MODE="uninstall"; shift ;;
     --purge) PURGE=1; shift ;;
     -h|--help) usage ;;
@@ -169,6 +172,9 @@ require_root() {
   if [[ "${MYRMIDON_INSTALL_SKIP_ROOT_CHECK:-0}" == "1" ]]; then
     say "MYRMIDON_INSTALL_SKIP_ROOT_CHECK=1: the root check is skipped (tests only)." \
         "MYRMIDON_INSTALL_SKIP_ROOT_CHECK=1: проверка root пропущена (только для тестов)."
+    return 0
+  fi
+  if (( DRY_RUN )) && [[ "$(id -u)" != "0" ]]; then
     return 0
   fi
   if [[ "$(id -u)" != "0" ]]; then
@@ -895,6 +901,14 @@ do_install() {
   write_env
   write_compose
 
+  if (( DRY_RUN )); then
+    log "validating the generated Compose configuration (dry run)"
+    ( cd "$DIR" && compose config >/dev/null ) || die "generated Compose configuration is invalid"
+    say "Dry run complete: generated files are in $DIR; no images were pulled and no services were changed." \
+        "Пробный запуск завершён: файлы созданы в $DIR; образы не загружались и сервисы не изменялись."
+    return 0
+  fi
+
   log "pulling the images (this may take a few minutes)"
   ( cd "$DIR" && compose pull --quiet ) || die "cannot pull the images of $RELEASE_TAG"
   log "starting the board stack"
@@ -1024,7 +1038,7 @@ main() {
     uninstall) do_uninstall ;;
     install)
       interactive_questions
-      install_docker
+      if (( ! DRY_RUN )); then install_docker; fi
       detect_docker_gid
       do_install ;;
   esac
