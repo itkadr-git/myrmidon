@@ -1922,8 +1922,10 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         ? {
             ...overrides,
             scheduleDeferredWork: (task) => {
+              // Setup-time maintenance is not part of the fixture. Running it
+              // via setImmediate can outlive the test and use the next case's
+              // provider fetch stub.
               if (setupComplete) deferredSchedule(task);
-              else setImmediate(task);
             },
           }
         : overrides,
