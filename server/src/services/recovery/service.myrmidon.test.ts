@@ -153,7 +153,6 @@ describeEmbeddedPostgres("reconcileStrandedAssignedIssues: infrastructure interr
       errorCode: "agent_paused",
       runtimeMode: "native",
       scheduledRetryAttempt: 0,
-      createdAtOffsetMs: 0,
       contextSnapshotExtra: { retryReason: "issue_continuation_needed" },
     });
 
