@@ -158,13 +158,26 @@ describe("myrmidon(1.6.1 SWARM-IDLE-WAKE) sweep pass", () => {
               }),
             }),
             where: () => {
+              if (table === heartbeatRuns && projection && "id" in projection) {
+                // hasLiveRunForTask probes this exact projection; the fixture
+                // has no run for the released task, so reclaim may proceed.
+                return { limit: () => Promise.resolve([]) };
+              }
+              if (table === issueClaims && projection && "id" in projection) {
+                // insertClaim's uniqueness guard must observe the old lease
+                // after release as inactive, not reuse the expired row.
+                return { limit: () => Promise.resolve([]) };
+              }
+              if (table === companies && projection && "id" in projection) {
+                return {
+                  limit: (limit: number) => Promise.resolve([{ id: "company-1" }].slice(0, limit)),
+                  then: (resolve: (rows: unknown[]) => unknown) =>
+                    Promise.resolve([{ id: "company-1", defaultResponsibleUserId: null }]).then(resolve),
+                };
+              }
               if (table === companies) {
                 return {
                   limit: (limit: number) => Promise.resolve([{ id: "company-1" }].slice(0, limit)),
-                  // resolveResponsibleUserIdForActivity ends with an unchained
-                  // `.where()` + `.then()` read of the company's default
-                  // responsible user (activity-log.ts); a bare { limit } object
-                  // made `.then` a TypeError that the matcher pass swallowed.
                   then: (resolve: (rows: unknown[]) => unknown) =>
                     Promise.resolve([{ id: "company-1", defaultResponsibleUserId: null }]).then(resolve),
                 };
