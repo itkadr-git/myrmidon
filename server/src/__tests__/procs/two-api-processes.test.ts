@@ -286,8 +286,9 @@ describeProcs("two api processes on one test database (PROCS-T1.5 skeleton)", ()
         client.on("error", reject);
       });
 
-    // Concurrent fresh sockets provide varied source ports for SO_REUSEPORT's
-    // flow hash; serial requests can repeatedly select the same replica.
+    // Concurrent fresh sockets use explicit source ports so the SO_REUSEPORT
+    // flow hash exercises both replicas rather than relying on ephemeral-port
+    // allocation.
     for (let batch = 0; batch < 8 && seenBootIds.size < processes.length; batch += 1) {
       const responses = await Promise.all(
         Array.from({ length: 16 }, (_, index) => requestReplica(40_000 + batch * 16 + index)),
