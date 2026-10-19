@@ -333,9 +333,6 @@ reflink_self_check() {
       || log "WARNING: cannot write ${out_dir}/reflink-check.json"
   fi
 }
-if [ "${MYRMIDON_REFLINK_CHECK:-1}" != "0" ]; then
-  reflink_self_check || log "WARNING: the reflink self-check itself failed to run"
-fi
 
 # --- uv cache self-check (myrmidon 1.6.5 BOT-DISK-UV-B) ------------------------
 # myrmidon(BOT-DISK-UV): since part A the bots with the shared package cache
@@ -506,9 +503,7 @@ uv_cache_self_check() {
       || log "WARNING: cannot write ${out_dir}/uv-cache-check.json"
   fi
 }
-if [ "${MYRMIDON_UV_CHECK:-1}" != "0" ]; then
-  uv_cache_self_check || log "WARNING: the uv cache self-check itself failed to run"
-fi
+# Checks are deferred until after the gateway exec below.
 
 # --- shared git-object store facts (myrmidon 1.6.5 BOT-DISK-G live check) ---
 # The live acceptance of the shared-objects fix needs FACTS, not only pass/fail:
@@ -777,21 +772,11 @@ git_objects_self_check() {
       || log "WARNING: cannot write ${out_dir}/git-objects-check.json"
   fi
 }
-if [ "${MYRMIDON_GIT_OBJECTS_CHECK:-1}" != "0" ]; then
-  git_objects_self_check || log "WARNING: the shared-objects self-check itself failed to run"
-fi
+# Checks are deferred until after the gateway exec below.
 
 # --- devbuild self-check (dev variant) --------------------------------------
-# myrmidon(1.6.5 DEVBUILD-IN-BOTS): the bot's heavy commands are meant to run
-# on the build VPS through devbuild, so a start without a working devbuild is
-# a misconfiguration worth one loud line. The check only runs when the wiring
-# is expected (DEVBUILD_HOST set in the container env); a bot without it is
-# the ordinary no-devbuild case and stays silent. The probe is `devbuild
-# 'true'`: it exercises the key (file mount or the DEVBUILD_SSH_KEY_DATA env
-# key), the ssh handshake and the remote shell, and rsyncs the (empty or
-# nearly empty) /workspace of a fresh container. It never stops the gateway —
-# a bot with a broken build offload still edits files and runs git; it logs
-# ERROR and writes ${HERMES_HOME}/.myrmidon/devbuild-check.json for the board.
+# Diagnostics run only for developer bots: this is the role that can use the
+# devbuild offload; other bot roles must not make an SSH/rsync startup probe.
 # MYRMIDON_DEVBUILD_CHECK=0 disables the probe (tests, manual runs).
 devbuild_self_check() {
   local out_dir="${HERMES_HOME}/.myrmidon" now ok=false err=""
@@ -815,9 +800,7 @@ devbuild_self_check() {
       || log "WARNING: cannot write ${out_dir}/devbuild-check.json"
   fi
 }
-if [ "${MYRMIDON_DEVBUILD_CHECK:-1}" != "0" ]; then
-  devbuild_self_check || log "WARNING: the devbuild self-check itself failed to run"
-fi
+# The devbuild check is deferred until after gateway launch.
 
 # --- bot disk lifecycle agent (dev variant) --------------------------------
 # myrmidon(1.6.5 BOT-DISK-H1c): botd (BOT-DISK-H3) replaces bot-clone-hygiene: it
@@ -835,8 +818,75 @@ elif command -v bot-clone-hygiene >/dev/null 2>&1; then
   log "clone hygiene reporter started (pid $!) — no botd in this image"
 fi
 
+
+# These checks may touch mounts, probe reflink/shared-object support, or wait
+# on remote SSH/rsync. Run them after the gateway is live and cap each probe.
+now_monotonic_ms() {
+  if [ -r /proc/uptime ]; then
+    read -r up _ < /proc/uptime
+    awk -v u="$up" 'BEGIN { printf "%.0f\n", u * 1000 }' 2>/dev/null || date +%s%3N
+  else
+    date +%s%3N
+  fi
+}
+
+run_bounded_diagnostic() {
+  local check="$1" pid watchdog rc=0 t0 t1 duration_ms
+  t0="$(now_monotonic_ms)"
+  log "phase ${check} starting"
+  ( "$check" ) &
+  pid=$!
+  ( sleep "${MYRMIDON_DIAGNOSTIC_TIMEOUT_SEC:-120}"; kill "$pid" 2>/dev/null || true ) &
+  watchdog=$!
+  wait "$pid" || rc=$?
+  kill "$watchdog" 2>/dev/null || true
+  wait "$watchdog" 2>/dev/null || true
+  t1="$(now_monotonic_ms)"
+  duration_ms=$(( t1 - t0 ))
+  log "phase ${check} finished in ${duration_ms}ms (rc=${rc})"
+  return "$rc"
+}
+
+run_startup_diagnostics() {
+  local t_diag_0 t_diag_1
+  t_diag_0="$(now_monotonic_ms)"
+  log "phase startup_diagnostics starting in background"
+  if [ "${MYRMIDON_REFLINK_CHECK:-1}" != "0" ]; then run_bounded_diagnostic reflink_self_check || log "WARNING: reflink self-check timed out or failed"; fi
+  if [ "${MYRMIDON_UV_CHECK:-1}" != "0" ]; then run_bounded_diagnostic uv_cache_self_check || log "WARNING: uv cache self-check timed out or failed"; fi
+  if [ "${MYRMIDON_GIT_OBJECTS_CHECK:-1}" != "0" ]; then run_bounded_diagnostic git_objects_self_check || log "WARNING: shared-objects self-check timed out or failed"; fi
+  if [ "${MYRMIDON_DEVBUILD_CHECK:-1}" != "0" ] && [ -n "${DEVBUILD_BOT_NAME:-}" ] && [ -n "${DEVBUILD_HOST:-}" ]; then
+    run_bounded_diagnostic devbuild_self_check || log "WARNING: devbuild self-check timed out or failed"
+  fi
+  t_diag_1="$(now_monotonic_ms)"
+  log "phase startup_diagnostics completed in $(( t_diag_1 - t_diag_0 ))ms"
+}
+
 # --replace: a previous instance's lock (from a hard container restart) does
 # not block this one — the fleet manager, not hermes, decides whether two
 # instances should ever coexist. --accept-hooks: no TTY to answer a shell
 # hook consent prompt (equivalent to hooks_auto_accept: true).
-exec hermes gateway run --replace --accept-hooks "$@"
+log "phase gateway_launch starting"
+hermes gateway run --replace --accept-hooks "$@" &
+# Waiting for startup self-checks to execute synchronously can delay the Docker
+# healthcheck until the rollout times out. Attach the gateway first, then run
+# bounded diagnostics concurrently, keeping Docker stop signals handled here.
+gateway_pid=$!
+log "phase gateway_launch pid=${gateway_pid} running"
+run_startup_diagnostics &
+diagnostics_pid=$!
+cleanup_diagnostics() {
+  kill "$gateway_pid" "$diagnostics_pid" 2>/dev/null || true
+  wait "$gateway_pid" 2>/dev/null || true
+  wait "$diagnostics_pid" 2>/dev/null || true
+}
+trap cleanup_diagnostics TERM INT HUP
+set +e
+wait "$gateway_pid"
+gateway_status=$?
+set -e
+if [ "$gateway_status" -ne 0 ]; then
+  kill "$diagnostics_pid" 2>/dev/null || true
+fi
+wait "$diagnostics_pid" 2>/dev/null || true
+trap - TERM INT HUP
+exit "$gateway_status"

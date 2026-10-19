@@ -33,6 +33,21 @@ restarting the server and without interrupting runs in flight
 Each field shows where its effective value comes from — saved setting,
 environment variable, or built-in default.
 
+## Run queue position and priority
+
+A queued run's chat card shows its position, queue length and wait reason when
+the server provides them. The UI uses run metadata first and fills missing
+fields from the position endpoint; while the position is unknown, it polls
+that endpoint every 30 seconds. On servers that do not serve the endpoint yet,
+the line stays hidden rather than guessing.
+
+**Instance → General → Run queue priority** lets an operator edit weights for
+review, release, lead, engineer and docs roles, plus the current-release bonus
+and queue-aging step/cap. Each field shows whether its value comes from saved
+settings, the server environment or defaults. Changes apply on the next
+admission pass without a server restart. The panel reports when the server
+endpoint is not available instead of implying that a save succeeded.
+
 ## Per-agent parallelism
 
 On the agent card, the **Container** section: the scheduling policy
@@ -121,6 +136,30 @@ for the pg_dump/psql child processes), so a long `COPY` of a large table is
 never aborted by a database-wide limit set with
 `ALTER DATABASE ... SET statement_timeout`. All other board connections
 keep the database limit unchanged (1.6.5 BACKUP-STATEMENT-TIMEOUT).
+
+## Attention feed windows
+
+**Instance → General → "Attention feed"** — two windows of the attention
+feed, editable live, applied on the feed's next build without a restart:
+
+| Setting | What it bounds | Default |
+|---|---|---|
+| Failed-run horizon | How far back the feed looks for an unresolved failed or timed-out run | `7` days |
+| Feed cache TTL | How long the feed reuses the snapshot it built per company | `45` s |
+
+The horizon accepts whole days from `1` to `365`; the TTL accepts whole
+seconds from `0` to `300`, where `0` turns the cache off (the feed is rebuilt
+on every read). Each field shows its bounds, the built-in default, and whether
+the value in force comes from the saved settings row or from the default.
+
+The panel reads and writes through `GET`/`PATCH`
+`/api/myrmidon/attention-feed`, backed by the instance settings row
+(`attentionFailedRunHorizonDays`, `attentionFeedCacheTtlSeconds` in the
+general block). A save is a partial write: only the window you changed is
+written, and the change is audited per company. Neither window has an
+environment variable, so the stored row (then the built-in default) is the
+only source; a hand-edited value that is not a whole number within the bounds
+reads as the default — the same fallback the feed itself applies.
 
 ## Also in the interface
 

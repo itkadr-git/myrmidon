@@ -140,7 +140,17 @@ fi
 # /workspace: with --delete below, syncing every clone on each call shipped
 # gigabytes and mirrored unrelated checkouts.
 if [ -z "${DEVBUILD_WORKSPACE:-}" ]; then
-  top="$(git -C "$PWD" rev-parse --show-toplevel 2>/dev/null || true)"
+  # The nearest directory with a .git entry (a directory, or the one-line file of a
+  # worktree whose base lives on another volume — `git rev-parse` stops at that
+  # filesystem boundary, 14.10), walking up from $PWD but not past /workspace.
+  # /workspace is a link to the bot volume (/bot/workspace): use the logical path,
+  # and map a physical one back.
+  top=""; d="$PWD"
+  case "$d" in /bot/workspace/*) d="/workspace/${d#/bot/workspace/}" ;; esac
+  while [ -n "$d" ] && [ "$d" != "/" ] && [ "$d" != "/workspace" ]; do
+    if [ -e "$d/.git" ]; then top="$d"; break; fi
+    d="$(dirname "$d")"
+  done
   case "$top" in
     /workspace/?*) WORKSPACE_SRC="$top" ;;
     *) WORKSPACE_SRC="/workspace" ;;
@@ -294,6 +304,9 @@ if res="$(resolve_git_dir "$WORKSPACE_SRC")"; then
 fi
 if [ "$git_kind" = "worktree" ] && [ "$git_root" = "$(cd "$WORKSPACE_SRC" && pwd -P)" ]; then
   wt_base_root="${MYRMIDON_GIT_BASE_DIR:-${hermes_home:-${HERMES_HOME:-/data/hermes}}/.myrmidon/git-base}"
+  # /data/hermes is a link to the bot volume (/bot/hermes): git reports the physical
+  # path of the base, so compare against the resolved root (14.10, PR #57 evidence).
+  wt_base_root="$(cd "$wt_base_root" 2>/dev/null && pwd -P || printf '%s' "$wt_base_root")"
   wt_name="$(basename "$git_dir")"
   case "$git_common" in "${wt_base_root%/}"/*) ;; *) echo "devbuild: worktree base $git_common is outside $wt_base_root - not shipped" >&2; exit 1 ;; esac
   case "$git_common$wt_name$bot_name" in *[!A-Za-z0-9._/-]*) echo "devbuild: unsupported characters in the worktree git paths" >&2; exit 1 ;; esac

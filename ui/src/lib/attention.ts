@@ -99,6 +99,8 @@ const SOURCE_META: Record<AttentionSourceKind, SourceMeta> = {
   // myrmidon(1.6.5 F-09): label for the queue_stall source — a queued run
   // older than the stall threshold without a waitReason.
   queue_stall: { label: "Queue stall" },
+  // myrmidon(1.6.6 OPE-7198): label for the codex_pool_alert attention card.
+  codex_pool_alert: { label: "Codex pool alert" },
 };
 
 export function sourceMeta(kind: AttentionSourceKind): SourceMeta {

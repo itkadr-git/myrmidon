@@ -20,6 +20,10 @@
 // hold a suppress decision that no longer applies for a bounded window.
 
 import type { Db } from "@paperclipai/db";
+import {
+  isThrottleCandidateIssueRewake,
+  type IssueRewakeCandidateInput,
+} from "../../services/issue-rewake-throttle.js";
 import { shouldSuppressRunForIssue } from "./guard.js";
 
 /** Skip reason recorded on the skipped wakeup request (vendor skip mechanism). */
@@ -35,6 +39,23 @@ export const MAX_TASK_PR_SYNC_WAKE_GUARD_TTL_SEC = 3600;
 export const TASK_PR_SYNC_WAKE_GUARD_CACHE_CAP = 1000;
 
 /** Master switch: unset or an unrecognized value keeps the guard on (a defect fix). */
+/**
+ * Whether a wake is an event-free candidate for the settle-pending skip.
+ *
+ * The vendor rewake throttle deliberately lets `issue_assigned` through (a
+ * direct assignment is an explicit request to act, #1267), but for a task
+ * whose PRs are all terminal with one merged the settle sweep closes the task,
+ * so an assignment wake only races it and must still be skipped. Every other
+ * bypass of the throttle (comment/event wakes, forceFreshSession, explicit
+ * resume, other event-shaped reasons) stays a bypass here too.
+ */
+export function isTaskPrSyncWakeGuardCandidate(input: IssueRewakeCandidateInput): boolean {
+  if (input.reason === "issue_assigned") {
+    return isThrottleCandidateIssueRewake({ ...input, reason: null });
+  }
+  return isThrottleCandidateIssueRewake(input);
+}
+
 export function readTaskPrSyncWakeGuardEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
   const raw = env[TASK_PR_SYNC_WAKE_GUARD_ENABLED_ENV]?.trim().toLowerCase();
   return raw !== "0" && raw !== "false" && raw !== "off" && raw !== "no";

@@ -405,6 +405,12 @@ async function sourceIssueId(
     case "empty_model_catalog": {
       return { exists: sourceId === `litellm:${companyId}`, issueId: null };
     }
+    // myrmidon(1.6.6 OPE-7198): the codex-pool alert card is computed from the
+    // process-level signal registry and its subject id is the stable dedupKey
+    // (`codex_pool:...`), not a stored row — same shape as foraging_limit / empty_model_catalog above.
+    case "codex_pool_alert": {
+      return { exists: sourceId.startsWith("codex_pool:"), issueId: null };
+    }
   }
 }
 
@@ -422,6 +428,15 @@ export async function canReadDecisionSource(
     const resource = await loadIssueResource(db, companyId, source.issueId);
     if (!resource) return false;
     return (await authz.decide({ actor, action: "issue:read", resource })).allowed;
+  }
+
+  // myrmidon(1.6.6 OPE-7198): codex-pool alerts are visible to any actor with company scope read.
+  if (sourceKind === "codex_pool_alert") {
+    return (await authz.decide({
+      actor,
+      action: "company_scope:read",
+      resource: { type: "company", companyId },
+    })).allowed;
   }
 
   if (sourceKind === "agent_error_alert" && source.agentId) {

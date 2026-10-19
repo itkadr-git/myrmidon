@@ -1,7 +1,8 @@
-import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, lt, lte, notInArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, gte, inArray, isNotNull, isNull, lt, lte, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
+  agentWakeupRequests,
   approvals,
   assets,
   companies,
@@ -86,6 +87,8 @@ import {
 import { hostCpuHoldSignal, hostMemoryHoldSignal } from "../myrmidon/run-admission.js"; // myrmidon(1.6.2/1.6.5 RUN-ADMISSION)
 // myrmidon(BOT-RUNTIME-TUNING D): the model fallback share raises one card per agent
 import { readModelFallbackSignals } from "../myrmidon/litellm-fallback-signal/attention.js";
+// myrmidon(1.6.6 OPE-7198): Codex/ChatGPT pool banned/exhausted role signals
+import { readPoolAccountSignals } from "../myrmidon/model-providers/signals.js";
 // myrmidon(1.6.5-F-18): an empty gateway model catalog raises one card per
 // company — the accounting key is misconfigured, not a quiet window.
 import { readEmptyCatalogSignal } from "../myrmidon/litellm-costs/attention.js";
@@ -211,6 +214,8 @@ const ATTENTION_SOURCE_KINDS: AttentionSourceKind[] = [
   "execution_hold",
   // myrmidon(1.6.5-F21-B): owner decision cards waiting on the owner.
   "owner_pending_card",
+  // myrmidon(1.6.6 OPE-7198): banned or exhausted Codex / ChatGPT subscription accounts.
+  "codex_pool_alert",
 ];
 
 const SEVERITY_RANK: Record<AttentionSeverity, number> = {
@@ -278,6 +283,8 @@ const SOURCE_RANK: Record<AttentionSourceKind, number> = {
   // advisory notices.
   secret_off_run_reads: 18,
   secret_off_run_grant_expiring: 18,
+  // myrmidon(1.6.6 OPE-7198): pool account alerts are high/medium operational notices.
+  codex_pool_alert: 4,
 };
 
 const PENDING_INTERACTION_STATUSES = ["pending"] as const;
@@ -367,6 +374,11 @@ type AttentionServiceOptions = {
    * per-Db default (`decisionRetentionSyncScheduler`).
    */
   decisionRetentionSync?: DecisionRetentionSyncSink;
+  /**
+   * myrmidon(1.6.6 OPE-7198): optional server-side hook to synchronize pool account
+   * signals before taking an attention feed snapshot.
+   */
+  poolSignalsSync?: (companyId: string) => Promise<unknown>;
 };
 
 function emptyCounts(): Record<AttentionSourceKind, number> {
@@ -2719,6 +2731,59 @@ async function buildAttentionFeedSnapshot(
         }
       }
 
+      const cappedAgents = await db
+        .select({
+          agentId: agentWakeupRequests.agentId,
+          agentName: agents.name,
+          status: agents.status,
+          requestedAt: agentWakeupRequests.requestedAt,
+          payload: agentWakeupRequests.payload,
+        })
+        .from(agentWakeupRequests)
+        .innerJoin(agents, eq(agents.id, agentWakeupRequests.agentId))
+        .where(and(
+          eq(agentWakeupRequests.companyId, companyId),
+          eq(agentWakeupRequests.reason, "heartbeat.daily_run_limit"),
+          eq(agentWakeupRequests.status, "skipped"),
+          gte(agentWakeupRequests.requestedAt, new Date(now - 24 * 60 * 60 * 1000)),
+        ))
+        .orderBy(desc(agentWakeupRequests.requestedAt));
+      const latestCapByAgent = new Map<string, (typeof cappedAgents)[number]>();
+      for (const row of cappedAgents) {
+        if (!latestCapByAgent.has(row.agentId)) latestCapByAgent.set(row.agentId, row);
+      }
+      for (const latest of latestCapByAgent.values()) {
+        const observed = Number((latest.payload as { heartbeatSkip?: { observed?: unknown } } | null)?.heartbeatSkip?.observed ?? 0);
+        const limit = Number((latest.payload as { heartbeatSkip?: { limit?: unknown } } | null)?.heartbeatSkip?.limit ?? 0);
+        const resetAt = new Date(Date.UTC(latest.requestedAt.getUTCFullYear(), latest.requestedAt.getUTCMonth(), latest.requestedAt.getUTCDate() + 1));
+        const whyNow = `Agent ${latest.agentName} exhausted its daily run limit (${observed}/${limit}); resets at ${resetAt.toISOString()}.`;
+        add(createItem({
+          companyId,
+          sourceKind: "agent_error_alert",
+          subject: {
+            kind: "agent", id: latest.agentId, companyId, title: latest.agentName,
+            identifier: null, status: latest.status,
+            href: `/${prefix}/agents/${latest.agentId}`,
+            metadata: { dailyRunLimit: limit, dailyRunsObserved: observed, resetsAt: resetAt.toISOString() },
+          },
+          whyNow,
+          decisionVerbs: decisionVerbs(
+            { id: "inspect", label: "Inspect", description: "Inspect the agent's heartbeat limit." },
+            { id: "dismiss", label: "Dismiss", description: "Dismiss this alert." },
+          ),
+          inlineResolvable: true,
+          entryRule: "An agent wake was skipped because its daily run limit was reached.",
+          exitRule: "The daily run window resets or the alert is dismissed.",
+          dedupKey: `heartbeat_daily_run_limit:${latest.agentId}`,
+          severity: "high",
+          activityAt: toIso(latest.requestedAt),
+          createdAt: toIso(latest.requestedAt),
+          updatedAt: toIso(latest.requestedAt),
+          relatedIssue: null,
+          detail: { kind: "generic", summaryExcerpt: excerpt(whyNow), images: [] },
+        }));
+      }
+
       const erroredAgents = await db
         .select({
           id: agents.id,
@@ -3459,6 +3524,54 @@ async function buildAttentionFeedSnapshot(
           detail: {
             kind: "generic",
             summaryExcerpt: excerpt(fallback.summaryExcerpt),
+            images: [],
+          },
+        }));
+      }
+
+      // myrmidon(1.6.6 OPE-7198): attention cards for banned or exhausted Codex / ChatGPT pool accounts.
+      if (serviceOptions.poolSignalsSync) {
+        await serviceOptions.poolSignalsSync(companyId).catch(() => {
+          // background sync errors do not abort feed snapshot
+        });
+      }
+      for (const poolSignal of readPoolAccountSignals(companyId)) {
+        add(createItem({
+          companyId,
+          sourceKind: "codex_pool_alert",
+          subject: {
+            kind: "agent",
+            id: poolSignal.dedupKey,
+            companyId,
+            title: poolSignal.title,
+            identifier: `ACC-${poolSignal.accountNumber}`,
+            status: poolSignal.kind,
+            href: `/${prefix}/company/settings/models`,
+            metadata: {
+              accountNumber: poolSignal.accountNumber,
+              providerId: poolSignal.providerId,
+              label: poolSignal.label,
+              kind: poolSignal.kind,
+              resetsAt: poolSignal.resetsAt,
+            },
+          },
+          whyNow: poolSignal.whyNow,
+          decisionVerbs: decisionVerbs(
+            { id: "inspect", label: "Inspect", description: "Open the provider settings and account list." },
+            { id: "dismiss", label: "Dismiss", description: "Dismiss this account alert." },
+          ),
+          inlineResolvable: true,
+          entryRule: "a Codex/ChatGPT subscription pool account is banned, token expired, or exhausted its quota window.",
+          exitRule: "the account completes relogin, limit resets, or the row is dismissed.",
+          dedupKey: poolSignal.dedupKey,
+          severity: poolSignal.severity,
+          activityAt: poolSignal.activityAt,
+          createdAt: poolSignal.activityAt,
+          updatedAt: poolSignal.activityAt,
+          relatedIssue: null,
+          detail: {
+            kind: "generic",
+            summaryExcerpt: excerpt(poolSignal.summaryExcerpt),
             images: [],
           },
         }));

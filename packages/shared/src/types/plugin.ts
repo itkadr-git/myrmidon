@@ -644,6 +644,15 @@ export interface PluginObjectReferenceProviderDeclaration {
   webhookEndpointKeys?: string[];
 }
 
+/** Model provider connector declaration in a plugin manifest. */
+export interface PluginModelProviderDeclaration {
+  type: string;
+  name?: string;
+  defaultBaseUrl?: string | null;
+  defaultModels?: readonly string[];
+  supportsChannels?: boolean;
+}
+
 // ---------------------------------------------------------------------------
 // Plugin Manifest V1
 // ---------------------------------------------------------------------------
@@ -712,6 +721,8 @@ export interface PaperclipPluginManifestV1 {
   localFolders?: PluginLocalFolderDeclaration[];
   /** External object reference providers this plugin contributes. */
   objectReferences?: PluginObjectReferenceProviderDeclaration[];
+  /** Model provider connectors this plugin contributes. */
+  modelProviders?: PluginModelProviderDeclaration[];
   /**
    * Legacy top-level launcher declarations.
    * Prefer `ui.launchers` for new manifests.

@@ -104,6 +104,7 @@ function makeSkill(overrides: Partial<CompanySkillDetail> = {}): CompanySkillDet
     sourcePath: null,
     currentVersion: makeVersion({ id: "ver-3", revisionNumber: 3, label: "polish pass" }),
     starredByCurrentActor: false,
+    requiredEnv: [],
     existingForks: [],
     ...overrides,
   };

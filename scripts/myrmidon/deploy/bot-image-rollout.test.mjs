@@ -148,7 +148,8 @@ case "$*" in
         img="$(jq -r '.image // empty' <<<"$fact")"
         [ -n "$img" ] || img="$(jq -r --arg id "$id" 'first(.[] | select(.id == $id) | .adapterConfig.container.image)' "$SANDBOX/agents.json")"
         st="$(jq -r '.state // "running"' <<<"$fact")"
-        jq -cn --arg img "$img" --arg st "$st" '{container: {state: $st, image: $img}}'; exit 0
+        idle="$(jq -r '.idleStopped // false' <<<"$fact")"
+        jq -cn --arg img "$img" --arg st "$st" --argjson idle "$idle" '{container: {state: $st, image: $img, idleStopped: $idle}}'; exit 0
       fi
     fi
     if [ -e "$SANDBOX/apply-stale-image" ]; then img="stale/img@sha256:0"; else
@@ -162,6 +163,14 @@ case "$*" in
     case "$(cat "$SANDBOX/apply-async")" in
       running) echo '{"status":"running","error":null,"startedAt":"2026-10-08T00:00:00Z","finishedAt":null}' ;;
       failed) echo '{"status":"failed","error":"docker pull exploded","startedAt":"2026-10-08T00:00:00Z","finishedAt":"2026-10-08T00:00:01Z"}' ;;
+      leaving-retry)
+        if [ ! -e "$SANDBOX/apply-async-left" ]; then
+          touch "$SANDBOX/apply-async-left"
+          echo '{"status":"failed","error":"Maintenance for this scope is still leaving; retry shortly","startedAt":"2026-10-08T00:00:00Z","finishedAt":"2026-10-08T00:00:01Z"}'
+        else
+          echo '{"status":"succeeded","error":null,"startedAt":"2026-10-08T00:00:00Z","finishedAt":"2026-10-08T00:00:01Z"}'
+        fi
+        ;;
       *) echo '{"status":"succeeded","error":null,"startedAt":"2026-10-08T00:00:00Z","finishedAt":"2026-10-08T00:00:01Z"}' ;;
     esac
     exit 0 ;;
@@ -172,6 +181,18 @@ case "$*" in
     if [ -e "$SANDBOX/apply-defer-first" ] && [ ! -e "$SANDBOX/applied-$id" ]; then
       touch "$SANDBOX/applied-$id"
       echo '{"outcome":{"kind":"deferred","reason":"the agent is under a maintenance window"}}'
+      echo '202'
+      exit 0
+    fi
+    # maintenance-leaving retry mode: answer one transient 409, then apply.
+    if [ -e "$SANDBOX/apply-still-leaving-$id" ] && [ ! -e "$SANDBOX/apply-left-$id" ]; then
+      touch "$SANDBOX/apply-left-$id"
+      echo '{"error":"Maintenance for this scope is still leaving; retry shortly","code":"maintenance_scope_leaving"}'
+      echo '409'
+      exit 0
+    fi
+    if [ -e "$SANDBOX/apply-still-leaving-$id" ]; then
+      echo '{"outcome":{"kind":"applied_restart"}}'
       echo '202'
       exit 0
     fi
@@ -263,6 +284,7 @@ function sandbox({
   dockergateConfig,
   applyFails = false,
   applyDeferFirst = false,
+  applyStillLeaving = [],
   // 1.6.5 async apply: "succeeded" | "failed" | "running" (never finishes);
   // asyncStaleImage: the container keeps a stale image after "succeeded".
   applyAsync = null,
@@ -288,6 +310,7 @@ function sandbox({
   if (sshFails) fs.writeFileSync(path.join(dir, "ssh-fails"), "");
   if (applyFails) fs.writeFileSync(path.join(dir, "apply-fails"), "");
   if (applyDeferFirst) fs.writeFileSync(path.join(dir, "apply-defer-first"), "");
+  for (const id of applyStillLeaving) fs.writeFileSync(path.join(dir, `apply-still-leaving-${id}`), "");
   if (applyAsync) fs.writeFileSync(path.join(dir, "apply-async"), applyAsync);
   if (asyncStaleImage) fs.writeFileSync(path.join(dir, "apply-stale-image"), "");
   if (containerFacts) fs.writeFileSync(path.join(dir, "container-facts.json"), JSON.stringify(containerFacts));
@@ -449,6 +472,20 @@ const rolloutSummary = (sb) =>
 const dockergateConfig = (sb) => JSON.parse(read(sb.dgConfig));
 
 describe("bot-image-rollout.sh", () => {
+  it("retries the explicit maintenance-leaving 409 and switches the bot", () => {
+    const id = "77777777-7777-4777-8777-777777777777";
+    const sb = sandbox({
+      agents: [{ id, image: `${BOT}@${OLD_DEV}`, status: "idle" }],
+      applyStillLeaving: [id],
+    });
+    const { code, out } = run(sb, "bot-image-rollout.sh", ["--resolution", "tag", "--ref", VERSION]);
+    assert.equal(code, 0, out);
+    assert.match(out, /maintenance is still leaving; retrying apply/);
+    assert.equal((calls(sb).match(new RegExp(`agents/${id}/bot-container/apply`, "g")) ?? []).length, 2);
+    assert.equal(JSON.parse(read(path.join(sb.dir, "agents.json"))).find((a) => a.id === id).adapterConfig.container.image, `${BOT}@${HERMES}`);
+    assert.match(out, /1 switched, 0 failed/);
+  });
+
   it("resolves the three bot images of the release and allows them in dockergate", () => {
     const sb = sandbox();
     const { code, out } = run(sb, "bot-image-rollout.sh", ["--resolution", "tag", "--ref", VERSION]);
@@ -557,6 +594,31 @@ describe("bot-image-rollout.sh", () => {
     assert.notEqual(code, 0);
     assert.match(out, /DEGRADED.*failed to switch/i);
     assert.match(journal(sb), /apply job-1 failed: docker pull exploded/);
+  });
+
+  it("async apply: retries when apply job reports maintenance still leaving and switches", () => {
+    const id = "77777777-7777-4777-8777-777777777777";
+    const sb = sandbox({
+      agents: [{ id, image: `${BOT}@${OLD_DEV}`, status: "idle" }],
+      applyAsync: "leaving-retry",
+    });
+    const { code, out } = run(sb, "bot-image-rollout.sh", ["--resolution", "tag", "--ref", VERSION]);
+    assert.equal(code, 0, out);
+    assert.match(out, /maintenance still leaving; retrying/);
+    assert.match(out, /1 switched, 0 deferred\(running\), 0 mismatch, 0 failed/);
+  });
+
+  it("rollout of an idle-stopped container verifies as switched", () => {
+    const id = "77777777-7777-4777-8777-777777777777";
+    const sb = sandbox({
+      agents: [{ id, image: `${BOT}@${OLD_DEV}`, status: "idle" }],
+      containerFacts: {
+        [id]: { state: "stopped", image: `${BOT}@${HERMES}`, idleStopped: true },
+      },
+    });
+    const { code, out } = run(sb, "bot-image-rollout.sh", ["--resolution", "tag", "--ref", VERSION]);
+    assert.equal(code, 0, out);
+    assert.match(out, /1 switched, 0 deferred\(running\), 0 mismatch, 0 failed/);
   });
 
   it("async apply: a job that never finishes times out as deferred (the sweep completes it)", () => {

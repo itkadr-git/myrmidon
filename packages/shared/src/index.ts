@@ -840,6 +840,8 @@ export type {
   CompanySkillResetRequest,
   CompanySkillImportRequest,
   CompanySkillImportResult,
+  CompanySkillDiscoveredSkill,
+  CompanySkillDiscoverResult,
   CompanySkillProjectScanRequest,
   CompanySkillProjectBrowseRequest,
   CompanySkillProjectBrowseEntry,
@@ -1119,6 +1121,7 @@ export type {
   IssueInboxAttentionKind,
   IssueBlockedInboxAction,
   IssueBlockedInboxAttention,
+  IssueBlockerMetadata,
   IssueUnblockDescriptor,
   IssueUnblockOwner,
   IssueBlockedInboxIssueRef,
@@ -1601,6 +1604,7 @@ export type {
   PluginApiRouteDeclaration,
   PluginObjectReferenceRefreshPolicy,
   PluginObjectReferenceProviderDeclaration,
+  PluginModelProviderDeclaration,
   PaperclipPluginManifestV1,
   PluginRecord,
   PluginDatabaseNamespaceRecord,
@@ -1795,6 +1799,7 @@ export {
   instanceSettingsSchema,
   instanceGeneralSettingsSchema,
   patchInstanceGeneralSettingsSchema,
+  boardProcessesSettingsSchema,
   type PatchInstanceGeneralSettings,
   instanceExperimentalSettingsSchema,
   instanceExperimentalSettingsWithManagedSchema,
@@ -1961,6 +1966,8 @@ export {
   updateIssueShapeSchema,
   stalledReviewDecisionSchema,
   issueExecutionPolicySchema,
+  issueBlockReasonSchema,
+  issueBlockerMetadataSchema,
   issueExecutionStateSchema,
   resolveIssueRecoveryActionSchema,
   issueReviewRequestSchema,
@@ -2400,6 +2407,9 @@ export {
   companySkillAuditFindingSchema,
   companySkillAuditResultSchema,
   companySkillImportSchema,
+  companySkillDiscoverSchema,
+  companySkillDiscoveredSkillSchema,
+  companySkillDiscoverResultSchema,
   companySkillProjectScanRequestSchema,
   companySkillProjectBrowseRequestSchema,
   companySkillProjectBrowseEntrySchema,
@@ -2477,6 +2487,7 @@ export {
   pluginLauncherRenderDeclarationSchema,
   pluginLauncherDeclarationSchema,
   pluginDatabaseDeclarationSchema,
+  pluginModelProviderDeclarationSchema,
   pluginApiRouteDeclarationSchema,
   pluginManifestV1Schema,
   installPluginSchema,
@@ -2491,6 +2502,7 @@ export {
   type PluginWebhookDeclarationInput,
   type PluginToolDeclarationInput,
   type PluginEnvironmentDriverDeclarationInput,
+  type PluginModelProviderDeclarationInput,
   type SandboxProviderCapabilitiesInput,
   type PluginUiSlotDeclarationInput,
   type PluginLauncherActionDeclarationInput,
@@ -2968,6 +2980,8 @@ export * from "./myrmidon-tool-policy-cache.js";
 // myrmidon(1.6.3-FORAGING-IDLE-GATE): the shared contract of the foraging
 // idle gate — the toggle, its storage key and the resolver with sources.
 export * from "./myrmidon-foraging-idle-gate.js";
+// myrmidon(1.7-AGENT-EXCHANGE-B): owner-facing exchange feed and skill candidates.
+export * from "./myrmidon-agent-exchange-feed.js";
 // myrmidon(1.6.5 LITELLM-WORKERS A): the shared contract of the LiteLLM worker
 // count — the stored per-company target, the ceilings the container's shape
 // imposes and the gunicorn signal arithmetic behind a resize.

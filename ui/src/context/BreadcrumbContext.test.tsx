@@ -1,5 +1,7 @@
 // @vitest-environment jsdom
 
+import { PRODUCT_NAME } from "@paperclipai/shared";
+import { i18n } from "@/i18n";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -103,20 +105,22 @@ describe("BreadcrumbContext", () => {
     expect(renderCounts).toHaveLength(3);
   });
 
-  it("builds page titles with the selected company name before Myrmidon", () => {
+  it("builds page titles with the selected company name before the shared product name", () => {
     expect(buildDocumentTitle([{ label: "Inbox" }], "Anachronist Wiki")).toBe(
-      "Inbox • Anachronist Wiki • Myrmidon",
+      `Inbox • Anachronist Wiki • ${PRODUCT_NAME}`,
     );
     expect(
       buildDocumentTitle(
         [{ label: "Issues", href: "/issues" }, { label: "PAP-3515" }],
         "Anachronist Wiki",
       ),
-    ).toBe("PAP-3515 • Issues • Anachronist Wiki • Myrmidon");
+    ).toBe(`PAP-3515 • Issues • Anachronist Wiki • ${PRODUCT_NAME}`);
   });
 
-  it("omits blank company names from page titles", () => {
-    expect(buildDocumentTitle([{ label: "Inbox" }], "  ")).toBe("Inbox • Myrmidon");
-    expect(buildDocumentTitle([], null)).toBe("Myrmidon");
+  it("omits blank company names and keeps the shared product name on every locale", () => {
+    expect(buildDocumentTitle([{ label: "Inbox" }], "  ")).toBe(`Inbox • ${PRODUCT_NAME}`);
+    expect(buildDocumentTitle([], null)).toBe(PRODUCT_NAME);
+    expect(i18n.getFixedT("en")("about.title")).toContain(PRODUCT_NAME);
+    expect(i18n.getFixedT("ru")("about.title")).toContain(PRODUCT_NAME);
   });
 });
