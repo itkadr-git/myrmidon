@@ -61,7 +61,11 @@ describe("classifyChanges", () => {
   });
 
   it("includes shared-source guard suites when app.ts changes", () => {
-    for (const changedFile of ["server/src/app.ts", "server/src/myrmidon/app-plugin.ts"]) {
+    for (const changedFile of [
+      "server/src/app.ts",
+      "server/src/myrmidon/app-plugin.ts",
+      "docs/myrmidon/SETTINGS.md",
+    ]) {
       const result = selectTests(
         [changedFile],
         [{ name: "@paperclipai/server", dir: "server", vitestProject: true }],
