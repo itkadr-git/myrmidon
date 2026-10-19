@@ -107,7 +107,7 @@ describe("planBotPlacement", () => {
     const zeroAllocatedSite = {
       name: "east",
       status: "available" as const,
-      capacity: { cpus: 10, memoryMb: 8192, pids: 200, maxBots: 8 },
+      capacity: { cpus: 7, memoryMb: 8192, pids: 200, maxBots: 8 },
       allocated: { cpus: 0, memoryMb: 0, pids: 0, bots: 0 },
     };
     expect(decide({
