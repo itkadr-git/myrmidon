@@ -613,7 +613,7 @@ describe("bot-image-rollout.sh", () => {
     const sb = sandbox({
       agents: [{ id, image: `${BOT}@${OLD_DEV}`, status: "idle" }],
       containerFacts: {
-        [id]: { state: "stopped", image: `${BOT}@${TARGET_DEV}`, idleStopped: true },
+        [id]: { state: "stopped", image: `${BOT}@${HERMES}`, idleStopped: true },
       },
     });
     const { code, out } = run(sb, "bot-image-rollout.sh", ["--resolution", "tag", "--ref", VERSION]);

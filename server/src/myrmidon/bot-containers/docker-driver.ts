@@ -1546,7 +1546,12 @@ export function dockerBotContainerDriver(
       const state = JSON.parse(raw) as { botKey?: unknown; idleStopped?: unknown };
       return state.botKey === botKey && state.idleStopped === true;
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+      if (
+        (error as NodeJS.ErrnoException).code === "ENOENT" ||
+        (error as NodeJS.ErrnoException).code === "ENOTDIR"
+      ) {
+        return false;
+      }
       throw error;
     }
   }
