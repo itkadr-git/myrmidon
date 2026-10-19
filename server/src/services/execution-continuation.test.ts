@@ -356,12 +356,24 @@ const support = await getEmbeddedPostgresTestSupport();
         id: crossTaskInteractionId,
         companyId,
         issueId,
-        kind: "suggest_tasks",
+        kind: "connection_intent",
         status: "accepted",
         sourceRunId: otherRunId,
         originCommentIds: [],
-        payload: {},
-        result: {},
+        payload: {
+          version: 1,
+          serviceSlug: "gmail",
+          serviceName: "Gmail",
+          serviceLogoUrl: null,
+          requestingAgentId: agentId,
+          requestingAgentName: "Executor",
+          phase: "requested",
+        },
+        result: {
+          version: 1,
+          outcome: "connected",
+          connectionId: randomUUID(),
+        },
       });
       const envelope = await buildExecutionContinuation({
         db,

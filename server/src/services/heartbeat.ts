@@ -18173,7 +18173,7 @@ export function heartbeatService(
       }
     }
 
-    const nextMetadata = {
+    const nextMetadata: Record<string, unknown> = {
       ...metadata,
       consecutiveFailures: nextFailures,
     };
@@ -32057,17 +32057,5 @@ export function heartbeatService(
         .limit(1);
       return run ?? null;
     },
-
-    finalizeAgentStatus: (
-      agentId: string,
-      outcome: "succeeded" | "interrupted" | "failed" | "cancelled" | "timed_out",
-      failureReason?: string | null,
-      options?: {
-        keepIdleOnFailure?: boolean;
-        wasFirstHeartbeat?: boolean;
-        errorCode?: string | null;
-        errorFamily?: string | null;
-      },
-    ) => finalizeAgentStatus(agentId, outcome, failureReason, options),
   };
 }
