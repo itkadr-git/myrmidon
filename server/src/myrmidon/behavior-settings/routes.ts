@@ -11,24 +11,27 @@
 
 import { Router } from "express";
 import type { Db } from "@paperclipai/db";
-import { createBehaviorSettingsPatchSchema, type BehaviorSettingsPatch } from "@paperclipai/shared";
+import { behaviorSettingRegistry, createBehaviorSettingsScopePatchSchema, type BehaviorSettingsPatch } from "@paperclipai/shared";
 import { validate } from "../../middleware/validate.js";
 import { assertBoardOrgAccess, assertInstanceAdmin, assertCompanyAccess, getActorInfo } from "../../routes/authz.js";
 import type { BehaviorSettingsService } from "./service.js";
 
 export function behaviorSettingsRoutes(_db: Db, service: BehaviorSettingsService) {
   const router = Router();
+  const instanceKeys = new Set(behaviorSettingRegistry.getInstanceKeys());
+  const companyKeys = new Set(behaviorSettingRegistry.getAll().filter((setting) => setting.scope === "company").map((setting) => setting.key));
 
-  // Read the instance-level behavior settings
+  // GET the instance-level
   router.get("/myrmidon/behavior-settings", async (req, res) => {
     assertBoardOrgAccess(req);
     res.json(await service.read());
   });
 
   // Update the instance-level behavior settings
-  router.patch("/myrmidon/behavior-settings", validate(createBehaviorSettingsPatchSchema()), async (req, res) => {
+  router.patch("/myrmidon/behavior-settings", validate(createBehaviorSettingsScopePatchSchema("instance")), async (req, res) => {
     assertInstanceAdmin(req);
-    res.json(await service.updateInstance(req.body as BehaviorSettingsPatch, getActorInfo(req)));
+    const patch = Object.fromEntries(Object.entries(req.body as BehaviorSettingsPatch).filter(([key]) => instanceKeys.has(key))) as BehaviorSettingsPatch;
+    res.json(await service.updateInstance(patch, getActorInfo(req)));
   });
 
   // Read the company-level behavior settings
@@ -39,10 +42,11 @@ export function behaviorSettingsRoutes(_db: Db, service: BehaviorSettingsService
   });
 
   // Update the company-level behavior settings
-  router.patch("/myrmidon/behavior-settings/:companyId", validate(createBehaviorSettingsPatchSchema()), async (req, res) => {
+  router.patch("/myrmidon/behavior-settings/:companyId", validate(createBehaviorSettingsScopePatchSchema("company")), async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
-    res.json(await service.updateCompany(companyId, req.body as BehaviorSettingsPatch, getActorInfo(req)));
+    const patch = Object.fromEntries(Object.entries(req.body as BehaviorSettingsPatch).filter(([key]) => companyKeys.has(key))) as BehaviorSettingsPatch;
+    res.json(await service.updateCompany(companyId, patch, getActorInfo(req)));
   });
 
   return router;

@@ -45,7 +45,7 @@ export {
 } from "./collector.js";
 export { readStackDocument, writeStackDocument, preserveStackGeneralKey } from "./store.js";
 export { stackRegistryRoutes, myrmidonStackRegistryRoutes, type StackRegistryRouteOptions } from "./routes.js";
-export { checkStackReleases, startStackCheckSweep, STACK_CHECK_PER_PAGE, type StackCheckOptions } from "./check.js";
+export { checkStackReleases, startStackCheckSweep, stopStackCheckSweep, STACK_CHECK_PER_PAGE, type StackCheckOptions } from "./check.js";
 export {
   STACK_CHECK_INTERVAL_ENV,
   STACK_CHECK_MIN_INTERVAL_SEC,

@@ -45,6 +45,7 @@ import { botContainerAgentReader, getBotContainerRuntime, setBotContainerRuntime
 import { readBotCacheLayoutForBot, readSharedBotRuntimePath, startCloneReportCollection } from "./bot-disk-service.js"; // myrmidon(1.6.1-BOT-DISK-B, 1.6.2-BOT-DISK-C, 1.6.5-BOT-DISK-H11, 1.6.5-DOCKERGATE-A2A3-STORM)
 import { scopeMigrator } from "./scope-migration.js"; // myrmidon(BOT-DISK-F)
 import { readAppliedScopeLayout } from "./scope-wiring.js"; // myrmidon(BOT-DISK-F)
+import { liveBehaviorSetting } from "../behavior-settings/live.js";
 
 export const BOT_RECONCILE_INTERVAL_ENV = "MYRMIDON_BOT_RECONCILE_INTERVAL_SEC";
 const MIN_RECONCILE_INTERVAL_SEC = 5;
@@ -53,7 +54,8 @@ const MAX_RECONCILE_INTERVAL_SEC = 3600;
 /** The sweep period. An unset, non-integer or out-of-range value falls back to the
  *  default (the same rule as the maintenance settings, R3). */
 export function readBotReconcileIntervalMs(env: NodeJS.ProcessEnv = process.env): number {
-  const raw = env[BOT_RECONCILE_INTERVAL_ENV]?.trim();
+  const raw = env[BOT_RECONCILE_INTERVAL_ENV]?.trim() ??
+    (env === process.env ? String(liveBehaviorSetting<number>("bot_reconcile_interval_sec")) : "");
   if (!raw) return DEFAULT_RECONCILE_INTERVAL_MS;
   const value = Number(raw);
   if (!Number.isInteger(value) || value < MIN_RECONCILE_INTERVAL_SEC || value > MAX_RECONCILE_INTERVAL_SEC) {

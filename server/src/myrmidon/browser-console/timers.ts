@@ -6,6 +6,8 @@
 // it); the hard ceiling closes it after M minutes regardless of activity.
 // The warning window is the last 60 seconds before whichever deadline wins.
 
+import { liveBehaviorSettingsView } from "../behavior-settings/live.js";
+
 export const BROWSER_IDLE_TIMEOUT_MIN_ENV = "MYRMIDON_BROWSER_IDLE_TIMEOUT_MIN";
 export const BROWSER_MAX_DURATION_MIN_ENV = "MYRMIDON_BROWSER_MAX_DURATION_MIN";
 
@@ -33,9 +35,12 @@ function readMinutes(env: NodeJS.ProcessEnv, name: string, fallback: number, min
 }
 
 export function readBrowserConsoleTimers(env: NodeJS.ProcessEnv = process.env): BrowserConsoleTimers {
+  const live = env === process.env ? liveBehaviorSettingsView().settings : {};
+  const idleFallback = typeof live.browser_idle_timeout_min === "number" ? live.browser_idle_timeout_min : DEFAULT_IDLE_TIMEOUT_MIN;
+  const maxFallback = typeof live.browser_max_duration_min === "number" ? live.browser_max_duration_min : DEFAULT_MAX_DURATION_MIN;
   return {
-    idleTimeoutMs: readMinutes(env, BROWSER_IDLE_TIMEOUT_MIN_ENV, DEFAULT_IDLE_TIMEOUT_MIN, MIN_IDLE_TIMEOUT_MIN, MAX_IDLE_TIMEOUT_MIN) * 60_000,
-    maxDurationMs: readMinutes(env, BROWSER_MAX_DURATION_MIN_ENV, DEFAULT_MAX_DURATION_MIN, MIN_MAX_DURATION_MIN, MAX_MAX_DURATION_MIN) * 60_000,
+    idleTimeoutMs: readMinutes(env, BROWSER_IDLE_TIMEOUT_MIN_ENV, idleFallback, MIN_IDLE_TIMEOUT_MIN, MAX_IDLE_TIMEOUT_MIN) * 60_000,
+    maxDurationMs: readMinutes(env, BROWSER_MAX_DURATION_MIN_ENV, maxFallback, MIN_MAX_DURATION_MIN, MAX_MAX_DURATION_MIN) * 60_000,
   };
 }
 

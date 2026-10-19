@@ -198,8 +198,6 @@ export function createDbBotProfilePorts(db: Db): BotProfilePorts {
         return `${secret.latestVersion}:${secret.status}`;
       },
     },
-    // myrmidon(FLEETD-VMEXEC): the allowlist is re-read per resolve (per tick),
-    // like the other per-tick bot settings; the env source is process.env.
     { env: process.env },
   );
   // myrmidon(PERF-DIET-G): the skills port, bound to the company services. The

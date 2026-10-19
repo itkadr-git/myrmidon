@@ -16,6 +16,7 @@
 
 import { randomUUID } from "node:crypto";
 import { parseBrowserFleet, type BrowserFleetEntry } from "@paperclipai/shared/myrmidon-browser-console";
+import { liveBehaviorSetting, liveBehaviorSettingsView } from "../behavior-settings/live.js";
 import type { Db } from "@paperclipai/db";
 import { logger } from "../../middleware/logger.js";
 import { autoCloseReason, readBrowserConsoleTimers, sessionDeadlines, type BrowserConsoleTimers } from "./timers.js";
@@ -63,12 +64,26 @@ export class BrowserConsoleError extends Error {
 export function browserConsoleService(deps: BrowserSessionServiceDeps) {
   const now = deps.now ?? (() => Date.now());
   const env = deps.env ?? process.env;
+  const useLiveSettings = deps.env === undefined;
   const log = deps.log ?? logger;
-  const timers: BrowserConsoleTimers = readBrowserConsoleTimers(env);
   const newSessionId = deps.newSessionId ?? (() => randomUUID());
 
+  function currentTimers(): BrowserConsoleTimers {
+    const base = readBrowserConsoleTimers(env);
+    if (useLiveSettings) {
+      return {
+        idleTimeoutMs: (liveBehaviorSetting<number>("browser_idle_timeout_min") ?? base.idleTimeoutMs / 60_000) * 60_000,
+        maxDurationMs: (liveBehaviorSetting<number>("browser_max_duration_min") ?? base.maxDurationMs / 60_000) * 60_000,
+      };
+    }
+    return base;
+  }
+
   function fleet(): BrowserFleetEntry[] {
-    const parsed = parseBrowserFleet(env.MYRMIDON_BROWSER_FLEET);
+    const raw = useLiveSettings
+      ? JSON.stringify(liveBehaviorSettingsView().settings.browser_fleet)
+      : env.MYRMIDON_BROWSER_FLEET;
+    const parsed = parseBrowserFleet(raw);
     if (!parsed.ok) {
       log.warn(`browser console: ${parsed.error}; the registry is empty until it is fixed`);
       return [];
@@ -83,6 +98,7 @@ export function browserConsoleService(deps: BrowserSessionServiceDeps) {
   }
 
   function deadlinesOf(record: BrowserSessionRecord) {
+    const timers = currentTimers();
     const deadlines = sessionDeadlines({ openedAt: record.openedAt, lastActivityAt: record.lastActivityAt, timers });
     return { deadlines, reason: autoCloseReason({ deadlines, now: now() }) };
   }
@@ -139,7 +155,7 @@ export function browserConsoleService(deps: BrowserSessionServiceDeps) {
 
   return {
     fleet,
-    timers,
+    timers: currentTimers(),
 
     async listBrowsers() {
       const doc = await readBrowserSessionDocument(deps.db);
@@ -201,7 +217,7 @@ export function browserConsoleService(deps: BrowserSessionServiceDeps) {
         throw new BrowserConsoleError(409, "A screen session is already open for this browser");
       }
 
-      const deadlines = sessionDeadlines({ openedAt, lastActivityAt: openedAt, timers });
+      const deadlines = sessionDeadlines({ openedAt, lastActivityAt: openedAt, timers: currentTimers() });
       return { screenSessionId: sessionId, screenPath: `/api/myrmidon/browsers/${encodeURIComponent(input.browserId)}/screen`, deadlines };
     },
 
@@ -213,7 +229,7 @@ export function browserConsoleService(deps: BrowserSessionServiceDeps) {
 
     async heartbeat(browserId: string, userId: string, activity: boolean): Promise<{ deadlines: ReturnType<typeof sessionDeadlines>; closedBy: string | null }> {
       const record = await liveSession(browserId);
-      if (!record) return { deadlines: sessionDeadlines({ openedAt: now(), lastActivityAt: now(), timers }), closedBy: "none" };
+      if (!record) return { deadlines: sessionDeadlines({ openedAt: now(), lastActivityAt: now(), timers: currentTimers() }), closedBy: "none" };
       if (record.userId !== userId) throw new BrowserConsoleError(403, "The open screen session belongs to another owner");
       const nextActivity = activity ? now() : record.lastActivityAt;
       await mutateBrowserSessionDocument(deps.db, (current) => {
@@ -222,7 +238,7 @@ export function browserConsoleService(deps: BrowserSessionServiceDeps) {
       });
       // The node heartbeat is best-effort; the board's own timers decide.
       void deps.client.heartbeat(record.screenSessionId, activity).catch(() => {});
-      return { deadlines: sessionDeadlines({ openedAt: record.openedAt, lastActivityAt: nextActivity, timers }), closedBy: null };
+      return { deadlines: sessionDeadlines({ openedAt: record.openedAt, lastActivityAt: nextActivity, timers: currentTimers() }), closedBy: null };
     },
 
     async done(browserId: string, userId: string): Promise<void> {

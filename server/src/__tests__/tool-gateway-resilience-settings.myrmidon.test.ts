@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
+import { applyLiveBehaviorSettings } from "../myrmidon/behavior-settings/live.js";
 import {
   TOOL_BREAKER_COOLDOWN_MS_ENV,
   TOOL_BREAKER_FAILURES_ENV,
@@ -28,6 +29,7 @@ afterEach(() => {
     if (saved[key] === undefined) delete process.env[key];
     else process.env[key] = saved[key];
   }
+  applyLiveBehaviorSettings({ settings: {}, sources: {} });
 });
 
 const session = { id: "session-a", agentId: "agent-a" };
@@ -40,6 +42,21 @@ const tool = (catalogEntryId: string) => ({
 });
 
 describe("tool gateway resilience settings (myrmidon P9)", () => {
+  it("prefers live UI values over inherited env, preserving only explicit env overrides", () => {
+    process.env[TOOL_BREAKER_FAILURES_ENV] = "9";
+    applyLiveBehaviorSettings({
+      settings: { tool_breaker_failures: 4 },
+      sources: { tool_breaker_failures: "ui" },
+    });
+    expect(toolGatewayResilienceSettings().breakerFailures).toBe(4);
+
+    applyLiveBehaviorSettings({
+      settings: { tool_breaker_failures: 4 },
+      sources: { tool_breaker_failures: "env" },
+    });
+    expect(toolGatewayResilienceSettings().breakerFailures).toBe(9);
+  });
+
   it("uses the documented defaults", () => {
     expect(toolGatewayResilienceSettings({})).toEqual({
       breakerFailures: 3,
@@ -69,6 +86,7 @@ describe("tool gateway resilience settings (myrmidon P9)", () => {
   });
 
   it("applies the timeout settings to per-call budgets", () => {
+    applyLiveBehaviorSettings({ settings: {}, sources: {} });
     process.env[TOOL_TIMEOUT_MAX_MS_ENV] = "30000";
     process.env[TOOL_TIMEOUT_SLOW_MS_ENV] = "20000";
     expect(resolveConnectedToolTimeoutMs({ requestedTimeoutMs: 999_999 })).toBe(30_000);
@@ -79,6 +97,7 @@ describe("tool gateway resilience settings (myrmidon P9)", () => {
 
 describe("per-tool circuit breaker (myrmidon P9)", () => {
   it("pauses only the failing tool after the configured number of unanswered calls", () => {
+    applyLiveBehaviorSettings({ settings: {}, sources: {} });
     process.env[TOOL_BREAKER_FAILURES_ENV] = "2";
     process.env[TOOL_BREAKER_COOLDOWN_MS_ENV] = "1000";
     let now = 1_000_000;
@@ -109,6 +128,7 @@ describe("per-tool circuit breaker (myrmidon P9)", () => {
   });
 
   it("re-opens at once when the half-open probe fails", () => {
+    applyLiveBehaviorSettings({ settings: {}, sources: {} });
     process.env[TOOL_BREAKER_FAILURES_ENV] = "1";
     process.env[TOOL_BREAKER_COOLDOWN_MS_ENV] = "1000";
     let now = 2_000_000;
@@ -121,6 +141,7 @@ describe("per-tool circuit breaker (myrmidon P9)", () => {
   });
 
   it("keeps breaker state per caller for connections without shared credentials", () => {
+    applyLiveBehaviorSettings({ settings: {}, sources: {} });
     process.env[TOOL_BREAKER_FAILURES_ENV] = "1";
     const resilience = createRemoteToolResilience({ now: () => 3_000_000 });
     const perUser = { ...sharedConnection, credentialPolicy: "per_user" };
@@ -132,6 +153,7 @@ describe("per-tool circuit breaker (myrmidon P9)", () => {
   });
 
   it("is off when the failure threshold is 0", () => {
+    applyLiveBehaviorSettings({ settings: {}, sources: {} });
     process.env[TOOL_BREAKER_FAILURES_ENV] = "0";
     const resilience = createRemoteToolResilience({ now: () => 4_000_000 });
     for (let i = 0; i < 10; i++) resilience.recordToolNoAnswer(session, sharedConnection, "entry-a", "no answer");

@@ -31,6 +31,7 @@
 
 import { createHash } from "node:crypto";
 
+import { liveBehaviorSetting } from "../behavior-settings/live.js";
 import type { HermesProfileEnvEntry } from "./profile-compiler.js";
 
 /**
@@ -155,6 +156,10 @@ export function createCardEnvResolver(
   const cache = new Map<string, { fingerprint: string; env: Record<string, HermesProfileEnvEntry> }>();
 
   return async function resolveCardEnv(agent: CardEnvAgent): Promise<ResolvedCardEnv> {
+    const allowlist = options.githubEnvAllowlist ?? (options.env === undefined
+      ? new Set(liveBehaviorSetting<string[]>("bot_container_github_env_allowlist") ?? [])
+      : parseGithubEnvAllowlist(options.env[GITHUB_ENV_ALLOWLIST_ENV]));
+    const allowlistFingerprint = [...allowlist].sort().join(",");
     const warnings: string[] = [];
     const bindings: Record<string, unknown> = {};
     for (const [name, binding] of Object.entries(asRecord(agent.adapterConfig.env))) {
@@ -166,7 +171,6 @@ export function createCardEnvResolver(
         // myrmidon(FLEETD-VMEXEC): a named dev bot keeps the binding; the secret
         // must still be bound to this agent, and the value lands in hermes/.env
         // (0600, secret) exactly like any other card env entry.
-        const allowlist = options.githubEnvAllowlist ?? parseGithubEnvAllowlist((options.env ?? process.env)[GITHUB_ENV_ALLOWLIST_ENV]);
         if (typeof agent.name === "string" && allowlist.has(agent.name)) {
           bindings[name] = binding;
           continue;
@@ -195,9 +199,10 @@ export function createCardEnvResolver(
     for (const secretId of [...secretIds].sort()) {
       stamps.push(`${secretId}@${(await ports.readSecretStamp(agent.companyId, secretId)) ?? "missing"}`);
     }
-    // Everything the resolved values depend on, and nothing that changes by itself.
+    // Environment values remain authoritative. When the live stored policy changes,
+    // invalidate the cache even if the card bindings and secrets are unchanged.
     const fingerprint = createHash("sha256")
-      .update(stableStringify({ companyId: agent.companyId, bindings, stamps }))
+      .update(stableStringify({ companyId: agent.companyId, bindings, stamps, allowlistFingerprint }))
       .digest("hex");
 
     const cached = cache.get(agent.id);

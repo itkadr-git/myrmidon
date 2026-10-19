@@ -27,6 +27,7 @@
 
 import { BotProfileInputError } from "./profile-input.js";
 import type { HermesProfileEnvEntry } from "./profile-compiler.js";
+import { liveBehaviorSetting } from "../behavior-settings/live.js";
 
 export const BOT_EGRESS_MODE_ENV = "MYRMIDON_BOT_EGRESS_MODE";
 export const BOT_EGRESS_PROXY_ENV = "MYRMIDON_BOT_EGRESS_PROXY";
@@ -74,7 +75,8 @@ function nonEmpty(value: string | undefined): string | null {
  * reader fails the same way, and for the same reason).
  */
 export function readBotEgressSettings(env: NodeJS.ProcessEnv = process.env): BotEgressSettings {
-  const rawMode = nonEmpty(env[BOT_EGRESS_MODE_ENV]);
+  const rawMode = nonEmpty(env[BOT_EGRESS_MODE_ENV]) ??
+    (env === process.env ? liveBehaviorSetting<string>("bot_egress_mode") : null);
   let mode: BotEgressMode = "off";
   if (rawMode !== null) {
     const normalized = rawMode.toLowerCase();

@@ -56,6 +56,7 @@
 
 import { CLONE_HYGIENE_REPORT_PATH } from "./clone-hygiene.js"; // myrmidon(1.6.2-BOT-DISK-C)
 import { randomBytes } from "node:crypto";
+import { liveBehaviorSetting, liveBehaviorSettingsView } from "../behavior-settings/live.js";
 import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import http from "node:http";
@@ -115,6 +116,7 @@ import { buildUstarArchive, parseUstarArchive, type UstarEntry, type UstarReadEn
 export const BOT_DOCKER_SOCKET_ENV = "MYRMIDON_BOT_DOCKER_SOCKET";
 export const DEFAULT_BOT_DOCKER_SOCKET = "/var/run/docker.sock";
 export const BOT_IMAGE_ALLOWLIST_ENV = "MYRMIDON_BOT_IMAGE_ALLOWLIST";
+export const BOT_YOLO_ENV = "MYRMIDON_BOT_YOLO";
 export const BOT_VOLUME_ROOT_ENV = "MYRMIDON_BOT_VOLUME_ROOT";
 export const BOT_NETWORK_ENV = "MYRMIDON_BOT_NETWORK";
 /** myrmidon(BOT-DISK-F): host directory of shared isolation-scope instances; default `<volumeRoot>/.scopes`. */
@@ -163,6 +165,8 @@ export interface DockerDriverConfig {
    *  devbuild wiring is off; no DEVBUILD_* env and no key mount is added to any
    *  container. Only a dev-variant image (isDevBuildImage) ever gets them. */
   devbuild: DevbuildSettings;
+  /** Whether to bypass dangerous-command approvals in unattended bots. */
+  yolo?: boolean;
   /** myrmidon(1.6.5-DOCKERGATE-A2A3-STORM): MYRMIDON_DOCKERGATE_MAX_RPS — the
    *  ceiling of board→gate requests per second across every loop (sweep, health
    *  wait, clone-report collection, "apply now"). The gate's own global bucket is
@@ -178,26 +182,43 @@ export interface DockerDriverConfig {
 export const DOCKERGATE_MAX_RPS_ENV = "MYRMIDON_DOCKERGATE_MAX_RPS";
 const DEFAULT_DOCKERGATE_MAX_RPS = 20;
 
-export function readDockerDriverConfig(env: NodeJS.ProcessEnv = process.env): DockerDriverConfig {
-  const volumeRoot = env[BOT_VOLUME_ROOT_ENV]?.trim();
+export function readDockerDriverConfig(env?: NodeJS.ProcessEnv): DockerDriverConfig {
+  const source = env ?? process.env;
+  const runtimeEnv = env === undefined;
+  const volumeRoot = source[BOT_VOLUME_ROOT_ENV]?.trim();
   if (!volumeRoot) {
     throw new BotContainerTemplateError(`${BOT_VOLUME_ROOT_ENV} must be set to use the bot container driver`);
   }
   let maxRps = DEFAULT_DOCKERGATE_MAX_RPS;
-  const rawRps = env[DOCKERGATE_MAX_RPS_ENV]?.trim();
+  const rawRps = source[DOCKERGATE_MAX_RPS_ENV]?.trim();
   if (rawRps) {
     const value = Number(rawRps);
     if (Number.isFinite(value) && value >= 0 && value <= 50) maxRps = value;
   }
+  const liveView = runtimeEnv ? liveBehaviorSettingsView() : undefined;
+  const liveSettings = liveView?.settings;
+  const imageAllowlist = liveSettings && "bot_image_allowlist" in liveSettings
+    ? liveSettings.bot_image_allowlist : runtimeEnv ? liveBehaviorSetting<unknown>("bot_image_allowlist") : undefined;
+  const mountAllowlist = liveSettings && "bot_mount_sources" in liveSettings
+    ? liveSettings.bot_mount_sources : runtimeEnv ? liveBehaviorSetting<unknown>("bot_mount_sources") : undefined;
+  const rawYolo = runtimeEnv && source[BOT_YOLO_ENV] === undefined && liveSettings && "bot_yolo" in liveSettings
+    ? liveSettings.bot_yolo as boolean | undefined
+    : source[BOT_YOLO_ENV];
+  const yolo = rawYolo === undefined
+    ? undefined
+    : typeof rawYolo === "boolean"
+      ? rawYolo
+      : /^(1|true|yes|on)$/i.test(rawYolo.trim());
   return {
-    socketPath: env[BOT_DOCKER_SOCKET_ENV]?.trim() || DEFAULT_BOT_DOCKER_SOCKET,
+    socketPath: source[BOT_DOCKER_SOCKET_ENV]?.trim() || DEFAULT_BOT_DOCKER_SOCKET,
     volumeRoot,
     // "." can never begin a bot key, so the default cannot collide with a bot's directory.
-    scopeRoot: env[BOT_SCOPE_ROOT_ENV]?.trim() || `${volumeRoot}/.scopes`,
-    network: env[BOT_NETWORK_ENV]?.trim() || DEFAULT_BOT_NETWORK,
-    allowlist: parseImageAllowlist(env[BOT_IMAGE_ALLOWLIST_ENV]),
-    mountSources: parseMountSourceAllowlist(env[BOT_MOUNT_SOURCES_ENV]),
-    devbuild: parseDevbuildSettings(env),
+    scopeRoot: source[BOT_SCOPE_ROOT_ENV]?.trim() || `${volumeRoot}/.scopes`,
+    network: source[BOT_NETWORK_ENV]?.trim() || DEFAULT_BOT_NETWORK,
+    allowlist: parseImageAllowlist(Array.isArray(imageAllowlist) ? imageAllowlist.join(",") : source[BOT_IMAGE_ALLOWLIST_ENV]),
+    mountSources: parseMountSourceAllowlist(Array.isArray(mountAllowlist) ? mountAllowlist.join(",") : source[BOT_MOUNT_SOURCES_ENV]),
+    devbuild: parseDevbuildSettings(source),
+    ...(yolo === undefined ? {} : { yolo }),
     maxRps,
   };
 }
@@ -318,7 +339,7 @@ export interface DockerCreateContainerBody {
  */
 export function buildCreateContainerRequestBody(
   spec: BotContainerSpec,
-  config: Pick<DockerDriverConfig, "volumeRoot" | "network" | "allowlist" | "mountSources" | "devbuild">,
+  config: Pick<DockerDriverConfig, "volumeRoot" | "network" | "allowlist" | "mountSources" | "devbuild" | "yolo">,
   sharedPackageCachePath?: string,
   gitMirror = false,
   /** myrmidon(BOT-DISK-F): the instance a shared member binds (isolated when absent). */
@@ -349,7 +370,8 @@ export function buildCreateContainerRequestBody(
   const devbuild: DevbuildSettings = isDevBuildImage(spec.image)
     ? config.devbuild
     : { host: null, user: "", base: "" };
-  const env = devbuildContainerEnv(devbuild, spec.botKey);
+  const env = devbuildContainerEnv(devbuild, spec.botKey) ?? {};
+  if (config.yolo !== undefined) env[BOT_YOLO_ENV] = config.yolo ? "1" : "0";
   const keyMount = devbuildKeyMount(devbuild, config.mountSources);
   // A legacy image never runs as a shared member: the scope layout needs the
   // image's start-time links (BOT_RUNTIME_SCOPE_LABEL), which only single-
@@ -363,7 +385,7 @@ export function buildCreateContainerRequestBody(
   return {
     Image: spec.image,
     Labels: buildLabels(spec),
-    ...(env
+    ...(Object.keys(env).length > 0
       ? { Env: Object.entries(env).map(([name, value]) => `${name}=${value}`) }
       : scope
         ? { Env: [`${BOT_SCOPE_SUBDIR_ENV}=${spec.botKey}`] }

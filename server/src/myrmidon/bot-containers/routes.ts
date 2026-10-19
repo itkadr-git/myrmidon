@@ -34,6 +34,7 @@ import { conflict, notFound } from "../../errors.js";
 import { logger } from "../../middleware/logger.js";
 import { assertBoard, assertCompanyAccess, hasCompanyAccess } from "../../routes/authz.js";
 import { BOT_IMAGE_ALLOWLIST_ENV } from "./docker-driver.js";
+import { liveBehaviorSetting } from "../behavior-settings/live.js";
 import {
   botKeyForAgent,
   classifyBotImageTracking,
@@ -241,8 +242,11 @@ export function botContainerRoutes(deps: BotContainerRoutesDeps) {
     assertBoard(req);
     const agent = await loadAgent(req);
     const env = envNow();
+    const runtimeEnv = deps.env === undefined;
     const enabled = isBotContainersEnabled(env);
-    const allowlist = parseImageAllowlist(env[BOT_IMAGE_ALLOWLIST_ENV]);
+    const allowlist = runtimeEnv
+      ? liveBehaviorSetting<string[]>("bot_image_allowlist") ?? []
+      : parseImageAllowlist(env[BOT_IMAGE_ALLOWLIST_ENV]);
     const parsed = readBotContainerAgentConfig(agent.adapterType, agent.adapterConfig);
     const savedImage = (agent.adapterConfig.container as { image?: unknown } | undefined)?.image;
     const runtime = deps.getRuntime();
