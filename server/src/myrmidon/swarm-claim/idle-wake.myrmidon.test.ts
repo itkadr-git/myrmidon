@@ -128,10 +128,10 @@ describe("myrmidon(1.6.1 SWARM-IDLE-WAKE) sweep pass", () => {
             innerJoin: (joinedTable: unknown) => ({
               where: () => {
                 if (joinedTable === issues) {
+                  // listClaimsOnNonQueueIssues uses this join, and the fixture
+                  // issue is still in the ready queue, so it must find no rows.
                   return {
-                    orderBy: () => ({ limit: (limit: number) => Promise.resolve(
-                      claimState && !claimState.releasedAt ? [claimState].slice(0, limit) : [],
-                    ) }),
+                    orderBy: () => ({ limit: () => Promise.resolve([]) }),
                   };
                 }
                 return {
