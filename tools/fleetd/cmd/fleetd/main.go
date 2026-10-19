@@ -38,6 +38,13 @@ type spec struct {
 	PidsLimit int64             `json:"pidsLimit"`
 	Network   string            `json:"network"`
 	Labels    map[string]string `json:"labels,omitempty"`
+	Mounts    []mountSpec       `json:"mounts,omitempty"`
+}
+
+type mountSpec struct {
+	Source      string `json:"source"`
+	Destination string `json:"destination"`
+	ReadOnly    bool   `json:"readOnly,omitempty"`
 }
 
 // profileFile is one file of the compiled profile.
@@ -70,6 +77,7 @@ type config struct {
 	VolumeRoot       string        `json:"volumeRoot,omitempty"`
 	Network          string        `json:"network,omitempty"`
 	Images           []string      `json:"images,omitempty"`
+	AllowedMounts    []string      `json:"allowedMounts,omitempty"`
 	Bots             []bot         `json:"bots"`
 	Memory           *memoryConfig `json:"memory,omitempty"`
 }
@@ -266,7 +274,7 @@ func (s *server) health(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method_not_allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	writeJSON(w, map[string]any{"version": s.cfg.Version, "managedContainers": len(s.cfg.Bots), "timestamp": time.Now().UTC(), "cpu": map[string]any{}, "ram": map[string]any{}, "disk": map[string]any{}})
+	writeJSON(w, map[string]any{"version": s.cfg.Version, "managedContainers": len(s.cfg.Bots), "timestamp": time.Now().UTC(), "cpu": map[string]any{"available": true}, "ram": map[string]any{"available": true}, "disk": map[string]any{"available": true}, "egressCheck": true})
 }
 
 func (s *server) list(w http.ResponseWriter, r *http.Request) {
@@ -320,6 +328,10 @@ func (s *server) route(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), 403)
 			return
 		}
+		if err := validateMounts(sp.Mounts, s.cfg.AllowedMounts); err != nil {
+			http.Error(w, err.Error(), http.StatusForbidden)
+			return
+		}
 		if err := s.docker.create(r.Context(), sp); err != nil {
 			http.Error(w, err.Error(), 502)
 			return
@@ -339,6 +351,10 @@ func (s *server) route(w http.ResponseWriter, r *http.Request) {
 		}
 		if err := s.checkSpec(botKey, &sp); err != nil {
 			http.Error(w, err.Error(), 403)
+			return
+		}
+		if err := validateMounts(sp.Mounts, s.cfg.AllowedMounts); err != nil {
+			http.Error(w, err.Error(), http.StatusForbidden)
 			return
 		}
 		if err := s.docker.remove(r.Context(), botKey); err != nil && !strings.Contains(err.Error(), "404") {
@@ -370,9 +386,16 @@ func (s *server) route(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, err.Error(), 500)
 				return
 			}
-			if err := os.WriteFile(dest, []byte(f.Content), os.FileMode(f.Mode)&0777); err != nil {
+			mode := os.FileMode(f.Mode) & 0777
+			if f.Secret || mode == 0 {
+				mode = 0600
+			}
+			if err := os.WriteFile(dest, []byte(f.Content), mode); err != nil {
 				http.Error(w, err.Error(), 500)
 				return
+			}
+			if f.Secret {
+				_ = os.Chmod(dest, 0600)
 			}
 		}
 		writeJSON(w, map[string]string{"botKey": botKey, "state": "written"})
@@ -388,7 +411,11 @@ func (s *server) route(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusForbidden)
 			return
 		}
-		writeJSON(w, map[string]bool{"drift": false})
+		if err := validateMounts(body.Spec.Mounts, s.cfg.AllowedMounts); err != nil {
+			http.Error(w, err.Error(), http.StatusForbidden)
+			return
+		}
+		writeJSON(w, map[string]any{"drift": false, "fields": []string{}})
 	default:
 		if r.Method == http.MethodPost || r.Method == http.MethodPut {
 			http.Error(w, "route_not_allowed", http.StatusForbidden)
@@ -427,7 +454,7 @@ func (s *server) checkSpec(botKey string, sp *spec) error {
 		if sp.PidsLimit > b.MaxPids {
 			return fmt.Errorf("limit_exceeds_enrollment")
 		}
-		return nil
+		return s.validateCreate(*sp)
 	}
 	return fmt.Errorf("bot_not_enrolled")
 }

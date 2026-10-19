@@ -14,6 +14,9 @@ import (
 )
 
 func (s *server) validateCreate(sp spec) error {
+	if sp.Image == "" || !strings.Contains(sp.Image, "@sha256:") {
+		return errForbidden("image_digest_required")
+	}
 	if !s.imageAllowed(sp.Image) {
 		return errForbidden("image_not_allowed")
 	}
@@ -29,6 +32,28 @@ func (s *server) validateCreate(sp spec) error {
 	}
 	_, err := s.binds(sp)
 	return err
+}
+
+func validateMounts(mounts []mountSpec, allowed []string) error {
+	for _, m := range mounts {
+		if m.Source == "" || m.Destination == "" || !filepath.IsAbs(m.Destination) || m.Destination == "/" {
+			return fmt.Errorf("mount_invalid")
+		}
+		if filepath.Clean(m.Destination) != m.Destination || strings.Contains(m.Source, "..") {
+			return fmt.Errorf("mount_invalid")
+		}
+		ok := false
+		for _, root := range allowed {
+			if m.Source == root || strings.HasPrefix(m.Source, strings.TrimSuffix(root, "/")+"/") {
+				ok = true
+				break
+			}
+		}
+		if !ok {
+			return fmt.Errorf("mount_not_allowed")
+		}
+	}
+	return nil
 }
 
 func (s *server) enrollment(key string) *bot {

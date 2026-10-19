@@ -84,10 +84,25 @@ func (d *dockerClient) create(ctx context.Context, sp spec) error {
 	}
 	labels["paperclip.botKey"] = sp.BotKey
 	host := map[string]any{"Memory": sp.MemoryMb * 1024 * 1024, "NanoCpus": int64(sp.Cpus * 1e9), "PidsLimit": sp.PidsLimit}
+	host["ReadonlyRootfs"] = true
+	host["CapDrop"] = []string{"ALL"}
+	host["SecurityOpt"] = []string{"no-new-privileges:true"}
+	host["ShmSize"] = int64(64 * 1024 * 1024)
 	if d.network != "" {
 		host["NetworkMode"] = d.network
 	}
-	body := map[string]any{"Image": sp.Image, "Labels": labels, "HostConfig": host}
+	binds := make([]string, 0, len(sp.Mounts))
+	for _, mount := range sp.Mounts {
+		mode := "rw"
+		if mount.ReadOnly {
+			mode = "ro"
+		}
+		binds = append(binds, mount.Source+":"+mount.Destination+":"+mode)
+	}
+	if len(binds) > 0 {
+		host["Binds"] = binds
+	}
+	body := map[string]any{"Image": sp.Image, "User": "10001", "Labels": labels, "HostConfig": host}
 	var out any
 	return d.request(ctx, http.MethodPost, "/v1.41/containers/create?name="+url.QueryEscape(d.name(sp.BotKey)), body, &out)
 }

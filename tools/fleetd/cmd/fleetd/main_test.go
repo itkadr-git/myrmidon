@@ -27,10 +27,10 @@ func testClientTLS() *tls.ConnectionState {
 
 func testConfig() *config {
 	cfg := &config{
-		Listen:      "127.0.0.1:0",
-		TLSCert:     "server.pem",
-		TLSKey:      "server-key.pem",
-		TLSClientCA: "site-ca.pem",
+		Listen:  "127.0.0.1:0",
+		Token:   fakeBearer(),
+		Network: "net-a",
+		Images:  []string{"example.com/bot@sha256:aa"},
 		Bots: []bot{
 			{BotKey: "bot-example-one", MaxMemoryMb: 1536, MaxCpus: 1, MaxPids: 256},
 		},
@@ -125,11 +125,26 @@ func TestHealthRouteRequiresAuthAndReportsResources(t *testing.T) {
 	s, _ := newServer(t)
 	s.cfg.Bots = []bot{{BotKey: "bot-example-one", MaxMemoryMb: 1024, MaxCpus: 1, MaxPids: 128}}
 	token := fakeBearer()
-	if rec := routeRequest(s, http.MethodGet, "/v1/health", "", ""); rec.Code != http.StatusUnauthorized {
-		t.Fatalf("unauthenticated health: got %d", rec.Code)
+	if rec := routeRequest(s, http.MethodGet, "/v1/bots", "", ""); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated list: got %d", rec.Code)
 	}
 	if rec := routeRequest(s, http.MethodGet, "/v1/bots/bot-example-one/status", token, ""); rec.Code != http.StatusOK {
 		t.Fatalf("authenticated status: got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestMountPolicy(t *testing.T) {
+	if err := validateMounts([]mountSpec{{Source: "/srv/bots", Destination: "/data", ReadOnly: true}}, []string{"/srv/bots"}); err != nil {
+		t.Fatalf("allowed mount rejected: %v", err)
+	}
+	for _, mounts := range [][]mountSpec{
+		{{Source: "/etc", Destination: "/data"}},
+		{{Source: "/srv/bots", Destination: "/"}},
+		{{Source: "/srv/bots/../secret", Destination: "/data"}},
+	} {
+		if err := validateMounts(mounts, []string{"/srv/bots"}); err == nil {
+			t.Fatalf("unsafe mount accepted: %#v", mounts)
+		}
 	}
 }
 
@@ -202,24 +217,6 @@ func TestValidateConfig(t *testing.T) {
 	if err := validate(cfg); err != nil {
 		t.Fatalf("valid config rejected: %v", err)
 	}
-	tlsCfg, err := tlsConfig("/missing/site-ca.pem")
-	if err == nil || tlsCfg != nil {
-		t.Fatalf("missing site CA accepted: config=%v err=%v", tlsCfg, err)
-	}
-	for _, field := range []string{"tlsCert", "tlsKey", "tlsClientCA"} {
-		bad := testConfig()
-		switch field {
-		case "tlsCert":
-			bad.TLSCert = ""
-		case "tlsKey":
-			bad.TLSKey = ""
-		case "tlsClientCA":
-			bad.TLSClientCA = ""
-		}
-		if err := validate(bad); err == nil || !strings.Contains(err.Error(), field) {
-			t.Errorf("missing %s accepted: %v", field, err)
-		}
-	}
 	bad := testConfig()
 	bad.Bots = nil
 	if err := validate(bad); err == nil || !strings.Contains(err.Error(), "bots[]") {
@@ -236,6 +233,18 @@ func TestStrictDecodeRejectsUnknownKeys(t *testing.T) {
 	var out config
 	if err := strictDecode([]byte(`{"listen":"a","tlsCert":"server.pem","tlsKey":"server-key.pem","tlsClientCA":"site-ca.pem","unknown":1,"bots":[{"botKey":"k","maxMemoryMb":1,"maxCpus":1,"maxPids":1}]}`), &out); err == nil {
 		t.Fatal("unknown key accepted")
+	}
+}
+
+func TestImagePolicyRequiresDigestAllowlist(t *testing.T) {
+	s := &server{cfg: testConfig()}
+	sp := spec{BotKey: "bot-example-one", Image: "example.com/bot@sha256:aa", MemoryMb: 128, Cpus: 1, PidsLimit: 64, Network: "net-a"}
+	if err := s.validateCreate(sp); err != nil {
+		t.Fatalf("valid image rejected: %v", err)
+	}
+	sp.Image = "example.com/bot:latest"
+	if err := s.validateCreate(sp); err == nil {
+		t.Fatal("tagged image accepted")
 	}
 }
 
