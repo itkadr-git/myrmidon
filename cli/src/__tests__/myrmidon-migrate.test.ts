@@ -10,6 +10,7 @@ import {
   closeRegisteredClients,
   createDb,
   ensurePostgresDatabase,
+  loadMigrationTargetSchema,
   runDatabaseBackup,
 } from "@paperclipai/db";
 import {
@@ -19,7 +20,14 @@ import {
   type EmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { checkVendorChain, chainStartsWithVendor } from "../commands/myrmidon-migrate-chain.js";
-import { loadVendorChain } from "../commands/myrmidon-migrate-vendor-chain.js";
+import {
+  buildVendorOnlyIndex,
+  loadVendorChain,
+  loadVendorReleases,
+  type VendorOnlyIndex,
+  type VendorRelease,
+} from "../commands/myrmidon-migrate-vendor-chain.js";
+import type { ColumnInfo, TableInfo } from "../commands/myrmidon-migrate-db.js";
 import {
   copyManifest,
   inventoryDirectory,
@@ -35,7 +43,11 @@ import {
   redact,
   sha256Hex,
 } from "../commands/myrmidon-migrate-secrets.js";
-import { runMigration, type MigrationOptions } from "../commands/myrmidon-migrate.js";
+import {
+  checkCompatibility,
+  runMigration,
+  type MigrationOptions,
+} from "../commands/myrmidon-migrate.js";
 
 const MIGRATIONS_DIR = fileURLToPath(new URL("../../../packages/db/src/migrations", import.meta.url));
 
@@ -55,30 +67,213 @@ describe("myrmidon:migrate pure guards", () => {
   });
 
   let chain: Awaited<ReturnType<typeof loadVendorChain>>;
+  let releases: VendorRelease[];
   beforeAll(async () => {
     chain = await loadVendorChain();
+    releases = await loadVendorReleases();
   });
-  const chainRows = () => chain.map((e) => ({ hash: e[1] }));
+  const rowsOf = (r: VendorRelease) => r.chain.map((e) => ({ hash: e[1] }));
+  const release = (name: string) => releases.find((r) => r.release === name)!;
+  const SUPPORTED: [string, number, string][] = [
+    ["v2026.916.1", 278, "0279_tired_deathstrike"],
+    ["v2026.916.0", 278, "0279_tired_deathstrike"],
+    ["v2026.1001.0", 282, "0283_jittery_psynapse"],
+    ["v2026.1005.0", 292, "0293_broad_rattler"],
+    ["v2026.1012.0", 304, "0305_chubby_vin_gonzales"],
+  ];
 
-  it("accepts exactly the vendor chain and nothing else", () => {
-    expect(checkVendorChain(chainRows(), chain).supported).toBe(true);
-    expect(chainStartsWithVendor([...chainRows(), { hash: "x" }], chain)).toBe(true);
-    expect(checkVendorChain(null, chain).reason).toBe("no-migration-journal");
-    expect(checkVendorChain([], chain).reason).toBe("empty-journal");
-    expect(checkVendorChain(chainRows().slice(0, -1), chain).reason).toBe("older-than-supported-release");
-    expect(checkVendorChain([...chainRows(), { hash: "x" }], chain).reason).toBe("newer-than-supported-release");
+  it("lists the supported Paperclip releases with their pinned chains", () => {
+    expect(releases.map((r) => [r.release, r.chain.length, r.chain[r.chain.length - 1]![0]])).toEqual(SUPPORTED.map((x) => [...x]));
+    for (const r of releases) {
+      // every release starts with the same base chain, and every hash is a sha256
+      expect(r.chain.slice(0, chain.length)).toEqual(chain);
+      for (const [, hash] of r.chain) expect(hash).toMatch(/^[0-9a-f]{64}$/);
+    }
+    // an older release is a prefix of a newer one
+    expect(release("v2026.1005.0").chain.slice(0, 282)).toEqual(release("v2026.1001.0").chain);
+    expect(release("v2026.1012.0").chain.slice(0, 292)).toEqual(release("v2026.1005.0").chain);
+  });
+
+  it.each(SUPPORTED)("accepts exactly the chain of %s and reports its canonical release", (name, length) => {
+    const check = checkVendorChain(rowsOf(release(name)), releases);
+    const canonicalRelease = name === "v2026.916.0" ? "v2026.916.1" : name;
+    expect(check).toMatchObject({ supported: true, vendorRelease: canonicalRelease, applied: length, expected: length });
+    expect(check.supportedReleases).toEqual(SUPPORTED.map((x) => x[0]));
+  });
+
+  it("accepts the base chain and keeps the target prefix check", () => {
+    expect(checkVendorChain(rowsOf(release("v2026.916.1")), releases).supported).toBe(true);
+    expect(chainStartsWithVendor([...rowsOf(release("v2026.916.1")), { hash: "x" }], chain)).toBe(true);
+    expect(checkVendorChain(null, releases).reason).toBe("no-migration-journal");
+    expect(checkVendorChain([], releases).reason).toBe("empty-journal");
+  });
+
+  it("rejects a truncated, extended or foreign chain with the right reason", () => {
+    const base = rowsOf(release("v2026.916.1"));
+    const latest = rowsOf(release("v2026.1012.0"));
+    // truncated: one short of each release
+    expect(checkVendorChain(base.slice(0, -1), releases).reason).toBe("older-than-supported-release");
+    for (const name of ["v2026.1001.0", "v2026.1005.0", "v2026.1012.0"]) {
+      const check = checkVendorChain(rowsOf(release(name)).slice(0, -1), releases);
+      expect(check.reason).toBe("older-than-supported-release");
+      expect(check.vendorRelease).toBe(name);
+    }
+    // between two supported releases (a half-upgraded source)
+    expect(checkVendorChain(latest.slice(0, 285), releases).reason).toBe("older-than-supported-release");
+    // extended past the newest supported release
+    const newer = checkVendorChain([...latest, { hash: "x" }], releases);
+    expect(newer.reason).toBe("newer-than-supported-release");
+    expect(newer.detail).toContain("v2026.1012.0");
+    expect(checkVendorChain([...base, { hash: "x" }], releases).reason).toBe("newer-than-supported-release");
+    // a foreign hash anywhere, including the last row of every release
+    for (const r of releases) {
+      const rows = rowsOf(r);
+      rows[rows.length - 1] = { hash: "f".repeat(64) };
+      expect(checkVendorChain(rows, releases).supported).toBe(false);
+    }
+    const foreign = latest.slice();
+    foreign[290] = { hash: "0".repeat(64) };
+    const check = checkVendorChain(foreign, releases);
+    expect(check).toMatchObject({ supported: false, reason: "hash-mismatch", firstMismatchIndex: 290 });
+    // an unknown migration after the base chain is not any supported release
+    expect(checkVendorChain([...base, { hash: "1".repeat(64) }, { hash: "2".repeat(64) }, { hash: "3".repeat(64) }, { hash: "4".repeat(64) }], releases).supported).toBe(false);
   });
 
   it("rejects a chain whose last name/number matches but a hash differs", () => {
-    const rows = chainRows();
+    const rows = rowsOf(release("v2026.916.1"));
     rows[100] = { hash: "0".repeat(64) };
-    const check = checkVendorChain(rows, chain);
+    const check = checkVendorChain(rows, releases);
     expect(check.supported).toBe(false);
     expect(check.reason).toBe("hash-mismatch");
     expect(check.firstMismatchIndex).toBe(100);
-    const lastOnlyDiffers = chainRows();
+    const lastOnlyDiffers = rowsOf(release("v2026.916.1"));
     lastOnlyDiffers[lastOnlyDiffers.length - 1] = { hash: "f".repeat(64) };
-    expect(checkVendorChain(lastOnlyDiffers, chain).supported).toBe(false);
+    expect(checkVendorChain(lastOnlyDiffers, releases).supported).toBe(false);
+  });
+
+  it("pins the features that only later releases have", () => {
+    const index = buildVendorOnlyIndex();
+    expect(index.tables.get("mcp_oauth_clients")).toBe("v2026.1012.0");
+    expect(index.tables.size).toBeGreaterThan(20);
+    expect(index.columns.get("agents.appearance")).toBeDefined();
+    expect(index.columns.get("routine_triggers.archived")).toBeDefined();
+    // nothing of the base release is listed as vendor-only
+    expect(index.tables.has("agents")).toBe(false);
+    expect(index.tables.has("assets")).toBe(false);
+  });
+
+  it("excludes features that exist in the target schema from the vendor-only index", () => {
+    const targetSchema = {
+      tables: new Set(["mcp_oauth_clients", "routine_webhook_test_receipts"]),
+      columns: new Set(["agents.appearance"]),
+    };
+    const index = buildVendorOnlyIndex(undefined, targetSchema);
+    expect(index.tables.has("mcp_oauth_clients")).toBe(false);
+    expect(index.tables.has("routine_webhook_test_receipts")).toBe(false);
+    expect(index.columns.has("agents.appearance")).toBe(false);
+    // Features absent from targetSchema and not dropped remain vendor-only:
+    expect(index.tables.get("chat_github_configurations")).toBe("v2026.1001.0");
+    expect(index.columns.get("routine_triggers.archived")).toBe("v2026.1001.0");
+  });
+
+  it("accounts for net migration chain drops such as user.keyboard_shortcuts", () => {
+    // user.keyboard_shortcuts was introduced in 0284, but dropped in 0289_drop_user_keyboard_shortcuts
+    const index = buildVendorOnlyIndex();
+    expect(index.columns.has("user.keyboard_shortcuts")).toBe(false);
+    expect(index.droppedColumns?.has("user.keyboard_shortcuts")).toBe(true);
+    // Features that were not dropped and are not in target remain vendor-only:
+    expect(index.tables.get("chat_github_configurations")).toBe("v2026.1001.0");
+    expect(index.columns.get("agents.appearance")).toBe("v2026.1001.0");
+  });
+
+  it("loads target schema from our migration tree snapshot", async () => {
+    const targetSchema = await loadMigrationTargetSchema();
+    expect(targetSchema.tables.has("agents")).toBe(true);
+    expect(targetSchema.tables.has("issues")).toBe(true);
+    expect(targetSchema.columns.has("agents.id")).toBe(true);
+    expect(targetSchema.columns.has("issues.id")).toBe(true);
+    // Later vendor-only features are not in current Myrmidon schema:
+    expect(targetSchema.tables.has("mcp_oauth_clients")).toBe(false);
+    expect(targetSchema.columns.has("agents.appearance")).toBe(false);
+  });
+
+  describe("checkCompatibility with features Myrmidon lacks", () => {
+    const col = (name: string, over: Partial<ColumnInfo> = {}): ColumnInfo => ({
+      name,
+      dataType: "text",
+      nullable: true,
+      hasDefault: false,
+      generated: false,
+      identityAlways: false,
+      hasIdentity: false,
+      defaultExpr: null,
+      ...over,
+    });
+    const table = (name: string, cols: ColumnInfo[]): TableInfo => ({ name, columns: cols });
+    const analysisOf = (tables: TableInfo[], rows: Record<string, number>, candidates: any[] = []) => ({
+      tables: new Map(tables.map((t) => [t.name, t])),
+      digests: new Map(tables.map((t) => [t.name, { rows: rows[t.name] ?? 0, digest: "d" }])),
+      vendorOnlyCandidates: candidates,
+    });
+    const index = {
+      tables: new Map([["browser_use_runs", "v2026.1012.0"]]),
+      columns: new Map([["agents.appearance", "v2026.1012.0"], ["user.keyboard_shortcuts", "v2026.1001.0"]]),
+    };
+
+    it("reports a missing vendor-only table and column as findings, not problems", () => {
+      const analysis = analysisOf(
+        [table("browser_use_runs", [col("id")]), table("agents", [col("id"), col("appearance")]), table("user", [col("id"), col("keyboard_shortcuts")])],
+        { browser_use_runs: 3, agents: 5, user: 2 },
+        [{ kind: "column", table: "agents", column: "appearance", rows: 4, introducedIn: "v2026.1012.0" }],
+      );
+      const target = new Map([["agents", table("agents", [col("id")])], ["user", table("user", [col("id")])]]);
+      const result = checkCompatibility(analysis, target, index);
+      expect(result.problems).toEqual([]);
+      expect(result.vendorOnly).toEqual([
+        { kind: "table", table: "browser_use_runs", rows: 3, introducedIn: "v2026.1012.0" },
+        { kind: "column", table: "agents", column: "appearance", rows: 4, introducedIn: "v2026.1012.0" },
+        { kind: "column", table: "user", column: "keyboard_shortcuts", rows: 2, introducedIn: "v2026.1001.0" },
+      ]);
+    });
+
+    it("keeps every other mismatch an error", () => {
+      const analysis = analysisOf(
+        [table("mystery", [col("id")]), table("agents", [col("id"), col("surprise")])],
+        { mystery: 1, agents: 1 },
+      );
+      const target = new Map([["agents", table("agents", [col("id")])]]);
+      const result = checkCompatibility(analysis, target, index);
+      expect(result.problems).toEqual(["table-missing-in-target:mystery", "column-missing-in-target:agents.surprise"]);
+      expect(result.vendorOnly).toEqual([]);
+    });
+
+    it("excludes empty tables quietly and lets the target lack a column the source dropped", () => {
+      const analysis = analysisOf([table("browser_use_runs", [col("id")]), table("user", [col("id")])], { user: 2 });
+      // the target still has the dropped column keyboard_shortcuts: nullable, so no value is needed
+      const nullable = new Map([["user", table("user", [col("id"), col("keyboard_shortcuts")])]]);
+      const ok = checkCompatibility(analysis, nullable, index);
+      expect(ok.problems).toEqual([]);
+      expect(ok.vendorOnly).toEqual([]);
+      expect(ok.exclusions).toEqual([{ kind: "table", name: "browser_use_runs", reason: "absent in target and empty in source" }]);
+      const required = new Map([["user", table("user", [col("id"), col("keyboard_shortcuts", { nullable: false })])]]);
+      expect(checkCompatibility(analysis, required, index).problems).toEqual(["target-column-requires-value:user.keyboard_shortcuts"]);
+    });
+
+    it("treats columns dropped in migration chain as exclusions, not missing errors", () => {
+      const droppedIndex: VendorOnlyIndex = {
+        tables: new Map(),
+        columns: new Map(),
+        droppedColumns: new Set(["user.keyboard_shortcuts"]),
+      };
+      const analysis = analysisOf([table("user", [col("id"), col("keyboard_shortcuts")])], { user: 2 });
+      const target = new Map([["user", table("user", [col("id")])]]);
+      const result = checkCompatibility(analysis, target, droppedIndex);
+      expect(result.problems).toEqual([]);
+      expect(result.vendorOnly).toEqual([]);
+      expect(result.exclusions).toEqual([
+        { kind: "column", name: "user.keyboard_shortcuts", reason: "dropped in migration chain; not needed in target" },
+      ]);
+    });
   });
 
   it("guards object keys and manifest paths against traversal", () => {
@@ -216,7 +411,7 @@ describeEmbeddedPostgres("myrmidon:migrate against a real Postgres", () => {
   afterAll(async () => {
     await cluster?.cleanup();
     for (const dir of tmpDirs) rmSync(dir, { recursive: true, force: true });
-  });
+  }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS * 3);
 
   type Fixture = {
     sourceUrl: string;
@@ -297,6 +492,52 @@ describeEmbeddedPostgres("myrmidon:migrate against a real Postgres", () => {
     await expectZeroWrites(f);
     expect(await sourceFingerprint(f.sourceUrl)).toBe(before);
   }, T);
+
+  it("prechecks vendor-only data against migration tree target schema: ignores dropped columns and requires flag only for truly absent features", async () => {
+    const f = await fixture();
+    // 1. Source database has data in user.keyboard_shortcuts (which was dropped in 0289 in the migration chain)
+    await scalar(f.sourceUrl, 'alter table "user" add column if not exists "keyboard_shortcuts" jsonb');
+    await scalar(
+      f.sourceUrl,
+      "insert into \"user\" (id, name, email, created_at, updated_at, keyboard_shortcuts) values ('88888888-8888-4888-8888-888888888888', 'Shortcuts User', 'sc@test.local', now(), now(), '{\"ctrl_k\": true}')",
+    );
+
+    // Dry-run through production precheck: user.keyboard_shortcuts does NOT require the flag
+    const dry = (await runMigration({ ...f.options, dryRun: true })) as Record<string, any>;
+    expect(dry.status).toBe("ok");
+    expect(dry.vendorOnlyData.requiresFlag).toBe(false);
+    expect(dry.vendorOnlyData.withData).toEqual([]);
+
+    // Real run without --accept-vendor-only-data succeeds without error
+    const runResult = (await runMigration(f.options)) as Record<string, any>;
+    expect(runResult.status).toBe("ok");
+    expect(runResult.phases).toContain("data");
+
+    // 2. Now test with a fresh fixture containing data in a feature that is TRULY absent from the target schema (e.g. agents.appearance)
+    const f2 = await fixture();
+    await scalar(f2.sourceUrl, 'alter table "user" add column if not exists "keyboard_shortcuts" jsonb');
+    await scalar(
+      f2.sourceUrl,
+      "insert into \"user\" (id, name, email, created_at, updated_at, keyboard_shortcuts) values ('88888888-8888-4888-8888-888888888888', 'Shortcuts User', 'sc@test.local', now(), now(), '{\"ctrl_k\": true}')",
+    );
+    await scalar(f2.sourceUrl, 'alter table "agents" add column if not exists "appearance" jsonb');
+    await scalar(f2.sourceUrl, "update \"agents\" set \"appearance\" = '{\"theme\": \"dark\"}'::jsonb");
+
+    // Production precheck dry run detects the truly vendor-only feature and requires the flag
+    const dry2 = (await runMigration({ ...f2.options, dryRun: true })) as Record<string, any>;
+    expect(dry2.status).toBe("ok");
+    expect(dry2.vendorOnlyData.requiresFlag).toBe(true);
+    expect(dry2.vendorOnlyData.withData).toMatchObject([{ table: "agents", column: "appearance" }]);
+    expect(dry2.vendorOnlyData.withData.some((c: any) => c.column === "keyboard_shortcuts")).toBe(false);
+
+    // Real run without --accept-vendor-only-data refuses before any target write
+    await expect(runMigration(f2.options)).rejects.toThrow(/accept-vendor-only-data/);
+    await expectZeroWrites(f2);
+
+    // Real run with --accept-vendor-only-data succeeds
+    const runWithFlag = (await runMigration({ ...f2.options, acceptVendorOnlyData: true })) as Record<string, any>;
+    expect(runWithFlag.status).toBe("ok");
+  }, T * 2);
 
   it("rejects unsupported source histories before any target write", async () => {
     for (const tamper of [

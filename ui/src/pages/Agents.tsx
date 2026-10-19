@@ -4,6 +4,8 @@ import { Link, useNavigate, useLocation } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
 import { agentsApi, type OrgNode } from "../api/agents";
 import { builtInAgentsApi, type BuiltInAgentState } from "../api/builtInAgents";
+import { projectsApi } from "../api/projects";
+import { filterAgentsByScope, parseAgentScope } from "./Agents.scope-filters";
 import { environmentsApi } from "../api/environments";
 import { heartbeatsApi } from "../api/heartbeats";
 import { instanceSettingsApi } from "../api/instanceSettings";
@@ -25,6 +27,7 @@ import { OrgChart } from "./OrgChart";
 import { relativeTime, cn, agentRouteRef, agentUrl } from "../lib/utils";
 import { PageTabBar } from "../components/PageTabBar";
 import { Tabs } from "@/components/ui/tabs";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Button } from "@/components/ui/button";
 import { AlertTriangle, Bot, Plus, List, Network } from "lucide-react";
 import { AGENT_ROLE_LABELS, type Agent, type Environment, type EnvironmentCapabilities } from "@paperclipai/shared";
@@ -219,6 +222,7 @@ export function Agents({ initialView = "list" }: { initialView?: AgentsView } = 
   const { setBreadcrumbs } = useBreadcrumbs();
   const navigate = useNavigate();
   const location = useLocation();
+  const scope = parseAgentScope(location.search);
   const { isMobile } = useSidebar();
   const { enabled: streamlinedUiEnabled } = useStreamlinedUiEnabled();
   const pathSegment = location.pathname.split("/").pop() ?? "all";
@@ -236,8 +240,34 @@ export function Agents({ initialView = "list" }: { initialView?: AgentsView } = 
     queryFn: () => instanceSettingsApi.get(),
     enabled: !!selectedCompanyId,
   });
+  const { data: projects } = useQuery({
+    queryKey: queryKeys.projects.list(selectedCompanyId!),
+    queryFn: () => projectsApi.list(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+  });
+  const activeProjects = (projects ?? []).filter((project) => !project.archivedAt);
+  const selectedProject = scope.type === "project"
+    ? activeProjects.find((project) => project.id === scope.projectId) ?? null
+    : null;
+  const [roleFilter, setRoleFilter] = useState("all");
+  const [modelFilter, setModelFilter] = useState("all");
+  const changeScope = (value: string) => {
+    setRoleFilter("all");
+    setModelFilter("all");
+    navigate(value === "company" ? `/agents/${tab}` : `/agents/${tab}?scope=project:${encodeURIComponent(value)}`);
+  };
+  const changeTab = (value: string) => {
+    setRoleFilter("all");
+    setModelFilter("all");
+    navigate(scope.type === "company" ? `/agents/${value}` : `/agents/${value}?scope=project:${encodeURIComponent(scope.projectId)}`);
+  };
   const builtInAgentsEnabled = instanceSettings?.experimental.enableBuiltInAgents === true;
   const tab: FilterTab = requestedTab === "builtin" && !builtInAgentsEnabled ? "all" : requestedTab;
+  useEffect(() => {
+    if (scope.type === "project" && projects && !selectedProject) {
+      navigate(`/agents/${tab}`, { replace: true });
+    }
+  }, [navigate, projects, scope.type, scope.type === "project" ? scope.projectId : "", selectedProject, tab]);
 
   const { data: builtInAgents } = useQuery({
     queryKey: queryKeys.builtInAgents.list(selectedCompanyId!),
@@ -395,8 +425,17 @@ export function Agents({ initialView = "list" }: { initialView?: AgentsView } = 
     return <PageSkeleton variant="list" />;
   }
 
-  const filtered = filterAgents(agents ?? [], tab, builtInAgentIds);
-  const filteredOrg = filterOrgTree(orgTree ?? [], tab, builtInAgentIds);
+  const scopedAgents = filterAgentsByScope(agents ?? [], scope, activeProjects);
+  const scopedAgentIds = new Set(scopedAgents.map((agent) => agent.id));
+  const filtered = filterAgents(scopedAgents, tab, builtInAgentIds)
+    .filter((agent) => roleFilter === "all" || agent.role === roleFilter)
+    .filter((agent) => modelFilter === "all" || agent.adapterModel === modelFilter);
+  const scopedTree = (nodes: OrgNode[]): OrgNode[] => nodes.flatMap((node) => {
+    const reports = scopedTree(node.reports);
+    if (!scopedAgentIds.has(node.id)) return reports;
+    return [{ ...node, reports }];
+  });
+  const filteredOrg = filterOrgTree(scopedTree(orgTree ?? []), tab, builtInAgentIds);
   const environmentDataLoading = environmentsEnabled && environments === undefined;
   const showEnvironmentColumn = environmentsEnabled && (environments === undefined || environments.length > 1);
   const resolveRenderedEnvironment = (agentId: string) => (
@@ -541,14 +580,45 @@ export function Agents({ initialView = "list" }: { initialView?: AgentsView } = 
         : "space-y-4",
     )}>
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <Tabs value={tab} onValueChange={(v) => navigate(`/agents/${v}`)}>
-          <PageTabBar
-            items={visibleTabItems}
-            value={tab}
-            onValueChange={(v) => navigate(`/agents/${v}`)}
-          />
-        </Tabs>
+        <div className="flex flex-wrap items-center gap-3">
+          <Tabs value={scope.type === "company" ? "company" : scope.projectId} onValueChange={changeScope}>
+            <PageTabBar
+              align="start"
+              value={scope.type === "company" ? "company" : scope.projectId}
+              onValueChange={changeScope}
+              items={[
+                { value: "company", label: t("agents.scopeCompany") },
+                ...activeProjects.map((project) => ({ value: project.id, label: project.name })),
+              ]}
+            />
+          </Tabs>
+          <Tabs value={tab} onValueChange={changeTab}>
+            <PageTabBar
+              items={visibleTabItems}
+              value={tab}
+              onValueChange={changeTab}
+            />
+          </Tabs>
+        </div>
         <div className="flex items-center gap-2">
+          <Select value={roleFilter} onValueChange={setRoleFilter}>
+            <SelectTrigger className="w-36"><SelectValue placeholder={t("agents.filterRole")} /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">{t("agents.filterAll")}</SelectItem>
+              {[...new Set(scopedAgents.map((agent) => agent.role))].sort().map((role) => (
+                <SelectItem key={role} value={role}>{role}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <Select value={modelFilter} onValueChange={setModelFilter}>
+            <SelectTrigger className="w-36"><SelectValue placeholder={t("agents.filterModel")} /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">{t("agents.filterAll")}</SelectItem>
+              {[...new Set(scopedAgents.map((agent) => agent.adapterModel).filter((model): model is string => !!model))].sort().map((model) => (
+                <SelectItem key={model} value={model}>{model}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
           {!forceListView ? <div className="flex items-center overflow-hidden rounded-md border border-border" role="group" aria-label={t("agents.agentView")}>
               <Button
                 type="button"
