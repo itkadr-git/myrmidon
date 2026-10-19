@@ -14,14 +14,18 @@ function parsedConfig(
 ) {
   const config = parseManagedConfigEnv({
     ...env,
-    [MANAGED_CONFIG_ENV_KEY]: JSON.stringify({
-      v: 1,
-      mode: "cloud",
-      catalogVersion: "2026.720.0",
-      features: {},
-      plugins: { autoInstall: ["daytona"] },
-      ...overrides,
-    }),
+    ...(Object.hasOwn(env, MANAGED_CONFIG_ENV_KEY)
+      ? {}
+      : {
+          [MANAGED_CONFIG_ENV_KEY]: JSON.stringify({
+            v: 1,
+            mode: "cloud",
+            catalogVersion: "2026.720.0",
+            features: {},
+            plugins: { autoInstall: ["daytona"] },
+            ...overrides,
+          }),
+        }),
   });
   if (!config) throw new Error("expected a parsed managed config");
   return config;
