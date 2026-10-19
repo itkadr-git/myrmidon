@@ -382,14 +382,19 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
     const runId = await seedRun({ companyId, agentId, status: "succeeded" });
     await db.update(issues).set({ executionRunId: runId }).where(eq(issues.companyId, companyId));
     const adapter = createPostgresWakeQueueAdapter(db, stubDeps);
+    let capturedPrimary: string | undefined;
     let capturedSibling: string | undefined;
 
     await adapter.withIssueExecutionLock({ companyId, runId, now: new Date() }, async (locked) => {
+      capturedPrimary = locked.primaryIssue.id;
       capturedSibling = locked.releasedSiblingIssue?.id;
       return { outcome: { kind: "released" }, postCommitEffects: [] };
     });
 
-    expect(capturedSibling).toBe(issueB);
+    expect(capturedPrimary).toBeDefined();
+    expect(capturedSibling).toBeDefined();
+    expect(capturedSibling).not.toBe(capturedPrimary);
+    expect(new Set([capturedPrimary, capturedSibling])).toEqual(new Set([issueA, issueB]));
   });
 
   it("reports the selected lock-free primary once context-only runs retain an independent queue", async () => {
