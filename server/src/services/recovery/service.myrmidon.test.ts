@@ -151,7 +151,7 @@ describeEmbeddedPostgres("reconcileStrandedAssignedIssues: infrastructure interr
   it("returns stranded work to the shared unassigned engineer queue", async () => {
     const { issueId } = await seedStrandedIssue({
       errorCode: "agent_paused",
-      runtimeMode: "native",
+      runtimeMode: "conversation",
       adapterType: "hermes_gateway",
       scheduledRetryAttempt: 0,
       contextSnapshotExtra: { retryReason: "issue_continuation_needed" },
