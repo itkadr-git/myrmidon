@@ -72,6 +72,17 @@ describe("createBufferedTextFileWriter", () => {
 
     expect(fs.readFileSync(outputPath, "utf8")).toBe(lines.join("\n"));
   });
+
+  it("writes gzip output without creating a plain SQL file", async () => {
+    const tempDir = createTempDir("paperclip-buffered-gzip-");
+    const outputPath = path.join(tempDir, "backup.sql.gz");
+    const writer = createBufferedTextFileWriter(outputPath, 16, true);
+    writer.emit("BEGIN;");
+    writer.emit("COMMIT;");
+    await writer.close();
+    expect(gunzipSync(fs.readFileSync(outputPath)).toString()).toBe("BEGIN;\nCOMMIT;");
+    expect(fs.readdirSync(tempDir)).toEqual(["backup.sql.gz"]);
+  });
 });
 
 describeEmbeddedPostgres("runDatabaseBackup", () => {

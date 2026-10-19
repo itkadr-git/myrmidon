@@ -918,6 +918,7 @@ export const BOT_LABEL_KEYS = {
   /** Set on the driver's helper containers instead of `bot`, so they never show
    *  up as a bot in `list()`. */
   helper: "myrmidon.bot-helper",
+  idleStopped: "myrmidon.idle-stopped",
 } as const;
 
 /**

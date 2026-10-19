@@ -405,6 +405,10 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
       // journal survives every general write (the pass appends to it on each
       // pass, and the "Foraging" page reads it back).
       ...(parsed.data.foragingPassJournal ? { foragingPassJournal: parsed.data.foragingPassJournal } : {}),
+      // myrmidon(1.6.6 PROCS-1.7 part A): the stored processes settings
+      // (the multi-process mode, design OPE-5394 §5.7) survive every general
+      // write — they are edited at Instance settings -> «Процессы».
+      ...(parsed.data.processes ? { processes: parsed.data.processes } : {}),
       // myrmidon(ATTENTION-WINDOW-CACHE): the attention feed's failed-run
       // horizon (days) and cache TTL (seconds) survive every general write —
       // without these lines the whitelist drops the keys, a PATCH answers 200
