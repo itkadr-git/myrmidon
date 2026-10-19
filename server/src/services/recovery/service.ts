@@ -2560,6 +2560,8 @@ export function recoveryService(
     previousStatus: StrandedPreviousStatus;
     recoveryCause?: StrandedRecoveryCause;
     successfulRunHandoffEvidence?: SuccessfulRunHandoffRecoveryEvidence | null;
+    scheduledRetryAttempt?: number | null;
+    scheduledRetryReason?: string | null;
   }) {
     const latestRun = await getLatestIssueRun(input.issue.companyId, input.issue.id);
     if (!latestRun || (latestRun.status !== "failed" && latestRun.status !== "timed_out" && latestRun.status !== "cancelled" && latestRun.status !== "interrupted" && latestRun.status !== "succeeded")) return false;
@@ -2583,8 +2585,8 @@ export function recoveryService(
       latestRun.errorCode &&
       isInfraInterruptErrorCode(latestRun.errorCode) &&
       infraInterruptRetryBudgetExhausted({
-        scheduledRetryAttempt: retryColumns?.scheduledRetryAttempt ?? null,
-        scheduledRetryReason: retryColumns?.scheduledRetryReason ?? null,
+        scheduledRetryAttempt: input.scheduledRetryAttempt ?? retryColumns?.scheduledRetryAttempt ?? null,
+        scheduledRetryReason: input.scheduledRetryReason ?? retryColumns?.scheduledRetryReason ?? null,
         contextSnapshot: latestRun.contextSnapshot,
       })
     ) {
@@ -3985,6 +3987,8 @@ export function recoveryService(
     recoveryCause?: StrandedRecoveryCause;
     successfulRunHandoffEvidence?: SuccessfulRunHandoffRecoveryEvidence | null;
     rerouteToSharedQueue?: boolean;
+    scheduledRetryAttempt?: number | null;
+    scheduledRetryReason?: string | null;
   }) {
     const recoveryCause = resolveStrandedRecoveryCause(
       input.latestRun,
@@ -4013,6 +4017,8 @@ export function recoveryService(
         latestRun: input.latestRun,
         previousStatus: input.previousStatus,
         recoveryCause: input.recoveryCause,
+        scheduledRetryAttempt: input.scheduledRetryAttempt,
+        scheduledRetryReason: input.scheduledRetryReason,
         successfulRunHandoffEvidence: input.successfulRunHandoffEvidence,
       });
       return rerouted ? input.issue : null;
@@ -4454,6 +4460,8 @@ export function recoveryService(
         previousStatus: input.previousStatus,
         recoveryCause,
         successfulRunHandoffEvidence: input.successfulRunHandoffEvidence,
+        scheduledRetryAttempt: input.scheduledRetryAttempt,
+        scheduledRetryReason: input.scheduledRetryReason,
       });
       if (rerouted) {
         return (await db.query.issues.findFirst({
@@ -4519,6 +4527,18 @@ export function recoveryService(
     if (
       input.rerouteToSharedQueue &&
       !isStrandedIssueRecoveryIssue(input.issue) &&
+      input.latestRun?.contextSnapshot &&
+      typeof input.latestRun.contextSnapshot === "object" &&
+      "retryReason" in input.latestRun.contextSnapshot &&
+      isInfraInterruptErrorCode(input.latestRun.errorCode) &&
+      recoveryCause !== SUCCESSFUL_RUN_MISSING_STATE_REASON &&
+      input.latestRun.status !== "failed" &&
+      recoveryCause !== "configuration_incomplete" &&
+      !infraInterruptRetryBudgetExhausted({
+        scheduledRetryAttempt: input.scheduledRetryAttempt ?? null,
+        scheduledRetryReason: input.scheduledRetryReason ?? null,
+        contextSnapshot: input.latestRun.contextSnapshot,
+      }) &&
       blockerIds.length === 0
     ) {
       const rerouted = await rerouteStrandedIssueToSharedQueue({
@@ -4527,6 +4547,8 @@ export function recoveryService(
         latestRun: input.latestRun,
         previousStatus: input.previousStatus,
         recoveryCause,
+        scheduledRetryAttempt: input.scheduledRetryAttempt,
+        scheduledRetryReason: input.scheduledRetryReason,
         successfulRunHandoffEvidence: input.successfulRunHandoffEvidence,
       });
       if (rerouted) {
@@ -5807,6 +5829,8 @@ export function recoveryService(
               tone: "danger",
             },
             rerouteToSharedQueue: true,
+            scheduledRetryAttempt: scheduledRetryColumns?.scheduledRetryAttempt ?? null,
+            scheduledRetryReason: scheduledRetryColumns?.scheduledRetryReason ?? null,
           });
           if (updated) {
             result.escalated += 1;
@@ -5875,6 +5899,8 @@ export function recoveryService(
           recoveryCause: SUCCESSFUL_RUN_MISSING_STATE_REASON,
           successfulRunHandoffEvidence: handoffEvidence,
           rerouteToSharedQueue: true,
+          scheduledRetryAttempt: scheduledRetryColumns?.scheduledRetryAttempt ?? null,
+          scheduledRetryReason: scheduledRetryColumns?.scheduledRetryReason ?? null,
         });
         if (updated) {
           result.successfulRunHandoffEscalated += 1;
