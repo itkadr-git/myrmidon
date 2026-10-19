@@ -131,7 +131,11 @@ describe("myrmidon(1.6.1 SWARM-IDLE-WAKE) sweep pass", () => {
                 return { where: () => ({ orderBy: () => Promise.resolve(directoryRows) }) };
               }
               if (table === issueClaims && projection && "agentId" in projection) {
-                const rows = claimState && !claimState.releasedAt ? [claimState] : [];
+                // The active-claim census is consumed as a Map; once the
+                // expired claim is released the replacement owner has none.
+                const rows = claimState && !claimState.releasedAt && claimState.agentId === "idle-agent"
+                  ? [{ agentId: "idle-agent" }]
+                  : [];
                 return { where: () => Promise.resolve(rows) };
               }
               if (table === issues && projection && "issueId" in projection) {
