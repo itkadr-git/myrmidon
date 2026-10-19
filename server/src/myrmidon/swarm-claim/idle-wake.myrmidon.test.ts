@@ -438,6 +438,12 @@ describe("myrmidon(1.6.1 SWARM-IDLE-WAKE) sweep pass", () => {
       intervalMs: 0,
       hostMemoryGate: () => ({ state: "open" } as never),
       hostCpuGate: () => ({ state: "open" } as never),
+      heartbeat: {
+        wakeup: async (agentId: string) => {
+          wakes.push({ agentId, opts: {} });
+          return { id: "wake-next" };
+        },
+      },
       enqueueWakeup: async (agentId: string, opts: Parameters<SwarmClaimEnqueueWakeup>[1]) => {
         wakes.push({ agentId, opts: opts as unknown as Record<string, unknown> });
         return { id: "wake-next" } as never;
