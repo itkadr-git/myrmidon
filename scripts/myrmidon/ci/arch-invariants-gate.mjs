@@ -40,6 +40,7 @@ const SWARM_SHARED = "packages/shared/src/myrmidon-swarm-claim.ts";
 const MIGRATIONS_DIR = "packages/db/src/migrations";
 const JOURNAL = "packages/db/src/migrations/meta/_journal.json";
 const MIGRATION_BASELINE = "arch-invariants-migration-baseline.json";
+const ADR_DIRECTORY = "docs/architecture/adr";
 /** Red-side selftests set this to a sandbox baseline (or "none"). */
 export const TEST_HOOKS = { migrationBaselineOverride: null };
 
@@ -314,6 +315,7 @@ export function check(root) {
   push("INV-11", checkSingleQueueOrder(root_));
   push("INV-12", checkNoPilot(root_));
   push("INV-13", checkMigrations(root_));
+  push("ADR-INVENTORY", checkArchitectureInventory(root_));
   return { findings };
 }
 
