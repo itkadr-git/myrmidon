@@ -76,12 +76,20 @@ Desktop (viewport width 768 px and up):
   counting decisions awaiting the owner (99+ past ninety-nine), and an owner
   footer showing the company name and the active channel ("Web · now").
 - A 56 px top bar: the nest switcher ("All nests" — today it states the
-  scope; the multi-project selector arrives later), status chips — colony
-  (running agents of total), Fleet (turns into "Fleet: 1 attention" when
-  agents are in error or runs failed), and the month's spend of budget —
-  and the "Tell the Commander" entry with a `Ctrl K` hint on it (the shortcut
-  itself arrives with the 1.6 chat update; today the palette opens by click),
-  and a navy decisions badge next to it.
+  scope; the multi-project selector arrives later), status chips backed by live
+  APIs (Wave A part 2):
+  - **Colony**: running agents out of active colony total (`running / (active + running + paused + error)`,
+    from `GET /companies/:id/dashboard`), with attention tone when any agent is in error;
+  - **Runs**: live runs (`queued + running` from `GET /companies/:id/live-runs`) and today's
+    failure count from `runActivity[today].failed` (UTC date key, attention tone when failures > 0);
+  - **Spend**: month spend from `GET /companies/:id/costs/summary`; when no budget is set
+    (`budgetCents = 0`), renders the spend alone without misleading "of $0";
+  - Unresolved or loading sources render `—`, never partial or invented figures; chips poll
+    every 30 seconds and refetch on window focus.
+  - The "Tell the Commander" entry with a `Ctrl K` hint on it (the shortcut itself arrives
+    with the 1.6 chat update; today the palette opens by click), and a navy "Wait for me"
+    decisions badge next to it, counting the owner-facing union of pending approvals, open
+    decisions, and pending interactions.
 - On company settings routes a 10-section settings side panel (General,
   Members, Access, Secrets, Runs and queue, Budgets, Autonomy, Guardrails,
   Castes and models, System).
@@ -170,7 +178,12 @@ details per screen are below.
   and the response-channel selector stays hidden.
 - **Language** (settings, route `company/settings/language`) — the interface
   language switch (English / Russian) with a preview card showing a decision
-  card in both languages side by side. The note holds: agent-written text
+  card in both languages side by side. For new users, the shell defaults to
+  English (`en`). Switching to Russian (`ru`) applies dynamically across the
+  entire shell (i18next, flat catalog, and the root `lang` attribute) without
+  requiring a page reload. The preference persists both in local storage and
+  in the user profile via `PUT /api/myrmidon/ui2/language/me`, synchronizing
+  across tabs and surviving re-login. The note holds: agent-written text
   (task bodies, run logs, comments) is never translated and identifiers
   never change. Number/date formats and the timezone belong to a later
   formats slice.
