@@ -285,12 +285,12 @@ export function createSkillLifecycleService(deps: SkillLifecycleServiceDeps): Sk
 
     async promote(companyId, skillId, input) {
       const skill = await requireSkill(companyId, skillId);
-      const approval = await store.getApproval(input.approvalId);
-      const approved = assertPromotionApproval(approval, skill.id);
       const versionId = skill.currentVersionId;
       if (!versionId) {
-        throw new SkillLifecycleError("promotion_no_version", "The skill has no version to promote.");
+        throw new SkillLifecycleError("skill_has_no_version", "A skill without a version cannot be promoted.");
       }
+      const approval = await store.consumeApproval(input.approvalId, companyId, skill.id);
+      const approved = assertPromotionApproval(approval, skill.id);
       const existing = await store.getRecord(companyId, skill.id);
       const timestamp = now();
       const fields = nextPromotionFields(existing, versionId, approved, timestamp);
