@@ -70,6 +70,14 @@ describeEmbeddedPostgres(
       db = createDb(tempDb.connectionString);
     }, 30_000);
 
+    beforeEach(async () => {
+      // Each scenario opts into owner delivery explicitly; do not leak the
+      // singleton setting from a preceding scenario.
+      await instanceSettingsService(db).updateGeneral({
+        [OWNER_DELIVERY_SETTINGS_KEY]: { mode: "via_bot" },
+      });
+    });
+
     afterAll(async () => {
       await tempDb?.cleanup();
       if (previousKeyFile === undefined)
