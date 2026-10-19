@@ -4424,6 +4424,7 @@ export function recoveryService(
 
     const approvedInfraReroute = Boolean(
       input.rerouteToSharedQueue &&
+        !isStrandedIssueRecoveryIssue(input.issue) &&
         input.latestRun &&
         input.latestRun.contextSnapshot &&
         typeof input.latestRun.contextSnapshot === "object" &&
