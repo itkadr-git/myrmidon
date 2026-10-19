@@ -2,6 +2,7 @@ import { createPublicKey, timingSafeEqual, verify, type JsonWebKey } from "node:
 import { eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { instanceSettings } from "@paperclipai/db";
+import { readProductEnv, readProductEnvFrom, writeProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
 
 export const CLOUD_RUNTIME_IDENTITY_HEADER = "x-paperclip-cloud-runtime-identity";
 export const CLOUD_RUNTIME_IDENTITY_AUDIENCE = "paperclip-runtime-identity/v1";
@@ -76,10 +77,11 @@ function exactHttpsOrigin(value: unknown): string | null {
   }
 }
 
-function configuredStartupOrigin(env: NodeJS.ProcessEnv): string | null {
-  const candidate = nonEmpty(env.PAPERCLIP_PUBLIC_URL)
-    ?? nonEmpty(env.PAPERCLIP_AUTH_PUBLIC_BASE_URL)
-    ?? nonEmpty(env.PAPERCLIP_API_URL);
+function configuredStartupOrigin(): string | null {
+  const candidate = nonEmpty(readProductEnv("CLOUD_API_ORIGIN"))
+    ?? nonEmpty(readProductEnv("PUBLIC_URL"))
+    ?? nonEmpty(readProductEnv("AUTH_PUBLIC_BASE_URL"))
+    ?? nonEmpty(readProductEnv("API_URL"));
   return candidate ? exactHttpsOrigin(candidate) : null;
 }
 
@@ -134,30 +136,31 @@ async function readPersistedIdentity(db: RuntimeIdentityDb): Promise<PersistedRu
 
 function applyCompatibilityEnvironment(identity: CloudRuntimeIdentitySnapshot, env: NodeJS.ProcessEnv) {
   const hostname = new URL(identity.canonicalOrigin).hostname;
-  env.PAPERCLIP_PUBLIC_URL = identity.canonicalOrigin;
-  env.PAPERCLIP_AUTH_PUBLIC_BASE_URL = identity.canonicalOrigin;
-  env.PAPERCLIP_API_URL = identity.canonicalOrigin;
-  env.PAPERCLIP_PRIMARY_HOST = hostname;
-  env.PAPERCLIP_STACK_SLUG = identity.stackSlug;
+  writeProductEnv(env, "PUBLIC_URL", identity.canonicalOrigin);
+  writeProductEnv(env, "AUTH_PUBLIC_BASE_URL", identity.canonicalOrigin);
+  writeProductEnv(env, "API_URL", identity.canonicalOrigin);
+  writeProductEnv(env, "PRIMARY_HOST", hostname);
+  writeProductEnv(env, "STACK_SLUG", identity.stackSlug);
 
   const existingCandidates = (() => {
     try {
-      const parsed = JSON.parse(env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON ?? "[]");
-      return Array.isArray(parsed) ? parsed.filter((value): value is string => typeof value === "string") : [];
+      const parsed = readProductEnvFrom(env, "RUNTIME_API_CANDIDATES_JSON") ?? "[]";
+      const values = JSON.parse(parsed);
+      return Array.isArray(values) ? values.filter((value): value is string => typeof value === "string") : [];
     } catch {
       return [];
     }
   })();
-  env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON = JSON.stringify([
+  writeProductEnv(env, "RUNTIME_API_CANDIDATES_JSON", JSON.stringify([
     identity.canonicalOrigin,
     ...existingCandidates.filter((candidate) => candidate !== identity.canonicalOrigin),
-  ]);
+  ]));
 }
 
 function assertPersistedIdentityMatchesStack(row: PersistedRuntimeIdentity, env: NodeJS.ProcessEnv) {
-  const configuredStackId = nonEmpty(env.PAPERCLIP_CLOUD_STACK_ID);
+  const configuredStackId = nonEmpty(readProductEnvFrom(env, "CLOUD_STACK_ID"));
   if (!configuredStackId || configuredStackId !== row.stackId) {
-    throw new Error("Persisted Cloud runtime identity does not match PAPERCLIP_CLOUD_STACK_ID");
+    throw new Error("Persisted Cloud runtime identity does not match MYRMIDON_CLOUD_STACK_ID");
   }
   if (!exactHttpsOrigin(row.previousOrigin) || !exactHttpsOrigin(row.canonicalOrigin)) {
     throw new Error("Persisted Cloud runtime identity contains an invalid origin");
@@ -172,12 +175,12 @@ export async function initializeCloudRuntimeIdentity(
   db: Db,
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<CloudRuntimeIdentitySnapshot | null> {
-  startupOrigin = configuredStartupOrigin(env);
+  startupOrigin = configuredStartupOrigin();
   // Self-hosted servers have no Cloud stack identity to restore. Avoid touching
   // the singleton table on that path; besides keeping the feature inert, this
   // preserves lightweight startup/test database seams that intentionally do
   // not construct a database client.
-  if (!nonEmpty(env.PAPERCLIP_CLOUD_STACK_ID)) {
+  if (!nonEmpty(readProductEnvFrom(env, "CLOUD_STACK_ID"))) {
     initialized = true;
     currentIdentity = null;
     return null;
@@ -201,9 +204,9 @@ export function getCloudRuntimeIdentity(): CloudRuntimeIdentitySnapshot | null {
 /** The live canonical origin, falling back to startup configuration off Cloud. */
 export function runtimePublicOrigin(env: NodeJS.ProcessEnv = process.env): string | null {
   if (env === process.env && currentIdentity) return currentIdentity.canonicalOrigin;
-  const candidate = nonEmpty(env.PAPERCLIP_PUBLIC_URL)
-    ?? nonEmpty(env.PAPERCLIP_AUTH_PUBLIC_BASE_URL)
-    ?? nonEmpty(env.PAPERCLIP_API_URL);
+  const candidate = nonEmpty(readProductEnvFrom(env, "PUBLIC_URL"))
+    ?? nonEmpty(readProductEnvFrom(env, "AUTH_PUBLIC_BASE_URL"))
+    ?? nonEmpty(readProductEnvFrom(env, "API_URL"));
   if (!candidate) return null;
   try {
     return new URL(candidate).origin;
@@ -232,18 +235,18 @@ function decodeJsonPart(part: string, label: string): Record<string, unknown> {
 }
 
 function publicKeyForKid(env: NodeJS.ProcessEnv, kid: string) {
-  const raw = nonEmpty(env.PAPERCLIP_CLOUD_RUNTIME_IDENTITY_JWKS);
-  if (!raw) throw new Error("PAPERCLIP_CLOUD_RUNTIME_IDENTITY_JWKS is not configured");
+  const raw = nonEmpty(readProductEnvFrom(env, "CLOUD_RUNTIME_IDENTITY_JWKS"));
+  if (!raw) throw new Error("MYRMIDON_CLOUD_RUNTIME_IDENTITY_JWKS is not configured");
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
   } catch {
-    throw new Error("PAPERCLIP_CLOUD_RUNTIME_IDENTITY_JWKS is invalid");
+    throw new Error("MYRMIDON_CLOUD_RUNTIME_IDENTITY_JWKS is invalid");
   }
   const keys = parsed && typeof parsed === "object" && !Array.isArray(parsed)
     ? (parsed as { keys?: unknown }).keys
     : undefined;
-  if (!Array.isArray(keys)) throw new Error("PAPERCLIP_CLOUD_RUNTIME_IDENTITY_JWKS is invalid");
+  if (!Array.isArray(keys)) throw new Error("MYRMIDON_CLOUD_RUNTIME_IDENTITY_JWKS is invalid");
   const matches = keys.filter((candidate): candidate is JsonWebKey & { kid: string } => {
     if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return false;
     const key = candidate as JsonWebKey & { kid?: unknown };
@@ -321,7 +324,7 @@ export function verifyCloudRuntimeIdentityAssertion(input: {
 }): RuntimeIdentityClaims {
   const env = input.env ?? process.env;
   const claims = verifyClaims({ compactJws: input.compactJws, env, now: input.now ?? new Date() });
-  const configuredStackId = nonEmpty(env.PAPERCLIP_CLOUD_STACK_ID);
+  const configuredStackId = nonEmpty(readProductEnvFrom(env, "CLOUD_STACK_ID"));
   if (!configuredStackId || claims.sub !== configuredStackId) {
     throw new Error("Cloud runtime identity stack does not match this instance");
   }
@@ -495,7 +498,7 @@ export type CloudControlClaims = {
 /**
  * Verify a Cloud control assertion for one exact action on this instance.
  * Signed with the same key set as the runtime identity assertion
- * (PAPERCLIP_CLOUD_RUNTIME_IDENTITY_JWKS) but under its own JWS type and
+ * (MYRMIDON_CLOUD_RUNTIME_IDENTITY_JWKS) but under its own JWS type and
  * audience. Instances without a Cloud stack identity reject every assertion —
  * the feature is inert when self-hosted.
  */
@@ -529,7 +532,7 @@ export function verifyCloudControlAssertion(input: {
   }
 
   const payload = decodeJsonPart(encodedPayload, "payload");
-  const configuredStackId = nonEmpty(env.PAPERCLIP_CLOUD_STACK_ID);
+  const configuredStackId = nonEmpty(readProductEnvFrom(env, "CLOUD_STACK_ID"));
   const nowSeconds = Math.floor(now.getTime() / 1000);
   if (
     payload.v !== 1
