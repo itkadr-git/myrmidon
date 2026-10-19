@@ -1181,7 +1181,7 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
 
         // decidePreDrain only returns "blocked" or "proceed" when the issue row is present.
         if (!issueRow) {
-          return releasedSiblingOutcome() ?? releaseOutcome ?? { outcome: { kind: "released" }, postCommitEffects: [], run: runSnapshot };
+          return releaseOutcome ?? { outcome: { kind: "released" }, postCommitEffects: [], run: runSnapshot };
         }
 
         // Enqueue does not stamp executionRunId until dispatch. A concurrent
@@ -1197,7 +1197,7 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
           inArray(heartbeatRuns.status, ["queued", "running", "scheduled_retry"]),
         )).limit(1);
         if (successor || releaseOutcome) {
-          return releasedSiblingOutcome() ?? releaseOutcome ?? { outcome: { kind: "released" }, postCommitEffects: [], run: runSnapshot };
+          return releaseOutcome ?? { outcome: { kind: "released" }, postCommitEffects: [], run: runSnapshot };
         }
 
         if (preDrain.kind === "blocked") {
@@ -1247,18 +1247,18 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
           executionBlocker.cause === "execution_owner_active" && executionBlocker.runId === run.id &&
           runSnapshot.conversationContinuation && ["failed", "timed_out", "interrupted"].includes(run.status));
         if (executionBlocker) {
-          return releasedSiblingOutcome() ?? { outcome: { kind: "released" }, postCommitEffects: [], run: runSnapshot };
+          return { outcome: { kind: "released" }, postCommitEffects: [], run: runSnapshot };
         }
 
         // Releases still settle while Agent Chat is disabled, but no deferred
         // turn or recovery successor may be created. Check here in the shared
         // transaction so cleanup retries and restart sweeps use the same gate.
         if (issueRow.conversationAgentId && !(await instanceSettingsService(tx).getExperimental()).enableAgentChat) {
-          return releasedSiblingOutcome() ?? { outcome: { kind: "released" }, postCommitEffects: [], run: runSnapshot };
+          return { outcome: { kind: "released" }, postCommitEffects: [], run: runSnapshot };
         }
 
         if (issueRow.status === "done" || issueRow.status === "cancelled") {
-          return releasedSiblingOutcome() ?? { outcome: { kind: "released" }, postCommitEffects: [], run: runSnapshot };
+          return { outcome: { kind: "released" }, postCommitEffects: [], run: runSnapshot };
         }
 
         const locked: LockedIssueExecution = {
