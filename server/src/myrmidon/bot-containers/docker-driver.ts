@@ -59,6 +59,7 @@ import { randomBytes } from "node:crypto";
 import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import http from "node:http";
+import { resolvePaperclipInstanceRoot } from "../../home-paths.js";
 import {
   RATE_LIMIT_MAX_RETRIES,
   backoffDelayMs,
@@ -171,7 +172,15 @@ export interface DockerDriverConfig {
    *  0 disables the client-side bucket; absent (a config built in tests, not by
    *  readDockerDriverConfig) means the same: pacing off. */
   maxRps?: number;
+  /**
+   * State directory where driver-owned instance state (e.g. idle-stopped marks)
+   * is stored on the board's own data volume, rather than the host's volumeRoot.
+   */
+  stateDir?: string;
 }
+
+/** MYRMIDON_BOT_STATE_DIR: data directory for driver state (defaults to instance root). */
+export const BOT_STATE_DIR_ENV = "MYRMIDON_BOT_STATE_DIR";
 
 /** MYRMIDON_DOCKERGATE_MAX_RPS: 0..50 requests/s, default 20 (half the gate's
  *  global bucket: a second caller — fleetd, a future collector — shares it). */
@@ -189,6 +198,9 @@ export function readDockerDriverConfig(env: NodeJS.ProcessEnv = process.env): Do
     const value = Number(rawRps);
     if (Number.isFinite(value) && value >= 0 && value <= 50) maxRps = value;
   }
+  const stateDir =
+    env[BOT_STATE_DIR_ENV]?.trim() ||
+    path.join(resolvePaperclipInstanceRoot(), "bot-containers", "idle-stopped");
   return {
     socketPath: env[BOT_DOCKER_SOCKET_ENV]?.trim() || DEFAULT_BOT_DOCKER_SOCKET,
     volumeRoot,
@@ -199,6 +211,7 @@ export function readDockerDriverConfig(env: NodeJS.ProcessEnv = process.env): Do
     mountSources: parseMountSourceAllowlist(env[BOT_MOUNT_SOURCES_ENV]),
     devbuild: parseDevbuildSettings(env),
     maxRps,
+    stateDir,
   };
 }
 
@@ -273,6 +286,8 @@ export interface DockerDriverOptions {
     check(args: { botKey: string; from: ScopeLayout; to: ScopeLayout }): Promise<void>;
     run(args: { botKey: string; from: ScopeLayout; to: ScopeLayout }): Promise<void>;
   };
+  /** State directory override; tests pass a temporary directory. */
+  stateDir?: string;
 }
 
 export interface DockerCreateContainerBody {
@@ -1516,8 +1531,13 @@ export function dockerBotContainerDriver(
       return null;
     }
   }
+  const stateDir =
+    options.stateDir ??
+    config.stateDir ??
+    path.join(resolvePaperclipInstanceRoot(), "bot-containers", "idle-stopped");
+
   async function idleStoppedStatePath(botKey: string): Promise<string> {
-    return path.join(config.volumeRoot, ".myrmidon-idle-stopped", `${botKey}.json`);
+    return path.join(stateDir, `${botKey}.json`);
   }
 
   async function readIdleStopped(botKey: string): Promise<boolean> {
@@ -1526,16 +1546,22 @@ export function dockerBotContainerDriver(
       const state = JSON.parse(raw) as { botKey?: unknown; idleStopped?: unknown };
       return state.botKey === botKey && state.idleStopped === true;
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+      if (
+        (error as NodeJS.ErrnoException).code === "ENOENT" ||
+        (error as NodeJS.ErrnoException).code === "ENOTDIR"
+      ) {
+        return false;
+      }
       throw error;
     }
   }
 
   async function writeIdleStopped(botKey: string, idleStopped: boolean): Promise<void> {
     const file = await idleStoppedStatePath(botKey);
-    const stateDir = path.join(config.volumeRoot, ".myrmidon-idle-stopped");
     if (!idleStopped) {
-      await unlink(file).catch((error: NodeJS.ErrnoException) => { if (error.code !== "ENOENT") throw error; });
+      await unlink(file).catch((error: NodeJS.ErrnoException) => {
+        if (error.code !== "ENOENT" && error.code !== "ENOTDIR") throw error;
+      });
       return;
     }
     await mkdir(stateDir, { recursive: true, mode: 0o700 });
@@ -1753,13 +1779,20 @@ export function dockerBotContainerDriver(
 
   async function stop(botKey: string): Promise<void> {
     await stopByName(containerNameFor(botKey));
+    await writeIdleStopped(botKey, false).catch(() => undefined);
   }
 
   async function stopIdle(botKey: string): Promise<void> {
     const name = containerNameFor(botKey);
     const res = await requestWithRateLimitRetry({ method: "POST", path: `/containers/${nameSegment(name)}/stop?t=${BOT_STOP_TIMEOUT_SEC}&myrmidon-idle=true` });
     if (res.status >= 400) throw describeFailure(`docker idle stop ${name}`, res);
-    await writeIdleStopped(botKey, true);
+    try {
+      await writeIdleStopped(botKey, true);
+    } catch (writeErr) {
+      // Отказ записи — ошибка стопа (контейнер не оставлять остановленным без отметки).
+      await startByName(name).catch(() => undefined);
+      throw new Error(`Failed to record idle-stopped state for bot ${botKey}: ${writeErr instanceof Error ? writeErr.message : String(writeErr)}`);
+    }
   }
 
   return { status, list, listRunning, templateDrift, statusWithDrift, create, recreate, writeProfile, start, restart, stop, stopIdle, readCloneReport, readBotSkills };
