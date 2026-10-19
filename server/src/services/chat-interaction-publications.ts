@@ -334,6 +334,7 @@ export async function enqueueIssueInteractionChatPublications(
           "discord",
           "microsoft-teams",
           "imessage-photon",
+          "github",
           "telegram",
         ]),
       ),
