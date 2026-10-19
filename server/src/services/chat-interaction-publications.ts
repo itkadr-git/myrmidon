@@ -460,8 +460,9 @@ export async function enqueueIssueInteractionChatPublications(
       classification: "external",
       source: "issue_interaction",
       text,
+      interactionId: isTextOnlyOwnerTelegram ? interaction.id : undefined,
       progressState: "waiting_for_input",
-      interaction: {
+      interaction: isTextOnlyOwnerTelegram ? undefined : {
         id: interaction.id,
         card: {
           kind:

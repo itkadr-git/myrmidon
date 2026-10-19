@@ -3,12 +3,13 @@ import type {
   IssueThreadInteraction,
   RequestConfirmationInteraction,
 } from "@paperclipai/shared";
+import { projectSafeChatPublicationText } from "../../services/chat-publication-projection.js";
 
 const MAX_TELEGRAM_MESSAGE_LENGTH = 4_096;
 const QUESTION_REPLY_GUIDANCE = "Ответьте сообщением: номером варианта или своими словами.";
 
 function finishTelegramText(lines: string[]): string {
-  const text = lines.join("\n").trim();
+  const text = projectSafeChatPublicationText(lines.join("\n").trim());
   if (text.length > MAX_TELEGRAM_MESSAGE_LENGTH) {
     throw new Error(
       `Owner interaction text exceeds Telegram's ${MAX_TELEGRAM_MESSAGE_LENGTH}-character message limit`,

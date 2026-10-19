@@ -305,7 +305,8 @@ describeEmbeddedPostgres(
       expect(publications[0]!.conversationId).not.toBeNull();
       const payload = publications[0]!.payload as {
         text?: string;
-        interaction?: { id?: string; card?: { actions?: unknown[] } };
+        interactionId?: string;
+        card?: unknown;
       };
       expect(payload.text).toContain("Choose a deploy window");
       expect(payload.text).toContain("Which deploy window?");
@@ -316,8 +317,8 @@ describeEmbeddedPostgres(
       expect(payload.text).toContain("   After work");
       expect(payload.text).toContain("Ответьте сообщением: номером варианта или своими словами.");
       expect(payload.text).toContain("https://paperclip.local");
-      expect(payload.interaction?.id).toBe(interaction.id);
-      expect(payload.interaction?.card?.actions).toEqual([]);
+      expect(payload.interactionId).toBe(interaction.id);
+      expect(payload).not.toHaveProperty("card");
       expect(payload.text).not.toContain("chat_action");
       const [boundConversation] = await db
         .select()
@@ -368,12 +369,14 @@ describeEmbeddedPostgres(
       expect(publications[0]!.endpointId).toBe(fixture.endpointId);
       const payload = publications[0]!.payload as {
         text?: string;
-        interaction?: { card?: { actions?: unknown[] } };
+        interactionId?: string;
+        card?: unknown;
       };
       expect(payload.text).toContain("Proceed with the deploy?");
       expect(payload.text).toContain("Deploy build to production.");
       expect(payload.text).toContain("Ответить можно только на доске.");
-      expect(payload.interaction?.card?.actions).toEqual([]);
+      expect(payload.interactionId).toBe(interaction.id);
+      expect(payload).not.toHaveProperty("card");
     });
 
     it("keeps the card board-only when the owner has no standing Telegram conversation", async () => {
