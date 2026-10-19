@@ -177,7 +177,7 @@ export function botDiskPhysicalRoutes(
   router.get("/myrmidon/bot-disk/reports", async (req, res) => {
     assertBoardOrgAccess(req);
     const reports = readBotDiskReports()
-      .map((entry) => ({ ...entry.report, receivedAt: entry.receivedAt }))
+      .map((entry) => ({ ...entry.report, receivedAt: entry.receivedAt, foreignUid: entry.foreignUid ?? null }))
       .sort((a, b) => Date.parse(a.receivedAt) - Date.parse(b.receivedAt));
     res.json({ reports, staleAfterMs: REPORT_STALE_MS });
   });

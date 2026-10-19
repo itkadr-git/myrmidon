@@ -58,6 +58,9 @@ const ALLOWLIST = [
   "PaperclipLockup", "PaperclipLoading", "AnimatedPaperclipIcon",
   "Paperclip-managed skills", "Paperclip skill", "Навык Paperclip",
   "Paperclip needs a disposition", // legacy notification body, still recognized
+  "Paperclip v2026.916.1", // source release in the migration changelog
+  "Paperclip → Myrmidon", // source product named in the migration changelog
+  "пользователей Paperclip на Myrmidon", // Russian migration changelog wording
   "Close the current Paperclip task", // frozen legacy Discord command digest
   "«Paperclip ", "Paperclip connections", "Paperclip projects",
   "Paperclip connected",
@@ -80,6 +83,7 @@ const ALLOWLIST = [
   "Allow Paperclip reads", "upstream Paperclip", "вендорского Paperclip",
   "Paperclip server failed to start", "Paperclip вендора",
   "Paperclip v2026.1001.0",
+  "Paperclip v2026.916.1", "Paperclip → Myrmidon", "пользователей Paperclip",
   "from Paperclip to Myrmidon", "с Paperclip на Myrmidon",
   "Paperclip instance", "экземпляр Paperclip",
   "Paperclip release",

@@ -14,9 +14,10 @@ import { fileURLToPath } from "node:url";
 //     verified `<base>.full.tar.zst` of the whole directory, which clears removal —
 //     bounded: over the size cap or with no free space it is refused (ok:false)
 //     and the directory stays;
-//   * the rhythm cache: the same op on the same path runs at most once per hour,
-//     keyed by path+op (a different op on the same path is a different decision);
-//     a repeat inside the window is a silent skip; the pass ends with
+//   * the rhythm cache: successful or error attempts on the same path/op are
+//     silently skipped inside the cooldown; deferred foreign-owner attempts are
+//     reported each pass so the board keeps a live attention card.
+//     a different op on the same path is a different decision; the pass ends with
 //     `cleaned N, deferred M (...)`.
 // Placeholder keys and repositories only.
 
@@ -26,6 +27,7 @@ const { guardedRemove, inside } = await import(lib("remove.js"));
 const { createAttention, createCooldown, DEFAULT_TTL_MS } = await import(lib("cache.js"));
 const { archive, archiveTree, readManifest, retain, retainPass, verifyEntry, FULL_TAR_CAP_BYTES } = await import(lib("archive.js"));
 const { createLoop } = await import(lib("loop.js"));
+const { buildReport } = await import(lib("report.js"));
 const { archiveThenRemove } = await import(lib("legacy.js"));
 
 const KEY = "ABC-123";
@@ -38,7 +40,7 @@ after(() => {
 });
 
 const git = (cwd, ...args) => {
-  const r = spawnSync("git", args, {
+  const r = spawnSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...args], {
     cwd,
     encoding: "utf8",
     env: { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" },
@@ -47,6 +49,19 @@ const git = (cwd, ...args) => {
   return r.stdout.trim();
 };
 const at = (iso) => new Date(iso);
+
+describe("botd foreign-owner report", () => {
+  it("keeps the explicit ownership attention outside the truncated action log", () => {
+    const report = buildReport({
+      botKey: "bot-test",
+      at: new Date("2026-10-17T00:00:00Z"),
+      actions: [{ at: "2026-10-17T00:00:00Z", action: "skip", path: "/workspace/ABC-123", result: "skipped", detail: "remove: closing-unpushed — deferred: foreign-uid (EACCES)" }],
+      foreignUid: { path: "/workspace/ABC-123", reason: "EACCES foreign-uid uid 0" },
+    });
+    assert.deepEqual(report.foreignUid, { path: "/workspace/ABC-123", reason: "EACCES foreign-uid uid 0" });
+    assert.equal(report.actions.length, 1);
+  });
+});
 
 /** A copy with one unpushed commit on a branch: the bundle would have real content. */
 function makeRepo(dir) {
@@ -346,6 +361,24 @@ describe("loop: the rhythm cache and the pass summary", () => {
     assert.equal(calls, 2);
   });
 
+  it("a deferred foreign-owner action is retried and reported on the next pass", async () => {
+    const file = path.join(tmp, "cooldown-deferred", "botd-cooldown.json");
+    const cooldown = createCooldown(file);
+    let calls = 0;
+    const actions = [{ op: "remove", path: "/scratch/foreign", reason: "closing" }];
+    const { loop } = loopRig({
+      actions,
+      executor: { remove: async () => (++calls === 1 ? { deferred: "foreign-uid", detail: "EACCES" } : "removed") },
+      cooldown,
+    });
+    const first = await loop.runOnce();
+    assert.match(first.executed[0].detail, /deferred: foreign-uid/);
+    const second = await loop.runOnce();
+    assert.equal(calls, 2, "deferred permissions must be retried after the owner is repaired");
+    assert.equal(second.executed[0].result, "ok");
+    assert.equal(cooldown.deferredRecent("/scratch/foreign", "remove"), false);
+  });
+
   it("without the cooldown module every action runs (behaviour unchanged)", async () => {
     let calls = 0;
     const { loop } = loopRig({ actions: [{ op: "remove", path: "/scratch/y", reason: "age" }], executor: { remove: async () => { calls += 1; return "removed"; } } });
@@ -496,6 +529,26 @@ describe("archiveTree: bounded like the fallback tar", () => {
     assert.match(r.reason, /only \d+ bytes free in .* for a \d+-byte directory/);
     assert.deepEqual(fs.readdirSync(archiveRoot), []);
     assert.ok(fs.existsSync(dir));
+  });
+
+  it("archiveThenRemove reuses a verified unchanged archive, but re-archives after edits", () => {
+    const dir = path.join(tmp, "archive-reuse");
+    const { copy } = makeRepo(dir);
+    const archiveRoot = path.join(dir, "archive");
+    const calls = [];
+    const archiveMod = {
+      archive: (...args) => { calls.push("repo"); return archive(...args); },
+      archiveTree: (...args) => { calls.push("tree"); return archiveTree(...args); },
+    };
+    const deps = { archiveMod, archiveRoot, isGit: (p) => fs.existsSync(path.join(p, ".git")), remove: () => "removed" };
+    const item = { path: copy, key: KEY };
+    assert.equal(archiveThenRemove(item, deps), "archived, removed");
+    assert.equal(calls.length, 1);
+    assert.equal(archiveThenRemove(item, deps), "previous archive verified unchanged; removed");
+    assert.equal(calls.length, 1, "unchanged source does not produce duplicate archives");
+    fs.writeFileSync(path.join(copy, "new-work.txt"), "new\\n");
+    assert.equal(archiveThenRemove(item, deps), "archived, removed");
+    assert.equal(calls.length, 2, "changed source gets a fresh archive");
   });
 
   it("legacy.archiveThenRemove keeps the directory when archiveTree refuses it", () => {
