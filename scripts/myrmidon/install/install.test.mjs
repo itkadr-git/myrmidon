@@ -18,9 +18,19 @@ const B = `sha256:${"b".repeat(64)}`;
 const C = `sha256:${"c".repeat(64)}`;
 
 const FAKE_DOCKER = `#!/usr/bin/env bash
+if [[ "$1" == "compose" ]]; then
+  shift
+  while [[ "$1" == "--project-name" || "$1" == "--project-directory" || "$1" == "--env-file" || "$1" == "-f" ]]; do shift 2; done
+elif [[ "$1" == "--project-name" ]]; then
+  shift 2
+fi
 printf 'docker %s\\n' "$*" >> "$SANDBOX/calls.log"
 case "$*" in
   "compose version") echo "Docker Compose version v2.30.0"; exit 0 ;;
+  *"config"*) exit 0 ;;
+  *"pull --quiet"*) exit 0 ;;
+  *"up -d"*) touch "$SANDBOX/up"; exit 0 ;;
+  *"down"*) rm -f "$SANDBOX/up"; exit 0 ;;
   *"network inspect"*) exit 0 ;;
   *"network create"*) exit 0 ;;
   *pg_dump*) echo "PGDUMP-FAKE-CONTENT"; exit 0 ;;
@@ -97,10 +107,12 @@ function run(sb, args = [], env = {}) {
     cwd: sb.dir,
     encoding: "utf8",
     env: {
-      ...process.env,
-      PATH: `${sb.bin}:${process.env.PATH}`,
+      ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^(PAPERCLIP|MYRMIDON|POSTGRES|DATABASE_URL|BETTER_AUTH_SECRET|JWT_SECRET|PAPERCLIP_TOOL_ACTION_SIGNING_SECRET|PAPERCLIP_INSTALL_DATABASE_URL)/.test(key))),
+      PATH: `${sb.bin}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`,
+      BASH_ENV: "",
       SANDBOX: sb.dir,
       MYRMIDON_INSTALL_SKIP_ROOT_CHECK: "1",
+      MYRMIDON_INSTALL_SKIP_DOCKER_INSTALL: "1",
       MYRMIDON_INSTALL_LANG: "en",
       MYRMIDON_INSTALL_HEALTH_TIMEOUT: "5",
       ...env,
@@ -110,6 +122,15 @@ function run(sb, args = [], env = {}) {
 
 const calls = (sb) => (fs.existsSync(path.join(sb.dir, "calls.log")) ? fs.readFileSync(path.join(sb.dir, "calls.log"), "utf8") : "");
 const envFile = (sb) => fs.readFileSync(path.join(sb.opt, "deploy.env"), "utf8");
+
+it("dry-run renders and validates without pulling or starting services", () => {
+  const sb = sandbox();
+  const result = run(sb, ["--dry-run"]);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stderr, /Dry run complete/);
+  assert.ok(fs.existsSync(path.join(sb.opt, "compose.yml")));
+  assert.doesNotMatch(calls(sb), /pull|up -d/);
+});
 
 const REPO = path.join(HERE, "..", "..", "..");
 
@@ -123,6 +144,7 @@ describe("install.sh", () => {
     assert.match(env, /MYRMIDON_VERSION=1\.6\.6/);
     assert.match(env, /POSTGRES_PASSWORD=[0-9a-f]{48}/);
     assert.match(env, /BETTER_AUTH_SECRET=[0-9a-f]{64}/);
+    assert.match(env, /MYR_LICENSE_INSTANCE_ID=$/m);
     assert.equal(fs.statSync(path.join(sb.opt, "deploy.env")).mode & 0o777, 0o600);
     // The daemon socket is root:docker 0660 and dockergate runs as the nonroot
     // user 65532: without the socket's group the container dies on
@@ -314,6 +336,7 @@ describe("install.sh", () => {
     assert.ok(compose.includes("postgres://") && compose.includes("@db:5432/"), "the board's database lives on the shared server");
 
     assert.doesNotMatch(compose, /image: postgres:/, "no literal postgres:17 image in the generated compose");
+    assert.doesNotMatch(compose, /paperclip-data:/i, "clean installs do not generate legacy Paperclip volume names");
 
     const init = fs.readFileSync(path.join(sb.opt, "db-init", "01-shared-roles.sh"), "utf8");
     assert.equal(fs.statSync(path.join(sb.opt, "db-init", "01-shared-roles.sh")).mode & 0o755, 0o755);
@@ -368,6 +391,52 @@ describe("install.sh", () => {
     assert.equal(again.status, 0, again.stderr);
     assert.match(envFile(sb), /MYRMIDON_DB_PROFILE=external/);
     assert.doesNotMatch(fs.readFileSync(path.join(sb.opt, "compose.yml"), "utf8"), /^  db:$/m);
+  });
+
+  it("preserves an existing qualified PostgreSQL image and data configuration", () => {
+    const sb = sandbox();
+    assert.equal(run(sb).status, 0);
+    const composePath = path.join(sb.opt, "compose.yml");
+    let compose = fs.readFileSync(composePath, "utf8");
+    compose = `services:\n  db:\n    image: registry.example.internal/team/postgres-custom:17.4\n    volumes:\n      - pgdata:/var/lib/postgresql/data\n  server:\n    volumes:\n      - /srv/myrmidon-state:/var/lib/myrmidon\n${compose}`;
+    fs.writeFileSync(composePath, compose);
+    const envPath = path.join(sb.opt, "deploy.env");
+    const envBefore = fs.readFileSync(envPath, "utf8");
+    const secretsBefore = envBefore.split("\n").filter((line) => /PASSWORD=|SECRET=/.test(line));
+    const volumeBefore = compose.match(/pgdata:[^\n]*/)[0];
+    const dataPathBefore = compose.match(/\/srv\/myrmidon-state[^\n]*/)?.[0];
+    const databaseUrlBefore = envBefore.match(/^MYRMIDON_DATABASE_URL=.*$/m)?.[0];
+
+    fs.writeFileSync(path.join(sb.dir, "up"), "");
+    const updated = run(sb);
+    assert.equal(updated.status, 0, updated.stderr);
+
+    const envAfter = fs.readFileSync(envPath, "utf8");
+    const composeAfter = fs.readFileSync(composePath, "utf8");
+    assert.ok(composeAfter.includes("registry.example.internal/team/postgres-custom:17.4"));
+    assert.equal(composeAfter.match(/pgdata:[^\n]+/)[0].split("\\n")[0], volumeBefore);
+    assert.ok(dataPathBefore && composeAfter.includes(dataPathBefore), "the bind mount path stays unchanged");
+    for (const secret of secretsBefore) assert.ok(envAfter.includes(secret), "preserves generated secret values");
+    assert.ok(envAfter.includes("MYRMIDON_DB_PROFILE=internal"));
+    if (databaseUrlBefore) assert.ok(envAfter.includes(databaseUrlBefore), "preserves the database connection setting");
+  });
+
+  it("detects qualified legacy PostgreSQL references", () => {
+    const sb = sandbox();
+    const composePath = path.join(sb.opt, "compose.yml");
+    fs.mkdirSync(sb.opt, { recursive: true });
+    fs.writeFileSync(composePath, "services:\n  db:\n    image: registry.example.internal/team/postgres:17\nvolumes:\n  pgdata:\n    name: paperclip_pgdata\n  myrmidon-data:\n");
+    const legacyUrl = `postgresql://${"legacy-role"}:${"preserved"}@db.example:5432/app`;
+    const envContents = `MYRMIDON_DB_PROFILE=keep\nMYRMIDON_DB_IMAGE=registry.example.internal/team/postgres:17\nMYRMIDON_DATABASE_URL=${legacyUrl}\nPOSTGRES_PASSWORD=legacy-secret\n`;
+    fs.writeFileSync(path.join(sb.opt, "deploy.env"), envContents);
+    fs.writeFileSync(path.join(sb.opt, ".myrmidon-install"), "myrmidon\n");
+    const r = run(sb);
+    assert.equal(r.status, 0, r.stderr);
+    const result = fs.readFileSync(composePath, "utf8");
+    assert.ok(result.includes("registry.example.internal/team/postgres:17") || result.includes("MYRMIDON_DB_IMAGE=registry.example.internal/team/postgres:17"));
+    assert.ok(result.includes("paperclip_pgdata"));
+    assert.ok(result.includes("myrmidon-data"));
+    assert.ok(fs.readFileSync(path.join(sb.opt, "deploy.env"), "utf8").includes("MYRMIDON_DB_PROFILE=keep"));
   });
 
   it("refuses an external database URL that is not a postgres connection string", () => {
