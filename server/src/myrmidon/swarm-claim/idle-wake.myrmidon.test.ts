@@ -168,13 +168,9 @@ describe("myrmidon(1.6.1 SWARM-IDLE-WAKE) sweep pass", () => {
                 return { limit: () => Promise.resolve([]) };
               }
               if (table === companies && projection && "id" in projection) {
-                // listActiveCompanies is a bounded direct read; the directory
-                // join used by listIdleRolePairs returns the idle agent row.
-                return {
-                  limit: (limit: number) => Promise.resolve([{ id: "company-1" }].slice(0, limit)),
-                  then: (resolve: (rows: unknown[]) => unknown) =>
-                    Promise.resolve([{ id: "company-1", defaultResponsibleUserId: null }]).then(resolve),
-                };
+                // listActiveCompanies selects directly from companies; the
+                // joined matcher directory is handled by innerJoin below.
+                return { limit: (limit: number) => Promise.resolve([{ id: "company-1" }].slice(0, limit)) };
               }
               if (table === companies) {
                 return {
@@ -240,10 +236,8 @@ describe("myrmidon(1.6.1 SWARM-IDLE-WAKE) sweep pass", () => {
                 };
               }
               if (table === agents && projection && "reportsTo" in projection) {
-                // The production read filters with `.where(...)` but the
-                // assignability helper awaits the query directly (no `.then`).
-                // Return an awaitable array rather than a hand-built thenable,
-                // whose `.then` argument shape differs from Drizzle's chain.
+                // listIdleRolePairs reads the joined agent/company directory;
+                // later direct agent reads are the assignability lookup.
                 return Promise.resolve([idleAgent]);
               }
               if (table === issues && projection && "issueId" in projection) {
