@@ -150,7 +150,7 @@ async function runReleaseDrain(
       companyId: run.companyId, issueId: siblingIssue.id, runId: run.id,
     });
     if (!claimed) {
-      return { outcome: { kind: "released" }, postCommitEffects, run };
+      return { outcome: { kind: "released" }, postCommitEffects };
     }
     const sibling = await ports.transaction.findIssue({ companyId: run.companyId, issueId: siblingIssue.id });
     if (sibling && sibling.status !== "done" && sibling.status !== "cancelled") {

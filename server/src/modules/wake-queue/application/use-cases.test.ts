@@ -136,6 +136,7 @@ function createFakeIssueLock(host: WakeQueueHost, transaction: WakeQueueTransact
       const result = await fn({ primaryIssue: issue, run }, { host, transaction });
       return { ...result, run };
     }),
+    claimIssueExecutionLease: vi.fn(async () => true),
   };
 }
 
@@ -366,6 +367,7 @@ describe("releaseIssueExecution", () => {
         );
         return { ...result, run: { ...RUN, status: "succeeded" } };
       }),
+      claimIssueExecutionLease: vi.fn(async () => true),
     };
     const release = createReleaseIssueExecution({ issueLock, recovery: createFakeRecovery() });
 
@@ -395,6 +397,7 @@ describe("releaseIssueExecution", () => {
         );
         return { ...result, run: RUN };
       }),
+      claimIssueExecutionLease: vi.fn(async () => true),
     };
     const release = createReleaseIssueExecution({ issueLock, recovery: createFakeRecovery() });
 
@@ -657,6 +660,7 @@ describe("releaseIssueExecution", () => {
         const result = await fn({ primaryIssue: doneIssue, run: RUN }, { host, transaction });
         return { ...result, run: RUN };
       }),
+      claimIssueExecutionLease: vi.fn(async () => true),
     };
     const releaseIssueExecution = createReleaseIssueExecution({ issueLock, recovery: createFakeRecovery() });
 
