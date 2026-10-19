@@ -77,11 +77,11 @@ function exactHttpsOrigin(value: unknown): string | null {
   }
 }
 
-function configuredStartupOrigin(): string | null {
-  const candidate = nonEmpty(readProductEnv("CLOUD_API_ORIGIN"))
-    ?? nonEmpty(readProductEnv("PUBLIC_URL"))
-    ?? nonEmpty(readProductEnv("AUTH_PUBLIC_BASE_URL"))
-    ?? nonEmpty(readProductEnv("API_URL"));
+function configuredStartupOrigin(env: NodeJS.ProcessEnv): string | null {
+  const candidate = nonEmpty(readProductEnvFrom(env, "CLOUD_API_ORIGIN"))
+    ?? nonEmpty(readProductEnvFrom(env, "PUBLIC_URL"))
+    ?? nonEmpty(readProductEnvFrom(env, "AUTH_PUBLIC_BASE_URL"))
+    ?? nonEmpty(readProductEnvFrom(env, "API_URL"));
   return candidate ? exactHttpsOrigin(candidate) : null;
 }
 
@@ -175,7 +175,7 @@ export async function initializeCloudRuntimeIdentity(
   db: Db,
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<CloudRuntimeIdentitySnapshot | null> {
-  startupOrigin = configuredStartupOrigin();
+  startupOrigin = configuredStartupOrigin(env);
   // Self-hosted servers have no Cloud stack identity to restore. Avoid touching
   // the singleton table on that path; besides keeping the feature inert, this
   // preserves lightweight startup/test database seams that intentionally do
