@@ -126,9 +126,30 @@ describe("myrmidon(1.6.1 SWARM-IDLE-WAKE) sweep pass", () => {
         from: (table: unknown) => {
           const selectQuery = {
             innerJoin: (joinedTable: unknown) => {
-              const rows = joinedTable === issues ? [] : [
-                { id: "idle-agent", companyId: "company-1", name: "Idle agent", reportsTo: null, role: "engineer", status: "idle", metadata: {} },
-              ];
+              if (table === agents && projection && "reportsTo" in projection) {
+                const directoryRows = [idleAgent];
+                return {
+                  where: () => ({ orderBy: () => Promise.resolve(directoryRows) }),
+                };
+              }
+              if (table === issueClaims && projection && "agentId" in projection) {
+                const rows = claimState && !claimState.releasedAt ? [claimState] : [];
+                return { where: () => Promise.resolve(rows) };
+              }
+              if (table === issues && projection && "issueId" in projection) {
+                const rows = issueState.assigneeAgentId === null ? [{
+                  issueId: issueState.id,
+                  identifier: "ENG-42",
+                  priority: "medium",
+                  pheromoneStrength: 0,
+                  failedRunsSinceLastChange: 0,
+                  queuedAt: NOW,
+                  assigneeAgentId: issueState.assigneeAgentId,
+                  projectId: null,
+                }] : [];
+                return { where: () => ({ orderBy: () => ({ limit: (limit: number) => Promise.resolve(rows.slice(0, limit)) }) }) };
+              }
+              const rows = joinedTable === issues ? [] : [idleAgent];
               return {
                 where: () => ({
                   orderBy: () => ({
