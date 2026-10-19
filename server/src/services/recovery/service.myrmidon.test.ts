@@ -150,7 +150,7 @@ describeEmbeddedPostgres("reconcileStrandedAssignedIssues: infrastructure interr
 
   it("returns stranded work to the shared unassigned engineer queue", async () => {
     const { issueId } = await seedStrandedIssue({
-      errorCode: "adapter_failed",
+      errorCode: "agent_paused",
       runtimeMode: "native",
       scheduledRetryAttempt: 0,
       createdAtOffsetMs: 0,
@@ -198,7 +198,7 @@ describeEmbeddedPostgres("reconcileStrandedAssignedIssues: infrastructure interr
 
   it("returns an assigned terminal reroute to todo and wakes the same engineer", async () => {
     const { companyId, agentId, issueId } = await seedStrandedIssue({
-      errorCode: "adapter_failed",
+      errorCode: "agent_paused",
       runtimeMode: "native",
       scheduledRetryAttempt: 0,
       createdAtOffsetMs: 0,
