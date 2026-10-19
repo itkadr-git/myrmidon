@@ -291,7 +291,12 @@ describeProcs("two api processes on one test database (PROCS-T1.5 skeleton)", ()
     // allocation.
     for (let batch = 0; batch < 8 && seenBootIds.size < processes.length; batch += 1) {
       const responses = await Promise.all(
-        Array.from({ length: 16 }, (_, index) => requestReplica(40_000 + batch * 16 + index)),
+        Array.from({ length: 64 }, (_, index) => {
+          // Spread source ports across the range: adjacent ports can still
+          // collide in the kernel's reuse-port hash bucket.
+          const probe = batch * 64 + index;
+          return requestReplica(10_000 + ((probe * 9_973) % 50_000));
+        }),
       );
       for (const response of responses) {
         expect(response.status, response.text.slice(0, 400)).toBe(200);
