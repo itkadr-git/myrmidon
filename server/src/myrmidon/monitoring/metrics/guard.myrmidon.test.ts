@@ -19,6 +19,7 @@ describe("metrics wiring guard", () => {
     const plugin = readFileSync(PLUGIN_TS, "utf8");
     expect(plugin).toContain('export { myrmidonMetricsApp } from "./monitoring/metrics/index.js";');
     expect(source).toContain('} from "./myrmidon/app-plugin.js";');
+    expect(source).toMatch(/app\.use\(myrmidonMetricsApp\(db\)\); \/\/ myrmidon\(1\.7-METRICS\)/);
   });
 
   it("the router is mounted at the origin root (outside /api) exactly once", () => {

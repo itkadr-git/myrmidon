@@ -24,6 +24,7 @@ describe("monitoring dashboard wiring guard", () => {
     const plugin = readFileSync(PLUGIN_TS, "utf8");
     expect(plugin).toContain('export { myrmidonMonitoringDashboardRoutes } from "./monitoring/dashboard/index.js";');
     expect(source).toContain('} from "./myrmidon/app-plugin.js";');
+    expect(source).toMatch(/api\.use\(myrmidonMonitoringDashboardRoutes\(db\)\)/);
   });
 
   it("the router is mounted under /api exactly once", () => {
