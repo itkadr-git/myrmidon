@@ -455,6 +455,10 @@ describe("myrmidon(1.6.1 SWARM-IDLE-WAKE) sweep pass", () => {
       }],
       isIssueCoolingDown: async () => false,
       isAgentAvailable: async () => true,
+      enqueueWakeup: async (agentId: string, opts: Record<string, unknown>) => {
+        wakes.push({ agentId, opts });
+        return { id: "wake-next" };
+      },
       isTaskBudgetBlocked: async () => false,
       logActivity: async () => {},
     } as never);
