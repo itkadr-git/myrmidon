@@ -125,7 +125,7 @@ export interface BotContainerStatusResponse {
   /** Whether the saved image matches the allowlist; null when there is no saved image. */
   imageAllowed: boolean | null;
   /** The live container, or null when it was not asked (flag off, no runtime, other adapter) or could not be. */
-  container: { state: BotContainerState; image: string | null } | null;
+  container: { state: BotContainerState; image: string | null; idleStopped?: boolean } | null;
   /** Set when the runtime was asked and did not answer. */
   containerError: string | null;
   /** myrmidon(1.6.4-BOT-CONTAINER-CARD): how the release bot-image rollout treats this bot:
@@ -279,7 +279,11 @@ export function botContainerRoutes(deps: BotContainerRoutesDeps) {
     if (enabled && runtime && botKey && agent.adapterType === "hermes_gateway") {
       try {
         const status = await runtime.driver.status(botKey);
-        body.container = { state: status.state, image: status.image ?? null };
+        body.container = {
+          state: status.state,
+          image: status.image ?? null,
+          ...(status.idleStopped ? { idleStopped: true } : {}),
+        };
         // myrmidon(CONCURRENCY-SYNC): the applied limit, as recorded by the last apply's
         // marker. Only a container that exists can carry one.
         if (status.state !== "missing") {
