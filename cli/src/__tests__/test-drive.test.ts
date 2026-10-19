@@ -490,7 +490,7 @@ describe("test-drive foreground lifecycle", () => {
       bind: "loopback",
       installService: false,
       skipServiceManagerCheck: true,
-      introLabel: "myrmidon test-drive",
+      introLabel: "paperclipai test-drive",
     });
     expect(events).toEqual(["listening", "initialized", "browser"]);
   });

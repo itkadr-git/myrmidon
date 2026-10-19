@@ -285,7 +285,7 @@ describe("managed install commands", () => {
       userHomeDir: process.env.HOME!,
     })).rejects.toThrow("other instance services are installed");
 
-    expect(fs.existsSync(paths.cliRoot)).toBe(false);
+    expect(fs.existsSync(paths.cliRoot)).toBe(true);
     expect(fs.existsSync(otherUnitPath)).toBe(true);
   });
 

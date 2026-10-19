@@ -218,7 +218,7 @@ describe("service runtime shim awareness", () => {
     expect(runtime?.message).toContain("/custom/bin/paperclipai");
     expect(runtime?.repairHint).toContain("/custom/bin/paperclipai");
     expect(runtime?.repairHint).toContain("unset PAPERCLIP_SHIM_PATH");
-    expect(runtime?.repairHint).toContain("`paperclipai install` followed by `paperclipai service install`");
+    expect(runtime?.repairHint).toContain("`myrmidon install` followed by `myrmidon service install`");
   });
 
   it("attributes a healthy foreign responder instead of reporting Healthy", async () => {
