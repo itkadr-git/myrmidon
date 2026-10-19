@@ -18155,21 +18155,23 @@ export function heartbeatService(
         Boolean(options?.keepIdleOnFailure) || isTransientFailure(failureInput);
       const maxFailures = DEFAULT_RUN_RETRY_MAX_ATTEMPTS;
 
-      if (isPermanent) {
-        nextStatus = "error";
-      } else if (isTransient) {
+      if (isTransient) {
+        // An explicit idle override means a bounded retry owns recovery. This
+        // is important for quota reset retries: the provider failure is
+        // persistent, but the agent itself remains available for the retry.
         if (nextFailures >= maxFailures) {
           nextStatus = "error";
           failureReason = `${nextFailures} consecutive runs failed: ${failureReason ?? "transient failure"}`;
         } else {
           nextStatus = "idle";
         }
+      } else if (isPermanent) {
+        nextStatus = "error";
+      } else if (nextFailures >= maxFailures) {
+        nextStatus = "error";
+        failureReason = `${nextFailures} consecutive runs failed: ${failureReason ?? "failure"}`;
       } else {
-        if (nextFailures >= maxFailures) {
-          nextStatus = "error";
-        } else {
-          nextStatus = "idle";
-        }
+        nextStatus = "idle";
       }
     }
 

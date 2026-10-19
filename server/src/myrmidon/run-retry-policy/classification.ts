@@ -237,7 +237,8 @@ export function isTransientFailure(input: RunFailureInput): boolean {
 
 /**
  * Checks whether a failure is a persistent/sustained issue (quota, auth, config)
- * that warrants immediately placing the agent into status=error rather than retrying.
+ * that warrants placing the agent into status=error unless the caller has an
+ * explicit bounded-retry override.
  */
 export function isPermanentAgentFailure(input: RunFailureInput): boolean {
   const errorCode = readToken(input.errorCode);
