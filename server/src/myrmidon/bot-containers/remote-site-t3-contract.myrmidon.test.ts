@@ -57,11 +57,14 @@ describe("T3 regressions against production profile, placement, routing and drif
   it("changes compiled restart hash when the key reference changes", () => expect(compileHermesProfile(profileInput).restartHash).not.toBe(compileHermesProfile({ ...profileInput, llm: { ...profileInput.llm, apiKeyEnv: "FIXTURE_LLM_KEY_NEXT" } }).restartHash));
   it("changes compiled restart hash when the MCP endpoint changes", () => expect(compileHermesProfile(profileInput).restartHash).not.toBe(compileHermesProfile({ ...profileInput, mcpServers: [{ name: "fixture-mcp", url: "http://mcp.t3-a.example.test/next" }] }).restartHash));
   it("rejects latest image tags through the production image allowlist helper", () => {
-    expect(isImageAllowed("ghcr.io/example/bot:latest", T3_A_FIXTURE.imageAllowlist)).toBe(false);
-    expect(isImageAllowed("ghcr.io/example/bot@sha256:abc123", T3_A_FIXTURE.imageAllowlist)).toBe(true);
+    const imageAllowlist = T3_A_FIXTURE.imageAllowlist ?? [];
+    expect(isImageAllowed("ghcr.io/example/bot:latest", imageAllowlist)).toBe(false);
+    expect(isImageAllowed("ghcr.io/example/bot@sha256:abc123", imageAllowlist)).toBe(true);
   });
   it("detects image digest and resource-limit drift through Docker production helpers", () => {
-    const body = buildCreateContainerRequestBody({ botKey: "fixture-bot", image: "ghcr.io/example/bot@sha256:aaa", memoryMb: 1024, cpus: 1, pidsLimit: 128, network: T3_A_FIXTURE.network }, { volumeRoot: T3_A_FIXTURE.volumeRoot, network: T3_A_FIXTURE.network, allowlist: ["ghcr.io/example/bot@sha256:*"], mountSources: [], devbuild: { host: null, user: "", base: "" } });
+    const volumeRoot = T3_A_FIXTURE.volumeRoot ?? "/srv/paperclip/t3-a";
+    const network = T3_A_FIXTURE.network ?? "paperclip-t3-a";
+    const body = buildCreateContainerRequestBody({ botKey: "fixture-bot", image: "ghcr.io/example/bot@sha256:aaa", memoryMb: 1024, cpus: 1, pidsLimit: 128, network }, { volumeRoot, network, allowlist: ["ghcr.io/example/bot@sha256:*"], mountSources: [], devbuild: { host: null, user: "", base: "" } });
     const inspect = (image: string, memory = body.HostConfig.Memory) => ({ Config: { Image: image }, HostConfig: { ...body.HostConfig, Memory: memory } });
     expect(templateDriftFields(inspect(body.Image), body)).toEqual([]);
     expect(templateDriftFields(inspect("ghcr.io/example/bot@sha256:bbb"), body).map((x) => x.field)).toContain("Config.Image");
