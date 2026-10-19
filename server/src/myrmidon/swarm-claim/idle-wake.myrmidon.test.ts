@@ -156,6 +156,18 @@ describe("myrmidon(1.6.1 SWARM-IDLE-WAKE) sweep pass", () => {
                   where: () => ({ orderBy: () => Promise.resolve([idleAgent]) }),
                 };
               }
+              if (joinedTable === issues) {
+                // listClaimsOnNonQueueIssues joins claims to issues and must
+                // exclude this still-queued task from the closed-task sweep.
+                return {
+                  where: () => ({
+                    orderBy: () => ({
+                      limit: (limit: number) => Promise.resolve([]),
+                      then: (resolve: (rows: unknown[]) => unknown) => Promise.resolve([]).then(resolve),
+                    }),
+                  }),
+                };
+              }
               const rows: unknown[] = [];
               return {
                 where: () => ({
