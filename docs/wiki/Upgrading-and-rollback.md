@@ -21,6 +21,13 @@ specific release: `install.sh --version myr-vX.Y.Z`. Once the short
 `latest` link follows the newest **stable** release;
 an RC installs only when asked for by its exact tag.
 
+For a safe migration from an older installation, run the installer with
+`--dry-run` first. It renders and validates the Compose configuration without
+pulling images or changing services. Keep the existing database URL,
+passwords, bind mounts and volume names. A normal install preserves legacy
+database volumes; do not remove volumes or run `docker compose down` as part
+of the upgrade.
+
 ## Upgrading with deploy.sh (manual flow)
 
 For servers managed by hand the deploy script is the path — see

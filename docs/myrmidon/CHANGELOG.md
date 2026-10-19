@@ -10,6 +10,14 @@ version file to edit. Base Paperclip version is in the image label
 
 ## Unreleased
 
+### Installer dry-run and safe legacy-volume migration
+
+- `install.sh --dry-run` renders and validates the Compose configuration
+  without pulling images or changing running services.
+- Normal installs preserve legacy database volumes during migration. New
+  install paths use Myrmidon names; uninstall cleanup also recognizes the
+  prior volume name for compatibility.
+
 ## 1.6.6
 
 ### The company agent list ships without adapter_config; the config stays one request away (PERF-DIET G2)
