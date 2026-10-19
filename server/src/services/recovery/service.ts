@@ -4477,9 +4477,9 @@ export function recoveryService(
       rerouteToSharedQueue: input.rerouteToSharedQueue,
     });
     if (!recoveryAction && input.issue.originKind === "stranded_issue_recovery") {
-      // Legacy infra interruptions are intentionally handed back to todo;
-      // other reroute causes still require the legacy blocked disposition.
-      if (approvedInfraReroute) {
+      // Approved infra reroutes bypass recovery actions; exhausted retries and
+      // legacy recovery cases retain the board escalation disposition.
+      if (approvedInfraReroute && !infraInterruptRetryBudgetExhausted) {
         return false;
       }
       const blockerIds = await existingUnresolvedBlockerIssueIds(
