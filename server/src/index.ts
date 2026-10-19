@@ -137,6 +137,7 @@ import { startMaintenanceMode } from "./myrmidon/maintenance/index.js"; // myrmi
 import { startDeployJobs } from "./myrmidon/deploy-jobs/index.js"; // myrmidon(R5-A)
 import { startRuntimeLimits } from "./myrmidon/runtime-limits/index.js"; // myrmidon(C0)
 import { startProcessesSettings, createProcessSupervisor, reportReadyToSupervisor, wireSupervisorDrainHandler, type SupervisorListenerHandle } from "./myrmidon/processes/index.js"; // myrmidon(PROCS-1.1/1.2)
+import type { ProcessSupervisor } from "./myrmidon/processes/supervisor.js";
 import { resolveProcessesSettings } from "@paperclipai/shared";
 import { startBehaviorSettings } from "./myrmidon/behavior-settings/index.js"; // myrmidon(SETTINGS-CORE)
 // myrmidon(PAUSE-GUARD): resumes operator pauses left older than a threshold
@@ -1113,7 +1114,13 @@ async function startServerWithDatabaseTeardown(
         createPostgresJsClient(activeDatabaseConnectionString, { maxConnections: 1 }),
       )
     : null;
+  const settingsApplierDeps = {
+    db: db as any,
+    processSupervisor: null as ProcessSupervisor | null,
+    applyTeamLiveness: undefined as (() => Promise<void>) | undefined,
+  };
   if (processBus) {
+    registerSettingsAppliers(processBus, settingsApplierDeps);
     try {
       await processBus.start();
       logger.info({ role: processRoleValue }, "process bus started (PROCS-1.3)");
@@ -1196,9 +1203,10 @@ async function startServerWithDatabaseTeardown(
         },
       })
     : null;
-  if (processBus) {
-    registerSettingsAppliers(processBus, { db: db as any, processSupervisor });
-  }
+  settingsApplierDeps.processSupervisor = processSupervisor;
+  settingsApplierDeps.applyTeamLiveness = async () => {
+    await heartbeat?.applyTeamLiveness();
+  };
   if (processSupervisor) {
     logger.info("myrmidon(PROCS-1.2): process supervisor wired on the worker");
   }
