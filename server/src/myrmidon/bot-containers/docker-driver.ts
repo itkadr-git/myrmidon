@@ -56,6 +56,8 @@
 
 import { CLONE_HYGIENE_REPORT_PATH } from "./clone-hygiene.js"; // myrmidon(1.6.2-BOT-DISK-C)
 import { randomBytes } from "node:crypto";
+import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
+import path from "node:path";
 import http from "node:http";
 import {
   RATE_LIMIT_MAX_RETRIES,
@@ -1514,11 +1516,40 @@ export function dockerBotContainerDriver(
       return null;
     }
   }
+  async function idleStoppedStatePath(botKey: string): Promise<string> {
+    return path.join(config.volumeRoot, ".myrmidon-idle-stopped", `${botKey}.json`);
+  }
+
+  async function readIdleStopped(botKey: string): Promise<boolean> {
+    try {
+      const raw = await readFile(await idleStoppedStatePath(botKey), "utf8");
+      const state = JSON.parse(raw) as { botKey?: unknown; idleStopped?: unknown };
+      return state.botKey === botKey && state.idleStopped === true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+      throw error;
+    }
+  }
+
+  async function writeIdleStopped(botKey: string, idleStopped: boolean): Promise<void> {
+    const file = await idleStoppedStatePath(botKey);
+    const stateDir = path.join(config.volumeRoot, ".myrmidon-idle-stopped");
+    if (!idleStopped) {
+      await unlink(file).catch((error: NodeJS.ErrnoException) => { if (error.code !== "ENOENT") throw error; });
+      return;
+    }
+    await mkdir(stateDir, { recursive: true, mode: 0o700 });
+    const temporary = `${file}.${process.pid}.${newNonce()}.tmp`;
+    await writeFile(temporary, JSON.stringify({ botKey, idleStopped: true }), { mode: 0o600 });
+    await rename(temporary, file);
+  }
+
   async function status(botKey: string): Promise<BotContainerStatus> {
     const name = containerNameFor(botKey);
     const info = await inspectByName(name);
     if (!info) return { botKey, state: "missing" };
     const marker = await readAppliedMarker(botKey, info);
+    const idleStopped = await readIdleStopped(botKey);
     return {
       botKey,
       state: botStateFromInspect(info),
@@ -1530,6 +1561,7 @@ export function dockerBotContainerDriver(
       // already asked for the status (the reconciler, once per bot per pass)
       // can hand it to templateDrift instead of paying a second inspect.
       inspect: info,
+      idleStopped,
     };
   }
 
@@ -1702,7 +1734,9 @@ export function dockerBotContainerDriver(
   }
 
   async function start(botKey: string): Promise<void> {
-    await startByName(containerNameFor(botKey)); // 304 (already running) is not an error
+    const name = containerNameFor(botKey);
+    await startByName(name); // 304 (already running) is not an error
+    await writeIdleStopped(botKey, false);
     await waitForHealthy(botKey);
   }
 
@@ -1721,5 +1755,12 @@ export function dockerBotContainerDriver(
     await stopByName(containerNameFor(botKey));
   }
 
-  return { status, list, listRunning, templateDrift, statusWithDrift, create, recreate, writeProfile, start, restart, stop, readCloneReport, readBotSkills };
+  async function stopIdle(botKey: string): Promise<void> {
+    const name = containerNameFor(botKey);
+    const res = await requestWithRateLimitRetry({ method: "POST", path: `/containers/${nameSegment(name)}/stop?t=${BOT_STOP_TIMEOUT_SEC}&myrmidon-idle=true` });
+    if (res.status >= 400) throw describeFailure(`docker idle stop ${name}`, res);
+    await writeIdleStopped(botKey, true);
+  }
+
+  return { status, list, listRunning, templateDrift, statusWithDrift, create, recreate, writeProfile, start, restart, stop, stopIdle, readCloneReport, readBotSkills };
 }
