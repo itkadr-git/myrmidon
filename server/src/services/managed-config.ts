@@ -32,7 +32,6 @@
  * disabled (see `applyManagedExperimentalOverlay` in instance-settings.ts).
  */
 
-import { readProductEnvFrom } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
 import {
   INSTANCE_FEATURE_CATALOG,
   instanceExperimentalSettingsSchema,
