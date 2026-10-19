@@ -4427,6 +4427,7 @@ export function recoveryService(
     if (
       input.rerouteToSharedQueue &&
       input.latestRun &&
+      !isStrandedIssueRecoveryIssue(input.issue) &&
       isInfraInterruptErrorCode(input.latestRun.errorCode)
     ) {
       // Rerouting is the recovery disposition itself. Apply it before creating
