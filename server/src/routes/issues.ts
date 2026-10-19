@@ -13782,6 +13782,15 @@ export function issueRoutes(
         res.status(422).json({ error: "Entering blocked requires blockerMetadata" });
         return;
       }
+      // myrmidon(BLOCKED-GUARD P0.6): typed blocker metadata describes the current block only;
+      // a transition out of blocked without new metadata clears it, so no stale reason survives.
+      const leavingBlocked =
+        existing.status === "blocked" &&
+        updateFields.status !== undefined &&
+        updateFields.status !== "blocked";
+      if (leavingBlocked && blockerMetadataRaw === undefined) {
+        updateFields.blockerMetadata = null;
+      }
       if (blockerMetadataRaw?.blockReason === "external_wait") {
         const monitor =
           (updateFields.executionPolicy as { monitor?: unknown } | undefined)?.monitor ??

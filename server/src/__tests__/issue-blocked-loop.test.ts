@@ -237,6 +237,45 @@ describeEmbeddedPostgres("blocked loop limiter (route level)", () => {
     expect(res.body.status).toBe("blocked");
   });
 
+  it("rejects an external_wait block without executionPolicy.monitor", async () => {
+    const s = await seed();
+    const res = await agentBlocks(s, {
+      blockerMetadata: {
+        blockReason: "external_wait",
+        owner: { agentId: s.agentId },
+        externalRef: "ci-run-1",
+        nextCheckAt: "2026-10-20T00:00:00.000Z",
+        timeoutAt: "2026-10-21T00:00:00.000Z",
+        escalationPolicy: "agent",
+      },
+    });
+    expect(res.status, JSON.stringify(res.body)).toBe(422);
+    expect(res.body.error).toContain("external_wait requires executionPolicy.monitor");
+  });
+
+  it("clears blocker metadata when the task leaves blocked", async () => {
+    const s = await seed();
+    const blocked = await agentBlocks(s, {});
+    expect(blocked.status, JSON.stringify(blocked.body)).toBe(200);
+    const stored = await db
+      .select({ blockerMetadata: issues.blockerMetadata })
+      .from(issues)
+      .where(eq(issues.id, s.issueId))
+      .then((rows) => rows[0]?.blockerMetadata);
+    expect(stored?.blockReason).toBe("dependency");
+
+    const unblocked = await request(createApp(boardActor(s.companyId)))
+      .patch(`/api/issues/${s.issueId}`)
+      .send({ status: "todo" });
+    expect(unblocked.status, JSON.stringify(unblocked.body)).toBe(200);
+    const cleared = await db
+      .select({ blockerMetadata: issues.blockerMetadata })
+      .from(issues)
+      .where(eq(issues.id, s.issueId))
+      .then((rows) => rows[0]?.blockerMetadata);
+    expect(cleared).toBeNull();
+  });
+
   async function countActivity(s: Seeded, action: string) {
     const rows = await db
       .select({ id: activityLog.id })

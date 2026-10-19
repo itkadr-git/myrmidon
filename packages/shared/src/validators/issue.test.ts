@@ -207,6 +207,18 @@ describe("issue validators", () => {
       ...valid,
       blockerMetadata: { ...valid.blockerMetadata, owner: "board" },
     }).success).toBe(false);
+    // exactly one principal: an agent and a user together is not one owner
+    expect(updateIssueSchema.safeParse({
+      ...valid,
+      blockerMetadata: {
+        ...valid.blockerMetadata,
+        owner: { agentId: "00000000-0000-4000-8000-000000000001", userId: "00000000-0000-4000-8000-000000000002" },
+      },
+    }).success).toBe(false);
+    expect(updateIssueSchema.safeParse({
+      ...valid,
+      blockerMetadata: { ...valid.blockerMetadata, owner: { userId: "00000000-0000-4000-8000-000000000002" } },
+    }).success).toBe(true);
   });
   it("requires typed blocker metadata when transitioning into blocked", () => {
     const result = updateIssueSchema.safeParse({ status: "blocked" });
