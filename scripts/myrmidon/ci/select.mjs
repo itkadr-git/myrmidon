@@ -66,6 +66,7 @@ const SHARED_GUARD_TRIGGERS = [
   "server/src/index.ts",
   "server/src/myrmidon/app-plugin.ts",
   "docs/myrmidon/FLAGS.md",
+  "docs/myrmidon/SETTINGS.md",
 ];
 
 /**
