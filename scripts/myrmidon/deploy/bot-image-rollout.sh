@@ -240,6 +240,24 @@ board_post_json_status() {
   printf '%s\n%s' "${out##*$'\n'}" "${out%$'\n'*}"
 }
 
+# Waits for any active or leaving maintenance windows on the board to retire completely.
+wait_for_maintenance_leaving() {
+  local deadline=$((SECONDS + 60)) body leaving_count
+  while :; do
+    body="$(board_get "/myrmidon/maintenance" 2>/dev/null)" || body=""
+    leaving_count="$(jq -r '[.windows[]? | select(.state == "leaving" or .state == "entering" or .state == "on")] | length' <<<"$body" 2>/dev/null || echo 0)"
+    if [[ "$leaving_count" == "0" ]]; then
+      return 0
+    fi
+    if ((SECONDS >= deadline)); then
+      bot_log "WARNING: maintenance windows still active/leaving ($leaving_count) after 60s; proceeding"
+      return 1
+    fi
+    bot_log "maintenance has $leaving_count window(s) active/leaving; waiting before switching cards..."
+    sleep 2
+  done
+}
+
 # Retry only the board's explicit transient response while a maintenance scope
 # is leaving; other 409 responses remain normal deferrals.
 apply_bot_container() {
@@ -721,7 +739,7 @@ wait_apply_job() {
 container_on_image() {
   local id="$1" want="$2" body
   body="$(board_get "/myrmidon/agents/$id/bot-container/status")" || return 1
-  jq -e --arg want "$want" '.container.state == "running" and .container.image == $want' <<<"$body" >/dev/null 2>&1
+  jq -e --arg want "$want" '((.container.state == "running") or (.container.state == "stopped" and .container.idleStopped == true)) and .container.image == $want' <<<"$body" >/dev/null 2>&1
 }
 
 # Puts the card's container block back after a failed apply: a card on the new
@@ -773,99 +791,116 @@ switch_one_bot() {
         ;;
     esac
   fi
-  if is_release_ref "$current"; then
-    # The card already names the release image (a previous rollout switched
-    # it or the apply stayed deferred): only re-apply, never re-PATCH.
-    out="$(apply_bot_container "$id")" || {
-      bot_log "apply of bot $id failed (card already on the release image); the periodic sweep retries"
-      journal "agent $id apply failed (card already on $target; the sweep retries)"
-      return 1
-    }
-  else
-    # PATCH the card: the route merges adapterConfig ONE level deep, so the
-    # whole container block goes back with the new image (an image-only block
-    # would replace it and drop enabled and the limits).
-    local block
-    block="$(card_container "$id" || true)"
-    prev_block="$block"
-    [[ -n "$block" && "$block" != "{}" ]] || { bot_log "bot $id: cannot read the card's container block; the card is untouched"; return 1; }
-    body="$(jq -cn --argjson c "$block" --arg img "$target" '{adapterConfig: {container: ($c + {image: $img})}}')"
-    if ! board_patch_json "/agents/$id" "$body" >/dev/null; then
-      bot_log "PATCH of bot $id's card failed; the card is untouched"
-      return 1
-    fi
-    # Apply now: the board's own reconciler drains this agent alone and
-    # recreates the container with the new image.
-    out="$(apply_bot_container "$id")" || {
-      bot_log "apply of bot $id failed after the card switch"
-      journal "agent $id card switched to $target, apply failed"
-      revert_card "$id" "$prev_block" "$target"
-      return 1
-    }
-  fi
-  # 1.6.5 async apply: the first line is the HTTP status, the rest the body.
-  # 202 queues the job; 409 says the bot cannot apply right now (not applicable,
-  # disabled, runtime unavailable) — that is a deferral, not a failure.
-  local http_status
-  http_status="${out%%$'\n'*}"
-  out="${out#*$'\n'}"
-  case "$http_status" in
-    202) ;;
-    409)
-      local conflict_code
-      if [[ "$out" == *"Maintenance for this scope is still leaving; retry shortly"* ]]; then
-        bot_log "bot $id apply remained blocked while maintenance was leaving; retry budget exhausted"
-        journal "agent $id apply remained in maintenance-leaving state after retries"
-        revert_card "$id" "$prev_block" "$target"
+  local apply_attempt=1
+  while :; do
+    if is_release_ref "$current" || [[ -n "$prev_block" ]]; then
+      # The card already names the release image (a previous rollout switched
+      # it, the apply stayed deferred, or a previous attempt patched it):
+      # only re-apply, never re-PATCH.
+      out="$(apply_bot_container "$id")" || {
+        bot_log "apply of bot $id failed (card already on the release image); the periodic sweep retries"
+        journal "agent $id apply failed (card already on $target; the sweep retries)"
+        return 1
+      }
+    else
+      # PATCH the card: the route merges adapterConfig ONE level deep, so the
+      # whole container block goes back with the new image (an image-only block
+      # would replace it and drop enabled and the limits).
+      local block
+      block="$(card_container "$id" || true)"
+      prev_block="$block"
+      [[ -n "$block" && "$block" != "{}" ]] || { bot_log "bot $id: cannot read the card's container block; the card is untouched"; return 1; }
+      body="$(jq -cn --argjson c "$block" --arg img "$target" '{adapterConfig: {container: ($c + {image: $img})}}')"
+      if ! board_patch_json "/agents/$id" "$body" >/dev/null; then
+        bot_log "PATCH of bot $id's card failed; the card is untouched"
         return 1
       fi
-      conflict_code="$(jq -r '.code // "bot_container_not_applicable"' <<<"$out" 2>/dev/null || true)"
-      bot_log "bot $id deferred (apply refused: $conflict_code)"
-      journal "agent $id apply refused (409 $conflict_code; card unchanged)"
-      return 2
-      ;;
-    *)
-      bot_log "apply of bot $id answered HTTP $http_status; the periodic sweep retries"
-      journal "agent $id apply answered HTTP $http_status"
-      revert_card "$id" "$prev_block" "$target"
-      return 1
-      ;;
-  esac
-  apply_id="$(jq -r '.applyId // ""' <<<"$out" 2>/dev/null || true)"
-  if [[ -n "$apply_id" ]]; then
-    # 1.6.5 async apply: 202 + applyId; the outcome is read from the job.
-    waited="$(wait_apply_job "$id" "$apply_id")"
-    case "$waited" in
-      succeeded)
-        if container_on_image "$id" "$target"; then
-          bot_log "bot $id: $current -> $target (apply $apply_id succeeded, container on the release image)"
-          journal "agent $id $current -> $target (async apply $apply_id)"
-          record_history "bot-image" "$id $target"
-          return 0
+      # Apply now: the board's own reconciler drains this agent alone and
+      # recreates the container with the new image.
+      out="$(apply_bot_container "$id")" || {
+        bot_log "apply of bot $id failed after the card switch"
+        journal "agent $id card switched to $target, apply failed"
+        revert_card "$id" "$prev_block" "$target"
+        return 1
+      }
+    fi
+    # 1.6.5 async apply: the first line is the HTTP status, the rest the body.
+    # 202 queues the job; 409 says the bot cannot apply right now (not applicable,
+    # disabled, runtime unavailable) — that is a deferral, not a failure.
+    local http_status
+    http_status="${out%%$'\n'*}"
+    out="${out#*$'\n'}"
+    case "$http_status" in
+      202) ;;
+      409)
+        local conflict_code
+        if [[ "$out" == *"Maintenance for this scope is still leaving; retry shortly"* ]]; then
+          bot_log "bot $id apply remained blocked while maintenance was leaving; retry budget exhausted"
+          journal "agent $id apply remained in maintenance-leaving state after retries"
+          revert_card "$id" "$prev_block" "$target"
+          return 1
         fi
-        # The job row says "succeeded" even when the reconciler deferred the
-        # pass (a busy agent, a drain that lost the window). The container
-        # staying off the release image is what proves it; the card already
-        # points at the release image and the periodic sweep retries.
-        bot_log "bot $id deferred (apply $apply_id succeeded but the container is not on the release image; the sweep retries)"
-        DEFERRED_REASON="apply $apply_id succeeded but the container is not running the release image yet"
-        journal "agent $id apply $apply_id deferred (container not on $target)"
+        conflict_code="$(jq -r '.code // "bot_container_not_applicable"' <<<"$out" 2>/dev/null || true)"
+        bot_log "bot $id deferred (apply refused: $conflict_code)"
+        journal "agent $id apply refused (409 $conflict_code; card unchanged)"
         return 2
         ;;
-      failed\|*)
-        bot_log "bot $id: apply $apply_id failed: ${waited#failed|}"
-        journal "agent $id apply $apply_id failed: ${waited#failed|}"
+      *)
+        bot_log "apply of bot $id answered HTTP $http_status; the periodic sweep retries"
+        journal "agent $id apply answered HTTP $http_status"
         revert_card "$id" "$prev_block" "$target"
         return 1
         ;;
-      *)
-        bot_log "bot $id deferred (apply $apply_id still not finished after ${MYR_BOT_APPLY_WAIT_SEC}s)"
-        DEFERRED_REASON="apply $apply_id still not finished after ${MYR_BOT_APPLY_WAIT_SEC}s"
-        journal "agent $id apply $apply_id still not finished after ${MYR_BOT_APPLY_WAIT_SEC}s"
-        return 2
-        ;;
     esac
-  fi
+    apply_id="$(jq -r '.applyId // ""' <<<"$out" 2>/dev/null || true)"
+    if [[ -n "$apply_id" ]]; then
+      # 1.6.5 async apply: 202 + applyId; the outcome is read from the job.
+      waited="$(wait_apply_job "$id" "$apply_id")"
+      case "$waited" in
+        succeeded)
+          if container_on_image "$id" "$target"; then
+            bot_log "bot $id: $current -> $target (apply $apply_id succeeded, container on the release image)"
+            journal "agent $id $current -> $target (async apply $apply_id)"
+            record_history "bot-image" "$id $target"
+            return 0
+          fi
+          # The job row says "succeeded" even when the reconciler deferred the
+          # pass (a busy agent, a drain that lost the window). The container
+          # staying off the release image is what proves it; the card already
+          # points at the release image and the periodic sweep retries.
+          bot_log "bot $id deferred (apply $apply_id succeeded but the container is not on the release image; the sweep retries)"
+          DEFERRED_REASON="apply $apply_id succeeded but the container is not running the release image yet"
+          journal "agent $id apply $apply_id deferred (container not on $target)"
+          return 2
+          ;;
+        failed\|*Maintenance\ for\ this\ scope\ is\ still\ leaving*)
+          if ((apply_attempt < 6)); then
+            bot_log "bot $id: apply $apply_id reported maintenance still leaving; retrying in 5s ($((apply_attempt + 1))/6)"
+            sleep 5
+            ((apply_attempt += 1))
+            continue
+          fi
+          bot_log "bot $id: apply $apply_id failed: ${waited#failed|}"
+          journal "agent $id apply $apply_id failed: ${waited#failed|}"
+          revert_card "$id" "$prev_block" "$target"
+          return 1
+          ;;
+        failed\|*)
+          bot_log "bot $id: apply $apply_id failed: ${waited#failed|}"
+          journal "agent $id apply $apply_id failed: ${waited#failed|}"
+          revert_card "$id" "$prev_block" "$target"
+          return 1
+          ;;
+        *)
+          bot_log "bot $id deferred (apply $apply_id still not finished after ${MYR_BOT_APPLY_WAIT_SEC}s)"
+          DEFERRED_REASON="apply $apply_id still not finished after ${MYR_BOT_APPLY_WAIT_SEC}s"
+          journal "agent $id apply $apply_id still not finished after ${MYR_BOT_APPLY_WAIT_SEC}s"
+          return 2
+          ;;
+      esac
+    fi
+    break
+  done
   kind="$(jq -r '.outcome.kind // ""' <<<"$out" 2>/dev/null || true)"
   case "$kind" in
     created | applied_files | applied_restart | unchanged)
@@ -929,12 +964,12 @@ switch_bot_recorded() {
 # --retry-deferred re-run pass (F-04 p.3, decision 06.10 item 3).
 declare -A BOT_STATE=() BOT_ORIG=() BOT_TARGET=()
 
-# The running container's fact as TSV "state<TAB>image"; non-zero when the
+# The running container's fact as TSV "state<TAB>image<TAB>idleStopped"; non-zero when the
 # board has no status to report (no container, or the read failed).
 container_fact() {
   local id="$1" body
   body="$(board_get "/myrmidon/agents/$id/bot-container/status")" || return 1
-  jq -r '[(.container.state // ""), (.container.image // "")] | @tsv' <<<"$body" 2>/dev/null || return 1
+  jq -r '[(.container.state // ""), (.container.image // ""), (.container.idleStopped // false)] | @tsv' <<<"$body" 2>/dev/null || return 1
 }
 
 VERIFY_ROWS=()
@@ -944,7 +979,7 @@ v_deferred=0
 v_mismatch=0
 v_failed=0
 verify_fleet() {
-  local id card fact="" cstate="" cimage="" target orig state verdict dreason
+  local id card fact="" cstate="" cimage="" cidle="false" target orig state verdict dreason
   VERIFY_ROWS=("id|card image|container image|state|verdict")
   DEFERRED_ROWS=()
   v_switched=0 v_deferred=0 v_mismatch=0 v_failed=0
@@ -952,16 +987,16 @@ verify_fleet() {
     [[ -n "$id" ]] || continue
     card="$(card_image "$id" || true)"
     if fact="$(container_fact "$id")"; then
-      cstate="${fact%%$'\t'*}"; cimage="${fact#*$'\t'}"
+      IFS=$'\t' read -r cstate cimage cidle <<<"$fact"
     else
-      cstate=""; cimage=""
+      cstate=""; cimage=""; cidle="false"
     fi
     target="${BOT_TARGET[$id]:-}" orig="${BOT_ORIG[$id]:-}" state="${BOT_STATE[$id]:-deferred}"
     if [[ "$state" == "failed" ]]; then
       # The main cycle failed on this bot (PATCH/apply error): the run stays
       # DEGRADED even if the cards happen to agree — the operator must see it.
       verdict="failed"
-    elif [[ -n "$target" && "$card" == "$target" && "$cimage" == "$target" && "$cstate" == "running" ]]; then
+    elif [[ -n "$target" && "$card" == "$target" && "$cimage" == "$target" && ( "$cstate" == "running" || ( "$cstate" == "stopped" && "$cidle" == "true" ) ) ]]; then
       # The fact confirms the switch — even for a bot the main cycle only
       # deferred (the sweep or a late apply finished it).
       verdict="switched"
@@ -1086,6 +1121,9 @@ stayed_deferred=0
 deferred_tail=()
 declare -A deferred_reasons=()
 batch_no=0
+if ((total > 0)); then
+  wait_for_maintenance_leaving || true
+fi
 if ((RETRY_DEFERRED)); then
   # One deliberate pass over the deferred bots: wait per bot, re-apply, never
   # interrupt a run; the verdict belongs to the verification below.
