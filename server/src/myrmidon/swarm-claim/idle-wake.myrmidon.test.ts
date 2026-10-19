@@ -282,9 +282,14 @@ describe("myrmidon(1.6.1 SWARM-IDLE-WAKE) sweep pass", () => {
               }
               if (projection && "agentId" in projection) return Promise.resolve([]);
               if (projection && "activeClaims" in projection) return Promise.resolve([]);
+              console.error("idle-wake fixture fallback", {
+                table: table === issues ? "issues" : table === agents ? "agents" : table === issueClaims ? "issueClaims" : "other",
+                projection: projection ? Object.keys(projection) : [],
+              });
               return {
                 orderBy: () => ({
                   limit: (limit: number) => Promise.resolve([issueState].slice(0, limit)),
+                  then: (resolve: (value: unknown[]) => unknown) => Promise.resolve([issueState]).then(resolve),
                 }),
                 limit: (limit: number) => Promise.resolve([issueState].slice(0, limit)),
                 groupBy: empty,
