@@ -40,7 +40,6 @@
 | `MYRMIDON_IDLE_STOP_ENABLED` | `false` | Enable the idle-stop sweeper and the wake-with-health-wait path. Off by default; when off, nothing changes. |
 | `MYRMIDON_IDLE_STOP_AFTER_SEC` | `1800` | A running bot container with no active heartbeat runs for longer than this is stopped by the sweeper. Minimum 60. |
 | `MYRMIDON_IDLE_START_HEALTH_TIMEOUT_MS` | `30000` | How long the board waits for a woken container to become healthy before the claimed run is cancelled with a journal error. Minimum 1000. |
-| `MYRMIDON_BOT_STATE_DIR` | unset (`<instance>/bot-containers/idle-stopped`) | Directory where driver state, such as idle-stopped bot markers, is persisted on the board data volume. |
 
 ## settings-ru-new
 
@@ -52,4 +51,3 @@
 | `MYRMIDON_IDLE_STOP_ENABLED` | `false` | Включает sweeper остановки простаивающих контейнеров и побудку с ожиданием здоровья. По умолчанию выключено; при выключении ничего не меняется. |
 | `MYRMIDON_IDLE_STOP_AFTER_SEC` | `1800` | Запущенный контейнер бота без активных прогонов дольше этого срока останавливается sweeper'ом. Минимум 60. |
 | `MYRMIDON_IDLE_START_HEALTH_TIMEOUT_MS` | `30000` | Сколько доска ждёт healthy у разбуженного контейнера, прежде чем отменить прогон с ошибкой в журнале. Минимум 1000. |
-| `MYRMIDON_BOT_STATE_DIR` | не задано (`<instance>/bot-containers/idle-stopped`) | Каталог для сохранения состояния драйвера (например, маркеров остановленных контейнеров) на томе данных доски. |
