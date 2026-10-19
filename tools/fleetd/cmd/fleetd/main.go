@@ -6,16 +6,17 @@
 package main
 
 import (
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
-	"crypto/tls"
-	"crypto/x509"
 	"strings"
 	"syscall"
+	"time"
 )
 
 // botStatus is the driver contract's BotContainerStatus.
@@ -30,19 +31,26 @@ type botStatus struct {
 
 // spec is the driver contract's BotContainerSpec.
 type spec struct {
-	BotKey    string            `json:"botKey"`
-	Image     string            `json:"image"`
-	MemoryMb  int64             `json:"memoryMb"`
-	Cpus      float64           `json:"cpus"`
-	PidsLimit int64             `json:"pidsLimit"`
-	Network   string            `json:"network"`
-	Labels    map[string]string `json:"labels,omitempty"`
-	ExtraMounts []extraMount `json:"extraMounts,omitempty"`
-	SharedMount *sharedMount `json:"sharedMount,omitempty"`
+	BotKey      string            `json:"botKey"`
+	Image       string            `json:"image"`
+	MemoryMb    int64             `json:"memoryMb"`
+	Cpus        float64           `json:"cpus"`
+	PidsLimit   int64             `json:"pidsLimit"`
+	Network     string            `json:"network"`
+	Labels      map[string]string `json:"labels,omitempty"`
+	ExtraMounts []extraMount      `json:"extraMounts,omitempty"`
+	SharedMount *sharedMount      `json:"sharedMount,omitempty"`
 }
 
-type extraMount struct { Source string `json:"source"`; ContainerPath string `json:"containerPath"`; ReadOnly bool `json:"readOnly"` }
-type sharedMount struct { HostPath string `json:"hostPath,omitempty"`; Writable bool `json:"writable"` }
+type extraMount struct {
+	Source        string `json:"source"`
+	ContainerPath string `json:"containerPath"`
+	ReadOnly      bool   `json:"readOnly"`
+}
+type sharedMount struct {
+	HostPath string `json:"hostPath,omitempty"`
+	Writable bool   `json:"writable"`
+}
 
 // profileFile is one file of the compiled profile.
 type profileFile struct {
@@ -63,22 +71,21 @@ type profile struct {
 // config is the JSON configuration (see docs/myrmidon/fleetd-vmexec.md).
 // Unknown keys are rejected at load time, the same discipline as dockergate.
 type config struct {
-	Listen   string `json:"listen"`
-	Token    string `json:"token"`
-	Upstream string `json:"upstream"`
-	Bots     []bot  `json:"bots"`
-	VolumeRoot string `json:"volumeRoot"`
-	Network string `json:"network"`
-	BoardAddress string `json:"boardAddress"`
-	BoardExtraHost string `json:"boardExtraHost"`
-	ImageAllowlist []string `json:"imageAllowlist"`
-	MountSources []string `json:"mountSources"`
-	GatewayPortStart int `json:"gatewayPortStart"`
-	GatewayPortEnd int `json:"gatewayPortEnd"`
-	TLSCert string `json:"tlsCert"`
-	TLSKey string `json:"tlsKey"`
-	TLSClientCA string `json:"tlsClientCA"`
-	EgressIP string `json:"egressIp"`
+	Listen           string   `json:"listen"`
+	TLSCert          string   `json:"tlsCert"`
+	TLSKey           string   `json:"tlsKey"`
+	TLSClientCA      string   `json:"tlsClientCA"`
+	Upstream         string   `json:"upstream"`
+	Bots             []bot    `json:"bots"`
+	VolumeRoot       string   `json:"volumeRoot"`
+	Network          string   `json:"network"`
+	BoardAddress     string   `json:"boardAddress"`
+	BoardExtraHost   string   `json:"boardExtraHost"`
+	ImageAllowlist   []string `json:"imageAllowlist"`
+	MountSources     []string `json:"mountSources"`
+	GatewayPortStart int      `json:"gatewayPortStart"`
+	GatewayPortEnd   int      `json:"gatewayPortEnd"`
+	EgressIP         string   `json:"egressIp"`
 }
 
 type bot struct {
@@ -86,7 +93,7 @@ type bot struct {
 	MaxMemoryMb int64   `json:"maxMemoryMb"`
 	MaxCpus     float64 `json:"maxCpus"`
 	MaxPids     int64   `json:"maxPids"`
-	GatewayPort int `json:"gatewayPort,omitempty"`
+	GatewayPort int     `json:"gatewayPort,omitempty"`
 }
 
 // strictDecode decodes data into out and rejects unknown keys.
@@ -127,9 +134,10 @@ func main() {
 	docker := newSocketDocker(cfg.Upstream)
 	defer docker.close()
 	srv := &server{cfg: &cfg, docker: docker}
-	http.HandleFunc("/v1/bots", srv.requireAuth(srv.list))
-	http.HandleFunc("/v1/bots/", srv.requireAuth(srv.route))
-	http.HandleFunc("/v1/health", srv.requireAuth(func(w http.ResponseWriter, r *http.Request) {
+	var mux http.ServeMux
+	mux.HandleFunc("/v1/bots", srv.requireAuth(srv.list))
+	mux.HandleFunc("/v1/bots/", srv.requireAuth(srv.route))
+	mux.HandleFunc("/v1/health", srv.requireAuth(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			http.Error(w, "method_not_allowed", http.StatusMethodNotAllowed)
 			return
@@ -141,24 +149,36 @@ func main() {
 		}
 		writeJSON(w, map[string]any{"resources": map[string]uint64{"diskFree": stat.Bavail * uint64(stat.Bsize)}, "egressCheck": map[string]string{"ifconfigIp": cfg.EgressIP, "expected": "NL"}})
 	}))
+	server := &http.Server{
+		Addr: cfg.Listen, Handler: &mux, ReadHeaderTimeout: 5 * time.Second,
+	}
+	config, err := tlsConfig(cfg.TLSClientCA)
+	if err != nil {
+		log.Fatalf("TLS setup failed: %v", err)
+	}
+	server.TLSConfig = config
 	log.Printf("fleetd listening on %s", cfg.Listen)
-	log.Fatal(http.ListenAndServeTLS(cfg.Listen, cfg.TLSCert, cfg.TLSKey, tlsConfig(cfg.TLSClientCA)))
+	log.Fatal(server.ListenAndServeTLS(cfg.TLSCert, cfg.TLSKey))
 }
 
-func tlsConfig(caPath string) *tls.Config {
+func tlsConfig(caPath string) (*tls.Config, error) {
 	caPEM, err := os.ReadFile(caPath)
-	if err != nil { log.Fatalf("read client CA: %v", err) }
+	if err != nil {
+		return nil, fmt.Errorf("read client CA")
+	}
 	pool := x509.NewCertPool()
-	if !pool.AppendCertsFromPEM(caPEM) { log.Fatal("client CA contains no certificates") }
-	return &tls.Config{MinVersion:tls.VersionTLS12, ClientAuth:tls.RequireAndVerifyClientCert, ClientCAs:pool}
+	if !pool.AppendCertsFromPEM(caPEM) {
+		return nil, fmt.Errorf("client CA contains no certificates")
+	}
+	return &tls.Config{MinVersion: tls.VersionTLS12, ClientAuth: tls.RequireAndVerifyClientCert, ClientCAs: pool}, nil
 }
 
 func validate(cfg *config) error {
 	if cfg.Listen == "" {
 		return fmt.Errorf("listen is required (host:port)")
 	}
-	if len(cfg.Token) < 32 {
-		return fmt.Errorf("token must be at least 32 characters")
+	if cfg.TLSCert == "" || cfg.TLSKey == "" || cfg.TLSClientCA == "" {
+		return fmt.Errorf("tlsCert, tlsKey and tlsClientCA are required")
 	}
 	if cfg.Upstream == "" {
 		cfg.Upstream = "/var/run/docker.sock"
@@ -174,13 +194,33 @@ func validate(cfg *config) error {
 		if b.MaxMemoryMb <= 0 || b.MaxCpus <= 0 || b.MaxPids <= 0 {
 			return fmt.Errorf("bots[%d] limits must be positive", i)
 		}
-		for j:=0;j<i;j++ { if cfg.Bots[j].BotKey==b.BotKey{return fmt.Errorf("duplicate bot key %q",b.BotKey)} }
+		for j := 0; j < i; j++ {
+			if cfg.Bots[j].BotKey == b.BotKey {
+				return fmt.Errorf("duplicate bot key %q", b.BotKey)
+			}
+		}
 	}
-	if cfg.VolumeRoot==""||!safeAbs(cfg.VolumeRoot){return fmt.Errorf("volumeRoot must be a safe absolute path")}
-	if cfg.Network==""||len(cfg.ImageAllowlist)==0{return fmt.Errorf("network and imageAllowlist are required")}
-	if cfg.GatewayPortStart<1024||cfg.GatewayPortEnd<cfg.GatewayPortStart||cfg.GatewayPortEnd>65535{return fmt.Errorf("gateway port range is invalid")}
-	if cfg.TLSCert==""||cfg.TLSKey==""||cfg.TLSClientCA==""{return fmt.Errorf("tlsCert, tlsKey and tlsClientCA are required")}
-	for i:=range cfg.Bots { if cfg.Bots[i].GatewayPort!=0 { if cfg.Bots[i].GatewayPort<cfg.GatewayPortStart||cfg.Bots[i].GatewayPort>cfg.GatewayPortEnd{return fmt.Errorf("bots[%d].gatewayPort is outside range",i)};for j:=0;j<i;j++{if cfg.Bots[j].GatewayPort==cfg.Bots[i].GatewayPort{return fmt.Errorf("duplicate gateway port")}} } }
+	if cfg.VolumeRoot == "" || !safeAbs(cfg.VolumeRoot) {
+		return fmt.Errorf("volumeRoot must be a safe absolute path")
+	}
+	if cfg.Network == "" || len(cfg.ImageAllowlist) == 0 {
+		return fmt.Errorf("network and imageAllowlist are required")
+	}
+	if cfg.GatewayPortStart < 1024 || cfg.GatewayPortEnd < cfg.GatewayPortStart || cfg.GatewayPortEnd > 65535 {
+		return fmt.Errorf("gateway port range is invalid")
+	}
+	for i := range cfg.Bots {
+		if cfg.Bots[i].GatewayPort != 0 {
+			if cfg.Bots[i].GatewayPort < cfg.GatewayPortStart || cfg.Bots[i].GatewayPort > cfg.GatewayPortEnd {
+				return fmt.Errorf("bots[%d].gatewayPort is outside range", i)
+			}
+			for j := 0; j < i; j++ {
+				if cfg.Bots[j].GatewayPort == cfg.Bots[i].GatewayPort {
+					return fmt.Errorf("duplicate gateway port")
+				}
+			}
+		}
+	}
 	return nil
 }
 
@@ -205,16 +245,14 @@ func (c c) in(set string) bool { return strings.ContainsRune(set, rune(c)) }
 // later commits (this one establishes the service skeleton, config check and
 // the auth gate).
 type server struct {
-	cfg *config
+	cfg    *config
 	docker dockerEngine
 }
 
 func (s *server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		auth := r.Header.Get("Authorization")
-		const prefix = "Bearer "
-		if len(auth) <= len(prefix) || auth[:len(prefix)] != prefix || auth[len(prefix):] != s.cfg.Token {
-			http.Error(w, "invalid_token", http.StatusUnauthorized)
+		if r.TLS == nil || len(r.TLS.PeerCertificates) == 0 {
+			http.Error(w, "client_certificate_required", http.StatusUnauthorized)
 			return
 		}
 		next(w, r)
@@ -229,7 +267,16 @@ func (s *server) list(w http.ResponseWriter, r *http.Request) {
 	}
 	bots := make([]botStatus, 0, len(s.cfg.Bots))
 	for _, b := range s.cfg.Bots {
-		x,ok,err:=s.inspect(r.Context(),b.BotKey);if err!=nil{http.Error(w,"docker_unavailable",503);return};if ok{bots=append(bots,s.toStatus(b.BotKey,x))}else{bots=append(bots,botStatus{BotKey:b.BotKey,State:"missing"})}
+		x, ok, err := s.inspect(r.Context(), b.BotKey)
+		if err != nil {
+			http.Error(w, "docker_unavailable", 503)
+			return
+		}
+		if ok {
+			bots = append(bots, s.toStatus(b.BotKey, x))
+		} else {
+			bots = append(bots, botStatus{BotKey: b.BotKey, State: "missing"})
+		}
 	}
 	writeJSON(w, map[string]any{"bots": bots})
 }
@@ -254,15 +301,74 @@ func (s *server) route(w http.ResponseWriter, r *http.Request) {
 	}
 	switch {
 	case action == "status" && r.Method == http.MethodGet:
-		x,ok,err:=s.inspect(r.Context(),botKey);if err!=nil{http.Error(w,"docker_unavailable",503)}else if !ok{writeJSON(w,botStatus{BotKey:botKey,State:"missing"})}else{writeJSON(w,s.toStatus(botKey,x))}
+		x, ok, err := s.inspect(r.Context(), botKey)
+		if err != nil {
+			http.Error(w, "docker_unavailable", 503)
+		} else if !ok {
+			writeJSON(w, botStatus{BotKey: botKey, State: "missing"})
+		} else {
+			writeJSON(w, s.toStatus(botKey, x))
+		}
 	case action == "recreate" && r.Method == http.MethodPost:
-		var body struct{Spec spec `json:"spec"`};if decodeBody(r,&body)!=nil||s.checkSpec(botKey,&body.Spec)!=nil{http.Error(w,"invalid_spec",400);return};if err:=s.validateCreate(body.Spec);err!=nil{writeAPIError(w,err);return};if _,ok,err:=s.inspect(r.Context(),botKey);err!=nil{http.Error(w,"docker_unavailable",503);return}else if ok{s.docker.call(r.Context(),http.MethodDelete,dockerAPIPrefix+"/containers/"+encodedName(botKey)+"?force=true",nil)};if err:=s.createContainer(r.Context(),body.Spec);err!=nil{writeAPIError(w,err);return};writeJSON(w,map[string]bool{"ok":true})
+		var body struct {
+			Spec spec `json:"spec"`
+		}
+		if decodeBody(r, &body) != nil || s.checkSpec(botKey, &body.Spec) != nil {
+			http.Error(w, "invalid_spec", 400)
+			return
+		}
+		if err := s.validateCreate(body.Spec); err != nil {
+			writeAPIError(w, err)
+			return
+		}
+		if _, ok, err := s.inspect(r.Context(), botKey); err != nil {
+			http.Error(w, "docker_unavailable", 503)
+			return
+		} else if ok {
+			s.docker.call(r.Context(), http.MethodDelete, dockerAPIPrefix+"/containers/"+encodedName(botKey)+"?force=true", nil)
+		}
+		if err := s.createContainer(r.Context(), body.Spec); err != nil {
+			writeAPIError(w, err)
+			return
+		}
+		writeJSON(w, map[string]bool{"ok": true})
 	case action == "start" && r.Method == http.MethodPost, action == "restart" && r.Method == http.MethodPost, action == "stop" && r.Method == http.MethodPost:
-		verb:=map[string]string{"start":"start","restart":"restart?t=10","stop":"stop?t=10"}[action];status,_,err:=s.docker.call(r.Context(),http.MethodPost,dockerAPIPrefix+"/containers/"+encodedName(botKey)+"/"+verb,nil);if err!=nil{http.Error(w,"docker_unavailable",503)}else if status==404{http.Error(w,"container_missing",404)}else if status!=204&&status!=304{http.Error(w,"docker_operation_failed",502)}else{writeJSON(w,map[string]bool{"ok":true})}
+		verb := map[string]string{"start": "start", "restart": "restart?t=10", "stop": "stop?t=10"}[action]
+		status, _, err := s.docker.call(r.Context(), http.MethodPost, dockerAPIPrefix+"/containers/"+encodedName(botKey)+"/"+verb, nil)
+		if err != nil {
+			http.Error(w, "docker_unavailable", 503)
+		} else if status == 404 {
+			http.Error(w, "container_missing", 404)
+		} else if status != 204 && status != 304 {
+			http.Error(w, "docker_operation_failed", 502)
+		} else {
+			writeJSON(w, map[string]bool{"ok": true})
+		}
 	case action == "profile" && r.Method == http.MethodPut:
-		var body struct{Profile profile `json:"profile"`};if decodeBody(r,&body)!=nil||body.Profile.BotKey!=botKey{http.Error(w,"invalid_profile",400);return};if err:=s.writeProfile(body.Profile);err!=nil{writeAPIError(w,err);return};writeJSON(w,map[string]bool{"ok":true})
+		var body struct {
+			Profile profile `json:"profile"`
+		}
+		if decodeBody(r, &body) != nil || body.Profile.BotKey != botKey {
+			http.Error(w, "invalid_profile", 400)
+			return
+		}
+		if err := s.writeProfile(body.Profile); err != nil {
+			writeAPIError(w, err)
+			return
+		}
+		writeJSON(w, map[string]bool{"ok": true})
 	case action == "logs" && r.Method == http.MethodGet:
-		tail:=r.URL.Query().Get("tail");if tail==""{tail="100"};status,b,err:=s.docker.call(r.Context(),http.MethodGet,dockerAPIPrefix+"/containers/"+encodedName(botKey)+"/logs?stdout=1&stderr=1&tail="+url.QueryEscape(tail)+"&timestamps=1",nil);if err!=nil||!dockerOK(status){http.Error(w,"logs_unavailable",502);return};w.Header().Set("Content-Type","text/plain; charset=utf-8");_,_=w.Write(redactLogs(b))
+		tail := r.URL.Query().Get("tail")
+		if tail == "" {
+			tail = "100"
+		}
+		status, b, err := s.docker.call(r.Context(), http.MethodGet, dockerAPIPrefix+"/containers/"+encodedName(botKey)+"/logs?stdout=1&stderr=1&tail="+url.QueryEscape(tail)+"&timestamps=1", nil)
+		if err != nil || !dockerOK(status) {
+			http.Error(w, "logs_unavailable", 502)
+			return
+		}
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		_, _ = w.Write(redactLogs(b))
 	case action == "template-drift" && r.Method == http.MethodPost:
 		var body struct {
 			Spec spec `json:"spec"`
@@ -275,7 +381,15 @@ func (s *server) route(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusForbidden)
 			return
 		}
-		x,ok,err:=s.inspect(r.Context(),botKey);if err!=nil{http.Error(w,"docker_unavailable",503)}else if !ok{writeJSON(w,map[string]any{"drift":true,"fields":[]string{"missing"}})}else{fields:=driftFields(body.Spec,x);writeJSON(w,map[string]any{"drift":len(fields)>0,"fields":fields})}
+		x, ok, err := s.inspect(r.Context(), botKey)
+		if err != nil {
+			http.Error(w, "docker_unavailable", 503)
+		} else if !ok {
+			writeJSON(w, map[string]any{"drift": true, "fields": []string{"missing"}})
+		} else {
+			fields := driftFields(body.Spec, x)
+			writeJSON(w, map[string]any{"drift": len(fields) > 0, "fields": fields})
+		}
 	default:
 		if r.Method == http.MethodPost || r.Method == http.MethodPut {
 			http.Error(w, "route_not_allowed", http.StatusForbidden)

@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -19,14 +21,20 @@ func fakeBearer() string {
 	}, "")
 }
 
+func testClientTLS() *tls.ConnectionState {
+	return &tls.ConnectionState{PeerCertificates: []*x509.Certificate{{}}}
+}
+
 func testConfig() *config {
 	cfg := &config{
-		Listen: "127.0.0.1:0",
+		Listen:      "127.0.0.1:0",
+		TLSCert:     "server.pem",
+		TLSKey:      "server-key.pem",
+		TLSClientCA: "site-ca.pem",
 		Bots: []bot{
 			{BotKey: "bot-example-one", MaxMemoryMb: 1536, MaxCpus: 1, MaxPids: 256},
 		},
 	}
-	cfg.Token = fakeBearer()
 	return cfg
 }
 
@@ -59,7 +67,7 @@ func do(t *testing.T, method, url, token string, body string) *httptest.Response
 		req = httptest.NewRequest(method, url, strings.NewReader(body))
 	}
 	if token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
+		req.TLS = testClientTLS()
 	}
 	rec := httptest.NewRecorder()
 	http.DefaultServeMux.ServeHTTP(rec, req)
@@ -76,7 +84,7 @@ func routeRequest(s *server, method, path, token, body string) *httptest.Respons
 		req = httptest.NewRequest(method, "http://fleetd.example.com"+path, strings.NewReader(body))
 	}
 	if token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
+		req.TLS = testClientTLS()
 	}
 	rec := httptest.NewRecorder()
 	s.requireAuth(func(w http.ResponseWriter, r *http.Request) {
@@ -92,19 +100,16 @@ func routeRequest(s *server, method, path, token, body string) *httptest.Respons
 func TestAuth(t *testing.T) {
 	s, _ := newServer(t)
 	if rec := routeRequest(s, http.MethodGet, "/v1/bots", "", ""); rec.Code != http.StatusUnauthorized {
-		t.Fatalf("no token: got %d", rec.Code)
+		t.Fatalf("no client certificate: got %d", rec.Code)
 	}
-	if rec := routeRequest(s, http.MethodGet, "/v1/bots", "wrong-token-aaaaaaaaaaaaaaaaaaaaa", ""); rec.Code != http.StatusUnauthorized {
-		t.Fatalf("wrong token: got %d", rec.Code)
-	}
-	if rec := routeRequest(s, http.MethodGet, "/v1/bots", s.cfg.Token, ""); rec.Code != http.StatusOK {
-		t.Fatalf("right token: got %d %s", rec.Code, rec.Body.String())
+	if rec := routeRequest(s, http.MethodGet, "/v1/bots", fakeBearer(), ""); rec.Code != http.StatusOK {
+		t.Fatalf("client certificate: got %d %s", rec.Code, rec.Body.String())
 	}
 }
 
 func TestListShape(t *testing.T) {
 	s, _ := newServer(t)
-	rec := routeRequest(s, http.MethodGet, "/v1/bots", s.cfg.Token, "")
+	rec := routeRequest(s, http.MethodGet, "/v1/bots", fakeBearer(), "")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("got %d", rec.Code)
 	}
@@ -119,7 +124,7 @@ func TestListShape(t *testing.T) {
 func TestHealthRouteRequiresAuthAndReportsResources(t *testing.T) {
 	s, _ := newServer(t)
 	s.cfg.Bots = []bot{{BotKey: "bot-example-one", MaxMemoryMb: 1024, MaxCpus: 1, MaxPids: 128}}
-	token := s.cfg.Token
+	token := fakeBearer()
 	if rec := routeRequest(s, http.MethodGet, "/v1/health", "", ""); rec.Code != http.StatusUnauthorized {
 		t.Fatalf("unauthenticated health: got %d", rec.Code)
 	}
@@ -130,7 +135,7 @@ func TestHealthRouteRequiresAuthAndReportsResources(t *testing.T) {
 
 func TestStatusOfUnenrolledBotIsRefused(t *testing.T) {
 	s, _ := newServer(t)
-	rec := routeRequest(s, http.MethodGet, "/v1/bots/notenrolled0000000000000000000000/status", s.cfg.Token, "")
+	rec := routeRequest(s, http.MethodGet, "/v1/bots/notenrolled0000000000000000000000/status", fakeBearer(), "")
 	if rec.Code != http.StatusForbidden || rec.Body.String() != "bot_not_enrolled\n" {
 		t.Fatalf("got %d %q", rec.Code, rec.Body.String())
 	}
@@ -139,7 +144,7 @@ func TestStatusOfUnenrolledBotIsRefused(t *testing.T) {
 func TestStatusOfEnrolledBotIsMissingByDefault(t *testing.T) {
 	s, _ := newServer(t)
 	key := s.cfg.Bots[0].BotKey
-	rec := routeRequest(s, http.MethodGet, "/v1/bots/"+key+"/status", s.cfg.Token, "")
+	rec := routeRequest(s, http.MethodGet, "/v1/bots/"+key+"/status", fakeBearer(), "")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("got %d %s", rec.Code, rec.Body.String())
 	}
@@ -158,10 +163,10 @@ func TestTemplateDriftChecksEnrolledLimits(t *testing.T) {
 	body := func(mem int64) string {
 		return `{"spec":{"botKey":"` + key + `","image":"example.com/bot@sha256:aa","memoryMb":` + itoa(mem) + `,"cpus":1,"pidsLimit":256,"network":"net-a"}}`
 	}
-	if rec := routeRequest(s, http.MethodPost, "/v1/bots/"+key+"/template-drift", s.cfg.Token, body(1024)); rec.Code != http.StatusOK {
+	if rec := routeRequest(s, http.MethodPost, "/v1/bots/"+key+"/template-drift", fakeBearer(), body(1024)); rec.Code != http.StatusOK {
 		t.Fatalf("within limits: got %d %s", rec.Code, rec.Body.String())
 	}
-	if rec := routeRequest(s, http.MethodPost, "/v1/bots/"+key+"/template-drift", s.cfg.Token, body(4096)); rec.Code != http.StatusForbidden || rec.Body.String() != "limit_exceeds_enrollment\n" {
+	if rec := routeRequest(s, http.MethodPost, "/v1/bots/"+key+"/template-drift", fakeBearer(), body(4096)); rec.Code != http.StatusForbidden || rec.Body.String() != "limit_exceeds_enrollment\n" {
 		t.Fatalf("over limits: got %d %q", rec.Code, rec.Body.String())
 	}
 }
@@ -170,7 +175,7 @@ func TestTemplateDriftRefusesMismatchedKey(t *testing.T) {
 	s, _ := newServer(t)
 	key := s.cfg.Bots[0].BotKey
 	body := `{"spec":{"botKey":"otherbot000000000000000000000000","image":"example.com/bot@sha256:aa","memoryMb":1024,"cpus":1,"pidsLimit":256,"network":"net-a"}}`
-	rec := routeRequest(s, http.MethodPost, "/v1/bots/"+key+"/template-drift", s.cfg.Token, body)
+	rec := routeRequest(s, http.MethodPost, "/v1/bots/"+key+"/template-drift", fakeBearer(), body)
 	if rec.Code != http.StatusForbidden || rec.Body.String() != "name_label_mismatch\n" {
 		t.Fatalf("got %d %q", rec.Code, rec.Body.String())
 	}
@@ -179,7 +184,7 @@ func TestTemplateDriftRefusesMismatchedKey(t *testing.T) {
 func TestUnknownActionIsRefused(t *testing.T) {
 	s, _ := newServer(t)
 	key := s.cfg.Bots[0].BotKey
-	rec := routeRequest(s, http.MethodPost, "/v1/bots/"+key+"/exec", s.cfg.Token, "{}")
+	rec := routeRequest(s, http.MethodPost, "/v1/bots/"+key+"/exec", fakeBearer(), "{}")
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("got %d %q", rec.Code, rec.Body.String())
 	}
@@ -187,7 +192,7 @@ func TestUnknownActionIsRefused(t *testing.T) {
 
 func TestBadBotKeyIsRejected(t *testing.T) {
 	s, _ := newServer(t)
-	if rec := routeRequest(s, http.MethodGet, "/v1/bots/BAD_KEY/status", s.cfg.Token, ""); rec.Code != http.StatusBadRequest {
+	if rec := routeRequest(s, http.MethodGet, "/v1/bots/BAD_KEY/status", fakeBearer(), ""); rec.Code != http.StatusBadRequest {
 		t.Fatalf("got %d", rec.Code)
 	}
 }
@@ -197,12 +202,25 @@ func TestValidateConfig(t *testing.T) {
 	if err := validate(cfg); err != nil {
 		t.Fatalf("valid config rejected: %v", err)
 	}
-	bad := testConfig()
-	bad.Token = "short"
-	if err := validate(bad); err == nil || !strings.Contains(err.Error(), "token") {
-		t.Fatalf("short token accepted: %v", err)
+	tlsCfg, err := tlsConfig("/missing/site-ca.pem")
+	if err == nil || tlsCfg != nil {
+		t.Fatalf("missing site CA accepted: config=%v err=%v", tlsCfg, err)
 	}
-	bad = testConfig()
+	for _, field := range []string{"tlsCert", "tlsKey", "tlsClientCA"} {
+		bad := testConfig()
+		switch field {
+		case "tlsCert":
+			bad.TLSCert = ""
+		case "tlsKey":
+			bad.TLSKey = ""
+		case "tlsClientCA":
+			bad.TLSClientCA = ""
+		}
+		if err := validate(bad); err == nil || !strings.Contains(err.Error(), field) {
+			t.Errorf("missing %s accepted: %v", field, err)
+		}
+	}
+	bad := testConfig()
 	bad.Bots = nil
 	if err := validate(bad); err == nil || !strings.Contains(err.Error(), "bots[]") {
 		t.Fatalf("no bots accepted: %v", err)
@@ -216,7 +234,7 @@ func TestValidateConfig(t *testing.T) {
 
 func TestStrictDecodeRejectsUnknownKeys(t *testing.T) {
 	var out config
-	if err := strictDecode([]byte(`{"listen":"a","token":"`+strings.Repeat("t", 40)+`","unknown":1,"bots":[{"botKey":"k","maxMemoryMb":1,"maxCpus":1,"maxPids":1}]}`), &out); err == nil {
+	if err := strictDecode([]byte(`{"listen":"a","tlsCert":"server.pem","tlsKey":"server-key.pem","tlsClientCA":"site-ca.pem","unknown":1,"bots":[{"botKey":"k","maxMemoryMb":1,"maxCpus":1,"maxPids":1}]}`), &out); err == nil {
 		t.Fatal("unknown key accepted")
 	}
 }
