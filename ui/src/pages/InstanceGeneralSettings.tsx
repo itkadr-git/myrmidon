@@ -18,6 +18,7 @@ import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { cn } from "../lib/utils";
 import { useSignOut } from "@/hooks/useSignOut";
 import { MaintenanceSettingsPanel } from "@/components/myrmidon/MaintenanceSettingsPanel"; // myrmidon(R3)
+import { IdleStopSettingsPanel } from "@/components/myrmidon/IdleStopSettingsPanel"; // myrmidon(OPE-7898)
 import { RuntimeLimitsSettingsPanel } from "@/components/myrmidon/RuntimeLimitsSettingsPanel"; // myrmidon(C0)
 import { ProcessesSettingsPanel } from "@/components/myrmidon/ProcessesSettingsPanel"; // myrmidon(PROCS-1.1)
 // myrmidon(PAUSE-GUARD): the forgotten-pause guard, next to the run limits
@@ -175,6 +176,7 @@ export function InstanceGeneralSettings({ embedded = false }: { embedded?: boole
       )}
 
       <MaintenanceSettingsPanel /> {/* myrmidon(R3) */}
+      <IdleStopSettingsPanel /> {/* myrmidon(OPE-7898) */}
       <RuntimeLimitsSettingsPanel /> {/* myrmidon(C0) */}
       <ProcessesSettingsPanel /> {/* myrmidon(PROCS-1.1): the processes of the board, applied without a restart */}
       <PauseGuardSettingsPanel /> {/* myrmidon(PAUSE-GUARD) */}

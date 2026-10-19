@@ -68,10 +68,7 @@ export interface BotContainerRouteAgent {
   companyId: string;
   adapterType: string;
   adapterConfig: Record<string, unknown>;
-  /** The card's scheduling policy; read for heartbeat.maxConcurrentRuns. */
   runtimeConfig: Record<string, unknown>;
-  /** myrmidon(BOT-ROLLOUT): the agent's lifecycle status (idle, paused, running, …) —
-   *  the same value the rollout script reads off the agents list to decide a switch. */
   status?: string | null;
 }
 
@@ -96,6 +93,7 @@ export interface BotContainerRoutesDeps {
    * route reads the outcome only from this store.
    */
   applyJobs: Pick<BotApplyJobStore, "acquireLiveJob" | "markRunning" | "markSucceeded" | "markFailed" | "getJob">;
+  getIdleStopRuntimeState?(botKey: string): Promise<{ state: string; lastStoppedAt: Date | null; lastStartedAt: Date | null }>;
   /**
    * myrmidon(CONCURRENCY-SYNC): when this agent's most recent run failed with
    * GATEWAY_RATE_LIMITED_ERROR_CODE, at or after `sinceIso` — or null. Read only for
@@ -149,6 +147,11 @@ export interface BotContainerStatusResponse {
    *  recently rate-limited runs). Null when there is nothing to warn about. */
   gatewayConcurrencyWarning: string | null;
   idleStopMode: "on_demand" | "always_on";
+  idleStopRuntime: {
+    state: string;
+    lastStoppedAt: string | null;
+    lastStartedAt: string | null;
+  } | null;
 }
 
 export type BotContainerApplyResponse = { outcome: Exclude<ApplyBotContainerOutcome, { kind: "not_applicable" }> };
@@ -274,6 +277,7 @@ export function botContainerRoutes(deps: BotContainerRoutesDeps) {
       gatewayConcurrencyNote: null,
       gatewayConcurrencyWarning: null,
       idleStopMode: ((agent.adapterConfig.container as { idleStopMode?: string } | undefined)?.idleStopMode === "always_on" ? "always_on" : "on_demand"),
+      idleStopRuntime: null,
     };
 
     const botKey = botKeyForAgent(agent.id);
@@ -282,6 +286,14 @@ export function botContainerRoutes(deps: BotContainerRoutesDeps) {
       try {
         const status = await runtime.driver.status(botKey);
         body.container = { state: status.state, image: status.image ?? null };
+        if (deps.getIdleStopRuntimeState) {
+          const state = await deps.getIdleStopRuntimeState(botKey);
+          body.idleStopRuntime = {
+            state: state.state,
+            lastStoppedAt: state.lastStoppedAt?.toISOString() ?? null,
+            lastStartedAt: state.lastStartedAt?.toISOString() ?? null,
+          };
+        }
         // myrmidon(CONCURRENCY-SYNC): the applied limit, as recorded by the last apply's
         // marker. Only a container that exists can carry one.
         if (status.state !== "missing") {

@@ -39,6 +39,7 @@ export class IdleStopService {
   private sweepInterval?: NodeJS.Timeout;
   private startupTimes: Map<string, number> = new Map();
   private readonly lastStopTimes = new Map<string, Date>();
+  private readonly lastStartTimes = new Map<string, Date>();
 
   constructor(driver: BotContainerDriver, db: Db, config: Partial<IdleStopConfig> = {}, loggerInstance?: IdleStopLogger) {
     this.driver = driver;
@@ -180,9 +181,13 @@ export class IdleStopService {
     }
   }
 
-  public async readRuntimeState(botKey: string): Promise<{ state: string; lastStoppedAt: Date | null }> {
+  public async readRuntimeState(botKey: string): Promise<{ state: string; lastStoppedAt: Date | null; lastStartedAt: Date | null }> {
     const status = await this.driver.status(botKey);
-    return { state: status.state, lastStoppedAt: this.lastStopTimes.get(botKey) ?? null };
+    return {
+      state: status.state,
+      lastStoppedAt: this.lastStopTimes.get(botKey) ?? null,
+      lastStartedAt: this.lastStartTimes.get(botKey) ?? null,
+    };
   }
 
   private async currentConfig(): Promise<IdleStopConfig> {
@@ -330,6 +335,7 @@ export class IdleStopService {
       this.startupTimes.set(botKey, Date.now());
 
       await this.driver.start(botKey);
+      this.lastStartTimes.set(botKey, new Date());
 
       // driver.start() already waits for healthy, but we verify
       const finalStatus = await this.driver.status(botKey);

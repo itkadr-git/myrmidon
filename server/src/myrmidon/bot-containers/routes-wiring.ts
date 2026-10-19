@@ -20,6 +20,7 @@ import { applyBotContainerNow, type BotContainerAgent, type BotContainerRuntimeD
 import { drizzleBotApplyJobStore } from "./apply-jobs.js";
 import { GATEWAY_RATE_LIMITED_ERROR_CODE } from "./concurrency-sync.js";
 import { botContainerRoutes } from "./routes.js";
+import { getIdleStopService } from "../idle-stop-startup.js";
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -113,6 +114,11 @@ export function myrmidonBotContainerRoutes(db: Db) {
         resource: { type: "agent", companyId: agent.companyId, agentId: agent.id },
       });
       if (!decision.allowed) throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
+    },
+    getIdleStopRuntimeState: async (botKey) => {
+      const runtime = getIdleStopService();
+      if (!runtime) return { state: "unknown", lastStoppedAt: null, lastStartedAt: null };
+      return runtime.readRuntimeState(botKey);
     },
     getRuntime: getBotContainerRuntime,
     applyNow: applyBotContainerNow,
