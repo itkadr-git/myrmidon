@@ -1123,9 +1123,6 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
           ? releaseCandidateRows.find((candidate: IssueRow) => candidate.id !== issueRow.id &&
               candidate.status !== "done" && candidate.status !== "cancelled")
           : undefined;
-        const releasedIssueIds = releaseCandidateRows
-          .filter((candidate: IssueRow) => candidate.status !== "done" && candidate.status !== "cancelled")
-          .map((candidate: IssueRow) => candidate.id);
         // Two separate updates: a retry can move `executionRunId` to a new run
         // while `checkoutRunId` still points at this one finishing.
         await tx
@@ -1175,7 +1172,6 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
         } : null;
 
         const releasedSiblingOutcome = () => releasedSiblingIssue &&
-          !releasedIssueIds.includes(releasedSiblingIssue.id) &&
           releasedSiblingIssue.status !== "done" && releasedSiblingIssue.status !== "cancelled"
           ? {
               outcome: { kind: "released" } as const, postCommitEffects: [], run: runSnapshot,

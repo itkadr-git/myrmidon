@@ -149,11 +149,12 @@ async function runReleaseDrain(
     const claimed = await ports.transaction.claimIssueExecutionLease({
       companyId: run.companyId, issueId: siblingIssue.id, runId: run.id,
     });
-    if (claimed) {
-      const sibling = await ports.transaction.findIssue({ companyId: run.companyId, issueId: siblingIssue.id });
-      if (sibling && sibling.status !== "done" && sibling.status !== "cancelled") {
-        issue = sibling;
-      }
+    if (!claimed) {
+      return { outcome: { kind: "released" }, postCommitEffects, run };
+    }
+    const sibling = await ports.transaction.findIssue({ companyId: run.companyId, issueId: siblingIssue.id });
+    if (sibling && sibling.status !== "done" && sibling.status !== "cancelled") {
+      issue = sibling;
     }
   }
 
