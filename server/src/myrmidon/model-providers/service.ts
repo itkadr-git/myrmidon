@@ -411,6 +411,11 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
     }
     if (input.body.packageName !== undefined) patch.packageName = input.body.packageName;
     if (input.body.rpmLimit !== undefined) patch.rpmLimit = input.body.rpmLimit;
+    if (input.body.key || input.body.baseUrl !== undefined) {
+      patch.toolCallCompatible = null;
+      patch.toolCallCheckedAt = null;
+      patch.toolCallCheckError = null;
+    }
 
     await deps.db.update(modelProviders).set(patch).where(eq(modelProviders.id, row.id));
     const updated = await loadProvider(input.companyId, input.providerId);

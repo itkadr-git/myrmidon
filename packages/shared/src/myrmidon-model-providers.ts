@@ -203,6 +203,9 @@ export const createModelProviderSchema = z
     baseUrl: z.string().trim().url().max(2048).optional().nullable(),
     key: z.string().min(1).max(4096),
     free: z.boolean().optional(),
+    expiresAt: z.string().datetime().optional().nullable(),
+    packageName: z.string().trim().max(160).optional().nullable(),
+    rpmLimit: z.number().int().positive().optional().nullable(),
   })
   .superRefine((value, ctx) => {
     if (value.type === "openai-compatible" && !value.baseUrl) {
