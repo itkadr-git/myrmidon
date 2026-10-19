@@ -4463,7 +4463,14 @@ export function recoveryService(
       rerouteToSharedQueue: input.rerouteToSharedQueue,
     });
     if (!recoveryAction && input.issue.originKind === "stranded_issue_recovery") {
-      if (input.rerouteToSharedQueue) return false;
+      // Legacy infra interruptions are intentionally handed back to todo;
+      // other reroute causes still require the legacy blocked disposition.
+      if (
+        input.rerouteToSharedQueue &&
+        isInfraInterruptErrorCode(input.latestRun.errorCode)
+      ) {
+        return false;
+      }
       const blockerIds = await existingUnresolvedBlockerIssueIds(
         input.issue.companyId,
         input.issue.id,
