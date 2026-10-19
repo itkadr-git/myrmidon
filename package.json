@@ -4,6 +4,7 @@
   "type": "module",
   "scripts": {
     "check:architecture-inventory": "node scripts/myrmidon/ci/check-architecture-inventory.mjs",
+    "check:dependencies": "dependency-cruiser --config .dependency-cruiser.cjs server/src/modules server/src/services server/src/routes",
     "postinstall": "node scripts/link-plugin-dev-sdk.mjs",
     "preflight:workspace-links": "node cli/node_modules/tsx/dist/cli.mjs scripts/ensure-workspace-package-links.ts",
     "dev": "pnpm --filter @paperclipai/server exec tsx ../scripts/dev-runner.ts watch",
@@ -89,8 +90,10 @@
   },
   "devDependencies": {
     "@playwright/test": "^1.62.1",
+    "@swc/core": "^1.16.18",
     "agentmail": "^0.5.14",
     "cross-env": "^10.1.0",
+    "dependency-cruiser": "^18.6.0",
     "esbuild": "^0.28.2",
     "typescript": "^7.0.2",
     "vitest": "^4.1.11"

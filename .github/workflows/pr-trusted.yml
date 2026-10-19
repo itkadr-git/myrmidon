@@ -320,6 +320,9 @@ jobs:
       - name: Validate architecture ADR inventory
         run: pnpm check:architecture-inventory
 
+      - name: Validate dependency architecture
+        run: pnpm check:dependencies
+
       - name: Test feature module boundary check
         run: node --test ./scripts/check-module-boundaries.test.mjs
 
