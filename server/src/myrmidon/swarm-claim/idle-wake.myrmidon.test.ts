@@ -196,7 +196,8 @@ describe("myrmidon(1.6.1 SWARM-IDLE-WAKE) sweep pass", () => {
                 return Promise.resolve([]);
               }
               if (table === agentWakeupRequests) {
-                return Promise.resolve([]);
+                // issueHasLiveClaimOrWake bounds the wake lookup with limit(1).
+                return { limit: () => Promise.resolve([]) };
               }
               if (table === heartbeatRuns) {
                 if (projection && "id" in projection) return { limit: () => Promise.resolve([]) };
