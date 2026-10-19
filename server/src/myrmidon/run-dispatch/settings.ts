@@ -1,6 +1,6 @@
 // server/src/myrmidon/run-dispatch/settings.ts
 //
-// myrmidon(1.6.6 RUN-DISPATCH, OPE-6977): the settings contract of the run
+// myrmidon(1.6.6 RUN-DISPATCH, OPE-6443): the settings contract of the run
 // start dispatcher — `instance_settings.general.processes`:
 //
 //   general.processes.runStartDispatch  "inline" | "notify"   default "inline"

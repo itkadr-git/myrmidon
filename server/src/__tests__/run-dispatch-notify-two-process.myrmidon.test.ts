@@ -13,7 +13,7 @@ import {
   type RunQueuedPayload,
 } from "../myrmidon/run-dispatch/index.ts";
 
-// myrmidon(1.6.6 RUN-DISPATCH-NOTIFY, OPE-6977): the two-process half of part B
+// myrmidon(1.6.6 RUN-DISPATCH-NOTIFY, OPE-6444): the two-process half of part B
 // of T1.4 — the notify path end to end against one database. Two
 // `heartbeatService` instances share the db: the «api» (executesRuns: false,
 // publishes `run_queued` instead of starting) and the «worker»
@@ -78,6 +78,11 @@ const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
 describeEmbeddedPostgres("run start dispatch, notify mode: two processes, one database (part B of T1.4)", () => {
+  // This suite measures dispatch, not host admission policy. Keep the
+  // process-wide gates open so all 200 queued runs can exercise the bus.
+  process.env.MYRMIDON_MAX_RUN_STARTS_PER_MINUTE = "off";
+  process.env.MYRMIDON_MIN_FREE_HOST_MEMORY_MB = "off";
+  process.env.MYRMIDON_MAX_HOST_LOAD_PERCENT_PER_CORE = "off";
   let db!: ReturnType<typeof createDb>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
   beforeAll(async () => {
@@ -211,6 +216,86 @@ describeEmbeddedPostgres("run start dispatch, notify mode: two processes, one da
       await worker.drainActiveRunExecutions().catch(() => {});
     }
   });
+
+  it("starts 200 queued runs exactly once across api and worker processes", async () => {
+    const { companyId, agentId } = await seedAgent();
+    const runIds: string[] = [];
+    for (let index = 0; index < 200; index += 1) {
+      runIds.push(await seedQueuedRun(companyId, agentId));
+    }
+
+    const { bus } = fakeBus();
+    const api = heartbeatService(db, {
+      runtimeEnv: { ...process.env, PAPERCLIP_IN_WORKTREE: "false" },
+      executesRuns: false,
+      processBus: bus,
+    });
+    const worker = heartbeatService(db, {
+      runtimeEnv: { ...process.env, PAPERCLIP_IN_WORKTREE: "false" },
+      executesRuns: true,
+      processBus: bus,
+    });
+
+    try {
+      const queuedAt = new Map(runIds.map((id) => [id, Date.now()]));
+      for (let index = 0; index < 200; index += 1) {
+        await (api as unknown as { dispatchRunStart: (id: string) => Promise<unknown[]> }).dispatchRunStart(agentId);
+      }
+      await api.drainActiveRunExecutions();
+      await worker.drainActiveRunExecutions();
+
+      const startedRuns = await db
+        .select({ id: heartbeatRuns.id, status: heartbeatRuns.status, startedAt: heartbeatRuns.startedAt, controllerBootId: heartbeatRuns.controllerBootId })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.agentId, agentId));
+      expect(startedRuns).toHaveLength(200);
+      expect(new Set(startedRuns.map((run) => run.id))).toEqual(new Set(runIds));
+      expect(startedRuns.every((run) => ["running", "succeeded"].includes(run.status))).toBe(true);
+      expect(startedRuns.every((run) => run.controllerBootId != null)).toBe(true);
+      const notifyP95 = startedRuns
+        .map((run) => Math.max(0, (run.startedAt?.getTime() ?? Date.now()) - (queuedAt.get(run.id) ?? Date.now())))
+        .sort((a, b) => a - b)[Math.ceil(200 * 0.95) - 1];
+
+      const inlineAgent = await seedAgent();
+      const inlineRunIds: string[] = [];
+      for (let index = 0; index < 200; index += 1) inlineRunIds.push(await seedQueuedRun(inlineAgent.companyId, inlineAgent.agentId));
+      const { instanceSettings } = await import("@paperclipai/db");
+      await db.update(instanceSettings)
+        .set({ general: { processes: { runStartDispatch: "inline", queuedResweepSec: 30 } } })
+        .where(eq(instanceSettings.singletonKey, "default"));
+      const inlineService = heartbeatService(db, {
+        runtimeEnv: { ...process.env, PAPERCLIP_IN_WORKTREE: "false" },
+        executesRuns: true,
+      });
+      try {
+        const inlineQueuedAt = new Map(inlineRunIds.map((id) => [id, Date.now()]));
+        for (let index = 0; index < 200; index += 1) {
+          await (inlineService as unknown as { dispatchRunStart: (id: string) => Promise<unknown[]> }).dispatchRunStart(inlineAgent.agentId);
+        }
+        await inlineService.drainActiveRunExecutions();
+        const inlineRuns = await db
+          .select({ id: heartbeatRuns.id, status: heartbeatRuns.status, startedAt: heartbeatRuns.startedAt })
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.agentId, inlineAgent.agentId));
+        expect(inlineRuns).toHaveLength(200);
+        expect(new Set(inlineRuns.map((run) => run.id))).toEqual(new Set(inlineRunIds));
+        const inlineP95 = inlineRuns
+          .map((run) => Math.max(0, (run.startedAt?.getTime() ?? Date.now()) - (inlineQueuedAt.get(run.id) ?? Date.now())))
+          .sort((a, b) => a - b)[Math.ceil(200 * 0.95) - 1];
+        expect(notifyP95).toBeLessThanOrEqual(inlineP95);
+        console.info(JSON.stringify({ count: 200, uniqueStarts: new Set(startedRuns.map((run) => run.id)).size, notifyP95Ms: notifyP95, inlineP95Ms: inlineP95 }));
+      } finally {
+        await inlineService.drainActiveRunExecutions().catch(() => {});
+      }
+    } finally {
+      const { instanceSettings } = await import("@paperclipai/db");
+      await db.update(instanceSettings)
+        .set({ general: { processes: { runStartDispatch: "notify", queuedResweepSec: 30 } } })
+        .where(eq(instanceSettings.singletonKey, "default"));
+      await api.drainActiveRunExecutions().catch(() => {});
+      await worker.drainActiveRunExecutions().catch(() => {});
+    }
+  }, 120_000);
 
   it("a lost NOTIFY (bus subscription down) is carried by the worker resweep", async () => {
     const { companyId, agentId } = await seedAgent();

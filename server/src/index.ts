@@ -8,6 +8,12 @@ import { sentryReady, shutdownSentry, captureException } from "./sentry.js";
 import { waitForPendingRunFailureReports } from "./services/run-failure-report.js";
 import { verifyStoppedNativeSessionForReplacement } from "./services/native-runtime/native-session-executor.js";
 import { embeddedPostgresOwnerPort } from "./embedded-postgres-owner.js";
+// myrmidon(PROCS-1.3) + myrmidon(1.6.6 RUN-DISPATCH-NOTIFY, OPE-6444): the
+// inter-process bus (Postgres LISTEN/NOTIFY) the run-start dispatcher's
+// `notify` mode publishes `run_queued` to, and the executor process subscribes
+// to. Constructed only in a multi-process deployment (PAPERCLIP_PROCESS_ROLE
+// set); a single-process deployment never starts it — byte-for-byte unchanged.
+import { ProcessBus } from "./services/process-bus.js";
 import { deliverExecutionStatuses } from "./services/execution-status-delivery.js";
 import { deliverReconciledExecutions, settleUnrecoverableExecutions } from "./services/execution-recovery-resolution.js";
 import { reconcileSafeNativeReplacements } from "./services/native-runtime/native-safe-replacement.js";
@@ -156,7 +162,6 @@ import {
   formatBoardProcessesComposition,
 } from "@paperclipai/shared"; // myrmidon(1.6.6 PROCS-J): the board's process composition
 import { readResolvedBoardProcesses } from "./myrmidon/board-processes/settings.js"; // myrmidon(1.6.6 PROCS-J)
-import { ProcessBus } from "./services/process-bus.js"; // myrmidon(1.6.6 RUN-DISPATCH-NOTIFY, OPE-6977)
 import {
   createLeaderLeaseManager,
   type LeaderLeaseManager,
@@ -191,7 +196,7 @@ import { createRunStallSweepFromHeartbeat, registerRunStallSweep, startRunStall 
 import { sweepGatewayRunReattach, GATEWAY_REATTACH_SWEEP_INTERVAL_MS } from "./myrmidon/gateway-run-reattach.js";
 import { readHotRestartIntent } from "./services/hot-restart.js"; // myrmidon(T1.6): predecessor boot id for the startup reattach pass
 import { createTaskPrSyncScheduler } from "./myrmidon/task-pr-sync/index.js"; // myrmidon(TASK-PR-SYNC)
-import { createStaleBlockScheduler, createRecoveryLivenessEventReader } from "./myrmidon/stale-block/index.js"; // myrmidon(STALE-BLOCK)
+import { createStaleBlockScheduler } from "./myrmidon/stale-block/index.js"; // myrmidon(STALE-BLOCK)
 import { createOwnerCardTtlScheduler } from "./myrmidon/owner-reply/index.js"; // myrmidon(1.6.5-F21-B)
 import { createReviewRoutingScheduler } from "./myrmidon/review-routing/index.js"; // myrmidon(REVIEW-ROUTING)
 import { createReviewReworkScheduler } from "./myrmidon/review-rework/index.js"; // myrmidon(REVIEW-REWORK)
@@ -1090,45 +1095,23 @@ async function startServerWithDatabaseTeardown(
     }
   };
   const pluginWorkerManager = createPluginWorkerManager();
-  // myrmidon(PROCS-1.1): an api process never claims or executes runs, so it
-  // builds no heartbeat service at all. That single gate covers the whole
-  // `if (heartbeat)` block below — startup recovery, every sweep, the scheduler
-  // interval and the plugin workers — which is what the api-role timer test
-  // asserts.
-  // myrmidon(1.6.6 RUN-DISPATCH-NOTIFY, OPE-6977): in a multi-process deployment
-  // (a role other than `all` is set) start the process bus (PROCS-1.3): api
-  // processes publish `run_queued` onto it, the executor subscribes, and the
-  // part-A resweep remains the carrier of correctness. A dedicated postgres.js
-  // client with max: 1 — `sql.listen` pins its connection for the lifetime of
-  // the listener, and the client owns no other work. Single-process (the
-  // default, role `all` or unset) has no bus: the dispatcher is inline.
-  const processRoleValue = process.env.PAPERCLIP_PROCESS_ROLE?.trim().toLowerCase() ?? "";
-  const multiProcessDeployment = processRoleValue !== "" && processRoleValue !== "all";
-  const processBus = multiProcessDeployment
-    ? new ProcessBus(
-        // The driver comes through @paperclipai/db: the server package has no
-        // direct `postgres` dependency.
+  // myrmidon(PROCS-1.3) + myrmidon(1.6.6 RUN-DISPATCH-NOTIFY, OPE-6444): the
+  // process bus is only needed when process roles split API from execution.
+  const processBus = processRoleProfile.role === "all"
+    ? null
+    : new ProcessBus(
         createPostgresJsClient(activeDatabaseConnectionString, { maxConnections: 1 }),
-      )
-    : null;
+      );
   if (processBus) {
     try {
       await processBus.start();
-      logger.info({ role: processRoleValue }, "process bus started (PROCS-1.3)");
+      logger.info({ role: processRoleProfile.role }, "process bus started (PROCS-1.3)");
     } catch (err) {
-      // The bus is the accelerator, never the carrier of correctness: a bus
-      // that cannot listen degrades the notify mode to the resweep, so the
-      // failure is logged and the process starts without it.
       logger.error({ err }, "process bus failed to start; notify mode degrades to the resweep");
     }
   }
   const heartbeat = config.heartbeatSchedulerEnabled && processRoleProfile.executesRuns
-    ? heartbeatService(db as any, {
-        pluginWorkerManager,
-        // myrmidon(1.6.6 RUN-DISPATCH-NOTIFY, OPE-6977): the role gate of T1.1.
-        executesRuns: processRoleValue !== "api",
-        processBus,
-      })
+    ? heartbeatService(db as any, { pluginWorkerManager, processBus })
     : null;
   const decisionServiceOptions = {
     wakeOriginAgent: createDecisionWakeOriginAgent(heartbeat?.wakeup ?? null),
@@ -1728,15 +1711,7 @@ async function startServerWithDatabaseTeardown(
   // sweep passes zero, so a restart retries a stranded orphan at once.
   const ENVIRONMENT_LEASE_CLEANUP_SWEEP_BACKOFF_MS = 5 * 60 * 1000;
   const environmentLeaseCleanupHeartbeat =
-    heartbeat ??
-    heartbeatService(db as any, {
-      pluginWorkerManager,
-      // myrmidon(1.6.6 RUN-DISPATCH-NOTIFY, OPE-6977): the same role gate and
-      // bus as the primary heartbeat above — consistent behavior when the
-      // scheduler is off but lease cleanup still builds a service.
-      executesRuns: processRoleValue !== "api",
-      processBus,
-    });
+    heartbeat ?? heartbeatService(db as any, { pluginWorkerManager });
   const connectionDeliveries = connectionIntentDeliveryService(db as any, environmentLeaseCleanupHeartbeat);
   const questionResponseDeliveries = questionResponseDeliveryService(db as any, {
     heartbeat: environmentLeaseCleanupHeartbeat,
@@ -1807,14 +1782,7 @@ async function startServerWithDatabaseTeardown(
   // reasons (a done/cancelled blocker, a passed due date, a cleared gate) off
   // blocked tasks through the ordinary issue update path. Opt-in via
   // MYRMIDON_STALE_BLOCK_ENABLED; the interval is enforced inside the sweep.
-  const scheduleStaleBlockSweep = createStaleBlockScheduler({
-    db: db as any,
-    track: trackHeartbeatSchedulerWork,
-    // myrmidon(1.6.1 OPE-3983): resolve the recovery-liveness event keys the
-    // internal blocked paths cite from the live issue_recovery_actions rows;
-    // every other key keeps the safe still-set default.
-    isEventStillSet: createRecoveryLivenessEventReader(db as any),
-  });
+  const scheduleStaleBlockSweep = createStaleBlockScheduler({ db: db as any, track: trackHeartbeatSchedulerWork });
   // myrmidon(1.6.5-F21-B): the periodic owner-card TTL pass — an owner
   // request_confirmation the owner leaves unanswered past
   // MYRMIDON_OWNER_CARD_TTL_MS is resolved by its recommended option

@@ -1,9 +1,5 @@
 ## changelog-en
 
-Runtime setting: `MYRMIDON_QUEUED_RESWEEP` controls the queued-run resweep
-interval; set it to `0` to disable the background resweep. The default remains
-enabled outside test runners.
-
 ### Run start dispatch over the process bus: the `notify` mode (1.6.6 RUN-DISPATCH-NOTIFY)
 
 - Part B of T1.4. With `general.processes.runStartDispatch = "notify"`, a

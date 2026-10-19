@@ -8,7 +8,7 @@ import {
 } from "./helpers/embedded-postgres.js";
 import { listAgentsWithQueuedRunsAndNoRunningRun } from "../myrmidon/run-dispatch/index.ts";
 
-// myrmidon(1.6.6 RUN-DISPATCH, OPE-6977): the database-facing half of part A of
+// myrmidon(1.6.6 RUN-DISPATCH, OPE-6443): the database-facing half of part A of
 // T1.4 — the "queued without running" selection and the lift of a queued run that
 // no notification will ever start. The pure half is in
 // run-dispatch-inline-resweep.myrmidon.test.ts.
