@@ -1696,7 +1696,7 @@ describe("dockerBotContainerDriver against a fake Docker daemon", () => {
         await driver.create(spec());
         await driver.writeProfile("agent-a", testProfile());
         await driver.start("agent-a");
-        await driver.stopIdle("agent-a");
+        await driver.stopIdle!("agent-a");
 
         expect(await driver.status("agent-a")).toMatchObject({ state: "stopped", idleStopped: true });
         expect(bot()?.body.Labels?.[BOT_LABEL_KEYS.idleStopped]).toBeUndefined();
