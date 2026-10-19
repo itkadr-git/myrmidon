@@ -122,7 +122,7 @@ export function systemdServiceName(instanceId: string): string {
 }
 
 export function launchdServiceName(instanceId: string): string {
-  return instanceId === "default" ? "ing.paperclip.myrmidon" : `ing.paperclip.myrmidon.${instanceId}`;
+  return instanceId === "default" ? "ing.paperclip.paperclipai" : `ing.paperclip.paperclipai.${instanceId}`;
 }
 
 export function renderSystemdUnit(input: { instanceId: string; shimPath: string; homeDir: string }): string {

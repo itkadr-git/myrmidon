@@ -112,6 +112,8 @@ describe("managed install store", () => {
     expect(shim).toContain(paths.currentPath);
     expect(shim).not.toContain("PAPERCLIP_HOME");
     expect(fs.statSync(paths.shimPath).mode & 0o777).toBe(0o755);
+    expect(fs.readFileSync(paths.legacyShimPath, "utf8")).toBe(shim);
+    expect(fs.statSync(paths.legacyShimPath).mode & 0o777).toBe(0o755);
 
     const rcPath = path.join(root, "home", ".bashrc");
     expect(addManagedPathBlock(rcPath)).toBe(true);
@@ -132,7 +134,11 @@ describe("managed install store", () => {
     writeManagedShim(paths);
     const output = execFileSync(paths.shimPath, [], { env: { ...process.env, PATH: oldBin }, encoding: "utf8" });
     expect(fs.realpathSync(output.trim())).toBe(fs.realpathSync(process.execPath));
+    const legacyOutput = execFileSync(paths.legacyShimPath, [], { env: { ...process.env, PATH: oldBin }, encoding: "utf8" });
+    expect(fs.realpathSync(legacyOutput.trim())).toBe(fs.realpathSync(process.execPath));
     expect(removeManagedShim(paths)).toBe(true);
+    expect(fs.existsSync(paths.shimPath)).toBe(false);
+    expect(fs.existsSync(paths.legacyShimPath)).toBe(false);
   });
 
   it("upgrades and removes the original managed shim format", () => {

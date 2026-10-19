@@ -36,6 +36,7 @@ export type InstallStorePaths = {
   lockPath: string;
   currentPath: string;
   shimPath: string;
+  legacyShimPath: string;
 };
 
 function ensurePrivateDirectory(directoryPath: string): void {
@@ -83,6 +84,7 @@ export function resolveInstallStorePaths(options: {
     lockPath: path.join(cliRoot, ".install.lock"),
     currentPath: path.join(cliRoot, "current"),
     shimPath: path.join(homeDir, ".local", "bin", "myrmidon"),
+    legacyShimPath: path.join(homeDir, ".local", "bin", "paperclipai"),
   };
 }
 
@@ -407,18 +409,23 @@ export function writeManagedShim(paths = resolveInstallStorePaths()): void {
   // runtime too, even when systemd/launchd supplies a different PATH.
   const contents = `#!/bin/sh\n# ${MANAGED_SHIM_MARKER}\nset -eu\nexport PATH=${shellQuote(path.dirname(process.execPath))}:"\${PATH:-/usr/local/bin:/usr/bin:/bin}"\nexec ${shellQuote(process.execPath)} ${shellQuote(entrypoint)} "\$@"\n`;
   writeFileAtomic(paths.shimPath, contents, 0o755);
+  assertManagedShimWritable({ ...paths, shimPath: paths.legacyShimPath });
+  writeFileAtomic(paths.legacyShimPath, contents, 0o755);
 }
 
 export function removeManagedShim(paths = resolveInstallStorePaths()): boolean {
-  try {
-    const contents = fs.readFileSync(paths.shimPath, "utf8");
-    if (!isManagedShimContents(contents)) return false;
-    fs.rmSync(paths.shimPath, { force: true });
-    return true;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return true;
-    throw error;
+  let removed = false;
+  for (const shimPath of [paths.shimPath, paths.legacyShimPath]) {
+    try {
+      const contents = fs.readFileSync(shimPath, "utf8");
+      if (!isManagedShimContents(contents)) continue;
+      fs.rmSync(shimPath, { force: true });
+      removed = true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
   }
+  return removed;
 }
 
 export function managedPathBlock(): string {
