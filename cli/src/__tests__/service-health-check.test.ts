@@ -201,7 +201,7 @@ describe("service runtime shim awareness", () => {
     const runtime = results.find((r) => r.name === "Service runtime");
     expect(runtime?.status).toBe("fail");
     expect(runtime?.message).toContain("no executable exists at");
-    expect(runtime?.repairHint).toContain("paperclipai install");
+    expect(runtime?.repairHint).toContain("myrmidon install");
   });
 
   it("diagnoses against the executable recorded in the definition, not the current env", async () => {
