@@ -274,6 +274,7 @@ describeEmbeddedPostgres(
           questions: [
             {
               id: "deploy-window",
+              header: "Choose a deploy window",
               prompt: "Which deploy window?",
               helpText: "Choose one and include any timing constraints.",
               selectionMode: "single" as const,
@@ -396,7 +397,7 @@ describeEmbeddedPostgres(
       };
       expect(payload.text).toContain("Proceed with the deploy?");
       expect(payload.text).toContain("Deploy build to production.");
-      expect(payload.text).toContain("Ответить можно только на доске.");
+      expect(payload.text).toContain("Ответьте сообщением: подтвердите или отклоните, либо своими словами.");
       expect(payload.interactionId).toBe(interaction.id);
       expect(payload).not.toHaveProperty("card");
     });
