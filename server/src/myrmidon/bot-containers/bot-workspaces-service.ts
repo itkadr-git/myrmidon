@@ -305,7 +305,8 @@ export function botWorkspacesStore(db: Db): BotWorkspacesStore {
             eq(activityLog.companyId, companyId),
             eq(activityLog.entityType, "issue"),
             eq(activityLog.action, "issue.updated"),
-            gt(activityLog.createdAt, since),
+            // Keep reassignment history unbounded so old copies cannot become
+            // unknown keys and remain forever due to fail-closed cleanup.
             sql`${activityLog.details}->'_previous'->>'assigneeAgentId' = ${agentId}`,
           ),
         );
