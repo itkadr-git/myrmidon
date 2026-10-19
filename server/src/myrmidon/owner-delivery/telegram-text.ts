@@ -48,13 +48,7 @@ export function telegramOwnerQuestionText(
       lines.push(`${index + 1}. ${option.label.trim()}${recommendation}`);
       if (option.description?.trim()) lines.push(`   ${option.description.trim()}`);
     }
-    if ("customAnswer" in question && question.customAnswer?.enabled) {
-      lines.push(`Свободный ответ: ${question.customAnswer.label?.trim() || "своими словами"}`);
-    } else if ("allowOther" in question && question.allowOther === false) {
-      lines.push("Ответьте сообщением: номером варианта");
-    } else {
-      lines.push(QUESTION_REPLY_GUIDANCE);
-    }
+    lines.push(QUESTION_REPLY_GUIDANCE);
   }
   if (taskUrl) lines.push(taskUrl);
   return finishTelegramText(lines);
