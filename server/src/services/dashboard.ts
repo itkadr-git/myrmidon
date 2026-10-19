@@ -144,6 +144,46 @@ export function dashboardService(db: Db) {
           ? (monthSpendCents / budgetMonthlyCents) * 100
           : 0;
 
+      const runActivity = new Map(
+        runActivityDays.map((date) => [
+          date,
+          {
+            date,
+            succeeded: 0,
+            failed: 0,
+            recovered: 0,
+            other: 0,
+            total: 0,
+            failedByErrorCode: {} as Record<string, number>,
+          },
+        ]),
+      );
+      for (const row of runActivityRows) {
+        const bucket = runActivity.get(String(row.date));
+        if (!bucket) continue;
+        const count = Number(row.count);
+        const status = String(row.status);
+        // Postgres booleans can arrive as JS boolean or "t"/"true" depending on driver.
+        const recovered = row.recovered === true || row.recovered === "t" || row.recovered === "true";
+        if (status === "succeeded") {
+          bucket.succeeded += count;
+        } else if (status === "failed" || status === "timed_out") {
+          if (recovered) {
+            bucket.recovered += count;
+          } else {
+            bucket.failed += count;
+            const code =
+              typeof row.error_code === "string" && row.error_code.length > 0
+                ? row.error_code
+                : "unknown";
+            bucket.failedByErrorCode[code] = (bucket.failedByErrorCode[code] ?? 0) + count;
+          }
+        } else {
+          bucket.other += count;
+        }
+        bucket.total += count;
+      }
+
       return {
         companyId,
         agents: {
