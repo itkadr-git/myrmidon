@@ -320,7 +320,18 @@ export async function reconcileBot(input: ReconcileBotInput): Promise<ReconcileO
     const changeClass = classifyProfileChange({ restartHash: status.restartHash, filesHash: status.filesHash }, profile);
 
     if (status.state === "stopped") {
-      if (status.idleStopped) return { kind: "unchanged" };
+      if (status.idleStopped) {
+        if (!drifted && changeClass === "none") return { kind: "unchanged" };
+        if (drifted) await driver.recreate(spec);
+        if (changeClass !== "none") await driver.writeProfile(botKey, profile);
+        await info("idle-stopped bot container image updated without restart", {
+          drifted,
+          changeClass,
+          ...appliedDetails(profile, applyTrigger(status.state, drifted, changeClass)),
+        });
+        await backimportBotSkillsIntoCatalog();
+        return { kind: "applied_restart" };
+      }
       if (drifted) await driver.recreate(spec);
       if (changeClass !== "none") await driver.writeProfile(botKey, profile);
       await driver.start(botKey);
