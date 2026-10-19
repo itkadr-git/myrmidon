@@ -53,6 +53,7 @@ describeEmbeddedPostgres(
       ReturnType<typeof startEmbeddedPostgresTestDatabase>
     > | null = null;
     const previousKeyFile = process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE;
+    const previousPublicUrl = process.env.PAPERCLIP_PUBLIC_URL;
     const secretsTmpDir = path.join(
       os.tmpdir(),
       `paperclip-myrmidon-u2-owner-delivery-${randomUUID()}`,
@@ -71,6 +72,7 @@ describeEmbeddedPostgres(
     }, 30_000);
 
     beforeEach(async () => {
+      process.env.PAPERCLIP_PUBLIC_URL = "https://paperclip.local";
       // Each scenario opts into owner delivery explicitly; do not leak the
       // singleton setting from a preceding scenario.
       await instanceSettingsService(db).updateGeneral({
@@ -82,6 +84,9 @@ describeEmbeddedPostgres(
       await instanceSettingsService(db).updateGeneral({
         [OWNER_DELIVERY_SETTINGS_KEY]: { mode: "via_bot" },
       });
+      if (previousPublicUrl === undefined)
+        delete process.env.PAPERCLIP_PUBLIC_URL;
+      else process.env.PAPERCLIP_PUBLIC_URL = previousPublicUrl;
     });
 
     afterAll(async () => {
