@@ -5,7 +5,10 @@ import { readQueuedInteractionResponse } from "../myrmidon/upstream-steer/queued
 // describeRunRetrySchedule and the issue payload reads it back with
 // readRunRetryPolicySnapshot (see docs/myrmidon/SETTINGS.md).
 import {
+  DEFAULT_RUN_RETRY_MAX_ATTEMPTS,
   describeRunRetrySchedule,
+  isPermanentAgentFailure,
+  isTransientFailure,
   readRunRetryPolicySnapshot,
 } from "../myrmidon/run-retry-policy/index.js";
 import { AGENT_CHAT_DIRECTIVE, conversationReplay, isConversation, isConversationExecutionWake, isWaitingConversation, prepareConversationTurn, settleConversationTurn } from "./agent-conversations.js";
@@ -1328,7 +1331,13 @@ function readHeartbeatRunErrorFamily(
   if (
     run.errorCode === "codex_transient_upstream" ||
     run.errorCode === "claude_transient_upstream" ||
-    run.errorCode === "codex_harness_crash"
+    run.errorCode === "codex_harness_crash" ||
+    run.errorCode === "continuation_source_context_missing" ||
+    run.errorCode === "controller_lease_lost" ||
+    run.errorCode === "legacy_controller_lease_lost" ||
+    run.errorCode === "native_session_lease_lost" ||
+    run.errorCode === "stream_interrupted" ||
+    run.errorCode === "transient_network_error"
   ) {
     return "transient_upstream";
   }
@@ -18096,7 +18105,12 @@ export function heartbeatService(
     agentId: string,
     outcome: "succeeded" | "interrupted" | "failed" | "cancelled" | "timed_out",
     failureReason?: string | null,
-    options?: { keepIdleOnFailure?: boolean; wasFirstHeartbeat?: boolean },
+    options?: {
+      keepIdleOnFailure?: boolean;
+      wasFirstHeartbeat?: boolean;
+      errorCode?: string | null;
+      errorFamily?: string | null;
+    },
   ) {
     const existing = await getAgent(agentId);
     if (!existing) return;
@@ -18109,20 +18123,68 @@ export function heartbeatService(
       options?.wasFirstHeartbeat ?? !existing.lastHeartbeatAt;
 
     const runningCount = await countRunningRunsForAgent(agentId);
-    const nextStatus =
-      runningCount > 0
-        ? "running"
-        : outcome === "succeeded" ||
-            outcome === "interrupted" ||
-            outcome === "cancelled" ||
-            (outcome === "failed" && options?.keepIdleOnFailure)
-          ? "idle"
-          : "error";
+    const metadata = parseObject(existing.metadata);
+    const currentFailures =
+      typeof metadata.consecutiveFailures === "number" &&
+      Number.isFinite(metadata.consecutiveFailures) &&
+      metadata.consecutiveFailures >= 0
+        ? metadata.consecutiveFailures
+        : 0;
+
+    let nextFailures = currentFailures;
+    let nextStatus: "idle" | "running" | "error";
+
+    if (runningCount > 0) {
+      nextStatus = "running";
+    } else if (
+      outcome === "succeeded" ||
+      outcome === "interrupted" ||
+      outcome === "cancelled"
+    ) {
+      nextFailures = 0;
+      nextStatus = "idle";
+    } else {
+      nextFailures = currentFailures + 1;
+      const failureInput = {
+        errorCode: options?.errorCode,
+        errorFamily: options?.errorFamily,
+        errorMessage: failureReason,
+      };
+      const isPermanent = isPermanentAgentFailure(failureInput);
+      const isTransient =
+        Boolean(options?.keepIdleOnFailure) || isTransientFailure(failureInput);
+      const maxFailures = DEFAULT_RUN_RETRY_MAX_ATTEMPTS;
+
+      if (isTransient) {
+        // An explicit idle override means a bounded retry owns recovery. This
+        // is important for quota reset retries: the provider failure is
+        // persistent, but the agent itself remains available for the retry.
+        if (nextFailures >= maxFailures) {
+          nextStatus = "error";
+          failureReason = `${nextFailures} consecutive runs failed: ${failureReason ?? "transient failure"}`;
+        } else {
+          nextStatus = "idle";
+        }
+      } else if (isPermanent) {
+        nextStatus = "error";
+      } else if (nextFailures >= maxFailures) {
+        nextStatus = "error";
+        failureReason = `${nextFailures} consecutive runs failed: ${failureReason ?? "failure"}`;
+      } else {
+        nextStatus = "idle";
+      }
+    }
+
+    const nextMetadata: Record<string, unknown> = {
+      ...metadata,
+      consecutiveFailures: nextFailures,
+    };
 
     const updated = await db
       .update(agents)
       .set({
         status: nextStatus,
+        metadata: nextMetadata,
         // Persist a human-readable reason on the agent record when it enters
         // error so operators see it on the agent page without digging into run
         // events; clear it whenever the agent leaves error.
@@ -19469,6 +19531,12 @@ export function heartbeatService(
 
       await finalizeAgentStatus(run.agentId, "failed", baseMessage, {
         wasFirstHeartbeat: timerClaimWasFirstHeartbeat(run),
+        errorCode: finalizedRun.errorCode,
+        keepIdleOnFailure:
+          isTransientFailure({
+            errorCode: finalizedRun.errorCode,
+            errorMessage: baseMessage,
+          }) || Boolean(retriedRun),
       });
       // myrmidon(1.6.6 RUN-DISPATCH-NOTIFY, OPE-6977): through the dispatcher.
       await runStartDispatcher.dispatchRunStart(run.agentId);
@@ -26857,7 +26925,11 @@ export function heartbeatService(
             }
           }
         }
+        const adapterErrorFamily = readHeartbeatRunErrorFamily(finalizedRun ?? run);
+        const effectiveErrorCode = finalizedRun?.errorCode ?? runErrorCode;
         await finalizeAgentStatus(agent.id, outcome, runErrorMessage, {
+          errorCode: effectiveErrorCode,
+          errorFamily: adapterErrorFamily,
           keepIdleOnFailure:
             outcome === "failed" &&
             ((finalizedRun
@@ -26868,8 +26940,12 @@ export function heartbeatService(
               // resource wait, not an agent health problem: the bounded retry
               // is already scheduled, so the agent stays idle instead of
               // going to error while its own runs are simply queued out.
-              readHeartbeatRunErrorFamily(finalizedRun ?? run) ===
-                "transient_upstream" ||
+              adapterErrorFamily === "transient_upstream" ||
+              isTransientFailure({
+                errorCode: effectiveErrorCode,
+                errorFamily: adapterErrorFamily,
+                errorMessage: runErrorMessage,
+              }) ||
               isWorkspaceSyncConflictFailure(adapterResult.errorMessage) ||
               isContextWindowError(runErrorMessage)),
           wasFirstHeartbeat: timerClaimWasFirstHeartbeat(run),
@@ -27058,7 +27134,15 @@ export function heartbeatService(
           nonRetryablePreflightFailureCode(err) ??
           recordedResponsibleUserDenialCode ??
           nativeTerminalFailureCode ??
-          "adapter_failed";
+          (err instanceof Error && /stream (?:was )?interrupted|interrupted stream/i.test(err.message)
+            ? "stream_interrupted"
+            : err instanceof Error && /lease lost/i.test(err.message)
+            ? "controller_lease_lost"
+            : err instanceof Error && err.message === "continuation_source_context_missing"
+            ? "continuation_source_context_missing"
+            : err instanceof Error && /ECONNRESET|ETIMEDOUT|socket hang up|fetch failed/i.test(err.message)
+            ? "transient_network_error"
+            : "adapter_failed");
         logger.error({ err, runId }, "heartbeat execution failed");
 
         let logSummary: {
@@ -27227,8 +27311,13 @@ export function heartbeatService(
         }
 
         await finalizeAgentStatus(agent.id, "failed", message, {
+          errorCode: failureErrorCode,
           wasFirstHeartbeat: timerClaimWasFirstHeartbeat(run),
           keepIdleOnFailure:
+            isTransientFailure({
+              errorCode: failureErrorCode,
+              errorMessage: message,
+            }) ||
             Boolean(nonRetryablePreflightFailureCode(err)) ||
             isWorkspaceSyncConflictFailure(message) ||
             isContextWindowError(message),
@@ -27309,7 +27398,17 @@ export function heartbeatService(
             : null) ??
           recordedResponsibleUserDenialCode ??
           nonRetryablePreflightCode ??
-          "setup_failed";
+          (outerErr instanceof Error && /continuation_source_context_missing/i.test(outerErr.message)
+            ? "continuation_source_context_missing"
+            : outerErr instanceof Error && /stream (?:was )?interrupted|interrupted stream/i.test(outerErr.message)
+            ? "stream_interrupted"
+            : outerErr instanceof Error && /lease lost/i.test(outerErr.message)
+            ? "controller_lease_lost"
+            : outerErr instanceof Error && /continuation_user_authorization_missing/i.test(outerErr.message)
+            ? "continuation_user_authorization_missing"
+            : outerErr instanceof Error && /ECONNRESET|ETIMEDOUT|socket hang up|fetch failed/i.test(outerErr.message)
+            ? "transient_network_error"
+            : "setup_failed");
         logger.error(
           { err: outerErr, runId },
           "heartbeat execution setup failed",
@@ -27428,16 +27527,23 @@ export function heartbeatService(
                 () => undefined,
               );
             }
-            // No provider work began. Retry temporary host scan failures with
-            // the existing durable failure budget, before releasing execution.
-            // Generic recovery must not grant a second budget on exhaustion.
-            await (isTransientWorkspaceGitScanCode(livenessRun.errorCode)
+            // No provider work began. Retry temporary host scan failures or transient
+            // infrastructure/continuation failures with the existing durable failure budget,
+            // before releasing execution. Generic recovery must not grant a second budget on exhaustion.
+            const setupTransient =
+              isTransientWorkspaceGitScanCode(livenessRun.errorCode) ||
+              isTransientFailure({
+                errorCode: livenessRun.errorCode,
+                errorFamily: readHeartbeatRunErrorFamily(livenessRun),
+                errorMessage: message,
+              });
+            await (setupTransient
               ? scheduleBoundedRetryForRun(livenessRun, failedAgent)
               : scheduleInteractionContinuationInfrastructureRetryIfEligible(livenessRun, failedAgent)
             ).catch((retryError) => {
               logger.warn(
                 { err: retryError, runId: livenessRun.id },
-                "failed to schedule interaction continuation retry after setup failure",
+                "failed to schedule retry after setup failure",
               );
             });
           }
@@ -27467,14 +27573,23 @@ export function heartbeatService(
         // path owned the terminal transition. If another path already finalized
         // the run, keep that terminal outcome authoritative.
         if (setupFailureWrite.updated) {
+          const setupErrorFamily = readHeartbeatRunErrorFamily(failedRun ?? run);
           await finalizeAgentStatus(run.agentId, "failed", message, {
             wasFirstHeartbeat: timerClaimWasFirstHeartbeat(run),
+            errorCode: setupFailureErrorCode,
+            errorFamily: setupErrorFamily,
             // Low-trust admission failures are task/principal preconditions,
             // not evidence that the immutable endpoint agent is unhealthy.
             // Keep the failed run and its safe provider refusal authoritative,
             // but return the agent to idle so clients do not also announce a
             // misleading agent-wide error for the same rejected chat turn.
-            keepIdleOnFailure: Boolean(nonRetryablePreflightCode),
+            keepIdleOnFailure:
+              Boolean(nonRetryablePreflightCode) ||
+              isTransientFailure({
+                errorCode: setupFailureErrorCode,
+                errorFamily: setupErrorFamily,
+                errorMessage: message,
+              }),
           }).catch(() => undefined);
         }
       }
