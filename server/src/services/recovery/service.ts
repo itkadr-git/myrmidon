@@ -262,6 +262,8 @@ type LatestIssueRun =
       | "livenessState"
       | "startedAt"
       | "createdAt"
+      | "scheduledRetryAttempt"
+      | "scheduledRetryReason"
       // myrmidon(L1): claimedAdapterType's input, so the L1 branch below can
       // gate hold suppression on the run's own adapter
       | "runnerProfileJson"
@@ -3995,7 +3997,12 @@ export function recoveryService(
       "retryReason" in input.latestRun.contextSnapshot &&
       input.recoveryCause !== "configuration_incomplete" &&
       input.latestRun.status !== "failed" &&
-      input.recoveryCause !== SUCCESSFUL_RUN_MISSING_STATE_REASON
+      input.recoveryCause !== SUCCESSFUL_RUN_MISSING_STATE_REASON &&
+      !infraInterruptRetryBudgetExhausted({
+        scheduledRetryAttempt: input.latestRun.scheduledRetryAttempt ?? null,
+        scheduledRetryReason: input.latestRun.scheduledRetryReason ?? null,
+        contextSnapshot: input.latestRun.contextSnapshot,
+      })
     ) {
       const rerouted = await rerouteStrandedIssueToSharedQueue({
         issue: input.issue,
@@ -5105,6 +5112,7 @@ export function recoveryService(
             issue,
             previousStatus: issue.status as StrandedPreviousStatus,
             latestRun,
+            recoveryCause: "dispatch_not_invokable",
             comment:
               productSaid("cannot safely continue automatic recovery because the original assignee is not invokable. ") +
               "The source assignment is unchanged and the board must choose the next action.",
