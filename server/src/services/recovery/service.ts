@@ -3997,8 +3997,6 @@ export function recoveryService(
       input.latestRun.status !== "failed" &&
       input.recoveryCause !== SUCCESSFUL_RUN_MISSING_STATE_REASON &&
       !infraInterruptRetryBudgetExhausted({
-        scheduledRetryAttempt: input.latestRun.scheduledRetryAttempt ?? null,
-        scheduledRetryReason: input.latestRun.scheduledRetryReason ?? null,
         contextSnapshot: input.latestRun.contextSnapshot,
       })
     ) {
@@ -5105,7 +5103,12 @@ export function recoveryService(
             "retryReason" in latestRun.contextSnapshot &&
             recoveryCause !== "configuration_incomplete" &&
             latestRun.status !== "failed" &&
-            recoveryCause !== SUCCESSFUL_RUN_MISSING_STATE_REASON;
+            recoveryCause !== SUCCESSFUL_RUN_MISSING_STATE_REASON &&
+            !infraInterruptRetryBudgetExhausted({
+              scheduledRetryAttempt: scheduledRetryColumns?.scheduledRetryAttempt ?? null,
+              scheduledRetryReason: scheduledRetryColumns?.scheduledRetryReason ?? null,
+              contextSnapshot: latestRun.contextSnapshot,
+            });
           const updated = await escalateStrandedAssignedIssue({
             issue,
             previousStatus: issue.status as StrandedPreviousStatus,
