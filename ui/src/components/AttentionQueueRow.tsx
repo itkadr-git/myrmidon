@@ -424,7 +424,7 @@ function EyebrowSeparator() {
   );
 }
 
-type CompactDecisionAction = "accept" | "approve" | "reject" | "request_revision" | "confirm_execution_hold";
+type CompactDecisionAction = "accept" | "approve" | "reject" | "request_revision" | "confirm_execution_hold" | "inspect_replay_block";
 
 function compactDecisionAction(item: AttentionItem, verbId: string): CompactDecisionAction | null {
   if (item.sourceKind === "approval" && (verbId === "approve" || verbId === "reject" || verbId === "request_revision")) {
@@ -444,6 +444,9 @@ function compactDecisionAction(item: AttentionItem, verbId: string): CompactDeci
   // attests the failed run left no external action and the task resumes.
   if (item.sourceKind === "execution_hold" && verbId === "confirm_continue") {
     return "confirm_execution_hold";
+  }
+  if (item.sourceKind === "replay_blocked" && verbId === "inspect") {
+    return "inspect_replay_block";
   }
   return null;
 }
@@ -515,6 +518,10 @@ function CompactDecisionActions({
       // action — the card's subject.id is the task itself.
       if (item.sourceKind === "execution_hold" && action === "confirm_execution_hold") {
         return issuesApi.confirmExecutionHold(item.subject.id);
+      }
+      if (item.sourceKind === "replay_blocked" && action === "inspect_replay_block") {
+        window.location.assign(item.subject.href ?? `/${companyId}/issues/${item.subject.identifier}`);
+        return Promise.resolve();
       }
       throw new Error("This decision must be completed from its detail view.");
     },
