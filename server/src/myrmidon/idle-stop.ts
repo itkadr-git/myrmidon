@@ -186,9 +186,10 @@ export class IdleStopService {
 
     this.logger.info(`Stopping idle container for bot ${botKey} (idle for ${idleDurationSec}s)`);
     try {
-      await this.driver.stop(botKey);
+      if (!this.driver.stopIdle) throw new Error('idle-stop route is not supported by this driver');
+      await this.driver.stopIdle(botKey);
     } catch (error) {
-      this.logger.error(`Failed to stop container for bot ${botKey}:`, error);
+      this.logger.error(`Failed to stop container for bot ${botKey} [${error instanceof Error ? error.message : String(error)}]`);
     }
   }
 
