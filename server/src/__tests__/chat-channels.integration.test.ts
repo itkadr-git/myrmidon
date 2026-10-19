@@ -21613,8 +21613,9 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         trigger: "subscribed_message",
       });
       expect(deferred).toHaveLength(1);
-      const drain = deferred.shift()?.();
-      expect(drain).toBeDefined();
+      const drainTask = deferred.shift();
+      expect(drainTask).toBeDefined();
+      const drain = drainTask!();
       await vi.waitFor(async () => {
         const [delivery] = await db
           .select()
@@ -21747,11 +21748,9 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       .from(chatDeliveries)
       .where(eq(chatDeliveries.endpointId, endpoint.id));
     expect(pendingDeliveries).toHaveLength(deliveryCountBeforeDuplicates + 1);
+    await service.processPendingDeliveries();
     await vi.waitFor(
-      async () => {
-        await service.processPendingDeliveries();
-        expect(wakeup.mock.calls.length).toBeGreaterThan(0);
-      },
+      () => expect(wakeup.mock.calls.length).toBeGreaterThan(0),
       { timeout: 10_000 },
     );
     expect(wakeup).toHaveBeenCalledTimes(1);
