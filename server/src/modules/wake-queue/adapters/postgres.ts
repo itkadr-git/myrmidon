@@ -192,6 +192,24 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
     : null;
 
   return {
+    async findIssue({ companyId, issueId }): Promise<IssueSnapshot | null> {
+      const [issue] = await tx.select().from(issues).where(and(eq(issues.companyId, companyId), eq(issues.id, issueId)));
+      return issue ? toIssueSnapshot(issue) : null;
+    },
+    async claimIssueExecutionLease({ companyId, issueId, runId }): Promise<boolean> {
+      const [claimed] = await tx
+        .update(issues)
+        .set({ executionRunId: runId })
+        .where(and(
+          eq(issues.companyId, companyId),
+          eq(issues.id, issueId),
+          isNull(issues.executionRunId),
+          isNull(issues.checkoutRunId),
+          notInArray(issues.status, ["done", "cancelled"]),
+        ))
+        .returning({ id: issues.id });
+      return Boolean(claimed);
+    },
     async findInvokableAgent({ companyId, agentId }): Promise<InvokableAgentSnapshot | null> {
       const agent = await tx
         .select()
@@ -1078,6 +1096,20 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
           )
           .orderBy(asc(issues.id));
 
+        const releaseCandidateRows = candidateIssues.filter((candidate: IssueRow) =>
+          candidate.executionRunId === run.id || candidate.checkoutRunId === run.id,
+        );
+        const contextIssueRow = contextIssueId
+          ? candidateIssues.find((candidate: IssueRow) => candidate.id === contextIssueId) ?? null
+          : null;
+        const issueRow = contextIssueRow ?? releaseCandidateRows[0] ?? null;
+        const releasedSiblingIssue = issueRow
+          ? releaseCandidateRows.find((candidate: IssueRow) => candidate.id !== issueRow.id &&
+              candidate.status !== "done" && candidate.status !== "cancelled")
+          : undefined;
+        const releasedIssueIds = releaseCandidateRows
+          .filter((candidate: IssueRow) => candidate.status !== "done" && candidate.status !== "cancelled")
+          .map((candidate: IssueRow) => candidate.id);
         // Two separate updates: a retry can move `executionRunId` to a new run
         // while `checkoutRunId` still points at this one finishing.
         await tx
@@ -1088,9 +1120,6 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
           .update(issues)
           .set({ checkoutRunId: null, updatedAt: input.now })
           .where(and(eq(issues.companyId, input.companyId), eq(issues.checkoutRunId, run.id)));
-
-        const issueRow =
-          (contextIssueId ? candidateIssues.find((candidate) => candidate.id === contextIssueId) : candidateIssues[0]) ?? null;
 
         // A queue interrupt authorizes only its original pending queue. Replays
         // after dispatch or deleting the final message cannot launch other work.
@@ -1125,13 +1154,22 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
         };
         const preDrain = decidePreDrain(preDrainFacts);
 
-        if (preDrain.kind === "released") {
-          return { outcome: { kind: "released" }, postCommitEffects: [], run: runSnapshot };
-        }
+        const releaseOutcome = preDrain.kind === "released" ? {
+          outcome: { kind: "released" } as const, postCommitEffects: [], run: runSnapshot,
+        } : null;
+
+        const releasedSiblingOutcome = () => releasedSiblingIssue &&
+          !releasedIssueIds.includes(releasedSiblingIssue.id) &&
+          releasedSiblingIssue.status !== "done" && releasedSiblingIssue.status !== "cancelled"
+          ? {
+              outcome: { kind: "released" } as const, postCommitEffects: [], run: runSnapshot,
+              releasedSiblingIssue: toIssueSnapshot(releasedSiblingIssue),
+            }
+          : null;
 
         // decidePreDrain only returns "blocked" or "proceed" when the issue row is present.
         if (!issueRow) {
-          throw new Error(`wake-queue: pre-drain decision ${preDrain.kind} reached without an issue row`);
+          return releasedSiblingOutcome() ?? releaseOutcome ?? { outcome: { kind: "released" }, postCommitEffects: [], run: runSnapshot };
         }
 
         // Enqueue does not stamp executionRunId until dispatch. A concurrent
@@ -1146,9 +1184,13 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
             sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issueRow.id}`),
           inArray(heartbeatRuns.status, ["queued", "running", "scheduled_retry"]),
         )).limit(1);
-        if (successor) return { outcome: { kind: "released" }, postCommitEffects: [], run: runSnapshot };
+        if (successor || releaseOutcome) {
+          return releasedSiblingOutcome() ?? releaseOutcome ?? { outcome: { kind: "released" }, postCommitEffects: [], run: runSnapshot };
+        }
 
         if (preDrain.kind === "blocked") {
+          const siblingOutcome = releasedSiblingOutcome();
+          if (siblingOutcome) return siblingOutcome;
           return {
             outcome: {
               kind: "blocked",
@@ -1192,18 +1234,34 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
         const recoveryOnly = Boolean(executionBlocker &&
           executionBlocker.cause === "execution_owner_active" && executionBlocker.runId === run.id &&
           runSnapshot.conversationContinuation && ["failed", "timed_out", "interrupted"].includes(run.status));
-        if (executionBlocker && !recoveryOnly) {
-          return { outcome: { kind: "released" }, postCommitEffects: [], run: runSnapshot };
+        if (executionBlocker) {
+          return releasedSiblingOutcome() ?? { outcome: { kind: "released" }, postCommitEffects: [], run: runSnapshot };
         }
 
         // Releases still settle while Agent Chat is disabled, but no deferred
         // turn or recovery successor may be created. Check here in the shared
         // transaction so cleanup retries and restart sweeps use the same gate.
         if (issueRow.conversationAgentId && !(await instanceSettingsService(tx).getExperimental()).enableAgentChat) {
-          return { outcome: { kind: "released" }, postCommitEffects: [], run: runSnapshot };
+          return releasedSiblingOutcome() ?? { outcome: { kind: "released" }, postCommitEffects: [], run: runSnapshot };
         }
 
-        const locked: LockedIssueExecution = { primaryIssue: toIssueSnapshot(issueRow), run: runSnapshot, recoveryOnly };
+        if (issueRow.status === "done" || issueRow.status === "cancelled") {
+          await tx.update(agentWakeupRequests).set({ status: "cancelled", updatedAt: input.now }).where(and(
+            eq(agentWakeupRequests.companyId, input.companyId),
+            eq(agentWakeupRequests.issueId, issueRow.id),
+            eq(agentWakeupRequests.status, DEFERRED_WAKE_STATUS),
+          ));
+          return releasedSiblingOutcome() ?? { outcome: { kind: "released" }, postCommitEffects: [], run: runSnapshot };
+        }
+
+        const locked: LockedIssueExecution = {
+          primaryIssue: toIssueSnapshot(issueRow),
+          releasedSiblingIssue: releasedSiblingIssue && releasedSiblingIssue.status !== "done" && releasedSiblingIssue.status !== "cancelled"
+            ? toIssueSnapshot(releasedSiblingIssue)
+            : undefined,
+          run: runSnapshot,
+          recoveryOnly,
+        };
         const result = await fn(locked, { host: buildHost(tx, deps), transaction: buildTransaction(tx, deps, db, run) });
         return { ...result, run: runSnapshot };
       });

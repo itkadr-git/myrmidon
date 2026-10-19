@@ -374,6 +374,43 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
     expect(await db.select().from(activityLog).where(eq(activityLog.entityId, issueId))).toHaveLength(1);
   });
 
+  it("locks issue rows referenced by a multi-issue finishing run", async () => {
+    const companyId = await seedCompany();
+    const agentId = await seedAgent({ companyId });
+    const issueA = await seedIssue({ companyId, identifier: "QA-91", assigneeAgentId: agentId });
+    const issueB = await seedIssue({ companyId, identifier: "QA-92", assigneeAgentId: agentId });
+    const runId = await seedRun({ companyId, agentId, status: "succeeded" });
+    await db.update(issues).set({ executionRunId: runId }).where(eq(issues.companyId, companyId));
+    const adapter = createPostgresWakeQueueAdapter(db, stubDeps);
+    let capturedSibling: string | undefined;
+
+    await adapter.withIssueExecutionLock({ companyId, runId, now: new Date() }, async (locked) => {
+      capturedSibling = locked.releasedSiblingIssue?.id;
+      return { outcome: { kind: "released" }, postCommitEffects: [] };
+    });
+
+    expect(capturedSibling).toBe(issueB);
+  });
+
+  it("reports the selected lock-free primary once context-only runs retain an independent queue", async () => {
+    const companyId = await seedCompany();
+    const agentId = await seedAgent({ companyId });
+    const primary = await seedIssue({ companyId, identifier: "QA-93", assigneeAgentId: agentId });
+    const terminalSibling = await seedIssue({ companyId, identifier: "QA-94", assigneeAgentId: agentId, status: "done" });
+    const runId = await seedRun({ companyId, agentId, status: "succeeded" });
+    await db.update(issues).set({ executionRunId: runId }).where(eq(issues.id, primary));
+    await db.update(issues).set({ executionRunId: runId }).where(eq(issues.id, terminalSibling));
+    const adapter = createPostgresWakeQueueAdapter(db, stubDeps);
+    let capturedSibling: string | undefined;
+
+    await adapter.withIssueExecutionLock({ companyId, runId, now: new Date() }, async (locked) => {
+      capturedSibling = locked.releasedSiblingIssue?.id;
+      return { outcome: { kind: "released" }, postCommitEffects: [] };
+    });
+
+    expect(capturedSibling).not.toBe(terminalSibling);
+  });
+
   it.each(["queued", "running", "scheduled_retry"])("does not promote another turn behind a %s successor without an execution lock", async (status) => {
     const companyId = await seedCompany();
     const agentId = await seedAgent({ companyId });
@@ -534,6 +571,22 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
     const issueRow = (await db.select().from(issues).where(eq(issues.id, issueId)))[0];
     expect(issueRow?.status).toBe("blocked");
     expect(issueRow?.executionState).toEqual({ phase: "running" });
+  });
+
+  it("atomically lease-claims one issue for release drain", async () => {
+    const companyId = await seedCompany();
+    const agentId = await seedAgent({ companyId });
+    const issueId = await seedIssue({ companyId, assigneeAgentId: agentId });
+    const runId = await seedRun({ companyId, agentId, status: "succeeded" });
+    const adapter = createPostgresWakeQueueAdapter(db, stubDeps);
+
+    const claimed = await adapter.claimIssueExecutionLease({ companyId, issueId, runId });
+    const competingClaim = await adapter.claimIssueExecutionLease({ companyId, issueId, runId: randomUUID() });
+    const [issueRow] = await db.select().from(issues).where(eq(issues.id, issueId));
+
+    expect(claimed).toBe(true);
+    expect(competingClaim).toBe(false);
+    expect(issueRow.executionRunId).toBe(runId);
   });
 
   // Review defect: the reopen path must carry the company into every read,
