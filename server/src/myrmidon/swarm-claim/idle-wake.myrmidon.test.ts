@@ -199,9 +199,11 @@ describe("myrmidon(1.6.1 SWARM-IDLE-WAKE) sweep pass", () => {
               }
               if (table === heartbeatRuns) {
                 if (projection && "id" in projection) return { limit: () => Promise.resolve([]) };
-                // listIdleRolePairs awaits the live-run and last-run directory
-                // reads directly; keep those projections promise-shaped.
-                if (projection && "agentId" in projection) return Promise.resolve([]);
+                // listIdleRolePairs awaits the live-run directory directly, while
+                // the last-run aggregate uses groupBy().
+                if (projection && "agentId" in projection && !("lastActiveAt" in projection)) {
+                  return Promise.resolve([]);
+                }
                 return {
                   limit: () => Promise.resolve([]),
                   groupBy: empty,
