@@ -101,6 +101,7 @@ function registerModuleMocks() {
       getById: vi.fn(async (agentId: string) => ({
         id: agentId,
         companyId: "company-1",
+        role: "reviewer",
         permissions: null,
       })),
       resolveByReference: vi.fn(async (_companyId: string, reference: string) => ({
@@ -341,9 +342,7 @@ describe("issue execution policy routes", () => {
     expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 
-  it("allows an agent-authored in_review transition with reviewPolicy human_only as the review path", async () => {
-    // myrmidon(HUMAN-REVIEW-WAIT): declaring the human-only wait is itself a
-    // real reviewer path — no fabricated interaction/approval needed.
+  it("rejects an agent-authored in_review transition with reviewPolicy human_only", async () => {
     const issue = {
       id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
       companyId: "company-1",
@@ -352,10 +351,41 @@ describe("issue execution policy routes", () => {
       assigneeUserId: null,
       createdByUserId: "local-board",
       identifier: "PAP-1003H",
-      title: "Waiting on the owner",
+      title: "Human-only policy is not an agent review path",
       executionPolicy: null,
       executionState: null,
       reviewPolicy: null,
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+
+    const res = await request(await createApp({
+      type: "agent",
+      agentId: "33333333-3333-4333-8333-333333333333",
+      companyId: "company-1",
+      runId: "55555555-5555-4555-8555-555555555555",
+    }))
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send({ status: "in_review", reviewPolicy: "human_only" });
+
+    expect(res.status).toBe(422);
+    expect(res.body.error).not.toContain('declare reviewPolicy "human_only"');
+    expect(res.body.details.validReviewPaths).not.toContain("human_only_review_policy");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("allows an agent-authored in_review transition with a different reviewer agent", async () => {
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "todo",
+      assigneeAgentId: "reviewer-agent",
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      identifier: "PAP-1003R",
+      title: "Reviewer agent handoff",
+      executionPolicy: null,
+      executionState: null,
+      reviewPolicy: "not_creator",
     };
     mockIssueService.getById.mockResolvedValue(issue);
     mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
@@ -371,14 +401,9 @@ describe("issue execution policy routes", () => {
       runId: "55555555-5555-4555-8555-555555555555",
     }))
       .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
-      .send({ status: "in_review", reviewPolicy: "human_only" });
+      .send({ status: "in_review", assigneeAgentId: "reviewer-agent" });
 
-    expect(res.status).toBe(200);
-    expect(mockIssueService.update).toHaveBeenCalledWith(
-      "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-      expect.objectContaining({ status: "in_review", reviewPolicy: "human_only" }),
-      expect.anything(),
-    );
+    expect(res.status).not.toBe(422);
   });
 
   it("rejects an agent-authored in_review transition that would remain pathless after a non-human policy", async () => {

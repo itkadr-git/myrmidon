@@ -97,6 +97,14 @@
    ]
   },
   {
+   "id": "A17",
+   "method": "POST",
+   "template": "containers/{name}/stop?t=30\u0026myrmidon-idle=true",
+   "suffixes": [
+    ""
+   ]
+  },
+  {
    "id": "A11",
    "method": "POST",
    "template": "containers/{name}/restart?t=30",

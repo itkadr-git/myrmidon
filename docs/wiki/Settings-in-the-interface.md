@@ -33,6 +33,21 @@ restarting the server and without interrupting runs in flight
 Each field shows where its effective value comes from — saved setting,
 environment variable, or built-in default.
 
+## Run queue position and priority
+
+A queued run's chat card shows its position, queue length and wait reason when
+the server provides them. The UI uses run metadata first and fills missing
+fields from the position endpoint; while the position is unknown, it polls
+that endpoint every 30 seconds. On servers that do not serve the endpoint yet,
+the line stays hidden rather than guessing.
+
+**Instance → General → Run queue priority** lets an operator edit weights for
+review, release, lead, engineer and docs roles, plus the current-release bonus
+and queue-aging step/cap. Each field shows whether its value comes from saved
+settings, the server environment or defaults. Changes apply on the next
+admission pass without a server restart. The panel reports when the server
+endpoint is not available instead of implying that a save succeeded.
+
 ## Per-agent parallelism
 
 ### `hermes_local` isolation
