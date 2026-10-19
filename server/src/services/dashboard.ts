@@ -138,6 +138,11 @@ export function dashboardService(db: Db) {
       }
 
       const monthSpendCents = Number(monthSpendResult[0]?.monthSpend ?? 0);
+      const budgetMonthlyCents = company.budgetMonthlyCents ?? 0;
+      const utilization =
+        budgetMonthlyCents > 0
+          ? (monthSpendCents / budgetMonthlyCents) * 100
+          : 0;
 
       return {
         companyId,
