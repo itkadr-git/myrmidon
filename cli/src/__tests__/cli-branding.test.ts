@@ -1,5 +1,5 @@
+import { execFileSync, spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, symlinkSync } from "node:fs";
-import { spawnSync } from "node:child_process";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { expect, it } from "vitest";
@@ -16,7 +16,7 @@ it("publishes both CLI aliases to the same entrypoint", () => {
 it("prints a deprecation warning only for the legacy binary", () => {
   const source = readFileSync(new URL("../index.ts", import.meta.url), "utf8");
   expect(source).toContain('basename(process.argv[1] ?? "")');
-  expect(source).toContain('"paperclipai", "paperclipai.cmd", "index.js"');
+  expect(source).toContain('replace(/\\.(cmd|exe)$/i, "") === "paperclipai"');
   expect(source).toContain("paperclipai is deprecated, use myrmidon");
 });
 
@@ -25,6 +25,7 @@ it("runs the built entrypoint under both aliases and warns once only for papercl
   const testDir = mkdtempSync(resolve(cliRoot, ".cli-branding-"));
   const aliases = ["myrmidon", "paperclipai"] as const;
   try {
+    execFileSync("pnpm", ["run", "build"], { cwd: cliRoot, stdio: "pipe" });
     for (const binary of aliases) {
       symlinkSync(resolve(cliRoot, "dist/index.js"), resolve(testDir, binary));
     }
