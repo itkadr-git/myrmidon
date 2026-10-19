@@ -271,6 +271,24 @@ describe("myr-ws open — task copy", { skip: !hasGit }, () => {
     assert.equal(again.path, out.path);
   });
 
+  it("refuses legacy clones whose remote only mentions github.com in a spoofed host or path", async () => {
+    for (const [key, remote] of [
+      ["ABC-122", "https://evil.example/github.com/acme/widgets.git"],
+      ["ABC-123", "https://evil.example/acme/widgets.git"],
+      ["ABC-124", "git@evil.example:acme/widgets.git"],
+    ]) {
+      const dir = path.join(ctx.workspaceRoot, key);
+      fs.mkdirSync(path.dirname(dir), { recursive: true });
+      git(tmp, "clone", "-q", originDir, dir);
+      git(dir, "remote", "set-url", "origin", remote);
+      const result = await run([key, REPO, "--json"]);
+      assert.equal(result.exitCode, 2, remote);
+      assert.ok(fs.existsSync(path.join(dir, ".git")), remote);
+      assert.ok(!fs.existsSync(path.join(ctx.home, "ws-registry.json")), remote);
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("refuses to adopt a legacy clone when the requested repo differs", async () => {
     const dir = path.join(ctx.workspaceRoot, "ABC-121");
     fs.mkdirSync(path.dirname(dir), { recursive: true });

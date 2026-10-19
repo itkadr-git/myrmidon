@@ -269,8 +269,22 @@ function isWorktreeOf(dir) {
 }
 
 function repoFromOrigin(git, dir) {
-  const url = git(dir, ["remote", "get-url", "origin"], { allowFail: true }).stdout;
-  const match = url.match(/(?:github\.com[:/])([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+?)(?:\.git)?$/i);
+  const raw = git(dir, ["remote", "get-url", "origin"], { allowFail: true }).stdout.trim();
+  let pathname;
+  try {
+    if (/^https?:\/\//i.test(raw) || /^ssh:\/\//i.test(raw)) {
+      const parsed = new URL(raw);
+      if (parsed.hostname.toLowerCase() !== "github.com") return null;
+      pathname = parsed.pathname;
+    } else {
+      const scp = raw.match(/^(?:[^@/:]+@)?([^:]+):(.+)$/);
+      if (!scp || scp[1].toLowerCase() !== "github.com") return null;
+      pathname = `/${scp[2]}`;
+    }
+  } catch {
+    return null;
+  }
+  const match = pathname.match(/^\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+?)(?:\.git)?\/?$/);
   return match ? match[1] : null;
 }
 
