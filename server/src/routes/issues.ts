@@ -13693,6 +13693,11 @@ export function issueRoutes(
         monitorExplicitlyUpdated:
           req.body.executionPolicy !== undefined && monitorChanged,
       });
+      // myrmidon(MON-RESTORE): capture and strip transient notice before persistence.
+      const monitorClearNotice = transition.patch.monitorClearNotice as
+        | { reason?: string | null; notes?: string | null }
+        | undefined;
+      delete transition.patch.monitorClearNotice;
       const decisionId = transition.decision ? randomUUID() : null;
       if (decisionId) {
         const nextExecutionState = transition.patch.executionState;
@@ -14330,11 +14335,6 @@ export function issueRoutes(
         generation: reopenedGeneration,
         finalIssueStatus: () => issue?.status,
       });
-      // myrmidon(MON-RESTORE): capture transient notice before persistence.
-      const monitorClearNotice = transition.patch.monitorClearNotice as
-        | { reason?: string | null; notes?: string | null }
-        | undefined;
-      delete transition.patch.monitorClearNotice;
       const decision =
         transition.decision && decisionId ? transition.decision : null;
       let attachmentComment: Awaited<ReturnType<typeof svc.addComment>> | null =
