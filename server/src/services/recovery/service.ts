@@ -3993,7 +3993,8 @@ export function recoveryService(
       input.latestRun?.contextSnapshot &&
       typeof input.latestRun.contextSnapshot === "object" &&
       "retryReason" in input.latestRun.contextSnapshot &&
-      input.recoveryCause !== "configuration_incomplete"
+      input.recoveryCause !== "configuration_incomplete" &&
+      input.recoveryCause !== SUCCESSFUL_RUN_MISSING_STATE_REASON
     ) {
       const rerouted = await rerouteStrandedIssueToSharedQueue({
         issue: input.issue,
