@@ -18,6 +18,7 @@ import {
   type EmbeddedPostgresTestDatabase,
 } from "../helpers/embedded-postgres.js";
 import {
+  pickFreePort,
   requestApi,
   startApiProcesses,
   stopApiProcess,
@@ -247,4 +248,31 @@ describeProcs("two api processes on one test database (PROCS-T1.5 skeleton)", ()
       expect(response.status).toBe(200);
     }
   }, 120_000);
+  it("scenario 4: SO_REUSEPORT shares one public port across every api replica", async () => {
+    await stopApiProcesses(processes);
+    processes = [];
+
+    const sharedPort = await pickFreePort();
+    processes = await startApiProcesses({
+      count: 2,
+      baseDir,
+      connectionString: database?.connectionString ?? externalTestDatabaseUrl!,
+      role: "api",
+      sharedPort,
+    });
+
+    const seenBootIds = new Set<string>();
+    for (let request = 0; request < 40 && seenBootIds.size < processes.length; request += 1) {
+      const response = await requestApi(`http://127.0.0.1:${sharedPort}`, "/api/myrmidon/board-processes");
+      expect(response.status, response.text.slice(0, 400)).toBe(200);
+      const body = response.json as BoardProcessesResponse;
+      seenBootIds.add(body.selfBootId);
+    }
+
+    expect(seenBootIds.size).toBe(processes.length);
+    const registry = await readBoardProcesses(processes[0]!);
+    const liveApiRows = registry.processes.filter((row) => row.role === "api" && row.status === "live");
+    expect(new Set(liveApiRows.map((row) => row.bootId))).toEqual(seenBootIds);
+  }, 180_000);
+
 });

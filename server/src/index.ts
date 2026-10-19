@@ -61,7 +61,6 @@ import { setupEnvironmentCustomImageTerminalWebSocketServer } from "./realtime/e
 import { setupLiveEventsWebSocketServer } from "./realtime/live-events-ws.js";
 import { startBrowserBridge } from "./myrmidon/browser-bridge/index.js"; // myrmidon(EXTCASE-B)
 import {
-  PROCESS_ROLE_API_PORT,
   PROCESS_ROLE_ENV,
   processRole,
   type ProcessRoleProfile,
@@ -1160,13 +1159,13 @@ async function startServerWithDatabaseTeardown(
           // re-opens it (drain-to-single) — the same trick the children use.
           await new Promise<void>((resolveListen, rejectListen) => {
             server.once("error", rejectListen);
-            server.listen({ host: "0.0.0.0", port: PROCESS_ROLE_API_PORT, reusePort: true }, () => {
+            server.listen({ host: "0.0.0.0", port: requestedListenPort, reusePort: true }, () => {
               server.off("error", rejectListen);
               resolveListen();
             });
           });
           publicListener = server;
-          logger.warn({ port: PROCESS_ROLE_API_PORT }, "myrmidon(PROCS-1.2): worker listens on the public port itself");
+          logger.warn({ port: requestedListenPort }, "myrmidon(PROCS-1.2): worker listens on the public port itself");
           return toSupervisorListener(server);
         },
         drainPublicListener: async (handle, graceMs) => {

@@ -333,11 +333,13 @@ export async function startApiProcesses(options: {
   baseDir: string;
   connectionString: string;
   role?: string;
+  /** Use one port for every process so Linux SO_REUSEPORT load-balancing is exercised. */
+  sharedPort?: number;
   readyTimeoutMs?: number;
 }): Promise<ApiProcessHandle[]> {
-  const ports = await Promise.all(
-    Array.from({ length: options.count }, () => pickFreePort()),
-  );
+  const ports = options.sharedPort !== undefined
+    ? Array.from({ length: options.count }, () => options.sharedPort!)
+    : await Promise.all(Array.from({ length: options.count }, () => pickFreePort()));
   const handles: ApiProcessHandle[] = [];
   for (let index = 0; index < options.count; index += 1) {
     handles.push(
