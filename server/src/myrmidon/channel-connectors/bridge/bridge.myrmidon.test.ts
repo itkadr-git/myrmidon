@@ -36,6 +36,13 @@ afterEach(() => {
 });
 
 describe("bridge seam: the flag", () => {
+  it("keeps bridge wiring exported through the app-plugin registry", () => {
+    const plugin = readFileSync(join(SRC_DIR, "myrmidon/app-plugin.ts"), "utf8");
+    const app = readFileSync(join(SRC_DIR, "app.ts"), "utf8");
+    expect(plugin).toContain('export { createTelegramVoiceSttWiring } from "./channel-connectors/bridge/voice-stt.js";');
+    expect(app).toContain('} from "./myrmidon/app-plugin.js";');
+  });
+
   it("is off when unset, blank or not a known truthy value", () => {
     expect(channelBridgeAdapterEnabled({})).toBe(false);
     expect(channelBridgeAdapterEnabled({ [ENV]: "   " })).toBe(false);

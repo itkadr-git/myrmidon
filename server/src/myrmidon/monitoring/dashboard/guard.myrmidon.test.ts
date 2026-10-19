@@ -15,16 +15,15 @@ import {
 } from "./index.js";
 
 const APP_TS = fileURLToPath(new URL("../../../app.ts", import.meta.url));
+const PLUGIN_TS = fileURLToPath(new URL("../../app-plugin.ts", import.meta.url));
 const SETTINGS_MD = fileURLToPath(new URL("../../../../../docs/myrmidon/SETTINGS.md", import.meta.url));
 
 describe("monitoring dashboard wiring guard", () => {
   it("the server entry point imports the module behind the 1.6.6 MONITORING C marker", () => {
     const source = readFileSync(APP_TS, "utf8");
-    const importLines = source
-      .split("\n")
-      .filter((line: string) => line.includes("myrmidon/monitoring/dashboard"));
-    expect(importLines.length).toBe(1);
-    expect(importLines[0]).toContain("myrmidon(1.6.6 MONITORING C)");
+    const plugin = readFileSync(PLUGIN_TS, "utf8");
+    expect(plugin).toContain('export { myrmidonMonitoringDashboardRoutes } from "./monitoring/dashboard/index.js";');
+    expect(source).toContain('} from "./myrmidon/app-plugin.js";');
   });
 
   it("the router is mounted under /api exactly once", () => {

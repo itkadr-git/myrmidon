@@ -11,15 +11,14 @@ import { describe, expect, it } from "vitest";
 import { myrmidonMetricsApp, METRICS_TOKEN_ENV, METRICS_TOKEN_SECRET_ENV } from "./index.js";
 
 const APP_TS = fileURLToPath(new URL("../../../app.ts", import.meta.url));
+const PLUGIN_TS = fileURLToPath(new URL("../../app-plugin.ts", import.meta.url));
 
 describe("metrics wiring guard", () => {
   it("the server entry point imports the module behind the 1.7-METRICS marker", () => {
     const source = readFileSync(APP_TS, "utf8");
-    const importLines = source.split("\n").filter((line: string) =>
-      line.includes("myrmidon/monitoring/metrics"),
-    );
-    expect(importLines.length).toBe(1);
-    expect(importLines[0]).toContain("myrmidon(1.7-METRICS)");
+    const plugin = readFileSync(PLUGIN_TS, "utf8");
+    expect(plugin).toContain('export { myrmidonMetricsApp } from "./monitoring/metrics/index.js";');
+    expect(source).toContain('} from "./myrmidon/app-plugin.js";');
   });
 
   it("the router is mounted at the origin root (outside /api) exactly once", () => {
