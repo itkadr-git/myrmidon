@@ -158,7 +158,10 @@ func (d *dockerClient) logs(ctx context.Context, bot string) (string, error) {
 		return "", fmt.Errorf("docker %s", resp.Status)
 	}
 	b, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	return string(b), err
+	if err != nil {
+		return "", err
+	}
+	return string(redactLogs(b)), nil
 }
 func safeProfilePath(root, bot, p string) (string, error) {
 	if root == "" {

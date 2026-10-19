@@ -415,7 +415,17 @@ func (s *server) route(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusForbidden)
 			return
 		}
-		writeJSON(w, map[string]any{"drift": false, "fields": []string{}})
+		x, ok, err := s.inspect(r.Context(), botKey)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+		if !ok {
+			writeJSON(w, map[string]any{"drift": false, "fields": []string{}})
+			return
+		}
+		fields := s.driftFields(body.Spec, &x)
+		writeJSON(w, map[string]any{"drift": len(fields) > 0, "fields": fields})
 	default:
 		if r.Method == http.MethodPost || r.Method == http.MethodPut {
 			http.Error(w, "route_not_allowed", http.StatusForbidden)
