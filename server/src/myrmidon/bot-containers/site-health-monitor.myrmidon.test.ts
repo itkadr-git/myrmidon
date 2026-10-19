@@ -13,6 +13,7 @@ describe("createSiteHealthMonitor", () => {
       save,
       fence: async () => { calls.push("fence"); },
       failover: async () => { calls.push("failover"); },
+      updateSiteStatus: vi.fn(async () => undefined),
       now: () => 10 * 60_000,
     });
     const result = await monitor.tick();
@@ -31,6 +32,7 @@ describe("createSiteHealthMonitor", () => {
       save,
       fence: async () => undefined,
       failover: async () => undefined,
+      updateSiteStatus: vi.fn(async () => undefined),
       now: () => 20 * 60_000,
     });
     const result = await monitor.tick();

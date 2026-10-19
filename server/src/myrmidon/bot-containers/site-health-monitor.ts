@@ -16,7 +16,7 @@ export interface SiteHealthMonitorDeps {
   save(siteName: string, snapshot: SiteHealthSnapshot): Promise<void>;
   fence(siteName: string): Promise<void>;
   failover(siteName: string): Promise<void>;
-  setStatus?(siteName: string, status: "unreachable" | "draining"): Promise<void>;
+  updateSiteStatus?(siteName: string, status: "unreachable" | "draining"): Promise<void>;
   now?: () => number;
   log?: { warn(fields: object, message: string): void; error(fields: object, message: string): void };
 }
@@ -55,11 +55,11 @@ export function createSiteHealthMonitor(deps: SiteHealthMonitorDeps): {
           // Fence before starting any move. The reducer emits each intent once
           // per outage episode, so retries cannot duplicate failover requests.
           if (next.intents.includes("drain")) {
-            await deps.setStatus?.(site.name, "unreachable");
+            await deps.updateSiteStatus?.(site.name, "unreachable");
             await deps.fence(site.name);
           }
           if (next.intents.includes("failover")) {
-            await deps.setStatus?.(site.name, "draining");
+            await deps.updateSiteStatus?.(site.name, "draining");
             await deps.failover(site.name);
           }
           results.push({ siteName: site.name, state: next.state, intents: next.intents });
@@ -77,7 +77,6 @@ export function createSiteHealthMonitor(deps: SiteHealthMonitorDeps): {
   const timer = setInterval(() => {
     void tick().catch((err) => deps.log?.error({ err }, "remote site health sweep failed"));
   }, SITE_HEALTH_MONITOR_INTERVAL_MS);
-  timer.unref?.();
 
   return { tick, stop: () => clearInterval(timer) };
 }

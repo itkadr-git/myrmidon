@@ -12,6 +12,7 @@
 import { laneInterval } from "../monitoring/board-load/lanes.js";
 import { createSiteHealthMonitor, type MonitoredSite } from "./site-health-monitor.js";
 import { createSiteHealthSnapshot, type SiteHealthSnapshot } from "../../../../packages/shared/src/remote-sites/health-reducer.js";
+import { failoverSite } from "./site-failover-orchestrator.js";
 import {
   scheduleSitePlacements,
   type AgentPlacementInput,
@@ -37,6 +38,9 @@ export interface SiteSchedulerLaneDeps {
   listHealthSites?(): Promise<MonitoredSite[]>;
   loadSiteHealth?(siteName: string): Promise<SiteHealthSnapshot>;
   saveSiteHealth?(siteName: string, snapshot: SiteHealthSnapshot): Promise<void>;
+  updateSiteStatus?(siteName: string, status: "unreachable" | "draining"): Promise<void>;
+  moveBot?(params: { companyId: string; botKey: string; dstSite: string }): Promise<void>;
+  markUnavailable?(params: { companyId: string; botKey: string; siteName: string }): Promise<void>;
   fenceSite?(siteName: string): Promise<void>;
   failoverSite?(siteName: string): Promise<void>;
   log?: {
@@ -234,11 +238,35 @@ export function startSiteSchedulerLane(deps: SiteSchedulerLaneDeps): {
     },
     load: deps.loadSiteHealth ?? (async () => createSiteHealthSnapshot()),
     save: deps.saveSiteHealth ?? (async () => undefined),
+    updateSiteStatus: deps.updateSiteStatus,
     fence: deps.fenceSite ?? (async (siteName) => {
       deps.log?.warn({ siteName }, "remote site fenced after health misses");
     }),
     failover: deps.failoverSite ?? (async (siteName) => {
-      deps.log?.warn({ siteName }, "remote site requires operator failover");
+      const result = await failoverSite(siteName, {
+        listBots: async (failedSite) => (await deps.listAgents())
+          .filter((agent) => {
+            const container = isRecord(agent.adapterConfig.container) ? agent.adapterConfig.container : {};
+            return container.host === failedSite;
+          })
+          .map((agent) => {
+            const container = isRecord(agent.adapterConfig.container) ? agent.adapterConfig.container : {};
+            const spec = extractBotSpec(agent.adapterConfig);
+            return { botKey: spec?.botKey ?? agent.id, companyId: agent.companyId, pinned: container.hostPinned === true };
+          }),
+        selectReserve: async (companyId, failedSite) => (await deps.listSites(companyId))
+          .find((site) => site.name !== failedSite && site.status === "active")?.name ?? null,
+        moveBot: async (params) => {
+          if (!deps.moveBot) throw new Error("moveBot wiring is required for failover");
+          await deps.moveBot(params);
+        },
+        markUnavailable: async (params) => {
+          if (!deps.markUnavailable) throw new Error("markUnavailable wiring is required for pinned failover");
+          await deps.markUnavailable(params);
+        },
+        log: deps.log,
+      });
+      deps.log?.info(result, "remote site failover completed");
     }),
     log: deps.log,
   });
