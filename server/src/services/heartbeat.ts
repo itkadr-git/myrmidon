@@ -25667,9 +25667,9 @@ export function heartbeatService(
                         ...(nativeGitHubBridge
                           ? {
                               PAPERCLIP_GITHUB_BROKER_URL:
-                                nativeGitHubBridge.env.PAPERCLIP_API_URL,
+                                readProductEnvFrom(nativeGitHubBridge.env, "API_URL"),
                               PAPERCLIP_GITHUB_BRIDGE_TOKEN:
-                                nativeGitHubBridge.env.PAPERCLIP_API_KEY,
+                                readProductEnvFrom(nativeGitHubBridge.env, "API_KEY"),
                             }
                           : {}),
                         ...(nativeMcpServer

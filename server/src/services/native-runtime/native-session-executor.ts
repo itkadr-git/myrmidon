@@ -7686,7 +7686,7 @@ async function executePaperclipNativeSessionWithinScope(
       // Run-scoped broker capabilities must rotate with the process, while the
       // settled provider checkpoint retains the conversation across runs.
       const hasBrokerCapability = Boolean(
-        input.runnerEnvironment?.PAPERCLIP_GITHUB_BROKER_TOKEN,
+        readProductEnvFrom(input.runnerEnvironment ?? {}, "GITHUB_BROKER_TOKEN"),
       );
       const credentialRunChanged =
         Boolean(entry.credentialRunId) !== hasBrokerCapability ||
@@ -7696,9 +7696,9 @@ async function executePaperclipNativeSessionWithinScope(
         entry.configDigest !== warmConfigDigest ||
         credentialRunChanged ||
         entry.githubAuthenticationMode !==
-          input.runnerEnvironment?.PAPERCLIP_GITHUB_AUTH_MODE ||
+          readProductEnvFrom(input.runnerEnvironment ?? {}, "GITHUB_AUTH_MODE") ||
         entry.networkAccess !==
-          (input.runnerEnvironment?.PAPERCLIP_RUNNER_NETWORK_ACCESS ===
+          (readProductEnvFrom(input.runnerEnvironment ?? {}, "RUNNER_NETWORK_ACCESS") ===
             "enabled")
       ) {
         if (entry.busy) throw new Error("native_session_supervisor_busy");
@@ -8022,12 +8022,12 @@ async function executePaperclipNativeSessionWithinScope(
                 } else
                   warmNativeSessions.set(warmSessionId, {
                     githubAuthenticationMode:
-                      input.runnerEnvironment?.PAPERCLIP_GITHUB_AUTH_MODE,
+                      readProductEnvFrom(input.runnerEnvironment ?? {}, "GITHUB_AUTH_MODE"),
                     networkAccess:
                       input.runnerEnvironment
-                        ?.PAPERCLIP_RUNNER_NETWORK_ACCESS === "enabled",
+                        readProductEnvFrom(input.runnerEnvironment ?? {}, "RUNNER_NETWORK_ACCESS") === "enabled",
                     credentialRunId: input.runnerEnvironment
-                      ?.PAPERCLIP_GITHUB_BROKER_TOKEN
+                      readProductEnvFrom(input.runnerEnvironment ?? {}, "GITHUB_BROKER_TOKEN")
                       ? input.execution.binding.runId
                       : undefined,
                     session,

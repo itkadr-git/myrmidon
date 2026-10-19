@@ -1102,7 +1102,7 @@ async function startServerWithDatabaseTeardown(
   // client with max: 1 — `sql.listen` pins its connection for the lifetime of
   // the listener, and the client owns no other work. Single-process (the
   // default, role `all` or unset) has no bus: the dispatcher is inline.
-  const processRoleValue = process.env.PAPERCLIP_PROCESS_ROLE?.trim().toLowerCase() ?? "";
+  const processRoleValue = readProductEnv("PROCESS_ROLE")?.trim().toLowerCase() ?? "";
   const multiProcessDeployment = processRoleValue !== "" && processRoleValue !== "all";
   const processBus = multiProcessDeployment
     ? new ProcessBus(
