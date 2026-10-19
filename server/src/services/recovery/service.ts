@@ -4422,7 +4422,6 @@ export function recoveryService(
     // generic escalation callers still need the action to establish `blocked`.
     if (
       input.rerouteToSharedQueue &&
-      input.issue.originKind !== "stranded_issue_recovery" &&
       input.latestRun &&
       isInfraInterruptErrorCode(input.latestRun.errorCode)
     ) {
