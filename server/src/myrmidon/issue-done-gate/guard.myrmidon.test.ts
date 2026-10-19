@@ -74,12 +74,12 @@ describe("issue done pull-request gate", () => {
       resolver({ 12: "merged" }),
     );
     const currentWhere = vi.fn(async () => [{ companyId: "other-company" }]);
-    const companyQuery = vi.fn(() => ({ where: currentWhere }));
+    const currentQuery = vi.fn(() => ({ from: vi.fn(() => ({ where: currentWhere })) }));
     const productQuery = vi.fn(() => ({ from: vi.fn(() => ({ where: vi.fn(async () => []) })) }));
     const tx = {
       execute: vi.fn(async () => undefined),
       select: vi.fn()
-        .mockReturnValueOnce({ where: currentWhere })
+        .mockReturnValueOnce(currentQuery())
         .mockReturnValueOnce(productQuery()),
     } as never;
     await expect(assertIssueDoneSnapshotUnchanged(tx, companyId, issueId, snapshot)).rejects.toMatchObject({
