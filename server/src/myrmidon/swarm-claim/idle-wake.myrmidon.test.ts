@@ -235,10 +235,12 @@ describe("myrmidon(1.6.1 SWARM-IDLE-WAKE) sweep pass", () => {
                 };
               }
               if (table === agents && projection && "reportsTo" in projection) {
-                // Direct invokability reads use where().limit(); listIdleRolePairs
-                // gets the ordered directory from the agents -> companies join.
+                // listIdleRolePairs and invokability use separate direct reads.
                 return {
-                  where: () => ({ limit: (limit: number) => Promise.resolve([idleAgent].slice(0, limit)) }),
+                  where: () => ({
+                    orderBy: () => Promise.resolve([idleAgent]),
+                    limit: (limit: number) => Promise.resolve([idleAgent].slice(0, limit)),
+                  }),
                 };
               }
               if (table === companies && projection && "id" in projection) {
