@@ -1257,10 +1257,6 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
           return { outcome: { kind: "released" }, postCommitEffects: [], run: runSnapshot };
         }
 
-        if (issueRow.status === "done" || issueRow.status === "cancelled") {
-          return { outcome: { kind: "released" }, postCommitEffects: [], run: runSnapshot };
-        }
-
         const locked: LockedIssueExecution = {
           primaryIssue: toIssueSnapshot(issueRow),
           releasedSiblingIssue: releasedSiblingIssue && releasedSiblingIssue.status !== "done" && releasedSiblingIssue.status !== "cancelled"
