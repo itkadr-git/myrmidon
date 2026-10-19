@@ -8024,10 +8024,12 @@ async function executePaperclipNativeSessionWithinScope(
                     githubAuthenticationMode:
                       readProductEnvFrom(input.runnerEnvironment ?? {}, "GITHUB_AUTH_MODE"),
                     networkAccess:
-                      input.runnerEnvironment
-                        readProductEnvFrom(input.runnerEnvironment ?? {}, "RUNNER_NETWORK_ACCESS") === "enabled",
-                    credentialRunId: input.runnerEnvironment
-                      readProductEnvFrom(input.runnerEnvironment ?? {}, "GITHUB_BROKER_TOKEN")
+                      readProductEnvFrom(input.runnerEnvironment ?? {}, "RUNNER_NETWORK_ACCESS") ===
+                      "enabled",
+                    credentialRunId: readProductEnvFrom(
+                      input.runnerEnvironment ?? {},
+                      "GITHUB_BROKER_TOKEN",
+                    )
                       ? input.execution.binding.runId
                       : undefined,
                     session,
