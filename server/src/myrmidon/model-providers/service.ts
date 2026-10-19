@@ -111,11 +111,15 @@ export interface ModelProviderView {
   type: ModelProviderType;
   name: string;
   baseUrl: string | null;
-  /** True when the secret store holds a value for the credential secret. */
   hasKey: boolean;
-  /** The secret-store name the credential lives under (a reference, not a value). */
   credentialSecretName: string | null;
   free: boolean;
+  expiresAt: string | null;
+  packageName: string | null;
+  rpmLimit: number | null;
+  toolCallCompatible: boolean | null;
+  toolCallCheckedAt: string | null;
+  toolCallCheckError: string | null;
   keyValidatedAt: string | null;
   createdAt: string;
   updatedAt: string;
@@ -151,6 +155,12 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
       hasKey,
       credentialSecretName: row.credentialSecretName,
       free: row.free,
+      expiresAt: row.expiresAt?.toISOString() ?? null,
+      packageName: row.packageName,
+      rpmLimit: row.rpmLimit,
+      toolCallCompatible: row.toolCallCompatible,
+      toolCallCheckedAt: row.toolCallCheckedAt?.toISOString() ?? null,
+      toolCallCheckError: row.toolCallCheckError,
       keyValidatedAt: row.keyValidatedAt ? row.keyValidatedAt.toISOString() : null,
       createdAt: row.createdAt.toISOString(),
       updatedAt: row.updatedAt.toISOString(),
@@ -299,6 +309,9 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
         name,
         baseUrl: input.body.baseUrl?.trim() || null,
         free: input.body.free ?? false,
+        expiresAt: input.body.expiresAt ? new Date(input.body.expiresAt) : null,
+        packageName: input.body.packageName ?? null,
+        rpmLimit: input.body.rpmLimit ?? null,
         keyValidatedAt: now(),
       })
       .returning();
@@ -393,6 +406,11 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
     }
     if (input.body.baseUrl !== undefined) patch.baseUrl = input.body.baseUrl?.trim() || null;
     if (input.body.free !== undefined) patch.free = input.body.free;
+    if (input.body.expiresAt !== undefined) {
+      patch.expiresAt = input.body.expiresAt ? new Date(input.body.expiresAt) : null;
+    }
+    if (input.body.packageName !== undefined) patch.packageName = input.body.packageName;
+    if (input.body.rpmLimit !== undefined) patch.rpmLimit = input.body.rpmLimit;
 
     await deps.db.update(modelProviders).set(patch).where(eq(modelProviders.id, row.id));
     const updated = await loadProvider(input.companyId, input.providerId);

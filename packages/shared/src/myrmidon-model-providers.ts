@@ -221,6 +221,9 @@ export const patchModelProviderSchema = z.object({
   name: z.string().trim().min(1).max(160).optional(),
   baseUrl: z.string().trim().url().max(2048).optional().nullable(),
   free: z.boolean().optional(),
+  expiresAt: z.string().datetime().optional().nullable(),
+  packageName: z.string().trim().max(160).optional().nullable(),
+  rpmLimit: z.number().int().positive().optional().nullable(),
 });
 export type PatchModelProviderInput = z.infer<typeof patchModelProviderSchema>;
 
