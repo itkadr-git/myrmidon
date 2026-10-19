@@ -168,10 +168,13 @@ describe("myrmidon(1.6.1 SWARM-IDLE-WAKE) sweep pass", () => {
                 return { limit: () => Promise.resolve([]) };
               }
               if (table === companies && projection && "id" in projection) {
+                // listActiveCompanies uses a bounded direct await. The activity
+                // log lookup selects a different projection, so it must not
+                // share this projection-only route.
                 return {
                   limit: (limit: number) => Promise.resolve([{ id: "company-1" }].slice(0, limit)),
                   then: (resolve: (rows: unknown[]) => unknown) =>
-                    Promise.resolve([{ id: "company-1", defaultResponsibleUserId: null }]).then(resolve),
+                    Promise.resolve([{ id: "company-1" }]).then(resolve),
                 };
               }
               if (table === companies) {
