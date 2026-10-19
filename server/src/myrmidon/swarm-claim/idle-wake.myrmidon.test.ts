@@ -143,16 +143,18 @@ describe("myrmidon(1.6.1 SWARM-IDLE-WAKE) sweep pass", () => {
             leftJoin: () => ({
               leftJoin: () => ({
                 where: () => ({
-                  orderBy: () => ({ limit: (limit: number) => Promise.resolve([{
-                    issueId: "released-issue",
-                    identifier: "ENG-42",
-                    priority: "medium",
-                    pheromoneStrength: 0,
-                    failedRunsSinceLastChange: 0,
-                    queuedAt: NOW,
-                    assigneeAgentId: issueState.assigneeAgentId,
-                    projectId: null,
-                  }].slice(0, limit)) }),
+                  orderBy: () => ({
+                    limit: (limit: number) => Promise.resolve((issueState.assigneeAgentId === null || issueState.assigneeAgentId === "former-agent" ? [{
+                      issueId: "released-issue",
+                      identifier: "ENG-42",
+                      priority: "medium",
+                      pheromoneStrength: 0,
+                      failedRunsSinceLastChange: 0,
+                      queuedAt: NOW,
+                      assigneeAgentId: issueState.assigneeAgentId,
+                      projectId: null,
+                    }] : []).slice(0, limit)),
+                  }),
                 }),
               }),
             }),
@@ -250,16 +252,18 @@ describe("myrmidon(1.6.1 SWARM-IDLE-WAKE) sweep pass", () => {
                 // Ready-queue candidates are selected from issues and the
                 // production query uses left joins only for enrichment.
                 return {
-                  orderBy: () => ({ limit: (limit: number) => Promise.resolve((issueState.assigneeAgentId === null ? [{
-                    issueId: issueState.id,
-                    identifier: "ENG-42",
-                    priority: "medium",
-                    pheromoneStrength: 0,
-                    failedRunsSinceLastChange: 0,
-                    queuedAt: NOW,
-                    assigneeAgentId: issueState.assigneeAgentId,
-                    projectId: null,
-                  }] : []).slice(0, limit)) }),
+                  orderBy: () => ({
+                    limit: (limit: number) => Promise.resolve((issueState.assigneeAgentId === null ? [{
+                      issueId: issueState.id,
+                      identifier: "ENG-42",
+                      priority: "medium",
+                      pheromoneStrength: 0,
+                      failedRunsSinceLastChange: 0,
+                      queuedAt: NOW,
+                      assigneeAgentId: issueState.assigneeAgentId,
+                      projectId: null,
+                    }] : []).slice(0, limit)),
+                  }),
                 };
               }
               if (table === issues && projection && "companyId" in projection && "assigneeAgentId" in projection) {
