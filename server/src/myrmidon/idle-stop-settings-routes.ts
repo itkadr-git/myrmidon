@@ -5,7 +5,7 @@ import { assertBoardOrgAccess, assertInstanceAdmin } from "../routes/authz.js";
 import { validate } from "../middleware/validate.js";
 import { idleStopSettingsSchema, patchIdleStopSettingsSchema, normalizeIdleStopSettings, mergeIdleStopSettings } from "@paperclipai/shared";
 
-export function idleStopSettingsRoutes(db: Db) {
+export function idleStopSettingsRoutes(db: Db, invalidateConfigCache?: () => void) {
   const router = Router();
   const settings = instanceSettingsService(db) as unknown as { getGeneral(): Promise<{ idleStop?: unknown }>; updateGeneral(patch: { idleStop: unknown }): Promise<unknown> };
   router.get("/myrmidon/idle-stop", async (req, res) => {
@@ -19,6 +19,7 @@ export function idleStopSettingsRoutes(db: Db) {
     const next = mergeIdleStopSettings(general.idleStop, req.body);
     const parsed = idleStopSettingsSchema.parse(next);
     await settings.updateGeneral({ idleStop: parsed });
+    invalidateConfigCache?.();
     res.json({ settings: parsed, stored: parsed });
   });
   return router;

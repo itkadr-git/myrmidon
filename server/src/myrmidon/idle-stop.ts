@@ -40,6 +40,7 @@ export class IdleStopService {
   private startupTimes: Map<string, number> = new Map();
   private readonly lastStopTimes = new Map<string, Date>();
   private readonly lastStartTimes = new Map<string, Date>();
+  private configCache?: { value: IdleStopConfig; expiresAt: number };
 
   constructor(driver: BotContainerDriver, db: Db, config: Partial<IdleStopConfig> = {}, loggerInstance?: IdleStopLogger) {
     this.driver = driver;
@@ -181,6 +182,10 @@ export class IdleStopService {
     }
   }
 
+  public invalidateConfigCache(): void {
+    this.configCache = undefined;
+  }
+
   public async readRuntimeState(botKey: string): Promise<{ state: string; lastStoppedAt: Date | null; lastStartedAt: Date | null }> {
     const status = await this.driver.status(botKey);
     return {
@@ -192,16 +197,19 @@ export class IdleStopService {
 
   private async currentConfig(): Promise<IdleStopConfig> {
     try {
+      if (this.configCache && this.configCache.expiresAt > Date.now()) return this.configCache.value;
       const settings = instanceSettingsService(this.db) as unknown as { getGeneral(): Promise<{ idleStop?: unknown }> };
       const raw = (await settings.getGeneral()).idleStop;
       if (raw && typeof raw === 'object') {
         const value = raw as Record<string, unknown>;
-        return {
+        const resolved: IdleStopConfig = {
           ...this.config,
           enabled: typeof value.enabled === 'boolean' ? value.enabled : this.config.enabled,
           afterSec: typeof value.afterSec === 'number' && Number.isFinite(value.afterSec) ? value.afterSec : this.config.afterSec,
           healthTimeoutMs: typeof value.healthTimeoutMs === 'number' && Number.isFinite(value.healthTimeoutMs) ? value.healthTimeoutMs : this.config.healthTimeoutMs,
         };
+        this.configCache = { value: resolved, expiresAt: Date.now() + 2_000 };
+        return resolved;
       }
     } catch (error) {
       this.logger.error('Could not read live IDLE-STOP settings; keeping last startup config:', error);

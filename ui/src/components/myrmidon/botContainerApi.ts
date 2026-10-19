@@ -26,6 +26,14 @@ export type BotImageTracking =
 export interface BotContainerStatus {
   /** The instance switch for bot containers is on. */
   enabled: boolean;
+  /** Per-agent idle-stop policy; absent on older servers. */
+  idleStopMode?: "on_demand" | "always_on";
+  /** Durable idle-stop runtime state; absent on older servers. */
+  idleStopRuntime?: {
+    state: string;
+    lastStoppedAt: string | null;
+    lastStartedAt: string | null;
+  } | null;
   /** The instance has a container runtime wired. */
   runtimeConfigured: boolean;
   /** The SAVED card is an enabled, complete container config. */
