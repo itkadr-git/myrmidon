@@ -23,9 +23,16 @@ type dockerClient struct {
 	images     []string
 }
 
+const dockerAPIVersion = "v1.41"
+
 func newDockerClient(c *config) *dockerClient {
-	return &dockerClient{socket: c.Upstream, api: strings.TrimPrefix(c.DockerAPIVersion, "v"), volumeRoot: c.VolumeRoot, network: c.Network, images: c.Images}
+	api := strings.TrimPrefix(c.DockerAPIVersion, "v")
+	if api == "" {
+		api = strings.TrimPrefix(dockerAPIVersion, "v")
+	}
+	return &dockerClient{socket: c.Upstream, api: api, volumeRoot: c.VolumeRoot, network: c.Network, images: c.Images}
 }
+func (d *dockerClient) prefix() string { return "v" + d.api }
 func (d *dockerClient) request(ctx context.Context, method, path string, body any, out any) error {
 	var rd io.Reader
 	if body != nil {
@@ -91,6 +98,12 @@ func (d *dockerClient) create(ctx context.Context, sp spec) error {
 	if d.network != "" {
 		host["NetworkMode"] = d.network
 	}
+	if sp.GatewayPort > 0 {
+		host["PortBindings"] = map[string][]map[string]string{"8642/tcp": {{"HostPort": fmt.Sprint(sp.GatewayPort)}}}
+	}
+	if sp.BoardExtraHost != "" {
+		host["ExtraHosts"] = []string{sp.BoardExtraHost}
+	}
 	binds := make([]string, 0, len(sp.Mounts))
 	for _, mount := range sp.Mounts {
 		mode := "rw"
@@ -104,7 +117,7 @@ func (d *dockerClient) create(ctx context.Context, sp spec) error {
 	}
 	body := map[string]any{"Image": sp.Image, "User": "10001", "Labels": labels, "HostConfig": host}
 	var out any
-	return d.request(ctx, http.MethodPost, "/v1.41/containers/create?name="+url.QueryEscape(d.name(sp.BotKey)), body, &out)
+	return d.request(ctx, http.MethodPost, "/"+d.prefix()+"/containers/create?name="+url.QueryEscape(d.name(sp.BotKey)), body, &out)
 }
 func (d *dockerClient) action(ctx context.Context, bot, action string) error {
 	if action == "restart" {
@@ -113,10 +126,10 @@ func (d *dockerClient) action(ctx context.Context, bot, action string) error {
 		}
 		action = "start"
 	}
-	return d.request(ctx, http.MethodPost, "/v1.41/containers/"+url.PathEscape(d.name(bot))+"/"+action, nil, nil)
+	return d.request(ctx, http.MethodPost, "/"+d.prefix()+"/containers/"+url.PathEscape(d.name(bot))+"/"+action, nil, nil)
 }
 func (d *dockerClient) remove(ctx context.Context, bot string) error {
-	return d.request(ctx, http.MethodDelete, "/v1.41/containers/"+url.PathEscape(d.name(bot))+"?force=true", nil, nil)
+	return d.request(ctx, http.MethodDelete, "/"+d.prefix()+"/containers/"+url.PathEscape(d.name(bot))+"?force=true", nil, nil)
 }
 func (d *dockerClient) status(ctx context.Context, bot string) (botStatus, error) {
 	var x struct {
@@ -128,7 +141,7 @@ func (d *dockerClient) status(ctx context.Context, bot string) (botStatus, error
 		} `json:"Config"`
 		StateName string `json:"State"`
 	}
-	err := d.request(ctx, http.MethodGet, "/v1.41/containers/"+url.PathEscape(d.name(bot))+"/json", nil, &x)
+	err := d.request(ctx, http.MethodGet, "/"+d.prefix()+"/containers/"+url.PathEscape(d.name(bot))+"/json", nil, &x)
 	if err != nil {
 		if strings.Contains(err.Error(), "404") {
 			return botStatus{BotKey: bot, State: "missing"}, nil
@@ -142,7 +155,7 @@ func (d *dockerClient) status(ctx context.Context, bot string) (botStatus, error
 	return botStatus{BotKey: bot, State: state, Image: x.Config.Image}, nil
 }
 func (d *dockerClient) logs(ctx context.Context, bot string) (string, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://docker/v1.41/containers/"+url.PathEscape(d.name(bot))+"/logs?stdout=true&stderr=true&tail=200", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://docker/"+d.prefix()+"/containers/"+url.PathEscape(d.name(bot))+"/logs?stdout=true&stderr=true&tail=200", nil)
 	if err != nil {
 		return "", err
 	}

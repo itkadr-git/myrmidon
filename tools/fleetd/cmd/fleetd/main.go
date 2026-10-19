@@ -6,6 +6,7 @@
 package main
 
 import (
+	"context"
 	"crypto/subtle"
 	"crypto/tls"
 	"crypto/x509"
@@ -14,6 +15,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -27,18 +29,21 @@ type botStatus struct {
 	Image       string  `json:"image,omitempty"`
 	RestartHash *string `json:"restartHash"`
 	FilesHash   *string `json:"filesHash"`
+	GatewayPort int     `json:"gatewayPort,omitempty"`
 }
 
 // spec is the driver contract's BotContainerSpec.
 type spec struct {
-	BotKey    string            `json:"botKey"`
-	Image     string            `json:"image"`
-	MemoryMb  int64             `json:"memoryMb"`
-	Cpus      float64           `json:"cpus"`
-	PidsLimit int64             `json:"pidsLimit"`
-	Network   string            `json:"network"`
-	Labels    map[string]string `json:"labels,omitempty"`
-	Mounts    []mountSpec       `json:"mounts,omitempty"`
+	BotKey         string            `json:"botKey"`
+	Image          string            `json:"image"`
+	MemoryMb       int64             `json:"memoryMb"`
+	Cpus           float64           `json:"cpus"`
+	PidsLimit      int64             `json:"pidsLimit"`
+	Network        string            `json:"network"`
+	GatewayPort    int               `json:"gatewayPort,omitempty"`
+	BoardExtraHost string            `json:"boardExtraHost,omitempty"`
+	Labels         map[string]string `json:"labels,omitempty"`
+	Mounts         []mountSpec       `json:"mounts,omitempty"`
 }
 
 type mountSpec struct {
@@ -78,6 +83,10 @@ type config struct {
 	Network          string        `json:"network,omitempty"`
 	Images           []string      `json:"images,omitempty"`
 	AllowedMounts    []string      `json:"allowedMounts,omitempty"`
+	BoardExtraHost   string        `json:"boardExtraHost,omitempty"`
+	BoardAddress     string        `json:"boardAddress,omitempty"`
+	GatewayPortStart int           `json:"gatewayPortStart,omitempty"`
+	GatewayPortEnd   int           `json:"gatewayPortEnd,omitempty"`
 	Bots             []bot         `json:"bots"`
 	Memory           *memoryConfig `json:"memory,omitempty"`
 }
@@ -87,6 +96,7 @@ type bot struct {
 	MaxMemoryMb int64   `json:"maxMemoryMb"`
 	MaxCpus     float64 `json:"maxCpus"`
 	MaxPids     int64   `json:"maxPids"`
+	GatewayPort int     `json:"gatewayPort,omitempty"`
 }
 
 // strictDecode decodes data into out and rejects unknown keys.
@@ -310,6 +320,7 @@ func (s *server) route(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusBadGateway)
 			return
 		}
+		status.GatewayPort = s.gatewayPort(botKey)
 		writeJSON(w, status)
 	case action == "logs" && r.Method == http.MethodGet:
 		logs, err := s.docker.logs(r.Context(), botKey)
@@ -330,6 +341,10 @@ func (s *server) route(w http.ResponseWriter, r *http.Request) {
 		}
 		if err := validateMounts(sp.Mounts, s.cfg.AllowedMounts); err != nil {
 			http.Error(w, err.Error(), http.StatusForbidden)
+			return
+		}
+		if err := s.applyGatewayPort(&sp); err != nil {
+			http.Error(w, err.Error(), http.StatusConflict)
 			return
 		}
 		if err := s.docker.create(r.Context(), sp); err != nil {
@@ -355,6 +370,10 @@ func (s *server) route(w http.ResponseWriter, r *http.Request) {
 		}
 		if err := validateMounts(sp.Mounts, s.cfg.AllowedMounts); err != nil {
 			http.Error(w, err.Error(), http.StatusForbidden)
+			return
+		}
+		if err := s.applyGatewayPort(&sp); err != nil {
+			http.Error(w, err.Error(), http.StatusConflict)
 			return
 		}
 		if err := s.docker.remove(r.Context(), botKey); err != nil && !strings.Contains(err.Error(), "404") {
@@ -444,8 +463,70 @@ func (s *server) enrolled(botKey string) bool {
 	return false
 }
 
-// checkSpec enforces the enrolled limits for the bot (a full create-body
-// policy lands with the Docker wiring; the limits check is the seam).
+type dockerInspect struct {
+	Config struct {
+		Image string `json:"Image"`
+		User  string `json:"User"`
+	} `json:"Config"`
+	HostConfig struct {
+		Memory         int64    `json:"Memory"`
+		NanoCPUs       int64    `json:"NanoCpus"`
+		PidsLimit      int64    `json:"PidsLimit"`
+		NetworkMode    string   `json:"NetworkMode"`
+		ReadonlyRootfs bool     `json:"ReadonlyRootfs"`
+		CapDrop        []string `json:"CapDrop"`
+		SecurityOpt    []string `json:"SecurityOpt"`
+		ShmSize        int64    `json:"ShmSize"`
+		PortBindings   map[string][]struct {
+			HostPort string `json:"HostPort"`
+		} `json:"PortBindings"`
+		Binds      []string `json:"Binds"`
+		ExtraHosts []string `json:"ExtraHosts"`
+	} `json:"HostConfig"`
+}
+
+func (s *server) inspect(ctx context.Context, bot string) (dockerInspect, bool, error) {
+	var x dockerInspect
+	err := s.docker.request(ctx, http.MethodGet, "/"+s.docker.prefix()+"/containers/"+url.PathEscape(s.docker.name(bot))+"/json", nil, &x)
+	if err != nil {
+		if strings.Contains(err.Error(), "404") {
+			return dockerInspect{}, false, nil
+		}
+		return dockerInspect{}, false, err
+	}
+	return x, true, nil
+}
+
+func (s *server) driftFields(sp spec, x *dockerInspect) []string {
+	fields := []string{}
+	if x.Config.Image != sp.Image {
+		fields = append(fields, "image")
+	}
+	if x.Config.User != "10001" {
+		fields = append(fields, "user")
+	}
+	if x.HostConfig.NetworkMode != s.cfg.Network {
+		fields = append(fields, "network")
+	}
+	if !x.HostConfig.ReadonlyRootfs {
+		fields = append(fields, "readonlyRootfs")
+	}
+	if x.HostConfig.Memory != sp.MemoryMb*1024*1024 {
+		fields = append(fields, "memoryMb")
+	}
+	if x.HostConfig.NanoCPUs != int64(sp.Cpus*1e9) {
+		fields = append(fields, "cpus")
+	}
+	if x.HostConfig.PidsLimit != sp.PidsLimit {
+		fields = append(fields, "pidsLimit")
+	}
+	if x.HostConfig.ShmSize != 64*1024*1024 {
+		fields = append(fields, "shmSize")
+	}
+	return fields
+}
+
+// checkSpec enforces the enrolled limits and Docker policy for the bot.
 func (s *server) checkSpec(botKey string, sp *spec) error {
 	if sp.BotKey != botKey {
 		return fmt.Errorf("name_label_mismatch")
@@ -455,14 +536,17 @@ func (s *server) checkSpec(botKey string, sp *spec) error {
 		if b.BotKey != botKey {
 			continue
 		}
-		if sp.MemoryMb > b.MaxMemoryMb {
+		if sp.MemoryMb > b.MaxMemoryMb || sp.Cpus > b.MaxCpus || sp.PidsLimit > b.MaxPids {
 			return fmt.Errorf("limit_exceeds_enrollment")
 		}
-		if sp.Cpus > b.MaxCpus {
-			return fmt.Errorf("limit_exceeds_enrollment")
+		if !strings.Contains(sp.Image, "@sha256:") || !s.docker.allowedImage(sp.Image) {
+			return fmt.Errorf("image_not_allowed")
 		}
-		if sp.PidsLimit > b.MaxPids {
-			return fmt.Errorf("limit_exceeds_enrollment")
+		if sp.Network == "" || sp.Network != s.cfg.Network {
+			return fmt.Errorf("network_not_allowed")
+		}
+		if err := validateMounts(sp.Mounts, s.cfg.AllowedMounts); err != nil {
+			return err
 		}
 		return s.validateCreate(*sp)
 	}

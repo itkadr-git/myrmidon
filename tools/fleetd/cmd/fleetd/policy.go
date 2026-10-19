@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -94,6 +95,33 @@ func (s *server) allocatePort(key string) (int, error) {
 	}
 	return 0, fmt.Errorf("gateway_port_exhausted")
 }
+
+func (s *server) gatewayPort(key string) int {
+	if b := s.enrollment(key); b != nil && b.GatewayPort != 0 {
+		return b.GatewayPort
+	}
+	x, ok, _ := s.inspect(context.Background(), key)
+	if ok && len(x.HostConfig.PortBindings["8642/tcp"]) > 0 {
+		p, _ := strconvPort(x.HostConfig.PortBindings["8642/tcp"][0].HostPort)
+		return p
+	}
+	return 0
+}
+
+func (s *server) applyGatewayPort(sp *spec) error {
+	if sp.GatewayPort != 0 {
+		return nil
+	}
+	p, err := s.allocatePort(sp.BotKey)
+	if err != nil {
+		return err
+	}
+	sp.GatewayPort = p
+	if sp.BoardExtraHost == "" {
+		sp.BoardExtraHost = s.cfg.BoardExtraHost
+	}
+	return nil
+}
 func (s *server) writeProfile(p profile) error {
 	if !validBotKey(p.BotKey) {
 		return errForbidden("bad_bot_key")
@@ -133,6 +161,8 @@ func (s *server) writeProfile(p profile) error {
 var secretPattern = regexp.MustCompile(`(?i)(["']?(?:api[_-]?key|token|password|secret)["']?\s*[:=]\s*["']?)[^\s"']+`)
 
 func redactLogs(b []byte) []byte { return secretPattern.ReplaceAll(b, []byte(`${1}<redacted>`)) }
+
+func strconvPort(v string) (int, error) { return strconv.Atoi(v) }
 func hashSecret(s string) string {
 	sum := sha256.Sum256([]byte(s))
 	return hex.EncodeToString(sum[:])[:12]
