@@ -388,7 +388,7 @@ export function createModelProviderService(deps: ModelProviderServiceDeps) {
     return view({ ...row, credentialSecretName: secretName, keyValidatedAt: now(), updatedAt: now() }, true);
   }
 
-  /** Runs a real provider tool-call probe and persists its result. */
+  /** Re-runs compatibility checks in the background for one company. */
   async function checkToolCallCompatibility(input: {
     companyId: string;
     providerId: string;
