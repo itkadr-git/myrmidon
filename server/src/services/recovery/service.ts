@@ -3986,24 +3986,24 @@ export function recoveryService(
     successfulRunHandoffEvidence?: SuccessfulRunHandoffRecoveryEvidence | null;
     rerouteToSharedQueue?: boolean;
   }) {
+    if (
+      input.rerouteToSharedQueue &&
+      !isStrandedIssueRecoveryIssue(input.issue) &&
+      input.latestRun?.contextSnapshot &&
+      typeof input.latestRun.contextSnapshot === "object" &&
+      "retryReason" in input.latestRun.contextSnapshot
+    ) {
+      const rerouted = await rerouteStrandedIssueToSharedQueue({
+        issue: input.issue,
+        reason: input.notice?.title ?? "stranded recovery issue",
+        latestRun: input.latestRun,
+        previousStatus: input.previousStatus,
+        recoveryCause: input.recoveryCause,
+        successfulRunHandoffEvidence: input.successfulRunHandoffEvidence,
+      });
+      return rerouted ? input.issue : null;
+    }
     if (isStrandedIssueRecoveryIssue(input.issue)) {
-      if (
-        input.rerouteToSharedQueue &&
-        input.issue.originKind !== "stranded_issue_recovery" &&
-        input.latestRun.contextSnapshot &&
-        typeof input.latestRun.contextSnapshot === "object" &&
-        "retryReason" in input.latestRun.contextSnapshot
-      ) {
-        const rerouted = await rerouteStrandedIssueToSharedQueue({
-          issue: input.issue,
-          reason: input.notice?.title ?? "stranded recovery issue",
-          latestRun: input.latestRun,
-          previousStatus: input.previousStatus,
-          recoveryCause: input.recoveryCause,
-          successfulRunHandoffEvidence: input.successfulRunHandoffEvidence,
-        });
-        return rerouted ? input.issue : null;
-      }
       const activeActions = await db
         .select({ id: issueRecoveryActions.id })
         .from(issueRecoveryActions)
