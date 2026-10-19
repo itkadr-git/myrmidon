@@ -358,6 +358,16 @@ describe("myrmidon(1.6.1 SWARM-IDLE-WAKE) sweep pass", () => {
                   }),
                 };
               }
+              if (table === issues && projection && "status" in projection && "assigneeAgentId" in projection) {
+                // claimTaskForAgent locks the current task before inserting the
+                // lease; model the query's terminal .for("update") call.
+                return {
+                  for: () => Promise.resolve([{
+                    status: issueState.status,
+                    assigneeAgentId: issueState.assigneeAgentId,
+                  }]),
+                };
+              }
               if (table === issues && projection && "companyId" in projection && "assigneeAgentId" in projection) {
                 // matchIssue re-reads the task after clearExpiredAssignee has
                 // committed its conditional update, so this read observes the
