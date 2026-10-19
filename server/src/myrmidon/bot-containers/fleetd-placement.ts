@@ -79,7 +79,8 @@ export function fleetGatewayApiBaseUrl(
   fleetdUrlOrSite: string | FleetSiteGateway,
   gatewayPort: number | undefined,
 ): string {
-  const fleetdUrl = typeof fleetdUrlOrSite === "string" ? fleetdUrlOrSite : fleetdUrlOrSite.fleetdUrl;
+  const isLegacyString = typeof fleetdUrlOrSite === "string";
+  const fleetdUrl = isLegacyString ? fleetdUrlOrSite : fleetdUrlOrSite.fleetdUrl;
   if (gatewayPort === undefined) {
     throw new Error("fleetd did not report a gateway port for this bot; the card cannot be pointed at it");
   }
@@ -87,7 +88,10 @@ export function fleetGatewayApiBaseUrl(
     throw new Error(`fleetd reported an invalid gateway port: ${JSON.stringify(gatewayPort)}`);
   }
   const url = new URL(fleetdUrl);
-  if (url.protocol !== "http:" && url.protocol !== "https:") {
+  if (isLegacyString && url.protocol !== "http:") {
+    throw new Error(`fleetd url must be http:// (got ${url.protocol}//)`);
+  }
+  if (!isLegacyString && url.protocol !== "http:" && url.protocol !== "https:") {
     throw new Error(`fleetd url must be http:// or https:// (got ${url.protocol}//)`);
   }
   return `${url.protocol}//${url.hostname}:${gatewayPort}`;
