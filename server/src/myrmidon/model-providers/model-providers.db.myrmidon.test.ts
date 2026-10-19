@@ -115,7 +115,7 @@ describeEmbeddedPostgres("myrmidon(1.6.1 MODEL-PROVIDERS) service over the datab
     const removeProvider = service.removeProvider.bind(service);
     (service as Record<string, unknown>).removeProvider = (input: Parameters<typeof removeProvider>[0]) =>
       removeProvider({ ...input, activity: record });
-    return { service, secrets: secrets.store, catalog, activity };
+    return { service, secrets: secrets.store, catalog, probes: catalog.probes, activity };
   }
 
   async function makeCompany(): Promise<string> {

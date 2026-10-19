@@ -115,6 +115,10 @@ function fakeService() {
         { id: "m1", modelName: "model-a", litellmModelName: "openai/model-a", enabled: false, free: true },
       ];
     },
+    async checkToolCallCompatibility(input) {
+      calls.push({ op: "checkToolCallCompatibility", companyId: input.companyId, providerId: input.providerId });
+      return providerView(input.providerId);
+    },
     async listChannels(companyId, providerId) {
       calls.push({ op: "listChannels", companyId, providerId });
       return {
