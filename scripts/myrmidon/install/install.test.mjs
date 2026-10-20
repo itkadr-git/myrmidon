@@ -486,6 +486,27 @@ describe("install.sh", () => {
     );
   });
 
+  it("gives the board the one shared license directory, read-write, at the module path", () => {
+    // The antigravity adapter runs inside the board and reads
+    // /etc/myrmidon-license/license.key there; host modules read the same host
+    // file. The licensing screen must write that one file, so the board mounts
+    // the host directory read-write and points MYR_LICENSE_PATH at it.
+    const sb = sandbox();
+    assert.equal(run(sb).status, 0);
+    const env = envFile(sb);
+    assert.match(env, /^MYRMIDON_LICENSE_DIR=\/etc\/myrmidon-license$/m);
+    const compose = fs.readFileSync(path.join(sb.opt, "compose.yml"), "utf8");
+    assert.match(compose, /^      MYR_LICENSE_PATH: "\/etc\/myrmidon-license\/license\.key"$/m);
+    assert.match(compose, /^      - \$\{MYRMIDON_LICENSE_DIR:-\/etc\/myrmidon-license\}:\/etc\/myrmidon-license$/m);
+    const { errors, interpolated } = composeInterpolation(compose, composeEnvVars(env));
+    assert.deepEqual(errors, []);
+    assert.ok(interpolated.includes("- /etc/myrmidon-license:/etc/myrmidon-license\n"), "mounted read-write, not :ro");
+
+    const custom = sandbox();
+    assert.equal(run(custom, [], { MYRMIDON_LICENSE_DIR: "/srv/licenses" }).status, 0);
+    assert.match(envFile(custom), /^MYRMIDON_LICENSE_DIR=\/srv\/licenses$/m);
+  });
+
   it("mounts the database volume at the path the PostgreSQL 18 image declares", () => {
     // PG18 keeps the cluster at /var/lib/postgresql/18/docker and the image
     // declares VOLUME /var/lib/postgresql. Mounting .../data would leave the

@@ -1,17 +1,16 @@
 // @vitest-environment jsdom
-// myrmidon(LICENSING): tests for the licensing settings panel.
+// myrmidon(LICENSING): tests for the client licensing screen.
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "@/api/client";
 import { LicensingSettingsPanel } from "./LicensingSettingsPanel";
+import type { LicensingStatus } from "./licensingApi";
 
 const mockApi = vi.hoisted(() => ({
   status: vi.fn(),
-  parseRequest: vi.fn(),
-  issue: vi.fn(),
-  issued: vi.fn(),
+  saveLicense: vi.fn(),
 }));
 const mockCopy = vi.hoisted(() => vi.fn());
 
@@ -24,13 +23,31 @@ vi.mock("@/lib/clipboard", () => ({ copyTextToClipboard: mockCopy }));
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
-const STATUS = {
+const STATUS: LicensingStatus = {
   installId: "myr-0123456789abcdef0123",
-  source: "machine-id" as const,
+  source: "machine-id",
   board: "1.6.6",
   knownModules: ["google-ai", "antigravity", "chatgpt-pool"],
-  issuerConfigured: true,
+  installedModules: ["antigravity", "google-ai"],
   request: "MYRQ1.eyJ2IjoxfQ",
+  license: { source: "none", path: "/etc/myrmidon-license/license.key", envOverride: false, share: "mounted" },
+  modules: [
+    { module: "google-ai", installed: true, state: "missing", reason: "no_license", expires: null },
+    { module: "antigravity", installed: true, state: "missing", reason: "no_license", expires: null },
+    { module: "chatgpt-pool", installed: false, state: "missing", reason: "no_license", expires: null },
+  ],
+  attention: true,
+};
+
+const LICENSED: LicensingStatus = {
+  ...STATUS,
+  license: { ...STATUS.license, source: "file" },
+  modules: [
+    { module: "google-ai", installed: true, state: "valid", reason: "ok", expires: 1800000000 },
+    { module: "antigravity", installed: true, state: "expiring", reason: "ok", expires: 1792800000 },
+    { module: "chatgpt-pool", installed: false, state: "wrong_instance", reason: "instance_mismatch", expires: null },
+  ],
+  attention: false,
 };
 
 let container: HTMLDivElement;
@@ -43,7 +60,6 @@ beforeEach(() => {
   root = null;
   queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   mockApi.status.mockResolvedValue(STATUS);
-  mockApi.issued.mockResolvedValue([]);
   mockCopy.mockResolvedValue(undefined);
 });
 
@@ -67,7 +83,7 @@ function renderPanel() {
 
 const q = (id: string) => container.querySelector(`[data-testid="${id}"]`) as HTMLElement | null;
 
-async function setValue(el: HTMLElement, value: string) {
+function setValue(el: HTMLElement, value: string) {
   const proto = el.tagName === "TEXTAREA" ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
   const setter = Object.getOwnPropertyDescriptor(proto, "value")!.set!;
   setter.call(el, value);
@@ -79,14 +95,37 @@ async function ready() {
 }
 
 describe("LicensingSettingsPanel", () => {
-  it("shows the install id and copies the license request", async () => {
+  it("shows the install id, preselects the installed modules and copies the request", async () => {
     renderPanel();
     await ready();
     expect(q("licensing-install-id")?.textContent).toBe(STATUS.installId);
+    expect((q("licensing-req-google-ai") as HTMLInputElement).checked).toBe(true);
+    expect((q("licensing-req-antigravity") as HTMLInputElement).checked).toBe(true);
+    expect((q("licensing-req-chatgpt-pool") as HTMLInputElement).checked).toBe(false);
     expect((q("licensing-request-text") as HTMLTextAreaElement).value).toBe(STATUS.request);
-    expect(q("licensing-source-warning")).toBeNull();
     q("licensing-copy-request")!.click();
     await vi.waitFor(() => expect(mockCopy).toHaveBeenCalledWith(STATUS.request));
+  });
+
+  it("asks the server for a request naming the modules the admin picks", async () => {
+    renderPanel();
+    await ready();
+    q("licensing-req-chatgpt-pool")!.click();
+    await vi.waitFor(() =>
+      expect(mockApi.status).toHaveBeenLastCalledWith(["antigravity", "google-ai", "chatgpt-pool"]),
+    );
+  });
+
+  it("shows the state of every closed module", async () => {
+    mockApi.status.mockResolvedValue(LICENSED);
+    renderPanel();
+    await ready();
+    expect(q("licensing-module-google-ai")?.getAttribute("data-state")).toBe("valid");
+    expect(q("licensing-module-state-google-ai")?.textContent).toContain("2027-01-15");
+    expect(q("licensing-module-antigravity")?.getAttribute("data-state")).toBe("expiring");
+    expect(q("licensing-module-state-antigravity")?.textContent).toContain("2026-10-24");
+    expect(q("licensing-module-chatgpt-pool")?.getAttribute("data-state")).toBe("wrong_instance");
+    expect(q("licensing-path")?.textContent).toContain("/etc/myrmidon-license/license.key");
   });
 
   it("renders nothing when the API refuses (not an instance admin)", async () => {
@@ -98,82 +137,77 @@ describe("LicensingSettingsPanel", () => {
     expect(container.textContent).toBe("");
   });
 
-  it("warns when the id does not come from the machine id", async () => {
-    mockApi.status.mockResolvedValue({ ...STATUS, source: "generated" });
+  it("warns when the id is not machine-derived or the file is not shared with the host", async () => {
+    mockApi.status.mockResolvedValue({
+      ...STATUS,
+      source: "generated",
+      license: { ...STATUS.license, share: "container-only" },
+    });
     renderPanel();
     await ready();
     expect(q("licensing-source-warning")).not.toBeNull();
+    expect(q("licensing-share-warning")).not.toBeNull();
   });
 
-  it("fills the form from a pasted request and issues a license", async () => {
-    mockApi.parseRequest.mockResolvedValue({
-      instanceId: "myr-aaaaaaaaaaaaaaaaaaaa",
-      board: "1.6.6",
-      modules: ["google-ai"],
-      requestedAt: "2026-10-16T08:00:00.000Z",
-    });
-    mockApi.issue.mockResolvedValue({
-      license: "MYR1.payload.signature",
-      id: "lic-1",
-      payload: { instance_id: "myr-aaaaaaaaaaaaaaaaaaaa", modules: ["google-ai"], features: ["core"], expires: null, watermark: null },
-    });
+  it("saves a pasted license and shows the new state", async () => {
+    mockApi.saveLicense.mockResolvedValue(LICENSED);
     renderPanel();
     await ready();
-    expect((q("licensing-issue") as HTMLButtonElement).disabled).toBe(true);
-    flushSync(() => void setValue(q("licensing-paste")!, "MYRQ1.abc"));
-    await vi.waitFor(() => expect((q("licensing-manual-id") as HTMLInputElement).value).toBe("myr-aaaaaaaaaaaaaaaaaaaa"));
-    expect((q("licensing-issue-google-ai") as HTMLInputElement).checked).toBe(true);
-    flushSync(() => void setValue(q("licensing-client")!, "client-1"));
-    await vi.waitFor(() => expect((q("licensing-issue") as HTMLButtonElement).disabled).toBe(false));
-    q("licensing-issue")!.click();
-    await vi.waitFor(() => expect(q("licensing-license-text")).not.toBeNull());
-    expect(mockApi.issue).toHaveBeenCalledWith({
-      request: "MYRQ1.abc",
-      modules: ["google-ai"],
-      days: 365,
-      watermark: "client-1",
-    });
-    expect((q("licensing-license-text") as HTMLTextAreaElement).value).toBe("MYR1.payload.signature");
-    expect(q("licensing-download")?.getAttribute("href")).toContain("MYR1.payload.signature");
-    q("licensing-copy-license")!.click();
-    await vi.waitFor(() => expect(mockCopy).toHaveBeenCalledWith("MYR1.payload.signature"));
+    expect((q("licensing-save") as HTMLButtonElement).disabled).toBe(true);
+    flushSync(() => setValue(q("licensing-license-input")!, "  MYR1.payload.signature\n"));
+    await vi.waitFor(() => expect((q("licensing-save") as HTMLButtonElement).disabled).toBe(false));
+    mockApi.status.mockResolvedValue(LICENSED); // what the server reports once the file is written
+    q("licensing-save")!.click();
+    await vi.waitFor(() => expect(q("licensing-saved")).not.toBeNull());
+    expect(mockApi.saveLicense).toHaveBeenCalledWith("MYR1.payload.signature");
+    await vi.waitFor(() => expect(q("licensing-module-google-ai")?.getAttribute("data-state")).toBe("valid"));
+    expect((q("licensing-license-input") as HTMLTextAreaElement).value).toBe("");
   });
 
-  it("shows one clear message for a bad request blob", async () => {
-    mockApi.parseRequest.mockRejectedValue(new ApiError("x", 422, null));
+  it("loads the license from a license.key file", async () => {
     renderPanel();
     await ready();
-    flushSync(() => void setValue(q("licensing-paste")!, "garbage"));
-    await vi.waitFor(() => expect(q("licensing-error")).not.toBeNull());
-    expect(q("licensing-error")!.textContent).not.toContain("422");
+    const input = q("licensing-license-file") as HTMLInputElement;
+    const file = new File(["MYR1.from.file\n"], "license.key", { type: "text/plain" });
+    Object.defineProperty(input, "files", { value: [file], configurable: true });
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+    await vi.waitFor(() =>
+      expect((q("licensing-license-input") as HTMLTextAreaElement).value).toBe("MYR1.from.file"),
+    );
   });
 
-  it("disables issuing and explains when the signing key is not configured", async () => {
-    mockApi.status.mockResolvedValue({ ...STATUS, issuerConfigured: false });
+  it("explains a refused license by its code, without raw server text", async () => {
+    mockApi.saveLicense.mockRejectedValue(
+      new ApiError("This license was issued for another installation", 422, {
+        error: "x",
+        code: "license_instance_mismatch",
+      }),
+    );
     renderPanel();
     await ready();
-    expect(q("licensing-issuer-missing")).not.toBeNull();
-    flushSync(() => void setValue(q("licensing-manual-id")!, "myr-aaaaaaaaaaaaaaaaaaaa"));
-    expect((q("licensing-issue") as HTMLButtonElement).disabled).toBe(true);
+    flushSync(() => setValue(q("licensing-license-input")!, "MYR1.a.b"));
+    await vi.waitFor(() => expect((q("licensing-save") as HTMLButtonElement).disabled).toBe(false));
+    q("licensing-save")!.click();
+    await vi.waitFor(() => expect(q("licensing-save-error")).not.toBeNull());
+    expect(q("licensing-save-error")!.textContent).not.toContain("422");
+    expect(q("licensing-saved")).toBeNull();
   });
 
-  it("lists issued licenses", async () => {
-    mockApi.issued.mockResolvedValue([
-      {
-        id: "lic-1",
-        issuedAt: "2026-10-16T08:00:00.000Z",
-        issuedBy: "user-a",
-        instanceId: "myr-aaaaaaaaaaaaaaaaaaaa",
-        modules: ["google-ai"],
-        features: ["core"],
-        expires: 1800000000,
-        watermark: "client-1",
-      },
-    ]);
+  it("names the path when the license directory is not writable", async () => {
+    mockApi.saveLicense.mockRejectedValue(new ApiError("x", 409, { code: "license_path_unwritable" }));
     renderPanel();
     await ready();
-    await vi.waitFor(() => expect(q("licensing-issued-row")).not.toBeNull());
-    expect(q("licensing-issued-row")!.textContent).toContain("myr-aaaaaaaaaaaaaaaaaaaa");
-    expect(q("licensing-issued-row")!.textContent).toContain("2027-01-15");
+    flushSync(() => setValue(q("licensing-license-input")!, "MYR1.a.b"));
+    await vi.waitFor(() => expect((q("licensing-save") as HTMLButtonElement).disabled).toBe(false));
+    q("licensing-save")!.click();
+    await vi.waitFor(() => expect(q("licensing-save-error")?.textContent).toContain("/etc/myrmidon-license/license.key"));
+  });
+
+  it("does not offer saving when MYR_LICENSE overrides the file", async () => {
+    mockApi.status.mockResolvedValue({ ...LICENSED, license: { ...LICENSED.license, source: "env", envOverride: true } });
+    renderPanel();
+    await ready();
+    expect(q("licensing-env-override")).not.toBeNull();
+    expect(q("licensing-save")).toBeNull();
   });
 });
