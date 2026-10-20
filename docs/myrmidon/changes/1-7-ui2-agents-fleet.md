@@ -1,5 +1,5 @@
 ---
-divergence-section: 1.7 — UI 2.0
+divergence-section: UI-2.0 — оболочка нового интерфейса (UI-0a)
 ---
 
 ## changelog-en
