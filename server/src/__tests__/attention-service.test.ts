@@ -175,6 +175,7 @@ describeEmbeddedPostgres("attention service", () => {
     projectId?: string | null;
     projectWorkspaceId?: string | null;
     executionState?: Record<string, unknown> | null;
+    executionPolicy?: Record<string, unknown> | null;
     updatedAt?: Date;
     createdAt?: Date;
     unblockDescriptor?: { owner: { userId: string } | "board"; action: string } | null;
@@ -202,6 +203,7 @@ describeEmbeddedPostgres("attention service", () => {
       originId: input.originId ?? null,
       originFingerprint: input.originFingerprint ?? "default",
       executionState: input.executionState ?? null,
+      executionPolicy: input.executionPolicy ?? null,
       unblockDescriptor: input.unblockDescriptor ?? null,
       blockedTransitionAt: input.blockedTransitionAt ?? null,
       harnessKind: input.harnessKind ?? null,
@@ -233,6 +235,38 @@ describeEmbeddedPostgres("attention service", () => {
       currentParticipant: { type: "agent", agentId },
     };
   }
+
+  it("surfaces overdue monitors without an outstanding wake claim", async () => {
+    const { companyId, workerId } = await seedCompany("ATM");
+    const dueAt = new Date("2026-08-02T11:50:00.000Z");
+    const policy = {
+      stages: [],
+      monitor: { status: "scheduled", nextCheckAt: dueAt.toISOString(), notes: "Check CI", scheduledBy: "assignee" },
+    };
+    const overdueId = await insertIssue({
+      companyId, identifier: "ATM-1", title: "Overdue monitor", status: "blocked",
+      assigneeAgentId: workerId, updatedAt: dueAt, executionPolicy: policy,
+    });
+    await db.update(issues).set({
+      monitorNextCheckAt: dueAt,
+      monitorWakeRequestedAt: null,
+    }).where(eq(issues.id, overdueId));
+    const claimedId = await insertIssue({
+      companyId, identifier: "ATM-2", title: "Claimed monitor", status: "blocked",
+      assigneeAgentId: workerId, updatedAt: dueAt, executionPolicy: policy,
+    });
+    await db.update(issues).set({
+      monitorNextCheckAt: dueAt,
+      monitorWakeRequestedAt: new Date("2026-08-02T11:59:00.000Z"),
+    }).where(eq(issues.id, claimedId));
+
+    const feed = await attentionService(db, { ...TEST_SERVICE_OPTS, now: () => Date.parse("2026-08-02T12:00:00.000Z") })
+      .list(companyId, { allowUnscopedAll: true, all: true, userId: "board-user" });
+    const alerts = feed.items.filter((item) => item.sourceKind === "issue_monitor_overdue");
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0]?.subject.id).toBe(overdueId);
+    expect(alerts[0]?.whyNow).toContain(dueAt.toISOString());
+  });
 
   it("excludes internal harness reviews from items, counts, and decision queues", async () => {
     const { companyId, workerId } = await seedCompany("ATH");
