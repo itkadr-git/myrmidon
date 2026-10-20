@@ -11,7 +11,7 @@ export type PoolChatTransportResolver = (input: {
   provider: PoolChatProvider;
   moduleId: string;
   config: Record<string, unknown>;
-}) => PoolChatTransport | Promise<PoolChatTransport | null>;
+}) => PoolChatTransport | null | Promise<PoolChatTransport | null>;
 
 function providerOf(value: string): PoolChatProvider {
   if (value === "chatgpt" || value === "google") return value;
