@@ -107,8 +107,9 @@ export function readLitellmCostSettings(env: NodeJS.ProcessEnv = process.env): L
     }
   }
   let intervalSec = DEFAULT_SWEEP_INTERVAL_SEC;
-  const raw = env[LITELLM_SWEEP_INTERVAL_ENV] ?? liveBehaviorSetting<number>("litellmCostIntervalSec").toString();
-  if (raw.trim()) {
+  const configuredInterval = env[LITELLM_SWEEP_INTERVAL_ENV] ?? liveBehaviorSetting<number | null>("litellmCostIntervalSec");
+  const raw = configuredInterval == null ? undefined : String(configuredInterval);
+  if (raw?.trim()) {
     const value = Number(raw);
     if (Number.isInteger(value) && value >= MIN_SWEEP_INTERVAL_SEC && value <= MAX_SWEEP_INTERVAL_SEC) {
       intervalSec = value;

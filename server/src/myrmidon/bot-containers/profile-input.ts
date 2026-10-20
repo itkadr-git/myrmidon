@@ -506,8 +506,8 @@ export function readBotProfileSettings(env: NodeJS.ProcessEnv = process.env): Bo
     compressionThresholdTokensError: compressionTokens.error,
     modelContextLengths: contextLengths.map,
     modelContextLengthsError: contextLengths.error,
-    auxiliaryTitleModel: env[BOT_AUX_TITLE_MODEL_ENV] ?? liveBehaviorSetting<string>("botAuxTitleModel") ?? null,
-    auxiliaryCompressionModel: env[BOT_AUX_COMPRESSION_MODEL_ENV] ?? liveBehaviorSetting<string>("botAuxCompressionModel") ?? null,
+    auxiliaryTitleModel: readSetting(env, BOT_AUX_TITLE_MODEL_ENV) ?? liveBehaviorSetting<string | null>("botAuxTitleModel") ?? null,
+    auxiliaryCompressionModel: readSetting(env, BOT_AUX_COMPRESSION_MODEL_ENV) ?? liveBehaviorSetting<string | null>("botAuxCompressionModel") ?? null,
     auxiliaryFallbackModels,
     // myrmidon(MEMORY-CENTRAL-A): MYRMIDON_BOT_LOCAL_MEMORY_OFF, truthy like
     // the other bot switches; anything else (including a typo) keeps local
