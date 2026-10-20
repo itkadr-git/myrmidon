@@ -2308,6 +2308,24 @@ successes and failures alike). The classifier endpoint comes from `MYRMIDON_SCEN
 judge uses. The shared package never reads `process.env`: env overrides are passed in by
 the server.
 
+### Knowledge distiller v2 environment overrides
+
+The optional knowledge distiller reads these `MYRMIDON_DISTILL_*` overrides. The
+key setting contains the name of a company secret, never the secret value itself.
+
+| Variable | Meaning |
+|---|---|
+| `MYRMIDON_DISTILL_ENABLED` | Enable the distiller sweep. |
+| `MYRMIDON_DISTILL_INTERVAL_SEC` | Seconds between sweeps. |
+| `MYRMIDON_DISTILL_WINDOW_SEC` | Source-material window in seconds. |
+| `MYRMIDON_DISTILL_MAX_INPUT_TOKENS` | Maximum input tokens per pass. |
+| `MYRMIDON_DISTILL_MAX_DURATION_SEC` | Maximum pass duration in seconds. |
+| `MYRMIDON_DISTILL_MAX_TASKS` | Maximum source tasks per pass. |
+| `MYRMIDON_DISTILL_MODEL` | Gateway model alias. |
+| `MYRMIDON_DISTILL_GATEWAY_URL` | Free-model gateway URL. |
+| `MYRMIDON_DISTILL_KEY_SECRET` | Company-secret name used for gateway authentication. |
+| `MYRMIDON_DISTILL_AUTO_ACCEPT` | Comma-separated sections eligible for auto-accept. |
+
 ## Name mapping PAPERCLIP_* → MYRMIDON_*
 
 Since 1.7 the product reads its environment variables as `MYRMIDON_<NAME>`;

@@ -1196,7 +1196,10 @@ describe.each(["unchanged", "newer_active", "stale_idle"] as const)(
           .from(agentWakeupRequests)
           .where(eq(agentWakeupRequests.idempotencyKey, newerWakeKey));
         expect(receipt.payload).toMatchObject({ commentId: newerCommentId });
-        expect(receipt.status).toBe("completed");
+        // Terminal issue cleanup cancels a deferred wake even when it was
+        // admitted for a newer comment while the original run recovered.
+        expect(receipt.status).toBe("cancelled");
+        expect(receipt.error).toBe("issue_closed");
         expect(receipt.runId).not.toBe(runId);
         expect(freshStartTurn).toHaveBeenCalledOnce();
         const [freshRun] = await db
