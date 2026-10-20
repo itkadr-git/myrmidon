@@ -26,8 +26,15 @@ export interface HeartbeatRunScratchEnvResult {
 }
 
 export type HeartbeatRunScratchCleanupResult =
-  | { removed: true; dir: string }
-  | { removed: false; dir: string; reason: "missing" | "unmarked" | "owner_mismatch" | "process_group_alive" };
+  | { removed: true; dir: string; bytes: number }
+  | { removed: false; dir: string; bytes: 0; reason: "missing" | "unmarked" | "owner_mismatch" | "process_group_alive" };
+
+export interface HeartbeatRunScratchSweepResult {
+  scanned: number;
+  removed: number;
+  removedBytes: number;
+  skipped: number;
+}
 
 const TEMP_ENV_KEYS = ["TMPDIR", "TEMP", "TMP"] as const;
 const ISSUE_SEGMENT_MAX_CHARS = 32;
@@ -102,6 +109,16 @@ export async function prepareHeartbeatRunScratch(input: {
   return { dir, markerPath, metadata };
 }
 
+async function directoryBytes(dir: string): Promise<number> {
+  let total = 0;
+  for (const entry of await fs.readdir(dir, { withFileTypes: true })) {
+    const child = path.join(dir, entry.name);
+    if (entry.isDirectory()) total += await directoryBytes(child);
+    else if (entry.isFile()) total += (await fs.stat(child)).size;
+  }
+  return total;
+}
+
 export function buildHeartbeatRunScratchEnv(
   existingEnv: Record<string, unknown>,
   scratch: HeartbeatRunScratch,
@@ -130,28 +147,60 @@ export async function cleanupHeartbeatRunScratch(input: {
   const tmpRoot = path.resolve(os.tmpdir());
   const dir = path.resolve(input.scratch.dir);
   if (!isPathInside(tmpRoot, dir) || !path.basename(dir).startsWith("paperclip-run-")) {
-    return { removed: false, dir, reason: "unmarked" };
+    return { removed: false, dir, bytes: 0, reason: "unmarked" };
   }
   try {
     const stats = await fs.stat(dir);
-    if (!stats.isDirectory()) return { removed: false, dir, reason: "missing" };
+    if (!stats.isDirectory()) return { removed: false, dir, bytes: 0, reason: "missing" };
   } catch {
-    return { removed: false, dir, reason: "missing" };
+    return { removed: false, dir, bytes: 0, reason: "missing" };
   }
 
   const marker = await readMarker(path.join(dir, HEARTBEAT_RUN_SCRATCH_MARKER));
-  if (!marker) return { removed: false, dir, reason: "unmarked" };
+  if (!marker) return { removed: false, dir, bytes: 0, reason: "unmarked" };
   if (
     marker.companyId !== input.scratch.metadata.companyId ||
     marker.agentId !== input.scratch.metadata.agentId ||
     marker.runId !== input.scratch.metadata.runId
   ) {
-    return { removed: false, dir, reason: "owner_mismatch" };
+    return { removed: false, dir, bytes: 0, reason: "owner_mismatch" };
   }
   if (input.isProcessGroupAlive?.(input.processGroupId) === true) {
-    return { removed: false, dir, reason: "process_group_alive" };
+    return { removed: false, dir, bytes: 0, reason: "process_group_alive" };
   }
 
+  const bytes = await directoryBytes(dir);
   await fs.rm(dir, { recursive: true, force: true });
-  return { removed: true, dir };
+  return { removed: true, dir, bytes };
+}
+
+export async function sweepHeartbeatRunScratch(input: {
+  root?: string;
+  now?: Date;
+  ttlMs: number;
+  isProcessGroupAlive?: (processGroupId: number | null | undefined) => boolean;
+}): Promise<HeartbeatRunScratchSweepResult> {
+  const root = path.resolve(input.root ?? os.tmpdir());
+  const result: HeartbeatRunScratchSweepResult = { scanned: 0, removed: 0, removedBytes: 0, skipped: 0 };
+  const now = (input.now ?? new Date()).getTime();
+  for (const entry of await fs.readdir(root, { withFileTypes: true })) {
+    if (!entry.isDirectory() || !entry.name.startsWith("paperclip-run-")) continue;
+    result.scanned += 1;
+    const dir = path.join(root, entry.name);
+    const markerPath = path.join(dir, HEARTBEAT_RUN_SCRATCH_MARKER);
+    const marker = await readMarker(markerPath);
+    if (!marker || now - Date.parse(marker.createdAt) < input.ttlMs) {
+      result.skipped += 1;
+      continue;
+    }
+    const cleaned = await cleanupHeartbeatRunScratch({
+      scratch: { dir, markerPath, metadata: marker },
+      isProcessGroupAlive: input.isProcessGroupAlive,
+    });
+    if (cleaned.removed) {
+      result.removed += 1;
+      result.removedBytes += cleaned.bytes;
+    } else result.skipped += 1;
+  }
+  return result;
 }
