@@ -6,7 +6,12 @@ import { canonicalRequestHash, type PoolChatRequestBody } from "./protocol.js";
 import { selectPoolChatAccount } from "./router.js";
 import type { PoolChatProvider, PoolChatTransport } from "./transports.js";
 
-export type PoolChatTransportResolver = (input: { provider: PoolChatProvider; moduleId: string; config: Record<string, unknown> }) => PoolChatTransport | null;
+export type PoolChatTransportResolver = (input: {
+  companyId: string;
+  provider: PoolChatProvider;
+  moduleId: string;
+  config: Record<string, unknown>;
+}) => PoolChatTransport | Promise<PoolChatTransport | null>;
 
 function providerOf(value: string): PoolChatProvider {
   if (value === "chatgpt" || value === "google") return value;
@@ -82,7 +87,19 @@ export function poolChatService(db: Db, resolveTransport: PoolChatTransportResol
       // Only the transaction winner may perform upstream I/O. Replays must
       // observe the durable state rather than sending the request again.
       if (!outcome.created) return outcome.request;
-      const transport = resolveTransport({ provider, moduleId: input.moduleId, config: { ...config, selectedAccountRef: outcome.accountRef } });
+      let transport: PoolChatTransport | null;
+      try {
+        transport = await resolveTransport({ companyId: input.companyId, provider, moduleId: input.moduleId, config: { ...config, selectedAccountRef: outcome.accountRef } });
+      } catch {
+        // Secret/provider resolution is before upstream I/O, so release the
+        // reservation instead of leaving a new request permanently dispatching.
+        await db.transaction(async (tx: any) => {
+          await tx.update(poolChatRequestAttempts).set({ state: "failed", failureCode: "provider_not_configured", failureDetail: "provider_transport_unavailable", settledUnits: 0, updatedAt: new Date() }).where(and(eq(poolChatRequestAttempts.requestId, outcome.request.id), eq(poolChatRequestAttempts.attemptNo, 1), eq(poolChatRequestAttempts.state, "dispatching")));
+          await tx.update(poolChatQuotaReservations).set({ state: "released", settledUnits: 0, updatedAt: new Date() }).where(and(eq(poolChatQuotaReservations.requestId, outcome.request.id), eq(poolChatQuotaReservations.state, "reserved")));
+          await tx.update(poolChatRequests).set({ status: "failed", charged: false, updatedAt: new Date() }).where(and(eq(poolChatRequests.id, outcome.request.id), eq(poolChatRequests.status, "dispatching")));
+        });
+        throw new HttpError(503, "Pool-chat provider transport is not configured");
+      }
       if (!transport) {
         await db.transaction(async (tx: any) => {
           await tx.update(poolChatRequestAttempts).set({ state: "failed", failureCode: "provider_not_configured", failureDetail: "provider_transport_unavailable", settledUnits: 0, updatedAt: new Date() }).where(and(eq(poolChatRequestAttempts.requestId, outcome.request.id), eq(poolChatRequestAttempts.attemptNo, 1), eq(poolChatRequestAttempts.state, "dispatching")));
