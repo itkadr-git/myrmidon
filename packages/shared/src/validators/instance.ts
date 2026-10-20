@@ -95,9 +95,17 @@ import {
 // percent of the model window, fallback window, optimizer agent) stored in the
 // same general settings row.
 import { promptBudgetSettingsSchema } from "../myrmidon-prompt-budget.js";
-// myrmidon(1.7-ACTIVE-CHANNEL): the owner active-channel inactivity threshold,
-// stored in the same general settings row.
+// myrmidon(1.7-ACTIVE-CHANNEL): owner active-channel threshold.
 import { ownerActiveChannelSettingsSchema } from "../myrmidon-owner-active-channel.js";
+import { budgetLimitsSettingsSchema } from "../myrmidon-budget-limits.js";
+// myrmidon(1.6.1-BOT-DISK-D): shared mount settings stored in the same general settings row
+import { sharedMountSettingsSchema } from "../myrmidon-shared-mount.js";
+import { foragingIdleGateSettingsSchema } from "../myrmidon-foraging-idle-gate.js";
+
+// myrmidon(1.6.6 LONG-TASK-CONTEXT): the long-task context guard settings
+// (switch, reset threshold percent, fallback window, history budget) stored in
+// the same general settings row.
+import { longTaskContextSettingsSchema } from "../myrmidon-long-task-context.js";
 
 // myrmidon(1.6.5 BOT-RUNTIME-TUNING D2): the fallback-signal settings (switch,
 // threshold percent, minimum calls, window and sweep interval) stored in the
@@ -326,9 +334,12 @@ export const instanceGeneralSettingsSchema = z.object({
   // message (on/off and the minimum spacing between edits), changed from
   // /api/myrmidon/telegram-dm-progress; absent means the defaults.
   telegramDmProgress: telegramDmProgressSettingsSchema.optional(),
-  // myrmidon(1.7-ACTIVE-CHANNEL): the owner active-channel inactivity
-  // threshold, changed from /api/myrmidon/owner/active-channel; absent means
-  // "use the environment override, then the default".
+  // myrmidon(1.6.5-TG-LOCALE-C): the instance-wide default language of the
+  // bridged Telegram DM (the fallback for a board user with no stored
+  // `user_ui_language` row), changed from Settings → Language and
+  // /api/myrmidon/bridge-language; absent means "use the environment force,
+  // then English".
+  bridgeLanguage: bridgeLanguageSettingsSchema.optional(),
   ownerActiveChannel: ownerActiveChannelSettingsSchema.optional(),
   // myrmidon(MEMORY-UI): agent card Memory tab — service address, optional key
   // secret name and the switch, changed from the instance settings page and

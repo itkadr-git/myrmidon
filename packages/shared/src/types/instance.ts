@@ -61,6 +61,14 @@ import type { SharedMountSettings } from "../myrmidon-shared-mount.js";
 import type { StoredFallbackSignalSettings } from "../myrmidon-fallback-signal.js";
 // myrmidon(1.7-ACTIVE-CHANNEL): the stored owner active-channel settings type.
 import type { OwnerActiveChannelSettings } from "../myrmidon-owner-active-channel.js";
+// myrmidon(1.6.5-PAUSE-GUARD): the forgotten-operator-pause guard of the same
+// general settings row.
+import type { StoredPauseGuardSettings } from "../myrmidon-pause-guard.js";
+import type { BudgetLimitsSettings } from "../myrmidon-budget-limits.js";
+// myrmidon(DB-PERF-C-P4): the TTL of the tool gateway policy cache lives in the
+// same general settings row.
+import type { ToolPolicyCacheSettings } from "../myrmidon-tool-policy-cache.js";
+import type { ForagingIdleGateSettings } from "../myrmidon-foraging-idle-gate.js";
 
 // myrmidon(1.6.1-FORAGING-LIMITS-UI)
 import type { ForagingSettings } from "../myrmidon-foraging.js";
@@ -454,12 +462,24 @@ export interface InstanceGeneralSettings {
    */
   foraging?: ForagingSettings;
   /**
-   * myrmidon(1.7-ACTIVE-CHANNEL): the owner active-channel inactivity
-   * threshold, changed from `GET`/`PATCH /api/myrmidon/owner/active-channel`.
-   * Absent means "use the environment override, then the default". Kept in
-   * sync with the validator of the same field
-   * (packages/shared/src/validators/instance.ts).
+   * myrmidon(DB-PERF-C-P4): TTL of the in-process cache behind the tool
+   * gateway's policy, profile, binding and profile-entry reads; changed from
+   * `GET`/`PATCH /api/myrmidon/tool-policy-cache`. Absent means the default
+   * (30 s), `0` switches the cache off. Kept in sync with the validator of the
+   * same field (packages/shared/src/validators/instance.ts).
    */
+  toolPolicyCache?: ToolPolicyCacheSettings;
+  // myrmidon(1.6.3-FORAGING-IDLE-GATE): the stored idle-gate toggle.
+  foragingIdleGate?: ForagingIdleGateSettings;
+  /**
+   * myrmidon(1.6.3 PLUGIN-ENTITLEMENT A): the ed25519 verification public key
+   * (PEM) for plugin entitlement tokens, changed from the instance settings
+   * page. Absent means "no verification key" — no entitlement token can
+   * verify, so every gated plugin stays unactivated. Kept in sync with the
+   * validator of the same field (packages/shared/src/validators/instance.ts).
+   */
+  pluginEntitlementPublicKey?: string;
+  /** Owner active-channel inactivity threshold. */
   ownerActiveChannel?: OwnerActiveChannelSettings;
 }
 
