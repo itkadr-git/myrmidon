@@ -11,8 +11,8 @@ export async function readNestRedactConfig(db: Db, nestId: string): Promise<Nest
 export async function writeNestRedactConfig(db: Db, nestId: string, patch: NestRedactConfigPatch): Promise<NestRedactConfig> {
   const current = await readNestRedactConfig(db, nestId);
   const next = mergeNestRedactConfig(current, patch);
-  await db.insert(nestRedactSettings).values({ nestId, config: next as Record<string, unknown> })
-    .onConflictDoUpdate({ target: nestRedactSettings.nestId, set: { config: next as Record<string, unknown>, updatedAt: new Date() } });
+  await db.insert(nestRedactSettings).values({ nestId, config: next as unknown as Record<string, unknown> })
+    .onConflictDoUpdate({ target: nestRedactSettings.nestId, set: { config: next as unknown as Record<string, unknown>, updatedAt: new Date() } });
   return next;
 }
 
