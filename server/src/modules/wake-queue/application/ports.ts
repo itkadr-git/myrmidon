@@ -116,6 +116,8 @@ export interface WakeQueueTransaction {
   findInvokableAgent(input: { companyId: string; agentId: string }): Promise<InvokableAgentSnapshot | null>;
   findIssue(input: { companyId: string; issueId: string }): Promise<IssueSnapshot | null>;
   claimIssueExecutionLease(input: { companyId: string; issueId: string; runId: string }): Promise<boolean>;
+  /** Undo a claim made for a sibling drain that found nothing to drain. */
+  releaseIssueExecutionLease(input: { companyId: string; issueId: string; runId: string }): Promise<void>;
   findNextDeferredWake(input: { companyId: string; issueId: string; excludedWakeIds?: string[] }): Promise<DeferredWakeCandidate | null>;
   getQueuedCommentLiveness(input: {
     companyId: string;
