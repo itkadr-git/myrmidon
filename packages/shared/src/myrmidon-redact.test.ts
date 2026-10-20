@@ -8,6 +8,12 @@ describe("nest redaction", () => {
     expect(redactText("Acme LLC invoice 42", config).text).toBe("[COUNTERPARTY] invoice 42");
   });
 
+  it("escapes regex metacharacters in dictionary keys", () => {
+    const config = defaultNestRedactConfig();
+    config.counterparties = { "A+B (test)": "[COUNTERPARTY]" };
+    expect(redactText("A+B (test) and AB test", config).text).toBe("[COUNTERPARTY] and AB test");
+  });
+
   it("keeps disabled rules untouched", () => {
     const config = defaultNestRedactConfig();
     config.rules.counterparties = false;

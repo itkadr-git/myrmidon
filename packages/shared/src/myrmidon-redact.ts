@@ -60,7 +60,7 @@ export function mergeNestRedactConfig(
 }
 
 function escaped(value: string): string {
-  return value.replace(/[.*+?^${}()|[\\]\\]/g, "\\$&");
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function dictionaryMatches(text: string, dictionary: Record<string, string>, kind: RedactRuleName): RedactMatch[] {
