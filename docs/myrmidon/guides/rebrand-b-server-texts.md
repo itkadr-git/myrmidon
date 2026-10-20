@@ -57,11 +57,13 @@ A guard test in each area fails if the copies drift apart.
 
 ## Guard tests
 
-- `cli/src/__tests__/cli-product.myrmidon.test.ts` — banner, name-constant
-  sync with the server module, and OpenAPI output free of the vendor name
-  (attribution, Cloud service names, and contract field names excepted).
+- `cli/src/__tests__/cli-product.myrmidon.test.ts` — banner and name-constant
+  sync with the server module.
 - `server/src/__tests__/server-user-text.myrmidon.test.ts` — scans the
-  renamed server files for stray vendor-name user text outside the allowlist.
+  renamed server files for stray vendor-name user text outside the allowlist,
+  and checks the generated OpenAPI output (attribution, Cloud service names,
+  and contract field names excepted). The OpenAPI scan lives here, not in the
+  CLI suite, so the CLI typecheck never has to resolve server modules.
 
 ## No settings
 
