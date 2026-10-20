@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { routeAdminTask } from "./router.js";
+import { resolveAdminAssistantAdapterConfig, routeAdminTask } from "./router.js";
 
 describe("instance administrator model routing", () => {
   const routing = { routineModel: "cheap", complexModel: "strong", reserveModel: "backup" };
@@ -14,5 +14,14 @@ describe("instance administrator model routing", () => {
 
   it("rejects a route when LiteLLM does not expose any configured model", () => {
     expect(() => routeAdminTask("routine", routing, ["unrelated"])).toThrow(/No configured LiteLLM model/);
+  });
+
+  it("passes the owner-selected model into the runtime adapter config", () => {
+    expect(resolveAdminAssistantAdapterConfig({
+      adapterConfig: { adminAssistant: { routing } },
+      metadata: { paperclipBuiltInAgent: { key: "admin-assistant" } },
+      context: { taskClass: "complex" },
+      availableModels: ["strong", "backup"],
+    })).toMatchObject({ model: "strong" });
   });
 });
