@@ -16,8 +16,8 @@ MUTATING_ACTION_PREFIXES = (
     "issue.comment", "issue.document", "issue.updated", "issue.blockers",
     "issue.created", "issue.child_created", "issue.work_product",
 )
-WAIT_RE = re.compile(r"\\b(waiting|wait|жду|ожидаю)\\b.*\\b(CI|deploy|deployment|деплой|выкат|сборк)", re.I)
-BLOCKER_RE = re.compile(r"\\b(blocked by|блокер|заблокирован из-за|ожидает от)\\b", re.I)
+WAIT_RE = re.compile(r"\b(waiting|wait|жду|ожидаю)\b.*\b(CI|deploy|deployment|деплой|выкат|сборк)", re.I)
+BLOCKER_RE = re.compile(r"\b(blocked by|блокер|заблокирован из-за|ожидает от)\b", re.I)
 
 
 def date_arg(value):
@@ -76,7 +76,10 @@ def paged_audit(root, token, start, end):
         payload = get_json(root + "/audit/agent-actions", token, params=params)
         if not isinstance(payload, dict) or not isinstance(payload.get("items"), list):
             raise RuntimeError("Audit API returned an unexpected paginated shape")
-        rows.extend(payload["items"])
+        rows.extend(
+            row for row in payload["items"]
+            if within(row, start, end, "createdAt")
+        )
         cursor = payload.get("nextCursor")
         if not cursor:
             return rows
