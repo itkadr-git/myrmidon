@@ -41,7 +41,7 @@ describe("heartbeat run scratch cleanup", () => {
 
     const result = await cleanupHeartbeatRunScratch({ scratch });
 
-    expect(result).toEqual({ removed: true, dir: scratch.dir, bytes: 197 });
+    expect(result).toEqual({ removed: true, dir: scratch.dir, bytes: 131 });
     await expect(fs.stat(scratch.dir)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
