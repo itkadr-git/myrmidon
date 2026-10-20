@@ -35,13 +35,18 @@ export function createPoolChatTransports(client: PoolChatTransportClient): Recor
       provider: "google",
       send: (request) => client.sendGoogle({
         ...request,
-        messages: request.messages.filter(({ role }) => role === "user"),
+        messages: request.messages.filter(({ role }) => role === "user").slice(0, 1),
       }),
     },
   };
 }
 
 export function redactTransportError(error: unknown): string {
-  if (error instanceof Error) return error.message.replace(/((?:api[_-]?key|sk|key|token|secret)[-_=: ]*)[^\\s,;]+/gi, "$1[redacted]");
+  if (error instanceof Error) {
+    return error.message.replace(
+      /((?:api[_-]?key|sk|key|token|secret)[-_=: ]*)[^\s,;]+/gi,
+      (_match, label: string) => `${label}[redacted]`,
+    );
+  }
   return "provider_transport_failed";
 }
