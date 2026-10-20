@@ -33,7 +33,34 @@ restarting the server and without interrupting runs in flight
 Each field shows where its effective value comes from — saved setting,
 environment variable, or built-in default.
 
+## Run queue position and priority
+
+A queued run's chat card shows its position, queue length and wait reason when
+the server provides them. The UI uses run metadata first and fills missing
+fields from the position endpoint; while the position is unknown, it polls
+that endpoint every 30 seconds. On servers that do not serve the endpoint yet,
+the line stays hidden rather than guessing.
+
+**Instance → General → Run queue priority** lets an operator edit weights for
+review, release, lead, engineer and docs roles, plus the current-release bonus
+and queue-aging step/cap. Each field shows whether its value comes from saved
+settings, the server environment or defaults. Changes apply on the next
+admission pass without a server restart. The panel reports when the server
+endpoint is not available instead of implying that a save succeeded.
+
 ## Per-agent parallelism
+
+### `hermes_local` isolation
+
+Isolation is configured on the agent card in the Hermes adapter's
+`adapterConfig`, not in the instance settings UI. It is off unless explicitly
+configured. Set `filesystemScope: "workspace"` for a Bubblewrap workspace-only
+filesystem boundary; optionally set `filesystemSandboxCommand` (default
+`bwrap`) and `filesystemExtraPaths`. Network isolation is independent:
+`networkScope: "deny"` disables networking, while `"allowlist"` uses
+`networkAllowlist` for permitted hosts/origins. Bubblewrap must be installed on
+the agent host. See the operator reference in
+[SETTINGS.md](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/SETTINGS.md#hermes_local-process-isolation).
 
 On the agent card, the **Container** section: the scheduling policy
 (`runtimeConfig.heartbeat.maxConcurrentRuns`) sets how many runs of this
@@ -89,7 +116,8 @@ model and an optional per-helper turn budget; **Instance → General →
 upper bound since HELPERS-NO-CAP (1.6.1) — a saved ceiling above 50 only
 shows a host-load warning) and the per-agent default (`2`), and shows a
 capacity hint summing the resolved limits against the host's build slots.
-Saving applies on every bot's
+Clearing either capacity field and saving sends `null` in the PATCH and removes
+the stored hint. Saving applies on every bot's
 next reconcile tick, without a restart. Details:
 [parallel-helpers](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/parallel-helpers.md).
 

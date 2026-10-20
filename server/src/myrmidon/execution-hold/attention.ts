@@ -18,7 +18,7 @@ import {
   EXECUTION_RECONCILIATION_CAUSES,
   type AttentionSeverity,
 } from "@paperclipai/shared";
-import { issueRecoveryActions, issues, type Db } from "@paperclipai/db";
+import { agents, companies, issueRecoveryActions, issues, type Db } from "@paperclipai/db";
 
 export interface ExecutionHoldCardInput {
   actionId: string;
@@ -30,6 +30,10 @@ export interface ExecutionHoldCardInput {
   failedRunId: string | null;
   nextAction: string | null;
   activityAt: string;
+  responsibleAgentId: string | null;
+  responsibleAgentName: string | null;
+  responsibleUserId: string | null;
+  decideByAt: string;
 }
 
 /**
@@ -84,7 +88,7 @@ export async function listExecutionHoldCards(
       assigneeAgentId: issues.assigneeAgentId,
     })
     .from(issues)
-    .where(and(inArray(issues.id, issueIds), eq(issues.companyId, companyId)));
+    .where(and(inArray(issues.id, issueIds), eq(issues.companyId, companyId), inArray(issues.status, ["todo", "in_progress", "in_review"])));
   const issueById = new Map(issueRows.map((row) => [row.id, row]));
 
   // Newest effective blocker per issue wins (the dispatcher's non-explicit
@@ -94,6 +98,13 @@ export async function listExecutionHoldCards(
     if (!byIssue.has(action.sourceIssueId)) byIssue.set(action.sourceIssueId, action);
   }
 
+  const [company] = await db.select({ defaultResponsibleUserId: companies.defaultResponsibleUserId }).from(companies).where(eq(companies.id, companyId)).limit(1);
+  const agentIds = [...new Set(issueRows.flatMap((issue) => issue.assigneeAgentId ? [issue.assigneeAgentId] : []))];
+  const agentRows = agentIds.length ? await db.select({ id: agents.id, reportsTo: agents.reportsTo }).from(agents).where(and(eq(agents.companyId, companyId), inArray(agents.id, agentIds))) : [];
+  const leadIds = [...new Set(agentRows.flatMap((agent) => agent.reportsTo ? [agent.reportsTo] : []))];
+  const leads = leadIds.length ? await db.select({ id: agents.id, name: agents.name, reportsTo: agents.reportsTo }).from(agents).where(and(eq(agents.companyId, companyId), inArray(agents.id, leadIds))) : [];
+  const leadMap = new Map(leads.map((lead) => [lead.id, lead]));
+  const assigneeMap = new Map(agentRows.map((agent) => [agent.id, agent]));
   const cards: ExecutionHoldCardInput[] = [];
   for (const action of byIssue.values()) {
     const issue = issueById.get(action.sourceIssueId);
@@ -111,6 +122,10 @@ export async function listExecutionHoldCards(
       failedRunId,
       nextAction: action.nextAction ?? null,
       activityAt: action.updatedAt.toISOString(),
+      responsibleAgentId: leadMap.get(assigneeMap.get(issue.assigneeAgentId)?.reportsTo ?? "")?.id ?? null,
+      responsibleAgentName: leadMap.get(assigneeMap.get(issue.assigneeAgentId)?.reportsTo ?? "")?.name ?? null,
+      responsibleUserId: leadMap.get(assigneeMap.get(issue.assigneeAgentId)?.reportsTo ?? "") ? null : company?.defaultResponsibleUserId ?? null,
+      decideByAt: new Date(action.updatedAt.getTime() + 24 * 60 * 60 * 1000).toISOString(),
     });
   }
   return cards;
