@@ -298,9 +298,6 @@ describeEmbeddedPostgres(
         },
         { agentId: fixture.agentId },
       );
-      await instanceSettingsService(db).updateGeneral({
-        [OWNER_DELIVERY_SETTINGS_KEY]: { mode: "owner_decisions_only" },
-      });
       const publications = await enqueueIssueInteractionChatPublications(db, interaction);
       const publication = publications.find((item) => item.provider === "telegram");
       expect((publication?.payload as { text?: string }).text).toContain(
@@ -321,7 +318,7 @@ describeEmbeddedPostgres(
             title: "A question with a large but valid prompt",
             questions: [{
               id: "large",
-              prompt: "x".repeat(3_900),
+              prompt: "x".repeat(4_000),
               selectionMode: "single" as const,
               allowOther: true,
               options: [{ id: "option", label: "Option" }],
