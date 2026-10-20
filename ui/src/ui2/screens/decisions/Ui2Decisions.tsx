@@ -12,9 +12,10 @@
 
 import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { Agent, DecisionOption } from "@paperclipai/shared";
+import type { Agent, AttentionItem, DecisionOption } from "@paperclipai/shared";
 import type { Decision } from "@/api/decisions";
 import { decisionsApi } from "@/api/decisions";
+import { attentionApi } from "@/api/attention";
 import { agentsApi } from "@/api/agents";
 import { queryKeys } from "@/lib/queryKeys";
 import { useCompany } from "@/context/CompanyContext";
@@ -56,6 +57,13 @@ export function Ui2Decisions() {
     refetchInterval: 30_000,
   });
 
+  const attentionQuery = useQuery({
+    queryKey: queryKeys.attention(companyId),
+    queryFn: () => attentionApi.list(companyId, { all: true }),
+    enabled: !!selectedCompanyId,
+    refetchInterval: 30_000,
+  });
+
   const agentsQuery = useQuery({
     queryKey: queryKeys.agents.list(companyId),
     queryFn: () => agentsApi.list(companyId),
@@ -68,6 +76,10 @@ export function Ui2Decisions() {
     for (const agent of agentsQuery.data ?? []) map.set(agent.id, agent.name);
     return map;
   }, [agentsQuery.data]);
+
+  const waitingItems = useMemo(() => (attentionQuery.data?.items ?? []).filter((item) =>
+    item.sourceKind === "approval" || item.sourceKind === "decision" || item.sourceKind === "issue_thread_interaction",
+  ), [attentionQuery.data]);
 
   const decisions = useMemo(() => {
     const list = openQuery.data ?? [];
@@ -99,7 +111,7 @@ export function Ui2Decisions() {
     onSuccess: invalidate,
   });
 
-  if (openQuery.isLoading) {
+  if (openQuery.isLoading || attentionQuery.isLoading) {
     return (
       <Ui2Page title={t("ui2.decisions.title")} subtitle={t("ui2.decisions.subtitle")}>
         <Ui2SkeletonRows rows={4} />
@@ -107,7 +119,7 @@ export function Ui2Decisions() {
     );
   }
 
-  if (openQuery.isError) {
+  if (openQuery.isError || attentionQuery.isError) {
     return (
       <Ui2Page title={t("ui2.decisions.title")} subtitle={t("ui2.decisions.subtitle")}>
         <Ui2ErrorState
@@ -120,10 +132,29 @@ export function Ui2Decisions() {
     );
   }
 
-  const totalOpen = (openQuery.data ?? []).length;
+  const totalOpen = waitingItems.length;
+
+  const openAttentionItem = (item: AttentionItem) => {
+    const href = item.relatedIssue?.href ?? item.subject.href;
+    if (href) window.location.assign(href);
+  };
 
   return (
     <Ui2Page title={t("ui2.decisions.title")} subtitle={t("ui2.decisions.subtitle")}>
+      <section className="ui2-decisions-waiting" aria-label={t("ui2.decisions.waiting.title")}>
+        <div className="mb-3 flex items-center justify-between">
+          <h2 className="text-sm font-semibold">{t("ui2.decisions.waiting.title")}</h2>
+          <span className="text-xs text-muted-foreground">{t("ui2.decisions.queue.count", { count: totalOpen })}</span>
+        </div>
+        {waitingItems.length === 0 ? (
+          <Ui2EmptyStateView title={t("ui2.decisions.waiting.empty.title")} body={t("ui2.decisions.waiting.empty.body")} variant="done" />
+        ) : (
+          <div className="space-y-2">
+            {waitingItems.map((item) => <WaitingItem key={item.id} item={item} onOpen={() => openAttentionItem(item)} />)}
+          </div>
+        )}
+      </section>
+
       <div className="ui2-decisions-filters flex flex-wrap items-center gap-2" role="tablist" aria-label={t("ui2.decisions.filter.all")}>
         {FILTERS.map((candidate) => {
           const label =
@@ -377,4 +408,13 @@ function Ui2DecisionCard({
       {busy ? <Ui2SkeletonRows rows={1} dense /> : null}
     </article>
   );
+}
+
+function WaitingItem({ item, onOpen }: { item: AttentionItem; onOpen: () => void }) {
+  const { t } = useUi2I18n();
+  const label = item.sourceKind === "approval" ? t("ui2.decisions.waiting.approval") : item.sourceKind === "decision" ? t("ui2.decisions.waiting.decision") : t("ui2.decisions.waiting.interaction");
+  return <button type="button" className="ui2-decisions-waiting-item flex w-full items-center justify-between rounded-lg border border-border bg-card p-3 text-left hover:bg-accent" onClick={onOpen}>
+    <span><span className="mr-2 rounded bg-muted px-1.5 py-0.5 text-xs">{label}</span><span className="font-medium">{item.subject.title ?? item.whyNow}</span><span className="ml-2 text-xs text-muted-foreground">{item.originAgentName ?? ""}</span></span>
+    <span className="text-xs text-muted-foreground">{t("ui2.decisions.card.age", { age: ui2DecisionAge(item.createdAt) })}</span>
+  </button>;
 }
