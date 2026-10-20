@@ -50,7 +50,7 @@ import {
 } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import type { ChatChannelService } from "../services/chat-channels.js";
-import type { WakeupOptions } from "../services/heartbeat.js";
+import { heartbeatService, type WakeupOptions } from "../services/heartbeat.js";
 import {
   companies,
   activityLog,
@@ -193,7 +193,6 @@ import {
   executionWorkspaceService,
   enrichWorkProductMetadataWithDiff,
   goalService,
-  heartbeatService,
   issueApprovalService,
   issueRecoveryActionService,
   issueThreadInteractionService,

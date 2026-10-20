@@ -26,7 +26,9 @@ import {
   issuePlanDecompositions,
   issueRecoveryActions,
   issueRelations,
+  issueLabels,
   issues,
+  labels as labelsTable,
   projects,
   projectWorkspaces,
   workspaceOperations,
@@ -908,6 +910,8 @@ describeEmbeddedPostgres("heartbeat workspace branch containment", () => {
     // activity after the first cleanup pass observes all runs as non-active.
     await deleteHeartbeatRunsForCleanup(db);
     await db.delete(issueComments);
+    await db.delete(issueLabels);
+    await db.delete(labelsTable);
     await db.delete(issues);
     await db.delete(projectWorkspaces);
     await db.delete(projects);
@@ -975,8 +979,24 @@ describeEmbeddedPostgres("heartbeat workspace branch containment", () => {
         mode: "isolated_workspace",
         workspaceStrategy: { type: "git_worktree" },
       },
-      ...(labels.length ? { labels } : {}),
     });
+
+    if (labels.length > 0) {
+      for (const name of labels) {
+        const labelId = randomUUID();
+        await db.insert(labelsTable).values({
+          id: labelId,
+          companyId,
+          name,
+          color: "#000000",
+        });
+        await db.insert(issueLabels).values({
+          issueId,
+          labelId,
+          companyId,
+        });
+      }
+    }
 
     const heartbeat = heartbeatService(db);
     const run = await heartbeat.wakeup(agentId, {
