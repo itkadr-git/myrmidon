@@ -42,16 +42,15 @@ export function poolChatRoutes(db: Db, resolveTransport: PoolChatTransportResolv
     res.status(201).json({ request: result });
   });
   router.get("/companies/:companyId/modules/:moduleId/chat/requests/:requestId", async (req, res) => {
-    // Authorize against the persisted request scope, not a caller-supplied
-    // default. A guessed request id must not become a cross-scope read.
-    const request = await service.status(req.params.companyId, req.params.moduleId, req.params.requestId);
     const actor = getActorInfo(req);
-    // Status reads use the persisted request scope, but they still require the
-    // same service-principal boundary as submit/capabilities. In particular,
-    // an agent JWT must not be accepted as a pool-chat invocation credential.
+    // Reject agent JWT/session callers before looking up the request. This
+    // avoids turning a guessed request id into an existence oracle.
     if (actor.actorType === "agent" && !actor.agentApiKeyId) {
       throw forbidden("Pool-chat invocation requires a scoped service principal");
     }
+    // Authorize against the persisted request scope, not a caller-supplied
+    // default. A guessed request id must not become a cross-scope read.
+    const request = await service.status(req.params.companyId, req.params.moduleId, req.params.requestId);
     const decision = await authorizePoolChatInvocation(db, {
       companyId: req.params.companyId,
       moduleId: req.params.moduleId,
