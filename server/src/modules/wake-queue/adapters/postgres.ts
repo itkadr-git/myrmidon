@@ -210,6 +210,12 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
         .returning({ id: issues.id });
       return Boolean(claimed);
     },
+    async releaseIssueExecutionLease({ companyId, issueId, runId }): Promise<void> {
+      await tx
+        .update(issues)
+        .set({ executionRunId: null })
+        .where(and(eq(issues.companyId, companyId), eq(issues.id, issueId), eq(issues.executionRunId, runId)));
+    },
     async findInvokableAgent({ companyId, agentId }): Promise<InvokableAgentSnapshot | null> {
       const agent = await tx
         .select()
@@ -1171,14 +1177,6 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
           outcome: { kind: "released" } as const, postCommitEffects: [], run: runSnapshot,
         } : null;
 
-        const releasedSiblingOutcome = () => releasedSiblingIssue &&
-          releasedSiblingIssue.status !== "done" && releasedSiblingIssue.status !== "cancelled"
-          ? {
-              outcome: { kind: "released" } as const, postCommitEffects: [], run: runSnapshot,
-              releasedSiblingIssue: toIssueSnapshot(releasedSiblingIssue),
-            }
-          : null;
-
         // decidePreDrain only returns "blocked" or "proceed" when the issue row is present.
         if (!issueRow) {
           return releaseOutcome ?? { outcome: { kind: "released" }, postCommitEffects: [], run: runSnapshot };
@@ -1201,8 +1199,6 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
         }
 
         if (preDrain.kind === "blocked") {
-          const siblingOutcome = releasedSiblingOutcome();
-          if (siblingOutcome) return siblingOutcome;
           return {
             outcome: {
               kind: "blocked",
