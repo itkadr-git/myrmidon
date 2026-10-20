@@ -1,0 +1,11 @@
+---
+settings-section: Bot containers (G-series, the 28.09 "option B" plan)
+---
+
+## settings-en
+
+| `MYRMIDON_BOT_STATE_DIR` | IDLE-STOP-STATE (OPE-8446) | the board instance root | Directory on the board's own data volume for driver-owned state, including idle-stopped marks. This keeps board state out of the host's `MYRMIDON_BOT_VOLUME_ROOT` | Set only when the state must live elsewhere on the board data volume |
+
+## settings-ru
+
+| `MYRMIDON_BOT_STATE_DIR` | IDLE-STOP-STATE (OPE-8446) | корень инстанса доски | Каталог на собственном томе данных доски для состояния драйвера, включая отметки idle-stopped. Это не даёт доске писать состояние в `MYRMIDON_BOT_VOLUME_ROOT` хоста | Задавайте только если состояние должно жить в другом месте тома данных доски |
