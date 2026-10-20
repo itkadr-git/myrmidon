@@ -472,20 +472,26 @@ export function pluginLifecycleManager(
     }
   }
 
-  async function deactivatePluginRuntime(
-    pluginId: string,
-    pluginKey: string,
-  ): Promise<void> {
+  async function deactivatePluginRuntime(plugin: PluginRecord): Promise<void> {
     const supportsRuntimeDeactivation =
       typeof pluginLoaderInstance.hasRuntimeServices === "function"
       && typeof pluginLoaderInstance.unloadSingle === "function";
 
     if (supportsRuntimeDeactivation && pluginLoaderInstance.hasRuntimeServices()) {
-      await pluginLoaderInstance.unloadSingle(pluginId, pluginKey);
-      return;
+      await pluginLoaderInstance.unloadSingle(plugin.id, plugin.pluginKey);
+    } else {
+      await stopWorkerIfRunning(plugin.id, plugin.pluginKey);
     }
 
-    await stopWorkerIfRunning(pluginId, pluginKey);
+    // Remove both the in-process catalog and external gateway/key state. Do this
+    // after the worker is stopped so a disabled plugin cannot repopulate either.
+    const configs = typeof registry.listConfigs === "function"
+      ? await registry.listConfigs(plugin.id)
+      : [];
+    for (const config of configs) {
+      removePluginProviderModels(config.companyId, plugin.id);
+      await providerModelSync?.remove(config.companyId, plugin);
+    }
   }
 
   // -----------------------------------------------------------------------
@@ -593,7 +599,7 @@ export function pluginLifecycleManager(
         );
       }
 
-      await deactivatePluginRuntime(pluginId, plugin.pluginKey);
+      await deactivatePluginRuntime(plugin);
 
       const result = await transition(pluginId, "disabled", reason ?? null, plugin);
       emitDomain("plugin.disabled", {
@@ -633,7 +639,7 @@ export function pluginLifecycleManager(
         );
       }
 
-      await deactivatePluginRuntime(pluginId, plugin.pluginKey);
+      await deactivatePluginRuntime(plugin);
       await pluginLoaderInstance.cleanupInstallArtifacts(plugin);
 
       // Perform the uninstall via registry (handles soft/hard delete)
@@ -666,7 +672,7 @@ export function pluginLifecycleManager(
       // continue running. The worker manager's auto-restart is disabled
       // because we are intentionally taking the plugin offline.
       const plugin = await requirePlugin(pluginId);
-      await deactivatePluginRuntime(pluginId, plugin.pluginKey);
+      await deactivatePluginRuntime(plugin);
 
       const result = await transition(pluginId, "error", error, plugin);
       emitDomain("plugin.error", {
@@ -680,7 +686,7 @@ export function pluginLifecycleManager(
     // -- markUpgradePending -----------------------------------------------
     async markUpgradePending(pluginId: string): Promise<PluginRecord> {
       const plugin = await requirePlugin(pluginId);
-      await deactivatePluginRuntime(pluginId, plugin.pluginKey);
+      await deactivatePluginRuntime(plugin);
 
       const result = await transition(pluginId, "upgrade_pending", null, plugin);
       emitDomain("plugin.upgrade_pending", {
@@ -725,7 +731,7 @@ export function pluginLifecycleManager(
         "plugin lifecycle: upgrade requested",
       );
 
-      await deactivatePluginRuntime(pluginId, plugin.pluginKey);
+      await deactivatePluginRuntime(plugin);
 
       // 1. Download and validate new package via loader
       const { oldManifest, newManifest, discovered } =
@@ -873,7 +879,7 @@ export function pluginLifecycleManager(
         // Bouncing the worker process alone (`handle.restart()`) leaves plugin
         // schema out of sync with worker code whenever a hot reload adds a new
         // migration, which makes downstream queries fail against missing tables.
-        await deactivatePluginRuntime(pluginId, plugin.pluginKey);
+        await deactivatePluginRuntime(plugin);
         await activateReadyPlugin(pluginId);
       } else {
         // No runtime activation services wired in (e.g. state-only test harness)
