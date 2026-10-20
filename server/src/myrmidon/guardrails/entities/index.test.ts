@@ -16,7 +16,7 @@ describe("entity recognizer", () => {
     ["4111111111111111", "payment_card"],
     ["7707083893", "inn"],
     ["1027700132195", "ogrn"],
-    ["304500100123456", "ogrnip"],
+    ["304500100123451", "ogrnip"],
   ])("detects %s as %s", (value, entity) => {
     expect(matches(value, entity)).toHaveLength(1);
     expect(matches(value, entity)[0].score).toBeGreaterThan(0);
@@ -24,6 +24,13 @@ describe("entity recognizer", () => {
 
   it("rejects a random 10-digit number as INN", () => {
     expect(matches("1234567890", "inn")).toHaveLength(0);
+  });
+
+  it("validates OGRN and OGRNIP check digits", () => {
+    expect(matches("1027700132195", "ogrn")).toHaveLength(1);
+    expect(matches("1027700132194", "ogrn")).toHaveLength(0);
+    expect(matches("304500100123451", "ogrnip")).toHaveLength(1);
+    expect(matches("304500100123456", "ogrnip")).toHaveLength(0);
   });
 
   it("rejects a card that fails Luhn", () => {
