@@ -137,11 +137,28 @@ async function runReleaseDrain(
   input: ReleaseIssueExecutionInput,
 ): Promise<ReleaseTransactionResult> {
   const { run } = locked;
-  const issue = locked.primaryIssue;
+  let issue = locked.primaryIssue;
   const postCommitEffects: PostCommitEffect[] = [];
-
+  const siblingIssue = locked.releasedSiblingIssue;
+  const shouldDrainSibling = Boolean(siblingIssue &&
+    (!siblingIssue.assigneeAgentId || siblingIssue.assigneeAgentId === run.agentId));
   if (locked.recoveryOnly) {
     return runReleaseRecoveryTail(issue, run, ports.host, ports.transaction, input, postCommitEffects);
+  }
+  if (locked.primaryReleaseOnly && !siblingIssue) {
+    return { outcome: { kind: "released" }, postCommitEffects };
+  }
+  if (siblingIssue && shouldDrainSibling) {
+    const claimed = await ports.transaction.claimIssueExecutionLease({
+      companyId: run.companyId, issueId: siblingIssue.id, runId: run.id,
+    });
+    if (!claimed) {
+      return { outcome: { kind: "released" }, postCommitEffects };
+    }
+    const sibling = await ports.transaction.findIssue({ companyId: run.companyId, issueId: siblingIssue.id });
+    if (sibling && sibling.status !== "done" && sibling.status !== "cancelled") {
+      issue = sibling;
+    }
   }
 
   // Each `continue` path either excludes a pending handoff receipt from
