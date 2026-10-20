@@ -437,6 +437,13 @@ export interface PluginPerformActionActorContext {
   runId: string | null;
   /** Company id authorized by the host bridge for this action, when applicable. */
   companyId: string | null;
+  /**
+   * myrmidon(PLUGIN-INSTANCE-ADMIN): true when the host verified that the
+   * board user is an instance administrator; false or absent otherwise
+   * (agents, system, older hosts). Lets a plugin restrict an action to the
+   * instance admin without its own user list.
+   */
+  isInstanceAdmin?: boolean;
 }
 
 export interface PluginPerformActionContext {

@@ -1989,6 +1989,8 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
       agentId: stringOrNull(rawActor?.agentId),
       runId: stringOrNull(rawActor?.runId),
       companyId: stringOrNull(rawActor?.companyId),
+      // myrmidon(PLUGIN-INSTANCE-ADMIN): only a literal true from the host counts.
+      isInstanceAdmin: rawActor?.isInstanceAdmin === true,
     });
     return Object.freeze({
       actor,
