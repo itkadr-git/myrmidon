@@ -55,7 +55,7 @@ export function poolChatService(db: Db, resolveTransport: PoolChatTransportResol
         if (eventReplay.requestHash !== hash) throw conflict("Client message was reused with a different request");
         return eventReplay;
       }
-      const module = await db.select({ provider: poolChatModuleInstances.provider, config: poolChatModuleInstances.config }).from(poolChatModuleInstances).where(and(eq(poolChatModuleInstances.companyId, input.companyId), eq(poolChatModuleInstances.id, input.moduleId), eq(poolChatModuleInstances.status, "active"))).then((rows) => rows[0]);
+      const module = await db.select({ provider: poolChatModuleInstances.provider, config: poolChatModuleInstances.config, credentialSecretName: poolChatModuleInstances.credentialSecretName }).from(poolChatModuleInstances).where(and(eq(poolChatModuleInstances.companyId, input.companyId), eq(poolChatModuleInstances.id, input.moduleId), eq(poolChatModuleInstances.status, "active"))).then((rows) => rows[0]);
       if (!module) throw notFound("Pool-chat module not found");
       const provider = providerOf(module.provider);
       const config = module.config ?? {};
@@ -89,7 +89,7 @@ export function poolChatService(db: Db, resolveTransport: PoolChatTransportResol
       if (!outcome.created) return outcome.request;
       let transport: PoolChatTransport | null;
       try {
-        transport = await resolveTransport({ companyId: input.companyId, provider, moduleId: input.moduleId, config: { ...config, selectedAccountRef: outcome.accountRef } });
+        transport = await resolveTransport({ companyId: input.companyId, provider, moduleId: input.moduleId, config: { ...config, credentialSecretName: module.credentialSecretName, selectedAccountRef: outcome.accountRef } });
       } catch {
         // Secret/provider resolution is before upstream I/O, so release the
         // reservation instead of leaving a new request permanently dispatching.
