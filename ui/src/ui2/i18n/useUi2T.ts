@@ -17,7 +17,9 @@ export type Ui2Key =
   | `tasks.${string}`
   | `time.${string}`
   // myrmidon(1.6-CTO-CHAT-A): the Commander chat screen keys (catalogs/en.ts).
-  | `commanderChat.${string}`;
+  | `commanderChat.${string}`
+  | `ui2.${string}`
+  | `screens.${string}`;
 
 export function useUi2T() {
   const { i18n: instance } = useTranslation();

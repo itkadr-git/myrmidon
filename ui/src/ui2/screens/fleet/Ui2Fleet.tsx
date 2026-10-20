@@ -23,7 +23,7 @@ export function Ui2Fleet() {
   const hosts = data?.hosts ?? [];
   const containers = data?.containers ?? [];
   return <Ui2Page title={t("ui2.screens.fleet.title")} subtitle={t("ui2.screens.fleet.subtitle")}>
-    {hosts.length === 0 && containers.length === 0 ? <Ui2EmptyStateView title={t("ui2.screens.fleet.empty")} body={t("ui2.screens.fleet.emptyBody")} /> : null}
+    {hosts.length === 0 && containers.length === 0 ? <Ui2EmptyStateView variant="done" title={t("ui2.screens.fleet.empty")} body={t("ui2.screens.fleet.emptyBody")} /> : null}
     {hosts.length > 0 ? <Ui2Section title={t("ui2.screens.fleet.hosts")}><div className="flex flex-col divide-y divide-border">{hosts.map((host) => <div className="flex flex-wrap items-center justify-between gap-3 py-3" key={host.name}><div className="flex items-center gap-2"><Ui2StatusDot tone={hostTone(host)} /><span className="font-medium">{host.name}</span></div><span className="text-xs text-muted-foreground">{t("ui2.screens.fleet.metrics", { cpu: host.cpuPercent ?? "—", memory: host.memoryPercent ?? "—", disk: host.diskPercent ?? "—" })}</span></div>)}</div></Ui2Section> : null}
     {containers.length > 0 ? <Ui2Section title={t("ui2.screens.fleet.services")}><div className="flex flex-col divide-y divide-border">{containers.map((container) => <div className="flex items-center justify-between gap-3 py-3" key={container.name}><div className="flex items-center gap-2"><Ui2StatusDot tone={container.state === "running" ? "ok" : container.state === "stopped" ? "danger" : "muted"} /><span>{container.name}</span></div><span className="text-xs text-muted-foreground">{t(`ui2.screens.fleet.states.${container.state}` as never)}</span></div>)}</div></Ui2Section> : null}
   </Ui2Page>;
