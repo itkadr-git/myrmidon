@@ -18,6 +18,9 @@ export function poolChatRoutes(db: Db, resolveTransport: PoolChatTransportResolv
   const authorize = async (req: Request, companyId: string, moduleId: string) => {
     const actor = getActorInfo(req);
     const scope = routeScope(req);
+    if (actor.actorType === "agent" && !actor.agentApiKeyId) {
+      throw forbidden("Pool-chat invocation requires a scoped service principal");
+    }
     const decision = await authorizePoolChatInvocation(db, { companyId, moduleId, channelId: scope.channelId, subjectId: scope.subjectId, principalType: actor.actorType, principalId: actor.actorId });
     if (!decision.allowed) throw forbidden("Pool-chat invocation is not authorized");
     return scope;

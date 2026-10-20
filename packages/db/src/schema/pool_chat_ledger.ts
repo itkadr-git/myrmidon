@@ -34,6 +34,9 @@ export const poolChatQuotaReservations = pgTable(
     id: uuid("id").primaryKey().defaultRandom(),
     companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
     requestId: uuid("request_id").notNull().references(() => poolChatRequests.id, { onDelete: "cascade" }),
+    // Opaque deployment account selected before dispatch. This is accounting
+    // metadata only; it must never be returned from the API.
+    accountRef: text("account_ref"),
     units: bigint("units", { mode: "number" }).notNull(),
     state: text("state").notNull().default("reserved"),
     settledUnits: bigint("settled_units", { mode: "number" }),
