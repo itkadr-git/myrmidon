@@ -78,8 +78,8 @@ function stubWriter(log: WriterLog, options: { failOn?: string } = {}): Knowledg
       log.revisions.set(input.slug, [{ content: input.content, sources: (input.sources ?? []).map((source) => ({ ...source, note: source.note ?? null })) }]);
       log.statuses.set(input.slug, { deliveredContent: input.content, status: "draft", supersededByItemId: null });
       log.items.set(input.slug, {
-        id: `id-${input.slug}`, slug: input.slug, kind: input.kind, title: input.title, summary: input.summary,
-        folderPath: input.folderPath, tags: input.tags ?? [], approvalRequired: input.approvalRequired ?? false,
+        id: `id-${input.slug}`, slug: input.slug, kind: input.kind ?? "wiki", title: input.title ?? input.slug, summary: input.summary ?? null,
+        folderPath: input.folderPath ?? "", tags: input.tags ?? [], approvalRequired: input.approvalRequired ?? false,
         approverKind: input.approverKind ?? null, deliveredContent: input.content, status: "draft", supersededByItemId: null,
       });
       return { id: `id-${input.slug}`, slug: input.slug };
@@ -380,7 +380,7 @@ describe("import run", () => {
     });
     const report = await runImport({ plan, service: stubWriter(log), companyId: "company-1", nestId: "nest-1", actor: AGENT, dryRun: false });
     expect(report.failed).toEqual([]);
-    expect(log.draft.at(-1)?.input.content).toContain("Expected exported body");
+    expect(log.draft.at(-1)?.input.content ?? "").toContain("Expected exported body");
   });
 
   it("writes nothing in dry-run but reports the same numbers", async () => {
