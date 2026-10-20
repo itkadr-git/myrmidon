@@ -18,7 +18,7 @@ describe("pool-chat account router", () => {
   });
 
   it("fails closed when all matching accounts are disabled or over quota", () => {
-    expect(() => selectPoolChatAccount({ accounts }, "chatgpt", 4)).toThrow("No pool-chat account");
+    expect(() => selectPoolChatAccount({ accounts }, "chatgpt", 5)).toThrow("No pool-chat account");
     expect(() => selectPoolChatAccount({ accounts: [{ ...accounts[0], enabled: false }] }, "chatgpt", 1))
       .toThrow("No pool-chat account");
   });
