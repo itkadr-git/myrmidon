@@ -79,8 +79,8 @@ describe("ui2 integration contracts (UI-0b / UI-0c)", () => {
     const { UI2_ROUTE_TABLE } = await import("./routes");
     expect(UI2_ROUTE_TABLE.map((e) => e.key).sort()).toEqual([
       "agent-overview",
-      "commander",
       "agents-fleet",
+      "commander",
       "commander-chat",
       "costs",
       "decisions",
