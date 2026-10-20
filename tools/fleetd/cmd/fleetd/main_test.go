@@ -68,6 +68,7 @@ func do(t *testing.T, method, url, token string, body string) *httptest.Response
 	}
 	if token != "" {
 		req.TLS = testClientTLS()
+		req.Header.Set("Authorization", "Bearer "+token)
 	}
 	rec := httptest.NewRecorder()
 	http.DefaultServeMux.ServeHTTP(rec, req)
@@ -85,6 +86,7 @@ func routeRequest(s *server, method, path, token, body string) *httptest.Respons
 	}
 	if token != "" {
 		req.TLS = testClientTLS()
+		req.Header.Set("Authorization", "Bearer "+token)
 	}
 	rec := httptest.NewRecorder()
 	s.requireAuth(func(w http.ResponseWriter, r *http.Request) {

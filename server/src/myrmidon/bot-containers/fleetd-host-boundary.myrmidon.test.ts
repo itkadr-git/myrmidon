@@ -151,7 +151,7 @@ describe("OPE-8137: board/fleetd path operates without /host or docker.sock", ()
         token: "test-fleetd-auth-token-32-chars-long",
         ca: "test CA placeholder", cert: "test certificate placeholder", key: "test private key placeholder",
       }, { request: async ({ method, path, body, headers }) => {
-        const response = await fetch(httpBaseUrl + path, {
+        const response = await fetch(httpBaseUrl + "/v1" + path, {
           method,
           headers,
           body: body ? new Uint8Array(body) : undefined,
@@ -212,7 +212,7 @@ describe("OPE-8137: board/fleetd path operates without /host or docker.sock", ()
         token: "test-fleetd-auth-token-32-chars-long",
         ca: "test CA placeholder", cert: "test certificate placeholder", key: "test private key placeholder",
       }, { request: async ({ method, path, body, headers }) => {
-        const response = await fetch(httpBaseUrl + path, {
+        const response = await fetch(httpBaseUrl + "/v1" + path, {
           method,
           headers,
           body: body ? new Uint8Array(body) : undefined,
