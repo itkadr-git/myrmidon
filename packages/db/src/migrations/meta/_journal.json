@@ -2368,6 +2368,13 @@
       "when": 1792395500000,
       "tag": "0400_clear_terminal_issue_monitors",
       "breakpoints": true
+    },
+    {
+      "idx": 401,
+      "version": "7",
+      "when": 1792400000000,
+      "tag": "0401_guardrail_mode_settings",
+      "breakpoints": true
     }
   ]
 }

@@ -27,6 +27,7 @@ A track writes only into its own section. A row is added in the same PR as the s
 
 | Variable | Function | Default | What it does | How to disable / special |
 |---|---|---|---|---|
+| `guardrail_mode_settings` (`company`, `caste`, `agent`) | 1.7-GUARDRAILS | `flag_only` | Stores per-rule guardrail mode overrides. Effective value is resolved agent > caste > company > default and is exposed with its source by the live guardrail modes API. Writes invalidate the effective-value cache; no restart is required. See [guardrails guide](guides/guardrails.md) | Remove an override to inherit. Invalid values are rejected. |
 
 ## Track 2 — wake and run core
 

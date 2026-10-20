@@ -1069,3 +1069,5 @@
 
 
 
+
+| 1.7-GUARDRAILS | Hierarchical guardrail mode settings | `packages/db/src/schema/guardrail_mode_settings.ts`, `server/src/myrmidon/guardrails/{modes,mode-store,mode-routes}.ts` | Per-rule company/caste/agent overrides with live reads and cache invalidation | `server/src/myrmidon/guardrails/modes.ts` | Never; this is Myrmidon behavior | (this PR) |
