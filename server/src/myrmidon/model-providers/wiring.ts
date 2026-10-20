@@ -183,7 +183,6 @@ export function createPluginProviderModelSync(
       const modelNames = provider.models.map((model: PluginProviderModelDeclaration["models"][number]) => `${provider.provider}/${model.id}`);
       const otherReadyPlugins: Array<{
         id: string;
-        companyId: string;
         pluginKey: string;
         manifestJson: unknown;
         status: string;
