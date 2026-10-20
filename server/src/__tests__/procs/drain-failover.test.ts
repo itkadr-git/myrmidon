@@ -533,12 +533,21 @@ describeProcs("drain and failover e2e: supervisor in-process, two api children (
     const forkedBeforeKill = forkedPids.length;
 
     // Resolve the victim child's bootId from the process registry:
-    const [victimRow] = await db
-      .select({ bootId: boardProcesses.bootId })
-      .from(boardProcesses)
-      .where(eq(boardProcesses.pid, victimPid));
-    expect(victimRow?.bootId, "victim bootId is registered in board_processes").toBeDefined();
-    const victimBootId = victimRow!.bootId;
+    let victimBootId!: string;
+    await waitFor(
+      async () => {
+        const [victimRow] = await db
+          .select({ bootId: boardProcesses.bootId })
+          .from(boardProcesses)
+          .where(eq(boardProcesses.pid, victimPid));
+        if (victimRow?.bootId) {
+          victimBootId = victimRow.bootId;
+          return true;
+        }
+        return `waiting for victim pid ${victimPid} to register in board_processes`;
+      },
+      { timeoutMs: SPLIT_READY_TIMEOUT_MS, label: "victim child registered in board_processes" },
+    );
 
     // Seed a real in-flight background run leased to the victim child:
     const failoverCompanyId = randomUUID();
