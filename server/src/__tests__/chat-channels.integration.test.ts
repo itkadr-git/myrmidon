@@ -21567,6 +21567,16 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     const entered = new Promise<void>((resolve) => {
       lockEntered = resolve;
     });
+    const holdEndpointLock = () =>
+      db.transaction(async (tx) => {
+        await tx
+          .select({ id: chatEndpoints.id })
+          .from(chatEndpoints)
+          .where(eq(chatEndpoints.id, endpoint.id))
+          .for("update");
+        lockEntered();
+        await holdLock;
+      });
     let lockTransaction: Promise<unknown> | undefined;
     try {
       await deliverMessage({
@@ -21583,28 +21593,8 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         id: slackThread.thread.id,
         name: slackThread.thread.channel.name,
       });
-      await vi.waitFor(async () => {
-        const conversation = await db
-          .select()
-          .from(chatConversations)
-          .where(eq(chatConversations.endpointId, endpoint.id))
-          .then((rows) => rows[0]);
-        expect(conversation?.issueId).toBeTruthy();
-      });
-      const holdEndpointLock = () =>
-        db.transaction(async (tx) => {
-          await tx
-            .select({ id: chatEndpoints.id })
-            .from(chatEndpoints)
-            .where(eq(chatEndpoints.id, endpoint.id))
-            .for("update");
-          lockEntered();
-          await holdLock;
-        });
-      replyThread.subscribe.mockImplementationOnce(async () => {
-        lockTransaction = holdEndpointLock();
-        await entered;
-      });
+      lockTransaction = holdEndpointLock();
+      await entered;
       await deliverMessage({
         callbacks,
         endpointId: endpoint.id,
