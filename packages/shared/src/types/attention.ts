@@ -79,6 +79,8 @@ export const ATTENTION_SOURCE_KINDS = [
   // myrmidon(1.6.5 F-09): a queued run older than the instance's stall
   // threshold (default 1 h) still waits without a waitReason.
   "queue_stall",
+  // myrmidon(OPE-7932): a due issue monitor has not produced a wake claim.
+  "issue_monitor_overdue",
 ] as const;
 
 export type AttentionSourceKind = (typeof ATTENTION_SOURCE_KINDS)[number];
