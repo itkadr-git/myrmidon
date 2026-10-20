@@ -104,7 +104,8 @@ model and an optional per-helper turn budget; **Instance → General →
 upper bound since HELPERS-NO-CAP (1.6.1) — a saved ceiling above 50 only
 shows a host-load warning) and the per-agent default (`2`), and shows a
 capacity hint summing the resolved limits against the host's build slots.
-Saving applies on every bot's
+Clearing either capacity field and saving sends `null` in the PATCH and removes
+the stored hint. Saving applies on every bot's
 next reconcile tick, without a restart. Details:
 [parallel-helpers](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/parallel-helpers.md).
 
