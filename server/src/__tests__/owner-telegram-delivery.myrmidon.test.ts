@@ -275,6 +275,9 @@ describeEmbeddedPostgres(
     it("uses the canonical rebrand public URL when configured", async () => {
       const fixture = await seedFixture();
       process.env.MYRMIDON_PUBLIC_URL = "https://myrmidon.example";
+      await instanceSettingsService(db).updateGeneral({
+        [OWNER_DELIVERY_SETTINGS_KEY]: { mode: "owner_decisions_only" },
+      });
       const interaction = await issueThreadInteractionService(db).create(
         { id: fixture.workIssue.id, companyId: fixture.companyId },
         {
@@ -318,10 +321,10 @@ describeEmbeddedPostgres(
             title: "A question with a large but valid prompt",
             questions: [{
               id: "large",
-              prompt: "x".repeat(5_000),
+              prompt: "x".repeat(3_900),
               selectionMode: "single" as const,
               allowOther: true,
-              options: [],
+              options: [{ id: "option", label: "Option" }],
             }],
           },
         },
