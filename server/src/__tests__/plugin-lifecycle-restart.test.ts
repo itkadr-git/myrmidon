@@ -30,6 +30,7 @@ const mockRegistry = vi.hoisted(() => ({
   updateStatus: vi.fn(),
   upsertConfig: vi.fn(),
   getConfig: vi.fn(),
+  listConfigs: vi.fn(),
   list: vi.fn(),
   delete: vi.fn(),
 }));
@@ -66,6 +67,9 @@ function makeWorkerManagerStub() {
 }
 
 describe("pluginLifecycleManager.restartWorker", () => {
+  beforeEach(() => {
+    mockRegistry.listConfigs.mockResolvedValue([{ companyId: "company-1" }]);
+  });
   it("exposes declared models only while plugin records are ready", async () => {
     const ready = {
       ...pluginRecord,
