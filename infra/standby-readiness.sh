@@ -25,6 +25,10 @@ check() {
 
 version_major() { sed -E 's/[^0-9]*([0-9]+).*/\1/'; }
 
+if [[ -r /etc/os-release ]]; then
+  # shellcheck disable=SC1091
+  . /etc/os-release
+fi
 os_id="${ID:-unknown}"
 os_version="${VERSION_ID:-}"
 os_major="$(printf '%s' "$os_version" | version_major)"
