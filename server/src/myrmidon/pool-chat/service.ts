@@ -30,18 +30,21 @@ export function poolChatService(db: Db, resolveTransport: PoolChatTransportResol
       const provider = providerOf(module.provider);
       const transport = resolveTransport({ provider, moduleId: input.moduleId, config: module.config ?? {} });
       if (!transport) throw new HttpError(503, "Pool-chat provider transport is not configured");
-      let request = await db.transaction(async (tx) => {
+      const outcome = await db.transaction(async (tx) => {
         const existing = await tx.select().from(poolChatRequests).where(and(eq(poolChatRequests.companyId, input.companyId), eq(poolChatRequests.moduleId, input.moduleId), eq(poolChatRequests.channel, input.channel), eq(poolChatRequests.subjectId, input.subjectId), eq(poolChatRequests.idempotencyKey, input.idempotencyKey))).then((rows) => rows[0]);
         if (existing) {
           if (existing.requestHash !== hash) throw conflict("Idempotency key was reused with a different request");
-          return existing;
+          return { request: existing, created: false };
         }
         const [created] = await tx.insert(poolChatRequests).values({ companyId: input.companyId, moduleId: input.moduleId, channel: input.channel, subjectId: input.subjectId, conversationId: input.body.conversationId, clientMessageId: input.body.clientMessageId, idempotencyKey: input.idempotencyKey, requestHash: hash, model: input.body.model, status: "dispatching", reservationUnits: 1 }).returning();
         await tx.insert(poolChatQuotaReservations).values({ companyId: input.companyId, requestId: created.id, units: 1, state: "reserved" });
         await tx.insert(poolChatRequestAttempts).values({ companyId: input.companyId, requestId: created.id, attemptNo: 1, state: "dispatching", provider, reservedUnits: 1 });
-        return created;
+        return { request: created, created: true };
       });
-      if (request.status !== "dispatching") return request;
+      // Only the transaction winner may perform upstream I/O. Replays must
+      // observe the durable state rather than sending the request again.
+      if (!outcome.created) return outcome.request;
+      let request = outcome.request;
       try {
         const result = await transport.send({ model: input.body.model, messages: input.body.messages, maxOutputTokens: input.body.maxOutputTokens ?? 2048 });
         request = await db.transaction(async (tx) => {
