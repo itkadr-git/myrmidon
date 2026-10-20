@@ -57,6 +57,8 @@ import { ownerDeliverySettingsSchema } from "../myrmidon-owner-delivery.js";
 // settings row (absent = the fix on; `{enabled: false}` = the pre-fix agent
 // behaviour).
 import { issueListAgentDefaultsSchema } from "../myrmidon-issue-list-agent-defaults.js";
+// myrmidon(1.7-GRD-MODES): guardrail mode overrides under instance general settings
+import { guardrailModesSettingsSchema } from "../myrmidon-guardrail-modes.js";
 // myrmidon(REVIEW-ROUTING): the automatic reviewer routing settings stored in the same row.
 import { reviewRoutingSettingsSchema } from "../myrmidon-review-routing.js";
 // myrmidon(REVIEW-REWORK): the review-return loop settings stored in the same row.
@@ -265,6 +267,10 @@ export const instanceGeneralSettingsSchema = z.object({
   // changed from /api/myrmidon/owner-delivery; absent means the default
   // "via_bot" (1.6.5-OWNER-VIA-BOT: no card, the author's message instead).
   ownerDelivery: ownerDeliverySettingsSchema.optional(),
+  // myrmidon(1.7-GRD-MODES): guardrail enforcement-mode overrides per company,
+  // caste and agent, changed from /api/myrmidon/companies/:id/guardrails/settings;
+  // absent means every rule is flag-only (the 1.6.1 behavior).
+  guardrailModes: guardrailModesSettingsSchema.optional(),
   // myrmidon(REVIEW-ROUTING): automatic reviewer routing, changed from
   // /api/myrmidon/companies/:id/review-routing/settings; absent means the defaults.
   reviewRouting: reviewRoutingSettingsSchema.optional(),
