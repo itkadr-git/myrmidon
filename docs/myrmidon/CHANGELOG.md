@@ -10,6 +10,22 @@ version file to edit. Base Paperclip version is in the image label
 
 ## Unreleased
 
+### Server and CLI texts renamed to Myrmidon (REBRAND B, OPE-4155)
+
+- User-visible text in the server and the CLI names the product Myrmidon:
+  CLI `--help` and banner, onboarding/doctor/service/update messages, CLI
+  HTTP client errors, OpenAPI summaries and descriptions, API error
+  messages, onboarding documents for external agents, outgoing request
+  user agents, the Node version warning, and the org-chart SVG wordmark.
+  Details: [guides/rebrand-b-server-texts.md](guides/rebrand-b-server-texts.md).
+- New guard tests keep the surfaces free of the vendor name:
+  `cli/src/__tests__/cli-product.myrmidon.test.ts` and
+  `server/src/__tests__/server-user-text.myrmidon.test.ts`.
+- Identifiers are untouched for compatibility: the `paperclipai` package and
+  bin, `PAPERCLIP_*` env vars, `X-Paperclip-*` headers, `@paperclipai/*`
+  packages, `~/.paperclip` paths, MCP server names, the `/paperclip` Discord
+  command, and frozen pre-rename snapshots.
+
 ## 1.6.4
 
 ### Fix: the board failed to start when a synthetic attention card was present

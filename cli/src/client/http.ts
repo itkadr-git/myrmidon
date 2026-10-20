@@ -1,4 +1,5 @@
 import { URL } from "node:url";
+import { PRODUCT_NAME } from "../myrmidon-product.js";
 
 export class ApiRequestError extends Error {
   status: number;
@@ -221,7 +222,7 @@ function buildConnectionErrorMessage(input: {
 }): string {
   const healthUrl = buildHealthCheckUrl(input.url);
   const lines = [
-    "Could not reach the Paperclip API.",
+    `Could not reach the ${PRODUCT_NAME} API.`,
     "",
     `Request: ${input.method} ${input.url}`,
   ];
@@ -230,7 +231,7 @@ function buildConnectionErrorMessage(input: {
   }
   lines.push(
     "",
-    "This usually means the Paperclip server is not running, the configured URL is wrong, or the request is being blocked before it reaches Paperclip.",
+    `This usually means the ${PRODUCT_NAME} server is not running, the configured URL is wrong, or the request is being blocked before it reaches ${PRODUCT_NAME}.`,
     "",
     "Try:",
     "- Start Paperclip with `pnpm dev` (from a source checkout) or `npx paperclipai run`.",

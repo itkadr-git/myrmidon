@@ -20,6 +20,7 @@ import {
   resolveCommandContext,
   type BaseClientOptions,
 } from "./common.js";
+import { PRODUCT_NAME } from "../../myrmidon-product.js";
 
 interface SecretListOptions extends BaseClientOptions {
   companyId?: string;
@@ -419,7 +420,7 @@ export function registerSecretCommands(program: Command): void {
   addCommonClientOptions(
     secrets
       .command("create")
-      .description("Create a Paperclip-managed secret")
+      .description(`Create a ${PRODUCT_NAME}-managed secret`)
       .requiredOption("-C, --company-id <id>", "Company ID")
       .requiredOption("--name <name>", "Secret display name")
       .option("--key <key>", "Portable secret key")
@@ -447,7 +448,7 @@ export function registerSecretCommands(program: Command): void {
   addCommonClientOptions(
     secrets
       .command("link")
-      .description("Link an external provider-owned secret without storing its value in Paperclip")
+      .description(`Link an external provider-owned secret without storing its value in ${PRODUCT_NAME}`)
       .requiredOption("-C, --company-id <id>", "Company ID")
       .requiredOption("--name <name>", "Secret display name")
       .requiredOption("--provider <provider>", "Secret provider id")
@@ -493,7 +494,7 @@ export function registerSecretCommands(program: Command): void {
   addCommonClientOptions(
     secrets
       .command("rotate")
-      .description("Rotate a Paperclip-managed secret value")
+      .description(`Rotate a ${PRODUCT_NAME}-managed secret value`)
       .argument("<secretId>", "Secret ID")
       .option("--value <value>", "New secret value")
       .option("--value-env <name>", "Read new secret value from an environment variable")
@@ -561,7 +562,7 @@ export function registerSecretCommands(program: Command): void {
   addCommonClientOptions(
     secrets
       .command("doctor")
-      .description("Run secret provider health checks through the Paperclip API")
+      .description(`Run secret provider health checks through the ${PRODUCT_NAME} API`)
       .requiredOption("-C, --company-id <id>", "Company ID")
       .action(async (opts: SecretDoctorOptions) => {
         try {

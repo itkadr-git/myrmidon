@@ -10,6 +10,22 @@
 
 ## Без выпуска
 
+### Тексты сервера и CLI переименованы в Myrmidon (REBRAND B, OPE-4155)
+
+- Пользовательские тексты сервера и CLI называют продукт Myrmidon:
+  `--help` и баннер CLI, сообщения онбординга/doctor/сервиса/update,
+  ошибки HTTP-клиента CLI, summary и description OpenAPI, тексты ошибок API,
+  onboarding-документы для внешних агентов, user-agent исходящих запросов,
+  предупреждение о версии Node и wordmark в SVG орг-диаграмм. Подробности:
+  [guides/rebrand-b-server-texts.ru.md](guides/rebrand-b-server-texts.ru.md).
+- Новые тесты-сторожи держат поверхности без имени вендора:
+  `cli/src/__tests__/cli-product.myrmidon.test.ts` и
+  `server/src/__tests__/server-user-text.myrmidon.test.ts`.
+- Идентификаторы не тронуты ради совместимости: пакет и bin `paperclipai`,
+  env `PAPERCLIP_*`, заголовки `X-Paperclip-*`, пакеты `@paperclipai/*`,
+  пути `~/.paperclip`, имена MCP-серверов, слеш-команда `/paperclip`
+  в Discord и замороженные снапшоты до переименования.
+
 ## 1.6.4
 
 ### Исправление: доска не запускалась при синтетической карточке внимания

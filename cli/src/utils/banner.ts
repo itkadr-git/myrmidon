@@ -1,22 +1,25 @@
 import pc from "picocolors";
 
-const PAPERCLIP_ART = [
-  "██████╗  █████╗ ██████╗ ███████╗██████╗  ██████╗██╗     ██╗██████╗ ",
-  "██╔══██╗██╔══██╗██╔══██╗██╔════╝██╔══██╗██╔════╝██║     ██║██╔══██╗",
-  "██████╔╝███████║██████╔╝█████╗  ██████╔╝██║     ██║     ██║██████╔╝",
-  "██╔═══╝ ██╔══██║██╔═══╝ ██╔══╝  ██╔══██╗██║     ██║     ██║██╔═══╝ ",
-  "██║     ██║  ██║██║     ███████╗██║  ██║╚██████╗███████╗██║██║     ",
-  "╚═╝     ╚═╝  ╚═╝╚═╝     ╚══════╝╚═╝  ╚═╝ ╚═════╝╚══════╝╚═╝╚═╝     ",
-] as const;
+import { PRODUCT_NAME, PRODUCT_TAGLINE } from "../myrmidon-product.js";
 
-const TAGLINE = "The app people use to manage AI agents for work";
+// myrmidon(B1b): Myrmidon wordmark replaces the vendor ASCII art. The helper
+// keeps its vendor export name (printPaperclipCliBanner) so callers stay
+// vendor-merge-compatible; only the visible output changed.
+const MYRMIDON_ART = [
+  "███╗   ███╗██╗   ██╗██████╗ ██╗██╗  ██╗███████╗██████╗ ",
+  "████╗ ████║██║   ██║██╔══██╗██║╚██╗██╔╝██╔════╝██╔══██╗",
+  "██╔████╔██║██║   ██║██████╔╝██║ ╚█████╔╝ █████╗  ██████╔╝",
+  "██║╚██╔╝██║██║   ██║██╔══██╗██║  ╚██╔╝  ██╔══╝  ██╔══██╗",
+  "██║ ╚═╝ ██║╚██╗ ██╔╝██║  ██║██║   ██║   ███████╗██║  ██║",
+  "╚═╝     ╚═╝ ╚████╔╝ ██║  ██║╚═╝   ╚═╝   ╚══════╝╚═╝  ╚═╝",
+] as const;
 
 export function printPaperclipCliBanner(): void {
   const lines = [
     "",
-    ...PAPERCLIP_ART.map((line) => pc.cyan(line)),
+    ...MYRMIDON_ART.map((line) => pc.cyan(line)),
     pc.blue("  ───────────────────────────────────────────────────────"),
-    pc.bold(pc.white(`  ${TAGLINE}`)),
+    pc.bold(pc.white(`  ${PRODUCT_NAME} — ${PRODUCT_TAGLINE}`)),
     "",
   ];
 
