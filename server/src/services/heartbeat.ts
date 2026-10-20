@@ -712,6 +712,7 @@ import {
   isRunUnderMaintenance,
   maintenanceWindowsForAgent,
 } from "../myrmidon/maintenance/gate.js";
+import { MAINTENANCE_INTERRUPT_ERROR_CODE, MAINTENANCE_RETRY_REASON } from "../myrmidon/maintenance/domain.js";
 // myrmidon(D2): uuid-typed json comparisons for the board DB hot path. See
 // docs/myrmidon/DIVERGENCE.md.
 import { jsonTextUuid } from "../myrmidon/db-hot-path/json-uuid.js";
@@ -15407,11 +15408,13 @@ export function heartbeatService(
       ),
     );
     const nextAttempt =
-      (retryReason === WORKSPACE_BUSY_RETRY_REASON ||
-      retryReason === AI_CONNECTION_BUSY_RETRY_REASON ||
-      retryReason === MAX_TURN_CONTINUATION_RETRY_REASON
-        ? (run.scheduledRetryAttempt ?? 0)
-        : executionFailureRetryCount(run)) + 1;
+      retryReason === MAINTENANCE_RETRY_REASON
+        ? 1
+        : (retryReason === WORKSPACE_BUSY_RETRY_REASON ||
+            retryReason === AI_CONNECTION_BUSY_RETRY_REASON ||
+            retryReason === MAX_TURN_CONTINUATION_RETRY_REASON
+            ? (run.scheduledRetryAttempt ?? 0)
+            : executionFailureRetryCount(run)) + 1;
     // myrmidon(HERMES-RUN-REATTACH): with a gateway Retry-After hint, the
     // schedule's base delay is the hint itself (clamped to a sane ceiling)
     // instead of the fixed 30s array, and the attempt ceiling is the
@@ -15505,7 +15508,12 @@ export function heartbeatService(
       };
     }
 
-    if (legacyExecutionNeedsReconciliation(run)) {
+    // A maintenance interruption explicitly requests a retry; the bounded
+    // retry scheduler, not failure-reconciliation, owns its attempt budget.
+    if (
+      run.errorCode !== MAINTENANCE_INTERRUPT_ERROR_CODE &&
+      legacyExecutionNeedsReconciliation(run)
+    ) {
       return {
         outcome: "not_scheduled" as const,
         reason:
