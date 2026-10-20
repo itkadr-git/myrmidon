@@ -532,24 +532,24 @@ describeProcs("drain and failover e2e: supervisor in-process, two api children (
     expect(victimPid, "the kill victim is the freshly grown child").not.toBe(survivorPid);
     const forkedBeforeKill = forkedPids.length;
 
-    // IPC readiness precedes durable process-registry writes in child startup.
-    // Wait for the row rather than assuming the registry transaction has won
-    // the race when the supervisor reports ready.
-    let victimBootId: string | undefined;
+    // Readiness is reported before the registry's first pulse, so wait for
+    // the grown child to publish its row before resolving its boot identity.
     await waitFor(
       async () => {
         const [row] = await db
           .select({ bootId: boardProcesses.bootId })
           .from(boardProcesses)
           .where(eq(boardProcesses.pid, victimPid));
-        victimBootId = row?.bootId;
-        return victimBootId ? true : `victim pid ${victimPid} not registered yet`;
+        return row?.bootId ?? "victim process registry row not published yet";
       },
       { timeoutMs: SPLIT_READY_TIMEOUT_MS, label: "victim child registered in board_processes" },
     );
-    if (!victimBootId) {
-      throw new Error(`victim pid ${victimPid} was not registered in board_processes`);
-    }
+    const [victimRow] = await db
+      .select({ bootId: boardProcesses.bootId })
+      .from(boardProcesses)
+      .where(eq(boardProcesses.pid, victimPid));
+    expect(victimRow?.bootId, "victim bootId is registered in board_processes").toBeDefined();
+    const victimBootId = victimRow!.bootId;
 
     // Seed a real in-flight background run leased to the victim child:
     const failoverCompanyId = randomUUID();
