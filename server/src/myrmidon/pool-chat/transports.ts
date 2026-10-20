@@ -33,20 +33,14 @@ export function createPoolChatTransports(client: PoolChatTransportClient): Recor
     },
     google: {
       provider: "google",
-      send: (request) => client.sendGoogle({
-        ...request,
-        messages: request.messages.filter(({ role }) => role === "user").slice(0, 1),
-      }),
+      send: (request) => client.sendGoogle(request),
     },
   };
 }
 
 export function redactTransportError(error: unknown): string {
-  if (error instanceof Error) {
-    return error.message.replace(
-      /((?:api[_-]?key|sk|key|token|secret)[-_=: ]*)[^\s,;]+/gi,
-      (_match, label: string) => `${label}[redacted]`,
-    );
-  }
+  // Provider exceptions may contain headers, URLs, or response bodies. Keep
+  // only a stable code; never persist or return vendor-controlled text.
+  void error;
   return "provider_transport_failed";
 }
