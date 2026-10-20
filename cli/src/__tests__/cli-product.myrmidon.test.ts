@@ -1,7 +1,16 @@
 import { describe, expect, it } from "vitest";
 
 import { PRODUCT_NAME, PRODUCT_TAGLINE } from "../myrmidon-product.js";
-import { MYRMIDON_ART, printPaperclipCliBanner } from "../utils/banner.js";
+import { printPaperclipCliBanner } from "../utils/banner.js";
+
+const EXPECTED_MYRMIDON_ART = [
+  "███╗   ███╗██╗   ██╗██████╗ ███╗   ███╗██╗██████╗  ██████╗ ███╗   ██╗",
+  "████╗ ████║╚██╗ ██╔╝██╔══██╗████╗ ████║██║██╔══██╗██╔═══██╗████╗  ██║",
+  "██╔████╔██║ ╚████╔╝ ██████╔╝██╔████╔██║██║██║  ██║██║   ██║██╔██╗ ██║",
+  "██║╚██╔╝██║  ╚██╔╝  ██╔══██╗██║╚██╔╝██║██║██║  ██║██║   ██║██║╚██╗██║",
+  "██║ ╚═╝ ██║   ██║   ██║  ██║██║ ╚═╝ ██║██║██████╔╝╚██████╔╝██║ ╚████║",
+  "╚═╝     ╚═╝   ╚═╝   ╚═╝  ╚═╝╚═╝     ╚═╝╚═╝╚═════╝  ╚═════╝ ╚═╝  ╚═══╝",
+] as const;
 
 // myrmidon(B1b): guard against the CLI re-introducing "Paperclip" as the
 // product name in user-visible surfaces (banner, --help, prompts, errors).
@@ -34,6 +43,6 @@ describe("cli product naming", () => {
     const plain = text.replace(/\u001b\[[0-9;]*m/g, "");
     expect(plain).toContain("Myrmidon");
     expect(plain).not.toContain("Paperclip");
-    expect(plain).toContain(MYRMIDON_ART.join("\n"));
+    expect(plain).toContain(EXPECTED_MYRMIDON_ART.join("\n"));
   });
 });
