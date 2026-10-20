@@ -44,6 +44,7 @@ const en = {
   "ui2.agents.status.idle": "Idle",
   "ui2.agents.status.running": "Running",
   "ui2.agents.status.error": "Error",
+  "ui2.agents.status.paused": "Paused",
   "ui2.screens.agents": "Agents",
 
   "ui2.decisions.title": "Decisions",
@@ -315,6 +316,7 @@ const ru: Record<Ui2MessageKey, string> = {
   "ui2.agents.status.idle": "Ожидание",
   "ui2.agents.status.running": "Выполняется",
   "ui2.agents.status.error": "Ошибка",
+  "ui2.agents.status.paused": "Приостановлен",
   "ui2.screens.agents": "Агенты",
 
   "ui2.decisions.title": "Решения",

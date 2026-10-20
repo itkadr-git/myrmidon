@@ -10,9 +10,9 @@ import { useUi2I18n } from "../../i18n/Ui2I18n";
 import { Ui2Page, Ui2StatusDot } from "../../components/ui2Primitives";
 import { Ui2EmptyStateView, Ui2ErrorState, Ui2SkeletonRows } from "../../components/ui2StateViews";
 
-type FleetStatus = "idle" | "running" | "error" | "paused";
+export type FleetStatus = "idle" | "running" | "error" | "paused";
 
-function fleetStatus(status: string, run?: LiveRunForIssue): FleetStatus {
+export function fleetStatus(status: string, run?: LiveRunForIssue): FleetStatus {
   if (status === "error" || status === "terminated" || run?.status === "failed") return "error";
   if (status === "paused") return "paused";
   if (status === "running") return "running";
