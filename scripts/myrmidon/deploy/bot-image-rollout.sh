@@ -295,7 +295,7 @@ list_bots() {
   jq -r '[.[]? | select(.adapterType == "hermes_gateway")
       | select((.adapterConfig.container // {}) | (.enabled == true))
       | [.id,
-         ((.adapterConfig.container.memoryMb // 2048) | tostring),
+         ((.adapterConfig.container.memoryMb // 1024) | tostring),
          ((.adapterConfig.container.cpus // 1) | tostring),
          ((.adapterConfig.container.pidsLimit // 512) | tostring)] | join("|")] | join("\n")' <<<"$body" 2>/dev/null
 }
