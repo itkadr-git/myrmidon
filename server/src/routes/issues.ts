@@ -420,6 +420,7 @@ const MAX_ISSUE_COMMENT_LIMIT = 500;
 // in the shared schema, so the refine is preserved via superRefine here.
 const updateIssueRouteSchema = updateIssueSchema.safeExtend({
   interrupt: z.boolean().optional(),
+  labels: z.array(z.string().trim().min(1).max(48)).max(20).optional(),
 });
 const queuedCommentMutationTargetSchema = z.object({
   queueId: z.string().min(1),
@@ -3738,7 +3739,7 @@ export function issueRoutes(
           .from(issueLabels)
           .innerJoin(labels, eq(issueLabels.labelId, labels.id))
           .where(eq(issueLabels.issueId, issue.id));
-        labelsForIssue = rows.map((row) => row.name);
+        labelsForIssue = Array.isArray(rows) ? rows.map((row: any) => row?.name).filter(Boolean) : [];
       } catch {
         // Fallback for mock db
       }
@@ -3750,9 +3751,10 @@ export function issueRoutes(
         issueId: issue.id,
       }).catch(() => issue.casteKey ?? null);
     }
-    const project = issue.projectId
-      ? await projectsSvc.getById(issue.projectId).catch(() => null)
-      : null;
+    const project =
+      issue.projectId && typeof projectsSvc?.getById === "function"
+        ? await projectsSvc.getById(issue.projectId).catch(() => null)
+        : null;
     const patchedLabels = patch?.labels
       ? patch.labels.filter((label) => !labelsForIssue.some((row) => row.toLowerCase() === label.toLowerCase()))
       : [];
@@ -12368,9 +12370,10 @@ export function issueRoutes(
         if ((rawCreateBody.assigneeUserId || requestedAgent?.role !== "engineer") && requiresEngineer({
           labels: Array.isArray(rawCreateBody.labels) ? rawCreateBody.labels as string[] : [],
           casteKey: explicitCaste,
-          projectDefaultCasteKey: rawCreateBody.projectId
-            ? (await projectsSvc.getById(rawCreateBody.projectId).catch(() => null))?.defaultCasteKey ?? null
-            : null,
+          projectDefaultCasteKey:
+            rawCreateBody.projectId && typeof projectsSvc?.getById === "function"
+              ? (await projectsSvc.getById(rawCreateBody.projectId).catch(() => null))?.defaultCasteKey ?? null
+              : null,
           harnessKind: typeof rawCreateBody.harnessKind === "string" ? rawCreateBody.harnessKind : null,
           executionWorkspacePreference: typeof rawCreateBody.executionWorkspacePreference === "string"
             ? rawCreateBody.executionWorkspacePreference as any
@@ -13586,6 +13589,7 @@ export function issueRoutes(
         hiddenAt: hiddenAtRaw,
         blockerMetadata: blockerMetadataRaw,
         onBehalfOfUserId: _requestedOnBehalfOfUserId,
+        labels: _patchLabels,
         ...updateFields
       } = req.body;
       if (existing.conversationAgentId && req.actor.type === "board" && commentBody) {
