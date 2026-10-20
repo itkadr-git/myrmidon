@@ -16,6 +16,19 @@ Service texts (command replies, refusals, status lines) follow the language
 of the linked board user, and the run status line and long answers can be
 shown as editable, split messages (opt-in settings).
 
+## Channel connector fallback
+
+The Telegram bridge can route its themes through a channel connector. The
+`MYRMIDON_CHANNEL_CONNECTOR_BRIDGE` switch is off by default; enabling it
+requires a server restart. When enabled, the connector handles the symbols it
+provides. If it throws, rejects, or times out, Myrmidon logs and counts the
+fallback and uses the legacy bridge symbol once. The per-call timeout is
+`MYRMIDON_CHANNEL_CONNECTOR_BRIDGE_TIMEOUT_MS` (default `15000` ms); an unset,
+invalid, or non-positive value keeps that default. Fallbacks are counted in
+`myrmidon_adapter_fallback_total` on `/metrics`. See the
+[connector settings](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/SETTINGS.md)
+and [CH-CONNECTOR G change note](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/changes/1.6.6-ch-connector-g-bridge-fallback.md).
+
 ## Decision cards in Telegram
 
 When an agent needs the owner's decision — a question card or a
