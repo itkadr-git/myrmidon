@@ -1,7 +1,4 @@
 # Myrmidon settings
-
-- `MYRMIDON_REDACT_URL`, `MYRMIDON_REDACT_MODE`, `MYRMIDON_REDACT_SCORE`, and `MYRMIDON_REDACT_TIMEOUT_SECONDS` configure the LiteLLM REDACT adapter in `tools/redact/litellm_guardrail.py`; values are read from the operator-provided environment at process startup and require no restart by this code change.
-
 > Russian version: [SETTINGS.ru.md](SETTINGS.ru.md)
 
 Our settings are environment variables `MYRMIDON_<AREA>_<NAME>`. Vendor `PAPERCLIP_*`
