@@ -112,13 +112,13 @@ export function DeployJobsPanelView({
 
       {state?.history ? (
         <details className="text-sm">
-          <summary className="cursor-pointer text-muted-foreground">Update journal ({state.history.length})</summary>
+          <summary className="cursor-pointer text-muted-foreground">Previous deploys ({state.history.length})</summary>
           <div className="mt-2 flex gap-2">
             <select aria-label="Update mode" value={modeFilter} onChange={(event) => setModeFilter(event.target.value)}>
               <option value="">All modes</option><option value="manual">Manual</option><option value="auto">Automatic</option><option value="canary">Canary</option>
             </select>
             <select aria-label="Update outcome" value={outcomeFilter} onChange={(event) => setOutcomeFilter(event.target.value)}>
-              <option value="">All outcomes</option><option value="succeeded">Succeeded</option><option value="rollback">Rollback</option><option value="aborted">Aborted</option>
+              <option value="">All outcomes</option><option value="succeeded">Succeeded</option><option value="rollback">Rollback</option><option value="aborted">Cancelled</option>
             </select>
           </div>
           <ul className="mt-2 space-y-1">
