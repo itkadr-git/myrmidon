@@ -43,6 +43,11 @@ import type {
   PaperclipPluginManifestV1,
 } from "@paperclipai/shared";
 import { pluginRegistryService } from "./plugin-registry.js";
+import {
+  listPluginProviderModels,
+  removePluginProviderModels,
+  replacePluginProviderModels,
+} from "../myrmidon/plugin-provider-models.js";
 import { pluginLoader, type PluginLoader } from "./plugin-loader.js";
 import type { PluginWorkerManager, WorkerStartOptions } from "./plugin-worker-manager.js";
 import { badRequest, notFound } from "../errors.js";
@@ -268,6 +273,12 @@ export interface PluginLifecycleManagerOptions {
   /** Plugin loader instance. Falls back to the default if omitted. */
   loader?: PluginLoader;
 
+  /** Synchronizes provider models and agent-key allowlists on lifecycle changes. */
+  providerModelSync?: {
+    sync(companyId: string, plugin: PluginRecord): Promise<void>;
+    remove(companyId: string, plugin: PluginRecord): Promise<void>;
+  };
+
   /**
    * Worker process manager. When provided, lifecycle transitions that bring
    * a plugin online (load, enable, upgrade-to-ready) will start the worker
@@ -309,6 +320,7 @@ export function pluginLifecycleManager(
   // as well as the new options object form.
   let loaderArg: PluginLoader | undefined;
   let workerManager: PluginWorkerManager | undefined;
+  let providerModelSync: PluginLifecycleManagerOptions["providerModelSync"];
 
   if (options && typeof options === "object" && "discoverAll" in options) {
     // Legacy: second arg is a PluginLoader directly
@@ -317,6 +329,7 @@ export function pluginLifecycleManager(
     const opts = options as PluginLifecycleManagerOptions;
     loaderArg = opts.loader;
     workerManager = opts.workerManager;
+    providerModelSync = opts.providerModelSync;
   }
 
   const registry = pluginRegistryService(db);
@@ -362,6 +375,10 @@ export function pluginLifecycleManager(
 
     if (!updated) throw notFound(`Plugin not found after status update: ${pluginId}`);
     const result = updated as PluginRecord;
+    if (to !== "ready") {
+      removePluginProviderModels(result.companyId, pluginId);
+      await providerModelSync?.remove(result.companyId, result);
+    }
 
     log.info(
       { pluginId, pluginKey: result.pluginKey, from: previousStatus, to },
@@ -414,21 +431,36 @@ export function pluginLifecycleManager(
     }
   }
 
-  async function activateReadyPlugin(pluginId: string): Promise<void> {
+  async function activateReadyPlugin(
+    pluginId: string,
+    pluginCompanyId: string,
+    readyPlugin?: PluginRecord,
+  ): Promise<void> {
     const supportsRuntimeActivation =
       typeof pluginLoaderInstance.hasRuntimeServices === "function"
       && typeof pluginLoaderInstance.loadSingle === "function";
     if (!supportsRuntimeActivation || !pluginLoaderInstance.hasRuntimeServices()) {
+      const models = listPluginProviderModels(readyPlugin ? [readyPlugin] : []);
+      if (models.length > 0) replacePluginProviderModels(pluginCompanyId, pluginId, models);
+      else removePluginProviderModels(pluginCompanyId, pluginId);
+      await providerModelSync?.sync(pluginCompanyId, readyPlugin as PluginRecord);
       return;
     }
 
     const loadResult = await pluginLoaderInstance.loadSingle(pluginId);
     if (!loadResult.success) {
+      removePluginProviderModels(pluginCompanyId, pluginId);
       throw new Error(
         loadResult.error
         ?? `Failed to activate plugin ${loadResult.plugin.pluginKey}`,
       );
     }
+
+    const loadedPlugin = loadResult.plugin as PluginRecord;
+    const models = listPluginProviderModels([loadedPlugin]);
+    if (models.length > 0) replacePluginProviderModels(pluginCompanyId, pluginId, models);
+    else removePluginProviderModels(pluginCompanyId, pluginId);
+    await providerModelSync?.sync(pluginCompanyId, loadedPlugin);
   }
 
   async function deactivatePluginRuntime(
@@ -465,7 +497,17 @@ export function pluginLifecycleManager(
      */
     async load(pluginId: string): Promise<PluginRecord> {
       const result = await transition(pluginId, "ready");
-      await activateReadyPlugin(pluginId);
+      try {
+        await activateReadyPlugin(pluginId, result.companyId, result);
+      } catch (error) {
+        // A failed activation must not leave a ready plugin or visible models.
+        await transition(
+          pluginId,
+          "error",
+          error instanceof Error ? error.message : String(error),
+        );
+        throw error;
+      }
 
       emitDomain("plugin.loaded", {
         pluginId,
@@ -499,8 +541,28 @@ export function pluginLifecycleManager(
         );
       }
 
-      const result = await transition(pluginId, "ready", null, plugin);
-      await activateReadyPlugin(pluginId);
+      let result: PluginRecord;
+      try {
+        result = await transition(pluginId, "ready", null, plugin);
+        await activateReadyPlugin(pluginId, plugin.companyId, result);
+      } catch (error) {
+        if (result!) {
+          try {
+            await transition(
+              pluginId,
+              "error",
+              error instanceof Error ? error.message : String(error),
+              result,
+            );
+          } catch {
+            // Preserve the activation error when secondary cleanup also fails.
+            removePluginProviderModels(plugin.companyId, pluginId);
+          }
+        } else {
+          removePluginProviderModels(plugin.companyId, pluginId);
+        }
+        throw error;
+      }
       emitDomain("plugin.enabled", {
         pluginId,
         pluginKey: result.pluginKey,

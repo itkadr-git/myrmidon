@@ -129,7 +129,7 @@ import { myrmidonBrowserConsoleRoutes } from "./myrmidon/browser-console/wiring.
 import { myrmidonLitellmCostsRoutes } from "./myrmidon/litellm-costs/routes.js"; // myrmidon(M2-A)
 import { myrmidonLitellmKeysRoutes } from "./myrmidon/litellm-keys/routes.js"; // myrmidon(M2-B)
 // myrmidon(1.6.1 MODEL-PROVIDERS A): company model-provider registry, secrets, settings API
-import { myrmidonModelProviderRoutes } from "./myrmidon/model-providers/wiring.js";
+import { myrmidonModelProviderRoutes, createPluginProviderModelSync } from "./myrmidon/model-providers/wiring.js";
 import { bindModelProviderPluginLifecycle } from "./myrmidon/model-providers/plugin-lifecycle.js"; // myrmidon(1.6.6 OPE-7198)
 import { myrmidonAgentExchangeRoutes } from "./myrmidon/agent-exchange/wiring.js"; // myrmidon(1.7-AGENT-EXCHANGE-A)
 // myrmidon(1.7-AGENT-EXCHANGE-B): the owner-facing feed of discussion rooms and
@@ -1323,7 +1323,7 @@ export async function createApp(
       { scheduler, jobStore },
       { workerManager },
       { toolDispatcher },
-      { workerManager },
+      { workerManager, providerModelSync: createPluginProviderModelSync(db) },
       { toolGateway },
     ),
   );

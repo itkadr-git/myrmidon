@@ -270,6 +270,20 @@ export function createLitellmSyncService(deps: LitellmSyncServiceDeps, trigger?:
   }
 
   return {
+    registerPluginModel: async (input: {
+      modelName: string;
+      providerType: string;
+      baseUrl: string;
+      credentialSecretName: string;
+    }) => {
+      await deps.litellm.registerModel({
+        litellmModelName: input.modelName,
+        providerType: input.providerType,
+        baseUrl: input.baseUrl,
+        credentialSecretName: input.credentialSecretName,
+      });
+    },
+    unregisterModel: (modelName: string) => deps.litellm.unregisterModel(modelName),
     syncModel,
     syncProviderModels,
     handleModelEnableDisable,

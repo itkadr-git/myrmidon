@@ -16,6 +16,7 @@ import {
   resolveExternalAdapterRegistration,
   setOverridePaused,
 } from "../adapters/registry.js";
+import { getPluginProviderModels, replacePluginProviderModels, removePluginProviderModels } from "../myrmidon/plugin-provider-models.js";
 
 vi.mock("@paperclipai/paperclip-runner/live", () => ({ probeAcpxClaudeInstallation: vi.fn(async () => undefined) }));
 
@@ -37,6 +38,18 @@ const externalAdapter: ServerAdapterModule = {
 };
 
 describe("server adapter registry", () => {
+  it("registers plugin models only for the owning company", async () => {
+    const model = { pluginId: "p1", pluginKey: "chatgpt-pool", provider: "chatgpt-pool", modelId: "chatgpt-pool/gpt-4o", label: "GPT-4o" };
+    replacePluginProviderModels("company-a", "p1", [model]);
+    try {
+      expect(await listAdapterModels("chatgpt-pool", "company-a")).toEqual([{ id: "chatgpt-pool/gpt-4o", label: "GPT-4o" }]);
+      expect(await listAdapterModels("chatgpt-pool", "company-b")).toEqual([]);
+    } finally {
+      removePluginProviderModels("company-a", "p1");
+    }
+    expect(getPluginProviderModels("company-a")).toEqual([]);
+  });
+
   beforeEach(() => {
     unregisterServerAdapter("external_test");
     unregisterServerAdapter("hermes_local");

@@ -29,6 +29,7 @@ import { Router } from "express";
 import type { Request, Response } from "express";
 import { and, desc, eq, gte } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
+import type { PluginRecord } from "@paperclipai/shared";
 import {
   agents,
   companies,
@@ -49,6 +50,7 @@ import {
 } from "@paperclipai/shared";
 import { pluginRegistryService } from "../services/plugin-registry.js";
 import { pluginLifecycleManager } from "../services/plugin-lifecycle.js";
+import { myrmidonModelProviderRoutes } from "../myrmidon/model-providers/wiring.js";
 import {
   getPluginUiContributionMetadata,
   listMissingDeclaredPluginEntrypoints,
@@ -443,6 +445,11 @@ export interface PluginRouteBridgeDeps {
   workerManager: PluginWorkerManager;
   /** Optional stream bus for SSE push from worker to UI. */
   streamBus?: PluginStreamBus;
+  /** Optional provider model lifecycle synchronization. */
+  providerModelSync?: {
+    sync(companyId: string, plugin: PluginRecord): Promise<void>;
+    remove(companyId: string, plugin: PluginRecord): Promise<void>;
+  };
 }
 
 export interface PluginRouteToolGatewayDeps {
@@ -538,9 +545,11 @@ export function pluginRoutes(
 ) {
   const router = Router();
   const registry = pluginRegistryService(db);
+  const providerRoutes = myrmidonModelProviderRoutes(db);
   const lifecycle = pluginLifecycleManager(db, {
     loader,
     workerManager: bridgeDeps?.workerManager ?? webhookDeps?.workerManager,
+    providerModelSync: bridgeDeps?.providerModelSync,
   });
   const issuesSvc = issueService(db);
 
@@ -1871,6 +1880,8 @@ export function pluginRoutes(
     req.on("close", safeUnsubscribe);
     res.on("error", safeUnsubscribe);
   });
+
+  router.use("/model-providers", providerRoutes);
 
   router.use("/plugins/:pluginId/api", async (req, res) => {
     if (!bridgeDeps) {

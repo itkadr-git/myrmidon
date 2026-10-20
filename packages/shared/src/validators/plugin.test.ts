@@ -33,6 +33,18 @@ describe("plugin capability constants", () => {
 });
 
 describe("plugin manifest validators", () => {
+  it("accepts provider model declarations and rejects duplicate ids", () => {
+    const base = {
+      id: "paperclip.provider-models", apiVersion: 1, version: "0.1.0",
+      displayName: "Provider", description: "Provider models", author: "Paperclip",
+      categories: ["automation"], capabilities: ["ui.dashboardWidget.register"],
+      entrypoints: { worker: "./worker.js" },
+      providerModels: { provider: "example", baseUrl: "https://api.example.com/v1", credentialSecretName: "example-key", models: [{ id: "m1" }] },
+    };
+    expect(pluginManifestV1Schema.parse(base).providerModels?.models).toHaveLength(1);
+    expect(pluginManifestV1Schema.safeParse({ ...base, providerModels: { ...base.providerModels, models: [{ id: "m1" }, { id: "m1" }] } }).success).toBe(false);
+  });
+
   it("accepts existing-style plugins that do not request access or authorization capabilities", () => {
     const parsed = pluginManifestV1Schema.parse({
       id: "paperclip.compat-dashboard",

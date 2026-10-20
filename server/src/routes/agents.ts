@@ -3382,7 +3382,7 @@ export function agentRoutes(
     }
     const models = refresh
       ? await refreshAdapterModels(modelAdapterType)
-      : await listAdapterModels(modelAdapterType);
+      : await listAdapterModels(modelAdapterType, companyId);
     res.json(models);
   });
 

@@ -385,7 +385,7 @@ export async function listModelCandidates(
 
   let discovered: { id: string; label: string }[] = [];
   try {
-    discovered = await listAdapterModels(adapterType);
+    discovered = await listAdapterModels(adapterType, companyId);
   } catch {
     // Model discovery failing must not make /model unusable; fall back to the card's own values.
     discovered = [];

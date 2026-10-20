@@ -8,6 +8,12 @@ const manifest: PaperclipPluginManifestV1 = {
   description: "A Paperclip plugin",
   author: "Plugin Author",
   categories: ["connector"],
+  providerModels: {
+    provider: "example-provider",
+    baseUrl: "https://api.example.com/v1",
+    credentialSecretName: "example-provider-key",
+    models: [{ id: "example-model", label: "Example Model" }],
+  },
   capabilities: [
     "events.subscribe",
     "plugin.state.read",
