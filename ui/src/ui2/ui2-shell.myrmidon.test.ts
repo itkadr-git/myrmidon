@@ -72,13 +72,14 @@ describe("ui2 clean-room boundary", () => {
 });
 
 describe("ui2 integration contracts (UI-0b / UI-0c)", () => {
-  it("the route table exposes the six UI-0c entries plus the real Commander chat screen (1.6)", async () => {
+  it("the route table exposes Commander, six UI-0c entries, and Commander chat (1.6)", async () => {
     // myrmidon(1.6-CTO-CHAT-A): importing routes.tsx now also pulls in the
     // real Commander chat screen (api client, react-query, auth) — give the
     // module graph more than the default 5s to load.
     const { UI2_ROUTE_TABLE } = await import("./routes");
     expect(UI2_ROUTE_TABLE.map((e) => e.key).sort()).toEqual([
       "agent-overview",
+      "commander",
       "commander-chat",
       "costs",
       "decisions",
