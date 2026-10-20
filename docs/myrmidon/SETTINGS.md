@@ -834,6 +834,21 @@ a human under `mode: types`). The one-button emergency off is
 |---|---|---|---|---|
 | `MYRMIDON_BROWSER_BRIDGE_PEPPER` | EXTCASE-B | unset | HMAC pepper for pairing codes and bridge tokens of the bridge: only digests live in the database; the presented code (exchanged for a device token) and the token at the extension's `/bridge/v1` connection are verified against them | Unset — the process takes a random pepper at its startup and logs a warning: everything issued before the restart stops validating, devices re-pair (the panel issues a new code). Set in the board's environment; the value is a secret, never stored in the repo or logs. The pepper is per-instance, which is why it is not kept in the settings the panel reads and edits |
 
+## Settings
+
+The knowledge-distill settings are documented in the dedicated section below.
+
+| `MYRMIDON_DISTILL_ENABLED` | 1.6.6-K5 | unset (off) | Enables the knowledge-distill sweep when set to `1`; other values keep it off | unset, empty, or any value other than `1` — off |
+| `MYRMIDON_DISTILL_INTERVAL_SEC` | 1.6.6-K5 | `86400` | Minimum interval between knowledge-distill passes | unset, empty, non-numeric, zero, or negative — default |
+| `MYRMIDON_DISTILL_WINDOW_SEC` | 1.6.6-K5 | `86400` | Look-back window for eligible knowledge-distill tasks | unset, empty, non-numeric, zero, or negative — default |
+| `MYRMIDON_DISTILL_MAX_INPUT_TOKENS` | 1.6.6-K5 | implementation default | Maximum input-token budget for one distill task | unset or invalid — implementation default |
+| `MYRMIDON_DISTILL_MAX_DURATION_SEC` | 1.6.6-K5 | implementation default | Maximum duration budget for one distill task | unset or invalid — implementation default |
+| `MYRMIDON_DISTILL_MAX_TASKS` | 1.6.6-K5 | `150` | Maximum tasks processed per sweep | unset, empty, non-numeric, zero, or negative — default |
+| `MYRMIDON_DISTILL_MODEL` | 1.6.6-K5 | implementation default | Named model used by the distill gateway | unset or empty — implementation default |
+| `MYRMIDON_DISTILL_GATEWAY_URL` | 1.6.6-K5 | unset | Gateway URL; required together with the named secret before a sweep can send | unset or empty — gateway unavailable, fail closed |
+| `MYRMIDON_DISTILL_KEY_SECRET` | 1.6.6-K5 | unset | Secret-store name for the gateway key; the value is never logged or returned | unset or empty — gateway unavailable, fail closed |
+| `MYRMIDON_DISTILL_AUTO_ACCEPT` | 1.6.6-K5 | unset | Comma-separated knowledge sections that may be auto-accepted | unset or empty — no sections are auto-accepted |
+
 ## Settings in the agent record (not environment variables)
 
 | Field | Function | Default | What it does | How to disable / special |
