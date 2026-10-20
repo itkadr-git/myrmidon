@@ -54,7 +54,7 @@ func (s *server) imageAllowed(image string) bool {
 		return false
 	}
 	for _, allowed := range s.cfg.Images {
-		prefix, wildcard, ok := strings.Cut(allowed, "*")
+		prefix, _, ok := strings.Cut(allowed, "*")
 		if (ok && strings.HasPrefix(image, prefix)) || (!ok && image == allowed) {
 			return true
 		}
