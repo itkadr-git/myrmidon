@@ -248,6 +248,15 @@ export function errorHandler(
     return;
   }
 
+  if (
+    typeof err === "object" &&
+    err !== null &&
+    ((err as { status?: number }).status === 413 || (err as { type?: string }).type === "entity.too.large")
+  ) {
+    res.status(400).json({ error: "Request payload too large" });
+    return;
+  }
+
   const rootError = err instanceof Error ? err : new Error(String(err));
 
   // The client tore down the connection mid-request (closed tab, dropped

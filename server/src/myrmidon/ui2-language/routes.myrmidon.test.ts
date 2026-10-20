@@ -112,6 +112,7 @@ describe("myrmidon(UI2-I18N) ui2 language: reading the preference", () => {
     // setting the English fallback decides, and the report says so.
     expect(res.body).toEqual({
       language: "en",
+      catalogs: {},
       updatedAt: null,
       telegramBridge: { source: "default", language: "en" },
     });
@@ -229,7 +230,7 @@ describe("myrmidon(UI2-I18N) ui2 language: writing the preference", () => {
   it("persists and returns a validated user-owned custom catalog", async () => {
     const h = harness();
     const catalog = { language: { label: "Custom" } };
-    const put = await request(h.app).put("/myrmidon/ui2/language/me/catalog").send({ language: "ru", catalog }).expect(200);
+    const put = await request(h.app).put("/api/myrmidon/ui2/language/me/catalog").send({ language: "ru", catalog }).expect(200);
     expect(put.body.catalogs.ru).toEqual(catalog);
     const get = await request(h.app).get(URL).expect(200);
     expect(get.body.catalogs.ru).toEqual(catalog);
@@ -237,7 +238,7 @@ describe("myrmidon(UI2-I18N) ui2 language: writing the preference", () => {
 
   it("rejects invalid custom catalog locale and excessive payload", async () => {
     const h = harness();
-    await request(h.app).put("/myrmidon/ui2/language/me/catalog").send({ language: "fr", catalog: {} }).expect(400);
-    await request(h.app).put("/myrmidon/ui2/language/me/catalog").send({ language: "ru", catalog: { a: "x".repeat(270000) } }).expect(400);
+    await request(h.app).put("/api/myrmidon/ui2/language/me/catalog").send({ language: "fr", catalog: {} }).expect(400);
+    await request(h.app).put("/api/myrmidon/ui2/language/me/catalog").send({ language: "ru", catalog: { a: "x".repeat(270000) } }).expect(400);
   });
 });

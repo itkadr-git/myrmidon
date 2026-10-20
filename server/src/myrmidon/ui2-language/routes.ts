@@ -13,7 +13,7 @@
 
 import { Router, type Request, type Response } from "express";
 import type { Db } from "@paperclipai/db";
-import { upsertUi2CatalogSchema, upsertUi2LanguageSchema, type Ui2Language } from "@paperclipai/shared";
+import { ui2CatalogSchema, ui2LanguageSchema, upsertUi2LanguageSchema, type Ui2Language } from "@paperclipai/shared";
 import { validate } from "../../middleware/validate.js";
 import { getActorInfo } from "../../routes/authz.js";
 // myrmidon(1.7-TG-LOCALE): the Settings → Language screen shows the source of
@@ -73,11 +73,23 @@ export function ui2LanguageRoutes(db: Db, deps?: Ui2LanguageServiceDeps) {
     });
   });
 
-  router.put("/myrmidon/ui2/language/me/catalog", validate(upsertUi2CatalogSchema), async (req, res) => {
+  router.put("/myrmidon/ui2/language/me/catalog", async (req, res) => {
     const userId = requireBoardUserId(req, res);
     if (!userId) return;
-    const { language, catalog } = req.body as { language: Ui2Language; catalog: Record<string, unknown> };
-    await service.upsertCatalog(userId, language, catalog);
+    const body = req.body as { language?: unknown; catalog?: unknown };
+    const languageResult = ui2LanguageSchema.safeParse(body?.language);
+    const catalogResult = ui2CatalogSchema.safeParse(body?.catalog);
+    if (!languageResult.success || !catalogResult.success) {
+      res.status(400).json({
+        error: "Invalid catalog",
+        issues: [
+          ...(languageResult.success ? [] : languageResult.error.issues),
+          ...(catalogResult.success ? [] : catalogResult.error.issues),
+        ],
+      });
+      return;
+    }
+    await service.upsertCatalog(userId, languageResult.data, catalogResult.data);
     res.json({ catalogs: await service.getCatalogs(userId) });
   });
 
@@ -99,6 +111,18 @@ export function ui2LanguageRoutes(db: Db, deps?: Ui2LanguageServiceDeps) {
       await service.logActivity(entry);
     }
     res.json(result);
+  });
+
+  router.use((err: unknown, _req: Request, res: Response, next: (error?: unknown) => void) => {
+    if (
+      typeof err === "object" &&
+      err !== null &&
+      ((err as { status?: number }).status === 413 || (err as { type?: string }).type === "entity.too.large")
+    ) {
+      res.status(400).json({ error: "Request payload too large" });
+      return;
+    }
+    next(err);
   });
 
   return router;
