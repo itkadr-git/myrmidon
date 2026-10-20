@@ -14,9 +14,9 @@ export function listPluginProviderModels(plugins: PluginRecord[]): DynamicPlugin
     .flatMap((plugin) => {
       const declaration = (plugin.manifestJson as { providerModels?: PluginProviderModelDeclaration } | null)?.providerModels;
       if (!declaration) return [];
-      return declaration.models.map((model) => ({
+      return declaration.models.map((model: PluginProviderModelDeclaration["models"][number]) => ({
         modelId: `${declaration.provider}/${model.id}`,
-        label: model.label ?? model.id,
+        label: model.name ?? model.id,
         pluginId: plugin.id,
         pluginKey: plugin.pluginKey,
         provider: declaration.provider,

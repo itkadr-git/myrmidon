@@ -14,8 +14,8 @@ const manifest: PaperclipPluginManifestV1 = {
     baseUrl: "https://api.openai.com/v1",
     credentialSecretName: "chatgpt-pool-api-key",
     models: [
-      { id: "gpt-4o", label: "GPT-4o" },
-      { id: "gpt-4o-mini", label: "GPT-4o mini" },
+      { id: "gpt-4o", name: "GPT-4o" },
+      { id: "gpt-4o-mini", name: "GPT-4o mini" },
     ],
   },
   entrypoints: { worker: "./dist/worker.js" },

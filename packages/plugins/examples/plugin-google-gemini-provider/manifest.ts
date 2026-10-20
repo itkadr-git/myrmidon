@@ -14,8 +14,8 @@ const manifest: PaperclipPluginManifestV1 = {
     baseUrl: "https://generativelanguage.googleapis.com/v1beta",
     credentialSecretName: "google-ai-api-key",
     models: [
-      { id: "gemini-2.5-pro", label: "Gemini 2.5 Pro" },
-      { id: "gemini-2.5-flash", label: "Gemini 2.5 Flash" },
+      { id: "gemini-2.5-pro", name: "Gemini 2.5 Pro" },
+      { id: "gemini-2.5-flash", name: "Gemini 2.5 Flash" },
     ],
   },
   entrypoints: { worker: "./dist/worker.js" },

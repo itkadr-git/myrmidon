@@ -12,7 +12,7 @@ const manifest: PaperclipPluginManifestV1 = {
     provider: "example-provider",
     baseUrl: "https://api.example.com/v1",
     credentialSecretName: "example-provider-key",
-    models: [{ id: "example-model", label: "Example Model" }],
+    models: [{ id: "example-model", name: "Example Model" }],
   },
   capabilities: [
     "events.subscribe",

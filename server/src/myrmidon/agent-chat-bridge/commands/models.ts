@@ -322,6 +322,7 @@ export async function listModelCandidates(
   adapterType: string,
   cardAdapterConfig: Record<string, unknown>,
   catalog: ChatModelCatalogReader | null = null,
+  companyId?: string,
 ): Promise<ChatModelList> {
   const seen = new Set<string>();
   const candidates: ChatModelCandidate[] = [];
