@@ -86,11 +86,11 @@ describe("ui2 integration contracts (UI-0b / UI-0c)", () => {
       "fleet",
       "knowledge",
       "knowledge-page",
+      "quality",
       "settings-autonomy-regulations",
       "settings-language",
       "settings-runs-queue",
       "settings-system",
-      "quality",
       "system",
     ]);
     for (const entry of UI2_ROUTE_TABLE) {

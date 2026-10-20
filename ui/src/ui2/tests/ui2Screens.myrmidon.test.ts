@@ -25,11 +25,11 @@ describe("myrmidon(UI2) route table integration", () => {
       "fleet",
       "knowledge",
       "knowledge-page",
+      "quality",
       "settings-autonomy-regulations",
       "settings-language",
       "settings-runs-queue",
       "settings-system",
-      "quality",
       "system",
     ]);
   });
