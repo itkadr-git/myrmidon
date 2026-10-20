@@ -26,6 +26,19 @@ export function poolChatService(db: Db, resolveTransport: PoolChatTransportResol
     },
     async submit(input: { companyId: string; moduleId: string; channel: string; subjectId: string; idempotencyKey: string; body: PoolChatRequestBody }) {
       const hash = canonicalRequestHash(input.body);
+      // Resolve an existing logical request before reading mutable module
+      // configuration. Replays must remain observable after disable/reconfig.
+      const existing = await db.select().from(poolChatRequests).where(and(
+        eq(poolChatRequests.companyId, input.companyId),
+        eq(poolChatRequests.moduleId, input.moduleId),
+        eq(poolChatRequests.channel, input.channel),
+        eq(poolChatRequests.subjectId, input.subjectId),
+        eq(poolChatRequests.idempotencyKey, input.idempotencyKey),
+      )).then((rows) => rows[0]);
+      if (existing) {
+        if (existing.requestHash !== hash) throw conflict("Idempotency key was reused with a different request");
+        return existing;
+      }
       const module = await db.select({ provider: poolChatModuleInstances.provider, config: poolChatModuleInstances.config }).from(poolChatModuleInstances).where(and(eq(poolChatModuleInstances.companyId, input.companyId), eq(poolChatModuleInstances.id, input.moduleId), eq(poolChatModuleInstances.status, "active"))).then((rows) => rows[0]);
       if (!module) throw notFound("Pool-chat module not found");
       const provider = providerOf(module.provider);
@@ -48,7 +61,14 @@ export function poolChatService(db: Db, resolveTransport: PoolChatTransportResol
       // observe the durable state rather than sending the request again.
       if (!outcome.created) return outcome.request;
       const transport = resolveTransport({ provider, moduleId: input.moduleId, config: { ...config, selectedAccountRef: outcome.accountRef } });
-      if (!transport) throw new HttpError(503, "Pool-chat provider transport is not configured");
+      if (!transport) {
+        await db.transaction(async (tx: any) => {
+          await tx.update(poolChatRequestAttempts).set({ state: "failed", failureCode: "provider_not_configured", failureDetail: "provider_transport_unavailable", settledUnits: 0, updatedAt: new Date() }).where(and(eq(poolChatRequestAttempts.requestId, outcome.request.id), eq(poolChatRequestAttempts.attemptNo, 1)));
+          await tx.update(poolChatQuotaReservations).set({ state: "released", settledUnits: 0, updatedAt: new Date() }).where(eq(poolChatQuotaReservations.requestId, outcome.request.id));
+          await tx.update(poolChatRequests).set({ status: "failed", charged: false, updatedAt: new Date() }).where(eq(poolChatRequests.id, outcome.request.id));
+        });
+        throw new HttpError(503, "Pool-chat provider transport is not configured");
+      }
       let request = outcome.request;
       try {
         const result = await transport.send({ model: input.body.model, messages: input.body.messages, maxOutputTokens: input.body.maxOutputTokens ?? 2048 });
