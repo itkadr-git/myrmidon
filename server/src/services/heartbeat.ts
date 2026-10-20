@@ -29842,7 +29842,6 @@ export function heartbeatService(
                 harnessKind: issue.harnessKind,
                 executionWorkspacePreference: issue.executionWorkspacePreference,
               })) {
-                const activityPublications: ActivityPublication[] = [];
                 const requeued = await issuesSvc.update(issue.id, {
                   status: "todo",
                   assigneeAgentId: null,
@@ -29854,8 +29853,19 @@ export function heartbeatService(
                   actorAgentId: null,
                   actorUserId: null,
                   companyGuard: issue.companyId,
-                }, tx, activityPublications);
+                }, tx);
                 if (!requeued) throw new Error("Engineer workspace recovery could not update the issue");
+                await logActivity(tx as unknown as Db, {
+                  companyId: issue.companyId,
+                  actorType: "system",
+                  actorId: "system",
+                  agentId,
+                  runId: null,
+                  action: "issue.engineer_workspace_requeued",
+                  entityType: "issue",
+                  entityId: issue.id,
+                  details: { reason: WORKSPACE_WORKTREE_REQUIRES_PROJECT_CODE },
+                });
                 return { kind: "skipped" as const };
               }
               const now = new Date();

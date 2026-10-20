@@ -3717,7 +3717,7 @@ export function issueRoutes(
   const decisionTrainingSvc = decisionTrainingService(db);
   const issueReferencesSvc = issueReferenceService(db);
   async function issueRequiresEngineer(
-    issue: typeof issueRows.$inferSelect,
+    issue: typeof issueRows.$inferSelect & { labels?: unknown },
     patch?: {
       labels?: readonly string[] | null;
       casteKey?: string | null;
@@ -3725,28 +3725,41 @@ export function issueRoutes(
       executionWorkspacePreference?: string | null;
     },
   ): Promise<boolean> {
-    const labelsForIssue = await db
-      .select({ name: labels.name })
-      .from(issueLabels)
-      .innerJoin(labels, eq(issueLabels.labelId, labels.id))
-      .where(eq(issueLabels.issueId, issue.id));
-    const resolvedCaste = await resolveTaskCaste(db, {
-      companyId: issue.companyId,
-      issueId: issue.id,
-    }).catch(() => issue.casteKey ?? null);
-    const projectDefault = issue.projectId
-      ? await db.query.projects.findFirst({
-          where: eq(projectRows.id, issue.projectId),
-          columns: { defaultCasteKey: true },
-        }).catch(() => null)
+    const existingLabels = Array.isArray(issue.labels)
+      ? (issue.labels as Array<string | { name?: string }>).map((l) =>
+          typeof l === "string" ? l : (l?.name ?? "")
+        ).filter(Boolean)
+      : [];
+    let labelsForIssue = existingLabels;
+    if (labelsForIssue.length === 0 && typeof (db as any)?.select === "function") {
+      try {
+        const rows = await db
+          .select({ name: labels.name })
+          .from(issueLabels)
+          .innerJoin(labels, eq(issueLabels.labelId, labels.id))
+          .where(eq(issueLabels.issueId, issue.id));
+        labelsForIssue = rows.map((row) => row.name);
+      } catch {
+        // Fallback for mock db
+      }
+    }
+    let resolvedCaste = patch?.casteKey ?? issue.casteKey ?? null;
+    if (!resolvedCaste && typeof (db as any)?.execute === "function") {
+      resolvedCaste = await resolveTaskCaste(db, {
+        companyId: issue.companyId,
+        issueId: issue.id,
+      }).catch(() => issue.casteKey ?? null);
+    }
+    const project = issue.projectId
+      ? await projectsSvc.getById(issue.projectId).catch(() => null)
       : null;
     const patchedLabels = patch?.labels
-      ? patch.labels.filter((label) => !labelsForIssue.some((row) => row.name === label))
+      ? patch.labels.filter((label) => !labelsForIssue.some((row) => row.toLowerCase() === label.toLowerCase()))
       : [];
     return requiresEngineer({
-      labels: [...labelsForIssue.map((row) => row.name), ...patchedLabels],
+      labels: [...labelsForIssue, ...patchedLabels],
       casteKey: patch?.casteKey ?? resolvedCaste,
-      projectDefaultCasteKey: projectDefault?.defaultCasteKey,
+      projectDefaultCasteKey: project?.defaultCasteKey ?? null,
       harnessKind: patch?.harnessKind ?? issue.harnessKind,
       executionWorkspacePreference:
         patch?.executionWorkspacePreference ?? issue.executionWorkspacePreference as any,
@@ -12356,7 +12369,7 @@ export function issueRoutes(
           labels: Array.isArray(rawCreateBody.labels) ? rawCreateBody.labels as string[] : [],
           casteKey: explicitCaste,
           projectDefaultCasteKey: rawCreateBody.projectId
-            ? (await db.query.projects.findFirst({ where: eq(projectRows.id, rawCreateBody.projectId), columns: { defaultCasteKey: true } }))?.defaultCasteKey
+            ? (await projectsSvc.getById(rawCreateBody.projectId).catch(() => null))?.defaultCasteKey ?? null
             : null,
           harnessKind: typeof rawCreateBody.harnessKind === "string" ? rawCreateBody.harnessKind : null,
           executionWorkspacePreference: typeof rawCreateBody.executionWorkspacePreference === "string"

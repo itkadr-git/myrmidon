@@ -19,6 +19,7 @@ import { and, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import { agents, issues, type Db } from "@paperclipai/db";
 import {
   swarmRoleForUnassignedTask,
+  swarmRoleFromLabels,
   SWARM_CLAIM_QUEUE_ISSUE_STATUSES,
   SWARM_DEFAULT_UNASSIGNED_ROLE,
   type SwarmQueueCandidate,
@@ -96,7 +97,8 @@ export function unassignedTaskRoutedToRole(role: string) {
 
 /** JS twin of the SQL routing rule above, for issue mutation validation. */
 export function unassignedTaskRoutedToRoleByLabels(role: string, labels: readonly string[]): boolean {
-  return swarmRoleForUnassignedTask(labels) === role.trim().toLowerCase();
+  const effectiveRole = swarmRoleFromLabels(labels) ?? "general";
+  return effectiveRole === role.trim().toLowerCase();
 }
 
 export function engineerCasteRequired(

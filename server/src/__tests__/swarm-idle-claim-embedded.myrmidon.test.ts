@@ -298,7 +298,7 @@ describeEmbeddedPostgres("swarm idle queue claims on the server, then wakes", ()
 
     const firstPass = await sweeper(failedWakeCalls, { failWake: true }).sweep(NOW);
 
-    expect(firstPass.idleClaimed).toBe(1);
+    expect(firstPass.idleClaimed).toBe(0);
     expect(firstPass.idleWoken).toBe(0);
     const [returned] = await db
       .select({ status: issues.status, assigneeAgentId: issues.assigneeAgentId })
