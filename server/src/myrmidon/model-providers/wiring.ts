@@ -199,12 +199,13 @@ export function createPluginProviderModelSync(
       for (const modelName of modelNames) {
         if (!stillOwnedNames.has(modelName)) await gateway.unregisterModel(modelName);
       }
+      const removableModelNames = modelNames.filter((modelName) => !stillOwnedNames.has(modelName));
       await updateAgentAllowlistsForCompany(
         db,
         defaultAgentGatewayKeyDeps(db, env),
         companyId,
         [],
-        modelNames,
+        removableModelNames,
         true,
       );
     },

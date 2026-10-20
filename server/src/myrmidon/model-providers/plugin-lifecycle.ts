@@ -15,7 +15,7 @@ import { plugins as pluginsTable } from "@paperclipai/db";
 import {
   DEFAULT_CHATGPT_POOL_MODELS,
   registerModelProviderConnector,
-  unregisterModelProviderConnector,
+  unregisterModelProviderConnectorForPlugin,
   unregisterModelProviderConnectorsByPlugin,
   type PaperclipPluginManifestV1,
   type PluginRecord,
@@ -80,18 +80,11 @@ export function registerConnectorsForPlugin(plugin: {
 /** Unregisters connectors contributed by a disabled or uninstalled plugin. */
 export function unregisterConnectorsForPlugin(
   pluginKey: string,
-  manifestJson?: PaperclipPluginManifestV1 | null,
+  _manifestJson?: PaperclipPluginManifestV1 | null,
 ): void {
+  unregisterModelProviderConnectorForPlugin("chatgpt-pool", pluginKey);
+  unregisterModelProviderConnectorForPlugin("gemini", pluginKey);
   unregisterModelProviderConnectorsByPlugin(pluginKey);
-  const decls = manifestJson?.modelProviders;
-  if (Array.isArray(decls) && decls.length > 0) {
-    for (const d of decls) {
-      unregisterModelProviderConnector(d.type);
-    }
-  }
-  if (isChatGptPoolKey(pluginKey)) {
-    unregisterModelProviderConnector("chatgpt-pool");
-  }
 }
 
 export interface ModelProviderPluginLifecycleBinding {
