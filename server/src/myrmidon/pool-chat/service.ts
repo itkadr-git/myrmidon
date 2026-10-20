@@ -64,7 +64,7 @@ export function poolChatService(db: Db, resolveTransport: PoolChatTransportResol
       if (!transport) {
         await db.transaction(async (tx: any) => {
           await tx.update(poolChatRequestAttempts).set({ state: "failed", failureCode: "provider_not_configured", failureDetail: "provider_transport_unavailable", settledUnits: 0, updatedAt: new Date() }).where(and(eq(poolChatRequestAttempts.requestId, outcome.request.id), eq(poolChatRequestAttempts.attemptNo, 1)));
-          await tx.update(poolChatQuotaReservations).set({ state: "released", settledUnits: 0, updatedAt: new Date() }).where(eq(poolChatQuotaReservations.requestId, outcome.request.id));
+          await tx.update(poolChatQuotaReservations).set({ state: "released", settledUnits: 0, updatedAt: new Date() }).where(and(eq(poolChatQuotaReservations.requestId, outcome.request.id), eq(poolChatQuotaReservations.state, "reserved")));
           await tx.update(poolChatRequests).set({ status: "failed", charged: false, updatedAt: new Date() }).where(eq(poolChatRequests.id, outcome.request.id));
         });
         throw new HttpError(503, "Pool-chat provider transport is not configured");
@@ -73,15 +73,16 @@ export function poolChatService(db: Db, resolveTransport: PoolChatTransportResol
       try {
         const result = await transport.send({ model: input.body.model, messages: input.body.messages, maxOutputTokens: input.body.maxOutputTokens ?? 2048 });
         request = await db.transaction(async (tx) => {
-          await tx.update(poolChatRequestAttempts).set({ state: "sent", settledUnits: result.inputUnits + result.outputUnits, providerRequestRef: result.providerRequestRef, updatedAt: new Date() }).where(and(eq(poolChatRequestAttempts.requestId, request.id), eq(poolChatRequestAttempts.attemptNo, 1)));
-          await tx.update(poolChatQuotaReservations).set({ state: "settled", settledUnits: result.inputUnits + result.outputUnits, updatedAt: new Date() }).where(eq(poolChatQuotaReservations.requestId, request.id));
-          const [updated] = await tx.update(poolChatRequests).set({ status: "completed", charged: true, result: { text: result.text }, usage: { inputUnits: result.inputUnits, outputUnits: result.outputUnits }, updatedAt: new Date() }).where(eq(poolChatRequests.id, request.id)).returning();
+          const [attempt] = await tx.update(poolChatRequestAttempts).set({ state: "sent", settledUnits: result.inputUnits + result.outputUnits, providerRequestRef: result.providerRequestRef, updatedAt: new Date() }).where(and(eq(poolChatRequestAttempts.requestId, request.id), eq(poolChatRequestAttempts.attemptNo, 1), eq(poolChatRequestAttempts.state, "dispatching"))).returning({ id: poolChatRequestAttempts.id });
+          if (!attempt) return (await tx.select().from(poolChatRequests).where(eq(poolChatRequests.id, request.id)))[0];
+          await tx.update(poolChatQuotaReservations).set({ state: "settled", settledUnits: result.inputUnits + result.outputUnits, updatedAt: new Date() }).where(and(eq(poolChatQuotaReservations.requestId, request.id), eq(poolChatQuotaReservations.state, "reserved")));
+          const [updated] = await tx.update(poolChatRequests).set({ status: "completed", charged: true, result: { text: result.text }, usage: { inputUnits: result.inputUnits, outputUnits: result.outputUnits }, updatedAt: new Date() }).where(and(eq(poolChatRequests.id, request.id), eq(poolChatRequests.status, "dispatching"))).returning();
           return updated;
         });
       } catch {
         await db.transaction(async (tx: any) => {
-          await tx.update(poolChatRequestAttempts).set({ state: "uncertain", failureCode: "provider_unknown", failureDetail: "provider_transport_failed", updatedAt: new Date() }).where(and(eq(poolChatRequestAttempts.requestId, request.id), eq(poolChatRequestAttempts.attemptNo, 1)));
-          await tx.update(poolChatRequests).set({ status: "uncertain", updatedAt: new Date() }).where(eq(poolChatRequests.id, request.id));
+          await tx.update(poolChatRequestAttempts).set({ state: "uncertain", failureCode: "provider_unknown", failureDetail: "provider_transport_failed", updatedAt: new Date() }).where(and(eq(poolChatRequestAttempts.requestId, request.id), eq(poolChatRequestAttempts.attemptNo, 1), eq(poolChatRequestAttempts.state, "dispatching")));
+          await tx.update(poolChatRequests).set({ status: "uncertain", updatedAt: new Date() }).where(and(eq(poolChatRequests.id, request.id), eq(poolChatRequests.status, "dispatching")));
         });
         throw new HttpError(502, "Pool-chat provider request failed");
       }
