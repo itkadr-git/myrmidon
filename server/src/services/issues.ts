@@ -10980,11 +10980,13 @@ export function issueService(db: Db) {
           if (updated.status === "done" || updated.status === "cancelled") {
             await finalizeSummarySlotsForTerminalIssue(tx, updated);
             // myrmidon(DEFERRED-WAKE-LEAK): cancel all deferred executions for terminal issue
-            await cancelDeferredExecutionsForTerminalIssue(
-              updated.id,
-              updated.companyId,
-              tx,
-            );
+            if (updated.status === "cancelled" || !data.lastStatusDecisionId) {
+              await cancelDeferredExecutionsForTerminalIssue(
+                updated.id,
+                updated.companyId,
+                tx,
+              );
+            }
             // myrmidon(CHANNEL-TASK-CLOSE): the assigned agent's status-only
             // close of a channel-bound (Telegram-born) task must notify the
             // bound conversation the same way the chat-side /close command
