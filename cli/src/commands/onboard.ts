@@ -58,6 +58,7 @@ import {
   shouldOfferForegroundStart,
 } from "../onboard-service.js";
 import { readInstallManifest, isManagedExecutable } from "../install-store.js";
+import { PRODUCT_NAME } from "../myrmidon-product.js";
 import { deleteProductEnv, readProductEnv, writeProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
 
 type SetupMode = "quickstart" | "advanced";

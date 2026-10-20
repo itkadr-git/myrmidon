@@ -15,6 +15,7 @@ import {
 import { eq, inArray } from "drizzle-orm";
 import { loadPaperclipEnvFile } from "../config/env.js";
 import { readConfig, resolveConfigPath } from "../config/store.js";
+import { PRODUCT_NAME } from "../myrmidon-product.js";
 import { readProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
 
 type RoutinesDisableAllOptions = {

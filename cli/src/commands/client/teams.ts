@@ -20,6 +20,7 @@ import {
   type ResolvedClientContext,
 } from "./common.js";
 import { ApiRequestError } from "../../client/http.js";
+import { PRODUCT_NAME } from "../../myrmidon-product.js";
 import { readProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
 
 interface TeamBrowseOptions extends BaseClientOptions {
