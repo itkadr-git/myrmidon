@@ -1,4 +1,5 @@
 # Настройки Myrmidon
+
 > English version: [SETTINGS.md](SETTINGS.md)
 
 > Это неполный перевод [SETTINGS.md](SETTINGS.md) — источник истины по настройкам.
