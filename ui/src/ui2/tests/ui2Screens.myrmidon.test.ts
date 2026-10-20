@@ -13,8 +13,15 @@ import { UI2_NAV_GROUPS, UI2_PHONE_TABS } from "../navModel";
 import { UI2_ROUTE_TABLE } from "../routes";
 import { isUi2RouteElementAPlaceholder } from "../routes";
 import { fleetStatus } from "../screens/agent-overview/Ui2AgentsFleetPage";
+import { getReturnFreeReviewRate } from "../screens/quality/Ui2QualityScreen";
 
 describe("myrmidon(UI2) route table integration", () => {
+  it("does not label task returns or run counts as run success", () => {
+    expect(getReturnFreeReviewRate({ returnRate: { enteredReview: 0, returned: 0 } })).toBeNull();
+    expect(getReturnFreeReviewRate({ returnRate: { enteredReview: 10, returned: 2 } })).toBe(80);
+    expect(getReturnFreeReviewRate({ returnRate: { enteredReview: 10, returned: 10 } })).toBe(0);
+  });
+
   it("ships exactly the contract entries, the fleet, the commander chat and the knowledge screens", () => {
     expect(UI2_ROUTE_TABLE.map((entry) => entry.key).sort()).toEqual([
       "agent-overview",
