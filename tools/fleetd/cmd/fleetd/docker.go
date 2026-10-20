@@ -139,7 +139,6 @@ func (d *dockerClient) status(ctx context.Context, bot string) (botStatus, error
 		Config struct {
 			Image string `json:"Image"`
 		} `json:"Config"`
-		StateName string `json:"State"`
 	}
 	err := d.request(ctx, http.MethodGet, "/"+d.prefix()+"/containers/"+url.PathEscape(d.name(bot))+"/json", nil, &x)
 	if err != nil {

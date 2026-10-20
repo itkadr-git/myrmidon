@@ -151,7 +151,11 @@ describe("OPE-8137: board/fleetd path operates without /host or docker.sock", ()
         token: "test-fleetd-auth-token-32-chars-long",
         ca: "test CA placeholder", cert: "test certificate placeholder", key: "test private key placeholder",
       }, { request: async ({ method, path, body, headers }) => {
-        const response = await fetch(httpBaseUrl + path, { method, headers, body });
+        const response = await fetch(httpBaseUrl + path, {
+          method,
+          headers,
+          body: body ? new Uint8Array(body) : undefined,
+        });
         return { status: response.status, body: Buffer.from(await response.arrayBuffer()) };
       }});
 
@@ -208,7 +212,11 @@ describe("OPE-8137: board/fleetd path operates without /host or docker.sock", ()
         token: "test-fleetd-auth-token-32-chars-long",
         ca: "test CA placeholder", cert: "test certificate placeholder", key: "test private key placeholder",
       }, { request: async ({ method, path, body, headers }) => {
-        const response = await fetch(httpBaseUrl + path, { method, headers, body });
+        const response = await fetch(httpBaseUrl + path, {
+          method,
+          headers,
+          body: body ? new Uint8Array(body) : undefined,
+        });
         return { status: response.status, body: Buffer.from(await response.arrayBuffer()) };
       },
         readSharedPackageCachePath: async () => "/srv/cache/pnpm",
