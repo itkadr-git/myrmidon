@@ -76,11 +76,11 @@ export const GUARDRAIL_MODES_SETTINGS_KEY = "guardrailModes";
 export const guardrailModesSettingsSchema = z
   .object({
     /** Company-wide overrides per rule. */
-    company: z.partialRecord(z.enum(GUARDRAIL_RULES), z.enum(GUARDRAIL_MODES)).default(() => ({})),
+    company: z.record(z.string(), z.enum(GUARDRAIL_MODES)).default(() => ({})),
     /** Caste (agent role) overrides: role -> rule -> mode. */
-    castes: z.record(z.string().min(1), z.partialRecord(z.enum(GUARDRAIL_RULES), z.enum(GUARDRAIL_MODES)).default(() => ({}))).default(() => ({})),
+    castes: z.record(z.string().min(1), z.record(z.string(), z.enum(GUARDRAIL_MODES)).default(() => ({}))).default(() => ({})),
     /** Agent overrides: agentId -> rule -> mode. */
-    agents: z.record(z.string().uuid(), z.partialRecord(z.enum(GUARDRAIL_RULES), z.enum(GUARDRAIL_MODES)).default(() => ({}))).default(() => ({})),
+    agents: z.record(z.string().uuid(), z.record(z.string(), z.enum(GUARDRAIL_MODES)).default(() => ({}))).default(() => ({})),
   })
   .strict();
 
