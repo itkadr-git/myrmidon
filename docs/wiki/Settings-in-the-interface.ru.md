@@ -52,6 +52,17 @@
 
 ## Параллельные ходы агента
 
+### Изоляция `hermes_local`
+
+Изоляция настраивается в карточке агента в `adapterConfig` адаптера Hermes,
+а не в настройках инстанса. По умолчанию она выключена. Задайте
+`filesystemScope: "workspace"` для границы Bubblewrap только на workspace;
+при необходимости задайте `filesystemSandboxCommand` (по умолчанию `bwrap`)
+и `filesystemExtraPaths`. Изоляция сети независима: `networkScope: "deny"` отключает сеть, а `"allowlist"` использует
+`networkAllowlist` для разрешённых
+хостов/origin. Bubblewrap должен быть установлен на хосте агента. Подробности
+в [справочнике оператора](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/SETTINGS.ru.md#изоляция-процесса-hermes_local).
+
 В карточке агента, раздел **Container**: политика планирования
 (`runtimeConfig.heartbeat.maxConcurrentRuns`) задаёт, сколько прогонов этого
 агента может быть активно одновременно; доска нормализует значение в
