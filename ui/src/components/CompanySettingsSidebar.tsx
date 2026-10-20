@@ -180,7 +180,6 @@ export function CompanySettingsSidebar() {
               end
             />
           )}
-<<<<<<< HEAD
           {showPage("instance.access") && (
             <SidebarNavItem
               to={`${INSTANCE_SETTINGS_PATH_PREFIX}/users`}
@@ -188,11 +187,9 @@ export function CompanySettingsSidebar() {
               icon={Users}
               end
             />
-=======
           {/* myrmidon(LICENSING): closed-module licenses, instance admin only */}
           {isInstanceAdmin && (
             <SidebarNavItem to={LICENSES_PATH} label={t("licensing.title")} icon={BadgeCheck} end />
->>>>>>> origin/main
           )}
           {/* myrmidon(ROLE-SCOPED-TOKENS): scoped board API key management */}
           {showPage("instance.access") && (
