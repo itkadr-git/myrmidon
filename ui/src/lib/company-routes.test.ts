@@ -14,14 +14,14 @@ describe("company routes", () => {
     const boardRouteRoots = new Set<string>();
     const routeBlock = appSource.match(/function boardRoutes\([\s\S]*?(?=\nfunction )/)?.[0];
     expect(routeBlock).toBeDefined();
-    for (const [, root] of routeBlock!.matchAll(/<Route\s+path="([a-z][a-z0-9-]*)"/g)) {
+    for (const [, root] of routeBlock!.matchAll(/path="([a-z][a-z0-9-]*)/g)) {
       if (!["runs", "budgets"].includes(root!)) boardRouteRoots.add(root!);
     }
     const legacyStart = appSource.indexOf("<Route element={streamlinedUiLoaded", appSource.indexOf("export function App()"));
     const legacyBlock = legacyStart >= 0
       ? appSource.slice(legacyStart).split('<Route path=":companyPrefix"')[0]
       : "";
-    for (const [, root] of legacyBlock.matchAll(/<Route\s+path="([a-z][a-z0-9-]*)"/g)) {
+    for (const [, root] of legacyBlock.matchAll(/path="([a-z][a-z0-9-]*)/g)) {
       boardRouteRoots.add(root!);
     }
     // Team Catalog is mounted by the shared UI surface rather than directly in
