@@ -21621,10 +21621,13 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         expect(conversation?.issueId).toBeTruthy();
       });
       await vi.waitFor(async () => {
-        const [delivery] = await db
+        const deliveries = await db
           .select()
           .from(chatDeliveries)
           .where(eq(chatDeliveries.endpointId, endpoint.id));
+        const delivery = deliveries.find((candidate) =>
+          JSON.stringify(candidate.normalizedEvent).includes(reply.id),
+        );
         expect(delivery).toMatchObject({ state: "received" });
         expect(deferred.length).toBeGreaterThan(0);
       });
