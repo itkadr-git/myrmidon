@@ -378,7 +378,7 @@ export function pluginLifecycleManager(
     if (to !== "ready") {
       const configs = typeof registry.listConfigs === "function"
         ? await registry.listConfigs(pluginId)
-        : [{ companyId: plugin.companyId }];
+        : [];
       for (const config of configs) {
         removePluginProviderModels(config.companyId, pluginId);
         await providerModelSync?.remove(config.companyId, result);
@@ -440,7 +440,7 @@ export function pluginLifecycleManager(
     const plugin = readyPlugin ?? await requirePlugin(pluginId);
     const companyIds = typeof registry.listConfigs === "function"
       ? (await registry.listConfigs(pluginId)).map((config: { companyId: string }) => config.companyId)
-      : plugin.companyId ? [plugin.companyId] : [];
+      : [];
     const supportsRuntimeActivation =
       typeof pluginLoaderInstance.hasRuntimeServices === "function"
       && typeof pluginLoaderInstance.loadSingle === "function";
@@ -565,11 +565,11 @@ export function pluginLifecycleManager(
             );
           } catch {
             // Preserve the activation error when secondary cleanup also fails.
-            const configs = typeof registry.listConfigs === "function" ? await registry.listConfigs(pluginId) : [{ companyId: plugin.companyId }];
+            const configs = typeof registry.listConfigs === "function" ? await registry.listConfigs(pluginId) : [];
             for (const config of configs) removePluginProviderModels(config.companyId, pluginId);
           }
         } else {
-          const configs = typeof registry.listConfigs === "function" ? await registry.listConfigs(pluginId) : [{ companyId: plugin.companyId }];
+          const configs = typeof registry.listConfigs === "function" ? await registry.listConfigs(pluginId) : [];
             for (const config of configs) removePluginProviderModels(config.companyId, pluginId);
         }
         throw error;

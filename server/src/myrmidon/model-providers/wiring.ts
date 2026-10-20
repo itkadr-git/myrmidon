@@ -17,7 +17,7 @@
 
 import { Router } from "express";
 import { and, eq } from "drizzle-orm";
-import { plugins, type Db } from "@paperclipai/db";
+import { pluginConfig, plugins, type Db } from "@paperclipai/db";
 import {
   readGatewayKeySettings,
   type PluginRecord,
@@ -187,9 +187,10 @@ export function createPluginProviderModelSync(
         pluginKey: string;
         manifestJson: unknown;
         status: string;
-      }> = await db.select({ id: plugins.id, companyId: plugins.companyId, pluginKey: plugins.pluginKey, manifestJson: plugins.manifestJson, status: plugins.status })
+      }> = await db.select({ id: plugins.id, pluginKey: plugins.pluginKey, manifestJson: plugins.manifestJson, status: plugins.status })
         .from(plugins)
-        .where(and(eq(plugins.companyId, companyId), eq(plugins.status, "ready")));
+        .innerJoin(pluginConfig, eq(pluginConfig.pluginId, plugins.id))
+        .where(and(eq(pluginConfig.companyId, companyId), eq(plugins.status, "ready")));
       const stillOwnedNames = new Set(otherReadyPlugins
         .filter((owner) => owner.id !== plugin.id)
         .flatMap((owner) => {
