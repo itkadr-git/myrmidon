@@ -328,6 +328,8 @@ async function sourceIssueId(
     // registry; the source id is the task the sweep unblocked.
     // myrmidon(REVIEW-ROUTING): the review routing signal is also about one task.
     case "review_routing":
+    // myrmidon(OPE-7932): the overdue monitor card is attached to its issue.
+    case "issue_monitor_overdue":
     // myrmidon(1.6.5 BOT-DISK-H4c): the archive card sits on the task.
     case "bot_disk_archive":
     // myrmidon(OPE-6011): the held-task card's subject is the held task.

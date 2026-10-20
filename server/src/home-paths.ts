@@ -4,6 +4,7 @@ const FRIENDLY_PATH_SEGMENT_RE = /[^a-zA-Z0-9._-]+/g;
 import {
   expandHomePrefix,
   resolveDefaultBackupDir as resolveSharedDefaultBackupDir,
+  resolveDatabaseBackupDir as resolveSharedDatabaseBackupDir,
   resolveDefaultEmbeddedPostgresDir as resolveSharedDefaultEmbeddedPostgresDir,
   resolveDefaultLogsDir as resolveSharedDefaultLogsDir,
   resolveDefaultSecretsKeyFilePath as resolveSharedDefaultSecretsKeyFilePath,
@@ -45,6 +46,10 @@ export function resolveDefaultStorageDir(): string {
 
 export function resolveDefaultBackupDir(): string {
   return resolveSharedDefaultBackupDir();
+}
+
+export function resolveDatabaseBackupDir(input: Parameters<typeof resolveSharedDatabaseBackupDir>[0] = {}): string {
+  return resolveSharedDatabaseBackupDir(input);
 }
 
 export function resolveDefaultAgentWorkspaceDir(agentId: string): string {
