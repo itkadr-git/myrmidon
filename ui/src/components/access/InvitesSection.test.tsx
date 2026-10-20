@@ -191,12 +191,27 @@ describe("InvitesSection", () => {
     await act(async () => {
       createButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
+    expect(container.textContent).toContain("Enter a valid email address.");
+    expect(createCompanyInviteMock).not.toHaveBeenCalled();
+
+    const emailInput = container.querySelector<HTMLInputElement>("#invitee-email");
+    expect(emailInput).toBeTruthy();
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+      setter.call(emailInput, "new.user@example.com");
+      emailInput!.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+    await act(async () => {
+      createButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
     await flushReact();
     await flushReact();
 
     expect(createCompanyInviteMock).toHaveBeenCalledWith("company-1", {
       allowedJoinTypes: "human",
       humanRole: "viewer",
+      defaultsPayload: { email: "new.user@example.com" },
       agentMessage: null,
     });
     expect(clipboardWriteTextMock).toHaveBeenCalledWith("https://paperclip.local/invite/new-token");
@@ -275,14 +290,23 @@ describe("InvitesSection", () => {
       (button) => button.textContent === "Create invite",
     );
 
+    const emailInput = container.querySelector<HTMLInputElement>("#invitee-email");
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
     await act(async () => {
+      setter.call(emailInput, "invitee@example.com");
+      emailInput?.dispatchEvent(new Event("input", { bubbles: true }));
       createButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await flushReact();
     await flushReact();
 
     const inviteInput = container.querySelector('input[aria-label="Latest invite URL"]') as HTMLInputElement | null;
-    expect(inviteInput?.value).toBe("https://paperclip.local/invite/new-token");
+    expect(createCompanyInviteMock).toHaveBeenCalledWith("company-1", expect.objectContaining({
+      allowedJoinTypes: "human",
+      humanRole: "viewer",
+      defaultsPayload: { email: "invitee@example.com" },
+      agentMessage: null,
+    }));
     expect(document.execCommand).toHaveBeenCalledWith("copy");
     expect(pushToastMock).toHaveBeenCalledWith({
       title: "Invite created",
