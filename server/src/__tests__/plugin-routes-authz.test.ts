@@ -384,6 +384,31 @@ describe.sequential("plugin install and upgrade authz", () => {
     expect(mockRegistry.upsertConfig).not.toHaveBeenCalled();
   }, 20_000);
 
+  it("passes exact approved capabilities through to lifecycle upgrade", async () => {
+    const pluginId = "11111111-1111-4111-8111-111111111111";
+    mockRegistry.getById.mockResolvedValue({
+      id: pluginId,
+      pluginKey: "paperclip.example",
+      version: "1.0.0",
+    });
+    mockLifecycle.upgrade.mockResolvedValue({ id: pluginId, version: "1.1.0" });
+
+    const { app } = await createApp({
+      type: "board",
+      userId: "admin-1",
+      source: "session",
+      isInstanceAdmin: true,
+      companyIds: [],
+    });
+
+    const res = await request(app)
+      .post(`/api/plugins/${pluginId}/upgrade`)
+      .send({ version: "1.1.0", approvedCapabilities: ["access.members.read"] });
+
+    expect(res.status).toBe(200);
+    expect(mockLifecycle.upgrade).toHaveBeenCalledWith(pluginId, "1.1.0", ["access.members.read"]);
+  }, 20_000);
+
   it("allows instance admins to upgrade plugins", async () => {
     const pluginId = "11111111-1111-4111-8111-111111111111";
     mockRegistry.getById.mockResolvedValue({

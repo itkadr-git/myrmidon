@@ -992,6 +992,9 @@ function webhookApp(
   return app;
 }
 
+// Upper bound for vi.waitFor in ingress-reorder tests: the 750 ms reorder window plus DB work under CI load.
+const INGRESS_REORDER_WAIT_MS = 10_000;
+
 describeEmbeddedPostgres("chat channel control-plane integration", () => {
   let db!: TestDb;
   let tempDb: Awaited<
@@ -5911,6 +5914,8 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     });
   });
 
+  // 20.10 OPE-8404: the drain waits the real 750 ms ingress reorder window before it creates the conversation;
+  // vi.waitFor's default 1 s left ~250 ms for DB work, which CI load did not always give. Wait for the condition longer.
   it("reorders same-second GitHub callbacks by comment id before starting the task", async () => {
     const fixture = await seedCompany();
     const deferred: Array<() => void> = [];
@@ -5975,7 +5980,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         .from(chatConversations)
         .where(eq(chatConversations.endpointId, endpoint.id));
       expect(rows).toHaveLength(1);
-    });
+    }, { timeout: INGRESS_REORDER_WAIT_MS });
     const [conversation] = await db
       .select()
       .from(chatConversations)
@@ -5991,7 +5996,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         "unmentioned follow-up delivered first",
       ]);
       expect(wakeup).toHaveBeenCalledTimes(2);
-    });
+    }, { timeout: INGRESS_REORDER_WAIT_MS });
     await service.shutdown();
   });
 
@@ -14417,6 +14422,8 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     await recovery.service.shutdown();
   });
 
+  // 20.10 OPE-8404: the drain waits the real 750 ms ingress reorder window before it creates the conversation;
+  // vi.waitFor's default 1 s left ~250 ms for DB work, which CI load did not always give. Wait for the condition longer.
   it("reorders rapid Slack callbacks by provider time before one conversation drain", async () => {
     const fixture = await seedCompany();
     const runtime = new FakeChatSdkRuntime();
@@ -14556,7 +14563,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         .from(chatConversations)
         .where(eq(chatConversations.endpointId, endpoint.id));
       expect(rows).toHaveLength(1);
-    });
+    }, { timeout: INGRESS_REORDER_WAIT_MS });
     const [conversation] = await db
       .select()
       .from(chatConversations)
@@ -14567,7 +14574,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         .from(issueComments)
         .where(eq(issueComments.issueId, conversation.issueId));
       expect(rows).toHaveLength(8);
-    });
+    }, { timeout: INGRESS_REORDER_WAIT_MS });
     const comments = await db
       .select({ id: issueComments.id, body: issueComments.body })
       .from(issueComments)
@@ -14606,7 +14613,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           .from(chatEndpointLeases)
           .where(eq(chatEndpointLeases.endpointId, endpoint.id)),
       ).toHaveLength(0);
-    });
+    }, { timeout: INGRESS_REORDER_WAIT_MS });
     await competingService.shutdown();
     await service.shutdown();
   });
@@ -60087,6 +60094,8 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     },
   );
 
+  // 20.10 OPE-8404: the drain waits the real 750 ms ingress reorder window before it creates the conversation;
+  // vi.waitFor's default 1 s left ~250 ms for DB work, which CI load did not always give. Wait for the condition longer.
   it("orders reversed GitHub edit and delete callbacks behind their durable root", async () => {
     const fixture = await seedCompany();
     const deferred: Array<() => void | Promise<void>> = [];
@@ -60203,7 +60212,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       expect(
         deliveries.every((delivery) => delivery.state === "processed"),
       ).toBe(true);
-    });
+    }, { timeout: INGRESS_REORDER_WAIT_MS });
 
     const [conversation] = await db
       .select()
@@ -60257,7 +60266,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           state: "filtered",
         },
       ]);
-    });
+    }, { timeout: INGRESS_REORDER_WAIT_MS });
     await expect(
       db
         .select({ body: issueComments.body })
