@@ -161,11 +161,7 @@ jobs:
           EXPECTED_COMMIT: ${{ github.sha }}
         run: |
           set -euo pipefail
-          if [ "${{ github.event_name }}" != "pull_request" ]; then
-            docker pull --quiet "$REF"
-          fi
-          # Pull-request builds are loaded into the local Docker daemon; published
-          # builds are pulled by digest before the smoke test.
+          docker pull --quiet "$REF"
           # local_trusted returns full health details (version) without auth;
           # it requires a loopback bind, hence the host network.
           docker run -d --name myrmidon-smoke --network host \
