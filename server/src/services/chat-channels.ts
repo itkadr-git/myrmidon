@@ -17823,6 +17823,23 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         ),
       )
       .orderBy(
+        // A GitHub delete payload has no updated_at. If it arrives before an
+        // edit for the same message, receipt-time ordering would apply the
+        // delete first and permanently discard the valid edit. Keep a pending
+        // edit ahead of that delete while preserving provider-time ordering
+        // for unrelated messages.
+        asc(sql`case
+          when ${chatDeliveries.eventKind} = 'message_deleted'
+            and exists (
+              select 1
+              from ${chatDeliveries} as pending_edit
+              where pending_edit.endpoint_id = ${chatDeliveries.endpointId}
+                and pending_edit.event_kind = 'message_updated'
+                and pending_edit.state in ('received', 'retry', 'processing')
+                and pending_edit.normalized_event->'message'->>'targetProviderEventId' = ${chatDeliveries.normalizedEvent}->'message'->>'targetProviderEventId'
+            ) then 1
+          else 0
+        end`),
         asc(
           sql`coalesce(nullif(${chatDeliveries.normalizedEvent}->'message'->>'providerSentAt', '')::timestamptz, ${chatDeliveries.receivedAt})`,
         ),
