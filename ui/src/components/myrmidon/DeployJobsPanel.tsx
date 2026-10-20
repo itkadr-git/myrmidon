@@ -129,6 +129,8 @@ export function DeployJobsPanelView({
             {state.history.filter((entry) => (!modeFilter || entry.mode === modeFilter) && (!statusFilter || entry.status === statusFilter) && (!outcomeFilter || (outcomeFilter === "rollback" ? entry.status.includes("rollback") : entry.status === outcomeFilter))).map((entry) => (
               <li key={entry.id} className="text-muted-foreground">
                 {new Date(entry.createdAt).toLocaleString()} — {entry.mode} — {describeDeployStatus(entry.status)} — {entry.digest.slice(0, 19)}…
+                {entry.version ? ` — version ${entry.version}` : ""}
+                {entry.commit ? ` — commit ${entry.commit.slice(0, 12)}` : ""}
                 {entry.window ? ` — ${entry.window}` : ""}
                 {entry.failureReason ? ` — ${entry.failureReason}` : ""}
               </li>

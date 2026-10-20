@@ -140,6 +140,14 @@ describe("DeployJobsPanel", () => {
     expect(history.textContent).not.toContain("Deployed");
   });
 
+  it("shows version and commit identity in previous deploys", () => {
+    const panel = render({
+      state: { job: null, history: [job({ status: "succeeded", active: false, abortable: false, id: "job-identity" })] },
+    });
+    expect(panel!.textContent).toContain("version 1.2.1");
+    expect(panel!.textContent).toContain("commit 0123456789ab");
+  });
+
   it("lists previous deploys from history", () => {
     const panel = render({
       state: { job: null, history: [job({ status: "succeeded", active: false, abortable: false, id: "job-old" })] },
