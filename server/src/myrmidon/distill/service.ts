@@ -119,7 +119,7 @@ export async function runDistillPass(opts: DistillServiceOptions): Promise<Disti
           slug: item.slug,
         },
         sources: rawSources,
-        evidenceTaskRefs: evidenceRefs,
+        evidenceTaskRefs: item.evidence,
       };
       const invalid = validateEvidence(proposal);
       const lifeLeak = rawSources.some((source) => isLifeSource(source));
