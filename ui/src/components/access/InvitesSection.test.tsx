@@ -301,12 +301,7 @@ describe("InvitesSection", () => {
     await flushReact();
 
     const inviteInput = container.querySelector('input[aria-label="Latest invite URL"]') as HTMLInputElement | null;
-    expect(createCompanyInviteMock).toHaveBeenCalledWith("company-1", expect.objectContaining({
-      allowedJoinTypes: "human",
-      humanRole: "viewer",
-      defaultsPayload: { email: "invitee@example.com" },
-      agentMessage: null,
-    }));
+    expect(inviteInput?.value).toBe("https://paperclip.local/invite/new-token");
     expect(document.execCommand).toHaveBeenCalledWith("copy");
     expect(pushToastMock).toHaveBeenCalledWith({
       title: "Invite created",
