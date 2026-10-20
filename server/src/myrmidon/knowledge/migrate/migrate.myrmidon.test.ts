@@ -88,7 +88,7 @@ function stubWriter(log: WriterLog, options: { failOn?: string } = {}): Knowledg
       const tree = parseKnowledgeTree(buf);
       const page = tree.pages[0];
       const item = log.items.get(page.slug);
-      if (item) log.items.set(page.slug, { ...item, kind: page.kind, title: page.title, summary: page.summary, folderPath: page.folder, tags: page.tags, approvalRequired: page.approvalRequired, approverKind: page.approverKind, deliveredContent: page.content });
+      if (item) log.items.set(page.slug, { ...item, kind: page.kind, title: page.title, summary: page.summary, folderPath: page.folder, tags: page.tags, approvalRequired: page.approvalRequired, approverKind: page.approverKind });
       return { created: 0, updated: item ? 1 : 0, pages: 1 };
     },
     async draft(nestId, slug, input, actor) {
