@@ -24,6 +24,11 @@ settings-section: Track 6 — security and models
 - The installer mounts the host license directory into the board read-write and
   sets `MYR_LICENSE_PATH`, so the adapter inside the board and the modules on the
   host read the same file. See `docs/myrmidon/guides/licensing.md`.
+- The board no longer issues licenses: the issue form, `POST /api/licensing/issue`,
+  `POST /api/licensing/parse-request`, `GET /api/licensing/issued` and the
+  variables `MYRMIDON_LICENSE_ISSUER_KEY_FILE` / `MYRMIDON_LICENSE_JOURNAL_FILE`
+  are removed; the core never loads a private key. Issuing is the vendor's
+  closed module.
 
 ### Plugins see whether the user is an instance admin (PLUGIN-INSTANCE-ADMIN)
 
@@ -56,6 +61,10 @@ settings-section: Track 6 — security and models
 - Установщик монтирует каталог лицензии хоста в доску на запись и задаёт
   `MYR_LICENSE_PATH`: адаптер внутри доски и модули на хосте читают один файл.
   См. `docs/myrmidon/guides/licensing.ru.md`.
+- Доска больше не выпускает лицензии: форма выпуска, `POST /api/licensing/issue`,
+  `POST /api/licensing/parse-request`, `GET /api/licensing/issued` и переменные
+  `MYRMIDON_LICENSE_ISSUER_KEY_FILE` / `MYRMIDON_LICENSE_JOURNAL_FILE` удалены;
+  ядро не загружает закрытый ключ. Выпуск — закрытый модуль поставщика.
 
 ### Плагины знают, администратор ли пользователь (PLUGIN-INSTANCE-ADMIN)
 

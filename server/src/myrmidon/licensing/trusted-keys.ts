@@ -6,18 +6,17 @@
 // modules, otherwise the licensing screen and the modules disagree about the
 // same license.
 //
-// Rotation: add the new key with its `kid` and keep the old one for as long
-// as licenses signed by it are in use. A license without `kid` is checked
-// against every key below; one with `kid` only against the key of that `kid`.
+// Rotation (same rule as the modules' TRUSTED_ISSUER_PUBLIC_KEYS): add the new
+// key and keep the old one for as long as licenses signed by it are in use. A
+// license verifies if any key below verifies it; its optional `kid` must be
+// the id of that key (first 16 hex of sha256 over the raw public key).
 
 import type { TrustedIssuerKey } from "./license.js";
 
-/** The original issuer key; its licenses carry no `kid`. */
+/** The original issuer key (licenses from before rotation support carry no `kid`). */
 const ISSUER_KEY_2026_10 = `-----BEGIN PUBLIC KEY-----
 MCowBQYDK2VwAyEA/s0tibLQd6UGQUQ7wtN9Pn9CssbxQ82PL82ZDuud830=
 -----END PUBLIC KEY-----
 `;
 
-export const TRUSTED_ISSUER_KEYS: readonly TrustedIssuerKey[] = Object.freeze([
-  { kid: null, publicKey: ISSUER_KEY_2026_10 },
-]);
+export const TRUSTED_ISSUER_KEYS: readonly TrustedIssuerKey[] = Object.freeze([ISSUER_KEY_2026_10]);

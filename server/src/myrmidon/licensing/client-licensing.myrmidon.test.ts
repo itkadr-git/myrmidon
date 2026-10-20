@@ -28,7 +28,7 @@ import {
   readCandidateLicense,
   writeLicenseFile,
 } from "./client-license.js";
-import { buildLicenseRequest, issueLicense, verifyLicense, type TrustedIssuerKey } from "./license.js";
+import { buildLicenseRequest, keyId, verifyLicense, type TrustedIssuerKey } from "./license.js";
 import { licensingRoutes } from "./routes.js";
 import { TRUSTED_ISSUER_KEYS } from "./trusted-keys.js";
 
@@ -57,6 +57,9 @@ const RUNNER_ISSUED = {
   // chatgpt-pool only, features core+video, no expiry
   chatgptOnly:
     "MYR1.eyJleHBpcmVzIjpudWxsLCJmZWF0dXJlcyI6WyJjb3JlIiwidmlkZW8iXSwiaW5zdGFuY2VfaWQiOiJteXItM2ViMWJkNDM5OTQ3ZWI3NjI5OTgiLCJtb2R1bGVzIjpbImNoYXRncHQtcG9vbCJdLCJyZXYiOjEsIndhdGVybWFyayI6bnVsbH0.g9aVCn4lKALdJ3vrzIDeyYSWFpknZkGkvVti9RjooPiJESCtbHt4pE3TiP5ktQ1nTJiGoWZgDpVMPBPTcH6OBQ",
+  // google-ai + antigravity with kid (runner issue default since rotation support), expires 2100-01-01
+  withKid:
+    "MYR1.eyJleHBpcmVzIjo0MTAyNDQ0ODAwLCJmZWF0dXJlcyI6WyJjb3JlIl0sImluc3RhbmNlX2lkIjoibXlyLTNlYjFiZDQzOTk0N2ViNzYyOTk4Iiwia2lkIjoiMDkxMmU0ZTk2YzhhMzlhZiIsIm1vZHVsZXMiOlsiYW50aWdyYXZpdHkiLCJnb29nbGUtYWkiXSwicmV2IjoxLCJ3YXRlcm1hcmsiOm51bGx9.-faodQMn9hOt4y5mNGD3CeS5t-TUZ_2JvpJ9_N0wqYuuZO8zeS09H3pvWTnRJZtj2yqDvdtFcvz7uaEWUzkTBA",
   // antigravity, signed with key 2, expires 2100-01-01
   key2Antigravity:
     "MYR1.eyJleHBpcmVzIjo0MTAyNDQ0ODAwLCJmZWF0dXJlcyI6WyJjb3JlIl0sImluc3RhbmNlX2lkIjoibXlyLTNlYjFiZDQzOTk0N2ViNzYyOTk4IiwibW9kdWxlcyI6WyJhbnRpZ3Jhdml0eSJdLCJyZXYiOjEsIndhdGVybWFyayI6bnVsbH0.M1qJO0fpgrNbODxXSg-TfNcJ7AzgoyhNkT0WnUnpEayXIlSbe-jqgjCdJ3NIauxvPgrC60W6d9SqJdNSmmvHCA",
@@ -141,10 +144,7 @@ describe("MYRQ1 request is the module-side build_request byte for byte", () => {
 });
 
 describe("licenses minted by the module-side `runner issue`", () => {
-  const keys: TrustedIssuerKey[] = [
-    { kid: null, publicKey: TEST_KEY_1 },
-    { kid: "test-2", publicKey: TEST_KEY_2 },
-  ];
+  const keys: TrustedIssuerKey[] = [TEST_KEY_1, TEST_KEY_2];
   // Expected reasons: the module-side verify_license on the same strings
   // (key 1 as the only trust anchor, then key 2 as the only one).
   const expected: Record<keyof typeof RUNNER_ISSUED, Record<(typeof MODULES)[number], [string, string]>> = {
@@ -163,6 +163,11 @@ describe("licenses minted by the module-side `runner issue`", () => {
       "google-ai": ["module_not_granted", "bad_signature"],
       antigravity: ["module_not_granted", "bad_signature"],
       "chatgpt-pool": ["ok", "bad_signature"],
+    },
+    withKid: {
+      "google-ai": ["ok", "bad_signature"],
+      antigravity: ["ok", "bad_signature"],
+      "chatgpt-pool": ["module_not_granted", "bad_signature"],
     },
     key2Antigravity: {
       "google-ai": ["bad_signature", "module_not_granted"],
@@ -187,7 +192,7 @@ describe("licenses minted by the module-side `runner issue`", () => {
       payload: { modules: ["antigravity", "chatgpt-pool", "google-ai"], expires: 4102444800, watermark: "client-test" },
     });
     expect(verifyLicense(RUNNER_ISSUED.key2Antigravity, INSTALL_ID, NOW_S, keys, { requiredModule: "antigravity" }).valid).toBe(true);
-    expect(verifyLicense(RUNNER_ISSUED.all, INSTALL_ID, NOW_S, [{ kid: "test-2", publicKey: TEST_KEY_2 }]).reason).toBe(
+    expect(verifyLicense(RUNNER_ISSUED.all, INSTALL_ID, NOW_S, [TEST_KEY_2]).reason).toBe(
       "bad_signature",
     );
   });
@@ -210,7 +215,22 @@ describe("licenses minted by the module-side `runner issue`", () => {
       "--expires", String(NOW_S + 30 * 86400),
       "--watermark", "client-a",
     ]);
-    const trusted = [{ kid: null, publicKey: pair.publicKey }];
+    const legacy = python([
+      "-m", "license_core.runner", "issue", "--no-kid",
+      "--signing-key", keyFile, "--instance", INSTALL_ID, "--module", "antigravity",
+    ]);
+    const referenceKid = python([
+      "-c",
+      "import sys; from license_core.key import key_id; print(key_id(sys.argv[1]))",
+      pair.publicKey.export({ type: "spki", format: "pem" }).toString(),
+    ]);
+    expect(keyId(pair.publicKey)).toBe(referenceKid);
+    expect(verifyLicense(license, INSTALL_ID, NOW_S, [pair.publicKey]).kid).toBe(referenceKid);
+    expect(verifyLicense(legacy, INSTALL_ID, NOW_S, [pair.publicKey], { requiredModule: "antigravity" })).toMatchObject({
+      valid: true,
+      kid: null,
+    });
+    const trusted = [pair.publicKey];
     expect(verifyLicense(license, INSTALL_ID, NOW_S, trusted, { requiredModule: "google-ai" })).toMatchObject({
       valid: true,
       payload: { modules: ["chatgpt-pool", "google-ai"], features: ["core", "video"], expires: NOW_S + 30 * 86400, watermark: "client-a" },
@@ -220,6 +240,26 @@ describe("licenses minted by the module-side `runner issue`", () => {
     expect(verifyLicense(license, INSTALL_ID, NOW_S + 31 * 86400, trusted).reason).toBe("expired");
   });
 });
+
+/** Test-only signer (throwaway keys): the board itself has no signing code. */
+function issueLicense(
+  privateKey: KeyObject,
+  p: { instanceId: string; modules: string[]; features: string[]; expires: number | null; watermark: string | null },
+): { license: string } {
+  const sorted = (v: string[]) => [...new Set(v)].sort();
+  const bytes = Buffer.from(
+    JSON.stringify({
+      expires: p.expires,
+      features: sorted(p.features),
+      instance_id: p.instanceId,
+      modules: sorted(p.modules),
+      rev: 1,
+      watermark: p.watermark,
+    }),
+    "ascii",
+  );
+  return { license: `MYR1.${bytes.toString("base64url")}.${edSign(null, bytes, privateKey).toString("base64url")}` };
+}
 
 /** A license whose payload carries `kid` (the rotation format), signed by `key`. */
 function kidLicense(key: KeyObject, kid: unknown, extra: Record<string, unknown> = {}): string {
@@ -240,25 +280,31 @@ function kidLicense(key: KeyObject, kid: unknown, extra: Record<string, unknown>
 describe("key rotation: kid and several trusted keys", () => {
   const oldPair = generateKeyPairSync("ed25519");
   const newPair = generateKeyPairSync("ed25519");
-  const keys: TrustedIssuerKey[] = [
-    { kid: null, publicKey: oldPair.publicKey },
-    { kid: "k2", publicKey: newPair.publicKey },
-  ];
+  const keys: TrustedIssuerKey[] = [oldPair.publicKey, newPair.publicKey];
 
-  it("accepts a kid license only from the key of that kid", () => {
-    expect(verifyLicense(kidLicense(newPair.privateKey, "k2"), INSTALL_ID, NOW_S, keys)).toMatchObject({ valid: true, kid: "k2" });
-    expect(verifyLicense(kidLicense(oldPair.privateKey, "k2"), INSTALL_ID, NOW_S, keys).reason).toBe("bad_signature");
-    expect(verifyLicense(kidLicense(newPair.privateKey, "k9"), INSTALL_ID, NOW_S, keys).reason).toBe("bad_signature");
+  it("computes the module-side key id", () => {
+    expect(keyId(TEST_KEY_1)).toBe("0912e4e96c8a39af");
+    expect(keyId(TEST_KEY_2)).toBe("2bc8cc8ac044b69a");
   });
 
-  it("keeps the exact payload shape otherwise", () => {
-    expect(verifyLicense(kidLicense(newPair.privateKey, 7 as unknown as string), INSTALL_ID, NOW_S, [
-      ...keys,
-      { kid: null, publicKey: newPair.publicKey },
-    ]).reason).toBe("bad_payload");
+  it("accepts a kid license signed by any trusted key whose id it names", () => {
+    const kid = keyId(newPair.publicKey);
+    expect(verifyLicense(kidLicense(newPair.privateKey, kid), INSTALL_ID, NOW_S, keys)).toMatchObject({ valid: true, kid });
+    expect(verifyLicense(RUNNER_ISSUED.withKid, INSTALL_ID, NOW_S, [TEST_KEY_2, TEST_KEY_1])).toMatchObject({
+      valid: true,
+      kid: "0912e4e96c8a39af",
+    });
+  });
+
+  it("refuses a kid that is not the id of the verifying key, and untrusted keys", () => {
+    expect(verifyLicense(kidLicense(newPair.privateKey, keyId(oldPair.publicKey)), INSTALL_ID, NOW_S, keys).reason).toBe("bad_payload");
+    expect(verifyLicense(kidLicense(newPair.privateKey, 7), INSTALL_ID, NOW_S, keys).reason).toBe("bad_payload");
     expect(
-      verifyLicense(kidLicense(newPair.privateKey, "k2", { extra: true }), INSTALL_ID, NOW_S, keys).reason,
+      verifyLicense(kidLicense(newPair.privateKey, keyId(newPair.publicKey), { extra: true }), INSTALL_ID, NOW_S, keys).reason,
     ).toBe("bad_payload");
+    expect(verifyLicense(kidLicense(newPair.privateKey, keyId(newPair.publicKey)), INSTALL_ID, NOW_S, [oldPair.publicKey]).reason).toBe(
+      "bad_signature",
+    );
   });
 
   it("still verifies licenses without kid from the old key", () => {
@@ -274,7 +320,7 @@ describe("key rotation: kid and several trusted keys", () => {
 });
 
 describe("license state per module", () => {
-  const keys = [{ kid: null, publicKey: TEST_KEY_1 }];
+  const keys = [TEST_KEY_1];
   const states = (text: string | null, installed: string[] = [...MODULES]) =>
     Object.fromEntries(
       moduleStatuses({
@@ -309,7 +355,7 @@ describe("license state per module", () => {
       license: { text: soon, source: "file" },
       installId: INSTALL_ID,
       nowSeconds: NOW_S,
-      trustedKeys: [{ kid: null, publicKey: pair.publicKey }],
+      trustedKeys: [pair.publicKey],
       installed: ["google-ai"],
     });
     expect(google).toMatchObject({ state: "expiring", expires: NOW_S + 5 * 86400 });
@@ -389,7 +435,7 @@ function app(actor: unknown, env: NodeJS.ProcessEnv, installed: string[] = [...M
       machineIdPaths: [machineIdFile],
       now: () => NOW,
       installedModules: async () => installed,
-      trustedKeys: [{ kid: null, publicKey: TEST_KEY_1 }],
+      trustedKeys: [TEST_KEY_1],
       hostShare: { containerMarkers: [path.join(dir, "no-container")] },
     }),
   );
@@ -508,7 +554,7 @@ describe("licensing routes: client side", () => {
         (req as unknown as { actor: unknown }).actor = admin;
         next();
       });
-      a.use("/api", licensingRoutes({ env, trustedKeys: [{ kid: null, publicKey: publicPem }] }));
+      a.use("/api", licensingRoutes({ env, trustedKeys: [publicPem] }));
       a.use(errorHandler);
       const saved = await request(a).post("/api/licensing/license").send({ value: license });
       expect(saved.status).toBe(200);
