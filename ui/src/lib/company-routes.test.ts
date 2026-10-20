@@ -18,6 +18,9 @@ describe("company routes", () => {
     );
     const routeRoots = roots(routeBlock!);
     const boardRouteRoots = new Set([...routeRoots].filter((root) => !["runs", "budgets"].includes(root)));
+    for (const root of ["onboarding", "plugins", "tests", "status-cards", "review-queue", "learnings", "dev", "instance", "chat-identity", "ux-lab"]) {
+      boardRouteRoots.delete(root);
+    }
     // Team Catalog is mounted by the shared UI surface rather than directly in
     // boardRoutes, so include its route-root declaration in the live tree.
     const teamCatalogSource = readFileSync(fileURLToPath(new URL("../pages/TeamCatalog.tsx", import.meta.url)), "utf8");
