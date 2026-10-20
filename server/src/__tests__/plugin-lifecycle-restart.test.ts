@@ -10,7 +10,7 @@
  * via the plugin loader, which re-reads the manifest from disk and runs
  * `applyMigrations` (idempotently) before starting the new worker.
  */
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const pluginRecord = {
   id: "plugin-1",
