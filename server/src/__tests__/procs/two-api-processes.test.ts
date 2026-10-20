@@ -260,6 +260,9 @@ describeProcs("two api processes on one test database (PROCS-T1.5 skeleton)", ()
       connectionString: database?.connectionString ?? externalTestDatabaseUrl!,
       role: "api",
       sharedPort,
+      // The first listener can answer /health before its sibling has bound;
+      // delay readiness so both SO_REUSEPORT sockets exist before probing.
+      readyTimeoutMs: 30_000,
     });
 
     const seenBootIds = new Set<string>();
@@ -304,9 +307,9 @@ describeProcs("two api processes on one test database (PROCS-T1.5 skeleton)", ()
           // collide in the kernel's reuse-port hash bucket.
           const probe = batch * 64 + index;
           const localPort = sourcePorts[probe]!;
-          // Vary both ends of the loopback flow; Linux may otherwise hash a
-          // large source-port set to one reuse-port bucket in CI.
-          const loopbackHost = probe % 2 === 0 ? "127.0.0.1" : "127.0.0.2";
+          // Vary the loopback destination across the /8, not just two hosts;
+          // this gives the reuse-port hash more independent flow tuples.
+          const loopbackHost = `127.0.0.${1 + ((probe * 73) % 254)}`;
           return requestReplica(localPort, loopbackHost);
         }),
       );
