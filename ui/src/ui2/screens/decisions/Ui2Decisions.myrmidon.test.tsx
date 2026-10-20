@@ -135,7 +135,19 @@ describe("myrmidon(UI2) Ui2Decisions screen parity", () => {
     mockDecisionsApi.list.mockResolvedValue([decisionFixture()]);
     mockDecisionsApi.decide.mockResolvedValue({});
     mockDecisionsApi.dismiss.mockResolvedValue({});
-    mockAttentionApi.list.mockResolvedValue({ items: [], totalCount: 0 });
+    mockAttentionApi.list.mockResolvedValue({
+      items: [{
+        id: "decision-1",
+        companyId: "company-1",
+        sourceKind: "decision",
+        subject: { kind: "decision", id: "decision-1", companyId: "company-1", title: "Raise the soft limit for the day", identifier: null, status: "open", href: null },
+        whyNow: "A decision is waiting",
+        originAgentName: "agent-a",
+        relatedIssue: null,
+        createdAt: minutesAgo(125),
+      }],
+      totalCount: 1,
+    });
     mockAgentsApi.list.mockResolvedValue([
       { id: "agent-1", companyId: "company-1", name: "agent-a", status: "active" },
     ]);
