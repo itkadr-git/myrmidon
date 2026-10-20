@@ -21,22 +21,12 @@ describe("company routes", () => {
     for (const root of ["onboarding", "plugins", "tests", "status-cards", "review-queue", "learnings", "dev", "instance", "chat-identity", "ux-lab"]) {
       boardRouteRoots.delete(root);
     }
-    // Team Catalog is mounted by the shared UI surface rather than directly in
-    // boardRoutes. Its separate navigation regression test below covers that
-    // live route without treating it as a BOARD_ROUTE_ROOT entry.
-
-    const globalRootsBlock = appSource.match(/<Route path="(?:oauth-handoff|auth|board-claim|cli-auth|invite)[^>]*>[\s\S]*?(?=<Route element=\{streamlinedUiLoaded)/)?.[0] ?? "";
-    const globalRoots = new Set([...globalRootsBlock.matchAll(/path="([a-z][a-z0-9-]*)/g)].map(([, root]) => root!));
-    for (const root of globalRoots) boardRouteRoots.delete(root);
     const source = readFileSync(fileURLToPath(new URL("./company-routes.ts", import.meta.url)), "utf8");
     const rootsBlock = source.match(/const BOARD_ROUTE_ROOTS = new Set\(\[([\s\S]*?)\]\);/)?.[1];
     expect(rootsBlock).toBeDefined();
     const listedRoots = new Set([...rootsBlock!.matchAll(/"([a-z][a-z0-9-]*)"/g)].map(([, root]) => root!));
 
-    const teamCatalogSource = readFileSync(fileURLToPath(new URL("../pages/TeamCatalog.tsx", import.meta.url)), "utf8");
-    const teamCatalogRoot = teamCatalogSource.match(/const TEAM_CATALOG_ROUTE_ROOT = "\/([a-z][a-z0-9-]*)";/)?.[1];
-    expect(teamCatalogRoot).toBeDefined();
-    expect([...listedRoots].filter((root) => root !== teamCatalogRoot && !boardRouteRoots.has(root))).toEqual([]);
+    expect([...listedRoots].filter((root) => !boardRouteRoots.has(root))).toEqual([]);
     expect([...boardRouteRoots].filter((root) => !listedRoots.has(root))).toEqual([]);
   });
 
