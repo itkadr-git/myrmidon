@@ -42,6 +42,6 @@ export function createPoolChatTransports(client: PoolChatTransportClient): Recor
 }
 
 export function redactTransportError(error: unknown): string {
-  if (error instanceof Error) return error.message.replace(/(api[_-]?key|sk|key|token|secret)[-_=: ]*[^\\s,;]+/gi, "$1=[redacted]");
+  if (error instanceof Error) return error.message.replace(/((?:api[_-]?key|sk|key|token|secret)[-_=: ]*)[^\\s,;]+/gi, "$1[redacted]");
   return "provider_transport_failed";
 }
