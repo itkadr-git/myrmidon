@@ -25,6 +25,8 @@ import {
   type MigrateMap,
 } from "./index.js";
 
+import { parseKnowledgeTree } from "../domain.js";
+
 const AGENT: KnowledgeActor = { actorType: "agent", actorId: "ef2496db-56cd-4700-be3e-194fcc6f2a6a", kind: null };
 
 /** A page long enough not to be mistaken for a stub (>= 200 bytes). */
@@ -75,11 +77,19 @@ function stubWriter(log: WriterLog, options: { failOn?: string } = {}): Knowledg
       log.create.push({ input, actor });
       log.revisions.set(input.slug, [{ content: input.content, sources: (input.sources ?? []).map((source) => ({ ...source, note: source.note ?? null })) }]);
       log.statuses.set(input.slug, { deliveredContent: input.content, status: "draft", supersededByItemId: null });
+      log.items.set(input.slug, {
+        id: `id-${input.slug}`, slug: input.slug, kind: input.kind, title: input.title, summary: input.summary,
+        folderPath: input.folderPath, tags: input.tags ?? [], approvalRequired: input.approvalRequired ?? false,
+        approverKind: input.approverKind ?? null, deliveredContent: input.content, status: "draft", supersededByItemId: null,
+      });
       return { id: `id-${input.slug}`, slug: input.slug };
     },
-    async importTree() {
-      // Metadata synchronization is intentionally a no-op in the test writer.
-      return { created: 0, updated: 0, pages: 0 };
+    async importTree(_companyId, _nestId, buf) {
+      const tree = parseKnowledgeTree(buf);
+      const page = tree.pages[0];
+      const item = log.items.get(page.slug);
+      if (item) log.items.set(page.slug, { ...item, kind: page.kind, title: page.title, summary: page.summary, folderPath: page.folder, tags: page.tags, approvalRequired: page.approvalRequired, approverKind: page.approverKind, deliveredContent: page.content });
+      return { created: 0, updated: item ? 1 : 0, pages: 1 };
     },
     async draft(nestId, slug, input, actor) {
       log.draft.push({ nestId, slug, input, actor });
@@ -90,6 +100,8 @@ function stubWriter(log: WriterLog, options: { failOn?: string } = {}): Knowledg
       const revisions = log.revisions.get(slug) ?? [];
       revisions.push({ content: input.content, sources: (input.sources ?? []).map((source) => ({ ...source, note: source.note ?? null })) });
       log.revisions.set(slug, revisions);
+      const item = log.items.get(slug);
+      if (item) log.items.set(slug, { ...item, deliveredContent: input.content });
       log.statuses.set(slug, { deliveredContent: input.content, status: "draft", supersededByItemId: null });
       return { id: `id-${slug}`, slug };
     },
