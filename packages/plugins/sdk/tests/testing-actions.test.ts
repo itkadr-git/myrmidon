@@ -60,6 +60,7 @@ describe("createTestHarness action context", () => {
       agentId: null,
       runId: "run-1",
       companyId: "host-company",
+      isInstanceAdmin: false, // myrmidon(PLUGIN-INSTANCE-ADMIN)
     });
     expect(result.contextFrozen).toBe(true);
     expect(result.actorFrozen).toBe(true);
