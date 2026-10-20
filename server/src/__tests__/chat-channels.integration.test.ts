@@ -9567,7 +9567,22 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     const standbyRuntime = new FakeChatSdkRuntime();
     const standby = createService(standbyRuntime, providerFetch);
     try {
-      await new Promise((resolve) => setTimeout(resolve, 250));
+      // Wait for the exact owner lease to expire instead of sleeping for a
+      // fixed duration. Under CI load, a 250ms sleep can race the expiry and
+      // make reconciliation contend with the stale callback transactions.
+      await vi.waitFor(async () => {
+        const [currentLease] = await db
+          .select({ token: chatEndpointLeases.token, expiresAt: chatEndpointLeases.expiresAt })
+          .from(chatEndpointLeases)
+          .where(
+            and(
+              eq(chatEndpointLeases.endpointId, endpoint.id),
+              eq(chatEndpointLeases.leaseKey, "discord_gateway_runtime"),
+            ),
+          );
+        expect(currentLease?.token).toBe(leaseBeforeTakeover.token);
+        expect(currentLease?.expiresAt.getTime()).toBeLessThanOrEqual(Date.now());
+      }, { timeout: 5_000 });
       const reconciled = await standby.service.reconcileProviderRuntimes();
       expect(reconciled).toMatchObject({ ownedElsewhere: 0, failed: 0 });
       const freshCallbacks = standbyRuntime.configurations.get(
