@@ -14,6 +14,7 @@ import { fileURLToPath } from "node:url";
 import { UI2_NAV_GROUPS, UI2_PHONE_TABS } from "../navModel";
 import { UI2_ROUTE_TABLE } from "../routes";
 import { isUi2RouteElementAPlaceholder } from "../routes";
+import { fleetStatus } from "../screens/agent-overview/Ui2AgentsFleetPage";
 
 const fleetScreenSource = readFileSync(
   fileURLToPath(new URL("../screens/agent-overview/Ui2AgentsFleetPage.tsx", import.meta.url)),
@@ -67,5 +68,14 @@ describe("myrmidon(UI2) route table integration", () => {
     expect(byKey.get("costs")?.legacyPath).toBe("/activity/costs");
     expect(byKey.get("agent-overview")?.legacyPath).toBe("/agents/:agentId");
     expect(byKey.get("agents-fleet")?.legacyPath).toBe("/agents");
+  });
+
+  it("maps canonical agent API statuses without treating active as running", () => {
+    expect(fleetStatus("active")).toBe("idle");
+    expect(fleetStatus("idle")).toBe("idle");
+    expect(fleetStatus("running")).toBe("running");
+    expect(fleetStatus("paused")).toBe("paused");
+    expect(fleetStatus("error")).toBe("error");
+    expect(fleetStatus("active", { status: "failed" } as never)).toBe("error");
   });
 });
