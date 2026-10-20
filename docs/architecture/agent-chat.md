@@ -13,7 +13,7 @@ Agent Chat bridges an external channel to a persistent conversation owned by an 
 4. The agent heartbeat reads the conversation context and produces a reply through the outbound channel adapter.
 5. Delivery status and failures are recorded against the conversation message.
 
-The bridge separates channel identity from Paperclip identity. Telegram or another channel may provide a sender id, but authorization is decided by the resolved company and participant record. A reply is scoped to the conversation that generated it, preventing cross-company or cross-thread delivery.
+The bridge separates channel identity from Myrmidon identity. Telegram or another channel may provide a sender id, but authorization is decided by the resolved company and participant record. A reply is scoped to the conversation that generated it, preventing cross-company or cross-thread delivery.
 
 ## Reliability rules
 
