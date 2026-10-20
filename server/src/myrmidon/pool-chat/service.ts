@@ -58,7 +58,7 @@ export function poolChatService(db: Db, resolveTransport: PoolChatTransportResol
           const [updated] = await tx.update(poolChatRequests).set({ status: "completed", charged: true, result: { text: result.text }, usage: { inputUnits: result.inputUnits, outputUnits: result.outputUnits }, updatedAt: new Date() }).where(eq(poolChatRequests.id, request.id)).returning();
           return updated;
         });
-      } catch (error) {
+      } catch {
         await db.transaction(async (tx: any) => {
           await tx.update(poolChatRequestAttempts).set({ state: "uncertain", failureCode: "provider_unknown", failureDetail: "provider_transport_failed", updatedAt: new Date() }).where(and(eq(poolChatRequestAttempts.requestId, request.id), eq(poolChatRequestAttempts.attemptNo, 1)));
           await tx.update(poolChatRequests).set({ status: "uncertain", updatedAt: new Date() }).where(eq(poolChatRequests.id, request.id));
