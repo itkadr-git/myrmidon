@@ -187,6 +187,7 @@ import { myrmidonMonitoringLinkRoutes } from "./myrmidon/monitoring/links/index.
 import { myrmidonMonitoringDashboardRoutes } from "./myrmidon/monitoring/dashboard/index.js"; // myrmidon(1.6.6 MONITORING C)
 import { myrmidonCloudConnectorRoutes } from "./myrmidon/cloud-connector/index.js"; // myrmidon(CLOUD-CONNECTOR)
 import { myrmidonBoardProcessRegistryRoutes } from "./myrmidon/process-registry/index.js"; // myrmidon(1.6.6 PROCS-0.1)
+import { poolChatRoutes } from "./myrmidon/pool-chat/routes.js";
 import { myrmidonAutonomyRoutes } from "./myrmidon/autonomy/index.js"; // myrmidon(1.6-AUTONOMY)
 // myrmidon(1.6-TG-PROACTIVITY-E): head-bot proactivity gate/bundling sweep
 import { sweepTelegramNotifyProactivity } from "./myrmidon/telegram-notify/sweep.js";
@@ -1186,6 +1187,7 @@ export async function createApp(
   api.use(myrmidonForagingPassRoutes(db)); // myrmidon(1.6.3-FORAGING-IDLE-GATE, UI half): the pass history
   api.use(myrmidonWikiCortexRoutes(db)); // myrmidon(1.6-WIKI): company regulations (wiki pages, revisions, resolver)
   api.use(myrmidonBoardProcessRegistryRoutes(db)); // myrmidon(1.6.6 PROCS-0.1): process registry read by the «Процессы» panel
+  api.use(poolChatRoutes(db, () => null)); // myrmidon(1.6.6 POOL-CHAT): authenticated router boundary; provider wiring is deployment-specific
   if (opts.databaseBackupService) {
     api.use(instanceDatabaseBackupRoutes(opts.databaseBackupService));
   }
