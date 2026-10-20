@@ -178,16 +178,16 @@ func (d *dockerClient) logs(ctx context.Context, bot string) (string, error) {
 }
 func safeProfilePath(root, bot, p string) (string, error) {
 	if root == "" {
-		return "", "profile_root_not_configured"
+		return "", fmt.Errorf("profile_root_not_configured")
 	}
 	clean := filepath.Clean(p)
 	if clean == "." || filepath.IsAbs(clean) || strings.HasPrefix(clean, ".."+string(os.PathSeparator)) {
-		return "", "invalid_profile_path"
+		return "", fmt.Errorf("invalid_profile_path")
 	}
 	base := filepath.Join(root, bot)
 	dest := filepath.Join(base, clean)
 	if dest != base && !strings.HasPrefix(dest, base+string(os.PathSeparator)) {
-		return "", "invalid_profile_path"
+		return "", fmt.Errorf("invalid_profile_path")
 	}
 	return dest, nil
 }
