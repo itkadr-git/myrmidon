@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { PRODUCT_NAME, PRODUCT_TAGLINE } from "../myrmidon-product.js";
-import { printPaperclipCliBanner } from "../utils/banner.js";
+import { MYRMIDON_ART, printPaperclipCliBanner } from "../utils/banner.js";
 
 // myrmidon(B1b): guard against the CLI re-introducing "Paperclip" as the
 // product name in user-visible surfaces (banner, --help, prompts, errors).
@@ -31,5 +31,6 @@ describe("cli product naming", () => {
     const text = lines.join("\n");
     expect(text).toContain("Myrmidon");
     expect(text).not.toContain("Paperclip");
+    expect(text).toContain(MYRMIDON_ART.join("\n"));
   });
 });
