@@ -16,6 +16,7 @@ describe("myrmidon(UI2) route table integration", () => {
   it("ships exactly the six contract entries plus the commander chat", () => {
     expect(UI2_ROUTE_TABLE.map((entry) => entry.key).sort()).toEqual([
       "agent-overview",
+      "agents-fleet",
       "commander-chat",
       "costs",
       "decisions",
@@ -36,11 +37,13 @@ describe("myrmidon(UI2) route table integration", () => {
     expect(byKey.get("decisions")?.path).toBe("decisions");
     expect(byKey.get("costs")?.path).toBe("activity/costs");
     expect(byKey.get("agent-overview")?.path).toBe("agents/:agentId/overview");
+    expect(byKey.get("agents-fleet")?.path).toBe("agents");
     expect(byKey.get("settings-runs-queue")?.path).toBe("company/settings/runs-queue");
     expect(byKey.get("settings-system")?.path).toBe("company/settings/system");
     expect(byKey.get("settings-language")?.path).toBe("company/settings/language");
     expect(byKey.get("decisions")?.legacyPath).toBe("/decisions");
     expect(byKey.get("costs")?.legacyPath).toBe("/activity/costs");
     expect(byKey.get("agent-overview")?.legacyPath).toBe("/agents/:agentId");
+    expect(byKey.get("agents-fleet")?.legacyPath).toBe("/agents");
   });
 });
