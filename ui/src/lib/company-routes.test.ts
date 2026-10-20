@@ -22,11 +22,8 @@ describe("company routes", () => {
       boardRouteRoots.delete(root);
     }
     // Team Catalog is mounted by the shared UI surface rather than directly in
-    // boardRoutes, so include its route-root declaration in the live tree.
-    const teamCatalogSource = readFileSync(fileURLToPath(new URL("../pages/TeamCatalog.tsx", import.meta.url)), "utf8");
-    const teamCatalogRoot = teamCatalogSource.match(/const TEAM_CATALOG_ROUTE_ROOT = "\/([a-z][a-z0-9-]*)";/)?.[1];
-    expect(teamCatalogRoot).toBeDefined();
-    boardRouteRoots.add(teamCatalogRoot!);
+    // boardRoutes. Its separate navigation regression test below covers that
+    // live route without treating it as a BOARD_ROUTE_ROOT entry.
 
     const globalRootsBlock = appSource.match(/<Route path="(?:oauth-handoff|auth|board-claim|cli-auth|invite)[^>]*>[\s\S]*?(?=<Route element=\{streamlinedUiLoaded)/)?.[0] ?? "";
     const globalRoots = new Set([...globalRootsBlock.matchAll(/path="([a-z][a-z0-9-]*)/g)].map(([, root]) => root!));
