@@ -55,6 +55,19 @@ describeEmbeddedPostgres(
     const previousKeyFile = process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE;
     const previousPublicUrl = process.env.PAPERCLIP_PUBLIC_URL;
     const previousMyrmidonPublicUrl = process.env.MYRMIDON_PUBLIC_URL;
+    const publicUrlEnvNames = [
+      "AUTH_PUBLIC_BASE_URL",
+      "MYRMIDON_AUTH_PUBLIC_BASE_URL",
+      "PAPERCLIP_AUTH_PUBLIC_BASE_URL",
+      "BETTER_AUTH_URL",
+      "BETTER_AUTH_BASE_URL",
+      "MANAGED_RUNTIME_PUBLIC_URL",
+      "MYRMIDON_MANAGED_RUNTIME_PUBLIC_URL",
+      "PAPERCLIP_MANAGED_RUNTIME_PUBLIC_URL",
+    ] as const;
+    const previousPublicUrlPrecedence = Object.fromEntries(
+      publicUrlEnvNames.map((name) => [name, process.env[name]]),
+    );
     const secretsTmpDir = path.join(
       os.tmpdir(),
       `paperclip-myrmidon-u2-owner-delivery-${randomUUID()}`,
@@ -73,6 +86,7 @@ describeEmbeddedPostgres(
     }, 30_000);
 
     beforeEach(async () => {
+      for (const name of publicUrlEnvNames) delete process.env[name];
       process.env.PAPERCLIP_PUBLIC_URL = "https://board.example";
       // Each scenario opts into owner delivery explicitly; do not leak the
       // singleton setting from a preceding scenario.
@@ -91,6 +105,11 @@ describeEmbeddedPostgres(
       if (previousMyrmidonPublicUrl === undefined)
         delete process.env.MYRMIDON_PUBLIC_URL;
       else process.env.MYRMIDON_PUBLIC_URL = previousMyrmidonPublicUrl;
+      for (const name of publicUrlEnvNames) {
+        const value = previousPublicUrlPrecedence[name];
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
     });
 
     afterAll(async () => {
