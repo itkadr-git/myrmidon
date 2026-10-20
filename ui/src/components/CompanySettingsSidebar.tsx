@@ -175,6 +175,14 @@ export function CompanySettingsSidebar() {
               end
             />
           )}
+          {showPage("instance.access") && (
+            <SidebarNavItem
+              to={`${INSTANCE_SETTINGS_PATH_PREFIX}/users`}
+              label="Users"
+              icon={Users}
+              end
+            />
+          )}
           {/* myrmidon(ROLE-SCOPED-TOKENS): scoped board API key management */}
           {showPage("instance.access") && (
             <SidebarNavItem
