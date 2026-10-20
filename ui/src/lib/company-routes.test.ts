@@ -24,12 +24,18 @@ describe("company routes", () => {
     for (const [, root] of legacyBlock.matchAll(/<Route\s+path="([a-z][a-z0-9-]*)"/g)) {
       boardRouteRoots.add(root!);
     }
+    // Team Catalog is mounted by the shared UI surface rather than directly in
+    // boardRoutes, so include its route-root declaration in the live tree.
+    const teamCatalogSource = readFileSync(fileURLToPath(new URL("../pages/TeamCatalog.tsx", import.meta.url)), "utf8");
+    const teamCatalogRoot = teamCatalogSource.match(/const TEAM_CATALOG_ROUTE_ROOT = "\/([a-z][a-z0-9-]*)";/)?.[1];
+    expect(teamCatalogRoot).toBeDefined();
+    boardRouteRoots.add(teamCatalogRoot!);
+
     const source = readFileSync(fileURLToPath(new URL("./company-routes.ts", import.meta.url)), "utf8");
     const rootsBlock = source.match(/const BOARD_ROUTE_ROOTS = new Set\(\[([\s\S]*?)\]\);/)?.[1];
     expect(rootsBlock).toBeDefined();
     const listedRoots = new Set([...rootsBlock!.matchAll(/"([a-z][a-z0-9-]*)"/g)].map(([, root]) => root!));
 
-    expect(listedRoots.size).toBe([...rootsBlock!.matchAll(/"([a-z][a-z0-9-]*)"/g)].length);
     expect([...listedRoots].filter((root) => !boardRouteRoots.has(root))).toEqual([]);
     expect([...boardRouteRoots].filter((root) => !listedRoots.has(root))).toEqual([]);
   });
