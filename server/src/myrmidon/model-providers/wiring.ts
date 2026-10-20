@@ -204,7 +204,7 @@ export function createPluginProviderModelSync(
         db,
         defaultAgentGatewayKeyDeps(db, env),
         companyId,
-        [],
+        [...stillOwnedNames],
         removableModelNames,
         true,
       );
