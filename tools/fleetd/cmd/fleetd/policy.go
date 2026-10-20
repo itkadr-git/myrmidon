@@ -170,7 +170,7 @@ func (s *server) writeProfile(p profile) error {
 	}
 	root := filepath.Join(s.cfg.VolumeRoot, p.BotKey)
 	for _, f := range p.Files {
-		if !safeAbs("/"+f.Path) || strings.Contains(f.Path, "..") || strings.HasPrefix(f.Path, "/") {
+		if f.Path == "" || filepath.IsAbs(f.Path) || strings.Contains(filepath.ToSlash(f.Path), "../") || strings.HasPrefix(filepath.ToSlash(f.Path), "..") {
 			return errForbidden("profile_path_invalid")
 		}
 		target := filepath.Join(root, filepath.Clean(f.Path))
