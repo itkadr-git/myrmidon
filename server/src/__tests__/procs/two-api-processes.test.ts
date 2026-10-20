@@ -267,7 +267,12 @@ describeProcs("two api processes on one test database (PROCS-T1.5 skeleton)", ()
       new Promise<{ status: number; text: string; json: unknown }>((resolve, reject) => {
         const client = http.get(
           `http://${loopbackHost}:${sharedPort}/api/myrmidon/board-processes`,
-          { agent: false, localAddress: "127.0.0.1", localPort },
+          {
+            agent: false,
+            localAddress: "127.0.0.1",
+            localPort,
+            headers: { host: `127.0.0.1:${sharedPort}` },
+          },
           (incoming) => {
             const chunks: Buffer[] = [];
             incoming.on("data", (chunk: Buffer) => chunks.push(chunk));
