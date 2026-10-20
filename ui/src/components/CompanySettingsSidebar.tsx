@@ -187,6 +187,7 @@ export function CompanySettingsSidebar() {
               icon={Users}
               end
             />
+          )}
           {/* myrmidon(LICENSING): closed-module licenses, instance admin only */}
           {isInstanceAdmin && (
             <SidebarNavItem to={LICENSES_PATH} label={t("licensing.title")} icon={BadgeCheck} end />
