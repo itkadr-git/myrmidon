@@ -772,6 +772,7 @@ describe.sequential("plugin tool and bridge authz", () => {
         agentId: null,
         runId: null,
         companyId: null,
+        isInstanceAdmin: true, // myrmidon(PLUGIN-INSTANCE-ADMIN)
       },
       renderEnvironment: null,
     });
@@ -809,6 +810,7 @@ describe.sequential("plugin tool and bridge authz", () => {
         agentId: null,
         runId: runA,
         companyId: companyA,
+        isInstanceAdmin: false, // myrmidon(PLUGIN-INSTANCE-ADMIN)
       },
       renderEnvironment: null,
     });
