@@ -2,6 +2,7 @@ import { isAcknowledgedNativeStop } from "../../../services/acknowledged-native-
 // myrmidon(1.6.1 OPE-3983): the native-failure block carries the recovery-liveness reasonRef.
 import { recoveryLivenessDescriptor } from "../../../myrmidon/stale-block/event-keys.js";
 import { instanceSettingsService } from "../../../services/instance-settings.js";
+import { MAINTENANCE_INTERRUPT_ERROR_CODE } from "../../../myrmidon/maintenance/domain.js";
 import { currentConversationCommentCondition } from "../../../services/agent-conversations.js";
 import { getExecutionBlocker } from "../../../services/execution-blocker.js";
 import { and, asc, eq, inArray, isNull, notInArray, or, sql } from "drizzle-orm";
@@ -209,6 +210,12 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
         ))
         .returning({ id: issues.id });
       return Boolean(claimed);
+    },
+    async releaseIssueExecutionLease({ companyId, issueId, runId }): Promise<void> {
+      await tx
+        .update(issues)
+        .set({ executionRunId: null })
+        .where(and(eq(issues.companyId, companyId), eq(issues.id, issueId), eq(issues.executionRunId, runId)));
     },
     async findInvokableAgent({ companyId, agentId }): Promise<InvokableAgentSnapshot | null> {
       const agent = await tx
@@ -734,6 +741,9 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
 }
 
 async function recordNativeTerminalRecoveryIfNeeded(tx: Db, run: HeartbeatRunRow, issue: IssueRow, now: Date): Promise<boolean> {
+  // Maintenance owns an explicit successor retry. Treating the expected stop
+  // as an unknown native execution creates a reconciliation hold instead.
+  if (run.errorCode === MAINTENANCE_INTERRUPT_ERROR_CODE) return false;
   const applies =
     run.runtimeMode === "native" &&
     ["failed", "timed_out", "interrupted", "cancelled"].includes(run.status) &&
@@ -1171,14 +1181,6 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
           outcome: { kind: "released" } as const, postCommitEffects: [], run: runSnapshot,
         } : null;
 
-        const releasedSiblingOutcome = () => releasedSiblingIssue &&
-          releasedSiblingIssue.status !== "done" && releasedSiblingIssue.status !== "cancelled"
-          ? {
-              outcome: { kind: "released" } as const, postCommitEffects: [], run: runSnapshot,
-              releasedSiblingIssue: toIssueSnapshot(releasedSiblingIssue),
-            }
-          : null;
-
         // decidePreDrain only returns "blocked" or "proceed" when the issue row is present.
         if (!issueRow) {
           return releaseOutcome ?? { outcome: { kind: "released" }, postCommitEffects: [], run: runSnapshot };
@@ -1201,8 +1203,6 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
         }
 
         if (preDrain.kind === "blocked") {
-          const siblingOutcome = releasedSiblingOutcome();
-          if (siblingOutcome) return siblingOutcome;
           return {
             outcome: {
               kind: "blocked",

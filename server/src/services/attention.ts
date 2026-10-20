@@ -287,6 +287,8 @@ const SOURCE_RANK: Record<AttentionSourceKind, number> = {
   secret_off_run_grant_expiring: 18,
   // myrmidon(1.6.6 OPE-7198): pool account alerts are high/medium operational notices.
   codex_pool_alert: 4,
+  // myrmidon(OPE-7932): overdue monitors need operator visibility, below blockers.
+  issue_monitor_overdue: 12,
 };
 
 const PENDING_INTERACTION_STATUSES = ["pending"] as const;
@@ -2008,6 +2010,60 @@ async function buildAttentionFeedSnapshot(
             blockedTaskCount,
             images: issueImages(blockerImageMap, terminalIssueId),
           },
+        }));
+      }
+
+      const overdueMonitors = await db
+        .select({
+          id: issues.id,
+          companyId: issues.companyId,
+          identifier: issues.identifier,
+          title: issues.title,
+          status: issues.status,
+          priority: issues.priority,
+          assigneeAgentId: issues.assigneeAgentId,
+          assigneeUserId: issues.assigneeUserId,
+          executionPolicy: issues.executionPolicy,
+          monitorNextCheckAt: issues.monitorNextCheckAt,
+          monitorWakeRequestedAt: issues.monitorWakeRequestedAt,
+          updatedAt: issues.updatedAt,
+          createdAt: issues.createdAt,
+        })
+        .from(issues)
+        .where(and(
+          eq(issues.companyId, companyId),
+          sql`${issues.monitorNextCheckAt} is not null`,
+          lte(issues.monitorNextCheckAt, new Date(now - 5 * 60_000)),
+          sql`(${issues.monitorWakeRequestedAt} is null or ${issues.monitorWakeRequestedAt} < ${new Date(now - 5 * 60_000).toISOString()}::timestamptz)`,
+          sql`${issues.status} not in ('done', 'cancelled')`,
+          isNull(issues.assigneeUserId),
+          isNotNull(issues.assigneeAgentId),
+          executionIssueCondition(),
+        ))
+        .orderBy(asc(issues.monitorNextCheckAt), asc(issues.id));
+      const overdueIssueMap = new Map(overdueMonitors.map((issue) => [issue.id, issue]));
+      for (const monitorIssue of overdueMonitors) {
+        const subject = overdueIssueMap.get(monitorIssue.id);
+        if (!subject) continue;
+        const nextCheckAt = monitorIssue.monitorNextCheckAt?.toISOString() ?? "unknown";
+        const dedupKey = `issue-monitor-overdue:${monitorIssue.id}`;
+        add(createItem({
+          companyId,
+          sourceKind: "issue_monitor_overdue",
+          subject: issueSubject(prefix, subject),
+          whyNow: `Scheduled monitor was due at ${nextCheckAt}, but no wake was recorded after the 5 minute grace period.`,
+          decisionVerbs: decisionVerbs({ id: "inspect", label: "Inspect", description: "Inspect the monitor and wake history." }),
+          inlineResolvable: false,
+          entryRule: "an open issue monitor is overdue and has no recorded wake claim",
+          exitRule: "the monitor is triggered, cleared, or the issue is closed",
+          dedupKey,
+          severity: "high",
+          activityAt: toIso(monitorIssue.monitorNextCheckAt ?? monitorIssue.updatedAt),
+          createdAt: toIso(monitorIssue.createdAt),
+          updatedAt: toIso(monitorIssue.updatedAt),
+          relatedIssue: null,
+          ...issueContext(subject),
+          detail: genericDetail(`Monitor due ${nextCheckAt}; wake not recorded.`, []),
         }));
       }
 
