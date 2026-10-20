@@ -336,14 +336,10 @@ describe("myrmidon(1.6.6 KNOWLEDGE-2.0 K-1) module hygiene", () => {
 
   it("the module dir holds exactly the known module files (K-1 core + K-8 seed)", () => {
     // K-1: domain/index/service/store. K-8 (OPE-5961, #1207) added the seed of
-    // decisions and product knowledge. KNOWLEDGE-2.0 L-8 adds git export; its
-    // implementation remains on main even though its docs were reverted.
-    // New module files must be listed here deliberately.
+    // decisions and product knowledge: seed.ts (runner), seed-data.ts and
+    // seed-product.ts (data). New files must be listed here deliberately.
     expect(sources).toEqual([
       "domain.ts",
-      "git-export-git.ts",
-      "git-export-job.ts",
-      "git-export.ts",
       "index.ts",
       "seed-data.ts",
       "seed-product.ts",
