@@ -156,6 +156,18 @@ func TestHealthRouteRequiresAuthAndReportsResources(t *testing.T) {
 	}
 }
 
+func TestWriteProfileUsesIsolatedVolumeRoot(t *testing.T) {
+	s, _ := newServer(t)
+	key := s.cfg.Bots[0].BotKey
+	rec := routeRequest(s, http.MethodPut, "/v1/bots/"+key+"/profile", fakeBearer(), `{"profile":{"botKey":"`+key+`","files":[{"path":"profile.json","content":"{}"}]}}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("profile write failed: %d %s", rec.Code, rec.Body.String())
+	}
+	if _, err := os.Stat(filepath.Join(s.cfg.VolumeRoot, key, "profile.json")); err != nil {
+		t.Fatalf("profile not written under isolated volume root: %v", err)
+	}
+}
+
 func TestMountPolicy(t *testing.T) {
 	if err := validateMounts([]mountSpec{{Source: "/srv/bots", Destination: "/data", ReadOnly: true}}, []string{"/srv/bots"}); err != nil {
 		t.Fatalf("allowed mount rejected: %v", err)
