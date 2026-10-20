@@ -11,19 +11,13 @@ import {
 describe("company routes", () => {
   it("keeps board route roots in sync with the company-prefixed route tree", () => {
     const appSource = readFileSync(fileURLToPath(new URL("../App.tsx", import.meta.url)), "utf8");
-    const boardRouteRoots = new Set<string>();
     const routeBlock = appSource.match(/function boardRoutes\([\s\S]*?(?=\nfunction )/)?.[0];
     expect(routeBlock).toBeDefined();
-    for (const [, root] of routeBlock!.matchAll(/path="([a-z][a-z0-9-]*)/g)) {
-      if (!["runs", "budgets"].includes(root!)) boardRouteRoots.add(root!);
-    }
-    const legacyStart = appSource.indexOf("<Route element={streamlinedUiLoaded", appSource.indexOf("export function App()"));
-    const legacyBlock = legacyStart >= 0
-      ? appSource.slice(legacyStart).split('<Route path=":companyPrefix"')[0]
-      : "";
-    for (const [, root] of legacyBlock.matchAll(/path="([a-z][a-z0-9-]*)/g)) {
-      boardRouteRoots.add(root!);
-    }
+    const roots = (block: string) => new Set(
+      [...block.matchAll(/path="([a-z][a-z0-9-]*)/g)].map(([, root]) => root!),
+    );
+    const routeRoots = roots(routeBlock!);
+    const boardRouteRoots = new Set([...routeRoots].filter((root) => !["runs", "budgets"].includes(root)));
     // Team Catalog is mounted by the shared UI surface rather than directly in
     // boardRoutes, so include its route-root declaration in the live tree.
     const teamCatalogSource = readFileSync(fileURLToPath(new URL("../pages/TeamCatalog.tsx", import.meta.url)), "utf8");
@@ -31,6 +25,8 @@ describe("company routes", () => {
     expect(teamCatalogRoot).toBeDefined();
     boardRouteRoots.add(teamCatalogRoot!);
 
+    const globalRootsBlock = appSource.match(/<Route path="(?:oauth-handoff|auth|board-claim|cli-auth|invite)[^>]*>[\s\S]*?(?=<Route element=\{streamlinedUiLoaded|<Route element=\{streamlinedUiLoaded)/)?.[0] ?? "";
+    const globalRoots = new Set([...globalRootsBlock.matchAll(/path="([a-z][a-z0-9-]*)/g)].map(([, root]) => root!));
     const source = readFileSync(fileURLToPath(new URL("./company-routes.ts", import.meta.url)), "utf8");
     const rootsBlock = source.match(/const BOARD_ROUTE_ROOTS = new Set\(\[([\s\S]*?)\]\);/)?.[1];
     expect(rootsBlock).toBeDefined();
