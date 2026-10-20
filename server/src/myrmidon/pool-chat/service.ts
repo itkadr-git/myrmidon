@@ -3,6 +3,7 @@ import { poolChatModuleInstances, poolChatQuotaReservations, poolChatRequestAtte
 import { and, eq } from "drizzle-orm";
 import { conflict, notFound, HttpError } from "../../errors.js";
 import { canonicalRequestHash, type PoolChatRequestBody } from "./protocol.js";
+import { selectPoolChatAccount } from "./router.js";
 import type { PoolChatProvider, PoolChatTransport } from "./transports.js";
 
 export type PoolChatTransportResolver = (input: { provider: PoolChatProvider; moduleId: string; config: Record<string, unknown> }) => PoolChatTransport | null;
@@ -28,7 +29,9 @@ export function poolChatService(db: Db, resolveTransport: PoolChatTransportResol
       const module = await db.select({ provider: poolChatModuleInstances.provider, config: poolChatModuleInstances.config }).from(poolChatModuleInstances).where(and(eq(poolChatModuleInstances.companyId, input.companyId), eq(poolChatModuleInstances.id, input.moduleId), eq(poolChatModuleInstances.status, "active"))).then((rows) => rows[0]);
       if (!module) throw notFound("Pool-chat module not found");
       const provider = providerOf(module.provider);
-      const transport = resolveTransport({ provider, moduleId: input.moduleId, config: module.config ?? {} });
+      const config = module.config ?? {};
+      const account = selectPoolChatAccount(config, provider, 1);
+      const transport = resolveTransport({ provider, moduleId: input.moduleId, config: { ...config, selectedAccountRef: account.accountRef } });
       if (!transport) throw new HttpError(503, "Pool-chat provider transport is not configured");
       const outcome = await db.transaction(async (tx) => {
         const existing = await tx.select().from(poolChatRequests).where(and(eq(poolChatRequests.companyId, input.companyId), eq(poolChatRequests.moduleId, input.moduleId), eq(poolChatRequests.channel, input.channel), eq(poolChatRequests.subjectId, input.subjectId), eq(poolChatRequests.idempotencyKey, input.idempotencyKey))).then((rows) => rows[0]);
@@ -38,7 +41,7 @@ export function poolChatService(db: Db, resolveTransport: PoolChatTransportResol
         }
         const [created] = await tx.insert(poolChatRequests).values({ companyId: input.companyId, moduleId: input.moduleId, channel: input.channel, subjectId: input.subjectId, conversationId: input.body.conversationId, clientMessageId: input.body.clientMessageId, idempotencyKey: input.idempotencyKey, requestHash: hash, model: input.body.model, status: "dispatching", reservationUnits: 1 }).returning();
         await tx.insert(poolChatQuotaReservations).values({ companyId: input.companyId, requestId: created.id, units: 1, state: "reserved" });
-        await tx.insert(poolChatRequestAttempts).values({ companyId: input.companyId, requestId: created.id, attemptNo: 1, state: "dispatching", provider, reservedUnits: 1 });
+        await tx.insert(poolChatRequestAttempts).values({ companyId: input.companyId, requestId: created.id, attemptNo: 1, state: "dispatching", provider, accountRef: account.accountRef, reservedUnits: 1 });
         return { request: created, created: true };
       });
       // Only the transaction winner may perform upstream I/O. Replays must
