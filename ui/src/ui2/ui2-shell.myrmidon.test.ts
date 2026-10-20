@@ -90,6 +90,8 @@ describe("ui2 integration contracts (UI-0b / UI-0c)", () => {
       "settings-language",
       "settings-runs-queue",
       "settings-system",
+      "quality",
+      "system",
     ]);
     for (const entry of UI2_ROUTE_TABLE) {
       expect(entry.element, entry.key).toBeTruthy();
