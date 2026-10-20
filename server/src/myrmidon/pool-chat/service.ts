@@ -39,6 +39,17 @@ export function poolChatService(db: Db, resolveTransport: PoolChatTransportResol
         if (existing.requestHash !== hash) throw conflict("Idempotency key was reused with a different request");
         return existing;
       }
+      const eventReplay = await db.select().from(poolChatRequests).where(and(
+        eq(poolChatRequests.companyId, input.companyId),
+        eq(poolChatRequests.moduleId, input.moduleId),
+        eq(poolChatRequests.channel, input.channel),
+        eq(poolChatRequests.subjectId, input.subjectId),
+        eq(poolChatRequests.clientMessageId, input.body.clientMessageId),
+      )).then((rows) => rows[0]);
+      if (eventReplay) {
+        if (eventReplay.requestHash !== hash) throw conflict("Client message was reused with a different request");
+        return eventReplay;
+      }
       const module = await db.select({ provider: poolChatModuleInstances.provider, config: poolChatModuleInstances.config }).from(poolChatModuleInstances).where(and(eq(poolChatModuleInstances.companyId, input.companyId), eq(poolChatModuleInstances.id, input.moduleId), eq(poolChatModuleInstances.status, "active"))).then((rows) => rows[0]);
       if (!module) throw notFound("Pool-chat module not found");
       const provider = providerOf(module.provider);
@@ -48,6 +59,17 @@ export function poolChatService(db: Db, resolveTransport: PoolChatTransportResol
         if (existing) {
           if (existing.requestHash !== hash) throw conflict("Idempotency key was reused with a different request");
           return { request: existing, created: false };
+        }
+        const eventReplay = await tx.select().from(poolChatRequests).where(and(
+          eq(poolChatRequests.companyId, input.companyId),
+          eq(poolChatRequests.moduleId, input.moduleId),
+          eq(poolChatRequests.channel, input.channel),
+          eq(poolChatRequests.subjectId, input.subjectId),
+          eq(poolChatRequests.clientMessageId, input.body.clientMessageId),
+        )).then((rows) => rows[0]);
+        if (eventReplay) {
+          if (eventReplay.requestHash !== hash) throw conflict("Client message was reused with a different request");
+          return { request: eventReplay, created: false };
         }
         // Select and reserve only for a new logical request. Replays must
         // return the durable result even if account availability changed.
@@ -63,9 +85,9 @@ export function poolChatService(db: Db, resolveTransport: PoolChatTransportResol
       const transport = resolveTransport({ provider, moduleId: input.moduleId, config: { ...config, selectedAccountRef: outcome.accountRef } });
       if (!transport) {
         await db.transaction(async (tx: any) => {
-          await tx.update(poolChatRequestAttempts).set({ state: "failed", failureCode: "provider_not_configured", failureDetail: "provider_transport_unavailable", settledUnits: 0, updatedAt: new Date() }).where(and(eq(poolChatRequestAttempts.requestId, outcome.request.id), eq(poolChatRequestAttempts.attemptNo, 1)));
+          await tx.update(poolChatRequestAttempts).set({ state: "failed", failureCode: "provider_not_configured", failureDetail: "provider_transport_unavailable", settledUnits: 0, updatedAt: new Date() }).where(and(eq(poolChatRequestAttempts.requestId, outcome.request.id), eq(poolChatRequestAttempts.attemptNo, 1), eq(poolChatRequestAttempts.state, "dispatching")));
           await tx.update(poolChatQuotaReservations).set({ state: "released", settledUnits: 0, updatedAt: new Date() }).where(and(eq(poolChatQuotaReservations.requestId, outcome.request.id), eq(poolChatQuotaReservations.state, "reserved")));
-          await tx.update(poolChatRequests).set({ status: "failed", charged: false, updatedAt: new Date() }).where(eq(poolChatRequests.id, outcome.request.id));
+          await tx.update(poolChatRequests).set({ status: "failed", charged: false, updatedAt: new Date() }).where(and(eq(poolChatRequests.id, outcome.request.id), eq(poolChatRequests.status, "dispatching")));
         });
         throw new HttpError(503, "Pool-chat provider transport is not configured");
       }
