@@ -44,6 +44,7 @@ export function DeployJobsPanelView({
 }) {
   const [reference, setReference] = useState("");
   const [modeFilter, setModeFilter] = useState("");
+  const [statusFilter, setStatusFilter] = useState("");
   const [outcomeFilter, setOutcomeFilter] = useState("");
   const [confirmStart, setConfirmStart] = useState(false);
   const problem = digestProblemClient(reference);
@@ -113,16 +114,19 @@ export function DeployJobsPanelView({
       {state?.history ? (
         <details className="text-sm">
           <summary className="cursor-pointer text-muted-foreground">Previous deploys ({state.history.length})</summary>
-          <div className="mt-2 flex gap-2">
+          <div className="mt-2 flex flex-wrap gap-2">
             <select aria-label="Update mode" value={modeFilter} onChange={(event) => setModeFilter(event.target.value)}>
               <option value="">All modes</option><option value="manual">Manual</option><option value="auto">Automatic</option><option value="canary">Canary</option>
+            </select>
+            <select aria-label="Update status" value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}>
+              <option value="">All statuses</option><option value="succeeded">Deployed</option><option value="auto_rolled_back">Rolled back automatically</option><option value="failed_rollback">Rollback failed</option><option value="failed_health">Health check failed</option><option value="aborted">Cancelled</option><option value="failed_verification">Image refused</option><option value="maintenance_failed">Maintenance failed</option>
             </select>
             <select aria-label="Update outcome" value={outcomeFilter} onChange={(event) => setOutcomeFilter(event.target.value)}>
               <option value="">All outcomes</option><option value="succeeded">Succeeded</option><option value="rollback">Rollback</option><option value="aborted">Cancelled</option>
             </select>
           </div>
           <ul className="mt-2 space-y-1">
-            {state.history.filter((entry) => (!modeFilter || entry.mode === modeFilter) && (!outcomeFilter || (outcomeFilter === "rollback" ? entry.status.includes("rollback") : entry.status === outcomeFilter))).map((entry) => (
+            {state.history.filter((entry) => (!modeFilter || entry.mode === modeFilter) && (!statusFilter || entry.status === statusFilter) && (!outcomeFilter || (outcomeFilter === "rollback" ? entry.status.includes("rollback") : entry.status === outcomeFilter))).map((entry) => (
               <li key={entry.id} className="text-muted-foreground">
                 {new Date(entry.createdAt).toLocaleString()} — {entry.mode} — {describeDeployStatus(entry.status)} — {entry.digest.slice(0, 19)}…
                 {entry.window ? ` — ${entry.window}` : ""}

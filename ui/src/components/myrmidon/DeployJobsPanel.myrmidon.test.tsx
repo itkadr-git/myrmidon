@@ -120,6 +120,26 @@ describe("DeployJobsPanel", () => {
     expect(panel!.querySelector('[data-testid="myrmidon-deploy-error"]')?.textContent).toContain("not enabled");
   });
 
+  it("filters previous deploys by status", () => {
+    const panel = render({
+      state: {
+        job: null,
+        history: [
+          job({ id: "job-deployed", status: "succeeded", active: false, abortable: false }),
+          job({ id: "job-rolled-back", status: "auto_rolled_back", active: false, abortable: false }),
+        ],
+      },
+    });
+    const filter = panel!.querySelector<HTMLSelectElement>('select[aria-label="Update status"]')!;
+    flushSync(() => {
+      filter.value = "auto_rolled_back";
+      filter.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    const history = panel!.querySelector("ul")!;
+    expect(history.textContent).toContain("Rolled back automatically");
+    expect(history.textContent).not.toContain("Deployed");
+  });
+
   it("lists previous deploys from history", () => {
     const panel = render({
       state: { job: null, history: [job({ status: "succeeded", active: false, abortable: false, id: "job-old" })] },
