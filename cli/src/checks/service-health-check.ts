@@ -11,7 +11,7 @@ import {
 } from "../services/service-manager.js";
 import { buildLocalHealthUrl } from "../utils/health-url.js";
 import type { CheckResult } from "./index.js";
-import { PRODUCT_NAME } from "../myrmidon-product.js";
+import { readProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
 
 type HealthResult = { ok: boolean; version: string | null; error?: string };
 type ServiceCheckDependencies = {
@@ -45,7 +45,7 @@ export async function serviceHealthChecks(
   config: PaperclipConfig,
   dependencies: Partial<ServiceCheckDependencies> = {},
 ): Promise<CheckResult[]> {
-  if (process.env.PAPERCLIP_SERVICE_MANAGED === "1") return [];
+  if (readProductEnv("SERVICE_MANAGED") === "1") return [];
 
   const deps: ServiceCheckDependencies = {
     detect: (instanceId) => detectServiceManager({ instanceId }),

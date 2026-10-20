@@ -12,6 +12,13 @@ import type {
 } from "@paperclipai/adapter-utils";
 import { githubLauncherPayload } from "@paperclipai/adapter-utils/github-launcher";
 import { measureSections } from "@paperclipai/adapter-utils/prompt-meter";
+import { classifyInputOverflow } from "@paperclipai/adapter-utils/input-overflow";
+import {
+  INPUT_LIMIT_CONFIG_KEY,
+  decideInputLimit,
+  readInputLimitHint,
+  trimTextToChars,
+} from "@paperclipai/adapter-utils/input-limit";
 import {
   asNumber,
   asString,
@@ -32,6 +39,13 @@ import {
   STOP_GRACE_MS,
   STOP_REQUEST_TIMEOUT_MS,
 } from "../shared/constants.js";
+// myrmidon(N4-RUN-LIVENESS): event-based run liveness behind
+// MYRMIDON_RUN_LIVENESS_EVENTS (default off); see run-liveness-events.ts.
+import {
+  installRunLivenessWatch,
+  resolveRunLivenessEvents,
+  touchRunLiveness,
+} from "./run-liveness-events.js";
 import {
   allowsInsecureRemoteHttp,
   isRemotePlainHttp,
@@ -104,6 +118,11 @@ type ExecutionState = {
    * (message.delta only — see RUNTIME_PROGRESS_DELTA_THROTTLE_MS), or null
    * before the first one. */
   lastRuntimeProgressAt: number | null;
+  /** myrmidon(N4-RUN-LIVENESS): Date.now() of the newest gateway event
+   * (handleEvent stamps every SSE frame); the liveness watch reads it.
+   * Initialized at run creation, so a run whose stream never connects still
+   * stalls after its full timeoutSec. */
+  lastEventAtMs: number;
 };
 
 type TextRedactor = (value: string) => string;
@@ -256,13 +275,11 @@ export function resolveSessionKey(input: {
   runId: string;
   issueId: string | null;
   /**
-   * myrmidon(PERF-DIET-K): the issue-scoped session generation. The board's
-   * session-generations module raises it once the session passes its
-   * age/activity threshold, so the whole conversation of one task stays
-   * bounded instead of growing for the task's whole life. Only the issue
-   * strategy carries it: agent-, run- and none-scoped keys keep the vendor's
-   * shape, and generation 1 (the first generation) keeps the key without a
-   * suffix too, so nothing changes until a threshold is actually crossed.
+   * myrmidon(PERF-DIET-K): the issue-scoped session generation. The board
+   * raises it once the session passes its age/activity threshold (and, since
+   * OPE-6168, after a provider input-overflow failure), so a task's
+   * conversation stays bounded. Only the issue strategy carries it; generation
+   * 1 keeps the key without a suffix, so nothing changes until it is crossed.
    */
   generation?: number | null;
 }): string | null {
@@ -496,6 +513,9 @@ function buildGitHubBrokerField(
 // form, userinfo/.git stripped); baseRef: the workspace's repoRef when it is a
 // valid git ref. A task without a usable repository or issue key yields
 // undefined — the field is then absent and the bot works in /scratch.
+// myrmidon(1.6.5-BOT-DISK-H4b): when the project workspace gives no usable
+// repository, `context.paperclipBotDiskDefaultRepo` (the server copies
+// general.botDisk.defaultRepo there, `owner/name`) is the fallback.
 const WS_ISSUE_KEY_RE = /^[A-Z][A-Z0-9]*-[0-9]+$/;
 const WS_REPO_NAME_RE = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 const WS_GIT_REF_RE = /^[^\s~^:?*[\]\\]+$/;
@@ -533,9 +553,18 @@ function buildWorkspaceField(
   if (!WS_ISSUE_KEY_RE.test(key)) return undefined;
   const workspace = parseObject(context.paperclipWorkspace);
   const repoUrl = asString(workspace.repoUrl, "").trim();
-  const repo = repoUrl ? deriveWorkspaceRepoName(repoUrl) : null;
+  let repo = repoUrl ? deriveWorkspaceRepoName(repoUrl) : null;
+  let usedDefault = false;
+  if (!repo) {
+    const fallback = asString(context.paperclipBotDiskDefaultRepo, "").trim();
+    if (fallback && WS_REPO_NAME_RE.test(fallback)) {
+      repo = fallback;
+      usedDefault = true;
+    }
+  }
   if (!repo) return undefined;
-  const baseRef = asString(workspace.repoRef, "").trim();
+  // The ref belongs to the project workspace's own repository, not to the fallback one.
+  const baseRef = usedDefault ? "" : asString(workspace.repoRef, "").trim();
   return {
     key,
     repo,
@@ -785,6 +814,7 @@ function createExecutionState(runId: string): ExecutionState {
     deltaLineBuffer: "",
     toolPreviews: new Map(),
     lastRuntimeProgressAt: null,
+    lastEventAtMs: Date.now(),
   };
 }
 
@@ -1092,6 +1122,9 @@ async function handleEvent(input: {
   const record = asRecord(parsed);
   const eventName = eventNameFromData(parsed, frame.event);
   state.lastEventName = eventName;
+  // myrmidon(N4-RUN-LIVENESS): every gateway event is proof of life; the
+  // liveness watch (when enabled) reads this stamp instead of the wall clock.
+  touchRunLiveness(state);
 
   if (debugEvents) {
     // myrmidon(G4): raw event JSON is now opt-in (adapterConfig.debugEvents);
@@ -1304,9 +1337,29 @@ function extractSessionId(value: unknown): string | null {
   return nonEmpty(record?.session_id) ?? nonEmpty(record?.sessionId) ?? nonEmpty(asRecord(record?.data)?.session_id);
 }
 
+// myrmidon(F06-MODEL-TELEMETRY): a payload that echoes the run journal's own
+// sentinel back ("unknown") is not naming a model, so it falls through to the
+// next source exactly like an absent field does.
+function nonEmptyModel(value: unknown): string | null {
+  const text = nonEmpty(value);
+  return text !== null && text.toLowerCase() !== "unknown" ? text : null;
+}
+
+// myrmidon(F06-MODEL-TELEMETRY): the terminal payload of the gateway does not
+// always carry the model, so most runs landed in heartbeat_runs.usageJson.model
+// as "unknown". Sources, in order: the `model` the gateway reports (top level,
+// then inside `usage`), then the LiteLLM route name `model_group` (the name
+// LiteLLM writes into its own spend log — top level, then inside `usage`); the
+// caller supplies the run's configured model as the final fallback.
 function extractModel(value: unknown): string | null {
   const record = asRecord(value);
-  return nonEmpty(record?.model) ?? nonEmpty(asRecord(record?.usage)?.model);
+  const usage = asRecord(record?.usage);
+  return (
+    nonEmptyModel(record?.model) ??
+    nonEmptyModel(usage?.model) ??
+    nonEmptyModel(record?.model_group) ??
+    nonEmptyModel(usage?.model_group)
+  );
 }
 
 function extractErrorMessage(value: unknown): string | null {
@@ -1349,6 +1402,12 @@ export function mapFinalResultForTest(input: {
    * into heartbeat_runs.usageJson.promptBreakdown. Optional so existing test
    * callers that exercise only the result mapping keep their shape. */
   promptBreakdown?: PromptBreakdown;
+  /** myrmidon(F06-MODEL-TELEMETRY): the model the run was configured with
+   * (ctx.config.model). Used only as the last resort when the terminal payload
+   * names no model, so usageJson.model stops reading "unknown" for runs whose
+   * gateway answer omits it. Optional so existing test callers that exercise
+   * only the result mapping keep their shape. */
+  configuredModel?: string | null;
 }): AdapterExecutionResult {
   const redactText = input.redactText ?? sanitizeSensitiveText;
   const payload = input.terminal.payload ?? {};
@@ -1382,13 +1441,18 @@ export function mapFinalResultForTest(input: {
             .toLowerCase()
             .includes(HERMES_GATEWAY_KEY_NOT_ALLOWED_SIGNATURE)
         ? "permanent_config_error"
-        : null;
+        : mapped.errorCode === "hermes_gateway_run_failed" &&
+            classifyInputOverflow(errorMessage)
+          ? "input_overflow"
+          : null;
   return {
     exitCode: mapped.exitCode,
     signal: mapped.signal,
     timedOut: false,
     provider: "hermes_gateway",
-    model: extractModel(payload),
+    // myrmidon(F06-MODEL-TELEMETRY): payload first, configured model last —
+    // see extractModel().
+    model: extractModel(payload) ?? nonEmptyModel(input.configuredModel),
     ...(input.promptBreakdown ? { promptBreakdown: input.promptBreakdown } : {}),
     ...(mapped.errorCode ? { errorCode: mapped.errorCode } : {}),
     ...(errorMessage ? { errorMessage } : {}),
@@ -1952,6 +2016,31 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       );
     }
   }
+  // myrmidon(OPE-6168): the model input limit, checked before the request is
+  // sent. The board puts the limit of the agent's model (catalog or override)
+  // into config.inputLimit; a request over its budget is trimmed here (head and
+  // tail of the input kept, the cut named in the middle) instead of being sent
+  // to a provider that rejects it. Whether the session itself still has room
+  // is the board's decision (it starts a fresh session generation).
+  const inputLimitHint = readInputLimitHint(ctx.config[INPUT_LIMIT_CONFIG_KEY]);
+  if (inputLimitHint) {
+    const requestBody = body.body;
+    const inputText = typeof requestBody.input === "string" ? requestBody.input : "";
+    const instructionsText = typeof requestBody.instructions === "string" ? requestBody.instructions : "";
+    const decision = decideInputLimit({
+      hint: inputLimitHint,
+      instructionsChars: instructionsText.length,
+      inputChars: inputText.length,
+    });
+    if (decision.action === "trim") {
+      const trimmed = trimTextToChars(inputText, decision.targetInputChars);
+      requestBody.input = trimmed.text;
+      await ctx.onLog(
+        "stdout",
+        `[hermes-gateway] input limit: the request (${decision.promptChars} chars) exceeds the budget of ${decision.budgetChars} chars for model ${inputLimitHint.model ?? "(unknown)"}; trimmed ${trimmed.removedChars} chars from the input before sending\n`,
+      );
+    }
+  }
   const createRunUrl = apiUrl(baseUrl, "/v1/runs");
 
   await ctx.onMeta?.({
@@ -2219,10 +2308,30 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   }).catch(() => undefined);
 
   let timeoutTimer: ReturnType<typeof setTimeout> | null = null;
+  let disposeLivenessWatch: (() => void) | null = null;
+  // myrmidon(N4-RUN-LIVENESS): with MYRMIDON_RUN_LIVENESS_EVENTS (or the
+  // card's livenessEvents) on, the fixed wall-clock timer is replaced by a
+  // silence watch — a run that keeps emitting gateway events past its
+  // timeoutSec is alive and is left alone; only a run whose event stream has
+  // been silent for the whole budget is reported timed out. Off (default) —
+  // the vendor's fixed timer below, unchanged.
+  const livenessByEvents = timeoutMs > 0 && resolveRunLivenessEvents(ctx.config.livenessEvents);
+  let fireTimeout: () => void = () => undefined;
   const timeoutPromise = new Promise<"timeout">((resolve) => {
     if (timeoutMs <= 0) return;
+    if (livenessByEvents) {
+      fireTimeout = () => resolve("timeout");
+      return;
+    }
     timeoutTimer = setTimeout(() => resolve("timeout"), timeoutMs);
   });
+  if (livenessByEvents) {
+    disposeLivenessWatch = installRunLivenessWatch({
+      state,
+      timeoutMs,
+      onStalled: fireTimeout,
+    });
+  }
   // myrmidon(G4): operator cancellation — see gateway-parity-gap.md #22.
   const cancelPromise = new Promise<"cancelled">((resolve) => {
     if (!ctx.signal) return;
@@ -2235,6 +2344,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   const outcome = await Promise.race([state.terminalPromise, timeoutPromise, cancelPromise]);
   if (timeoutTimer) clearTimeout(timeoutTimer);
+  // myrmidon(N4-RUN-LIVENESS): the silence watch reschedules itself; without
+  // the disposer its next tick would outlive a finished/cancelled run.
+  disposeLivenessWatch?.();
   controller.abort();
   // myrmidon(G4): handleEvent's SSE terminal branch already flushes the
   // trailing partial delta line, but pollStatus's terminal branch (the
@@ -2344,6 +2456,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     strategy,
     redactText,
     promptBreakdown,
+    // myrmidon(F06-MODEL-TELEMETRY): the run's own model from the agent card,
+    // used when the gateway's terminal payload names none.
+    configuredModel: nonEmpty(ctx.config.model),
   });
   // myrmidon(MEMORY-CENTRAL-B): remember this turn in the central store once
   // the run reached a terminal outcome (whatever it was — a failed turn's

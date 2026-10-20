@@ -92,16 +92,20 @@ import { StackScreen } from "./components/myrmidon/stack/StackScreen"; // myrmid
 import { AutonomyMatrixScreen } from "./components/myrmidon/autonomy/AutonomyMatrixContainer"; // myrmidon(1.6 AUTONOMY-MATRIX B)
 import { WipLimitScreen } from "./components/myrmidon/wip-limit/WipLimitScreenContainer"; // myrmidon(1.6.1 WIP-LIMIT B)
 import { OwnerDeliveryScreen } from "./components/myrmidon/owner-delivery/OwnerDeliveryScreenContainer"; // myrmidon(1.6.5-OWNER-DM-FILTER)
+// myrmidon(1.7-AGENT-EXCHANGE-B): the owner-facing feed of discussion rooms.
+import { AgentExchangeFeedScreen } from "./components/myrmidon/AgentExchangeFeedScreen"; // myrmidon(1.7-AGENT-EXCHANGE-B)
 import { ReviewRoutingScreen } from "./components/myrmidon/review-routing/ReviewRoutingScreenContainer"; // myrmidon(REVIEW-ROUTING)
 import { CorpusScreen } from "./components/myrmidon/corpus/CorpusScreenContainer"; // myrmidon(1.6.6 CORPUS E)
 
 import { ModelProvidersScreen } from "./components/myrmidon/model-providers/ModelProvidersContainer"; // myrmidon(1.6.1 MODEL-PROVIDERS C)
 import { CastesScreen } from "./components/myrmidon/castes/CastesContainer"; // myrmidon(1.6.1 CUSTOM-CASTES C)
+import { VoiceSttScreen } from "./components/myrmidon/voice-stt/VoiceSttContainer"; // myrmidon(1.6.1 VOICE-STT C)
 import { CompanyImport } from "./pages/CompanyImport";
 import { DesignGuide } from "./pages/DesignGuide";
 import { InstanceExperimentalSettings } from "./pages/InstanceExperimentalSettings";
 import { InstanceAccess } from "./pages/InstanceAccess";
 import { BoardApiKeysPage } from "./pages/BoardApiKeys";
+import { LicensesPage } from "./components/myrmidon/LicensesPage"; // myrmidon(LICENSING)
 import { ProfileSettings } from "./pages/ProfileSettings";
 import { PluginManager } from "./pages/PluginManager";
 import { PluginSettings } from "./pages/PluginSettings";
@@ -226,9 +230,15 @@ function boardRoutes(streamlinedUiEnabled: boolean) {
       <Route path="company/settings/owner-delivery" element={<OwnerDeliveryScreen />} /> {/* myrmidon(1.6.5-OWNER-DM-FILTER) */}
       <Route path="company/settings/review-routing" element={<ReviewRoutingScreen />} /> {/* myrmidon(REVIEW-ROUTING) */}
       <Route path="company/settings/corpus" element={<CorpusScreen />} /> {/* myrmidon(1.6.6 CORPUS E): the knowledge corpus settings screen route */}
+      <Route path="company/settings/agent-exchange" element={<AgentExchangeFeedScreen />} /> {/* myrmidon(1.7-AGENT-EXCHANGE-B): the feed of the agents' discussion rooms */}
 
-      <Route path="company/settings/castes" element={<ModelProvidersScreen />} /> {/* myrmidon(1.6.1 MODEL-PROVIDERS C): the ui2 "Castes and models" section route */}
-      <Route path="company/settings/caste-directory" element={<CastesScreen />} /> {/* myrmidon(1.6.1 CUSTOM-CASTES C): the caste directory settings screen route */}
+      {/* myrmidon(1.6.5 F-26 T3 CASTES-AND-NESTS): IA v2 — Castes is the caste
+          directory, Models & providers moved off /castes, and the pre-IA-v2
+          /caste-directory address redirects to the new one. */}
+      <Route path="company/settings/castes" element={<CastesScreen />} />
+      <Route path="company/settings/models" element={<ModelProvidersScreen />} />
+      <Route path="company/settings/caste-directory" element={<Navigate to="/company/settings/castes" replace />} />
+      <Route path="company/settings/voice-stt" element={<VoiceSttScreen />} /> {/* myrmidon(1.6.1 VOICE-STT C) */}
       <Route path="company/settings/clouds" element={<CloudsSettingsPage />} /> {/* myrmidon(CLOUD-CONNECTOR) */}
       <Route path="company/settings/tools" element={<LegacyToolsSettingsRedirect />} />
       <Route path="company/settings/tools/:tab" element={<LegacyToolsSettingsRedirect />} />
@@ -288,6 +298,7 @@ function boardRoutes(streamlinedUiEnabled: boolean) {
         {/* myrmidon(ROLE-SCOPED-TOKENS): scoped board API key management */}
         <Route path="company/settings/instance/board-api-keys" element={<BoardApiKeysPage />} />
       </Route>
+      <Route path="company/settings/instance/licenses" element={<LicensesPage />} /> {/* myrmidon(LICENSING): installation id, license request, license state and install */}
       <Route element={<HiddenSettingsPageGate pageKey="instance.experimental" />}>
         <Route path="company/settings/instance/experimental" element={<InstanceExperimentalSettings />} />
       </Route>
@@ -427,6 +438,10 @@ function boardRoutes(streamlinedUiEnabled: boolean) {
       <Route path="approvals/all" element={<Approvals />} />
       <Route path="approvals/:approvalId" element={<ApprovalDetail />} />
       <Route path="activity" element={streamlinedUiEnabled ? <CompanyActivity /> : <ProductionSurface><ProductionCompanyActivity /></ProductionSurface>} />
+      {/* Registered in both UI modes: the sidebar links to them in the
+          streamlined menu too (OPE-7948). */}
+      <Route path="swarm-claim" element={<ProductionSurface><ProductionSwarmSupervisor /></ProductionSurface>} /> {/* myrmidon(1.6-SWARM-CLAIM-B) */}
+      <Route path="foraging" element={<ProductionSurface><ProductionForaging /></ProductionSurface>} /> {/* myrmidon(1.6-FORAGE) */}
       {streamlinedUiEnabled ? (
         <>
           <Route path="activity/runs" element={<AuditHub section="runs" />} />
@@ -447,8 +462,6 @@ function boardRoutes(streamlinedUiEnabled: boolean) {
         <>
           <Route path="costs" element={<ProductionSurface><ProductionCosts /></ProductionSurface>} />
           <Route path="quality" element={<ProductionSurface><ProductionQuality /></ProductionSurface>} /> {/* myrmidon(1.6-BASELINE) */}
-          <Route path="swarm-claim" element={<ProductionSurface><ProductionSwarmSupervisor /></ProductionSurface>} /> {/* myrmidon(1.6-SWARM-CLAIM-B) */}
-          <Route path="foraging" element={<ProductionSurface><ProductionForaging /></ProductionSurface>} /> {/* myrmidon(1.6-FORAGE) */}
           <Route path="audit" element={<Navigate to="/activity?mode=agents" replace />} />
         </>
       )}

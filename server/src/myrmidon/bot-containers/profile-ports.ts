@@ -32,7 +32,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { agentApiKeys, agents as agentsTable, companies, companyMemberships, type Db } from "@paperclipai/db";
 import { and, asc, eq, isNull, sql } from "drizzle-orm";
 // myrmidon(PARALLEL-HELPERS): the settings type the parallel-helpers port returns.
-import type { BotLspSettings, ParallelHelpersSettings } from "@paperclipai/shared";
+import type { BotLspSettings, BotDiskMechanics, ParallelHelpersSettings } from "@paperclipai/shared";
 import { getConfiguredSecretProvider } from "../../secrets/configured-provider.js";
 import {
   agentInstructionsService,
@@ -53,6 +53,7 @@ import {
 } from "./board-gateway.js";
 import { createBotCardSync, type BotCardSyncPorts, type BotCardSyncResult } from "./card-sync.js";
 import { createCardEnvResolver } from "./card-env.js";
+import { listMediaAclAgents, runMediaAclExport } from "./media-acl-export.js";
 import { loadBotInstructionsBundle } from "./instructions-source.js";
 import { readBotProfileSettings } from "./profile-input.js";
 import {
@@ -74,7 +75,7 @@ import { loadRegulationWorkspaceFiles } from "../wiki-cortex/delivery.js";
 import { createWikiRegulationService } from "../wiki-cortex/service.js";
 import { createDbRegulationStore } from "../wiki-cortex/store.js";
 import { readAppliedScopeLayout } from "./scope-wiring.js"; // myrmidon(BOT-DISK-F)
-import { readBotDiskLayout, readCloneIdleTtlSecForRole, readSharedPackageCachePathForRole } from "./bot-disk-service.js"; // myrmidon(1.6.1-BOT-DISK-B, 1.6.2-BOT-DISK-C)
+import { readBotDiskLayout, readBotDiskMechanics, readCloneIdleTtlSecForRole, readSharedPackageCachePathForRole } from "./bot-disk-service.js"; // myrmidon(1.6.1-BOT-DISK-B, 1.6.2-BOT-DISK-C, 1.6.5-BOT-DISK-H5c)
 
 export { BOT_AGENT_API_KEY_NAME };
 
@@ -258,6 +259,10 @@ export function createDbBotProfilePorts(db: Db): BotProfilePorts {
       );
       return { secretId, value, version };
     },
+
+    // (myrmidon(1.6.5-F11-A): no media-token port here — the single token source
+    // is the card env entry MEDIA_TOOLS_TOKEN, which resolveCardEnv above already
+    // resolves; the compiler reads it via mediaTokenFromEnv. See media-mcp.ts.)
 
     async ensureAgentApiKey(agent) {
       const secretName = agentApiKeySecretName(agent.id);
@@ -479,6 +484,21 @@ export function createDbBotProfilePorts(db: Db): BotProfilePorts {
       return { storeDir: layout.pnpmStoreDir, importMethod: layout.pnpmImportMethod };
     },
 
+    // myrmidon(1.6.5-BOT-DISK-UV-A): the uv cache directory and link mode, read
+    // per tick from the same row (the layout resolves defaults for a key the
+    // operator never set).
+    async uvSettings(): Promise<{ cacheDir: string; linkMode: string }> {
+      const layout = await readBotDiskLayout(db);
+      return { cacheDir: layout.uvCacheDir, linkMode: layout.uvLinkMode };
+    },
+
+    // myrmidon(1.6.5-BOT-DISK-H5c): the BOT-DISK-H mechanics (C7), read per tick
+    // from the same `general.botDisk` row, so a settings change reaches the bots
+    // on the next reconcile without a restart.
+    async botDiskMechanics(): Promise<BotDiskMechanics> {
+      return readBotDiskMechanics(db);
+    },
+
     // myrmidon(BOT-DISK-F): the layout the board keeps this bot on, so a member of a shared
     // scope instance gets the instance's pnpm store path.
     async scopeLayout(agentId: string) {
@@ -539,6 +559,11 @@ export function botProfileWiring(
   endProfilePass: (pass: BotProfilePass) => void;
   syncCard: (agentId: string, botKey: string, appliedApiServerKeyVersion: number) => Promise<BotCardSyncResult>;
   releaseStrayGateways: (keepAgentIds: ReadonlySet<string>) => Promise<{ released: number; warnings: string[] }>;
+  /** myrmidon(MEDIA-PROVISION): one pass of the media ACL registry exporter
+   *  (media-acl-export.ts) over the fleet, sharing this wiring's card-env
+   *  resolver — so its per-agent cache and secret-stamp validation are the
+   *  profile compiler's, not a second set. */
+  exportMediaAcl: () => Promise<{ bots: number; failedResolves: number; changed: boolean } | null>;
 } {
   const ports = createDbBotProfilePorts(db);
   const { activity, ...compileOptions } = opts;
@@ -550,5 +575,11 @@ export function botProfileWiring(
     endProfilePass: compile.endPass,
     syncCard: createBotCardSync(createDbBotCardSyncPorts(db, ports)),
     releaseStrayGateways: (keepAgentIds) => releaseStrayBotGateways(db, keepAgentIds),
+    exportMediaAcl: () =>
+      runMediaAclExport({
+        listAgents: listMediaAclAgents(db),
+        resolveCardEnv: ports.resolveCardEnv,
+        env: compileOptions.env ?? process.env,
+      }),
   };
 }

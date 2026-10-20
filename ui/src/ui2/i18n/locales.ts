@@ -36,6 +36,16 @@ const en = {
   "ui2.common.emptyDoneSr": "Nothing needs you: all entries are handled.",
   "ui2.common.emptyFilteredSr": "No entries match this filter.",
   "ui2.common.skeletonSr": "Loading",
+  "ui2.agents.title": "Agents",
+  "ui2.agents.empty": "No agents configured yet.",
+  "ui2.agents.role": "Role",
+  "ui2.agents.status": "Status",
+  "ui2.agents.run": "Current run",
+  "ui2.agents.status.idle": "Idle",
+  "ui2.agents.status.running": "Running",
+  "ui2.agents.status.error": "Error",
+  "ui2.agents.status.paused": "Paused",
+  "ui2.screens.agents": "Agents",
 
   "ui2.decisions.title": "Decisions",
   "ui2.decisions.subtitle": "The queue of decisions that wait for you",
@@ -126,6 +136,12 @@ const en = {
   "ui2.settings.runs.maxConcurrentRuns": "Max concurrent runs",
   "ui2.settings.runs.maxStartsPerMinute": "Max run starts per minute",
   "ui2.settings.runs.minFreeMemoryMb": "Min free memory (MB)",
+  // myrmidon(1.6.5 OWNER-CHAT-ADMISSION): the hard floor of the server
+  // container says who waits at it.
+  "ui2.settings.runs.minFreeMemoryMb.hint":
+    "The hard floor of the server container: below it everything waits, and an answer to a message the owner wrote in a chat is no exception. That answer is held by this floor alone — measured on the container and on the host's available memory — and not by the host floor below. Default 1500.",
+  "ui2.settings.runs.minFreeHostMemoryMb.hint":
+    "Automatic runs wait for this floor — schedules, monitors, background follow-ups. A turn started by a message the owner wrote in a chat does not: it is admitted by the floor above (applied to the container and to the host's available memory) and takes the front of the queue. Default 15360 (15 GB).",
   "ui2.settings.runs.runMemoryEstimateMb": "Memory estimate per run (MB)",
   "ui2.settings.runs.minFreeHostMemoryMb": "Min free host memory (MB)",
   "ui2.settings.runs.maxHostLoadPercentPerCore": "Max host load per core above the host's background (% of a core)",
@@ -162,10 +178,12 @@ const en = {
   "ui2.settings.runs.waitReason.global_cap": "the concurrency ceiling is full",
   "ui2.settings.runs.waitReason.start_ramp": "the start ramp paces new starts",
   "ui2.settings.runs.waitReason.memory": "the server keeps its free-memory floor",
-  "ui2.settings.runs.waitReason.host_memory": "the host free-memory floor is closed",
+  "ui2.settings.runs.waitReason.host_memory": "automatic runs wait for the host free-memory floor",
   "ui2.settings.runs.waitReason.host_cpu": "the host CPU ceiling is closed",
   "ui2.settings.runs.waitReason.agent_fair_share": "another agent's turn comes first (fair share)",
   "ui2.settings.runs.waitReason.agent_concurrency": "the agent's own concurrency limit is full",
+  "ui2.settings.runs.waitReason.higher_priority_ready":
+    "the agent's more important ready task goes first",
 
   "ui2.settings.system.title": "System",
   "ui2.settings.system.subtitle": "Channels, access and the change log",
@@ -290,6 +308,16 @@ const ru: Record<Ui2MessageKey, string> = {
   "ui2.common.emptyDoneSr": "Ничего не требует вас: все записи обработаны.",
   "ui2.common.emptyFilteredSr": "Под этот фильтр нет записей.",
   "ui2.common.skeletonSr": "Загрузка",
+  "ui2.agents.title": "Агенты",
+  "ui2.agents.empty": "Агенты пока не настроены.",
+  "ui2.agents.role": "Роль",
+  "ui2.agents.status": "Состояние",
+  "ui2.agents.run": "Текущий прогон",
+  "ui2.agents.status.idle": "Ожидание",
+  "ui2.agents.status.running": "Выполняется",
+  "ui2.agents.status.error": "Ошибка",
+  "ui2.agents.status.paused": "Приостановлен",
+  "ui2.screens.agents": "Агенты",
 
   "ui2.decisions.title": "Решения",
   "ui2.decisions.subtitle": "Очередь решений, которые ждут вас",
@@ -380,6 +408,10 @@ const ru: Record<Ui2MessageKey, string> = {
   "ui2.settings.runs.maxConcurrentRuns": "Максимум одновременных прогонов",
   "ui2.settings.runs.maxStartsPerMinute": "Максимум запусков в минуту",
   "ui2.settings.runs.minFreeMemoryMb": "Минимум свободной памяти (МБ)",
+  "ui2.settings.runs.minFreeMemoryMb.hint":
+    "Жёсткий пол контейнера сервера: ниже него ждёт всё, и ответ на сообщение владельца в чате — не исключение. Такой ответ держит только этот пол — по контейнеру и по доступной памяти хоста, — а не порог хоста ниже. По умолчанию 1500.",
+  "ui2.settings.runs.minFreeHostMemoryMb.hint":
+    "Этого порога ждут автоматические прогоны — расписания, мониторы, фоновые доработки. Ход по сообщению владельца в чате — нет: он допускается по полу выше (к контейнеру и к доступной памяти хоста) и встаёт в начало очереди. По умолчанию 15360 (15 ГБ).",
   "ui2.settings.runs.runMemoryEstimateMb": "Оценка памяти на прогон (МБ)",
   "ui2.settings.runs.minFreeHostMemoryMb": "Минимум свободной памяти хоста (МБ)",
   "ui2.settings.runs.maxHostLoadPercentPerCore": "Максимум нагрузки хоста на ядро сверх фоновой (% ядра)",
@@ -413,10 +445,12 @@ const ru: Record<Ui2MessageKey, string> = {
   "ui2.settings.runs.waitReason.global_cap": "потолок одновременных прогонов занят",
   "ui2.settings.runs.waitReason.start_ramp": "плавный старт разводит новые прогоны",
   "ui2.settings.runs.waitReason.memory": "сервер держит порог свободной памяти",
-  "ui2.settings.runs.waitReason.host_memory": "порог свободной памяти хоста закрыт",
+  "ui2.settings.runs.waitReason.host_memory": "автоматические прогоны ждут порог свободной памяти хоста",
   "ui2.settings.runs.waitReason.host_cpu": "потолок нагрузки CPU хоста закрыт",
   "ui2.settings.runs.waitReason.agent_fair_share": "очередь другого агента раньше (справедливая доля)",
   "ui2.settings.runs.waitReason.agent_concurrency": "личный лимит одновременных прогонов агента занят",
+  "ui2.settings.runs.waitReason.higher_priority_ready":
+    "сначала более важная готовая задача агента",
 
   "ui2.settings.system.title": "Система",
   "ui2.settings.system.subtitle": "Каналы, доступ и журнал изменений",

@@ -239,6 +239,12 @@ export const wakeAgentSchema = z.object({
    * binds to the agent's top ready task or is refused.
    */
   issueId: z.string().uuid().optional(),
+  /** Run-scoped managed AI account selection; never changes agent defaults. */
+  externalSession: z.object({
+    connectionId: z.string().uuid(),
+    grantId: z.string().uuid(),
+    model: z.string().trim().min(1).max(200),
+  }).strict().optional(),
   payload: z.record(z.string(), z.unknown()).optional().nullable(),
   idempotencyKey: z.string().optional().nullable(),
   forceFreshSession: z.preprocess(
@@ -309,6 +315,10 @@ export const updateAgentPermissionsSchema = z.object({
   authorizationPolicy: trustAuthorizationPolicySchema.optional(),
   toolAccess: agentToolAccessSchema.optional(), // myrmidon(S6)
   boardAdmin: z.boolean().optional(), // myrmidon(ADMIN-AGENT)
+  // myrmidon(1.6.5-F-23): grant/revoke the secrets:read_off_run grant. The
+  // board actor toggles this on the agent card; the grant is issued with a
+  // +30 days expiry by default.
+  offRunSecretRead: z.boolean().optional(),
 });
 
 export type UpdateAgentPermissions = z.infer<typeof updateAgentPermissionsSchema>;

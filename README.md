@@ -180,9 +180,9 @@ what exists as of 1.6.4 (latest release; 1.6.5-rc.14 is the current release cand
 - **The swarm.** Per-role task queues: an agent takes the top task of its
   role's queue behind a lease (TTL + heartbeat), an expired lease returns to
   the queue, a P0 task preempts, a per-agent active-task limit applies, and a
-  supervisor view reports against a frozen baseline. Off until enabled — see
-  [Configuration](#configuration); the pilot (roles, companies, lease TTL,
-  limits) is edited live in Instance settings
+  supervisor view shows the queues and leases. Off until enabled — see
+  [Configuration](#configuration); the swarm settings (lease TTL,
+  limits) are edited live in Instance settings
   ([swarm-claim-settings](docs/myrmidon/guides/swarm-claim-settings.md)).
 - **Parallel helpers.** Per-agent helper subagents with a company ceiling and
   a helper model — see [CHANGELOG](docs/myrmidon/CHANGELOG.md) (1.6.0).
@@ -212,8 +212,9 @@ what exists as of 1.6.4 (latest release; 1.6.5-rc.14 is the current release cand
 
 ### Channels
 
-- **The owner's channel.** Question and confirmation cards reach the owner's
-  Telegram and can be answered there
+- **The owner's channel.** Owner decisions reach the owner's Telegram — a
+  plain bot message the owner answers in text (the default), or a card with
+  buttons — and can be answered there
   ([owner-telegram-cards](docs/myrmidon/guides/owner-telegram-cards.md)); a
   run shows one live status message in the DM
   ([telegram-dm-status](docs/myrmidon/guides/telegram-dm-status.md)).

@@ -6,8 +6,10 @@
 // the same reason server/src/myrmidon/maintenance/index.ts has no direct test file
 // of its own: everything testable in it is pushed down into domain.ts/service.ts.
 
-import type { BotContainerSpec, BotExtraMount } from "./driver.js";
+import type { BotContainerSpec, BotExtraMount, BotSharedMount } from "./driver.js";
 import { BOT_KEY_PATTERN } from "./template.js";
+import type { SharedMountSettings } from "@paperclipai/shared";
+import { resolveBotSharedMount } from "./shared-mount.js";
 
 export const BOT_CONTAINERS_ENV = "MYRMIDON_BOT_CONTAINERS";
 
@@ -25,7 +27,7 @@ const HERMES_GATEWAY_ADAPTER_TYPE = "hermes_gateway";
  * migration that completed legacy cards used. There is one set for every bot
  * image family (hermes, hermes-dev, hermes-node): no per-family limits exist.
  */
-export const BOT_CONTAINER_DEFAULTS = { memoryMb: 2048, cpus: 1, pidsLimit: 512 } as const;
+export const BOT_CONTAINER_DEFAULTS = { memoryMb: 1024, cpus: 1, pidsLimit: 512 } as const;
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -110,6 +112,9 @@ export interface BotContainerAgentConfig {
    *  sources directory, templates, common tools). Their sources are checked
    *  against MYRMIDON_BOT_MOUNT_SOURCES when the container template is built. */
   extraMounts: BotExtraMount[];
+  /** myrmidon(1.6.1-BOT-DISK-D): the shared directory this bot gets at `/shared`;
+   *  absent when the instance setting is off or the bot is not allowlisted. */
+  sharedMount?: BotSharedMount;
 }
 
 export type BotContainerAgentConfigResult =
@@ -132,10 +137,16 @@ export const CONTAINER_GROUP_UNSUPPORTED_REASON =
  * not-applicable rather than thrown — a malformed card must not take a sweep of
  * other agents down. A card asking for a shared `group` container is refused the
  * same way (see CONTAINER_GROUP_UNSUPPORTED_REASON).
+ *
+ * myrmidon(1.6.1-BOT-DISK-D): `sharedMountSettings` (the instance's
+ * `general.sharedMount`) and the agent id decide whether the bot also gets the
+ * shared directory; without them the answer is "no shared mount".
  */
 export function readBotContainerAgentConfig(
   adapterType: string,
   adapterConfig: Record<string, unknown>,
+  sharedMountSettings?: SharedMountSettings,
+  agentId?: string,
 ): BotContainerAgentConfigResult {
   if (adapterType !== HERMES_GATEWAY_ADAPTER_TYPE) {
     return { ok: false, reason: `adapter type "${adapterType}" is not ${HERMES_GATEWAY_ADAPTER_TYPE}` };
@@ -166,7 +177,19 @@ export function readBotContainerAgentConfig(
   // myrmidon(1.6.1-BOT-DISK-C): an optional per-bot disk quota on the card.
   const diskQuotaMb =
     typeof c.diskQuotaMb === "number" && Number.isInteger(c.diskQuotaMb) && c.diskQuotaMb > 0 ? c.diskQuotaMb : undefined;
-  return { ok: true, config: { image, memoryMb, cpus, pidsLimit, extraMounts: extraMounts.mounts, ...(diskQuotaMb !== undefined ? { diskQuotaMb } : {}) } };
+  const sharedMount = resolveBotSharedMount(agentId, sharedMountSettings);
+  return {
+    ok: true,
+    config: {
+      image,
+      memoryMb,
+      cpus,
+      pidsLimit,
+      extraMounts: extraMounts.mounts,
+      ...(diskQuotaMb !== undefined ? { diskQuotaMb } : {}),
+      ...(sharedMount ? { sharedMount } : {}),
+    },
+  };
 }
 
 /**
@@ -225,5 +248,6 @@ export function botContainerSpec(botKey: string, config: BotContainerAgentConfig
     pidsLimit: config.pidsLimit,
     network,
     extraMounts: config.extraMounts,
+    ...(config.sharedMount ? { sharedMount: config.sharedMount } : {}),
   };
 }

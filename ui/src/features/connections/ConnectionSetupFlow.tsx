@@ -1,3 +1,4 @@
+// myrmidon(DEBRAND-c): persist browser state under the Myrmidon namespace.
 import { AiConnectionCredentialStep } from "@/components/ai-connections/AiConnectionCredentialStep";
 import { ConnectionChoiceList } from "./ConnectionChoiceList";
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
@@ -110,7 +111,7 @@ type EnrollmentAccessState = {
 };
 
 function enrollmentAccessStorageKey(appKey: string): string {
-  return `paperclip.connector-enrollment-access:${appKey}`;
+  return `myrmidon.connector-enrollment-access:${appKey}`;
 }
 
 function validEnrollmentAccessState(value: unknown): value is EnrollmentAccessState {

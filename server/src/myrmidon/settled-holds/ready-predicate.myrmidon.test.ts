@@ -46,7 +46,7 @@ import {
   terminalizeLegacyExecution,
 } from "../../services/legacy-execution-recovery.js";
 import { listRoleQueue, listUnassignedQueue } from "../swarm-claim/queue.js";
-import { listIdleRolePairs } from "../swarm-claim/idle-queue.js";
+import { listIdleRolePairs } from "../swarm-claim/matcher.js";
 import { issueHasLiveClaimOrWake } from "../swarm-claim/sweep.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();

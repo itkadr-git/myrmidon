@@ -97,6 +97,14 @@
    ]
   },
   {
+   "id": "A17",
+   "method": "POST",
+   "template": "containers/{name}/stop?t=30\u0026myrmidon-idle=true",
+   "suffixes": [
+    ""
+   ]
+  },
+  {
    "id": "A11",
    "method": "POST",
    "template": "containers/{name}/restart?t=30",
@@ -127,6 +135,28 @@
    "suffixes": [
     ""
    ]
+  },
+  {
+   "id": "A16",
+   "method": "GET",
+   "template": "containers/{name}/archive?path=%2Fbot%2Fhermes%2Fskills",
+   "suffixes": [
+    ""
+   ]
+  },
+  {
+   "id": "A16",
+   "method": "GET",
+   "template": "containers/{name}/archive?path=%2Fdata%2Fhermes%2Fskills",
+   "suffixes": [
+    ""
+   ]
+  },
+  {
+   "id": "A14",
+   "method": "GET",
+   "template": "myrmidon/disk",
+   "noPrefix": true
   }
  ]
 }

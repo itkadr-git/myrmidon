@@ -39,6 +39,7 @@ import type {
 } from "@paperclipai/shared";
 import { pluginsApi, type PluginUiContribution } from "@/api/plugins";
 import { authApi } from "@/api/auth";
+import { accessApi } from "@/api/access"; // myrmidon(PLUGIN-INSTANCE-ADMIN)
 import { queryKeys } from "@/lib/queryKeys";
 import { cn } from "@/lib/utils";
 import {
@@ -778,9 +779,10 @@ type PluginSlotMountProps = {
  * The bridge hooks need the full host context shape; the slot context carries
  * the subset available from the rendering location.
  */
-function slotContextToHostContext(
+export function slotContextToHostContext(
   pluginSlotContext: PluginSlotContext,
   userId: string | null,
+  isInstanceAdmin = false, // myrmidon(PLUGIN-INSTANCE-ADMIN)
 ): PluginHostContext {
   return {
     companyId: pluginSlotContext.companyId ?? null,
@@ -790,6 +792,7 @@ function slotContextToHostContext(
     entityType: pluginSlotContext.entityType ?? null,
     parentEntityId: pluginSlotContext.parentEntityId ?? null,
     userId,
+    isInstanceAdmin, // myrmidon(PLUGIN-INSTANCE-ADMIN)
     renderEnvironment: null,
   };
 }
@@ -814,7 +817,17 @@ function PluginBridgeScope({
     queryFn: () => authApi.getSession(),
   });
   const userId = session?.user?.id ?? session?.session?.userId ?? null;
-  const hostContext = useMemo(() => slotContextToHostContext(context, userId), [context, userId]);
+  // myrmidon(PLUGIN-INSTANCE-ADMIN): the same access answer the host shell uses.
+  const { data: boardAccess } = useQuery({
+    queryKey: queryKeys.access.currentBoardAccess,
+    queryFn: () => accessApi.getCurrentBoardAccess(),
+    retry: false,
+  });
+  const isInstanceAdmin = Boolean(boardAccess?.isInstanceAdmin || boardAccess?.source === "local_implicit");
+  const hostContext = useMemo(
+    () => slotContextToHostContext(context, userId, isInstanceAdmin),
+    [context, userId, isInstanceAdmin],
+  );
   const value = useMemo(() => ({ pluginId, hostContext }), [pluginId, hostContext]);
 
   return (

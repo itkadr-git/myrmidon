@@ -204,16 +204,23 @@ else
   log "WARNING: no catalog memory provider at ${catalog_dir}/hindsight — a profile with memory.provider=hindsight starts without memory"
 fi
 
-# --- hard-link self-check (dev variant) -------------------------------------
-# myrmidon(BOT-DISK-D): pnpm falls back to copying when it cannot hard-link, which
-# silently turns every clone's node_modules into a full copy (the disk grew ~5 GB/h
-# before the bot tree became one mount). So at every start: make a file in the pnpm
-# store directory and try to hard-link it into each clone root. A failure is logged
-# as an error and written to ${HERMES_HOME}/.myrmidon/hardlink-check.json, which the
-# clone-hygiene reporter passes to the board (the bot-disk status). It never stops
+# --- reflink self-check (BOT-DISK-H8b) ---------------------------------------
+# myrmidon(BOT-DISK-H8): pnpm imports packages into a clone with
+# package-import-method=clone (cp --reflink), so the store and every clone
+# root must sit on a copy-on-write filesystem. When they do not (EXDEV across
+# superblocks, EOPNOTSUPP on a filesystem without reflinks) pnpm silently falls
+# back to copying, and every clone's node_modules becomes a full copy — the
+# disk grew ~5 GB/h before the bot tree became one mount. So at every start:
+# make a file in the pnpm store directory and try `cp --reflink=always` of it
+# into each clone root, then, where filefrag(1) is available, confirm the copy
+# really shares extents with the store file (a filesystem may accept the ioctl
+# yet materialize a full copy). A failure is logged as an error and written to
+# ${HERMES_HOME}/.myrmidon/reflink-check.json, which the clone-hygiene reporter
+# passes to the board (the bot_disk_lifecycle/reflink card key). It never stops
 # the gateway: a bot with a broken store still works, just wastefully.
 # The store is the one the bot's tools will use: the environment's
-# npm_config_store_dir, overridden by the profile's .env, defaulting to the image's.
+# npm_config_store_dir, overridden by the profile's .env, defaulting to the
+# image's.
 dotenv_value() {
   local file="${HERMES_HOME}/.env" line value
   [ -r "${file}" ] || return 0
@@ -231,19 +238,41 @@ json_escape() {
   printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' | tr -d '\n\r\t'
 }
 
-hardlink_self_check() {
-  local store method roots root probe src dst err ok_all=true entries="" sep="" ok
+# One physical identity of a path for comparisons, both sides the same way.
+# realpath(1) is in both coreutils and busybox (the image's two flavours);
+# where it is absent, fall back to `cd <dir> && pwd -P` for directories and
+# dir-part + basename for anything else — never a bare `readlink -f`, which
+# busybox resolves differently. A missing path answers "" (the caller treats
+# that as "cannot normalise", not as equality with anything).
+physical_path() {
+  local p="$1"
+  if command -v realpath >/dev/null 2>&1; then
+    realpath "${p}" 2>/dev/null
+    return
+  fi
+  if [ -d "${p}" ]; then
+    (cd "${p}" 2>/dev/null && pwd -P)
+    return
+  fi
+  local d b
+  d="$(dirname "${p}" 2>/dev/null)" || return 1
+  b="$(basename "${p}" 2>/dev/null)" || return 1
+  d="$(cd "${d}" 2>/dev/null && pwd -P)" || return 1
+  printf '%s/%s\n' "${d}" "${b}"
+}
+
+reflink_self_check() {
+  local store method roots root probe src dst err ok_all=true entries="" sep="" ok shared
   store="$(dotenv_value npm_config_store_dir)"
   store="${store:-${npm_config_store_dir:-/workspace/.pnpm-store}}"
-  method="$(dotenv_value npm_config_package_import_method)"
-  method="${method:-${npm_config_package_import_method:-hardlink}}"
-  roots="${MYRMIDON_HARDLINK_ROOTS:-/data/hermes /workspace /scratch}"
-  probe=".myrmidon-hardlink-probe.$$"
+  method="reflink"
+  roots="${MYRMIDON_REFLINK_ROOTS:-/data/hermes /workspace /scratch}"
+  probe=".myrmidon-reflink-probe.$$"
   src="${store}/${probe}"
   err=""
   if ! err="$(mkdir -p "${store}" 2>&1 && : > "${src}" 2>&1)"; then
     err="cannot create a file in the pnpm store ${store}: ${err}"
-    log "ERROR: hard-link self-check: ${err}"
+    log "ERROR: reflink self-check: ${err}"
     for root in ${roots}; do
       entries="${entries}${sep}{\"root\":\"$(json_escape "${root}")\",\"ok\":false,\"error\":\"$(json_escape "${err}")\"}"
       sep=","
@@ -253,10 +282,35 @@ hardlink_self_check() {
     for root in ${roots}; do
       dst="${root}/${probe}"
       ok=true
-      if ! err="$(ln "${src}" "${dst}" 2>&1)"; then
+      if ! err="$(cp --reflink=always "${src}" "${dst}" 2>&1)"; then
         ok=false
         ok_all=false
-        log "ERROR: hard-link self-check: cannot hard-link from the pnpm store ${store} into ${root}: ${err} — pnpm would copy every package into every clone there"
+        log "ERROR: reflink self-check: cannot reflink from the pnpm store ${store} into ${root}: ${err} — pnpm would copy every package into every clone there (bot_disk_lifecycle/reflink)"
+      elif command -v filefrag >/dev/null 2>&1; then
+        # A filesystem can accept FICLONE yet materialize a full copy; the only
+        # cheap proof is that the copy shares at least one physical extent with
+        # the store file. An empty source has no extents, so the probe carries
+        # a payload.
+        if [ ! -s "${src}" ]; then printf 'reflink-self-check\n' > "${src}"; cp --reflink=always "${src}" "${dst}" 2>/dev/null || true; fi
+        shared=""
+        local src_phys dst_phys phys
+        src_phys="$(filefrag -v "${src}" 2>/dev/null | sed -n 's/^[[:space:]]*[0-9]*:[[:space:]]*[0-9]*\.\.[0-9]*:[[:space:]]*\([0-9][0-9]*\)\.\..*/\1/p')"
+        dst_phys="$(filefrag -v "${dst}" 2>/dev/null | sed -n 's/^[[:space:]]*[0-9]*:[[:space:]]*[0-9]*\.\.[0-9]*:[[:space:]]*\([0-9][0-9]*\)\.\..*/\1/p')"
+        for phys in ${src_phys}; do
+          case " ${dst_phys} " in *" ${phys} "*) shared="${phys}"; break ;; esac
+        done
+        if [ -z "${src_phys}" ]; then
+          # filefrag gave nothing usable (FS without FIEMAP): the cp itself is
+          # the only available proof, treat it as the answer.
+          err=""
+        elif [ -z "${shared}" ]; then
+          ok=false
+          ok_all=false
+          err="cp --reflink=always succeeded but no shared physical extents (filefrag) — a full copy"
+          log "ERROR: reflink self-check: ${dst} shares no extents with the store — pnpm would copy every package (bot_disk_lifecycle/reflink)"
+        else
+          err=""
+        fi
       else
         err=""
       fi
@@ -267,21 +321,189 @@ hardlink_self_check() {
     rm -f "${src}" 2>/dev/null || true
   fi
   if [ "${ok_all}" = true ]; then
-    log "hard-link self-check ok: store=${store} roots=${roots} importMethod=${method}"
+    log "reflink self-check ok: store=${store} roots=${roots} importMethod=${method}"
   fi
   local out_dir="${HERMES_HOME}/.myrmidon" now
   now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   if mkdir -p "${out_dir}" 2>/dev/null; then
-    printf '{"version":1,"checkedAt":"%s","store":"%s","importMethod":"%s","ok":%s,"roots":[%s]}\n' \
+    printf '{"version":1,"method":"reflink","checkedAt":"%s","store":"%s","importMethod":"%s","ok":%s,"roots":[%s]}\n' \
       "${now}" "$(json_escape "${store}")" "$(json_escape "${method}")" "${ok_all}" "${entries}" \
-      > "${out_dir}/hardlink-check.json.tmp" 2>/dev/null \
-      && mv -f "${out_dir}/hardlink-check.json.tmp" "${out_dir}/hardlink-check.json" 2>/dev/null \
-      || log "WARNING: cannot write ${out_dir}/hardlink-check.json"
+      > "${out_dir}/reflink-check.json.tmp" 2>/dev/null \
+      && mv -f "${out_dir}/reflink-check.json.tmp" "${out_dir}/reflink-check.json" 2>/dev/null \
+      || log "WARNING: cannot write ${out_dir}/reflink-check.json"
   fi
 }
-if [ "${MYRMIDON_HARDLINK_CHECK:-1}" != "0" ]; then
-  hardlink_self_check || log "WARNING: the hard-link self-check itself failed to run"
-fi
+
+# --- uv cache self-check (myrmidon 1.6.5 BOT-DISK-UV-B) ------------------------
+# myrmidon(BOT-DISK-UV): since part A the bots with the shared package cache
+# point UV_CACHE_DIR at ONE uv cache per partition (<sharedPackageCachePath>/uv,
+# bound at /cache/uv). uv materialises installed packages into the venv either
+# by hardlinking from that cache (UV_LINK_MODE=hardlink) or by copying/cloning
+# (UV_LINK_MODE=clone). Both only save disk when the cache really reaches the
+# bot's roots: hardlinks cannot cross the bind mount (EXDEV — uv then copies
+# every wheel into every venv), and clone is a reflink that degrades to a full
+# copy the same silent way the pnpm store did (H8b). So at every start:
+# prove the cache directory is usable, then from a file inside it probe every
+# clone root — `cp --reflink=always` where the link mode wants reflinks
+# (confirmed via filefrag extents where available), `ln` compared by inode
+# (stat -c %i) where the link mode wants hardlinks. The result goes to
+# ${HERMES_HOME}/.myrmidon/uv-cache-check.json, shaped like reflink-check.json
+# (version, method, checkedAt, cache, ok, roots[]). A failure logs an ERROR and
+# never stops the gateway: a bot with a useless uv cache works, just
+# wastefully (the same logic as the pnpm self-check above). The cache is the
+# one the bot's tools will use: the environment's UV_CACHE_DIR, overridden by
+# the profile's .env (part A writes it there), defaulting to the image's
+# /cache/uv; the link mode is UV_LINK_MODE, default clone (what part A pins).
+uv_cache_self_check() {
+  local cache mode roots root probe src srcroot out_dir now ok_all=true entries="" sep="" err srcroot_ok=""
+  cache="$(dotenv_value UV_CACHE_DIR)"
+  cache="${cache:-${UV_CACHE_DIR:-/cache/uv}}"
+  mode="$(dotenv_value UV_LINK_MODE)"
+  mode="${mode:-${UV_LINK_MODE:-clone}}"
+  roots="${MYRMIDON_UV_CHECK_ROOTS:-/data/hermes /workspace /scratch}"
+  probe=".myrmidon-uv-probe.$$"
+  srcroot=""
+  err=""
+  # 1. the cache itself must hold files created by this bot's user.
+  if ! err="$(mkdir -p "${cache}" 2>&1 && : > "${cache}/${probe}" 2>&1)"; then
+    err="cannot create a file in the uv cache ${cache}: ${err}"
+    # myrmidon(1.6.5 BOT-SELFCHECK-DIAG): the raw mkdir/touch error alone
+    # cannot tell apart the three field causes of this failure — the bind is
+    # absent and the read-only rootfs refused mkdir, the bind exists but is
+    # mounted read-only, or the bind is rw but the source directory belongs
+    # to another uid (root:root 0755 — a write probe fails with Permission
+    # denied while the mount is rw). Name the facts the on-call reads:
+    # whether the directory exists, whether it is a mountpoint (mountpoint -q,
+    # with a device-number comparison against the parent as the fallback for
+    # a mountpoint-less busybox), its mode/owner and this process's ids.
+    local diag="" d_parent d_dev p_dev d_stat
+    if [ -d "${cache}" ]; then
+      d_stat="$(stat -c '%a %u:%g' "${cache}" 2>/dev/null || echo '?')"
+      diag="directory exists (mode/owner ${d_stat}); process uid:gid $(id -u 2>/dev/null):$(id -g 2>/dev/null)"
+      if command -v mountpoint >/dev/null 2>&1; then
+        if mountpoint -q "${cache}" 2>/dev/null; then
+          diag="${diag}; ${cache} is a mountpoint"
+        else
+          diag="${diag}; ${cache} is not a mountpoint"
+        fi
+      else
+        d_dev="$(stat -c %d "${cache}" 2>/dev/null || echo '?')"
+        d_parent="$(dirname "${cache}")"
+        p_dev="$(stat -c %d "${d_parent}" 2>/dev/null || echo '?')"
+        if [ "${d_dev}" != "?" ] && [ "${p_dev}" != "?" ] && [ "${d_dev}" != "${p_dev}" ]; then
+          diag="${diag}; ${cache} is on its own filesystem (a mount)"
+        else
+          diag="${diag}; ${cache} shares its parent's filesystem"
+        fi
+      fi
+    else
+      diag="directory does not exist and cannot be created (the root filesystem is read-only and no writable bind covers ${cache})"
+    fi
+    err="${err} [${diag}]"
+    log "ERROR: uv cache self-check: ${err} — uv would re-download and copy every package (bot_disk_lifecycle/uv-cache)"
+    for root in ${roots}; do
+      entries="${entries}${sep}{\"root\":\"$(json_escape "${root}")\",\"ok\":false,\"error\":\"$(json_escape "${err}")\"}"
+      sep=","
+    done
+    ok_all=false
+  else
+    rm -f "${cache}/${probe}" 2>/dev/null || true
+    # 2. one root where creating a file in the cache directory actually lands:
+    # usually the cache itself; when a deeper subpath of it is a separate mount
+    # (e.g. /cache/uv/archives on its own partition) the first root that holds
+    # the probe is the honest source for step 3.
+    for root in "${cache}" ${roots}; do
+      if [ -d "${root}" ] && err="$(mkdir -p "${root}" 2>&1 && printf 'uv-self-check\n' > "${root}/${probe}" 2>&1)"; then
+        srcroot="${root}"
+        break
+      fi
+    done
+    if [ -z "${srcroot}" ]; then
+      err="no writable place to stage a probe file near ${cache}"
+      log "ERROR: uv cache self-check: ${err} — nothing to measure (bot_disk_lifecycle/uv-cache)"
+      for root in ${roots}; do
+        entries="${entries}${sep}{\"root\":\"$(json_escape "${root}")\",\"ok\":false,\"error\":\"$(json_escape "${err}")\"}"
+        sep=","
+      done
+      ok_all=false
+    else
+      src="${srcroot}/${probe}"
+      case "${mode}" in
+        hardlink)
+          # uv links installed files out of the cache; a hardlink only saves
+          # disk when both sides are the same inode — the same filesystem.
+          local src_inode dst_inode
+          src_inode="$(stat -c %i "${src}" 2>/dev/null || true)"
+          for root in ${roots}; do
+            dst="${root}/${probe}"
+            ok=true
+            if ! err="$(ln "${src}" "${dst}" 2>&1)"; then
+              ok=false
+              ok_all=false
+              log "ERROR: uv cache self-check: cannot hardlink from ${srcroot} into ${root}: ${err} — uv would copy every package into the venv there (bot_disk_lifecycle/uv-cache)"
+            else
+              dst_inode="$(stat -c %i "${dst}" 2>/dev/null || true)"
+              if [ -z "${src_inode}" ] || [ "${src_inode}" != "${dst_inode}" ]; then
+                ok=false
+                ok_all=false
+                err="hardlink created but inodes differ (stat) — the link crossed filesystems"
+                log "ERROR: uv cache self-check: the hardlink in ${root} is not the cache inode — uv would copy every package there (bot_disk_lifecycle/uv-cache)"
+              fi
+              rm -f "${dst}" 2>/dev/null || true
+            fi
+            entries="${entries}${sep}{\"root\":\"$(json_escape "${root}")\",\"ok\":${ok},\"error\":$( [ "${ok}" = true ] && printf 'null' || printf '"%s"' "$(json_escape "${err}")" )}"
+            sep=","
+          done
+          ;;
+        *)
+          # clone (the default): uv copies with reflink where the filesystem
+          # supports it; the proof is the H8b proof — cp --reflink=always plus
+          # shared physical extents where filefrag can see them.
+          local shared src_phys dst_phys phys
+          for root in ${roots}; do
+            dst="${root}/${probe}"
+            ok=true
+            if ! err="$(cp --reflink=always "${src}" "${dst}" 2>&1)"; then
+              ok=false
+              ok_all=false
+              log "ERROR: uv cache self-check: cannot reflink from ${srcroot} into ${root}: ${err} — uv would fully copy every package into the venv there (bot_disk_lifecycle/uv-cache)"
+            elif command -v filefrag >/dev/null 2>&1; then
+              shared=""
+              src_phys="$(filefrag -v "${src}" 2>/dev/null | sed -n 's/^[[:space:]]*[0-9]*:[[:space:]]*[0-9]*\.\.[0-9]*:[[:space:]]*\([0-9][0-9]*\)\.\..*/\1/p')"
+              dst_phys="$(filefrag -v "${dst}" 2>/dev/null | sed -n 's/^[[:space:]]*[0-9]*:[[:space:]]*[0-9]*\.\.[0-9]*:[[:space:]]*\([0-9][0-9]*\)\.\..*/\1/p')"
+              for phys in ${src_phys}; do
+                case " ${dst_phys} " in *" ${phys} "*) shared="${phys}"; break ;; esac
+              done
+              if [ -n "${src_phys}" ] && [ -z "${shared}" ]; then
+                ok=false
+                ok_all=false
+                err="cp --reflink=always succeeded but no shared physical extents (filefrag) — a full copy"
+                log "ERROR: uv cache self-check: ${dst} shares no extents with ${srcroot} — uv would fully copy every package there (bot_disk_lifecycle/uv-cache)"
+              fi
+            fi
+            rm -f "${dst}" 2>/dev/null || true
+            entries="${entries}${sep}{\"root\":\"$(json_escape "${root}")\",\"ok\":${ok},\"error\":$( [ "${ok}" = true ] && printf 'null' || printf '"%s"' "$(json_escape "${err}")" )}"
+            sep=","
+          done
+          ;;
+      esac
+      rm -f "${src}" 2>/dev/null || true
+    fi
+  fi
+  if [ "${ok_all}" = true ]; then
+    log "uv cache self-check ok: cache=${cache} roots=${roots} linkMode=${mode}"
+  fi
+  out_dir="${HERMES_HOME}/.myrmidon"
+  now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  if mkdir -p "${out_dir}" 2>/dev/null; then
+    printf '{"version":1,"method":"%s","checkedAt":"%s","cache":"%s","ok":%s,"roots":[%s]}\n' \
+      "$(json_escape "${mode}")" "${now}" "$(json_escape "${cache}")" "${ok_all}" "${entries}" \
+      > "${out_dir}/uv-cache-check.json.tmp" 2>/dev/null \
+      && mv -f "${out_dir}/uv-cache-check.json.tmp" "${out_dir}/uv-cache-check.json" 2>/dev/null \
+      || log "WARNING: cannot write ${out_dir}/uv-cache-check.json"
+  fi
+}
+# Checks are deferred until after the gateway exec below.
 
 # --- shared git-object store facts (myrmidon 1.6.5 BOT-DISK-G live check) ---
 # The live acceptance of the shared-objects fix needs FACTS, not only pass/fail:
@@ -359,7 +581,7 @@ git_objects_self_check() {
   local store checks="" ok_all=true err sep=""
   local wrapper="${MYRMIDON_GIT_WRAPPER:-/opt/paperclip/bin/git}"
   local shadow="${MYRMIDON_GIT_SHADOW:-/usr/local/bin/git}"
-  local real_git="${MYRMIDON_GIT_REAL:-/usr/bin/git}"
+  local real_git="${MYRMIDON_GIT_REAL:-/opt/paperclip/libexec/git}"
   if [ -n "${MYRMIDON_GIT_LOCAL_MIRROR+x}" ]; then
     store="${MYRMIDON_GIT_LOCAL_MIRROR}"
   else
@@ -407,6 +629,9 @@ git_objects_self_check() {
   mkdir -p "${HERMES_HOME}/.myrmidon" 2>/dev/null || true
   work="$(mktemp -d "${HERMES_HOME}/.myrmidon/git-selfcheck.XXXXXX" 2>/dev/null)" || rc=1
   if [ "${rc}" -eq 0 ]; then
+    # actual/expected are filled by the round trip for the failure report;
+    # they are empty when the trip never got that far.
+    local rc_actual="" rc_want=""
     err="$(
       {
         set -e
@@ -424,14 +649,24 @@ git_objects_self_check() {
         # local-path URL through unchanged anyway.
         "${real_git}" clone -q --reference-if-able "${mirror}" "${origin}" "${dest}"
         target="$(sed -n '1p' "${dest}/.git/objects/info/alternates")"
-        # git records the realpath; HERMES_HOME itself may be a link into the bot's mount.
-        want="$(cd "${mirror}/objects" 2>/dev/null && pwd -P)"
-        [ -n "${target}" ] && [ "${target%/}" = "${want}" ]
+        # git records the realpath; HERMES_HOME itself may be a link into the
+        # bot's mount. Compare BOTH sides normalised the same way
+        # (physical_path): a symlinked scratch made the textual comparison
+        # fail on a healthy chain.
+        target="$(physical_path "${target}")"
+        want="$(physical_path "${mirror}/objects")"
+        # for the failure report outside this subshell:
+        printf 'actual=%s\nwant=%s\n' "${target}" "${want}" > "${work}/.diag"
+        [ -n "${target}" ] && [ "${target%/}" = "${want%/}" ]
       } 2>&1
     )"; rc=$?
+    if [ -f "${work}/.diag" ]; then
+      rc_actual="$(sed -n 's/^actual=//p' "${work}/.diag")"
+      rc_want="$(sed -n 's/^want=//p' "${work}/.diag")"
+    fi
     rm -rf "${work}" 2>/dev/null || true
     if [ "${rc}" -ne 0 ]; then
-      add_check "reference-clone" false "a test clone with --reference-if-able did not borrow the mirror's objects: ${err}"
+      add_check "reference-clone" false "a test clone with --reference-if-able did not borrow the mirror's objects: ${err} [actual=${rc_actual:-none}; expected=${rc_want:-none}]"
     else
       add_check "reference-clone" true ""
     fi
@@ -467,13 +702,21 @@ git_objects_self_check() {
           "${wrapper}" -c "url.file://${origin}.insteadOf=https://github.com/${probe_repo}" \
             clone -q --reference-if-able "${work}/stale.git" --depth 50 "https://github.com/${probe_repo}" "${dest}"
           target="$(sed -n '1p' "${dest}/.git/objects/info/alternates" 2>/dev/null)"
-          want="$(cd "${store}/${probe_repo}.git/objects" 2>/dev/null && pwd -P)"
-          [ -n "${target}" ] && [ -n "${want}" ] && [ "${target%/}" = "${want}" ]
+          want="$(physical_path "${store}/${probe_repo}.git/objects")"
+          target="$(physical_path "${target}")"
+          # for the failure report outside this subshell:
+          printf 'actual=%s\nwant=%s\n' "${target}" "${want}" > "${work}/.diag"
+          [ -n "${target}" ] && [ -n "${want}" ] && [ "${target%/}" = "${want%/}" ]
         } 2>&1
       )"; rc=$?
+      local sf_actual="" sf_want=""
+      if [ -f "${work}/.diag" ]; then
+        sf_actual="$(sed -n 's/^actual=//p' "${work}/.diag")"
+        sf_want="$(sed -n 's/^want=//p' "${work}/.diag")"
+      fi
       rm -rf "${work}" "${store}/${probe_repo}.git" "${store}/${probe_repo%%/*}" 2>/dev/null || true
       if [ "${rc}" -ne 0 ]; then
-        add_check "store-fills" false "a task-shaped clone (--reference-if-able + --depth) through the wrapper did not leave a mirror in the store ${store} and borrow it: ${err}"
+        add_check "store-fills" false "a task-shaped clone (--reference-if-able + --depth) through the wrapper did not leave a mirror in the store ${store} and borrow it: ${err} [actual=${sf_actual:-none}; expected=${sf_want:-none}]"
       else
         add_check "store-fills" true ""
       fi
@@ -482,13 +725,21 @@ git_objects_self_check() {
   # 5. the store is in use: GitHub task clones exist, so a mirror must.
   # Roots and shape follow bot-clone-hygiene (myrmidon BOT-DISK-F/H): clones sit
   # below a top-level entry of /workspace and /scratch, whatever the depth.
-  local task_roots="${MYRMIDON_TASK_ROOTS:-/workspace:/scratch}" clones=0 mirrors=0 sample="" d
- 
+  # myrmidon(1.6.5 BOT-SELFCHECK-DIAG): a task root may itself be a symlink
+  # into the bot's one mount — walk its physical path (find would otherwise
+  # not follow it) while reporting the logical root the operator knows. On
+  # failure the message carries the counts and the facts, not just "failed".
+  local task_roots="${MYRMIDON_TASK_ROOTS:-/workspace:/scratch}" clones=0 mirrors=0 sample="" d g g_phys walked_roots="" wsep=""
+
   if [ -n "${store}" ] && [ -d "${store}" ]; then
     mirrors="$(find "${store}" -mindepth 2 -maxdepth 2 -name '*.git' -type d 2>/dev/null | wc -l | tr -d ' ')"
   fi
   for g in $(printf '%s' "${task_roots}" | tr ':' ' '); do
-    for d in $(find "${g}" -maxdepth 4 -name .git 2>/dev/null | head -200); do
+    g_phys="$(physical_path "${g}")"
+    [ -n "${g_phys}" ] || g_phys="${g}"
+    walked_roots="${walked_roots}${wsep}${g} -> ${g_phys}"
+    wsep=", "
+    for d in $(find -H "${g_phys}" -maxdepth 4 -name .git 2>/dev/null | head -200); do
       d="${d%/.git}"
       case "$("${real_git}" -C "${d}" config --get remote.origin.url 2>/dev/null)" in
         *github.com*)
@@ -501,7 +752,7 @@ git_objects_self_check() {
   if [ "${clones}" -eq 0 ] || [ "${mirrors}" -gt 0 ] || [ -z "${store}" ]; then
     add_check "store-in-use" true ""
   else
-    add_check "store-in-use" false "${clones} GitHub task clone(s) on this bot (e.g. ${sample}) but the store ${store} holds no mirror: those clones copied their git history in full. A clone through the wrapper fills the store — see store-fills above for the shape it accepts."
+    add_check "store-in-use" false "${clones} GitHub task clone(s) on this bot (e.g. ${sample}) but the store ${store} holds no mirror (mirrors=${mirrors}, roots walked: ${walked_roots}): those clones copied their git history in full. A clone through the wrapper fills the store — see store-fills above for the shape it accepts."
   fi
   if [ "${ok_all}" = true ]; then
     log "shared-objects self-check ok: store=${store:-off}"
@@ -521,21 +772,11 @@ git_objects_self_check() {
       || log "WARNING: cannot write ${out_dir}/git-objects-check.json"
   fi
 }
-if [ "${MYRMIDON_GIT_OBJECTS_CHECK:-1}" != "0" ]; then
-  git_objects_self_check || log "WARNING: the shared-objects self-check itself failed to run"
-fi
+# Checks are deferred until after the gateway exec below.
 
 # --- devbuild self-check (dev variant) --------------------------------------
-# myrmidon(1.6.5 DEVBUILD-IN-BOTS): the bot's heavy commands are meant to run
-# on the build VPS through devbuild, so a start without a working devbuild is
-# a misconfiguration worth one loud line. The check only runs when the wiring
-# is expected (DEVBUILD_HOST set in the container env); a bot without it is
-# the ordinary no-devbuild case and stays silent. The probe is `devbuild
-# 'true'`: it exercises the key (file mount or the DEVBUILD_SSH_KEY_DATA env
-# key), the ssh handshake and the remote shell, and rsyncs the (empty or
-# nearly empty) /workspace of a fresh container. It never stops the gateway —
-# a bot with a broken build offload still edits files and runs git; it logs
-# ERROR and writes ${HERMES_HOME}/.myrmidon/devbuild-check.json for the board.
+# Diagnostics run only for developer bots: this is the role that can use the
+# devbuild offload; other bot roles must not make an SSH/rsync startup probe.
 # MYRMIDON_DEVBUILD_CHECK=0 disables the probe (tests, manual runs).
 devbuild_self_check() {
   local out_dir="${HERMES_HOME}/.myrmidon" now ok=false err=""
@@ -559,22 +800,93 @@ devbuild_self_check() {
       || log "WARNING: cannot write ${out_dir}/devbuild-check.json"
   fi
 }
-if [ "${MYRMIDON_DEVBUILD_CHECK:-1}" != "0" ]; then
-  devbuild_self_check || log "WARNING: the devbuild self-check itself failed to run"
+# The devbuild check is deferred until after gateway launch.
+
+# --- bot disk lifecycle agent (dev variant) --------------------------------
+# myrmidon(1.6.5 BOT-DISK-H1c): botd (BOT-DISK-H3) replaces bot-clone-hygiene: it
+# reports the bot's workspaces to the board and runs the workspace lifecycle. Until
+# H3 ships the binary, the image has no botd and the old reporter runs instead
+# (myrmidon 1.6.2 BOT-DISK-C: the board's draft-directory lifecycle removes an idle
+# git clone only when this container says it holds nothing unpushed; the reporter
+# only reads the clones and writes ${HERMES_HOME}/.myrmidon/clone-hygiene.json).
+# Both exist in the dev variant only, so the base image starts neither.
+if command -v botd >/dev/null 2>&1; then
+  botd >/dev/null &
+  log "botd started (pid $!)"
+elif command -v bot-clone-hygiene >/dev/null 2>&1; then
+  bot-clone-hygiene --interval "${MYRMIDON_CLONE_HYGIENE_INTERVAL_SEC:-900}" >/dev/null &
+  log "clone hygiene reporter started (pid $!) — no botd in this image"
 fi
 
-# --- clone hygiene report (dev variant) -----------------------------------
-# myrmidon(1.6.2 BOT-DISK-C): the board's draft-directory lifecycle removes an
-# idle git clone only when this container says it holds nothing unpushed. The
-# reporter only reads the clones and writes ${HERMES_HOME}/.myrmidon/clone-hygiene.json;
-# it exists in the dev variant only, so the base image skips this.
-if command -v bot-clone-hygiene >/dev/null 2>&1; then
-  bot-clone-hygiene --interval "${MYRMIDON_CLONE_HYGIENE_INTERVAL_SEC:-900}" >/dev/null &
-  log "clone hygiene reporter started (pid $!)"
-fi
+
+# These checks may touch mounts, probe reflink/shared-object support, or wait
+# on remote SSH/rsync. Run them after the gateway is live and cap each probe.
+now_monotonic_ms() {
+  if [ -r /proc/uptime ]; then
+    read -r up _ < /proc/uptime
+    awk -v u="$up" 'BEGIN { printf "%.0f\n", u * 1000 }' 2>/dev/null || date +%s%3N
+  else
+    date +%s%3N
+  fi
+}
+
+run_bounded_diagnostic() {
+  local check="$1" pid watchdog rc=0 t0 t1 duration_ms
+  t0="$(now_monotonic_ms)"
+  log "phase ${check} starting"
+  ( "$check" ) &
+  pid=$!
+  ( sleep "${MYRMIDON_DIAGNOSTIC_TIMEOUT_SEC:-120}"; kill "$pid" 2>/dev/null || true ) &
+  watchdog=$!
+  wait "$pid" || rc=$?
+  kill "$watchdog" 2>/dev/null || true
+  wait "$watchdog" 2>/dev/null || true
+  t1="$(now_monotonic_ms)"
+  duration_ms=$(( t1 - t0 ))
+  log "phase ${check} finished in ${duration_ms}ms (rc=${rc})"
+  return "$rc"
+}
+
+run_startup_diagnostics() {
+  local t_diag_0 t_diag_1
+  t_diag_0="$(now_monotonic_ms)"
+  log "phase startup_diagnostics starting in background"
+  if [ "${MYRMIDON_REFLINK_CHECK:-1}" != "0" ]; then run_bounded_diagnostic reflink_self_check || log "WARNING: reflink self-check timed out or failed"; fi
+  if [ "${MYRMIDON_UV_CHECK:-1}" != "0" ]; then run_bounded_diagnostic uv_cache_self_check || log "WARNING: uv cache self-check timed out or failed"; fi
+  if [ "${MYRMIDON_GIT_OBJECTS_CHECK:-1}" != "0" ]; then run_bounded_diagnostic git_objects_self_check || log "WARNING: shared-objects self-check timed out or failed"; fi
+  if [ "${MYRMIDON_DEVBUILD_CHECK:-1}" != "0" ] && [ -n "${DEVBUILD_BOT_NAME:-}" ] && [ -n "${DEVBUILD_HOST:-}" ]; then
+    run_bounded_diagnostic devbuild_self_check || log "WARNING: devbuild self-check timed out or failed"
+  fi
+  t_diag_1="$(now_monotonic_ms)"
+  log "phase startup_diagnostics completed in $(( t_diag_1 - t_diag_0 ))ms"
+}
 
 # --replace: a previous instance's lock (from a hard container restart) does
 # not block this one — the fleet manager, not hermes, decides whether two
 # instances should ever coexist. --accept-hooks: no TTY to answer a shell
 # hook consent prompt (equivalent to hooks_auto_accept: true).
-exec hermes gateway run --replace --accept-hooks "$@"
+log "phase gateway_launch starting"
+hermes gateway run --replace --accept-hooks "$@" &
+# Waiting for startup self-checks to execute synchronously can delay the Docker
+# healthcheck until the rollout times out. Attach the gateway first, then run
+# bounded diagnostics concurrently, keeping Docker stop signals handled here.
+gateway_pid=$!
+log "phase gateway_launch pid=${gateway_pid} running"
+run_startup_diagnostics &
+diagnostics_pid=$!
+cleanup_diagnostics() {
+  kill "$gateway_pid" "$diagnostics_pid" 2>/dev/null || true
+  wait "$gateway_pid" 2>/dev/null || true
+  wait "$diagnostics_pid" 2>/dev/null || true
+}
+trap cleanup_diagnostics TERM INT HUP
+set +e
+wait "$gateway_pid"
+gateway_status=$?
+set -e
+if [ "$gateway_status" -ne 0 ]; then
+  kill "$diagnostics_pid" 2>/dev/null || true
+fi
+wait "$diagnostics_pid" 2>/dev/null || true
+trap - TERM INT HUP
+exit "$gateway_status"

@@ -1,4 +1,5 @@
-const PENDING_INVITE_STORAGE_KEY = "paperclip:pending-invite-token";
+// myrmidon(DEBRAND-c): persist browser state under the Myrmidon namespace.
+const PENDING_INVITE_STORAGE_KEY = "myrmidon:pending-invite-token";
 
 function canUseStorage() {
   return typeof window !== "undefined" && typeof window.localStorage !== "undefined";

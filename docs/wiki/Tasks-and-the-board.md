@@ -18,6 +18,14 @@ either a list of blocking tasks or a reason reference. A stale blocked
 reason (the blocker long done, the task still parked) is caught by the
 stale-block watchdog instead of sitting silent forever.
 
+Scheduled issue monitors are checked for tasks in `in_progress`, `in_review`,
+and `blocked`; a due monitor wakes its assignee with the monitor context.
+Completed or cancelled tasks have their schedules cleared. If a due monitor
+has not triggered within the overdue threshold, the Attention feed raises an
+`issue_monitor_overdue` item for operators. Inspect the task's monitor schedule
+and wake history, then resume or reschedule the task; the item clears when the
+monitor is no longer overdue.
+
 ## Role queues
 
 With the role-queue pilot, a free agent claims the top task of its role's
@@ -69,3 +77,23 @@ an optional finisher summarizes the outcome.
 - [Commander chat](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/commander-chat.md)
 - [Discussion rooms](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/agent-exchange.md)
 - Review routing: [SETTINGS.md](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/SETTINGS.md), section «REVIEW-ROUTING»
+
+## Recovery and requeue holds
+
+If a failed run is reconciled after an operator has already returned its task
+to `todo` or `backlog`, the recovery sweep preserves that chosen status rather
+than changing it to `blocked`. It records a closed hold (`outcome = "cancelled"`)
+so the task is not automatically replayed. An operator can explicitly resume
+the held task by moving it to a working status; normal recovery of tasks that
+were not requeued remains unchanged.
+
+## Concurrent settings edits
+
+General and experimental instance-settings updates are serialized on the
+`instance_settings` row. Concurrent PATCH requests therefore merge against the
+latest stored document instead of overwriting one another's edits. This also
+covers creation of the first settings row.
+
+## Review admission
+
+When a task enters `in_review` or its reviewer changes, Myrmidon persists the reviewer wake request in the same transaction as the task update. Review-stage wake requests are persisted through that transaction path as well. This keeps the task update and the request to wake its reviewer atomic.

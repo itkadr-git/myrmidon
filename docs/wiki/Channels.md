@@ -16,12 +16,31 @@ Service texts (command replies, refusals, status lines) follow the language
 of the linked board user, and the run status line and long answers can be
 shown as editable, split messages (opt-in settings).
 
+## Channel connector fallback
+
+The Telegram bridge can route its themes through a channel connector. The
+`MYRMIDON_CHANNEL_CONNECTOR_BRIDGE` switch is off by default; enabling it
+requires a server restart. When enabled, the connector handles the symbols it
+provides. If it throws, rejects, or times out, Myrmidon logs and counts the
+fallback and uses the legacy bridge symbol once. The per-call timeout is
+`MYRMIDON_CHANNEL_CONNECTOR_BRIDGE_TIMEOUT_MS` (default `15000` ms); an unset,
+invalid, or non-positive value keeps that default. Fallbacks are counted in
+`myrmidon_adapter_fallback_total` on `/metrics`. See the
+[connector settings](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/SETTINGS.md)
+and [CH-CONNECTOR G change note](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/changes/1.6.6-ch-connector-g-bridge-fallback.md).
+
 ## Decision cards in Telegram
 
 When an agent needs the owner's decision — a question card or a
-confirmation card on a task — the card is delivered to the owner's Telegram
-and the owner answers it there; the answer lands on the task as if it had
-been given in the board UI.
+confirmation card on a task — the decision reaches the owner's Telegram in
+the shape the instance's owner-delivery mode picks. In the default `via_bot`
+mode there is no card with buttons: the agent's bot writes the owner one
+plain message that explains what to decide and why, and the owner answers
+with ordinary text in the same chat; the agent records the decision on the
+card. Instances that keep the `owner_decisions_only` or `all` mode receive
+the card itself, and the owner answers it there; either way the answer lands
+on the task as if it had been given in the board UI. The mode is set in
+Company Settings, "Owner Telegram delivery".
 
 ## Digests and escalations
 

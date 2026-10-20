@@ -11,6 +11,7 @@ import { heartbeatRun } from "./commands/heartbeat-run.js";
 import { runCommand } from "./commands/run.js";
 import { bootstrapCeoInvite } from "./commands/auth-bootstrap-ceo.js";
 import { dbBackupCommand } from "./commands/db-backup.js";
+import { registerMyrmidonMigrateCommand } from "./commands/myrmidon-migrate.js";
 import { registerEnvLabCommands } from "./commands/env-lab.js";
 import { registerContextCommands } from "./commands/client/context.js";
 import { registerCompanyCommands } from "./commands/client/company.js";
@@ -261,6 +262,7 @@ registerSecretCommands(program);
 registerSkillsCommands(program);
 registerTeamCommands(program);
 registerWorktreeCommands(program);
+registerMyrmidonMigrateCommand(program);
 registerEnvLabCommands(program);
 registerPluginCommands(program);
 
