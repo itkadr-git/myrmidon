@@ -369,12 +369,12 @@ describe("import run", () => {
     const root = makeExport({ "myrmidon/foo.md": long("Expected exported body") });
     const plan = planMigration({ root, map: emptyMap({ expectedTotal: 1 }), expectedTotal: 1 });
     const log = emptyLog();
-    log.revisions.set("myrmidon/foo", [
+    log.revisions.set("architecture/foo", [
       { content: "Earlier body", sources: [{ kind: "document", ref: "earlier", note: null }] },
       { content: "Unrelated later revision", sources: [{ kind: "issue", ref: "OPE-999", note: null }] },
     ]);
-    log.items.set("myrmidon/foo", {
-      id: "item-1", slug: "myrmidon/foo", kind: "wiki", title: "Old title", summary: null,
+    log.items.set("architecture/foo", {
+      id: "item-1", slug: "architecture/foo", kind: "wiki", title: "Old title", summary: null,
       folderPath: "", tags: [], approvalRequired: false, approverKind: null,
       deliveredContent: "Unrelated later revision", status: "draft", supersededByItemId: null,
     });
