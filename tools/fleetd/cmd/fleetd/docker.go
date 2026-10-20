@@ -148,9 +148,6 @@ func (d *dockerClient) status(ctx context.Context, bot string) (botStatus, error
 		return botStatus{}, err
 	}
 	state := x.State.Status
-	if state == "" {
-		state = x.StateName
-	}
 	return botStatus{BotKey: bot, State: state, Image: x.Config.Image}, nil
 }
 func (d *dockerClient) logs(ctx context.Context, bot string) (string, error) {
