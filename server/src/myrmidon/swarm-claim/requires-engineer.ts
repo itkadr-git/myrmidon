@@ -25,10 +25,34 @@ const CHECKOUT_PREFERENCES = new Set<string>([
   "reuse_existing",
 ]);
 
+export function normalizeLabels(labels: unknown): string[] {
+  if (Array.isArray(labels)) {
+    return labels
+      .map((item) => {
+        if (typeof item === "string") return item;
+        if (item && typeof item === "object" && "name" in item && typeof (item as any).name === "string") {
+          return (item as any).name;
+        }
+        return "";
+      })
+      .filter(Boolean);
+  }
+  if (typeof labels === "string") {
+    try {
+      const parsed = JSON.parse(labels);
+      return normalizeLabels(parsed);
+    } catch {
+      return labels.trim() ? [labels.trim()] : [];
+    }
+  }
+  return [];
+}
+
 /** Q1's fail-open derived predicate. Do not infer from title or description. */
 export function requiresEngineer(input: EngineerRequirementInput): boolean {
-  if (input.labels?.some((label) => label.trim().toLowerCase() === NEEDS_ENGINEER_LABEL)) return true;
-  if (engineerCasteRequired(input.casteKey, input.projectDefaultCasteKey, input.labels ?? [])) return true;
+  const labelsList = normalizeLabels(input.labels);
+  if (labelsList.some((label) => label.trim().toLowerCase() === NEEDS_ENGINEER_LABEL)) return true;
+  if (engineerCasteRequired(input.casteKey, input.projectDefaultCasteKey, labelsList)) return true;
   if (input.harnessKind === "skill_test") return true;
   if (isCheckoutRequiredPreference(input.executionWorkspacePreference)) return true;
   return false;

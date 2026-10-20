@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   isCheckoutRequiredPreference,
+  normalizeLabels,
   requiresEngineer,
 } from "./requires-engineer.js";
 
@@ -32,6 +33,14 @@ describe("requiresEngineer", () => {
 
   it("does not infer from unrelated labels or prose signals", () => {
     expect(requiresEngineer({ labels: ["backend"], harnessKind: "custom" })).toBe(false);
+  });
+
+  it("handles labels formatted as JSON strings or object arrays", () => {
+    expect(requiresEngineer({ labels: JSON.stringify(["needs-engineer"]) as any })).toBe(true);
+    expect(requiresEngineer({ labels: [{ name: "needs-engineer" }] as any })).toBe(true);
+    expect(normalizeLabels('["foo", "bar"]')).toEqual(["foo", "bar"]);
+    expect(normalizeLabels([{ name: "hello" }])).toEqual(["hello"]);
+    expect(normalizeLabels(null)).toEqual([]);
   });
 });
 

@@ -29835,8 +29835,18 @@ export function heartbeatService(
                 companyId: issue.companyId,
                 issueId: issue.id,
               }).catch(() => issue.casteKey ?? null);
+              const issueLabelRows = await tx
+                .select({ name: labels.name })
+                .from(issueLabels)
+                .innerJoin(labels, eq(issueLabels.labelId, labels.id))
+                .where(eq(issueLabels.issueId, issue.id))
+                .then((rows) => rows.map((r) => r.name))
+                .catch(() => []);
+              const effectiveLabels = issueLabelRows.length > 0
+                ? issueLabelRows
+                : (issue.labels ?? []);
               if (requiresEngineer({
-                labels: issue.labels ?? [],
+                labels: effectiveLabels,
                 casteKey: resolvedCaste,
                 projectDefaultCasteKey: issue.projectDefaultCasteKey,
                 harnessKind: issue.harnessKind,

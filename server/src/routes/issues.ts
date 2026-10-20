@@ -50,7 +50,7 @@ import {
 } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import type { ChatChannelService } from "../services/chat-channels.js";
-import { heartbeatService, type WakeupOptions } from "../services/heartbeat.js";
+import type { WakeupOptions } from "../services/heartbeat.js";
 import {
   companies,
   activityLog,
@@ -193,6 +193,7 @@ import {
   executionWorkspaceService,
   enrichWorkProductMetadataWithDiff,
   goalService,
+  heartbeatService,
   issueApprovalService,
   issueRecoveryActionService,
   issueThreadInteractionService,
@@ -13543,16 +13544,30 @@ export function issueRoutes(
           req.body.assigneeAgentId as string | null | undefined,
           { actorType: req.actor.type },
         );
+      const requestedAssigneeAgentId =
+        normalizedAssigneeAgentId === undefined
+          ? existing.assigneeAgentId
+          : normalizedAssigneeAgentId;
+      const effectiveAssigneeUserId =
+        req.body.assigneeUserId !== undefined
+          ? req.body.assigneeUserId
+          : (normalizedAssigneeAgentId !== undefined ? null : existing.assigneeUserId);
+      const isAssigningOrSignalsChanged =
+        normalizedAssigneeAgentId !== undefined ||
+        req.body.assigneeUserId !== undefined ||
+        req.body.labels !== undefined ||
+        req.body.casteKey !== undefined ||
+        req.body.harnessKind !== undefined ||
+        req.body.executionWorkspacePreference !== undefined;
       if (
-        (normalizedAssigneeAgentId !== undefined || req.body.assigneeUserId !== undefined) &&
-        (normalizedAssigneeAgentId !== existing.assigneeAgentId ||
-          req.body.assigneeUserId !== undefined)
+        isAssigningOrSignalsChanged &&
+        (requestedAssigneeAgentId || effectiveAssigneeUserId)
       ) {
-        const requestedAgent = normalizedAssigneeAgentId
-          ? await agentsSvc.getById(normalizedAssigneeAgentId)
+        const requestedAgent = requestedAssigneeAgentId
+          ? await agentsSvc.getById(requestedAssigneeAgentId)
           : null;
         if (
-          (req.body.assigneeUserId || requestedAgent?.role !== "engineer") &&
+          (effectiveAssigneeUserId || requestedAgent?.role !== "engineer") &&
           await issueRequiresEngineer(existing, {
             labels: Array.isArray(req.body.labels) ? req.body.labels as string[] : undefined,
             casteKey: typeof req.body.casteKey === "string" ? req.body.casteKey : undefined,
@@ -13566,7 +13581,7 @@ export function issueRoutes(
           throw unprocessable("This issue requires an engineer", {
             code: "issue_requires_engineer",
             issueId: existing.id,
-            assigneeAgentId: normalizedAssigneeAgentId,
+            assigneeAgentId: requestedAssigneeAgentId,
           });
         }
       }
@@ -13680,37 +13695,6 @@ export function issueRoutes(
         existing.companyId,
         updateFields.executionWorkspaceSettings?.environmentId,
       );
-      const requestedAssigneeAgentId =
-        normalizedAssigneeAgentId === undefined
-          ? existing.assigneeAgentId
-          : normalizedAssigneeAgentId;
-      if (
-        (requestedAssigneeAgentId || req.body.assigneeUserId) &&
-        (requestedAssigneeAgentId !== existing.assigneeAgentId ||
-          req.body.assigneeUserId !== undefined)
-      ) {
-        const assignee = requestedAssigneeAgentId
-          ? await agentsSvc.getById(requestedAssigneeAgentId)
-          : null;
-        if (
-          (req.body.assigneeUserId || assignee?.role !== "engineer") &&
-          await issueRequiresEngineer(existing, {
-            labels: Array.isArray(req.body.labels) ? req.body.labels as string[] : undefined,
-            casteKey: typeof req.body.casteKey === "string" ? req.body.casteKey : undefined,
-            harnessKind: typeof req.body.harnessKind === "string" ? req.body.harnessKind : undefined,
-            executionWorkspacePreference:
-              typeof req.body.executionWorkspacePreference === "string"
-                ? req.body.executionWorkspacePreference
-                : undefined,
-          })
-        ) {
-          throw unprocessable("This issue requires an engineer", {
-            code: "issue_requires_engineer",
-            issueId: existing.id,
-            assigneeAgentId: requestedAssigneeAgentId,
-          });
-        }
-      }
       const explicitMoveToTodoRequested =
         reopenRequested || resumeRequested === true;
       const recoveryRelevantSourceMutationRequested =
