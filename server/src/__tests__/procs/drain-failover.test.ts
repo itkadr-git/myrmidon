@@ -532,8 +532,9 @@ describeProcs("drain and failover e2e: supervisor in-process, two api children (
     expect(victimPid, "the kill victim is the freshly grown child").not.toBe(survivorPid);
     const forkedBeforeKill = forkedPids.length;
 
-    // Readiness is reported before the registry's first pulse, so wait for
-    // the grown child to publish its row before resolving its boot identity.
+    // The supervisor's ready IPC is emitted only after the child has completed
+    // its awaited initial registry tick. Keep polling for the row to tolerate
+    // database scheduling without treating readiness and persistence as a race.
     await waitFor(
       async () => {
         const [row] = await db

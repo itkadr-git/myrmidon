@@ -266,14 +266,16 @@ describeProcs("two api processes on one test database (PROCS-T1.5 skeleton)", ()
       readyTimeoutMs: 30_000,
     });
 
-    const expectedBootIds = new Set<string>();
-    for (const handle of processes) {
-      const own = await readBoardProcesses(handle);
-      const row = [...apiRows(own).values()].find((candidate) => candidate.bootId === own.selfBootId);
-      expect(row, `registry row for replica at ${handle.baseUrl}`).toBeDefined();
-      expect(row?.status).toBe("live");
-      expectedBootIds.add(own.selfBootId);
-    }
+    // Both handles address the same reuse-port endpoint, so a request through a
+    // handle is not guaranteed to reach that handle's own process. Establish
+    // the expected replica set from the shared registry instead of assuming
+    // deterministic kernel routing for the first two requests.
+    const registry = await readBoardProcesses(processes[0]!);
+    const expectedBootIds = new Set(
+      registry.processes
+        .filter((row) => row.role === "api" && row.status === "live")
+        .map((row) => row.bootId),
+    );
     expect(expectedBootIds.size).toBe(replicaCount);
 
     const seenBootIds = new Set<string>();
