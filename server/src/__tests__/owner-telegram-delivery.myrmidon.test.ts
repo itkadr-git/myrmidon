@@ -298,6 +298,7 @@ describeEmbeddedPostgres(
       await instanceSettingsService(db).updateGeneral({
         [OWNER_DELIVERY_SETTINGS_KEY]: { mode: "owner_decisions_only" },
       });
+      // The issue interaction service requires owner-only mode at creation time.
       const interaction = await issueThreadInteractionService(db).create(
         { id: fixture.workIssue.id, companyId: fixture.companyId },
         {
