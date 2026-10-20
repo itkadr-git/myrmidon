@@ -263,11 +263,11 @@ describeProcs("two api processes on one test database (PROCS-T1.5 skeleton)", ()
     });
 
     const seenBootIds = new Set<string>();
-    const requestReplica = (localPort: number) =>
+    const requestReplica = (localPort: number, loopbackHost: string) =>
       new Promise<{ status: number; text: string; json: unknown }>((resolve, reject) => {
         const client = http.get(
-          `http://127.0.0.1:${sharedPort}/api/myrmidon/board-processes`,
-          { agent: false, localPort },
+          `http://${loopbackHost}:${sharedPort}/api/myrmidon/board-processes`,
+          { agent: false, localAddress: "127.0.0.1", localPort },
           (incoming) => {
             const chunks: Buffer[] = [];
             incoming.on("data", (chunk: Buffer) => chunks.push(chunk));
@@ -299,7 +299,10 @@ describeProcs("two api processes on one test database (PROCS-T1.5 skeleton)", ()
           const localPort = candidate === sharedPort
             ? 10_000 + ((candidate - 10_000 + 1) % 50_000)
             : candidate;
-          return requestReplica(localPort);
+          // Vary both ends of the loopback flow; Linux may otherwise hash a
+          // large source-port set to one reuse-port bucket in CI.
+          const loopbackHost = probe % 2 === 0 ? "127.0.0.1" : "127.0.0.2";
+          return requestReplica(localPort, loopbackHost);
         }),
       );
       for (const response of responses) {
