@@ -144,7 +144,7 @@ dg_ctr="myr-predeploy-dockergate-$suffix"
 board_ctr="myr-predeploy-board-$suffix"
 # DEPLOY-HYGIENE (OPE-5107): the copy's data lives in a NAMED volume of this
 # run, removed by the same trap that removes the containers. An anonymous
-# volume (-v /var/lib/postgresql/data) survives `docker rm -f` and stays on
+# volume (-v /var/lib/postgresql; PostgreSQL 18+ images refuse a mount at .../data, older ones keep PGDATA in its data/ subdirectory) survives `docker rm -f` and stays on
 # the disk forever — the 3.4/3.6 GB orphans of 05.10 and rc.3.
 db_vol="${MYRMIDON_PREDEPLOY_DB_VOLUME:-myr-predeploy-dbvol-$suffix}"
 board_ref="$MYRMIDON_IMAGE@$board_digest"
@@ -160,7 +160,7 @@ if [[ "$DRY_RUN" == "1" ]]; then
   log "dry run: nothing will be changed. Predeploy check plan:"
   plan "0. read the predeploy dump $dump_file ($(wc -c <"$dump_file" | tr -d ' ') bytes) as the production snapshot (read-only)"
   plan "1. docker network create $network (no bot container, no production dockergate on it)"
-  plan "2. docker run -d --name $db_ctr --network $network -v $db_vol:/var/lib/postgresql/data $postgres_image (database $db_name, user $db_user, generated password)"
+  plan "2. docker run -d --name $db_ctr --network $network -v $db_vol:/var/lib/postgresql $postgres_image (database $db_name, user $db_user, generated password)"
   plan "3. wait for the copy to accept connections, then restore the dump into it"
   if [[ -n "$dockergate_ref" ]]; then
     plan "4. docker run -d --name $dg_ctr --network $network $dockergate_ref (the NEW dockergate of this release)"
@@ -225,7 +225,7 @@ export DUMP_FILE="$dump_file"
 log "PREDEPLOY-DB-CHECK: 2/6 copy of the production database ($postgres_image)"
 # shellcheck disable=SC2086  # the operator's extra docker arguments are word-split on purpose
 docker run -d --name "$db_ctr" --network "$network" \
-  -v "$db_vol:/var/lib/postgresql/data" \
+  -v "$db_vol:/var/lib/postgresql" \
   -e POSTGRES_DB="$db_name" -e POSTGRES_USER="$db_user" -e POSTGRES_PASSWORD="$db_password" \
   $postgres_image >/dev/null || die "cannot start the throwaway Postgres ($postgres_image); production was not touched"
 

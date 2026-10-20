@@ -278,6 +278,74 @@ const DAYTONA: ResolvedBundledPlugin = {
   localPath: path.join(CATALOG_ROOT, "sandbox-providers/daytona"),
 };
 
+// ---------------------------------------------------------------------------
+// Connector fail-closed properties (OPE-5065, piece A; upstream #13758)
+// ---------------------------------------------------------------------------
+
+describe("connector fail-closed properties", () => {
+  it("self-hosted auto-install activates only kubernetes and never any other catalog entry", async () => {
+    expect(SELF_HOSTED_AUTO_INSTALL_KEYS).toEqual(["kubernetes"]);
+    const others = BUNDLED_PLUGIN_CATALOG.map((entry) => entry.key).filter(
+      (key) => key !== "kubernetes",
+    );
+    expect(others).toHaveLength(6);
+
+    const resolved = resolveBundledPluginInstalls(SELF_HOSTED_AUTO_INSTALL_KEYS, {
+      catalogRoot: DEFAULT_BUNDLED_CATALOG_ROOT,
+      env: {},
+      enforceCatalogRoot: true,
+    });
+    expect(resolved.map((entry) => entry.key)).toEqual(["kubernetes"]);
+
+    const { deps, installPlugin } = makeDeps();
+    await ensureBundledPlugins(resolved, deps, { reinstallUninstalled: false });
+    expect(installPlugin).toHaveBeenCalledTimes(1);
+    expect(installPlugin).toHaveBeenCalledWith({ localPath: K8S.localPath });
+    for (const entry of BUNDLED_PLUGIN_CATALOG) {
+      if (entry.key === "kubernetes") continue;
+      const touched = installPlugin.mock.calls.some(([call]) =>
+        String((call as { localPath: string }).localPath).endsWith(entry.relativePath),
+      );
+      expect(touched).toBe(false);
+      expect(deps.lifecycle.load).not.toHaveBeenCalledWith(
+        expect.stringContaining(entry.pluginKey),
+      );
+    }
+  });
+
+  it("ensureBundledPlugins performs zero writes and exposes no uninstall path", async () => {
+    // Property: deinstallation happens only through an explicit operator
+    // action elsewhere in the plugin registry; this module must not be able
+    // to trigger it at all. The provisioner deps are the complete surface
+    // ensureBundledPlugins can reach, so pin that surface to be free of any
+    // uninstall/unload/remove/deactivate capability.
+    const { deps } = makeDeps();
+    expect(
+      [...Object.keys(deps.registry), ...Object.keys(deps.loader), ...Object.keys(deps.lifecycle)]
+        .filter((key) => /uninstall|remove|delete|unload|deactivate|disable/i.test(key)),
+    ).toEqual([]);
+
+    // Every catalog entry present and ready; only kubernetes in the ensure
+    // list. A non-uninstalling reconciler must leave all rows untouched.
+    const rows = Object.fromEntries(
+      BUNDLED_PLUGIN_CATALOG.map((entry) => [
+        entry.pluginKey,
+        { id: `row-${entry.key}`, pluginKey: entry.pluginKey, status: "ready" },
+      ]),
+    );
+    const present = makeDeps({ rows });
+    await ensureBundledPlugins([K8S], present.deps, { reinstallUninstalled: false });
+    expect(present.installPlugin).not.toHaveBeenCalled();
+    expect(present.update).not.toHaveBeenCalled();
+    expect(present.updateStatus).not.toHaveBeenCalled();
+    expect(present.deps.lifecycle.load).not.toHaveBeenCalled();
+    // Non-listed connectors are not even queried: nothing walks the registry.
+    const queried = (present.deps.registry.getByKey as ReturnType<typeof vi.fn>).mock.calls
+      .map(([key]) => key);
+    expect(queried).toEqual([K8S.pluginKey]);
+  });
+});
+
 describe("ensureBundledPlugins", () => {
   it("installs and loads a missing bundled plugin", async () => {
     const { deps, installPlugin } = makeDeps();

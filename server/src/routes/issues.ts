@@ -5622,7 +5622,10 @@ export function issueRoutes(
     },
     // myrmidon(OPE-6241): withdraw of the actor's own interaction tolerates a
     // responsible-user mismatch (automation runs carry a service account, not
-    // the key owner's user id). Resolution routes keep the strict default.
+    // the key owner's user id). myrmidon(OPE-6547): resolution routes
+    // (accept/reject/respond/verdicts) tolerate it unconditionally for the same
+    // reason — the key owner is never the run's responsible user, and the
+    // resolver-audience decision remains the authorization boundary there.
     opts?: { allowResponsibleUserMismatch?: boolean },
   ) {
     if (req.actor.type !== "agent") return null;
@@ -5835,7 +5838,22 @@ export function issueRoutes(
     // Actor-only gates deliberately precede the interaction lookup. An actor
     // outside the issue's trusted/watchdog scope must not learn whether an
     // interaction id exists on that issue.
-    const runId = await assertAgentInteractionRunAttribution(req, res, issue);
+    //
+    // myrmidon(OPE-6547): an agent API key authenticates the call as its
+    // *owner*, while the run carrying the mutation records the run's own
+    // responsible user — the issue's responsible user, a steering comment
+    // author, or the company default for an automation/heartbeat run. Those are
+    // routinely different users, so requiring them to match rejected every
+    // key-authenticated resolution with `interaction_run_attribution_required`
+    // (accept/reject/respond/verdicts) and left agent request confirmations
+    // pending forever. The gate keeps its real work: the run must exist, belong
+    // to this company and to the authenticated agent, and the resolver-audience
+    // decision plus containment below still decide who may resolve (addressee,
+    // creator exclusion, human-only, governed actions). The key owner's user id
+    // never carried authority over the interaction here.
+    const runId = await assertAgentInteractionRunAttribution(req, res, issue, {
+      allowResponsibleUserMismatch: true,
+    });
     if (runId === false) return false;
     if (
       !(await assertIssueThreadInteractionContainmentAllowed(req, res, issue))

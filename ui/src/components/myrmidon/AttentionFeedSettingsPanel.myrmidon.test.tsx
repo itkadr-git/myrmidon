@@ -5,6 +5,8 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { AttentionFeedSettingsPanel } from "./AttentionFeedSettingsPanel";
 import * as attentionFeedApiModule from "./attentionFeedApi";
+import { setAppLanguage } from "@/i18n/myrmidon-i18n";
+import ru from "@/i18n/myrmidon-locales/ru.json";
 
 const BOUNDS = {
   failedRunHorizonDays: { min: 1, max: 365, default: 7 },
@@ -62,9 +64,12 @@ function waitForField(container: HTMLDivElement, testId: string, value: string) 
 }
 
 describe("AttentionFeedSettingsPanel", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.restoreAllMocks();
     document.body.innerHTML = "";
+    // The panel renders through the fork i18n catalog; pin the language so a
+    // leaked locale from another test file cannot flip the assertions.
+    await setAppLanguage("en");
   });
 
   it("shows both windows with their bounds and where each value comes from", async () => {
@@ -201,5 +206,49 @@ describe("AttentionFeedSettingsPanel", () => {
     });
     await waitFor(() => Boolean(container.querySelector('[data-testid="attention-feed-error"]')));
     expect(container.querySelector('[data-testid="attention-feed-saved"]')).toBeNull();
+  });
+
+  it("renders every visible string from the fork catalog in Russian", async () => {
+    await setAppLanguage("ru");
+    vi.spyOn(attentionFeedApiModule.attentionFeedApi, "get").mockResolvedValue({
+      ...view,
+      settings: { failedRunHorizonDays: 14, feedCacheTtlSeconds: 90 },
+      sources: { failedRunHorizonDays: "settings", feedCacheTtlSeconds: "settings" },
+    } as never);
+    const container = renderPanel();
+    await waitForField(container, "attention-feed-horizon-input", "14");
+
+    expect(container.textContent).toContain(ru.attentionFeed.title);
+    expect(container.querySelector('[data-testid="attention-feed-hint"]')?.textContent)
+      .toBe(ru.attentionFeed.hint);
+    expect(container.querySelector('[data-testid="attention-feed-horizon-source"]')?.textContent)
+      .toBe(ru.attentionFeed.sourceSettings);
+    expect(container.querySelector('[data-testid="attention-feed-cache-ttl-source"]')?.textContent)
+      .toBe(ru.attentionFeed.sourceSettings);
+    expect(button(container, "attention-feed-reset").textContent).toBe(ru.attentionFeed.reset);
+    expect(container.querySelector('[data-testid="attention-feed-settings-note"]')?.textContent)
+      .toBe(ru.attentionFeed.note);
+  });
+
+  it("localizes the range validation message before calling the API", async () => {
+    await setAppLanguage("ru");
+    const update = vi.fn();
+    vi.spyOn(attentionFeedApiModule.attentionFeedApi, "get").mockResolvedValue(view as never);
+    vi.spyOn(attentionFeedApiModule.attentionFeedApi, "update").mockImplementation(update as never);
+    const container = renderPanel();
+    await waitForField(container, "attention-feed-horizon-input", "7");
+
+    await act(async () => {
+      setInputValue(field(container, "attention-feed-horizon-input"), "400");
+    });
+    await act(async () => {
+      button(container, "attention-feed-save").click();
+    });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+    expect(update).not.toHaveBeenCalled();
+    expect(container.querySelector('[data-testid="attention-feed-error"]')?.textContent)
+      .toBe("Введите целое число от 1 до 365");
   });
 });

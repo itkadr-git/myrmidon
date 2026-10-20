@@ -2,8 +2,9 @@
 -- of the board — one row per running board process, refreshed by a 10 s pulse;
 -- rows older than 2 min are reaped by the leader. Additive only: one new table
 -- plus one index, no vendor table touched, no data rewritten
--- (generated with drizzle-kit).
-CREATE TABLE "board_processes" (
+-- (generated with drizzle-kit). IF NOT EXISTS: a board that ran the 1.6.5 release
+-- line already has this exact table (created there under another migration number).
+CREATE TABLE IF NOT EXISTS "board_processes" (
 	"boot_id" text PRIMARY KEY NOT NULL,
 	"role" text NOT NULL,
 	"pid" integer NOT NULL,
@@ -17,4 +18,4 @@ CREATE TABLE "board_processes" (
 	"rss_bytes" bigint
 );
 --> statement-breakpoint
-CREATE INDEX "board_processes_last_seen_idx" ON "board_processes" USING btree ("last_seen_at");
+CREATE INDEX IF NOT EXISTS "board_processes_last_seen_idx" ON "board_processes" USING btree ("last_seen_at");

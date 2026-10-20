@@ -21,6 +21,7 @@ const support = await getEmbeddedPostgresTestSupport();
   const originalRequest = "Original request: draft the release notes for agent-a.";
   const latestRequest = "Latest request: also add a migration section.";
   const previousLimit = process.env.MYRMIDON_CONTINUATION_HISTORY_LIMIT;
+  const previousChars = process.env.MYRMIDON_CONTINUATION_HISTORY_CHARS;
 
   beforeAll(async () => {
     database = await startEmbeddedPostgresTestDatabase("paperclip-continuation-limit-");
@@ -73,6 +74,8 @@ const support = await getEmbeddedPostgresTestSupport();
   afterEach(() => {
     if (previousLimit === undefined) delete process.env.MYRMIDON_CONTINUATION_HISTORY_LIMIT;
     else process.env.MYRMIDON_CONTINUATION_HISTORY_LIMIT = previousLimit;
+    if (previousChars === undefined) delete process.env.MYRMIDON_CONTINUATION_HISTORY_CHARS;
+    else process.env.MYRMIDON_CONTINUATION_HISTORY_CHARS = previousChars;
   });
 
   const build = () =>
@@ -121,10 +124,26 @@ const support = await getEmbeddedPostgresTestSupport();
     );
   });
 
-  it("returns the full history when the limit is 0", async () => {
+  it("returns the full history when the count limit and the volume bound are both off", async () => {
     process.env.MYRMIDON_CONTINUATION_HISTORY_LIMIT = "0";
+    process.env.MYRMIDON_CONTINUATION_HISTORY_CHARS = "0";
     const envelope = await build();
     expect(envelope.messages).toHaveLength(COMMENT_COUNT);
     expect("truncationNotice" in envelope).toBe(false);
+  });
+
+  it("bounds the volume of the history even when the count limit is off", async () => {
+    process.env.MYRMIDON_CONTINUATION_HISTORY_LIMIT = "0";
+    delete process.env.MYRMIDON_CONTINUATION_HISTORY_CHARS;
+    const envelope = await build();
+    // 500 entries of 400 characters do not travel: the volume bound is what
+    // keeps an endless task from growing the payload on every run.
+    expect(envelope.messages.length).toBeGreaterThan(0);
+    expect(envelope.messages.length).toBeLessThan(COMMENT_COUNT);
+    const bodies = envelope.messages.map((message) => message.body);
+    // Pinned entries travel whatever the volume is.
+    expect(bodies).toContain(originalRequest);
+    expect(bodies).toContain(latestRequest);
+    for (const message of envelope.messages) expect(message.body.length).toBeLessThanOrEqual(8_000);
   });
 });
