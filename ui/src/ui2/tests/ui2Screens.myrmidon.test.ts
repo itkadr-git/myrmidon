@@ -18,11 +18,8 @@ describe("myrmidon(UI2) route table integration", () => {
   it("ships the six contract entries plus Commander and Commander chat", () => {
     expect(UI2_ROUTE_TABLE.map((entry) => entry.key).sort()).toEqual([
       "agent-overview",
-<<<<<<< HEAD
       "commander",
-=======
       "agents-fleet",
->>>>>>> origin/main
       "commander-chat",
       "costs",
       "decisions",
