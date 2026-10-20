@@ -311,7 +311,7 @@ function assertImportedSkillKeyAllowed(skill: ImportedSkill) {
   const sourceKind = asString(metadata?.sourceKind);
   if (sourceKind === "paperclip_bundled") return;
   throw unprocessable(
-    `Reserved ${PN} skill key "${skill.key}" cannot be imported from unbundled sources.`,
+    `Reserved Paperclip skill key "${skill.key}" cannot be imported from unbundled sources.`,
     {
       skillKey: skill.key,
       sourceKind: sourceKind ?? skill.sourceType,

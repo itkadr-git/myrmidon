@@ -111,4 +111,18 @@ describe("server user-visible text does not name the vendor", () => {
     }
     expect(stray).toEqual([]);
   });
+
+  it("renders an OpenAPI document whose copy does not name the vendor", async () => {
+    const { buildOpenApiSpec } = await import("../routes/openapi.js");
+    const doc = JSON.stringify(buildOpenApiSpec());
+    expect(doc).toContain("Myrmidon");
+    // Vendor references that remain by design: attribution, upstream repo URLs,
+    // external Paperclip Cloud services, and schema field names that are part
+    // of the API contract (minimumPaperclipVersion, enablePaperclipDeveloperMode).
+    const allowed = /Based on Paperclip|paperclipai\/paperclip|Paperclip Cloud/g;
+    const stripped = doc.replace(allowed, "");
+    const contract = /minimumPaperclipVersion|enablePaperclipDeveloperMode|enableSimplifiedEnglish/g;
+    const stripped2 = stripped.replace(contract, "");
+    expect(stripped2).not.toMatch(/Paperclip/);
+  });
 });
