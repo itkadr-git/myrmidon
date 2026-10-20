@@ -39,7 +39,7 @@ describe("agents fleet screen", () => {
     await renderScreen();
     expect(container.textContent).toContain("No agents configured yet.");
   });
-  it("renders a cycle without dropping agents, paused status, and agent links", async () => {
+  it("renders each agent in a cycle exactly once", async () => {
     mockApi.agentsList.mockResolvedValue([
       { id: "a", name: "Alpha", role: "lead", status: "paused", reportsTo: "b" },
       { id: "b", name: "Beta", role: "engineer", status: "active", reportsTo: "a" },
@@ -48,7 +48,7 @@ describe("agents fleet screen", () => {
     expect(container.textContent).toContain("Alpha");
     expect(container.textContent).toContain("Beta");
     expect(container.textContent).toContain("Paused");
-    expect(container.querySelector('a[href="/agents/a"]')).not.toBeNull();
-    expect(container.querySelector('a[href="/agents/b"]')).not.toBeNull();
+    expect(container.querySelectorAll('a[href="/agents/a"]')).toHaveLength(1);
+    expect(container.querySelectorAll('a[href="/agents/b"]')).toHaveLength(1);
   });
 });

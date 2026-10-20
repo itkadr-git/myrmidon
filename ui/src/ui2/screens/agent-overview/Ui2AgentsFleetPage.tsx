@@ -1,4 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
+import type { ReactNode } from "react";
 import type { AgentListItem } from "@paperclipai/shared";
 import type { LiveRunForIssue } from "@/api/heartbeats";
 import { Link } from "@/lib/router";
@@ -57,8 +58,7 @@ export function Ui2AgentsFleetPage() {
       roots.push(agent);
     }
   }
-  // Cyclic reporting chains have no natural root; render one member as a root
-  // and let the visited set prevent recursion while preserving every agent.
+  // Cyclic reporting chains have no natural root; promote one member only.
   for (const agent of agents) {
     let cursor = agent.id;
     const seen = new Set<string>();
@@ -66,16 +66,15 @@ export function Ui2AgentsFleetPage() {
       seen.add(cursor);
       cursor = parentByAgent.get(cursor)!;
     }
-    if (seen.has(cursor)) {
-      for (const cycleId of seen) {
-        const cycleRoot = agentsById.get(cycleId);
-        if (cycleRoot && !roots.some((root) => root.id === cycleId)) roots.push(cycleRoot);
-      }
+    if (seen.has(cursor) && !roots.some((root) => seen.has(root.id))) {
+      const cycleRoot = agentsById.get(cursor);
+      if (cycleRoot) roots.push(cycleRoot);
     }
   }
-  const renderAgent = (agent: AgentListItem, ancestors = new Set<string>()) => {
-    const nextAncestors = new Set(ancestors);
-    nextAncestors.add(agent.id);
+  const visited = new Set<string>();
+  const renderAgent = (agent: AgentListItem): ReactNode => {
+    if (visited.has(agent.id)) return null;
+    visited.add(agent.id);
     const run = latestRuns.get(agent.id);
     const state = fleetStatus(String(agent.status), run);
     const tone = state === "error" ? "danger" : state === "running" ? "ok" : "muted";
@@ -86,7 +85,7 @@ export function Ui2AgentsFleetPage() {
         <span className="flex items-center gap-2 text-sm"><Ui2StatusDot tone={tone} />{t(`ui2.agents.status.${state}` as never)}</span>
         <span className="text-sm text-muted-foreground">{t("ui2.agents.run" as never)}: {run?.id ?? t("ui2.common.unknown" as never)}</span>
       </Link>
-      {(childrenByManager.get(agent.id) ?? []).some((child) => !nextAncestors.has(child.id)) ? <ul className="ml-5 border-l border-border">{(childrenByManager.get(agent.id) ?? []).filter((child) => !nextAncestors.has(child.id)).map((child) => renderAgent(child, nextAncestors))}</ul> : null}
+      {(childrenByManager.get(agent.id) ?? []).some((child) => !visited.has(child.id)) ? <ul className="ml-5 border-l border-border">{(childrenByManager.get(agent.id) ?? []).filter((child) => !visited.has(child.id)).map((child) => renderAgent(child))}</ul> : null}
     </li>;
   };
   return (
