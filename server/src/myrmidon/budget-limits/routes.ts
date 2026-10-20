@@ -8,6 +8,7 @@
 //   GET    /api/myrmidon/companies/:companyId/budget-limits/signal-only     (company access)
 //   PATCH  /api/myrmidon/companies/:companyId/budget-limits/signal-only     (board only)
 //   PUT    /api/myrmidon/companies/:companyId/budget-limits/limits/:level/:ref  (board only)
+//   GET    /api/myrmidon/companies/:companyId/budget-limits/effective/:issueId (company access)
 //   GET    /api/myrmidon/companies/:companyId/budget-limits/limits/:level/:ref  (company access)
 //   DELETE /api/myrmidon/companies/:companyId/budget-limits/limits/:level/:ref  (board only)
 //
@@ -131,6 +132,14 @@ export function budgetLimitsRoutes(db: Db, deps: BudgetLimitRoutesDeps = {}) {
       res.json(resolved);
     },
   );
+
+  router.get(`${base}/effective/:issueId`, async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const resolved = await store.effective(companyId, req.params.issueId as string);
+    if (!resolved) { res.status(404).json({ error: "Issue not found" }); return; }
+    res.json(resolved);
+  });
 
   router.get(`${base}/limits/:level/:ref`, async (req, res) => {
     const companyId = req.params.companyId as string;
