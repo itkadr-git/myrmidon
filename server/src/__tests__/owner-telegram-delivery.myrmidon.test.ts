@@ -54,6 +54,7 @@ describeEmbeddedPostgres(
     > | null = null;
     const previousKeyFile = process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE;
     const previousPublicUrl = process.env.PAPERCLIP_PUBLIC_URL;
+    const previousMyrmidonPublicUrl = process.env.MYRMIDON_PUBLIC_URL;
     const secretsTmpDir = path.join(
       os.tmpdir(),
       `paperclip-myrmidon-u2-owner-delivery-${randomUUID()}`,
@@ -87,6 +88,9 @@ describeEmbeddedPostgres(
       if (previousPublicUrl === undefined)
         delete process.env.PAPERCLIP_PUBLIC_URL;
       else process.env.PAPERCLIP_PUBLIC_URL = previousPublicUrl;
+      if (previousMyrmidonPublicUrl === undefined)
+        delete process.env.MYRMIDON_PUBLIC_URL;
+      else process.env.MYRMIDON_PUBLIC_URL = previousMyrmidonPublicUrl;
     });
 
     afterAll(async () => {
@@ -267,6 +271,75 @@ describeEmbeddedPostgres(
 
       return { companyId, agentId, boardUserId, endpointId, dmIssue, workIssue };
     }
+
+    it("uses the canonical rebrand public URL when configured", async () => {
+      const fixture = await seedFixture();
+      process.env.MYRMIDON_PUBLIC_URL = "https://myrmidon.example";
+      const interaction = await issueThreadInteractionService(db).create(
+        { id: fixture.workIssue.id, companyId: fixture.companyId },
+        {
+          kind: "ask_user_questions" as const,
+          continuationPolicy: "wake_assignee" as const,
+          resolverPolicy: "human_only" as const,
+          payload: {
+            version: 1 as const,
+            title: "Canonical URL question",
+            questions: [{
+              id: "canonical-url",
+              prompt: "Which release?",
+              selectionMode: "single" as const,
+              allowOther: true,
+              options: [{ id: "stable", label: "Stable" }],
+            }],
+          },
+        },
+        { agentId: fixture.agentId },
+      );
+      await instanceSettingsService(db).updateGeneral({
+        [OWNER_DELIVERY_SETTINGS_KEY]: { mode: "owner_decisions_only" },
+      });
+      const publications = await enqueueIssueInteractionChatPublications(db, interaction);
+      const publication = publications.find((item) => item.provider === "telegram");
+      expect((publication?.payload as { text?: string }).text).toContain(
+        `https://myrmidon.example/issues/${fixture.workIssue.id}`,
+      );
+    });
+
+    it("does not roll back an oversized interaction when Telegram cannot fit it", async () => {
+      const fixture = await seedFixture();
+      const interaction = await issueThreadInteractionService(db).create(
+        { id: fixture.workIssue.id, companyId: fixture.companyId },
+        {
+          kind: "ask_user_questions" as const,
+          continuationPolicy: "wake_assignee" as const,
+          resolverPolicy: "human_only" as const,
+          payload: {
+            version: 1 as const,
+            title: "A question with a large but valid prompt",
+            questions: [{
+              id: "large",
+              prompt: "x".repeat(5_000),
+              selectionMode: "single" as const,
+              allowOther: true,
+              options: [],
+            }],
+          },
+        },
+        { agentId: fixture.agentId },
+      );
+
+      await instanceSettingsService(db).updateGeneral({
+        [OWNER_DELIVERY_SETTINGS_KEY]: { mode: "owner_decisions_only" },
+      });
+      await expect(
+        enqueueIssueInteractionChatPublications(db, interaction),
+      ).resolves.toEqual([]);
+      const [stored] = await db
+        .select({ id: issues.id })
+        .from(issues)
+        .where(eq(issues.id, fixture.workIssue.id));
+      expect(stored?.id).toBe(fixture.workIssue.id);
+    });
 
     it("delivers owner questions as complete plain text without actions", async () => {
       const fixture = await seedFixture();

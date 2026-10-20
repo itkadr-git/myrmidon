@@ -18,6 +18,7 @@ import type {
   SafeExternalChatCardAction,
 } from "@paperclipai/shared";
 import { readConfigFile } from "../config-file.js";
+import { readProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
 // myrmidon(B1): product name in the user-facing text below; see product.ts.
 import { PRODUCT_NAME } from "../myrmidon/product.js";
 // myrmidon(U2): owner-delivery bindings for tasks without their own chat thread.
@@ -118,12 +119,12 @@ function terminalNativeInteractionCopy(
 
 export function publicChatInteractionTaskUrl(issueId: string): string | null {
   const configured =
-    process.env.PAPERCLIP_AUTH_PUBLIC_BASE_URL?.trim() ||
+    readProductEnv("AUTH_PUBLIC_BASE_URL")?.trim() ||
     process.env.BETTER_AUTH_URL?.trim() ||
     process.env.BETTER_AUTH_BASE_URL?.trim() ||
-    process.env.PAPERCLIP_PUBLIC_URL?.trim() ||
+    readProductEnv("PUBLIC_URL")?.trim() ||
     readConfigFile()?.auth?.publicBaseUrl?.trim() ||
-    process.env.PAPERCLIP_MANAGED_RUNTIME_PUBLIC_URL?.trim();
+    readProductEnv("MANAGED_RUNTIME_PUBLIC_URL")?.trim();
   return safeChatTaskUrl(configured, issueId);
 }
 
@@ -390,15 +391,29 @@ export async function enqueueIssueInteractionChatPublications(
       endpoint.provider === "telegram" && endpoint.capabilities.actions === true
         ? nativeTelegramConfirmation(interaction)
         : null;
-    const ownerTelegramText =
-      endpoint.provider === "telegram"
-        ? telegramOwnerInteractionText(
-            interaction,
-            taskUrl,
-            isOwnerTelegramBinding,
-            confirmation !== null,
-          )
-        : null;
+    let ownerTelegramText: string | null = null;
+    if (endpoint.provider === "telegram") {
+      try {
+        ownerTelegramText = telegramOwnerInteractionText(
+          interaction,
+          taskUrl,
+          isOwnerTelegramBinding,
+          confirmation !== null,
+        );
+      } catch (error) {
+        // A valid interaction must not roll back because Telegram cannot fit
+        // its complete text payload. Skip only this owner publication; do not
+        // silently truncate or fall back to an executable card.
+        if (
+          isOwnerTelegramBinding &&
+          error instanceof Error &&
+          error.message.includes("Telegram's 4096-character message limit")
+        ) {
+          continue;
+        }
+        throw error;
+      }
+    }
     const isTextOnlyOwnerTelegram =
       isOwnerTelegramBinding &&
       ownerTelegramText !== null;
