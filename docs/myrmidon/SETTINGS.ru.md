@@ -1,5 +1,8 @@
 # Настройки Myrmidon
 
+- `MYRMIDON_REDACT_URL`, `MYRMIDON_REDACT_MODE`, `MYRMIDON_REDACT_SCORE` и `MYRMIDON_REDACT_TIMEOUT_SECONDS` настраивают LiteLLM-адаптер REDACT в `tools/redact/litellm_guardrail.py`; источник значений — окружение, заданное оператором при старте процесса.
+
+
 > English version: [SETTINGS.md](SETTINGS.md)
 
 > Это неполный перевод [SETTINGS.md](SETTINGS.md) — источник истины по настройкам.
