@@ -73,10 +73,30 @@ settings-section: Track 5 — operations
 ## settings-en
 
 | `MYRMIDON_LESSON_DISTILL_ENABLED` | KNOWLEDGE-2.0 L-4 | off | Enables the hindsight lesson distillation sweep of the knowledge module (hourly; lessons repeated at least twice in the window become pending knowledge suggestions). Tuned by `MYRMIDON_LESSON_DISTILL_PERIOD_MINUTES` (60), `MYRMIDON_LESSON_DISTILL_WINDOW_HOURS` (24) and `MYRMIDON_LESSON_DISTILL_REPEAT_THRESHOLD` (2) | Unset or anything other than `1` — the sweep is a no-op |
+| `MYRMIDON_DISTILL_ENABLED` | KNOWLEDGE-2.0 K-5 | off | Enables the closed-task knowledge distiller sweep. | Unset or anything other than `1` — the sweep is a no-op. |
+| `MYRMIDON_DISTILL_INTERVAL_SEC` | KNOWLEDGE-2.0 K-5 | 86400 | Interval between distiller passes, in seconds. | Invalid, zero, or unset values use 86400. |
+| `MYRMIDON_DISTILL_WINDOW_SEC` | KNOWLEDGE-2.0 K-5 | 86400 | Lookback window for closed tasks, in seconds. | Invalid, zero, or unset values use 86400. |
+| `MYRMIDON_DISTILL_MAX_INPUT_TOKENS` | KNOWLEDGE-2.0 K-5 | stored budget | Input-token signal threshold for one distiller pass. | The built-in budget applies when unset or invalid. |
+| `MYRMIDON_DISTILL_MAX_DURATION_SEC` | KNOWLEDGE-2.0 K-5 | stored budget | Duration signal threshold for one distiller pass, in seconds. | The built-in budget applies when unset or invalid. |
+| `MYRMIDON_DISTILL_MAX_TASKS` | KNOWLEDGE-2.0 K-5 | 150 | Maximum closed tasks selected per distiller pass. | Invalid, zero, or unset values use 150. |
+| `MYRMIDON_DISTILL_MODEL` | KNOWLEDGE-2.0 K-5 | free | Free model name used by the distiller gateway call. | The built-in `free` model applies when unset. |
+| `MYRMIDON_DISTILL_GATEWAY_URL` | KNOWLEDGE-2.0 K-5 | stored card | OpenAI-compatible gateway address used by the distiller. | Unset uses the stored knowledge card address. |
+| `MYRMIDON_DISTILL_KEY_SECRET` | KNOWLEDGE-2.0 K-5 | stored card | Name of the company secret used to authenticate the distiller gateway. | Unset uses the stored secret name; the secret value is never documented or logged. |
+| `MYRMIDON_DISTILL_AUTO_ACCEPT` | KNOWLEDGE-2.0 K-5 | empty | Comma-separated sections eligible for automatic acceptance. | Empty disables auto-accept; only supported sections are honored. |
 
 ## settings-ru
 
 | `MYRMIDON_LESSON_DISTILL_ENABLED` | KNOWLEDGE-2.0 L-4 | выкл | Включает обход дистилляции уроков hindsight модуля знаний (раз в час; урок, повторённый не менее двух раз в окне, становится pending-предложением знаний). Настраивается `MYRMIDON_LESSON_DISTILL_PERIOD_MINUTES` (60), `MYRMIDON_LESSON_DISTILL_WINDOW_HOURS` (24) и `MYRMIDON_LESSON_DISTILL_REPEAT_THRESHOLD` (2) | Не задана или не `1` — обход ничего не делает |
+| `MYRMIDON_DISTILL_ENABLED` | KNOWLEDGE-2.0 K-5 | выкл | Включает обход дистиллятора знаний по закрытым задачам. | Не задана или не `1` — обход ничего не делает. |
+| `MYRMIDON_DISTILL_INTERVAL_SEC` | KNOWLEDGE-2.0 K-5 | 86400 | Интервал между проходами дистиллятора, в секундах. | Неверное, нулевое или отсутствующее значение заменяется на 86400. |
+| `MYRMIDON_DISTILL_WINDOW_SEC` | KNOWLEDGE-2.0 K-5 | 86400 | Окно поиска закрытых задач, в секундах. | Неверное, нулевое или отсутствующее значение заменяется на 86400. |
+| `MYRMIDON_DISTILL_MAX_INPUT_TOKENS` | KNOWLEDGE-2.0 K-5 | бюджет | Сигнальный порог входных токенов одного прохода. | При отсутствии или ошибочности применяется встроенный бюджет. |
+| `MYRMIDON_DISTILL_MAX_DURATION_SEC` | KNOWLEDGE-2.0 K-5 | бюджет | Сигнальный порог длительности прохода, в секундах. | При отсутствии или ошибочности применяется встроенный бюджет. |
+| `MYRMIDON_DISTILL_MAX_TASKS` | KNOWLEDGE-2.0 K-5 | 150 | Максимум закрытых задач за проход дистиллятора. | Неверное, нулевое или отсутствующее значение заменяется на 150. |
+| `MYRMIDON_DISTILL_MODEL` | KNOWLEDGE-2.0 K-5 | free | Имя бесплатной модели для вызова шлюза дистиллятора. | При отсутствии применяется встроенная модель `free`. |
+| `MYRMIDON_DISTILL_GATEWAY_URL` | KNOWLEDGE-2.0 K-5 | сохранённая карточка | Адрес OpenAI-совместимого шлюза дистиллятора. | При отсутствии используется адрес из сохранённой карточки знаний. |
+| `MYRMIDON_DISTILL_KEY_SECRET` | KNOWLEDGE-2.0 K-5 | сохранённая карточка | Имя секрета компании для аутентификации вызова шлюза. | Используется сохранённое имя; значение секрета не документируется и не выводится. |
+| `MYRMIDON_DISTILL_AUTO_ACCEPT` | KNOWLEDGE-2.0 K-5 | пусто | Разделы для автоматического принятия через запятую. | Пустое значение выключает авто-принятие; учитываются только поддержанные разделы. |
 
 ## settings-en-new
 
