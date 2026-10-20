@@ -218,13 +218,6 @@ func writeAPIError(w http.ResponseWriter, err error) {
 }
 func urlPath(key string) string { return url.PathEscape(key) }
 func (s *server) dockerDelete(ctx context.Context, key string) error {
-	status, _, err := s.docker.call(ctx, http.MethodDelete, dockerAPIPrefix+"/containers/"+urlPath(containerName(key))+"?force=true", nil)
-	if err != nil {
-		return err
-	}
-	if status != 204 && status != 404 {
-		return dockerError(status)
-	}
-	return nil
+	return s.docker.remove(ctx, key)
 }
 func fileHash(b []byte) string { sum := sha256.Sum256(b); return hex.EncodeToString(sum[:]) }

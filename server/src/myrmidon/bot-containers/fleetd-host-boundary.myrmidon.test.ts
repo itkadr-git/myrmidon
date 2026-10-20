@@ -146,8 +146,14 @@ describe("OPE-8137: board/fleetd path operates without /host or docker.sock", ()
     });
 
     try {
-      const config: FleetdDriverConfig = { baseUrl: `https://${httpBaseUrl.slice("http://".length)}`, token: "test-fleetd-auth-token-32-chars-long", ca: "fake-ca", cert: "fake-cert", key: "fake-key" };
-      const driver = fleetdBotContainerDriver(config);
+      const driver = fleetdBotContainerDriver({
+        baseUrl: `https://${httpBaseUrl.slice("http://".length)}`,
+        token: "test-fleetd-auth-token-32-chars-long",
+        ca: "test CA placeholder", cert: "test certificate placeholder", key: "test private key placeholder",
+      }, { request: async ({ method, path, body, headers }) => {
+        const response = await fetch(httpBaseUrl + path, { method, headers, body });
+        return { status: response.status, body: Buffer.from(await response.arrayBuffer()) };
+      }});
 
       // Status
       const status = await driver.status("bot-reg-test");
@@ -197,8 +203,14 @@ describe("OPE-8137: board/fleetd path operates without /host or docker.sock", ()
     };
 
     try {
-      const config: FleetdDriverConfig = { baseUrl: `https://${httpBaseUrl.slice("http://".length)}`, token: "test-fleetd-auth-token-32-chars-long", ca: "fake-ca", cert: "fake-cert", key: "fake-key" };
-      const driver = fleetdBotContainerDriver(config, {
+      const driver = fleetdBotContainerDriver({
+        baseUrl: `https://${httpBaseUrl.slice("http://".length)}`,
+        token: "test-fleetd-auth-token-32-chars-long",
+        ca: "test CA placeholder", cert: "test certificate placeholder", key: "test private key placeholder",
+      }, { request: async ({ method, path, body, headers }) => {
+        const response = await fetch(httpBaseUrl + path, { method, headers, body });
+        return { status: response.status, body: Buffer.from(await response.arrayBuffer()) };
+      },
         readSharedPackageCachePath: async () => "/srv/cache/pnpm",
         log: mockLog,
       });
@@ -219,8 +231,8 @@ describe("OPE-8137: board/fleetd path operates without /host or docker.sock", ()
     });
 
     try {
-      const config: FleetdDriverConfig = { baseUrl: `https://${httpBaseUrl.slice("http://".length)}`, token: "test-token-at-least-32-characters", ca: "fake-ca", cert: "fake-cert", key: "fake-key" };
-      const driver = fleetdBotContainerDriver(config);
+      const config: FleetdDriverConfig = { baseUrl: "https://fleetd.invalid", token: "test-token-at-least-32-characters", ca: "test CA", cert: "test cert", key: "test key" };
+      const driver = fleetdBotContainerDriver(config, { request: async () => ({ status: 403, body: Buffer.from("bot_not_enrolled") }) });
 
       await expect(driver.status("unknown-bot")).rejects.toThrow(FleetdDriverError);
       await expect(driver.status("unknown-bot")).rejects.toThrow("fleetd 403 bot_not_enrolled");
@@ -403,14 +415,14 @@ describe("OPE-8137: fleet placement and host parsing boundaries", () => {
       JSON.stringify([
         {
           name: "site-worker",
-          url: "http://site-worker.internal:9100",
+          url: "https://site-worker.internal:9100",
           tokenSecret: "site-token",
         },
       ]),
     );
     expect(parsed.get("site-worker")).toEqual({
       name: "site-worker",
-      url: "http://site-worker.internal:9100",
+      url: "https://site-worker.internal:9100",
       tokenSecret: "site-token",
     });
 
