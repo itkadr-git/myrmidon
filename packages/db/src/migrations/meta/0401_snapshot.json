@@ -55968,7 +55968,7 @@
           "isUnique": true,
           "method": "btree",
           "with": {},
-          "where": null
+          "where": ""
         }
       },
       "foreignKeys": {
