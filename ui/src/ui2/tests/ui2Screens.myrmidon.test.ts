@@ -30,6 +30,8 @@ describe("myrmidon(UI2) route table integration", () => {
       "settings-language",
       "settings-runs-queue",
       "settings-system",
+      "quality",
+      "system",
     ]);
   });
 
