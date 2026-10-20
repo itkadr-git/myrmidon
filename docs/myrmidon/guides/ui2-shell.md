@@ -121,11 +121,12 @@ The 2.0 screens re-skin these surfaces under the flag:
 | Decisions | `decisions` | The decisions page |
 | Costs | `activity/costs` | The costs page |
 | Agent overview | `agents/:agentId/overview` | The agent card |
+| Agents fleet | `agents` | The company agent list |
 | Runs and queue (settings) | `company/settings/runs-queue` | Instance run limits |
 | System (settings) | `company/settings/system` | Instance system settings |
 | Language (settings) | `company/settings/language` | The UI language setting |
 
-Every other page — tasks, agents, chats, the rest of company settings —
+Every other page — tasks, chats, the rest of company settings —
 renders as the existing page inside the 2.0 frame. Routing, data and access
 are unchanged in both cases: a 2.0 screen reads the same endpoints its 1.x
 counterpart reads.
@@ -157,6 +158,12 @@ details per screen are below.
   spend (twelve rows at most). A failed incident resolution shows the
   server's error next to the incident. The mock-only hierarchy
   (nest → caste → line), the forecast and the ticket limit stay hidden.
+- **Agents fleet** (route `agents`) — a company-scoped, scrollable agent tree
+  grouped by `reportsTo`, with each agent's name, role, canonical status and
+  latest live run. `active`/`idle` map to Idle, `running` to Running,
+  `paused` to Paused and `error` to Error. Live runs are bounded to 100 rows;
+  selecting a row opens that agent's detail page. Empty fleets show a localized
+  empty state.
 - **Agent overview** (route `agents/:agentId/overview`) — the agent's status,
   its policy (status `hard_stop`, `warning` or ok), recent runs from the last
   24 hours with cost, tokens and result, and the spend over the last 30 days.

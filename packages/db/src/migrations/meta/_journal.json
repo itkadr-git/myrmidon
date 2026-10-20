@@ -2354,6 +2354,20 @@
       "when": 1792195200000,
       "tag": "0398_knowledge_revision_language",
       "breakpoints": true
+    },
+    {
+      "idx": 399,
+      "version": "7",
+      "when": 1792395442686,
+      "tag": "0399_typed_blocker_metadata",
+      "breakpoints": true
+    },
+    {
+      "idx": 400,
+      "version": "7",
+      "when": 1792395500000,
+      "tag": "0400_clear_terminal_issue_monitors",
+      "breakpoints": true
     }
   ]
 }

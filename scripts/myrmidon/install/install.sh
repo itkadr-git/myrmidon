@@ -55,6 +55,18 @@ MYR_REPO="${MYRMIDON_INSTALL_REPO:-itkadr-git/myrmidon}"
 # shared NAT address exhausts quickly.
 MYR_WEB="${MYRMIDON_INSTALL_WEB_URL:-https://github.com}"
 MYR_PROJECT=myrmidon
+# Production installs must bind identity to the host; the cached fallback can
+# differ from module hosts and is therefore unsafe for license issuance.
+MYR_LICENSE_INSTANCE_ID="${MYR_LICENSE_INSTANCE_ID:-}"
+# LICENSING: the one host directory that holds the closed modules' license
+# file. Host module processes read <dir>/license.key directly, module
+# containers bind-mount that file, and the board container mounts the whole
+# directory read-write at the same path: the licensing screen saves the key
+# there and the antigravity adapter (it runs inside the board) reads it there.
+# One file, one switch point (MYR_LICENSE_PATH), no second copy.
+MYRMIDON_LICENSE_DIR="${MYRMIDON_LICENSE_DIR:-/etc/myrmidon-license}"
+# uid:gid of the board process inside the image (the `node` user).
+MYRMIDON_BOARD_UID="${MYRMIDON_BOARD_UID:-1000}"
 
 DIR=""
 PORT=""
@@ -562,6 +574,7 @@ write_env() {
   [[ -n "${BETTER_AUTH_SECRET:-}" ]] || BETTER_AUTH_SECRET="$(rand_hex 32)"
   [[ -n "${PAPERCLIP_TOOL_ACTION_SIGNING_SECRET:-}" ]] || PAPERCLIP_TOOL_ACTION_SIGNING_SECRET="$(rand_hex 32)"
   [[ -n "$PUBLIC_URL" ]] || PUBLIC_URL="http://$(hostname -f 2>/dev/null || hostname):$PORT"
+  [[ -n "$MYR_LICENSE_INSTANCE_ID" ]] || [[ -r /etc/machine-id ]] || die "host /etc/machine-id is required for a stable installation id; repair the host machine-id or explicitly set the same MYR_LICENSE_INSTANCE_ID for the board and every module host"
 
   # SHARED-PG profile parameters, persisted into deploy.env so a re-run (the
   # update path) keeps exactly the shape the first install chose. "keep" marks
@@ -625,6 +638,8 @@ POSTGRES_USER=paperclip
 POSTGRES_PASSWORD=$POSTGRES_PASSWORD
 BETTER_AUTH_SECRET=$BETTER_AUTH_SECRET
 PAPERCLIP_TOOL_ACTION_SIGNING_SECRET=$PAPERCLIP_TOOL_ACTION_SIGNING_SECRET
+MYR_LICENSE_INSTANCE_ID=${MYR_LICENSE_INSTANCE_ID:-}
+MYRMIDON_LICENSE_DIR=$MYRMIDON_LICENSE_DIR
 $db_profile_env
 ENV
   chmod 600 "$DIR/deploy.env"
@@ -722,10 +737,16 @@ services:
       PAPERCLIP_PUBLIC_URL: "${MYRMIDON_PUBLIC_URL}"
       PAPERCLIP_TOOL_ACTION_SIGNING_SECRET: "${PAPERCLIP_TOOL_ACTION_SIGNING_SECRET:?PAPERCLIP_TOOL_ACTION_SIGNING_SECRET must be set}"
       BETTER_AUTH_SECRET: "${BETTER_AUTH_SECRET:?BETTER_AUTH_SECRET must be set}"
+      MYR_LICENSE_INSTANCE_ID: "${MYR_LICENSE_INSTANCE_ID:-}"
+      MYR_LICENSE_PATH: "/etc/myrmidon-license/license.key"
 %%BOARD_DATABASE_URL%%
       MYRMIDON_BOT_DOCKER_SOCKET: "/run/myrmidon-dockergate/engine.sock"
     volumes:
       - myrmidon-data:/myrmidon
+      - /etc/machine-id:/etc/machine-id:ro
+      # Read-write: the licensing screen writes license.key here (in place, so
+      # module containers that mount the single file see the new text).
+      - ${MYRMIDON_LICENSE_DIR:-/etc/myrmidon-license}:/etc/myrmidon-license
       - ./run:/run/myrmidon-dockergate
 
   dockergate:
@@ -821,6 +842,21 @@ compose_is_up() {
   [[ -n "$(compose ps -q server 2>/dev/null)" ]]
 }
 
+# The license directory must exist before compose starts (a missing bind
+# source would be created root-owned and the board could not save a key) and
+# be writable by the board process. An existing license file is kept and only
+# handed to the board user; the modules on the host read it as root.
+prepare_license_dir() {
+  local lic="$MYRMIDON_LICENSE_DIR"
+  [[ "$lic" == /* ]] || die "MYRMIDON_LICENSE_DIR must be an absolute path"
+  install -d -m 0755 "$lic"
+  chown "$MYRMIDON_BOARD_UID:$MYRMIDON_BOARD_UID" "$lic"
+  if [[ -f "$lic/license.key" ]]; then
+    chown "$MYRMIDON_BOARD_UID:$MYRMIDON_BOARD_UID" "$lic/license.key"
+    chmod 0644 "$lic/license.key"
+  fi
+}
+
 prepare_dirs() {
   mkdir -p "$DIR/dockergate" "$DIR/bots" "$DIR/state" "$DIR/run" "$DIR/dockergate-state"
   # dockergate runs as the image's nonroot user (65532) and creates the socket
@@ -829,6 +865,7 @@ prepare_dirs() {
     chown 65532:65532 "$DIR/run" "$DIR/dockergate-state"
     chmod 0711 "$DIR/run"
     chmod 0755 "$DIR/dockergate-state"
+    prepare_license_dir
   fi
   docker network inspect myrmidon-bots >/dev/null 2>&1 \
     || docker network create myrmidon-bots >/dev/null 2>&1 || true

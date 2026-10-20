@@ -14,6 +14,7 @@ import { Ui2I18nProvider } from "./i18n/Ui2I18n";
 import { Ui2Decisions } from "./screens/decisions/Ui2Decisions";
 import { Ui2Costs } from "./screens/costs/Ui2Costs";
 import { Ui2AgentOverviewPage } from "./screens/agent-overview/Ui2AgentOverviewPage";
+import { Ui2AgentsFleetPage } from "./screens/agent-overview/Ui2AgentsFleetPage";
 import { Ui2RunsSettings } from "./screens/settings/runs-queue/Ui2RunsSettings";
 import { Ui2SystemSettings } from "./screens/settings/system/Ui2SystemSettings";
 import { Ui2LanguageSettings } from "./screens/settings/language/Ui2LanguageSettings";
@@ -25,6 +26,7 @@ export type Ui2ScreenKey =
   | "decisions"
   | "costs"
   | "agent-overview"
+  | "agents-fleet"
   | "settings-runs-queue"
   | "settings-system"
   | "settings-language"
@@ -73,6 +75,13 @@ export const UI2_ROUTE_TABLE: Ui2RouteEntry[] = [
     titleKey: "ui2.screens.agentOverview",
     element: ui2Screen(<Ui2AgentOverviewPage />),
     legacyPath: "/agents/:agentId",
+  },
+  {
+    key: "agents-fleet",
+    path: "agents",
+    titleKey: "ui2.screens.agents",
+    element: ui2Screen(<Ui2AgentsFleetPage />),
+    legacyPath: "/agents",
   },
   {
     key: "settings-runs-queue",

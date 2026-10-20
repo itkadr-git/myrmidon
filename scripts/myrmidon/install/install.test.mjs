@@ -144,6 +144,7 @@ describe("install.sh", () => {
     assert.match(env, /MYRMIDON_VERSION=1\.6\.6/);
     assert.match(env, /POSTGRES_PASSWORD=[0-9a-f]{48}/);
     assert.match(env, /BETTER_AUTH_SECRET=[0-9a-f]{64}/);
+    assert.match(env, /MYR_LICENSE_INSTANCE_ID=$/m);
     assert.equal(fs.statSync(path.join(sb.opt, "deploy.env")).mode & 0o777, 0o600);
     // The daemon socket is root:docker 0660 and dockergate runs as the nonroot
     // user 65532: without the socket's group the container dies on
@@ -483,6 +484,27 @@ describe("install.sh", () => {
       ["BETTER_AUTH_SECRET"],
       "only the one required secret fails when nothing is set",
     );
+  });
+
+  it("gives the board the one shared license directory, read-write, at the module path", () => {
+    // The antigravity adapter runs inside the board and reads
+    // /etc/myrmidon-license/license.key there; host modules read the same host
+    // file. The licensing screen must write that one file, so the board mounts
+    // the host directory read-write and points MYR_LICENSE_PATH at it.
+    const sb = sandbox();
+    assert.equal(run(sb).status, 0);
+    const env = envFile(sb);
+    assert.match(env, /^MYRMIDON_LICENSE_DIR=\/etc\/myrmidon-license$/m);
+    const compose = fs.readFileSync(path.join(sb.opt, "compose.yml"), "utf8");
+    assert.match(compose, /^      MYR_LICENSE_PATH: "\/etc\/myrmidon-license\/license\.key"$/m);
+    assert.match(compose, /^      - \$\{MYRMIDON_LICENSE_DIR:-\/etc\/myrmidon-license\}:\/etc\/myrmidon-license$/m);
+    const { errors, interpolated } = composeInterpolation(compose, composeEnvVars(env));
+    assert.deepEqual(errors, []);
+    assert.ok(interpolated.includes("- /etc/myrmidon-license:/etc/myrmidon-license\n"), "mounted read-write, not :ro");
+
+    const custom = sandbox();
+    assert.equal(run(custom, [], { MYRMIDON_LICENSE_DIR: "/srv/licenses" }).status, 0);
+    assert.match(envFile(custom), /^MYRMIDON_LICENSE_DIR=\/srv\/licenses$/m);
   });
 
   it("mounts the database volume at the path the PostgreSQL 18 image declares", () => {
