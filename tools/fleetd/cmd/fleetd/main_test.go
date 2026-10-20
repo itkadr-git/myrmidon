@@ -48,19 +48,12 @@ func newServer(t *testing.T) (*server, *httptest.Server) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = listener.Close() })
-	go func() {
-		for {
-			conn, err := listener.Accept()
-			if err != nil {
-				return
-			}
-			go func() {
-				defer conn.Close()
-				_, _ = conn.Write([]byte("HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"))
-			}()
-		}
-	}()
+	dockerHTTP := &http.Server{Handler: http.NotFoundHandler()}
+	t.Cleanup(func() {
+		_ = dockerHTTP.Close()
+		_ = listener.Close()
+	})
+	go func() { _ = dockerHTTP.Serve(listener) }()
 	cfg.Upstream = socket
 	srv := &server{cfg: cfg, docker: newDockerClient(cfg)}
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
