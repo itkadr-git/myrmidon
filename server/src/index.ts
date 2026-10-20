@@ -1376,7 +1376,9 @@ async function startServerWithDatabaseTeardown(
         logger.warn({ err: error, phase }, "board process registry tick failed"),
     });
     // Ensure the child is visible in board_processes before readiness is reported.
-    void registry.tick();
+    // `start()` also schedules a best-effort initial tick, but readiness must
+    // not race that write when a supervisor immediately inspects the child.
+    await registry.tick();
   }
 
   // myrmidon(PROCS-1.2): the role split of the public listener and the IPC
