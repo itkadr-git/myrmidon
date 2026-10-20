@@ -8,6 +8,7 @@ library so it can be copied into a LiteLLM deployment without new dependencies.
 from __future__ import annotations
 
 import json
+import asyncio
 import os
 from dataclasses import dataclass
 from typing import Any, Callable
@@ -75,11 +76,15 @@ class LiteLLMRedactGuardrail:
         )
 
     def _score(self, result: dict[str, Any]) -> float:
+        if "score" not in result:
+            raise ValueError("RD1 response is missing score")
         try:
-            score = float(result.get("score", 0))
-        except (TypeError, ValueError):
-            score = 0
-        return max(0.0, min(1.0, score))
+            score = float(result["score"])
+        except (TypeError, ValueError) as exc:
+            raise ValueError("RD1 response score must be numeric") from exc
+        if not 0 <= score <= 1:
+            raise ValueError("RD1 response score must be between 0 and 1")
+        return score
 
     def _apply(self, text: str, *, stage: str) -> str:
         result = self._scan(text, stage=stage)
@@ -95,7 +100,7 @@ class LiteLLMRedactGuardrail:
             return replacement if isinstance(replacement, str) else text
         return text
 
-    def async_pre_call_hook(self, user_api_key: str, cache: Any, data: dict[str, Any], process_id: str) -> dict[str, Any]:
+    async def async_pre_call_hook(self, user_api_key: str, cache: Any, data: dict[str, Any], process_id: str) -> dict[str, Any]:
         """Scan message content before LiteLLM sends the provider request."""
         del user_api_key, cache, process_id
         payload = dict(data)
@@ -105,19 +110,19 @@ class LiteLLMRedactGuardrail:
                 messages.append(message)
                 continue
             updated = dict(message)
-            updated["content"] = self._apply(message["content"], stage="pre_call")
+            updated["content"] = await asyncio.to_thread(self._apply, message["content"], stage="pre_call")
             messages.append(updated)
         if self.config.mode == "flag":
             return data
         payload["messages"] = messages
         return payload
 
-    def async_post_call_success_hook(self, data: dict[str, Any], response: Any) -> Any:
+    async def async_post_call_success_hook(self, data: dict[str, Any], response: Any) -> Any:
         """Scan provider output; mask it when configured, or block by score."""
         text = _response_text(response)
         if text is None:
             return response
-        updated_text = self._apply(text, stage="post_call")
+        updated_text = await asyncio.to_thread(self._apply, text, stage="post_call")
         if self.config.mode != "mask" or updated_text == text:
             return response
         return _replace_response_text(response, updated_text)

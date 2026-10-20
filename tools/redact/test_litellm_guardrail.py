@@ -1,4 +1,5 @@
 import unittest
+import asyncio
 
 from litellm_guardrail import (
     GuardrailConfig,
@@ -23,7 +24,7 @@ class RedactGuardrailIntegrationTest(unittest.TestCase):
             transport=self.transport,
         )
         with self.assertRaises(RedactGuardrailBlocked):
-            guardrail.async_pre_call_hook("key", None, {"messages": [{"content": "sensitive"}]}, "pid")
+            asyncio.run(guardrail.async_pre_call_hook("key", None, {"messages": [{"content": "sensitive"}]}, "pid"))
         self.assertEqual(self.calls[0][1]["stage"], "pre_call")
 
     def test_score_below_threshold_passes(self):
@@ -32,7 +33,7 @@ class RedactGuardrailIntegrationTest(unittest.TestCase):
             transport=self.transport,
         )
         data = {"messages": [{"role": "user", "content": "ordinary"}]}
-        self.assertEqual(guardrail.async_pre_call_hook("key", None, data, "pid"), data)
+        self.assertEqual(asyncio.run(guardrail.async_pre_call_hook("key", None, data, "pid")), data)
 
     def test_flag_mode_does_not_change_payload(self):
         guardrail = LiteLLMRedactGuardrail(
@@ -40,8 +41,19 @@ class RedactGuardrailIntegrationTest(unittest.TestCase):
             transport=self.transport,
         )
         data = {"messages": [{"role": "user", "content": "sensitive"}], "extra": "kept"}
-        self.assertEqual(guardrail.async_pre_call_hook("key", None, data, "pid"), data)
+        self.assertEqual(asyncio.run(guardrail.async_pre_call_hook("key", None, data, "pid")), data)
         self.assertEqual(self.calls[0][1]["mode"], "flag")
+
+    def test_invalid_score_fails_closed(self):
+        def invalid_transport(url, payload, timeout):
+            return {"entities": ["email"]}
+
+        guardrail = LiteLLMRedactGuardrail(
+            GuardrailConfig("http://rd1.test/scan", mode="block"),
+            transport=invalid_transport,
+        )
+        with self.assertRaises(ValueError):
+            asyncio.run(guardrail.async_pre_call_hook("key", None, {"messages": [{"content": "sensitive"}]}, "pid"))
 
 
 if __name__ == "__main__":
