@@ -88,6 +88,19 @@ export function resolveDefaultBackupDir(input: {
   return path.resolve(resolvePaperclipInstanceRoot(input), "data", "backups");
 }
 
+type BackupDirConfig = { database?: { backup?: { dir?: string } } };
+
+/** Resolve the directory used by every database-backup producer and consumer. */
+export function resolveDatabaseBackupDir(input: {
+  homeDir?: string;
+  instanceId?: string;
+  config?: BackupDirConfig | null;
+} = {}): string {
+  const config = input.config;
+  const configured = readProductEnv("DB_BACKUP_DIR")?.trim() || config?.database?.backup?.dir?.trim();
+  return configured ? path.resolve(expandHomePrefix(configured)) : resolveDefaultBackupDir(input);
+}
+
 export function resolveHomeAwarePath(value: string): string {
   return path.resolve(expandHomePrefix(value));
 }

@@ -101,6 +101,7 @@ function createFakeTransaction(overrides: Partial<WakeQueueTransaction> = {}): W
     findInvokableAgent: vi.fn(async () => AGENT),
     findIssue: vi.fn(async () => ISSUE),
     claimIssueExecutionLease: vi.fn(async () => true),
+    releaseIssueExecutionLease: vi.fn(async () => undefined),
     findNextDeferredWake: vi.fn(async () => null),
     getQueuedCommentLiveness: vi.fn(async () => ({ liveNonSelfCommentIds: [], containedSelfAuthoredComment: false })),
     cancelDeferredWake: vi.fn(async () => true),
@@ -438,6 +439,65 @@ describe("releaseIssueExecution", () => {
 
     expect(claimIssueExecutionLease).toHaveBeenCalledOnce();
     expect(findNextDeferredWake).not.toHaveBeenCalled();
+  });
+
+  it("hands the lease back and drains the primary when the claimed sibling has no deferred wake", async () => {
+    const sibling = { ...ISSUE, id: "issue-4", identifier: "ISSUE-4" };
+    const findNextDeferredWake = vi.fn(async (input: { issueId: string }) =>
+      input.issueId === ISSUE.id ? wakeCandidate({ id: "wake-primary" }) : null,
+    );
+    const releaseIssueExecutionLease = vi.fn(async () => undefined);
+    const transaction = createFakeTransaction({
+      claimIssueExecutionLease: vi.fn(async () => true),
+      releaseIssueExecutionLease,
+      findIssue: vi.fn(async () => sibling),
+      findNextDeferredWake,
+    });
+    const issueLock: IssueLockWriter = {
+      withIssueExecutionLock: vi.fn(async (
+        _input: { companyId: string; runId: string; now: Date },
+        fn: Parameters<IssueLockWriter["withIssueExecutionLock"]>[1],
+      ) => {
+        const result = await fn(
+          { primaryIssue: ISSUE, releasedSiblingIssue: sibling, run: RUN },
+          { host: createFakeHost(), transaction },
+        );
+        return { ...result, run: RUN };
+      }),
+      claimIssueExecutionLease: vi.fn(async () => true),
+    };
+    const release = createReleaseIssueExecution({ issueLock, recovery: createFakeRecovery() });
+
+    const result = await release({ companyId: RUN.companyId, runId: RUN.id, now: new Date() });
+
+    expect(releaseIssueExecutionLease).toHaveBeenCalledWith({ companyId: RUN.companyId, issueId: sibling.id, runId: RUN.id });
+    expect(findNextDeferredWake).toHaveBeenCalledWith(expect.objectContaining({ issueId: ISSUE.id }));
+    expect(result.outcome.kind).toBe("promoted");
+  });
+
+  it("stays released and keeps no lease when the primary is release-only and the sibling has no wake", async () => {
+    const sibling = { ...ISSUE, id: "issue-5", identifier: "ISSUE-5" };
+    const releaseIssueExecutionLease = vi.fn(async () => undefined);
+    const transaction = createFakeTransaction({ releaseIssueExecutionLease });
+    const issueLock: IssueLockWriter = {
+      withIssueExecutionLock: vi.fn(async (
+        _input: { companyId: string; runId: string; now: Date },
+        fn: Parameters<IssueLockWriter["withIssueExecutionLock"]>[1],
+      ) => {
+        const result = await fn(
+          { primaryIssue: ISSUE, primaryReleaseOnly: true, releasedSiblingIssue: sibling, run: RUN },
+          { host: createFakeHost(), transaction },
+        );
+        return { ...result, run: RUN };
+      }),
+      claimIssueExecutionLease: vi.fn(async () => true),
+    };
+    const release = createReleaseIssueExecution({ issueLock, recovery: createFakeRecovery() });
+
+    const result = await release({ companyId: RUN.companyId, runId: RUN.id, now: new Date() });
+
+    expect(releaseIssueExecutionLease).toHaveBeenCalledOnce();
+    expect(result.outcome.kind).toBe("released");
   });
 
   it("processes the deferred wakes in requestedAt order", async () => {

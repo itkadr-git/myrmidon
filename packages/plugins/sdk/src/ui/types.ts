@@ -103,6 +103,12 @@ export interface PluginHostContext {
   parentEntityId?: string | null;
   /** UUID of the current authenticated user. */
   userId: string | null;
+  /**
+   * myrmidon(PLUGIN-INSTANCE-ADMIN): whether the current user is an instance
+   * administrator. For rendering only — the authority is the host-verified
+   * `actor.isInstanceAdmin` of an action.
+   */
+  isInstanceAdmin?: boolean;
   /** Runtime metadata for the host container currently rendering this plugin UI. */
   renderEnvironment?: PluginRenderEnvironmentContext | null;
 }
