@@ -25,8 +25,9 @@ describe("company routes", () => {
     expect(teamCatalogRoot).toBeDefined();
     boardRouteRoots.add(teamCatalogRoot!);
 
-    const globalRootsBlock = appSource.match(/<Route path="(?:oauth-handoff|auth|board-claim|cli-auth|invite)[^>]*>[\s\S]*?(?=<Route element=\{streamlinedUiLoaded|<Route element=\{streamlinedUiLoaded)/)?.[0] ?? "";
+    const globalRootsBlock = appSource.match(/<Route path="(?:oauth-handoff|auth|board-claim|cli-auth|invite)[^>]*>[\s\S]*?(?=<Route element=\{streamlinedUiLoaded/)?.[0] ?? "";
     const globalRoots = new Set([...globalRootsBlock.matchAll(/path="([a-z][a-z0-9-]*)/g)].map(([, root]) => root!));
+    for (const root of globalRoots) boardRouteRoots.delete(root);
     const source = readFileSync(fileURLToPath(new URL("./company-routes.ts", import.meta.url)), "utf8");
     const rootsBlock = source.match(/const BOARD_ROUTE_ROOTS = new Set\(\[([\s\S]*?)\]\);/)?.[1];
     expect(rootsBlock).toBeDefined();
