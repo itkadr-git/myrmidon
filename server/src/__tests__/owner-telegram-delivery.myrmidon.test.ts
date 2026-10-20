@@ -72,7 +72,7 @@ describeEmbeddedPostgres(
     }, 30_000);
 
     beforeEach(async () => {
-      process.env.PAPERCLIP_PUBLIC_URL = "https://paperclip.local";
+      process.env.PAPERCLIP_PUBLIC_URL = "https://board.example";
       // Each scenario opts into owner delivery explicitly; do not leak the
       // singleton setting from a preceding scenario.
       await instanceSettingsService(db).updateGeneral({
@@ -328,7 +328,7 @@ describeEmbeddedPostgres(
       expect(payload.text).toContain("2. Evening");
       expect(payload.text).toContain("   After work");
       expect(payload.text).toContain("Ответьте сообщением: номером варианта или своими словами.");
-      expect(payload.text).toContain("https://paperclip.local");
+      expect(payload.text).toContain("https://board.example");
       expect(payload.interactionId).toBe(interaction.id);
       expect(payload).not.toHaveProperty("card");
       expect(payload.text).not.toContain("chat_action");
