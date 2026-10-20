@@ -58,7 +58,7 @@ export function isAdapterEnvironmentFailure(run: typeof heartbeatRuns.$inferSele
   // Only inspect a bounded error field for legacy adapters; stdout/stderr can
   // contain unrelated documentation and must not classify a live task.
   const message = typeof result?.errorMessage === "string" ? result.errorMessage : run.error;
-  return typeof message === "string" && /(?:not licensed|не лицензирован|license(?:d|\\s+missing)|module .* unavailable|credential(?:s)? .* missing|уч[её]тн(?:ые|ых) .* недоступ|model .* unavailable|unable to access model|adapter .* unavailable)/i.test(message);
+  return typeof message === "string" && /(?:not licensed|не лицензирован|license(?:d|\s+missing)|module .* unavailable|credential(?:s)? .* missing|уч[её]тн(?:ые|ых) .* недоступ|model .* unavailable|unable to access model|adapter .* unavailable)/i.test(message);
 }
 
 /** An operator records observed outcomes; this is not permission to blindly retry. */

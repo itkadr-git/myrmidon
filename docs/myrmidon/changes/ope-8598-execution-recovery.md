@@ -22,5 +22,4 @@
 
 | ID | Что изменено | Файлы | Зачем | Тесты | Когда снимать | PR |
 |---|---|---|---|---|---|---|
-|---|---|---|---|---|---|---|
 | OPE-8598 | Адаптерные license/pool error codes и ограниченные error-family/диагностики освобождают задачу в unassigned `todo`, очищая execution pointers; произвольные stdout/stderr LICENSE-упоминания не классифицируются | `server/src/services/execution-recovery-resolution.ts`; + `server/src/services/execution-recovery-resolution.myrmidon.test.ts` | Адаптерный сбой переводил задачу в `blocked` без blocker metadata, а сохранённый assignee исключал её из swarm claim | Коды Antigravity (включая `antigravity_pool_unavailable`), семейства ошибок, русский текст и защита от ложного срабатывания | Никогда, наше поведение. Снять ветку и тесты при поддержке классификации здоровья адаптера вендором | #1517 (этот PR, обновлён) |
