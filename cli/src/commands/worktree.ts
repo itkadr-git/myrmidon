@@ -31,6 +31,7 @@ import {
   withWorktreePortRegistryLock,
   writeWorktreePortRegistry,
 } from "@paperclipai/shared/worktree-port-registry";
+import { PRODUCT_NAME } from "../myrmidon-product.js";
 import {
   applyPendingMigrations,
   agents,

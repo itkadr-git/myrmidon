@@ -17,6 +17,7 @@ import { readConfig } from "../config/store.js";
 import type { PaperclipConfig } from "../config/schema.js";
 import { runCommand, type StartedServer } from "./run.js";
 import { isLinkedGitWorktree } from "./git-workspace.js";
+import { PRODUCT_NAME } from "../myrmidon-product.js";
 import { readProductEnv, writeProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
 
 export const TEST_DRIVE_HARNESSES = ["claude", "codex", "opencode"] as const;
