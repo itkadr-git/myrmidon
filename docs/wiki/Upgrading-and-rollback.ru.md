@@ -8,10 +8,10 @@
 ещё раз:
 
 ```sh
-curl -fsSL https://github.com/itkadr-git/myrmidon/releases/download/myr-v1.6.6-rc.10/install.sh | sudo bash
+curl -fsSL https://github.com/itkadr-git/myrmidon/releases/download/myr-v1.6.6-rc.11/install.sh | sudo bash
 ```
 
-Текущий опубликованный кандидат — 1.6.6-rc.10. Установщик доступен
+Текущий опубликованный кандидат — 1.6.6-rc.11. Установщик доступен
 начиная с выпуска 1.6.5; ссылка `releases/latest/download/install.sh`
 ведёт на последний стабильный выпуск, поэтому для кандидата укажите точный
 тег. Установщик находит выпуск, **снимает копию базы данных до любых изменений**,
