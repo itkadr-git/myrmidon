@@ -146,7 +146,7 @@ describe("OPE-8137: board/fleetd path operates without /host or docker.sock", ()
     });
 
     try {
-      const config: FleetdDriverConfig = { baseUrl, token: "test-fleetd-auth-token-32-chars-long" };
+      const config: FleetdDriverConfig = { baseUrl, token: "test-fleetd-auth-token-32-chars-long", ca: "fake-ca", cert: "fake-cert", key: "fake-key" };
       const driver = fleetdBotContainerDriver(config);
 
       // Status
@@ -197,7 +197,7 @@ describe("OPE-8137: board/fleetd path operates without /host or docker.sock", ()
     };
 
     try {
-      const config: FleetdDriverConfig = { baseUrl, token: "test-fleetd-auth-token-32-chars-long" };
+      const config: FleetdDriverConfig = { baseUrl, token: "test-fleetd-auth-token-32-chars-long", ca: "fake-ca", cert: "fake-cert", key: "fake-key" };
       const driver = fleetdBotContainerDriver(config, {
         readSharedPackageCachePath: async () => "/srv/cache/pnpm",
         log: mockLog,
@@ -219,7 +219,7 @@ describe("OPE-8137: board/fleetd path operates without /host or docker.sock", ()
     });
 
     try {
-      const config: FleetdDriverConfig = { baseUrl, token: "test-token-at-least-32-characters" };
+      const config: FleetdDriverConfig = { baseUrl, token: "test-token-at-least-32-characters", ca: "fake-ca", cert: "fake-cert", key: "fake-key" };
       const driver = fleetdBotContainerDriver(config);
 
       await expect(driver.status("unknown-bot")).rejects.toThrow(FleetdDriverError);
