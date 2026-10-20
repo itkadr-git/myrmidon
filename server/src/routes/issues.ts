@@ -11,10 +11,13 @@ import { supersedeExplicitWakeSettledHold } from "../myrmidon/settled-holds/supe
 // clears the issue's settled replay hold and re-plans its parked wakes.
 import {
   clearReplayHoldsOnHumanUnblock,
+  isAssigneeChangePatch,
   isHumanUnblock,
   issueHasSettledReplayHold,
   mayBeHumanUnblock,
   replanParkedWakesAfterUnblock,
+  HUMAN_UNBLOCK_NOTE,
+  REASSIGN_UNBLOCK_NOTE,
   type HumanUnblockResult,
 } from "../myrmidon/settled-holds/human-unblock.js";
 import { extractIssueReferenceIdentifiers, requiresExecutionReconciliation, EXECUTION_RECONCILIATION_CAUSES } from "@paperclipai/shared";
@@ -1101,6 +1104,17 @@ function hasExecutionParticipant(value: unknown) {
   return false;
 }
 
+function hasReviewExecutionParticipant(value: unknown) {
+  const state = parseIssueExecutionState(value);
+  return Boolean(
+    state?.status === "pending" &&
+      state.currentStageType === "review" &&
+      state.currentParticipant &&
+      ((state.currentParticipant.type === "agent" && state.currentParticipant.agentId) ||
+        (state.currentParticipant.type === "user" && state.currentParticipant.userId)),
+  );
+}
+
 function hasScheduledMonitor(input: {
   existingMonitorNextCheckAt?: Date | null;
   patchMonitorNextCheckAt?: unknown;
@@ -2084,8 +2098,7 @@ const INVALID_AGENT_IN_REVIEW_DISPOSITION_MESSAGE =
   "invalid_issue_disposition: Agent-authored updates that move an issue to in_review must include a real review path. " +
   "This request would leave the issue in_review without anyone or anything owning the next action. " +
   "Keep working instead of moving to review, create a request_confirmation or ask_user_questions interaction, " +
-  "link or request a pending approval, assign a human reviewer with assigneeUserId, set a typed executionState.currentParticipant through an execution policy, " +
-  "declare reviewPolicy \"human_only\" so the verdict waits on a person, or schedule an issue monitor for an external review/check. After creating one of those review paths, retry the status update.";
+  "link or request a pending approval, assign a human reviewer with assigneeUserId, set a typed executionState.currentParticipant through an execution policy, or schedule an issue monitor for an external review/check. After creating one of those review paths, retry the status update.";
 
 function executionPrincipalsEqual(
   left: ParsedExecutionState["currentParticipant"] | null,
@@ -4826,7 +4839,7 @@ export function issueRoutes(
       input.updateFields.executionState === undefined
         ? input.existing.executionState
         : input.updateFields.executionState;
-    if (hasExecutionParticipant(nextExecutionState)) return null;
+    if (hasReviewExecutionParticipant(nextExecutionState)) return null;
 
     const nextExecutionPolicy = input.updateFields.executionPolicy;
     if (
@@ -4852,17 +4865,47 @@ export function issueRoutes(
     )
       return null;
 
-    // myrmidon(HUMAN-REVIEW-WAIT): declaring `reviewPolicy: "human_only"` when
-    // moving to in_review is itself a real review path — the verdict can only
-    // come from a person, and a human comment wakes the assignee through the
-    // normal comment path. Without this the guard forced agents to fabricate an
-    // interaction/approval just to enter a lawful "waiting for the owner" state
-    // (a human-only review on a board, 05.10).
     const nextReviewPolicy =
       input.updateFields.reviewPolicy === undefined
         ? input.existing.reviewPolicy
         : input.updateFields.reviewPolicy;
-    if (nextReviewPolicy === "human_only") return null;
+    if (
+      nextReviewPolicy === "human_only" &&
+      (input.actorType !== "agent" ||
+        (typeof input.updateFields.assigneeUserId === "string" &&
+          input.updateFields.assigneeUserId.trim().length > 0))
+    ) return null;
+
+    if (nextReviewPolicy === "human_only" && input.actorType === "agent") {
+      throw unprocessable(INVALID_AGENT_IN_REVIEW_DISPOSITION_MESSAGE, {
+        code: "invalid_issue_disposition",
+        missing: "review_path",
+        validReviewPaths: [
+          "pending_issue_thread_interaction",
+          "linked_pending_approval",
+          "human_assignee_user_id",
+          "typed_execution_state_current_participant",
+          "scheduled_issue_monitor",
+        ],
+      });
+    }
+
+    const nextAssigneeAgentId =
+      input.updateFields.assigneeAgentId === undefined
+        ? input.existing.assigneeAgentId
+        : input.updateFields.assigneeAgentId;
+    const executionReviewParticipants = summarizeExecutionParticipants(
+      normalizeIssueExecutionPolicy(input.updateFields.executionPolicy ?? null),
+      "review",
+    );
+    if (
+      input.actorAgentId &&
+      nextAssigneeAgentId &&
+      nextAssigneeAgentId !== input.actorAgentId &&
+      (executionReviewParticipants.some(
+        (participant) => participant.type === "agent" && participant.agentId === nextAssigneeAgentId,
+      ) || (await agentsSvc.getById(String(nextAssigneeAgentId)))?.role === "reviewer")
+    ) return null;
 
     throw unprocessable(INVALID_AGENT_IN_REVIEW_DISPOSITION_MESSAGE, {
       code: "invalid_issue_disposition",
@@ -4873,7 +4916,6 @@ export function issueRoutes(
         "human_assignee_user_id",
         "typed_execution_state_current_participant",
         "scheduled_issue_monitor",
-        "human_only_review_policy",
       ],
     });
   }
@@ -13352,6 +13394,7 @@ export function issueRoutes(
         interrupt: interruptRequested,
         deferWakeForGoal,
         hiddenAt: hiddenAtRaw,
+        blockerMetadata: blockerMetadataRaw,
         onBehalfOfUserId: _requestedOnBehalfOfUserId,
         ...updateFields
       } = req.body;
@@ -13727,6 +13770,14 @@ export function issueRoutes(
         throw unprocessable("unblockDescriptor requires blocked status");
       }
       const descriptor = updateFields.unblockDescriptor ?? null;
+      if (blockerMetadataRaw !== undefined) {
+        updateFields.blockerMetadata = blockerMetadataRaw;
+      }
+      const blockerOwner = blockerMetadataRaw?.owner;
+      if (blockerMetadataRaw && blockerOwner && Object.keys(blockerOwner).length !== 1) {
+        res.status(422).json({ error: "blocker owner must identify exactly one principal" });
+        return;
+      }
       if (descriptor && typeof descriptor === "object") {
         const owner = descriptor.owner;
         if (
@@ -13783,6 +13834,33 @@ export function issueRoutes(
       }
       const enteringBlocked =
         existing.status !== "blocked" && updateFields.status === "blocked";
+      if (
+        enteringBlocked &&
+        req.actor.type === "agent" &&
+        blockerMetadataRaw == null
+      ) {
+        res.status(422).json({ error: "Entering blocked requires blockerMetadata" });
+        return;
+      }
+      // myrmidon(BLOCKED-GUARD P0.6): typed blocker metadata describes the current block only;
+      // a transition out of blocked without new metadata clears it, so no stale reason survives.
+      const leavingBlocked =
+        existing.status === "blocked" &&
+        updateFields.status !== undefined &&
+        updateFields.status !== "blocked";
+      if (leavingBlocked && blockerMetadataRaw === undefined) {
+        updateFields.blockerMetadata = null;
+      }
+      if (blockerMetadataRaw?.blockReason === "external_wait") {
+        const monitor =
+          (updateFields.executionPolicy as { monitor?: unknown } | undefined)?.monitor ??
+          (existing.executionPolicy as { monitor?: unknown } | null)?.monitor;
+        if (!monitor) {
+          res.status(422).json({ error: "external_wait requires executionPolicy.monitor" });
+          return;
+        }
+        updateFields.status = "in_review";
+      }
       // myrmidon(BLOCKED-LOOP): signature of an agent return to blocked, kept
       // in the issue.updated details so the next attempt can compare with it.
       let blockedLoopSignature: BlockedLoopSignature | null = null;
@@ -14147,22 +14225,36 @@ export function issueRoutes(
       // myrmidon(HOLD-READY): a possible board unblock of an issue that has
       // a settled replay hold runs the update in a transaction, so the hold
       // is cleared atomically with it.
+      // myrmidon(REPLAY-BLOCK-TRIAGE): the same for an assignee change by ANY
+      // actor — the hold belongs to the previous executor's stopped run, so
+      // the new executor must not inherit it (the OPE-6329 lock-in).
+      const assigneeChangeRequested =
+        normalizedAssigneeAgentId !== undefined ||
+        req.body.assigneeUserId !== undefined;
+      const reassignHoldClearPossible =
+        assigneeChangeRequested &&
+        isAssigneeChangePatch({
+          existing,
+          assigneeAgentIdPatch: normalizedAssigneeAgentId,
+          assigneeUserIdPatch:
+            req.body.assigneeUserId === undefined
+              ? undefined
+              : (req.body.assigneeUserId as string | null),
+        }) &&
+        (await issueHasSettledReplayHold(db, existing.companyId, existing.id));
       const humanUnblockPossible =
-        mayBeHumanUnblock({
+        reassignHoldClearPossible ||
+        (mayBeHumanUnblock({
           requestActorType: req.actor.type,
           runId: actor.runId,
           existingStatus: existing.status,
-          assigneeChangeRequested:
-            normalizedAssigneeAgentId !== undefined ||
-            req.body.assigneeUserId !== undefined,
-          // myrmidon(OPE-6954): a person moving the issue into a workable
-          // status is the same "carry on" as moving it out of `blocked`.
-          // Since REQUEUE-HOLD the settle leaves a re-queued task in its own
-          // status, so this is the action an operator has left.
+          assigneeChangeRequested,
+          // myrmidon(OPE-6954): status changes are another operator "carry on"
+          // action since REQUEUE-HOLD leaves re-queued tasks in their status.
           statusChangeRequested:
             updateFields.status !== undefined && updateFields.status !== existing.status,
         }) &&
-        (await issueHasSettledReplayHold(db, existing.companyId, existing.id));
+        (await issueHasSettledReplayHold(db, existing.companyId, existing.id)));
       let humanUnblock: HumanUnblockResult | null = null;
       const updateIssue = (tx?: Parameters<typeof svc.update>[2]) => {
         if (tx) {
@@ -14377,24 +14469,29 @@ export function issueRoutes(
             }
             // myrmidon(HOLD-READY): an explicit human unblock is an operator
             // resolve of the settled "do not replay" hold.
-            if (
-              humanUnblockPossible &&
-              updated.assigneeAgentId &&
-              isHumanUnblock({
+            // myrmidon(REPLAY-BLOCK-TRIAGE): so is any change of executor —
+            // the hold belongs to the previous executor's run.
+            if (updated.assigneeAgentId && humanUnblockPossible) {
+              const humanUnblockMatch = isHumanUnblock({
                 requestActorType: req.actor.type,
                 runId: actor.runId,
                 before: existing,
                 after: updated,
-              })
-            ) {
-              humanUnblock = await clearReplayHoldsOnHumanUnblock({
-                tx: tx as unknown as Db,
-                companyId: updated.companyId,
-                issueId: updated.id,
-                assigneeAgentId: updated.assigneeAgentId,
-                actor: { actorType: actor.actorType, actorId: actor.actorId },
-                postCommitActivityPublications,
               });
+              const reassignMatch =
+                updated.assigneeAgentId !== existing.assigneeAgentId ||
+                updated.assigneeUserId !== existing.assigneeUserId;
+              if (humanUnblockMatch || reassignMatch) {
+                humanUnblock = await clearReplayHoldsOnHumanUnblock({
+                  tx: tx as unknown as Db,
+                  companyId: updated.companyId,
+                  issueId: updated.id,
+                  assigneeAgentId: updated.assigneeAgentId,
+                  actor: { actorType: actor.actorType, actorId: actor.actorId },
+                  note: humanUnblockMatch ? HUMAN_UNBLOCK_NOTE : REASSIGN_UNBLOCK_NOTE,
+                  postCommitActivityPublications,
+                });
+              }
             }
             if (commentAttachmentIds?.length) {
               // Reassignment, comment creation and upload binding commit together.
@@ -14491,6 +14588,7 @@ export function issueRoutes(
           issueId: issue.id,
           agentId: committedUnblock.replanAgentId,
           actorId: actor.actorId,
+          actorType: actor.actorType === "agent" ? "agent" : "user",
           clearedActionIds: committedUnblock.clearedActionIds,
         });
       }

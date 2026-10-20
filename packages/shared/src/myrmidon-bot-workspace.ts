@@ -342,6 +342,12 @@ export const wsReportForeignSchema = z.object({
 });
 export type WsReportForeign = z.infer<typeof wsReportForeignSchema>;
 
+export const wsReportForeignUidSchema = z.object({
+  path: z.string().min(1).max(500),
+  reason: z.string().min(1).max(500),
+});
+export type WsReportForeignUid = z.infer<typeof wsReportForeignUidSchema>;
+
 /**
  * Body of `POST /api/myrmidon/bots/me/disk-report`. The body is capped at 1 MiB
  * (413 above); the report is a snapshot, not a log — `actions` holds at most
@@ -358,6 +364,7 @@ export const wsDiskReportSchema = z.object({
   archives: z.array(wsReportArchiveSchema),
   actions: z.array(wsReportActionSchema),
   foreign: z.array(wsReportForeignSchema),
+  foreignUid: wsReportForeignUidSchema.nullable().optional(),
 });
 export type WsDiskReport = z.infer<typeof wsDiskReportSchema>;
 

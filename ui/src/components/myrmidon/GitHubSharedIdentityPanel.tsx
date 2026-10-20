@@ -57,13 +57,15 @@ type AppDraft = {
   slug?: string | null;
 };
 
-type Draft = { enabled: boolean; commitEmailDomain: string; apps: AppDraft[] };
+type PatDraft = { id: string; name: string; tokenSecretId: string; allowedRepos: string; agentIds: string[] };
+type Draft = { enabled: boolean; commitEmailDomain: string; apps: AppDraft[]; pats: PatDraft[] };
 
 function draftFrom(view: GitHubSharedIdentityView): Draft {
   return {
     enabled: view.settings.enabled,
     commitEmailDomain: view.settings.commitEmailDomain ?? "",
-    apps: view.settings.apps.map((app) => ({
+    pats: (view.settings.pats ?? []).map((pat) => ({ ...pat, allowedRepos: pat.allowedRepos.join("\n") })),
+    apps: (view.settings.apps ?? []).map((app) => ({
       id: app.id,
       name: app.name,
       appId: app.appId,
@@ -83,6 +85,13 @@ export function bodyFromDraft(draft: Draft): GitHubSharedIdentityPut {
   return {
     enabled: draft.enabled,
     commitEmailDomain: draft.commitEmailDomain.trim() || null,
+    pats: draft.pats.map((pat) => ({
+      id: pat.id,
+      name: pat.name.trim(),
+      tokenSecretId: pat.tokenSecretId.trim(),
+      allowedRepos: splitList(pat.allowedRepos),
+      agentIds: pat.agentIds.map((agentId) => agentId.trim()),
+    })),
     apps: draft.apps.map((app) => ({
       id: app.id,
       name: app.name.trim(),
@@ -280,13 +289,26 @@ export function GitHubSharedIdentityPanelView({
           <label className="flex items-center gap-2 text-sm">
             <input
               type="checkbox"
-              aria-label="Use GitHub App identities"
+              aria-label="Use managed GitHub identities"
               checked={draft.enabled}
               onChange={(event) => setDraft((current) => ({ ...current, enabled: event.target.checked }))}
             />
-            Use GitHub App identities
+            Use managed GitHub identities
           </label>
 
+          <section className="space-y-3 rounded-md border border-border p-4" aria-label="GitHub PAT identities">
+            <h3 className="font-medium">Personal access tokens</h3>
+            {draft.pats.map((pat, index) => (
+              <div key={pat.id} className="space-y-3 border-t border-border pt-3" data-testid={`github-pat-${index}`}>
+                <label className="grid gap-1 text-sm">Name<Input aria-label={`PAT identity name ${index + 1}`} value={pat.name} onChange={(e) => setDraft((d) => ({ ...d, pats: d.pats.map((x) => x.id === pat.id ? { ...x, name: e.target.value } : x) }))} /></label>
+                <label className="grid gap-1 text-sm">Token secret<SecretPicker secretId={pat.tokenSecretId} secrets={secrets} onSelect={(tokenSecretId) => setDraft((d) => ({ ...d, pats: d.pats.map((x) => x.id === pat.id ? { ...x, tokenSecretId } : x) }))} /></label>
+                <label className="grid gap-1 text-sm">Allowed repositories (one owner/repo per line)<Textarea aria-label={`PAT allowed repositories ${index + 1}`} rows={2} value={pat.allowedRepos} onChange={(e) => setDraft((d) => ({ ...d, pats: d.pats.map((x) => x.id === pat.id ? { ...x, allowedRepos: e.target.value } : x) }))} /></label>
+                <fieldset><legend className="text-sm">Agents allowed</legend>{agents.map((agent) => <label key={agent.id} className="mr-3 inline-flex items-center gap-1 text-sm"><input type="checkbox" checked={pat.agentIds.includes(agent.id)} onChange={(e) => setDraft((d) => ({ ...d, pats: d.pats.map((x) => x.id === pat.id ? { ...x, agentIds: e.target.checked ? [...x.agentIds, agent.id] : x.agentIds.filter((id) => id !== agent.id) } : x) }))} />{agent.name}</label>)}</fieldset>
+                <Button type="button" variant="outline" size="sm" onClick={() => setDraft((d) => ({ ...d, pats: d.pats.filter((x) => x.id !== pat.id) }))}>Remove PAT identity</Button>
+              </div>
+            ))}
+            <Button type="button" variant="outline" size="sm" onClick={() => setDraft((d) => ({ ...d, pats: [...d.pats, { id: newId(), name: "", tokenSecretId: "", allowedRepos: "", agentIds: [] }] }))}>Add PAT identity</Button>
+          </section>
           {draft.apps.map((app, index) => {
             const label = app.name.trim() || `App ${index + 1}`;
             return (

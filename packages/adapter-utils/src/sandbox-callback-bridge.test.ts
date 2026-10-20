@@ -358,6 +358,13 @@ describe("sandbox callback bridge", () => {
       "utf8",
     );
 
+    await vi.waitFor(async () => {
+      const response = JSON.parse(
+        await readFile(path.posix.join(directories.responsesDir, "req-1.json"), "utf8"),
+      ) as { status: number; body: string };
+      expect(response.status).toBe(403);
+    });
+
     await worker.stop({ drainTimeoutMs: 1_000 });
 
     const response = JSON.parse(

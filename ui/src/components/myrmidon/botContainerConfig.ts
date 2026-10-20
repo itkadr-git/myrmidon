@@ -6,7 +6,7 @@
 // to be positive; the ranges below are the UI's own sanity bounds (they keep a
 // typo like an extra zero from asking the host for terabytes), not server rules.
 
-export const BOT_CONTAINER_DEFAULTS = { memoryMb: 2048, cpus: 1, pidsLimit: 512 } as const;
+export const BOT_CONTAINER_DEFAULTS = { memoryMb: 1024, cpus: 1, pidsLimit: 512 } as const;
 
 export type BotContainerNumberField = "memoryMb" | "cpus" | "pidsLimit";
 
