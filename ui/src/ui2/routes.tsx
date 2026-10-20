@@ -20,6 +20,7 @@ import { Ui2LanguageSettings } from "./screens/settings/language/Ui2LanguageSett
 // myrmidon(1.6-CTO-CHAT-A): the Commander chat screen — a real ui2 screen, not
 // a placeholder (see screens/CommanderChatScreen.tsx).
 import { CommanderChatScreen } from "./screens/CommanderChatScreen";
+import { Ui2Commander } from "./screens/commander/Ui2Commander";
 
 export type Ui2ScreenKey =
   | "decisions"
@@ -28,6 +29,7 @@ export type Ui2ScreenKey =
   | "settings-runs-queue"
   | "settings-system"
   | "settings-language"
+  | "commander"
   | "commander-chat";
 
 export interface Ui2RouteEntry {
@@ -98,6 +100,14 @@ export const UI2_ROUTE_TABLE: Ui2RouteEntry[] = [
   // myrmidon(1.6-CTO-CHAT-A): the Commander chat — own route under the ui2
   // flag. The legacy entry stays /board-chat (conference room); this screen is
   // the single-owner planning conversation, so it does not shadow it.
+  {
+    key: "commander",
+    path: "commander",
+    titleKey: "ui2.screens.commander",
+    element: ui2Screen(<Ui2Commander />),
+    legacyPath: "/dashboard",
+  },
+  // Commander chat remains the separate planning conversation route.
   {
     key: "commander-chat",
     path: "commander-chat",
