@@ -39,8 +39,20 @@ export function poolChatRoutes(db: Db, resolveTransport: PoolChatTransportResolv
     res.status(201).json({ request: result });
   });
   router.get("/companies/:companyId/modules/:moduleId/chat/requests/:requestId", async (req, res) => {
-    await authorize(req, req.params.companyId, req.params.moduleId);
-    res.json({ request: await service.status(req.params.companyId, req.params.moduleId, req.params.requestId) });
+    // Authorize against the persisted request scope, not a caller-supplied
+    // default. A guessed request id must not become a cross-scope read.
+    const request = await service.status(req.params.companyId, req.params.moduleId, req.params.requestId);
+    const actor = getActorInfo(req);
+    const decision = await authorizePoolChatInvocation(db, {
+      companyId: req.params.companyId,
+      moduleId: req.params.moduleId,
+      channelId: request.channel,
+      subjectId: request.subjectId,
+      principalType: actor.actorType,
+      principalId: actor.actorId,
+    });
+    if (!decision.allowed) throw forbidden("Pool-chat invocation is not authorized");
+    res.json({ request });
   });
   return router;
 }
