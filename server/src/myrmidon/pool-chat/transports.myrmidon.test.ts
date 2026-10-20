@@ -20,7 +20,7 @@ describe("pool-chat transports", () => {
     expect(sendChatGpt).toHaveBeenCalledWith(request);
   });
 
-  it("converts Google requests to user text and performs a single transport call", async () => {
+  it("preserves the full conversation for the Google text bridge", async () => {
     const sendGoogle = vi.fn(async (request) => ({
       text: "answer", inputUnits: 1, outputUnits: 1, providerRequestRef: null,
     }));
@@ -28,12 +28,14 @@ describe("pool-chat transports", () => {
 
     await transports.google.send({ model: "fast", messages, maxOutputTokens: 100 });
     expect(sendGoogle).toHaveBeenCalledTimes(1);
-    expect(sendGoogle.mock.calls[0]?.[0].messages).toEqual([{ role: "user", content: "question" }]);
+    expect(sendGoogle.mock.calls[0]?.[0].messages).toEqual(messages);
   });
 
   it("redacts key-like values from provider errors", () => {
     expect(redactTransportError(new Error("request failed: api_key=secret-value")))
-      .toBe("request failed: api_key=[redacted]");
+      .toBe("provider_transport_failed");
+    expect(redactTransportError(new Error("https://provider.test/?token=secret")))
+      .toBe("provider_transport_failed");
     expect(redactTransportError({ token: "private" })).toBe("provider_transport_failed");
   });
 });

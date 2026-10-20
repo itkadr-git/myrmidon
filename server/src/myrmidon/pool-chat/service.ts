@@ -60,10 +60,10 @@ export function poolChatService(db: Db, resolveTransport: PoolChatTransportResol
         });
       } catch (error) {
         await db.transaction(async (tx: any) => {
-          await tx.update(poolChatRequestAttempts).set({ state: "uncertain", failureCode: "provider_unknown", failureDetail: error instanceof Error ? error.message.slice(0, 256) : "provider_unknown", updatedAt: new Date() }).where(and(eq(poolChatRequestAttempts.requestId, request.id), eq(poolChatRequestAttempts.attemptNo, 1)));
+          await tx.update(poolChatRequestAttempts).set({ state: "uncertain", failureCode: "provider_unknown", failureDetail: "provider_transport_failed", updatedAt: new Date() }).where(and(eq(poolChatRequestAttempts.requestId, request.id), eq(poolChatRequestAttempts.attemptNo, 1)));
           await tx.update(poolChatRequests).set({ status: "uncertain", updatedAt: new Date() }).where(eq(poolChatRequests.id, request.id));
         });
-        throw error;
+        throw new HttpError(502, "Pool-chat provider request failed");
       }
       return request;
     },
