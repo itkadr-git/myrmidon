@@ -93,6 +93,14 @@ describe("ui2 integration contracts (UI-0b / UI-0c)", () => {
     }
   }, 30_000);
 
+  it("keeps the Fleet destination on the dedicated route", async () => {
+    const { UI2_NAV_GROUPS, UI2_PHONE_TABS } = await import("./navModel");
+    const fleetRail = UI2_NAV_GROUPS.flatMap((group) => group.items).find((item) => item.labelKey === "ui2.nav.fleet");
+    const fleetPhone = UI2_PHONE_TABS.find((item) => item.labelKey === "ui2.nav.fleet");
+    expect(fleetRail?.to).toBe("/fleet");
+    expect(fleetPhone?.to).toBe("/fleet");
+  });
+
   it("Ui2Root exists and mounts the shell (UI-0b's provider line)", async () => {
     const mod = await import("./Ui2Root");
     expect(typeof mod.Ui2Root).toBe("function");

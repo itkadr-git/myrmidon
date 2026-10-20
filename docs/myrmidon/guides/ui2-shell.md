@@ -113,6 +113,7 @@ The 2.0 screens re-skin these surfaces under the flag:
 | Decisions | `decisions` | The decisions page |
 | Costs | `activity/costs` | The costs page |
 | Agent overview | `agents/:agentId/overview` | The agent card |
+| Fleet | `fleet` | Monitoring dashboard hosts and services |
 | Runs and queue (settings) | `company/settings/runs-queue` | Instance run limits |
 | System (settings) | `company/settings/system` | Instance system settings |
 | Language (settings) | `company/settings/language` | The UI language setting |

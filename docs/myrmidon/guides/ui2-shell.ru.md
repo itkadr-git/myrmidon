@@ -117,7 +117,8 @@ preference). Пока он выключен (по умолчанию) — нич
 | Решения | `decisions` | Страница решений |
 | Расходы | `activity/costs` | Страница расходов |
 | Обзор агента | `agents/:agentId/overview` | Карточка агента |
-| Прогоны и очередь (настройки) | `company/settings/runs-queue` | Лимиты прогонов инстанса |
+| Флот | `fleet` | Узлы и службы из monitoring dashboard |
+| Очередь запусков (настройки) | `company/settings/runs-queue` | Лимиты запусков инстанса |
 | Система (настройки) | `company/settings/system` | Системные настройки инстанса |
 | Язык (настройки) | `company/settings/language` | Настройка языка интерфейса |
 
