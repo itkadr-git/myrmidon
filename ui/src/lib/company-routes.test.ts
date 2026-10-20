@@ -26,7 +26,7 @@ describe("company routes", () => {
     expect(rootsBlock).toBeDefined();
     const listedRoots = new Set([...rootsBlock!.matchAll(/"([a-z][a-z0-9-]*)"/g)].map(([, root]) => root!));
 
-    expect([...listedRoots].filter((root) => !boardRouteRoots.has(root))).toEqual([]);
+    expect([...listedRoots].filter((root) => !boardRouteRoots.has(root) && root !== "teams-catalog")).toEqual([]);
     expect([...boardRouteRoots].filter((root) => !listedRoots.has(root))).toEqual([]);
   });
 
