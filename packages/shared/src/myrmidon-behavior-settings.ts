@@ -695,10 +695,13 @@ export function resolveBehaviorSettings(options: {
 /**
  * Schema for validating a behavior settings patch
  */
-export function createBehaviorSettingsPatchSchema() {
+export function createBehaviorSettingsPatchSchema(scope?: SettingScope) {
   const shape: Record<string, z.ZodTypeAny> = {};
+  const defs = scope
+    ? behaviorSettingRegistry.getAll().filter((def) => def.scope === scope)
+    : behaviorSettingRegistry.getAll();
   
-  for (const def of behaviorSettingRegistry.getAll()) {
+  for (const def of defs) {
     let schema: z.ZodTypeAny;
     switch (def.valueType) {
       case "boolean":

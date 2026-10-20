@@ -24,6 +24,7 @@ import {
   mergeBehaviorSettings,
   type BehaviorSettingsPatch,
   type ResolvedBehaviorSettings,
+  type SettingScope,
 } from "@paperclipai/shared";
 import { badRequest } from "../../errors.js";
 import { logger } from "../../middleware/logger.js";
@@ -146,7 +147,7 @@ export function behaviorSettingsService(
 
     updateInstance: async (patch, actor) =>
       withBehaviorSettingsTransition(async () => {
-        validatePatchValues(patch);
+        validatePatchValues(patch, "instance");
         const before = await deps.instanceSettings.readInstance();
         const previous = resolveBehaviorSettings({ stored: before, env });
 
@@ -187,7 +188,7 @@ export function behaviorSettingsService(
 
     updateCompany: async (companyId, patch, actor) =>
       withBehaviorSettingsTransition(async () => {
-        validatePatchValues(patch);
+        validatePatchValues(patch, "company");
         const before = await deps.instanceSettings.readCompany(companyId);
         const previous = resolveBehaviorSettings({ stored: before, env });
 
@@ -223,11 +224,16 @@ export function behaviorSettingsService(
   };
 }
 
-function validatePatchValues(patch: BehaviorSettingsPatch): void {
+function validatePatchValues(patch: BehaviorSettingsPatch, expectedScope: SettingScope): void {
   for (const [key, value] of Object.entries(patch)) {
     const def = behaviorSettingRegistry.get(key);
     if (!def) {
       throw badRequest(`Unknown setting key: '${key}'`);
+    }
+    if (def.scope !== expectedScope) {
+      throw badRequest(
+        `Setting '${key}' has scope '${def.scope}', expected '${expectedScope}'`,
+      );
     }
     if (value !== undefined && def.validate(value) === null) {
       throw badRequest(`Invalid value for setting '${key}'`);

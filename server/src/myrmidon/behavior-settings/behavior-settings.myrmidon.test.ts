@@ -447,6 +447,34 @@ describe("myrmidon(1.7) behavior settings: type and range validation", () => {
       .send({ totally_random_key_that_does_not_exist: true })
       .expect(400);
   });
+
+  it("rejects cross-scope updates with 400 Bad Request", async () => {
+    const h = harness();
+
+    // company endpoint rejects instance-only key (debug_mode)
+    await request(h.withActor(member))
+      .patch(COMPANY_URL(COMPANY_ID))
+      .send({ debug_mode: true })
+      .expect(400);
+
+    // company endpoint (/company/:companyId alias) rejects instance-only key
+    await request(h.withActor(member))
+      .patch(`/api/myrmidon/behavior-settings/company/${COMPANY_ID}`)
+      .send({ debug_mode: true })
+      .expect(400);
+
+    // instance endpoint rejects company-only key (review_routing_enabled)
+    await request(h.withActor(admin))
+      .patch(INSTANCE_URL)
+      .send({ review_routing_enabled: false })
+      .expect(400);
+
+    // instance PUT alias also rejects company-only key
+    await request(h.withActor(admin))
+      .put(INSTANCE_URL)
+      .send({ review_routing_enabled: false })
+      .expect(400);
+  });
 });
 
 describe("myrmidon(1.7) behavior settings: permission matrix", () => {
