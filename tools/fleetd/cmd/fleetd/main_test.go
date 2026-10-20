@@ -4,8 +4,10 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -40,7 +42,27 @@ func testConfig() *config {
 
 func newServer(t *testing.T) (*server, *httptest.Server) {
 	t.Helper()
-	srv := &server{cfg: testConfig(), docker: newDockerClient(testConfig())}
+	cfg := testConfig()
+	socket := filepath.Join(t.TempDir(), "docker.sock")
+	listener, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer conn.Close()
+				_, _ = conn.Write([]byte("HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"))
+			}()
+		}
+	}()
+	cfg.Upstream = socket
+	srv := &server{cfg: cfg, docker: newDockerClient(cfg)}
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/v1/bots") {
 			srv.requireAuth(func(w http.ResponseWriter, r *http.Request) {
