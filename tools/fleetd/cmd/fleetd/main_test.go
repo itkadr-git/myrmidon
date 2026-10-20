@@ -54,6 +54,11 @@ func newServer(t *testing.T) (*server, *httptest.Server) {
 		_ = listener.Close()
 		t.Fatal(err)
 	}
+	if err := os.Chmod(cfg.VolumeRoot, 0700); err != nil {
+		_ = listener.Close()
+		t.Fatal(err)
+	}
+	// Docker context is tools/fleetd, so keep fixture output outside the checkout.
 	dockerHTTP := &http.Server{Handler: http.NotFoundHandler()}
 	t.Cleanup(func() {
 		_ = dockerHTTP.Close()
