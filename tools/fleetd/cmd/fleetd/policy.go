@@ -36,6 +36,47 @@ func (s *server) validateCreate(sp spec) error {
 	return err
 }
 
+type apiError struct {
+	status int
+	reason string
+}
+
+func (e *apiError) Error() string { return e.reason }
+
+func errForbidden(reason string) error {
+	return &apiError{status: http.StatusForbidden, reason: reason}
+}
+
+func errConflict(reason string) error { return &apiError{status: http.StatusConflict, reason: reason} }
+
+func (s *server) imageAllowed(image string) bool {
+	if !strings.Contains(image, "@sha256:") {
+		return false
+	}
+	for _, allowed := range s.cfg.Images {
+		prefix, wildcard, ok := strings.Cut(allowed, "*")
+		if (ok && strings.HasPrefix(image, prefix)) || (!ok && image == allowed) {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *server) binds(sp spec) ([]string, error) {
+	root := filepath.Join(s.cfg.VolumeRoot, sp.BotKey)
+	if err := os.MkdirAll(root, 0700); err != nil {
+		return nil, err
+	}
+	binds := []string{root + ":/home/bot/data:ro"}
+	for _, mount := range sp.Mounts {
+		if !mount.ReadOnly {
+			return nil, errForbidden("mount_not_allowed")
+		}
+		binds = append(binds, mount.Source+":"+mount.Destination+":ro")
+	}
+	return binds, nil
+}
+
 func validateMounts(mounts []mountSpec, allowed []string) error {
 	for _, m := range mounts {
 		if m.Source == "" || m.Destination == "" || !filepath.IsAbs(m.Destination) || m.Destination == "/" {
