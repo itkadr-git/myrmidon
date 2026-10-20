@@ -80,7 +80,7 @@ describe("myrmidon(UI2) Ui2Fleet screen parity", () => {
   it("renders an error with a retry action", async () => {
     mockFleetApi.dashboard.mockRejectedValue(new Error("dashboard unavailable"));
     await renderScreen();
-    expect(container.textContent).toContain("Something went wrong");
+    expect(container.textContent).toContain("Could not load this data. Try again.");
     expect(container.textContent).toContain("Retry");
     expect(container.textContent).toContain("dashboard unavailable");
   });
