@@ -78,8 +78,10 @@ export function registerUi2Catalogs(custom: Partial<Record<Ui2Language, Record<s
     const catalog = custom[locale as Ui2Language]
       ? mergeCatalog(baseCatalog as unknown as CatalogObject, custom[locale as Ui2Language] as CatalogObject)
       : baseCatalog;
-    if (i18n.hasResourceBundle(locale, UI2_NAMESPACE)) {
-      i18n.removeResourceBundle(locale, UI2_NAMESPACE);
+    // Keep the initial registration idempotent; custom catalogs still update
+    // an existing bundle through i18next's deep-overwrite flag.
+    if (i18n.hasResourceBundle(locale, UI2_NAMESPACE) && !custom[locale as Ui2Language]) {
+      continue;
     }
     i18n.addResourceBundle(locale, UI2_NAMESPACE, catalog, true, true);
   }
