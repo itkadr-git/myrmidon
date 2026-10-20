@@ -2,8 +2,6 @@
 
 > Russian version: [SETTINGS.ru.md](SETTINGS.ru.md)
 
-| `nestRedactByNest` | 1.7-REDACT | `{}` | Per-nest redaction config in `instance_settings.general`, keyed by `nest_id`; managed by `GET/PATCH /api/myrmidon/nests/:nestId/redact`, effective without restart |
-
 Our settings are environment variables `MYRMIDON_<AREA>_<NAME>`. Vendor `PAPERCLIP_*`
 variables remain as they are and are not described here, except where we change their
 meaning or default value.

@@ -2,10 +2,6 @@
 
 > English version: [SETTINGS.md](SETTINGS.md)
 
-| `nestRedactByNest` | 1.7-REDACT | `{}` | Настройка REDACT по гнезду в `instance_settings.general`, ключ `nest_id`; управляется через `GET/PATCH /api/myrmidon/nests/:nestId/redact`, применяется без перезапуска |
-
-> English version: [SETTINGS.md](SETTINGS.md)
-
 > Это неполный перевод [SETTINGS.md](SETTINGS.md) — источник истины по настройкам.
 > This is a partial translation of [SETTINGS.md](SETTINGS.md) — the source of truth for settings.
 
