@@ -1367,7 +1367,7 @@ async function startServerWithDatabaseTeardown(
   {
     const boundBoardAddress =
       typeof server.address === "function" ? server.address() : null;
-    startBoardProcessRegistry(db as any, {
+    const registry = startBoardProcessRegistry(db as any, {
       apiPort:
         typeof boundBoardAddress === "object" && boundBoardAddress
           ? boundBoardAddress.port
@@ -1375,6 +1375,8 @@ async function startServerWithDatabaseTeardown(
       onError: (error, phase) =>
         logger.warn({ err: error, phase }, "board process registry tick failed"),
     });
+    // Ensure the child is visible in board_processes before readiness is reported.
+    void registry.tick();
   }
 
   // myrmidon(PROCS-1.2): the role split of the public listener and the IPC

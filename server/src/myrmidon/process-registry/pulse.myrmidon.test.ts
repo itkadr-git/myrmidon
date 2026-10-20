@@ -168,6 +168,7 @@ describe("board process pulse", () => {
 
     pulse.start();
     pulse.start();
+    await vi.advanceTimersByTimeAsync(0);
     await vi.advanceTimersByTimeAsync(50);
     expect(f.writes).toHaveLength(2);
     pulse.stop();
