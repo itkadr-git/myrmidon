@@ -17,6 +17,6 @@ settings-section: Track 5 — operations
 | `MYRMIDON_DISTILL_WINDOW_SEC` | DISTILL | `3600` | Lookback window for eligible distillation work | Invalid or non-positive values use the default |
 
 
-## Effective limit API
+### Effective limit API
 
 The budget-limits API now exposes `GET /api/myrmidon/companies/:companyId/budget-limits/effective/:issueId`. It resolves the active issue limit using issue, foraging, caste, project nest, then company nest precedence and returns the selected amount, period, mode, and source metadata. PUT rejects project and issue refs outside the requested company.
