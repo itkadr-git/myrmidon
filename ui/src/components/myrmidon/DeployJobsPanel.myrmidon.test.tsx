@@ -140,6 +140,17 @@ describe("DeployJobsPanel", () => {
     expect(history.textContent).not.toContain("Deployed");
   });
 
+  it("reports selected history filters to the API-backed owner", () => {
+    const onFilterChange = vi.fn();
+    const panel = render({ onFilterChange });
+    const filter = panel!.querySelector<HTMLSelectElement>('select[aria-label="Update mode"]')!;
+    flushSync(() => {
+      filter.value = "canary";
+      filter.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    expect(onFilterChange).toHaveBeenCalledWith({ mode: "canary", status: undefined, outcome: undefined });
+  });
+
   it("shows version and commit identity in previous deploys", () => {
     const panel = render({
       state: { job: null, history: [job({ status: "succeeded", active: false, abortable: false, id: "job-identity" })] },
