@@ -192,6 +192,11 @@ async function main() {
   // One attention signal per path per TTL (botd-attention.json); the uid of the
   // owner that blocks us goes into the text. chown is never attempted here.
   const attention = cacheMod.createAttention(ATTENTION_PATH, { log });
+  let foreignUid = null;
+  const signalForeignUid = (p, info) => {
+    foreignUid = { path: p, reason: `${info.reason}${info.uid == null ? "" : ` uid ${info.uid}`}`.slice(0, 500) };
+    attention.signal(p, info);
+  };
   // The rhythm of the rules: one op on one path no more than once per TTL
   // (botd-cooldown.json); a repeat within the window is skipped without a log line.
   const cooldown = cacheMod.createCooldown(COOLDOWN_PATH);
@@ -253,6 +258,8 @@ async function main() {
     parts.bases = bases.map((b) => ({ repo: b.repo, path: b.path, sizeBytes: null, lastFetchAt: b.lastFetch ? b.lastFetch.toISOString().replace(/\.\d{3}Z$/, "Z") : null }));
     parts.archives = archives.map((a) => ({ key: a.key, path: a.path, sizeBytes: a.sizeBytes, createdAt: a.createdAt.toISOString().replace(/\.\d{3}Z$/, "Z") }));
     parts.selfChecks = { reflink: null, gitref: null, wsCli: wsOk };
+    parts.foreignUid = foreignUid;
+    foreignUid = null;
     return { inventory, parts };
   }
 
@@ -267,7 +274,7 @@ async function main() {
       return guardedRemove(p, roots);
     } catch (err) {
       if (err && err.deferred === "foreign-uid") {
-        attention.signal(p, { reason: `${err.code} foreign-uid`, uid: err.uid });
+        signalForeignUid(p, { reason: `${err.code} foreign-uid`, uid: err.uid });
         return { deferred: err.deferred, detail: err.message };
       }
       throw err;
@@ -281,7 +288,7 @@ async function main() {
       fs.accessSync(path.resolve(p), fs.constants.W_OK | fs.constants.X_OK);
     } catch (err) {
       if (err && (err.code === "EACCES" || err.code === "EPERM")) {
-        attention.signal(p, { reason: `${err.code} foreign-uid`, uid: null });
+        signalForeignUid(p, { reason: `${err.code} foreign-uid`, uid: null });
         return { deferred: "foreign-uid", detail: `${err.code}: ${String(err.message).slice(0, 300)}` };
       }
     }

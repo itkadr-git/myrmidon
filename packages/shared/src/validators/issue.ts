@@ -445,6 +445,33 @@ export const issueExecutionMonitorPolicySchema = z.object({
     .default(null),
 });
 
+export const issueBlockReasonSchema = z.enum([
+  "external_wait",
+  "dependency",
+  "recovery",
+  "human_decision",
+  "resource",
+]);
+
+export const issueBlockerMetadataSchema = z.object({
+  blockReason: issueBlockReasonSchema,
+  owner: z.union([
+    z.object({ agentId: z.string().uuid() }).strict(),
+    z.object({ userId: z.string().uuid() }).strict(),
+  ]),
+  blockedByIssueIds: z.array(z.string().uuid()).max(20).optional(),
+  externalRef: z.string().trim().min(1).max(500).optional(),
+  nextCheckAt: z.string().datetime(),
+  timeoutAt: z.string().datetime(),
+  escalationPolicy: z.string().trim().min(1).max(120),
+}).strict().refine(
+  (value: {
+    blockedByIssueIds?: string[];
+    externalRef?: string;
+  }) => Boolean(value.blockedByIssueIds?.length || value.externalRef),
+  { message: "Provide blockedByIssueIds or externalRef", path: ["externalRef"] },
+);
+
 export const issueExecutionPolicySchema = z.object({
   mode: z.enum(ISSUE_EXECUTION_POLICY_MODES).optional().default("normal"),
   commentRequired: z.boolean().optional().default(true),
@@ -697,6 +724,7 @@ const createIssueBaseSchema = z.object({
   goalId: z.string().guid().optional().nullable(),
   parentId: z.string().guid().optional().nullable(),
   blockedByIssueIds: z.array(z.string().guid()).optional(),
+  blockerMetadata: issueBlockerMetadataSchema.nullable().optional(),
   unblockDescriptor: z
     .object({
       owner: z.union([
@@ -831,11 +859,13 @@ function requireReasonRefForBlockedTransition(
   value: {
     status?: unknown;
     blockedByIssueIds?: unknown;
+    blockerMetadata?: unknown;
     unblockDescriptor?: { reasonRef?: unknown } | null;
   },
   ctx: z.RefinementCtx,
 ) {
   if (value.status !== "blocked") return;
+  if (value.blockerMetadata !== undefined && value.blockerMetadata !== null) return;
   const hasBlockers =
     Array.isArray(value.blockedByIssueIds) &&
     value.blockedByIssueIds.length > 0;
@@ -965,6 +995,7 @@ export const updateIssueShapeSchema = objectWithoutDefaults(
     interrupt: z.boolean().optional(),
     deferWakeForGoal: z.boolean().optional(),
     hiddenAt: z.string().datetime().nullable().optional(),
+    blockerMetadata: issueBlockerMetadataSchema.nullable().optional(),
   });
 
 export const updateIssueSchema = objectWithoutDefaults(
@@ -991,6 +1022,7 @@ export const updateIssueSchema = objectWithoutDefaults(
     /** Assignment-only handoff; the following structured goal action owns the wake. */
     deferWakeForGoal: z.boolean().optional(),
     hiddenAt: z.string().datetime().nullable().optional(),
+    blockerMetadata: issueBlockerMetadataSchema.nullable().optional(),
     // myrmidon(STALE-BLOCK): blocked transitions need a reason reference
     // (issue | event | date) — enforced on PATCH via the refine below.
   })

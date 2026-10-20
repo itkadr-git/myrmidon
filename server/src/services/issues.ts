@@ -1,6 +1,7 @@
 import { documentService } from "./documents.js";
 // myrmidon(P5): lock owner lifecycle in checkout 409s
 import { checkoutRunStatusForIssue } from "../myrmidon/issue-checkout-guard.js";
+
 // myrmidon(1.6.5 OPE-6608): the board matcher's issue events
 import { notifySwarmIssueEvent } from "../myrmidon/swarm-claim/events.js";
 import { parseTaskSearch, taskSearchCtes, taskSearchScore } from "./task-search.js";
@@ -2895,7 +2896,7 @@ function myLastTouchAtExpr(companyId: string, userId: string) {
 // myrmidon(DB-PERF-P7): the canonical "last activity" of an issue is
 // greatest(updated_at, newest comment, newest activity_log row outside the
 // local-inbox actions). It is denormalized into issues.last_activity_at and kept
-// current by the triggers of migration 0307, so ordering and reporting read one
+// current by the triggers of migration 0355, so ordering and reporting read one
 // column instead of two correlated MAX subqueries per candidate row (the cost
 // that dominated GET /issues before this column existed).
 function issueCanonicalLastActivityAtExpr() {
@@ -4611,6 +4612,7 @@ async function listIssueReviewAttentionMap(
       conversationState: issue.conversationState,
       executionPolicy: issue.executionPolicy,
       executionState: issue.executionState,
+      blockerMetadata: issue.blockerMetadata,
       monitorNextCheckAt: issue.monitorNextCheckAt,
       monitorAttemptCount: issue.monitorAttemptCount,
       // myrmidon(HUMAN-REVIEW-WAIT): the human-review-wait facts.
@@ -5660,6 +5662,7 @@ async function listIssueBlockedInboxAttentionMap(
       conversationState: issue.conversationState,
       executionPolicy: issue.executionPolicy,
       executionState: issue.executionState,
+      blockerMetadata: issue.blockerMetadata,
       monitorNextCheckAt: issue.monitorNextCheckAt,
       monitorAttemptCount: issue.monitorAttemptCount,
       // myrmidon(HUMAN-REVIEW-WAIT): the human-review-wait facts.
@@ -10530,6 +10533,24 @@ export function issueService(db: Db) {
         .where(idPredicate)
         .then((rows: Array<typeof issues.$inferSelect>) => rows[0] ?? null);
       if (!existing) return null;
+      const donePullRequestSnapshot = existing.status !== "done" && data.status === "done"
+        && dbOrTx === db
+        ? await (async () => {
+            const [{ assertIssueDonePullRequestsSettled, inspectIssueDonePullRequests }, { createPullRequestMergeDetailsResolver }] = await Promise.all([
+              import("../myrmidon/issue-done-gate/guard.js"),
+              import("./github-pull-request-merge.js"),
+            ]);
+            const resolverDb = db;
+            const snapshot = await inspectIssueDonePullRequests(
+              resolverDb,
+              existing.companyId,
+              id,
+              createPullRequestMergeDetailsResolver(resolverDb),
+            );
+            assertIssueDonePullRequestsSettled(snapshot);
+            return snapshot;
+          })()
+        : null;
       if (data.parentId !== undefined && data.parentId !== existing.parentId) {
         await assertExecutionTaskParent(dbOrTx, existing.companyId, data.parentId);
       }
@@ -10550,6 +10571,7 @@ export function issueService(db: Db) {
       const {
         labelIds: nextLabelIds,
         blockedByIssueIds,
+        blockerMetadata,
         actorAgentId,
         actorUserId,
         companyGuard,
@@ -10618,6 +10640,7 @@ export function issueService(db: Db) {
 
       const patch: Partial<typeof issues.$inferInsert> = {
         ...issueData,
+        ...(blockerMetadata !== undefined ? { blockerMetadata } : {}),
         // myrmidon(S5): issue descriptions are stored with secret values masked.
         // The single write point for update: every path that PATCHes the
         // description (board edit, agent amend, API) stores the masked text.
@@ -10839,6 +10862,28 @@ export function issueService(db: Db) {
           .for("update")
           .then((rows: Array<typeof issues.$inferSelect>) => rows[0] ?? null);
         if (!receiptExisting) return null;
+        if (receiptExisting.status !== "done" && patch.status === "done" && donePullRequestSnapshot) {
+          const { assertIssueDoneSnapshotUnchanged } = await import("../myrmidon/issue-done-gate/guard.js");
+          await assertIssueDoneSnapshotUnchanged(tx as Db, existing.companyId, id, donePullRequestSnapshot);
+        } else if (receiptExisting.status !== "done" && patch.status === "done") {
+          // External transaction callers cannot perform provider requests without
+          // holding their transaction open; fail closed unless the stored facts
+          // already prove every linked PR merged.
+          const { assertStoredIssueDonePullRequestsSettled } = await import("../myrmidon/issue-done-gate/guard.js");
+          const products = await tx.select({
+            id: issueWorkProducts.id,
+            companyId: issueWorkProducts.companyId,
+            type: issueWorkProducts.type,
+            status: issueWorkProducts.status,
+            url: issueWorkProducts.url,
+            metadata: issueWorkProducts.metadata,
+          }).from(issueWorkProducts).where(and(
+            eq(issueWorkProducts.companyId, receiptExisting.companyId),
+            eq(issueWorkProducts.issueId, id),
+            eq(issueWorkProducts.type, "pull_request"),
+          ));
+          assertStoredIssueDonePullRequestsSettled(products);
+        }
         if (actorAgentId && patch.status === "done") {
           const [review] = await tx.select({ id: toolActionRequests.id }).from(toolActionRequests).where(and(eq(toolActionRequests.companyId, existing.companyId), eq(toolActionRequests.issueId, id), inArray(toolActionRequests.status, ["pending", "approved", "executing"]))).limit(1);
           if (review) throw conflict("This task is waiting for a connection review. Finish unrelated work, then yield in_review without retrying the governed call.", { code: "tool_review_pending", actionRequestId: review.id });

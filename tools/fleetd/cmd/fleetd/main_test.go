@@ -269,3 +269,51 @@ func jsonInt(n int64) string {
 	b, _ := json.Marshal(n)
 	return string(b)
 }
+
+func TestFleetdDoesNotRequireHostOrDockerSock(t *testing.T) {
+	s, _ := newServer(t)
+	key := s.cfg.Bots[0].BotKey
+
+	// 1. /v1/bots returns list without needing /host or /var/run/docker.sock
+	recList := routeRequest(s, http.MethodGet, "/v1/bots", s.cfg.Token, "")
+	if recList.Code != http.StatusOK {
+		t.Fatalf("list failed without host mounts: %d %s", recList.Code, recList.Body.String())
+	}
+
+	// 2. /v1/bots/:key/status responds with missing status cleanly
+	recStatus := routeRequest(s, http.MethodGet, "/v1/bots/"+key+"/status", s.cfg.Token, "")
+	if recStatus.Code != http.StatusOK {
+		t.Fatalf("status failed: %d %s", recStatus.Code, recStatus.Body.String())
+	}
+
+	// 3. /v1/bots/:key/template-drift succeeds within enrolled limits without host files
+	driftBody := `{"spec":{"botKey":"` + key + `","image":"example.com/bot@sha256:aa","memoryMb":1024,"cpus":1,"pidsLimit":256,"network":"net-a"}}`
+	recDrift := routeRequest(s, http.MethodPost, "/v1/bots/"+key+"/template-drift", s.cfg.Token, driftBody)
+	if recDrift.Code != http.StatusOK {
+		t.Fatalf("drift failed: %d %s", recDrift.Code, recDrift.Body.String())
+	}
+
+	// 4. Attempt to pass invalid action or path traversal is rejected before any backend check
+	recBadAction := routeRequest(s, http.MethodPost, "/v1/bots/"+key+"/../host", s.cfg.Token, "{}")
+	if recBadAction.Code == http.StatusOK {
+		t.Fatalf("expected path traversal / unknown action to be rejected, got %d", recBadAction.Code)
+	}
+}
+
+func TestValidateConfigUpstreamDefaultAndDisabledSafe(t *testing.T) {
+	// Upstream defaults safely to /var/run/docker.sock if empty, but doesn't require socket existence at config validation
+	cfg := testConfig()
+	cfg.Upstream = ""
+	if err := validate(cfg); err != nil {
+		t.Fatalf("valid config without explicit upstream rejected: %v", err)
+	}
+	if cfg.Upstream != "/var/run/docker.sock" {
+		t.Fatalf("expected default upstream, got %q", cfg.Upstream)
+	}
+
+	// Custom upstream (e.g. mock TCP or remote socket) is allowed and valid
+	cfg.Upstream = "http://127.0.0.1:2375"
+	if err := validate(cfg); err != nil {
+		t.Fatalf("valid config with custom upstream rejected: %v", err)
+	}
+}

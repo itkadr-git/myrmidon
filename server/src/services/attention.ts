@@ -1,7 +1,8 @@
-import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, lt, lte, notInArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, gte, inArray, isNotNull, isNull, lt, lte, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
+  agentWakeupRequests,
   approvals,
   assets,
   companies,
@@ -211,6 +212,7 @@ const ATTENTION_SOURCE_KINDS: AttentionSourceKind[] = [
   "pause_guard",
   // myrmidon(OPE-6011): a held task's silent-wake notice.
   "execution_hold",
+  "replay_blocked",
   // myrmidon(1.6.5-F21-B): owner decision cards waiting on the owner.
   "owner_pending_card",
   // myrmidon(1.6.6 OPE-7198): banned or exhausted Codex / ChatGPT subscription accounts.
@@ -271,6 +273,7 @@ const SOURCE_RANK: Record<AttentionSourceKind, number> = {
   // myrmidon(OPE-6011): a held task blocks all of its wakes — ranked with the
   // other machine-recovery stops, just below a recovery action itself.
   execution_hold: 1,
+  replay_blocked: 1,
   // myrmidon(1.6.5-F21-B): unanswered owner cards stall delivery; a card with
   // some stale ones ranks with the stalled-review notices.
   owner_pending_card: 16,
@@ -2730,6 +2733,59 @@ async function buildAttentionFeedSnapshot(
         }
       }
 
+      const cappedAgents = await db
+        .select({
+          agentId: agentWakeupRequests.agentId,
+          agentName: agents.name,
+          status: agents.status,
+          requestedAt: agentWakeupRequests.requestedAt,
+          payload: agentWakeupRequests.payload,
+        })
+        .from(agentWakeupRequests)
+        .innerJoin(agents, eq(agents.id, agentWakeupRequests.agentId))
+        .where(and(
+          eq(agentWakeupRequests.companyId, companyId),
+          eq(agentWakeupRequests.reason, "heartbeat.daily_run_limit"),
+          eq(agentWakeupRequests.status, "skipped"),
+          gte(agentWakeupRequests.requestedAt, new Date(now - 24 * 60 * 60 * 1000)),
+        ))
+        .orderBy(desc(agentWakeupRequests.requestedAt));
+      const latestCapByAgent = new Map<string, (typeof cappedAgents)[number]>();
+      for (const row of cappedAgents) {
+        if (!latestCapByAgent.has(row.agentId)) latestCapByAgent.set(row.agentId, row);
+      }
+      for (const latest of latestCapByAgent.values()) {
+        const observed = Number((latest.payload as { heartbeatSkip?: { observed?: unknown } } | null)?.heartbeatSkip?.observed ?? 0);
+        const limit = Number((latest.payload as { heartbeatSkip?: { limit?: unknown } } | null)?.heartbeatSkip?.limit ?? 0);
+        const resetAt = new Date(Date.UTC(latest.requestedAt.getUTCFullYear(), latest.requestedAt.getUTCMonth(), latest.requestedAt.getUTCDate() + 1));
+        const whyNow = `Agent ${latest.agentName} exhausted its daily run limit (${observed}/${limit}); resets at ${resetAt.toISOString()}.`;
+        add(createItem({
+          companyId,
+          sourceKind: "agent_error_alert",
+          subject: {
+            kind: "agent", id: latest.agentId, companyId, title: latest.agentName,
+            identifier: null, status: latest.status,
+            href: `/${prefix}/agents/${latest.agentId}`,
+            metadata: { dailyRunLimit: limit, dailyRunsObserved: observed, resetsAt: resetAt.toISOString() },
+          },
+          whyNow,
+          decisionVerbs: decisionVerbs(
+            { id: "inspect", label: "Inspect", description: "Inspect the agent's heartbeat limit." },
+            { id: "dismiss", label: "Dismiss", description: "Dismiss this alert." },
+          ),
+          inlineResolvable: true,
+          entryRule: "An agent wake was skipped because its daily run limit was reached.",
+          exitRule: "The daily run window resets or the alert is dismissed.",
+          dedupKey: `heartbeat_daily_run_limit:${latest.agentId}`,
+          severity: "high",
+          activityAt: toIso(latest.requestedAt),
+          createdAt: toIso(latest.requestedAt),
+          updatedAt: toIso(latest.requestedAt),
+          relatedIssue: null,
+          detail: { kind: "generic", summaryExcerpt: excerpt(whyNow), images: [] },
+        }));
+      }
+
       const erroredAgents = await db
         .select({
           id: agents.id,
@@ -2940,7 +2996,7 @@ async function buildAttentionFeedSnapshot(
       for (const card of await listExecutionHoldCards(db, companyId)) {
         add(createItem({
           companyId,
-          sourceKind: "execution_hold",
+          sourceKind: "replay_blocked",
           subject: {
             kind: "issue",
             id: card.issueId,
@@ -2951,11 +3007,15 @@ async function buildAttentionFeedSnapshot(
             href: card.issueIdentifier ? `/${prefix}/issues/${card.issueIdentifier}` : null,
             metadata: {
               recoveryActionId: card.actionId,
+              responsibleAgentId: card.responsibleAgentId,
+              responsibleAgentName: card.responsibleAgentName,
+              responsibleUserId: card.responsibleUserId,
+              dueAt: card.decideByAt,
               cause: card.cause,
               failedRunId: card.failedRunId,
             },
           },
-          whyNow: executionHoldSignalWhyNow(card),
+          whyNow: `Replay blocked: ${card.responsibleAgentName ? `responsible lead ${card.responsibleAgentName}` : `board operator${card.responsibleUserId ? ` (${card.responsibleUserId})` : ""}`} must triage this issue.`,
           decisionVerbs: decisionVerbs(
             {
               id: "confirm_continue",
@@ -2968,9 +3028,9 @@ async function buildAttentionFeedSnapshot(
           ),
           inlineResolvable: false,
           entryRule:
-            "a settled execution-reconciliation hold (replay=blocked) is the issue's newest effective blocker and the issue has an assignee",
+            "a settled replay block is the issue's newest effective blocker, the issue has an assignee, and it needs daily triage by its responsible lead or board operator",
           exitRule:
-            "the hold is superseded (explicit wake, recovery resolution, or the Confirm verb), or the issue loses its assignee.",
+            "the replay block is cleared or superseded, or the issue loses its assignee.",
           dedupKey: executionHoldSignalDedupKey(card),
           severity: executionHoldSignalSeverity(),
           activityAt: card.activityAt,
