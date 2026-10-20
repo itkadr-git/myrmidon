@@ -55961,7 +55961,8 @@
               "expression": "nest_id",
               "isExpression": false,
               "asc": true,
-              "nulls": "last"
+              "nulls": "last",
+              "opClass": "text_ops"
             }
           ],
           "isUnique": true,
