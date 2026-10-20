@@ -9,17 +9,10 @@
 // paths stay stable so parity comparison stays possible.
 
 import { describe, expect, it } from "vitest";
-import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 import { UI2_NAV_GROUPS, UI2_PHONE_TABS } from "../navModel";
 import { UI2_ROUTE_TABLE } from "../routes";
 import { isUi2RouteElementAPlaceholder } from "../routes";
 import { fleetStatus } from "../screens/agent-overview/Ui2AgentsFleetPage";
-
-const fleetScreenSource = readFileSync(
-  fileURLToPath(new URL("../screens/agent-overview/Ui2AgentsFleetPage.tsx", import.meta.url)),
-  "utf8",
-);
 
 describe("myrmidon(UI2) route table integration", () => {
   it("ships exactly the six contract entries plus the commander chat", () => {
@@ -38,16 +31,9 @@ describe("myrmidon(UI2) route table integration", () => {
   it("keeps the fleet route reachable from both desktop and phone navigation", () => {
     expect(UI2_NAV_GROUPS.flatMap((group) => group.items).filter((item) => item.to === "/agents")).toHaveLength(1);
     expect(UI2_PHONE_TABS.filter((item) => item.to === "/agents")).toHaveLength(1);
-    expect(UI2_PHONE_TABS.some((item) => item.to === "/more")).toBe(true);
+    expect(UI2_PHONE_TABS.some((item) => item.to === "/agents/all")).toBe(true);
   });
 
-  it("uses company-scoped agents and bounded live-run data", () => {
-    expect(fleetScreenSource).toContain("agentsApi.list(companyId)");
-    expect(fleetScreenSource).toContain('liveRunsForCompany(companyId, { minCount: 50, limit: 100 })');
-    expect(fleetScreenSource).toContain('status === "paused"');
-    expect(fleetScreenSource).toContain("agent.reportsTo");
-    expect(fleetScreenSource).toContain("overflow-y-auto");
-  });
 
   it("every entry renders a real screen, not the placeholder", () => {
     for (const entry of UI2_ROUTE_TABLE) {

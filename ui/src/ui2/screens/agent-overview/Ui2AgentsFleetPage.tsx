@@ -46,16 +46,36 @@ export function Ui2AgentsFleetPage() {
   const agentsById = new Map<string, AgentListItem>(agents.map((agent) => [agent.id, agent]));
   const childrenByManager = new Map<string, AgentListItem[]>();
   const roots: AgentListItem[] = [];
+  const parentByAgent = new Map<string, string>();
   for (const agent of agents) {
     if (agent.reportsTo && agentsById.has(agent.reportsTo)) {
       const children = childrenByManager.get(agent.reportsTo) ?? [];
       children.push(agent);
       childrenByManager.set(agent.reportsTo, children);
+      parentByAgent.set(agent.id, agent.reportsTo);
     } else {
       roots.push(agent);
     }
   }
-  const renderAgent = (agent: AgentListItem) => {
+  // Cyclic reporting chains have no natural root; render one member as a root
+  // and let the visited set prevent recursion while preserving every agent.
+  for (const agent of agents) {
+    let cursor = agent.id;
+    const seen = new Set<string>();
+    while (parentByAgent.has(cursor) && !seen.has(cursor)) {
+      seen.add(cursor);
+      cursor = parentByAgent.get(cursor)!;
+    }
+    if (seen.has(cursor)) {
+      for (const cycleId of seen) {
+        const cycleRoot = agentsById.get(cycleId);
+        if (cycleRoot && !roots.some((root) => root.id === cycleId)) roots.push(cycleRoot);
+      }
+    }
+  }
+  const renderAgent = (agent: AgentListItem, ancestors = new Set<string>()) => {
+    const nextAncestors = new Set(ancestors);
+    nextAncestors.add(agent.id);
     const run = latestRuns.get(agent.id);
     const state = fleetStatus(String(agent.status), run);
     const tone = state === "error" ? "danger" : state === "running" ? "ok" : "muted";
@@ -66,7 +86,7 @@ export function Ui2AgentsFleetPage() {
         <span className="flex items-center gap-2 text-sm"><Ui2StatusDot tone={tone} />{t(`ui2.agents.status.${state}` as never)}</span>
         <span className="text-sm text-muted-foreground">{t("ui2.agents.run" as never)}: {run?.id ?? t("ui2.common.unknown" as never)}</span>
       </Link>
-      {(childrenByManager.get(agent.id) ?? []).length > 0 ? <ul className="ml-5 border-l border-border">{(childrenByManager.get(agent.id) ?? []).map((child) => renderAgent(child))}</ul> : null}
+      {(childrenByManager.get(agent.id) ?? []).some((child) => !nextAncestors.has(child.id)) ? <ul className="ml-5 border-l border-border">{(childrenByManager.get(agent.id) ?? []).filter((child) => !nextAncestors.has(child.id)).map((child) => renderAgent(child, nextAncestors))}</ul> : null}
     </li>;
   };
   return (
@@ -78,7 +98,6 @@ export function Ui2AgentsFleetPage() {
         <section aria-label={t("ui2.agents.title" as never)} className="max-h-[70vh] overflow-y-auto overscroll-contain rounded-lg border border-border bg-card">
           <ul className="divide-y divide-border">
             {roots.map((agent: AgentListItem) => renderAgent(agent))}
-            {agents.filter((agent: AgentListItem) => !roots.some((root) => root.id === agent.id) && ![...childrenByManager.values()].some((children) => children.some((child) => child.id === agent.id))).map((agent: AgentListItem) => renderAgent(agent))}
           </ul>
         </section>
       ) : null}

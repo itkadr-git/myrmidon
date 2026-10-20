@@ -77,5 +77,5 @@ export const UI2_PHONE_TABS: Ui2NavItem[] = [
   { labelKey: "ui2.nav.fleet", to: "/agents", icon: Server },
   // myrmidon(1.6-CTO-CHAT-A): same switch on the phone tab bar.
   { labelKey: "ui2.nav.commander", to: "/commander-chat", icon: MessagesSquare },
-  { labelKey: "ui2.nav.more", to: "/more", icon: LayoutGrid },
+  { labelKey: "ui2.nav.more", to: "/agents/all", icon: LayoutGrid },
 ];
