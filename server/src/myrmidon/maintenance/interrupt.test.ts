@@ -213,8 +213,11 @@ describeEmbeddedPostgres("maintenance interrupt_and_retry", () => {
     expect((await svc.status()).instance).toMatchObject({ state: "entering", runningRuns: 5, interruptedRuns: 0 });
 
     clock += 1;
-    await svc.tick();
-    // The grace is over: every run is interrupted and leaves `running`.
+    // Each tick makes a bounded number of interrupt passes. Keep ticking until
+    // all five runs have settled instead of assuming one tick drains any size.
+    for (let pass = 0; pass < 10 && (await svc.status()).instance?.runningRuns; pass += 1) {
+      await svc.tick();
+    }
     expect((await svc.status()).instance).toMatchObject({ interruptedRuns: 5, runningRuns: 0 });
 
     for (const seed of seeds) {
