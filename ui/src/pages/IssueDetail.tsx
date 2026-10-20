@@ -176,6 +176,7 @@ import { liveBlueBadge } from "../lib/status-colors";
 import { ApprovalCard } from "../components/ApprovalCard";
 import { ProjectTile } from "../components/ProjectTile";
 import { InlineEditor } from "../components/InlineEditor";
+import { ExternalSessionsPanel } from "../components/issue/ExternalSessionsPanel";
 import {
   IssueChatThread,
   type IssueChatComposerHandle,
@@ -1200,6 +1201,8 @@ type IssueDetailChatTabProps = {
   issueStatus: Issue["status"];
   /** Marks cross-issue agent comments in the thread (the open cross-task write design (attribution)). */
   issueAssigneeAgentId: Issue["assigneeAgentId"];
+  issueIdentifier: string | null;
+  issueAgentModel: string | null;
   issueWorkMode: IssueWorkMode;
   executionRunId: string | null;
   blockedBy: Issue["blockedBy"];
@@ -1348,6 +1351,8 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
   issueWorkMode,
   issueStatus,
   issueAssigneeAgentId,
+  issueIdentifier,
+  issueAgentModel,
   executionRunId,
   blockedBy,
   liveIssueIds,
@@ -2325,6 +2330,18 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
           }}
         >
           <EmailThreadProvider companyId={companyId} issueId={issueId}>
+          {classicTaskInterfaceEnabled && issueAssigneeAgentId ? (
+            <div className="mx-auto w-full max-w-5xl px-4 pt-4">
+              <ExternalSessionsPanel
+                companyId={companyId}
+                issueId={issueId}
+                issueIdentifier={issueIdentifier}
+                agentId={issueAssigneeAgentId}
+                agentModel={issueAgentModel}
+                canLaunch={false}
+              />
+            </div>
+          ) : null}
           <ThreadComponent
             key={conversationMode ? draftKey : issueId}
             {...(!classicTaskInterfaceEnabled ? { creationActivity: resolvedActivity } : {})}
@@ -7747,6 +7764,8 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
               <ReplayBlockedNotice companyId={issue.companyId} issueId={issue.id} onResolved={invalidateIssueDetail} />
               {resolvedDetailTab === "chat" ? (
                 <IssueDetailChatTab
+                  issueIdentifier={issue.identifier}
+                  issueAgentModel={issue.assigneeAgentId ? agentMap.get(issue.assigneeAgentId)?.adapterModel ?? null : null}
                   threadHeader={<>{taskChatThreadHeader}{instanceExperimentalSettings?.enableChatConnectors && <EmailTaskActivity key={issue.id} companyId={issue.companyId} issueId={issue.id} />}</>}
                   issueBrief={
                     // Suppress the seeded-description bubble for the onboarding first
