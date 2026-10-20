@@ -286,19 +286,19 @@ describeProcs("two api processes on one test database (PROCS-T1.5 skeleton)", ()
         client.on("error", reject);
       });
 
-    // Concurrent fresh sockets use explicit source ports so the SO_REUSEPORT
-    // flow hash exercises both replicas rather than relying on ephemeral-port
-    // allocation.
+    // Concurrent fresh sockets use explicit, globally unique source ports so
+    // the SO_REUSEPORT flow hash exercises both replicas without bind races.
+    const sourcePorts: number[] = [];
+    for (let port = 10_000; sourcePorts.length < 512; port += 1) {
+      if (port !== sharedPort) sourcePorts.push(port);
+    }
     for (let batch = 0; batch < 8 && seenBootIds.size < processes.length; batch += 1) {
       const responses = await Promise.all(
         Array.from({ length: 64 }, (_, index) => {
           // Spread source ports across the range: adjacent ports can still
           // collide in the kernel's reuse-port hash bucket.
           const probe = batch * 64 + index;
-          const candidate = 10_000 + ((probe * 9_973) % 50_000);
-          const localPort = candidate === sharedPort
-            ? 10_000 + ((candidate - 10_000 + 1) % 50_000)
-            : candidate;
+          const localPort = sourcePorts[probe]!;
           // Vary both ends of the loopback flow; Linux may otherwise hash a
           // large source-port set to one reuse-port bucket in CI.
           const loopbackHost = probe % 2 === 0 ? "127.0.0.1" : "127.0.0.2";
