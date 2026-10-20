@@ -1,7 +1,8 @@
 // myrmidon(LICENSING): licensing API for the installation owner.
 //
 //   GET  /api/licensing/install-id    { installId, source }
-//   GET  /api/licensing/status        install id + request blob + issuer flag
+//   GET  /api/licensing/status        install id + request blob + license state per closed module
+//   POST /api/licensing/license       { value } save a license where the modules read it
 //   POST /api/licensing/parse-request { request } -> the request fields
 //   POST /api/licensing/issue         sign a module license
 //   GET  /api/licensing/issued        journal of issued licenses
@@ -28,14 +29,43 @@ import {
   isValidInstanceId,
   issueLicense,
   parseLicenseRequest,
+  verifyLicense,
   CORE_FEATURE,
+  type TrustedIssuerKey,
+  type VerifyReason,
 } from "./license.js";
 import { IssuerKeyError, appendJournal, isIssuerConfigured, loadIssuerKey, readJournal } from "./issuer.js";
+import {
+  LICENSE_ENV,
+  MAX_LICENSE_CHARS,
+  hostShare,
+  licenseFilePath,
+  moduleStatuses,
+  needsAttention,
+  readCandidateLicense,
+  writeLicenseFile,
+  type HostShareOptions,
+} from "./client-license.js";
+import { TRUSTED_ISSUER_KEYS } from "./trusted-keys.js";
 
 const NOT_A_REQUEST =
   "This does not look like a license request. Ask the client to press 'Copy license request' again.";
 
 const parseRequestBody = z.object({ request: z.string().max(4096) });
+
+// `value`, not `license`: the request logger redacts `value` in 4xx lines, so
+// a refused license never reaches a log.
+const saveLicenseBody = z.object({ value: z.string().min(1).max(MAX_LICENSE_CHARS) }).strict();
+
+const SAVE_REFUSALS: Partial<Record<VerifyReason, string>> = {
+  bad_format: "This is not a license: expected one line starting with MYR1.",
+  bad_payload: "The license content is damaged.",
+  bad_signature: "The license signature is invalid: the text was changed or it was not issued by the vendor.",
+  unsupported_rev: "This license format is not supported by this board version.",
+  instance_mismatch: "This license was issued for another installation (the installation id does not match).",
+  expired: "This license has already expired.",
+  feature_not_granted: "This license does not allow any module to start.",
+};
 
 const issueBody = z
   .object({
@@ -64,6 +94,12 @@ export interface LicensingRoutesOptions {
   env?: NodeJS.ProcessEnv;
   machineIdPaths?: readonly string[];
   now?: () => Date;
+  /** Closed modules installed into this board (see installed-modules.ts). */
+  installedModules?: () => Promise<string[]>;
+  /** Test seam: trust anchors; production always uses TRUSTED_ISSUER_KEYS. */
+  trustedKeys?: readonly TrustedIssuerKey[];
+  /** Test seam for the "is the license file shared with the host" probe. */
+  hostShare?: HostShareOptions;
 }
 
 export function licensingRoutes(options: LicensingRoutesOptions = {}): Router {
@@ -71,29 +107,114 @@ export function licensingRoutes(options: LicensingRoutesOptions = {}): Router {
   const env = () => options.env ?? process.env;
   const now = () => (options.now ? options.now() : new Date());
   const install = () => resolveInstallId({ env: env(), machineIdPaths: options.machineIdPaths });
+  const trustedKeys = options.trustedKeys ?? TRUSTED_ISSUER_KEYS;
+  const installed = async () => {
+    if (!options.installedModules) return [] as string[];
+    try {
+      return (await options.installedModules()).filter((m) => (KNOWN_MODULES as readonly string[]).includes(m));
+    } catch (err) {
+      logger.warn({ err }, "licensing: cannot list installed closed modules");
+      return [] as string[];
+    }
+  };
+
+  async function clientState(requested: string[] | null) {
+    const id = install();
+    const board = readAboutBuildInfo(env()).version;
+    const installedModules = await installed();
+    const requestModules =
+      requested && requested.length > 0
+        ? requested
+        : installedModules.length > 0
+          ? installedModules
+          : [...KNOWN_MODULES];
+    const license = readCandidateLicense(env());
+    const nowSeconds = Math.floor(now().getTime() / 1000);
+    const modules = moduleStatuses({
+      license,
+      installId: id.installId,
+      nowSeconds,
+      trustedKeys,
+      installed: installedModules,
+    });
+    const file = licenseFilePath(env());
+    return {
+      ...id,
+      board,
+      knownModules: KNOWN_MODULES,
+      installedModules,
+      issuerConfigured: isIssuerConfigured(env()),
+      request: buildLicenseRequest({ instanceId: id.installId, board, modules: requestModules, now: now() }),
+      license: {
+        source: license.source,
+        path: file,
+        envOverride: license.source === "env",
+        share: hostShare(file, options.hostShare),
+      },
+      modules,
+      attention: needsAttention(modules),
+    };
+  }
 
   for (const prefix of ["/licensing", "/myrmidon/licensing"]) {
     router.get(`${prefix}/install-id`, instanceAdminOnly, (_req, res) => {
       res.json(install());
     });
 
-    router.get(`${prefix}/status`, instanceAdminOnly, (req, res) => {
-      const id = install();
-      const modules = typeof req.query.modules === "string" && req.query.modules
-        ? req.query.modules.split(",").filter((m) => (KNOWN_MODULES as readonly string[]).includes(m))
-        : [...KNOWN_MODULES];
-      res.json({
-        ...id,
-        board: readAboutBuildInfo(env()).version,
-        knownModules: KNOWN_MODULES,
-        issuerConfigured: isIssuerConfigured(env()),
-        request: buildLicenseRequest({
-          instanceId: id.installId,
-          board: readAboutBuildInfo(env()).version,
-          modules,
-          now: now(),
-        }),
-      });
+    router.get(`${prefix}/status`, instanceAdminOnly, async (req, res, next) => {
+      try {
+        const requested =
+          typeof req.query.modules === "string" && req.query.modules
+            ? req.query.modules.split(",").filter((m) => (KNOWN_MODULES as readonly string[]).includes(m))
+            : null;
+        res.json(await clientState(requested));
+      } catch (err) {
+        next(err);
+      }
+    });
+
+    router.post(`${prefix}/license`, instanceAdminOnly, validate(saveLicenseBody), async (req, res, next) => {
+      try {
+        const text = (req.body as z.infer<typeof saveLicenseBody>).value.trim();
+        if ((env()[LICENSE_ENV] ?? "").trim()) {
+          throw conflict("The license is set by the MYR_LICENSE variable; a saved file would not be used", {
+            code: "license_env_override",
+          });
+        }
+        const id = install();
+        const nowSeconds = Math.floor(now().getTime() / 1000);
+        const result = verifyLicense(text, id.installId, nowSeconds, trustedKeys);
+        if (!result.valid) {
+          const message = SAVE_REFUSALS[result.reason] ?? "The license is not valid.";
+          throw unprocessable(message, { code: `license_${result.reason}` });
+        }
+        const file = licenseFilePath(env());
+        try {
+          writeLicenseFile(file, text);
+        } catch (err) {
+          const code = (err as NodeJS.ErrnoException).code ?? "unknown";
+          logger.warn({ path: file, code }, "licensing: cannot write the license file");
+          throw conflict(`Cannot write the license file ${file} (${code})`, {
+            code: "license_path_unwritable",
+            path: file,
+            errno: code,
+          });
+        }
+        // Metadata only: never the license text.
+        logger.info(
+          {
+            path: file,
+            instanceId: id.installId,
+            modules: result.payload?.modules,
+            expires: result.payload?.expires ?? null,
+            kid: result.kid ?? null,
+          },
+          "module license saved",
+        );
+        res.json(await clientState(null));
+      } catch (err) {
+        next(err);
+      }
     });
 
     router.post(`${prefix}/parse-request`, instanceAdminOnly, validate(parseRequestBody), (req, res) => {

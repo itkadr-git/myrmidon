@@ -101,6 +101,7 @@ export function issueLicense(
 export type VerifyReason =
   | "ok"
   | "no_license"
+  | "unreadable"
   | "bad_format"
   | "bad_signature"
   | "bad_payload"
@@ -110,14 +111,54 @@ export type VerifyReason =
   | "module_not_granted"
   | "feature_not_granted";
 
-/** Mirror of the module-side verification, in the same order of checks. */
+/**
+ * A public key the board trusts for license signatures. `kid` names the key
+ * in licenses that carry a `kid` field; `null` is a key known only by its
+ * bytes (the original key, whose licenses carry no `kid`).
+ */
+export interface TrustedIssuerKey {
+  kid: string | null;
+  publicKey: KeyObject | string;
+}
+
+const PAYLOAD_FIELDS = ["rev", "instance_id", "modules", "features", "expires", "watermark"] as const;
+const OPTIONAL_PAYLOAD_FIELDS = ["kid"] as const;
+const KID_RE = /^[A-Za-z0-9._:-]{1,64}$/;
+
+function asKeyObject(key: KeyObject | string): KeyObject {
+  return typeof key === "string" ? createPublicKey(key) : key;
+}
+
+/** The `kid` a payload names, read before the signature check only to pick
+ * the key; anything unreadable means "no kid" and every key is tried. */
+function peekKid(payloadBytes: Buffer): string | null {
+  try {
+    const raw = JSON.parse(payloadBytes.toString("utf8"));
+    return raw && typeof raw === "object" && typeof raw.kid === "string" ? raw.kid : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Mirror of the module-side verification, in the same order of checks
+ * (presence, envelope, signature, payload shape, rev, instance, expiry,
+ * module, feature).
+ *
+ * Key rotation: `publicKey` may be a list of trusted keys. A license that
+ * names a `kid` is checked only against the trusted keys with that `kid`; a
+ * license without `kid` (every license issued before rotation) is checked
+ * against every trusted key, so it keeps verifying for as long as the key
+ * that signed it stays in the list. `kid` is the only extra payload field
+ * accepted on top of the exact module-side set.
+ */
 export function verifyLicense(
   licenseText: string | null | undefined,
   instanceId: string,
   nowSeconds: number,
-  publicKey: KeyObject | string,
+  publicKey: KeyObject | string | readonly TrustedIssuerKey[],
   opts: { requiredModule?: string; requiredFeature?: string | null } = {},
-): { valid: boolean; reason: VerifyReason; payload?: LicensePayload } {
+): { valid: boolean; reason: VerifyReason; payload?: LicensePayload; kid?: string | null } {
   const fail = (reason: VerifyReason) => ({ valid: false, reason });
   if (!licenseText || !licenseText.trim()) return fail("no_license");
   const parts = licenseText.trim().split(".");
@@ -130,18 +171,35 @@ export function verifyLicense(
   } catch {
     return fail("bad_format");
   }
-  const key = typeof publicKey === "string" ? createPublicKey(publicKey) : publicKey;
-  if (!verify(null, payloadBytes, key, signature)) return fail("bad_signature");
+  const trusted: readonly TrustedIssuerKey[] = Array.isArray(publicKey)
+    ? (publicKey as readonly TrustedIssuerKey[])
+    : [{ kid: null, publicKey: publicKey as KeyObject | string }];
+  const kid = peekKid(payloadBytes);
+  const candidates = kid === null ? trusted : trusted.filter((k) => k.kid === kid);
+  let signed = false;
+  for (const candidate of candidates) {
+    try {
+      if (verify(null, payloadBytes, asKeyObject(candidate.publicKey), signature)) {
+        signed = true;
+        break;
+      }
+    } catch {
+      return fail("bad_format");
+    }
+  }
+  if (!signed) return fail("bad_signature");
   let payload: Record<string, unknown>;
   try {
     payload = JSON.parse(payloadBytes.toString("utf8"));
   } catch {
     return fail("bad_payload");
   }
-  const fields = ["rev", "instance_id", "modules", "features", "expires", "watermark"];
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) return fail("bad_payload");
   const keys = Object.keys(payload);
-  if (keys.length !== fields.length || !fields.every((f) => keys.includes(f))) return fail("bad_payload");
+  const allowed = new Set<string>([...PAYLOAD_FIELDS, ...OPTIONAL_PAYLOAD_FIELDS]);
+  if (!PAYLOAD_FIELDS.every((f) => keys.includes(f)) || !keys.every((k) => allowed.has(k))) {
+    return fail("bad_payload");
+  }
   const { rev, instance_id: pInstance, modules, features, expires, watermark } = payload as Record<string, unknown>;
   const strList = (v: unknown): v is string[] =>
     Array.isArray(v) && v.every((x) => typeof x === "string" && x.length > 0);
@@ -150,13 +208,22 @@ export function verifyLicense(
   if (!strList(modules) || !strList(features)) return fail("bad_payload");
   if (expires !== null && !Number.isInteger(expires)) return fail("bad_payload");
   if (watermark !== null && typeof watermark !== "string") return fail("bad_payload");
+  if ("kid" in payload && (typeof payload.kid !== "string" || !KID_RE.test(payload.kid))) return fail("bad_payload");
   if (rev !== CONTRACT_REV) return fail("unsupported_rev");
   if (pInstance !== instanceId) return fail("instance_mismatch");
   if (expires !== null && (expires as number) <= nowSeconds) return fail("expired");
   if (opts.requiredModule && !modules.includes(opts.requiredModule)) return fail("module_not_granted");
   const requiredFeature = opts.requiredFeature === undefined ? CORE_FEATURE : opts.requiredFeature;
   if (requiredFeature && !features.includes(requiredFeature)) return fail("feature_not_granted");
-  return { valid: true, reason: "ok", payload: payload as unknown as LicensePayload };
+  const result: LicensePayload = {
+    rev: rev as number,
+    instance_id: pInstance,
+    modules,
+    features,
+    expires: expires as number | null,
+    watermark: watermark as string | null,
+  };
+  return { valid: true, reason: "ok", payload: result, kid };
 }
 
 // --- MYRQ1 license request ---------------------------------------------------
@@ -174,20 +241,43 @@ export function isValidInstanceId(value: unknown): value is string {
   return typeof value === "string" && INSTANCE_ID_RE.test(value);
 }
 
+export const UNKNOWN_BOARD = "unknown";
+export const MAX_BOARD_CHARS = 32;
+
+/** `time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now))`: whole seconds, UTC. */
+function requestTimestamp(now: Date): string {
+  return now.toISOString().replace(/\.\d{3}Z$/, "Z");
+}
+
+/**
+ * The MYRQ1 blob exactly as the module side builds it (`build_request`):
+ * sorted keys, tight separators, ASCII-only JSON, whole-second UTC time,
+ * board version capped at 32 chars (`unknown` when empty), modules sorted and
+ * restricted to the known closed modules (at least one). The same inputs give
+ * the same bytes on both sides, so the vendor's reference parser accepts it.
+ */
 export function buildLicenseRequest(input: {
   instanceId: string;
   board: string;
   modules: readonly string[];
   now?: Date;
 }): string {
-  const body: LicenseRequest = {
-    v: 1,
-    instance_id: input.instanceId,
-    board: input.board,
-    modules: sortedUnique(input.modules),
-    ts: (input.now ?? new Date()).toISOString(),
-  };
-  return `${REQUEST_PREFIX}.${b64urlEncode(Buffer.from(JSON.stringify(body), "utf8"))}`;
+  const modules = sortedUnique(input.modules);
+  if (modules.length === 0) throw new Error("at least one module is required");
+  const unknown = modules.filter((m) => !(KNOWN_MODULES as readonly string[]).includes(m));
+  if (unknown.length > 0) throw new Error(`unknown module(s): ${unknown.join(", ")}`);
+  const board = (input.board || UNKNOWN_BOARD).slice(0, MAX_BOARD_CHARS);
+  const text =
+    "{" +
+    [
+      `"board":${asciiJson(board)}`,
+      `"instance_id":${asciiJson(input.instanceId)}`,
+      `"modules":${asciiJson(modules)}`,
+      `"ts":${asciiJson(requestTimestamp(input.now ?? new Date()))}`,
+      `"v":1`,
+    ].join(",") +
+    "}";
+  return `${REQUEST_PREFIX}.${b64urlEncode(Buffer.from(text, "ascii"))}`;
 }
 
 /** Returns null for anything that is not a well-formed request: the caller

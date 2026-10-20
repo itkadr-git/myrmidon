@@ -171,7 +171,7 @@ describe("license request MYRQ1", () => {
       instance_id: MACHINE_ID_INSTALL_ID,
       board: "1.6.6",
       modules: ["antigravity", "google-ai"],
-      ts: "2026-10-16T08:00:00.000Z",
+      ts: "2026-10-16T08:00:00Z",
     });
     for (const bad of ["", "MYRQ1.", "MYRQ1.!!!", "MYRQ2.abc", "hello", 42, null, `MYRQ1.${Buffer.from("{}").toString("base64url")}`]) {
       expect(parseLicenseRequest(bad)).toBeNull();
