@@ -1047,6 +1047,7 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
       targetSlug?: string | null;
       sourceKind?: KnowledgeSourceKind;
       sourceRef?: string | null;
+      trust?: "internal" | "external";
     },
   ): Promise<{ id: string; targetItemId: string | null; status: string; createdAt: string }> {
     assertSingleLine(input.body, "Suggestion body");
@@ -1065,6 +1066,7 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
         rationale: input.rationale ?? null,
         sourceKind: input.sourceKind ?? null,
         sourceRef: input.sourceRef ?? null,
+        trust: input.trust ?? "internal",
         status: "pending",
         createdByAgentId: actor.actorType === "agent" ? (actor.actorId ?? null) : null,
         createdByUserId: actor.actorType === "user" ? (actor.actorId ?? null) : null,

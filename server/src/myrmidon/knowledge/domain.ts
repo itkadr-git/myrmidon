@@ -77,6 +77,10 @@ export type KnowledgeSourceKind = (typeof KNOWLEDGE_SOURCE_KINDS)[number];
 export const KNOWLEDGE_SUGGESTION_STATUSES = ["pending", "accepted", "declined"] as const;
 export type KnowledgeSuggestionStatus = (typeof KNOWLEDGE_SUGGESTION_STATUSES)[number];
 
+/** Provenance trust levels for knowledge suggestions. */
+export const KNOWLEDGE_SUGGESTION_TRUSTS = ["internal", "external"] as const;
+export type KnowledgeSuggestionTrust = (typeof KNOWLEDGE_SUGGESTION_TRUSTS)[number];
+
 /** Actor kinds an event / approval can carry. */
 export const KNOWLEDGE_ACTOR_TYPES = ["agent", "user", "system"] as const;
 export type KnowledgeActorType = (typeof KNOWLEDGE_ACTOR_TYPES)[number];

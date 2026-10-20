@@ -223,6 +223,10 @@ export const knowledgeSources = pgTable(
 export const KNOWLEDGE_SUGGESTION_STATUSES = ["pending", "accepted", "declined"] as const;
 export type KnowledgeSuggestionStatus = (typeof KNOWLEDGE_SUGGESTION_STATUSES)[number];
 
+/** Provenance trust levels for suggestions. */
+export const KNOWLEDGE_SUGGESTION_TRUSTS = ["internal", "external"] as const;
+export type KnowledgeSuggestionTrust = (typeof KNOWLEDGE_SUGGESTION_TRUSTS)[number];
+
 export const knowledgeSuggestions = pgTable(
   "knowledge_suggestions",
   {
@@ -239,6 +243,7 @@ export const knowledgeSuggestions = pgTable(
     rationale: text("rationale"),
     sourceKind: text("source_kind").$type<KnowledgeSourceKind>(),
     sourceRef: text("source_ref"),
+    trust: text("trust").$type<KnowledgeSuggestionTrust>(),
     status: text("status").$type<KnowledgeSuggestionStatus>().notNull().default("pending"),
     createdByAgentId: text("created_by_agent_id"),
     createdByUserId: text("created_by_user_id"),
@@ -249,6 +254,7 @@ export const knowledgeSuggestions = pgTable(
   (table) => ({
     nestStatusIdx: index("knowledge_suggestions_nest_status_idx").on(table.nestId, table.status),
     companyIdx: index("knowledge_suggestions_company_idx").on(table.companyId),
+    trustIdx: index("knowledge_suggestions_trust_idx").on(table.trust),
   }),
 );
 
