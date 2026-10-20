@@ -540,6 +540,15 @@ describeEmbeddedPostgres("attention service", () => {
       updatedAt: new Date("2026-07-09T12:04:00.000Z"),
     });
 
+    const replayHoldIssueId = await insertIssue({
+      companyId, identifier: "ATN-REPLAY", title: "Replay held task", status: "in_progress", assigneeAgentId: workerId, updatedAt: baseTime,
+    });
+    const replayHoldActionId = randomUUID();
+    await db.insert(issueRecoveryActions).values({
+      id: replayHoldActionId, companyId, sourceIssueId: replayHoldIssueId, kind: "active_run_watchdog", status: "resolved",
+      cause: "legacy_execution_requires_reconciliation", fingerprint: "attention-replay-hold",
+      evidence: { automaticRecovery: { replay: "blocked" } }, nextAction: "Inspect failed execution", updatedAt: baseTime,
+    });
     await db.insert(issueRecoveryActions).values([
       {
         id: randomUUID(),
@@ -730,7 +739,7 @@ describeEmbeddedPostgres("attention service", () => {
 
     const feed = await attentionService(db, TEST_SERVICE_OPTS).list(companyId, { userId: "board-user" });
 
-    expect(feed.totalCount).toBe(11);
+    expect(feed.totalCount).toBe(12);
     expect(feed.countsBySourceKind).toMatchObject({
       approval: 1,
       issue_thread_interaction: 1,
@@ -742,7 +751,16 @@ describeEmbeddedPostgres("attention service", () => {
       failed_run: 1,
       budget_alert: 2,
       agent_error_alert: 1,
+      replay_blocked: 1,
     });
+    const replayCard = feed.items.find((item) => item.sourceKind === "replay_blocked");
+    expect(replayCard).toMatchObject({
+      sourceKind: "replay_blocked",
+      subject: { id: replayHoldIssueId, metadata: { responsibleAgentId: null, responsibleUserId: null, dueAt: expect.any(String) } },
+      decideBy: null,
+      whyNow: expect.stringContaining("board operator"),
+    });
+    expect(replayCard?.subject.metadata?.dueAt).toBe("2026-07-10T12:00:00.000Z");
     expect(feed.items.map((item) => item.sourceKind)).toEqual(expect.arrayContaining([
       "approval",
       "issue_thread_interaction",

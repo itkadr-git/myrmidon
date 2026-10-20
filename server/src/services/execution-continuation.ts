@@ -144,35 +144,74 @@ export async function buildExecutionContinuation(input: {
   );
   const explicitContinuation = object(input.context.explicitUserContinuation);
   const explicitUserSource = string(explicitContinuation.previousRunId);
-  const sourceRunId =
-    explicitUserSource ??
-    triggerInteraction?.sourceRunId ??
-    string(input.context.retryOfRunId) ??
-    string(input.context.previousRunId) ??
-    string(input.context.interruptedRunId);
-  const sourceRun = sourceRunId
-    ? (
-        await db
-          .select({ context: heartbeatRuns.contextSnapshot, result: heartbeatRuns.resultJson })
-          .from(heartbeatRuns)
-          .where(
-            and(
-              eq(heartbeatRuns.companyId, companyId),
-              eq(heartbeatRuns.id, sourceRunId),
-              sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
-            ),
-          )
-      )[0]
-    : null;
-  if (sourceRunId && !sourceRun)
-    throw new Error(explicitUserSource ? "continuation_user_authorization_missing" : "continuation_source_context_missing");
+
+  let sourceRunId: string | null = null;
+  let sourceRun: { context: unknown; result: unknown } | null = null;
+
+  if (explicitUserSource) {
+    sourceRunId = explicitUserSource;
+    const [row] = await db
+      .select({ context: heartbeatRuns.contextSnapshot, result: heartbeatRuns.resultJson })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, companyId),
+          eq(heartbeatRuns.id, explicitUserSource),
+          sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
+        ),
+      );
+    sourceRun = row ?? null;
+    if (!sourceRun) {
+      throw new Error("continuation_user_authorization_missing");
+    }
+  } else {
+    // Candidates in order of precedence: interaction source run (if on this issue),
+    // followed by retry/continuation runs for this task.
+    const candidates = [
+      triggerInteraction?.sourceRunId,
+      string(input.context.retryOfRunId),
+      string(input.context.previousRunId),
+      string(input.context.interruptedRunId),
+    ].filter((id): id is string => typeof id === "string" && id.length > 0);
+
+    for (const candidateId of candidates) {
+      const [row] = await db
+        .select({ context: heartbeatRuns.contextSnapshot, result: heartbeatRuns.resultJson })
+        .from(heartbeatRuns)
+        .where(
+          and(
+            eq(heartbeatRuns.companyId, companyId),
+            eq(heartbeatRuns.id, candidateId),
+            sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
+          ),
+        );
+      if (row) {
+        sourceRunId = candidateId;
+        sourceRun = row;
+        break;
+      }
+    }
+
+    const requestedRunId =
+      string(input.context.retryOfRunId) ??
+      string(input.context.previousRunId) ??
+      string(input.context.interruptedRunId);
+    if (requestedRunId && !sourceRun) {
+      throw new Error("continuation_source_context_missing");
+    }
+  }
+
   const originCommentIds = [
     ...new Set([
       ...continuationOriginCommentIds(input.context),
       ...continuationOriginCommentIds(sourceRun?.context),
-      ...(triggerInteraction?.originCommentIds ?? []),
-      ...(triggerInteraction?.sourceCommentId
-        ? [triggerInteraction.sourceCommentId]
+      ...(triggerInteraction && (!triggerInteraction.sourceRunId || sourceRunId === triggerInteraction.sourceRunId)
+        ? [
+            ...(triggerInteraction.originCommentIds ?? []),
+            ...(triggerInteraction.sourceCommentId
+              ? [triggerInteraction.sourceCommentId]
+              : []),
+          ]
         : []),
     ]),
   ];

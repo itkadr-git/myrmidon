@@ -331,6 +331,7 @@ async function sourceIssueId(
     // myrmidon(1.6.5 BOT-DISK-H4c): the archive card sits on the task.
     case "bot_disk_archive":
     // myrmidon(OPE-6011): the held-task card's subject is the held task.
+    case "replay_blocked":
     case "execution_hold":
     case "stale_block": {
       const row = await db
