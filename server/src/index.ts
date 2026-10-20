@@ -1363,6 +1363,21 @@ async function startServerWithDatabaseTeardown(
   });
   startupListenerBound = true;
 
+  // Register before reporting API readiness. The supervisor may immediately
+  // use that report to run drain/failover assertions against this identity.
+  {
+    const boundBoardAddress =
+      typeof server.address === "function" ? server.address() : null;
+    startBoardProcessRegistry(db as any, {
+      apiPort:
+        typeof boundBoardAddress === "object" && boundBoardAddress
+          ? boundBoardAddress.port
+          : listenPort,
+      onError: (error, phase) =>
+        logger.warn({ err: error, phase }, "board process registry tick failed"),
+    });
+  }
+
   // myrmidon(PROCS-1.2): the role split of the public listener and the IPC
   // contract with the worker.
   //
