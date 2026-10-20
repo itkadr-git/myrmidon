@@ -9,7 +9,6 @@ version file to edit. Base Paperclip version is in the image label
 [ci.md](ci.md) and [deploy.md](deploy.md).
 
 ## Unreleased
-
 ### Server and CLI texts renamed to Myrmidon (REBRAND B, OPE-4155)
 
 - User-visible text in the server and the CLI names the product Myrmidon:
@@ -25,6 +24,7 @@ version file to edit. Base Paperclip version is in the image label
   bin, `PAPERCLIP_*` env vars, `X-Paperclip-*` headers, `@paperclipai/*`
   packages, `~/.paperclip` paths, MCP server names, the `/paperclip` Discord
   command, and frozen pre-rename snapshots.
+
 
 ## 1.6.4
 

@@ -9,7 +9,6 @@
 [ci.md](ci.md) и [deploy.md](deploy.md).
 
 ## Без выпуска
-
 ### Тексты сервера и CLI переименованы в Myrmidon (REBRAND B, OPE-4155)
 
 - Пользовательские тексты сервера и CLI называют продукт Myrmidon:
@@ -25,6 +24,7 @@
   env `PAPERCLIP_*`, заголовки `X-Paperclip-*`, пакеты `@paperclipai/*`,
   пути `~/.paperclip`, имена MCP-серверов, слеш-команда `/paperclip`
   в Discord и замороженные снапшоты до переименования.
+
 
 ## 1.6.4
 
