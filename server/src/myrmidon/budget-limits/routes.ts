@@ -35,7 +35,7 @@ import { validate } from "../../middleware/validate.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "../../routes/authz.js";
 import { logActivity } from "../../services/activity-log.js";
 import { instanceSettingsService } from "../../services/instance-settings.js";
-import { createBudgetLimitStore, validateBudgetLimitRef } from "./store.js";
+import { createBudgetLimitStore, validateBudgetLimitRef, validateBudgetLimitScope } from "./store.js";
 import { computeBudgetLimitUsage } from "./usage.js";
 import { readResolvedSignalOnly, writeBudgetLimitsSignalOnly } from "./settings.js";
 
@@ -174,6 +174,11 @@ export function budgetLimitsRoutes(db: Db, deps: BudgetLimitRoutesDeps = {}) {
       const refError = validateBudgetLimitRef(level, ref);
       if (refError) {
         res.status(400).json({ error: refError });
+        return;
+      }
+      const scopeError = await validateBudgetLimitScope(db, companyId, level, ref);
+      if (scopeError) {
+        res.status(400).json({ error: scopeError });
         return;
       }
       const body = req.body as z.infer<typeof budgetLimitUpsertSchema>;

@@ -30,9 +30,18 @@ describe("resolveEffectiveBudgetLimit", () => {
     expect(result).toMatchObject({ amountCents: 500, sourceLevel: "issue", sourceRef: "issue-1" });
   });
 
-  it("falls back through caste, foraging, project, then company", () => {
+  it("prefers foraging over caste when both are configured", () => {
+    const rows = [limit("foraging", "foraging", 300), limit("caste", "backend", 400)];
+    expect(resolveEffectiveBudgetLimit(rows, { issueId: "issue-1", projectId: null, casteKey: "backend" })).toMatchObject({
+      amountCents: 300,
+      sourceLevel: "foraging",
+      sourceRef: "foraging",
+    });
+  });
+
+  it("falls back through foraging, caste, project, then company", () => {
     const rows = [limit("nest", "company", 100), limit("nest", "project-1", 200), limit("foraging", "foraging", 300), limit("caste", "backend", 400)];
-    expect(resolveEffectiveBudgetLimit(rows, { issueId: "issue-1", projectId: "project-1", casteKey: "backend" }).sourceLevel).toBe("caste");
+    expect(resolveEffectiveBudgetLimit(rows, { issueId: "issue-1", projectId: "project-1", casteKey: "backend" }).sourceLevel).toBe("foraging");
     expect(resolveEffectiveBudgetLimit(rows, { issueId: "issue-1", projectId: "project-1", casteKey: null }).sourceLevel).toBe("foraging");
     expect(resolveEffectiveBudgetLimit([rows[0]], { issueId: "issue-1", projectId: "project-1", casteKey: null }).sourceRef).toBe("company");
   });

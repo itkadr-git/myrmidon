@@ -13,7 +13,7 @@
 // - Reads are company-scoped by construction.
 
 import { and, desc, eq } from "drizzle-orm";
-import { budgetLimitChanges, budgetLimits, issues, type Db } from "@paperclipai/db";
+import { budgetLimitChanges, budgetLimits, issues, projects, type Db } from "@paperclipai/db";
 import {
   BUDGET_LIMIT_FORAGING_REF,
   BUDGET_LIMIT_NEST_COMPANY_REF,
@@ -124,6 +124,29 @@ export function validateBudgetLimitRef(level: BudgetLimitLevel, ref: string): st
   return null;
 }
 
+export async function validateBudgetLimitScope(
+  db: Db,
+  companyId: string,
+  level: BudgetLimitLevel,
+  ref: string,
+): Promise<string | null> {
+  if (level === "nest" && ref !== BUDGET_LIMIT_NEST_COMPANY_REF) {
+    const [project] = await db
+      .select({ id: projects.id })
+      .from(projects)
+      .where(and(eq(projects.id, ref), eq(projects.companyId, companyId)));
+    return project ? null : "nest ref must identify a project in this company";
+  }
+  if (level === "issue") {
+    const [issue] = await db
+      .select({ id: issues.id })
+      .from(issues)
+      .where(and(eq(issues.id, ref), eq(issues.companyId, companyId)));
+    return issue ? null : "issue ref must identify an issue in this company";
+  }
+  return null;
+}
+
 export interface BudgetLimitStorePorts {
   db: Db;
   now?: () => Date;
@@ -154,8 +177,9 @@ export function resolveEffectiveBudgetLimit(
   refs: { issueId: string; projectId: string | null; casteKey: string | null },
 ): EffectiveBudgetLimitView {
   const candidates: Array<[BudgetLimitLevel, string]> = [["issue", refs.issueId]];
-  if (refs.casteKey) candidates.push(["caste", refs.casteKey]);
+  // Foraging is deeper than caste in the task hierarchy.
   candidates.push(["foraging", BUDGET_LIMIT_FORAGING_REF]);
+  if (refs.casteKey) candidates.push(["caste", refs.casteKey]);
   if (refs.projectId) candidates.push(["nest", refs.projectId]);
   candidates.push(["nest", BUDGET_LIMIT_NEST_COMPANY_REF]);
   for (const [level, ref] of candidates) {
