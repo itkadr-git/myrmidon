@@ -35,6 +35,16 @@ describe("entity recognizer", () => {
     expect(bankAccountMatchesBic("30101810400000000225", "044525226")).toBe(false);
   });
 
+  it("does not classify a BIC as KPP", () => {
+    expect(matches("044525225", "kpp")).toHaveLength(0);
+    expect(matches("КПП: 770101001", "kpp")).toHaveLength(1);
+  });
+
+  it("distinguishes settlement and correspondent accounts by prefix", () => {
+    expect(matches("40817810099910004312", "correspondent_account")).toHaveLength(0);
+    expect(matches("30101810400000000225", "bank_account")).toHaveLength(0);
+  });
+
   it("supports a dictionary nest through a narrow interface", () => {
     const result = detectEntities("Секретное кодовое слово", {
       find: () => [{ value: "кодовое слово", start: 10, end: 23, score: 0.81 }],
