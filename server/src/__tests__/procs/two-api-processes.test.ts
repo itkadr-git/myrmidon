@@ -254,8 +254,9 @@ describeProcs("two api processes on one test database (PROCS-T1.5 skeleton)", ()
     processes = [];
 
     const sharedPort = await pickFreePort();
+    const replicaCount = 2;
     processes = await startApiProcesses({
-      count: 2,
+      count: replicaCount,
       baseDir,
       connectionString: database?.connectionString ?? externalTestDatabaseUrl!,
       role: "api",
@@ -264,6 +265,16 @@ describeProcs("two api processes on one test database (PROCS-T1.5 skeleton)", ()
       // delay readiness so both SO_REUSEPORT sockets exist before probing.
       readyTimeoutMs: 30_000,
     });
+
+    const expectedBootIds = new Set<string>();
+    for (const handle of processes) {
+      const own = await readBoardProcesses(handle);
+      const row = [...apiRows(own).values()].find((candidate) => candidate.bootId === own.selfBootId);
+      expect(row, `registry row for replica at ${handle.baseUrl}`).toBeDefined();
+      expect(row?.status).toBe("live");
+      expectedBootIds.add(own.selfBootId);
+    }
+    expect(expectedBootIds.size).toBe(replicaCount);
 
     const seenBootIds = new Set<string>();
     const requestReplica = (localPort: number, loopbackHost: string) =>
@@ -322,7 +333,7 @@ describeProcs("two api processes on one test database (PROCS-T1.5 skeleton)", ()
       }
     }
 
-    expect(seenBootIds.size).toBe(processes.length);
+    expect(seenBootIds).toEqual(expectedBootIds);
     const registry = await readBoardProcesses(processes[0]!);
     const liveApiRows = registry.processes.filter((row) => row.role === "api" && row.status === "live");
     expect(new Set(liveApiRows.map((row) => row.bootId))).toEqual(seenBootIds);
