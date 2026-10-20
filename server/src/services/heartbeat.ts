@@ -17902,7 +17902,7 @@ export function heartbeatService(
               .select({ running: sql<number>`count(*)` })
               .from(heartbeatRuns)
               .where(eq(heartbeatRuns.status, "running"));
-            const [{ agentRunning }] = await tx
+            const [{ running: agentRunning }] = await tx
               .select({ running: sql<number>`count(*)` })
               .from(heartbeatRuns)
               .where(
