@@ -167,28 +167,6 @@ func hashSecret(s string) string {
 	sum := sha256.Sum256([]byte(s))
 	return hex.EncodeToString(sum[:])[:12]
 }
-func (s *server) driftFields(sp spec, x *dockerInspect) []string {
-	var out []string
-	if x.Config.Image != sp.Image {
-		out = append(out, "image")
-	}
-	if x.HostConfig.Memory != sp.MemoryMb*1024*1024 {
-		out = append(out, "memoryMb")
-	}
-	if x.HostConfig.NanoCPUs != int64(sp.Cpus*1e9) {
-		out = append(out, "cpus")
-	}
-	if x.HostConfig.PidsLimit != sp.PidsLimit {
-		out = append(out, "pidsLimit")
-	}
-	if x.HostConfig.NetworkMode != sp.Network {
-		out = append(out, "network")
-	}
-	if !x.HostConfig.ReadonlyRootfs {
-		out = append(out, "readonlyRootfs")
-	}
-	return out
-}
 func writeAPIError(w http.ResponseWriter, err error) {
 	if e, ok := err.(*apiError); ok {
 		http.Error(w, e.reason, e.status)
