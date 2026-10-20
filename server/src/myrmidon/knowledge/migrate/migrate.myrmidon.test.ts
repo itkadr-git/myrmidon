@@ -62,6 +62,7 @@ interface WriterLog {
   listRevisions: string[];
   statuses: Map<string, { deliveredContent: string | null; status: string; supersededByItemId: string | null }>;
   revisions: Map<string, Array<{ content: string; sources: Array<{ kind: "document" | "issue" | "url" | "task" | "pr" | "run" | "decision"; ref: string; note: string | null }> }>>;
+  items: Map<string, { id: string; slug: string; kind: string; title: string; summary: string | null; folderPath: string; tags: string[]; approvalRequired: boolean; approverKind: string | null; deliveredContent: string | null; status: string; supersededByItemId: string | null }>;
   failDraftOn?: string;
 }
 
@@ -75,6 +76,10 @@ function stubWriter(log: WriterLog, options: { failOn?: string } = {}): Knowledg
       log.revisions.set(input.slug, [{ content: input.content, sources: (input.sources ?? []).map((source) => ({ ...source, note: source.note ?? null })) }]);
       log.statuses.set(input.slug, { deliveredContent: input.content, status: "draft", supersededByItemId: null });
       return { id: `id-${input.slug}`, slug: input.slug };
+    },
+    async importTree() {
+      // Metadata synchronization is intentionally a no-op in the test writer.
+      return { created: 0, updated: 0, pages: 0 };
     },
     async draft(nestId, slug, input, actor) {
       log.draft.push({ nestId, slug, input, actor });
@@ -94,7 +99,7 @@ function stubWriter(log: WriterLog, options: { failOn?: string } = {}): Knowledg
     },
     async get(_nestId, slug) {
       log.get.push(slug);
-      const item = log.statuses.get(slug);
+      const item = log.items.get(slug);
       if (item) return item;
       return log.revisions.has(slug)
         ? { deliveredContent: log.revisions.get(slug)?.at(-1)?.content ?? null, status: "draft", supersededByItemId: null }
@@ -113,7 +118,7 @@ function stubWriter(log: WriterLog, options: { failOn?: string } = {}): Knowledg
 }
 
 function emptyLog(): WriterLog {
-  return { create: [], draft: [], supersede: [], search: [], get: [], listRevisions: [], statuses: new Map(), revisions: new Map() };
+  return { create: [], draft: [], supersede: [], search: [], get: [], listRevisions: [], statuses: new Map(), revisions: new Map(), items: new Map() };
 }
 
 describe("frontmatter", () => {

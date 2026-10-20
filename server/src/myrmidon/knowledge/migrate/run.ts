@@ -393,7 +393,7 @@ export async function runImport(options: ImportOptions): Promise<ImportReport> {
               appended += 1;
               created.set(target, { id: refreshed?.id ?? alreadyThere.id ?? target, slug: target, content: needsContentUpdate ? content : currentContent, sources: allSources });
             } else {
-              created.set(target, { id: alreadyThere.id, slug: target, content: currentContent, sources: allSources });
+              created.set(target, { id: alreadyThere.id ?? target, slug: target, content: currentContent, sources: allSources });
             }
           }
         } catch (error) {
