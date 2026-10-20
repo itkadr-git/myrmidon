@@ -21635,10 +21635,13 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       expect(drainTask).toBeDefined();
       const drain = drainTask!();
       await vi.waitFor(async () => {
-        const [delivery] = await db
+        const deliveries = await db
           .select()
           .from(chatDeliveries)
           .where(eq(chatDeliveries.endpointId, endpoint.id));
+        const delivery = deliveries.find((candidate) =>
+          JSON.stringify(candidate.normalizedEvent).includes(reply.id),
+        );
         expect(delivery).toMatchObject({ state: "retry", attempts: 1 });
       });
       const lockObserved = await db.execute<{ waiting: boolean }>(sql`
@@ -21661,10 +21664,13 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       throw error;
     }
 
-    const [firstAttempt] = await db
+    const deliveries = await db
       .select()
       .from(chatDeliveries)
       .where(eq(chatDeliveries.endpointId, endpoint.id));
+    const firstAttempt = deliveries.find((candidate) =>
+      JSON.stringify(candidate.normalizedEvent).includes(reply.id),
+    );
     expect(firstAttempt).toMatchObject({ state: "retry", attempts: 1 });
     const actionsAfterConflict = await db
       .select()
@@ -21690,10 +21696,13 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       .where(eq(chatDeliveries.id, firstAttempt.id));
 
     await service.processPendingDeliveries();
-    const deliveries = await db
+    const retryDeliveries = await db
       .select()
       .from(chatDeliveries)
       .where(eq(chatDeliveries.endpointId, endpoint.id));
+    const retryDelivery = retryDeliveries.find((candidate) =>
+      JSON.stringify(candidate.normalizedEvent).includes(reply.id),
+    );
     const actions = await db
       .select()
       .from(chatActions)
@@ -21703,8 +21712,8 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           eq(chatActions.kind, "inbound_wakeup"),
         ),
       );
-    expect(deliveries).toHaveLength(1);
-    expect(deliveries[0]).toMatchObject({ state: "processed", attempts: 2 });
+    expect(retryDeliveries).toHaveLength(1);
+    expect(retryDelivery).toMatchObject({ state: "processed", attempts: 2 });
     expect(actions).toHaveLength(1);
     expect(actions[0]).toMatchObject({
       status: "processed",
