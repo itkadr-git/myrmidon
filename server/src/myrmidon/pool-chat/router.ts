@@ -42,12 +42,12 @@ export function selectPoolChatAccount(
   const accounts = Array.isArray(config.accounts) ? config.accounts.filter(isAccount) : [];
   const eligible = accounts
     .filter((account) => account.provider === provider && account.enabled)
-    .filter((account) => account.quotaUnits === null || account.usedUnits + reservationUnits <= account.quotaUnits)
     .sort((left, right) => {
       const leftRemaining = left.quotaUnits === null ? Number.MAX_SAFE_INTEGER : left.quotaUnits - left.usedUnits;
       const rightRemaining = right.quotaUnits === null ? Number.MAX_SAFE_INTEGER : right.quotaUnits - right.usedUnits;
       return rightRemaining - leftRemaining || left.accountRef.localeCompare(right.accountRef);
-    });
+    })
+    .filter((account) => account.quotaUnits === null || account.usedUnits + reservationUnits <= account.quotaUnits);
   const selected = eligible[0];
   if (!selected) throw new HttpError(429, "No pool-chat account has available quota");
   return { accountRef: selected.accountRef, provider: selected.provider };
