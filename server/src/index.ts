@@ -2021,8 +2021,11 @@ async function startServerWithDatabaseTeardown(
     const boundBoardAddress =
       typeof server.address === "function" ? server.address() : null;
     startBoardProcessRegistry(db as any, {
-      apiPort:
-        typeof boundBoardAddress === "object" && boundBoardAddress
+      // Worker processes expose only the loopback control listener; their
+      // public board port is not an API endpoint in the process registry.
+      apiPort: processRoleProfile.role === "worker"
+        ? null
+        : typeof boundBoardAddress === "object" && boundBoardAddress
           ? boundBoardAddress.port
           : listenPort,
       onError: (error, phase) =>
