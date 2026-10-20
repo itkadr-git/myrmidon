@@ -786,6 +786,8 @@ export function pluginRoutes(
         agentId: null,
         runId: req.actor.runId ?? null,
         companyId: scopedCompanyId,
+        // myrmidon(PLUGIN-INSTANCE-ADMIN): the host-verified instance-admin flag.
+        isInstanceAdmin: req.actor.isInstanceAdmin === true,
       };
     }
     return {
