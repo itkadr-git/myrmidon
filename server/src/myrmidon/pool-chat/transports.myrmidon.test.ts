@@ -3,9 +3,9 @@ import type { PoolChatMessage } from "./protocol.js";
 import { createPoolChatTransports, redactTransportError } from "./transports.js";
 
 const messages: PoolChatMessage[] = [
-  { role: "system", content: "instructions" },
   { role: "user", content: "question" },
   { role: "assistant", content: "prior answer" },
+  { role: "user", content: "follow-up" },
 ];
 
 describe("pool-chat transports", () => {
