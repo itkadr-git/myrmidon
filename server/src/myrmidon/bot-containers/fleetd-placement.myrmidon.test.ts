@@ -66,11 +66,11 @@ describe("myrmidon(FLEETD-VMEXEC) placement — effective settings per host", ()
 
 describe("myrmidon(FLEETD-VMEXEC) placement — the card's gateway base URL", () => {
   it("builds the gateway URL from the fleetd entry's host and reported port", () => {
-    expect(fleetGatewayApiBaseUrl("https://fleetd.internal:9100", 18642)).toBe("http://fleetd.internal:18642");
+    expect(fleetGatewayApiBaseUrl("https://fleetd.internal:9100", 18642)).toBe("https://fleetd.internal:18642");
   });
 
   it("keeps a hostname as-is and drops the fleetd port from the host part", () => {
-    expect(fleetGatewayApiBaseUrl("https://fleetd.example.com:9100", 18643)).toBe("http://fleetd.example.com:18643");
+    expect(fleetGatewayApiBaseUrl("https://fleetd.example.com:9100", 18643)).toBe("https://fleetd.example.com:18643");
   });
 
   it("refuses a missing port instead of guessing one", () => {

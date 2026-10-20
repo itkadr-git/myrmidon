@@ -63,7 +63,7 @@ export function effectiveBotSettings(
 
 /**
  * The base URL the BOARD uses to reach a bot gateway on a fleet host:
- * `http://<fleetd-host>:<published-port>` (the bot gateway is separate from the mTLS fleetd API). The host part comes from the fleetd
+ * `https://<fleetd-host>:<published-port>` (the bot gateway is separate from the mTLS fleetd API). The host part comes from the fleetd
  * entry's own URL (the board already reaches that machine there), and the port is
  * the one the host's fleetd published for this bot — reported per bot in
  * `BotContainerStatus.gatewayPort`, because only fleetd knows which port it
@@ -82,5 +82,5 @@ export function fleetGatewayApiBaseUrl(fleetdUrl: string, gatewayPort: number | 
   if (url.protocol !== "https:") {
     throw new Error(`fleetd url must be https:// (got ${url.protocol}//)`);
   }
-  return `http://${url.hostname}:${gatewayPort}`;
+  return `https://${url.hostname}:${gatewayPort}`;
 }
