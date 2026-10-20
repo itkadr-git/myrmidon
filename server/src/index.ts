@@ -17,6 +17,7 @@ import { laneInterval, recordLaneDbQuery } from "./myrmidon/monitoring/board-loa
 import { connectionIntentDeliveryService } from "./services/connection-intent-delivery.js";
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import { createServer, type Server as HttpServer } from "node:http";
+import type { Db } from "@paperclipai/db";
 import { resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
@@ -257,6 +258,9 @@ export interface StartedServer {
   listenPort: number;
   apiUrl: string;
   databaseUrl: string;
+  db: Db;
+  processRole: ProcessRoleProfile["role"];
+  ownsBackgroundWork: boolean;
   shutdown: (signal?: "SIGINT" | "SIGTERM") => Promise<void>;
 }
 
@@ -3041,6 +3045,9 @@ async function startServerWithDatabaseTeardown(
     listenPort,
     apiUrl: configuredApiUrl,
     databaseUrl: activeDatabaseConnectionString,
+    db,
+    processRole: processRoleProfile.role,
+    ownsBackgroundWork: processRoleProfile.runsBackground,
     shutdown: (signal = "SIGTERM") => shutdown(signal, false),
   };
   } catch (error) {
