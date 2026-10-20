@@ -37,6 +37,20 @@ import {
 // docs/myrmidon/DIVERGENCE.md "REQUEUE-HOLD".
 import { isReadyQueueStatus, REQUEUED_HOLD_NOTE } from "../myrmidon/settled-holds/requeued.js";
 
+// Adapter setup failures describe an agent/environment, not the task. Keep the
+// task claimable so swarm dispatch can move it to a healthy executor.
+function isAdapterEnvironmentFailure(run: typeof heartbeatRuns.$inferSelect): boolean {
+  const details = [
+    run.errorCode,
+    run.error,
+    run.stdoutExcerpt,
+    run.stderrExcerpt,
+    typeof run.resultJson?.errorMessage === "string" ? run.resultJson.errorMessage : null,
+    typeof run.resultJson?.errorCode === "string" ? run.resultJson.errorCode : null,
+  ].filter((value): value is string => Boolean(value)).join(" ");
+  return /(?:not licensed|license(?:d|\s+missing)?|module .* unavailable|credential(?:s)? .* missing|model .* unavailable|unable to access model|adapter .* unavailable)/i.test(details);
+}
+
 /** An operator records observed outcomes; this is not permission to blindly retry. */
 export async function validateExecutionReconciliation(input: {
   db: Db;
@@ -501,12 +515,15 @@ export async function settleUnrecoverableExecutions(
         // hold left (the release path promotes it). See
         // myrmidon/chat-holds/chat-backed.ts.
         const chat = current && await isChatBackedIssue(tx as unknown as Db, task.companyId, task.id);
+        const adapterFailure = current && isAdapterEnvironmentFailure(run);
         // myrmidon(OPE-6954): a status an actor set after the failure — the
-        // ready queue — belongs to that actor, not to the failure. The
-        // closure below leaves it alone and records the hold only.
+        // ready queue — belongs to that actor. Adapter failures are also
+        // environment state, so both paths release the task without blocking it.
         const requeued = current && isReadyQueueStatus(task.status);
         const note = chat
           ? "The chat turn stopped. Recorded work is preserved; the next message starts a fresh turn and nothing is replayed."
+          : adapterFailure
+          ? "Adapter environment failure recorded. The task was released to the ready queue for another executor."
           : requeued
           ? REQUEUED_HOLD_NOTE
           : current
@@ -527,6 +544,13 @@ export async function settleUnrecoverableExecutions(
               updatedAt: now,
             })
             .where(eq(issues.id, task.id));
+        } else if (adapterFailure && !requeued) {
+          await tx.update(issues).set({
+            status: "todo",
+            executionRunId: null,
+            checkoutRunId: null,
+            updatedAt: now,
+          }).where(eq(issues.id, task.id));
         } else if (current && !requeued) {
           const [projected] = await tx
             .update(issues)
@@ -556,7 +580,7 @@ export async function settleUnrecoverableExecutions(
           .update(issueRecoveryActions)
           .set({
             status: "resolved",
-            outcome: current && !chat && !requeued ? "blocked" : "cancelled",
+            outcome: adapterFailure ? "cancelled" : current && !chat && !requeued ? "blocked" : "cancelled",
             resolvedAt: now,
             updatedAt: now,
             nextAction: note,
@@ -594,8 +618,9 @@ export async function settleUnrecoverableExecutions(
           runId: run.id,
           details: {
             recoveryActionId: action.id,
-            outcome: current && !chat && !requeued ? "blocked" : "cancelled",
+            outcome: adapterFailure ? "cancelled" : current && !chat && !requeued ? "blocked" : "cancelled",
             replay: "not_authorized",
+            ...(adapterFailure ? { taskDisposition: "released_for_swarm" } : {}),
             ...(chat ? { continuation: CHAT_CONTINUATION_REPLAY } : {}),
           },
         });
