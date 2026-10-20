@@ -28,7 +28,21 @@ A track writes only into its own section. A row is added in the same PR as the s
 | Variable | Function | Default | What it does | How to disable / special |
 |---|---|---|---|---|
 
-## Track 2 — wake and run core
+## Track 2 — knowledge distill
+
+| Variable | Function | Default | What it does | How to disable / special |
+|---|---|---|---|---|
+| `MYRMIDON_DISTILL_AUTO_ACCEPT` | 1.6.6-KNOWLEDGE-E | unset | Comma-separated distill classes that may be auto-accepted when their proposal has internal sources | Unset or empty — no classes are auto-accepted |
+| `MYRMIDON_DISTILL_GATEWAY_URL` | 1.6.6-KNOWLEDGE-E | unset | Base URL of the chat-completions gateway used by the knowledge distiller | Unset — the configured knowledge-curator transport is used |
+| `MYRMIDON_DISTILL_INTERVAL_SEC` | 1.6.6-KNOWLEDGE-E | `86400` | Interval between knowledge-distill sweep passes | Non-numeric or non-positive — the default |
+| `MYRMIDON_DISTILL_KEY_SECRET` | 1.6.6-KNOWLEDGE-E | unset | Secret key for the distill gateway; the value is never logged | Unset — the distill pass cannot call the gateway |
+| `MYRMIDON_DISTILL_MAX_DURATION_SEC` | 1.6.6-KNOWLEDGE-E | `1800` | Maximum model-call duration budget for one distill pass | Non-numeric or non-positive — the default |
+| `MYRMIDON_DISTILL_MAX_INPUT_TOKENS` | 1.6.6-KNOWLEDGE-E | `1000000` | Input-token budget for one distill pass | Non-numeric or non-positive — the default |
+| `MYRMIDON_DISTILL_MAX_TASKS` | 1.6.6-KNOWLEDGE-E | `150` | Maximum number of completed tasks considered by one distill pass | Non-numeric or non-positive — the default |
+| `MYRMIDON_DISTILL_MODEL` | 1.6.6-KNOWLEDGE-E | unset | Model name sent to the distill gateway | Unset — the configured knowledge-curator model is used |
+| `MYRMIDON_DISTILL_WINDOW_SEC` | 1.6.6-KNOWLEDGE-E | `86400` | Lookback window for completed tasks included in a distill pass | Non-numeric or non-positive — the default |
+
+## Track 3 — wake and run core
 
 | Variable | Function | Default | What it does | How to disable / special |
 |---|---|---|---|---|
