@@ -199,6 +199,36 @@ describeEmbeddedPostgres("deferred wakeups on terminal issues (OPE-8490)", () =>
       expect(updatedWake?.finishedAt).not.toBeNull();
     });
 
+    it("cancels deferred executions when done includes a status decision id", async () => {
+      const issueId = randomUUID();
+
+      await db.insert(issues).values({
+        id: issueId,
+        companyId,
+        title: "Decision-backed issue to be completed",
+        status: "in_progress",
+        priority: "high",
+        assigneeAgentId: agentId,
+      });
+
+      const wake = deferredWake(issueId);
+      await db.insert(agentWakeupRequests).values(wake);
+
+      await issueService(db).update(issueId, {
+        status: "done",
+        lastStatusDecisionId: randomUUID(),
+      });
+
+      const [updatedWake] = await db
+        .select()
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.id, wake.id));
+
+      expect(updatedWake?.status).toBe("cancelled");
+      expect(updatedWake?.error).toBe("issue_closed");
+      expect(updatedWake?.finishedAt).not.toBeNull();
+    });
+
     it("cancelDeferredExecutionsForTerminalIssue can be called directly", async () => {
       const issueId = randomUUID();
 
