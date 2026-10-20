@@ -44,6 +44,7 @@ func testConfig() *config {
 func newServer(t *testing.T) (*server, *httptest.Server) {
 	t.Helper()
 	cfg := testConfig()
+	cfg.VolumeRoot = t.TempDir()
 	socket := filepath.Join(t.TempDir(), "docker.sock")
 	listener, err := net.Listen("unix", socket)
 	if err != nil {
