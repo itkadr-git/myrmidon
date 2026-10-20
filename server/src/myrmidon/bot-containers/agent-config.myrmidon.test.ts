@@ -180,7 +180,7 @@ describe("readBotContainerAgentConfig: container.extraMounts", () => {
 
 describe("botContainerCardSaveProblem (1.6.4-BOT-CONTAINER-CARD)", () => {
   it("has the defaults the form and the migration use", () => {
-    expect(BOT_CONTAINER_DEFAULTS).toEqual({ memoryMb: 2048, cpus: 1, pidsLimit: 512 });
+    expect(BOT_CONTAINER_DEFAULTS).toEqual({ memoryMb: 1024, cpus: 1, pidsLimit: 512 });
   });
 
   it("accepts a card without a container block and any other adapter", () => {
@@ -206,7 +206,7 @@ describe("botContainerCardSaveProblem (1.6.4-BOT-CONTAINER-CARD)", () => {
     expect(problem).toContain("memoryMb");
     expect(problem).toContain("pidsLimit");
     expect(problem).not.toContain("cpus (");
-    expect(problem).toContain("defaults are memoryMb 2048, cpus 1, pidsLimit 512");
+    expect(problem).toContain("defaults are memoryMb 1024, cpus 1, pidsLimit 512");
     expect(
       botContainerCardSaveProblem("hermes_gateway", { container: { ...VALID_CONTAINER_CONFIG, memoryMb: 0 } }),
     ).toContain("memoryMb");
