@@ -272,7 +272,9 @@ describeProcs("two api processes on one test database (PROCS-T1.5 skeleton)", ()
           `http://${loopbackHost}:${sharedPort}/api/myrmidon/board-processes`,
           {
             agent: false,
-            localAddress: "127.0.0.1",
+            // Keep the source address aligned with the destination so Linux
+            // hashes each probe as a distinct loopback flow.
+            localAddress: loopbackHost,
             localPort,
             headers: { host: `127.0.0.1:${sharedPort}` },
           },
