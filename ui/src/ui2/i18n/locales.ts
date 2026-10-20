@@ -58,6 +58,13 @@ const en = {
   "ui2.screens.agents": "Agents",
 
   "ui2.decisions.title": "Decisions",
+  "ui2.decisions.waiting.title": "Waiting for you",
+  "ui2.decisions.waiting.approval": "Approval",
+  "ui2.decisions.waiting.decision": "Decision",
+  "ui2.decisions.waiting.interaction": "Interaction",
+  "ui2.decisions.waiting.empty.title": "Nothing is waiting",
+  "ui2.decisions.waiting.empty.body": "Approvals, decisions and questions for you will appear here.",
+
   "ui2.decisions.subtitle": "The queue of decisions that wait for you",
   "ui2.decisions.filter.all": "All",
   "ui2.decisions.filter.policies": "Policies",
@@ -429,6 +436,13 @@ const ru: Record<Ui2MessageKey, string> = {
   "ui2.screens.agents": "Агенты",
 
   "ui2.decisions.title": "Решения",
+  "ui2.decisions.waiting.title": "Ждёт меня",
+  "ui2.decisions.waiting.approval": "Согласование",
+  "ui2.decisions.waiting.decision": "Решение",
+  "ui2.decisions.waiting.interaction": "Вопрос",
+  "ui2.decisions.waiting.empty.title": "Ничего не ждёт",
+  "ui2.decisions.waiting.empty.body": "Здесь появятся согласования, решения и вопросы для вас.",
+
   "ui2.decisions.subtitle": "Очередь решений, которые ждут вас",
   "ui2.decisions.filter.all": "Все",
   "ui2.decisions.filter.policies": "Политики",

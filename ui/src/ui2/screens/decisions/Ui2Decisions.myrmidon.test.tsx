@@ -27,6 +27,9 @@ vi.mock("@/api/decisions", () => ({
   decisionsApi: mockDecisionsApi,
 }));
 
+const mockAttentionApi = vi.hoisted(() => ({ list: vi.fn() }));
+vi.mock("@/api/attention", () => ({ attentionApi: mockAttentionApi }));
+
 const mockAgentsApi = vi.hoisted(() => ({
   list: vi.fn(),
 }));
@@ -132,6 +135,7 @@ describe("myrmidon(UI2) Ui2Decisions screen parity", () => {
     mockDecisionsApi.list.mockResolvedValue([decisionFixture()]);
     mockDecisionsApi.decide.mockResolvedValue({});
     mockDecisionsApi.dismiss.mockResolvedValue({});
+    mockAttentionApi.list.mockResolvedValue({ items: [], totalCount: 0 });
     mockAgentsApi.list.mockResolvedValue([
       { id: "agent-1", companyId: "company-1", name: "agent-a", status: "active" },
     ]);
