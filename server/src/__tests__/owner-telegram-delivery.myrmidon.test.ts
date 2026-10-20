@@ -295,10 +295,8 @@ describeEmbeddedPostgres(
       const fixture = await seedFixture();
       process.env.MYRMIDON_PUBLIC_URL = "https://myrmidon.example";
       process.env.PAPERCLIP_PUBLIC_URL = "https://myrmidon.example";
-      await instanceSettingsService(db).updateGeneral({
-        [OWNER_DELIVERY_SETTINGS_KEY]: { mode: "owner_decisions_only" },
-      });
-      // The issue interaction service requires owner-only mode at creation time.
+      // Create while delivery is disabled; enable owner delivery before the
+      // explicit enqueue so this test isolates URL projection from creation.
       const interaction = await issueThreadInteractionService(db).create(
         { id: fixture.workIssue.id, companyId: fixture.companyId },
         {
@@ -319,6 +317,9 @@ describeEmbeddedPostgres(
         },
         { agentId: fixture.agentId },
       );
+      await instanceSettingsService(db).updateGeneral({
+        [OWNER_DELIVERY_SETTINGS_KEY]: { mode: "owner_decisions_only" },
+      });
       const publications = await enqueueIssueInteractionChatPublications(db, interaction);
       const publication = publications.find((item) => item.provider === "telegram");
       expect((publication?.payload as { text?: string }).text).toContain(
