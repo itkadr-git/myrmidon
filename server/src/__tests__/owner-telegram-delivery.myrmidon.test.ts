@@ -275,6 +275,7 @@ describeEmbeddedPostgres(
     it("uses the canonical rebrand public URL when configured", async () => {
       const fixture = await seedFixture();
       process.env.MYRMIDON_PUBLIC_URL = "https://myrmidon.example";
+      process.env.PAPERCLIP_PUBLIC_URL = "https://myrmidon.example";
       await instanceSettingsService(db).updateGeneral({
         [OWNER_DELIVERY_SETTINGS_KEY]: { mode: "owner_decisions_only" },
       });
