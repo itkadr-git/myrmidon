@@ -43,6 +43,8 @@ export function DeployJobsPanelView({
   error: string | null;
 }) {
   const [reference, setReference] = useState("");
+  const [modeFilter, setModeFilter] = useState("");
+  const [outcomeFilter, setOutcomeFilter] = useState("");
   const [confirmStart, setConfirmStart] = useState(false);
   const problem = digestProblemClient(reference);
   const job = state?.job ?? null;
@@ -108,16 +110,26 @@ export function DeployJobsPanelView({
         {preview ? <PreviewCard preview={preview} /> : null}
       </div>
 
-      {state?.history?.length ? (
+      {state?.history ? (
         <details className="text-sm">
-          <summary className="cursor-pointer text-muted-foreground">Previous deploys ({state.history.length})</summary>
+          <summary className="cursor-pointer text-muted-foreground">Update journal ({state.history.length})</summary>
+          <div className="mt-2 flex gap-2">
+            <select aria-label="Update mode" value={modeFilter} onChange={(event) => setModeFilter(event.target.value)}>
+              <option value="">All modes</option><option value="manual">Manual</option><option value="auto">Automatic</option><option value="canary">Canary</option>
+            </select>
+            <select aria-label="Update outcome" value={outcomeFilter} onChange={(event) => setOutcomeFilter(event.target.value)}>
+              <option value="">All outcomes</option><option value="succeeded">Succeeded</option><option value="rollback">Rollback</option><option value="aborted">Aborted</option>
+            </select>
+          </div>
           <ul className="mt-2 space-y-1">
-            {state.history.map((entry) => (
+            {state.history.filter((entry) => (!modeFilter || entry.mode === modeFilter) && (!outcomeFilter || (outcomeFilter === "rollback" ? entry.status.includes("rollback") : entry.status === outcomeFilter))).map((entry) => (
               <li key={entry.id} className="text-muted-foreground">
-                {new Date(entry.createdAt).toLocaleString()} — {describeDeployStatus(entry.status)} — {entry.digest.slice(0, 19)}…
+                {new Date(entry.createdAt).toLocaleString()} — {entry.mode} — {describeDeployStatus(entry.status)} — {entry.digest.slice(0, 19)}…
+                {entry.window ? ` — ${entry.window}` : ""}
                 {entry.failureReason ? ` — ${entry.failureReason}` : ""}
               </li>
             ))}
+            {!state.history.length ? <li className="text-muted-foreground">No completed updates yet.</li> : null}
           </ul>
         </details>
       ) : null}
