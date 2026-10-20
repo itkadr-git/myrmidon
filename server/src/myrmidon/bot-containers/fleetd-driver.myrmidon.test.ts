@@ -12,8 +12,13 @@ import type { CompiledProfile } from "./types.js";
 
 // Everything here is placeholder data: fake ids, names and values.
 
-const CONFIG: FleetdDriverConfig = { baseUrl: "http://127.0.0.1:0", token: "fake-fleetd-token" };
-
+const CONFIG: FleetdDriverConfig = {
+  baseUrl: "https://127.0.0.1:0",
+  token: "fake-fleetd-token",
+  ca: "fake-ca",
+  cert: "fake-cert",
+  key: "fake-key",
+};
 const profile: CompiledProfile = {
   botKey: "bot-a",
   files: [
@@ -54,7 +59,7 @@ function fakeServer(
     server.listen(0, "127.0.0.1", () => {
       const address = server.address();
       if (!address || typeof address === "string") throw new Error("expected a tcp address");
-      resolve({ server, calls, config: { baseUrl: `http://127.0.0.1:${address.port}`, token: CONFIG.token } });
+      resolve({ server, calls, config: { ...CONFIG, baseUrl: `https://127.0.0.1:${address.port}` } });
     });
   });
 }
@@ -66,15 +71,14 @@ describe("myrmidon(FLEETD-VMEXEC) fleetd driver — the HTTP contract", () => {
       res.end(JSON.stringify({ botKey: "bot-a", state: "running", image: "example.com/bot@sha256:aa", restartHash: "r1", filesHash: "f1" }));
     });
     try {
-      const driver = fleetdBotContainerDriver(config);
-      const status = await driver.status("bot-a");
-      expect(status).toEqual({
-        botKey: "bot-a",
-        state: "running",
-        image: "example.com/bot@sha256:aa",
-        restartHash: "r1",
-        filesHash: "f1",
+      const driver = fleetdBotContainerDriver(config, {
+        request: async () => ({
+          status: 200,
+          body: Buffer.from(JSON.stringify({ botKey: "bot-a", state: "running", image: "example.com/bot@sha256:aa", restartHash: "r1", filesHash: "f1" })),
+        }),
       });
+      const status = await driver.status("bot-a");
+      expect(status).toEqual({ botKey: "bot-a", state: "running", image: "example.com/bot@sha256:aa", restartHash: "r1", filesHash: "f1" });
     } finally {
       server.close();
     }
@@ -90,7 +94,7 @@ describe("myrmidon(FLEETD-VMEXEC) fleetd driver — the HTTP contract", () => {
         res.end(JSON.stringify(body));
       });
       try {
-        const driver = fleetdBotContainerDriver(config);
+        const driver = fleetdBotContainerDriver(config, { request: async () => ({ status: 200, body: Buffer.from(JSON.stringify(body)) }) });
         expect(await driver.list(["bot-a"])).toEqual([{ botKey: "bot-a", state: "stopped" }]);
       } finally {
         server.close();
@@ -106,7 +110,7 @@ describe("myrmidon(FLEETD-VMEXEC) fleetd driver — the HTTP contract", () => {
       } else res.end("{}");
     });
     try {
-      const driver = fleetdBotContainerDriver(config);
+      const driver = fleetdBotContainerDriver(config, { request: async () => ({ status: 200, body: Buffer.from("{}") }) });
       const spec = { botKey: "bot-a", image: "example.com/bot@sha256:aa", memoryMb: 1024, cpus: 1, pidsLimit: 256, network: "net-a" };
       expect(await driver.templateDrift(spec)).toEqual({
         drifted: true,
@@ -128,7 +132,7 @@ describe("myrmidon(FLEETD-VMEXEC) fleetd driver — the HTTP contract", () => {
   it("writeProfile PUTs the whole profile as JSON", async () => {
     const { server, config, calls } = await fakeServer((_call, res) => res.end("{}"));
     try {
-      const driver = fleetdBotContainerDriver(config);
+      const driver = fleetdBotContainerDriver(config, { request: async () => ({ status: 200, body: Buffer.from("{}") }) });
       await driver.writeProfile("bot-a", profile);
       expect(calls).toHaveLength(1);
       expect(calls[0]!.method).toBe("PUT");
@@ -142,7 +146,7 @@ describe("myrmidon(FLEETD-VMEXEC) fleetd driver — the HTTP contract", () => {
   it("start/restart/stop POST to their routes", async () => {
     const { server, config, calls } = await fakeServer((_call, res) => res.end("{}"));
     try {
-      const driver = fleetdBotContainerDriver(config);
+      const driver = fleetdBotContainerDriver(config, { request: async () => ({ status: 200, body: Buffer.from("{}") }) });
       await driver.start("bot-a");
       await driver.restart("bot-a");
       await driver.stop("bot-a");
@@ -161,7 +165,7 @@ describe("myrmidon(FLEETD-VMEXEC) fleetd driver — auth and errors", () => {
   it("sends the bearer token on every call and never logs it", async () => {
     const { server, config, calls } = await fakeServer((_call, res) => res.end("{}"));
     try {
-      const driver = fleetdBotContainerDriver(config);
+      const driver = fleetdBotContainerDriver(config, { request: async () => ({ status: 200, body: Buffer.from("{}") }) });
       await driver.status("bot-a");
       expect(calls[0]!.headers.authorization).toBe(`Bearer ${CONFIG.token}`);
     } finally {
@@ -175,7 +179,7 @@ describe("myrmidon(FLEETD-VMEXEC) fleetd driver — auth and errors", () => {
       res.end("bot_not_enrolled");
     });
     try {
-      const driver = fleetdBotContainerDriver(config);
+      const driver = fleetdBotContainerDriver(config, { request: async () => ({ status: 200, body: Buffer.from("{}") }) });
       await expect(driver.status("bot-a")).rejects.toBeInstanceOf(FleetdDriverError);
       await expect(driver.status("bot-a")).rejects.toThrow("fleetd 403 bot_not_enrolled");
     } finally {
@@ -189,7 +193,7 @@ describe("myrmidon(FLEETD-VMEXEC) fleetd driver — auth and errors", () => {
       res.end("x".repeat(500));
     });
     try {
-      const driver = fleetdBotContainerDriver(config);
+      const driver = fleetdBotContainerDriver(config, { request: async () => ({ status: 200, body: Buffer.from("{}") }) });
       const err: unknown = await driver.status("bot-a").then(
         () => { throw new Error("expected a failure"); },
         (e: unknown) => e,
@@ -201,17 +205,17 @@ describe("myrmidon(FLEETD-VMEXEC) fleetd driver — auth and errors", () => {
     }
   });
 
-  it("readFleetdDriverConfig requires both URL and token", () => {
+  it("readFleetdDriverConfig requires HTTPS, token, and mTLS trust/key material", () => {
     expect(() => readFleetdDriverConfig({})).toThrow(/MYRMIDON_FLEET_HOST_URL/);
-    expect(() => readFleetdDriverConfig({ MYRMIDON_FLEET_HOST_URL: "http://fleetd.example.com" })).toThrow(
-      /MYRMIDON_FLEET_HOST_TOKEN/,
-    );
-    const config = readFleetdDriverConfig({
-      MYRMIDON_FLEET_HOST_URL: "http://fleetd.example.com/",
+    expect(() => readFleetdDriverConfig({ MYRMIDON_FLEET_HOST_URL: "http://fleetd.example.com", MYRMIDON_FLEET_HOST_TOKEN: "t" })).toThrow(/https/);
+    expect(() => readFleetdDriverConfig({ MYRMIDON_FLEET_HOST_URL: "https://fleetd.example.com", MYRMIDON_FLEET_HOST_TOKEN: "t" })).toThrow(/mTLS/);
+    expect(() => readFleetdDriverConfig({
+      MYRMIDON_FLEET_HOST_URL: "https://fleetd.example.com/",
       MYRMIDON_FLEET_HOST_TOKEN: " fake-token ",
-    });
-    expect(config.baseUrl).toBe("http://fleetd.example.com");
-    expect(config.token).toBe("fake-token");
+      MYRMIDON_FLEET_HOST_CA: "fake-ca",
+      MYRMIDON_FLEET_HOST_CERT: "fake-cert",
+      MYRMIDON_FLEET_HOST_KEY: "fake-key",
+    })).toEqual({ baseUrl: "https://fleetd.example.com", token: "fake-token", ca: "fake-ca", cert: "fake-cert", key: "fake-key" });
   });
 });
 
@@ -261,10 +265,10 @@ describe("myrmidon(FLEETD-VMEXEC) fleetd driver — request injection hooks", ()
 
   it("parseFleetdEndpoint accepts http host:port and rejects anything else", async () => {
     const { parseFleetdEndpoint } = await import("./fleetd-driver.js");
-    expect(parseFleetdEndpoint("http://fleetd.example.com")).toEqual({ host: "fleetd.example.com", port: 80 });
-    expect(parseFleetdEndpoint("http://fleetd.example.com:9100")).toEqual({ host: "fleetd.example.com", port: 9100 });
-    expect(() => parseFleetdEndpoint("https://fleetd.example.com")).toThrow(/must be http/);
-    expect(() => parseFleetdEndpoint("http://fleetd.example.com:notaport")).toThrow();
+    expect(parseFleetdEndpoint("https://fleetd.example.com")).toEqual({ host: "fleetd.example.com", port: 443 });
+    expect(parseFleetdEndpoint("https://fleetd.example.com:9100")).toEqual({ host: "fleetd.example.com", port: 9100 });
+    expect(() => parseFleetdEndpoint("http://fleetd.example.com")).toThrow(/must be https/);
+    expect(() => parseFleetdEndpoint("https://fleetd.example.com:notaport")).toThrow();
   });
 });
 

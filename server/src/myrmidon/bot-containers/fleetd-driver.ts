@@ -1,9 +1,8 @@
 // server/src/myrmidon/bot-containers/fleetd-driver.ts
 //
 // myrmidon(FLEETD-VMEXEC): BotContainerDriver client for a `fleetd` service
-// running on another machine (the dev bots' host). The board speaks plain HTTP
-// over the internal network with a static token (a company secret the operator
-// provisions; see MYRMIDON_FLEET_HOSTS in SETTINGS.md); fleetd holds the local
+// running on another machine. The board connects with mutual TLS; fleetd holds
+// the local Docker socket and verifies the board client certificate.
 // Docker socket of its host and enforces the same fixed container template the
 // dockergate-backed local driver enforces, so this client never sends anything
 // the template does not describe: the same BotContainerSpec the reconciler
@@ -11,19 +10,13 @@
 // compiler already produces.
 //
 // Transport notes:
-//  - node:http, no new dependency (CONVENTIONS §8). HTTP, because the fleetd
-//    host is reachable only over the internal network and terminating TLS there
-//    buys nothing the network itself does not already provide; the token is
-//    sent as a bearer header and never logged.
-//  - Every response body is capped, and a non-2xx answer is an Error with the
-//    fleetd status code and reason phrase (fleetd error bodies are one line,
-//    produced by the same reason-code discipline as dockergate: no secrets,
-//    no host paths).
-//  - The profile travels as JSON with file contents inline. Secret files are
-//    marked so fleetd never logs them; the request body is bounded by the same
-//    limits the local driver's tar path uses.
+//  - node:https, no new dependency. Both peers authenticate with certificates;
+//    the bearer token is retained as a defense-in-depth application credential.
+//  - Every response body is capped, and non-2xx answers are converted to a
+//    reason-code error without logging response contents.
+//  - The profile travels as JSON with file contents inline.
 
-import http from "node:http";
+import https from "node:https";
 
 import { logger } from "../../middleware/logger.js";
 
@@ -35,6 +28,9 @@ const AUTHORIZATION = "authorization";
 
 export const FLEETD_DRIVER_BASE_URL_ENV = "MYRMIDON_FLEET_HOST_URL";
 export const FLEETD_DRIVER_TOKEN_ENV = "MYRMIDON_FLEET_HOST_TOKEN";
+export const FLEETD_DRIVER_CA_ENV = "MYRMIDON_FLEET_HOST_CA";
+export const FLEETD_DRIVER_CERT_ENV = "MYRMIDON_FLEET_HOST_CERT";
+export const FLEETD_DRIVER_KEY_ENV = "MYRMIDON_FLEET_HOST_KEY";
 const DEFAULT_TIMEOUT_MS = 60_000;
 /** profileDrift/writeProfile bodies carry the whole profile; allow headroom. */
 const BODY_LIMIT_BYTES = 64 * 1024 * 1024;
@@ -43,6 +39,9 @@ const START_TIMEOUT_MS = 180_000;
 export interface FleetdDriverConfig {
   baseUrl: string;
   token: string;
+  ca: string | Buffer;
+  cert: string | Buffer;
+  key: string | Buffer;
   timeoutMs?: number;
 }
 
@@ -58,9 +57,14 @@ export class FleetdDriverError extends Error {
 export function readFleetdDriverConfig(env: NodeJS.ProcessEnv = process.env): FleetdDriverConfig {
   const baseUrl = env[FLEETD_DRIVER_BASE_URL_ENV]?.trim().replace(/\/+$/, "");
   const token = env[FLEETD_DRIVER_TOKEN_ENV]?.trim();
+  const ca = env[FLEETD_DRIVER_CA_ENV]?.trim();
+  const cert = env[FLEETD_DRIVER_CERT_ENV]?.trim();
+  const key = env[FLEETD_DRIVER_KEY_ENV]?.trim();
   if (!baseUrl) throw new Error(`${FLEETD_DRIVER_BASE_URL_ENV} must be set to use the fleetd driver`);
+  if (!baseUrl.startsWith("https://")) throw new Error(`${FLEETD_DRIVER_BASE_URL_ENV} must use https://`);
   if (!token) throw new Error(`${FLEETD_DRIVER_TOKEN_ENV} must be set to use the fleetd driver`);
-  return { baseUrl, token };
+  if (!ca || !cert || !key) throw new Error("fleetd mTLS requires MYRMIDON_FLEET_HOST_CA, MYRMIDON_FLEET_HOST_CERT, and MYRMIDON_FLEET_HOST_KEY");
+  return { baseUrl, token, ca, cert, key };
 }
 
 interface RawResponse {
@@ -101,12 +105,11 @@ export interface FleetdEndpoint {
   port: number;
 }
 
-/** Parses `http://host[:port]` into what node:http wants. No TLS: the fleetd
- *  host is reachable only over the internal network (see the module comment). */
+/** Parses `https://host[:port]` for the mTLS fleetd listener. */
 export function parseFleetdEndpoint(baseUrl: string): FleetdEndpoint {
   const url = new URL(baseUrl);
-  if (url.protocol !== "http:") throw new Error(`fleetd baseUrl must be http:// (got ${url.protocol}//)`);
-  const port = url.port === "" ? 80 : Number(url.port);
+  if (url.protocol !== "https:") throw new Error(`fleetd baseUrl must be https:// (got ${url.protocol}//)`);
+  const port = url.port === "" ? 443 : Number(url.port);
   if (!Number.isInteger(port) || port <= 0 || port > 65535) throw new Error(`fleetd baseUrl port is invalid: ${url.port}`);
   return { host: url.hostname, port };
 }
@@ -125,13 +128,17 @@ function fleetdRequest(
   return new Promise((resolve, reject) => {
     const headers = { ...(opts.headers ?? {}) };
     if (opts.body) headers["Content-Length"] = String(opts.body.length);
-    const req = http.request(
+    const req = https.request(
       {
         host: endpoint.host,
         port: endpoint.port,
         path: `/v1${opts.path}`,
         method: opts.method,
         headers,
+        ca: config.ca,
+        cert: config.cert,
+        key: config.key,
+        minVersion: "TLSv1.2",
         timeout: opts.timeoutMs ?? config.timeoutMs ?? DEFAULT_TIMEOUT_MS,
       },
       (res) => {

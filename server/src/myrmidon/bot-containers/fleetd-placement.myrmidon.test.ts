@@ -20,7 +20,7 @@ const INSTANCE: InstanceBotSettings = {
 
 const HOST: FleetHostConfig = {
   name: "vmexec",
-  url: "http://fleetd.internal:9100",
+  url: "https://fleetd.internal:9100",
   tokenSecret: "fleetd-vmexec-token",
 };
 
@@ -63,25 +63,25 @@ describe("myrmidon(FLEETD-VMEXEC) placement — effective settings per host", ()
 });
 
 describe("myrmidon(FLEETD-VMEXEC) placement — the card's gateway base URL", () => {
-  it("builds http://<host>:<port> from the fleetd entry's host and the reported port", () => {
-    expect(fleetGatewayApiBaseUrl("http://fleetd.internal:9100", 18642)).toBe("http://fleetd.internal:18642");
+  it("builds the gateway URL from the fleetd entry's host and reported port", () => {
+    expect(fleetGatewayApiBaseUrl("https://fleetd.internal:9100", 18642)).toBe("http://fleetd.internal:18642");
   });
 
   it("keeps a hostname as-is and drops the fleetd port from the host part", () => {
-    expect(fleetGatewayApiBaseUrl("http://fleetd.example.com:9100", 18643)).toBe("http://fleetd.example.com:18643");
+    expect(fleetGatewayApiBaseUrl("https://fleetd.example.com:9100", 18643)).toBe("http://fleetd.example.com:18643");
   });
 
   it("refuses a missing port instead of guessing one", () => {
-    expect(() => fleetGatewayApiBaseUrl("http://fleetd.internal:9100", undefined)).toThrow(/did not report a gateway port/);
+    expect(() => fleetGatewayApiBaseUrl("https://fleetd.internal:9100", undefined)).toThrow(/did not report a gateway port/);
   });
 
   it("refuses an out-of-range or non-integer port", () => {
     for (const bad of [0, -1, 70000, 1.5, Number.NaN]) {
-      expect(() => fleetGatewayApiBaseUrl("http://fleetd.internal:9100", bad)).toThrow(/invalid gateway port|did not report/);
+      expect(() => fleetGatewayApiBaseUrl("https://fleetd.internal:9100", bad)).toThrow(/invalid gateway port|did not report/);
     }
   });
 
-  it("refuses a non-http fleetd url", () => {
-    expect(() => fleetGatewayApiBaseUrl("https://fleetd.internal:9100", 18642)).toThrow(/must be http/);
+  it("refuses a non-https fleetd url", () => {
+    expect(() => fleetGatewayApiBaseUrl("http://fleetd.internal:9100", 18642)).toThrow(/must be https/);
   });
 });
