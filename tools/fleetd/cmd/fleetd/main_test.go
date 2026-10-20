@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -46,6 +47,10 @@ func newServer(t *testing.T) (*server, *httptest.Server) {
 	socket := filepath.Join(t.TempDir(), "docker.sock")
 	listener, err := net.Listen("unix", socket)
 	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(socket, 0600); err != nil {
+		_ = listener.Close()
 		t.Fatal(err)
 	}
 	dockerHTTP := &http.Server{Handler: http.NotFoundHandler()}
