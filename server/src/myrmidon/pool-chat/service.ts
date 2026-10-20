@@ -75,7 +75,7 @@ export function poolChatService(db: Db, resolveTransport: PoolChatTransportResol
         // return the durable result even if account availability changed.
         const account = selectPoolChatAccount(config, provider, 1);
         const [created] = await tx.insert(poolChatRequests).values({ companyId: input.companyId, moduleId: input.moduleId, channel: input.channel, subjectId: input.subjectId, conversationId: input.body.conversationId, clientMessageId: input.body.clientMessageId, idempotencyKey: input.idempotencyKey, requestHash: hash, model: input.body.model, status: "dispatching", reservationUnits: 1 }).returning();
-        await tx.insert(poolChatQuotaReservations).values({ companyId: input.companyId, requestId: created.id, units: 1, state: "reserved" });
+        await tx.insert(poolChatQuotaReservations).values({ companyId: input.companyId, requestId: created.id, accountRef: account.accountRef, units: 1, state: "reserved" });
         await tx.insert(poolChatRequestAttempts).values({ companyId: input.companyId, requestId: created.id, attemptNo: 1, state: "dispatching", provider, accountRef: account.accountRef, reservedUnits: 1 });
         return { request: created, created: true, accountRef: account.accountRef };
       });
@@ -94,6 +94,14 @@ export function poolChatService(db: Db, resolveTransport: PoolChatTransportResol
       let request = outcome.request;
       try {
         const result = await transport.send({ model: input.body.model, messages: input.body.messages, maxOutputTokens: input.body.maxOutputTokens ?? 2048 });
+        if (
+          !result || typeof result.text !== "string" ||
+          !Number.isSafeInteger(result.inputUnits) || result.inputUnits < 0 ||
+          !Number.isSafeInteger(result.outputUnits) || result.outputUnits < 0 ||
+          (result.providerRequestRef !== null && typeof result.providerRequestRef !== "string")
+        ) {
+          throw new Error("invalid_provider_result");
+        }
         request = await db.transaction(async (tx) => {
           const [attempt] = await tx.update(poolChatRequestAttempts).set({ state: "sent", settledUnits: result.inputUnits + result.outputUnits, providerRequestRef: result.providerRequestRef, updatedAt: new Date() }).where(and(eq(poolChatRequestAttempts.requestId, request.id), eq(poolChatRequestAttempts.attemptNo, 1), eq(poolChatRequestAttempts.state, "dispatching"))).returning({ id: poolChatRequestAttempts.id });
           if (!attempt) return (await tx.select().from(poolChatRequests).where(eq(poolChatRequests.id, request.id)))[0];
