@@ -75,7 +75,7 @@ export function poolChatService(db: Db, resolveTransport: PoolChatTransportResol
         // return the durable result even if account availability changed.
         const account = selectPoolChatAccount(config, provider, 1);
         const [created] = await tx.insert(poolChatRequests).values({ companyId: input.companyId, moduleId: input.moduleId, channel: input.channel, subjectId: input.subjectId, conversationId: input.body.conversationId, clientMessageId: input.body.clientMessageId, idempotencyKey: input.idempotencyKey, requestHash: hash, model: input.body.model, status: "dispatching", reservationUnits: 1 }).returning();
-        await tx.insert(poolChatQuotaReservations).values({ companyId: input.companyId, requestId: created.id, accountRef: account.accountRef, units: 1, state: "reserved" });
+        await tx.insert(poolChatQuotaReservations).values({ companyId: input.companyId, requestId: created.id, units: 1, state: "reserved" });
         await tx.insert(poolChatRequestAttempts).values({ companyId: input.companyId, requestId: created.id, attemptNo: 1, state: "dispatching", provider, accountRef: account.accountRef, reservedUnits: 1 });
         return { request: created, created: true, accountRef: account.accountRef };
       });
