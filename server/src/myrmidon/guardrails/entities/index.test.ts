@@ -42,6 +42,27 @@ describe("entity recognizer", () => {
     expect(bankAccountMatchesBic("30101810400000000225", "044525226")).toBe(false);
   });
 
+  it.each([
+    ["30101810400000000225", "044525225"],
+    ["30101810400000000555", "044525225"],
+    ["30101810000000000777", "044525225"],
+  ])("accepts a valid correspondent-account/BIC pair: %s / %s", (account, bic) => {
+    expect(bankAccountMatchesBic(account, bic)).toBe(true);
+  });
+
+  it.each([
+    ["30101810400000000224", "044525225"],
+    ["30101810400000000556", "044525225"],
+    ["30101810000000000778", "044525225"],
+  ])("rejects a pair with a changed check input: %s / %s", (account, bic) => {
+    expect(bankAccountMatchesBic(account, bic)).toBe(false);
+  });
+
+  it("uses the settlement-account BIC suffix for non-correspondent accounts", () => {
+    expect(bankAccountMatchesBic("40817810899910004312", "044525225")).toBe(true);
+    expect(bankAccountMatchesBic("40817810899910004312", "044525226")).toBe(false);
+  });
+
   it("does not classify a BIC as KPP", () => {
     expect(matches("044525225", "kpp")).toHaveLength(0);
     expect(matches("КПП: 770101001", "kpp")).toHaveLength(1);

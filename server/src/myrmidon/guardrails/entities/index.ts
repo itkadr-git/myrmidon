@@ -73,7 +73,10 @@ export function detectEntities(text: string, dictionary?: DictionaryMatcher): En
 export function bankAccountMatchesBic(account: string, bic: string): boolean {
   const a = digits(account), b = digits(bic);
   if (a.length !== 20 || b.length !== 9) return false;
-  const check = (b.slice(-3) + a).slice(0, 23);
-  const weights = [7,1,3];
-  return [...check].reduce((sum, digit, i) => sum + Number(digit) * weights[(i + 2) % 3], 0) % 10 === 0;
+  // Settlement accounts use the BIC's last three digits; correspondent
+  // accounts use 0 plus BIC digits 5-6 (1-based), with the same keying rule.
+  const prefix = a.startsWith("3") ? `0${b.slice(4, 6)}` : b.slice(-3);
+  const check = prefix + a;
+  const weights = [7, 1, 3];
+  return [...check].reduce((sum, digit, i) => sum + Number(digit) * weights[i % 3], 0) % 10 === 0;
 }
