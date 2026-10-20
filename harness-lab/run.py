@@ -1,9 +1,20 @@
 #!/usr/bin/env python3
 """Run the reference scenarios against an explicitly isolated board."""
-import argparse, json, os, sys, urllib.error, urllib.request
+import argparse, ipaddress, json, os, sys, urllib.error, urllib.request
 from pathlib import Path
+from urllib.parse import urlparse
 
-PROD_MARKERS = ("10.10.10.2:3100", "paperclip.prod", "/production")
+PROD_MARKERS = ("paperclip.prod", "/production")
+
+def is_production_url(value):
+    parsed = urlparse(value)
+    host = (parsed.hostname or "").lower()
+    try:
+        if ipaddress.ip_address(host).is_private or ipaddress.ip_address(host).is_loopback:
+            return True
+    except ValueError:
+        pass
+    return any(marker in value.lower() for marker in PROD_MARKERS)
 ROOT = Path(__file__).resolve().parent
 
 def fail(message):
@@ -33,14 +44,14 @@ def main():
     if not args.dry_run:
         if not base:
             fail("HARNESS_LAB_BOARD_URL is required; refusing an implicit board")
-        if any(marker in base.lower() for marker in PROD_MARKERS):
+        if is_production_url(base):
             fail("production-looking board URL rejected")
         if not rubric:
             fail("HARNESS_LAB_RUBRIC_PATH is required; operator-only rubric is missing")
         rubric_path = Path(rubric)
         if not rubric_path.is_file():
             fail("operator-only rubric is not readable")
-    elif base and any(marker in base.lower() for marker in PROD_MARKERS):
+    elif base and is_production_url(base):
         fail("production-looking board URL rejected")
     manifest = json.loads((ROOT / "manifest.json").read_text())
     token = os.environ.get("HARNESS_LAB_BOARD_TOKEN")
