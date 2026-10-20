@@ -202,7 +202,6 @@ export async function recordRunOutputGuardrailEvents(
       const allIndex = allHits.findIndex((other) => other.span[0] < hit.span[1] && hit.span[0] < other.span[1]);
       if (allIndex < 0) continue;
       const snippet = guardrailSnippet(redacted.text, redacted.spans[allIndex]!, GUARDRAIL_SNIPPET_MAX_CHARS);
-      const snippet = guardrailSnippet(masked, hit.span);
       const baseSeverity = hit.kind === "secret" ? "warn" : "info";
       const severity =
         input.modeHint === "block"
