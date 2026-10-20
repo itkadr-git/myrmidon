@@ -40,6 +40,8 @@ function job(overrides: Partial<DeployJobView> = {}): DeployJobView {
     commit: "0123456789abcdef0123456789abcdef01234567",
     status: "maintenance_entering",
     reason: "deploy",
+    mode: "manual",
+    window: null,
     startedBy: { actorType: "user", actorId: "user-a" },
     createdAt: NOW,
     updatedAt: NOW,
