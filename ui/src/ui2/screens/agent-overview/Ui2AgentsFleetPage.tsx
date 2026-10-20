@@ -47,7 +47,7 @@ export function Ui2AgentsFleetPage() {
                 <Link to={`/agents/${agent.id}`} className="flex min-h-16 flex-wrap items-center gap-x-5 gap-y-2 p-4 hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
                   <span className="min-w-40 flex-1 font-medium">{agent.name}</span>
                   <span className="text-sm text-muted-foreground">{t("ui2.agents.role" as never)}: {agent.role}</span>
-                  <span className="flex items-center gap-2 text-sm"><Ui2StatusDot tone={state === "error" ? "danger" : state === "running" ? "ok" : "default"} />{t(`ui2.agents.status.${state}` as never)}</span>
+                  <span className="flex items-center gap-2 text-sm"><Ui2StatusDot tone={state === "error" ? "danger" : state === "running" ? "ok" : "muted"} />{t(`ui2.agents.status.${state}` as never)}</span>
                   <span className="text-sm text-muted-foreground">{t("ui2.agents.run" as never)}: {run?.id ?? t("ui2.common.unknown" as never)}</span>
                 </Link>
               </li>;
