@@ -609,6 +609,8 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
       agentId: stringOrNull(actorInput?.agentId),
       runId: stringOrNull(actorInput?.runId),
       companyId,
+      // myrmidon(PLUGIN-INSTANCE-ADMIN): same rule as the worker RPC host.
+      isInstanceAdmin: actorInput?.isInstanceAdmin === true,
     });
     return Object.freeze({ actor, companyId });
   }

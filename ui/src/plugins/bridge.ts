@@ -109,6 +109,7 @@ export interface PluginHostContext {
   entityType: string | null;
   parentEntityId?: string | null;
   userId: string | null;
+  isInstanceAdmin?: boolean; // myrmidon(PLUGIN-INSTANCE-ADMIN)
   renderEnvironment?: PluginRenderEnvironmentContext | null;
 }
 
