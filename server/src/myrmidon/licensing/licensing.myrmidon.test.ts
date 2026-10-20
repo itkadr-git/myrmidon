@@ -231,6 +231,27 @@ describe("licensing routes", () => {
     expect(bad.status).toBe(422);
   });
 
+  it("accepts and parses MYR-LICENSE-REQUEST v1 one-liner requests", async () => {
+    const oneLiner = `MYR-LICENSE-REQUEST v1 install_id=${MACHINE_ID_INSTALL_ID} modules=antigravity,google-ai board=1.6.6`;
+    const parsed = await request(app(admin, envFor()))
+      .post("/api/licensing/parse-request")
+      .send({ request: oneLiner });
+    expect(parsed.status).toBe(200);
+    expect(parsed.body).toMatchObject({
+      instanceId: MACHINE_ID_INSTALL_ID,
+      modules: ["antigravity", "google-ai"],
+      board: "1.6.6",
+    });
+
+    const res = await request(app(admin, envFor()))
+      .post("/api/licensing/issue")
+      .send({ request: oneLiner, modules: ["antigravity"], days: 30 });
+    expect(res.status).toBe(201);
+    expect(res.body.payload.instance_id).toBe(MACHINE_ID_INSTALL_ID);
+    expect(res.body.payload.modules).toEqual(["antigravity"]);
+  });
+
+
   it("issues a license from a pasted request, verifies, and journals metadata only", async () => {
     const status = await request(app(admin, envFor())).get("/api/licensing/status");
     const res = await request(app(admin, envFor()))

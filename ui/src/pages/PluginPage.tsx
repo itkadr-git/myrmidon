@@ -4,6 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useCompany } from "@/context/CompanyContext";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { pluginsApi } from "@/api/plugins";
+import { accessApi } from "@/api/access";
 import { queryKeys } from "@/lib/queryKeys";
 import {
   PluginSlotMount,
@@ -13,6 +14,12 @@ import {
 import { Button } from "@/components/ui/button";
 import { ArrowLeft } from "lucide-react";
 import { NotFoundPage } from "./NotFound";
+import {
+  ModuleLicenseBanner,
+  isClosedLicenseModule,
+  type LicenseModule,
+} from "@/components/myrmidon/ModuleLicenseBanner"; // myrmidon(LICENSING)
+
 
 /**
  * Company-context plugin page. Renders a plugin's `page` slot at
@@ -88,6 +95,20 @@ export function PluginPage() {
     return matches[0] ?? null;
   }, [pluginId, pluginRoutePath, contributions]);
 
+  const closedModule: LicenseModule | null = useMemo(() => {
+    if (isClosedLicenseModule(pluginRoutePath)) return pluginRoutePath;
+    if (pageSlot?.routePath && isClosedLicenseModule(pageSlot.routePath)) return pageSlot.routePath;
+    return null;
+  }, [pluginRoutePath, pageSlot]);
+
+  const { data: boardAccess } = useQuery({
+    queryKey: queryKeys.access.currentBoardAccess,
+    queryFn: () => accessApi.getCurrentBoardAccess(),
+    retry: false,
+    enabled: Boolean(closedModule),
+  });
+  const isInstanceAdmin = Boolean(boardAccess?.isInstanceAdmin || boardAccess?.source === "local_implicit");
+
   const context = useMemo(
     () => ({
       companyId: resolvedCompanyId ?? null,
@@ -135,6 +156,10 @@ export function PluginPage() {
     );
   }
 
+  if (closedModule && boardAccess && !isInstanceAdmin) {
+    return <NotFoundPage scope="board" />;
+  }
+
   if (!contributions) {
     return <div className="text-sm text-muted-foreground">Loading…</div>;
   }
@@ -153,6 +178,13 @@ export function PluginPage() {
   }
 
   if (!pageSlot) {
+    if (closedModule && isInstanceAdmin) {
+      return (
+        <div className="space-y-4">
+          <ModuleLicenseBanner module={closedModule} />
+        </div>
+      );
+    }
     if (pluginRoutePath) {
       return <NotFoundPage scope="board" />;
     }
@@ -175,6 +207,7 @@ export function PluginPage() {
           </Button>
         </div>
       )}
+      {closedModule && <ModuleLicenseBanner module={closedModule} />}
       <PluginSlotMount
         slot={pageSlot}
         context={context}
@@ -183,6 +216,7 @@ export function PluginPage() {
       />
     </div>
   );
+
 }
 
 function resolveRouteSidebarPageTitle(pageSlot: ResolvedPluginSlot, routeSplat: string | undefined): string {

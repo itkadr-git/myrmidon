@@ -1235,7 +1235,11 @@
     "installHint": "Place the text into the license file of the modules on that installation.",
     "issuedTitle": "Issued licenses",
     "issuedEmpty": "No licenses issued yet.",
-    "until": "until {{date}}"
+    "until": "until {{date}}",
+    "serverIdentifier": "Server identifier:",
+    "moduleNotLicensed": "Module \"{{module}}\" is not licensed on this server",
+    "moduleLicenseInvalid": "No valid license for this module.",
+    "moduleCopyRequest": "Copy license request"
   },
   "remoteSites": {
     "title": "Remote sites",

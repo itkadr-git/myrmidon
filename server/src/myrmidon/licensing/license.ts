@@ -190,12 +190,38 @@ export function buildLicenseRequest(input: {
   return `${REQUEST_PREFIX}.${b64urlEncode(Buffer.from(JSON.stringify(body), "utf8"))}`;
 }
 
+export function buildLicenseRequestOneLiner(input: {
+  instanceId: string;
+  board: string;
+  modules: readonly string[];
+}): string {
+  return `MYR-LICENSE-REQUEST v1 install_id=${input.instanceId} modules=${sortedUnique(input.modules).join(",")} board=${input.board}`;
+}
+
+const ONE_LINER_RE = /^MYR-LICENSE-REQUEST\s+v1\s+install_id=([A-Za-z0-9._:-]{1,128})\s+modules=([A-Za-z0-9,_-]{1,500})\s+board=([^\s]+)/;
+
 /** Returns null for anything that is not a well-formed request: the caller
  * shows one generic message, never the parse details. */
 export function parseLicenseRequest(text: unknown): LicenseRequest | null {
   if (typeof text !== "string") return null;
   const trimmed = text.trim();
-  if (trimmed.length > 4096 || !REQUEST_RE.test(trimmed)) return null;
+  if (trimmed.length > 4096) return null;
+
+  const oneLinerMatch = trimmed.match(ONE_LINER_RE);
+  if (oneLinerMatch) {
+    const [, instanceId, modulesStr, board] = oneLinerMatch;
+    if (!isValidInstanceId(instanceId)) return null;
+    const modules = modulesStr.split(",").map((m) => m.trim()).filter(Boolean);
+    return {
+      v: 1,
+      instance_id: instanceId,
+      board: board.slice(0, 40),
+      modules: modules.slice(0, 20).map((m) => m.slice(0, 64)),
+      ts: new Date().toISOString(),
+    };
+  }
+
+  if (!REQUEST_RE.test(trimmed)) return null;
   try {
     const raw = JSON.parse(strictB64urlDecode(trimmed.slice(REQUEST_PREFIX.length + 1)).toString("utf8"));
     if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
@@ -213,3 +239,4 @@ export function parseLicenseRequest(text: unknown): LicenseRequest | null {
     return null;
   }
 }
+

@@ -61,3 +61,12 @@ export const licensingApi = {
   issue: (input: IssueLicenseInput) => api.post<IssuedLicense>("/licensing/issue", input),
   issued: () => api.get<IssuedLicenseRecord[]>("/licensing/issued"),
 };
+
+export function isClosedLicenseModule(value: unknown): value is LicenseModule {
+  return typeof value === "string" && (LICENSE_MODULES as readonly string[]).includes(value);
+}
+
+export function buildLicenseRequestOneLiner(installId: string, modules: readonly string[], board: string): string {
+  return `MYR-LICENSE-REQUEST v1 install_id=${installId} modules=${modules.join(",")} board=${board}`;
+}
+

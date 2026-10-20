@@ -10,6 +10,10 @@ divergence-section: Трек 6 — безопасность и модели
   It shows the installation id (`myr-` + 20 hex of `sha256(machine-id)`, the same
   algorithm the closed connector modules use; `GET /api/licensing/install-id`),
   and a one-click "Copy license request" (a one-line `MYRQ1.…` blob).
+- Closed connector module screens (`google-ai`, `antigravity`, `chatgpt-pool`)
+  render a no-license banner when unlicensed showing "Server identifier: <install-id>"
+  and a "Copy license request" button (copying `MYR-LICENSE-REQUEST v1 install_id=<id> modules=<module> board=<version>`),
+  visible strictly to instance administrators.
 - The owner pastes a client's request (or an id) into the issue form, picks
   modules, the term in days and a client/watermark, and the board signs a
   `MYR1.<payload>.<signature>` license with an Ed25519 key read from
@@ -26,6 +30,10 @@ divergence-section: Трек 6 — безопасность и модели
   `sha256(machine-id)`, тем же алгоритмом, что и закрытые модули-коннекторы;
   `GET /api/licensing/install-id`) и кнопку «Скопировать запрос лицензии» (строка
   `MYRQ1.…`).
+- Экраны закрытых модулей-коннекторов (`google-ai`, `antigravity`, `chatgpt-pool`)
+  при отсутствии действующей лицензии показывают баннер с «Идентификатор сервера: <install-id>»
+  и кнопкой «Скопировать запрос лицензии» (однострочник `MYR-LICENSE-REQUEST v1 install_id=<id> modules=<module> board=<версия>`),
+  видимость строго для администратора инстанса (`instance_admin`).
 - Владелец вставляет запрос клиента (или идентификатор) в форму выпуска, выбирает
   модули, срок в днях и клиента/водяной знак, и доска подписывает лицензию
   `MYR1.<payload>.<signature>` ключом Ed25519 из `MYRMIDON_LICENSE_ISSUER_KEY_FILE`.
@@ -37,7 +45,8 @@ divergence-section: Трек 6 — безопасность и модели
 
 | ID | Что меняем | Файлы вендора | Причина | Тест-сторож | Как снимать | PR |
 |---|---|---|---|---|---|---|
-| LICENSING | Новый модуль `server/src/myrmidon/licensing/**` (идентификатор установки, формат лицензии MYR1/MYRQ1, подпись Ed25519, журнал) и панель `LicensingSettingsPanel`. В вендорских файлах — по одной строке с маркером `myrmidon(LICENSING)`. | `server/src/app.ts` (импорт и `api.use(licensingRoutes())`), `ui/src/pages/InstanceGeneralSettings.tsx` (импорт и `<LicensingSettingsPanel />`) | Владелец выпускает лицензии закрытых модулей из интерфейса доски, клиент запрашивает лицензию одной кнопкой | `server/src/myrmidon/licensing/licensing.myrmidon.test.ts`, `ui/src/components/myrmidon/LicensingSettingsPanel.myrmidon.test.tsx` | Убрать две строки с маркером и каталог `server/src/myrmidon/licensing/`, панель | этот PR |
+| LICENSING | Новый модуль `server/src/myrmidon/licensing/**` (идентификатор установки, формат лицензии MYR1/MYRQ1/MYR-LICENSE-REQUEST, подпись Ed25519, журнал), панель `LicensingSettingsPanel` и баннер `ModuleLicenseBanner`. В вендорских файлах — строки с маркером `myrmidon(LICENSING)`. | `server/src/app.ts` (импорт и `api.use(licensingRoutes())`), `ui/src/pages/InstanceGeneralSettings.tsx` (импорт и `<LicensingSettingsPanel />`), `ui/src/pages/PluginPage.tsx` (импорт и `ModuleLicenseBanner`) | Владелец выпускает лицензии закрытых модулей из интерфейса доски, клиент запрашивает лицензию одной кнопкой на экранах закрытых модулей и в настройках | `server/src/myrmidon/licensing/licensing.myrmidon.test.ts`, `ui/src/components/myrmidon/LicensingSettingsPanel.myrmidon.test.tsx`, `ui/src/components/myrmidon/ModuleLicenseBanner.myrmidon.test.tsx`, `ui/src/pages/PluginPage.myrmidon.test.tsx` | Убрать строки с маркером и модули `server/src/myrmidon/licensing/`, панели | этот PR |
+
 
 ## settings-en-new
 

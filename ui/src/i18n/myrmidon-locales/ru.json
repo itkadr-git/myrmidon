@@ -1235,7 +1235,11 @@
     "installHint": "Положите текст в файл лицензии модулей на той установке.",
     "issuedTitle": "Выпущенные лицензии",
     "issuedEmpty": "Лицензии ещё не выпускались.",
-    "until": "до {{date}}"
+    "until": "до {{date}}",
+    "serverIdentifier": "Идентификатор сервера:",
+    "moduleNotLicensed": "Модуль «{{module}}» не лицензирован на этом сервере",
+    "moduleLicenseInvalid": "Лицензия недействительна.",
+    "moduleCopyRequest": "Скопировать запрос лицензии"
   },
   "remoteSites": {
     "title": "Удалённые площадки",
