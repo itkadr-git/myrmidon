@@ -198,6 +198,7 @@ describe("pluginLifecycleManager.restartWorker", () => {
     mockRegistry.getById.mockResolvedValue({ ...ready, status: "ready" });
     await lifecycle.disable("plugin-1");
     expect(remove).toHaveBeenCalledWith("company-1", expect.objectContaining({ id: "plugin-1" }));
+    expect(getPluginProviderModels("company-1")).toEqual([]);
   });
 
   it("does a full deactivate+reactivate cycle when the loader has runtime services", async () => {
