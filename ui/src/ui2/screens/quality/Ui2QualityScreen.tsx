@@ -4,8 +4,7 @@ import { baselineApi, baselineMetricsKey } from "@/api/baseline";
 import { useUi2I18n } from "../../i18n/Ui2I18n";
 import { Ui2EmptyState, Ui2ErrorNote, Ui2Loading, Ui2Page, Ui2Section, Ui2Tile, Ui2Tiles } from "../../components/ui2Primitives";
 
-
-
+/** Calculates the review return-free rate; this is not a run success metric. */
 export function getReturnFreeReviewRate(row: { returnRate: { enteredReview: number; returned: number } }): number | null {
   const enteredReview = row.returnRate.enteredReview;
   if (enteredReview <= 0) return null;
