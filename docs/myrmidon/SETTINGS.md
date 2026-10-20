@@ -1222,3 +1222,13 @@ is configured or usable.
 | Field | Default | What it does | Bounds / special |
 |---|---|---|---|
 | `promptBudget.optimizerAgentId` | absent | Agent that receives the deep-analysis task filed by the "Deep analysis" button | A uuid of another agent of the same company; absent, blank or not a uuid answers the deep POST with 422. An additive field of the `promptBudget` area owned by the thresholds part (`instance_settings.general.promptBudget`); no environment variable |
+
+
+## 1.7 - USERS-ADMIN-UI A: instance user access
+
+| Setting | Default | Scope / source | Behavior |
+|---|---|---|---|
+| `instance_settings.general.authSelfSignUp.enabled` | `false` | Instance -> General -> User access; environment override `MYRMIDON_AUTH_SELF_SIGN_UP` is authoritative | Enables public self-registration only when explicitly set. The page shows the effective value and whether it comes from the instance setting or environment. Changes apply immediately without a restart. |
+| `instance_settings.general.myrmidonAuthBlockedUsers` | empty object | Managed by the user administration routes | Per-user block state/reason metadata; do not edit directly. Blocking closes live sessions and prevents new sign-ins. |
+
+See [the user administration guide](guides/users-admin-a.md) for route and precedence details.

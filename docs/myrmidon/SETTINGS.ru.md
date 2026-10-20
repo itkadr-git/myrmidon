@@ -859,3 +859,13 @@ API: `GET /api/myrmidon/companies/:companyId/prompt-budget/agents/:agentId/advic
 | Поле | Умолчание | Что делает | Границы / особые случаи |
 |---|---|---|---|
 | `promptBudget.optimizerAgentId` | нет | Агент, которому ставится задача глубокого разбора по кнопке «Deep analysis» | uuid другого агента той же компании; пустое, отсутствующее или не-uuid значение отвечает на deep-POST ошибкой 422. Аддитивное поле области `promptBudget`, которой владеет часть порогов (`instance_settings.general.promptBudget`); переменной окружения нет |
+
+
+## 1.7 - USERS-ADMIN-UI A: dostup polzovatelei ekzemplyara
+
+| Nastroika | Po umolchaniyu | Oblast / istochnik | Povedenie |
+|---|---|---|---|
+| `instance_settings.general.authSelfSignUp.enabled` | `false` | Ekzemplyar -> Osnovnoe -> Dostup polzovatelei; `MYRMIDON_AUTH_SELF_SIGN_UP` prinuditelno zadaet znachenie | Publichnaya samoregistratsiya vklyuchaetsya tolko yavno. Ekran pokazyvaet effektivnoe znachenie i ego istochnik: nastroika ekzemplyara ili peremennaya okruzheniya. Izmenenie deistvuet bez perezapuska. |
+| `instance_settings.general.myrmidonAuthBlockedUsers` | pustoi obekt | Upravlyaetsya marshrutami administrirovaniya polzovatelei | Metadannye blokirovki i prichiny po polzovatelyam; ne redaktirovat napryamuyu. Blokirovka zakryvaet sessii i zapreshchaet novye vhody. |
+
+Podrobnosti marshrutov i prioriteta istochnikov: [rukovodstvo po administrirovaniyu polzovatelei](guides/users-admin-a.ru.md).
