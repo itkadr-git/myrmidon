@@ -37,6 +37,30 @@ import {
 // docs/myrmidon/DIVERGENCE.md "REQUEUE-HOLD".
 import { isReadyQueueStatus, REQUEUED_HOLD_NOTE } from "../myrmidon/settled-holds/requeued.js";
 
+// Adapter setup failures describe an agent/environment, not the task. Keep the
+// task claimable so swarm dispatch can move it to a healthy executor.
+export function isAdapterEnvironmentFailure(run: typeof heartbeatRuns.$inferSelect): boolean {
+  const result = run.resultJson as Record<string, unknown> | null;
+  const errorFamily = typeof result?.errorFamily === "string" ? result.errorFamily : null;
+  const errorCode = run.errorCode ?? (typeof result?.errorCode === "string" ? result.errorCode : null);
+
+  // These are structured adapter failures emitted by the affected adapters.
+  if (
+    errorCode &&
+    /^(?:antigravity_(?:not_licensed|pool_unavailable)|adapter_(?:engine_unavailable|credentials_missing)|model_unavailable|configuration_incomplete)$/.test(errorCode)
+  ) {
+    return true;
+  }
+  if (["permanent_config_error", "adapter_engine_unavailable", "configuration_incomplete"].includes(errorFamily ?? "")) {
+    return true;
+  }
+
+  // Only inspect a bounded error field for legacy adapters; stdout/stderr can
+  // contain unrelated documentation and must not classify a live task.
+  const message = typeof result?.errorMessage === "string" ? result.errorMessage : run.error;
+  return typeof message === "string" && /(?:not licensed|не лицензирован|license(?:d|\s+missing)|module .* unavailable|credential(?:s)? .* missing|уч[её]тн(?:ые|ых) .* недоступ|model .* unavailable|unable to access model|adapter .* unavailable)/i.test(message);
+}
+
 /** An operator records observed outcomes; this is not permission to blindly retry. */
 export async function validateExecutionReconciliation(input: {
   db: Db;
@@ -501,12 +525,15 @@ export async function settleUnrecoverableExecutions(
         // hold left (the release path promotes it). See
         // myrmidon/chat-holds/chat-backed.ts.
         const chat = current && await isChatBackedIssue(tx as unknown as Db, task.companyId, task.id);
+        const adapterFailure = current && isAdapterEnvironmentFailure(run);
         // myrmidon(OPE-6954): a status an actor set after the failure — the
-        // ready queue — belongs to that actor, not to the failure. The
-        // closure below leaves it alone and records the hold only.
+        // ready queue — belongs to that actor. Adapter failures are also
+        // environment state, so both paths release the task without blocking it.
         const requeued = current && isReadyQueueStatus(task.status);
         const note = chat
           ? "The chat turn stopped. Recorded work is preserved; the next message starts a fresh turn and nothing is replayed."
+          : adapterFailure
+          ? "Adapter environment failure recorded. The task was released to the ready queue for another executor."
           : requeued
           ? REQUEUED_HOLD_NOTE
           : current
@@ -527,6 +554,15 @@ export async function settleUnrecoverableExecutions(
               updatedAt: now,
             })
             .where(eq(issues.id, task.id));
+        } else if (adapterFailure && !requeued) {
+          await tx.update(issues).set({
+            status: "todo",
+            assigneeAgentId: null,
+            statusVersion: sql`${issues.statusVersion} + 1`,
+            executionRunId: null,
+            checkoutRunId: null,
+            updatedAt: now,
+          }).where(eq(issues.id, task.id));
         } else if (current && !requeued) {
           const [projected] = await tx
             .update(issues)
@@ -556,7 +592,7 @@ export async function settleUnrecoverableExecutions(
           .update(issueRecoveryActions)
           .set({
             status: "resolved",
-            outcome: current && !chat && !requeued ? "blocked" : "cancelled",
+            outcome: adapterFailure ? "cancelled" : current && !chat && !requeued ? "blocked" : "cancelled",
             resolvedAt: now,
             updatedAt: now,
             nextAction: note,
@@ -594,8 +630,9 @@ export async function settleUnrecoverableExecutions(
           runId: run.id,
           details: {
             recoveryActionId: action.id,
-            outcome: current && !chat && !requeued ? "blocked" : "cancelled",
+            outcome: adapterFailure ? "cancelled" : current && !chat && !requeued ? "blocked" : "cancelled",
             replay: "not_authorized",
+            ...(adapterFailure ? { taskDisposition: "released_for_swarm" } : {}),
             ...(chat ? { continuation: CHAT_CONTINUATION_REPLAY } : {}),
           },
         });
