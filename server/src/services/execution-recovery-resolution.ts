@@ -39,16 +39,26 @@ import { isReadyQueueStatus, REQUEUED_HOLD_NOTE } from "../myrmidon/settled-hold
 
 // Adapter setup failures describe an agent/environment, not the task. Keep the
 // task claimable so swarm dispatch can move it to a healthy executor.
-function isAdapterEnvironmentFailure(run: typeof heartbeatRuns.$inferSelect): boolean {
-  const details = [
-    run.errorCode,
-    run.error,
-    run.stdoutExcerpt,
-    run.stderrExcerpt,
-    typeof run.resultJson?.errorMessage === "string" ? run.resultJson.errorMessage : null,
-    typeof run.resultJson?.errorCode === "string" ? run.resultJson.errorCode : null,
-  ].filter((value): value is string => Boolean(value)).join(" ");
-  return /(?:not licensed|license(?:d|\s+missing)?|module .* unavailable|credential(?:s)? .* missing|model .* unavailable|unable to access model|adapter .* unavailable)/i.test(details);
+export function isAdapterEnvironmentFailure(run: typeof heartbeatRuns.$inferSelect): boolean {
+  const result = run.resultJson as Record<string, unknown> | null;
+  const errorFamily = typeof result?.errorFamily === "string" ? result.errorFamily : null;
+  const errorCode = run.errorCode ?? (typeof result?.errorCode === "string" ? result.errorCode : null);
+
+  // These are structured adapter failures emitted by the affected adapters.
+  if (
+    errorCode &&
+    /^(?:antigravity_(?:not_licensed|pool_unavailable)|adapter_(?:engine_unavailable|credentials_missing)|model_unavailable|configuration_incomplete)$/.test(errorCode)
+  ) {
+    return true;
+  }
+  if (["permanent_config_error", "adapter_engine_unavailable", "configuration_incomplete"].includes(errorFamily ?? "")) {
+    return true;
+  }
+
+  // Only inspect a bounded error field for legacy adapters; stdout/stderr can
+  // contain unrelated documentation and must not classify a live task.
+  const message = typeof result?.errorMessage === "string" ? result.errorMessage : run.error;
+  return typeof message === "string" && /(?:not licensed|не лицензирован|license(?:d|\\s+missing)|module .* unavailable|credential(?:s)? .* missing|уч[её]тн(?:ые|ых) .* недоступ|model .* unavailable|unable to access model|adapter .* unavailable)/i.test(message);
 }
 
 /** An operator records observed outcomes; this is not permission to blindly retry. */
@@ -547,6 +557,8 @@ export async function settleUnrecoverableExecutions(
         } else if (adapterFailure && !requeued) {
           await tx.update(issues).set({
             status: "todo",
+            assigneeAgentId: null,
+            statusVersion: sql`${issues.statusVersion} + 1`,
             executionRunId: null,
             checkoutRunId: null,
             updatedAt: now,
