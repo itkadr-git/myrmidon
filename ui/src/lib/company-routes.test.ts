@@ -33,7 +33,10 @@ describe("company routes", () => {
     expect(rootsBlock).toBeDefined();
     const listedRoots = new Set([...rootsBlock!.matchAll(/"([a-z][a-z0-9-]*)"/g)].map(([, root]) => root!));
 
-    expect([...listedRoots].filter((root) => !boardRouteRoots.has(root))).toEqual([]);
+    const teamCatalogSource = readFileSync(fileURLToPath(new URL("../pages/TeamCatalog.tsx", import.meta.url)), "utf8");
+    const teamCatalogRoot = teamCatalogSource.match(/const TEAM_CATALOG_ROUTE_ROOT = "\/([a-z][a-z0-9-]*)";/)?.[1];
+    expect(teamCatalogRoot).toBeDefined();
+    expect([...listedRoots].filter((root) => root !== teamCatalogRoot && !boardRouteRoots.has(root))).toEqual([]);
     expect([...boardRouteRoots].filter((root) => !listedRoots.has(root))).toEqual([]);
   });
 
