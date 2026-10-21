@@ -9,7 +9,8 @@ import { mkdirSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { and, eq, inArray, sql } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { TelegramAdapter } from "@chat-adapter/telegram";
 import {
   agents,
   authUsers,
@@ -29,16 +30,54 @@ import {
 import {
   OWNER_DELIVERY_SETTINGS_KEY,
   type ChatProvider,
+  type SafeChatPublicationPayload,
 } from "@paperclipai/shared";
 import { issueThreadInteractionService } from "../services/issue-thread-interactions.js";
 import { readOwnerDeliveryMode } from "../myrmidon/owner-delivery/telegram-owner-bindings.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { enqueueIssueInteractionChatPublications } from "../services/chat-interaction-publications.js";
+import { safeCardForPublication } from "../services/chat-channels.js";
+import { logger } from "../middleware/logger.js";
 import { telegramConversationUserId } from "../myrmidon/agent-chat-bridge/identity.js";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
+
+/** Records what would reach the Telegram Bot API instead of calling it. */
+class CapturingTelegramAdapter extends TelegramAdapter {
+  readonly requests: Array<{
+    method: string;
+    payload?: Record<string, unknown> | FormData;
+  }> = [];
+
+  constructor() {
+    super({
+      botToken: "123:test-token",
+      mode: "webhook",
+      secretToken: "test-webhook-secret",
+      userName: "paperclip_test_bot",
+    });
+  }
+
+  protected override async telegramFetch<TResult>(
+    method: string,
+    payload?: Record<string, unknown> | FormData,
+  ): Promise<TResult> {
+    this.requests.push({ method, payload });
+    return {
+      message_id: 41,
+      date: 1_700_000_000,
+      chat: { id: 123, type: "private" },
+      text: "sent",
+    } as TResult;
+  }
+
+  sendMessageBody(): Record<string, unknown> {
+    const send = this.requests.find(({ method }) => method === "sendMessage");
+    return (send?.payload ?? {}) as Record<string, unknown>;
+  }
+}
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported
@@ -333,7 +372,7 @@ describeEmbeddedPostgres(
       );
     });
 
-    it("does not roll back an oversized interaction when Telegram cannot fit it", async () => {
+    it("does not roll back an oversized interaction and tells the owner to answer on the board", async () => {
       const fixture = await seedFixture();
       const interaction = await issueThreadInteractionService(db).create(
         { id: fixture.workIssue.id, companyId: fixture.companyId },
@@ -359,14 +398,120 @@ describeEmbeddedPostgres(
       await instanceSettingsService(db).updateGeneral({
         [OWNER_DELIVERY_SETTINGS_KEY]: { mode: "owner_decisions_only" },
       });
-      await expect(
-        enqueueIssueInteractionChatPublications(db, interaction),
-      ).resolves.toEqual([]);
+      const warn = vi.spyOn(logger, "warn").mockImplementation(() => logger);
+      try {
+        const inserted = await enqueueIssueInteractionChatPublications(db, interaction);
+        expect(inserted).toHaveLength(1);
+        const payload = inserted[0]!.payload as SafeChatPublicationPayload;
+        expect(payload.text).toContain("слишком длинный для Telegram");
+        expect(payload.text).toContain("Ответить можно только на доске.");
+        expect(payload.text).toContain(`https://board.example/issues/${fixture.workIssue.id}`);
+        expect(payload.text).not.toContain("xxxxxxxx");
+        expect(payload.interactionId).toBe(interaction.id);
+        expect(payload).not.toHaveProperty("card");
+        const logged = warn.mock.calls.find(
+          ([fields]) =>
+            (fields as { interactionId?: string } | undefined)?.interactionId ===
+            interaction.id,
+        );
+        expect(logged).toBeDefined();
+        // The log trace carries ids only, never the question text.
+        expect(JSON.stringify(logged)).not.toContain("xxxxxxxx");
+      } finally {
+        warn.mockRestore();
+      }
       const [stored] = await db
         .select({ id: issues.id })
         .from(issues)
         .where(eq(issues.id, fixture.workIssue.id));
       expect(stored?.id).toBe(fixture.workIssue.id);
+    });
+
+    it("sends a board-only notice for confirmations that cannot be shown as text", async () => {
+      const fixture = await seedFixture();
+      const created = await issueThreadInteractionService(db).create(
+        { id: fixture.workIssue.id, companyId: fixture.companyId },
+        {
+          kind: "request_confirmation" as const,
+          continuationPolicy: "wake_assignee" as const,
+          resolverPolicy: "human_only" as const,
+          payload: {
+            version: 1 as const,
+            prompt: "Approve the sensitive change?",
+            detailsMarkdown: "SENSITIVE-DETAILS",
+          },
+        },
+        { agentId: fixture.agentId },
+      );
+      // Only the sensitive-payload markers matter to the renderer; the
+      // persisted proposal shape is validated at create time elsewhere.
+      const interaction = {
+        ...created,
+        payload: { ...created.payload, secretProposal: {} },
+      } as unknown as typeof created;
+      await instanceSettingsService(db).updateGeneral({
+        [OWNER_DELIVERY_SETTINGS_KEY]: { mode: "owner_decisions_only" },
+      });
+      const inserted = await enqueueIssueInteractionChatPublications(db, interaction);
+      expect(inserted).toHaveLength(1);
+      const payload = inserted[0]!.payload as SafeChatPublicationPayload;
+      expect(payload.text).toContain("Ответить можно только на доске.");
+      expect(payload.text).toContain(`https://board.example/issues/${fixture.workIssue.id}`);
+      expect(payload.text).not.toContain("SENSITIVE-DETAILS");
+      expect(payload.text).not.toContain("Approve the sensitive change?");
+      expect(payload.interactionId).toBe(interaction.id);
+      expect(payload).not.toHaveProperty("card");
+    });
+
+    it("hands Telegram a plain message with no reply_markup even when the endpoint allows actions", async () => {
+      const fixture = await seedFixture();
+      const interaction = await issueThreadInteractionService(db).create(
+        { id: fixture.workIssue.id, companyId: fixture.companyId },
+        {
+          kind: "ask_user_questions" as const,
+          continuationPolicy: "wake_assignee" as const,
+          resolverPolicy: "human_only" as const,
+          payload: {
+            version: 1 as const,
+            title: "Pick a color",
+            questions: [{
+              id: "color",
+              prompt: "Which color?",
+              selectionMode: "single" as const,
+              allowOther: false,
+              options: [
+                { id: "red", label: "Red" },
+                { id: "blue", label: "Blue" },
+              ],
+            }],
+          },
+        },
+        { agentId: fixture.agentId },
+      );
+      await instanceSettingsService(db).updateGeneral({
+        [OWNER_DELIVERY_SETTINGS_KEY]: { mode: "owner_decisions_only" },
+      });
+      await enqueueIssueInteractionChatPublications(db, interaction);
+      const [publication] = await publicationsForInteraction(
+        fixture.companyId,
+        interaction.id,
+      );
+      const payload = publication!.payload as SafeChatPublicationPayload;
+      const [endpoint] = await db
+        .select()
+        .from(chatEndpoints)
+        .where(eq(chatEndpoints.id, fixture.endpointId));
+      expect(endpoint!.capabilities.actions).toBe(true);
+
+      // The sender builds the card from payload.card; none means a plain post.
+      expect(safeCardForPublication(payload, "telegram")).toBeNull();
+      const adapter = new CapturingTelegramAdapter();
+      await adapter.postMessage("telegram:123", payload.text);
+      const body = adapter.sendMessageBody();
+      expect(body).toHaveProperty("text");
+      expect(body).not.toHaveProperty("reply_markup");
+      expect(JSON.stringify(body)).not.toContain("inline_keyboard");
+      expect(JSON.stringify(body)).not.toContain("callback_data");
     });
 
     it("delivers owner questions as complete plain text without actions", async () => {
@@ -545,6 +690,263 @@ describeEmbeddedPostgres(
 
       const publications = await enqueueIssueInteractionChatPublications(db, interaction);
       expect(publications).toEqual([]);
+    });
+
+
+    // myrmidon(1.6.5-OWNER-DM-FILTER): the owner-DM audience filter matrix.
+    // The filter consumes the interaction's vendor-computed audience fields:
+    // a card reaches the owner's DM only when it is addressed to a human
+    // (effectiveResolverPolicy "human_only", or addresseeUserId = the task
+    // owner). Agent-addressed and purely operational cards stay board-only.
+    describe("owner-DM audience filter (1.6.5)", () => {
+      beforeEach(async () => {
+        await instanceSettingsService(db).updateGeneral({
+          [OWNER_DELIVERY_SETTINGS_KEY]: { mode: "owner_decisions_only" },
+        });
+      });
+
+      /** Read the stored card text of the single publication for an interaction. */
+      async function publicationText(
+        companyId: string,
+        interactionId: string,
+      ): Promise<string | null> {
+        const rows = await publicationsForInteraction(companyId, interactionId);
+        if (rows.length === 0) return null;
+        const payload = rows[0]!.payload as { text?: string };
+        return payload.text ?? null;
+      }
+
+      async function createCard(
+        fixture: Awaited<ReturnType<typeof seedFixture>>,
+        input: {
+          resolverPolicy?: "anyone" | "not_creator" | "human_only";
+          addresseeAgentId?: string;
+          addresseeUserId?: string;
+        } = {},
+      ) {
+        return issueThreadInteractionService(db).create(
+          { id: fixture.workIssue.id, companyId: fixture.companyId },
+          {
+            kind: "request_confirmation" as const,
+            continuationPolicy: "wake_assignee" as const,
+            ...(input.resolverPolicy
+              ? { resolverPolicy: input.resolverPolicy }
+              : {}),
+            ...(input.addresseeAgentId
+              ? { addresseeAgentId: input.addresseeAgentId }
+              : {}),
+            ...(input.addresseeUserId
+              ? { addresseeUserId: input.addresseeUserId }
+              : {}),
+            payload: {
+              version: 1 as const,
+              prompt: "Proceed with the deploy?",
+              acceptLabel: "Accept",
+              rejectLabel: "Reject",
+              allowDeclineReason: true,
+            },
+          },
+          { agentId: fixture.agentId },
+        );
+      }
+
+      it("delivers a human_only card with no addressee to the owner's DM", async () => {
+        const fixture = await seedFixture();
+        const interaction = await createCard(fixture, {
+          resolverPolicy: "human_only",
+        });
+        const publications = await publicationsForInteraction(
+          fixture.companyId,
+          interaction.id,
+        );
+        expect(publications).toHaveLength(1);
+        expect(publications[0]!.endpointId).toBe(fixture.endpointId);
+      });
+
+      it("delivers a card addressed to the task owner to the owner's DM", async () => {
+        const fixture = await seedFixture();
+        const interaction = await createCard(fixture, {
+          resolverPolicy: "not_creator",
+          addresseeUserId: fixture.boardUserId,
+        });
+        const publications = await publicationsForInteraction(
+          fixture.companyId,
+          interaction.id,
+        );
+        expect(publications).toHaveLength(1);
+        expect(publications[0]!.endpointId).toBe(fixture.endpointId);
+      });
+
+      it("keeps a card addressed to a different board user board-only", async () => {
+        const fixture = await seedFixture();
+        const otherUserId = randomUUID();
+        await db
+          .insert(authUsers)
+          .values({
+            id: otherUserId,
+            name: "Other User",
+            email: `other-${otherUserId.slice(0, 8)}@example.com`,
+            emailVerified: true,
+            createdAt: new Date(),
+            updatedAt: new Date(),
+          })
+          .onConflictDoNothing();
+        await db.insert(companyMemberships).values({
+          companyId: fixture.companyId,
+          principalType: "user",
+          principalId: otherUserId,
+          role: "member",
+          status: "active",
+        });
+
+        const interaction = await createCard(fixture, {
+          resolverPolicy: "not_creator",
+          addresseeUserId: otherUserId,
+        });
+        const publications = await publicationsForInteraction(
+          fixture.companyId,
+          interaction.id,
+        );
+        expect(publications).toEqual([]);
+      });
+
+      it("keeps an agent-addressed card board-only", async () => {
+        const fixture = await seedFixture();
+        const otherAgentId = randomUUID();
+        await db.insert(agents).values({
+          id: otherAgentId,
+          companyId: fixture.companyId,
+          name: "Agent B",
+          role: "engineer",
+          status: "idle",
+          adapterType: "paperclip_runner",
+          adapterConfig: {},
+          runtimeConfig: {},
+          permissions: {},
+        });
+
+        const interaction = await createCard(fixture, {
+          resolverPolicy: "not_creator",
+          addresseeAgentId: otherAgentId,
+        });
+        const publications = await publicationsForInteraction(
+          fixture.companyId,
+          interaction.id,
+        );
+        expect(publications).toEqual([]);
+      });
+
+      it("keeps an operational card (no human addressee) board-only", async () => {
+        const fixture = await seedFixture();
+        for (const resolverPolicy of ["anyone", "not_creator"] as const) {
+          const interaction = await createCard(fixture, { resolverPolicy });
+          const publications = await publicationsForInteraction(
+            fixture.companyId,
+            interaction.id,
+          );
+          expect(publications).toEqual([]);
+        }
+      });
+
+      it('mode "all" restores the pre-filter behaviour for operational cards', async () => {
+        const fixture = await seedFixture();
+        await instanceSettingsService(db).updateGeneral({
+          [OWNER_DELIVERY_SETTINGS_KEY]: { mode: "all" },
+        });
+
+        const interaction = await createCard(fixture, {
+          resolverPolicy: "anyone",
+        });
+        const publications = await publicationsForInteraction(
+          fixture.companyId,
+          interaction.id,
+        );
+        expect(publications).toHaveLength(1);
+        expect(publications[0]!.endpointId).toBe(fixture.endpointId);
+
+        await instanceSettingsService(db).updateGeneral({
+          [OWNER_DELIVERY_SETTINGS_KEY]: { mode: "owner_decisions_only" },
+        });
+      });
+
+      // myrmidon(1.6.5-OWNER-VIA-BOT): under "via_bot" even a human_only card or
+      // a card addressed straight to the owner is NOT published to the owner's DM.
+      it('mode "via_bot" publishes no interactive card to the owner DM', async () => {
+        const fixture = await seedFixture();
+        await instanceSettingsService(db).updateGeneral({
+          [OWNER_DELIVERY_SETTINGS_KEY]: { mode: "via_bot" },
+        });
+        try {
+          const humanOnly = await createCard(fixture, { resolverPolicy: "human_only" });
+          const addressed = await createCard(fixture, {
+            resolverPolicy: "not_creator",
+            addresseeUserId: fixture.boardUserId,
+          });
+          expect(await publicationsForInteraction(fixture.companyId, humanOnly.id)).toEqual([]);
+          expect(await publicationsForInteraction(fixture.companyId, addressed.id)).toEqual([]);
+        } finally {
+          await instanceSettingsService(db).updateGeneral({
+            [OWNER_DELIVERY_SETTINGS_KEY]: { mode: "owner_decisions_only" },
+          });
+        }
+      });
+
+      it("keeps vendor bindings (chat-bound task) byte-for-byte on the vendor path", async () => {
+        const fixture = await seedFixture();
+        // Bind the work task to its own chat thread: the vendor binding path
+        // wins and the owner-DM filter never runs.
+        const resourceId = randomUUID();
+        await db.insert(chatEndpointResources).values({
+          id: resourceId,
+          companyId: fixture.companyId,
+          endpointId: fixture.endpointId,
+          type: "group",
+          providerResourceId: `telegram-group-${randomUUID()}`,
+          label: "Team group",
+          enabled: true,
+          availability: "available",
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        });
+        await db.insert(chatConversations).values({
+          companyId: fixture.companyId,
+          endpointId: fixture.endpointId,
+          resourceId,
+          issueId: fixture.workIssue.id,
+          externalConversationId: `telegram-group-${fixture.companyId.slice(0, 8)}`,
+          externalThreadId: `telegram-group-${fixture.companyId.slice(0, 8)}:thread`,
+          sessionGeneration: 1,
+          externalLabel: "Team group",
+          isDirectMessage: false,
+          state: "active",
+          lastActivityAt: new Date(),
+        });
+
+        const interaction = await createCard(fixture, {
+          resolverPolicy: "anyone",
+        });
+        const publications = await publicationsForInteraction(
+          fixture.companyId,
+          interaction.id,
+        );
+        expect(publications).toHaveLength(1);
+        expect(publications[0]!.endpointId).toBe(fixture.endpointId);
+        const text = await publicationText(fixture.companyId, interaction.id);
+        expect(text).not.toBeNull();
+        // Vendor text is the generic vendor card body, not the owner text.
+        expect(text).toContain("This task needs an authorized response");
+        // The vendor binding keeps its card with executable actions.
+        const payload = publications[0]!.payload as SafeChatPublicationPayload;
+        expect(payload.card?.actions?.length ?? 0).toBeGreaterThan(0);
+        const card = safeCardForPublication(payload, "telegram");
+        expect(card).not.toBeNull();
+        const adapter = new CapturingTelegramAdapter();
+        await adapter.postMessage("telegram:123", {
+          card: card!,
+          fallbackText: payload.text,
+        });
+        expect(adapter.sendMessageBody()).toHaveProperty("reply_markup");
+      });
     });
 
     it("does not deliver a card authored by another agent through this endpoint", async () => {

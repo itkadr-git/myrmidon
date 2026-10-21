@@ -24,7 +24,12 @@ import { PRODUCT_NAME } from "../myrmidon/product.js";
 // myrmidon(U2): owner-delivery bindings for tasks without their own chat thread.
 import { telegramOwnerDeliveryBindings } from "../myrmidon/owner-delivery/telegram-owner-bindings.js";
 // myrmidon(U2): owner Telegram questions and confirmations are delivered as text only.
-import { telegramOwnerInteractionText } from "../myrmidon/owner-delivery/telegram-text.js";
+import {
+  TelegramOwnerTextTooLongError,
+  telegramOwnerBoardOnlyText,
+  telegramOwnerInteractionText,
+} from "../myrmidon/owner-delivery/telegram-text.js";
+import { logger } from "../middleware/logger.js";
 import { projectSafeChatPublication } from "./chat-publication-projection.js";
 import { safeChatTaskUrl } from "./chat-task-url.js";
 import {
@@ -392,26 +397,33 @@ export async function enqueueIssueInteractionChatPublications(
         ? nativeTelegramConfirmation(interaction)
         : null;
     let ownerTelegramText: string | null = null;
-    if (endpoint.provider === "telegram") {
+    if (isOwnerTelegramBinding) {
       try {
         ownerTelegramText = telegramOwnerInteractionText(
           interaction,
           taskUrl,
-          isOwnerTelegramBinding,
+          true,
           confirmation !== null,
         );
+        // Nothing renderable (tool/secret/connection confirmation and other
+        // kinds): the owner still learns that a decision waits on the board.
+        ownerTelegramText ??= telegramOwnerBoardOnlyText(taskUrl, "board_only");
       } catch (error) {
-        // A valid interaction must not roll back because Telegram cannot fit
-        // its complete text payload. Skip only this owner publication; do not
-        // silently truncate or fall back to an executable card.
-        if (
-          isOwnerTelegramBinding &&
-          error instanceof Error &&
-          error.message.includes("Telegram's 4096-character message limit")
-        ) {
-          continue;
-        }
-        throw error;
+        if (!(error instanceof TelegramOwnerTextTooLongError)) throw error;
+        // A valid interaction must not roll back, and the owner must not
+        // learn nothing, because Telegram cannot fit the complete text. Never
+        // truncate and never fall back to an executable card: send a short
+        // board-only notice and leave a log trace (ids only, no content).
+        logger.warn(
+          {
+            interactionId: interaction.id,
+            issueId: interaction.issueId,
+            endpointId: endpoint.id,
+            textLength: error.length,
+          },
+          "Owner Telegram interaction text exceeds the message limit; sent a board-only notice",
+        );
+        ownerTelegramText = telegramOwnerBoardOnlyText(taskUrl, "too_long");
       }
     }
     const isTextOnlyOwnerTelegram =

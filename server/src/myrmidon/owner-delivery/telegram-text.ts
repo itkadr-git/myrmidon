@@ -8,14 +8,41 @@ import { projectSafeChatPublicationText } from "../../services/chat-publication-
 const MAX_TELEGRAM_MESSAGE_LENGTH = 4_096;
 const QUESTION_REPLY_GUIDANCE = "Ответьте сообщением: номером варианта или своими словами.";
 
+/** The complete owner text does not fit into one Telegram message. */
+export class TelegramOwnerTextTooLongError extends Error {
+  constructor(readonly length: number) {
+    super(
+      `Owner interaction text exceeds Telegram's ${MAX_TELEGRAM_MESSAGE_LENGTH}-character message limit`,
+    );
+    this.name = "TelegramOwnerTextTooLongError";
+  }
+}
+
 function finishTelegramText(lines: string[]): string {
   const text = projectSafeChatPublicationText(lines.join("\n").trim());
   if (text.length > MAX_TELEGRAM_MESSAGE_LENGTH) {
-    throw new Error(
-      `Owner interaction text exceeds Telegram's ${MAX_TELEGRAM_MESSAGE_LENGTH}-character message limit`,
-    );
+    throw new TelegramOwnerTextTooLongError(text.length);
   }
   return text;
+}
+
+/**
+ * Short notice for an interaction that cannot be shown in Telegram (too long,
+ * or a tool/secret/connection confirmation that is resolved on the board
+ * only). Carries no interaction content, so it always fits.
+ */
+export function telegramOwnerBoardOnlyText(
+  taskUrl: string | null,
+  reason: "too_long" | "board_only",
+): string {
+  const lines = [
+    reason === "too_long"
+      ? "Вопрос слишком длинный для Telegram."
+      : "Нужно ваше решение.",
+    "Ответить можно только на доске.",
+  ];
+  if (taskUrl) lines.push("", taskUrl);
+  return finishTelegramText(lines);
 }
 
 export function telegramOwnerQuestionText(
