@@ -913,7 +913,9 @@ function uniqueImportedSkillKey(companyId: string, baseSlug: string, usedKeys: S
 }
 
 function buildSkillRuntimeName(key: string, slug: string) {
-  if (key.startsWith("paperclipai/paperclip/")) return slug;
+  if (key.startsWith("paperclipai/paperclip/")) {
+    return LEGACY_BUNDLED_SKILL_SLUGS[slug] ?? slug;
+  }
   return `${slug}--${hashSkillValue(key)}`;
 }
 
@@ -963,25 +965,39 @@ function readCanonicalSkillKey(frontmatter: Record<string, unknown>, metadata: R
  * `ensureSkillInventoryCurrent` imports into every company library.
  */
 export const PAPERCLIP_CORE_SKILL_KEYS = [
-  "paperclipai/paperclip/paperclip",
-  "paperclipai/paperclip/paperclip-board",
-  "paperclipai/paperclip/paperclip-converting-plans-to-tasks",
-  "paperclipai/paperclip/paperclip-create-agent",
+  "paperclipai/paperclip/myrmidon",
+  "paperclipai/paperclip/myrmidon-board",
+  "paperclipai/paperclip/myrmidon-converting-plans-to-tasks",
+  "paperclipai/paperclip/myrmidon-create-agent",
   "paperclipai/paperclip/para-memory-files",
 ] as const;
+
+const LEGACY_BUNDLED_SKILL_SLUGS: Record<string, string> = {
+  paperclip: "myrmidon",
+  "paperclip-board": "myrmidon-board",
+  "paperclip-converting-plans-to-tasks": "myrmidon-converting-plans-to-tasks",
+  "paperclip-create-agent": "myrmidon-create-agent",
+};
+const MYRMIDON_BUNDLED_SKILL_KEYS: Record<string, string> = {
+  paperclip: "paperclipai/paperclip/myrmidon",
+  "paperclip-board": "paperclipai/paperclip/myrmidon-board",
+  "paperclip-converting-plans-to-tasks": "paperclipai/paperclip/myrmidon-converting-plans-to-tasks",
+  "paperclip-create-agent": "paperclipai/paperclip/myrmidon-create-agent",
+};
 
 function deriveCanonicalSkillKey(
   companyId: string,
   input: Pick<ImportedSkill, "slug" | "sourceType" | "sourceLocator" | "metadata">,
 ) {
-  const slug = normalizeSkillSlug(input.slug) ?? "skill";
+  const requestedSlug = normalizeSkillSlug(input.slug) ?? "skill";
+  const slug = LEGACY_BUNDLED_SKILL_SLUGS[requestedSlug] ?? requestedSlug;
   const metadata = isPlainRecord(input.metadata) ? input.metadata : null;
   const explicitKey = readCanonicalSkillKey({}, metadata);
   if (explicitKey) return explicitKey;
 
   const sourceKind = asString(metadata?.sourceKind);
   if (sourceKind === "paperclip_bundled") {
-    return `paperclipai/paperclip/${slug}`;
+    return `paperclipai/paperclip/${LEGACY_BUNDLED_SKILL_SLUGS[slug] ?? slug}`;
   }
 
   const owner = normalizeSkillSlug(asString(metadata?.owner));
@@ -2485,6 +2501,15 @@ function resolveSkillReference(
     if (byKey) {
       return { skill: byKey, ambiguous: false };
     }
+    const keyParts = normalizedKey.split("/");
+    const legacySlug = keyParts.at(-1) ?? "";
+    const aliasedSlug = LEGACY_BUNDLED_SKILL_SLUGS[legacySlug];
+    if (aliasedSlug && keyParts.length === 3) {
+      const byLegacyKey = skills.find(
+        (skill) => skill.key === `${keyParts[0]}/${keyParts[1]}/${aliasedSlug}`,
+      );
+      if (byLegacyKey) return { skill: byLegacyKey, ambiguous: false };
+    }
   }
 
   const normalizedSlug = normalizeSkillSlug(trimmed);
@@ -2492,7 +2517,8 @@ function resolveSkillReference(
     return { skill: null, ambiguous: false };
   }
 
-  const bySlug = skills.filter((skill) => skill.slug === normalizedSlug);
+  const aliasedSlug = LEGACY_BUNDLED_SKILL_SLUGS[normalizedSlug] ?? normalizedSlug;
+  const bySlug = skills.filter((skill) => skill.slug === aliasedSlug);
   if (bySlug.length === 1) {
     return { skill: bySlug[0] ?? null, ambiguous: false };
   }
@@ -3311,8 +3337,15 @@ export function companySkillService(db: Db) {
       const bundledSkills = await readLocalSkillImports(companyId, skillsRoot)
         .then((skills) => skills.map((skill) => ({
           ...skill,
-          key: deriveCanonicalSkillKey(companyId, {
+          slug: LEGACY_BUNDLED_SKILL_SLUGS[skill.slug] ?? skill.slug,
+          name: LEGACY_BUNDLED_SKILL_SLUGS[skill.slug] ?? skill.name,
+          markdown: rewriteFrontmatterName(
+            skill.markdown,
+            LEGACY_BUNDLED_SKILL_SLUGS[skill.slug] ?? skill.name,
+          ),
+          key: MYRMIDON_BUNDLED_SKILL_KEYS[skill.slug] ?? deriveCanonicalSkillKey(companyId, {
             ...skill,
+            slug: LEGACY_BUNDLED_SKILL_SLUGS[skill.slug] ?? skill.slug,
             metadata: {
               ...(skill.metadata ?? {}),
               sourceKind: "paperclip_bundled",
@@ -3369,7 +3402,7 @@ export function companySkillService(db: Db) {
   }
 
   async function ensureBundledSkillReleases(companyId: string, bundledSkills: CompanySkill[]) {
-    const paperclipSkill = bundledSkills.find((skill) => skill.key === "paperclipai/paperclip/paperclip");
+    const paperclipSkill = bundledSkills.find((skill) => skill.key === "paperclipai/paperclip/myrmidon");
     if (!paperclipSkill) return;
     for (const release of await readBundledSkillReleaseRegistry()) {
       const fileInventory = serializeVersionFileInventory(
@@ -3444,6 +3477,31 @@ export function companySkillService(db: Db) {
       companyId,
       Array.from(foldersByCategory.keys(), bundledFolderLabel),
     );
+    const bundledRows = await db
+      .select({ id: companySkills.id, key: companySkills.key, slug: companySkills.slug, name: companySkills.name, metadata: companySkills.metadata })
+      .from(companySkills)
+      .where(eq(companySkills.companyId, companyId));
+    for (const row of bundledRows) {
+      const targetKey = MYRMIDON_BUNDLED_SKILL_KEYS[row.slug];
+      if (!targetKey || (row.key === targetKey && row.slug === (LEGACY_BUNDLED_SKILL_SLUGS[row.slug] ?? row.slug))) continue;
+      const meta = isPlainRecord(row.metadata) ? row.metadata : {};
+      if (meta.sourceKind !== "paperclip_bundled") continue;
+      const conflictingKey = await db.select({ id: companySkills.id })
+        .from(companySkills)
+        .where(and(eq(companySkills.companyId, companyId), eq(companySkills.key, targetKey)))
+        .then((rows) => rows[0] ?? null);
+      if (conflictingKey && conflictingKey.id !== row.id) {
+        const conflictingSkill = await db.select({ metadata: companySkills.metadata })
+          .from(companySkills)
+          .where(and(eq(companySkills.companyId, companyId), eq(companySkills.id, conflictingKey.id)))
+          .then((rows) => rows[0] ?? null);
+        if (!conflictingSkill || !isPlainRecord(conflictingSkill.metadata) || conflictingSkill.metadata.sourceKind !== "paperclip_bundled") continue;
+        await db.delete(companySkills).where(and(eq(companySkills.companyId, companyId), eq(companySkills.id, conflictingKey.id)));
+      }
+      await db.update(companySkills)
+        .set({ key: targetKey, slug: LEGACY_BUNDLED_SKILL_SLUGS[row.slug] ?? row.slug, name: LEGACY_BUNDLED_SKILL_SLUGS[row.slug] ?? row.slug, updatedAt: new Date() })
+        .where(and(eq(companySkills.companyId, companyId), eq(companySkills.id, row.id)));
+    }
   }
 
   async function reconcileLocalPathSkillSources(companyId: string) {

@@ -2,14 +2,21 @@ name: Myrmidon image
 
 # Builds the Myrmidon container image from the vendor Dockerfile (production
 # stage, amd64 only) and publishes it to ghcr.io/itkadr-git/myrmidon.
-# Never runs on pull requests, so fork PRs cannot build or push. The image is
-# pushed by digest first, smoke-tested (/api/health must report the expected
-# version and commit), and only then tagged. See docs/myrmidon/ci.md.
+# Pull requests build the production image without publishing it. Pushes and
+# release tags publish by digest, smoke-test (/api/health), and then tag it.
+# See docs/myrmidon/ci.md.
 
 on:
   push:
     branches: [main]
     tags: ["myr-v*"]
+  pull_request:
+    paths:
+      - Dockerfile
+      - docker/**
+      - "**/package.json"
+      - pnpm-lock.yaml
+      - pnpm-workspace.yaml
   workflow_dispatch:
 
 permissions: {}
@@ -88,6 +95,7 @@ jobs:
           df -h /
 
       - name: Login to GitHub Container Registry
+        if: ${{ github.event_name != 'pull_request' }}
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
         with:
           registry: ghcr.io
@@ -114,8 +122,25 @@ jobs:
             org.opencontainers.image.version=${{ steps.version.outputs.expected }}
             io.github.itkadr-git.myrmidon.base.paperclip-version=${{ steps.version.outputs.vendor }}
 
+      - name: Build for pull request
+        if: ${{ github.event_name == 'pull_request' }}
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
+        with:
+          context: .
+          target: production
+          platforms: linux/amd64
+          load: true
+          push: false
+          tags: ${{ steps.meta.outputs.tags }}
+          build-args: |
+            PAPERCLIP_BUILD_VERSION=${{ steps.version.outputs.build }}
+            PAPERCLIP_BUILD_COMMIT=${{ github.sha }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=registry,ref=${{ env.IMAGE }}:buildcache
+
       - name: Build and push by digest
         id: build
+        if: ${{ github.event_name != 'pull_request' }}
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
         with:
           context: .
@@ -131,7 +156,7 @@ jobs:
 
       - name: Smoke test /api/health
         env:
-          REF: ${{ env.IMAGE }}@${{ steps.build.outputs.digest }}
+          REF: ${{ github.event_name == 'pull_request' && steps.meta.outputs.tags || format('{0}@{1}', env.IMAGE, steps.build.outputs.digest) }}
           EXPECTED_VERSION: ${{ steps.version.outputs.expected }}
           EXPECTED_COMMIT: ${{ github.sha }}
         run: |

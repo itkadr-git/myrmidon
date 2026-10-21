@@ -184,13 +184,18 @@ export function deployJobsService(db: Db, deps: DeployJobServiceDeps) {
     }
   }
 
-  async function currentView(): Promise<{ job: DeployJobView | null; history: DeployJobView[] }> {
+  async function currentView(filters?: { mode?: string; status?: string; outcome?: string }): Promise<{ job: DeployJobView | null; history: DeployJobView[] }> {
     const doc = await store.read();
     const active = doc.jobs.find((j) => isDeployJobActive(j.status)) ?? null;
     const last = doc.jobs[doc.jobs.length - 1] ?? doc.history[0] ?? null;
+    const history = doc.history.filter((entry) =>
+      (!filters?.mode || entry.mode === filters.mode) &&
+      (!filters?.status || entry.status === filters.status) &&
+      (!filters?.outcome || (filters.outcome === "rollback" ? entry.status.includes("rollback") : entry.status === filters.outcome)),
+    );
     return {
       job: active ? toView(active) : last ? toView(last) : null,
-      history: doc.history.map(toView),
+      history: history.map(toView),
     };
   }
 
@@ -203,7 +208,7 @@ export function deployJobsService(db: Db, deps: DeployJobServiceDeps) {
   }
 
   /** Create a job and start verification. */
-  async function create(input: { reference: string; reason?: string }, actor: { actorType: string; actorId: string }): Promise<DeployJobView> {
+  async function create(input: { reference: string; reason?: string; mode?: "manual" | "auto" | "canary"; window?: string | null }, actor: { actorType: string; actorId: string }): Promise<DeployJobView> {
     if (!settings.enabled) {
       throw new DeployJobError(503, "deploys from the interface are not enabled on this instance (MYRMIDON_DEPLOY_ENABLED)");
     }
@@ -223,6 +228,8 @@ export function deployJobsService(db: Db, deps: DeployJobServiceDeps) {
         companyId: "", // filled below from the first company; instance-level feature
         digest,
         reason: (input.reason ?? `deploy ${DEPLOY_IMAGE_REPOSITORY}@${digest.slice(0, 19)}`).slice(0, 500),
+        mode: input.mode,
+        window: input.window,
         startedBy: actor,
         now: now(),
       });

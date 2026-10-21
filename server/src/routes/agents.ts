@@ -2,12 +2,10 @@ import { listOpenRouterModels } from "../services/openrouter-models.js";
 // myrmidon(B1c): product name in user-facing runner errors; see product.ts.
 import { PRODUCT_NAME } from "../myrmidon/product.js";
 import { prepareManagedAiRuntime, assertManagedAiProjectAuth, stripAiAuthBindings } from "../services/ai-connection-runtime.js";
-import { ADAPTER_AUTH_MISSING_CHECK_CODE, AI_CONNECTION_CAPABILITIES, aiConnectionBindingSchema, type AiConnectionBinding } from "@paperclipai/shared";
-import { toolConnections } from "@paperclipai/db";
+import { ADAPTER_AUTH_MISSING_CHECK_CODE, AI_CONNECTION_CAPABILITIES, aiConnectionBindingSchema, aiConnectionMetadataSchema, isAiConnectionCompatible, type AiConnectionBinding } from "@paperclipai/shared";
 import { aiConnectionService } from "../services/ai-connections.js";
 import { defaultAiConnectionForHire } from "../services/agent-ai-connection-default.js";
 import { assertAiConnectionCreateAccess, canInstallSharedAiConnectionForNewAgent, responsibleUserForAiRequest, validateAiApiKey } from "./ai-connections.js";
-import { isAiConnectionCompatible } from "@paperclipai/shared";
 import { applyConnectorSkills, resolveConnectorAssignments, annotateConnectorSkills, isConnectorSkill } from "../services/connector-runtime.js";
 import { getExecutionBlocker } from "../services/execution-blocker.js";
 import { paperclipRunnerTransitionConfig, normalizeLegacyRunnerProvider, isPaperclipRunnerProvider } from "@paperclipai/adapter-utils";
@@ -22,6 +20,7 @@ import type { Db } from "@paperclipai/db";
 import type { ChatChannelService } from "../services/chat-channels.js";
 import { activityLog, agents as agentsTable, chatConversations, companies, heartbeatRuns, issues as issuesTable, projects as projectsTable } from "@paperclipai/db";
 import { and, desc, eq, inArray, not, sql } from "drizzle-orm";
+import { toolConnections } from "@paperclipai/db";
 import { sha256Digest } from "../services/feedback-redaction.js";
 import {
   agentSkillSyncSchema,
@@ -2236,6 +2235,7 @@ export function agentRoutes(
       }
     }
     const disabled = new Set(getDisabledAdapterTypes());
+    if (process.env.MYRMIDON_DISABLE_HERMES_LOCAL === "1") disabled.add("hermes_local");
     if (!disabled.has(adapterType)) return adapterType;
     const available = listServerAdapters()
       .map((a) => a.type)
@@ -6140,6 +6140,48 @@ export function agentRoutes(
     if (req.actor.type === "agent" && req.actor.agentId !== id) {
       await dbAutonomyGate(db).assertAllowed(req, "pause_wake_agents");
     }
+    if (req.body.externalSession) {
+      assertBoard(req);
+      if (!req.body.issueId || req.body.failedRunId || agent.runtimeConfig?.aiConnection == null || !req.actor.userId) {
+        throw unprocessable("External session requires a task, a user actor and a managed AI agent");
+      }
+      const task = await getAccessibleResource(req, res, issueService(db).getById(req.body.issueId), "Task not found");
+      if (!task || task.companyId !== agent.companyId) return;
+      if (!(await assertAgentReadAllowed(req, res, agent))) return;
+      const commentAccess = await access.decide({
+        actor: req.actor,
+        action: "issue:comment",
+        resource: { type: "issue", companyId: agent.companyId, issueId: task.id, projectId: task.projectId, parentIssueId: task.parentId, assigneeAgentId: task.assigneeAgentId, assigneeUserId: task.assigneeUserId, status: task.status },
+      });
+      if (!commentAccess.allowed) throw forbidden(commentAccess.explanation, authorizationDeniedDetails(commentAccess));
+      if (task.assigneeAgentId !== agent.id) throw conflict("The task must be assigned to this agent");
+      if (task.status !== "todo" && task.status !== "in_progress") throw conflict("The task must be open to start an external session");
+      const configured = aiConnectionBindingSchema.safeParse(agent.runtimeConfig.aiConnection);
+      if (!configured.success || configured.data.mode === "responsible_user") {
+        throw unprocessable("Agent must have an explicit managed AI connection for external session runs");
+      }
+      const { connectionId, grantId, model } = req.body.externalSession;
+      const selected = await aiConnectionService(db).select({
+        companyId: agent.companyId,
+        agentId: agent.id,
+        userId: req.actor.userId,
+        adapterType: agent.adapterType,
+        model,
+        runnerProvider: parseObject(agent.adapterConfig).provider,
+        acpxAgent: parseObject(agent.adapterConfig).acpxAgent,
+        binding: configured.data,
+        allowUninstalledPersonal: false,
+        allowUninstalledShared: false,
+        allowLegacyValidation: false,
+      });
+      if (selected.connection.id !== connectionId || selected.grant.id !== grantId || selected.attribution.mode !== "shared") {
+        throw forbidden("External sessions may only use the agent's configured shared AI connection");
+      }
+      const selectedMetadata = aiConnectionMetadataSchema.safeParse(selected.connection.config.ai);
+      if (!selectedMetadata.success || !isAiConnectionCompatible(selectedMetadata.data, agent.adapterType, model, parseObject(agent.adapterConfig).provider, parseObject(agent.adapterConfig).acpxAgent)) {
+        throw unprocessable("Selected model is incompatible with the agent adapter");
+      }
+    }
     if (req.body.debug?.providerTrace === "raw") {
       assertInstanceAdmin(req);
     }
@@ -6302,6 +6344,7 @@ export function agentRoutes(
       idempotencyKey: req.body.idempotencyKey ?? null,
       requestedByActorType: req.actor.type === "agent" ? "agent" : "user",
       requestedByActorId: req.actor.type === "agent" ? req.actor.agentId ?? null : req.actor.userId ?? null,
+      externalSession: req.body.externalSession,
       contextSnapshot: {
         triggeredBy: req.actor.type,
         originIdentityContextId: req.actor.identityContextId ?? null,
@@ -7018,6 +7061,52 @@ export function agentRoutes(
     const summary = req.query.summary === "true" || req.query.summary === "1";
     const runs = await heartbeat.list(companyId, agentId, limit, { summary });
     res.json(await runRedactions.redactForRuns(companyId, runs));
+  });
+
+  router.get("/companies/:companyId/external-sessions", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    if (!(await assertRunTelemetryReadAllowed(req, res, companyId))) return;
+    const agentId = typeof req.query.agentId === "string" ? req.query.agentId : undefined;
+    const issueId = typeof req.query.issueId === "string" ? req.query.issueId : undefined;
+    const limitParam = Number(req.query.limit ?? 100);
+    const limit = Number.isFinite(limitParam) ? Math.max(1, Math.min(200, Math.trunc(limitParam))) : 100;
+    const rows = await db.select({
+      id: heartbeatRuns.id,
+      agentId: heartbeatRuns.agentId,
+      status: heartbeatRuns.status,
+      startedAt: heartbeatRuns.startedAt,
+      finishedAt: heartbeatRuns.finishedAt,
+      createdAt: heartbeatRuns.createdAt,
+      logBytes: heartbeatRuns.logBytes,
+      exitCode: heartbeatRuns.exitCode,
+      errorCode: heartbeatRuns.errorCode,
+      externalSession: sql<Record<string, unknown> | null>`coalesce(${heartbeatRuns.contextSnapshot}->'externalSession', '{}'::jsonb)`.as("externalSession"),
+      issueId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'issueId'`.as("issueId"),
+    }).from(heartbeatRuns).where(and(
+      eq(heartbeatRuns.companyId, companyId),
+      sql`${heartbeatRuns.contextSnapshot} ? 'externalSession'`,
+      ...(agentId ? [eq(heartbeatRuns.agentId, agentId)] : []),
+      ...(issueId ? [sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`] : []),
+    )).orderBy(desc(heartbeatRuns.createdAt)).limit(limit);
+    res.set("Cache-Control", "no-cache, no-store");
+    const decoratedRows = await Promise.all(rows.map(async (row) => {
+      const decorated = await heartbeat.decorateActiveRunStatus(row);
+      const { externalSession: _externalSession, ...publicRow } = row;
+      const safeExternalSession = await runRedactions.redactForRun(companyId, row.id, row.externalSession);
+      return {
+        ...publicRow,
+        status: decorated.status,
+        logUrl: `/api/heartbeat-runs/${row.id}/log`,
+        cancelUrl: ["queued", "running"].includes(decorated.status) ? `/api/heartbeat-runs/${row.id}/cancel` : null,
+        _safeExternalSession: safeExternalSession,
+      };
+    }));
+    const redactedRuns = await runRedactions.redactForRuns(companyId, decoratedRows);
+    res.json(redactedRuns.map(({ _safeExternalSession, ...run }) => ({
+      ...run,
+      externalSession: _safeExternalSession,
+    })));
   });
 
   router.get("/companies/:companyId/provider-traces", async (req, res) => {

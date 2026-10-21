@@ -123,6 +123,8 @@ import { myrmidonTeamLivenessRoutes } from "./myrmidon/team-liveness/index.js"; 
 import { myrmidonBotLspRoutes } from "./myrmidon/bot-lsp/index.js"; // myrmidon(BOT-LSP-DEFAULTS)
 import { myrmidonReplayBlockedRoutes } from "./myrmidon/replay-blocked/index.js"; // myrmidon(N1)
 import { aboutRoutes } from "./myrmidon/about/routes.js"; // myrmidon(ABOUT)
+import { licensingRoutes } from "./myrmidon/licensing/routes.js"; // myrmidon(LICENSING)
+import { installedClosedModules } from "./myrmidon/licensing/installed-modules.js"; // myrmidon(LICENSING)
 import { myrmidonBotContainerRoutes } from "./myrmidon/bot-containers/routes-wiring.js"; // myrmidon(W2b)
 import { myrmidonBrowserConsoleRoutes } from "./myrmidon/browser-console/wiring.js"; // myrmidon(BROWSER-CONSOLE)
 import { myrmidonLitellmCostsRoutes } from "./myrmidon/litellm-costs/routes.js"; // myrmidon(M2-A)
@@ -131,6 +133,9 @@ import { myrmidonLitellmKeysRoutes } from "./myrmidon/litellm-keys/routes.js"; /
 import { myrmidonModelProviderRoutes } from "./myrmidon/model-providers/wiring.js";
 import { bindModelProviderPluginLifecycle } from "./myrmidon/model-providers/plugin-lifecycle.js"; // myrmidon(1.6.6 OPE-7198)
 import { myrmidonAgentExchangeRoutes } from "./myrmidon/agent-exchange/wiring.js"; // myrmidon(1.7-AGENT-EXCHANGE-A)
+// myrmidon(1.7-AGENT-EXCHANGE-B): the owner-facing feed of discussion rooms and
+// the «to skill» action that registers a room outcome as a skill candidate.
+import { myrmidonAgentExchangeFeedRoutes } from "./myrmidon/agent-exchange/feed-wiring.js"; // myrmidon(1.7-AGENT-EXCHANGE-B)
 import { myrmidonBaselineRoutes } from "./myrmidon/baseline/routes.js"; // myrmidon(1.6-BASELINE)
 import { myrmidonBotEgressRoutes } from "./myrmidon/bot-containers/egress-wiring.js"; // myrmidon(EGRESS-B)
 import { myrmidonBotCanaryRoutes } from "./myrmidon/bot-containers/canary-index.js"; // myrmidon(R5-B)
@@ -172,6 +177,7 @@ import { reviewRoutingRoutes } from "./myrmidon/review-routing/routes.js"; // my
 import { reviewReworkRoutes } from "./myrmidon/review-rework/routes.js"; // myrmidon(REVIEW-REWORK)
 // myrmidon(PLUGIN-ENTITLEMENT C): instance-level plugin entitlement keys
 import { pluginEntitlementRoutes } from "./myrmidon/plugin-entitlement/index.js";
+import { licensingInstallIdRoutes } from "./myrmidon/licensing-install-id/routes.js";
 import { myrmidonLitellmBudgetSyncRoutes } from "./myrmidon/litellm-budget-sync/index.js"; // myrmidon(1.7-BUDGET-CONFIG-C)
 import { myrmidonLitellmWorkersRoutes } from "./myrmidon/litellm-workers/routes.js"; // myrmidon(1.6.5 LITELLM-WORKERS A)
 import { agentInstructionsRevisionsRoutes } from "./myrmidon/agent-instructions-revisions/index.js"; // myrmidon(H2)
@@ -202,7 +208,7 @@ import { myrmidonCorpusMcpRoutes } from "./myrmidon/corpus/index.js";
 import { myrmidonSttRoutes } from "./myrmidon/stt/index.js"; // myrmidon(1.6.1 VOICE-STT A1)
 import { myrmidonGitHubSharedIdentityRoutes } from "./myrmidon/github-shared-identity/index.js"; // myrmidon(GITHUB-SHARED-IDENTITY)
 
-import { createTelegramVoiceSttWiring } from "./myrmidon/telegram-voice-stt-intake/wiring.js"; // myrmidon(1.6.5 VOICE-STT A)
+import { createTelegramVoiceSttWiring } from "./myrmidon/channel-connectors/bridge/voice-stt.js"; // myrmidon(1.6.5 VOICE-STT A) myrmidon(1.6.6 CH-CONNECTOR-D)
 import { myrmidonVoiceMeetingProtocolRoutes } from "./myrmidon/voice-meeting-protocol/index.js"; // myrmidon(1.6.5 VOICE-STT B)
 import { myrmidonEvalsRoutes } from "./myrmidon/evals/index.js"; // myrmidon(1.6-EVALS)
 import { myrmidonDebateRoutes } from "./myrmidon/debates/index.js"; // myrmidon(1.7-DEBATE-ASYM-A)
@@ -734,6 +740,7 @@ export async function createApp(
      * Absent on today's single process and on an api child; `/healthz` then
      * answers for this process itself. */
     processSupervisor?: import("./myrmidon/processes/index.js").ProcessSupervisor | null;
+    processBus?: { publish(channel: "settings_changed", payload: unknown): Promise<void> } | null;
     // ProcessSupervisor (PROCS-1.2) is structurally assignable to the
     // readiness view (PROCS-1.5) — state() and children() match, so one
     // declaration serves both call sites.
@@ -1074,7 +1081,7 @@ export async function createApp(
   api.use(announcementRoutes(db, { ...opts.announcements, version: opts.hostVersion ?? serverVersion }));
   api.use(resourceMembershipRoutes(db));
   api.use(inboxDismissalRoutes(db));
-  api.use(instanceSettingsRoutes(db));
+  api.use(instanceSettingsRoutes(db, { processBus: opts.processBus ?? undefined }));
   api.use(myrmidonMaintenanceRoutes(db)); // myrmidon(R3)
   api.use(datastoreCareRetentionRoutes(db)); // myrmidon(1.6.5-DBC1)
   api.use(boardLoadApp(db)); // myrmidon(1.6.6 PROCS-0.3A): lanes, api-load p95, pg_stat_statements, cpu-profile
@@ -1095,12 +1102,14 @@ export async function createApp(
   api.use(myrmidonBotLspRoutes(db)); // myrmidon(BOT-LSP-DEFAULTS)
   api.use(myrmidonReplayBlockedRoutes(db)); // myrmidon(N1)
   api.use(aboutRoutes()); // myrmidon(ABOUT)
+  api.use(licensingRoutes({ installedModules: installedClosedModules(db) })); // myrmidon(LICENSING): install id, license request, license state and save (instance admin)
   api.use(myrmidonBotContainerRoutes(db)); // myrmidon(W2b)
   api.use(myrmidonBrowserConsoleRoutes(db)); // myrmidon(BROWSER-CONSOLE)
   api.use(myrmidonLitellmCostsRoutes(db)); // myrmidon(M2-A): gateway-collected costs and model catalog
   api.use(myrmidonLitellmKeysRoutes(db)); // myrmidon(M2-B): per-agent gateway keys and fallback topology
   api.use(myrmidonModelProviderRoutes(db)); // myrmidon(1.6.1 MODEL-PROVIDERS A+B): model-provider store, settings API and LiteLLM sync
   api.use(myrmidonAgentExchangeRoutes(db)); // myrmidon(1.7-AGENT-EXCHANGE-A): discussion rooms on issue cards
+  api.use(myrmidonAgentExchangeFeedRoutes(db)); // myrmidon(1.7-AGENT-EXCHANGE-B): owner feed + «to skill» candidate
   api.use(myrmidonBaselineRoutes(db)); // myrmidon(1.6-BASELINE): cycle/review/return/blocked/run/cost metrics
   api.use(myrmidonBotEgressRoutes(db)); // myrmidon(EGRESS-B)
   api.use(myrmidonBotCanaryRoutes(db)); // myrmidon(R5-B)
@@ -1142,6 +1151,7 @@ export async function createApp(
   api.use(reviewRoutingRoutes(db)); // myrmidon(REVIEW-ROUTING): automatic reviewer routing settings
   api.use(reviewReworkRoutes(db)); // myrmidon(REVIEW-REWORK): review-return loop settings
   api.use(pluginEntitlementRoutes(db)); // myrmidon(PLUGIN-ENTITLEMENT C): accept/remove plugin keys (instance admin)
+  api.use(licensingInstallIdRoutes()); // myrmidon(LIC-ID-1): instance install ID
   api.use(myrmidonLitellmBudgetSyncRoutes(db)); // myrmidon(1.7-BUDGET-CONFIG-C): LiteLLM budget projection settings, status, re-sync
   api.use(myrmidonLitellmWorkersRoutes(db)); // myrmidon(1.6.5 LITELLM-WORKERS A): LiteLLM worker-process target, live pool size and TTIN/TTOU resize
   api.use(agentInstructionsRevisionsRoutes(db)); // myrmidon(H2)

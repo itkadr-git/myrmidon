@@ -157,6 +157,7 @@ export type QueuedRunFacts = {
   // myrmidon(P2): the run answers a pending interaction addressed to its agent
   isPendingInteractionAddresseeWake?: boolean;
   isAuthorizedSourceScopedRecovery: boolean;
+  isProductiveContinuationRecovery?: boolean;
   isNonAssigneeWorkspaceBusyRetry: boolean;
 
   resumeIntent: boolean;
@@ -182,6 +183,7 @@ type OwnershipFacts = {
   isPendingInteractionAddresseeWake?: boolean;
   isCurrentReviewParticipant?: boolean;
   isAuthorizedSourceScopedRecovery?: boolean;
+  isProductiveContinuationRecovery?: boolean;
 };
 
 type OwnershipOutcome = "current_owner" | "reassigned";
@@ -198,6 +200,7 @@ function decideIssueOwnership(facts: OwnershipFacts): OwnershipOutcome {
   // myrmidon(P2): the addressee of a pending interaction is often not the assignee
   if (facts.isPendingInteractionAddresseeWake) return "current_owner";
   if (facts.isCurrentReviewParticipant) return "current_owner";
+  if (facts.isProductiveContinuationRecovery) return "current_owner";
   if (facts.isAuthorizedSourceScopedRecovery) return "current_owner";
   return "reassigned";
 }
@@ -585,6 +588,7 @@ export function decideQueuedRunStaleness(
       facts.reviewParticipant.participantIsAgent &&
       facts.reviewParticipant.participantAgentId === facts.runAgentId,
     isAuthorizedSourceScopedRecovery: facts.isAuthorizedSourceScopedRecovery,
+    isProductiveContinuationRecovery: facts.isProductiveContinuationRecovery,
   });
   if (ownership === "reassigned") {
     return {

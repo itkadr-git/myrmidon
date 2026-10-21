@@ -671,6 +671,7 @@ export type {
   IssueBlockerAttentionIssueSummary,
   IssueBlockerAttentionReason,
   IssueBlockerAttentionState,
+  IssueBlockerMetadata,
   IssueReviewAttention,
   IssueReviewAttentionPath,
   IssueReviewAttentionPathKind,

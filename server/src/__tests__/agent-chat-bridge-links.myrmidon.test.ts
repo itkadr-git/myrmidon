@@ -16,6 +16,7 @@ import {
   toolConnections,
 } from "@paperclipai/db";
 import type { ChatProvider } from "@paperclipai/shared";
+import { resolveBoardPublicBaseUrl } from "../myrmidon/agent-chat-bridge/links.js";
 import { CHAT_RUN_PRESENTATION_AUTHORIZATION_REASON } from "../services/heartbeat-run-summary.js";
 import { issueService } from "../services/issues.js";
 import {
@@ -27,6 +28,12 @@ const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported
   ? describe
   : describe.skip;
+
+it("resolves canonical public origins before their Paperclip aliases", () => {
+  expect(resolveBoardPublicBaseUrl({ MYRMIDON_PUBLIC_URL: "https://new.example.test" })).toBe("https://new.example.test");
+  expect(resolveBoardPublicBaseUrl({ PAPERCLIP_PUBLIC_URL: "https://old.example.test" })).toBe("https://old.example.test");
+  expect(resolveBoardPublicBaseUrl({ MYRMIDON_PUBLIC_URL: "https://new.example.test", PAPERCLIP_PUBLIC_URL: "https://old.example.test" })).toBe("https://new.example.test");
+});
 
 describeEmbeddedPostgres(
   "myrmidon(X8g) absolute board links in Telegram-bound agent replies",
