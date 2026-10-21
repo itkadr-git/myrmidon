@@ -270,10 +270,15 @@ describeProcs("two api processes on one test database (PROCS-T1.5 skeleton)", ()
     // handle is not guaranteed to reach that handle's own process. Establish
     // the expected replica set from the shared registry instead of assuming
     // deterministic kernel routing for the first two requests.
+    const currentPids = new Set(
+      processes.map((handle) => handle.child.pid).filter((pid): pid is number => typeof pid === "number"),
+    );
     const registry = await readBoardProcesses(processes[0]!);
     const expectedBootIds = new Set(
       registry.processes
-        .filter((row) => row.role === "api" && row.status === "live")
+        // The database retains recently stopped rows until reaping; count only
+        // the live processes started by this scenario's fixture.
+        .filter((row) => row.role === "api" && row.status === "live" && currentPids.has(row.pid))
         .map((row) => row.bootId),
     );
     expect(expectedBootIds.size).toBe(replicaCount);
