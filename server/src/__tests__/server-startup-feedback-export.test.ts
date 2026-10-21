@@ -674,6 +674,10 @@ describe("startServer feedback export wiring", () => {
       createdAt: new Date(),
       updatedAt: new Date(),
     });
+    loadConfigMock.mockReturnValue(buildTestConfig({
+      heartbeatSchedulerEnabled: true,
+      databaseUrl: "postgres://paperclip:***@127.0.0.1:5432/paperclip",
+    }));
     const intervals: number[] = [];
     const setIntervalSpy = vi.spyOn(globalThis, "setInterval").mockImplementation(((
       callback: () => void,
