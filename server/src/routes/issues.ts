@@ -14819,6 +14819,7 @@ export function issueRoutes(
                 },
               });
               handoffCommitted = true;
+            }
 
             if (
               updated.status === "in_review" &&
