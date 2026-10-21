@@ -1292,8 +1292,7 @@
       "drain": "Drain",
       "resume": "Resume"
     }
-  }
-,
+  },
   "guardrails": {
     "title": "Guardrails",
     "breadcrumb": "Guardrails",
