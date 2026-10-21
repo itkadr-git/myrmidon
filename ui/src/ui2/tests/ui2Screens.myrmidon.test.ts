@@ -31,6 +31,13 @@ describe("myrmidon(UI2) route table integration", () => {
     ]);
   });
 
+  it("marks the knowledge and regulations nav items as gated on the knowledge API", () => {
+    const items = UI2_NAV_GROUPS.flatMap((group) => group.items);
+    for (const to of ["/knowledge", "/company/settings/autonomy/regulations"]) {
+      expect(items.find((item) => item.to === to)?.requires).toBe("knowledge");
+    }
+  });
+
   it("keeps the fleet route reachable from both desktop and phone navigation", () => {
     expect(UI2_NAV_GROUPS.flatMap((group) => group.items).filter((item) => item.to === "/agents")).toHaveLength(1);
     expect(UI2_PHONE_TABS.filter((item) => item.to === "/agents")).toHaveLength(1);

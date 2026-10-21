@@ -29,6 +29,11 @@ export interface Ui2NavItem {
   icon: typeof Gauge;
   /** Badge count source key; the shell fills counts from live queries. */
   badge?: "attention";
+  /**
+   * Capability the item needs. The rail hides it until the capability is
+   * confirmed live (K-4: the knowledge REST of K-2 may not be deployed yet).
+   */
+  requires?: "knowledge";
 }
 
 export interface Ui2NavGroup {
@@ -71,11 +76,12 @@ export const UI2_NAV_GROUPS: Ui2NavGroup[] = [
     // (read / search / revisions) and the regulations of Autonomy.
     labelKey: WORK_GROUP_LABEL,
     items: [
-      { labelKey: KNOWLEDGE_LABEL, to: "/knowledge", icon: BookOpen },
+      { labelKey: KNOWLEDGE_LABEL, to: "/knowledge", icon: BookOpen, requires: "knowledge" },
       {
         labelKey: REGULATIONS_LABEL,
         to: "/company/settings/autonomy/regulations",
         icon: ScrollText,
+        requires: "knowledge",
       },
     ],
   },
