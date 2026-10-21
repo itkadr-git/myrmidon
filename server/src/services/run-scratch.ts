@@ -34,6 +34,47 @@ export interface HeartbeatRunScratchSweepResult {
   removed: number;
   removedBytes: number;
   skipped: number;
+  /** Marked directories that stayed (not yet past TTL, or guarded), and their size. */
+  remaining: number;
+  remainingBytes: number;
+}
+
+/** Cumulative and last-sweep volume of the run scratch janitor, for the metrics endpoint. */
+export interface HeartbeatRunScratchMetrics {
+  removedDirsTotal: number;
+  removedBytesTotal: number;
+  remainingDirs: number;
+  remainingBytes: number;
+  /** ISO time of the last completed sweep, null before the first one. */
+  lastSweepAt: string | null;
+}
+
+const scratchMetrics: HeartbeatRunScratchMetrics = {
+  removedDirsTotal: 0,
+  removedBytesTotal: 0,
+  remainingDirs: 0,
+  remainingBytes: 0,
+  lastSweepAt: null,
+};
+
+export function recordHeartbeatRunScratchSweep(result: HeartbeatRunScratchSweepResult, at: Date = new Date()): void {
+  scratchMetrics.removedDirsTotal += result.removed;
+  scratchMetrics.removedBytesTotal += result.removedBytes;
+  scratchMetrics.remainingDirs = result.remaining;
+  scratchMetrics.remainingBytes = result.remainingBytes;
+  scratchMetrics.lastSweepAt = at.toISOString();
+}
+
+export function heartbeatRunScratchMetrics(): HeartbeatRunScratchMetrics {
+  return { ...scratchMetrics };
+}
+
+export function resetHeartbeatRunScratchMetrics(): void {
+  scratchMetrics.removedDirsTotal = 0;
+  scratchMetrics.removedBytesTotal = 0;
+  scratchMetrics.remainingDirs = 0;
+  scratchMetrics.remainingBytes = 0;
+  scratchMetrics.lastSweepAt = null;
 }
 
 const TEMP_ENV_KEYS = ["TMPDIR", "TEMP", "TMP"] as const;
@@ -181,7 +222,14 @@ export async function sweepHeartbeatRunScratch(input: {
   isProcessGroupAlive?: (processGroupId: number | null | undefined) => boolean;
 }): Promise<HeartbeatRunScratchSweepResult> {
   const root = path.resolve(input.root ?? os.tmpdir());
-  const result: HeartbeatRunScratchSweepResult = { scanned: 0, removed: 0, removedBytes: 0, skipped: 0 };
+  const result: HeartbeatRunScratchSweepResult = {
+    scanned: 0,
+    removed: 0,
+    removedBytes: 0,
+    skipped: 0,
+    remaining: 0,
+    remainingBytes: 0,
+  };
   const now = (input.now ?? new Date()).getTime();
   for (const entry of await fs.readdir(root, { withFileTypes: true })) {
     if (!entry.isDirectory() || !entry.name.startsWith("paperclip-run-")) continue;
@@ -191,6 +239,7 @@ export async function sweepHeartbeatRunScratch(input: {
     const marker = await readMarker(markerPath);
     if (!marker || now - Date.parse(marker.createdAt) < input.ttlMs) {
       result.skipped += 1;
+      if (marker) await keepRemaining(result, dir);
       continue;
     }
     const cleaned = await cleanupHeartbeatRunScratch({
@@ -200,7 +249,19 @@ export async function sweepHeartbeatRunScratch(input: {
     if (cleaned.removed) {
       result.removed += 1;
       result.removedBytes += cleaned.bytes;
-    } else result.skipped += 1;
+    } else {
+      result.skipped += 1;
+      await keepRemaining(result, dir);
+    }
   }
   return result;
+}
+
+async function keepRemaining(result: HeartbeatRunScratchSweepResult, dir: string): Promise<void> {
+  result.remaining += 1;
+  try {
+    result.remainingBytes += await directoryBytes(dir);
+  } catch {
+    // The directory vanished or is unreadable mid-sweep; it still counts as one entry.
+  }
 }

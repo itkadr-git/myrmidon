@@ -131,7 +131,15 @@ describe("heartbeat run scratch cleanup", () => {
       root, now: new Date("2026-01-03T00:00:00.000Z"), ttlMs: 36 * 60 * 60 * 1000,
     });
 
-    expect(result).toEqual({ scanned: 2, removed: 1, removedBytes: expectedBytes, skipped: 1 });
+    const freshBytes = (await fs.stat(path.join(freshDir, HEARTBEAT_RUN_SCRATCH_MARKER))).size;
+    expect(result).toEqual({
+      scanned: 2,
+      removed: 1,
+      removedBytes: expectedBytes,
+      skipped: 1,
+      remaining: 1,
+      remainingBytes: freshBytes,
+    });
     await expect(fs.stat(expiredDir)).rejects.toMatchObject({ code: "ENOENT" });
     await expect(fs.stat(freshDir)).resolves.toBeDefined();
   });
@@ -141,7 +149,14 @@ describe("heartbeat run scratch cleanup", () => {
     cleanupDirs.add(root);
     const dir = await fs.mkdtemp(path.join(root, "paperclip-run-unmarked-"));
     const result = await sweepHeartbeatRunScratch({ root, now: new Date(), ttlMs: 0 });
-    expect(result).toEqual({ scanned: 1, removed: 0, removedBytes: 0, skipped: 1 });
+    expect(result).toEqual({
+      scanned: 1,
+      removed: 0,
+      removedBytes: 0,
+      skipped: 1,
+      remaining: 0,
+      remainingBytes: 0,
+    });
     await expect(fs.stat(dir)).resolves.toBeDefined();
   });
 
