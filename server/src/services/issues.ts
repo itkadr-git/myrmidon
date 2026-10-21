@@ -9992,9 +9992,23 @@ export function issueService(db: Db) {
               trustExplicitResponsibleUserId === true,
           },
         );
-
+        if (issueData.sourceTrust?.disposition === "quarantined") {
+          if (!responsibleUserId) {
+            throw unprocessable(
+              "Low-trust output cannot be quarantined without a promotion owner",
+            );
+          }
+        }
         const values = {
           ...issueData,
+          ...(issueData.sourceTrust?.disposition === "quarantined"
+            ? {
+                sourceTrust: {
+                  ...issueData.sourceTrust,
+                  promotionOwnerUserId: responsibleUserId,
+                },
+              }
+            : {}),
           // myrmidon(S5): issue descriptions are stored with secret values masked.
           // Applied here (the single write point for create) so every creation
           // path — board, agent, API — stores the masked description.
