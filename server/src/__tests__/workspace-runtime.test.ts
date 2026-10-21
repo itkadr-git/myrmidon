@@ -515,7 +515,7 @@ describe("resolveManagedPaperclipRuntimePublicOrigin", () => {
       ...baseInput,
       environment: {},
       exposedUrl: "http://paperclip-dev:45439",
-    })).toThrow(/internal-only.*Configure PAPERCLIP_PUBLIC_URL or BETTER_AUTH_URL/);
+    })).toThrow(/internal-only.*Configure MYRMIDON_PUBLIC_URL or BETTER_AUTH_URL/);
     expect(() => resolveManagedPaperclipRuntimePublicOrigin({
       ...baseInput,
       environment: {},
@@ -4732,7 +4732,7 @@ describe("ensureRuntimeServicesForRun", () => {
           },
         },
         adapterEnv: {},
-      })).rejects.toThrow(/internal-only or non-resolvable.*Configure PAPERCLIP_PUBLIC_URL or BETTER_AUTH_URL/);
+      })).rejects.toThrow(/internal-only or non-resolvable.*Configure MYRMIDON_PUBLIC_URL or BETTER_AUTH_URL/);
     } finally {
       await releaseRuntimeServicesForRun(runId);
     }

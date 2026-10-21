@@ -72,7 +72,7 @@ describeEmbeddedPostgres("maintenance interrupt_and_retry", () => {
   });
 
   /** An agent working on an assigned issue, its run already started. */
-  async function seedIssueRun(script: string) {
+  async function seedIssueRun(script: string, start = true) {
     const companyId = randomUUID();
     const agentId = randomUUID();
     const issueId = randomUUID();
@@ -118,7 +118,7 @@ describeEmbeddedPostgres("maintenance interrupt_and_retry", () => {
         contextSnapshot: { issueId, wakeReason: "issue_assigned" },
       })
       .returning();
-    await heartbeatService(db).resumeQueuedRuns();
+    if (start) await heartbeatService(db).resumeQueuedRuns();
     return { companyId, agentId, issueId, runId: run!.id };
   }
 
@@ -138,6 +138,19 @@ describeEmbeddedPostgres("maintenance interrupt_and_retry", () => {
     const rows = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId));
     return rows.filter((r) => r.cause === LEGACY_RECOVERY_CAUSE);
   }
+
+  it("does not claim a queued run after maintenance starts", async () => {
+    const { runId } = await seedIssueRun(FAST, false);
+    const svc = maintenanceService(db, { heartbeat: maintenanceHeartbeatPort(heartbeatService(db)) });
+    await svc.enter(
+      { scope: { type: "instance" }, reason: "deploy", drainTimeoutSec: 0, onTimeout: "interrupt_and_retry" },
+      ADMIN,
+    );
+
+    await heartbeatService(db).resumeQueuedRuns();
+    expect((await run(runId)).status).toBe("queued");
+    expect((await svc.status()).instance).toMatchObject({ runningRuns: 0, queuedRuns: 1 });
+  }, 30_000);
 
   it("interrupts at the drain timeout without a reconciliation hold and retries after exit", async () => {
     const { agentId, issueId, runId } = await seedIssueRun(SLOW);
@@ -213,8 +226,11 @@ describeEmbeddedPostgres("maintenance interrupt_and_retry", () => {
     expect((await svc.status()).instance).toMatchObject({ state: "entering", runningRuns: 5, interruptedRuns: 0 });
 
     clock += 1;
-    await svc.tick();
-    // The grace is over: every run is interrupted and leaves `running`.
+    // Each tick makes a bounded number of interrupt passes. Keep ticking until
+    // all five runs have settled instead of assuming one tick drains any size.
+    for (let pass = 0; pass < 10 && (await svc.status()).instance?.runningRuns; pass += 1) {
+      await svc.tick();
+    }
     expect((await svc.status()).instance).toMatchObject({ interruptedRuns: 5, runningRuns: 0 });
 
     for (const seed of seeds) {

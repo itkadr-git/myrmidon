@@ -11,10 +11,13 @@ import { supersedeExplicitWakeSettledHold } from "../myrmidon/settled-holds/supe
 // clears the issue's settled replay hold and re-plans its parked wakes.
 import {
   clearReplayHoldsOnHumanUnblock,
+  isAssigneeChangePatch,
   isHumanUnblock,
   issueHasSettledReplayHold,
   mayBeHumanUnblock,
   replanParkedWakesAfterUnblock,
+  HUMAN_UNBLOCK_NOTE,
+  REASSIGN_UNBLOCK_NOTE,
   type HumanUnblockResult,
 } from "../myrmidon/settled-holds/human-unblock.js";
 import { extractIssueReferenceIdentifiers, requiresExecutionReconciliation, EXECUTION_RECONCILIATION_CAUSES } from "@paperclipai/shared";
@@ -49,6 +52,7 @@ import type { Db } from "@paperclipai/db";
 import type { ChatChannelService } from "../services/chat-channels.js";
 import type { WakeupOptions } from "../services/heartbeat.js";
 import {
+  companies,
   activityLog,
   agentWakeupRequests,
   agents,
@@ -179,8 +183,8 @@ import {
   agentService,
   budgetService,
   companySkillService,
-  companyService,
   companySearchService,
+  companyService,
   executionWorkspaceService,
   enrichWorkProductMetadataWithDiff,
   goalService,
@@ -334,6 +338,7 @@ import { parseIssueExecutionWorkspaceSettings } from "../services/execution-work
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import {
   buildPromotedSourceTrust,
+  buildLowTrustQuarantineNotice,
   isLowTrustQuarantined,
   redactQuarantinedBodyForHigherTrust,
   resolveActorSourceTrustForIssue,
@@ -1099,6 +1104,17 @@ function hasExecutionParticipant(value: unknown) {
   return false;
 }
 
+function hasReviewExecutionParticipant(value: unknown) {
+  const state = parseIssueExecutionState(value);
+  return Boolean(
+    state?.status === "pending" &&
+      state.currentStageType === "review" &&
+      state.currentParticipant &&
+      ((state.currentParticipant.type === "agent" && state.currentParticipant.agentId) ||
+        (state.currentParticipant.type === "user" && state.currentParticipant.userId)),
+  );
+}
+
 function hasScheduledMonitor(input: {
   existingMonitorNextCheckAt?: Date | null;
   patchMonitorNextCheckAt?: unknown;
@@ -1455,19 +1471,67 @@ const ISSUE_WAKE_DIAGNOSTIC_KNOWN_SOURCES = new Set([
   "automation",
 ]);
 
+// Every wake reason the engine and its enqueue sites write. The projection
+// masks anything else as "other" (issue-wake-diagnostic-reasons-guard.test.ts
+// fails when a writer starts enqueuing a reason that is missing here).
 const ISSUE_WAKE_DIAGNOSTIC_KNOWN_REASONS = new Set([
-  "issue_assigned",
-  "issue_blockers_resolved",
-  "issue_commented",
-  "issue_comment_mentioned",
-  "issue_dependencies_blocked",
-  "issue_tree_hold_active",
-  "missing_issue_comment",
-  "process_lost_retry",
-  "run_liveness_continuation",
+  "agent.not_invokable",
+  "approval_approved",
+  "budget.blocked",
+  "company.inactive",
+  "email_received",
+  "execution_reconciliation_required",
+  "execution_review_participant_recovery",
+  "execution_review_requested",
+  "finish_successful_run_handoff",
+  "goal_control",
   "heartbeat.disabled",
+  "heartbeat.scheduling_suppressed",
+  "heartbeat.timer.cached_identical_prompt",
   "heartbeat.timer.no_actionable_work",
   "heartbeat.wakeOnDemand.disabled",
+  "heartbeat.worktree_execution_cutoff",
+  "heartbeat_timer",
+  "idle_pickup",
+  "interaction_pending",
+  "issue_assigned",
+  "issue_blockers_resolved",
+  "issue_checked_out",
+  "issue_comment_mentioned",
+  "issue_commented",
+  "issue_dependencies_blocked",
+  "issue_disposition_repair",
+  "issue_execution_deferred",
+  "issue_execution_hold_confirmed",
+  "issue_execution_issue_not_found",
+  "issue_execution_promoted",
+  "issue_execution_same_name",
+  "issue_monitor_recovery",
+  "issue_monitor_recovery_issue",
+  "issue_recovery_action_restored",
+  "issue_review_path_lost",
+  "issue_rewake_throttled",
+  "issue_state_guard_mismatch",
+  "issue_tree_hold_active",
+  "issue_tree_restored",
+  "issue_tree_resumed",
+  "issue_unblock_requested",
+  "missing_issue_comment",
+  "native_safe_replacement",
+  "pause_resume",
+  "process_lost_retry",
+  "project.token_quota_exceeded",
+  "provider_quota_recovery",
+  "resurrection_execution_reconciliation_required",
+  "retry_failed_run",
+  "run_liveness_continuation",
+  "run_stalled",
+  "skill_test_run_created",
+  "swarm_claim_queue",
+  "task_watchdog_stopped_subtree",
+  "wake_skipped_pr_settle_pending",
+  "worktree_execution_cutoff",
+  "workspace_worktree_requires_project",
 ]);
 
 const ISSUE_WAKE_DIAGNOSTIC_KNOWN_STATUSES = new Set([
@@ -2082,8 +2146,7 @@ const INVALID_AGENT_IN_REVIEW_DISPOSITION_MESSAGE =
   "invalid_issue_disposition: Agent-authored updates that move an issue to in_review must include a real review path. " +
   "This request would leave the issue in_review without anyone or anything owning the next action. " +
   "Keep working instead of moving to review, create a request_confirmation or ask_user_questions interaction, " +
-  "link or request a pending approval, assign a human reviewer with assigneeUserId, set a typed executionState.currentParticipant through an execution policy, " +
-  "declare reviewPolicy \"human_only\" so the verdict waits on a person, or schedule an issue monitor for an external review/check. After creating one of those review paths, retry the status update.";
+  "link or request a pending approval, assign a human reviewer with assigneeUserId, set a typed executionState.currentParticipant through an execution policy, or schedule an issue monitor for an external review/check. After creating one of those review paths, retry the status update.";
 
 function executionPrincipalsEqual(
   left: ParsedExecutionState["currentParticipant"] | null,
@@ -3967,10 +4030,30 @@ export function issueRoutes(
       companyId: string;
       projectId?: string | null;
       executionPolicy?: unknown;
+      responsibleUserId?: string | null;
     },
     actor: ReturnType<typeof getActorInfo>,
+    requirePromotionOwner = false,
   ) {
-    return resolveActorSourceTrustForIssue({ db, issue, actor });
+    const company = await companiesSvc.getById(issue.companyId);
+    const promotionOwnerUserId =
+      issue.responsibleUserId ??
+      (actor.actorType === "user" ? actor.actorId : null) ??
+      company?.defaultResponsibleUserId ??
+      null;
+    const sourceTrust = await resolveActorSourceTrustForIssue({
+      db,
+      issue: { ...issue, responsibleUserId: promotionOwnerUserId },
+      actor,
+      requirePromotionOwner,
+    });
+    if (!sourceTrust || sourceTrust.disposition !== "quarantined") {
+      return sourceTrust;
+    }
+    if (requirePromotionOwner && !promotionOwnerUserId) {
+      throw unprocessable("Low-trust output cannot be quarantined without a promotion owner");
+    }
+    return { ...sourceTrust, promotionOwnerUserId };
   }
 
   async function assertCrossIssueInfluenceWithinRunCap(
@@ -4804,7 +4887,7 @@ export function issueRoutes(
       input.updateFields.executionState === undefined
         ? input.existing.executionState
         : input.updateFields.executionState;
-    if (hasExecutionParticipant(nextExecutionState)) return null;
+    if (hasReviewExecutionParticipant(nextExecutionState)) return null;
 
     const nextExecutionPolicy = input.updateFields.executionPolicy;
     if (
@@ -4830,17 +4913,47 @@ export function issueRoutes(
     )
       return null;
 
-    // myrmidon(HUMAN-REVIEW-WAIT): declaring `reviewPolicy: "human_only"` when
-    // moving to in_review is itself a real review path — the verdict can only
-    // come from a person, and a human comment wakes the assignee through the
-    // normal comment path. Without this the guard forced agents to fabricate an
-    // interaction/approval just to enter a lawful "waiting for the owner" state
-    // (a human-only review on a board, 05.10).
     const nextReviewPolicy =
       input.updateFields.reviewPolicy === undefined
         ? input.existing.reviewPolicy
         : input.updateFields.reviewPolicy;
-    if (nextReviewPolicy === "human_only") return null;
+    if (
+      nextReviewPolicy === "human_only" &&
+      (input.actorType !== "agent" ||
+        (typeof input.updateFields.assigneeUserId === "string" &&
+          input.updateFields.assigneeUserId.trim().length > 0))
+    ) return null;
+
+    if (nextReviewPolicy === "human_only" && input.actorType === "agent") {
+      throw unprocessable(INVALID_AGENT_IN_REVIEW_DISPOSITION_MESSAGE, {
+        code: "invalid_issue_disposition",
+        missing: "review_path",
+        validReviewPaths: [
+          "pending_issue_thread_interaction",
+          "linked_pending_approval",
+          "human_assignee_user_id",
+          "typed_execution_state_current_participant",
+          "scheduled_issue_monitor",
+        ],
+      });
+    }
+
+    const nextAssigneeAgentId =
+      input.updateFields.assigneeAgentId === undefined
+        ? input.existing.assigneeAgentId
+        : input.updateFields.assigneeAgentId;
+    const executionReviewParticipants = summarizeExecutionParticipants(
+      normalizeIssueExecutionPolicy(input.updateFields.executionPolicy ?? null),
+      "review",
+    );
+    if (
+      input.actorAgentId &&
+      nextAssigneeAgentId &&
+      nextAssigneeAgentId !== input.actorAgentId &&
+      (executionReviewParticipants.some(
+        (participant) => participant.type === "agent" && participant.agentId === nextAssigneeAgentId,
+      ) || (await agentsSvc.getById(String(nextAssigneeAgentId)))?.role === "reviewer")
+    ) return null;
 
     throw unprocessable(INVALID_AGENT_IN_REVIEW_DISPOSITION_MESSAGE, {
       code: "invalid_issue_disposition",
@@ -4851,7 +4964,6 @@ export function issueRoutes(
         "human_assignee_user_id",
         "typed_execution_state_current_participant",
         "scheduled_issue_monitor",
-        "human_only_review_policy",
       ],
     });
   }
@@ -10595,7 +10707,7 @@ export function issueRoutes(
       }
 
       const actor = getActorInfo(req);
-      const sourceTrust = await sourceTrustForActorWrite(issue, actor);
+      const sourceTrust = await sourceTrustForActorWrite(issue, actor, true);
       const referenceSummaryBefore =
         await issueReferencesSvc.listIssueReferenceSummary(issue.id);
       const result = await documentsSvc.upsertIssueDocument({
@@ -11405,7 +11517,8 @@ export function issueRoutes(
       )
         return;
       const actor = getActorInfo(req);
-      if (await sourceTrustForActorWrite(issue, actor)) {
+      const issueSourceTrust = await resolveActorSourceTrustForIssue({ db, issue, actor });
+      if (issueSourceTrust) {
         res.status(403).json({
           error: "Low-trust actors cannot promote quarantined output",
         });
@@ -11426,7 +11539,6 @@ export function issueRoutes(
         });
         return;
       }
-
       const promotedAt = new Date();
       const promotionTrust = buildPromotedSourceTrust({
         sourceIssueId: issue.id,
@@ -11435,6 +11547,7 @@ export function issueRoutes(
         promotedByActorType: actor.actorType,
         promotedByActorId: actor.actorId,
         promotedAt,
+        promotionOwnerUserId: sourceTrust.promotionOwnerUserId,
       });
       const product = await db.transaction(async (tx) => {
         const markPromoted = {
@@ -11609,7 +11722,7 @@ export function issueRoutes(
           return;
         }
       }
-      const sourceTrust = await sourceTrustForActorWrite(issue, actor);
+      const sourceTrust = await sourceTrustForActorWrite(issue, actor, true);
       const product = await workProductsSvc.update(id, {
         ...patch,
         ...(sourceTrust ? { sourceTrust } : {}),
@@ -12271,15 +12384,26 @@ export function issueRoutes(
         Boolean(executionPolicy?.monitor),
       );
       const issueId = randomUUID();
+      const company = await companiesSvc.getById(companyId);
+      const promotionOwnerUserId =
+        authenticatedActorResponsibleUserId(req) ??
+        (actor.actorType === "user" ? actor.actorId : null) ??
+        company?.defaultResponsibleUserId ??
+        null;
       const sourceTrust = await sourceTrustForActorWrite(
         {
           id: issueId,
           companyId,
           projectId: createBody.projectId ?? null,
           executionPolicy,
+          responsibleUserId: promotionOwnerUserId,
         },
         actor,
+        true,
       );
+      if (sourceTrust?.disposition === "quarantined" && !promotionOwnerUserId) {
+        throw unprocessable("Low-trust output cannot be quarantined without a promotion owner");
+      }
       let deduplicationReason: "idempotency_key" | "recent_open_title" | null =
         null;
       const createInput = {
@@ -12293,7 +12417,8 @@ export function issueRoutes(
         createdByAgentId: actor.agentId,
         createdByUserId: actor.actorType === "user" ? actor.actorId : null,
         actorRunId: actor.runId,
-        actorResponsibleUserId: authenticatedActorResponsibleUserId(req),
+        actorResponsibleUserId:
+          authenticatedActorResponsibleUserId(req) ?? promotionOwnerUserId,
         trustExplicitResponsibleUserId: actor.actorType === "user",
         watchdogActorRunId: actor.runId,
         onDeduplicated: (reason: "idempotency_key" | "recent_open_title") => {
@@ -12620,20 +12745,29 @@ export function issueRoutes(
         Boolean(executionPolicy?.monitor),
       );
       const issueId = randomUUID();
+      const company = await companiesSvc.getById(parent.companyId);
+      const promotionOwnerUserId =
+        authenticatedActorResponsibleUserId(req) ??
+        (actor.actorType === "user" ? actor.actorId : parent.responsibleUserId) ??
+        company?.defaultResponsibleUserId ??
+        null;
       const sourceTrust = await sourceTrustForActorWrite(
         {
           id: issueId,
           companyId: parent.companyId,
           projectId: createBody.projectId ?? parent.projectId ?? null,
           executionPolicy,
+          responsibleUserId: promotionOwnerUserId,
         },
         actor,
+        true,
       );
       const { issue, parentBlockerAdded } = await svc.createChild(parent.id, {
         ...createBody,
         ...(taskBridgeOriginForActor(req) ?? {}),
         id: issueId,
         executionPolicy,
+        ...(sourceTrust ? { sourceTrust } : {}),
         ...(currentSerializedChild
           ? {
               status: "blocked",
@@ -12643,11 +12777,11 @@ export function issueRoutes(
               ),
             }
           : {}),
-        ...(sourceTrust ? { sourceTrust } : {}),
         createdByAgentId: actor.agentId,
         createdByUserId: actor.actorType === "user" ? actor.actorId : null,
         actorRunId: actor.runId,
-        actorResponsibleUserId: authenticatedActorResponsibleUserId(req),
+        actorResponsibleUserId:
+          authenticatedActorResponsibleUserId(req) ?? promotionOwnerUserId,
         trustExplicitResponsibleUserId: actor.actorType === "user",
         actorAgentId: actor.agentId,
         actorUserId: actor.actorType === "user" ? actor.actorId : null,
@@ -12830,6 +12964,13 @@ export function issueRoutes(
       }
 
       const actor = getActorInfo(req);
+      const company = await companiesSvc.getById(sourceIssue.companyId);
+      const promotionOwnerUserId =
+        authenticatedActorResponsibleUserId(req) ??
+        (actor.actorType === "user" ? actor.actorId : null) ??
+        sourceIssue.responsibleUserId ??
+        company?.defaultResponsibleUserId ??
+        null;
       const normalizedChildren = [];
       for (const child of requestedChildren) {
         const executionPolicy = applyActorMonitorScheduledBy(
@@ -12850,9 +12991,14 @@ export function issueRoutes(
             companyId: sourceIssue.companyId,
             projectId: child.projectId ?? sourceIssue.projectId ?? null,
             executionPolicy,
+            responsibleUserId: promotionOwnerUserId,
           },
           actor,
+          true,
         );
+        if (sourceTrust?.disposition === "quarantined" && !promotionOwnerUserId) {
+          throw unprocessable("Low-trust output cannot be quarantined without a promotion owner");
+        }
         normalizedChildren.push({
           ...child,
           id: childIssueId,
@@ -12861,7 +13007,8 @@ export function issueRoutes(
           createdByAgentId: actor.agentId,
           createdByUserId: actor.actorType === "user" ? actor.actorId : null,
           actorRunId: actor.runId,
-          actorResponsibleUserId: authenticatedActorResponsibleUserId(req),
+          actorResponsibleUserId:
+            authenticatedActorResponsibleUserId(req) ?? promotionOwnerUserId,
           trustExplicitResponsibleUserId: actor.actorType === "user",
           actorAgentId: actor.agentId,
           actorUserId: actor.actorType === "user" ? actor.actorId : null,
@@ -13295,6 +13442,7 @@ export function issueRoutes(
         interrupt: interruptRequested,
         deferWakeForGoal,
         hiddenAt: hiddenAtRaw,
+        blockerMetadata: blockerMetadataRaw,
         onBehalfOfUserId: _requestedOnBehalfOfUserId,
         ...updateFields
       } = req.body;
@@ -13670,6 +13818,14 @@ export function issueRoutes(
         throw unprocessable("unblockDescriptor requires blocked status");
       }
       const descriptor = updateFields.unblockDescriptor ?? null;
+      if (blockerMetadataRaw !== undefined) {
+        updateFields.blockerMetadata = blockerMetadataRaw;
+      }
+      const blockerOwner = blockerMetadataRaw?.owner;
+      if (blockerMetadataRaw && blockerOwner && Object.keys(blockerOwner).length !== 1) {
+        res.status(422).json({ error: "blocker owner must identify exactly one principal" });
+        return;
+      }
       if (descriptor && typeof descriptor === "object") {
         const owner = descriptor.owner;
         if (
@@ -13726,6 +13882,33 @@ export function issueRoutes(
       }
       const enteringBlocked =
         existing.status !== "blocked" && updateFields.status === "blocked";
+      if (
+        enteringBlocked &&
+        req.actor.type === "agent" &&
+        blockerMetadataRaw == null
+      ) {
+        res.status(422).json({ error: "Entering blocked requires blockerMetadata" });
+        return;
+      }
+      // myrmidon(BLOCKED-GUARD P0.6): typed blocker metadata describes the current block only;
+      // a transition out of blocked without new metadata clears it, so no stale reason survives.
+      const leavingBlocked =
+        existing.status === "blocked" &&
+        updateFields.status !== undefined &&
+        updateFields.status !== "blocked";
+      if (leavingBlocked && blockerMetadataRaw === undefined) {
+        updateFields.blockerMetadata = null;
+      }
+      if (blockerMetadataRaw?.blockReason === "external_wait") {
+        const monitor =
+          (updateFields.executionPolicy as { monitor?: unknown } | undefined)?.monitor ??
+          (existing.executionPolicy as { monitor?: unknown } | null)?.monitor;
+        if (!monitor) {
+          res.status(422).json({ error: "external_wait requires executionPolicy.monitor" });
+          return;
+        }
+        updateFields.status = "in_review";
+      }
       // myrmidon(BLOCKED-LOOP): signature of an agent return to blocked, kept
       // in the issue.updated details so the next attempt can compare with it.
       let blockedLoopSignature: BlockedLoopSignature | null = null;
@@ -14090,22 +14273,36 @@ export function issueRoutes(
       // myrmidon(HOLD-READY): a possible board unblock of an issue that has
       // a settled replay hold runs the update in a transaction, so the hold
       // is cleared atomically with it.
+      // myrmidon(REPLAY-BLOCK-TRIAGE): the same for an assignee change by ANY
+      // actor — the hold belongs to the previous executor's stopped run, so
+      // the new executor must not inherit it (the OPE-6329 lock-in).
+      const assigneeChangeRequested =
+        normalizedAssigneeAgentId !== undefined ||
+        req.body.assigneeUserId !== undefined;
+      const reassignHoldClearPossible =
+        assigneeChangeRequested &&
+        isAssigneeChangePatch({
+          existing,
+          assigneeAgentIdPatch: normalizedAssigneeAgentId,
+          assigneeUserIdPatch:
+            req.body.assigneeUserId === undefined
+              ? undefined
+              : (req.body.assigneeUserId as string | null),
+        }) &&
+        (await issueHasSettledReplayHold(db, existing.companyId, existing.id));
       const humanUnblockPossible =
-        mayBeHumanUnblock({
+        reassignHoldClearPossible ||
+        (mayBeHumanUnblock({
           requestActorType: req.actor.type,
           runId: actor.runId,
           existingStatus: existing.status,
-          assigneeChangeRequested:
-            normalizedAssigneeAgentId !== undefined ||
-            req.body.assigneeUserId !== undefined,
-          // myrmidon(OPE-6954): a person moving the issue into a workable
-          // status is the same "carry on" as moving it out of `blocked`.
-          // Since REQUEUE-HOLD the settle leaves a re-queued task in its own
-          // status, so this is the action an operator has left.
+          assigneeChangeRequested,
+          // myrmidon(OPE-6954): status changes are another operator "carry on"
+          // action since REQUEUE-HOLD leaves re-queued tasks in their status.
           statusChangeRequested:
             updateFields.status !== undefined && updateFields.status !== existing.status,
         }) &&
-        (await issueHasSettledReplayHold(db, existing.companyId, existing.id));
+        (await issueHasSettledReplayHold(db, existing.companyId, existing.id)));
       let humanUnblock: HumanUnblockResult | null = null;
       const updateIssue = (tx?: Parameters<typeof svc.update>[2]) => {
         if (tx) {
@@ -14320,24 +14517,29 @@ export function issueRoutes(
             }
             // myrmidon(HOLD-READY): an explicit human unblock is an operator
             // resolve of the settled "do not replay" hold.
-            if (
-              humanUnblockPossible &&
-              updated.assigneeAgentId &&
-              isHumanUnblock({
+            // myrmidon(REPLAY-BLOCK-TRIAGE): so is any change of executor —
+            // the hold belongs to the previous executor's run.
+            if (updated.assigneeAgentId && humanUnblockPossible) {
+              const humanUnblockMatch = isHumanUnblock({
                 requestActorType: req.actor.type,
                 runId: actor.runId,
                 before: existing,
                 after: updated,
-              })
-            ) {
-              humanUnblock = await clearReplayHoldsOnHumanUnblock({
-                tx: tx as unknown as Db,
-                companyId: updated.companyId,
-                issueId: updated.id,
-                assigneeAgentId: updated.assigneeAgentId,
-                actor: { actorType: actor.actorType, actorId: actor.actorId },
-                postCommitActivityPublications,
               });
+              const reassignMatch =
+                updated.assigneeAgentId !== existing.assigneeAgentId ||
+                updated.assigneeUserId !== existing.assigneeUserId;
+              if (humanUnblockMatch || reassignMatch) {
+                humanUnblock = await clearReplayHoldsOnHumanUnblock({
+                  tx: tx as unknown as Db,
+                  companyId: updated.companyId,
+                  issueId: updated.id,
+                  assigneeAgentId: updated.assigneeAgentId,
+                  actor: { actorType: actor.actorType, actorId: actor.actorId },
+                  note: humanUnblockMatch ? HUMAN_UNBLOCK_NOTE : REASSIGN_UNBLOCK_NOTE,
+                  postCommitActivityPublications,
+                });
+              }
             }
             if (commentAttachmentIds?.length) {
               // Reassignment, comment creation and upload binding commit together.
@@ -14434,6 +14636,7 @@ export function issueRoutes(
           issueId: issue.id,
           agentId: committedUnblock.replanAgentId,
           actorId: actor.actorId,
+          actorType: actor.actorType === "agent" ? "agent" : "user",
           clearedActionIds: committedUnblock.clearedActionIds,
         });
       }
@@ -15559,6 +15762,13 @@ export function issueRoutes(
           !["done", "cancelled"].includes(existing.status) &&
           ["done", "cancelled"].includes(issue.status);
         if (becameTerminal) {
+          if (svc.cancelDeferredExecutionsForTerminalIssue) {
+            await svc.cancelDeferredExecutionsForTerminalIssue(
+              issue.id,
+              issue.companyId,
+              db,
+            );
+          }
           const expiredInteractions = await issueThreadInteractionService(
             db,
           ).expirePendingInteractionsForTerminalIssue(issue, {
@@ -18405,7 +18615,10 @@ export function issueRoutes(
           actorUserId: actor.actorType === "user" ? actor.actorId : null,
         };
 
-        const sourceTrust = await sourceTrustForActorWrite(currentIssue, actor);
+        const sourceTrust =
+          actor.actorType === "agent"
+            ? await sourceTrustForActorWrite(currentIssue, actor, true)
+            : null;
         const commentOptions = {
           authorType:
             req.body.authorType ??
@@ -18527,12 +18740,17 @@ export function issueRoutes(
           attachmentIds: req.body.attachmentIds,
           clientRequestId: actor.actorType === "user" ? req.body.clientRequestId : undefined,
           authorizationReason: commentAuthorizationReason,
-          sourceTrust: await sourceTrustForActorWrite(currentIssue, actor),
+          sourceTrust: await sourceTrustForActorWrite(currentIssue, actor, true),
         };
         const add = (dbOrTx: Db = db) =>
           svc.addComment(
             id,
-            req.body.body,
+            commentOptions.sourceTrust?.disposition === "quarantined"
+              ? buildLowTrustQuarantineNotice({
+                  promotionOwnerUserId:
+                    commentOptions.sourceTrust.promotionOwnerUserId ?? null,
+                })
+              : req.body.body,
             {
               agentId: actor.agentId ?? undefined,
               userId: actor.actorType === "user" ? actor.actorId : undefined,
@@ -19000,6 +19218,13 @@ export function issueRoutes(
           !["done", "cancelled"].includes(issueBeforeCommentDecision.status) &&
           ["done", "cancelled"].includes(currentIssue.status);
         if (becameTerminal) {
+          if (svc.cancelDeferredExecutionsForTerminalIssue) {
+            await svc.cancelDeferredExecutionsForTerminalIssue(
+              currentIssue.id,
+              currentIssue.companyId,
+              db,
+            );
+          }
           const expiredInteractions = await issueThreadInteractionService(
             db,
           ).expirePendingInteractionsForTerminalIssue(currentIssue, {

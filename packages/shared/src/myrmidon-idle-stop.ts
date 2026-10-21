@@ -27,3 +27,11 @@ export function normalizeIdleStopSettings(raw: unknown, env: Record<string, stri
 export function mergeIdleStopSettings(raw: unknown, patch: IdleStopSettingsPatch, env: Record<string, string | undefined> = defaultIdleStopEnv): IdleStopSettings {
   return idleStopSettingsSchema.parse({ ...normalizeIdleStopSettings(raw, env), ...patch });
 }
+export const idleStopModeSchema = z.enum(["on_demand", "always_on"]);
+export type IdleStopMode = z.infer<typeof idleStopModeSchema>;
+
+/** Mass change of the per-bot IDLE-STOP mode. */
+export const patchIdleStopBotModesSchema = z.object({
+  agentIds: z.array(z.string().uuid()).min(1).max(500),
+  mode: idleStopModeSchema,
+}).strict();

@@ -1,6 +1,8 @@
 import { BotContainerDriver, BotContainerStatus } from './bot-containers/driver.js';
-import { Db, heartbeatRuns, agents } from '@paperclipai/db';
+import { Db, heartbeatRuns, agents, botApplyJobs } from '@paperclipai/db';
 import { and, eq, inArray, desc, sql } from 'drizzle-orm';
+import { readMaintenanceDocument } from './maintenance/store.js';
+import { idleStopRuntimeFromStatus, type IdleStopRuntime } from './idle-stop-runtime.js';
 import { instanceSettingsService } from '../services/instance-settings.js';
 
 // Logger type - matches pino Logger interface
@@ -38,8 +40,6 @@ export class IdleStopService {
   private readonly logger: IdleStopLogger;
   private sweepInterval?: NodeJS.Timeout;
   private startupTimes: Map<string, number> = new Map();
-  private readonly lastStopTimes = new Map<string, Date>();
-  private readonly lastStartTimes = new Map<string, Date>();
   private configCache?: { value: IdleStopConfig; expiresAt: number };
 
   constructor(driver: BotContainerDriver, db: Db, config: Partial<IdleStopConfig> = {}, loggerInstance?: IdleStopLogger) {
@@ -61,9 +61,10 @@ export class IdleStopService {
   }
 
   public start(): void {
+    // The sweeper always runs: the live `enabled` flag (board settings) is read on every
+    // sweep, so switching IDLE-STOP on from the board needs no restart.
     if (!this.config.enabled) {
-      this.logger.info('IDLE-STOP service disabled, not starting');
-      return;
+      this.logger.info('IDLE-STOP is disabled at startup; the sweeper stays idle until it is enabled in settings');
     }
 
     this.logger.info(
@@ -101,7 +102,7 @@ export class IdleStopService {
     try {
       this.logger.debug('Starting idle container sweep');
 
-      const botKeys = await this.listBotKeys();
+      const { botKeys, alwaysOn } = await this.listBots();
       if (botKeys.length === 0) {
         this.logger.debug('No bot container agents found, skipping sweep');
         return;
@@ -111,7 +112,7 @@ export class IdleStopService {
       this.logger.debug(`Found ${containers.length} bot containers`);
 
       for (const container of containers) {
-        await this.checkContainer(container, config.afterSec);
+        await this.checkContainer(container, config.afterSec, alwaysOn.has(container.botKey));
       }
     } catch (error) {
       this.logger.error('Error during idle container sweep:', error);
@@ -147,10 +148,10 @@ export class IdleStopService {
     }
   }
 
-  private async listBotKeys(): Promise<string[]> {
+  private async listBots(): Promise<{ botKeys: string[]; alwaysOn: Set<string> }> {
     try {
       const rows = await this.db
-        .select({ agentId: agents.id })
+        .select({ agentId: agents.id, adapterConfig: agents.adapterConfig })
         .from(agents)
         .where(
           and(
@@ -159,19 +160,35 @@ export class IdleStopService {
             sql`${agents.adapterConfig} #> '{container,enabled}' = 'true'::jsonb`,
           ),
         );
-      return rows.map((row) => row.agentId);
+      const alwaysOn = new Set<string>();
+      for (const row of rows) {
+        const container = (row.adapterConfig as { container?: { idleStopMode?: unknown } } | null | undefined)?.container;
+        if (container?.idleStopMode === 'always_on') alwaysOn.add(row.agentId);
+      }
+      return { botKeys: rows.map((row) => row.agentId), alwaysOn };
     } catch (error) {
       this.logger.error('Error listing bot container agents:', error);
-      return [];
+      return { botKeys: [], alwaysOn: new Set() };
     }
   }
 
-  private async checkContainer(container: BotContainerStatus, afterSec = this.config.afterSec): Promise<void> {
+  private async checkContainer(container: BotContainerStatus, afterSec: number, alwaysOn: boolean): Promise<void> {
     const botKey = container.botKey;
+
+    // Per-bot mode "always on": never stopped, whatever the idle time.
+    if (alwaysOn) {
+      this.logger.debug(`Bot ${botKey} is configured always-on, skipping stop`);
+      return;
+    }
 
     // Only stop running containers
     if (container.state !== 'running') {
       this.logger.debug(`Bot ${botKey} is not running (state=${container.state}), skipping`);
+      return;
+    }
+
+    if (await this.isApplyOrMaintenanceActive(botKey, container, afterSec)) {
+      this.logger.debug(`Bot ${botKey} is undergoing apply/recreate or maintenance, skipping`);
       return;
     }
 
@@ -181,14 +198,7 @@ export class IdleStopService {
       return;
     }
 
-    const [agent] = await this.db.select({ adapterConfig: agents.adapterConfig }).from(agents).where(eq(agents.id, botKey)).limit(1);
-    const containerConfig = agent?.adapterConfig?.container;
-    if (containerConfig && typeof containerConfig === 'object' && (containerConfig as Record<string, unknown>).idleStopMode === 'always_on') {
-      this.logger.debug(`Bot ${botKey} is configured always-on, skipping stop`);
-      return;
-    }
-
-    const idleDurationSec = await this.getIdleDurationSec(botKey);
+    const idleDurationSec = await this.getIdleDurationSec(botKey, container);
     if (idleDurationSec < afterSec) {
       this.logger.debug(
         `Bot ${botKey} is idle but not long enough (${idleDurationSec}s/${afterSec}s)`,
@@ -198,10 +208,10 @@ export class IdleStopService {
 
     this.logger.info(`Stopping idle container for bot ${botKey} (idle for ${idleDurationSec}s)`);
     try {
-      await this.driver.stop(botKey);
-      this.lastStopTimes.set(botKey, new Date());
+      if (!this.driver.stopIdle) throw new Error('idle-stop route is not supported by this driver');
+      await this.driver.stopIdle(botKey);
     } catch (error) {
-      this.logger.error(`Failed to stop container for bot ${botKey}:`, error);
+      this.logger.error(`Failed to stop container for bot ${botKey} [${error instanceof Error ? error.message : String(error)}]`);
     }
   }
 
@@ -209,15 +219,16 @@ export class IdleStopService {
     this.configCache = undefined;
   }
 
-  public async readRuntimeState(botKey: string): Promise<{ state: string; lastStoppedAt: Date | null; lastStartedAt: Date | null }> {
+  /**
+   * Container state with the last stop/start times (from the container's docker inspect, so
+   * they survive a board restart).
+   */
+  public async readRuntimeState(botKey: string): Promise<{ state: string } & IdleStopRuntime> {
     const status = await this.driver.status(botKey);
-    return {
-      state: status.state,
-      lastStoppedAt: this.lastStopTimes.get(botKey) ?? null,
-      lastStartedAt: this.lastStartTimes.get(botKey) ?? null,
-    };
+    return { state: status.state, ...idleStopRuntimeFromStatus(status) };
   }
 
+  /** Effective settings: stored board settings over startup (env) values; re-read every 2 s at most. */
   private async currentConfig(): Promise<IdleStopConfig> {
     try {
       if (this.configCache && this.configCache.expiresAt > Date.now()) return this.configCache.value;
@@ -235,9 +246,59 @@ export class IdleStopService {
         return resolved;
       }
     } catch (error) {
-      this.logger.error('Could not read live IDLE-STOP settings; keeping last startup config:', error);
+      this.logger.error(`Could not read live IDLE-STOP settings; keeping startup config [${error instanceof Error ? error.message : String(error)}]`);
     }
     return this.config;
+  }
+
+  private async isApplyOrMaintenanceActive(botKey: string, container: BotContainerStatus, afterSec: number): Promise<boolean> {
+    const inspect = container.inspect as
+      | { State?: { Health?: { Status?: string }; StartedAt?: string } }
+      | undefined;
+    if (inspect?.State?.Health?.Status === 'starting') {
+      return true;
+    }
+    if (inspect?.State?.StartedAt) {
+      const startedAtMs = new Date(inspect.State.StartedAt).getTime();
+      if (Number.isFinite(startedAtMs) && (Date.now() - startedAtMs) < afterSec * 1000) {
+        return true;
+      }
+    }
+
+    let agentId: string | null = null;
+    try {
+      agentId = await this.resolveAgentId(botKey);
+      if (agentId) {
+        const [activeApply] = await this.db
+          .select({ id: botApplyJobs.id })
+          .from(botApplyJobs)
+          .where(
+            and(
+              eq(botApplyJobs.botId, agentId),
+              inArray(botApplyJobs.status, ['pending', 'running']),
+            ),
+          )
+          .limit(1);
+        if (activeApply) return true;
+      }
+    } catch {
+      // In tests with fakeDb or if table not configured in mock
+    }
+
+    try {
+      const doc = await readMaintenanceDocument(this.db);
+      const isMaintenance = doc.windows.some(
+        (w) =>
+          (w.state === 'entering' || w.state === 'on' || w.state === 'leaving') &&
+          (w.scope.type === 'instance' ||
+            (w.scope.type === 'agent' && (w.scope.id === botKey || (agentId && w.scope.id === agentId)))),
+      );
+      if (isMaintenance) return true;
+    } catch {
+      // ignore
+    }
+
+    return false;
   }
 
   /**
@@ -276,7 +337,7 @@ export class IdleStopService {
    * Gets the idle duration in seconds for a bot.
    * Idle = time since the last heartbeat run finished (or started, if none finished).
    */
-  private async getIdleDurationSec(botKey: string): Promise<number> {
+  private async getIdleDurationSec(botKey: string, container?: BotContainerStatus): Promise<number> {
     try {
       const agentId = await this.resolveAgentId(botKey);
       if (!agentId) {
@@ -306,7 +367,19 @@ export class IdleStopService {
         return 0;
       }
 
-      const idleMs = Date.now() - new Date(lastActivity).getTime();
+      let idleMs = Date.now() - new Date(lastActivity).getTime();
+      const inspect = container?.inspect as
+        | { State?: { StartedAt?: string } }
+        | undefined;
+      if (inspect?.State?.StartedAt) {
+        const startedAtMs = new Date(inspect.State.StartedAt).getTime();
+        if (Number.isFinite(startedAtMs)) {
+          const uptimeMs = Date.now() - startedAtMs;
+          if (uptimeMs >= 0 && uptimeMs < idleMs) {
+            idleMs = uptimeMs;
+          }
+        }
+      }
       return Math.floor(idleMs / 1000);
     } catch (error) {
       this.logger.error(`Error getting idle duration for bot ${botKey}:`, error);
@@ -343,13 +416,14 @@ export class IdleStopService {
    * When IDLE-STOP is disabled, returns true immediately without calling the driver.
    */
   public async wake(botKey: string): Promise<boolean> {
-    if (!this.config.enabled) {
-      // IDLE-STOP disabled: no-op passthrough, never touch the driver
-      return true;
-    }
+    const config = await this.currentConfig();
 
     try {
       const status = await this.driver.status(botKey);
+
+      // IDLE-STOP switched off: a no-op passthrough — except for a container it stopped earlier,
+      // which must still come back (the switch is live, bots may be stopped at that moment).
+      if (!config.enabled && !(status.idleStopped && status.state !== 'running')) return true;
 
       if (status.state === 'running') {
         this.logger.debug(`Bot ${botKey} is already running`);
@@ -367,7 +441,6 @@ export class IdleStopService {
       this.startupTimes.set(botKey, Date.now());
 
       await this.driver.start(botKey);
-      this.lastStartTimes.set(botKey, new Date());
 
       // driver.start() already waits for healthy, but we verify
       const finalStatus = await this.driver.status(botKey);
@@ -398,15 +471,14 @@ export class IdleStopService {
    */
   public async ensureStartedAndHealthy(botKey: string): Promise<void> {
     const config = await this.currentConfig();
-    if (!config.enabled) {
-      return;
-    }
-
     const startTime = Date.now();
     const timeoutMs = config.healthTimeoutMs;
 
     try {
       const status = await this.driver.status(botKey);
+
+      // Switched off: only a container IDLE-STOP stopped earlier is brought back.
+      if (!config.enabled && !(status.idleStopped && status.state !== 'running')) return;
 
       if (status.state === 'running') {
         return;

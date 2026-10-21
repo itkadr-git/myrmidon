@@ -18,6 +18,14 @@ either a list of blocking tasks or a reason reference. A stale blocked
 reason (the blocker long done, the task still parked) is caught by the
 stale-block watchdog instead of sitting silent forever.
 
+Scheduled issue monitors are checked for tasks in `in_progress`, `in_review`,
+and `blocked`; a due monitor wakes its assignee with the monitor context.
+Completed or cancelled tasks have their schedules cleared. If a due monitor
+has not triggered within the overdue threshold, the Attention feed raises an
+`issue_monitor_overdue` item for operators. Inspect the task's monitor schedule
+and wake history, then resume or reschedule the task; the item clears when the
+monitor is no longer overdue.
+
 ## Role queues
 
 With the role-queue pilot, a free agent claims the top task of its role's
@@ -40,6 +48,12 @@ the review-routing sweep picks the least-loaded eligible reviewer agent
 A review that stays without a verdict past the configured hours is signalled
 and moved to another reviewer. With no eligible reviewer at all, the task is
 signalled on the attention desk.
+
+When an issue enters `in_review` or its reviewer is reassigned, the issue update
+and the durable reviewer wake request are committed in one database transaction.
+Execution-stage reviewer wake requests use that same transaction path. If the
+wake request cannot be persisted, the issue update does not leave the task in
+review without a durable wake receipt.
 
 ## Planning from a chat message
 

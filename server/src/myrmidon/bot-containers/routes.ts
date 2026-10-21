@@ -62,6 +62,7 @@ import {
 } from "./clone-hygiene.js";
 import { isImageAllowed, parseImageAllowlist } from "./template.js";
 import type { BotContainerState } from "./driver.js";
+import { idleStopRuntimeFromStatus } from "../idle-stop-runtime.js";
 
 export interface BotContainerRouteAgent {
   id: string;
@@ -93,7 +94,6 @@ export interface BotContainerRoutesDeps {
    * route reads the outcome only from this store.
    */
   applyJobs: Pick<BotApplyJobStore, "acquireLiveJob" | "markRunning" | "markSucceeded" | "markFailed" | "getJob">;
-  getIdleStopRuntimeState?(botKey: string): Promise<{ state: string; lastStoppedAt: Date | null; lastStartedAt: Date | null }>;
   /**
    * myrmidon(CONCURRENCY-SYNC): when this agent's most recent run failed with
    * GATEWAY_RATE_LIMITED_ERROR_CODE, at or after `sinceIso` — or null. Read only for
@@ -123,7 +123,7 @@ export interface BotContainerStatusResponse {
   /** Whether the saved image matches the allowlist; null when there is no saved image. */
   imageAllowed: boolean | null;
   /** The live container, or null when it was not asked (flag off, no runtime, other adapter) or could not be. */
-  container: { state: BotContainerState; image: string | null } | null;
+  container: { state: BotContainerState; image: string | null; idleStopped?: boolean } | null;
   /** Set when the runtime was asked and did not answer. */
   containerError: string | null;
   /** myrmidon(1.6.4-BOT-CONTAINER-CARD): how the release bot-image rollout treats this bot:
@@ -148,7 +148,7 @@ export interface BotContainerStatusResponse {
   gatewayConcurrencyWarning: string | null;
   idleStopMode: "on_demand" | "always_on";
   idleStopRuntime: {
-    state: string;
+    idleStopped: boolean;
     lastStoppedAt: string | null;
     lastStartedAt: string | null;
   } | null;
@@ -285,15 +285,17 @@ export function botContainerRoutes(deps: BotContainerRoutesDeps) {
     if (enabled && runtime && botKey && agent.adapterType === "hermes_gateway") {
       try {
         const status = await runtime.driver.status(botKey);
-        body.container = { state: status.state, image: status.image ?? null };
-        if (deps.getIdleStopRuntimeState) {
-          const state = await deps.getIdleStopRuntimeState(botKey);
-          body.idleStopRuntime = {
-            state: state.state,
-            lastStoppedAt: state.lastStoppedAt?.toISOString() ?? null,
-            lastStartedAt: state.lastStartedAt?.toISOString() ?? null,
-          };
-        }
+        body.container = {
+          state: status.state,
+          image: status.image ?? null,
+          ...(status.idleStopped ? { idleStopped: true } : {}),
+        };
+        const idleRuntime = idleStopRuntimeFromStatus(status);
+        body.idleStopRuntime = {
+          idleStopped: idleRuntime.idleStopped,
+          lastStoppedAt: idleRuntime.lastStoppedAt?.toISOString() ?? null,
+          lastStartedAt: idleRuntime.lastStartedAt?.toISOString() ?? null,
+        };
         // myrmidon(CONCURRENCY-SYNC): the applied limit, as recorded by the last apply's
         // marker. Only a container that exists can carry one.
         if (status.state !== "missing") {

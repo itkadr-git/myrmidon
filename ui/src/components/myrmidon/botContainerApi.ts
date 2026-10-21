@@ -30,7 +30,8 @@ export interface BotContainerStatus {
   idleStopMode?: "on_demand" | "always_on";
   /** Durable idle-stop runtime state; absent on older servers. */
   idleStopRuntime?: {
-    state: string;
+    /** Stopped by IDLE-STOP and waiting for the next run. */
+    idleStopped: boolean;
     lastStoppedAt: string | null;
     lastStartedAt: string | null;
   } | null;
