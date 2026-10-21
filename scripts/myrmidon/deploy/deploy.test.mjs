@@ -1754,7 +1754,7 @@ exit 0
       // the rewritten block: the live fragments, relative to the anchor file's
       // own directory, one per line, between the untouched markers
       const rewritten = read(path.join(sb.dir, "checklist.md"));
-      assert.match(rewritten, new RegExp(`board-mount-set:begin\\n\\s*compose/docker-compose\\.yml\\n\\s*compose/docker-compose\\.myrmidon-image\\.yml\\n\\s*docker-compose\\.myrmidon-dockergate\\.yml\\n\\s*board-mount-set:end`));
+      assert.match(rewritten, new RegExp(`board-mount-set:begin -->\\n\\s*compose/docker-compose\\.yml\\n\\s*compose/docker-compose\\.myrmidon-image\\.yml\\n\\s*docker-compose\\.myrmidon-dockergate\\.yml\\n\\s*<!-- board-mount-set:end`));
       assert.match(rewritten, /# image update checklist/);
       // one commit, naming the deploy reference
       assert.match(calls(sb), /git -C \S+ add -- checklist\.md/);
@@ -1781,7 +1781,7 @@ exit 0
       const { code, out } = run(sb, "deploy.sh", ["--digest", NEW]);
       assert.equal(code, 0, out);
       assert.match(out, /WARNING: COMPOSE-SET-ANCHOR: the git commit of checklist\.md failed/);
-      assert.match(read(path.join(sb.dir, "checklist.md")), /board-mount-set:begin\n\s*docker-compose\.yml\n\s*docker-compose\.myrmidon-dockergate\.yml\n\s*<!-- board-mount-set:end/);
+      assert.match(read(path.join(sb.dir, "checklist.md")), /board-mount-set:begin -->\n\s*docker-compose\.yml\n\s*docker-compose\.myrmidon-dockergate\.yml\n\s*<!-- board-mount-set:end/);
     });
 
     it("warns and rewrites nothing when the block has a begin marker but no end marker", () => {
