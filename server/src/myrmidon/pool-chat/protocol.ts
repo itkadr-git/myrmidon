@@ -53,7 +53,7 @@ export function validateRequestBody(
   }
 
   let previousRole: PoolChatMessage["role"] | null = null;
-  let inputBytes = Buffer.byteLength(JSON.stringify({ conversationId, clientMessageId, model }), "utf8");
+  let inputBytes = Buffer.byteLength(JSON.stringify({ conversationId, model }), "utf8");
   const normalizedMessages: PoolChatMessage[] = [];
   for (const raw of messages) {
     if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
@@ -96,7 +96,6 @@ export function validateRequestBody(
 export function canonicalRequestHash(value: PoolChatRequestBody): string {
   const canonical = JSON.stringify({
     conversationId: value.conversationId,
-    clientMessageId: value.clientMessageId,
     model: value.model,
     messages: value.messages.map(({ role, content }) => ({ role, content })),
     maxOutputTokens: value.maxOutputTokens ?? 2048,
