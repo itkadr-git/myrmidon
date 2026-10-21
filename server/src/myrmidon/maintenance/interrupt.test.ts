@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import {
   activityLog,
   agentRuntimeState,
@@ -21,6 +21,7 @@ import {
 } from "../../__tests__/helpers/embedded-postgres.js";
 import { heartbeatService } from "../../services/heartbeat.js";
 import { LEGACY_RECOVERY_CAUSE } from "../../services/legacy-execution-recovery.js";
+import { applyRunAdmissionLimits, currentRunAdmissionLimits, resetSharedRunAdmissionForTests } from "../run-admission.js";
 import { MAINTENANCE_INTERRUPT_ERROR_CODE } from "./domain.js";
 import { resetMaintenanceGateCaches } from "./gate.js";
 import { maintenanceHeartbeatPort } from "./index.js";
@@ -36,6 +37,20 @@ const FAST = "process.exit(0)";
 describeEmbeddedPostgres("maintenance interrupt_and_retry", () => {
   let db!: ReturnType<typeof createDb>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+
+  beforeEach(() => {
+    applyRunAdmissionLimits({
+      ...currentRunAdmissionLimits(),
+      maxConcurrentRuns: 5,
+      maxStartsPerMinute: null,
+      minFreeMemoryMb: null,
+      minFreeHostMemoryMb: null,
+      maxHostLoadPercentPerCore: null,
+      maxHostCpuBusyPercent: null,
+      maxHostCpuPsiSomeAvg10: null,
+      maxPerAgentStartSharePercent: 100,
+    });
+  });
 
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("myrmidon-maintenance-interrupt-");
@@ -68,6 +83,7 @@ describeEmbeddedPostgres("maintenance interrupt_and_retry", () => {
   });
 
   afterAll(async () => {
+    resetSharedRunAdmissionForTests();
     await tempDb?.cleanup();
   });
 
