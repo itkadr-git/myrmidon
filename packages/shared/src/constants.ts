@@ -1369,6 +1369,8 @@ export const PLUGIN_CAPABILITIES = [
   // Read issue attachment metadata and, via the capability-scoped host
   // bridge, attachment content bytes (bytes-only, company-scoped, audit-logged).
   "issue.attachments.read",
+  // Upload bounded issue attachments through the host's scoped storage path.
+  "issue.attachments.write",
   // Read company approvals (list + get). The host redacts approval payloads to
   // match the web app's own approval read surface.
   "approvals.read",
