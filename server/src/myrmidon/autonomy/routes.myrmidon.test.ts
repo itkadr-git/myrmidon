@@ -16,6 +16,7 @@ import { describe, expect, it, vi } from "vitest";
 import { AUTONOMY_SAFE_DEFAULTS, type AutonomyActionClass, type AutonomyChangeLogEntry, type AutonomyRegulation } from "@paperclipai/shared";
 import { errorHandler } from "../../middleware/index.js";
 import { autonomyRoutes } from "./routes.js";
+import type { AutonomyRegulationsBackend } from "./knowledge-regulations.js";
 import { autonomyGate, AUTONOMY_FORBIDDEN_CODE } from "./gate.js";
 import { memoryAutonomyStore } from "./store.js";
 import { autonomyService, AUTONOMY_ACTIVITY_SOURCE } from "./service.js";
@@ -63,6 +64,7 @@ function app(
   actor: unknown,
   store = memoryAutonomyStore(),
   listRegulations?: (companyId: string) => Promise<AutonomyRegulation[]>,
+  regulationsBackend?: AutonomyRegulationsBackend,
 ) {
   const changelog = makeChangeLog();
   let seq = 0;
@@ -79,6 +81,7 @@ function app(
       listChangeLog: changelog.listChangeLog,
       logActivity: changelog.logActivity,
       ...(listRegulations ? { listRegulations } : {}),
+      ...(regulationsBackend ? { regulationsBackend } : {}),
       now: () => new Date("2026-10-02T00:00:00.000Z"),
       newId: () => `id-${++seq}`,
     }),
@@ -242,6 +245,44 @@ describe("myrmidon(1.6-AUTONOMY) routes: read and edit with a change log", () =>
     expect(direct.body).toEqual({ regulations });
     expect(listRegulations).toHaveBeenCalledWith(COMPANY_ID);
   });
+  it("approve and restore present the actor's grade to the rule gate and answer 403 on a mismatch", async () => {
+    const seen: Array<{ op: string; kind: string | null }> = [];
+    const refuse = (id: string, kind: string | null) => ({
+      ok: false as const,
+      failure: { kind: "approver_kind_mismatch" as const, regulationId: id, required: "owner", presented: kind },
+    });
+    const backend = {
+      approve: vi.fn(async (_c: string, _a: unknown, id: string, kind: string | null) => {
+        seen.push({ op: "approve", kind });
+        return kind === "owner" ? { ok: true as const, value: { id } as unknown as AutonomyRegulation } : refuse(id, kind);
+      }),
+      restore: vi.fn(async (_c: string, _a: unknown, input: { id: string }, kind: string | null) => {
+        seen.push({ op: "restore", kind });
+        return kind === "owner" ? { ok: true as const, value: { id: input.id } as unknown as AutonomyRegulation } : refuse(input.id, kind);
+      }),
+    } as unknown as AutonomyRegulationsBackend;
+    const operator = { ...boardActor, memberships: [{ companyId: COMPANY_ID, status: "active", membershipRole: "operator" }] };
+    const owner = { ...boardActor, memberships: [{ companyId: COMPANY_ID, status: "active", membershipRole: "owner" }] };
+    const instanceAdmin = { ...boardActor, isInstanceAdmin: true };
+
+    const asOperator = app(operator, memoryAutonomyStore(), undefined, backend).server;
+    const approveDenied = await request(asOperator).post(`/api/myrmidon/autonomy/regulations/rule-1/approve?companyId=${COMPANY_ID}`).expect(403);
+    expect(approveDenied.body.code).toBe("autonomy_approver_kind_mismatch");
+    expect(approveDenied.body.required).toBe("owner");
+    await request(asOperator).post(`/api/myrmidon/autonomy/regulations/rule-1/revisions/1/restore?companyId=${COMPANY_ID}`).expect(403);
+
+    for (const actor of [owner, instanceAdmin]) {
+      const server = app(actor, memoryAutonomyStore(), undefined, backend).server;
+      await request(server).post(`/api/myrmidon/autonomy/regulations/rule-1/approve?companyId=${COMPANY_ID}`).expect(200);
+      await request(server).post(`/api/myrmidon/autonomy/regulations/rule-1/revisions/1/restore?companyId=${COMPANY_ID}`).expect(200);
+    }
+    expect(seen.map((x) => `${x.op}:${x.kind}`)).toEqual([
+      "approve:operator", "restore:operator",
+      "approve:owner", "restore:owner",
+      "approve:owner", "restore:owner",
+    ]);
+  });
+
   it("edits the matrix, answers 409 on a stale version and shows the edit in the change log", async () => {
     const { server } = app(boardActor);
     const patch = {

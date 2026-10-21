@@ -18,6 +18,7 @@ import {
   type AutonomyRegulation,
   type AutonomyRegulationRevision,
 } from "@paperclipai/shared";
+import { approverKindSatisfies } from "../knowledge/domain.js";
 import { ruleApproverKind } from "../knowledge/rules.js";
 import {
   AUTONOMY_ACTIVITY_SOURCE,
@@ -312,14 +313,32 @@ export async function updateKnowledgeAutonomyRegulation(
   return ok(res);
 }
 
+/**
+ * The same gate the knowledge store applies on approve (S4), for the autonomy
+ * facade: the grade is recomputed from the rule's roles and the live caste
+ * directory (the stored `approver_kind` is not trusted), and the approver must
+ * present at least that grade. A refusal is `approver_kind_mismatch` (403).
+ */
+function checkApproverGate(
+  sensitivity: { sensitive: ReadonlySet<string> },
+  item: { id: string; roles: string[] | null },
+  presented: string | null,
+): AutonomyFailure | null {
+  const required = ruleApproverKind(item.roles ?? [], sensitivity);
+  if (approverKindSatisfies(required, presented)) return null;
+  return { kind: "approver_kind_mismatch", regulationId: item.id, required, presented };
+}
+
 export async function approveKnowledgeAutonomyRegulation(
   db: Db,
   companyId: string,
   actor: AutonomyActorRef,
   regulationId: string,
+  approverKind: string | null,
   logActivity?: AutonomyLogActivityFn,
 ): Promise<AutonomyResult<AutonomyRegulation>> {
   const at = new Date();
+  const sensitivity = await resolveCasteSensitivity(db, companyId);
   const txResult = await db.transaction(async (tx) => {
     const [item] = await tx
       .select()
@@ -327,6 +346,8 @@ export async function approveKnowledgeAutonomyRegulation(
       .where(and(eq(knowledgeItems.nestId, companyId), eq(knowledgeItems.id, regulationId), eq(knowledgeItems.kind, "rule")))
       .for("update");
     if (!item) return { notFound: true } as const;
+    const refusal = checkApproverGate(sensitivity, item, approverKind);
+    if (refusal) return { refusal } as const;
 
     const revs = await tx
       .select()
@@ -365,6 +386,9 @@ export async function approveKnowledgeAutonomyRegulation(
   if ("notFound" in txResult) {
     return fail({ kind: "regulation_not_found", regulationId });
   }
+  if ("refusal" in txResult) {
+    return fail(txResult.refusal);
+  }
   if ("alreadyApproved" in txResult) {
     return fail({ kind: "already_approved", regulationId });
   }
@@ -392,9 +416,11 @@ export async function restoreKnowledgeAutonomyRegulation(
   companyId: string,
   actor: AutonomyActorRef,
   input: { id: string; toRevision: number },
+  approverKind: string | null,
   logActivity?: AutonomyLogActivityFn,
 ): Promise<AutonomyResult<AutonomyRegulation>> {
   const at = new Date();
+  const sensitivity = await resolveCasteSensitivity(db, companyId);
   const txResult = await db.transaction(async (tx) => {
     const [item] = await tx
       .select()
@@ -402,6 +428,9 @@ export async function restoreKnowledgeAutonomyRegulation(
       .where(and(eq(knowledgeItems.nestId, companyId), eq(knowledgeItems.id, input.id), eq(knowledgeItems.kind, "rule")))
       .for("update");
     if (!item) return { notFound: true } as const;
+    // A rollback publishes an approved copy at once, so it passes the approval gate.
+    const refusal = checkApproverGate(sensitivity, item, approverKind);
+    if (refusal) return { refusal } as const;
 
     const revs = await tx
       .select()
@@ -449,6 +478,9 @@ export async function restoreKnowledgeAutonomyRegulation(
 
   if ("notFound" in txResult) {
     return fail({ kind: "regulation_not_found", regulationId: input.id });
+  }
+  if ("refusal" in txResult) {
+    return fail(txResult.refusal);
   }
   if ("revisionNotFound" in txResult) {
     return fail({ kind: "revision_not_found", regulationId: input.id, revision: input.toRevision });
@@ -511,8 +543,8 @@ export interface AutonomyRegulationsBackend {
   list(companyId: string): Promise<AutonomyRegulation[]>;
   create(companyId: string, actor: AutonomyActorRef, input: { role: string; title: string; bodyMarkdown: string }): Promise<AutonomyResult<AutonomyRegulation>>;
   update(companyId: string, actor: AutonomyActorRef, input: { id: string; title?: string; bodyMarkdown?: string }): Promise<AutonomyResult<AutonomyRegulation>>;
-  approve(companyId: string, actor: AutonomyActorRef, regulationId: string): Promise<AutonomyResult<AutonomyRegulation>>;
-  restore(companyId: string, actor: AutonomyActorRef, input: { id: string; toRevision: number }): Promise<AutonomyResult<AutonomyRegulation>>;
+  approve(companyId: string, actor: AutonomyActorRef, regulationId: string, approverKind: string | null): Promise<AutonomyResult<AutonomyRegulation>>;
+  restore(companyId: string, actor: AutonomyActorRef, input: { id: string; toRevision: number }, approverKind: string | null): Promise<AutonomyResult<AutonomyRegulation>>;
   delete(companyId: string, actor: AutonomyActorRef, regulationId: string): Promise<AutonomyResult<{ id: string }>>;
 }
 
@@ -526,10 +558,10 @@ export function createKnowledgeAutonomyRegulationsBackend(
       createKnowledgeAutonomyRegulation(db, companyId, actor, input, logActivity),
     update: (companyId: string, actor: AutonomyActorRef, input: { id: string; title?: string; bodyMarkdown?: string }) =>
       updateKnowledgeAutonomyRegulation(db, companyId, actor, input, logActivity),
-    approve: (companyId: string, actor: AutonomyActorRef, regulationId: string) =>
-      approveKnowledgeAutonomyRegulation(db, companyId, actor, regulationId, logActivity),
-    restore: (companyId: string, actor: AutonomyActorRef, input: { id: string; toRevision: number }) =>
-      restoreKnowledgeAutonomyRegulation(db, companyId, actor, input, logActivity),
+    approve: (companyId: string, actor: AutonomyActorRef, regulationId: string, approverKind: string | null) =>
+      approveKnowledgeAutonomyRegulation(db, companyId, actor, regulationId, approverKind, logActivity),
+    restore: (companyId: string, actor: AutonomyActorRef, input: { id: string; toRevision: number }, approverKind: string | null) =>
+      restoreKnowledgeAutonomyRegulation(db, companyId, actor, input, approverKind, logActivity),
     delete: (companyId: string, actor: AutonomyActorRef, regulationId: string) =>
       deleteKnowledgeAutonomyRegulation(db, companyId, actor, regulationId, logActivity),
   };

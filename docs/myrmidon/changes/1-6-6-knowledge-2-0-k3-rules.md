@@ -63,6 +63,11 @@ divergence-section: KNOWLEDGE-2.0 — единый модуль знаний
 - Легаси CRUD автономии (`/myrmidon/autonomy/regulations*`) и wiki-cortex
   (`/wiki-regulations/*`) читают и пишут через `knowledge_items` (`kind=rule`)
   без нового состояния в `myrmidon_wiki_regulations`.
+- Одобрение и откат ревизии через `/myrmidon/autonomy/regulations/:id/approve`
+  и `.../revisions/:rev/restore` проходят тот же гейт по касте: грейд пересчитывается
+  из `roles` правила и справочника каст (сохранённому `approver_kind` не верим),
+  грейд актора берётся из запроса (owner / admin / operator), недостаточный — 403
+  `autonomy_approver_kind_mismatch`.
 
 ## divergence-new
 

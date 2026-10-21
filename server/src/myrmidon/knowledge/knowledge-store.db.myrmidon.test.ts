@@ -491,8 +491,16 @@ describeEmbeddedPostgres("myrmidon(1.6.6 KNOWLEDGE-2.0 K-1) knowledge store over
     expect(updatedRes.value.bodyMarkdown).toBe("Draft v2");
     expect(updatedRes.value.status).toBe("draft");
 
-    // Approve
-    const approvedRes = await backend.approve(companyId, { type: "board", id: "user-1" }, reg.id);
+    // Approve: a sensitive caste's rule is the owner's; the operator is refused (403 gate)
+    const operatorApprove = await backend.approve(companyId, { type: "board", id: "user-2" }, reg.id, "operator");
+    expect(operatorApprove).toEqual({
+      ok: false,
+      failure: { kind: "approver_kind_mismatch", regulationId: reg.id, required: "owner", presented: "operator" },
+    });
+    expect((await db.select().from(knowledgeItems).where(eq(knowledgeItems.id, reg.id)))[0]!.deliveredRevisionId).toBeNull();
+    const noKindApprove = await backend.approve(companyId, { type: "board", id: "user-2" }, reg.id, null);
+    expect(noKindApprove.ok).toBe(false);
+    const approvedRes = await backend.approve(companyId, { type: "board", id: "user-1" }, reg.id, "owner");
     expect(approvedRes.ok).toBe(true);
     if (!approvedRes.ok) return;
     expect(approvedRes.value.status).toBe("approved");
@@ -501,8 +509,13 @@ describeEmbeddedPostgres("myrmidon(1.6.6 KNOWLEDGE-2.0 K-1) knowledge store over
     expect(approvedItem!.status).toBe("published");
     expect(approvedItem!.deliveredRevisionId).not.toBeNull();
 
-    // Restore to revision 1
-    const restoredRes = await backend.restore(companyId, { type: "board", id: "user-1" }, { id: reg.id, toRevision: 1 });
+    // Restore to revision 1: the rollback publishes at once, so it passes the same gate
+    const operatorRestore = await backend.restore(companyId, { type: "board", id: "user-2" }, { id: reg.id, toRevision: 1 }, "operator");
+    expect(operatorRestore.ok).toBe(false);
+    if (!operatorRestore.ok) expect(operatorRestore.failure.kind).toBe("approver_kind_mismatch");
+    const [afterRefusedRestore] = await db.select().from(knowledgeItems).where(eq(knowledgeItems.id, reg.id));
+    expect(afterRefusedRestore!.currentRevisionNumber).toBe(2);
+    const restoredRes = await backend.restore(companyId, { type: "board", id: "user-1" }, { id: reg.id, toRevision: 1 }, "owner");
     expect(restoredRes.ok).toBe(true);
     if (!restoredRes.ok) return;
     expect(restoredRes.value.revision).toBe(3);
@@ -542,7 +555,7 @@ describeEmbeddedPostgres("myrmidon(1.6.6 KNOWLEDGE-2.0 K-1) knowledge store over
     );
     expect(created.ok).toBe(true);
     if (!created.ok) return;
-    await backend.approve(companyId, { type: "board", id: "user-1" }, created.value.id);
+    await backend.approve(companyId, { type: "board", id: "user-1" }, created.value.id, "operator");
 
     // Read via wiki-cortex store
     const wikiStore = createDbRegulationStore(db);

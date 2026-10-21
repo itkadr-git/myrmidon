@@ -82,6 +82,14 @@ function respondFailure(res: Response, failure: AutonomyFailure) {
     case "not_approved":
       res.status(409).json({ error: "Regulation is not approved", code: "autonomy_not_approved" });
       return;
+    case "approver_kind_mismatch":
+      res.status(403).json({
+        error: `Approval requires kind "${failure.required}", the approver presents "${failure.presented ?? "none"}"`,
+        code: "autonomy_approver_kind_mismatch",
+        required: failure.required,
+        presented: failure.presented,
+      });
+      return;
   }
 }
 
@@ -91,6 +99,25 @@ function actorFromRequest(req: Request): AutonomyActorRef {
   if (info.actorType === "agent" && info.agentId) return { type: "agent", id: info.agentId };
   if (info.actorType === "user") return { type: "board", id: info.actorId };
   return { type: "system", id: "system" };
+}
+
+/**
+ * myrmidon(1.6.6 K-3): the grade a board actor presents to the rule approval
+ * gate. The instance admin and the local implicit board are the owner; a
+ * company membership maps by its role (owner, admin, otherwise operator).
+ * Never taken from the request body: the caller cannot type its own grade.
+ */
+export function approverKindFromRequest(req: Request, companyId: string): string {
+  const actor = req.actor as {
+    source?: string;
+    isInstanceAdmin?: boolean;
+    memberships?: Array<{ companyId: string; status?: string; membershipRole?: string | null }>;
+  };
+  if (actor.source === "local_implicit" || actor.isInstanceAdmin) return "owner";
+  const membership = actor.memberships?.find((m) => m.companyId === companyId && m.status === "active");
+  if (membership?.membershipRole === "owner") return "owner";
+  if (membership?.membershipRole === "admin") return "admin";
+  return "operator";
 }
 
 /**
@@ -233,7 +260,7 @@ export function autonomyRoutes(deps: AutonomyRoutesDeps) {
     const actor = actorFromRequest(req);
     const id = String(req.params.id ?? "");
     const result = deps.regulationsBackend
-      ? await deps.regulationsBackend.approve(companyId, actor, id)
+      ? await deps.regulationsBackend.approve(companyId, actor, id, approverKindFromRequest(req, companyId))
       : await service.approveRegulation(companyId, actor, id);
     if (!result.ok) {
       respondFailure(res, result.failure);
@@ -250,7 +277,7 @@ export function autonomyRoutes(deps: AutonomyRoutesDeps) {
     const actor = actorFromRequest(req);
     const id = String(req.params.id ?? "");
     const result = deps.regulationsBackend
-      ? await deps.regulationsBackend.restore(companyId, actor, { id, toRevision: revision })
+      ? await deps.regulationsBackend.restore(companyId, actor, { id, toRevision: revision }, approverKindFromRequest(req, companyId))
       : await service.restoreRegulationRevision(companyId, actor, { id, toRevision: revision });
     if (!result.ok) {
       respondFailure(res, result.failure);
