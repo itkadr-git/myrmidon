@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { evaluateProviderUsageWarning, aggregateProviderUsageReports, type ProviderUsageReportedEventV1 } from "./provider-usage.js";
-import { updateProviderUsageWarningThresholdSchema } from "./provider-usage-settings.js";
+import { resolveProviderUsageWarningThreshold, updateProviderUsageWarningThresholdSchema, withProviderUsageWarningThreshold } from "./provider-usage-settings.js";
 
 const report: ProviderUsageReportedEventV1 = {
   schemaVersion: 1,
@@ -52,5 +52,19 @@ describe("provider usage", () => {
     expect(aggregateProviderUsageReports([report, newer, newer])).toHaveLength(1);
     expect(aggregateProviderUsageReports([report, next])).toHaveLength(2);
     expect(aggregateProviderUsageReports([report, newer])[0]?.used.requests).toBe(90);
+  });
+  it("scopes the warning threshold to the company", () => {
+    const stored = withProviderUsageWarningThreshold(undefined, "company-a", 60);
+    expect(resolveProviderUsageWarningThreshold(stored, "company-a")).toBe(60);
+    expect(resolveProviderUsageWarningThreshold(stored, "company-b")).toBe(80);
+    const both = withProviderUsageWarningThreshold(stored, "company-b", 90);
+    expect(resolveProviderUsageWarningThreshold(both, "company-a")).toBe(60);
+    expect(resolveProviderUsageWarningThreshold(both, "company-b")).toBe(90);
+  });
+  it("keeps a legacy instance-wide number as the default for other companies", () => {
+    expect(resolveProviderUsageWarningThreshold(70, "company-a")).toBe(70);
+    const migrated = withProviderUsageWarningThreshold(70, "company-a", 50);
+    expect(resolveProviderUsageWarningThreshold(migrated, "company-a")).toBe(50);
+    expect(resolveProviderUsageWarningThreshold(migrated, "company-b")).toBe(70);
   });
 });

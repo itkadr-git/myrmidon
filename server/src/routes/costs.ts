@@ -1,6 +1,5 @@
 import { Router } from "express";
 import type { Db } from "@paperclipai/db";
-import type { Request } from "express";
 import {
   createCostEventSchema,
   createFinanceEventSchema,
@@ -11,9 +10,8 @@ import {
   createProviderUsageReportedEventSchema,
   updateProviderUsageWarningThresholdSchema,
   PROVIDER_USAGE_WARNING_THRESHOLD_SETTING,
+  withProviderUsageWarningThreshold,
   type ProviderUsageReportedEventV1,
-  type ProviderUsageAggregate,
-  type ProviderUsageWarning,
 } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
 import {
@@ -181,20 +179,6 @@ export function costRoutes(
     res.status(201).json(event);
   });
 
-  const emitWarning = async (companyId: string, req: Request, warning: ProviderUsageWarning, ownerIssueId?: string) => {
-    if (!ownerIssueId) return;
-    const ownerIssue = await resolveIssueByRef(ownerIssueId);
-    if (!ownerIssue || ownerIssue.companyId !== companyId) return;
-    const actor = getActorInfo(req);
-    if (actor.actorType === "agent" && !actor.runId) return;
-    const metricUsed = warning.limit > 0 ? warning.used / warning.limit * 100 : 0;
-    const description = `${warning.provider} usage reached ${metricUsed.toFixed(1)}% for ${warning.metric}; ${warning.remaining} remaining before ${warning.resetsAt}. Credential reference: ${warning.credentialRef}.`;
-    const commentContext = {
-      ...(actor.agentId ? { agentId: actor.agentId } : {}),
-      ...(actor.runId ? { runId: actor.runId } : {}),
-    };
-    await issues.addComment(ownerIssue.id, `Provider usage warning: ${description}`, commentContext, { authorType: actor.actorType, clientRequestId: `provider-usage-warning:${warning.key}` });
-  };
   router.post("/companies/:companyId/provider-usage-reports", validate(createProviderUsageReportedEventSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
@@ -203,12 +187,17 @@ export function costRoutes(
       return;
     }
     const event = req.body as ProviderUsageReportedEventV1;
-    const result = await providerUsage.ingest(companyId, event);
+    // The event may name the owner by identifier (OPE-1) or uuid; snapshots store the uuid.
+    // An unknown or foreign-company owner is ignored: the report is still recorded.
+    const ownerIssue = event.ownerIssueId ? await resolveIssueByRef(event.ownerIssueId).catch(() => null) : null;
+    const ownerIssueId = ownerIssue && ownerIssue.companyId === companyId ? ownerIssue.id : null;
+    // Owner comments are delivered only by the durable outbox (deliverPendingWarnings), never inline,
+    // so one warning produces one comment.
+    const result = await providerUsage.ingest(companyId, event, new Date(), ownerIssueId);
     if (result.duplicate) {
       res.status(200).json({ accepted: false, duplicate: true });
       return;
     }
-    if (result.warning) await emitWarning(companyId, req, result.warning, event.ownerIssueId);
     res.status(202).json({ accepted: result.accepted, aggregate: result.aggregate, warning: result.warning });
   });
 
@@ -225,7 +214,13 @@ export function costRoutes(
     assertCompanyAccess(req, companyId);
     const actor = getActorInfo(req);
     const current = await db.select().from(instanceSettings).limit(1);
-    const general = { ...((current[0]?.general as Record<string, unknown> | undefined) ?? {}), [PROVIDER_USAGE_WARNING_THRESHOLD_SETTING]: req.body.thresholdPercent };
+    const currentGeneral = (current[0]?.general as Record<string, unknown> | undefined) ?? {};
+    // Per-company: PATCH on one company must not change the threshold of the others.
+    const general = {
+      ...currentGeneral,
+      [PROVIDER_USAGE_WARNING_THRESHOLD_SETTING]: withProviderUsageWarningThreshold(
+        currentGeneral[PROVIDER_USAGE_WARNING_THRESHOLD_SETTING], companyId, req.body.thresholdPercent),
+    };
     if (current[0]) {
       await db.update(instanceSettings).set({ general, updatedAt: new Date() }).where(eq(instanceSettings.id, current[0].id));
     } else {

@@ -23,13 +23,17 @@ export interface ProviderUsageIngestResult {
 type ProviderUsageDb = Db;
 
 export function providerUsageService(db: Db) {
-  async function thresholdForCompany(_companyId: string): Promise<number> {
+  async function thresholdForCompany(companyId: string): Promise<number> {
     const rows = await db.select().from(instanceSettings).limit(1);
     const settings = rows[0]?.general as Record<string, unknown> | undefined;
-    return resolveProviderUsageWarningThreshold(settings?.[PROVIDER_USAGE_WARNING_THRESHOLD_SETTING]);
+    return resolveProviderUsageWarningThreshold(settings?.[PROVIDER_USAGE_WARNING_THRESHOLD_SETTING], companyId);
   }
 
-  async function ingest(companyId: string, event: ProviderUsageReportedEventV1, now = new Date()): Promise<ProviderUsageIngestResult> {
+  /**
+   * `ownerIssueId` is the already-resolved owner issue uuid (the event may carry a
+   * human identifier such as OPE-1); null/undefined means no owner comment.
+   */
+  async function ingest(companyId: string, event: ProviderUsageReportedEventV1, now = new Date(), ownerIssueId: string | null = null): Promise<ProviderUsageIngestResult> {
     const thresholdPercent = await thresholdForCompany(companyId);
     const warning = evaluateProviderUsageWarning(event, thresholdPercent, companyId, now.toISOString());
     return db.transaction(async (tx) => {
@@ -44,14 +48,14 @@ export function providerUsageService(db: Db) {
       await tx.insert(providerUsageSnapshots).values({
         companyId, provider: event.provider, credentialRef: event.credentialRef,
         windowKind: event.window.kind, windowStartedAt: startedAt, resetsAt, observedAt,
-        sourceEventId: event.eventId, ownerIssueId: event.ownerIssueId ?? null,
+        sourceEventId: event.eventId, ownerIssueId,
         used: event.window.used, limits: event.window.limit,
       }).onConflictDoUpdate({
         target: [providerUsageSnapshots.companyId, providerUsageSnapshots.provider,
           providerUsageSnapshots.credentialRef, providerUsageSnapshots.windowKind,
           providerUsageSnapshots.windowStartedAt],
         set: { resetsAt, observedAt, used: event.window.used, limits: event.window.limit,
-          sourceEventId: event.eventId, ownerIssueId: event.ownerIssueId ?? null, updatedAt: new Date() },
+          sourceEventId: event.eventId, ownerIssueId, updatedAt: new Date() },
         setWhere: sql`${providerUsageSnapshots.observedAt} < ${observedAt}`,
       });
 
@@ -66,7 +70,7 @@ export function providerUsageService(db: Db) {
       if (snapshot?.ownerIssueId && warning) {
         const body = `Provider usage warning: ${warning.provider} ${warning.metric} usage reached ${warning.thresholdPercent}% before reset at ${warning.resetsAt}.`;
         await tx.insert(providerUsageWarningDeliveries).values({
-          companyId, ownerIssueId: snapshot.ownerIssueId, warningKey: warning.key, body,
+          companyId, ownerIssueId: snapshot.ownerIssueId, warningKey: warning.key, body, nextAttemptAt: now,
         }).onConflictDoNothing();
       }
       invalidateAttentionFeedCache(db, companyId);
@@ -80,7 +84,9 @@ export function providerUsageService(db: Db) {
       eq(providerUsageSnapshots.companyId, companyId),
       sql`${providerUsageSnapshots.resetsAt} > now()`,
     ));
-    return aggregateProviderUsageReports(rows.map((snapshot) => ({
+    // One snapshot per (credential, window) is enforced by a unique index, so aggregate
+    // row by row and carry each row's own owner issue instead of matching by position.
+    return rows.flatMap((snapshot) => aggregateProviderUsageReports([{
       schemaVersion: 1,
       companyId,
       eventId: snapshot.sourceEventId,
@@ -94,7 +100,10 @@ export function providerUsageService(db: Db) {
         used: snapshot.used,
         limit: snapshot.limits,
       },
-    })), thresholdPercent, now.toISOString()).map((aggregate: ProviderUsageAggregate, index: number) => ({ ...aggregate, ownerIssueId: rows[index]?.ownerIssueId ?? undefined }));
+    }], thresholdPercent, now.toISOString()).map((aggregate: ProviderUsageAggregate) => ({
+      ...aggregate,
+      ownerIssueId: snapshot.ownerIssueId ?? undefined,
+    })));
   }
 
   async function deliverPendingWarnings(now = new Date()): Promise<{ delivered: number; failed: number }> {
@@ -102,18 +111,20 @@ export function providerUsageService(db: Db) {
       sql`${providerUsageSnapshots.resetsAt} > ${now}`,
       sql`${providerUsageSnapshots.ownerIssueId} is not null`,
     ));
+    const thresholds = new Map<string, number>();
     for (const snapshot of snapshots) {
+      if (!thresholds.has(snapshot.companyId)) thresholds.set(snapshot.companyId, await thresholdForCompany(snapshot.companyId));
       const warning = evaluateProviderUsageWarning({
         schemaVersion: 1, companyId: snapshot.companyId, eventId: snapshot.sourceEventId,
         provider: snapshot.provider, credentialRef: snapshot.credentialRef,
         ownerIssueId: snapshot.ownerIssueId ?? undefined,
         observedAt: snapshot.observedAt.toISOString(),
         window: { kind: snapshot.windowKind as ProviderUsageReportedEventV1["window"]["kind"], startedAt: snapshot.windowStartedAt.toISOString(), resetsAt: snapshot.resetsAt.toISOString(), used: snapshot.used, limit: snapshot.limits },
-      }, await thresholdForCompany(snapshot.companyId), snapshot.companyId, now.toISOString());
+      }, thresholds.get(snapshot.companyId)!, snapshot.companyId, now.toISOString());
       if (!warning || !snapshot.ownerIssueId) continue;
       const body = `Provider usage warning: ${warning.provider} ${warning.metric} usage reached ${warning.thresholdPercent}% before reset at ${warning.resetsAt}.`;
       await db.insert(providerUsageWarningDeliveries).values({
-        companyId: snapshot.companyId, ownerIssueId: snapshot.ownerIssueId, warningKey: warning.key, body,
+        companyId: snapshot.companyId, ownerIssueId: snapshot.ownerIssueId, warningKey: warning.key, body, nextAttemptAt: now,
       }).onConflictDoNothing();
     }
     const pending = await db.select().from(providerUsageWarningDeliveries).where(and(
