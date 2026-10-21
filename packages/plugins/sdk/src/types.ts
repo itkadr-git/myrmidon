@@ -23,6 +23,7 @@ import type {
   IssueDocumentSummary,
   IssueRelationIssueSummary,
   IssueAssigneeAdapterOverrides,
+  IssueUnblockDescriptor,
   IssueAttachment,
   IssueThreadInteraction,
   ConnectionIntentInteraction,
@@ -1416,6 +1417,7 @@ export interface PluginIssueAttachmentContent {
  * - `issue.interactions.read` for `listInteractions`
  * - `issue.interactions.respond` for `respondInteraction`
  * - `issue.attachments.read` for `listAttachments` and `getAttachmentContent`
+ * - `issue.attachments.write` for `uploadAttachment`
  * - `issue.documents.read` for `documents.list` and `documents.get`
  * - `issue.documents.write` for `documents.upsert` and `documents.delete`
  */
@@ -1480,6 +1482,10 @@ export interface PluginIssuesClient {
       blockedByIssueIds?: string[];
       labelIds?: string[];
       executionWorkspaceSettings?: Record<string, unknown> | null;
+      // myrmidon(1.6.1 OPE-3983): additive — lets a plugin entering `blocked`
+      // carry the part A reason contract (owner + action + reasonRef) so the
+      // stale-block sweep can judge the block instead of skipping it.
+      unblockDescriptor?: IssueUnblockDescriptor | null;
     },
     companyId: string,
     actor?: PluginIssueMutationActor,
@@ -1613,6 +1619,15 @@ export interface PluginIssuesClient {
     companyId: string,
     options?: { maxBytes?: number | null },
   ): Promise<PluginIssueAttachmentContent | null>;
+  /** Upload bounded bytes to an issue through the credential-isolated host bridge. Requires `issue.attachments.write`. */
+  uploadAttachment(input: {
+    issueId: string;
+    companyId: string;
+    filename: string;
+    contentType: string;
+    contentBase64: string;
+    actor?: PluginIssueMutationActor;
+  }): Promise<IssueAttachment>;
   /** Read and write issue documents. Requires `issue.documents.read` / `issue.documents.write`. */
   documents: PluginIssueDocumentsClient;
   /** Read and write blocker relationships. */

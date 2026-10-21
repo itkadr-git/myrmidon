@@ -621,6 +621,27 @@ func TestAllow_A11_Restart(t *testing.T) {
 	r.wantDaemonHeaders()
 }
 
+func TestAllow_A17_IdleStopWithoutReplacement(t *testing.T) {
+	r := newRig(t)
+	r.seedMain("running")
+	id := r.id("")
+	res := r.send("POST", r.target("", "/stop?t=30&myrmidon-idle=true"), nil, nil)
+	wantStatus(t, res, 204)
+	if c, _ := r.d.Get(r.name("")); c.Status != "exited" {
+		t.Errorf("status %q", c.Status)
+	}
+	r.wantURIs("GET "+r.target("", "/json"), "GET "+r.target(".next", "/json"), "GET "+r.target(".helper", "/json"),
+		"POST /v1.45/containers/"+id+"/stop?t=30&myrmidon-idle=true")
+}
+
+func TestDeny_A17_StartingHealthDenied(t *testing.T) {
+	r := newRig(t)
+	r.seedMain("running")
+	r.d.Modify(r.name(""), func(c *fakedocker.Container) { c.Health = "starting" })
+	res := r.send("POST", r.target("", "/stop?t=30&myrmidon-idle=true"), nil, nil)
+	wantDeny(t, res, deny.IdleStopDenied)
+}
+
 func TestAllow_A12_RenameNextToMain(t *testing.T) {
 	r := newRig(t)
 	r.seedNext("created")

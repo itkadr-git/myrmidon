@@ -15,7 +15,7 @@
 // unknown host must surface as a reconcile error, never fall back to the
 // local driver (a bot would silently run on the wrong machine).
 
-import { cardFleetHost, type FleetHostConfig } from "./fleetd-hosts.js";
+import { cardFleetHost, fleetSiteKey, type FleetHostConfig } from "./fleetd-hosts.js";
 import type { BotContainerDriver, BotContainerSpec, BotContainerStatus, TemplateDriftReport } from "./driver.js";
 import type { CompiledProfile } from "./types.js";
 
@@ -28,6 +28,8 @@ export interface FleetRoutingDeps {
 
 /** The per-bot agent record the routing needs: the container block of the card. */
 export interface RoutedBotAgent {
+  /** The agent's company: when set, the host is looked up company-scoped (fleetSiteKey). */
+  companyId?: string;
   adapterConfig: { container?: unknown };
 }
 
@@ -43,7 +45,9 @@ async function driverFor(
   const host = agent ? cardFleetHost(agent.adapterConfig) : null;
   if (host === null) return deps.local;
   const fleetMap = resolveFleetMap(deps);
-  const driver = fleetMap.get(host);
+  // Tenant isolation: a named host resolves only inside the agent's own
+  // company; without a companyId the bare name is used (static env maps).
+  const driver = fleetMap.get(agent?.companyId ? fleetSiteKey(agent.companyId, host) : host);
   if (!driver) {
     throw new Error(
       `container.host "${host}" names no configured fleet host (check MYRMIDON_FLEET_HOSTS or fleet sites registry)`,

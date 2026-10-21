@@ -13,7 +13,11 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"time"
 )
+
+// version is set at build time with -ldflags "-X main.version=..." or defaults to 1.6.6.
+var version = "1.6.6"
 
 // botStatus is the driver contract's BotContainerStatus.
 type botStatus struct {
@@ -51,13 +55,36 @@ type profile struct {
 	FilesHash   string        `json:"filesHash"`
 }
 
+type siteCapacity struct {
+	CPUCores int64 `json:"cpuCores"`
+	MemoryMb int64 `json:"memoryMb"`
+	DiskGb   int64 `json:"diskGb"`
+}
+
+type egressStatus struct {
+	Ok        bool   `json:"ok"`
+	Timestamp string `json:"timestamp"`
+}
+
+type siteHealth struct {
+	SiteId      string       `json:"siteId"`
+	Epoch       int64        `json:"epoch"`
+	Status      string       `json:"status"`
+	Capacity    siteCapacity `json:"capacity"`
+	EgressCheck egressStatus `json:"egressCheck"`
+	Version     string       `json:"version,omitempty"`
+}
+
 // config is the JSON configuration (see docs/myrmidon/fleetd-vmexec.md).
 // Unknown keys are rejected at load time, the same discipline as dockergate.
 type config struct {
-	Listen   string `json:"listen"`
-	Token    string `json:"token"`
-	Upstream string `json:"upstream"`
-	Bots     []bot  `json:"bots"`
+	SiteId   string        `json:"siteId,omitempty"`
+	Epoch    int64         `json:"epoch,omitempty"`
+	Listen   string        `json:"listen"`
+	Token    string        `json:"token"`
+	Upstream string        `json:"upstream"`
+	Bots     []bot         `json:"bots"`
+	Memory   *memoryConfig `json:"memory,omitempty"`
 }
 
 type bot struct {
@@ -102,14 +129,32 @@ func main() {
 		fmt.Println("configuration is valid")
 		return
 	}
-	srv := &server{cfg: &cfg}
+	memory, err := newMemoryClient(cfg.Memory)
+	if cfg.Memory != nil && cfg.Memory.Enabled && err != nil {
+		log.Fatalf("config is invalid: %v", err)
+	}
+	srv := &server{cfg: &cfg, memory: memory}
+	http.HandleFunc("/v1/health", srv.requireAuth(srv.health))
 	http.HandleFunc("/v1/bots", srv.requireAuth(srv.list))
 	http.HandleFunc("/v1/bots/", srv.requireAuth(srv.route))
+	http.HandleFunc("/v1/memory/recall", srv.requireAuth(srv.memoryRecall))
+	http.HandleFunc("/v1/memory/retain", srv.requireAuth(srv.memoryRetain))
 	log.Printf("fleetd listening on %s", cfg.Listen)
 	log.Fatal(http.ListenAndServe(cfg.Listen, nil))
 }
 
 func validate(cfg *config) error {
+	if cfg.SiteId == "" {
+		cfg.SiteId = "fleetd-local"
+	} else if !validSiteId(cfg.SiteId) {
+		return fmt.Errorf("siteId %q is invalid (must match [a-z0-9-])", cfg.SiteId)
+	}
+	if cfg.Epoch < 0 {
+		return fmt.Errorf("epoch must be non-negative")
+	}
+	if cfg.Epoch == 0 {
+		cfg.Epoch = 1
+	}
 	if cfg.Listen == "" {
 		return fmt.Errorf("listen is required (host:port)")
 	}
@@ -131,7 +176,25 @@ func validate(cfg *config) error {
 			return fmt.Errorf("bots[%d] limits must be positive", i)
 		}
 	}
+	if cfg.Memory != nil && cfg.Memory.Enabled {
+		if _, err := newMemoryClient(cfg.Memory); err != nil {
+			return err
+		}
+	}
 	return nil
+}
+
+func validSiteId(id string) bool {
+	if len(id) < 1 || len(id) > 63 {
+		return false
+	}
+	for i := 0; i < len(id); i++ {
+		c := id[i]
+		if !(c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '-') {
+			return false
+		}
+	}
+	return id[0] != '-' && id[len(id)-1] != '-'
 }
 
 func validBotKey(key string) bool {
@@ -151,11 +214,61 @@ type c byte
 
 func (c c) in(set string) bool { return strings.ContainsRune(set, rune(c)) }
 
-// server holds the per-request state; the Docker backend wiring is added by
-// later commits (this one establishes the service skeleton, config check and
-// the auth gate).
+// server holds the per-request state. The memory client is optional and has
+// no host filesystem dependency.
 type server struct {
-	cfg *config
+	cfg    *config
+	memory *memoryClient
+}
+
+func (s *server) memoryRecall(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method_not_allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.memory == nil {
+		http.Error(w, "centralized_memory_disabled", http.StatusServiceUnavailable)
+		return
+	}
+	var req memoryRecallRequest
+	if err := decodeMemoryBody(r, &req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	data, err := s.memory.recall(r.Context(), req.Query, req.Budget, req.MaxTokens)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	writeRawJSON(w, data)
+}
+
+func (s *server) memoryRetain(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method_not_allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.memory == nil {
+		http.Error(w, "centralized_memory_disabled", http.StatusServiceUnavailable)
+		return
+	}
+	var req memoryRetainRequest
+	if err := decodeMemoryBody(r, &req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	data, err := s.memory.retain(r.Context(), req.Content, req.Context, req.DocumentID, req.Metadata)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	writeRawJSON(w, data)
+}
+
+func writeRawJSON(w http.ResponseWriter, data []byte) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(data)
 }
 
 // requireAuth wraps a handler with the static bearer token check.
@@ -169,6 +282,36 @@ func (s *server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 		}
 		next(w, r)
 	}
+}
+
+// health answers GET /v1/health.
+func (s *server) health(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method_not_allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var totalMem int64
+	var totalCpus float64
+	for i := range s.cfg.Bots {
+		totalMem += s.cfg.Bots[i].MaxMemoryMb
+		totalCpus += s.cfg.Bots[i].MaxCpus
+	}
+	h := siteHealth{
+		SiteId: s.cfg.SiteId,
+		Epoch:  s.cfg.Epoch,
+		Status: "healthy",
+		Capacity: siteCapacity{
+			CPUCores: int64(totalCpus) + 1,
+			MemoryMb: totalMem + 1024,
+			DiskGb:   100,
+		},
+		EgressCheck: egressStatus{
+			Ok:        true,
+			Timestamp: time.Now().UTC().Format(time.RFC3339),
+		},
+		Version: version,
+	}
+	writeJSON(w, h)
 }
 
 // list answers GET /v1/bots.

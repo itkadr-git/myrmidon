@@ -347,8 +347,8 @@ describe("myrmidon(1.6.6 T1) fleet routing in startup", () => {
     };
 
     const mockManager = {
-      getClients: vi.fn(() => new Map([["myr-vm1", remoteClient]])),
-      refresh: vi.fn(async () => new Map([["myr-vm1", remoteClient]])),
+      getClients: vi.fn(() => new Map([["comp-1/myr-vm1", remoteClient]])),
+      refresh: vi.fn(async () => new Map([["comp-1/myr-vm1", remoteClient]])),
       getVersion: vi.fn(() => 1),
       close: vi.fn(),
     };

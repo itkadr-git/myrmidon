@@ -120,7 +120,7 @@ export function DecisionQueuePage() {
   });
   const { data: openIssues } = useQuery({
     queryKey: [...queryKeys.issues.list(selectedCompanyId!), "stuck-signal-open"],
-    queryFn: () => issuesApi.list(selectedCompanyId!, { status: "todo,in_progress,blocked,in_review", limit: 1000 }),
+    queryFn: () => issuesApi.listAll(selectedCompanyId!, { status: "todo,in_progress,blocked,in_review" }),
     enabled: !!selectedCompanyId,
   });
   const stuckCounts = useMemo(

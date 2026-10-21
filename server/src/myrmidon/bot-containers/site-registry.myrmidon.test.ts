@@ -1,13 +1,17 @@
+import { PgDialect } from "drizzle-orm/pg-core";
+import type { SQL } from "drizzle-orm";
 import { describe, expect, it, vi } from "vitest";
 import {
   bumpFleetRegistryVersion,
   createFleetClientManager,
+  deleteFleetAffinity,
   getFleetRegistryVersion,
   parseTlsCredentials,
   type FleetSite,
   type FleetSiteInsert,
 } from "./site-registry.js";
 import type { BotContainerDriver, BotContainerStatus } from "./driver.js";
+import { fleetSiteKey } from "./fleetd-hosts.js";
 import type { FleetdDriverConfig } from "./fleetd-driver.js";
 
 function fakeDriver(name: string): BotContainerDriver {
@@ -139,9 +143,9 @@ describe("site-registry — createFleetClientManager", () => {
     });
 
     const clients = await manager.refresh();
-    expect(clients.has("myr-vm1")).toBe(true);
-    expect(clients.has("local-fleet")).toBe(true);
-    expect(clients.has("inactive-site")).toBe(false);
+    expect(clients.has(fleetSiteKey("company-1", "myr-vm1"))).toBe(true);
+    expect(clients.has(fleetSiteKey("company-1", "local-fleet"))).toBe(true);
+    expect(clients.has(fleetSiteKey("company-1", "inactive-site"))).toBe(false);
 
     const httpsConfig = createdConfigs.find((c) => c.baseUrl === "https://myr-vm1.example.test:9443");
     expect(httpsConfig).toBeDefined();
@@ -295,5 +299,53 @@ describe("site-registry — createFleetClientManager", () => {
     expect(clients.size).toBe(0);
     expect(loggedErrors).toHaveLength(1);
     expect(loggedErrors[0].msg).toContain("failed to refresh fleet sites");
+  });
+});
+
+describe("site-registry — tenant isolation", () => {
+  const mkSite = (companyId: string, url: string): FleetSite =>
+    ({
+      id: `site-${companyId}`,
+      companyId,
+      name: "myr-vm1",
+      url,
+      status: "active",
+      capacity: { maxCpus: 2, maxMemoryMb: 8192 },
+      profile: {},
+      enrolledAt: new Date(),
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    }) as unknown as FleetSite;
+
+  it("keeps same-named sites of two companies as separate clients", async () => {
+    const sites = [mkSite("company-a", "http://127.0.0.1:9101"), mkSite("company-b", "http://127.0.0.1:9102")];
+    const fakeDb = { select: () => ({ from: () => Promise.resolve(sites) }) } as any;
+    const manager = createFleetClientManager({
+      db: fakeDb,
+      readCompanySecret: async () => null,
+      createDriver: (config) => Object.assign(fakeDriver(config.baseUrl), { baseUrl: config.baseUrl }),
+    });
+    const clients = await manager.refresh();
+    expect(clients.size).toBe(2);
+    expect((clients.get(fleetSiteKey("company-a", "myr-vm1")) as any).baseUrl).toBe("http://127.0.0.1:9101");
+    expect((clients.get(fleetSiteKey("company-b", "myr-vm1")) as any).baseUrl).toBe("http://127.0.0.1:9102");
+    expect(clients.has("myr-vm1")).toBe(false);
+  });
+
+  it("deleteFleetAffinity filters by companyId as well as id", async () => {
+    const wheres: unknown[] = [];
+    const fakeDb = {
+      delete: () => ({
+        where: (cond: unknown) => {
+          wheres.push(cond);
+          return { returning: async () => [] };
+        },
+      }),
+    } as any;
+    // Foreign company's row is not matched: the DELETE carries a company predicate.
+    expect(await deleteFleetAffinity(fakeDb, "company-a", "aff-of-company-b")).toBe(false);
+    const query = new PgDialect().sqlToQuery(wheres[0] as SQL);
+    expect(query.sql).toContain("company_id");
+    expect(query.params).toEqual(["company-a", "aff-of-company-b"]);
   });
 });

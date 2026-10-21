@@ -37,6 +37,7 @@ export interface FleetHostConfig {
   hindsightUrl?: string;
   /** LLM gateway base URL as seen from this host (`http://…`); instance-wide value when omitted. */
   llmBaseUrl?: string;
+  mcpEndpoints?: readonly string[];
   /** Name the bot container on this host resolves the board by (docker `--add-host`
    *  target). The instance-wide board URL name by default; the board's own
    *  hostname allowlist is never widened by this field. */
@@ -60,6 +61,7 @@ const ALLOWED_KEYS = new Set([
   "tokenSecret",
   "hindsightUrl",
   "llmBaseUrl",
+  "mcpEndpoints",
   "boardExtraHost",
   "volumeRoot",
   "network",
@@ -146,6 +148,10 @@ export function parseFleetHosts(raw: string | undefined): Map<string, FleetHostC
     if (hindsightUrl !== undefined) host.hindsightUrl = hindsightUrl;
     const llmBaseUrl = optionalHttpUrl(entry, "llmBaseUrl", name);
     if (llmBaseUrl !== undefined) host.llmBaseUrl = llmBaseUrl;
+    if (entry.mcpEndpoints !== undefined && (!Array.isArray(entry.mcpEndpoints) || entry.mcpEndpoints.some((value) => typeof value !== "string" || value.trim() === ""))) {
+      throw new Error(`${FLEET_HOSTS_ENV}: host "${name}" field "mcpEndpoints" must be an array of non-empty strings`);
+    }
+    if (entry.mcpEndpoints !== undefined) host.mcpEndpoints = (entry.mcpEndpoints as string[]).map((value) => value.trim());
     if (boardExtraHost !== undefined) host.boardExtraHost = boardExtraHost;
     if (volumeRoot !== undefined) host.volumeRoot = volumeRoot;
     if (network !== undefined) host.network = network;
@@ -177,4 +183,13 @@ export function cardFleetHostPinned(card: { container?: unknown }): boolean {
     throw new Error(`container.hostPinned must be a boolean (got ${JSON.stringify(pinned)})`);
   }
   return pinned;
+}
+/**
+ * Tenant-scoped key of a fleet site in the client map: a site name is unique
+ * only within a company, so two companies may both own "myr-vm1" with
+ * different URLs/tokens. Routing and the client manager must use this key,
+ * never the bare name, once the agent's company is known.
+ */
+export function fleetSiteKey(companyId: string, name: string): string {
+  return `${companyId}/${name}`;
 }

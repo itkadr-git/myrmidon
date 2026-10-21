@@ -36,7 +36,18 @@ describe("classifyChanges", () => {
     }
   });
 
-  it("keeps Myrmidon docs and scripts in the docs tier", () => {
+  it("forces the full tier for the predeploy extension compatibility gate", () => {
+    for (const file of [
+      "scripts/myrmidon/deploy/predeploy-board-check.sh",
+      "scripts/myrmidon/deploy/predeploy-board-check.test.mjs",
+    ]) {
+      const result = classifyChanges([file]);
+      assert.equal(result.tier, "full", file);
+      assert.match(result.reasons.join(" "), /predeploy compatibility gate/);
+    }
+  });
+
+  it("keeps Myrmidon docs and non-critical scripts in the docs tier", () => {
     const result = classifyChanges(["docs/myrmidon/tracks/1.md", "scripts/myrmidon/deploy/deploy.sh", "NOTICE"]);
     assert.equal(result.tier, "docs");
   });
@@ -47,6 +58,30 @@ describe("classifyChanges", () => {
 
   it("treats vendor docs read by tests as code", () => {
     assert.equal(classifyChanges(["docs/api/issues.md"]).tier, "fast");
+  });
+
+  it("includes shared-source guard suites when app.ts changes", () => {
+    for (const changedFile of [
+      "server/src/app.ts",
+      "server/src/myrmidon/app-plugin.ts",
+      "docs/myrmidon/SETTINGS.md",
+    ]) {
+      const result = selectTests(
+        [changedFile],
+        [{ name: "@paperclipai/server", dir: "server", vitestProject: true }],
+        [
+          { file: "server/src/__tests__/app-private-hostname-gate.test.ts", source: "" },
+          { file: "server/src/myrmidon/monitoring/dashboard/guard.myrmidon.test.ts", source: "" },
+        ],
+      );
+      assert.deepEqual(result.files, [{
+        package: "@paperclipai/server",
+        files: [
+          "server/src/__tests__/app-private-hostname-gate.test.ts",
+          "server/src/myrmidon/monitoring/dashboard/guard.myrmidon.test.ts",
+        ],
+      }]);
+    }
   });
 
   it("honours a forced full run", () => {

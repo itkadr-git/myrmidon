@@ -17,7 +17,7 @@ import { logger } from "../../middleware/logger.js";
 import { secretService } from "../../services/index.js";
 import type { BotContainerDriver } from "./driver.js";
 import { fleetdBotContainerDriver, type FleetdDriverConfig } from "./fleetd-driver.js";
-import { parseFleetHosts, type FleetHostConfig } from "./fleetd-hosts.js";
+import { fleetSiteKey, parseFleetHosts, type FleetHostConfig } from "./fleetd-hosts.js";
 
 let fleetRegistryVersion = 1;
 
@@ -204,10 +204,10 @@ export async function listFleetAffinities(
   }) as unknown as FleetAffinity[];
 }
 
-export async function deleteFleetAffinity(db: Db, id: string): Promise<boolean> {
+export async function deleteFleetAffinity(db: Db, companyId: string, id: string): Promise<boolean> {
   const deleted = await db
     .delete(myrmidonFleetAffinity)
-    .where(eq(myrmidonFleetAffinity.id, id))
+    .where(and(eq(myrmidonFleetAffinity.companyId, companyId), eq(myrmidonFleetAffinity.id, id)))
     .returning({ id: myrmidonFleetAffinity.id });
   return deleted.length > 0;
 }
@@ -381,9 +381,10 @@ export function createFleetClientManager(deps: FleetClientManagerDeps): FleetCli
       const activeNames = new Set<string>();
 
       for (const site of activeSites) {
-        activeNames.add(site.name);
+        const key = fleetSiteKey(site.companyId, site.name);
+        activeNames.add(key);
         const fingerprint = `${site.url}|${site.tokenSecret ?? ""}|${site.caCert ?? ""}|${site.clientCert ?? ""}|${site.clientCertSecretKey ?? ""}`;
-        if (clients.has(site.name) && clientFingerprints.get(site.name) === fingerprint) {
+        if (clients.has(key) && clientFingerprints.get(key) === fingerprint) {
           continue;
         }
 
@@ -467,8 +468,8 @@ export function createFleetClientManager(deps: FleetClientManagerDeps): FleetCli
         };
 
         const driver = createDriver(driverConfig);
-        clients.set(site.name, driver);
-        clientFingerprints.set(site.name, fingerprint);
+        clients.set(key, driver);
+        clientFingerprints.set(key, fingerprint);
       }
 
       // Remove inactive or deleted sites

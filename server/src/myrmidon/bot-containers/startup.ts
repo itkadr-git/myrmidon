@@ -240,6 +240,7 @@ function build(
           const agent = await readAgentFn(botKey);
           if (!agent) return undefined;
           return {
+            companyId: agent.companyId,
             adapterConfig: agent.adapterConfig as { container?: unknown },
           };
         } catch {
