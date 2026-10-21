@@ -45,7 +45,8 @@ export function readWorktreeInstanceId(workspacePath: string): string | null {
   } catch {
     return null;
   }
-  const instanceId = parseEnvContents(contents).PAPERCLIP_INSTANCE_ID?.trim();
+  const instanceEnv = parseEnvContents(contents);
+  const instanceId = readProductEnvFrom(instanceEnv, "INSTANCE_ID")?.trim();
   if (!instanceId || !INSTANCE_ID_RE.test(instanceId)) return null;
   return instanceId;
 }
@@ -209,7 +210,7 @@ function resolveConfiguredInstanceRoot(pointer: WorktreeInstancePointer, expecte
   if (!INSTANCE_ID_RE.test(instanceId)) {
     return {
       instanceRoot: null,
-      warning: `Refusing worktree instance cleanup from ${pointer.envPath}: PAPERCLIP_INSTANCE_ID is not a safe path segment.`,
+      warning: `Refusing worktree instance cleanup from ${pointer.envPath}: instance id is not a safe path segment.`,
       refusalReason: "unsafe_instance_id",
     };
   }
@@ -226,7 +227,7 @@ function resolveConfiguredInstanceRoot(pointer: WorktreeInstancePointer, expecte
   if (expectedInstanceId && instanceId !== expectedInstanceId) {
     return {
       instanceRoot,
-      warning: `Refusing worktree instance cleanup from ${pointer.envPath}: PAPERCLIP_INSTANCE_ID "${instanceId}" does not match the expected workspace instance "${expectedInstanceId}".`,
+      warning: `Refusing worktree instance cleanup from ${pointer.envPath}: instance id does not match the expected workspace instance.`,
       refusalReason: "instance_id_mismatch",
     };
   }
