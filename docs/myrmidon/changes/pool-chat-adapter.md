@@ -1,3 +1,7 @@
+---
+settings-section: Track 4 — chats and skills
+---
+
 ## changelog-en
 
 ### Pool-chat server boundary (OPE-8207)
@@ -13,3 +17,7 @@
 - Добавлены аутентифицированные маршруты capabilities, отправки и чтения статуса запроса в области модуля: строгая ограниченная валидация, scoped idempotency, долговечные записи запроса/попытки/reservation, policy выбора аккаунта и fail-closed отправка провайдеру.
 - Повторный запрос возвращает существующую долговечную запись без повторного вызова провайдера. Запрос, который мог дойти до провайдера, сохраняется в состоянии `uncertain`; исключения провайдера заменяются стабильным безопасным кодом. Если transport не настроен, запрос завершается fail-closed, reservation освобождается.
 - В этом PR нет production wiring для ChatGPT/Google и runtime credentials. Операторам нельзя включать pool-chat на live-аккаунтах, пока не готовы deployment-specific secret resolution, provider adapters, DB migration, quota settlement/recovery и acceptance-проверка. Проверка на live pool не проводилась.
+
+## settings-en
+
+| `MYRMIDON_POOL_CHAT_ENABLED` | OPE-8207 | unset (off) | Enables the pool-chat module boundary; deployment-specific module configuration, secret resolution, provider transport, migration, quota recovery, and acceptance verification are required before live use | unset or any value other than `1` — off |
