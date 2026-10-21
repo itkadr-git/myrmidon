@@ -482,12 +482,13 @@ describe("startServer feedback export wiring", () => {
 
     expect(startBoardProcessRegistryMock).toHaveBeenCalledTimes(1);
     const registryStartOrder = startBoardProcessRegistryMock.mock.invocationCallOrder[0];
-    const readyLogOrder = vi.mocked(logger.info).mock.invocationCallOrder.find(
+    const readyLogOrders = vi.mocked(logger.info).mock.invocationCallOrder.filter(
       (_order, index) =>
         typeof vi.mocked(logger.info).mock.calls[index]?.[0] === "string" &&
         (vi.mocked(logger.info).mock.calls[index]?.[0] as string).startsWith("Server startup recovery complete"),
     );
-    expect(readyLogOrder).toBeDefined();
+    expect(readyLogOrders).toHaveLength(1);
+    const readyLogOrder = readyLogOrders[0];
     expect(registryStartOrder).toBeLessThan(readyLogOrder!);
   });
 
