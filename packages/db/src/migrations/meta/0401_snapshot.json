@@ -1,5 +1,5 @@
 {
-  "id": "9746120c-2eef-43db-990a-8a745127e81f",
+  "id": "d1ca4883-9694-403f-959f-c4a74ea7cf3b",
   "prevId": "d1ca4883-9694-403f-959f-c4a74ea7cf3b",
   "version": "7",
   "dialect": "postgresql",
@@ -33055,6 +33055,12 @@
           "type": "text",
           "primaryKey": false,
           "notNull": false
+        },
+        "blocker_metadata": {
+          "name": "blocker_metadata",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {
@@ -51808,13 +51814,6 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
-        },
-        "custom_catalogs": {
-          "name": "custom_catalogs",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'{}'::jsonb"
         }
       },
       "indexes": {
@@ -55293,6 +55292,19 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
+        },
+        "lang": {
+          "name": "lang",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'en'"
+        },
+        "translation_of": {
+          "name": "translation_of",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {
@@ -55346,6 +55358,21 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
+        },
+        "knowledge_revisions_translation_idx": {
+          "name": "knowledge_revisions_translation_idx",
+          "columns": [
+            {
+              "expression": "translation_of",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         }
       },
       "foreignKeys": {
@@ -55386,6 +55413,20 @@
             "id"
           ],
           "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "knowledge_revisions_translation_of_knowledge_revisions_id_fk": {
+          "name": "knowledge_revisions_translation_of_knowledge_revisions_id_fk",
+          "tableFrom": "knowledge_revisions",
+          "tableTo": "knowledge_revisions",
+          "schemaTo": "public",
+          "columnsFrom": [
+            "translation_of"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
           "onUpdate": "no action"
         }
       },
