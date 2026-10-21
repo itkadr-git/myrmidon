@@ -201,6 +201,78 @@ describe("pluginLifecycleManager.restartWorker", () => {
     expect(getPluginProviderModels("company-1")).toEqual([]);
   });
 
+  it("runs the runtime enable bridge after activation and before enable resolves", async () => {
+    const order: string[] = [];
+    const ready = {
+      ...pluginRecord,
+      status: "disabled",
+      manifestJson: {
+        id: "example.plugin", capabilities: [],
+        providerModels: {
+          provider: "example",
+          baseUrl: "https://api.example.com/v1",
+          credentialSecretName: "example-key",
+          models: [{ id: "one" }],
+        },
+      },
+    } as never;
+    const loader = {
+      hasRuntimeServices: vi.fn().mockReturnValue(true),
+      loadSingle: vi.fn().mockImplementation(async () => {
+        order.push("runtime-enabled");
+        return { success: true, plugin: { ...ready, status: "ready" } };
+      }),
+      unloadSingle: vi.fn().mockResolvedValue(undefined),
+    } as unknown as PluginLoader;
+    const sync = vi.fn().mockImplementation(async (companyId: string, plugin: { id: string; status: string }) => {
+      order.push(`gateway-sync:${companyId}:${plugin.id}:${plugin.status}`);
+    });
+    const lifecycle = pluginLifecycleManager({} as never, {
+      loader,
+      providerModelSync: { sync, remove: vi.fn().mockResolvedValue(undefined) },
+    });
+    mockRegistry.getById.mockResolvedValue(ready);
+    mockRegistry.updateStatus.mockImplementation(async (_id: string, value: { status: string }) => ({
+      ...ready,
+      ...value,
+    }));
+    mockRegistry.listConfigs.mockResolvedValue([{ companyId: "company-1" }]);
+
+    await lifecycle.enable("plugin-1");
+
+    expect(order).toEqual(["runtime-enabled", "gateway-sync:company-1:plugin-1:ready"]);
+    expect(sync).toHaveBeenCalledTimes(1);
+  });
+
+  it("removes only the disabled owner's gateway models when names are shared", async () => {
+    const owners = new Set(["plugin-1", "plugin-2"]);
+    const removed: string[] = [];
+    const remove = vi.fn().mockImplementation(async (_companyId: string, plugin: { id: string }) => {
+      owners.delete(plugin.id);
+      if (owners.size === 0) removed.push("example/one");
+    });
+    const ready = {
+      ...pluginRecord,
+      status: "ready",
+      manifestJson: { id: "example.plugin", capabilities: [], providerModels: {
+        provider: "example", baseUrl: "https://api.example.com/v1", credentialSecretName: "example-key", models: [{ id: "one" }],
+      } },
+    } as never;
+    const lifecycle = pluginLifecycleManager({} as never, {
+      loader: {} as PluginLoader,
+      providerModelSync: { sync: vi.fn().mockResolvedValue(undefined), remove },
+    });
+    mockRegistry.getById.mockResolvedValue(ready);
+    mockRegistry.listConfigs.mockResolvedValue([{ companyId: "company-1" }]);
+    mockRegistry.updateStatus.mockImplementation(async (_id: string, value: { status: string }) => ({ ...ready, ...value }));
+
+    await lifecycle.disable("plugin-1");
+
+    expect(remove).toHaveBeenCalledTimes(1);
+    expect(removed).toEqual([]);
+    expect(owners).toEqual(new Set(["plugin-2"]));
+  });
+
   describe("provider model gateway lifecycle", () => {
     const withModels = {
       ...pluginRecord,
