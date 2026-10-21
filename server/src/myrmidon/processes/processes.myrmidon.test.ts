@@ -112,14 +112,16 @@ describe("processes settings service (PROCS-1.1)", () => {
     assert.equal(view.notInEffectReason, null);
   });
 
-  it("lets the environment escape win over the stored mode", async () => {
-    const h = harness({ mode: "split" }, { PAPERCLIP_PROCESS_MODE: "single" });
+  it("lets the environment escape win over the stored mode, preferring MYRMIDON", async () => {
+    const h = harness({ mode: "split" }, { MYRMIDON_PROCESS_MODE: "single" });
     const service = createProcessesSettingsService(h.deps);
     const view = await service.read();
     assert.equal(view.settings.mode, "single");
     assert.equal(view.sources.mode, "env");
     assert.equal(view.effectiveMode, "single");
     assert.equal(view.notInEffectReason, null);
+    const preferred = createProcessesSettingsService(harness({ mode: "split" }, { MYRMIDON_PROCESS_MODE: "single", PAPERCLIP_PROCESS_MODE: "split" }).deps);
+    assert.equal((await preferred.read()).settings.mode, "single");
   });
 
   it("writes nothing and journals nothing when a patch repeats the current value", async () => {

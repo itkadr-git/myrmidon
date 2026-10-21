@@ -350,6 +350,7 @@ describe("myrmidon(1.6.6 T1) fleet routing in startup", () => {
       getClients: vi.fn(() => new Map([["comp-1/myr-vm1", remoteClient]])),
       refresh: vi.fn(async () => new Map([["comp-1/myr-vm1", remoteClient]])),
       getVersion: vi.fn(() => 1),
+      ensureFresh: vi.fn(async () => {}),
       close: vi.fn(),
     };
 
@@ -392,6 +393,58 @@ describe("myrmidon(1.6.6 T1) fleet routing in startup", () => {
     }
   });
 
+  it("reloads the fleet clients before routing (hot-reload) and fails closed when the agent read fails", async () => {
+    const h = harness();
+    const remoteClient = {
+      status: vi.fn(async () => ({ botKey: "bot-remote", state: "running" as const })),
+      list: vi.fn(async () => []),
+      templateDrift: vi.fn(async () => ({ drifted: false, fields: [] })),
+      create: vi.fn(async () => {}),
+      recreate: vi.fn(async () => {}),
+      writeProfile: vi.fn(async () => {}),
+      start: vi.fn(async () => {}),
+      restart: vi.fn(async () => {}),
+      stop: vi.fn(async () => {}),
+    } as unknown as BotContainerDriver;
+    const clients = new Map<string, BotContainerDriver>();
+    const mockManager = {
+      getClients: vi.fn(() => clients),
+      refresh: vi.fn(async () => clients),
+      getVersion: vi.fn(() => 1),
+      // A registry change shows up only after ensureFresh runs.
+      ensureFresh: vi.fn(async () => {
+        clients.set("comp-1/myr-vm1", remoteClient);
+      }),
+      close: vi.fn(),
+    };
+    h.ports.createFleetClientManager = () => mockManager;
+    let failRead = false;
+    h.ports.readAgent = () => async (botKey: string) => {
+      if (failRead) throw new Error("agent read failed");
+      return {
+        id: botKey,
+        companyId: "comp-1",
+        name: "Remote Bot",
+        adapterType: "hermes_gateway",
+        adapterConfig: { container: { enabled: true, host: "myr-vm1" } },
+      } as unknown as BotContainerAgent;
+    };
+
+    startBotContainers(DB, { env: ENABLED, ports: h.ports });
+    try {
+      const [, runtime] = h.spies.startReconciliation.mock.calls[0];
+      await runtime.driver.status("bot-remote");
+      expect(mockManager.ensureFresh).toHaveBeenCalled();
+      expect(remoteClient.status).toHaveBeenCalledWith("bot-remote");
+
+      // A failing agent read must not silently route to the local driver.
+      failRead = true;
+      await expect(runtime.driver.status("bot-remote")).rejects.toThrow("agent read failed");
+    } finally {
+      stopBotContainers();
+    }
+  });
+
   it("survives invalid fleet registry or env errors and logs them", async () => {
     const h = harness();
     h.ports.bootstrapFleetSitesFromEnv = async () => {
@@ -403,6 +456,7 @@ describe("myrmidon(1.6.6 T1) fleet routing in startup", () => {
         throw new Error("Registry database connection error");
       }),
       getVersion: vi.fn(() => 1),
+      ensureFresh: vi.fn(async () => {}),
       close: vi.fn(),
     };
     h.ports.createFleetClientManager = () => mockManager;

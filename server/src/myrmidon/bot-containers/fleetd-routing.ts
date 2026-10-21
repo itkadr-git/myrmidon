@@ -24,6 +24,12 @@ export interface FleetRoutingDeps {
   local: BotContainerDriver;
   /** A fleetd client per configured host name, or a dynamic map provider. */
   fleet: ReadonlyMap<string, BotContainerDriver> | (() => ReadonlyMap<string, BotContainerDriver>);
+  /**
+   * Awaited before every routing decision: lets a dynamic registry reload its
+   * clients (hot-reload) so a CRUD change applies without a server restart.
+   * A failure here must not break routing — the last good map is used.
+   */
+  ready?: () => Promise<void>;
 }
 
 /** The per-bot agent record the routing needs: the container block of the card. */
@@ -37,10 +43,20 @@ function resolveFleetMap(deps: FleetRoutingDeps): ReadonlyMap<string, BotContain
   return typeof deps.fleet === "function" ? deps.fleet() : deps.fleet;
 }
 
+async function awaitReady(deps: FleetRoutingDeps): Promise<void> {
+  if (!deps.ready) return;
+  try {
+    await deps.ready();
+  } catch {
+    // keep routing on the last good client map
+  }
+}
+
 async function driverFor(
   deps: FleetRoutingDeps,
   agentOrPromise: RoutedBotAgent | undefined | Promise<RoutedBotAgent | undefined>,
 ): Promise<BotContainerDriver> {
+  await awaitReady(deps);
   const agent = await agentOrPromise;
   const host = agent ? cardFleetHost(agent.adapterConfig) : null;
   if (host === null) return deps.local;
@@ -67,6 +83,7 @@ export function fleetRoutingDriver(
       return driver.status(botKey);
     },
     async list(botKeys: readonly string[]): Promise<BotContainerStatus[]> {
+      await awaitReady(deps);
       const fleetMap = resolveFleetMap(deps);
       // A routed list is the union of all hosts' own lists.
       const results = await Promise.all(

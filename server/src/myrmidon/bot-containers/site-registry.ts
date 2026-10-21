@@ -3,6 +3,7 @@
 // myrmidon(1.6.6 T1): Remote sites registry, CRUD, env bootstrap, and
 // dynamic FleetClientManager for mTLS and hot-reload.
 
+import { createHash } from "node:crypto";
 import https from "node:https";
 import type { Db } from "@paperclipai/db";
 import {
@@ -248,6 +249,21 @@ export async function bootstrapFleetSitesFromEnv(
     return { inserted: 0, updated: 0 };
   }
 
+  // Tenant isolation: env hosts are never spread over every company. They go
+  // to the companies named in MYRMIDON_FLEET_HOSTS_COMPANY_IDS, or — when it
+  // is unset — to the only company of a single-company installation.
+  const scopeRaw = env.MYRMIDON_FLEET_HOSTS_COMPANY_IDS;
+  if (scopeRaw && scopeRaw.trim()) {
+    const wanted = new Set(scopeRaw.split(",").map((v) => v.trim()).filter(Boolean));
+    companyRows = companyRows.filter((c) => wanted.has(c.id));
+  } else if (companyRows.length > 1) {
+    logWarn(
+      { companies: companyRows.length },
+      "MYRMIDON_FLEET_HOSTS is set on a multi-company installation without MYRMIDON_FLEET_HOSTS_COMPANY_IDS; skipping env bootstrap (create sites per company in the registry)",
+    );
+    return { inserted: 0, updated: 0 };
+  }
+
   let inserted = 0;
   let updated = 0;
 
@@ -292,6 +308,9 @@ export async function bootstrapFleetSitesFromEnv(
 
 export interface FleetClientManagerDeps {
   db: Db;
+  /** Max age of the client map before ensureFresh re-reads the registry. Default 30 s. */
+  refreshTtlMs?: number;
+  now?: () => number;
   readCompanySecret?: (companyId: string, name: string) => Promise<string | null>;
   createDriver?: (config: FleetdDriverConfig) => BotContainerDriver;
   log?: {
@@ -305,6 +324,12 @@ export interface FleetClientManager {
   getClients(): ReadonlyMap<string, BotContainerDriver>;
   refresh(): Promise<ReadonlyMap<string, BotContainerDriver>>;
   getVersion(): number;
+  /**
+   * Hot-reload: re-reads the registry when its version moved since the last
+   * refresh (CRUD in this process) or when the last refresh is older than the
+   * TTL (edits made elsewhere). Concurrent callers share one refresh.
+   */
+  ensureFresh(): Promise<void>;
   close(): void;
 }
 
@@ -348,15 +373,23 @@ export function parseTlsCredentials(raw: string): { cert?: string; key?: string 
 }
 
 export function createFleetClientManager(deps: FleetClientManagerDeps): FleetClientManager {
-  const log = deps.log ?? logger;
   const logWarn = (fields: Record<string, unknown>, message: string) => {
     if (deps.log && typeof deps.log.warn === "function") deps.log.warn(fields, message);
     else if (deps.log && typeof deps.log.info === "function") deps.log.info(fields, message);
     else logger.warn(fields, message);
   };
+  const now = deps.now ?? Date.now;
+  const ttlMs = deps.refreshTtlMs ?? 30_000;
+  const MIN_RETRY_MS = 2_000;
   const clients = new Map<string, BotContainerDriver>();
+  // Fingerprint of the RESOLVED material (url, token, certs, key values), so a
+  // rotated secret value rebuilds the client even if the secret name is the same.
   const clientFingerprints = new Map<string, string>();
-  const agentsToClose: https.Agent[] = [];
+  const clientAgents = new Map<string, https.Agent>();
+  let lastVersion = -1;
+  let lastAttemptAt = 0;
+  let lastOk = false;
+  let inFlight: Promise<ReadonlyMap<string, BotContainerDriver>> | null = null;
 
   const resolveSecret =
     deps.readCompanySecret ??
@@ -374,88 +407,103 @@ export function createFleetClientManager(deps: FleetClientManagerDeps): FleetCli
 
   const createDriver = deps.createDriver ?? fleetdBotContainerDriver;
 
-  async function refresh(): Promise<ReadonlyMap<string, BotContainerDriver>> {
+  function dropClient(key: string): void {
+    clients.delete(key);
+    clientFingerprints.delete(key);
+    const agent = clientAgents.get(key);
+    if (agent) {
+      agent.destroy();
+      clientAgents.delete(key);
+    }
+  }
+
+  async function firstResolved(companyId: string, names: string[], pick: "cert" | "key"): Promise<string | undefined> {
+    for (const name of names) {
+      const raw = await resolveSecret(companyId, name);
+      if (!raw) continue;
+      const parsed = parseTlsCredentials(raw);
+      if (parsed[pick]) return parsed[pick];
+    }
+    return undefined;
+  }
+
+  async function doRefresh(): Promise<ReadonlyMap<string, BotContainerDriver>> {
+    const versionAtStart = getFleetRegistryVersion();
+    lastAttemptAt = now();
     try {
       const sites = await listFleetSites(deps.db);
       const activeSites = sites.filter((s) => s.status === "active");
-      const activeNames = new Set<string>();
+      const activeKeys = new Set<string>();
 
       for (const site of activeSites) {
         const key = fleetSiteKey(site.companyId, site.name);
-        activeNames.add(key);
-        const fingerprint = `${site.url}|${site.tokenSecret ?? ""}|${site.caCert ?? ""}|${site.clientCert ?? ""}|${site.clientCertSecretKey ?? ""}`;
-        if (clients.has(key) && clientFingerprints.get(key) === fingerprint) {
-          continue;
-        }
+        activeKeys.add(key);
 
         let token: string | undefined;
         if (site.tokenSecret) {
           const resolved = await resolveSecret(site.companyId, site.tokenSecret);
-          if (resolved) token = resolved;
+          if (!resolved) {
+            // Never build an unauthenticated client for a site that is
+            // configured with a token: keep whatever client exists, add none.
+            logWarn(
+              { companyId: site.companyId, site: site.name, tokenSecret: site.tokenSecret },
+              "fleet site token secret did not resolve; client not (re)built",
+            );
+            continue;
+          }
+          token = resolved;
         }
 
         let clientCert: string | undefined = site.clientCert ?? undefined;
         let clientKey: string | undefined;
-
-        if (site.clientCertSecretKey) {
-          const resolved = await resolveSecret(site.companyId, site.clientCertSecretKey);
+        const base = site.clientCertSecretKey;
+        if (base) {
+          const resolved = await resolveSecret(site.companyId, base);
           if (resolved) {
             const parsed = parseTlsCredentials(resolved);
             if (parsed.cert && !clientCert) clientCert = parsed.cert;
             if (parsed.key) clientKey = parsed.key;
           }
-
           if (!clientCert) {
-            const candidateNames = [
-              site.clientCertSecretKey.endsWith("-key") ? site.clientCertSecretKey.replace(/-key$/, "-cert") : null,
-              site.clientCertSecretKey.endsWith("_key") ? site.clientCertSecretKey.replace(/_key$/, "_cert") : null,
-              `${site.clientCertSecretKey}-cert`,
-              `${site.clientCertSecretKey}_cert`,
-            ].filter((n): n is string => Boolean(n && n !== site.clientCertSecretKey));
-
-            for (const cand of candidateNames) {
-              const resolvedCert = await resolveSecret(site.companyId, cand);
-              if (resolvedCert) {
-                const parsed = parseTlsCredentials(resolvedCert);
-                if (parsed.cert) {
-                  clientCert = parsed.cert;
-                  break;
-                }
-              }
-            }
+            const names = [
+              base.endsWith("-key") ? base.replace(/-key$/, "-cert") : null,
+              base.endsWith("_key") ? base.replace(/_key$/, "_cert") : null,
+              `${base}-cert`,
+              `${base}_cert`,
+            ].filter((n): n is string => Boolean(n && n !== base));
+            clientCert = await firstResolved(site.companyId, names, "cert");
           }
-
           if (!clientKey) {
-            const candidateNames = [
-              site.clientCertSecretKey.endsWith("-cert") ? site.clientCertSecretKey.replace(/-cert$/, "-key") : null,
-              site.clientCertSecretKey.endsWith("_cert") ? site.clientCertSecretKey.replace(/_cert$/, "_key") : null,
-              `${site.clientCertSecretKey}-key`,
-              `${site.clientCertSecretKey}_key`,
-            ].filter((n): n is string => Boolean(n && n !== site.clientCertSecretKey));
-
-            for (const cand of candidateNames) {
-              const resolvedKey = await resolveSecret(site.companyId, cand);
-              if (resolvedKey) {
-                const parsed = parseTlsCredentials(resolvedKey);
-                if (parsed.key) {
-                  clientKey = parsed.key;
-                  break;
-                }
-              }
-            }
+            const names = [
+              base.endsWith("-cert") ? base.replace(/-cert$/, "-key") : null,
+              base.endsWith("_cert") ? base.replace(/_cert$/, "_key") : null,
+              `${base}-key`,
+              `${base}_key`,
+            ].filter((n): n is string => Boolean(n && n !== base));
+            clientKey = await firstResolved(site.companyId, names, "key");
+          }
+          if (!clientCert || !clientKey) {
+            logWarn(
+              { companyId: site.companyId, site: site.name, clientCertSecretKey: base },
+              "fleet site client certificate or key did not resolve; client not (re)built",
+            );
+            continue;
           }
         }
 
+        const fingerprint = createHash("sha256")
+          .update(JSON.stringify([site.url, token ?? null, site.caCert ?? null, clientCert ?? null, clientKey ?? null]))
+          .digest("hex");
+        if (clients.has(key) && clientFingerprints.get(key) === fingerprint) continue;
+
         let httpsAgent: https.Agent | undefined;
-        const isHttps = site.url.startsWith("https:");
-        if (isHttps || site.caCert || clientKey || clientCert) {
+        if (site.url.startsWith("https:") || site.caCert || clientKey || clientCert) {
           httpsAgent = new https.Agent({
             ca: site.caCert ?? undefined,
             cert: clientCert ?? undefined,
             key: clientKey ?? undefined,
             rejectUnauthorized: true,
           });
-          agentsToClose.push(httpsAgent);
         }
 
         const driverConfig: FleetdDriverConfig = {
@@ -467,19 +515,30 @@ export function createFleetClientManager(deps: FleetClientManagerDeps): FleetCli
           ...(httpsAgent ? { httpsAgent } : {}),
         };
 
-        const driver = createDriver(driverConfig);
+        let driver: BotContainerDriver;
+        try {
+          driver = createDriver(driverConfig);
+        } catch (err) {
+          httpsAgent?.destroy();
+          throw err;
+        }
+        // The replaced client's agent is released only after the new one is in.
+        const oldAgent = clientAgents.get(key);
         clients.set(key, driver);
         clientFingerprints.set(key, fingerprint);
+        if (httpsAgent) clientAgents.set(key, httpsAgent);
+        else clientAgents.delete(key);
+        oldAgent?.destroy();
       }
 
       // Remove inactive or deleted sites
-      for (const name of Array.from(clients.keys())) {
-        if (!activeNames.has(name)) {
-          clients.delete(name);
-          clientFingerprints.delete(name);
-        }
+      for (const key of Array.from(clients.keys())) {
+        if (!activeKeys.has(key)) dropClient(key);
       }
+      lastVersion = versionAtStart;
+      lastOk = true;
     } catch (err) {
+      lastOk = false;
       if (deps.log && typeof deps.log.error === "function") {
         deps.log.error({ err }, "failed to refresh fleet sites from registry; keeping existing clients");
       } else {
@@ -487,6 +546,28 @@ export function createFleetClientManager(deps: FleetClientManagerDeps): FleetCli
       }
     }
     return clients;
+  }
+
+  function refresh(): Promise<ReadonlyMap<string, BotContainerDriver>> {
+    if (inFlight) return inFlight;
+    const run = doRefresh().finally(() => {
+      if (inFlight === run) inFlight = null;
+    });
+    inFlight = run;
+    return run;
+  }
+
+  async function ensureFresh(): Promise<void> {
+    if (inFlight) {
+      await inFlight;
+      return;
+    }
+    const age = now() - lastAttemptAt;
+    const stale = !lastOk || lastVersion !== getFleetRegistryVersion() || age >= ttlMs;
+    if (!stale) return;
+    // After a failed refresh, do not hammer the database on every routed call.
+    if (!lastOk && lastAttemptAt !== 0 && age < MIN_RETRY_MS) return;
+    await refresh();
   }
 
   function getClients(): ReadonlyMap<string, BotContainerDriver> {
@@ -498,10 +579,8 @@ export function createFleetClientManager(deps: FleetClientManagerDeps): FleetCli
   }
 
   function close(): void {
-    for (const agent of agentsToClose) {
-      agent.destroy();
-    }
-    agentsToClose.length = 0;
+    for (const agent of clientAgents.values()) agent.destroy();
+    clientAgents.clear();
     clients.clear();
     clientFingerprints.clear();
   }
@@ -510,6 +589,7 @@ export function createFleetClientManager(deps: FleetClientManagerDeps): FleetCli
     getClients,
     refresh,
     getVersion,
+    ensureFresh,
     close,
   };
 }

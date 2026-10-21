@@ -234,18 +234,17 @@ function build(
       {
         local: localDriver,
         fleet: () => clientManager.getClients(),
+        ready: () => clientManager.ensureFresh(),
       },
       async (botKey: string) => {
-        try {
-          const agent = await readAgentFn(botKey);
-          if (!agent) return undefined;
-          return {
-            companyId: agent.companyId,
-            adapterConfig: agent.adapterConfig as { container?: unknown },
-          };
-        } catch {
-          return undefined;
-        }
+        // A failed agent read must surface as a reconcile error: swallowing it
+        // would route a bot with container.host to the local driver.
+        const agent = await readAgentFn(botKey);
+        if (!agent) return undefined;
+        return {
+          companyId: agent.companyId,
+          adapterConfig: agent.adapterConfig as { container?: unknown },
+        };
       },
     );
 

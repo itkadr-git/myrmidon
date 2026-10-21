@@ -2,6 +2,7 @@ import { PgDialect } from "drizzle-orm/pg-core";
 import type { SQL } from "drizzle-orm";
 import { describe, expect, it, vi } from "vitest";
 import {
+  bootstrapFleetSitesFromEnv,
   bumpFleetRegistryVersion,
   createFleetClientManager,
   deleteFleetAffinity,
@@ -347,5 +348,177 @@ describe("site-registry — tenant isolation", () => {
     const query = new PgDialect().sqlToQuery(wheres[0] as SQL);
     expect(query.sql).toContain("company_id");
     expect(query.params).toEqual(["company-a", "aff-of-company-b"]);
+  });
+});
+
+describe("site-registry — hot-reload and client lifecycle", () => {
+  const mkSite = (over: Partial<FleetSite> = {}): FleetSite =>
+    ({
+      id: "site-1",
+      companyId: "company-1",
+      name: "myr-vm1",
+      url: "https://myr-vm1.example.test:9443",
+      tokenSecret: "tok",
+      status: "active",
+      capacity: { maxCpus: 2, maxMemoryMb: 8192 },
+      profile: {},
+      enrolledAt: new Date(),
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      ...over,
+    }) as unknown as FleetSite;
+
+  it("ensureFresh re-reads the registry when its version moved, not otherwise", async () => {
+    let sites: FleetSite[] = [mkSite()];
+    const from = vi.fn(() => Promise.resolve(sites));
+    const fakeDb = { select: () => ({ from }) } as any;
+    const manager = createFleetClientManager({
+      db: fakeDb,
+      readCompanySecret: async () => "tok-1",
+      createDriver: (c) => fakeDriver(c.baseUrl),
+      refreshTtlMs: 60_000,
+    });
+    await manager.ensureFresh();
+    expect(manager.getClients().size).toBe(1);
+    const reads = from.mock.calls.length;
+    await manager.ensureFresh();
+    expect(from.mock.calls.length).toBe(reads);
+
+    sites = [];
+    bumpFleetRegistryVersion();
+    await manager.ensureFresh();
+    expect(manager.getClients().size).toBe(0);
+    manager.close();
+  });
+
+  it("ensureFresh re-reads after the TTL even without a version bump", async () => {
+    let t = 1_000;
+    const from = vi.fn(() => Promise.resolve([mkSite()]));
+    const manager = createFleetClientManager({
+      db: { select: () => ({ from }) } as any,
+      readCompanySecret: async () => "tok-1",
+      createDriver: (c) => fakeDriver(c.baseUrl),
+      refreshTtlMs: 30_000,
+      now: () => t,
+    });
+    await manager.ensureFresh();
+    const reads = from.mock.calls.length;
+    t += 31_000;
+    await manager.ensureFresh();
+    expect(from.mock.calls.length).toBe(reads + 1);
+    manager.close();
+  });
+
+  it("rebuilds the client when a secret VALUE rotates under the same name, and destroys the old agent", async () => {
+    let value = "tok-1";
+    const created: FleetdDriverConfig[] = [];
+    const manager = createFleetClientManager({
+      db: { select: () => ({ from: () => Promise.resolve([mkSite()]) }) } as any,
+      readCompanySecret: async () => value,
+      createDriver: (c) => {
+        created.push(c);
+        return fakeDriver(c.baseUrl);
+      },
+    });
+    await manager.refresh();
+    expect(created).toHaveLength(1);
+    const firstAgent = created[0]!.httpsAgent as import("node:https").Agent;
+    const destroy = vi.spyOn(firstAgent, "destroy");
+    await manager.refresh();
+    expect(created).toHaveLength(1); // same values: no rebuild
+    value = "tok-2";
+    await manager.refresh();
+    expect(created).toHaveLength(2);
+    expect(created[1]!.token).toBe("tok-2");
+    expect(destroy).toHaveBeenCalled();
+    manager.close();
+  });
+
+  it("builds no client when the token secret does not resolve (never unauthenticated)", async () => {
+    const created: FleetdDriverConfig[] = [];
+    const warns: string[] = [];
+    const manager = createFleetClientManager({
+      db: { select: () => ({ from: () => Promise.resolve([mkSite()]) }) } as any,
+      readCompanySecret: async () => null,
+      createDriver: (c) => {
+        created.push(c);
+        return fakeDriver(c.baseUrl);
+      },
+      log: { warn: (_f, m) => warns.push(m), error: () => {} },
+    });
+    await manager.refresh();
+    expect(created).toHaveLength(0);
+    expect(manager.getClients().size).toBe(0);
+    expect(warns.join(" ")).toContain("token secret did not resolve");
+  });
+
+  it("destroys the agent of a site that left the registry", async () => {
+    let sites: FleetSite[] = [mkSite()];
+    const created: FleetdDriverConfig[] = [];
+    const manager = createFleetClientManager({
+      db: { select: () => ({ from: () => Promise.resolve(sites) }) } as any,
+      readCompanySecret: async () => "tok-1",
+      createDriver: (c) => {
+        created.push(c);
+        return fakeDriver(c.baseUrl);
+      },
+    });
+    await manager.refresh();
+    const destroy = vi.spyOn(created[0]!.httpsAgent as import("node:https").Agent, "destroy");
+    sites = [];
+    await manager.refresh();
+    expect(destroy).toHaveBeenCalled();
+    expect(manager.getClients().size).toBe(0);
+  });
+});
+
+describe("site-registry — env bootstrap tenant scope", () => {
+  const HOSTS = JSON.stringify([{ name: "myr-vm1", url: "https://myr-vm1.example.test:9443", tokenSecret: "tok" }]);
+  const mkDb = (companyIds: string[]) => {
+    const inserted: Array<{ companyId: string }> = [];
+    const db = {
+      select: () => ({
+        from: () => {
+          const rows = Promise.resolve(companyIds.map((id) => ({ id })));
+          // getFleetSite: .from().where().limit() → no existing site
+          return Object.assign(rows, { where: () => ({ limit: async () => [] }) });
+        },
+      }),
+      insert: () => ({
+        values: (v: { companyId: string }) => ({
+          returning: async () => {
+            inserted.push(v);
+            return [v];
+          },
+        }),
+      }),
+    } as any;
+    return { db, inserted };
+  };
+
+  it("skips the bootstrap on a multi-company installation without an explicit company list", async () => {
+    const { db, inserted } = mkDb(["c1", "c2"]);
+    const warns: string[] = [];
+    const res = await bootstrapFleetSitesFromEnv(db, { MYRMIDON_FLEET_HOSTS: HOSTS } as any, { warn: (_f, m) => warns.push(m) });
+    expect(res).toEqual({ inserted: 0, updated: 0 });
+    expect(inserted).toHaveLength(0);
+    expect(warns.join(" ")).toContain("MYRMIDON_FLEET_HOSTS_COMPANY_IDS");
+  });
+
+  it("bootstraps only the listed companies", async () => {
+    const { db, inserted } = mkDb(["c1", "c2", "c3"]);
+    const res = await bootstrapFleetSitesFromEnv(db, {
+      MYRMIDON_FLEET_HOSTS: HOSTS,
+      MYRMIDON_FLEET_HOSTS_COMPANY_IDS: "c2",
+    } as any);
+    expect(res.inserted).toBe(1);
+    expect(inserted.map((r) => r.companyId)).toEqual(["c2"]);
+  });
+
+  it("bootstraps the only company of a single-company installation", async () => {
+    const { db, inserted } = mkDb(["c1"]);
+    const res = await bootstrapFleetSitesFromEnv(db, { MYRMIDON_FLEET_HOSTS: HOSTS } as any);
+    expect(res.inserted).toBe(1);
+    expect(inserted.map((r) => r.companyId)).toEqual(["c1"]);
   });
 });

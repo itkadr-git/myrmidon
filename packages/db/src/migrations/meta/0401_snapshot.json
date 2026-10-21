@@ -1,5 +1,5 @@
 {
-  "id": "6de9aa2c-9f48-4213-829d-a118af6a1671",
+  "id": "65fb8a87-cfd0-4446-80c9-cc0b04810311",
   "prevId": "d1ca4883-9694-403f-959f-c4a74ea7cf3b",
   "version": "7",
   "dialect": "postgresql",
@@ -2363,6 +2363,50 @@
           ],
           "isUnique": true,
           "where": "\"agent_wakeup_requests\".\"idempotency_key\" LIKE 'tool-action-response:%' AND \"agent_wakeup_requests\".\"status\" NOT IN ('skipped', 'failed', 'cancelled')",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "agent_wakeup_requests_pause_resume_idempotency_uq": {
+          "name": "agent_wakeup_requests_pause_resume_idempotency_uq",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "idempotency_key",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"agent_wakeup_requests\".\"idempotency_key\" LIKE 'pause_resume:%' AND \"agent_wakeup_requests\".\"status\" NOT IN ('skipped', 'failed', 'cancelled')",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "agent_wakeup_requests_stranded_autopolicy_retry_idempotency_uq": {
+          "name": "agent_wakeup_requests_stranded_autopolicy_retry_idempotency_uq",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "idempotency_key",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"agent_wakeup_requests\".\"idempotency_key\" LIKE 'myrmidon.stranded_autopolicy_retry:%' AND \"agent_wakeup_requests\".\"status\" NOT IN ('skipped', 'failed', 'cancelled')",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -55907,455 +55951,6 @@
           "tableTo": "companies",
           "columnsFrom": [
             "nest_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.myrmidon_fleet_sites": {
-      "name": "myrmidon_fleet_sites",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "company_id": {
-          "name": "company_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "name": {
-          "name": "name",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "url": {
-          "name": "url",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "token_secret": {
-          "name": "token_secret",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "ca_cert": {
-          "name": "ca_cert",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "ca_cert_fingerprint": {
-          "name": "ca_cert_fingerprint",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "client_cert": {
-          "name": "client_cert",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "client_cert_secret_key": {
-          "name": "client_cert_secret_key",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "client_cert_not_after": {
-          "name": "client_cert_not_after",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "status": {
-          "name": "status",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'active'"
-        },
-        "capacity": {
-          "name": "capacity",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'{\"maxCpus\":8,\"maxMemoryMb\":32768}'::jsonb"
-        },
-        "profile": {
-          "name": "profile",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'{}'::jsonb"
-        },
-        "labels": {
-          "name": "labels",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false,
-          "default": "'{}'::jsonb"
-        },
-        "enrolled_at": {
-          "name": "enrolled_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "last_seen_at": {
-          "name": "last_seen_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "cert_rotated_at": {
-          "name": "cert_rotated_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "myrmidon_fleet_sites_company_idx": {
-          "name": "myrmidon_fleet_sites_company_idx",
-          "columns": [
-            {
-              "expression": "company_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "myrmidon_fleet_sites_company_name_uq": {
-          "name": "myrmidon_fleet_sites_company_name_uq",
-          "columns": [
-            {
-              "expression": "company_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "name",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "myrmidon_fleet_sites_company_id_companies_id_fk": {
-          "name": "myrmidon_fleet_sites_company_id_companies_id_fk",
-          "tableFrom": "myrmidon_fleet_sites",
-          "tableTo": "companies",
-          "columnsFrom": [
-            "company_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.myrmidon_fleet_affinity": {
-      "name": "myrmidon_fleet_affinity",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "company_id": {
-          "name": "company_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "scope": {
-          "name": "scope",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "target_id": {
-          "name": "target_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "site_name": {
-          "name": "site_name",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "weight": {
-          "name": "weight",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 100
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "myrmidon_fleet_affinity_company_idx": {
-          "name": "myrmidon_fleet_affinity_company_idx",
-          "columns": [
-            {
-              "expression": "company_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "myrmidon_fleet_affinity_scope_target_idx": {
-          "name": "myrmidon_fleet_affinity_scope_target_idx",
-          "columns": [
-            {
-              "expression": "scope",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "target_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "myrmidon_fleet_affinity_company_id_companies_id_fk": {
-          "name": "myrmidon_fleet_affinity_company_id_companies_id_fk",
-          "tableFrom": "myrmidon_fleet_affinity",
-          "tableTo": "companies",
-          "columnsFrom": [
-            "company_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.myrmidon_fleet_moves": {
-      "name": "myrmidon_fleet_moves",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "company_id": {
-          "name": "company_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "bot_key": {
-          "name": "bot_key",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "src_site": {
-          "name": "src_site",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "dst_site": {
-          "name": "dst_site",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "phase": {
-          "name": "phase",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "phase_log": {
-          "name": "phase_log",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'[]'::jsonb"
-        },
-        "started_at": {
-          "name": "started_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "completed_at": {
-          "name": "completed_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "lease_expires": {
-          "name": "lease_expires",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "error": {
-          "name": "error",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "myrmidon_fleet_moves_company_bot_idx": {
-          "name": "myrmidon_fleet_moves_company_bot_idx",
-          "columns": [
-            {
-              "expression": "company_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "bot_key",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "myrmidon_fleet_moves_phase_idx": {
-          "name": "myrmidon_fleet_moves_phase_idx",
-          "columns": [
-            {
-              "expression": "phase",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "myrmidon_fleet_moves_company_id_companies_id_fk": {
-          "name": "myrmidon_fleet_moves_company_id_companies_id_fk",
-          "tableFrom": "myrmidon_fleet_moves",
-          "tableTo": "companies",
-          "columnsFrom": [
-            "company_id"
           ],
           "columnsTo": [
             "id"
