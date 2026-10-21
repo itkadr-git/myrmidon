@@ -3,7 +3,7 @@
 import { act as reactAct, type ComponentProps, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import type { CatalogSkill, CompanySkillDetail, CompanySkillListItem, CompanySkillVersion, FolderListResult } from "@paperclipai/shared";
+import type { CatalogSkill, CompanySkillDetail, CompanySkillListItem, CompanySkillVersion, FolderListResult } from "@myrmidon/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   DiscoveredSkillsDialog,

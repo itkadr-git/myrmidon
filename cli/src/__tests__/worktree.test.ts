@@ -27,7 +27,7 @@ import {
   routines,
   routineTriggers,
   workspaceRuntimeServices,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import {
   copyGitHooksToWorktreeGitDir,
   copySeededSecretsKey,

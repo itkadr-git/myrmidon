@@ -20,7 +20,7 @@ import {
   REASSIGN_UNBLOCK_NOTE,
   type HumanUnblockResult,
 } from "../myrmidon/settled-holds/human-unblock.js";
-import { extractIssueReferenceIdentifiers, requiresExecutionReconciliation, EXECUTION_RECONCILIATION_CAUSES } from "@paperclipai/shared";
+import { extractIssueReferenceIdentifiers, requiresExecutionReconciliation, EXECUTION_RECONCILIATION_CAUSES } from "@myrmidon/shared";
 import {
   validateExecutionReconciliation,
   markExecutionReconciliation,
@@ -48,7 +48,7 @@ import {
   or,
   sql,
 } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import type { ChatChannelService } from "../services/chat-channels.js";
 import type { WakeupOptions } from "../services/heartbeat.js";
 import {
@@ -78,7 +78,7 @@ import {
   pipelineStages,
   pipelines,
   projectWorkspaces,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import { dbAutonomyGate } from "../myrmidon/autonomy/gate.js";
 import {
   addIssueCommentSchema,
@@ -168,8 +168,8 @@ import {
   issueWriteDenialResponse,
   type IssueWriteDenialCode,
   type IssueWriteDenialContext,
-} from "@paperclipai/shared";
-import { trackAgentTaskCompleted } from "@paperclipai/shared/telemetry";
+} from "@myrmidon/shared";
+import { trackAgentTaskCompleted } from "@myrmidon/shared/telemetry";
 import { getTelemetryClient } from "../telemetry.js";
 import { isUniqueViolation } from "../db-errors.js";
 import type { StorageService } from "../storage/types.js";

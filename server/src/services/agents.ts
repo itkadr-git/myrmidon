@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { and, desc, eq, gte, inArray, lt, ne, or, sql } from "drizzle-orm";
 import { resolveStatusOnResume } from "../myrmidon/pause-drain.js";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import { listAgentProjectIds } from "../myrmidon/project-membership.js";
 import {
   agents,
@@ -18,7 +18,7 @@ import {
   issueExecutionDecisions,
   issues,
   issueComments,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import {
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
   agentRuntimeConfigSchema,
@@ -30,10 +30,10 @@ import {
   type AgentApiKeyScope,
   // myrmidon(PERF-DIET-G): the slim list row of GET /companies/:id/agents
   type AgentListItem,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import {
   normalizePaperclipRunnerAdapterConfig,
-} from "@paperclipai/adapter-utils/server-utils";
+} from "@myrmidon/adapter-utils/server-utils";
 // myrmidon(1.6.5 BASE-SKILLS): the company base skills are merged into every
 // agent at creation, whichever path creates it.
 import {

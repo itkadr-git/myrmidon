@@ -1,7 +1,7 @@
 import { healthApi } from "@/api/health";
 import { aiConnectionsApi } from "@/api/ai-connections";
 import { useLocalAiLogin } from "../ai-connections/useLocalAiLogin";
-import type { AiConnectionBinding, AiConnectionLoginIntent } from "@paperclipai/shared";
+import type { AiConnectionBinding, AiConnectionLoginIntent } from "@myrmidon/shared";
 import { useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { motion } from "motion/react";
@@ -22,7 +22,7 @@ import { CredentialModeLink } from "../onboarding/CredentialModeLink";
 import { FooterNav } from "../onboarding/FooterNav";
 import { MAKE_ROOM, CARD_ENTER } from "../onboarding/onboarding-motion";
 import { buildFixedClaudeOAuthBinding } from "../environment-variables-editor/model";
-import type { EnvBinding } from "@paperclipai/shared";
+import type { EnvBinding } from "@myrmidon/shared";
 
 export type ProviderConnection = {
   env: Record<string, EnvBinding>;

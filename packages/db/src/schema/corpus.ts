@@ -18,7 +18,7 @@ import {
 import { companies } from "./companies.js";
 
 // Dialect-only column types. They appear ONLY here and in the store layer of
-// @paperclipai/corpus; domain and ports never see them.
+// @myrmidon/corpus; domain and ports never see them.
 const tsvector = customType<{ data: string; driverData: string }>({
   dataType() {
     return "tsvector";

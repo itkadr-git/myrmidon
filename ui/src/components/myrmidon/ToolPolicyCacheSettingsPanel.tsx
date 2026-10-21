@@ -9,7 +9,7 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Database } from "lucide-react";
-import type { PatchToolPolicyCacheSettings } from "@paperclipai/shared";
+import type { PatchToolPolicyCacheSettings } from "@myrmidon/shared";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";

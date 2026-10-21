@@ -7,8 +7,8 @@ import type {
   InstanceFeatureKey,
   ManagedSettingMetadata,
   PatchInstanceExperimentalSettings,
-} from "@paperclipai/shared";
-import { experimentalSettingKey } from "@paperclipai/shared";
+} from "@myrmidon/shared";
+import { experimentalSettingKey } from "@myrmidon/shared";
 import { instanceSettingsApi } from "@/api/instanceSettings";
 import { useHiddenSettings } from "@/hooks/useHiddenSettings";
 import { getWorktreeInstanceId, isWorktreeRuntime } from "../lib/worktree-branding";

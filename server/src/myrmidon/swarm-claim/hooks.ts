@@ -11,13 +11,13 @@
 //   "next agent of the caste" guess made here.
 
 import { and, eq } from "drizzle-orm";
-import { heartbeatRuns, type Db } from "@paperclipai/db";
+import { heartbeatRuns, type Db } from "@myrmidon/db";
 import {
   SWARM_CLAIM_RELEASED_ACTION,
   SWARM_CLAIM_RELEASE_REASON_RUN_FINISHED,
   readStoredSwarmSettings,
   resolveSwarmClaimSettings,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { planClaim } from "./domain.js";
 import { findLiveClaimForIssue, heartbeatClaim, insertClaim, releaseClaim } from "./store.js";
 import { logActivity as logActivityService } from "../../services/activity-log.js";

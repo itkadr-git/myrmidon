@@ -1,4 +1,4 @@
-import { runIdentityContexts } from "@paperclipai/db";
+import { runIdentityContexts } from "@myrmidon/db";
 import { captureRunIdentity } from "./run-identity.js";
 import { resolveManagedGitHubIdentitySelection } from "./git-credentials.js";
 import { emitToolPolicyChanged } from "./tool-policy-cache-events.js";
@@ -49,7 +49,7 @@ import {
   or,
   sql,
 } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import {
   agents,
   approvals,
@@ -83,8 +83,8 @@ import {
   toolProfileEntries,
   toolProfiles,
   toolStdioCommandTemplates,
-} from "@paperclipai/db";
-import type { ToolRunContext } from "@paperclipai/plugin-sdk";
+} from "@myrmidon/db";
+import type { ToolRunContext } from "@myrmidon/plugin-sdk";
 import { loadToolPolicySnapshot } from "./tool-policy-snapshot.js";
 import type {
   CreateToolMcpGateway,
@@ -105,13 +105,13 @@ import type {
   ToolMcpGatewayTokenCreated,
   ToolMcpGatewayWithTokens,
   UpdateToolMcpGateway,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import {
   isGitHubConnectorProfileId,
   isGoogleWorkspaceConnectorProfileId,
   type GitHubConnectorProfileId,
   type GoogleWorkspaceConnectorProfileId,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 // myrmidon(B1c): product name in user-facing gateway texts; see product.ts.
 import { PRODUCT_NAME as PN } from "../myrmidon/product.js";
 import type {
@@ -141,7 +141,7 @@ import {
 } from "./remote-url-credentials.js";
 import { toolAccessPolicyService } from "./tool-access-policy.js";
 // myrmidon(S6): the per-agent tool/connection permission and its gate.
-import { agentToolPermissionAllows } from "@paperclipai/shared";
+import { agentToolPermissionAllows } from "@myrmidon/shared";
 import { loadAgentToolPermissions } from "../myrmidon/agent-tool-permissions.js";
 // myrmidon(DB-PERF-C-P4): gateway setup binds a profile outside the tool-access CRUD.
 import { invalidateToolPolicyCache } from "../myrmidon/tool-policy-cache/runtime.js";
@@ -194,7 +194,7 @@ import {
   verifyToolArgumentsSignature,
 } from "./tool-content-guards.js";
 import { extendApprovedExecutionWaitDeadline } from "./approved-execution-wait.js";
-import { readProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
+import { readProductEnv } from "@myrmidon/shared/env-alias"; // myrmidon(REBRAND-C)
 import { browserConsoleMcpPauseForEndpoint } from "../myrmidon/browser-console/mcp-guard.js"; // myrmidon(BROWSER-CONSOLE-B)
 
 const DEFAULT_SESSION_TTL_MS = 15 * 60 * 1000;

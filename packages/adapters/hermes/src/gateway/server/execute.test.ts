@@ -3,11 +3,11 @@ import os from "node:os";
 import path from "node:path";
 
 import { describe, expect, it, vi, afterEach } from "vitest";
-import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
+import type { AdapterExecutionContext } from "@myrmidon/adapter-utils";
 import {
   GITHUB_LAUNCHER_PAYLOAD_VERSION,
   githubLauncherProgramFiles,
-} from "@paperclipai/adapter-utils/github-launcher";
+} from "@myrmidon/adapter-utils/github-launcher";
 import { execute, mapFinalResultForTest, parseSseFramesForTest, resolveSessionKey } from "./execute.js";
 import { testEnvironment } from "./test.js";
 import {
@@ -24,7 +24,7 @@ import {
 // see the tool.completed preview-caching test below.
 import { parseHermesStdoutLine } from "../../ui/parse-stdout.js";
 // myrmidon(1.6.5 BOT-DISK-H5a): the C6 contract fixture is the oracle for the
-// workspace body field. This package does not depend on @paperclipai/shared
+// workspace body field. This package does not depend on @myrmidon/shared
 // (and tsc's rootDir forbids importing it by path), so the schema's three
 // field formats are restated in runWorkspaceFieldSchema below; the contract
 // test in packages/shared keeps the fixture and the real schema in lockstep.

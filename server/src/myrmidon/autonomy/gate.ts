@@ -12,13 +12,13 @@
 // `approval_required` creates an approval card and holds the action until approved.
 // The held action is stored and will be executed once approved, or discarded if rejected.
 
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import type { Request } from "express";
 import {
   resolveAutonomy,
   type AutonomyActionClass,
   type AutonomyVerdict,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { forbidden } from "../../errors.js";
 import { dbAutonomyStore, agentRoleFromDb, type AutonomyStore } from "./store.js";
 import { toolActionRequests, toolInvocations } from "@paperclipai/db";

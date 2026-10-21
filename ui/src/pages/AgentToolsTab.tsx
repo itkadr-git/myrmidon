@@ -7,7 +7,7 @@ import type {
   ToolCatalogEntry,
   ToolConnection,
   ToolPolicy,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { Link } from "@/lib/router";
 import { queryKeys } from "../lib/queryKeys";
 import { toolsApi } from "../api/tools";

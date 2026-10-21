@@ -5,11 +5,11 @@ import type {
   ToolApplication,
   ToolConnection,
   ToolProfileWithDetails,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import {
   humanizeConnectionDisplayName,
   isToolConnectionAttentionHealth as isAttentionHealthStatus,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { useNavigate } from "@/lib/router";
 import { useCompany } from "@/context/CompanyContext";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";

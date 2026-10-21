@@ -3,7 +3,7 @@
 // idle-timer.myrmidon.test.ts; this file covers the rest of the contract.
 
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { createDb, instanceSettings, type Db } from "@paperclipai/db";
+import { createDb, instanceSettings, type Db } from "@myrmidon/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,

@@ -2,7 +2,7 @@ import { useEffect, useState, type ReactNode } from "react";
 import type {
   FeedbackDataSharingPreference,
   FeedbackVoteValue,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { cn, formatShortDate } from "../lib/utils";
 import { timeAgo } from "../lib/timeAgo";
 import { copyTextToClipboard } from "../lib/clipboard";

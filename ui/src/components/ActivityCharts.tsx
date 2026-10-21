@@ -1,4 +1,4 @@
-import type { DashboardRunActivityDay, HeartbeatRun } from "@paperclipai/shared";
+import type { DashboardRunActivityDay, HeartbeatRun } from "@myrmidon/shared";
 
 /* ---- Utilities ---- */
 

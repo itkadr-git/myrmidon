@@ -1,11 +1,11 @@
 import { and, eq, inArray, sql } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import {
   chatEndpoints,
   chatMessageLinks,
   chatPublications,
   toolConnections,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import { logActivity } from "../services/activity-log.js";
 
 /**

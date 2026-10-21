@@ -22,14 +22,14 @@ import {
   heartbeatRuns,
   issues,
   nativeRunResults,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import { describe, expect, it, vi } from "vitest";
 import {
   CodexAppServerDriver,
   HarnessDriverBackend,
   createCodexTaskEnvelope,
   createRunnerdCodexTransport as createCapabilityRunnerdCodexTransport,
-} from "@paperclipai/paperclip-runner";
+} from "@myrmidon/paperclip-runner";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,

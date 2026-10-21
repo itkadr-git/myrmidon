@@ -67,7 +67,7 @@ import type {
   RoutineDetail as RoutineDetailType,
   RoutineEnvConfig,
   RoutineVariable,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 
 const LAST_SECTION_STORAGE_KEY = "myrmidon.routineLastSection";
 

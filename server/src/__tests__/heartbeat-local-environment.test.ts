@@ -10,7 +10,7 @@ import {
   createDb,
   environmentLeases,
   environments,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,

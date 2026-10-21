@@ -11,12 +11,12 @@
 // only the caller's company slice.
 
 import { eq, sql } from "drizzle-orm";
-import { instanceSettings, type Db } from "@paperclipai/db";
+import { instanceSettings, type Db } from "@myrmidon/db";
 import {
   parseTelegramNotifyDocument,
   emptyTelegramNotifyDocument,
   type TelegramNotifyDocument,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 
 // myrmidon(TG-NOTIFY-A): the owner settings live under their OWN key of
 // `instance_settings.general`. The key `myrmidonTelegramNotify` already holds the

@@ -5,7 +5,7 @@ import { buildCliCommandLabel } from "../../client/command-label.js";
 import { readConfig } from "../../config/store.js";
 import { readContext, resolveProfile, type ClientContextProfile } from "../../client/context.js";
 import { ApiRequestError, PaperclipApiClient } from "../../client/http.js";
-import { readProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
+import { readProductEnv } from "@myrmidon/shared/env-alias"; // myrmidon(REBRAND-C)
 
 export interface BaseClientOptions {
   config?: string;

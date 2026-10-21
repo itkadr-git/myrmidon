@@ -1,5 +1,5 @@
 import { BotContainerDriver, BotContainerStatus } from './bot-containers/driver.js';
-import { Db, heartbeatRuns, agents, botApplyJobs } from '@paperclipai/db';
+import { Db, heartbeatRuns, agents, botApplyJobs } from '@myrmidon/db';
 import { and, eq, inArray, desc, sql } from 'drizzle-orm';
 import { readMaintenanceDocument } from './maintenance/store.js';
 

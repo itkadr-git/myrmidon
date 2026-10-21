@@ -20,20 +20,20 @@ const serverRoot = path.join(repoRoot, "server");
 const serverSrcDir = path.join(repoRoot, "server", "src");
 const serverScriptsDir = path.join(repoRoot, "server", "scripts");
 const nonServerProjects = [
-  "@paperclipai/shared",
-  "@paperclipai/skills-catalog",
-  "@paperclipai/db",
-  "@paperclipai/corpus",
-  "@paperclipai/adapter-utils",
-  "@paperclipai/adapter-claude-local",
-  "@paperclipai/adapter-codex-local",
-  "@paperclipai/adapter-grok-local",
-  "@paperclipai/adapter-openclaw-gateway",
-  "@paperclipai/adapter-opencode-local",
-  "@paperclipai/plugin-daytona",
-  "@paperclipai/plugin-sdk",
-  "@paperclipai/create-paperclip-plugin",
-  "@paperclipai/ui",
+  "@myrmidon/shared",
+  "@myrmidon/skills-catalog",
+  "@myrmidon/db",
+  "@myrmidon/corpus",
+  "@myrmidon/adapter-utils",
+  "@myrmidon/adapter-claude-local",
+  "@myrmidon/adapter-codex-local",
+  "@myrmidon/adapter-grok-local",
+  "@myrmidon/adapter-openclaw-gateway",
+  "@myrmidon/adapter-opencode-local",
+  "@myrmidon/plugin-daytona",
+  "@myrmidon/plugin-sdk",
+  "@myrmidon/create-paperclip-plugin",
+  "@myrmidon/ui",
   "paperclipai",
 ];
 const routeTestPattern = /[^/]*(?:route|routes|authz)[^/]*\.test\.ts$/;
@@ -74,7 +74,7 @@ const generalChatGroupName = "general-chat";
 const chatSuite = "server/src/__tests__/chat-channels.integration.test.ts";
 const generalWorkspacesAGroupName = "general-workspaces-a";
 const generalWorkspacesBGroupName = "general-workspaces-b";
-const generalWorkspacesAProjects = ["@paperclipai/ui", "paperclipai"];
+const generalWorkspacesAProjects = ["@myrmidon/ui", "paperclipai"];
 const generalWorkspacesBProjects = nonServerProjects.filter((project) => !generalWorkspacesAProjects.includes(project));
 const generalGroupNames = [generalServerGroupName, generalWorkspacesAGroupName, generalWorkspacesBGroupName];
 const allowedGeneralGroupNames = [...generalGroupNames, generalServerWithoutChatGroupName, generalChatGroupName];
@@ -363,7 +363,7 @@ function runProjectGroup(projects, groupName, shardIndex = null, shardCount = nu
 
 function runGeneralGroup(routeTests, groupName, shardIndex = null, shardCount = null) {
   if (groupName === generalChatGroupName) {
-    runVitest(["--project", "@paperclipai/server", ...serializedServerVitestArgs, chatSuite],
+    runVitest(["--project", "@myrmidon/server", ...serializedServerVitestArgs, chatSuite],
       "chat integration test shard", { index: shardIndex ?? 0, count: shardCount ?? 1 });
     return;
   }
@@ -387,7 +387,7 @@ function runGeneralGroup(routeTests, groupName, shardIndex = null, shardCount = 
       runVitest(
         [
           "--project",
-          "@paperclipai/server",
+          "@myrmidon/server",
           ...serializedServerVitestArgs,
           ...shardFiles,
         ],
@@ -401,7 +401,7 @@ function runGeneralGroup(routeTests, groupName, shardIndex = null, shardCount = 
     runVitest(
       [
         "--project",
-        "@paperclipai/server",
+        "@myrmidon/server",
         ...serializedServerVitestArgs,
         ...excludeRouteArgs,
       ],
@@ -437,7 +437,7 @@ function runSerializedSuites(routeTests, shardIndex, shardCount) {
     runVitest(
       [
         "--project",
-        "@paperclipai/server",
+        "@myrmidon/server",
         routeTest.repoPath,
         "--pool=forks",
         "--isolate",

@@ -11,7 +11,7 @@ import {
   redactSensitive,
   stripSecretBearingUrlParts,
 } from "./redact-sensitive.js";
-import { readProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
+import { readProductEnv } from "@myrmidon/shared/env-alias"; // myrmidon(REBRAND-C)
 
 const sharedOpts = {
   translateTime: "SYS:HH:MM:ss",

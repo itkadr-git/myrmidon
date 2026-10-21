@@ -28,7 +28,7 @@
 // This module owns only the decision. It never talks to a provider.
 
 import { eq, sql } from "drizzle-orm";
-import { agents, instanceSettings, type Db } from "@paperclipai/db";
+import { agents, instanceSettings, type Db } from "@myrmidon/db";
 import {
   DEFAULT_TELEGRAM_NOTIFY_PROACTIVITY_MODE,
   DEFAULT_TELEGRAM_NOTIFY_PROACTIVITY_RARELY_MAX_PER_DAY,
@@ -38,7 +38,7 @@ import {
   resolveProactivityMode,
   telegramNotifySettingsSchema,
   type TelegramNotifyProactivityMode,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 
 /** Our own key inside instance_settings.general: the rarely day counters. */
 export const TELEGRAM_NOTIFY_GENERAL_KEY = "myrmidonTelegramNotify";

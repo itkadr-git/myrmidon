@@ -20,7 +20,7 @@ import type {
   CloudProviderId,
   CloudRoot,
   CloudRootKind,
-} from "@paperclipai/shared/myrmidon-cloud-connector";
+} from "@myrmidon/shared/myrmidon-cloud-connector";
 import {
   CLOUD_PROVIDER_LABELS,
   cloudsAccountsQueryKey,

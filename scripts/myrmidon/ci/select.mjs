@@ -44,7 +44,7 @@ const LIGHT = [
 // Large packages are never tested whole in the fast tier: only their tests that
 // changed or directly import the change. Above this many selected files a
 // package gets the full tier instead.
-export const SELECTIVE_PACKAGES = ["@paperclipai/server", "@paperclipai/ui", "paperclipai"];
+export const SELECTIVE_PACKAGES = ["@myrmidon/server", "@myrmidon/ui", "paperclipai"];
 export const MAX_FAST_FILES_PER_PACKAGE = 60;
 
 // These suites read shared source or documentation directly, so import-based

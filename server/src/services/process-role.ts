@@ -24,7 +24,7 @@
 // unchanged behavior) and reports itself as invalid, so the caller logs it
 // loudly at startup.
 
-import { readProductEnv, readProductEnvFrom } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
+import { readProductEnv, readProductEnvFrom } from "@myrmidon/shared/env-alias"; // myrmidon(REBRAND-C)
 
 /** Environment variable that overrides the process role. */
 export const PROCESS_ROLE_ENV = "MYRMIDON_PROCESS_ROLE";

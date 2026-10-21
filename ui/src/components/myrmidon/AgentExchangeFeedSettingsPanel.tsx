@@ -10,7 +10,7 @@ import type {
   AgentExchangeFeedSettings,
   AgentExchangeFeedSettingsPatch,
   ResolvedAgentExchangeFeedSettings,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";

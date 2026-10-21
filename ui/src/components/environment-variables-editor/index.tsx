@@ -10,7 +10,7 @@ import {
 } from "react";
 import { flushSync } from "react-dom";
 import { AlertCircle, KeyRound, Plus, RotateCcw, Save, UserRound } from "lucide-react";
-import type { CompanySecret, EnvBinding, UserSecretDefinition } from "@paperclipai/shared";
+import type { CompanySecret, EnvBinding, UserSecretDefinition } from "@myrmidon/shared";
 import { cn } from "@/lib/utils";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { useOptionalToastActions } from "@/context/ToastContext";

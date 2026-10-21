@@ -7,11 +7,11 @@ import type {
   ChatPublicationSummary,
   ChatActivityItem,
   ChatFileTransferResolutionPrecondition,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 export type {
   ChatPublicationSummary,
   ChatActivityItem,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 
 export type ChatProvider =
   "slack" | "github" | "discord" | "microsoft-teams" | "telegram" | "agentmail" | "imessage-photon";

@@ -22,7 +22,7 @@ import {
   MAX_FALLBACK_SIGNAL_WINDOW_SEC,
   type FallbackSignalSettingKey,
   type FallbackSignalSettingsPatch,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";

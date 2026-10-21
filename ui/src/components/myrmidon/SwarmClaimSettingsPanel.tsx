@@ -10,7 +10,7 @@
 import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ShieldCheck } from "lucide-react";
-import type { SwarmClaimSettingsPatch, SwarmClaimSettingSource } from "@paperclipai/shared";
+import type { SwarmClaimSettingsPatch, SwarmClaimSettingSource } from "@myrmidon/shared";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";

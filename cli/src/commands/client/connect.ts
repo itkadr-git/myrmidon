@@ -1,8 +1,8 @@
 import { Command } from "commander";
 import * as p from "@clack/prompts";
 import pc from "picocolors";
-import type { Agent, Company } from "@paperclipai/shared";
-import { createAgentKeySchema, createBoardApiKeySchema } from "@paperclipai/shared";
+import type { Agent, Company } from "@myrmidon/shared";
+import { createAgentKeySchema, createBoardApiKeySchema } from "@myrmidon/shared";
 import { loginBoardCli } from "../../client/board-auth.js";
 import { PaperclipApiClient } from "../../client/http.js";
 import { resolveProfile, readContext, setCurrentProfile, upsertProfile } from "../../client/context.js";

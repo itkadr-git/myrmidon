@@ -7,9 +7,9 @@
 // sweep itself registers (see sweep.ts), so a saved limit reaches LiteLLM
 // within seconds of the save, not at the next tick.
 
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import { isNotNull } from "drizzle-orm";
-import { companies } from "@paperclipai/db";
+import { companies } from "@myrmidon/db";
 import { myrmidonLitellmBudgetSyncRoutes } from "./routes.js";
 import { startBudgetProjectionSweep, stopBudgetProjectionSweep } from "./sweep.js";
 

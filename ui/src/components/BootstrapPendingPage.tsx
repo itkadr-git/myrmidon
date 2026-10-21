@@ -3,7 +3,7 @@ import { Loader2, ShieldCheck, Terminal, TriangleAlert } from "lucide-react";
 import { Link } from "@/lib/router";
 import { Button } from "@/components/ui/button";
 import { BOOTSTRAP_FALLBACK_COMMAND } from "@/bootstrapSetup";
-import type { AuthSession } from "@paperclipai/shared";
+import type { AuthSession } from "@myrmidon/shared";
 import { Card } from "@/components/ui/card";
 
 type BootstrapPendingPageProps = {

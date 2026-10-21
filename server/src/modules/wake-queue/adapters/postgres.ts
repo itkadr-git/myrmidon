@@ -6,9 +6,9 @@ import { MAINTENANCE_INTERRUPT_ERROR_CODE } from "../../../myrmidon/maintenance/
 import { currentConversationCommentCondition } from "../../../services/agent-conversations.js";
 import { getExecutionBlocker } from "../../../services/execution-blocker.js";
 import { and, asc, eq, inArray, isNull, notInArray, or, sql } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
-import { runContextPersistenceFields } from "@paperclipai/db";
-import { extractIssueReferenceIdentifiers } from "@paperclipai/shared";
+import type { Db } from "@myrmidon/db";
+import { runContextPersistenceFields } from "@myrmidon/db";
+import { extractIssueReferenceIdentifiers } from "@myrmidon/shared";
 import {
   activityLog,
   agentWakeupRequests,
@@ -20,7 +20,7 @@ import {
   issueRelations,
   issues,
   nativeRunFinalizations,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import { hasConversationContinuationPolicy } from "../../../services/conversation-continuation.js";
 import { legacyExecutionNeedsReconciliation } from "../../../services/legacy-execution-recovery.js";
 import {

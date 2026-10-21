@@ -19,7 +19,7 @@ import type {
   BrowserConsoleStatus,
   BrowserScreenConsoleTokenResponse,
   BrowserScreenStatusResponse,
-} from "@paperclipai/shared/myrmidon-browser-console";
+} from "@myrmidon/shared/myrmidon-browser-console";
 
 const HEARTBEAT_MS = 30_000;
 /** Interaction bursts must not hammer the heartbeat endpoint; one report per window is enough. */

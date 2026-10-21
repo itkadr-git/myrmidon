@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Ban, Check, FlaskConical, Loader2, RefreshCw, Search, ShieldQuestion } from "lucide-react";
-import type { Agent, ToolCatalogEntry, ToolConnectionCapabilities } from "@paperclipai/shared";
+import type { Agent, ToolCatalogEntry, ToolConnectionCapabilities } from "@myrmidon/shared";
 import { useSearchParams } from "@/lib/router";
 import { AgentIcon } from "@/components/AgentIconPicker";
 import { AgentMultiSelect } from "@/components/AgentMultiSelect";

@@ -57,8 +57,8 @@ test('notices a new publishFromCi:true package that is missing from npm', async 
   );
 
   assert.equal(result.informational.length, 1);
-  assert.match(result.informational[0], /@paperclipai\/brand-new/);
-  assert.match(result.informational[0], /release:bootstrap-package -- @paperclipai\/brand-new --publish/);
+  assert.match(result.informational[0], /@myrmidon\/brand-new/);
+  assert.match(result.informational[0], /release:bootstrap-package -- @myrmidon\/brand-new --publish/);
   assert.match(result.informational[0], /No contributor action/);
 });
 
@@ -98,7 +98,7 @@ test('notices a publishFromCi flip from false to true on a missing package', asy
   );
 
   assert.equal(result.informational.length, 1);
-  assert.match(result.informational[0], /@paperclipai\/flipped/);
+  assert.match(result.informational[0], /@myrmidon\/flipped/);
 });
 
 test('notices a publishFromCi:false package that published packages newly depend on', async () => {
@@ -155,7 +155,7 @@ test('notices a newly added dependency on an existing unpublished package even w
   );
 
   assert.equal(result.informational.length, 1);
-  assert.match(result.informational[0], /@paperclipai\/adapter-hermes-gateway/);
+  assert.match(result.informational[0], /@myrmidon\/adapter-hermes-gateway/);
   assert.match(result.informational[0], /depend on it/);
 });
 
@@ -178,7 +178,7 @@ test('stays quiet for a publishFromCi:false package nothing depends on', async (
   assert.deepEqual(result.informational, []);
 });
 
-test('never looks up names outside the @paperclipai scope', async () => {
+test('never looks up names outside the @myrmidon scope', async () => {
   const lookedUp = [];
   const result = await checkReleaseBootstrap(
     [manifestChangedFile],

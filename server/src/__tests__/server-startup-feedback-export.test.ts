@@ -210,12 +210,12 @@ vi.mock("detect-port", () => ({
   default: detectPortMock,
 }));
 
-vi.mock("@paperclipai/db", async (importOriginal) => ({
+vi.mock("@myrmidon/db", async (importOriginal) => ({
   // Spread the real module: the startup module graph (via wip-limit ->
   // services/issues.js -> documents.ts / execution-projection.ts) reads dozens
   // of table exports at module scope, and a partial mock breaks as soon as the
   // graph gains a new edge. Only the startup-path functions are overridden.
-  ...(await importOriginal<typeof import("@paperclipai/db")>()),
+  ...(await importOriginal<typeof import("@myrmidon/db")>()),
   createDb: createDbMock,
   ensurePostgresDatabase: vi.fn(),
   getPostgresDataDirectory: vi.fn(),
@@ -411,7 +411,7 @@ vi.mock("../services/plugin-worker-manager.js", () => ({
 }));
 
 // The bot container sweep is off unless enabled and is not under test here; its port wiring
-// pulls the real services graph, which this test replaces with a partial @paperclipai/db mock.
+// pulls the real services graph, which this test replaces with a partial @myrmidon/db mock.
 vi.mock("../myrmidon/bot-containers/startup.js", () => ({
   startBotContainers: vi.fn(),
   stopBotContainers: vi.fn(),
@@ -419,7 +419,7 @@ vi.mock("../myrmidon/bot-containers/startup.js", () => ({
 
 // myrmidon(R5-B): same for the bot image canary wiring — the canary index
 // imports the bot container runtime, which pulls the real services graph and
-// the partial @paperclipai/db mock has no table columns. The canary itself is
+// the partial @myrmidon/db mock has no table columns. The canary itself is
 // a no-op unless MYRMIDON_BOT_CANARY is set and has its own suites.
 vi.mock("../myrmidon/bot-containers/canary-index.js", () => ({
   startBotCanary: vi.fn(),

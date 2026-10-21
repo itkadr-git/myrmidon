@@ -22,7 +22,7 @@ import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
 import { pathToFileURL } from "node:url";
 import type { Request as ExpressRequest, RequestHandler } from "express";
-import { warnIfUnsupportedNodeVersion } from "@paperclipai/shared/node-version";
+import { warnIfUnsupportedNodeVersion } from "@myrmidon/shared/node-version";
 import { and, eq, sql } from "drizzle-orm";
 import {
   createDb,
@@ -41,7 +41,7 @@ import {
   companies,
   companyMemberships,
   instanceUserRoles,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import detectPort from "detect-port";
 import { createApp } from "./app.js";
 import { loadConfig } from "./config.js";
@@ -138,7 +138,7 @@ import { startDeployJobs } from "./myrmidon/deploy-jobs/index.js"; // myrmidon(R
 import { startRuntimeLimits } from "./myrmidon/runtime-limits/index.js"; // myrmidon(C0)
 import { startProcessesSettings, createProcessSupervisor, reportReadyToSupervisor, wireSupervisorDrainHandler, type SupervisorListenerHandle } from "./myrmidon/processes/index.js"; // myrmidon(PROCS-1.1/1.2)
 import type { ProcessSupervisor } from "./myrmidon/processes/supervisor.js";
-import { resolveProcessesSettings } from "@paperclipai/shared";
+import { resolveProcessesSettings } from "@myrmidon/shared";
 import { startBehaviorSettings } from "./myrmidon/behavior-settings/index.js"; // myrmidon(SETTINGS-CORE)
 // myrmidon(PAUSE-GUARD): resumes operator pauses left older than a threshold
 import { createPauseGuardSweepFromHeartbeat } from "./myrmidon/pause-guard/index.js";
@@ -155,7 +155,7 @@ import {
 import {
   assertBoardProcessesStartable,
   formatBoardProcessesComposition,
-} from "@paperclipai/shared"; // myrmidon(1.6.6 PROCS-J): the board's process composition
+} from "@myrmidon/shared"; // myrmidon(1.6.6 PROCS-J): the board's process composition
 import { readResolvedBoardProcesses } from "./myrmidon/board-processes/settings.js"; // myrmidon(1.6.6 PROCS-J)
 import { ProcessBus } from "./services/process-bus.js"; // myrmidon(1.6.6 RUN-DISPATCH-NOTIFY, OPE-6977)
 import { registerSettingsAppliers } from "./myrmidon/settings-appliers/index.js"; // myrmidon(PROCS-1.8)
@@ -224,7 +224,7 @@ import type {
   InstanceDatabaseBackupRunResult,
   InstanceDatabaseBackupTrigger,
 } from "./routes/instance-database-backups.js";
-import { readProductEnv, writeProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
+import { readProductEnv, writeProductEnv } from "@myrmidon/shared/env-alias"; // myrmidon(REBRAND-C)
 
 type BetterAuthSessionUser = {
   id: string;
@@ -1109,7 +1109,7 @@ async function startServerWithDatabaseTeardown(
   const multiProcessDeployment = processRoleValue !== "" && processRoleValue !== "all";
   const processBus = multiProcessDeployment
     ? new ProcessBus(
-        // The driver comes through @paperclipai/db: the server package has no
+        // The driver comes through @myrmidon/db: the server package has no
         // direct `postgres` dependency.
         createPostgresJsClient(activeDatabaseConnectionString, { maxConnections: 1 }),
       )

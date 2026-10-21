@@ -1,4 +1,4 @@
-import type { IssueCommentMetadata, IssueCommentPresentation } from "@paperclipai/shared";
+import type { IssueCommentMetadata, IssueCommentPresentation } from "@myrmidon/shared";
 import {
   agentLinkRow,
   keyValueRow,

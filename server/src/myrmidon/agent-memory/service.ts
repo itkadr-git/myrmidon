@@ -15,12 +15,12 @@
 // company-scoped, so deletion is auditable per the plan's acceptance criteria.
 
 import { eq, and } from "drizzle-orm";
-import { agents, pluginConfig, plugins, type Db } from "@paperclipai/db";
+import { agents, pluginConfig, plugins, type Db } from "@myrmidon/db";
 import { logActivity } from "../../services/activity-log.js";
 import { logger } from "../../middleware/logger.js";
 import { instanceSettingsService, secretService } from "../../services/index.js";
 import { createMemoryHindsightClient, type MemoryHindsightClient } from "./hindsight-client.js";
-import { normalizeAgentMemorySettings } from "@paperclipai/shared";
+import { normalizeAgentMemorySettings } from "@myrmidon/shared";
 import { readMemoryUiSettings, type MemoryUiSettings } from "./settings.js";
 
 const HINDSIGHT_PLUGIN_KEY = "paperclip-plugin-hindsight";

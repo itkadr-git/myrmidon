@@ -13,7 +13,7 @@
 import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi, type Mocked } from "vitest";
-import { listAvailableModelProviderTypes } from "@paperclipai/shared";
+import { listAvailableModelProviderTypes } from "@myrmidon/shared";
 import { errorHandler } from "../../middleware/index.js";
 import { modelProviderRoutesWithSync } from "./routes-with-sync.js";
 import type { ModelProviderService, ModelProviderView } from "./service.js";

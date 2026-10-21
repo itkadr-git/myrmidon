@@ -6,7 +6,7 @@ import {
   hidesCompanyPage,
   readAgentBoardAdmin,
   type Agent,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { Shield, ShieldCheck, Trash2 } from "lucide-react";
 import { accessApi, type CompanyMember } from "@/api/access";
 import { agentsApi } from "@/api/agents";

@@ -22,7 +22,7 @@
 
 import { describe, expect, it, beforeAll, afterAll } from "vitest";
 import { sql } from "drizzle-orm";
-import { boardLeases, createDb } from "@paperclipai/db";
+import { boardLeases, createDb } from "@myrmidon/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,

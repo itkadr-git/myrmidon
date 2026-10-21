@@ -28,7 +28,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 
-import { agents, type Db } from "@paperclipai/db";
+import { agents, type Db } from "@myrmidon/db";
 import { and, eq, ne, sql } from "drizzle-orm";
 import type { HermesProfileEnvEntry } from "./profile-compiler.js";
 import type { BotProfileAgentRecord } from "./profile-compile.js";

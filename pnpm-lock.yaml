@@ -79,52 +79,52 @@ importers:
       '@clack/prompts':
         specifier: ^1.7.0
         version: 1.7.0
-      '@paperclipai/adapter-claude-local':
+      '@myrmidon/adapter-claude-local':
         specifier: workspace:*
         version: link:../packages/adapters/claude-local
-      '@paperclipai/adapter-codex-local':
+      '@myrmidon/adapter-codex-local':
         specifier: workspace:*
         version: link:../packages/adapters/codex-local
-      '@paperclipai/adapter-cursor-cloud':
+      '@myrmidon/adapter-cursor-cloud':
         specifier: workspace:*
         version: link:../packages/adapters/cursor-cloud
-      '@paperclipai/adapter-cursor-local':
+      '@myrmidon/adapter-cursor-local':
         specifier: workspace:*
         version: link:../packages/adapters/cursor-local
-      '@paperclipai/adapter-gemini-local':
+      '@myrmidon/adapter-gemini-local':
         specifier: workspace:*
         version: link:../packages/adapters/gemini-local
-      '@paperclipai/adapter-grok-local':
+      '@myrmidon/adapter-grok-local':
         specifier: workspace:*
         version: link:../packages/adapters/grok-local
-      '@paperclipai/adapter-kimi-local':
+      '@myrmidon/adapter-kimi-local':
         specifier: workspace:*
         version: link:../packages/adapters/kimi-local
-      '@paperclipai/adapter-omp-local':
+      '@myrmidon/adapter-omp-local':
         specifier: workspace:*
         version: link:../packages/adapters/omp-local
-      '@paperclipai/adapter-openclaw-gateway':
+      '@myrmidon/adapter-openclaw-gateway':
         specifier: workspace:*
         version: link:../packages/adapters/openclaw-gateway
-      '@paperclipai/adapter-opencode-local':
+      '@myrmidon/adapter-opencode-local':
         specifier: workspace:*
         version: link:../packages/adapters/opencode-local
-      '@paperclipai/adapter-pi-local':
+      '@myrmidon/adapter-pi-local':
         specifier: workspace:*
         version: link:../packages/adapters/pi-local
-      '@paperclipai/adapter-utils':
+      '@myrmidon/adapter-utils':
         specifier: workspace:*
         version: link:../packages/adapter-utils
-      '@paperclipai/db':
+      '@myrmidon/db':
         specifier: workspace:*
         version: link:../packages/db
-      '@paperclipai/hermes-paperclip-adapter':
+      '@myrmidon/hermes-paperclip-adapter':
         specifier: workspace:*
         version: link:../packages/adapters/hermes
-      '@paperclipai/server':
+      '@myrmidon/server':
         specifier: workspace:*
         version: link:../server
-      '@paperclipai/shared':
+      '@myrmidon/shared':
         specifier: workspace:*
         version: link:../packages/shared
       commander:
@@ -155,7 +155,7 @@ importers:
 
   packages/adapter-utils:
     dependencies:
-      '@paperclipai/shared':
+      '@myrmidon/shared':
         specifier: workspace:*
         version: link:../shared
       acpx:
@@ -180,10 +180,10 @@ importers:
       '@anthropic-ai/sdk':
         specifier: 0.121.0
         version: 0.121.0(zod@4.4.3)
-      '@paperclipai/adapter-utils':
+      '@myrmidon/adapter-utils':
         specifier: workspace:*
         version: link:../../adapter-utils
-      '@paperclipai/shared':
+      '@myrmidon/shared':
         specifier: workspace:*
         version: link:../../shared
       picocolors:
@@ -202,10 +202,10 @@ importers:
       '@agentclientprotocol/codex-acp':
         specifier: ^1.6.2
         version: 1.6.2(patch_hash=juyg45ifkipb4jskg7lpym2lj4)
-      '@paperclipai/adapter-utils':
+      '@myrmidon/adapter-utils':
         specifier: workspace:*
         version: link:../../adapter-utils
-      '@paperclipai/shared':
+      '@myrmidon/shared':
         specifier: workspace:*
         version: link:../../shared
       picocolors:
@@ -224,7 +224,7 @@ importers:
       '@cursor/sdk':
         specifier: ^1.0.28
         version: 1.0.28
-      '@paperclipai/adapter-utils':
+      '@myrmidon/adapter-utils':
         specifier: workspace:*
         version: link:../../adapter-utils
       picocolors:
@@ -240,7 +240,7 @@ importers:
 
   packages/adapters/cursor-local:
     dependencies:
-      '@paperclipai/adapter-utils':
+      '@myrmidon/adapter-utils':
         specifier: workspace:*
         version: link:../../adapter-utils
       picocolors:
@@ -256,7 +256,7 @@ importers:
 
   packages/adapters/gemini-local:
     dependencies:
-      '@paperclipai/adapter-utils':
+      '@myrmidon/adapter-utils':
         specifier: workspace:*
         version: link:../../adapter-utils
       picocolors:
@@ -272,10 +272,10 @@ importers:
 
   packages/adapters/grok-local:
     dependencies:
-      '@paperclipai/adapter-utils':
+      '@myrmidon/adapter-utils':
         specifier: workspace:*
         version: link:../../adapter-utils
-      '@paperclipai/shared':
+      '@myrmidon/shared':
         specifier: workspace:*
         version: link:../../shared
       picocolors:
@@ -291,10 +291,10 @@ importers:
 
   packages/adapters/hermes:
     dependencies:
-      '@paperclipai/adapter-utils':
+      '@myrmidon/adapter-utils':
         specifier: workspace:*
         version: link:../../adapter-utils
-      '@paperclipai/shared':
+      '@myrmidon/shared':
         specifier: workspace:*
         version: link:../../shared
       picocolors:
@@ -313,7 +313,7 @@ importers:
 
   packages/adapters/hermes-gateway:
     dependencies:
-      '@paperclipai/hermes-paperclip-adapter':
+      '@myrmidon/hermes-paperclip-adapter':
         specifier: workspace:*
         version: link:../hermes
     devDependencies:
@@ -329,7 +329,7 @@ importers:
 
   packages/adapters/kimi-local:
     dependencies:
-      '@paperclipai/adapter-utils':
+      '@myrmidon/adapter-utils':
         specifier: workspace:*
         version: link:../../adapter-utils
       picocolors:
@@ -345,7 +345,7 @@ importers:
 
   packages/adapters/omp-local:
     dependencies:
-      '@paperclipai/adapter-utils':
+      '@myrmidon/adapter-utils':
         specifier: workspace:*
         version: link:../../adapter-utils
       picocolors:
@@ -361,7 +361,7 @@ importers:
 
   packages/adapters/openclaw-gateway:
     dependencies:
-      '@paperclipai/adapter-utils':
+      '@myrmidon/adapter-utils':
         specifier: workspace:*
         version: link:../../adapter-utils
       picocolors:
@@ -383,10 +383,10 @@ importers:
 
   packages/adapters/opencode-local:
     dependencies:
-      '@paperclipai/adapter-utils':
+      '@myrmidon/adapter-utils':
         specifier: workspace:*
         version: link:../../adapter-utils
-      '@paperclipai/shared':
+      '@myrmidon/shared':
         specifier: workspace:*
         version: link:../../shared
       picocolors:
@@ -402,10 +402,10 @@ importers:
 
   packages/adapters/pi-local:
     dependencies:
-      '@paperclipai/adapter-utils':
+      '@myrmidon/adapter-utils':
         specifier: workspace:*
         version: link:../../adapter-utils
-      '@paperclipai/shared':
+      '@myrmidon/shared':
         specifier: workspace:*
         version: link:../../shared
       picocolors:
@@ -421,7 +421,7 @@ importers:
 
   packages/corpus:
     dependencies:
-      '@paperclipai/db':
+      '@myrmidon/db':
         specifier: workspace:*
         version: link:../db
       drizzle-orm:
@@ -443,7 +443,7 @@ importers:
 
   packages/db:
     dependencies:
-      '@paperclipai/shared':
+      '@myrmidon/shared':
         specifier: workspace:*
         version: link:../shared
       drizzle-orm:
@@ -518,7 +518,7 @@ importers:
       '@modelcontextprotocol/sdk':
         specifier: ^1.30.0
         version: 1.30.0(zod@4.4.3)
-      '@paperclipai/shared':
+      '@myrmidon/shared':
         specifier: workspace:*
         version: link:../shared
       zod:
@@ -577,10 +577,10 @@ importers:
         specifier: ^1.4.2
         version: 1.8.0
     devDependencies:
-      '@paperclipai/paperclip-eval-kernel':
+      '@myrmidon/paperclip-eval-kernel':
         specifier: workspace:*
         version: link:../paperclip-eval-kernel
-      '@paperclipai/shared':
+      '@myrmidon/shared':
         specifier: workspace:*
         version: link:../shared
       '@playwright/test':
@@ -622,7 +622,7 @@ importers:
 
   packages/plugins/create-paperclip-plugin:
     dependencies:
-      '@paperclipai/plugin-sdk':
+      '@myrmidon/plugin-sdk':
         specifier: workspace:*
         version: link:../sdk
     devDependencies:
@@ -635,7 +635,7 @@ importers:
 
   packages/plugins/examples/plugin-authoring-smoke-example:
     dependencies:
-      '@paperclipai/plugin-sdk':
+      '@myrmidon/plugin-sdk':
         specifier: workspace:*
         version: link:../../sdk
     devDependencies:
@@ -684,7 +684,7 @@ importers:
       '@lezer/highlight':
         specifier: ^1.2.1
         version: 1.2.3
-      '@paperclipai/plugin-sdk':
+      '@myrmidon/plugin-sdk':
         specifier: workspace:*
         version: link:../../sdk
       codemirror:
@@ -715,7 +715,7 @@ importers:
 
   packages/plugins/examples/plugin-hello-world-example:
     dependencies:
-      '@paperclipai/plugin-sdk':
+      '@myrmidon/plugin-sdk':
         specifier: workspace:*
         version: link:../../sdk
     devDependencies:
@@ -740,10 +740,10 @@ importers:
 
   packages/plugins/examples/plugin-kitchen-sink-example:
     dependencies:
-      '@paperclipai/plugin-sdk':
+      '@myrmidon/plugin-sdk':
         specifier: workspace:*
         version: link:../../sdk
-      '@paperclipai/shared':
+      '@myrmidon/shared':
         specifier: workspace:*
         version: link:../../../shared
     devDependencies:
@@ -771,7 +771,7 @@ importers:
 
   packages/plugins/hindsight-paperclip:
     dependencies:
-      '@paperclipai/plugin-sdk':
+      '@myrmidon/plugin-sdk':
         specifier: workspace:*
         version: link:../sdk
     devDependencies:
@@ -787,7 +787,7 @@ importers:
 
   packages/plugins/paperclip-plugin-fake-sandbox:
     dependencies:
-      '@paperclipai/plugin-sdk':
+      '@myrmidon/plugin-sdk':
         specifier: workspace:*
         version: link:../sdk
     devDependencies:
@@ -803,10 +803,10 @@ importers:
 
   packages/plugins/plugin-llm-wiki:
     devDependencies:
-      '@paperclipai/plugin-sdk':
+      '@myrmidon/plugin-sdk':
         specifier: workspace:*
         version: link:../sdk
-      '@paperclipai/shared':
+      '@myrmidon/shared':
         specifier: workspace:*
         version: link:../../shared
       '@rollup/plugin-node-resolve':
@@ -852,7 +852,7 @@ importers:
         specifier: ^1.0.198
         version: 1.7.8
     devDependencies:
-      '@paperclipai/plugin-sdk':
+      '@myrmidon/plugin-sdk':
         specifier: workspace:*
         version: link:../sdk
       '@types/node':
@@ -870,7 +870,7 @@ importers:
 
   packages/plugins/plugin-workspace-diff:
     dependencies:
-      '@paperclipai/plugin-sdk':
+      '@myrmidon/plugin-sdk':
         specifier: workspace:*
         version: link:../sdk
       '@pierre/diffs':
@@ -904,7 +904,7 @@ importers:
 
   packages/plugins/sdk:
     dependencies:
-      '@paperclipai/shared':
+      '@myrmidon/shared':
         specifier: workspace:*
         version: link:../../shared
       zod:
@@ -936,7 +936,7 @@ importers:
 
   packages/skills-catalog:
     dependencies:
-      '@paperclipai/shared':
+      '@myrmidon/shared':
         specifier: workspace:*
         version: link:../shared
     devDependencies:
@@ -991,55 +991,55 @@ importers:
       '@opentelemetry/api':
         specifier: ^1.9.0
         version: 1.9.1
-      '@paperclipai/adapter-claude-local':
+      '@myrmidon/adapter-claude-local':
         specifier: workspace:*
         version: link:../packages/adapters/claude-local
-      '@paperclipai/adapter-codex-local':
+      '@myrmidon/adapter-codex-local':
         specifier: workspace:*
         version: link:../packages/adapters/codex-local
-      '@paperclipai/adapter-cursor-cloud':
+      '@myrmidon/adapter-cursor-cloud':
         specifier: workspace:*
         version: link:../packages/adapters/cursor-cloud
-      '@paperclipai/adapter-cursor-local':
+      '@myrmidon/adapter-cursor-local':
         specifier: workspace:*
         version: link:../packages/adapters/cursor-local
-      '@paperclipai/adapter-gemini-local':
+      '@myrmidon/adapter-gemini-local':
         specifier: workspace:*
         version: link:../packages/adapters/gemini-local
-      '@paperclipai/adapter-grok-local':
+      '@myrmidon/adapter-grok-local':
         specifier: workspace:*
         version: link:../packages/adapters/grok-local
-      '@paperclipai/adapter-kimi-local':
+      '@myrmidon/adapter-kimi-local':
         specifier: workspace:*
         version: link:../packages/adapters/kimi-local
-      '@paperclipai/adapter-omp-local':
+      '@myrmidon/adapter-omp-local':
         specifier: workspace:*
         version: link:../packages/adapters/omp-local
-      '@paperclipai/adapter-openclaw-gateway':
+      '@myrmidon/adapter-openclaw-gateway':
         specifier: workspace:*
         version: link:../packages/adapters/openclaw-gateway
-      '@paperclipai/adapter-opencode-local':
+      '@myrmidon/adapter-opencode-local':
         specifier: workspace:*
         version: link:../packages/adapters/opencode-local
-      '@paperclipai/adapter-pi-local':
+      '@myrmidon/adapter-pi-local':
         specifier: workspace:*
         version: link:../packages/adapters/pi-local
-      '@paperclipai/adapter-utils':
+      '@myrmidon/adapter-utils':
         specifier: workspace:*
         version: link:../packages/adapter-utils
-      '@paperclipai/db':
+      '@myrmidon/db':
         specifier: workspace:*
         version: link:../packages/db
-      '@paperclipai/hermes-paperclip-adapter':
+      '@myrmidon/hermes-paperclip-adapter':
         specifier: workspace:*
         version: link:../packages/adapters/hermes
-      '@paperclipai/plugin-sdk':
+      '@myrmidon/plugin-sdk':
         specifier: workspace:*
         version: link:../packages/plugins/sdk
-      '@paperclipai/shared':
+      '@myrmidon/shared':
         specifier: workspace:*
         version: link:../packages/shared
-      '@paperclipai/skills-catalog':
+      '@myrmidon/skills-catalog':
         specifier: workspace:*
         version: link:../packages/skills-catalog
       '@photon-ai/advanced-imessage':
@@ -1133,7 +1133,7 @@ importers:
         specifier: ^4.4.3
         version: 4.4.3
     devDependencies:
-      '@paperclipai/paperclip-runner':
+      '@myrmidon/paperclip-runner':
         specifier: workspace:*
         version: link:../packages/paperclip-runner
       '@types/express':
@@ -1202,46 +1202,46 @@ importers:
       '@mdxeditor/editor':
         specifier: ^4.2.3
         version: 4.2.3(@codemirror/language@6.12.4)(@lezer/highlight@1.2.3)(@types/react-dom@19.2.5(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(typescript@7.0.2)(yjs@13.6.32)
-      '@paperclipai/adapter-claude-local':
+      '@myrmidon/adapter-claude-local':
         specifier: workspace:*
         version: link:../packages/adapters/claude-local
-      '@paperclipai/adapter-codex-local':
+      '@myrmidon/adapter-codex-local':
         specifier: workspace:*
         version: link:../packages/adapters/codex-local
-      '@paperclipai/adapter-cursor-cloud':
+      '@myrmidon/adapter-cursor-cloud':
         specifier: workspace:*
         version: link:../packages/adapters/cursor-cloud
-      '@paperclipai/adapter-cursor-local':
+      '@myrmidon/adapter-cursor-local':
         specifier: workspace:*
         version: link:../packages/adapters/cursor-local
-      '@paperclipai/adapter-gemini-local':
+      '@myrmidon/adapter-gemini-local':
         specifier: workspace:*
         version: link:../packages/adapters/gemini-local
-      '@paperclipai/adapter-grok-local':
+      '@myrmidon/adapter-grok-local':
         specifier: workspace:*
         version: link:../packages/adapters/grok-local
-      '@paperclipai/adapter-kimi-local':
+      '@myrmidon/adapter-kimi-local':
         specifier: workspace:*
         version: link:../packages/adapters/kimi-local
-      '@paperclipai/adapter-omp-local':
+      '@myrmidon/adapter-omp-local':
         specifier: workspace:*
         version: link:../packages/adapters/omp-local
-      '@paperclipai/adapter-openclaw-gateway':
+      '@myrmidon/adapter-openclaw-gateway':
         specifier: workspace:*
         version: link:../packages/adapters/openclaw-gateway
-      '@paperclipai/adapter-opencode-local':
+      '@myrmidon/adapter-opencode-local':
         specifier: workspace:*
         version: link:../packages/adapters/opencode-local
-      '@paperclipai/adapter-pi-local':
+      '@myrmidon/adapter-pi-local':
         specifier: workspace:*
         version: link:../packages/adapters/pi-local
-      '@paperclipai/adapter-utils':
+      '@myrmidon/adapter-utils':
         specifier: workspace:*
         version: link:../packages/adapter-utils
-      '@paperclipai/hermes-paperclip-adapter':
+      '@myrmidon/hermes-paperclip-adapter':
         specifier: workspace:*
         version: link:../packages/adapters/hermes
-      '@paperclipai/shared':
+      '@myrmidon/shared':
         specifier: workspace:*
         version: link:../packages/shared
       '@radix-ui/react-slot':

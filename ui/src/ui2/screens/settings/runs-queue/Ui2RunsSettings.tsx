@@ -11,7 +11,7 @@
 
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { RunLimitKey, RunLimits, RunLimitsPatch, RunLimitsSource } from "@paperclipai/shared";
+import type { RunLimitKey, RunLimits, RunLimitsPatch, RunLimitsSource } from "@myrmidon/shared";
 import {
   runtimeLimitsApi,
   runtimeLimitsQueryKey,

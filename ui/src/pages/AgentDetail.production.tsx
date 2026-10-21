@@ -37,7 +37,7 @@ import { adapterLabels, roleLabels, help } from "../components/agent-config-prim
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { AgentToolAccessSection } from "../components/myrmidon/AgentToolAccessSection"; // myrmidon(S6)
 import { useAdapterCapabilities } from "@/adapters/use-adapter-capabilities";
-import { redactCommandText as redactCommandSecretText } from "@paperclipai/adapter-utils";
+import { redactCommandText as redactCommandSecretText } from "@myrmidon/adapter-utils";
 import { MarkdownEditor } from "../components/MarkdownEditor";
 import { assetsApi } from "../api/assets";
 import { toolsApi } from "../api/tools";
@@ -117,11 +117,11 @@ import {
   type WorkspaceOperation,
   isResponsibleUserDenialCode,
   responsibleUserLabel,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { ResponsibleUserDenialNotice } from "../components/ResponsibleUserDenialNotice";
 import { RunWorkspaceRecoverySurface } from "../components/RunWorkspaceRecoverySurface";
 import { buildPermissionsForTrustPreset, getTrustPreset } from "../lib/trust-policy-ui";
-import { redactHomePathUserSegments, redactHomePathUserSegmentsInValue } from "@paperclipai/adapter-utils";
+import { redactHomePathUserSegments, redactHomePathUserSegmentsInValue } from "@myrmidon/adapter-utils";
 import { agentRouteRef } from "../lib/utils";
 import {
   isStarred,

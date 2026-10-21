@@ -9,7 +9,7 @@ import {
   UserRound,
   UserRoundPen,
 } from "lucide-react";
-import type { DeploymentMode } from "@paperclipai/shared";
+import type { DeploymentMode } from "@myrmidon/shared";
 import { Link } from "@/lib/router";
 import { authApi } from "@/api/auth";
 import { healthApi } from "@/api/health";

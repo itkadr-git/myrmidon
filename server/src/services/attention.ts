@@ -1,5 +1,5 @@
 import { and, asc, desc, eq, gt, gte, inArray, isNotNull, isNull, lt, lte, notInArray, sql } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidon/db";
 import {
   agents,
   agentWakeupRequests,
@@ -29,8 +29,8 @@ import {
   projects,
   projectWorkspaces,
   secretAccessEvents,
-} from "@paperclipai/db";
-import { deriveProjectUrlKey, botDiskQuotaWhyNow } from "@paperclipai/shared";
+} from "@myrmidon/db";
+import { deriveProjectUrlKey, botDiskQuotaWhyNow } from "@myrmidon/shared";
 import type {
   AttentionDecisionVerb,
   AttentionFeed,
@@ -50,7 +50,7 @@ import type {
   IssueThreadInteractionEffectiveResolverPolicySource,
   IssueThreadInteractionResolverPolicyProvenance,
   IssueReviewPolicy,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { badRequest } from "../errors.js";
 import { listAttentionExhaustedRuns } from "./attention-exhausted-runs.js";
 import { budgetService } from "./budgets.js";
@@ -146,7 +146,7 @@ import { buildWipLimitStatus } from "../myrmidon/wip-limit/status.js";
 import {
   WIP_LIMIT_SETTINGS_KEY,
   normalizeWipLimitSettings,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 // myrmidon(1.6.5 PROMPT-BUDGET-SIGNAL): the recorded prompt-budget signals.
 import { readPromptBudgetSignals } from "../myrmidon/prompt-budget/signal.js";
 // myrmidon(1.6.1-FORAGING-LIMITS-UI): the learning-spend operator signals.
@@ -155,7 +155,7 @@ import {
   readForagingLimitSignal,
 } from "../myrmidon/foraging/limits.js";
 // myrmidon(1.7-BUDGET-CONFIG-B): the enforcement mode shown on the budget card.
-import { resolveBudgetEnforcement } from "@paperclipai/shared";
+import { resolveBudgetEnforcement } from "@myrmidon/shared";
 
 /**
  * myrmidon(TRACING-HEALTH): a stable UUID for the synthetic "LLM tracing"

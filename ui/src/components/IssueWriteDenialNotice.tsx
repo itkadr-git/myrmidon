@@ -4,7 +4,7 @@ import {
   type IssueWriteDenialCode,
   type IssueWriteDenialContext,
   type IssueWriteDenialTone,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { cn } from "../lib/utils";
 
 /**

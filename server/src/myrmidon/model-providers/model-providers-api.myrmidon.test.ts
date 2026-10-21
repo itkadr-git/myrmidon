@@ -17,7 +17,7 @@ import {
   listAvailableModelProviderTypes,
   registerModelProviderConnector,
   unregisterModelProviderConnector,
-} from "@paperclipai/shared";
+} from "@myrmidon/shared";
 import { badRequest } from "../../errors.js";
 import { errorHandler } from "../../middleware/index.js";
 import { modelProviderRoutes } from "./routes.js";
