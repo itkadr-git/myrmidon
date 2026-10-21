@@ -2368,6 +2368,13 @@
       "when": 1792395500000,
       "tag": "0400_clear_terminal_issue_monitors",
       "breakpoints": true
+    },
+    {
+      "idx": 401,
+      "version": "7",
+      "when": 1792554492375,
+      "tag": "0401_military_maddog",
+      "breakpoints": true
     }
   ]
 }
