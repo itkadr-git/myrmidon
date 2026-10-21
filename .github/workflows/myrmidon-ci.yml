@@ -5,21 +5,24 @@ name: Myrmidon CI
 #   docs - only Myrmidon docs/scripts changed: script checks only;
 #   fast - ordinary pull requests: typecheck (no Rust), build (no Rust release binary)
 #          and only the tests that the change touches directly;
-#   full - push to main, manual runs, merge queue (always full: the full tier
-#          is required before landing), PRs labelled `full-ci`
-#          (from the next push on), and PRs touching
+#   full - push to main, manual runs, merge queue (always full), PRs labelled
+#          `full-ci` or `review-approved` (the label itself starts a full run:
+#          the owner account has no merge queue, so the approval label is the
+#          "ready to land" gate), and PRs touching
 #          shared foundations (lockfile, db, shared, runner, CI...): every lane.
 # A red full run on main opens (or updates) an issue labelled `main-red`.
 # Everything runs on GitHub-hosted runners without secrets. See docs/myrmidon/ci.md.
 #
 # Merge queue: the `merge_group` event re-runs the same checks on a candidate
 # commit built on top of the fresh main, so two PRs that are green separately
-# cannot land a broken combination. The candidate always gets the full tier;
-# the plan still compares it with its base only to select what to run.
+# cannot land a broken combination. The candidate always gets the full tier.
 # See docs/myrmidon/merge-queue.md.
 
 on:
   pull_request:
+    # `labeled` makes the `review-approved` (and `full-ci`) label start a run
+    # on the same head, which the plan then escalates to the full tier.
+    types: [opened, synchronize, reopened, labeled]
   merge_group:
     types: [checks_requested]
   push:
@@ -85,7 +88,7 @@ jobs:
           EVENT: ${{ github.event_name }}
           BASE: ${{ github.event_name == 'merge_group' && github.event.merge_group.base_sha || github.event.pull_request.base.sha }}
           HEAD: ${{ github.event_name == 'merge_group' && github.event.merge_group.head_sha || github.event.pull_request.head.sha }}
-          FULL_LABEL: ${{ github.event_name == 'merge_group' || (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'full-ci')) }}
+          FULL_LABEL: ${{ github.event_name == 'merge_group' || (github.event_name == 'pull_request' && (contains(github.event.pull_request.labels.*.name, 'full-ci') || contains(github.event.pull_request.labels.*.name, 'review-approved'))) }}
           BASE_REF: ${{ github.event.pull_request.base.ref }}
         run: |
           set -euo pipefail
