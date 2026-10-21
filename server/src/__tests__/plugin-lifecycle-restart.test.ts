@@ -201,6 +201,88 @@ describe("pluginLifecycleManager.restartWorker", () => {
     expect(getPluginProviderModels("company-1")).toEqual([]);
   });
 
+  describe("provider model gateway lifecycle", () => {
+    const withModels = {
+      ...pluginRecord,
+      status: "ready",
+      manifestJson: {
+        id: "example.plugin", capabilities: [],
+        providerModels: {
+          provider: "example",
+          baseUrl: "https://api.example.com/v1",
+          credentialSecretName: "example-key",
+          models: [{ id: "one" }],
+        },
+      },
+    } as never;
+
+    function setup(remove: ReturnType<typeof vi.fn>, sync = vi.fn().mockResolvedValue(undefined)) {
+      const loader = {
+        hasRuntimeServices: vi.fn().mockReturnValue(true),
+        loadSingle: vi.fn().mockResolvedValue({ success: true, plugin: withModels }),
+        unloadSingle: vi.fn().mockResolvedValue(undefined),
+        cleanupInstallArtifacts: vi.fn().mockResolvedValue(undefined),
+      } as unknown as PluginLoader;
+      mockRegistry.getById.mockResolvedValue(withModels);
+      mockRegistry.listConfigs.mockResolvedValue([{ companyId: "company-1" }]);
+      mockRegistry.updateStatus.mockImplementation(async (_id: string, value: { status: string }) => ({
+        ...(withModels as object),
+        ...value,
+      }));
+      const lifecycle = pluginLifecycleManager({} as never, {
+        loader,
+        workerManager: makeWorkerManagerStub().workerManager,
+        providerModelSync: { sync, remove },
+      });
+      return { lifecycle, sync };
+    }
+
+    it("removes gateway models exactly once on disable", async () => {
+      const remove = vi.fn().mockResolvedValue(undefined);
+      const { lifecycle } = setup(remove);
+      await lifecycle.disable("plugin-1");
+      expect(remove).toHaveBeenCalledTimes(1);
+      expect(remove).toHaveBeenCalledWith("company-1", expect.objectContaining({ id: "plugin-1" }));
+    });
+
+    it("still disables the plugin when the gateway cleanup fails", async () => {
+      const remove = vi.fn().mockRejectedValue(new Error("litellm down"));
+      const { lifecycle } = setup(remove);
+      const result = await lifecycle.disable("plugin-1");
+      expect(result.status).toBe("disabled");
+      expect(mockRegistry.updateStatus).toHaveBeenCalledWith("plugin-1", expect.objectContaining({ status: "disabled" }));
+    });
+
+    it("still enables the plugin when the gateway sync fails", async () => {
+      const remove = vi.fn().mockResolvedValue(undefined);
+      const sync = vi.fn().mockRejectedValue(new Error("litellm down"));
+      const { lifecycle } = setup(remove, sync);
+      mockRegistry.getById.mockResolvedValue({ ...(withModels as object), status: "disabled" });
+      const result = await lifecycle.enable("plugin-1");
+      expect(sync).toHaveBeenCalled();
+      expect(result.status).toBe("ready");
+    });
+
+    it("keeps gateway models and key allow-lists during reload, error and upgrade_pending", async () => {
+      const remove = vi.fn().mockResolvedValue(undefined);
+      const { lifecycle, sync } = setup(remove);
+      await lifecycle.restartWorker("plugin-1");
+      expect(sync).toHaveBeenCalled();
+      await lifecycle.markUpgradePending("plugin-1");
+      mockRegistry.getById.mockResolvedValue(withModels);
+      await lifecycle.markError("plugin-1", "worker crashed");
+      expect(remove).not.toHaveBeenCalled();
+    });
+
+    it("removes gateway models on uninstall", async () => {
+      const remove = vi.fn().mockResolvedValue(undefined);
+      const { lifecycle } = setup(remove);
+      (mockRegistry as Record<string, unknown>).uninstall = vi.fn().mockResolvedValue(withModels);
+      await lifecycle.unload("plugin-1");
+      expect(remove).toHaveBeenCalledTimes(1);
+    });
+  });
+
   it("does a full deactivate+reactivate cycle when the loader has runtime services", async () => {
     mockRegistry.getById.mockResolvedValue(pluginRecord);
     mockRegistry.updateStatus.mockResolvedValue(pluginRecord);
