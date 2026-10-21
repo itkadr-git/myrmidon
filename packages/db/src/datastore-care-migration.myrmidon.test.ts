@@ -20,7 +20,7 @@ import {
 
 const MIGRATION_FILE = "./migrations/0310_datastore_care.sql";
 const SNAPSHOT_FILE = "./migrations/meta/0310_snapshot.json";
-const PREVIOUS_SNAPSHOT_FILE = "./migrations/meta/0402_snapshot.json";
+const PREVIOUS_SNAPSHOT_FILE = "./migrations/meta/0401_snapshot.json";
 
 const SNAPSHOT_COLUMNS = [
   "id",
