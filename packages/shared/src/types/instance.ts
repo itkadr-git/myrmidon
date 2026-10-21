@@ -45,6 +45,7 @@ import type { ReviewReworkSettings } from "../myrmidon-review-rework.js";
 // myrmidon(F16): the issue-list agent defaults shape stored in the general row.
 import type { IssueListAgentDefaultsSettings } from "../myrmidon-issue-list-agent-defaults.js";
 import type { BudgetEnforcementSettings } from "../myrmidon-budget-enforcement.js";
+import type { AuthSelfSignUpSettings } from "../myrmidon-auth-self-signup.js";
 // myrmidon(1.7-AGENT-EXCHANGE-A): the discussion-room settings stored in the
 // same general settings row.
 import type { AgentExchangeSettings } from "../myrmidon-agent-exchange.js";
@@ -385,6 +386,8 @@ export interface InstanceGeneralSettings {
    * (packages/shared/src/validators/instance.ts).
    */
   budgetEnforcement?: BudgetEnforcementSettings;
+  /** myrmidon(1.7 USERS-ADMIN-UI A): self-registration setting; absent means off. */
+  authSelfSignUp?: AuthSelfSignUpSettings;
   /**
    * myrmidon(1.7-DEBATE-ASYM-A): the asymmetric-debates engine settings —
    * generator/critic/judge roles (cross-family validated), rounds and the

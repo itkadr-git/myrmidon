@@ -2929,6 +2929,9 @@ export * from "./myrmidon-budget-enforcement.js";
 // precedence resolver shared by the server core, the settings validator and the
 // UI panels of parts B–E.
 export * from "./myrmidon-behavior-settings.js";
+// myrmidon(1.7 USERS-ADMIN-UI A): shared auth settings and username rules.
+export * from "./myrmidon-auth-self-signup.js";
+export * from "./myrmidon-auth-noemail.js";
 // myrmidon(MEMORY-UI): the agent memory instance setting (address, optional key secret, switch).
 export * from "./myrmidon-agent-memory.js";
 // myrmidon(1.7-DEBATE-ASYM-A): the shared contract of asymmetric debates —
