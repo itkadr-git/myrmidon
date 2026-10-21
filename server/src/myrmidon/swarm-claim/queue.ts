@@ -23,6 +23,7 @@ import {
   type SwarmQueueCandidate,
 } from "@paperclipai/shared";
 import { issueHasNoExecutionHold } from "../settled-holds/ready-predicate.js";
+import { projectScopedClaimGate } from "../project-membership.js";
 import {
   failedRunsDerivedSql,
   failedRunsJoinOnSql,
@@ -134,7 +135,19 @@ export function roleQueueRows(
         // to the role by its label (default: the engineer).
         or(
           agentId ? eq(issues.assigneeAgentId, agentId) : eq(agents.role, role),
-          and(isNull(issues.assigneeAgentId), unassignedTaskRoutedToRole(role)),
+          and(
+            isNull(issues.assigneeAgentId),
+            unassignedTaskRoutedToRole(role),
+            // myrmidon(1.6.6 PROJECT-SCOPED-CLAIM): the unassigned half is the
+            // self-serve read of ONE agent — a task that carries a project is
+            // in it only for a member of that project (lead or joined), the
+            // same rule scope-wiring.listAgents answers for bot containers. A
+            // task assigned to an agent is a manual action and is never gated.
+            // Without an agent there is no member to judge by: the agentless
+            // read is the role-wide view (monitoring, supervisor), not a claim,
+            // so it keeps the whole routed queue.
+            agentId ? projectScopedClaimGate(agentId) : sql`true`,
+          ),
         ),
         // Not blocked by an unresolved blocker (the same rule idle-pickup uses).
         sql`not exists (
