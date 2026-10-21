@@ -160,10 +160,18 @@ const {
     on: vi.fn().mockReturnThis(),
     once: vi.fn().mockReturnThis(),
     off: vi.fn().mockReturnThis(),
-    listen: vi.fn((_port: number, _host: string, callback?: () => void) => {
-      callback?.();
-      return fakeServer;
-    }),
+    listen: vi.fn(
+      (
+        _portOrOptions: number | Record<string, unknown>,
+        hostOrCallback?: string | (() => void),
+        callback?: () => void,
+      ) => {
+        // API-role startup uses Node's options-object overload; the default
+        // role uses (port, host, callback). Both must signal the bound await.
+        (typeof hostOrCallback === "function" ? hostOrCallback : callback)?.();
+        return fakeServer;
+      },
+    ),
     close: vi.fn((callback?: (error?: Error) => void) => callback?.()),
   };
   const loadConfigMock = vi.fn();
