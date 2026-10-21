@@ -938,6 +938,9 @@ sync_compose_set_anchor() {
   # carries absolute paths; the block keeps them verbatim (the watchdog's
   # parser accepts paths, and the project directory is the label's own).
   local tmp printed=0 anchor_dir in_block=0
+  # the previous set, read BEFORE the file is replaced (for the log line below)
+  local anchor_had
+  anchor_had="$(sed -n '/board-mount-set:begin/,/board-mount-set:end/p' "$anchor_file" | { grep -oE '^[[:space:]]*[A-Za-z0-9._/-]+\.ya?ml[[:space:]]*$' || true; } | sed 's#^.*/##; s/^[[:space:]]*//; s/[[:space:]]*$//' | tr '\n' ' ')"
   anchor_dir="$(dirname "$anchor_file")"
   tmp="$(mktemp "$anchor_file.XXXXXX")"
   while IFS= read -r line || [[ -n "$line" ]]; do
@@ -985,7 +988,7 @@ sync_compose_set_anchor() {
   ANCHOR_SYNC_ACTION="rewritten"
   log "COMPOSE-SET-ANCHOR: the live set differs from the anchor; the block was rewritten from the live label:"
   # shown in the file's / the label's own order (the comparison above is sorted)
-  log "  anchor had: $(sed -n '/board-mount-set:begin/,/board-mount-set:end/p' "$anchor_file" | { grep -oE '^[[:space:]]*[A-Za-z0-9._/-]+\.ya?ml[[:space:]]*$' || true; } | sed 's#^.*/##; s/^[[:space:]]*//; s/[[:space:]]*$//' | tr '\n' ' ')"
+  log "  anchor had: $anchor_had"
   log "  live label: $(printf '%s\n' "$label_raw" | tr ',' '\n' | sed 's#.*/##; s/^[[:space:]]*//; s/[[:space:]]*$//' | sed '/^$/d' | tr '\n' ' ')"
   # One commit naming the deploy, when the anchor lives in a git repository.
   if command -v git >/dev/null 2>&1 && [[ -n "$MYRMIDON_COMPOSE_SET_ANCHOR_GIT" && -d "$MYRMIDON_COMPOSE_SET_ANCHOR_GIT/.git" ]]; then

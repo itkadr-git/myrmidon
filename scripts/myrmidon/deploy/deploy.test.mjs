@@ -1749,7 +1749,7 @@ exit 0
       // a drifted anchor never fails the deploy
       assert.equal(code, 0, out);
       assert.match(out, /COMPOSE-SET-ANCHOR: the live set differs from the anchor; the block was rewritten/);
-      assert.match(out, /anchor had: docker-compose\.yml docker-compose\.myrmidon-image\.yml/);
+      assert.match(out, /anchor had: docker-compose\.yml docker-compose\.myrmidon-image\.yml $/m);
       assert.match(out, /live label: docker-compose\.yml docker-compose\.myrmidon-image\.yml docker-compose\.myrmidon-dockergate\.yml/);
       // the rewritten block: the live fragments, relative to the anchor file's
       // own directory, one per line, between the untouched markers
