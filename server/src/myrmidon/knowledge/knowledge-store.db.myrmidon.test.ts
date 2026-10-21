@@ -22,6 +22,7 @@ import {
   createPgKnowledgeSearchIndex,
   knowledgeItems,
   knowledgeLinks,
+  nestRedactSettings,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -310,6 +311,27 @@ describeEmbeddedPostgres("myrmidon(1.6.6 KNOWLEDGE-2.0 K-1) knowledge store over
     expect(await mod.search("zebra")).toEqual([]); // drafts are not indexed until delivered
     await mod.publish("mars", AGENT, (await mod.listRevisions("mars"))[1]!.id);
     expect((await mod.search("zebra")).map((h) => h.slug)).toEqual(["mars"]);
+  });
+
+  it("applies per-nest REDACT settings before create and draft persistence", async () => {
+    companyId = await makeCompany();
+    const mod = createKnowledgeModule(db, companyId, {
+      now: () => new Date("2026-10-08T00:00:00Z"),
+      searchIndex: createMemorySearchIndex(),
+    });
+    await db.insert(nestRedactSettings).values({
+      nestId: companyId,
+      config: {
+        mode: "redact",
+        rules: { counterparties: true, signers: true, contracts: false, invoices: false },
+        counterparties: { "Acme (test)": "[COUNTERPARTY]" },
+        signers: {}, contractNumbers: [], invoiceNumbers: [],
+      },
+    });
+    const created = await mod.create({ slug: "redacted", title: "Acme (test)", content: "Signed by Acme (test)" }, AGENT);
+    expect(created.content).toBe("Signed by [COUNTERPARTY]");
+    const draft = await mod.draft("redacted", { content: "Acme (test) renewal" }, AGENT);
+    expect(draft.content).toBe("[COUNTERPARTY] renewal");
   });
 
   it("the second company sees none of the first company's knowledge", async () => {
