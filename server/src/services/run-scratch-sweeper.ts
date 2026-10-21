@@ -53,15 +53,28 @@ export async function runRunScratchSweep(input: {
   }
 }
 
-/** Starts the periodic sweep (first pass immediately). The timer is unref-ed. */
+/**
+ * Starts the periodic sweep (first pass immediately). Passes are chained with
+ * a re-armed, unref-ed timeout so two sweeps never overlap.
+ */
 export function startRunScratchSweeper(input: {
   config: RunScratchSweeperConfig;
   logger: RunScratchSweeperLogger;
   root?: string;
-}): ReturnType<typeof setInterval> {
-  const pass = () => void runRunScratchSweep({ ttlMs: input.config.ttlMs, root: input.root, logger: input.logger });
-  pass();
-  const timer = setInterval(pass, input.config.intervalMs);
-  timer.unref?.();
-  return timer;
+}): { stop: () => void } {
+  let stopped = false;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const pass = async () => {
+    await runRunScratchSweep({ ttlMs: input.config.ttlMs, root: input.root, logger: input.logger });
+    if (stopped) return;
+    timer = setTimeout(() => void pass(), input.config.intervalMs);
+    timer.unref?.();
+  };
+  void pass();
+  return {
+    stop: () => {
+      stopped = true;
+      if (timer) clearTimeout(timer);
+    },
+  };
 }
