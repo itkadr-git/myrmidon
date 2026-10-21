@@ -36,7 +36,6 @@ export function providerUsageService(db: Db) {
    */
   async function ingest(companyId: string, event: ProviderUsageReportedEventV1, now = new Date(), ownerIssueId: string | null = null): Promise<ProviderUsageIngestResult> {
     const thresholdPercent = await thresholdForCompany(companyId);
-    const warning = evaluateProviderUsageWarning(event, thresholdPercent, companyId, now.toISOString());
     return db.transaction(async (tx) => {
       const receipts = await tx.insert(providerUsageEventReceipts).values({ companyId, eventId: event.eventId })
         .onConflictDoNothing({ target: [providerUsageEventReceipts.companyId, providerUsageEventReceipts.eventId] })
@@ -56,7 +55,9 @@ export function providerUsageService(db: Db) {
           providerUsageSnapshots.credentialRef, providerUsageSnapshots.windowKind,
           providerUsageSnapshots.windowStartedAt],
         set: { resetsAt, observedAt, used: event.window.used, limits: event.window.limit,
-          sourceEventId: event.eventId, ownerIssueId, updatedAt: new Date() },
+          sourceEventId: event.eventId,
+          ownerIssueId: ownerIssueId ? sql`coalesce(${providerUsageSnapshots.ownerIssueId}, ${ownerIssueId})` : providerUsageSnapshots.ownerIssueId,
+          updatedAt: new Date() },
         setWhere: sql`${providerUsageSnapshots.observedAt} < ${observedAt}`,
       });
 
@@ -68,6 +69,24 @@ export function providerUsageService(db: Db) {
         eq(providerUsageSnapshots.windowStartedAt, startedAt),
       ));
       const snapshot = rows[0];
+      const snapshotEvent: ProviderUsageReportedEventV1 | null = snapshot ? {
+        schemaVersion: 1,
+        companyId,
+        eventId: snapshot.sourceEventId,
+        provider: snapshot.provider,
+        credentialRef: snapshot.credentialRef,
+        observedAt: snapshot.observedAt.toISOString(),
+        window: {
+          kind: snapshot.windowKind as ProviderUsageReportedEventV1["window"]["kind"],
+          startedAt: snapshot.windowStartedAt.toISOString(),
+          resetsAt: snapshot.resetsAt.toISOString(),
+          used: snapshot.used,
+          limit: snapshot.limits,
+        },
+      } : null;
+      const warning = snapshotEvent
+        ? evaluateProviderUsageWarning(snapshotEvent, thresholdPercent, companyId, now.toISOString())
+        : null;
       if (snapshot?.ownerIssueId && warning) {
         const body = `Provider usage warning: ${describeProviderUsageWarning(warning)}`;
         await tx.insert(providerUsageWarningDeliveries).values({
@@ -75,7 +94,7 @@ export function providerUsageService(db: Db) {
         }).onConflictDoNothing();
       }
       invalidateAttentionFeedCache(db, companyId);
-      return { accepted: true, duplicate: false, aggregate: snapshot ? aggregateProviderUsageReports([{ schemaVersion: 1, companyId, eventId: snapshot.sourceEventId, provider: snapshot.provider, credentialRef: snapshot.credentialRef, observedAt: snapshot.observedAt.toISOString(), window: { kind: snapshot.windowKind as ProviderUsageReportedEventV1["window"]["kind"], startedAt: snapshot.windowStartedAt.toISOString(), resetsAt: snapshot.resetsAt.toISOString(), used: snapshot.used, limit: snapshot.limits } }], thresholdPercent, now.toISOString())[0] ?? null : null, warning };
+      return { accepted: true, duplicate: false, aggregate: snapshot ? aggregateProviderUsageReports([snapshotEvent!], thresholdPercent, now.toISOString())[0] ?? null : null, warning };
     });
   }
 
@@ -83,7 +102,7 @@ export function providerUsageService(db: Db) {
     const thresholdPercent = await thresholdForCompany(companyId);
     const rows = await db.select().from(providerUsageSnapshots).where(and(
       eq(providerUsageSnapshots.companyId, companyId),
-      sql`${providerUsageSnapshots.resetsAt} > now()`,
+      sql`${providerUsageSnapshots.resetsAt} > ${now}`,
     ));
     // One snapshot per (credential, window) is enforced by a unique index, so aggregate
     // row by row and carry each row's own owner issue instead of matching by position.
