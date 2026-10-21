@@ -174,7 +174,10 @@ describe("myrmidon(1.6.5 SWARM-PANEL-COOLING) the cooling block through updateGe
     await service.updateGeneral({ swarm: { runWithoutTaskGate: true } });
 
     const general = (await service.getGeneral()) as unknown as Record<string, unknown>;
-    expect(general.swarm).toEqual({ runWithoutTaskGate: true, scent });
+    // Reading fills the scent defaults in; what matters is that no cooling key survives.
+    expect(general.swarm).toMatchObject({ runWithoutTaskGate: true, scent });
+    expect(general.swarm).not.toHaveProperty("cooldownBaseMin");
+    expect(general.swarm).not.toHaveProperty("cooldownCeilingHours");
   });
 
   it("a scent-only patch keeps the stored cooling keys", async () => {
