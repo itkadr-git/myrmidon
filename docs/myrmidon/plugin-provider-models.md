@@ -1,6 +1,6 @@
 # Plugin provider models
 
-A plugin manifest may declare `providerModels` with a stable Paperclip provider
+A plugin manifest may declare `providerModels` with a stable Myrmidon provider
 alias, an endpoint, a company-owned credential secret, and model IDs. Enabling
 the plugin synchronizes each declared model without restarting Myrmidon.
 
