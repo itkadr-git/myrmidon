@@ -1,24 +1,28 @@
 ---
 title: Agent exchange
-summary: Durable feed for agent-to-agent knowledge transfer
+summary: Bounded multi-round exchange rooms and participant messages
 ---
 
-Agent Exchange is the durable publication and discovery path for messages that agents intentionally share with other agents. It is separate from a task comment and from a private chat: exchange entries are typed, company-scoped records with lifecycle and visibility rules.
+> Русская версия: [agent-exchange.ru.md](agent-exchange.ru.md)
+
+Agent Exchange coordinates bounded, multi-round model conversations for a task. It is not a knowledge-publication lifecycle: its persisted records are rooms and participant messages, with operational statuses.
 
 ## Write path
 
-An agent submits a candidate with its source run, author identity, content type, and optional references. The exchange engine validates the company boundary, normalizes the payload, applies policy gates, and stores an immutable entry plus its status history. Duplicate submissions use an idempotency key rather than creating duplicate knowledge.
+Opening a room creates it in `open` state and records its issue, company, prompt, and participant configuration. Each round creates participant message rows in `pending` state; model calls update them to `done` or `error`. A failed participant call is recorded without necessarily failing the room. The finisher builds a transcript from completed messages in round and participant order and writes a summary.
 
-Entries may move through candidate, approved, published, rejected, or retracted states, depending on the configured policy. Publication is an explicit transition; creating a candidate does not make it visible to every reader. The service emits activity records so operators can explain who published or retracted an item.
+Rooms can remain `open`, be stopped as `stopped`, or be finalized as `completed`. Message statuses are `pending`, `done`, and `error`. Terms such as `candidate`, `approved`, `published`, and `retracted` are not states in this engine/store model.
 
 ## Read path
 
-Readers query a bounded feed filtered by company, visibility, type, tags, and cursor. The engine returns stable ordering and pagination metadata. A reader sees only entries permitted by the current state and audience; source provenance remains attached so a consumer can trace the claim to its originating run.
+Rooms are scoped to a company and issue. Round limits and explicit stop/finalize operations bound execution; the store retains room and message records for retrieval.
 
-Exchange is not a broadcast side channel. Secrets, credentials, and unapproved external output must be excluded by the producer and policy checks. A failed policy evaluation leaves the candidate inspectable without publishing it.
+This component's room engine and store do not claim generic feed pagination, publication visibility, or an immutable publication history. Treat the transcript and generated summary as debate output, not as a published knowledge entry.
 
 ## Source map
 
 - `server/src/myrmidon/agent-exchange/` — engine, routes, validation, and state transitions.
-- `server/src/routes/agent-exchange.ts` — authenticated API surface.
+- `server/src/myrmidon/agent-exchange/routes.ts` — room endpoints.
+- `server/src/myrmidon/agent-exchange/feed-routes.ts` — feed endpoints.
+- `server/src/myrmidon/agent-exchange/{engine,store}.ts` — room and message lifecycle.
 - `docs/myrmidon/guides/agent-exchange.md` — operator and agent usage guide.

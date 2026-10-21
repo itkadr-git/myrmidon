@@ -3,6 +3,8 @@ title: Execution workspaces and worktrees
 summary: Filesystem isolation, measurement, and cleanup around agent runs
 ---
 
+> Русская версия: [execution-workspaces.ru.md](execution-workspaces.ru.md)
+
 An execution workspace is the filesystem boundary assigned to a run or development task. The control plane stores its identity, source, lifecycle status, and runtime metadata; the execution driver creates and removes the directory or worktree. A workspace is not the agent process itself and is not a substitute for task checkout.
 
 ## Lifecycle
@@ -25,5 +27,6 @@ A failed sweep leaves the last successful measurement visible and must not silen
 
 - `server/src/myrmidon/workspace-hygiene/` — limits, measurements, sweeps, and service endpoints.
 - `server/src/services/execution-workspaces.ts` — workspace lifecycle orchestration.
+- `server/src/services/execution-workspace-policy.ts` — workspace policy.
 - `server/src/services/environment-runtime.ts` — runtime-driver boundary.
 - `server/src/myrmidon/workspace-hygiene/service.ts` — live settings and bounded measurements.

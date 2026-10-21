@@ -3,6 +3,8 @@ title: Agent adapters
 summary: How Myrmidon invokes local and gateway-backed agent runtimes
 ---
 
+> Русская версия: [agent-adapters.ru.md](agent-adapters.ru.md)
+
 Myrmidon keeps execution behind an adapter boundary. The server selects an adapter from the agent configuration, passes a run request and cancellation hooks to its server implementation, then records the normalized result, usage, cost, and continuation state. UI and CLI modules parse the same result for operators; they do not execute the agent.
 
 ## Adapter families
