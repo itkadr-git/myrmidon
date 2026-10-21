@@ -15,6 +15,7 @@ const manifest: PaperclipPluginManifestV1 = {
     "database.namespace.write",
     "issues.read",
     "issues.create",
+    "issue.attachments.write",
     "issues.wakeup",
     "issue.relations.read",
     "issue.relations.write",
