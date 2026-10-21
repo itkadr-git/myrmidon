@@ -60,10 +60,13 @@ case "$1" in
     case "$4" in
       *myrmidon-dockergate*|*myrmidon-fleetd*)
         if [ -e "$SANDBOX/components-missing" ]; then echo "ERROR: $4: not found" >&2; exit 1; fi
-        for a in "$@"; do case "$a" in *Manifest.Layers*) printf '[{"size":1048576}]\n'; exit 0 ;; esac; done
+        for a in "$@"; do case "$a" in *Manifest.Digest*) cat "$SANDBOX/component-digests.json" | jq -r --arg r "$4" '.[\$r]'; exit 0 ;; esac; done
+        # DEPLOY-HYGIENE: the disk precheck reads the layer sizes of the manifest.
+        for a in "$@"; do case "$a" in *'json .Manifest}}'*) echo '{"Layers":[{"size":1048576}]}'; exit 0 ;; esac; done
         cat "$SANDBOX/component-image.json" ;;
       *)
         if [ -e "$SANDBOX/registry-missing" ]; then echo "ERROR: $4: not found" >&2; exit 1; fi
+        for a in "$@"; do case "$a" in *'json .Manifest}}'*) echo '{"Layers":[{"size":1048576}]}'; exit 0 ;; esac; done
         cat "$SANDBOX/imagetools.json" ;;
     esac ;;
   run) echo "1.4.0+0123456789ab" ;;
@@ -105,6 +108,13 @@ case "$1" in
   merge-base) exit "$(cat "$SANDBOX/git-ancestor-exit")" ;;
   ls-remote) cat "$SANDBOX/git-tags" ;;
 esac
+`;
+
+// DEPLOY-HYGIENE: the disk precheck reads the free space of /var/lib/docker
+// with df; the sandbox always has plenty (the precheck has its own tests).
+const FAKE_DF = `#!/usr/bin/env bash
+printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\\n'
+printf '/dev/root 209715200 1024 209714176 1%% /\\n'
 `;
 
 const FAKE_CURL = `#!/usr/bin/env bash
@@ -175,6 +185,7 @@ function sandbox({
   fs.writeFileSync(path.join(composeDir, "docker-compose.yml"), "services: {}\n");
   fs.writeFileSync(path.join(bin, "docker"), FAKE_DOCKER, { mode: 0o755 });
   fs.writeFileSync(path.join(bin, "curl"), FAKE_CURL, { mode: 0o755 });
+  fs.writeFileSync(path.join(bin, "df"), FAKE_DF, { mode: 0o755 });
   if (!noGit) fs.writeFileSync(path.join(bin, "git"), FAKE_GIT, { mode: 0o755 });
   fs.writeFileSync(path.join(dir, "calls.log"), "");
   const labels =
