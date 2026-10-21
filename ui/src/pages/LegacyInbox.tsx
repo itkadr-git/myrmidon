@@ -3003,6 +3003,18 @@ export function Inbox() {
                       continue;
                     }
 
+                    if (item.kind === "knowledge") {
+                      const suggestion = item.suggestion;
+                      elements.push(wrapItem(getInboxWorkItemKey(item), isSelected,
+                        <div className="rounded-lg border p-4">
+                          <p className="text-sm font-medium">Knowledge suggestion</p>
+                          <p className="mt-1 text-sm text-muted-foreground">{suggestion.body}</p>
+                          {suggestion.rationale && <p className="mt-1 text-xs text-muted-foreground">Recommendation: {suggestion.rationale}</p>}
+                          <Button variant="outline" size="sm" className="mt-3" onClick={() => navigate("/knowledge/review")}>Review suggestion</Button>
+                        </div>));
+                      continue;
+                    }
+
                     const issue = item.issue;
                     const childIssues = group.childrenByIssueId.get(issue.id) ?? [];
                     const hasChildren = childIssues.length > 0;

@@ -53,6 +53,7 @@ import { ApprovalDetail } from "./pages/ApprovalDetail";
 import { CompanyActivity } from "./pages/audit/CompanyActivity";
 import { AuditHub } from "./pages/audit/AuditHub";
 import { Inbox } from "./pages/Inbox";
+const KnowledgeReview = lazy(() => import("./pages/KnowledgeReview").then((module) => ({ default: module.KnowledgeReview })));
 import { WhatNeedsMe } from "./pages/WhatNeedsMe";
 import { DecisionQueuePage } from "./pages/DecisionQueuePage";
 import { BoardChat } from "./pages/BoardChat";
@@ -489,6 +490,7 @@ function boardRoutes(streamlinedUiEnabled: boolean) {
       <Route path="inbox/blocked" element={<Inbox />} />
       <Route path="inbox/all" element={<Inbox />} />
       <Route path="inbox/requests" element={<JoinRequestQueue />} />
+      <Route path="knowledge/review" element={<Suspense fallback={null}><KnowledgeReview /></Suspense>} />
       <Route path="inbox/new" element={<Navigate to="/inbox/mine" replace />} />
       <Route path="u/:userSlug" element={<UserProfile />} />
       <Route path="design-guide" element={<DesignGuide />} />

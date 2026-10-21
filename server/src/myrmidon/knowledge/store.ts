@@ -1085,21 +1085,27 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
   async function decideSuggestion(
     nestId: string,
     actor: KnowledgeActor,
-    input: { suggestionId: string; companyId: string; decision: "accepted" | "declined" },
+    input: { suggestionId: string; companyId: string; decision: "accepted" | "declined"; reason?: string | null },
   ): Promise<{ id: string; status: string }> {
-    const [row] = await db
+    let [row] = await db
       .select()
       .from(knowledgeSuggestions)
-      .where(and(eq(knowledgeSuggestions.nestId, nestId), eq(knowledgeSuggestions.id, input.suggestionId)))
+      .where(and(eq(knowledgeSuggestions.nestId, nestId), eq(knowledgeSuggestions.id, input.suggestionId), eq(knowledgeSuggestions.status, "pending")))
       .limit(1);
+    if (!row) {
+      [row] = await db.select().from(knowledgeSuggestions)
+        .where(and(eq(knowledgeSuggestions.nestId, nestId), eq(knowledgeSuggestions.id, input.suggestionId))).limit(1);
+    }
     if (!row) throw new KnowledgeDomainError("suggestion_not_found", 404, "No such suggestion.");
     if (row.status !== "pending") {
       throw new KnowledgeDomainError("suggestion_decided", 409, `Suggestion is already ${row.status}.`);
     }
-    await db
+    const [updated] = await db
       .update(knowledgeSuggestions)
-      .set({ status: input.decision, decidedBy: `${actor.actorType}:${actor.actorId ?? "unknown"}`, decidedAt: now() })
-      .where(eq(knowledgeSuggestions.id, row.id));
+      .set({ status: input.decision, rationale: input.reason ?? row.rationale, decidedBy: `${actor.actorType}:${actor.actorId ?? "unknown"}`, decidedAt: now() })
+      .where(and(eq(knowledgeSuggestions.nestId, nestId), eq(knowledgeSuggestions.id, row.id), eq(knowledgeSuggestions.status, "pending")))
+      .returning({ id: knowledgeSuggestions.id });
+    if (!updated) throw new KnowledgeDomainError("suggestion_decided", 409, "Suggestion was decided concurrently.");
     await appendEvent(db, {
       companyId: input.companyId,
       nestId,
@@ -1111,7 +1117,38 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
     return { id: row.id, status: input.decision };
   }
 
-  async function listSuggestions(nestId: string, status: "pending" | "accepted" | "declined" | "all" = "pending"): Promise<Array<{ id: string; targetItemId: string | null; body: string; status: string; createdAt: string }>> {
+  async function editSuggestion(
+    nestId: string,
+    actor: KnowledgeActor,
+    input: { suggestionId: string; companyId: string; body: string; rationale?: string | null },
+  ): Promise<{ id: string; status: string }> {
+    assertSingleLine(input.body, "Suggestion body");
+    if (input.rationale != null) assertSingleLine(input.rationale, "Suggestion rationale");
+    const [row] = await db
+      .select()
+      .from(knowledgeSuggestions)
+      .where(and(eq(knowledgeSuggestions.nestId, nestId), eq(knowledgeSuggestions.id, input.suggestionId)))
+      .limit(1);
+    if (!row) throw new KnowledgeDomainError("suggestion_not_found", 404, "No such suggestion.");
+    if (row.status !== "pending") {
+      throw new KnowledgeDomainError("suggestion_decided", 409, `Suggestion is already ${row.status}.`);
+    }
+    await db
+      .update(knowledgeSuggestions)
+      .set({ body: input.body, rationale: input.rationale ?? null })
+      .where(and(eq(knowledgeSuggestions.nestId, nestId), eq(knowledgeSuggestions.id, row.id), eq(knowledgeSuggestions.status, "pending")));
+    await appendEvent(db, {
+      companyId: input.companyId,
+      nestId,
+      itemId: row.targetItemId,
+      event: "knowledge.suggestion.edited",
+      payload: { suggestionId: row.id },
+      actor,
+    });
+    return { id: row.id, status: row.status };
+  }
+
+  async function listSuggestions(nestId: string, status: "pending" | "accepted" | "declined" | "all" = "pending"): Promise<Array<{ id: string; targetItemId: string | null; body: string; rationale: string | null; sourceKind: KnowledgeSourceKind | null; sourceRef: string | null; status: string; createdAt: string }>> {
     const conditions = [eq(knowledgeSuggestions.nestId, nestId)];
     if (status !== "all") conditions.push(eq(knowledgeSuggestions.status, status));
     const rows = await db.select().from(knowledgeSuggestions).where(and(...conditions)).orderBy(asc(knowledgeSuggestions.createdAt));
@@ -1119,6 +1156,9 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
       id: row.id,
       targetItemId: row.targetItemId,
       body: row.body,
+      rationale: row.rationale,
+      sourceKind: row.sourceKind,
+      sourceRef: row.sourceRef,
       status: row.status,
       createdAt: row.createdAt.toISOString(),
     }));
@@ -1358,6 +1398,7 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
     search: searchNest,
     suggest,
     decideSuggestion,
+    editSuggestion,
     listSuggestions,
     exportTree,
     importTree,
