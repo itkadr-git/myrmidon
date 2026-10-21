@@ -107,6 +107,26 @@ describe("INV-10: no automatic wake without a task", () => {
     assert.match(checkWakeTaskBinding(dir)[0], /INV-10/);
   });
 
+  it("pure pass-through wrapper (id, opts) => enqueueWakeup(id, opts) is allowed", () => {
+    const dir = sandbox({
+      "server/src/services/wrap.ts": `const deps = {
+  enqueueWakeup: (nextAgentId, wakeOptions) =>
+    enqueueWakeup(nextAgentId, wakeOptions),
+};\n`,
+    });
+    assert.deepEqual(checkWakeTaskBinding(dir), []);
+  });
+
+  it("RED: wrapper that does not forward its own options fails", () => {
+    const dir = sandbox({
+      "server/src/services/wrap.ts": `const deps = {
+  enqueueWakeup: (nextAgentId, wakeOptions) =>
+    enqueueWakeup(nextAgentId, otherOptions),
+};\n`,
+    });
+    assert.match(checkWakeTaskBinding(dir)[0], /INV-10/);
+  });
+
   it("RED: undefined issueId does not satisfy task binding", () => {
     const dir = sandbox({ "server/src/services/bad.ts": `enqueueWakeup(agent.id, { source: "automation", payload: { issueId: undefined } });\n` });
     const findings = checkWakeTaskBinding(dir);

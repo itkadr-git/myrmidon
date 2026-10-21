@@ -9323,8 +9323,6 @@ export interface HeartbeatServiceOptions {
     runId: string;
     reason: string;
   }) => Promise<{ closed: number; busy: number; failed: number }>;
-  /** Test seam to exercise dependency-blocked admission without its immediate pickup side effect. */
-  suppressDependencyBlockedIdlePickup?: boolean;
   /** Test seam for changing a continuation issue at the final pre-dispatch boundary. */
   beforeResolvedInteractionContinuationDispatchCheck?: (input: {
     runId: string;
@@ -30429,7 +30427,6 @@ export function heartbeatService(
       }
       if (outcome.kind === "skipped") {
         if (
-          !options.suppressDependencyBlockedIdlePickup &&
           "dependencyBlockedAgent" in outcome &&
           outcome.dependencyBlockedReadyForPickup
         ) {
@@ -30453,16 +30450,8 @@ export function heartbeatService(
                 {
                   db,
                   budget: idleWakeBudget,
-                  // Bind the idle pickup to the task whose dependency release
-                  // made the agent eligible, so this automatic wake is auditable.
                   enqueueWakeup: (nextAgentId, wakeOptions) =>
-                    enqueueWakeup(nextAgentId, {
-                      ...wakeOptions,
-                      contextSnapshot: {
-                        ...wakeOptions.contextSnapshot,
-                        issueId: outcome.dependencyBlockedIssueId,
-                      },
-                    }),
+                    enqueueWakeup(nextAgentId, wakeOptions),
                 },
                 outcome.dependencyBlockedAgent,
                 { excludeIssueId: outcome.dependencyBlockedIssueId, behaviorEnabled: true },
@@ -32016,7 +32005,6 @@ export function heartbeatService(
     // myrmidon(IDLE-PICKUP): periodic idle-pickup pass, exposed for the
     // scheduler tick in index.ts and for tests and operators
     sweepIdlePickup: (now?: Date) => idlePickupSweeper.sweep(now),
-    resetIdlePickupForTest: () => idlePickupSweeper.resetForTest(),
 
     // myrmidon(AUTO-RESUME): resumes an agent left in `error` once its backoff
     // step is due; logic in myrmidon/auto-resume.ts. Called by the scheduler

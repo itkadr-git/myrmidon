@@ -137,13 +137,18 @@ export function checkWakeTaskBinding(root) {
           const site = `${rel}:${i + 1}`;
           const beforeCall = line.slice(0, match.index).trim();
           const forwards = /=>\s*$/.test(beforeCall) || /function\s+enqueueWakeup|opts:\s*WakeupOptions/.test(line) || /function\s+trackWakeup/.test(lines.slice(Math.max(0, i - 10), i + 1).join("\n"));
+          // Pure pass-through wrapper `(id, opts) =>\n enqueueWakeup(id, opts)`: the task binding is
+          // supplied by the caller that builds opts (e.g. idle-pickup sets contextSnapshot.issueId).
+          const prevLine = (lines[i - 1] ?? "").trim();
+          const passThrough = beforeCall === "" && /=>\s*$/.test(prevLine) && /^enqueueWakeup\(\s*(\w+)\s*,\s*(\w+)\s*\)\s*,?\s*$/.test(line.trim())
+            && new RegExp(`\\(\\s*${line.trim().match(/\(\s*(\w+)\s*,\s*(\w+)/)?.[1]}\\s*,\\s*${line.trim().match(/\(\s*(\w+)\s*,\s*(\w+)/)?.[2]}\\s*\\)\\s*=>`).test(prevLine);
           const manual = /source:\s*"on_demand"|source:\s*\w+\.source/.test(window.text);
           const explicitTask = /(?:issueId|taskId|taskKey|childId)\s*:\s*(?!undefined\b|null\b|void\s+0\b)(?:\"[^\"]+\"|'[^']+'|[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)(?![\w$])/.test(window.text);
           const contextSnapshotTask = /contextSnapshot\s*:\s*\{[\s\S]{0,500}?\b(?:issueId|taskId|taskKey|childId)\s*:\s*(?!undefined\b|null\b|void\s+0\b)(?:\"[^\"]+\"|'[^']+'|[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)/.test(window.text);
           const contextSpread = /\.\.\.(?:payload|contextSnapshot)\b/.test(window.text);
           const variableContext = /(?:payload|contextSnapshot)\s*:\s*[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*/.test(window.text);
           const schedulerTick = /source:\s*"timer"/.test(window.text) && /reason:\s*"heartbeat_timer"/.test(window.text);
-          if (!explicitTask && !contextSnapshotTask && !contextSpread && !variableContext && !manual && !schedulerTick && !forwards) findings.push(`${site}: automatic enqueueWakeup without issue/task context (INV-10)`);
+          if (!explicitTask && !contextSnapshotTask && !contextSpread && !variableContext && !manual && !schedulerTick && !forwards && !passThrough) findings.push(`${site}: automatic enqueueWakeup without issue/task context (INV-10)`);
         }
       });
     }

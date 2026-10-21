@@ -16,7 +16,6 @@ import {
   executionWorkspaces,
   heartbeatRunEvents,
   heartbeatRuns,
-  instanceSettings,
   issueComments,
   issueDocuments,
   issueRelations,
@@ -96,7 +95,7 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-heartbeat-dependency-scheduling-");
     db = createDb(tempDb.connectionString);
-    heartbeat = heartbeatService(db, { suppressDependencyBlockedIdlePickup: true });
+    heartbeat = heartbeatService(db);
     await ensureIssueRelationsTable(db);
   }, 120_000);
 
@@ -268,15 +267,6 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
   });
 
   it("keeps blocked descendants idle until their blockers resolve", async () => {
-    await db.insert(instanceSettings).values({
-      singletonKey: "default",
-      general: { teamLiveness: { idlePickupEnabled: true } },
-    }).onConflictDoUpdate({
-      target: [instanceSettings.singletonKey],
-      set: { general: { teamLiveness: { idlePickupEnabled: true } } },
-    });
-    await heartbeat.resetIdlePickupForTest();
-    await heartbeat.sweepIdlePickup(new Date(0));
     const companyId = randomUUID();
     const agentId = randomUUID();
     const blockerId = randomUUID();
@@ -373,9 +363,20 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
     });
     expect(blockedWakeRequest).toBe(true);
 
-    const idlePickupSweep = await heartbeat.sweepIdlePickup(new Date(Date.now() + 60_000));
-    expect(idlePickupSweep.issueIds).toContain(readyIssueId);
-    expect(idlePickupSweep.issueIds).not.toContain(blockedIssueId);
+    const readyWakeRequest = await waitForCondition(async () => {
+      const rows = await db
+        .select({ status: agentWakeupRequests.status, reason: agentWakeupRequests.reason })
+        .from(agentWakeupRequests)
+        .where(
+          and(
+            eq(agentWakeupRequests.agentId, agentId),
+            sql`${agentWakeupRequests.payload} ->> 'issueId' = ${readyIssueId}`,
+          ),
+        )
+        .orderBy(agentWakeupRequests.requestedAt);
+      return rows.some((row) => row.status !== "skipped" && row.reason === "idle_pickup");
+    });
+    expect(readyWakeRequest).toBe(true);
 
     const readyRunsStarted = await waitForCondition(async () => {
       const rows = await db
