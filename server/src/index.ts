@@ -137,6 +137,7 @@ import { startMaintenanceMode } from "./myrmidon/maintenance/index.js"; // myrmi
 import { startDeployJobs } from "./myrmidon/deploy-jobs/index.js"; // myrmidon(R5-A)
 import { startRuntimeLimits } from "./myrmidon/runtime-limits/index.js"; // myrmidon(C0)
 import { startProcessesSettings, createProcessSupervisor, reportReadyToSupervisor, wireSupervisorDrainHandler, type SupervisorListenerHandle } from "./myrmidon/processes/index.js"; // myrmidon(PROCS-1.1/1.2)
+import type { ProcessSupervisor } from "./myrmidon/processes/supervisor.js";
 import { resolveProcessesSettings } from "@paperclipai/shared";
 import { startBehaviorSettings } from "./myrmidon/behavior-settings/index.js"; // myrmidon(SETTINGS-CORE)
 // myrmidon(PAUSE-GUARD): resumes operator pauses left older than a threshold
@@ -157,6 +158,7 @@ import {
 } from "@paperclipai/shared"; // myrmidon(1.6.6 PROCS-J): the board's process composition
 import { readResolvedBoardProcesses } from "./myrmidon/board-processes/settings.js"; // myrmidon(1.6.6 PROCS-J)
 import { ProcessBus } from "./services/process-bus.js"; // myrmidon(1.6.6 RUN-DISPATCH-NOTIFY, OPE-6977)
+import { registerSettingsAppliers } from "./myrmidon/settings-appliers/index.js"; // myrmidon(PROCS-1.8)
 import {
   createLeaderLeaseManager,
   type LeaderLeaseManager,
@@ -1112,7 +1114,13 @@ async function startServerWithDatabaseTeardown(
         createPostgresJsClient(activeDatabaseConnectionString, { maxConnections: 1 }),
       )
     : null;
+  const settingsApplierDeps = {
+    db: db as any,
+    processSupervisor: null as ProcessSupervisor | null,
+    applyTeamLiveness: undefined as (() => Promise<void>) | undefined,
+  };
   if (processBus) {
+    registerSettingsAppliers(processBus, settingsApplierDeps);
     try {
       await processBus.start();
       logger.info({ role: processRoleValue }, "process bus started (PROCS-1.3)");
@@ -1195,6 +1203,10 @@ async function startServerWithDatabaseTeardown(
         },
       })
     : null;
+  settingsApplierDeps.processSupervisor = processSupervisor;
+  settingsApplierDeps.applyTeamLiveness = async () => {
+    await heartbeat?.applyTeamLiveness();
+  };
   if (processSupervisor) {
     logger.info("myrmidon(PROCS-1.2): process supervisor wired on the worker");
   }
@@ -1207,6 +1219,7 @@ async function startServerWithDatabaseTeardown(
     // background role.
     backgroundWork: processRoleProfile.runsBackground,
     processSupervisor,
+    processBus,
     storageService,
     feedbackExportService: feedback,
     databaseBackupService: {
