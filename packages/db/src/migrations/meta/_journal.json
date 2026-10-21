@@ -2372,8 +2372,15 @@
     {
       "idx": 401,
       "version": "7",
-      "when": 1792395500001,
-      "tag": "0401_skill_lifecycle_backfill",
+      "when": 1792395501000,
+      "tag": "0401_wakeup_key_partial_unique_indexes",
+      "breakpoints": true
+    },
+    {
+      "idx": 402,
+      "version": "7",
+      "when": 1792395502000,
+      "tag": "0402_skill_lifecycle_backfill",
       "breakpoints": true
     }
   ]
