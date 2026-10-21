@@ -18,14 +18,6 @@ settings-section: Track 4 — chats and skills
 - Повторный запрос возвращает существующую долговечную запись без повторного вызова провайдера. Запрос, который мог дойти до провайдера, сохраняется в состоянии `uncertain`; исключения провайдера заменяются стабильным безопасным кодом. Если transport не настроен, запрос завершается fail-closed, reservation освобождается.
 - Это отключённая по умолчанию реализационная граница, но quota accounting ещё не доведён до приёмки. Reservation сейчас фиксированная на запрос; долговечного атомарного баланса и проверки лимита по аккаунту нет. Нельзя использовать live-аккаунты, пока не реализованы оценка фактических units, контроль лимита, транзакционные reservation/settlement, recovery и acceptance-проверки. Проверка на live pool не проводилась.
 
-## settings-en
-
-| `MYRMIDON_POOL_CHAT_ENABLED` | OPE-8207 | unset (off) | Enables the pool-chat module boundary; deployment-specific module configuration, secret resolution, provider transport, migration, quota recovery, and acceptance verification are required before live use | unset or any value other than `1` — off |
-
-## settings-ru
-
-| `MYRMIDON_POOL_CHAT_ENABLED` | OPE-8207 | unset (off) | Включает границу pool-chat; до live-использования необходимы deployment-specific конфигурация модуля, разрешение секретов, transport провайдера, миграция, quota recovery и acceptance-проверка | не задано или любое значение кроме `1` — выключено |
-
 ### Operator acceptance runbook (EN)
 
 This is a deployment runbook, not a claim of live-pool qualification. The implementation and CI tests use a fake transport. Only an authorized operator may enable a real deployment, and this task did not perform that run.
