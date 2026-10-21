@@ -24,7 +24,10 @@ const listEventsMock = vi.hoisted(() => vi.fn());
 
 vi.mock("./guardrailsApi", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./guardrailsApi")>()),
-  listEvents: listEventsMock,
+  guardrailsApi: {
+    ...(await importOriginal<typeof import("./guardrailsApi")>()).guardrailsApi,
+    listEvents: listEventsMock,
+  },
   guardrailsEventsQueryKey: (companyId: string, filters: unknown) => [
     "myrmidon",
     "guardrails",
