@@ -142,6 +142,7 @@ describeEmbeddedPostgres("myrmidon(1.7-GRD-MODES): enforcement modes integration
       env: ENV_ON,
       now: FIXED_NOW,
     });
+    if (!decision) throw new Error("Expected guardrail decision");
     expect(decision.mode).toBe("flag");
     expect(decision.source).toBe("default");
     expect(decision.text).toBe(text);
@@ -168,6 +169,7 @@ describeEmbeddedPostgres("myrmidon(1.7-GRD-MODES): enforcement modes integration
       env: ENV_ON,
       now: FIXED_NOW,
     });
+    if (!masked) throw new Error("Expected guardrail decision");
     expect(masked.mode).toBe("mask");
     expect(masked.source).toBe("caste");
     expect(masked.caste).toBe("engineer");
@@ -188,6 +190,7 @@ describeEmbeddedPostgres("myrmidon(1.7-GRD-MODES): enforcement modes integration
       env: ENV_ON,
       now: FIXED_NOW,
     });
+    if (!blocked) throw new Error("Expected guardrail decision");
     expect(blocked.mode).toBe("block");
     expect(blocked.source).toBe("caste");
     expect(blocked.text).toContain("withheld");
@@ -215,6 +218,7 @@ describeEmbeddedPostgres("myrmidon(1.7-GRD-MODES): enforcement modes integration
       env: ENV_ON,
       now: FIXED_NOW,
     });
+    if (!decision) throw new Error("Expected guardrail decision");
     expect(decision.mode).toBe("block");
     expect(decision.source).toBe("agent");
   });
@@ -232,6 +236,7 @@ describeEmbeddedPostgres("myrmidon(1.7-GRD-MODES): enforcement modes integration
       env: { ...ENV_ON, [GUARDRAILS_MODE_FORCE_ENV]: "mask" },
       now: FIXED_NOW,
     });
+    if (!decision) throw new Error("Expected guardrail decision");
     expect(decision.mode).toBe("mask");
     expect(decision.source).toBe("env");
   });
@@ -249,6 +254,7 @@ describeEmbeddedPostgres("myrmidon(1.7-GRD-MODES): enforcement modes integration
       env: {},
       now: FIXED_NOW,
     });
+    if (!decision) throw new Error("Expected guardrail decision");
     expect(decision.hits).toBe(0);
     expect(decision.mode).toBe("flag");
     expect(decision.text).toBe(secretText());
@@ -270,6 +276,7 @@ describeEmbeddedPostgres("myrmidon(1.7-GRD-MODES): enforcement modes integration
       env: ENV_ON,
       now: FIXED_NOW,
     });
+    if (!decision) throw new Error("Expected guardrail decision");
     expect(decision.rule).toBe("pii");
     expect(decision.mode).toBe("mask");
     expect(decision.text).toContain("[masked]");
