@@ -695,7 +695,7 @@ import {
   touchHeartbeatRunRuntimeStatus,
 } from "./heartbeat-run-runtime-status.js";
 // myrmidon(DM-PROGRESS): run-log tool lines feed the live Telegram DM status steps
-import { recordDmProgressLogChunk } from "../myrmidon/telegram-dm-progress/runtime-steps.js";
+import { recordDmProgressLogChunk } from "../myrmidon/channel-connectors/bridge/dm-progress.js";
 import {
   findMissingHotRestartSnapshotRunIds,
   readHotRestartIntent,

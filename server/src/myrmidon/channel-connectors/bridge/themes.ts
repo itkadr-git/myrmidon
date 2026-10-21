@@ -46,6 +46,15 @@ export type ChannelBridgeThemeKey =
   | "services/chat-telegram-photo"
   | "services/chat-telegram-ephemeral"
   | "services/chat-telegram-rich-intake";
+  // CH-CONNECTOR-D2: DM progress/status and draft transport themes.
+  | "telegram-dm-progress/runtime-steps"
+  | "telegram-dm-status-settings"
+  | "telegram-dm-status-progress"
+  | "services/chat-telegram-draft-stop"
+  | "services/chat-telegram-video-note"
+  | "telegram-dm-progress/settings"
+  | "telegram-dm-progress/sweep"
+  | "telegram-dm-progress/throttle";
 
 /**
  * The symbols a connector serves for one theme. Every symbol left out keeps

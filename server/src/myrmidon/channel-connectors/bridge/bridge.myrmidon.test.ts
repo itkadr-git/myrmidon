@@ -124,13 +124,14 @@ describe("bridge seam: theme selection", () => {
 // seam, and none of them is left on the bridge module directly. The list is the
 // call map of the task: batch 1 covers points 1-8 (addressing aliases), 41-45
 // (forum topics), 46-49 (voice intake) and 55-63 (conversation identity); batch
+// 2 (OPE-6975) adds the DM progress/status track and the draft/video transport
+// (map points 27-40, 50-52); batch
 // 3 (OPE-6976) adds points 53-54 (media intake and the rich tree's own binding
 // call), 64-69 (the notify track), 71-72 (DM command menus) and 73-77 (the
 // Telegram helper modules). The shared re-export of point 70 stays in
 // `packages/shared` on purpose: it is the data contract (types and validators
 // the board UI reads too), not a bridge call the connector can serve.
-const BATCH_SEAM = "myrmidon/channel-connectors/bridge/";
-const CONVERTED: {
+const BATCH_SEAM = "myrmidon/channel-connectors/bridge/";const CONVERTED: {
   file: string;
   legacy: string;
   seam: string;
@@ -226,6 +227,72 @@ const CONVERTED: {
     legacy: "myrmidon/telegram-voice-stt-intake/wiring.js",
     seam: "channel-connectors/bridge/voice-stt.js",
     symbols: ["createTelegramVoiceSttWiring"],
+  },
+  {
+    file: "services/chat-run-publications.ts",
+    legacy: "myrmidon/telegram-dm-status-settings.js",
+    seam: "channel-connectors/bridge/dm-status-settings.js",
+    symbols: ["telegramDmStatusEnabled"],
+  },
+  {
+    file: "services/chat-run-publications.ts",
+    legacy: "myrmidon/telegram-dm-status-progress.js",
+    seam: "channel-connectors/bridge/dm-status-progress.js",
+    symbols: ["composeDmStatusText", "readDmStatusSteps"],
+  },
+  {
+    file: "services/chat-run-publications.ts",
+    legacy: "myrmidon/telegram-dm-progress/runtime-steps.js",
+    seam: "channel-connectors/bridge/dm-progress.js",
+    symbols: ["readDmProgressRuntimeSteps"],
+  },
+  {
+    file: "services/chat-run-publications.ts",
+    legacy: "myrmidon/telegram-dm-progress/sweep.js",
+    seam: "channel-connectors/bridge/dm-progress-sweep.js",
+    symbols: ["readTelegramDmProgressForSweep"],
+  },
+  {
+    file: "services/chat-run-publications.ts",
+    legacy: "myrmidon/telegram-dm-progress/throttle.js",
+    seam: "channel-connectors/bridge/dm-progress-throttle.js",
+    symbols: ["decideDmStatusPublish"],
+  },
+  {
+    file: "services/chat-channels.ts",
+    legacy: "./chat-telegram-draft-stop.js",
+    seam: "channel-connectors/bridge/telegram-draft-stop.js",
+    symbols: ["isTelegramDraftStopped", "parseTelegramDraftBinding"],
+  },
+  {
+    file: "services/chat-sdk-runtime.ts",
+    legacy: "./chat-telegram-draft-stop.js",
+    seam: "channel-connectors/bridge/telegram-draft-stop.js",
+    symbols: ["isTelegramDraftStopped", "parseTelegramDraftBinding"],
+  },
+  {
+    file: "services/chat-sdk-runtime.ts",
+    legacy: "./chat-telegram-video-note.js",
+    seam: "channel-connectors/bridge/telegram-video-note.js",
+    symbols: ["normalizeTelegramVideoNoteAttachments"],
+  },
+  {
+    file: "services/heartbeat.ts",
+    legacy: "myrmidon/telegram-dm-progress/runtime-steps.js",
+    seam: "channel-connectors/bridge/dm-progress.js",
+    symbols: ["recordDmProgressLogChunk"],
+  },
+  {
+    file: "services/heartbeat-run-runtime-status.ts",
+    legacy: "myrmidon/telegram-dm-progress/runtime-steps.js",
+    seam: "channel-connectors/bridge/dm-progress.js",
+    symbols: ["recordDmProgressStep", "recordDmProgressRuntimeStatus"],
+  },
+  {
+    file: "services/instance-settings.ts",
+    legacy: "myrmidon/telegram-dm-progress/settings.js",
+    seam: "channel-connectors/bridge/dm-progress-settings.js",
+    symbols: ["preserveTelegramDmProgressGeneralKey"],
   },
   // myrmidon(1.6.6 CH-CONNECTOR-D) batch 3 (OPE-6976), the map points 53-77.
   {
@@ -350,8 +417,7 @@ const BATCH3_SEAM_MODULES = [
   "telegram-media.ts",
   "telegram-photo.ts",
   "telegram-ephemeral.ts",
-  "telegram-rich.ts",
-];
+  "telegram-rich.ts",];
 
 const SRC_DIR = join(fileURLToPath(new URL(".", import.meta.url)), "..", "..", "..");
 
