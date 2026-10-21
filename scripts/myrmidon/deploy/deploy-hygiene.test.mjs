@@ -30,6 +30,9 @@ echo "docker $*" >> "$SANDBOX/calls.log"
 last=""
 for a in "$@"; do last="$a"; done
 case "$1" in
+  ps)
+    cat "$SANDBOX/containers.txt" 2>/dev/null
+    exit 0 ;;
   inspect)
     grep -m1 "^" "$SANDBOX/used-images.txt" 2>/dev/null
     exit 0 ;;
@@ -40,10 +43,15 @@ case "$1" in
           case "$4" in *RootFS.Layers*) echo '["sha256:local-layer"]'; exit 0 ;; esac
         fi
         if [ -n "\${FAKE_LOCAL_IMAGE:-}" ] && [ "$last" = "$FAKE_LOCAL_IMAGE" ]; then exit 0; fi
-        echo "Error: No such image: $last" >&2; exit 1 ;;
+        echo "Error: No such image: $last" >&2
+        exit 1 ;;
       ls)
         repo=""
-        for a in "$@"; do case "$a" in image|ls|--*) continue ;; esac; repo="$a"; break; done
+        for a in "$@"; do
+          case "$a" in image|ls|--*) continue ;; esac
+          repo="$a"
+          break
+        done
         short=$(basename "$repo")
         cat "$SANDBOX/images-$short.txt" 2>/dev/null
         exit 0 ;;
@@ -57,13 +65,13 @@ case "$1" in
         done
         echo "deleted $last"
         exit 0 ;;
-  system)
-    if [ "$2" = "df" ]; then echo "Docker disk usage"; exit 0; fi ;;
-  ps)
-    cat "$SANDBOX/containers.txt" 2>/dev/null
+    esac
     exit 0 ;;
-  inspect)
-    cat "$SANDBOX/used-images.txt" 2>/dev/null
+  system)
+    if [ "$2" = "df" ]; then
+      echo "TYPE            TOTAL     ACTIVE    SIZE      RECLAIMABLE"
+      echo "Images          8         3         33GB      20GB"
+    fi
     exit 0 ;;
   buildx)
     case "$*" in
@@ -77,7 +85,9 @@ case "$1" in
         exit 0 ;;
     esac
     exit 0 ;;
-  run) echo "cid-x"; exit 0 ;;
+  run)
+    echo "cid-x"
+    exit 0 ;;
 esac
 exit 0
 `;
@@ -185,14 +195,12 @@ exit 0
     fs.writeFileSync(path.join(bin, "git"), gitContent, { mode: 0o755 });
     return { dir, bin };
   }
-  // Runs deploy.sh up to its first argument check with the fake git first in
-  // PATH; the run dies on "give --digest or --release", after the journal's
-  // first line. The deploy journal is STDERR (deploy-from-job.sh captures it
-  // as job-<id>.log), so the head assertions read stderr only — and each case
-  // also proves the stamp never leaks into stdout.
+  // Keep the fake invocation environment isolated from a host BASH_ENV. A host
+  // startup file can otherwise override the fake git and hide the fixture's
+  // fallback/error branches.
   function runJournal(sb, exactPath = false) {
     return spawnSync("bash", [path.join(HERE, "deploy.sh")], {
-      env: { ...process.env, PATH: exactPath ? sb.bin : `${sb.bin}:${process.env.PATH}`, SANDBOX: sb.dir },
+      env: { ...process.env, BASH_ENV: "", PATH: exactPath ? sb.bin : `${sb.bin}:${process.env.PATH}`, SANDBOX: sb.dir },
       encoding: "utf8",
     });
   }
