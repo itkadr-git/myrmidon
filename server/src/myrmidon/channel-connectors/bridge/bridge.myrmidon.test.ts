@@ -247,7 +247,6 @@ const CONVERTED: {
     legacy: "myrmidon/telegram-dm-progress/runtime-steps.js",
     seam: "channel-connectors/bridge/dm-progress.js",
     symbols: [
-      "recordDmProgressStep",
       "recordDmProgressRuntimeStatus",
       "clearDmProgressRuntimeSteps",
       "clearAllDmProgressRuntimeSteps",
