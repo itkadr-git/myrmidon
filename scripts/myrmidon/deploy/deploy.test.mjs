@@ -104,6 +104,7 @@ case "$1" in
   fetch) if [ -e "$SANDBOX/git-fetch-fails" ]; then echo "fatal: unable to access" >&2; exit 128; fi ;;
   merge-base) exit "$(cat "$SANDBOX/git-ancestor-exit")" ;;
   ls-remote) cat "$SANDBOX/git-tags" ;;
+  commit) if [ -e "$SANDBOX/git-commit-fails" ]; then echo "fatal: unable to commit" >&2; exit 1; fi ;;
 esac
 `;
 
@@ -1708,12 +1709,15 @@ exit 0
     const labelSource = (label) =>
       `printf '%s' '${label}'`;
 
-    const enable = (sb, extra = {}) =>
+    const enable = (sb, extra = {}) => {
+      // the anchor's git repository (the step commits only into a real .git dir)
+      fs.mkdirSync(path.join(extra.git ?? path.join(sb.dir, "repo"), ".git"), { recursive: true });
       fs.appendFileSync(sb.config, [
         `MYRMIDON_COMPOSE_SET_ANCHOR_FILE=${extra.file ?? path.join(sb.dir, "checklist.md")}`,
         `MYRMIDON_COMPOSE_SET_ANCHOR_GIT=${extra.git ?? path.join(sb.dir, "repo")}`,
         extra.label ? `MYRMIDON_COMPOSE_SET_LABEL_SOURCE='${extra.label}'` : "",
       ].filter(Boolean).join("\n") + "\n");
+    };
 
     it("is skipped with a log line when the anchor file setting is empty", () => {
       const sb = sandbox();
@@ -1756,7 +1760,7 @@ exit 0
       assert.match(calls(sb), /git -C \S+repo add -- checklist\.md/);
       assert.match(calls(sb), /git -C \S+repo commit -m chore\(deploy\): sync board-mount-set anchor to the live compose set/);
       // the digest of this deploy is in the commit message
-      assert.match(calls(sb), new RegExp(`deploy sha256:b{63}b`));
+      assert.match(calls(sb), new RegExp(`deploy \\S*sha256:b{63}b`));
     });
 
     it("warns and rewrites nothing when the anchor file has no readable block", () => {
@@ -1767,6 +1771,28 @@ exit 0
       assert.equal(code, 0, out);
       assert.match(out, /COMPOSE-SET-ANCHOR: no readable board-mount-set block/);
       assert.equal(read(path.join(sb.dir, "checklist.md")), "# checklist without a block\n");
+    });
+
+    it("warns, keeps the rewritten file and does not fail the deploy when git commit fails", () => {
+      const sb = sandbox();
+      anchorFile(sb, ["docker-compose.yml"]);
+      fs.writeFileSync(path.join(sb.dir, "git-commit-fails"), "");
+      enable(sb, { label: labelSource("docker-compose.yml,docker-compose.myrmidon-dockergate.yml") });
+      const { code, out } = run(sb, "deploy.sh", ["--digest", NEW]);
+      assert.equal(code, 0, out);
+      assert.match(out, /WARNING: COMPOSE-SET-ANCHOR: the git commit of checklist\.md failed/);
+      assert.match(read(path.join(sb.dir, "checklist.md")), /board-mount-set:begin\n\s*docker-compose\.yml\n\s*docker-compose\.myrmidon-dockergate\.yml\n\s*<!-- board-mount-set:end/);
+    });
+
+    it("warns and rewrites nothing when the block has a begin marker but no end marker", () => {
+      const sb = sandbox();
+      const body = "# checklist\n<!-- board-mount-set:begin -->\ndocker-compose.yml\n\ntail text\n";
+      fs.writeFileSync(path.join(sb.dir, "checklist.md"), body);
+      enable(sb, { label: labelSource("docker-compose.yml,docker-compose.myrmidon-dockergate.yml") });
+      const { code, out } = run(sb, "deploy.sh", ["--digest", NEW]);
+      assert.equal(code, 0, out);
+      assert.match(out, /COMPOSE-SET-ANCHOR: the board-mount-set block .* has no end marker/);
+      assert.equal(read(path.join(sb.dir, "checklist.md")), body);
     });
 
     it("warns and keeps going when the anchor file does not exist", () => {

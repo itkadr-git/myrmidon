@@ -922,6 +922,10 @@ sync_compose_set_anchor() {
     log "WARNING: COMPOSE-SET-ANCHOR: no readable board-mount-set block in $anchor_file (the block format is the watchdog's contract and is not created here); the anchor was not re-checked"
     return 0
   fi
+  if ! grep -q 'board-mount-set:end' "$anchor_file"; then
+    log "WARNING: COMPOSE-SET-ANCHOR: the board-mount-set block in $anchor_file has no end marker; nothing was rewritten"
+    return 0
+  fi
   if [[ "$anchor_basenames" == "$label_basenames" ]]; then
     ANCHOR_SYNC_ACTION="match"
     log "COMPOSE-SET-ANCHOR: the anchor matches the live set ($(printf '%s' "$label_basenames" | grep -c . || true) fragments)"
@@ -973,7 +977,9 @@ sync_compose_set_anchor() {
   owner="$(stat -c '%u:%g' "$anchor_file" 2>/dev/null || printf '')"
   mv -f "$tmp" "$anchor_file"
   chmod "$mode" "$anchor_file"
-  [[ -n "$owner" ]] && chown "$owner" "$anchor_file" 2>/dev/null || true
+  if [[ -n "$owner" ]]; then
+    chown "$owner" "$anchor_file" 2>/dev/null || true
+  fi
   ANCHOR_SYNC_ACTION="rewritten"
   log "COMPOSE-SET-ANCHOR: the live set differs from the anchor; the block was rewritten from the live label:"
   log "  anchor had: $(printf '%s' "$anchor_basenames" | tr '\n' ' ')"
