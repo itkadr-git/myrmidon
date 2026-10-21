@@ -541,7 +541,9 @@ describeProcs("drain and failover e2e: supervisor in-process, two api children (
           .select({ bootId: boardProcesses.bootId })
           .from(boardProcesses)
           .where(eq(boardProcesses.pid, victimPid));
-        return row?.bootId ?? "victim process registry row not published yet";
+        return row?.bootId
+          ? true
+          : "victim process registry row not published yet";
       },
       { timeoutMs: SPLIT_READY_TIMEOUT_MS, label: "victim child registered in board_processes" },
     );
