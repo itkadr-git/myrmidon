@@ -211,6 +211,8 @@ const {
     routineServiceFactoryMock,
     routineServiceMock,
     existingSettingsRows,
+    connectionDeliverySweepPendingMock,
+    questionResponseDeliverySweepPendingMock,
   };
 });
 
