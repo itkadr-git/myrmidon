@@ -65,6 +65,33 @@ const PILOT_WORD = /pilot/i;
  * substring inside another word does not. */
 const PILOT_TOKEN = /(?<![A-Za-z0-9_])pilot(?![A-Za-z0-9_])|pilot(?:Enabled|Percent|_enabled|_percent)\b/i;
 
+/** INV-10: the only call sites allowed to pass payload/contextSnapshot as a
+ * variable (or spread). Each entry is matched by a stable text marker in the
+ * call window (not a line number) and PROVEN against its producer: the gate
+ * requires `producer.pattern` to match in `producer.file`, i.e. the producer
+ * still builds the context with an issueId. An unregistered variable payload
+ * is a violation. */
+const VERIFIED_VARIABLE_WAKES = [
+  { file: "server/src/services/heartbeat.ts", marker: /remote-stop-comment:/,
+    producer: { file: "server/src/services/heartbeat.ts", pattern: /payload->>'issueId' = \$\{issueId\}/ } },
+  { file: "server/src/services/heartbeat.ts", marker: /RUN_LIVENESS_CONTINUATION_REASON/,
+    producer: { file: "server/src/services/recovery/run-liveness-continuations.ts", pattern: /contextSnapshot:\s*withRecoveryContext\(\{\s*issueId:/ } },
+  { file: "server/src/services/heartbeat.ts", marker: /FINISH_SUCCESSFUL_RUN_HANDOFF_REASON/,
+    producer: { file: "server/src/services/recovery/successful-run-handoff.ts", pattern: /const payload = withRecoveryContext\(\{\s*issueId:/ } },
+  { file: "server/src/services/heartbeat.ts", marker: /ISSUE_REVIEW_PATH_LOST_WAKE_REASON/,
+    producer: { file: "server/src/services/recovery/review-path-recovery.ts", pattern: /const payload = withRecoveryContext\(\{\s*issueId:/ } },
+  { file: "server/src/services/task-watchdogs.ts", marker: /task_watchdog_stopped_subtree/,
+    producer: { file: "server/src/services/task-watchdogs.ts", pattern: /function watchdogWakeContext[\s\S]{0,600}?return \{\s*issueId:/ } },
+];
+
+function verifiedVariableWake(root, rel, windowText) {
+  return VERIFIED_VARIABLE_WAKES.some((entry) => {
+    if (entry.file !== rel || !entry.marker.test(windowText)) return false;
+    const producer = readIfExists(root, entry.producer.file);
+    return producer !== null && entry.producer.pattern.test(producer);
+  });
+}
+
 /** Automatic sources that need the task binding; manual ones are user-driven. */
 const AUTOMATIC_WAKE_SOURCES = ["automation", "assignment", "timer"];
 
@@ -145,10 +172,12 @@ export function checkWakeTaskBinding(root) {
           const manual = /source:\s*"on_demand"|source:\s*\w+\.source/.test(window.text);
           const explicitTask = /(?:issueId|taskId|taskKey|childId)\s*:\s*(?!undefined\b|null\b|void\s+0\b)(?:\"[^\"]+\"|'[^']+'|[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)(?![\w$])/.test(window.text);
           const contextSnapshotTask = /contextSnapshot\s*:\s*\{[\s\S]{0,500}?\b(?:issueId|taskId|taskKey|childId)\s*:\s*(?!undefined\b|null\b|void\s+0\b)(?:\"[^\"]+\"|'[^']+'|[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)/.test(window.text);
-          const contextSpread = /\.\.\.(?:payload|contextSnapshot)\b/.test(window.text);
-          const variableContext = /(?:payload|contextSnapshot)\s*:\s*[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*/.test(window.text);
+          // `{ issueId, ... }` shorthand inside the contextSnapshot literal (also behind a ternary/call).
+          const shorthandTask = /contextSnapshot\s*:[^{}]{0,40}\{[^{}]*?\b(?:issueId|taskId)\b\s*[,}]/.test(window.text);
+          // A variable/spread payload proves nothing by itself: only registered, producer-verified sites pass.
+          const verifiedVariable = verifiedVariableWake(root, rel.split(path.sep).join("/"), window.text);
           const schedulerTick = /source:\s*"timer"/.test(window.text) && /reason:\s*"heartbeat_timer"/.test(window.text);
-          if (!explicitTask && !contextSnapshotTask && !contextSpread && !variableContext && !manual && !schedulerTick && !forwards && !passThrough) findings.push(`${site}: automatic enqueueWakeup without issue/task context (INV-10)`);
+          if (!explicitTask && !contextSnapshotTask && !shorthandTask && !verifiedVariable && !manual && !schedulerTick && !forwards && !passThrough) findings.push(`${site}: automatic enqueueWakeup without issue/task context (INV-10)`);
         }
       });
     }
@@ -175,7 +204,11 @@ export function checkSingleQueueOrder(root) {
     lines.forEach((line, i) => {
       if (/\.sort\s*\(/.test(line)) {
         const queueOrderingRegion = /orderSwarmQueueCandidates[\s\S]{0,1800}?\.sort\s*\(/.test(lines.slice(Math.max(0, i - 35), i + 1).join("\n"));
-        const roleSort = rel === "server/src/myrmidon/swarm-claim/matcher.ts" && i + 1 >= 1070 && i + 1 <= 1080;
+        // The role-name listing: a comparator-less .sort() of agent role strings
+        // (lexicographic, not a queue order). Matched by content, not line number.
+        const roleSort = rel === "server/src/myrmidon/swarm-claim/matcher.ts"
+          && /\.sort\(\s*\)/.test(line)
+          && /\.map\(\(agent\) => agent\.role\)/.test(lines.slice(Math.max(0, i - 10), i).join("\n"));
         if (!queueOrderingRegion && !roleSort) findings.push(`${rel}:${i + 1}: queue code must use orderSwarmQueueCandidates, not .sort() (INV-11)`);
       }
     });

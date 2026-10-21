@@ -136,6 +136,57 @@ describe("INV-10: no automatic wake without a task", () => {
 });
 
 describe("INV-11: one swarm queue order", () => {
+  it("RED: a variable payload/contextSnapshot without a verified producer fails", () => {
+    const dir = sandbox({
+      "server/src/services/bad.ts": `await enqueueWakeup(agent.id, {
+  source: "automation",
+  reason: "sneaky",
+  payload: somePayload,
+  contextSnapshot: ctx,
+});\n`,
+    });
+    assert.match(checkWakeTaskBinding(dir)[0], /INV-10/);
+  });
+
+  it("RED: spreading an unknown contextSnapshot without a verified producer fails", () => {
+    const dir = sandbox({
+      "server/src/services/bad.ts": `await enqueueWakeup(agent.id, {
+  source: "automation",
+  contextSnapshot: { ...decision.contextSnapshot, parentRunId: run.id },
+});\n`,
+    });
+    assert.match(checkWakeTaskBinding(dir)[0], /INV-10/);
+  });
+
+  it("a registered variable wake passes only while its producer still carries issueId", () => {
+    const call = `await enqueueWakeup(agent.id, {
+  source: "automation",
+  reason: ISSUE_REVIEW_PATH_LOST_WAKE_REASON,
+  payload: decision.payload,
+  contextSnapshot: decision.contextSnapshot,
+});\n`;
+    const good = sandbox({
+      "server/src/services/heartbeat.ts": call,
+      "server/src/services/recovery/review-path-recovery.ts": `const payload = withRecoveryContext({\n    issueId: input.issueId,\n  }, "normal_model");\n`,
+    });
+    assert.deepEqual(checkWakeTaskBinding(good), []);
+    const broken = sandbox({
+      "server/src/services/heartbeat.ts": call,
+      "server/src/services/recovery/review-path-recovery.ts": `const payload = withRecoveryContext({\n    reviewPathLost: true,\n  }, "normal_model");\n`,
+    });
+    assert.match(checkWakeTaskBinding(broken)[0], /INV-10/);
+  });
+
+  it("shorthand issueId inside the contextSnapshot literal passes", () => {
+    const dir = sandbox({
+      "server/src/services/ok.ts": `await enqueueWakeup(agent.id, {
+  source: "on_demand_like",
+  contextSnapshot: response ? { ...parse(x), issueId, triggeredBy: "board" } : { issueId },
+});\n`,
+    });
+    assert.deepEqual(checkWakeTaskBinding(dir), []);
+  });
+
   it("RED: a second .sort() of queue candidates fails", () => {
     const dir = sandbox({
       "server/src/myrmidon/swarm-claim/queue2.ts": `const ordered = candidates.sort((a, b) => a.weight - b.weight);\n`,
@@ -147,6 +198,27 @@ describe("INV-11: one swarm queue order", () => {
 
   it("RED: a nested second queue sort fails", () => {
     const dir = sandbox({ "server/src/myrmidon/swarm-claim/nested/order.ts": `const ordered = candidates.sort((a, b) => a.weight - b.weight);\n` });
+    assert.match(checkSingleQueueOrder(dir)[0], /INV-11/);
+  });
+
+  it("the role-name sort in matcher.ts is exempt by content, regardless of its line number", () => {
+    const body = `const roles = [
+  ...new Set(
+    agentRows
+      .map((agent) => agent.role),
+  ),
+]
+  .filter((role) => !wanted || wanted.has(role))
+  .sort();\n`;
+    const shifted = "// padding\n".repeat(2000) + body;
+    const dir = sandbox({ "server/src/myrmidon/swarm-claim/matcher.ts": body, "server/src/myrmidon/swarm-claim/matcher2.ts": "x" });
+    assert.deepEqual(checkSingleQueueOrder(dir), []);
+    const dir2 = sandbox({ "server/src/myrmidon/swarm-claim/matcher.ts": shifted });
+    assert.deepEqual(checkSingleQueueOrder(dir2), []);
+  });
+
+  it("RED: a comparator sort in matcher.ts is not exempt", () => {
+    const dir = sandbox({ "server/src/myrmidon/swarm-claim/matcher.ts": `const x = rows.map((agent) => agent.role)\n  .sort((a, b) => a.weight - b.weight);\n` });
     assert.match(checkSingleQueueOrder(dir)[0], /INV-11/);
   });
 
