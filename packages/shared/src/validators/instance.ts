@@ -386,6 +386,12 @@ export const instanceGeneralSettingsSchema = z.object({
   // fields another part of the same feature stores there; absent (or an absent
   // count) means the default { api: 1, worker: 0 } = today's single process.
   processes: storedBoardProcessesSettingsSchema.optional(),
+  // myrmidon(PROCS-1.8): committed task-drain state shared across processes.
+  taskDrain: z.object({
+    draining: z.boolean(),
+    startedAt: z.string().datetime().nullable(),
+    expiresAt: z.string().datetime().nullable(),
+  }).optional(),
   // myrmidon(1.7-BUDGET-CONFIG A): the global "signal only" flag of the
   // per-level spend limits, changed from PATCH …/budget-limits/signal-only;
   // absent means the default (signal only ON — limits never stop work).
