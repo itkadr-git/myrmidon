@@ -32,6 +32,7 @@ const {
   resolveHeartbeatSchedulingSuppressionMock,
   routineServiceFactoryMock,
   routineServiceMock,
+  startBoardProcessRegistryMock,
 } = vi.hoisted(() => {
   const createAppMock = vi.fn(async () => Object.assign((_: unknown, __: unknown) => {}, {
     locals: {
@@ -119,6 +120,7 @@ const {
     tickScheduledTriggers: vi.fn(async () => ({ triggered: 0 })),
   };
   const routineServiceFactoryMock = vi.fn(() => routineServiceMock);
+  const startBoardProcessRegistryMock = vi.fn();
   const feedbackExportServiceMock = {
     flushPendingFeedbackTraces: vi.fn(async () => ({ attempted: 0, sent: 0, failed: 0 })),
   };
@@ -158,6 +160,7 @@ const {
     resolveHeartbeatSchedulingSuppressionMock,
     routineServiceFactoryMock,
     routineServiceMock,
+    startBoardProcessRegistryMock,
   };
 });
 
@@ -234,6 +237,12 @@ vi.mock("../services/native-runtime/native-session-executor.js", () => ({
   verifyStoppedNativeSessionForReplacement: vi.fn(async () => null),
 }));
 
+vi.mock("../myrmidon/process-registry/index.js", () => ({
+  startBoardProcessRegistry: startBoardProcessRegistryMock,
+  stopBoardProcessRegistry: vi.fn(),
+  myrmidonBoardProcessRegistryRoutes: vi.fn(() => ({ use: vi.fn() })),
+}));
+
 // This suite verifies server startup scheduling; replacement correctness is
 // exercised by the dedicated DB-backed recovery suites.
 vi.mock("../services/native-runtime/native-safe-replacement.js", () => ({
@@ -254,6 +263,8 @@ vi.mock("../middleware/logger.js", () => ({
     error: vi.fn(),
   },
 }));
+
+import { logger } from "../middleware/logger.js";
 
 vi.mock("../realtime/live-events-ws.js", () => ({
   setupLiveEventsWebSocketServer: vi.fn(),
@@ -460,6 +471,20 @@ describe("startServer feedback export wiring", () => {
     createBetterAuthInstanceMock.mockReturnValue({});
     deriveAuthTrustedOriginsMock.mockReturnValue([]);
     process.env.BETTER_AUTH_SECRET = "test-secret";
+  });
+
+  it("starts the process registry exactly once before reporting API readiness", async () => {
+    await startServer();
+
+    expect(startBoardProcessRegistryMock).toHaveBeenCalledTimes(1);
+    const registryStartOrder = startBoardProcessRegistryMock.mock.invocationCallOrder[0];
+    const readyLogOrder = vi.mocked(logger.info).mock.invocationCallOrder.find(
+      (_order, index) =>
+        typeof vi.mocked(logger.info).mock.calls[index]?.[0] === "string" &&
+        (vi.mocked(logger.info).mock.calls[index]?.[0] as string).startsWith("Server startup recovery complete"),
+    );
+    expect(readyLogOrder).toBeDefined();
+    expect(registryStartOrder).toBeLessThan(readyLogOrder!);
   });
 
   it("starts without PAPERCLIP_DECISION_SIGNING_SECRET by generating a persisted key", async () => {

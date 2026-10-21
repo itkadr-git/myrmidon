@@ -2038,22 +2038,6 @@ async function startServerWithDatabaseTeardown(
   scheduleGitHubConnectionEventPoll();
   scheduleGitHubConnectionContinuitySweep();
 
-  // myrmidon(1.6.6 PROCS-0.1): the process registry pulse — this process's
-  // row every 10 s, stale rows reaped by the process that owns timers. The
-  // behavior with mode=single is exactly today's: one process, one row.
-  {
-    const boundBoardAddress =
-      typeof server.address === "function" ? server.address() : null;
-    startBoardProcessRegistry(db as any, {
-      apiPort:
-        typeof boundBoardAddress === "object" && boundBoardAddress
-          ? boundBoardAddress.port
-          : listenPort,
-      onError: (error, phase) =>
-        logger.warn({ err: error, phase }, "board process registry tick failed"),
-    });
-  }
-
   // myrmidon(PROCS-1.2): the whole heartbeat/sweep block below is the worker
   // role's business. An api child serves HTTP only — it builds the objects the
   // app layer imports (with inert no-op handles) and skips every scheduler,
