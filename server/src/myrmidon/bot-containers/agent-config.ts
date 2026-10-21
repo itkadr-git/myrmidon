@@ -28,7 +28,7 @@ const HERMES_GATEWAY_ADAPTER_TYPE = "hermes_gateway";
  * migration that completed legacy cards used. There is one set for every bot
  * image family (hermes, hermes-dev, hermes-node): no per-family limits exist.
  */
-export const BOT_CONTAINER_DEFAULTS = { memoryMb: 2048, cpus: 1, pidsLimit: 512 } as const;
+export const BOT_CONTAINER_DEFAULTS = { memoryMb: 1024, cpus: 1, pidsLimit: 512 } as const;
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);

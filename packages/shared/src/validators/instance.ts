@@ -66,6 +66,8 @@ import { reviewReworkSettingsSchema } from "../myrmidon-review-rework.js";
 import { budgetEnforcementSettingsSchema } from "../myrmidon-budget-enforcement.js";
 // myrmidon(1.7-AGENT-EXCHANGE-A): the discussion-room settings of the same row.
 import { agentExchangeSettingsSchema } from "../myrmidon-agent-exchange.js";
+// myrmidon(1.7-AGENT-EXCHANGE-B): the feed of discussion rooms of the same row.
+import { agentExchangeFeedSettingsSchema } from "../myrmidon-agent-exchange-feed.js";
 // myrmidon(MEMORY-UI): the agent memory settings stored in the same row.
 import { agentMemorySettingsSchema } from "../myrmidon-agent-memory.js";
 // myrmidon(PAUSE-GUARD): the forgotten-pause guard settings stored in the same
@@ -134,6 +136,24 @@ export const backupRetentionPolicySchema = z.object({
   // absent/false keeps tiered retention. Additive — old payloads parse unchanged.
   keepLastOnly: z.boolean().optional(),
 });
+
+// myrmidon(1.6.6 PROCS-1.7 part A): the lease-relevant half of
+// `general.processes`. The counts half (api/worker) is owned by PROCS-J in
+// `packages/shared/src/myrmidon-board-processes.ts`; the stored row is shared
+// between both, so this schema passthrough-accepts the fields it does not own
+// (api, worker, and anything a later part adds). Every field has a default
+// and the defaults are the single-process board: nothing changes until an
+// operator explicitly switches `mode` to `split`.
+export const boardProcessesSettingsSchema = z
+  .object({
+    mode: z.enum(["single", "split"]).default("single"),
+    apiCount: z.number().int().min(1).max(4).default(1),
+    leaderLeaseTtlSec: z.number().int().min(5).max(300).default(30),
+    liveEventsBus: z.enum(["local", "pg"]).default("local"),
+    admissionStore: z.enum(["memory", "db"]).default("memory"),
+    singletonProxy: z.boolean().default(true),
+  })
+  .passthrough();
 
 export const instanceGeneralSettingsSchema = z.object({
   censorUsernameInLogs: z.boolean().default(false),
@@ -301,6 +321,9 @@ export const instanceGeneralSettingsSchema = z.object({
   // from /api/myrmidon/agent-exchange/settings; absent means the defaults
   // (the room feature is off).
   agentExchange: agentExchangeSettingsSchema.optional(),
+  // myrmidon(1.7-AGENT-EXCHANGE-B): the feed of discussion rooms of the same
+  // general settings row.
+  agentExchangeFeed: agentExchangeFeedSettingsSchema.optional(),
   // myrmidon(PLUGIN-ENTITLEMENT C): accepted plugin entitlement keys, managed
   // from the instance settings page and PATCH /api/myrmidon/plugin-entitlement/keys;
   // absent means "no keys are registered" (no plugin is unlocked).

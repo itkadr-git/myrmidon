@@ -36,11 +36,16 @@ describe("metrics self-check probe", () => {
     // (1.6.5-PROCS-Q3 five process families, the event-loop utilization of
     // PROCS-0.1 as the sixth, the two PROCS-0.3A lane families as the seventh
     // and eighth) are likewise not DB reads — they survive a broken
-    // database too.
-    expect(result.families_ok).toBe(1 + 8);
+
+    // database too. The bridge fallback and chat-ingress counters are the
+    // ninth and tenth: in-process counters with no database behind them.
+    expect(result.families_ok).toBe(1 + 8 + 2);
     const expectedFailed = METRIC_FAMILIES.filter(
       (family) =>
-        family !== "myrmidon_scrape_errors" && !family.startsWith("myrmidon_board_"),
+        family !== "myrmidon_scrape_errors" &&
+        !family.startsWith("myrmidon_board_") &&
+        family !== "myrmidon_adapter_fallback_total" &&
+        family !== "myrmidon_chat_ingress_total",
     ).sort();
     expect(result.families_failed.sort()).toEqual(expectedFailed);
     expect(result.checked_at).toBe(NOW.toISOString());
