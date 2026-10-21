@@ -36,6 +36,9 @@ import {
 } from "./helpers/embedded-postgres.js";
 import { matchAgent, matchIssue, type SwarmMatcherDeps } from "../myrmidon/swarm-claim/matcher.js";
 import { listRoleQueue, roleQueueRows } from "../myrmidon/swarm-claim/queue.js";
+import { idlePickupCandidateRows } from "../myrmidon/idle-pickup.js";
+import { botScopeStore } from "../myrmidon/bot-containers/scope-wiring.js";
+import { issueService } from "../services/issues.js";
 import { listAgentProjectIds } from "../myrmidon/project-membership.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -300,5 +303,58 @@ describeEmbeddedPostgres("project-scoped automatic claim", () => {
     // matcher: the nested agent wins over the outsider that sorts first
     const pair = await matchIssue(matcher(), scoped);
     expect(pair?.agentId).toBe(MEMBER_ID);
+  });
+
+  it("idle pickup keeps a task assigned to a non-member: the scope gates handing out, not the assignee", async () => {
+    const companyId = await seedCompany();
+    await seedAgent(companyId, OUTSIDER_ID, "outsider-eng");
+    const projectId = await seedProject(companyId);
+    const issueId = await seedTask(companyId, "TASK-ASSIGNED", projectId);
+    await db.update(issues).set({ assigneeAgentId: OUTSIDER_ID }).where(eqId(issueId));
+
+    const rows = await idlePickupCandidateRows(db, companyId, OUTSIDER_ID);
+
+    expect(rows.map((row) => row.id)).toEqual([issueId]);
+  });
+
+  it("a child task inherits the parent's projectId", async () => {
+    const companyId = await seedCompany();
+    const projectId = await seedProject(companyId);
+    const parentId = await seedTask(companyId, "TASK-PARENT", projectId);
+
+    const { issue: child } = await issueService(db).createChild(parentId, {
+      title: "Child",
+      status: "todo",
+    } as never);
+
+    expect(child.projectId).toBe(projectId);
+    expect(child.parentId).toBe(parentId);
+  });
+
+  it("a projectless unassigned task goes to any agent: queue and matcher", async () => {
+    const companyId = await seedCompany();
+    await seedAgent(companyId, OUTSIDER_ID, "outsider-eng");
+    await seedAgent(companyId, MEMBER_ID, "member-eng");
+    const open = await seedTask(companyId, "TASK-FREE", null);
+
+    const outsiderQueue = await listRoleQueue(db, companyId, "engineer", OUTSIDER_ID);
+    const pair = await matchIssue(matcher(), open);
+
+    expect(outsiderQueue.map((entry) => entry.issueId)).toEqual([open]);
+    expect(pair?.agentId).toBe(OUTSIDER_ID);
+  });
+
+  it("bot-container scope: a membership row of another company's agent id does not make a member", async () => {
+    const companyId = await seedCompany();
+    const otherCompanyId = await seedCompany();
+    await seedAgent(companyId, MEMBER_ID, "member-eng");
+    await seedAgent(otherCompanyId, OUTSIDER_ID, "other-co-eng");
+    const projectId = await seedProject(companyId);
+    await join(companyId, projectId, MEMBER_ID);
+    await join(companyId, projectId, OUTSIDER_ID);
+
+    const roster = await botScopeStore(db).listAgents(companyId);
+
+    expect(roster.map((a) => [a.id, a.projectIds])).toEqual([[MEMBER_ID, [projectId]]]);
   });
 });

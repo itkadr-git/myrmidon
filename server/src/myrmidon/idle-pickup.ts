@@ -8,7 +8,6 @@ import { resolveAgentTeamLiveness, type ResolvedTeamLiveness } from "@paperclipa
 import { issueHasNoExecutionHold, wakeNotParkedOnExecutionHold } from "./settled-holds/ready-predicate.js";
 // myrmidon(1.6.5 F-26 T5): the cooling window of stale wake candidates (design §4.3).
 import { isIssueCoolingDown, readSwarmSettings } from "./wake-task-guard.js";
-import { projectScopedClaimGate } from "./project-membership.js";
 
 /**
  * Idle pickup (IDLE-PICKUP, Myrmidon 1.3).
@@ -355,7 +354,7 @@ function issuePriorityRank(priority: string | null | undefined): number {
  * no execution hold (HOLD-READY). The remaining checks (live run, queued wake) need per-issue lookups and
  * run in the loop in `idlePickupForAgent`.
  */
-function idlePickupCandidateRows(db: Db, companyId: string, agentId: string) {
+export function idlePickupCandidateRows(db: Db, companyId: string, agentId: string) {
   return db
     .select({
       id: issues.id,
@@ -368,9 +367,9 @@ function idlePickupCandidateRows(db: Db, companyId: string, agentId: string) {
       and(
         eq(issues.companyId, companyId),
         eq(issues.assigneeAgentId, agentId),
-        // A task assigned manually to this agent remains theirs, but stale or
-        // cross-project assignments must not turn into an automatic pickup.
-        projectScopedClaimGate(agentId),
+        // myrmidon(1.6.6 PROJECT-SCOPED-CLAIM): NOT project-gated. A task already
+        // assigned to this agent (by hand or by a gated claim) stays theirs —
+        // the scope applies where a task is handed out (matcher, role queue).
         isNull(issues.assigneeUserId),
         isNull(issues.hiddenAt),
         isNull(issues.conversationAgentId),
