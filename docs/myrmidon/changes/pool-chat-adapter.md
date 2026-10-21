@@ -8,7 +8,8 @@ settings-section: Track 4 — chats and skills
 
 - Adds authenticated module-scoped capabilities, submit, and request-status routes with bounded request validation, scoped idempotency, durable request/attempt/reservation records, account-selection policy, and fail-closed provider dispatch.
 - A replay returns its existing durable request without repeating provider I/O. A request that may have reached a provider remains `uncertain`; provider exceptions are reduced to a stable redacted code. Missing provider transport configuration fails closed and releases the reservation.
-- This is a disabled-by-default implementation boundary, not acceptance-complete quota accounting. Reservation is currently a fixed per-request unit; there is no durable atomic per-account balance enforcement/recovery. Do not use live pool accounts until actual-unit estimation, balance cap, transactional reservation/settlement, recovery, and acceptance verification are implemented. No live-pool validation is implied.
+- Quota is enforced per account in tokens. Each new request reserves an upper bound (estimated input at 4 characters per token plus the requested output ceiling) under a per-module advisory lock, so concurrent submits cannot overshoot `quotaUnits`; the check reads live usage from the ledger (reserved or settled units of dispatching, sent and uncertain attempts) added to the configured `usedUnits` baseline. Settlement replaces the reservation with actual usage; failed no-send attempts release it. The cap is a lifetime budget: the operator resets it by raising `quotaUnits` or lowering `usedUnits`. Automatic recovery of requests stuck in `uncertain` is not included: they keep their reservation until an operator resolves them.
+- Disabled by default (`MYRMIDON_POOL_CHAT_ENABLED`). Live pool validation is operator-only and was not run.
 
 ## changelog-ru
 
@@ -16,7 +17,8 @@ settings-section: Track 4 — chats and skills
 
 - Добавлены аутентифицированные маршруты capabilities, отправки и чтения статуса запроса в области модуля: строгая ограниченная валидация, scoped idempotency, долговечные записи запроса/попытки/reservation, policy выбора аккаунта и fail-closed отправка провайдеру.
 - Повторный запрос возвращает существующую долговечную запись без повторного вызова провайдера. Запрос, который мог дойти до провайдера, сохраняется в состоянии `uncertain`; исключения провайдера заменяются стабильным безопасным кодом. Если transport не настроен, запрос завершается fail-closed, reservation освобождается.
-- Это отключённая по умолчанию реализационная граница, но quota accounting ещё не доведён до приёмки. Reservation сейчас фиксированная на запрос; долговечного атомарного баланса и проверки лимита по аккаунту нет. Нельзя использовать live-аккаунты, пока не реализованы оценка фактических units, контроль лимита, транзакционные reservation/settlement, recovery и acceptance-проверки. Проверка на live pool не проводилась.
+- Квота ведётся по аккаунтам в токенах. Новый запрос резервирует верхнюю оценку (входные символы / 4 плюс запрошенный потолок вывода) под advisory-блокировкой модуля, поэтому параллельные запросы не превысят `quotaUnits`; проверка берёт фактическое использование из реестра (reservation или settled units у попыток dispatching, sent и uncertain) плюс базовое `usedUnits` из конфигурации. Расчёт заменяет резерв фактическим расходом; провально-неотправленные попытки резерв освобождают. Лимит — суммарный бюджет: оператор сбрасывает его, повышая `quotaUnits` или уменьшая `usedUnits`. Автоматического разбора запросов в `uncertain` нет: они держат резерв, пока оператор их не разрешит.
+- Выключено по умолчанию (`MYRMIDON_POOL_CHAT_ENABLED`). Проверка на live pool — только оператором, не проводилась.
 
 ## settings-en
 
