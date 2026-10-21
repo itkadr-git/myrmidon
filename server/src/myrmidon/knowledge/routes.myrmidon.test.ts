@@ -253,4 +253,83 @@ describe("myrmidon(1.6.6 K-2) knowledge REST gates", () => {
     expect(Array.isArray(res.body.items)).toBe(true);
     expect(deps.module.search).toHaveBeenCalledTimes(1);
   });
+
+  it("import: a gzip body reaches the module through the route's own raw parser (not 422)", async () => {
+    const deps = makeDeps({ grants: true });
+    const body = Buffer.from([0x1f, 0x8b, 0x08, 0x00, 0x01, 0x02, 0x03]);
+    const res = await request(app(deps, boardActor))
+      .post(`${base}/import`)
+      .set("content-type", "application/gzip")
+      .send(body);
+    expect(res.status).toBe(200);
+    expect(deps.module.importTree).toHaveBeenCalledTimes(1);
+    const passed = (deps.module.importTree as ReturnType<typeof vi.fn>).mock.calls[0]![0] as Buffer;
+    expect(Buffer.isBuffer(passed)).toBe(true);
+    expect(passed.equals(body)).toBe(true);
+  });
+
+  it("import: an empty body is still 422", async () => {
+    const deps = makeDeps({ grants: true });
+    const res = await request(app(deps, boardActor)).post(`${base}/import`).set("content-type", "application/gzip");
+    expect(res.status).toBe(422);
+    expect(deps.module.importTree).not.toHaveBeenCalled();
+  });
+
+  it("matrix: an agent import under the safe default (approval_required) is 409, the store is untouched", async () => {
+    const deps = makeDeps({ grants: true });
+    const res = await request(app(deps, agentActor))
+      .post(`${base}/import`)
+      .set("content-type", "application/gzip")
+      .send(Buffer.from([0x1f, 0x8b, 0x08]));
+    expect(res.status).toBe(409);
+    expect(res.body.code).toBe(KNOWLEDGE_APPROVAL_REQUIRED_CODE);
+    expect(deps.module.importTree).not.toHaveBeenCalled();
+  });
+
+  it("matrix: an agent archive outside the auto sections parks a card (409)", async () => {
+    const deps = makeDeps({ grants: true });
+    const item = makeItem({ slug: "playbooks/runbook", folderPath: "playbooks" });
+    (deps.module.get as ReturnType<typeof vi.fn>).mockResolvedValue(item);
+    const res = await request(app(deps, agentActor)).post(`${base}/items/playbooks/runbook/archive`).send({});
+    expect(res.status).toBe(409);
+    expect(res.body.code).toBe(KNOWLEDGE_APPROVAL_REQUIRED_CODE);
+    expect(deps.parkPublishForApproval).toHaveBeenCalledTimes(1);
+    expect(deps.module.archive).not.toHaveBeenCalled();
+  });
+
+  it("matrix: an agent supersede outside the auto sections parks a card (409)", async () => {
+    const deps = makeDeps({ grants: true });
+    const item = makeItem({ slug: "playbooks/runbook", folderPath: "playbooks" });
+    (deps.module.get as ReturnType<typeof vi.fn>).mockResolvedValue(item);
+    const res = await request(app(deps, agentActor))
+      .post(`${base}/items/playbooks/runbook/supersede`)
+      .send({ replacementSlug: "playbooks/runbook-v2" });
+    expect(res.status).toBe(409);
+    expect(deps.module.supersede).not.toHaveBeenCalled();
+  });
+
+  it("matrix: an agent never archives or supersedes a rule", async () => {
+    const deps = makeDeps({ grants: true });
+    const item = makeItem({ kind: "rule", slug: "rules/no-secrets", folderPath: "rules" });
+    (deps.module.get as ReturnType<typeof vi.fn>).mockResolvedValue(item);
+    const a = await request(app(deps, agentActor)).post(`${base}/items/rules/no-secrets/archive`).send({});
+    expect(a.status).toBe(403);
+    expect(a.body.code).toBe(KNOWLEDGE_RULE_APPROVE_FORBIDDEN_CODE);
+    const b = await request(app(deps, agentActor))
+      .post(`${base}/items/rules/no-secrets/supersede`)
+      .send({ replacementSlug: "rules/new" });
+    expect(b.status).toBe(403);
+    expect(deps.module.archive).not.toHaveBeenCalled();
+    expect(deps.module.supersede).not.toHaveBeenCalled();
+  });
+
+  it("matrix (board): archive and supersede go through for a board user", async () => {
+    const deps = makeDeps({ grants: true });
+    const item = makeItem({ slug: "playbooks/runbook", folderPath: "playbooks" });
+    (deps.module.get as ReturnType<typeof vi.fn>).mockResolvedValue(item);
+    expect((await request(app(deps, boardActor)).post(`${base}/items/playbooks/runbook/archive`).send({})).status).toBe(200);
+    expect(
+      (await request(app(deps, boardActor)).post(`${base}/items/playbooks/runbook/supersede`).send({ replacementSlug: "playbooks/v2" })).status,
+    ).toBe(200);
+  });
 });

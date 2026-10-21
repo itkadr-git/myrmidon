@@ -40,7 +40,7 @@
 //   5. The domain gates of K-1 (approvalRequired/approverKind, suggestion
 //      state machine) still apply on top.
 
-import { Router, type Request, type Response } from "express";
+import express, { Router, type Request, type Response } from "express";
 import type { Db } from "@paperclipai/db";
 import {
   knowledgeApproveSchema,
@@ -217,6 +217,34 @@ export function knowledgeRoutes(deps: KnowledgeRoutesDeps) {
         { code: KNOWLEDGE_APPROVAL_REQUIRED_CODE, actionRequestId: card?.actionRequestId ?? null },
       );
       throw err;
+    }
+  }
+
+  /**
+   * Gate 4c: a bulk import can land published pages of any section (rules
+   * included) in one call, so an agent passes only when the autonomy matrix
+   * says `allowed` for `knowledge_publish`; the safe default
+   * (`approval_required`) refuses with 409, `forbidden` with 403. A board user
+   * always imports.
+   */
+  async function assertBulkImportAllowed(req: Request, companyId: string): Promise<void> {
+    const actor = actorOf(req);
+    if (actor.actorType !== "agent") return;
+    const agentId = actor.agentId ?? "";
+    const stored = deps.matrixFor ? await deps.matrixFor(companyId) : null;
+    const matrix = stored ?? defaultAutonomyMatrix();
+    const role = deps.roleForAgent ? await deps.roleForAgent(agentId) : null;
+    const verdict = resolveAutonomy(role, "knowledge_publish", matrix, agentId);
+    if (verdict === "forbidden") {
+      throw forbidden("knowledge import is forbidden for this actor by the autonomy matrix", {
+        code: "autonomy_forbidden",
+      });
+    }
+    if (verdict === "approval_required") {
+      throw new HttpError(409, "knowledge import by an agent requires approval: ask a board user to import the tree.", {
+        code: KNOWLEDGE_APPROVAL_REQUIRED_CODE,
+        actionRequestId: null,
+      });
     }
   }
 
@@ -505,6 +533,11 @@ export function knowledgeRoutes(deps: KnowledgeRoutesDeps) {
     const mod = deps.moduleFor(companyId);
     const actor = actorOf(req);
     try {
+      // Archiving takes a page out of what agents read: same gates as publish
+      // (autonomy matrix + the agent-never-touches-a-rule bar).
+      const item = await loadItemForMutation(mod, req.params.idOrSlug as string);
+      assertRuleApproveAllowed(req, item.kind);
+      await assertPublishAllowed(req, companyId, item, null);
       res.json({ item: await mod.archive(req.params.idOrSlug as string, { actorType: actor.actorType, actorId: actor.actorId }) });
     } catch (err) {
       throw toHttpError(err);
@@ -520,6 +553,9 @@ export function knowledgeRoutes(deps: KnowledgeRoutesDeps) {
       const mod = deps.moduleFor(companyId);
       const actor = actorOf(req);
       try {
+        const current = await loadItemForMutation(mod, req.params.idOrSlug as string);
+        assertRuleApproveAllowed(req, current.kind);
+        await assertPublishAllowed(req, companyId, current, null);
         res.json({
           item: await mod.supersede(
             req.params.idOrSlug as string,
@@ -620,7 +656,13 @@ export function knowledgeRoutes(deps: KnowledgeRoutesDeps) {
     },
   );
 
-  router.post("/myrmidon/companies/:companyId/knowledge/import", async (req: Request, res: Response) => {
+  // The app-level parser only reads JSON; the exported tree is a gzip body, so
+  // this route carries its own raw parser (the matching `export` content type
+  // plus the usual binary aliases).
+  router.post(
+    "/myrmidon/companies/:companyId/knowledge/import",
+    express.raw({ type: ["application/gzip", "application/x-gzip", "application/octet-stream"], limit: "50mb" }),
+    async (req: Request, res: Response) => {
     const companyId = companyOf(req);
     await assertKnowledgeToolAccess(req, "knowledge_publish");
     const mod = deps.moduleFor(companyId);
@@ -629,12 +671,14 @@ export function knowledgeRoutes(deps: KnowledgeRoutesDeps) {
     if (!Buffer.isBuffer(buf) || buf.length === 0) {
       throw unprocessable("import expects a gzipped tree in the request body");
     }
+    await assertBulkImportAllowed(req, companyId);
     try {
       res.json(await mod.importTree(buf, { actorType: actor.actorType, actorId: actor.actorId }));
     } catch (err) {
       throw toHttpError(err);
     }
-  });
+    },
+  );
 
   return router;
 }
