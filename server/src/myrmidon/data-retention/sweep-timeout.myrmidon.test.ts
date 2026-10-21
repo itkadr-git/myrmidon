@@ -44,14 +44,14 @@ function makeSweep(opts: { maxBatchThatFits: number; totalRows: number }) {
     db: db as never,
     resolveSettings: async () =>
       ({ heartbeatRunsDays: 30, activityLogDays: 0, accessAuditDays: 0 }) as never,
-    readLastRun: async () =>
-      ({
+    readLastRun: async () => {
+      const empty = { deletedTotal: 0, lastDeleted: 0, lastFreedBytes: 0 };
+      return {
         waitingForBackup: false,
-        runs: { deletedTotal: 0, lastDeleted: 0, lastFreedBytes: 0 },
-        activity: { deletedTotal: 0, lastDeleted: 0, lastFreedBytes: 0 },
-        access: { deletedTotal: 0, lastDeleted: 0, lastFreedBytes: 0 },
+        perTable: { runs: empty, activity: empty, access: empty },
         ...lastRun,
-      }) as never,
+      } as never;
+    },
     writeLastRun: async (value) => {
       lastRun = value as never;
     },
