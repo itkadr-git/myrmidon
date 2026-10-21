@@ -35,4 +35,4 @@ divergence-section: Трек 4 — чаты и навыки
 
 ## divergence
 
-| 1.6.5-OWNER-DM-FILTER-C | Новый read-only маршрут журнала доставки owner-DM: импорт и `api.use(ownerDeliveryRoutes(db))` | `server/src/app.ts` (2 строки-вызова) | Доске нужен проверяемый журнал публикаций в ЛС владельца без дублирования полей interaction в БД | `server/src/__tests__/owner-delivery-publications.myrmidon.test.ts` | Удалить строки импорта и монтирования; модуль `server/src/myrmidon/owner-delivery/{classify,routes}.ts` уходит вместе | (этот PR) |
+| 1.6.5-OWNER-DM-FILTER-C | Новый read-only маршрут журнала доставки owner-DM: подключение `ownerDeliveryJournalRoutes` в существующий роутер owner-delivery | `server/src/myrmidon/owner-delivery/routes.ts` (импорт и `router.use`, 3 строки) | Доске нужен проверяемый журнал публикаций в ЛС владельца без дублирования полей interaction в БД | `server/src/__tests__/owner-delivery-publications.myrmidon.test.ts` | Удалить импорт и `router.use` из routes.ts; файлы `classify.ts` и `publications-journal.ts` уходят вместе | (этот PR) |
