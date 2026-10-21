@@ -103,13 +103,13 @@ SET
       THEN concat_ws(
         E'\n',
         NULLIF(wake."error", ''),
-        'Safely retired duplicate by migration 0304; retained wake request ' || duplicates."retained_id"::text
+        'Safely retired duplicate by migration 0401; retained wake request ' || duplicates."retained_id"::text
       )
     ELSE wake."error"
   END,
   "payload" = COALESCE(wake."payload", '{}'::jsonb) || jsonb_build_object(
     'migrationDedupe', jsonb_build_object(
-      'migration', '0304_wakeup_key_partial_unique_indexes',
+      'migration', '0401_wakeup_key_partial_unique_indexes',
       'retainedWakeRequestId', duplicates."retained_id",
       'originalIdempotencyKey', duplicates."original_idempotency_key",
       'previousStatus', duplicates."previous_status",
