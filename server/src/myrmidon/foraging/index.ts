@@ -18,7 +18,6 @@
 
 import type { Db } from "@paperclipai/db";
 import { financeEvents } from "@paperclipai/db";
-import { secretService } from "../../services/index.js";
 import { instanceSettingsService } from "../../services/instance-settings.js";
 import { logger } from "../../middleware/logger.js";
 import { nullForagingCandidatePort, type ForagingCandidatePort } from "./domain.js";
@@ -27,6 +26,8 @@ import { readForagingSettings, resolveForagingEffectiveSettings, foragingSetting
 import { createForagingService, type ForagingService } from "./service.js";
 import { createDbForagingStore, type ForagingStore } from "./store.js";
 import { createDbForagingSkillStore, createForagingCandidatePort } from "./candidate-port.js";
+import { createDbForagingQuarantineStore, createForagingKnowledgePort } from "./knowledge-port.js";
+import { createKnowledgeModule } from "../knowledge/index.js";
 import { skillLifecycleService } from "../skill-lifecycle/index.js";
 import { foragingRoutes } from "./routes.js";
 import {
@@ -99,6 +100,15 @@ export function foragingCandidatePort(db: Db): ForagingCandidatePort {
   }
 }
 
+/** External findings are quarantined before becoming reviewable suggestions. */
+export function foragingKnowledgeCandidatePort(db: Db): ForagingCandidatePort {
+  return createForagingKnowledgePort({
+    knowledge: (companyId) => createKnowledgeModule(db, companyId),
+    quarantine: createDbForagingQuarantineStore(db),
+    log: logger,
+  });
+}
+
 export interface ForagingWiring {
   store: ForagingStore;
   service: ForagingService;
@@ -108,21 +118,14 @@ export interface ForagingWiring {
 /** The store, the reader and the service bound to the database. */
 export function foragingWiring(db: Db, env: NodeJS.ProcessEnv = process.env): ForagingWiring {
   const store = createDbForagingStore(db);
-  const secrets = secretService(db);
   const settings = instanceSettingsService(db);
   const service = createForagingService({
     store,
     reader: createForagingReader({
       env,
       minHostIntervalMs: readForagingSettings(env).minHostIntervalMs,
-      readKey: async (companyId, secretName) => {
-        if (!secretName) return null;
-        const row = await secrets.getByName(companyId, secretName);
-        if (!row) return null;
-        return secrets.resolveSecretValue(companyId, row.id, "latest");
-      },
     }),
-    candidatePort: foragingCandidatePort(db),
+    candidatePort: foragingKnowledgeCandidatePort(db),
     // myrmidon(1.6.3-FORAGING-IDLE-GATE): the per-role idle check reads the
     // swarm-claim queue and the agents of the role from this database.
     db,

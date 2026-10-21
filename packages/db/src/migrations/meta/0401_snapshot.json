@@ -1,5 +1,5 @@
 {
-  "id": "65fb8a87-cfd0-4446-80c9-cc0b04810311",
+  "id": "1432d007-4648-4c7e-a57a-b455e538f2ca",
   "prevId": "d1ca4883-9694-403f-959f-c4a74ea7cf3b",
   "version": "7",
   "dialect": "postgresql",
@@ -2363,50 +2363,6 @@
           ],
           "isUnique": true,
           "where": "\"agent_wakeup_requests\".\"idempotency_key\" LIKE 'tool-action-response:%' AND \"agent_wakeup_requests\".\"status\" NOT IN ('skipped', 'failed', 'cancelled')",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "agent_wakeup_requests_pause_resume_idempotency_uq": {
-          "name": "agent_wakeup_requests_pause_resume_idempotency_uq",
-          "columns": [
-            {
-              "expression": "company_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "idempotency_key",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "where": "\"agent_wakeup_requests\".\"idempotency_key\" LIKE 'pause_resume:%' AND \"agent_wakeup_requests\".\"status\" NOT IN ('skipped', 'failed', 'cancelled')",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "agent_wakeup_requests_stranded_autopolicy_retry_idempotency_uq": {
-          "name": "agent_wakeup_requests_stranded_autopolicy_retry_idempotency_uq",
-          "columns": [
-            {
-              "expression": "company_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "idempotency_key",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "where": "\"agent_wakeup_requests\".\"idempotency_key\" LIKE 'myrmidon.stranded_autopolicy_retry:%' AND \"agent_wakeup_requests\".\"status\" NOT IN ('skipped', 'failed', 'cancelled')",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -55891,6 +55847,13 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
+        },
+        "trust": {
+          "name": "trust",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "default": null
         }
       },
       "indexes": {
@@ -55920,6 +55883,21 @@
           "columns": [
             {
               "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "knowledge_suggestions_trust_idx": {
+          "name": "knowledge_suggestions_trust_idx",
+          "columns": [
+            {
+              "expression": "trust",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
