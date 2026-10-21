@@ -1549,7 +1549,7 @@ async function buildAttentionFeedSnapshot(
           whyNow: card.whyNow,
           decisionVerbs: [],
           inlineResolvable: false,
-          entryRule: `provider usage reached ${warning.thresholdPercent}% before reset`,
+          entryRule: warning.trigger === "usage" ? `provider usage reached ${warning.thresholdPercent}% before reset` : `provider window passed ${warning.thresholdPercent}% of its length before reset`,
           exitRule: "provider window resets or usage falls below threshold",
           dedupKey: card.dedupKey,
           severity: card.severity,

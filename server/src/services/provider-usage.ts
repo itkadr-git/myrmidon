@@ -5,6 +5,7 @@ import { invalidateAttentionFeedCache } from "./attention.js";
 import { issueService } from "./issues.js";
 import {
   aggregateProviderUsageReports,
+  describeProviderUsageWarning,
   evaluateProviderUsageWarning,
   PROVIDER_USAGE_WARNING_THRESHOLD_SETTING,
   resolveProviderUsageWarningThreshold,
@@ -68,7 +69,7 @@ export function providerUsageService(db: Db) {
       ));
       const snapshot = rows[0];
       if (snapshot?.ownerIssueId && warning) {
-        const body = `Provider usage warning: ${warning.provider} ${warning.metric} usage reached ${warning.thresholdPercent}% before reset at ${warning.resetsAt}.`;
+        const body = `Provider usage warning: ${describeProviderUsageWarning(warning)}`;
         await tx.insert(providerUsageWarningDeliveries).values({
           companyId, ownerIssueId: snapshot.ownerIssueId, warningKey: warning.key, body, nextAttemptAt: now,
         }).onConflictDoNothing();
@@ -122,7 +123,7 @@ export function providerUsageService(db: Db) {
         window: { kind: snapshot.windowKind as ProviderUsageReportedEventV1["window"]["kind"], startedAt: snapshot.windowStartedAt.toISOString(), resetsAt: snapshot.resetsAt.toISOString(), used: snapshot.used, limit: snapshot.limits },
       }, thresholds.get(snapshot.companyId)!, snapshot.companyId, now.toISOString());
       if (!warning || !snapshot.ownerIssueId) continue;
-      const body = `Provider usage warning: ${warning.provider} ${warning.metric} usage reached ${warning.thresholdPercent}% before reset at ${warning.resetsAt}.`;
+      const body = `Provider usage warning: ${describeProviderUsageWarning(warning)}`;
       await db.insert(providerUsageWarningDeliveries).values({
         companyId: snapshot.companyId, ownerIssueId: snapshot.ownerIssueId, warningKey: warning.key, body, nextAttemptAt: now,
       }).onConflictDoNothing();

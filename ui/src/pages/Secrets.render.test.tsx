@@ -408,6 +408,36 @@ describe("Secrets page layout", () => {
     vi.clearAllMocks();
   });
 
+  it("shows the remaining provider usage on a secret matched by its key", async () => {
+    mockSecretsApi.list.mockResolvedValue([makeCompanySecret({ id: "s-usage", key: "nghi_llm_key", name: "nghi/llm/key" })]);
+    mockCostsApi.providerUsage.mockResolvedValue({
+      thresholdPercent: 80,
+      usage: [{
+        provider: "nghi", credentialRef: "nghi_llm_key", window: "package",
+        startedAt: "2026-10-01T00:00:00.000Z", resetsAt: "2099-10-16T00:00:00.000Z", observedAt: "2026-10-14T00:00:00.000Z",
+        used: { requests: 90 }, limit: { requests: 100 }, remaining: { requests: 10 }, remainingPercent: { requests: 10 },
+        thresholdPercent: 80, warning: null,
+      }],
+    });
+    const root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await act(async () => {
+      root.render(
+        <MemoryRouter>
+          <QueryClientProvider client={queryClient}>
+            <Secrets />
+          </QueryClientProvider>
+        </MemoryRouter>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    const widget = container.querySelector('[data-testid="provider-usage-remaining"]');
+    expect(widget).not.toBeNull();
+    expect(widget?.textContent).toContain("requests: 10 remaining (10%)");
+  });
+
   it("uses the shared search/filter/tab affordances and keeps vault sections quiet", async () => {
     const root = createRoot(container);
     const queryClient = new QueryClient({

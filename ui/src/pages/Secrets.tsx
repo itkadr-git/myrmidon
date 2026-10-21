@@ -810,7 +810,7 @@ export function Secrets() {
   const providers = providersQuery.data ?? EMPTY_SECRET_PROVIDERS;
   const providerConfigs = providerConfigsQuery.data ?? EMPTY_PROVIDER_CONFIGS;
   const usageByCredential = useMemo(
-    () => new Map((providerUsageQuery.data?.usage ?? []).map((usage) => [`${usage.provider}:${usage.credentialRef}`, usage])),
+    () => new Map((providerUsageQuery.data?.usage ?? []).map((usage) => [usage.credentialRef, usage])),
     [providerUsageQuery.data],
   );
   const selectedSecret = useMemo(
@@ -1675,10 +1675,13 @@ export function Secrets() {
   }
 
   function renderProviderUsage(secret: CompanySecret) {
+    // Adapters report usage under an opaque credentialRef. A secret is matched by an
+    // explicit providerMetadata.usageCredentialRef when one is set, otherwise by its own
+    // key or id — so the widget works without any extra configuration step.
     const metadata = secret.providerMetadata as Record<string, unknown> | null | undefined;
-    const ref = metadata?.usageCredentialRef;
-    if (typeof ref !== "string" || !ref) return null;
-    const usage = usageByCredential.get(`${secret.provider}:${ref}`);
+    const explicitRef = metadata?.usageCredentialRef;
+    const candidates = [typeof explicitRef === "string" ? explicitRef : "", secret.key, secret.id].filter(Boolean);
+    const usage = candidates.map((ref) => usageByCredential.get(ref)).find(Boolean);
     if (!usage) return null;
     const metric = usage.warning?.metric ?? (typeof usage.remainingPercent.requests === "number" ? "requests" : "tokens");
     const remainingPercent = usage.remainingPercent[metric];

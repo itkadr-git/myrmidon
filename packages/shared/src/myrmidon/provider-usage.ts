@@ -34,6 +34,19 @@ export interface ProviderUsageWarning {
   limit: number;
   remaining: number;
   remainingPercent: number;
+  /** `usage`: the consumed share reached the threshold; `time`: the window is past the threshold share of its length. */
+  trigger: "usage" | "time";
+  usedPercent: number;
+  elapsedPercent: number;
+}
+
+/** One human-readable line per warning; the wording follows what actually triggered it. */
+export function describeProviderUsageWarning(w: Pick<ProviderUsageWarning, "provider" | "metric" | "trigger" | "usedPercent" | "elapsedPercent" | "thresholdPercent" | "used" | "limit" | "remaining" | "resetsAt">): string {
+  const pct = (n: number) => `${Math.round(n)}%`;
+  if (w.trigger === "usage") {
+    return `${w.provider} ${w.metric}: used ${pct(w.usedPercent)} (threshold ${pct(w.thresholdPercent)}), ${w.remaining} of ${w.limit} remains before reset at ${w.resetsAt}.`;
+  }
+  return `${w.provider} ${w.metric}: ${pct(w.elapsedPercent)} of the window has elapsed (threshold ${pct(w.thresholdPercent)}), used ${pct(w.usedPercent)} so far; ${w.remaining} of ${w.limit} remains before reset at ${w.resetsAt}.`;
 }
 
 export interface ProviderUsageAggregate {
@@ -75,7 +88,8 @@ export function evaluateProviderUsageWarning(
     const limit = event.window.limit[metric];
     if (typeof used !== "number" || !Number.isFinite(used) || used < 0) continue;
     if (typeof limit !== "number" || !Number.isFinite(limit) || limit <= 0) continue;
-    if (used / limit * 100 < thresholdPercent && !timeThresholdReached) continue;
+    const usedPercent = used / limit * 100;
+    if (usedPercent < thresholdPercent && !timeThresholdReached) continue;
     const remaining = Math.max(0, limit - used);
     return {
       key: [event.companyId, event.provider, event.credentialRef, event.window.kind, event.window.startedAt, metric].join(":"),
@@ -90,7 +104,10 @@ export function evaluateProviderUsageWarning(
       used,
       limit,
       remaining,
-      remainingPercent: Math.max(0, 100 - used / limit * 100),
+      remainingPercent: Math.max(0, 100 - usedPercent),
+      trigger: usedPercent >= thresholdPercent ? "usage" : "time",
+      usedPercent,
+      elapsedPercent,
     };
   }
   return null;

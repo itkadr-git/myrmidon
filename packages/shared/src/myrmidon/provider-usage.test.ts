@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { evaluateProviderUsageWarning, aggregateProviderUsageReports, type ProviderUsageReportedEventV1 } from "./provider-usage.js";
+import { describeProviderUsageWarning, evaluateProviderUsageWarning, aggregateProviderUsageReports, type ProviderUsageReportedEventV1 } from "./provider-usage.js";
 import { resolveProviderUsageWarningThreshold, updateProviderUsageWarningThresholdSchema, withProviderUsageWarningThreshold } from "./provider-usage-settings.js";
 
 const report: ProviderUsageReportedEventV1 = {
@@ -41,6 +41,16 @@ describe("provider usage", () => {
       metric: "requests",
       observedAt: "2026-10-14T09:00:00.000Z",
     });
+  });
+  it("tells a time-triggered warning from a usage-triggered one", () => {
+    const low = { ...report, observedAt: "2026-10-14T05:01:00Z", window: { ...report.window, used: { requests: 1 }, limit: { requests: 100 } } };
+    const byTime = evaluateProviderUsageWarning(low, 80, "", "2026-10-14T09:00:00Z");
+    expect(byTime).toMatchObject({ trigger: "time", usedPercent: 1, elapsedPercent: 80 });
+    expect(describeProviderUsageWarning(byTime!)).toContain("80% of the window has elapsed");
+    expect(describeProviderUsageWarning(byTime!)).not.toContain("used 80%");
+    const byUsage = evaluateProviderUsageWarning(report, 80)!;
+    expect(byUsage.trigger).toBe("usage");
+    expect(describeProviderUsageWarning(byUsage)).toContain("used 80%");
   });
   it("does not warn at or after the reset", () => {
     expect(evaluateProviderUsageWarning({ ...report, observedAt: report.window.resetsAt }, 80)).toBeNull();
