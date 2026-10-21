@@ -7274,6 +7274,7 @@ export function agentRoutes(
     // Recovery reads this to stand down instead of classifying the cancelled
     // run as agent stranding and re-waking the agent the operator just stopped.
     const run = await heartbeat.cancelRun(runId, "Cancelled by a board operator", {
+      cancellationSource: { code: "board_operator", endpoint: "POST /api/heartbeat-runs/:runId/cancel", actor: req.actor.userId ?? "board" },
       resultJson: {
         cancelledByActorType: "user",
         cancelledByUserId: req.actor.userId ?? null,
