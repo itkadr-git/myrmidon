@@ -341,7 +341,21 @@ async function open(request, deps = {}) {
     });
   }
 
-  // 2. Full legacy clones are converted only after validating their identity.
+  // 2a. A worktree that exists on disk but is missing from the registry (the
+  //     registry was lost or a previous open died before writing it) is adopted.
+  if (!scratch && fs.existsSync(dir) && isWorktreeOf(dir)) {
+    const adoptedRepo = repo || repoFromOrigin(git, dir) || undefined;
+    const entry = stripUndefined({ key, repo: adoptedRepo, path: dir, class: klass, branch, openedAt: isoNow(ctx) });
+    withRegistryLock(ctx, () => {
+      const r = readRegistry(ctx);
+      r.entries = r.entries.filter((e) => e.path !== dir);
+      r.entries.push(entry);
+      writeRegistry(ctx, r);
+    });
+    return stripUndefined({ ok: true, key, path: dir, class: klass, repo: adoptedRepo, branch, reused: true });
+  }
+
+  // 2b. Full legacy clones are converted only after validating their identity.
   if (!scratch && fs.existsSync(dir) && isGitCopy(dir)) {
     const top = git(dir, ["rev-parse", "--show-toplevel"], { allowFail: true });
     const gitDir = git(dir, ["rev-parse", "--absolute-git-dir"], { allowFail: true });

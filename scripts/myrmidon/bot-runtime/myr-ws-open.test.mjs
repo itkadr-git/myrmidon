@@ -289,6 +289,17 @@ describe("myr-ws open — task copy", { skip: !hasGit }, () => {
     }
   });
 
+  it("still adopts an unregistered linked worktree after the registry is lost", async () => {
+    const first = copyOf(await run(["ABC-125", REPO, "--json"]));
+    fs.rmSync(path.join(ctx.home, "ws-registry.json"), { force: true });
+    const again = await run(["ABC-125", REPO, "--json"]);
+    assert.equal(again.exitCode, 0, again.stderr);
+    const out = copyOf(again);
+    assert.equal(out.path, first.path);
+    assert.equal(out.reused, true);
+    assert.ok(fs.existsSync(path.join(ctx.home, "ws-registry.json")));
+  });
+
   it("refuses to adopt a legacy clone when the requested repo differs", async () => {
     const dir = path.join(ctx.workspaceRoot, "ABC-121");
     fs.mkdirSync(path.dirname(dir), { recursive: true });
