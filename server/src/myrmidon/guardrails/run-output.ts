@@ -66,11 +66,13 @@ export interface GuardrailRunOutputDecision {
   /** Legacy event counts retained for existing callers. */
   total?: number;
   recorded?: number;
+  totalSecrets?: number;
+  totalPii?: number;
 }
 
 export async function guardrailsOnRunOutput(
   input: GuardrailRunOutputInput,
-): Promise<GuardrailRunOutputDecision> {
+): Promise<GuardrailRunOutputDecision | null> {
   // Resolve the mode BEFORE journaling so the event severity reflects what
   // the hit actually did (mask -> warn, block -> error).
   const enforcement = await resolveGuardrailModeForAgent({
@@ -90,7 +92,8 @@ export async function guardrailsOnRunOutput(
     modeHint: enforcement.mode,
   });
   // Layer off, empty text or no hits: nothing changes, whatever the mode.
-  if (base === null || base.total === 0 || typeof input.text !== "string") {
+  if (base === null) return null;
+  if (base.total === 0 || typeof input.text !== "string") {
     return {
       mode: "flag",
       rule: "secret",
@@ -100,6 +103,8 @@ export async function guardrailsOnRunOutput(
       hits: 0,
       total: 0,
       recorded: 0,
+      totalSecrets: 0,
+      totalPii: 0,
     };
   }
   // The rule whose mode governs the whole text: secrets win over pii (the
@@ -116,6 +121,8 @@ export async function guardrailsOnRunOutput(
       hits: base.total,
       total: base.total,
       recorded: base.recorded,
+      totalSecrets: base.totalSecrets,
+      totalPii: base.totalPii,
     };
   }
   const spans = detectGuardrailHits(input.text)
@@ -131,6 +138,8 @@ export async function guardrailsOnRunOutput(
       hits: base.total,
       total: base.total,
       recorded: base.recorded,
+      totalSecrets: base.totalSecrets,
+      totalPii: base.totalPii,
     };
   }
   return {
@@ -140,6 +149,10 @@ export async function guardrailsOnRunOutput(
     caste: mode.caste,
     text: guardrailBlockRefusal({ rule, hits: base.total, source: mode.source }),
     hits: base.total,
+    total: base.total,
+    recorded: base.recorded,
+    totalSecrets: base.totalSecrets,
+    totalPii: base.totalPii,
   };
 }
 

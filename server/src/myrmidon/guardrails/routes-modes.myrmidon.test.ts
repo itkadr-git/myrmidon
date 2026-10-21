@@ -154,7 +154,7 @@ describeEmbeddedPostgres("myrmidon(1.7-GRD-MODES): routes", () => {
     const res = await request(app)
       .put(`/api/myrmidon/companies/${companyId}/guardrails/settings`)
       .send({ company: { secret: "nuclear" } });
-    expect(res.status).toBe(422);
+    expect(res.status).toBe(400);
   });
 
   it("PUT settings refuses a non-board actor", async () => {

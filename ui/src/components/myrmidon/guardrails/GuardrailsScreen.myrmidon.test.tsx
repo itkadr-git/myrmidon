@@ -72,7 +72,7 @@ function renderView(overrides: Partial<Parameters<typeof GuardrailsScreenView>[0
 
 function saveButton(): HTMLButtonElement {
   return [...container.querySelectorAll("button")].find(
-    (button) => button.textContent === "guardrails.save",
+    (button) => button.textContent?.includes("guardrails.save"),
   ) as HTMLButtonElement;
 }
 

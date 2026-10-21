@@ -318,7 +318,7 @@ export function GuardrailsScreenView({
           </div>
 
           <div>
-            <Button type="button" size="sm" disabled={pending} onClick={save}>
+            <Button type="button" size="sm" disabled={pending || !dirty} onClick={save}>
               {pending ? t("guardrails.saving") : t("guardrails.save")}
             </Button>
           </div>
