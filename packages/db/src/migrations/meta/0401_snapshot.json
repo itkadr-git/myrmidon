@@ -1,5 +1,5 @@
 {
-  "id": "d1ca4883-9694-403f-959f-c4a74ea7cf3b",
+  "id": "9746120c-2eef-43db-990a-8a745127e81f",
   "prevId": "d1ca4883-9694-403f-959f-c4a74ea7cf3b",
   "version": "7",
   "dialect": "postgresql",
@@ -51814,6 +51814,13 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
+        },
+        "custom_catalogs": {
+          "name": "custom_catalogs",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'::jsonb"
         }
       },
       "indexes": {
