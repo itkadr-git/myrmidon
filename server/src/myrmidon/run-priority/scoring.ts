@@ -14,7 +14,7 @@ import {
   releaseTagMatches,
   runPriorityWeight,
   type RunPrioritySettings,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 
 /** One queued run with everything the comparator needs. */
 export interface PriorityScoredRun {

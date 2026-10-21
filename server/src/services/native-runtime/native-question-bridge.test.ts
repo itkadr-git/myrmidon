@@ -12,8 +12,8 @@ import {
   issueThreadInteractions,
   issues,
   nativeRunFinalizations,
-} from "@paperclipai/db";
-import type { PrpEvent } from "@paperclipai/paperclip-runner";
+} from "@myrmidonai/db";
+import type { PrpEvent } from "@myrmidonai/paperclip-runner";
 
 import {
   getEmbeddedPostgresTestSupport,

@@ -15,7 +15,7 @@
 // to compile before part A lands; the ranking itself is a frozen contract.
 
 import { sql } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
 import { readSwarmSupervisorSettings } from "./settings.js";
 // myrmidon(1.6.1 SWARM-SETTINGS-UI): the same resolver the core uses, so the
 // supervisor's "where the value came from" and the settings page agree.
@@ -24,7 +24,7 @@ import {
   effectivePheromone,
   pheromoneDynamicsOf,
   type PheromoneDynamicsSettings,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import {
   failedRunsDerivedSql,
   failedRunsJoinOnRawSql,

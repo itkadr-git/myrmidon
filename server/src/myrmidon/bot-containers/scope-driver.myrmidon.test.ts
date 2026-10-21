@@ -12,7 +12,7 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { scopeInstanceDirName, type ScopeLayout } from "@paperclipai/shared";
+import { scopeInstanceDirName, type ScopeLayout } from "@myrmidonai/shared";
 import {
   buildCreateContainerRequestBody,
   buildHelperContainerRequestBody,

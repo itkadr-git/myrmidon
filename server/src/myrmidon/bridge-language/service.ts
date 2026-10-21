@@ -12,7 +12,7 @@
 // overlapping requests cannot commit in one order and audit in the other (the
 // same shape as the DM-progress settings).
 
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
 import {
   BRIDGE_LANGUAGE_SETTINGS_KEY,
   mergeBridgeLanguageSettings,
@@ -20,7 +20,7 @@ import {
   type BridgeLanguageSettings,
   type PatchBridgeLanguage,
   type ResolvedBridgeLanguage,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import { instanceSettingsService, logActivity } from "../../services/index.js";
 import {
   invalidateBridgeLanguageSettingsCache,

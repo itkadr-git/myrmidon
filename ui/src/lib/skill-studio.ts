@@ -10,7 +10,7 @@ import type {
   CompanySkillTestRunTemplate,
   IssueAttachment,
   IssueDocument,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import {
   getIssueOutputs,
   getPromotedOutputAttachmentIds,

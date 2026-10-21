@@ -5,7 +5,7 @@
 // account shared with us can never become read-write.
 
 import { describe, expect, it } from "vitest";
-import type { CloudGrant, CloudRoot } from "@paperclipai/shared/myrmidon-cloud-connector";
+import type { CloudGrant, CloudRoot } from "@myrmidonai/shared/myrmidon-cloud-connector";
 import {
   allowsWrite,
   appliesTo,

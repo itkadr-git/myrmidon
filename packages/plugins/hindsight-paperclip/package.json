@@ -12,14 +12,14 @@
     "worker": "./dist/worker.js"
   },
   "scripts": {
-    "prebuild": "pnpm --filter @paperclipai/plugin-sdk ensure-build-deps",
+    "prebuild": "pnpm --filter @myrmidonai/plugin-sdk ensure-build-deps",
     "build": "tsc",
     "clean": "rm -rf dist",
-    "typecheck": "pnpm --filter @paperclipai/plugin-sdk ensure-build-deps && tsc --noEmit",
+    "typecheck": "pnpm --filter @myrmidonai/plugin-sdk ensure-build-deps && tsc --noEmit",
     "test": "vitest run --config vitest.config.ts"
   },
   "dependencies": {
-    "@paperclipai/plugin-sdk": "workspace:*"
+    "@myrmidonai/plugin-sdk": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

@@ -316,11 +316,11 @@ describe("public repository paid workflow security", () => {
       "node scripts/link-plugin-dev-sdk.mjs",
     );
     expect(preparedBeforeProviderAccess).toContain(
-      '"@paperclipai/plugin-daytona"',
+      '"@myrmidonai/plugin-daytona"',
     );
-    expect(preparedBeforeProviderAccess).toContain('"@paperclipai/plugin-sdk"');
+    expect(preparedBeforeProviderAccess).toContain('"@myrmidonai/plugin-sdk"');
     expect(preparedBeforeProviderAccess).toContain(
-      'realpath "$daytona_root/node_modules/@paperclipai/plugin-sdk"',
+      'realpath "$daytona_root/node_modules/@myrmidonai/plugin-sdk"',
     );
     expect(preparedBeforeProviderAccess).toContain(
       'pnpm --dir "$daytona_root" build',
@@ -556,10 +556,10 @@ describe("public repository paid workflow security", () => {
       buildJob.match(/pnpm install --frozen-lockfile --ignore-scripts/g),
     ).toHaveLength(2);
     expect(buildJob).toContain(
-      "pnpm --filter @paperclipai/paperclip-runner build:typescript",
+      "pnpm --filter @myrmidonai/paperclip-runner build:typescript",
     );
     expect(buildJob).toContain(
-      "pnpm --filter @paperclipai/paperclip-runner build:runner-binaries",
+      "pnpm --filter @myrmidonai/paperclip-runner build:runner-binaries",
     );
     expect(buildJob).toContain(
       "node packages/paperclip-runner/scripts/build-provider-pack.mjs",

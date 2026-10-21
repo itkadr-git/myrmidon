@@ -124,8 +124,8 @@ script needs.
 ## Verifying a change
 
 ```sh
-pnpm --filter @paperclipai/server exec vitest run src/myrmidon/workspace-hygiene
-pnpm --filter @paperclipai/shared exec vitest run src/myrmidon-workspace-hygiene.test.ts
+pnpm --filter @myrmidonai/server exec vitest run src/myrmidon/workspace-hygiene
+pnpm --filter @myrmidonai/shared exec vitest run src/myrmidon-workspace-hygiene.test.ts
 ```
 
 `server/src/myrmidon/workspace-hygiene/sweep.myrmidon.test.ts` holds the acceptance cases: an

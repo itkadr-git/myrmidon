@@ -31,7 +31,7 @@ import {
   normalizeCapabilitySet,
   type BrowserBridgeCapability,
   type BrowserBridgeMethod,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import type { BridgeExtensionRegistry } from "./extensions.js";
 import { logger } from "../../middleware/logger.js";
 import { connectionEntry, type BrowserBridgeActor, type BrowserBridgeJournalEntry } from "./journal.js";

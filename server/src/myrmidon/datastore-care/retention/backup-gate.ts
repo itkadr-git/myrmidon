@@ -30,7 +30,7 @@ import { existsSync, readFileSync } from "node:fs";
 import {
   resolveDatabaseBackupDir,
   resolvePaperclipConfigPathForInstance,
-} from "@paperclipai/shared/home-paths";
+} from "@myrmidonai/shared/home-paths";
 
 /** The gate asks for a backup younger than this. */
 export const DATASTORE_CARE_BACKUP_MAX_AGE_MS = 24 * 60 * 60 * 1000;

@@ -1,4 +1,4 @@
-import { connectionPurposeTransportSchema } from "@paperclipai/shared";
+import { connectionPurposeTransportSchema } from "@myrmidonai/shared";
 import { emitToolPolicyChanged } from "./tool-policy-cache-events.js";
 import { syncConnectionCredentialBindings } from "./connection-credential-bindings.js";
 import { canBrowseProjectRepositoryGrant, mergeProjectRepository } from "./project-repositories.js";
@@ -24,7 +24,7 @@ import {
   or,
   sql,
 } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
 import {
   agents,
   connectionGrantMembers,
@@ -63,7 +63,7 @@ import {
   toolProfiles,
   toolRuntimeMetricCounters,
   toolRuntimeSlots,
-} from "@paperclipai/db";
+} from "@myrmidonai/db";
 import type {
   AppDefinition,
   ConnectionGrantKind,
@@ -146,7 +146,7 @@ import type {
   UnbindToolProfileBinding,
   VercelConnectCredentialReference,
   VercelConnectGrantReference,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 // myrmidon(B1c): product name in user-facing connector texts; see product.ts.
 import { PRODUCT_NAME as PN } from "../myrmidon/product.js";
 import {
@@ -166,19 +166,19 @@ import {
   resolveConnectionMethodServerUrl,
   type GitHubConnectorProfileId,
   type GoogleWorkspaceConnectorProfileId,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import {
   checkMcpRemoteHeaderName,
   checkMcpRemoteHeaderValue,
   mcpRemoteHeaderNameFromConfigPath,
   mcpRemoteHeaderRejectionMessage,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import {
   checkOAuthEndpointUrl,
   oauthEndpointUrlRejectionMessage,
   type OAuthEndpointKind,
   type OAuthEndpointUrlRejection,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import {
   badRequest,
   conflict,
@@ -206,7 +206,7 @@ import {
   guardedRemoteHttpFetch,
   type GuardedRemoteHttpFetchOptions,
 } from "./remote-http-fetch.js";
-import { readProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
+import { readProductEnv } from "@myrmidonai/shared/env-alias"; // myrmidon(REBRAND-C)
 import {
   REMOTE_URL_SECRET_CONFIG_PATH,
   remoteUrlCredentialMatchesPublicUrl,
@@ -17457,7 +17457,7 @@ export function toolAccessService(
       ]);
       const repositories = new Map<
         string,
-        import("@paperclipai/shared").ProjectRepository
+        import("@myrmidonai/shared").ProjectRepository
       >();
       let connectionCount = 0;
       let failedConnectionCount = 0;

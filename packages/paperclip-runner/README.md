@@ -16,18 +16,18 @@ imports or starts Paperclip's server, UI, CLI, or production database.
 
 ## Public package surfaces
 
-- `@paperclipai/paperclip-runner` — production contracts, clients/backends,
+- `@myrmidonai/paperclip-runner` — production contracts, clients/backends,
   PRP validation/replay, canonical catalog/dispatcher, and compatibility check.
-- `@paperclipai/paperclip-runner/testing` — deterministic mocks plus PRP and
+- `@myrmidonai/paperclip-runner/testing` — deterministic mocks plus PRP and
   semantic conformance kits. Tests and external conformance consumers import
   this explicitly.
-- `@paperclipai/paperclip-runner/evals` — versioned native-attempt metadata,
+- `@myrmidonai/paperclip-runner/evals` — versioned native-attempt metadata,
   fail-closed package/binary compatibility checks, and explicit runnerd
   artifact resolution for eval consumers.
 
 The package root has no mock or scenario exports. Generic credential-free
 matrix orchestration lives in the workspace-private
-`@paperclipai/paperclip-eval-kernel`; scenario content and provider-backed eval
+`@myrmidonai/paperclip-eval-kernel`; scenario content and provider-backed eval
 campaigns remain outside the runtime package.
 See [ADR 0001](docs/adr/0001-runner-testing-eval-package-boundaries.md).
 
@@ -164,8 +164,8 @@ prospective session configuration exactly.
 Run the complete contract gate with:
 
 ```sh
-pnpm install --filter @paperclipai/paperclip-runner --lockfile=false --offline --ignore-scripts --dev
-pnpm --filter @paperclipai/paperclip-runner verify
+pnpm install --filter @myrmidonai/paperclip-runner --lockfile=false --offline --ignore-scripts --dev
+pnpm --filter @myrmidonai/paperclip-runner verify
 ```
 
 The verification command requires a stable Rust toolchain with `cargo` on
@@ -176,7 +176,7 @@ Playwright browser libraries into a user-owned cache and run the same acceptance
 sequence with:
 
 ```sh
-pnpm --filter @paperclipai/paperclip-runner verify:rootless
+pnpm --filter @myrmidonai/paperclip-runner verify:rootless
 ```
 
 The tracer's final line is stable:
@@ -198,30 +198,30 @@ The tracer's final line is stable:
 Run only the tracer with:
 
 ```sh
-pnpm --filter @paperclipai/paperclip-runner trace:conformance
+pnpm --filter @myrmidonai/paperclip-runner trace:conformance
 ```
 
 Replay the Replay happy path, run a Local session, or open the browser
 devtool:
 
 ```sh
-pnpm --filter @paperclipai/paperclip-runner replay:fixture
-pnpm --filter @paperclipai/paperclip-runner trace:local-runner -- --scenario happy-path
-pnpm --filter @paperclipai/paperclip-runner trace:codex
-pnpm --filter @paperclipai/paperclip-runner demo:live-console -- --host 127.0.0.1 --port 4174
+pnpm --filter @myrmidonai/paperclip-runner replay:fixture
+pnpm --filter @myrmidonai/paperclip-runner trace:local-runner -- --scenario happy-path
+pnpm --filter @myrmidonai/paperclip-runner trace:codex
+pnpm --filter @myrmidonai/paperclip-runner demo:live-console -- --host 127.0.0.1 --port 4174
 
 # Live console: chat with a live session in the browser.
-pnpm --filter @paperclipai/paperclip-runner console:live-console
-pnpm --filter @paperclipai/paperclip-runner browser:dev --host 127.0.0.1 --port 4179
+pnpm --filter @myrmidonai/paperclip-runner console:live-console
+pnpm --filter @myrmidonai/paperclip-runner browser:dev --host 127.0.0.1 --port 4179
 
 # SDK: open the public-SDK reference console and mini consumer.
-pnpm --filter @paperclipai/paperclip-runner console:sdk
+pnpm --filter @myrmidonai/paperclip-runner console:sdk
 
 # Standalone: run the standalone legacy/native/kill-switch tracer and page.
-pnpm --filter @paperclipai/paperclip-runner trace:standalone
-pnpm --filter @paperclipai/paperclip-runner trace:standalone -- --feature-flag enabled
-pnpm --filter @paperclipai/paperclip-runner trace:standalone -- --feature-flag enabled --kill-switch enabled
-pnpm --filter @paperclipai/paperclip-runner demo:standalone
+pnpm --filter @myrmidonai/paperclip-runner trace:standalone
+pnpm --filter @myrmidonai/paperclip-runner trace:standalone -- --feature-flag enabled
+pnpm --filter @myrmidonai/paperclip-runner trace:standalone -- --feature-flag enabled --kill-switch enabled
+pnpm --filter @myrmidonai/paperclip-runner demo:standalone
 
 ```
 
@@ -253,8 +253,8 @@ The deterministic workflow scorer and the chaos schedule do not require
 provider credentials:
 
 ```sh
-pnpm --filter @paperclipai/paperclip-runner test:runner-workflow-evals
-pnpm --filter @paperclipai/paperclip-runner report:runner-chaos-evals
+pnpm --filter @myrmidonai/paperclip-runner test:runner-workflow-evals
+pnpm --filter @myrmidonai/paperclip-runner report:runner-chaos-evals
 ```
 
 `report:runner-live-evals` is a paid, provider-backed command. Native Codex
@@ -267,11 +267,11 @@ additional scheduling after the observed campaign total reaches that value:
 ```sh
 PAPERCLIP_EVAL_MAX_CAMPAIGN_COST_USD=12 \
   PAPERCLIP_EVALS_ROOT=/path/to/paperclip-evals \
-  pnpm --filter @paperclipai/paperclip-runner report:runner-live-evals
+  pnpm --filter @myrmidonai/paperclip-runner report:runner-live-evals
 
 # Run two scheduled native Codex executions only.
 PAPERCLIP_EVALS_ROOT=/path/to/paperclip-evals \
-  pnpm --filter @paperclipai/paperclip-runner report:runner-live-evals -- \
+  pnpm --filter @myrmidonai/paperclip-runner report:runner-live-evals -- \
   --candidate codex-luna --limit 2
 ```
 
@@ -291,13 +291,13 @@ clear them after use. Validate locally, provision or inspect the stack, run the
 bounded lab/smoke, and tear it down explicitly with:
 
 ```sh
-pnpm --filter @paperclipai/paperclip-runner test:aws-agentcore-provisioning
-pnpm --filter @paperclipai/paperclip-runner aws-agentcore:provision -- --dry-run
-pnpm --filter @paperclipai/paperclip-runner aws-agentcore:provision
-pnpm --filter @paperclipai/paperclip-runner aws-agentcore:probe
-pnpm --filter @paperclipai/paperclip-runner aws-agentcore:lab
-pnpm --filter @paperclipai/paperclip-runner smoke:capability:aws-agentcore
-pnpm --filter @paperclipai/paperclip-runner aws-agentcore:destroy -- --yes
+pnpm --filter @myrmidonai/paperclip-runner test:aws-agentcore-provisioning
+pnpm --filter @myrmidonai/paperclip-runner aws-agentcore:provision -- --dry-run
+pnpm --filter @myrmidonai/paperclip-runner aws-agentcore:provision
+pnpm --filter @myrmidonai/paperclip-runner aws-agentcore:probe
+pnpm --filter @myrmidonai/paperclip-runner aws-agentcore:lab
+pnpm --filter @myrmidonai/paperclip-runner smoke:capability:aws-agentcore
+pnpm --filter @myrmidonai/paperclip-runner aws-agentcore:destroy -- --yes
 ```
 
 To admit the hosted direct-eval workflow, provision with the account-local
@@ -305,7 +305,7 @@ GitHub Actions OIDC provider and keep the default exact repository and protected
 environment binding:
 
 ```sh
-pnpm --filter @paperclipai/paperclip-runner aws-agentcore:provision -- \
+pnpm --filter @myrmidonai/paperclip-runner aws-agentcore:provision -- \
   --aws-profile paperclip-dev \
   --github-oidc-provider-arn arn:aws:iam::<account-id>:oidc-provider/token.actions.githubusercontent.com
 ```

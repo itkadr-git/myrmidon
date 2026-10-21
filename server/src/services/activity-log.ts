@@ -1,9 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
-import { activityLog, agentApiKeys, companies, heartbeatRuns, issues } from "@paperclipai/db";
-import { isUuidLike, PLUGIN_EVENT_TYPES, type PluginEventType } from "@paperclipai/shared";
-import type { PluginEvent } from "@paperclipai/plugin-sdk";
+import type { Db } from "@myrmidonai/db";
+import { activityLog, agentApiKeys, companies, heartbeatRuns, issues } from "@myrmidonai/db";
+import { isUuidLike, PLUGIN_EVENT_TYPES, type PluginEventType } from "@myrmidonai/shared";
+import type { PluginEvent } from "@myrmidonai/plugin-sdk";
 import { publishLiveEvent } from "./live-events.js";
 import { redactCurrentUserValue } from "../log-redaction.js";
 import { sanitizeRecord } from "../redaction.js";

@@ -4,10 +4,10 @@ import {
   resolveWsBotDiskPartitionSettings,
   type WsBotDiskPartitionSettings,
   type WsDiskPressureLevel,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import { logger } from "../../middleware/logger.js";
 import { instanceSettingsService } from "../../services/index.js";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
 import type { BotPartitionUsage, DockergateDiskClient } from "./dockergate.js";
 
 /**

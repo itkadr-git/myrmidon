@@ -62,7 +62,7 @@ for (const source of ["anthropic", "openai"] as const) {
     let environmentId: string | undefined;
     if (environment === "daytona") {
       if (!process.env.DAYTONA_API_KEY || !process.env.HIRING_AI_DAYTONA_IMAGE) throw new Error("Daytona requires DAYTONA_API_KEY and HIRING_AI_DAYTONA_IMAGE");
-      const installed = (await api("/plugins")).find((plugin: any) => plugin.packageName === "@paperclipai/plugin-daytona");
+      const installed = (await api("/plugins")).find((plugin: any) => plugin.packageName === "@myrmidonai/plugin-daytona");
       if (!installed) await api("/plugins/install", "POST", { packageName: path.resolve(import.meta.dirname, "../../packages/plugins/sandbox-providers/daytona"), isLocalPath: true });
       else expect(installed.status).toBe("ready");
       const secret = await api(`/companies/${company.id}/secrets`, "POST", { name: `Daytona QA ${nonce}`, key: "DAYTONA_API_KEY", value: process.env.DAYTONA_API_KEY });

@@ -6,7 +6,7 @@
 
 import { describe, expect, it } from "vitest";
 import { parseAutonomyDocument, emptyAutonomyDocument } from "./store.js";
-import { AUTONOMY_SAFE_DEFAULTS } from "@paperclipai/shared";
+import { AUTONOMY_SAFE_DEFAULTS } from "@myrmidonai/shared";
 
 describe("autonomy store migration (deploy default)", () => {
   it("lifts stored deploy:allowed to approval_required when no rule overrides it", () => {

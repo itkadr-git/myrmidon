@@ -16,8 +16,8 @@ import {
   issues,
   principalPermissionGrants,
   userInboxAgentPolicies,
-} from "@paperclipai/db";
-import { LOW_TRUST_REVIEW_PRESET } from "@paperclipai/shared";
+} from "@myrmidonai/db";
+import { LOW_TRUST_REVIEW_PRESET } from "@myrmidonai/shared";
 import { errorHandler } from "../middleware/index.js";
 import { issueRoutes } from "../routes/issues.js";
 import { subscribeCompanyLiveEvents } from "../services/live-events.js";

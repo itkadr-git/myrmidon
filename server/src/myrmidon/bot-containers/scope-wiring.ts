@@ -14,7 +14,7 @@ import {
   projectMemberships,
   projects,
   type Db,
-} from "@paperclipai/db";
+} from "@myrmidonai/db";
 import {
   ISOLATED_LAYOUT,
   isScopeInstanceDirName,
@@ -23,7 +23,7 @@ import {
   type IsolationMode,
   type ScopeLayout,
   type SettableScopeKind,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import { botScopeRoutes } from "./scope-routes.js";
 import { botScopeService, type BotScopeService, type ScopeStore } from "./scope-service.js";
 import { isUniqueViolation } from "../../db-errors.js";

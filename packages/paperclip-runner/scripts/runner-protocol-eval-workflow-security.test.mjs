@@ -45,7 +45,7 @@ test("pull request CI builds the canonical Evalbook viewer", async () => {
 
   assert.match(
     buildJob,
-    /name: Build Runner Evalbook viewer[\s\S]*pnpm --filter @paperclipai\/paperclip-runner build:issue-thread/u,
+    /name: Build Runner Evalbook viewer[\s\S]*pnpm --filter @myrmidonai\/paperclip-runner build:issue-thread/u,
   );
 });
 
@@ -107,7 +107,7 @@ test("resolves both repositories immutably and bounds total matrix concurrency",
   assert.match(workflow, /matrix_1/u);
   assert.match(
     workflow,
-    /pnpm --filter @paperclipai\/paperclip-runner deploy --prod/u,
+    /pnpm --filter @myrmidonai\/paperclip-runner deploy --prod/u,
   );
   assert.match(
     workflow,

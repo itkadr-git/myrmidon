@@ -3,11 +3,11 @@ import fsSync from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { mergePaperclipConfig, paperclipConfigSchema } from "@paperclipai/shared";
+import { mergePaperclipConfig, paperclipConfigSchema } from "@myrmidonai/shared";
 import {
   updateEnvFileContents,
   writeEnvFileAtomicallyIfChanged,
-} from "@paperclipai/shared/env-file";
+} from "@myrmidonai/shared/env-file";
 import { resourceStatus, stockHash } from "../services/managed-resource-drift.js";
 import { agentInstructionsService } from "../services/agent-instructions.js";
 

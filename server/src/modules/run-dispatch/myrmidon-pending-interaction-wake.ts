@@ -1,5 +1,5 @@
 import { and, eq } from "drizzle-orm";
-import { issueThreadInteractions, type Db } from "@paperclipai/db";
+import { issueThreadInteractions, type Db } from "@myrmidonai/db";
 
 /**
  * Pending interaction addressee wake (P2).

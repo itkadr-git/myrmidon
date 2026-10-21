@@ -7,8 +7,8 @@
 // log. Company access applies, the same rule as the other foraging reads.
 
 import { Router } from "express";
-import type { Db } from "@paperclipai/db";
-import { FORAGING_PASS_JOURNAL_LIMIT } from "@paperclipai/shared";
+import type { Db } from "@myrmidonai/db";
+import { FORAGING_PASS_JOURNAL_LIMIT } from "@myrmidonai/shared";
 import { assertCompanyAccess } from "../../routes/authz.js";
 import type { ForagingPassJournalService } from "./pass-journal.js";
 

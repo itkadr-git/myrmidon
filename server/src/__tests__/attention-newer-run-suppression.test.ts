@@ -9,7 +9,7 @@ import {
   heartbeatRuns,
   inboxDismissals,
   issues,
-} from "@paperclipai/db";
+} from "@myrmidonai/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,

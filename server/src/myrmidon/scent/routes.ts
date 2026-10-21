@@ -17,8 +17,8 @@
 
 import { Router } from "express";
 import { and, eq } from "drizzle-orm";
-import { agents, issues, type Db } from "@paperclipai/db";
-import { readScentSettings } from "@paperclipai/shared";
+import { agents, issues, type Db } from "@myrmidonai/db";
+import { readScentSettings } from "@myrmidonai/shared";
 import { assertCompanyAccess } from "../../routes/authz.js";
 import { instanceSettingsService } from "../../services/instance-settings.js";
 import { logActivity } from "../../services/activity-log.js";

@@ -4,8 +4,8 @@
 import express from "express";
 import request from "supertest";
 import { describe, expect, it, vi } from "vitest";
-import type { Db } from "@paperclipai/db";
-import { FORAGING_PASS_JOURNAL_LIMIT, type ForagingPassJournalEntry } from "@paperclipai/shared";
+import type { Db } from "@myrmidonai/db";
+import { FORAGING_PASS_JOURNAL_LIMIT, type ForagingPassJournalEntry } from "@myrmidonai/shared";
 import { errorHandler } from "../../middleware/index.js";
 import { foragingPassRoutes } from "./pass-routes.js";
 import type { ForagingPassJournalService } from "./pass-journal.js";

@@ -22,7 +22,7 @@ import type {
   FallbackSignalSettingKey,
   FallbackSignalSettingSource,
   ResolvedFallbackSignalSettings,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import { shareTripsSignal, type FallbackShare, type FallbackSignalSettings } from "./attention.js";
 
 export interface FallbackStatusRow {

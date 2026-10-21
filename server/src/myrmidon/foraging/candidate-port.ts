@@ -21,8 +21,8 @@
 // throwing port, but the port itself must not throw outward).
 
 import { and, eq, sql } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
-import { companySkillVersions, companySkills } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
+import { companySkillVersions, companySkills } from "@myrmidonai/db";
 import type { SkillLifecycleService } from "../skill-lifecycle/index.js";
 import {
   type ForagingCandidateInput,

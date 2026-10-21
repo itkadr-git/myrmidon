@@ -7,8 +7,8 @@
 // keep whatever the server stores.
 
 import { and, desc, eq, inArray, sql } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
-import { agentTaskSessions, heartbeatRuns } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
+import { agentTaskSessions, heartbeatRuns } from "@myrmidonai/db";
 import { safeChatTaskUrl } from "../../../services/chat-task-url.js";
 import { issueService } from "../../../services/issues.js";
 import { readCrossChannelSettings } from "../settings.js";

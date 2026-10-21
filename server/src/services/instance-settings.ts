@@ -1,5 +1,5 @@
-import type { Db } from "@paperclipai/db";
-import { companies, instanceSettings } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
+import { companies, instanceSettings } from "@myrmidonai/db";
 
 /**
  * A `Db` or an open transaction handle — the subset of query builders the
@@ -26,12 +26,12 @@ import {
   type InstanceSettings,
   type PatchInstanceSettings,
   type PatchInstanceExperimentalSettings,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import {
   INSTANCE_FEATURE_CATALOG,
   applyOperatorGeneralDefaults,
   stripOperatorGeneralEchoes,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import { eq } from "drizzle-orm";
 // myrmidon(R3): keep maintenance mode state across vendor writes of `general`
 import { preserveMaintenanceGeneralKey, preserveBrowserConsoleGeneralKey } from "../myrmidon/maintenance/store.js";

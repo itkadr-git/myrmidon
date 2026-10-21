@@ -26,13 +26,13 @@ import {
   heartbeatRuns,
   issueClaims,
   issues,
-} from "@paperclipai/db";
+} from "@myrmidonai/db";
 import { eq } from "drizzle-orm";
 import {
   SWARM_CLAIM_WAKE_REASON,
   SWARM_MATCHED_WAKE_REASON,
   resolveSwarmClaimSettings,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,

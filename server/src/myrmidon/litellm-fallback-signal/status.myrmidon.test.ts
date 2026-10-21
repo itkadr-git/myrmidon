@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { resolveFallbackSignalSettings } from "@paperclipai/shared";
-import type { Db } from "@paperclipai/db";
+import { resolveFallbackSignalSettings } from "@myrmidonai/shared";
+import type { Db } from "@myrmidonai/db";
 import {
   readModelFallbackSignals,
   resetModelFallbackSignals,

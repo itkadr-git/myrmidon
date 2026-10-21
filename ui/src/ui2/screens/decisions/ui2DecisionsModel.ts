@@ -8,7 +8,7 @@
 // without data is hidden, it does not show zeros".
 
 import type { Decision } from "@/api/decisions";
-import type { DecisionOption } from "@paperclipai/shared";
+import type { DecisionOption } from "@myrmidonai/shared";
 
 /** The three mock filter groups, derived from ruleKey like the map suggests. */
 export type Ui2DecisionGroup = "policies" | "money" | "external" | "other";

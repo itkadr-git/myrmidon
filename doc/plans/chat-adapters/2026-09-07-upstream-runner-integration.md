@@ -143,7 +143,7 @@ The guarded local `upstream-live-upgrade.ts` helper and its logs remain alongsid
 that directory. The portable-backup precision discrepancy was not patched as
 part of this chat integration.
 
-`pnpm --filter @paperclipai/server build` passed, including the full native runner
+`pnpm --filter @myrmidonai/server build` passed, including the full native runner
 build, protocol/contract checks and binary staging. The package and vendored
 runner binaries share SHA256
 `f7c1273cce29e521e820ad947d657e500da28477f563053148e764cdfb3730cd`.

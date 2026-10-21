@@ -9,7 +9,7 @@
 // -> built-in defaults; the effective source is reported by the resolver.
 
 import { eq, sql } from "drizzle-orm";
-import { instanceSettings, type Db } from "@paperclipai/db";
+import { instanceSettings, type Db } from "@myrmidonai/db";
 import {
   DEFAULT_TOOL_AUTONOMY_MAPPING,
   resolveToolAutonomyClass,

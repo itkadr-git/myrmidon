@@ -5,8 +5,8 @@
 // never returned, never logged. See docs/myrmidon/SETTINGS.md.
 
 import { z } from "zod";
-import type { Db } from "@paperclipai/db";
-import { instanceSettings } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
+import { instanceSettings } from "@myrmidonai/db";
 import { eq } from "drizzle-orm";
 import {
   DEFAULT_ALERT_ROUTE_ASSIGNEE,

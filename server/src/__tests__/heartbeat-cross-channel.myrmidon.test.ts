@@ -24,7 +24,7 @@ import {
   createDb,
   heartbeatRuns,
   type Db,
-} from "@paperclipai/db";
+} from "@myrmidonai/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,

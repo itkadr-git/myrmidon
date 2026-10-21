@@ -1,6 +1,6 @@
 // myrmidon(CORPUS-A): PostgreSQL store for per-company corpus module settings.
 import { eq } from "drizzle-orm";
-import { corpusSettings } from "@paperclipai/db";
+import { corpusSettings } from "@myrmidonai/db";
 import { CORPUS_DEFAULT_SETTINGS, type CorpusModuleSettings } from "../domain.js";
 import type { CorpusSettingsStore } from "../ports.js";
 import type { CorpusDb } from "./types.js";

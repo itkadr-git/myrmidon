@@ -1,4 +1,4 @@
-import type { AskUserQuestionsInteraction } from "@paperclipai/shared";
+import type { AskUserQuestionsInteraction } from "@myrmidonai/shared";
 import type { ModalResponse } from "chat";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {

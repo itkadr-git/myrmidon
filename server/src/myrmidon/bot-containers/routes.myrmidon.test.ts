@@ -5,8 +5,8 @@
 import express from "express";
 import request from "supertest";
 import { describe, expect, it, vi } from "vitest";
-import { AGENT_DEFAULT_MAX_CONCURRENT_RUNS } from "@paperclipai/shared";
-import type { BotApplyJobStatus } from "@paperclipai/db";
+import { AGENT_DEFAULT_MAX_CONCURRENT_RUNS } from "@myrmidonai/shared";
+import type { BotApplyJobStatus } from "@myrmidonai/db";
 import { forbidden } from "../../errors.js";
 import { errorHandler } from "../../middleware/index.js";
 import { BOT_CONTAINERS_ENV, CONTAINER_GROUP_UNSUPPORTED_REASON } from "./agent-config.js";

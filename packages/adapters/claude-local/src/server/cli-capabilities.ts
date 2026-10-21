@@ -1,5 +1,5 @@
-import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
-import { runAdapterExecutionTargetProcess } from "@paperclipai/adapter-utils/execution-target";
+import type { AdapterExecutionTarget } from "@myrmidonai/adapter-utils/execution-target";
+import { runAdapterExecutionTargetProcess } from "@myrmidonai/adapter-utils/execution-target";
 import path from "node:path";
 
 const effortFlagSupportCache = new Map<string, Promise<boolean | null>>();

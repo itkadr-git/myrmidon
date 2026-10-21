@@ -34,7 +34,7 @@ import {
   parsePluginEntitlementToken,
   toPluginEntitlementKeyViews,
   type PluginEntitlementKey,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import {
   acceptPluginEntitlementKey,
   preservePluginEntitlementKeysGeneralKey,

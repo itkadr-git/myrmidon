@@ -10,15 +10,15 @@ import {
   companyMemberships,
   instanceSettings,
   issues,
-} from "@paperclipai/db";
-import type { Db } from "@paperclipai/db";
+} from "@myrmidonai/db";
+import type { Db } from "@myrmidonai/db";
 import {
   OWNER_DELIVERY_DEFAULT_MODE,
   OWNER_DELIVERY_SETTINGS_KEY,
   normalizeOwnerDeliverySettings,
   ownerDeliveryAllowsCard,
   type OwnerDeliveryMode,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 // myrmidon(1.6.6 CH-CONNECTOR-D): the conversation key comes through the seam.
 import { telegramConversationUserId } from "../channel-connectors/bridge/identity.js";
 

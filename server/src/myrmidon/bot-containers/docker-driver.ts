@@ -68,7 +68,7 @@ import {
   type RateLimiter,
 } from "./dockergate-pacing.js"; // myrmidon(1.6.5-DOCKERGATE-A2A3-STORM)
 import type { BotContainerDriver, BotContainerSpec, BotContainerStatus, BotSkillDirectory, TemplateDriftField, TemplateDriftReport } from "./driver.js";
-import { ISOLATED_LAYOUT, type ScopeLayout } from "@paperclipai/shared";
+import { ISOLATED_LAYOUT, type ScopeLayout } from "@myrmidonai/shared";
 import type { CompiledProfile } from "./types.js";
 import { logger } from "../../middleware/logger.js";
 import { prepareBotSharedMount, resolveSpecSharedMount } from "./shared-mount.js"; // myrmidon(1.6.1-BOT-DISK-D)

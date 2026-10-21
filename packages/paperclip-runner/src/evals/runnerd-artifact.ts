@@ -41,7 +41,7 @@ async function readVerifiedBuildMetadata(
 export interface PaperclipRunnerdBuildMetadata {
   schema: typeof PAPERCLIP_RUNNERD_BUILD_METADATA_SCHEMA;
   binaryName: "paperclip-runnerd";
-  packageName: "@paperclipai/paperclip-runner";
+  packageName: "@myrmidonai/paperclip-runner";
   packageVersion: string;
   binaryContractVersion: number;
   nativeExecutionVersion: number;

@@ -2,8 +2,8 @@
 // activity log and shapes them for the pure policy.
 
 import { and, desc, eq, sql } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
-import { activityLog } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
+import { activityLog } from "@myrmidonai/db";
 import type { BlockedLoopEvent } from "./policy.js";
 
 /** Key under `issue.updated` details where the guard records its signature. */

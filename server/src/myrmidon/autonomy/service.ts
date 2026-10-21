@@ -9,9 +9,9 @@
 // without a database.
 
 import { randomUUID } from "node:crypto";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
 import { and, desc, eq, sql } from "drizzle-orm";
-import { activityLog } from "@paperclipai/db";
+import { activityLog } from "@myrmidonai/db";
 import {
   defaultAutonomyMatrix,
   type AutonomyActionClass,
@@ -23,7 +23,7 @@ import {
   type AutonomyRegulation,
   type AutonomyRegulationRevision,
   type AutonomySnapshot,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import {
   AUTONOMY_REVISION_LIMIT,
   type AutonomyDocument,

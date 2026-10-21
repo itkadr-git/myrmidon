@@ -3,26 +3,26 @@ import { createReadStream } from "node:fs";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
-import { environmentLeases, heartbeatRuns } from "@paperclipai/db";
-import type { EnvironmentLease } from "@paperclipai/shared";
+import type { Db } from "@myrmidonai/db";
+import { environmentLeases, heartbeatRuns } from "@myrmidonai/db";
+import type { EnvironmentLease } from "@myrmidonai/shared";
 import {
   prepareAdapterExecutionTargetRuntime,
   type AdapterExecutionTarget,
   type PreparedAdapterExecutionTargetRuntime,
-} from "@paperclipai/adapter-utils/execution-target";
-import type { GitWorkspaceSnapshot } from "@paperclipai/adapter-utils/git-workspace-sync";
+} from "@myrmidonai/adapter-utils/execution-target";
+import type { GitWorkspaceSnapshot } from "@myrmidonai/adapter-utils/git-workspace-sync";
 import {
   directorySnapshotSha256,
   parseDirectorySnapshot,
   serializeDirectorySnapshot,
   type DirectorySnapshot,
   type SerializedDirectorySnapshot,
-} from "@paperclipai/adapter-utils/workspace-restore-merge";
+} from "@myrmidonai/adapter-utils/workspace-restore-merge";
 import type {
   WorkspaceDurableSeedPaths,
   WorkspaceInboundMode,
-} from "@paperclipai/adapter-utils/sandbox-managed-runtime";
+} from "@myrmidonai/adapter-utils/sandbox-managed-runtime";
 import { resolvePaperclipInstanceRoot } from "../../home-paths.js";
 import { parseObject } from "../../adapters/utils.js";
 import type { NativeRestartRecoveryClaim } from "./native-restart-recovery.js";
@@ -713,7 +713,7 @@ async function finalizePreparedRuntime(input: {
 }): Promise<NativeWorkspaceSyncReference> {
   await input.runtime.restoreWorkspace();
   const finalSnapshot =
-    await import("@paperclipai/adapter-utils/workspace-restore-merge").then(
+    await import("@myrmidonai/adapter-utils/workspace-restore-merge").then(
       ({ captureDirectorySnapshot }) =>
         captureDirectorySnapshot(input.descriptor.binding.localCwd, {
           exclude: input.runtime.workspaceSyncSnapshot?.baseline.exclude ?? [],

@@ -25,8 +25,8 @@
 // (the same reason the run admission limits inject their ports).
 
 import { and, asc, eq, lt, notInArray, sql } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
-import { agents, companies } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
+import { agents, companies } from "@myrmidonai/db";
 import { logger } from "../../middleware/logger.js";
 import { resolveStatusOnResume } from "../pause-drain.js";
 import {

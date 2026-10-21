@@ -21,7 +21,7 @@ function stripAnsi(text: string): string {
  * tool cards (with status icons, expand/collapse) instead of raw stdout blocks.
  */
 
-import type { TranscriptEntry } from "@paperclipai/adapter-utils";
+import type { TranscriptEntry } from "@myrmidonai/adapter-utils";
 
 import { TOOL_OUTPUT_PREFIX } from "../shared/constants.js";
 

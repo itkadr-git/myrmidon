@@ -3,8 +3,8 @@ import {
   agentWakeupRequests,
   issueThreadInteractions,
   issues,
-} from "@paperclipai/db";
-import type { Db } from "@paperclipai/db";
+} from "@myrmidonai/db";
+import type { Db } from "@myrmidonai/db";
 import { logger } from "../middleware/logger.js";
 import { isUniqueViolation } from "../db-errors.js";
 

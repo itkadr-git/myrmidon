@@ -4,7 +4,7 @@
 // settings row on every reconcile tick (profile-ports.ts botLsp). Wired here:
 // the routes and the read-only walk over the container bots the view reports.
 
-import { agents as agentsTable, type Db } from "@paperclipai/db";
+import { agents as agentsTable, type Db } from "@myrmidonai/db";
 import { and, eq, ne, sql } from "drizzle-orm";
 import { HERMES_GATEWAY_ADAPTER_TYPE } from "../bot-containers/agents-query.js";
 import { botLspRoutes } from "./routes.js";

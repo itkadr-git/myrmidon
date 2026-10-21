@@ -5,10 +5,10 @@
 // app.ts mounts `wipLimitRoutes` from here; the startup in index.ts ticks the
 // sweeper on the heartbeat scheduler (the same place the swarm-claim sweep
 // lives). The shared contract (settings shape, limit resolver, status rows)
-// lives in `@paperclipai/shared` so part B (the UI) reads the same decisions
+// lives in `@myrmidonai/shared` so part B (the UI) reads the same decisions
 // this module enforces.
 
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
 import { issueService } from "../../services/issues.js";
 import { instanceSettingsService } from "../../services/instance-settings.js";
 import { wipLimitRoutes } from "./routes.js";

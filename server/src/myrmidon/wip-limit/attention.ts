@@ -11,8 +11,8 @@
 // implementation work is over the limit by definition (limit 0), and the card
 // says so instead of quoting a number that is not the real cause.
 
-import type { AttentionSeverity } from "@paperclipai/shared";
-import type { WipLimitAgentStatus } from "@paperclipai/shared";
+import type { AttentionSeverity } from "@myrmidonai/shared";
+import type { WipLimitAgentStatus } from "@myrmidonai/shared";
 
 /** One attention card the feed renders for an over-limit agent. */
 export interface WipLimitAttentionCard {

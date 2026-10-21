@@ -505,7 +505,7 @@ that hits the gate's limit resolves in place instead of multiplying.
 ### LLM Wiki plugin install/upgrade guide and release wiring test (WIKI-PLUGIN-RELEASE)
 
 - `docs/wiki-plugin-install-guide.md` — installation, folder configuration,
-  upgrade and troubleshooting steps for `@paperclipai/plugin-llm-wiki`.
+  upgrade and troubleshooting steps for `@myrmidonai/plugin-llm-wiki`.
 - `scripts/myrmidon/wiki-plugin/wiki-plugin-release.test.mjs` — static
   `node:test` contract that pins the plugin's release wiring (esbuild build
   script, SDK from the repository workspace, `paperclipPlugin` entry points,

@@ -13,7 +13,7 @@ import {
   companies,
   createDb,
   issues,
-} from "@paperclipai/db";
+} from "@myrmidonai/db";
 import { registerServerAdapter, unregisterServerAdapter } from "../adapters/registry.js";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { heartbeatService } from "../services/heartbeat.js";

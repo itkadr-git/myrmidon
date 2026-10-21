@@ -14,7 +14,7 @@
 // is what lets the watchdog tests pin the detection latency instead of waiting
 // ten real minutes for it.
 
-import type { MonitoringLinkScope } from "@paperclipai/shared";
+import type { MonitoringLinkScope } from "@myrmidonai/shared";
 
 /** The subset of a board key row a link's liveness depends on. */
 export interface MonitoringLinkKeyRow {

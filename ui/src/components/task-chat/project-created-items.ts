@@ -1,4 +1,4 @@
-import type { ActivityEvent, Project } from "@paperclipai/shared";
+import type { ActivityEvent, Project } from "@myrmidonai/shared";
 import type { TaskChatProjectCreatedItem } from "./task-chat-model";
 
 export function projectCreatedItems(

@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import type { IssueAttachment, IssueWorkProduct } from "@paperclipai/shared";
+import type { IssueAttachment, IssueWorkProduct } from "@myrmidonai/shared";
 import { Download, ExternalLink, FileText, Link2 } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { OutputVideoPlayer } from "@/components/issue-output/OutputVideoPlayer";

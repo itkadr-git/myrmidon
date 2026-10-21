@@ -10,7 +10,7 @@
 //   * Yandex has no search endpoint, so `search` walks the granted root (depth
 //     and item capped) — which also means a hit can never be outside it.
 
-import type { CloudRoot } from "@paperclipai/shared/myrmidon-cloud-connector";
+import type { CloudRoot } from "@myrmidonai/shared/myrmidon-cloud-connector";
 import { CloudConnectorError, type CloudItem, type CloudListing } from "../types.js";
 import { normalizeCloudName, joinCloudPath } from "../paths.js";
 import type { CloudLocation, CloudProvider, CloudSearchHit } from "./provider.js";

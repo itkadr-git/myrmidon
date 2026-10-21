@@ -13,7 +13,7 @@ import {
   createDb,
   plugins,
   secretAccessEvents,
-} from "@paperclipai/db";
+} from "@myrmidonai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import {
   createPluginSecretsHandler,
@@ -124,7 +124,7 @@ describeEmbeddedPostgres("createPluginSecretsHandler shared vault integration", 
     await db.insert(plugins).values({
       id: pluginId,
       pluginKey: "paperclip.plugin-secrets-test",
-      packageName: "@paperclipai/plugin-secrets-test",
+      packageName: "@myrmidonai/plugin-secrets-test",
       version: "0.0.1",
       apiVersion: 1,
       categories: ["automation"],

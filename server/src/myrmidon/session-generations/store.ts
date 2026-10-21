@@ -19,7 +19,7 @@
 
 import { and, desc, eq, like, or } from "drizzle-orm";
 
-import { heartbeatRuns, type Db } from "@paperclipai/db";
+import { heartbeatRuns, type Db } from "@myrmidonai/db";
 
 import {
   reduceSessionGenerationRows,

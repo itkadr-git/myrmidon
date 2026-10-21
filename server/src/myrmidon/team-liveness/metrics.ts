@@ -15,7 +15,7 @@
 // cannot drift from the behaviour they describe.
 
 import { and, count, eq, gte } from "drizzle-orm";
-import { agentWakeupRequests, type Db } from "@paperclipai/db";
+import { agentWakeupRequests, type Db } from "@myrmidonai/db";
 import { autoResumeMetrics } from "../auto-resume.js";
 import { countRunStallInterrupts } from "../run-stall/metrics.js";
 

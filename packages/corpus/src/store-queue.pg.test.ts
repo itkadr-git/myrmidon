@@ -1,13 +1,13 @@
 // myrmidon(CORPUS-A): store/queue tests on embedded PostgreSQL 18, by the
-// knowledge K-1 pattern (startEmbeddedPostgresTestDatabase from @paperclipai/db).
+// knowledge K-1 pattern (startEmbeddedPostgresTestDatabase from @myrmidonai/db).
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { sql as rawSql } from "drizzle-orm";
-import { createDb } from "@paperclipai/db";
+import { createDb } from "@myrmidonai/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
   type EmbeddedPostgresTestDatabase,
-} from "@paperclipai/db";
+} from "@myrmidonai/db";
 import { PostgresCorpusStore } from "./postgres/store.js";
 import { PostgresWorkQueue } from "./postgres/queue.js";
 import { PostgresCorpusSettingsStore } from "./postgres/settings.js";

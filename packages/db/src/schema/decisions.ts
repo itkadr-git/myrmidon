@@ -1,4 +1,4 @@
-import type { DecisionInput, DecisionOption } from "@paperclipai/shared";
+import type { DecisionInput, DecisionOption } from "@myrmidonai/shared";
 import { sql } from "drizzle-orm";
 import {
   index,

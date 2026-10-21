@@ -8,7 +8,7 @@
 // byte of the payload. `summarizeActionResult` is the single place that decides
 // what "the result" means per method, so a new method cannot leak by accident.
 
-import type { BrowserBridgeMethod } from "@paperclipai/shared";
+import type { BrowserBridgeMethod } from "@myrmidonai/shared";
 
 export const BROWSER_BRIDGE_ENTITY_TYPE = "browser_bridge";
 

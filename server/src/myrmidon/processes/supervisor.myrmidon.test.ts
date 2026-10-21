@@ -10,7 +10,7 @@ import type { ChildProcess } from "node:child_process";
 import {
   DEFAULT_PROCESSES_SETTINGS,
   type ProcessesSettings,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import {
   createProcessSupervisor,
   SUPERVISOR_BACKOFF_INITIAL_MS,

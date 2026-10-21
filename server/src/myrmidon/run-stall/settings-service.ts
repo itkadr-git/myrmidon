@@ -16,7 +16,7 @@
 // runs through one queue (see `withRunStallTransition`), exactly as the
 // runtime-limits transition does.
 
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
 import {
   RUN_STALL_KEYS,
   RUN_STALL_MANAGED_ELSEWHERE_CODE,
@@ -28,7 +28,7 @@ import {
   type ResolvedRunStall,
   type RunStallPatch,
   type RunStallValues,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import { conflict } from "../../errors.js";
 import { logger } from "../../middleware/logger.js";
 import { teamLivenessReader } from "../team-liveness/settings.js";

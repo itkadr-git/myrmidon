@@ -4,7 +4,7 @@
 // per pulse, one read for the panel, one delete for the leader's reaping.
 
 import { asc, lt } from "drizzle-orm";
-import { boardProcesses, type Db } from "@paperclipai/db";
+import { boardProcesses, type Db } from "@myrmidonai/db";
 import type { BoardProcessIdentity } from "./domain.js";
 
 /** The pulse's per-tick measurements; null while an observer is unavailable.

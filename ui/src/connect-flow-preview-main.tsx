@@ -1,7 +1,7 @@
 import { StrictMode, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { MotionConfig, motion } from "motion/react";
-import { isValidBrowserCode } from "@paperclipai/shared";
+import { isValidBrowserCode } from "@myrmidonai/shared";
 import {
   CARD_ENTER,
   CARD_EXIT,

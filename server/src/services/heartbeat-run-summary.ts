@@ -1,7 +1,7 @@
 import type {
   RunPresentationDecision,
   RunPresentationSource,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 // myrmidon(S5): mask secret values in run results
 import { maskSecretsInText, maskSecretsInValue } from "../myrmidon/secret-masking.js";
 
@@ -130,7 +130,7 @@ export const CHAT_RUN_PRESENTATION_AUTHORIZATION_REASON =
   "allow_chat_run_presentation";
 
 export type RunPresentationCommentAction = "reuse" | "create" | "none";
-export type { RunPresentationDecision } from "@paperclipai/shared";
+export type { RunPresentationDecision } from "@myrmidonai/shared";
 
 export interface ResolvedHeartbeatRunResponse {
   text: string | null;

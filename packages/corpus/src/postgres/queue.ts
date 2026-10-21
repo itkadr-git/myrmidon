@@ -1,7 +1,7 @@
 // myrmidon(CORPUS-A): PostgreSQL WorkQueue over corpus_parse_jobs.
 // Store layer — dialect constructs (FOR UPDATE SKIP LOCKED) live only here.
 import { and, eq, sql } from "drizzle-orm";
-import { corpusParseJobs } from "@paperclipai/db";
+import { corpusParseJobs } from "@myrmidonai/db";
 import {
   parseJobRetryDelayMs,
   type CorpusParseJob,

@@ -4,7 +4,7 @@
 // cards, plus the capacity hint (a warning, never a block). The profile
 // compiler re-reads the row every reconcile tick, so a change applies within
 // one tick without a restart.
-import type { ParallelHelpersSettings, HelperCapacityHint } from "@paperclipai/shared";
+import type { ParallelHelpersSettings, HelperCapacityHint } from "@myrmidonai/shared";
 import { api } from "@/api/client";
 
 export interface ParallelHelpersView {

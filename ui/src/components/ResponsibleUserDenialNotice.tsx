@@ -2,7 +2,7 @@ import { ShieldX, UserX } from "lucide-react";
 import {
   describeResponsibleUserDenial,
   type ResponsibleUserDenialCode,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import { cn } from "../lib/utils";
 
 /**

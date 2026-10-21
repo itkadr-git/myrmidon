@@ -20,7 +20,7 @@
 //     reason on the document. Nothing in this pass throws into the board.
 
 import { logger } from "../../middleware/logger.js";
-import type { CorpusSettings } from "@paperclipai/shared";
+import type { CorpusSettings } from "@myrmidonai/shared";
 import type { CorpusJobRecord, CorpusPorts, CorpusPortsResolver, ParsedChunk } from "./ports.js";
 
 /**

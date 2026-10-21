@@ -7,7 +7,7 @@ import {
   type BotLspCard,
   type BotLspMode,
   type BotLspSettings,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import { CollapsibleSection, Field } from "../agent-config-primitives";
 import { BOT_LSP_MODE_HINTS, BOT_LSP_MODE_LABELS } from "./botLspModes";
 

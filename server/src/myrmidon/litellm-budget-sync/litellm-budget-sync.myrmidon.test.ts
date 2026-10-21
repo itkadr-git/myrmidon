@@ -23,7 +23,7 @@ import {
   normalizeBudgetProjectionSettings,
   budgetProjectionSettingsSchema,
   type BudgetProjectionStoredSettings,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import {
   DEFAULT_BUDGET_PROJECTION_SWEEP_INTERVAL_SEC,
   clampSweepInterval,

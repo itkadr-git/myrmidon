@@ -1,7 +1,7 @@
 import request from "supertest";
 import { eq } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
-import { activityLog, issues } from "@paperclipai/db";
+import { activityLog, issues } from "@myrmidonai/db";
 import {
   resetCompanyIssueFixtures,
   routeApp,

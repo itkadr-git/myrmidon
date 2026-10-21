@@ -30,8 +30,8 @@
 // source registry rows (role) and from the findings' assignees (agent), the
 // same attribution the Costs screens use.
 
-import type { AttentionSeverity } from "@paperclipai/shared";
-import type { ForagingSettings } from "@paperclipai/shared";
+import type { AttentionSeverity } from "@myrmidonai/shared";
+import type { ForagingSettings } from "@myrmidonai/shared";
 
 /** Stable per-company dedup key: one card while the limit stands. */
 export const FORAGING_LIMIT_DEDUP_KEY = "foraging_limits:learning";

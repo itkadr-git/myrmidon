@@ -1,9 +1,9 @@
 import type {
   ExecutionContinuationEnvelope,
   ExecutionContinuationWakeLinks,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import { and, eq } from "drizzle-orm";
-import { heartbeatRunContinuations, type Db } from "@paperclipai/db";
+import { heartbeatRunContinuations, type Db } from "@myrmidonai/db";
 
 // myrmidon(RUN-SNAPSHOT-DEDUP): the execution continuation envelope is stored
 // once per run snapshot. `context_snapshot.executionContinuation` is the

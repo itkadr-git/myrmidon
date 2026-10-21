@@ -19,7 +19,7 @@ import {
   type DatastoreCareRetentionLastRun,
   type DatastoreCareRetentionPatch,
   type PatchInstanceGeneralSettings,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import type { instanceSettingsService } from "../../../services/instance-settings.js";
 
 export type DatastoreCareSettingsService = Pick<

@@ -20,7 +20,7 @@ import {
   issueRelations,
   issues,
   type Db,
-} from "@paperclipai/db";
+} from "@myrmidonai/db";
 import { logger } from "../../middleware/logger.js";
 import { publishActivity, type ActivityPublication } from "../../services/activity-log.js";
 import type { IssuePostCommitAction } from "../../services/issues.js";

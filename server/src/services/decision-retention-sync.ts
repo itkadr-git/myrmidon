@@ -1,5 +1,5 @@
-import type { Db } from "@paperclipai/db";
-import type { AttentionItem } from "@paperclipai/shared";
+import type { Db } from "@myrmidonai/db";
+import type { AttentionItem } from "@myrmidonai/shared";
 import { logger } from "../middleware/logger.js";
 import { decisionRetentionService } from "./decision-retention.js";
 

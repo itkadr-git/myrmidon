@@ -6,7 +6,7 @@
 // re-reads the stored row on every pass, so saving applies without a restart.
 // A null fallback means "no fallback assignee": the rework task is created
 // unassigned in todo — the role-queue shape the swarm claims.
-import type { ReviewReworkSettings, ReviewReworkSettingsPatch } from "@paperclipai/shared";
+import type { ReviewReworkSettings, ReviewReworkSettingsPatch } from "@myrmidonai/shared";
 import { api } from "@/api/client";
 
 /** One journal entry: who changed what, and when. */

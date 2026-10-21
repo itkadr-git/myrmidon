@@ -2,7 +2,7 @@
 
 The human-visible product name has one source of truth: `PRODUCT_NAME` in
 `packages/shared/src/myrmidon-product.ts`, exported through
-`@paperclipai/shared`. UI components import that symbol rather than defining a
+`@myrmidonai/shared`. UI components import that symbol rather than defining a
 second constant. Page titles end in the shared name. The regular and production
 account-menu variants render their localized About link/version label from the
 same shared-name localization resource.

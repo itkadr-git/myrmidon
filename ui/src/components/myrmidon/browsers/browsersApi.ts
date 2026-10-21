@@ -7,7 +7,7 @@ import type {
   BrowserScreenOpenResponse,
   BrowserScreenStatusResponse,
   BrowserSessionJournalEntry,
-} from "@paperclipai/shared/myrmidon-browser-console";
+} from "@myrmidonai/shared/myrmidon-browser-console";
 
 export const browsersQueryKey = ["myrmidon", "browsers"] as const;
 export const browsersJournalQueryKey = ["myrmidon", "browsers", "journal"] as const;

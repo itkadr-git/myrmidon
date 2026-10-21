@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { readInputLimitHint } from "@paperclipai/adapter-utils/input-limit";
+import { readInputLimitHint } from "@myrmidonai/adapter-utils/input-limit";
 import { decideSessionReset, promptTokensOf, readInputLimitSettings } from "./input-limit.js";
 
 const hint = readInputLimitHint({ model: "m", maxInputTokens: 1000 })!; // budget 900 tokens

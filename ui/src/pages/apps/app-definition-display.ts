@@ -1,4 +1,4 @@
-import type { AppDefinition, ToolApplication, ToolConnection } from "@paperclipai/shared";
+import type { AppDefinition, ToolApplication, ToolConnection } from "@myrmidonai/shared";
 
 export type AppGalleryDisplayEntry = AppDefinition & {
   key?: string;

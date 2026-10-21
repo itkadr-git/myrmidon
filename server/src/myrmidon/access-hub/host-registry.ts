@@ -10,7 +10,7 @@
 
 import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
-import { instanceSettings, type Db } from "@paperclipai/db";
+import { instanceSettings, type Db } from "@myrmidonai/db";
 import type { AccessHubHost } from "./types.js";
 
 export const ACCESS_HUB_HOSTS_GENERAL_KEY = "myrmidonAccessHubHosts";

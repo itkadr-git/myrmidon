@@ -25,9 +25,9 @@
 
 import { randomBytes } from "node:crypto";
 import { and, eq, inArray } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
-import { agents, chatActions, chatConversations, chatPublications } from "@paperclipai/db";
-import type { SafeChatPublicationPayload } from "@paperclipai/shared";
+import type { Db } from "@myrmidonai/db";
+import { agents, chatActions, chatConversations, chatPublications } from "@myrmidonai/db";
+import type { SafeChatPublicationPayload } from "@myrmidonai/shared";
 import {
   TELEGRAM_CALLBACK_DATA_LIMIT_BYTES,
   telegramChatSdkCallbackData,

@@ -13,13 +13,13 @@
 // implementation and the activity-log sink.
 
 import { and, eq } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
-import { companyMemberships, userUiLanguage } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
+import { companyMemberships, userUiLanguage } from "@myrmidonai/db";
 import {
   ui2LanguageSchema,
   type Ui2Language,
   type Ui2LanguagePreference,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import { logActivity } from "../../services/index.js";
 // myrmidon(1.6.5-TG-LOCALE-C): the bridge language decision lives with the
 // bridge catalogs; this service only reports it to the screen.

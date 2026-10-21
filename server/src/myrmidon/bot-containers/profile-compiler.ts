@@ -43,7 +43,7 @@
 //     in input.env under that name.
 import { createHash } from "node:crypto";
 
-import type { ParallelHelpersCard, ResolvedParallelHelpers } from "@paperclipai/shared";
+import type { ParallelHelpersCard, ResolvedParallelHelpers } from "@myrmidonai/shared";
 import { effortForModel } from "../effort-policy/effort-policy.js";
 import type { CompiledProfile, CompiledProfileFile } from "./types.js";
 import { writeYamlDocument, type YamlMapping, type YamlNode } from "./deterministic-yaml.js";

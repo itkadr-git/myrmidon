@@ -31,7 +31,7 @@ import {
   scentTaskStrength,
   topScentCasteKey,
   type IssueScent,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import type {
   ClassifyIssueScentInput,
   ClassifyAgentScentInput,

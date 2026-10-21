@@ -11,7 +11,7 @@
 
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { agents, companies, createDb, knowledgeEvents, knowledgeSuggestions } from "@paperclipai/db";
+import { agents, companies, createDb, knowledgeEvents, knowledgeSuggestions } from "@myrmidonai/db";
 import { eq } from "drizzle-orm";
 import {
   getEmbeddedPostgresTestSupport,

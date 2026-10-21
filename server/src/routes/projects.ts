@@ -1,13 +1,13 @@
 import { createHash } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
-import { activityLog } from "@paperclipai/db";
+import { activityLog } from "@myrmidonai/db";
 import { projectToolContext } from "../services/project-tool-context.js";
 import { persistActivity, publishActivity } from "../services/activity-log.js";
 import { z } from "zod";
 import { normalizeProjectRepositoryUrl, resolveProjectRepositorySelection } from "../services/project-repositories.js";
 import { toolAccessService } from "../services/tool-access.js";
 import { Router, type Request, type Response } from "express";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
 import {
   createProjectSchema,
   createProjectWorkspaceSchema,
@@ -17,9 +17,9 @@ import {
   updateProjectSchema,
   updateProjectWorkspaceSchema,
   workspaceRuntimeControlTargetSchema,
-} from "@paperclipai/shared";
-import type { WorkspaceRuntimeDesiredState, WorkspaceRuntimeServiceStateMap } from "@paperclipai/shared";
-import { trackProjectCreated } from "@paperclipai/shared/telemetry";
+} from "@myrmidonai/shared";
+import type { WorkspaceRuntimeDesiredState, WorkspaceRuntimeServiceStateMap } from "@myrmidonai/shared";
+import { trackProjectCreated } from "@myrmidonai/shared/telemetry";
 import { validate } from "../middleware/validate.js";
 import { accessService, projectService, logActivity, workspaceOperationService } from "../services/index.js";
 import { conflict, forbidden, unprocessable } from "../errors.js";
@@ -46,7 +46,7 @@ import { environmentService } from "../services/environments.js";
 import { secretService } from "../services/secrets.js";
 // myrmidon(B1c): product name in user-facing texts; see product.ts.
 import { PRODUCT_NAME as PN } from "../myrmidon/product.js";
-import { readProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
+import { readProductEnv } from "@myrmidonai/shared/env-alias"; // myrmidon(REBRAND-C)
 
 const WORKSPACE_CONTROL_OUTPUT_MAX_CHARS = 256 * 1024;
 const SHARED_WORKSPACE_STOP_AND_RESTART_ACTIONS = new Set(["stop", "restart"]);
@@ -62,7 +62,7 @@ export function projectRoutes(db: Db) {
     return context;
   }
 
-  async function selectedRepositories(req: Request, companyId: string, ids: string[], existing: import("@paperclipai/shared").ProjectWorkspace[] = []) {
+  async function selectedRepositories(req: Request, companyId: string, ids: string[], existing: import("@myrmidonai/shared").ProjectWorkspace[] = []) {
     const viewer = await repositoryViewer(req);
     if (!ids.length) return [];
     const available = await toolAccessService(db).listProjectRepositories(companyId, viewer.userId, viewer.localTrusted);

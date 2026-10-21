@@ -13,7 +13,7 @@
  * execution-policy-bootstrap.
  */
 import fs from "node:fs";
-import { adapterRegistrySchema, type AdapterRegistryEntryParsed } from "@paperclipai/shared";
+import { adapterRegistrySchema, type AdapterRegistryEntryParsed } from "@myrmidonai/shared";
 import { logger } from "../middleware/logger.js";
 import { listServerAdapters } from "../adapters/registry.js";
 import { setAdapterDisabled } from "./adapter-plugin-store.js";

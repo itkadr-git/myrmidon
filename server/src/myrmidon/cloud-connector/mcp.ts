@@ -17,7 +17,7 @@ import {
   CLOUD_TOOL_NAMES,
   cloudToolCallSchema,
   type CloudToolName,
-} from "@paperclipai/shared/myrmidon-cloud-connector";
+} from "@myrmidonai/shared/myrmidon-cloud-connector";
 import { CLOUD_DOWNLOAD_LIMIT_BYTES, CLOUD_READ_LIMIT_BYTES, type CloudConnectorService } from "./service.js";
 import { cloudAgentIdentity } from "./identity.js";
 

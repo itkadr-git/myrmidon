@@ -15,7 +15,7 @@
 оболочки UI 2.0, смёрженный отдельным PR) зовёт тот же
 `POST /api/myrmidon/cto-chat/plan` и показывает полученное предложение;
 половины встречаются только в общем контракте предложения в
-`@paperclipai/shared`.
+`@myrmidonai/shared`.
 
 Планировщик по умолчанию выключен. Он открывается, когда заданы и
 `MYRMIDON_CTO_CHAT_BASE_URL`, и `MYRMIDON_CTO_CHAT_KEY_SECRET` — полная таблица

@@ -4,7 +4,7 @@
 // those payloads. A route that is not deployed yet, or an old report without
 // some fields, must never break the UI: callers treat a failed read as "no
 // data" and every optional field as possibly absent.
-import type { WsDiskApiResponse, WsDiskReport } from "@paperclipai/shared";
+import type { WsDiskApiResponse, WsDiskReport } from "@myrmidonai/shared";
 import { api } from "@/api/client";
 
 /** The board relays dockergate `GET /myrmidon/disk` (contract C5). */

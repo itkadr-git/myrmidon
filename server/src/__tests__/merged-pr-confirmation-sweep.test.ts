@@ -9,7 +9,7 @@ import {
   goals,
   issueThreadInteractions,
   issues,
-} from "@paperclipai/db";
+} from "@myrmidonai/db";
 import {
   extractGitHubPullRequestReferences,
   getMergeConfirmationPullRequestReferences,

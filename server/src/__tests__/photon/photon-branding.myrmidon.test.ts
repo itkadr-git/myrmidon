@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { AskUserQuestionsInteraction } from "@paperclipai/shared";
+import type { AskUserQuestionsInteraction } from "@myrmidonai/shared";
 import { publishPhotonPrompt } from "../../services/photon/interactions.js";
 import { photonFixture } from "./fixture.js";
 

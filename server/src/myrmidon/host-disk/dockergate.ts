@@ -1,7 +1,7 @@
 import {
   wsDiskApiResponseSchema,
   type WsDiskApiResponse,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import {
   BOT_DOCKER_SOCKET_ENV_NAME,
   dockergateDiskClientFromEnv,

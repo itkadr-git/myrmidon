@@ -9,7 +9,7 @@
 // audit record. Part B never re-assigns an issue by hand — the queue decides.
 
 import { sql } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
 import type { SwarmSupervisorReadPort } from "./view.js";
 import { createSwarmSupervisorDbPort } from "./view.js";
 import { clearExpiredAssignee } from "../swarm-claim/store.js";

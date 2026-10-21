@@ -9,7 +9,7 @@ import {
   externalObjects,
   toolApplications,
   toolConnections,
-} from "@paperclipai/db";
+} from "@myrmidonai/db";
 import { eq } from "drizzle-orm";
 import { githubConnectionEventService } from "../services/github-connection-events.js";
 import { subscribeCompanyLiveEvents } from "../services/live-events.js";

@@ -14,7 +14,7 @@
 //  - the switch is read by the matcher per event, so a swarm turned off stops
 //    matching at once, with no restart.
 
-import { SWARM_CLAIM_QUEUE_ISSUE_STATUSES } from "@paperclipai/shared";
+import { SWARM_CLAIM_QUEUE_ISSUE_STATUSES } from "@myrmidonai/shared";
 import { logger } from "../../middleware/logger.js";
 import type { SwarmMatcherPair } from "./matcher.js";
 

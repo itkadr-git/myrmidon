@@ -6,13 +6,13 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
-import type { PaperclipPluginManifestV1 } from "@paperclipai/shared";
+import type { PaperclipPluginManifestV1 } from "@myrmidonai/shared";
 import {
   createHostClientHandlers,
   PLUGIN_RPC_ERROR_CODES,
   type HostServices,
   type HostToWorkerMethods,
-} from "@paperclipai/plugin-sdk";
+} from "@myrmidonai/plugin-sdk";
 
 vi.mock("../middleware/logger.js", () => {
   const mockLogger: Record<string, unknown> = {

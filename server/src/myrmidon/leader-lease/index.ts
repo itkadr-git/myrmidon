@@ -26,7 +26,7 @@
 // (an activity-log entry the attention feed surfaces) and publishes
 // `leader_changed` (§5.4.4).
 
-import { activityLog, boardProcesses, type Db } from "@paperclipai/db";
+import { activityLog, boardProcesses, type Db } from "@myrmidonai/db";
 import { lt } from "drizzle-orm";
 import {
   leaderLeaseService,

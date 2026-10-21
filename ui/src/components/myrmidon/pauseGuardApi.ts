@@ -10,7 +10,7 @@ import type {
   PauseGuardSettings,
   PauseGuardSettingsPatch,
   PauseGuardSettingsSource,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import { api } from "@/api/client";
 
 export interface PauseGuardView {

@@ -5,7 +5,7 @@
 // with plain fakes and this file is the only one that knows about `Db`.
 
 import { Router } from "express";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
 import { logActivity } from "../../services/index.js";
 import { wikiRegulationRoutes, type WikiRegulationActivityEntry } from "./routes.js";
 import { createWikiRegulationService } from "./service.js";

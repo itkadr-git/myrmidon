@@ -9,7 +9,7 @@ import {
   readWorktreeInstancePointer,
   stopEmbeddedPostgresIfRunning,
 } from "../services/workspace-instance-cleanup.js";
-import type { WorkspaceOperation } from "@paperclipai/shared";
+import type { WorkspaceOperation } from "@myrmidonai/shared";
 import type { WorkspaceOperationRecorder } from "../services/workspace-operations.js";
 
 const tempRoots = new Set<string>();

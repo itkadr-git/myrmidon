@@ -11,7 +11,7 @@ import { compareWithBaseline } from "./service.js";
 import type { BaselineMetricsResponse } from "./service.js";
 import type { BaselineGroupMetrics } from "./metrics.js";
 import { baselineRoutes } from "./routes.js";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
 
 const WINDOW = { from: "2026-09-01T00:00:00.000Z", to: "2026-09-15T00:00:00.000Z" };
 const SOURCE = { statusLog: "activity_log", costs: "litellm_cost_events" as const };

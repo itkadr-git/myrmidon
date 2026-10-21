@@ -18,7 +18,7 @@
 // fakes and no database, the same way the access-hub routes are tested.
 
 import { Router } from "express";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
 import { notFound, unprocessable } from "../../errors.js";
 import { assertBoardOrgAccess, assertCompanyAccess } from "../../routes/authz.js";
 import { issueService } from "../../services/issues.js";

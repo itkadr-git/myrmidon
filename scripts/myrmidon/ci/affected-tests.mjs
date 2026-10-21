@@ -18,7 +18,7 @@ import { MAX_FAST_FILES_PER_PACKAGE, applyReleaseFast, classifyChanges, selectTe
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, "../../..");
-const SERVER = "@paperclipai/server";
+const SERVER = "@myrmidonai/server";
 const TEST_FILE = /\.(test|spec)\.(?:[cm]?[jt]sx?)$/;
 
 function log(message) {

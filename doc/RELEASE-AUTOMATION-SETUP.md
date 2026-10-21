@@ -34,8 +34,8 @@ Do this for every public package that Paperclip publishes.
 At minimum that includes:
 
 - `paperclipai`
-- `@paperclipai/server`
-- `@paperclipai/ui`
+- `@myrmidonai/server`
+- `@myrmidonai/ui`
 - public packages under `packages/`
 
 ### 2.1. In npm, open each package settings page

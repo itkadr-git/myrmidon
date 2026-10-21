@@ -15,7 +15,7 @@ import {
   REVIEW_REWORK_UNBLOCKED_ACTION,
   REVIEW_REWORK_WAKE_REASON,
   type ReviewReworkSettings,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import {
   createReviewReworkSweep,
   extractPrCoordinates,

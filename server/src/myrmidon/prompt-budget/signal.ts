@@ -17,7 +17,7 @@
 // under the threshold loses its record, and the card is the only surface the
 // owner and the operator see.
 
-import { promptBudgetSignalKey } from "@paperclipai/shared";
+import { promptBudgetSignalKey } from "@myrmidonai/shared";
 import type { PromptBudgetAttentionCard } from "./attention.js";
 
 /** One recorded signal: the card plus the day-key it was first seen under. */

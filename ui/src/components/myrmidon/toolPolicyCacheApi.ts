@@ -4,7 +4,7 @@
 // profiles, bindings and profile entries before reading them again. The server
 // re-reads the setting on every cache access, so a saved value applies to the
 // next gateway call without a restart; 0 switches the cache off.
-import type { PatchToolPolicyCacheSettings, ToolPolicyCacheSettings } from "@paperclipai/shared";
+import type { PatchToolPolicyCacheSettings, ToolPolicyCacheSettings } from "@myrmidonai/shared";
 import { api } from "@/api/client";
 
 export interface ToolPolicyCacheView {

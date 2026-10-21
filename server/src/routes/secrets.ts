@@ -1,5 +1,5 @@
 import { Router, type Response } from "express";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
 import {
   createSecretProviderConfigSchema,
   createSecretSchema,
@@ -14,7 +14,7 @@ import {
   updateSecretSchema,
   updateUserSecretDefinitionSchema,
   updateUserSecretValueSchema,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import { validate } from "../middleware/validate.js";
 import { assertBoard, assertBoardOrAgent, assertCompanyAccess, getAccessibleResource } from "./authz.js";
 import { logActivity, secretService } from "../services/index.js";

@@ -9,8 +9,8 @@
 // routes of part A are the single writer.
 
 import { eq } from "drizzle-orm";
-import { instanceSettings, type Db } from "@paperclipai/db";
-import { parseTelegramNotifyDocument } from "@paperclipai/shared";
+import { instanceSettings, type Db } from "@myrmidonai/db";
+import { parseTelegramNotifyDocument } from "@myrmidonai/shared";
 import type { ErrorChannelSettings } from "./errors.js";
 
 /** instance_settings.general key of the owner settings (same key as the part A store). */

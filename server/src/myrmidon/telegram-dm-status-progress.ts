@@ -1,6 +1,6 @@
 import { and, desc, eq, inArray } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
-import { heartbeatRunEvents } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
+import { heartbeatRunEvents } from "@myrmidonai/db";
 import { redactSensitiveText } from "../redaction.js";
 // myrmidon(DM-PROGRESS): legacy adapters (hermes_gateway, hermes_local) write
 // no native step events; their steps come from the in-memory runtime history.

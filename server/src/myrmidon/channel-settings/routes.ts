@@ -8,7 +8,7 @@
 // rest of the instance settings follow.
 
 import { Router } from "express";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
 import { badRequest } from "../../errors.js";
 import { assertBoardOrgAccess, assertInstanceAdmin, getActorInfo } from "../../routes/authz.js";
 import { parseChannelSettingsPatch, type ChannelSettingsPatch } from "./settings.js";

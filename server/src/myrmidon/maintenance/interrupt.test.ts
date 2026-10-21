@@ -14,7 +14,7 @@ import {
   instanceSettings,
   issueRecoveryActions,
   issues,
-} from "@paperclipai/db";
+} from "@myrmidonai/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,

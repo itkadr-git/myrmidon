@@ -12,13 +12,13 @@ import {
   issues,
   nativeRunFinalizations,
   type Db,
-} from "@paperclipai/db";
+} from "@myrmidonai/db";
 import { conflict } from "../errors.js";
 import { buildExecutionContinuation } from "./execution-continuation.js";
 import {
   EXECUTION_RECONCILIATION_CAUSES,
   type ExecutionReconciliation,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import { parseIssueExecutionState } from "./issue-execution-policy.js";
 import { isConversation, isSupersededConversationRun } from "./agent-conversations.js";
 // myrmidon(D2): uuid-typed json comparisons for the board DB hot path. See

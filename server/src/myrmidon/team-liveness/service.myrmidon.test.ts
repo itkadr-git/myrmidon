@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   DEFAULT_TEAM_LIVENESS_SETTINGS,
   TEAM_LIVENESS_ENV_KEYS,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import { teamLivenessService, TEAM_LIVENESS_ACTION } from "./service.js";
 
 // TEAM-LIVENESS-SETTINGS: the settings service of the three automatic

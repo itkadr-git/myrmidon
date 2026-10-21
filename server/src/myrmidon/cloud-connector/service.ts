@@ -8,7 +8,7 @@
 // refused — is journalled, which is what the acceptance case checks.
 
 import { randomUUID } from "node:crypto";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
 import {
   CLOUD_PERSONAL_ROOT_ALIAS,
   type CloudAccessMode,
@@ -20,7 +20,7 @@ import {
   type CloudRoot,
   type CloudToolCall,
   type CloudToolResult,
-} from "@paperclipai/shared/myrmidon-cloud-connector";
+} from "@myrmidonai/shared/myrmidon-cloud-connector";
 import { CloudConnectorError, type CloudAgentIdentity, type CloudListing } from "./types.js";
 import { splitCloudPath } from "./paths.js";
 import {

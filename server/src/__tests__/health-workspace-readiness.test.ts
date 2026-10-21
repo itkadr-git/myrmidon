@@ -4,7 +4,7 @@ import path from "node:path";
 import express from "express";
 import request from "supertest";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
 import { healthRoutes } from "../routes/health.js";
 import {
   WORKSPACE_EXECUTION_WORKSPACE_COMPANY_ID_ENV_KEY,

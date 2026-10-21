@@ -39,8 +39,8 @@ import {
   type PoolAccountChannelView,
   type PoolAccountLimitWindow,
   type PoolAccountRoleSignal,
-} from "@paperclipai/shared";
-import { modelProviderModels, modelProviders, type Db } from "@paperclipai/db";
+} from "@myrmidonai/shared";
+import { modelProviderModels, modelProviders, type Db } from "@myrmidonai/db";
 import { badRequest, conflict, notFound, unprocessable } from "../../errors.js";
 import {
   clearPoolAccountSignals,

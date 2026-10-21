@@ -8,20 +8,20 @@
 // share one implementation.
 
 import { and, desc, eq, gte, inArray, isNull, or, sql } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
 import {
   activityLog,
   heartbeatRuns,
   instanceSettings,
   issueComments,
   issues,
-} from "@paperclipai/db";
+} from "@myrmidonai/db";
 import {
   TASKLESS_BLOCKED_WAKE_REASONS,
   resolveSwarmSettings,
   swarmCoolingPeriodMs,
   type SwarmSettings,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 
 export interface TasklessWakeContext {
   source: string | null | undefined;

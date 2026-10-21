@@ -102,14 +102,14 @@ describe("checkExactPeerVersions", () => {
   it("reports a package as missing when it cannot be resolved", async () => {
     const { checkExactPeerVersions } = await importFreshInstrumentation();
 
-    const result = checkExactPeerVersions(["@paperclipai/does-not-exist-anywhere"], {
-      "@paperclipai/does-not-exist-anywhere": "1.0.0",
+    const result = checkExactPeerVersions(["@myrmidonai/does-not-exist-anywhere"], {
+      "@myrmidonai/does-not-exist-anywhere": "1.0.0",
     });
 
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.diagnostic).toContain("@opentelemetry/* packages are not installed");
-      expect(result.diagnostic).toContain("@paperclipai/does-not-exist-anywhere");
+      expect(result.diagnostic).toContain("@myrmidonai/does-not-exist-anywhere");
     }
   });
 

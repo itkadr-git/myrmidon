@@ -4,7 +4,7 @@ import path from "node:path";
 import type { PaperclipConfig } from "../config/schema.js";
 import type { CheckResult } from "./index.js";
 import { resolveRuntimeLikePath } from "./path-resolver.js";
-import { readProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
+import { readProductEnv } from "@myrmidonai/shared/env-alias"; // myrmidon(REBRAND-C)
 
 function isInsideOsTmpDir(targetPath: string): boolean {
   const tmpRoot = path.resolve(os.tmpdir());
@@ -25,7 +25,7 @@ export async function databaseCheck(config: PaperclipConfig, configPath?: string
     }
 
     try {
-      const { createDb } = await import("@paperclipai/db");
+      const { createDb } = await import("@myrmidonai/db");
       const db = createDb(config.database.connectionString);
       await db.execute("SELECT 1");
       return {

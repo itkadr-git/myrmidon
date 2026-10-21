@@ -45,7 +45,7 @@
  * delivers secrets as env vars and the managed document stays secret-free.
  */
 
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
 import { logger } from "../middleware/logger.js";
 import { environmentService } from "./environments.js";
 import type { ManagedSandboxEnvironmentReconcileAction } from "./environments.js";

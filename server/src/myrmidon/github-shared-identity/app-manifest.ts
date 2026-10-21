@@ -43,7 +43,7 @@ import {
 } from "./settings.js";
 import type { GitHubAppPermissions } from "./app-token.js";
 import { readGitHubSharedIdentitySettings, writeGitHubSharedIdentitySettings } from "./store.js";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
 
 /** GitHub's own host — an application constant, not an operator setting. */
 const GITHUB_WEB = "https://github.com";

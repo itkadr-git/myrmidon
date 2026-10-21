@@ -11,7 +11,7 @@ import {
   wsDiskApiResponseSchema,
   wsDiskQuotaPutRequestSchema,
   wsDiskQuotaPutResponseSchema,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import {
   createDockergateDiskClient,
   DockergateDiskError,

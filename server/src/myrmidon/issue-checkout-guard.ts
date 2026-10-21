@@ -1,7 +1,7 @@
 import { and, eq } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
-import { heartbeatRuns } from "@paperclipai/db";
-import { isUuidLike } from "@paperclipai/shared";
+import type { Db } from "@myrmidonai/db";
+import { heartbeatRuns } from "@myrmidonai/db";
+import { isUuidLike } from "@myrmidonai/shared";
 import {
   crossIssueInfluenceRunContextError,
   readRunSourceIssueId,

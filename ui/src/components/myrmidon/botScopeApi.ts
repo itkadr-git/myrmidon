@@ -8,7 +8,7 @@ import type {
   IsolationMode,
   PutScopeAgentPrefBody,
   SettableScopeKind,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 
 export type { BotScopeAgentView, BotScopeGroupView, BotScopeOverview, IsolationMode, SettableScopeKind };
 

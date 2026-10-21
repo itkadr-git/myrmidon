@@ -36,7 +36,7 @@
 // The watcher never throws: one bad record must not fail the sweep, and the
 // whole watcher is wrapped by the caller's own never-throw guard as well.
 
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
 import {
   bumpBotRolloutDeferredAttempt,
   mutateBotRolloutDeferredDocument,

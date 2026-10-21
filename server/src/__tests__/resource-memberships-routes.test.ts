@@ -13,7 +13,7 @@ import {
   documents,
   projectMemberships,
   projects,
-} from "@paperclipai/db";
+} from "@myrmidonai/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,

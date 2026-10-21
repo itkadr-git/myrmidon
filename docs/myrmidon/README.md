@@ -15,7 +15,7 @@ Myrmidon — система управления компаниями из ИИ-
   `packages/paperclip-runner/devtools/issue-thread/src/fonts/NOTICE.md`. Файл `NOTICE` в корне —
   наш: в нём сказано, что Myrmidon основан на Paperclip (MIT), и перечислены эти уведомления.
 - Myrmidon не связан с Paperclip AI, и они его не одобряли. Имя Paperclip в коде (пакеты
-  `@paperclipai/*`, переменные `PAPERCLIP_*`, CLI `paperclipai`) оставлено ради совместимости и
+  `@myrmidonai/*`, переменные `PAPERCLIP_*`, CLI `paperclipai`) оставлено ради совместимости и
   лёгкого переноса обновлений. Как название нашего продукта оно не используется.
 - Раз в неделю переносим последний стабильный релиз вендора. Свои изменения вендору не
   отправляем.

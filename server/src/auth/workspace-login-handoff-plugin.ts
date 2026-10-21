@@ -15,8 +15,8 @@ import { and, eq } from "drizzle-orm";
 import { setSessionCookie } from "better-auth/cookies";
 import { createAuthEndpoint } from "better-auth/api";
 import type { Session, User } from "better-auth/types";
-import type { Db } from "@paperclipai/db";
-import { companyMemberships } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
+import { companyMemberships } from "@myrmidonai/db";
 import { logger } from "../middleware/logger.js";
 import {
   exchangeWorkspaceHandoffTicket,

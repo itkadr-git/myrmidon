@@ -11,7 +11,7 @@ import { describe, expect, it } from "vitest";
 import { errorHandler } from "../../middleware/index.js";
 import { casteRoutes } from "./routes.js";
 import type { CasteService } from "./service.js";
-import type { CasteView } from "@paperclipai/shared";
+import type { CasteView } from "@myrmidonai/shared";
 
 const COMPANY_ID = "22222222-2222-4222-8222-222222222222";
 const OTHER_COMPANY = "33333333-3333-4333-8333-333333333333";

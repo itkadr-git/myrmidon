@@ -4,8 +4,8 @@
 // here, so the rules above stay testable and each vendor file keeps a single
 // call site (CONVENTIONS.md §8).
 
-import type { Db } from "@paperclipai/db";
-import type { RunStallValues } from "@paperclipai/shared";
+import type { Db } from "@myrmidonai/db";
+import type { RunStallValues } from "@myrmidonai/shared";
 import { logger } from "../../middleware/logger.js";
 import { logActivity } from "../../services/activity-log.js";
 import { instanceSettingsService } from "../../services/index.js";

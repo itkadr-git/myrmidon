@@ -1,4 +1,4 @@
-import { asString, parseJson, parseObject } from "@paperclipai/adapter-utils/server-utils";
+import { asString, parseJson, parseObject } from "@myrmidonai/adapter-utils/server-utils";
 
 export interface ParsedKimiToolCall {
   id: string | null;

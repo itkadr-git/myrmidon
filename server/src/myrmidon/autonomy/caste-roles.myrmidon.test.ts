@@ -22,7 +22,7 @@ import {
   AUTONOMY_SAFE_DEFAULTS,
   resolveAutonomy,
   type AutonomyMatrix,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 
 function matrix(overrides: Partial<AutonomyMatrix> = {}): AutonomyMatrix {
   return {

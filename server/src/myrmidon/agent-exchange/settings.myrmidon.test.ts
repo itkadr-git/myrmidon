@@ -6,7 +6,7 @@
 // read failure fails safe-closed (the master switch off).
 
 import { describe, expect, it } from "vitest";
-import { DEFAULT_AGENT_EXCHANGE_SETTINGS, AGENT_EXCHANGE_ENV_KEYS } from "@paperclipai/shared";
+import { DEFAULT_AGENT_EXCHANGE_SETTINGS, AGENT_EXCHANGE_ENV_KEYS } from "@myrmidonai/shared";
 import { readAgentExchangeSettings } from "./settings.js";
 
 function deps(stored: unknown, env: Record<string, string> = {}) {

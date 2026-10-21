@@ -27,7 +27,7 @@ import {
   putScopeSettingSchema,
   SETTABLE_SCOPE_KINDS,
   type SettableScopeKind,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import { badRequest, notFound } from "../../errors.js";
 import { validate } from "../../middleware/validate.js";
 import { assertBoard, assertCompanyAccess, assertInstanceAdmin, hasCompanyAccess } from "../../routes/authz.js";

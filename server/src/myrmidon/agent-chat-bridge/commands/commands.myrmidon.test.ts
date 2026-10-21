@@ -16,7 +16,7 @@ import {
   heartbeatRuns,
   issues,
   userUiLanguage,
-} from "@paperclipai/db";
+} from "@myrmidonai/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,

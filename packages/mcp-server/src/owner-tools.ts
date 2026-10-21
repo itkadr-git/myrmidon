@@ -13,7 +13,7 @@ import { z } from "zod";
 import {
   OWNER_MESSAGE_MAX_CHARS,
   OWNER_REPLY_RESOLUTION_ACTIONS,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import { PaperclipApiClient } from "./client.js";
 import { formatErrorResponse, formatTextResponse } from "./format.js";
 import type { ToolDefinition } from "./tools.js";

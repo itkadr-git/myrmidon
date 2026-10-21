@@ -1,8 +1,8 @@
 import { and, desc, eq, gt, inArray, not, or, sql } from "drizzle-orm";
 import { conversationRecoveryActionPredicate, getConversationOwnershipBlocker } from "./conversation-continuation.js";
 import { z } from "zod";
-import { heartbeatRuns, issueComments, issues, issueRecoveryActions, type Db } from "@paperclipai/db";
-import { EXECUTION_RECONCILIATION_CAUSES, type ExecutionBlocker } from "@paperclipai/shared";
+import { heartbeatRuns, issueComments, issues, issueRecoveryActions, type Db } from "@myrmidonai/db";
+import { EXECUTION_RECONCILIATION_CAUSES, type ExecutionBlocker } from "@myrmidonai/shared";
 // myrmidon(L2): an explicitly authorized wake ignores a settled "do not
 // replay" hold once its named run (if any) is verified to have released its
 // execution claim; see settled-holds/explicit-wake-bypass.ts and

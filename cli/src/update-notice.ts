@@ -4,7 +4,7 @@ import { packageVersion } from "./version.js";
 import { compareVersions } from "./commands/update.js";
 import { readInstallManifest, resolveInstallStorePaths } from "./install-store.js";
 import { resolveConfigPath } from "./config/store.js";
-import { readProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
+import { readProductEnv } from "@myrmidonai/shared/env-alias"; // myrmidon(REBRAND-C)
 const NOTICE_INTERVAL_MS = 24 * 60 * 60 * 1000;
 // myrmidon(TEL): no vendor registry by default; the check runs only against an explicitly configured URL
 function updateCheckUrl(): string | null { return readProductEnv("UPDATE_CHECK_URL")?.trim() || null; }

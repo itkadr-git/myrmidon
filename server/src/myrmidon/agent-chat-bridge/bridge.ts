@@ -10,11 +10,11 @@ import {
   chatEndpoints,
   issues,
   type Db,
-} from "@paperclipai/db";
+} from "@myrmidonai/db";
 import type {
   IssueComment,
   SafeChatPublicationPayload,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 
 import { logger } from "../../middleware/logger.js";
 import { redactSensitiveText } from "../../redaction.js";

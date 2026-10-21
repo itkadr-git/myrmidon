@@ -1,5 +1,5 @@
 import { eq, and } from 'drizzle-orm';
-import { agentWakeupRequests, type Db } from '@paperclipai/db';
+import { agentWakeupRequests, type Db } from '@myrmidonai/db';
 
 /**
  * Сервис для обработки повторной отправки отбитых побудок агентов (WAKE-STALL-ROOT A)

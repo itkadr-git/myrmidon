@@ -12,8 +12,8 @@
 // verification public key can rotate after a key was accepted). A stored
 // key with a bad/expired/mismatched signature does not entitle the plugin.
 
-import type { PaperclipPluginManifestV1, PluginEntitlementKey } from "@paperclipai/shared";
-import { findActivePluginEntitlementKey } from "@paperclipai/shared";
+import type { PaperclipPluginManifestV1, PluginEntitlementKey } from "@myrmidonai/shared";
+import { findActivePluginEntitlementKey } from "@myrmidonai/shared";
 import { verifyEntitlementToken } from "../myrmidon/plugin-entitlement/validation.js";
 
 /** Whether the manifest opts into entitlement gating. */

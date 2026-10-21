@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { DEFAULT_TEAM_LIVENESS_SETTINGS, TEAM_LIVENESS_ENV_KEYS } from "@paperclipai/shared";
+import { DEFAULT_TEAM_LIVENESS_SETTINGS, TEAM_LIVENESS_ENV_KEYS } from "@myrmidonai/shared";
 import { createTeamLivenessReader } from "./settings.js";
 
 // TEAM-LIVENESS-SETTINGS: the reader the three sweeps consult on every pass.

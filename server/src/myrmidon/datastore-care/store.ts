@@ -9,7 +9,7 @@
 
 import { and, desc, eq, gte, lt } from "drizzle-orm";
 
-import { datastoreAuditReports, datastoreSnapshots, type Db } from "@paperclipai/db";
+import { datastoreAuditReports, datastoreSnapshots, type Db } from "@myrmidonai/db";
 
 import type { AuditCriterion, AuditSummary } from "./audit-report.js";
 import type { DatastoreSnapshotPayload, DatastoreTopQueryMetric } from "./domain.js";

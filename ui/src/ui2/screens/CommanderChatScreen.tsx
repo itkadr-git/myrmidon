@@ -29,7 +29,7 @@ import { ctoChatApi, type CtoChatPlan } from "@/api/ctoChat";
 import { queryKeys } from "@/lib/queryKeys";
 import { IssueThreadInteractionCard } from "@/components/IssueThreadInteractionCard";
 import { useUi2T } from "@/ui2/i18n/useUi2T";
-import type { Issue, IssueThreadInteraction } from "@paperclipai/shared";
+import type { Issue, IssueThreadInteraction } from "@myrmidonai/shared";
 
 /**
  * The agent the Commander conversation is held with. Resolved by role/name so

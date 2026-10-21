@@ -2,7 +2,7 @@ import { useMemo, useRef, useState, useEffect } from "react";
 import type {
   DocumentAnnotationComment,
   DocumentAnnotationThreadWithComments,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import {
   Check,
   Copy,
@@ -27,7 +27,7 @@ import { AgentIcon } from "./AgentIconPicker";
 import { deriveInitials } from "./Identity";
 import { MarkdownBody } from "./MarkdownBody";
 import type { PendingAnchor } from "./DocumentAnnotationLayer";
-import type { Agent } from "@paperclipai/shared";
+import type { Agent } from "@myrmidonai/shared";
 import type { CompanyUserProfile } from "@/lib/company-members";
 import { useDocumentAnnotationMutations } from "@/hooks/useDocumentAnnotationMutations";
 

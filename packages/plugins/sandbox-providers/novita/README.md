@@ -1,4 +1,4 @@
-# `@paperclipai/plugin-novita-sandbox`
+# `@myrmidonai/plugin-novita-sandbox`
 
 Published Novita Agent Sandbox provider plugin for Paperclip.
 
@@ -9,7 +9,7 @@ This package lives in the Paperclip monorepo, but it is intentionally excluded f
 From a Paperclip instance, install:
 
 ```text
-@paperclipai/plugin-novita-sandbox
+@myrmidonai/plugin-novita-sandbox
 ```
 
 The host plugin installer runs `npm install` into the managed plugin directory, so package dependencies such as `novita-sandbox` are pulled in during installation.
@@ -32,7 +32,7 @@ pnpm test
 pnpm typecheck
 ```
 
-These commands assume the repo root has already been installed once so the local `@paperclipai/plugin-sdk` workspace package is available to the compiler during development.
+These commands assume the repo root has already been installed once so the local `@myrmidonai/plugin-sdk` workspace package is available to the compiler during development.
 
 ## Package layout
 

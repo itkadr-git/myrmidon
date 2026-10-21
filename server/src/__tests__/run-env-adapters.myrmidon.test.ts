@@ -7,10 +7,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
-import { execute as executeClaude } from "@paperclipai/adapter-claude-local/server";
-import { execute as executeCodex } from "@paperclipai/adapter-codex-local/server";
-import { execute as executeHermes } from "@paperclipai/hermes-paperclip-adapter/server";
+import type { AdapterExecutionContext } from "@myrmidonai/adapter-utils";
+import { execute as executeClaude } from "@myrmidonai/adapter-claude-local/server";
+import { execute as executeCodex } from "@myrmidonai/adapter-codex-local/server";
+import { execute as executeHermes } from "@myrmidonai/hermes-paperclip-adapter/server";
 
 // Obviously fake values: nothing here is a real credential.
 const FAKE_SERVER_SECRETS: Record<string, string> = {

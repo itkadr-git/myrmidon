@@ -696,7 +696,7 @@ version file to edit. Base Paperclip version is in the image label
 
 ### UI copy debranded: visible "Paperclip" strings renamed to Myrmidon (DB1)
 
-- All user-visible "Paperclip Cloud"/"Paperclip Labs"/"Paperclip EE"/"Paperclip Enterprise" strings across the web UI (pages, components, connection flows, OAuth handoff errors, placeholder examples) now read "Myrmidon …". Locales en/ru and the shared locale catalogs were swept in every language; MIT attribution lines (`about.base`, `about.attribution`) are untouched verbatim. Wire identifiers (`paperclip.*.v1` localStorage keys, adapter types, `paperclip_vault`, `X-Paperclip-*`, `@paperclipai/*`) keep their names until DEBRAND part c / stage 4.
+- All user-visible "Paperclip Cloud"/"Paperclip Labs"/"Paperclip EE"/"Paperclip Enterprise" strings across the web UI (pages, components, connection flows, OAuth handoff errors, placeholder examples) now read "Myrmidon …". Locales en/ru and the shared locale catalogs were swept in every language; MIT attribution lines (`about.base`, `about.attribution`) are untouched verbatim. Wire identifiers (`paperclip.*.v1` localStorage keys, adapter types, `paperclip_vault`, `X-Paperclip-*`, `@myrmidonai/*`) keep their names until DEBRAND part c / stage 4.
 - The branding-guard test (`ui/src/lib/myrmidon-branding-guard.myrmidon.test.ts`) tightened to a bare `\bPaperclip\b` scan: the vendor-product-word exceptions (Cloud/Labs/EE/Enterprise) are removed from its allowlist, so any new visible "Paperclip …" copy fails CI.
 
 ### Corpus knowledge module core: ports, domain, migrations, PostgreSQL store/queue (CORPUS-A)
@@ -2776,13 +2776,13 @@ and dockergate.md.
   `general.botDisk.graceClosingMinutes` / `scratchTtlHours` (defaults 30 min /
   24 h); `pressure` is `none` until a dockergate snapshot is wired in.
 - The lifecycle rule is a pure function (`workspaceStateOf`), the answer is
-  checked against the C3 schema from `@paperclipai/shared` before it is sent.
+  checked against the C3 schema from `@myrmidonai/shared` before it is sent.
 
 ### The board receives the disk report of every bot (1.6.5 BOT-DISK-H, part H4b)
 
 - New route `POST /api/myrmidon/bots/me/disk-report`, for the bot's own agent key
   only (any other actor gets 403, an anonymous call 401). The body is checked
-  against the C4 schema from `@paperclipai/shared`: a broken body is 400 and the
+  against the C4 schema from `@myrmidonai/shared`: a broken body is 400 and the
   previous report stays, a body over 1 MiB is 413, a report that names another
   bot is 403. The answer is `{ok, nextReportSec}` (300 s).
 - The last report of each bot is kept in memory with its receive time, the same
@@ -5848,7 +5848,7 @@ instead of 3 x 3 queries.
 ### LLM Wiki plugin install/upgrade guide and release wiring test (WIKI-PLUGIN-RELEASE)
 
 - `docs/wiki-plugin-install-guide.md` — installation, folder configuration,
-  upgrade and troubleshooting steps for `@paperclipai/plugin-llm-wiki`.
+  upgrade and troubleshooting steps for `@myrmidonai/plugin-llm-wiki`.
 - `scripts/myrmidon/wiki-plugin/wiki-plugin-release.test.mjs` — static
   `node:test` contract that pins the plugin's release wiring (esbuild build
   script, SDK from the repository workspace, `paperclipPlugin` entry points,

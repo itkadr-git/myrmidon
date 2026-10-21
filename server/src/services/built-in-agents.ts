@@ -2,12 +2,12 @@ import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { readPaperclipSkillSyncPreference, writePaperclipSkillSyncPreference } from "@paperclipai/adapter-utils/server-utils";
+import { readPaperclipSkillSyncPreference, writePaperclipSkillSyncPreference } from "@myrmidonai/adapter-utils/server-utils";
 import { and, desc, eq, ne } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
-import { agents, builtInManagedResources, companies, issueThreadInteractions, issues, routines, routineTriggers } from "@paperclipai/db";
-import { syncRoutineVariablesWithTemplate } from "@paperclipai/shared";
-import type { Agent, Approval, CompanySkill, PermissionKey, Routine, RoutineTrigger, RoutineVariable } from "@paperclipai/shared";
+import type { Db } from "@myrmidonai/db";
+import { agents, builtInManagedResources, companies, issueThreadInteractions, issues, routines, routineTriggers } from "@myrmidonai/db";
+import { syncRoutineVariablesWithTemplate } from "@myrmidonai/shared";
+import type { Agent, Approval, CompanySkill, PermissionKey, Routine, RoutineTrigger, RoutineVariable } from "@myrmidonai/shared";
 import { conflict, HttpError, notFound, unprocessable } from "../errors.js";
 import { logActivity } from "./activity-log.js";
 import { agentInstructionsService } from "./agent-instructions.js";
@@ -263,7 +263,7 @@ function readBuiltInText(relativePath: string, fallbackText: string) {
   );
 }
 
-const skillsCatalogRoot = resolvePackageRoot("@paperclipai/skills-catalog");
+const skillsCatalogRoot = resolvePackageRoot("@myrmidonai/skills-catalog");
 const REFLECTION_COACH_INSTRUCTIONS = readBuiltInText("reflection-coach/AGENTS.md", FALLBACK_REFLECTION_COACH_INSTRUCTIONS);
 const REFLECTION_COACH_ROUTINE = readBuiltInText(
   "reflection-coach/routines/recent-agent-reflection.md",

@@ -1,4 +1,4 @@
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
 import {
   ALERT_RECOVERY_JOURNAL_KEY,
   ALERT_RECOVERY_SETTINGS_KEY,
@@ -7,7 +7,7 @@ import {
   type AlertRecoveryRecord,
   type AlertRecoverySettings,
   type ResolvedAlertRecoverySettings,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import { instanceSettingsService } from "../../../services/index.js";
 
 /**

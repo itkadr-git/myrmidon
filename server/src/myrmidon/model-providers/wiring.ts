@@ -16,8 +16,8 @@
 // setting unset (the default): sync is off, the routes behave as in part A.
 
 import { Router } from "express";
-import type { Db } from "@paperclipai/db";
-import { readGatewayKeySettings } from "@paperclipai/shared";
+import type { Db } from "@myrmidonai/db";
+import { readGatewayKeySettings } from "@myrmidonai/shared";
 import { secretService } from "../../services/index.js";
 import { logActivity } from "../../services/index.js";
 import {

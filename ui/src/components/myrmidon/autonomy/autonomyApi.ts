@@ -3,14 +3,14 @@
 // server/src/myrmidon/autonomy): this client speaks the landed REST contract —
 // GET /api/myrmidon/autonomy (snapshot), PATCH /api/myrmidon/autonomy/matrix,
 // POST/PATCH/DELETE regulation verbs — with `companyId` following the
-// access-hub query-param pattern. Types import from @paperclipai/shared.
+// access-hub query-param pattern. Types import from @myrmidonai/shared.
 import { api } from "@/api/client";
 import type {
   AutonomyMatrix,
   AutonomyMatrixPatch,
   AutonomyRegulation,
   AutonomySnapshot,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 
 export type AutonomyView = AutonomySnapshot;
 

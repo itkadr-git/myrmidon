@@ -1,4 +1,4 @@
-import type { PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
+import type { PaperclipPluginManifestV1 } from "@myrmidonai/plugin-sdk";
 
 /**
  * Local fork of the upstream hindsight memory plugin.

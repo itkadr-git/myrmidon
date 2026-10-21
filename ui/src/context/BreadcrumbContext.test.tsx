@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { PRODUCT_NAME } from "@paperclipai/shared";
+import { PRODUCT_NAME } from "@myrmidonai/shared";
 import { i18n } from "@/i18n";
 import { act } from "react";
 import { createRoot } from "react-dom/client";

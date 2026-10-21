@@ -13,7 +13,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { prepareGitHubExecutionEnvironment } from "@paperclipai/adapter-utils/execution-target";
+import { prepareGitHubExecutionEnvironment } from "@myrmidonai/adapter-utils/execution-target";
 
 import {
   HOST_GITHUB_CREDENTIALS_ENV,

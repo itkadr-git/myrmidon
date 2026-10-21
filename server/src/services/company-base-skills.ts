@@ -22,15 +22,15 @@
 // agents that already carry it.
 
 import { and, asc, eq, inArray, notInArray } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
-import { agents, companyBaseSkills, companySkills } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
+import { agents, companyBaseSkills, companySkills } from "@myrmidonai/db";
 import type {
   CompanyBaseSkillAgent,
   CompanyBaseSkillApplyResult,
   CompanyBaseSkillEntry,
   CompanyBaseSkillGap,
   CompanyBaseSkillOverview,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import {
   mergeCompanyBaseSkillsIntoAgentConfig,
   readCompanyBaseSkillKeys,

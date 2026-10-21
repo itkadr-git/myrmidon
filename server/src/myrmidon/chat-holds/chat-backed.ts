@@ -15,7 +15,7 @@
 // no "replay" to withhold: the next message is a fresh turn the owner asked
 // for. See docs/myrmidon/DIVERGENCE.md "CHAT-HOLD".
 import { and, eq, inArray, isNotNull, or, sql, type SQL } from "drizzle-orm";
-import { agentWakeupRequests, chatConversations, issues, type Db } from "@paperclipai/db";
+import { agentWakeupRequests, chatConversations, issues, type Db } from "@myrmidonai/db";
 
 /** `evidence.automaticRecovery.policy` of a chat turn recovery settled without a hold. */
 export const CHAT_CONTINUATION_POLICY = "chat_continuation_v1";

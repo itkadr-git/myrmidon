@@ -11,8 +11,8 @@
 
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Sparkles } from "lucide-react";
-import type { IssueScent } from "@paperclipai/shared";
-import { ISSUE_SCENT_MAX_TAGS } from "@paperclipai/shared";
+import type { IssueScent } from "@myrmidonai/shared";
+import { ISSUE_SCENT_MAX_TAGS } from "@myrmidonai/shared";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 

@@ -17,7 +17,7 @@ import {
   resolveAlertRecoverySettings,
   type AlertRecoveryRecord,
   type AlertRecoverySettings,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import { createAlertRecoveryService, type AlertRecoveryAlert, type AlertRecoveryIssuePort } from "./index.js";
 import { alertRecoveryRunbooks } from "./runbook.js";
 import type { AlertRecoveryStore } from "./store.js";

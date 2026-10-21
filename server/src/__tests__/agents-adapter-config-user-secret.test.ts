@@ -16,7 +16,7 @@ import {
   secretAccessEvents,
   userSecretDeclarations,
   userSecretDefinitions,
-} from "@paperclipai/db";
+} from "@myrmidonai/db";
 import type { ServerAdapterModule } from "../adapters/index.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 
@@ -95,8 +95,8 @@ vi.mock("../services/instance-settings.js", () => ({
   instanceSettingsService: () => mockInstanceSettingsService,
 }));
 
-vi.mock("@paperclipai/adapter-claude-local/server", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@paperclipai/adapter-claude-local/server")>();
+vi.mock("@myrmidonai/adapter-claude-local/server", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@myrmidonai/adapter-claude-local/server")>();
   return {
     ...actual,
     runClaudeLogin: mockRunClaudeLogin,

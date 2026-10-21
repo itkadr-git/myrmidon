@@ -29,10 +29,10 @@
 
 import { createHash, randomBytes } from "node:crypto";
 
-import { agentApiKeys, agents as agentsTable, companies, companyMemberships, type Db } from "@paperclipai/db";
+import { agentApiKeys, agents as agentsTable, companies, companyMemberships, type Db } from "@myrmidonai/db";
 import { and, asc, eq, isNull, sql } from "drizzle-orm";
 // myrmidon(PARALLEL-HELPERS): the settings type the parallel-helpers port returns.
-import type { BotLspSettings, BotDiskMechanics, ParallelHelpersSettings } from "@paperclipai/shared";
+import type { BotLspSettings, BotDiskMechanics, ParallelHelpersSettings } from "@myrmidonai/shared";
 import { getConfiguredSecretProvider } from "../../secrets/configured-provider.js";
 import {
   agentInstructionsService,

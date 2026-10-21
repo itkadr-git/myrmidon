@@ -1,4 +1,4 @@
-import type { Environment } from "@paperclipai/shared";
+import type { Environment } from "@myrmidonai/shared";
 
 /**
  * True iff the environment row was provisioned by the platform (the

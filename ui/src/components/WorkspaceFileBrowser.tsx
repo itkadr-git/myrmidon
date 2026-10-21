@@ -24,7 +24,7 @@ import type {
   WorkspaceFileListFileItem,
   WorkspaceFileListMode,
   WorkspaceFileSelector,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 
 type BrowserSource = "current" | "other";
 

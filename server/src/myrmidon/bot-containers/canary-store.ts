@@ -6,7 +6,7 @@
 // preserveBotCanaryGeneralKey and the myrmidon(R5-B) call site there).
 
 import { eq, sql } from "drizzle-orm";
-import { instanceSettings, type Db } from "@paperclipai/db";
+import { instanceSettings, type Db } from "@myrmidonai/db";
 import { parseBotCanaryDocument, type BotCanaryDocument } from "./canary-domain.js";
 
 export const BOT_CANARY_GENERAL_KEY = "myrmidonBotCanary";

@@ -3,7 +3,7 @@
 // No database and no clock here; the sweep feeds these functions.
 
 import { randomUUID } from "node:crypto";
-import type { IssueExecutionPolicy } from "@paperclipai/shared";
+import type { IssueExecutionPolicy } from "@myrmidonai/shared";
 import { applyIssueExecutionPolicyTransition } from "../../services/issue-execution-policy.js";
 
 export interface RoutingIssue {

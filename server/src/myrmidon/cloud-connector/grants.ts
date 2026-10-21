@@ -19,7 +19,7 @@ import {
   type CloudGrantTargetKind,
   type CloudResolvedAccess,
   type CloudRoot,
-} from "@paperclipai/shared/myrmidon-cloud-connector";
+} from "@myrmidonai/shared/myrmidon-cloud-connector";
 import type { CloudAgentIdentity } from "./types.js";
 
 export const GRANT_SPECIFICITY: Record<CloudGrantTargetKind, number> = {

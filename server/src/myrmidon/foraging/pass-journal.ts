@@ -16,7 +16,7 @@
 // not the view). Recording a pass is best effort — a journal failure must not
 // fail a pass that already read its sources.
 
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
 import {
   appendForagingPassJournal,
   readForagingPassJournal,
@@ -25,7 +25,7 @@ import {
   type ForagingPassJournalEntry,
   type ForagingPassSkip,
   type ForagingSkipReason,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import { instanceSettingsService } from "../../services/instance-settings.js";
 
 export { FORAGING_PASS_JOURNAL_KEY, FORAGING_PASS_JOURNAL_LIMIT };

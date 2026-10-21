@@ -17,7 +17,7 @@
 // and while the ports are not wired they throw `corpus_not_configured`. Both are
 // 503 for the routes; neither changes anything else on the board.
 
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
 import {
   CORPUS_DISABLED_ERROR,
   changedCorpusSettingsKeys,
@@ -33,7 +33,7 @@ import {
   type CorpusSettingsPatch,
   type CorpusStats,
   type ResolvedCorpusSettings,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import { logger } from "../../middleware/logger.js";
 import { instanceSettingsService, logActivity } from "../../services/index.js";
 import type {

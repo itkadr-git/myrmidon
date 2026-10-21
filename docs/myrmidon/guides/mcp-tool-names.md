@@ -34,7 +34,7 @@ descriptions here would be a second, separate contract change (see
 
 - `PAPERCLIP_API_URL` / `PAPERCLIP_API_KEY` and the other environment
   variables of the server — those belong to REBRAND C (`MYRMIDON_*` aliases).
-- The `@paperclipai/mcp-server` package name and the `paperclip-mcp-server`
+- The `@myrmidonai/mcp-server` package name and the `paperclip-mcp-server`
   bin — package renames are out of scope for this phase (pending the epic's
   package-rename decision).
 - The MCP `serverInfo` name `paperclip` — it is protocol metadata that some
@@ -65,7 +65,7 @@ descriptions here would be a second, separate contract change (see
    to `myrmidon…` and delete `tool-aliases.ts`, its test, and the
    `withMyrmidonToolNames(...)` call in `index.ts`.
 3. Regenerate the runner contracts in the same PR
-   (`PAPERCLIP_EVALS_ROOT` set; `pnpm --filter @paperclipai/paperclip-runner
+   (`PAPERCLIP_EVALS_ROOT` set; `pnpm --filter @myrmidonai/paperclip-runner
    generate:capability-inventory && generate:capability-contract &&
    generate:protocol-coverage`). The fold map in
    `packages/paperclip-runner/scripts/lib/capability-inventory.mjs`
@@ -75,7 +75,7 @@ descriptions here would be a second, separate contract change (see
 
 ## How to verify
 
-- Tests: `pnpm --filter @paperclipai/mcp-server test` —
+- Tests: `pnpm --filter @myrmidonai/mcp-server test` —
   `src/tool-aliases.test.ts` checks the mapping covers all 42 old names, that
   the published list contains the `myrmidon*` names, that every old name is
   registered with a `deprecated` marker in its description, that both names

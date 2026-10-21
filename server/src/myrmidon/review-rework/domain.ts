@@ -32,7 +32,7 @@
 import {
   parseReviewReworkVerdictMarkers,
   type ReviewReworkVerdictMarker,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 
 /** Effective state of one linked PR, after the stored row and resolved facts merge. */
 export type ReviewReworkPrState = "open" | "draft" | "merged" | "closed" | "unknown";

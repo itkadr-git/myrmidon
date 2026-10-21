@@ -1,5 +1,5 @@
 import { and, asc, desc, eq, inArray, isNull, sql } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
 import {
   projects,
   projectGoals,
@@ -10,7 +10,7 @@ import {
   plugins,
   projectWorkspaces,
   workspaceRuntimeServices,
-} from "@paperclipai/db";
+} from "@myrmidonai/db";
 import {
   deriveProjectUrlKey,
   hasNonAsciiContent,
@@ -27,7 +27,7 @@ import {
   type WorkspaceRuntimeService,
   type PluginManagedProjectDeclaration,
   type PluginManagedProjectResolution,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import { unprocessable } from "../errors.js";
 import { createCasteStore } from "../myrmidon/castes/store.js";
 import { listCurrentRuntimeServicesForProjectWorkspaces } from "./workspace-runtime-read-model.js";
@@ -755,7 +755,7 @@ export function projectService(db: Db) {
             resourceKey: input.projectKey,
             companyId: input.companyId,
             projectId: project?.id ?? existingBinding.resourceId,
-            project: project as import("@paperclipai/shared").Project | null,
+            project: project as import("@myrmidonai/shared").Project | null,
             status: input.reset ? "reset" : "resolved",
           };
         }
@@ -789,7 +789,7 @@ export function projectService(db: Db) {
           resourceKey: input.projectKey,
           companyId: input.companyId,
           projectId: hydrated?.id ?? project.id,
-          project: hydrated as import("@paperclipai/shared").Project | null,
+          project: hydrated as import("@myrmidonai/shared").Project | null,
           status: "relinked",
         };
       }
@@ -828,12 +828,12 @@ export function projectService(db: Db) {
         resourceKey: input.projectKey,
         companyId: input.companyId,
         projectId: hydrated?.id ?? project.id,
-        project: hydrated as import("@paperclipai/shared").Project | null,
+        project: hydrated as import("@myrmidonai/shared").Project | null,
         status: "created",
       };
     },
 
-    createWithRepositories: async (companyId: string, data: Parameters<typeof createProject>[1], repositories: import("@paperclipai/shared").ProjectRepository[]): Promise<ProjectWithGoals> => {
+    createWithRepositories: async (companyId: string, data: Parameters<typeof createProject>[1], repositories: import("@myrmidonai/shared").ProjectRepository[]): Promise<ProjectWithGoals> => {
       return db.transaction(async (tx) => {
         const service = projectService(tx as unknown as Db);
         const project = await service.create(companyId, data);
@@ -844,7 +844,7 @@ export function projectService(db: Db) {
       });
     },
 
-    replaceRepositories: async (projectId: string, repositories: import("@paperclipai/shared").ProjectRepository[]): Promise<ProjectWithGoals | null> => {
+    replaceRepositories: async (projectId: string, repositories: import("@myrmidonai/shared").ProjectRepository[]): Promise<ProjectWithGoals | null> => {
       return db.transaction(async (tx) => {
         const [project] = await tx.select().from(projects).where(eq(projects.id, projectId)).for("update");
         if (!project) return null;

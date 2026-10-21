@@ -6,8 +6,8 @@
 // interaction wake projects into the issue comment queue as an immutable
 // entry, never as an editable comment, and never coalesces with other wakes.
 import { and, eq, inArray, sql } from "drizzle-orm";
-import { agentWakeupRequests, issueThreadInteractions, type Db } from "@paperclipai/db";
-import type { IssueComment, IssueQueuedCommentEntry } from "@paperclipai/shared";
+import { agentWakeupRequests, issueThreadInteractions, type Db } from "@myrmidonai/db";
+import type { IssueComment, IssueQueuedCommentEntry } from "@myrmidonai/shared";
 
 function record(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};

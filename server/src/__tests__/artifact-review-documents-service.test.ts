@@ -12,8 +12,8 @@ import {
   issueAttachments,
   issueDocuments,
   issues,
-} from "@paperclipai/db";
-import { artifactReviewDocumentKey } from "@paperclipai/shared";
+} from "@myrmidonai/db";
+import { artifactReviewDocumentKey } from "@myrmidonai/shared";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,

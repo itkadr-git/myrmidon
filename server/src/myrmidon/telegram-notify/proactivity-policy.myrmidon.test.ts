@@ -9,7 +9,7 @@
 // Neutral data only.
 
 import { describe, expect, it } from "vitest";
-import { DEFAULT_TELEGRAM_NOTIFY_PROACTIVITY_RARELY_MAX_PER_DAY } from "@paperclipai/shared";
+import { DEFAULT_TELEGRAM_NOTIFY_PROACTIVITY_RARELY_MAX_PER_DAY } from "@myrmidonai/shared";
 import {
   decideProactivity,
   isOwnerDrivenPublicationKey,

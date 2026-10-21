@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { pluginOperationIssueOriginKind } from "@paperclipai/shared";
+import { pluginOperationIssueOriginKind } from "@myrmidonai/shared";
 import type {
   PaperclipPluginManifestV1,
   PluginCapability,
@@ -22,7 +22,7 @@ import type {
   Agent,
   Goal,
   Approval,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import type {
   EventFilter,
   PluginContext,

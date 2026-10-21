@@ -8,7 +8,7 @@
 import express from "express";
 import request from "supertest";
 import { describe, expect, it, vi } from "vitest";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
 import { errorHandler } from "../../middleware/index.js";
 import { botCanaryRoutes } from "./canary-routes.js";
 import { botCanaryService, type BotCanaryServiceDeps } from "./canary-service.js";

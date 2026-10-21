@@ -25,7 +25,7 @@ import {
   cloudRootCreateSchema,
   cloudToolCallSchema,
   type CloudProviderId,
-} from "@paperclipai/shared/myrmidon-cloud-connector";
+} from "@myrmidonai/shared/myrmidon-cloud-connector";
 import { forbidden, HttpError, unauthorized } from "../../errors.js";
 import { validate } from "../../middleware/validate.js";
 import { assertAuthenticated } from "../../routes/authz.js";

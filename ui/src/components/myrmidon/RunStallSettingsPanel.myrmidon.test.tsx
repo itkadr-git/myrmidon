@@ -6,7 +6,7 @@
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { RunStallKey, RunStallSource } from "@paperclipai/shared";
+import type { RunStallKey, RunStallSource } from "@myrmidonai/shared";
 import type { RunStallView } from "./runStallApi";
 import { RunStallSettingsPanelView, parseRunStallDraft } from "./RunStallSettingsPanel";
 

@@ -15,7 +15,7 @@ import type {
   CloudGrant,
   CloudJournalEntry,
   CloudRoot,
-} from "@paperclipai/shared/myrmidon-cloud-connector";
+} from "@myrmidonai/shared/myrmidon-cloud-connector";
 import { CloudsSettingsPageView, type CloudsSettingsPageViewProps } from "./CloudsSettingsPage";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any

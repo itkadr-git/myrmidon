@@ -35,7 +35,7 @@ Examples:
 
 ```
 devbuild 'pnpm install && pnpm -r typecheck'
-devbuild 'pnpm --filter @paperclipai/db exec tsc --noEmit'
+devbuild 'pnpm --filter @myrmidonai/db exec tsc --noEmit'
 devbuild 'pnpm test:run'
 devbuild 'go test ./...'
 devbuild 'cd packages/paperclip-runner && cargo test --workspace'

@@ -16,7 +16,7 @@
 // delivery mode: in the other modes the owner answers on the board card itself,
 // and a sentence in a comment must not silently resolve anything.
 
-import type { OwnerDeliveryMode } from "@paperclipai/shared";
+import type { OwnerDeliveryMode } from "@myrmidonai/shared";
 import type { PendingOwnerCard } from "./pending-owner-cards.js";
 import { planOwnerReply, type OwnerReplyPendingReason } from "./owner-reply-plan.js";
 

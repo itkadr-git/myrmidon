@@ -29,7 +29,7 @@ import {
   issues,
   principalPermissionGrants,
   toolConnections,
-} from "@paperclipai/db";
+} from "@myrmidonai/db";
 import type { Author, Message, Thread } from "chat";
 import {
   chatChannelService,
@@ -64,7 +64,7 @@ import {
 import {
   TELEGRAM_DM_PROGRESS_ENV,
   TELEGRAM_DM_PROGRESS_INTERVAL_ENV,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -412,7 +412,7 @@ describeEmbeddedPostgres("Telegram DM run status (U1)", () => {
         ) => {
           const request = opts?.durableChatRequest;
           if (request) {
-            const { agentWakeupRequests } = await import("@paperclipai/db");
+            const { agentWakeupRequests } = await import("@myrmidonai/db");
             const [existing] = await db
               .select({ id: agentWakeupRequests.id })
               .from(agentWakeupRequests)

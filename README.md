@@ -398,6 +398,6 @@ Myrmidon is MIT-licensed. It is based on
 Copyright (c) 2025 Paperclip AI, MIT License — see
 [LICENSE](LICENSE) and [NOTICE](NOTICE). Myrmidon is not affiliated with or
 endorsed by Paperclip AI. The Paperclip name remains in package names
-(`@paperclipai/*`), environment variables (`PAPERCLIP_*`) and the
+(`@myrmidonai/*`), environment variables (`PAPERCLIP_*`) and the
 `paperclipai` CLI for compatibility only. Third-party notices kept in this
 tree are listed in [NOTICE](NOTICE).

@@ -8,7 +8,7 @@ import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { AgentExchangeFeedResponse, AgentExchangeFeedRoom } from "@paperclipai/shared";
+import type { AgentExchangeFeedResponse, AgentExchangeFeedRoom } from "@myrmidonai/shared";
 import { AgentExchangeFeedScreenView } from "./AgentExchangeFeedScreen";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any

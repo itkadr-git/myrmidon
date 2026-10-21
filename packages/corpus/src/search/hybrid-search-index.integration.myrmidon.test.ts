@@ -17,7 +17,7 @@ import { CORPUS_EMBEDDING_DIMENSIONS, l2Normalize, toPgVectorLiteral } from "./v
 // available:
 //
 //   1. `CORPUS_TEST_PGVECTOR_DSN` — an external stand that allows `CREATE EXTENSION`.
-//   2. the embedded PostgreSQL 18 cluster of `@paperclipai/db`, with pgvector staged into it by the
+//   2. the embedded PostgreSQL 18 cluster of `@myrmidonai/db`, with pgvector staged into it by the
 //      package's own shim (`installPgvectorIntoEmbeddedCluster`) — the same pair the store/queue
 //      suite uses. The shim caches the Debian pgvector package and reports why it cannot stage the
 //      extension (foreign host, no network, no `ar`/`tar`), and the suite skips on that reason.
@@ -26,7 +26,7 @@ import { CORPUS_EMBEDDING_DIMENSIONS, l2Normalize, toPgVectorLiteral } from "./v
 // keeps its own data. `CORPUS_SEARCH_PERF_CHUNKS` scales the synthetic corpus up to the acceptance
 // size (10^5) for the latency measurement:
 //
-//   CORPUS_TEST_PGVECTOR_DSN=postgres://… pnpm --filter @paperclipai/corpus exec vitest run
+//   CORPUS_TEST_PGVECTOR_DSN=postgres://… pnpm --filter @myrmidonai/corpus exec vitest run
 
 const DSN_ENV = "CORPUS_TEST_PGVECTOR_DSN";
 // Text search configuration of the probe column and of the query; both come from the probe schema
@@ -88,7 +88,7 @@ async function resolveSearchStand(): Promise<SearchStand | null> {
   }
 
   try {
-    const embedded = await import("@paperclipai/db");
+    const embedded = await import("@myrmidonai/db");
     const support = await embedded.getEmbeddedPostgresTestSupport();
     if (!support.supported) {
       skipReason = support.reason ?? "the embedded PostgreSQL test cluster is not supported here";

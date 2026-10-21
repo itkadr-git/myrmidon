@@ -1,11 +1,11 @@
 import { Router, type Request } from "express";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
 import {
   alertRecoveryEventSchema,
   patchAlertRecoverySettingsSchema,
   type AlertRecoveryEventInput,
   type AlertRecoverySettingsPatch,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import { unprocessable } from "../../../errors.js";
 import { validate } from "../../../middleware/validate.js";
 import { assertBoard, assertCompanyAccess, assertInstanceAdmin, getActorInfo } from "../../../routes/authz.js";

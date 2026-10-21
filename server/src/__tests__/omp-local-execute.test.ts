@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { execute } from "@paperclipai/adapter-omp-local/server";
+import { execute } from "@myrmidonai/adapter-omp-local/server";
 
 // myrmidon(OMP-LOCAL): targeted execute tests for omp_local
 

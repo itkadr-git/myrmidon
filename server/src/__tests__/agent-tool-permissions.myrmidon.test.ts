@@ -18,8 +18,8 @@ import {
   toolProfileBindings,
   toolProfileEntries,
   toolProfiles,
-} from "@paperclipai/db";
-import type { PermissionKey } from "@paperclipai/shared";
+} from "@myrmidonai/db";
+import type { PermissionKey } from "@myrmidonai/shared";
 import { toolAccessRoutes } from "../routes/tool-access.js";
 import { errorHandler } from "../middleware/index.js";
 import {
@@ -34,7 +34,7 @@ import {
   agentToolPermissionAllows,
   normalizeAgentToolPermissions,
   readAgentToolPermissions,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;

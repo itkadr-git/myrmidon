@@ -12,7 +12,7 @@
 
 import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { Agent, DecisionOption } from "@paperclipai/shared";
+import type { Agent, DecisionOption } from "@myrmidonai/shared";
 import type { Decision } from "@/api/decisions";
 import { decisionsApi } from "@/api/decisions";
 import { agentsApi } from "@/api/agents";

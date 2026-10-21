@@ -51,9 +51,9 @@ const {
   })),
 }));
 
-vi.mock("@paperclipai/adapter-utils/server-utils", async () => {
-  const actual = await vi.importActual<typeof import("@paperclipai/adapter-utils/server-utils")>(
-    "@paperclipai/adapter-utils/server-utils",
+vi.mock("@myrmidonai/adapter-utils/server-utils", async () => {
+  const actual = await vi.importActual<typeof import("@myrmidonai/adapter-utils/server-utils")>(
+    "@myrmidonai/adapter-utils/server-utils",
   );
   return {
     ...actual,
@@ -63,9 +63,9 @@ vi.mock("@paperclipai/adapter-utils/server-utils", async () => {
   };
 });
 
-vi.mock("@paperclipai/adapter-utils/ssh", async () => {
-  const actual = await vi.importActual<typeof import("@paperclipai/adapter-utils/ssh")>(
-    "@paperclipai/adapter-utils/ssh",
+vi.mock("@myrmidonai/adapter-utils/ssh", async () => {
+  const actual = await vi.importActual<typeof import("@myrmidonai/adapter-utils/ssh")>(
+    "@myrmidonai/adapter-utils/ssh",
   );
   return {
     ...actual,
@@ -76,9 +76,9 @@ vi.mock("@paperclipai/adapter-utils/ssh", async () => {
   };
 });
 
-vi.mock("@paperclipai/adapter-utils/execution-target", async () => {
-  const actual = await vi.importActual<typeof import("@paperclipai/adapter-utils/execution-target")>(
-    "@paperclipai/adapter-utils/execution-target",
+vi.mock("@myrmidonai/adapter-utils/execution-target", async () => {
+  const actual = await vi.importActual<typeof import("@myrmidonai/adapter-utils/execution-target")>(
+    "@myrmidonai/adapter-utils/execution-target",
   );
   return {
     ...actual,

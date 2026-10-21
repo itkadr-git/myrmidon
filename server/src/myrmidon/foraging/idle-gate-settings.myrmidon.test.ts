@@ -4,7 +4,7 @@
 // the pass re-reads on every pass. Same shape as the swarm-claim settings
 // tests (fake settings ports, no database).
 import { describe, expect, it, vi } from "vitest";
-import { FORAGING_IDLE_GATE_SETTINGS_KEY } from "@paperclipai/shared";
+import { FORAGING_IDLE_GATE_SETTINGS_KEY } from "@myrmidonai/shared";
 import {
   FORAGING_IDLE_GATE_ACTION,
   foragingIdleGateService,

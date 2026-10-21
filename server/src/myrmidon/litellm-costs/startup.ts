@@ -12,8 +12,8 @@
 // previous one (slow gateway) waits: the timer skips a tick whose sweep is
 // still running instead of stacking them.
 
-import type { Db } from "@paperclipai/db";
-import { companies } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
+import { companies } from "@myrmidonai/db";
 import { isNotNull } from "drizzle-orm";
 import { logger } from "../../middleware/logger.js";
 import { secretService } from "../../services/index.js";

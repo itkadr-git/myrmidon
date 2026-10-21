@@ -2,7 +2,7 @@
 // agent card. "All" is the explicit default (the behaviour before this existed);
 // "Listed" is an allow-list of tool names and connection ids, one per line.
 import { useEffect, useState } from "react";
-import { readAgentToolPermissions } from "@paperclipai/shared";
+import { readAgentToolPermissions } from "@myrmidonai/shared";
 import type { AgentPermissionUpdate } from "@/api/agents";
 import { Button } from "@/components/ui/button";
 

@@ -4,7 +4,7 @@ import { Button } from "@/components/ui/button";
 import { cn, formatDateTime } from "@/lib/utils";
 import { formatMonitorOffset } from "@/lib/issue-monitor";
 import { formatRetryAttemptCounter, formatRetryClassification, formatRetryReason } from "@/lib/runRetryState";
-import type { IssueScheduledRetry } from "@paperclipai/shared";
+import type { IssueScheduledRetry } from "@myrmidonai/shared";
 import { useRetryNowMutation, type RetryNowError } from "../hooks/useRetryNowMutation";
 import { Badge } from "@/components/ui/badge";
 import { InlineBanner } from "@/components/InlineBanner";

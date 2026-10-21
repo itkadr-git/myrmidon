@@ -4,7 +4,7 @@
 // read from the instance settings at evaluation time — there is no startup
 // apply step and no in-process cache, so nothing else needs wiring here.
 
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
 import { budgetEnforcementRoutes } from "./routes.js";
 import { budgetEnforcementService } from "./service.js";
 

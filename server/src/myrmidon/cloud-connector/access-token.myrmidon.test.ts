@@ -8,7 +8,7 @@
 // without a network or a database.
 
 import { describe, expect, it, vi } from "vitest";
-import type { CloudAccount } from "@paperclipai/shared/myrmidon-cloud-connector";
+import type { CloudAccount } from "@myrmidonai/shared/myrmidon-cloud-connector";
 import { createCloudAccessTokenResolver } from "./access-token.js";
 import { serializeTokenBundle } from "./oauth.js";
 import { memoryCloudTokenStore, type CloudTokenStore } from "./token-store.js";

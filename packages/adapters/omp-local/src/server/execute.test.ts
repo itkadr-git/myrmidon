@@ -101,8 +101,8 @@ vi.mock("./models.js", async (importOriginal) => {
   };
 });
 
-vi.mock("@paperclipai/adapter-utils/execution-target", async (importOriginal) => {
-  const actual = (await importOriginal()) as typeof import("@paperclipai/adapter-utils/execution-target");
+vi.mock("@myrmidonai/adapter-utils/execution-target", async (importOriginal) => {
+  const actual = (await importOriginal()) as typeof import("@myrmidonai/adapter-utils/execution-target");
   return {
     ...actual,
     // The callback bridge is not under test here (asset staging and env are).

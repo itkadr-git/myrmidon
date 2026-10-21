@@ -10,7 +10,7 @@
 // `general.debate` key survives every vendor write of the row (the preserve
 // helper registered in services/instance-settings.ts).
 
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
 import { debateRoutes, debateServiceForDb } from "./routes.js";
 
 export { debateRoutes, debateServiceForDb };

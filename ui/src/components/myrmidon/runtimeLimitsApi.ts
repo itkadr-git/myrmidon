@@ -8,7 +8,7 @@
 // myrmidon(1.6.5 RUN-ADMISSION rc.2): GET also carries the live host CPU
 // reading the ceiling is applied to, so the settings page shows the load next
 // to the field instead of only the number the operator typed.
-import type { RunLimits, RunLimitsPatch, RunLimitsSource, RunLimitKey } from "@paperclipai/shared";
+import type { RunLimits, RunLimitsPatch, RunLimitsSource, RunLimitKey } from "@myrmidonai/shared";
 import { api } from "@/api/client";
 
 /**

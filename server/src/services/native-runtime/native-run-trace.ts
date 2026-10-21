@@ -1,7 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash } from "node:crypto";
 
-import { runWithRuntimeParent } from "@paperclipai/adapter-utils/acpx-engine/startup-timing";
+import { runWithRuntimeParent } from "@myrmidonai/adapter-utils/acpx-engine/startup-timing";
 import type { AdapterRuntimeEvent } from "../../adapters/index.js";
 import {
   getStartupTraceContext,

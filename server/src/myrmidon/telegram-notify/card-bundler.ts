@@ -38,13 +38,13 @@ import {
   chatEndpoints,
   chatPublications,
   type Db,
-} from "@paperclipai/db";
+} from "@myrmidonai/db";
 import { projectSafeChatPublication } from "../../services/chat-publication-projection.js";
 import { PRODUCT_NAME } from "../product.js";
 import type {
   SafeExternalChatCardAction,
   SafeChatPublicationPayload,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 
 /** The bundling window, in milliseconds. */
 export const TELEGRAM_NOTIFY_BUNDLE_WINDOW_MS = 5 * 60 * 1_000;

@@ -2,7 +2,7 @@ import { useState, type ReactNode } from "react";
 import { environmentDisplayLabel, filterManagedSandboxSelectableEnvironments } from "@/lib/managed-sandbox-environment";
 import { Link } from "@/lib/router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { Project, SharedWorkspaceConcurrency } from "@paperclipai/shared";
+import type { Project, SharedWorkspaceConcurrency } from "@myrmidonai/shared";
 import { ProjectDefaultCaste } from "./ProjectDefaultCaste";
 import { ProjectRepositories } from "./ProjectRepositories";
 import { cn, formatDate } from "../lib/utils";

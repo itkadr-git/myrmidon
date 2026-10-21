@@ -8,7 +8,7 @@
 // second), so the reader keeps the resolved value for a few seconds at most;
 // a PATCH drops the cached value at once. The precedence (environment
 // override, then stored settings, then the built-in default) is decided in
-// `@paperclipai/shared` (myrmidon-telegram-dm-progress.ts).
+// `@myrmidonai/shared` (myrmidon-telegram-dm-progress.ts).
 //
 // This file deliberately has no runtime import of the instance settings
 // service: services/instance-settings.ts imports the preserve helper below.
@@ -17,7 +17,7 @@ import {
   TELEGRAM_DM_PROGRESS_SETTINGS_KEY,
   resolveTelegramDmProgress,
   type ResolvedTelegramDmProgress,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 
 export { TELEGRAM_DM_PROGRESS_SETTINGS_KEY };
 

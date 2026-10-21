@@ -9,7 +9,7 @@
 import { describe, it, beforeEach, vi, expect, type Mock } from "vitest";
 import request from "supertest";
 import express, { type Request, type Response, type NextFunction } from "express";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
 import { HttpError } from "../errors.js";
 import { agentRoutes } from "./agents.js";
 import { dbAutonomyGate } from "../myrmidon/autonomy/gate.js";

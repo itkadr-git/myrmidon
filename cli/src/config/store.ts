@@ -10,7 +10,7 @@ import {
   resolveDefaultConfigPath,
   resolvePaperclipInstanceId,
 } from "./home.js";
-import { readProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
+import { readProductEnv } from "@myrmidonai/shared/env-alias"; // myrmidon(REBRAND-C)
 
 const DEFAULT_CONFIG_BASENAME = "config.json";
 

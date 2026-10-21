@@ -1,10 +1,10 @@
 import { and, asc, eq, inArray, isNull, or, sql } from "drizzle-orm";
-import { agentWakeupRequests, agents, companies, heartbeatRuns, issueComments, issues, type Db } from "@paperclipai/db";
+import { agentWakeupRequests, agents, companies, heartbeatRuns, issueComments, issues, type Db } from "@myrmidonai/db";
 import { logger } from "../middleware/logger.js";
 // myrmidon(TEAM-LIVENESS-SETTINGS): the instance settings (and the per-agent card
 // switch) this pass obeys, so an operator can change the throttle and the wake
 // budget without restarting the server — a restart drops every run in flight.
-import { resolveAgentTeamLiveness, type ResolvedTeamLiveness } from "@paperclipai/shared";
+import { resolveAgentTeamLiveness, type ResolvedTeamLiveness } from "@myrmidonai/shared";
 import { issueHasNoExecutionHold, wakeNotParkedOnExecutionHold } from "./settled-holds/ready-predicate.js";
 // myrmidon(1.6.5 F-26 T5): the cooling window of stale wake candidates (design §4.3).
 import { isIssueCoolingDown, readSwarmSettings } from "./wake-task-guard.js";

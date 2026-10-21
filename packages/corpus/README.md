@@ -1,4 +1,4 @@
-# @paperclipai/corpus
+# @myrmidonai/corpus
 
 Knowledge corpus module: the retrieval core behind the product's own RAG
 (replaces the external RAGFlow dependency). The package is self-contained:
@@ -26,7 +26,7 @@ it imports nothing RAGFlow-related and builds without any external service.
 
 ## Database
 
-Tables (all additive, migration `0390_corpus_module` in `@paperclipai/db`):
+Tables (all additive, migration `0390_corpus_module` in `@myrmidonai/db`):
 
 | Table | Purpose |
 | --- | --- |
@@ -52,11 +52,11 @@ All queries are company-scoped: every read/write takes `companyId`.
 ## Tests
 
 ```sh
-pnpm --filter @paperclipai/corpus exec vitest run
+pnpm --filter @myrmidonai/corpus exec vitest run
 ```
 
 Store/queue tests boot an embedded PostgreSQL 18 (`embedded-postgres`, the
-same harness as `@paperclipai/db` tests) and apply the real migration files;
+same harness as `@myrmidonai/db` tests) and apply the real migration files;
 on hosts where embedded Postgres is unsupported they skip with a warning.
 
 ## License

@@ -20,7 +20,7 @@
 import { Router } from "express";
 import { z } from "zod";
 import { and, eq, inArray, isNull } from "drizzle-orm";
-import { agents, companySecrets, type Db } from "@paperclipai/db";
+import { agents, companySecrets, type Db } from "@myrmidonai/db";
 import { logActivity } from "../../services/activity-log.js";
 import { assertActorCompanyPermission, assertBoard, assertCompanyAccess, getActorInfo } from "../../routes/authz.js";
 import { validate } from "../../middleware/validate.js";

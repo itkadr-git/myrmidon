@@ -17,7 +17,7 @@
 //     missing skill library each refuse with their own code.
 
 import { describe, expect, it } from "vitest";
-import { agentExchangeRoomSkillKey, agentExchangeRoomSkillSlug } from "@paperclipai/shared";
+import { agentExchangeRoomSkillKey, agentExchangeRoomSkillSlug } from "@myrmidonai/shared";
 import { AgentExchangeFeedError } from "./feed.js";
 import {
   agentExchangeCandidateDescription,

@@ -6,7 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import request from "supertest";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { createDb, plugins } from "@paperclipai/db";
+import { createDb, plugins } from "@myrmidonai/db";
 import {
   ensureLocalPluginBuilt,
   pluginLoader,
@@ -61,7 +61,7 @@ async function createBundledPluginFixture(
   options: { rootDir?: string; buildDistImmediately?: boolean } = {},
 ): Promise<FixturePlugin> {
   const slug = `plugin-autobuild-${nameSuffix}-${randomUUID().slice(0, 8)}`;
-  const packageName = `@paperclipai/${slug}`;
+  const packageName = `@myrmidonai/${slug}`;
   const pluginKey = `paperclip.${slug.replace(/^plugin-/, "").replace(/-/g, "_")}`;
   const packageRoot = path.join(options.rootDir ?? repoPluginRoot, slug);
   const distDir = path.join(packageRoot, "dist");
@@ -184,7 +184,7 @@ describe("ensureLocalPluginBuilt", () => {
     await ensureLocalPluginBuilt(
       packageRoot,
       {
-        name: "@paperclipai/plugin-outside",
+        name: "@myrmidonai/plugin-outside",
         paperclipPlugin: {
           manifest: "./dist/manifest.js",
           worker: "./dist/worker.js",
@@ -225,7 +225,7 @@ describe("ensureLocalPluginBuilt", () => {
     const installArgs = ["install", "--ignore-workspace", ...(localPolicy ? ["--ignore-scripts"] : []), "--no-lockfile"];
     const execStub = vi.fn(async (_file: string, args: readonly string[]) => {
       if (args.join(" ") === installArgs.join(" ")) {
-        await mkdir(path.join(fixture.packageRoot, "node_modules", "@paperclipai", "plugin-sdk"), { recursive: true });
+        await mkdir(path.join(fixture.packageRoot, "node_modules", "@myrmidonai", "plugin-sdk"), { recursive: true });
       }
       if (args.join(" ") === "build") {
         await mkdir(path.join(fixture.distDir, "ui"), { recursive: true });
@@ -264,7 +264,7 @@ describe("ensureLocalPluginBuilt", () => {
     cleanupPaths.add(fixture.packageRoot);
 
     const execStub = vi.fn(async () => {
-      await mkdir(path.join(fixture.packageRoot, "node_modules", "@paperclipai", "plugin-sdk"), { recursive: true });
+      await mkdir(path.join(fixture.packageRoot, "node_modules", "@myrmidonai", "plugin-sdk"), { recursive: true });
       return { stdout: "", stderr: "" };
     });
     await ensureLocalPluginBuilt(
@@ -345,7 +345,7 @@ describeEmbeddedPostgres("plugin install auto-build route", () => {
     expect(existsSync(path.join(fixture.distDir, "manifest.js"))).toBe(true);
     expect(existsSync(path.join(fixture.distDir, "worker.js"))).toBe(true);
     expect(existsSync(path.join(fixture.distDir, "ui", "index.js"))).toBe(true);
-    expect(existsSync(path.join(fixture.packageRoot, "node_modules", "@paperclipai", "plugin-sdk"))).toBe(true);
+    expect(existsSync(path.join(fixture.packageRoot, "node_modules", "@myrmidonai", "plugin-sdk"))).toBe(true);
     expect(mockLifecycle.load).toHaveBeenCalledTimes(1);
   }, 60_000);
 
@@ -358,7 +358,7 @@ describeEmbeddedPostgres("plugin install auto-build route", () => {
     const app = await createInstallApp(db);
 
     expect(existsSync(path.join(fixture.distDir, "manifest.js"))).toBe(true);
-    expect(existsSync(path.join(fixture.packageRoot, "node_modules", "@paperclipai", "plugin-sdk"))).toBe(false);
+    expect(existsSync(path.join(fixture.packageRoot, "node_modules", "@myrmidonai", "plugin-sdk"))).toBe(false);
 
     const res = await request(app)
       .post("/api/plugins/install")
@@ -367,7 +367,7 @@ describeEmbeddedPostgres("plugin install auto-build route", () => {
     expect(res.status).toBe(200);
     expect(res.body.packageName).toBe(fixture.packageName);
     expect(res.body.pluginKey).toBe(fixture.pluginKey);
-    expect(existsSync(path.join(fixture.packageRoot, "node_modules", "@paperclipai", "plugin-sdk"))).toBe(true);
+    expect(existsSync(path.join(fixture.packageRoot, "node_modules", "@myrmidonai", "plugin-sdk"))).toBe(true);
     expect(mockLifecycle.load).toHaveBeenCalledTimes(1);
   }, 60_000);
 

@@ -26,7 +26,7 @@ import {
   issues,
   litellmCostEvents,
   type Db,
-} from "@paperclipai/db";
+} from "@myrmidonai/db";
 import { readTracingHealthAttentionSignal } from "../../tracing-health/attention.js";
 import { readStaleBlockSignals } from "../../stale-block/attention.js";
 import {

@@ -10,7 +10,7 @@ import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { INSTANCE_FEATURE_CATALOG, instanceExperimentalSettingsSchema } from "@paperclipai/shared";
+import { INSTANCE_FEATURE_CATALOG, instanceExperimentalSettingsSchema } from "@myrmidonai/shared";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const UI_SRC = join(HERE, "..");

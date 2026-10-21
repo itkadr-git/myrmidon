@@ -2,7 +2,7 @@
 // checks plugin-loader runs at install time (schema, API version,
 // capabilities), plus a real worker start over the host RPC path. Run from
 // the server package:
-//   pnpm --filter @paperclipai/server exec tsx \
+//   pnpm --filter @myrmidonai/server exec tsx \
 //     ../scripts/myrmidon/plugin-compat/check.ts --work <dir>
 // Here we reuse checkManifest only, reading the manifest module from the
 // fork's built dist.
@@ -72,7 +72,7 @@ async function main() {
     autoRestart: false,
     rpcTimeoutMs: 20_000,
     env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "", NODE_ENV: "production" },
-    // Dev worktrees resolve @paperclipai/shared to TS sources; the loader
+    // Dev worktrees resolve @myrmidonai/shared to TS sources; the loader
     // mirrors what plugin-loader does for local-path plugins.
     ...(fs.existsSync(devTsxLoader) ? { execArgv: ["--import", devTsxLoader] } : {}),
   });

@@ -2,8 +2,8 @@ import path from "node:path";
 import {
   runAdapterExecutionTargetShellCommand,
   type AdapterExecutionTarget,
-} from "@paperclipai/adapter-utils/execution-target";
-import { ensurePathInEnv } from "@paperclipai/adapter-utils/server-utils";
+} from "@myrmidonai/adapter-utils/execution-target";
+import { ensurePathInEnv } from "@myrmidonai/adapter-utils/server-utils";
 
 const DEFAULT_CURSOR_COMMAND_BASENAMES = new Set(["agent", "cursor-agent"]);
 // `.local/bin` first because the official Cursor Agent installer drops the

@@ -1,7 +1,7 @@
 // Processes of the board (myrmidon PROCS-1.1/1.2): the route, the startup read
 // of `instance_settings.general.processes` (design OPE-5394 §7.2), and the
 // supervisor wiring (§7.1).
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
 import { applyProcessesSettingsToProcess, createProcessesSettingsService, defaultProcessesSettingsDeps } from "./service.js";
 import { myrmidonProcessesRoutes } from "./routes.js";
 import type { ProcessSupervisor } from "./supervisor.js";

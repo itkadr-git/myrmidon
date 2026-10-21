@@ -9,7 +9,7 @@
 // woken" without reading server logs.
 
 import { Router } from "express";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
 import { assertCompanyAccess } from "../routes/authz.js";
 import { listCoolingIssues, readSwarmSettings } from "./wake-task-guard.js";
 

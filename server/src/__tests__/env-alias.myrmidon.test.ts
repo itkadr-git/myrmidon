@@ -7,7 +7,7 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { loadConfig } from "../config.ts";
-import { readProductEnv, resetEnvAliasWarningsForTest } from "@paperclipai/shared/env-alias";
+import { readProductEnv, resetEnvAliasWarningsForTest } from "@myrmidonai/shared/env-alias";
 
 describe("MYRMIDON_* env names with PAPERCLIP_* alias", () => {
   afterEach(() => {

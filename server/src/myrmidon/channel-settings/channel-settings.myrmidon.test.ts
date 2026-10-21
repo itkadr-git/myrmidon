@@ -8,7 +8,7 @@
 import express from "express";
 import request from "supertest";
 import { describe, expect, it } from "vitest";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
 import { errorHandler } from "../../middleware/index.js";
 import { channelSettingsRoutes } from "./routes.js";
 import {

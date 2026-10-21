@@ -1,4 +1,4 @@
-import { checkOAuthEndpointUrl, oauthEndpointUrlRejectionMessage } from "@paperclipai/shared";
+import { checkOAuthEndpointUrl, oauthEndpointUrlRejectionMessage } from "@myrmidonai/shared";
 
 export type AuthorizationTarget =
   | { ok: true; url: string; host: string }

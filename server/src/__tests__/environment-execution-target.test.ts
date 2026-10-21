@@ -12,7 +12,7 @@ import {
   measureStartupStep,
   runWithoutActiveStep,
   SANDBOX_STARTUP_SPAN_ATTRS,
-} from "@paperclipai/adapter-utils/acpx-engine/startup-timing";
+} from "@myrmidonai/adapter-utils/acpx-engine/startup-timing";
 import {
   DEFAULT_SANDBOX_REMOTE_CWD,
   resolveEnvironmentExecutionTarget,

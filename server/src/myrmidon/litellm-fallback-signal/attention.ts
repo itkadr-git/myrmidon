@@ -20,7 +20,7 @@
 // reads; the sweep (sweep.ts) keeps the registry fresh on a timer, the same
 // split tracing-health uses. No new table: the feed recomputes on every list.
 
-import type { AttentionSeverity } from "@paperclipai/shared";
+import type { AttentionSeverity } from "@myrmidonai/shared";
 // myrmidon(BOT-RUNTIME-TUNING D2): the settings contract of the signal (stored
 // instance settings over environment over defaults).
 import {
@@ -33,7 +33,7 @@ import {
   fallbackSignalWindowMs,
   readFallbackSignalSettingsFromEnv,
   type FallbackSignalSettings as StoredFallbackSignalSettings,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 
 export const FALLBACK_ATTENTION_DEDUP_PREFIX = "model_fallback:";
 export const FALLBACK_ATTENTION_ACTION_TRANSITION = "myrmidon.model_fallback.signal";
@@ -49,7 +49,7 @@ export function fallbackDedupKey(agentId: string): string {
 //
 // myrmidon(BOT-RUNTIME-TUNING D2): the values now come from the shared contract
 // — the stored instance settings, then a set environment variable, then the
-// built-in default (see `@paperclipai/shared`, myrmidon-fallback-signal). This
+// built-in default (see `@myrmidonai/shared`, myrmidon-fallback-signal). This
 // module keeps the millisecond shape the sweep works in, and the names the
 // deployment already uses keep their meaning.
 

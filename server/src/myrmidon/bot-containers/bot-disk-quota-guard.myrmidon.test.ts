@@ -29,7 +29,7 @@ import {
   realizeExecutionWorkspace,
   WorkspaceRuntimeValidationFailure,
 } from "../../services/workspace-runtime.js";
-import { BOT_DISK_QUOTA_EXCEEDED_ERROR_CODE } from "@paperclipai/shared";
+import { BOT_DISK_QUOTA_EXCEEDED_ERROR_CODE } from "@myrmidonai/shared";
 
 const execFileAsync = promisify(execFile);
 

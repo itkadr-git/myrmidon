@@ -5,8 +5,8 @@
 // tick in index.ts. They must share it, so the endpoint reports the state of
 // the sweep that actually runs — the same structure workspace-hygiene uses.
 
-import type { Db } from "@paperclipai/db";
-import { BOT_DISK_QUOTA_SETTINGS_KEY, normalizeBotDiskQuotaSettings } from "@paperclipai/shared";
+import type { Db } from "@myrmidonai/db";
+import { BOT_DISK_QUOTA_SETTINGS_KEY, normalizeBotDiskQuotaSettings } from "@myrmidonai/shared";
 import { logger } from "../../middleware/logger.js";
 import { instanceSettingsService } from "../../services/instance-settings.js";
 import { createBotDiskQuotaSweep, type BotDiskQuotaSweep, type BotDiskQuotaSweepResult } from "./bot-disk-quota-sweep.js";

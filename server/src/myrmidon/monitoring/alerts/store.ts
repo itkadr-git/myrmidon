@@ -5,7 +5,7 @@
 // sweep (sweep.ts) drops closed entries by age.
 
 import { eq, sql } from "drizzle-orm";
-import { instanceSettings, type Db } from "@paperclipai/db";
+import { instanceSettings, type Db } from "@myrmidonai/db";
 import { alertIdentity, type AlertSource } from "./domain.js";
 import { ALERT_ROUTES_GENERAL_KEY } from "./settings.js";
 

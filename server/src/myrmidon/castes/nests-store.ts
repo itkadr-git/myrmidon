@@ -12,7 +12,7 @@
 // matcher pass sees either the old or the new set.
 
 import { and, asc, eq, inArray } from "drizzle-orm";
-import { agentNests, projects, type Db } from "@paperclipai/db";
+import { agentNests, projects, type Db } from "@myrmidonai/db";
 
 export interface AgentNestStoreDeps {
   db: Db;

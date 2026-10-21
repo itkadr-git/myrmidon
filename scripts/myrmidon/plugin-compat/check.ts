@@ -4,7 +4,7 @@
 // until it answers `health`.
 //
 // Run from the server package so its dependencies resolve:
-//   pnpm --filter @paperclipai/server exec tsx ../scripts/myrmidon/plugin-compat/check.ts \
+//   pnpm --filter @myrmidonai/server exec tsx ../scripts/myrmidon/plugin-compat/check.ts \
 //     [--work <dir>] [--fixtures-only] [--report <file>]
 //
 // --work points at the directory prepared by install.mjs. --fixtures-only

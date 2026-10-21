@@ -9,12 +9,12 @@
 // `./company-base-skills.js`.
 
 import { asc, eq } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
-import { companyBaseSkills } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
+import { companyBaseSkills } from "@myrmidonai/db";
 import {
   readPaperclipSkillSyncPreference,
   writePaperclipSkillSyncPreference,
-} from "@paperclipai/adapter-utils/server-utils";
+} from "@myrmidonai/adapter-utils/server-utils";
 
 /** The shape `paperclipSkillSync.desiredSkills` stores per skill. */
 export interface DesiredSkillEntry {

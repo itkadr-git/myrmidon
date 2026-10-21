@@ -3,8 +3,8 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-vi.mock("@paperclipai/adapter-utils/server-utils", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@paperclipai/adapter-utils/server-utils")>();
+vi.mock("@myrmidonai/adapter-utils/server-utils", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@myrmidonai/adapter-utils/server-utils")>();
   return {
     ...actual,
     runChildProcess: vi.fn(async () => ({
@@ -17,7 +17,7 @@ vi.mock("@paperclipai/adapter-utils/server-utils", async (importOriginal) => {
   };
 });
 
-import * as serverUtils from "@paperclipai/adapter-utils/server-utils";
+import * as serverUtils from "@myrmidonai/adapter-utils/server-utils";
 import { execute } from "./execute.js";
 import {
   applyCardModelsToConfigYaml,

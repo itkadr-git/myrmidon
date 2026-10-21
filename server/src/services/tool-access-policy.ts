@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { and, asc, desc, eq, gt, inArray, ne, sql } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
 import { emitToolPolicyChanged } from "./tool-policy-cache-events.js";
 import {
   agents,
@@ -22,7 +22,7 @@ import {
   toolProfileEntries,
   toolProfiles,
   toolRateLimitCounters,
-} from "@paperclipai/db";
+} from "@myrmidonai/db";
 import type {
   ToolAccessDecision,
   ToolAccessDecisionInput,
@@ -41,8 +41,8 @@ import type {
   ToolRedactedValueSummary,
   ToolTrustRuleArgumentFilters,
   ToolRiskLevel,
-} from "@paperclipai/shared";
-import { toolPolicyConditionsSchema } from "@paperclipai/shared";
+} from "@myrmidonai/shared";
+import { toolPolicyConditionsSchema } from "@myrmidonai/shared";
 // myrmidon(B1c): product name in user-facing policy texts; see product.ts.
 import { PRODUCT_NAME as PN } from "../myrmidon/product.js";
 import { badRequest, conflict, notFound, unprocessable } from "../errors.js";

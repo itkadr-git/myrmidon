@@ -19,7 +19,7 @@ import {
 } from "./services/service-manager.js";
 import { buildLocalAppUrl, buildLocalHealthUrl } from "./utils/health-url.js";
 import { packageVersion } from "./version.js";
-import { readProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
+import { readProductEnv } from "@myrmidonai/shared/env-alias"; // myrmidon(REBRAND-C)
 
 export type OnboardServiceOptions = {
   yes?: boolean;

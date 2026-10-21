@@ -1,14 +1,14 @@
 import { and, asc, desc, eq, gte, inArray, isNull, or, sql } from "drizzle-orm";
 import type { SQL, SQLWrapper } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
-import { documents, issueComments, issueDocuments, issues } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
+import { documents, issueComments, issueDocuments, issues } from "@myrmidonai/db";
 import {
   type CompanySearchExtractIssueResult,
   type CompanySearchExtractMatch,
   type CompanySearchExtractQuery,
   type CompanySearchExtractResponse,
   type CompanySearchExtractSourceRef,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import { visibleIssueCondition } from "./issue-visibility.js";
 
 const EXCERPT_MAX_CHARS = 180;

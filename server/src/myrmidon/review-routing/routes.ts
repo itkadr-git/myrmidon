@@ -8,8 +8,8 @@
 // on the instance, so one setting applies to every company of the instance.
 
 import { Router } from "express";
-import type { Db } from "@paperclipai/db";
-import { reviewRoutingSettingsSchema } from "@paperclipai/shared";
+import type { Db } from "@myrmidonai/db";
+import { reviewRoutingSettingsSchema } from "@myrmidonai/shared";
 import { validate } from "../../middleware/validate.js";
 import { assertCompanyAccess, assertInstanceAdmin } from "../../routes/authz.js";
 import { instanceSettingsService } from "../../services/instance-settings.js";

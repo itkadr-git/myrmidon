@@ -1,5 +1,5 @@
 import { and, desc, eq, inArray, isNotNull, or, sql } from "drizzle-orm";
-import { environmentLeases, heartbeatRunEvents, heartbeatRuns, issueRecoveryActions, type Db } from "@paperclipai/db";
+import { environmentLeases, heartbeatRunEvents, heartbeatRuns, issueRecoveryActions, type Db } from "@myrmidonai/db";
 import { readProcessStartedAt } from "./hot-restart.js";
 // myrmidon(D2): uuid-typed json comparisons for the board DB hot path. See
 // docs/myrmidon/DIVERGENCE.md.

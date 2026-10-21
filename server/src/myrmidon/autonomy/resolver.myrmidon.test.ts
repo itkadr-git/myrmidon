@@ -17,7 +17,7 @@ import {
   resolveAutonomy,
   type AutonomyMatrix,
   type AutonomyRegulation,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 
 // The shared module is imported here to make the red-side explicit: on main
 // this module does not exist, so every test in this file fails to load.

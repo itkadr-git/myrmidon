@@ -4,7 +4,7 @@
 // app.ts, built over the real instance-settings service. The document and its
 // resolver live in settings.ts, the read/update service in service.ts.
 
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
 import { channelSettingsRoutes } from "./routes.js";
 import { channelSettingsService } from "./service.js";
 

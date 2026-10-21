@@ -68,8 +68,8 @@ import {
 import { AgentIcon } from "@/components/AgentIconPicker";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import type { MentionOption } from "@/components/MarkdownEditor";
-import type { IssueAttachment, IssueWorkMode } from "@paperclipai/shared";
-import type { RunnerGoalCapability } from "@paperclipai/shared";
+import type { IssueAttachment, IssueWorkMode } from "@myrmidonai/shared";
+import type { RunnerGoalCapability } from "@myrmidonai/shared";
 import type { ActionCommandOption } from "@/context/EditorAutocompleteContext";
 import { TaskChatComposerTakeoverActionsContext } from "./TaskChatComposerTakeoverContext";
 

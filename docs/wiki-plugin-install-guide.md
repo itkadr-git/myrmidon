@@ -1,7 +1,7 @@
 # LLM Wiki Plugin Installation and Upgrade Guide
 
 ## Overview
-The LLM Wiki plugin (`@paperclipai/plugin-llm-wiki`) provides local-file LLM Wiki functionality for source ingestion, wiki browsing, query, lint, and maintenance workflows.
+The LLM Wiki plugin (`@myrmidonai/plugin-llm-wiki`) provides local-file LLM Wiki functionality for source ingestion, wiki browsing, query, lint, and maintenance workflows.
 
 ## Installation
 
@@ -16,7 +16,7 @@ The plugin is installed automatically as part of the standard Myrmidon deploymen
 ### Manual Installation
 1. Navigate to the Plugins section in your Myrmidon instance
 2. Click "Install Plugin" 
-3. Search for `@paperclipai/plugin-llm-wiki`
+3. Search for `@myrmidonai/plugin-llm-wiki`
 4. Click "Install" and follow the configuration prompts
 
 ## Configuration

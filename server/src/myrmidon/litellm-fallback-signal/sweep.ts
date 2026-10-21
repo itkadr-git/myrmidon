@@ -18,8 +18,8 @@
 // per first tick and stays idle, it does not fail the server.
 
 import { and, eq, ne, isNotNull } from "drizzle-orm";
-import { agents, companies, type Db } from "@paperclipai/db";
-import type { ResolvedFallbackSignalSettings } from "@paperclipai/shared";
+import { agents, companies, type Db } from "@myrmidonai/db";
+import type { ResolvedFallbackSignalSettings } from "@myrmidonai/shared";
 import { logger } from "../../middleware/logger.js";
 import { secretService, instanceSettingsService } from "../../services/index.js";
 import {

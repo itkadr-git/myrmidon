@@ -1,5 +1,5 @@
 import { defineConfig } from "@playwright/test";
-import { readProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
+import { readProductEnv } from "@myrmidonai/shared/env-alias"; // myrmidon(REBRAND-C)
 
 /**
  * Focused browser suite for the Capability issue thread.

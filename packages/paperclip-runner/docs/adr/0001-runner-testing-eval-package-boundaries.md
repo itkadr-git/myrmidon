@@ -34,9 +34,9 @@ Public runner exports are:
 
 | Export | Stability and purpose |
 |---|---|
-| `@paperclipai/paperclip-runner` | Runtime contracts, runner clients/backends, PRP validation/replay, canonical catalog/dispatcher, and compatibility preflight |
-| `@paperclipai/paperclip-runner/evals` | Versioned native-attempt/build metadata, compatibility negotiation, and explicit runnerd artifact resolution |
-| `@paperclipai/paperclip-runner/testing` | Deterministic mocks, PRP port conformance, and provider-neutral semantic conformance kit |
+| `@myrmidonai/paperclip-runner` | Runtime contracts, runner clients/backends, PRP validation/replay, canonical catalog/dispatcher, and compatibility preflight |
+| `@myrmidonai/paperclip-runner/evals` | Versioned native-attempt/build metadata, compatibility negotiation, and explicit runnerd artifact resolution |
+| `@myrmidonai/paperclip-runner/testing` | Deterministic mocks, PRP port conformance, and provider-neutral semantic conformance kit |
 | `./browser`, `./react`, `./standalone`, `./styles.css` | Existing explicitly named UI/standalone consumers |
 
 Mock adapters and conformance constants are no longer package-root exports.
@@ -51,7 +51,7 @@ after an independent release requirement exists; a directory preference is not
 sufficient.
 
 Generic credential-free matrix orchestration lives in the separately versioned,
-workspace-private `@paperclipai/paperclip-eval-kernel` package. It contains no
+workspace-private `@myrmidonai/paperclip-eval-kernel` package. It contains no
 runner imports, provider configuration, scenario corpus, scorer, or report
 renderer. The runner may use it only as a development dependency; runtime,
 optional, and peer dependency sets remain free of eval packages. Paid provider
@@ -63,12 +63,12 @@ The dependency graph is acyclic:
 Paperclip App production binding
             |
             v
-@paperclipai/paperclip-runner (runtime contracts)
+@myrmidonai/paperclip-runner (runtime contracts)
             ^
             |
-Eval consumers ----> @paperclipai/paperclip-runner/evals
-       |             @paperclipai/paperclip-runner/testing
-       +-----------> @paperclipai/paperclip-eval-kernel
+Eval consumers ----> @myrmidonai/paperclip-runner/evals
+       |             @myrmidonai/paperclip-runner/testing
+       +-----------> @myrmidonai/paperclip-eval-kernel
 ```
 
 No arrow points from App runtime to an external eval repository.
@@ -102,8 +102,8 @@ errors must not stand in for this preflight.
 Run:
 
 ```sh
-pnpm --filter @paperclipai/paperclip-runner check:package-boundaries
-pnpm --filter @paperclipai/paperclip-runner check:clean-consumers
+pnpm --filter @myrmidonai/paperclip-runner check:package-boundaries
+pnpm --filter @myrmidonai/paperclip-runner check:clean-consumers
 ```
 
 The second command builds and packs the runner, installs its tarball into a
@@ -116,7 +116,7 @@ gate; workspace tests alone are not proof.
 ## Consequences
 
 - Existing tests importing mock/conformance values from the package root must
-  migrate to `@paperclipai/paperclip-runner/testing`.
+  migrate to `@myrmidonai/paperclip-runner/testing`.
 - `ajv` is a runtime dependency because the public dispatcher imports it.
 - The semantic conformance kit defines normalized comparison; real App service
   adapters and risk-weighted vectors may evolve behind its testkit version.

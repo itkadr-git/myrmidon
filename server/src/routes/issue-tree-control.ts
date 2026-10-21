@@ -3,7 +3,7 @@ import type { Request } from "express";
 import {
   issues as issueRows,
   type Db,
-} from "@paperclipai/db";
+} from "@myrmidonai/db";
 import { and, eq, inArray, isNotNull } from "drizzle-orm";
 import { getExecutionBlocker } from "../services/execution-blocker.js";
 // myrmidon(L2): resuming a paused subtree with wake is an explicitly
@@ -15,7 +15,7 @@ import {
   isUuidLike,
   previewIssueTreeControlSchema,
   releaseIssueTreeHoldSchema,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import { validate } from "../middleware/validate.js";
 import {
   heartbeatService,

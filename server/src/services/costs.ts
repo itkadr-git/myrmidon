@@ -1,7 +1,7 @@
 import { and, desc, eq, gte, isNotNull, isNull, lt, lte, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
-import type { Db } from "@paperclipai/db";
-import { activityLog, agents, companies, costEvents, heartbeatRuns, issues, projects } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
+import { activityLog, agents, companies, costEvents, heartbeatRuns, issues, projects } from "@myrmidonai/db";
 import { notFound, unprocessable } from "../errors.js";
 import { agentPromptStats, type AgentPromptStats } from "../myrmidon/prompt-budget/fleet-prompt-report.js"; // myrmidon(1.6.3 PROMPT-BUDGET D)
 import { budgetService, type BudgetServiceHooks } from "./budgets.js";

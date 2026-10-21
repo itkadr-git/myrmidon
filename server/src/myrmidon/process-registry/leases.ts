@@ -7,7 +7,7 @@
 // lease is ever written, so the answer is an empty list.
 
 import { asc } from "drizzle-orm";
-import { boardLeases, type Db } from "@paperclipai/db";
+import { boardLeases, type Db } from "@myrmidonai/db";
 import type { BoardProcessRow } from "./store.js";
 
 export type BoardLeaseRow = {

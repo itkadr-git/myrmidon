@@ -24,8 +24,8 @@ import {
   heartbeatRuns,
   issueComments,
   type Db,
-} from "@paperclipai/db";
-import { OWNER_REPLY_RESOLUTION_ACTIONS, type OwnerReplyResolution } from "@paperclipai/shared";
+} from "@myrmidonai/db";
+import { OWNER_REPLY_RESOLUTION_ACTIONS, type OwnerReplyResolution } from "@myrmidonai/shared";
 import { conflict, forbidden, unprocessable } from "../../errors.js";
 import { logger } from "../../middleware/logger.js";
 import { redactSensitiveText } from "../../redaction.js";

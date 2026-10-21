@@ -15,7 +15,7 @@
 //   - warnings are reported when they change, not on every tick.
 
 import { isBotBoardGatewayEnabled } from "./board-gateway.js";
-import type { BotLspSettings, BotDiskMechanics, ParallelHelpersSettings, ScopeLayout } from "@paperclipai/shared";
+import type { BotLspSettings, BotDiskMechanics, ParallelHelpersSettings, ScopeLayout } from "@myrmidonai/shared";
 import {
   assertBotEgressSettings,
   BOT_EGRESS_MODE_ENV,

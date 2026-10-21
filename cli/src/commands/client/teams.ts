@@ -8,7 +8,7 @@ import type {
   CatalogTeamImportOptions,
   CatalogTeamSourcePolicy,
   InstalledCatalogTeam,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import {
   addCommonClientOptions,
   apiPath,
@@ -20,7 +20,7 @@ import {
   type ResolvedClientContext,
 } from "./common.js";
 import { ApiRequestError } from "../../client/http.js";
-import { readProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
+import { readProductEnv } from "@myrmidonai/shared/env-alias"; // myrmidon(REBRAND-C)
 
 interface TeamBrowseOptions extends BaseClientOptions {
   kind?: string;

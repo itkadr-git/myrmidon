@@ -15,7 +15,7 @@
 //   per-company state.
 
 import { eq, sql } from "drizzle-orm";
-import { instanceSettings, type Db } from "@paperclipai/db";
+import { instanceSettings, type Db } from "@myrmidonai/db";
 
 /** The storage key for instance-scoped behavior settings. */
 export const BEHAVIOR_SETTINGS_GENERAL_KEY = "behaviorSettings";

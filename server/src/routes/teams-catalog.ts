@@ -1,10 +1,10 @@
 import { Router, type Request } from "express";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
 import {
   catalogTeamInstallSchema,
   catalogTeamListQuerySchema,
   catalogTeamPreviewSchema,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import { validate } from "../middleware/validate.js";
 import { accessService, agentService } from "../services/index.js";
 import {

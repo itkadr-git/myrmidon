@@ -1,6 +1,6 @@
 export {};
 
-import type { AgentApiKeyScope, BoardApiKeyScope } from "@paperclipai/shared";
+import type { AgentApiKeyScope, BoardApiKeyScope } from "@myrmidonai/shared";
 
 declare global {
   namespace Express {

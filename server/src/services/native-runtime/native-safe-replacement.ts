@@ -13,7 +13,7 @@ import {
   toolInvocations,
   type Db,
   runContextPersistenceFields,
-} from "@paperclipai/db";
+} from "@myrmidonai/db";
 import { decideNativeReplacement } from "./native-replacement-evidence.js";
 import { issueService } from "../issues.js";
 import { issueRecoveryActionService } from "../issue-recovery-actions.js";

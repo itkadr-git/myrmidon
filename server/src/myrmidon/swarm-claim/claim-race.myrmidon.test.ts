@@ -13,7 +13,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { and, eq, isNull } from "drizzle-orm";
-import { agents, companies, createDb, issueClaims, issues, type Db } from "@paperclipai/db";
+import { agents, companies, createDb, issueClaims, issues, type Db } from "@myrmidonai/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,

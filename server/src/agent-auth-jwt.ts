@@ -1,7 +1,7 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
-import { normalizeAgentApiKeyScope, type AgentApiKeyScope } from "@paperclipai/shared";
+import { normalizeAgentApiKeyScope, type AgentApiKeyScope } from "@myrmidonai/shared";
 import { resolvePaperclipInstanceId } from "./home-paths.js";
-import { readProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
+import { readProductEnv } from "@myrmidonai/shared/env-alias"; // myrmidon(REBRAND-C)
 
 interface JwtHeader {
   alg: string;

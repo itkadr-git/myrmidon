@@ -10,7 +10,7 @@
 // error.
 
 import { Router } from "express";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
 import { assertBoard, assertCompanyAccess } from "../../routes/authz.js";
 import { instanceSettingsService } from "../../services/instance-settings.js";
 import { createCasteDirectoryReader } from "../castes/directory.js";

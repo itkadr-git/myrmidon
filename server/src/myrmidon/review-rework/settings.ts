@@ -14,7 +14,7 @@
 // answer "who turned this off, and when", and writes the
 // `instance.review_rework.updated` activity row.
 
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
 import {
   REVIEW_REWORK_JOURNAL_KEY,
   REVIEW_REWORK_JOURNAL_LIMIT,
@@ -24,7 +24,7 @@ import {
   normalizeReviewReworkSettings,
   type ReviewReworkSettings,
   type ReviewReworkSettingsPatch,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import type { instanceSettingsService } from "../../services/instance-settings.js";
 
 /** One journal entry: who changed what, and when. */

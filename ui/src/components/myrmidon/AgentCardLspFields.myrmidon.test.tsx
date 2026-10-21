@@ -3,7 +3,7 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { BotLspSettings } from "@paperclipai/shared";
+import type { BotLspSettings } from "@myrmidonai/shared";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { AgentCardLspFields, botLspCardFor } from "./AgentCardLspFields";
 

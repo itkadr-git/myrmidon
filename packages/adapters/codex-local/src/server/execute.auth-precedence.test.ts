@@ -48,9 +48,9 @@ const {
   startAdapterExecutionTargetPaperclipBridge: vi.fn(async () => null),
 }));
 
-vi.mock("@paperclipai/adapter-utils/execution-target", async () => {
-  const actual = await vi.importActual<typeof import("@paperclipai/adapter-utils/execution-target")>(
-    "@paperclipai/adapter-utils/execution-target",
+vi.mock("@myrmidonai/adapter-utils/execution-target", async () => {
+  const actual = await vi.importActual<typeof import("@myrmidonai/adapter-utils/execution-target")>(
+    "@myrmidonai/adapter-utils/execution-target",
   );
   return {
     ...actual,

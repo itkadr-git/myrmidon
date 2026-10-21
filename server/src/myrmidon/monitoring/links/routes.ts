@@ -20,8 +20,8 @@
 // would let the two disagree about whether a link is alive.
 
 import { Router } from "express";
-import type { Db } from "@paperclipai/db";
-import { isMonitoringLinkScope } from "@paperclipai/shared";
+import type { Db } from "@myrmidonai/db";
+import { isMonitoringLinkScope } from "@myrmidonai/shared";
 import { forbidden } from "../../../errors.js";
 import { assertCompanyAccess } from "../../../routes/authz.js";
 import { evaluateMonitoringLinks, type MonitoringLinkKeyRow } from "./health.js";

@@ -171,7 +171,7 @@ function registerRouteMocks() {
     dbAutonomyGate: () => mockAutonomyGate,
   }));
 
-  vi.doMock("@paperclipai/shared/telemetry", () => ({
+  vi.doMock("@myrmidonai/shared/telemetry", () => ({
     trackAgentTaskCompleted: vi.fn(),
     trackErrorHandlerCrash: vi.fn(),
   }));
@@ -467,7 +467,7 @@ function boardActor() {
 describe("agent issue mutation checkout ownership", () => {
   beforeEach(() => {
     vi.resetModules();
-    vi.doUnmock("@paperclipai/shared/telemetry");
+    vi.doUnmock("@myrmidonai/shared/telemetry");
     vi.doUnmock("../telemetry.js");
     vi.doUnmock("../services/access.js");
     vi.doUnmock("../services/activity-log.js");

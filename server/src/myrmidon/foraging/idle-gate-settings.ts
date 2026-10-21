@@ -10,14 +10,14 @@
 // log — and that is all: the toggle is read on every foraging pass, so the
 // next pass already uses it. No restart, no in-process cache to invalidate.
 
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
 import {
   FORAGING_IDLE_GATE_ENABLED_ENV,
   FORAGING_IDLE_GATE_SETTINGS_KEY,
   resolveForagingIdleGate,
   type ForagingIdleGatePatch,
   type ResolvedForagingIdleGate,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import { instanceSettingsService } from "../../services/instance-settings.js";
 
 export { FORAGING_IDLE_GATE_ENABLED_ENV, FORAGING_IDLE_GATE_SETTINGS_KEY };

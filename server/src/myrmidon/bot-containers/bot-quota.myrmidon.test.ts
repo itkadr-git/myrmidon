@@ -17,7 +17,7 @@ import {
   normalizeBotDiskQuotaSettings,
   resolveBotDiskQuotaMb,
   type BotDiskQuotaSettings,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import {
   BOT_VOLUME_ROOT_ENV,
   measureBotVolumeSize,

@@ -5,7 +5,7 @@ import {
   resolveDefaultContextPath,
   resolvePaperclipInstanceId,
 } from "./home.js";
-import { readProductEnv, writeProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
+import { readProductEnv, writeProductEnv } from "@myrmidonai/shared/env-alias"; // myrmidon(REBRAND-C)
 
 export interface DataDirOptionLike {
   dataDir?: string;

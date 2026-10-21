@@ -1,5 +1,5 @@
 import esbuild from "esbuild";
-import { createPluginBundlerPresets } from "@paperclipai/plugin-sdk/bundlers";
+import { createPluginBundlerPresets } from "@myrmidonai/plugin-sdk/bundlers";
 
 const presets = createPluginBundlerPresets();
 const watch = process.argv.includes("--watch");

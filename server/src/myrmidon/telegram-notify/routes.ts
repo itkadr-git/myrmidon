@@ -15,8 +15,8 @@
 // with the current document and writes nothing.
 
 import { Router, type Request, type Response } from "express";
-import type { Db } from "@paperclipai/db";
-import { telegramNotifySettingsPatchSchema } from "@paperclipai/shared";
+import type { Db } from "@myrmidonai/db";
+import { telegramNotifySettingsPatchSchema } from "@myrmidonai/shared";
 import { unprocessable } from "../../errors.js";
 import { validate } from "../../middleware/validate.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "../../routes/authz.js";

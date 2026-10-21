@@ -15,9 +15,9 @@
 // (OPE-3609, swarm-claim-supervisor/). This file owns the claim side only.
 
 import { Router } from "express";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
 import { readSwarmQueueCounters } from "./matcher.js";
-import { patchSwarmClaimSettingsSchema, type SwarmClaimSettingsPatch } from "@paperclipai/shared";
+import { patchSwarmClaimSettingsSchema, type SwarmClaimSettingsPatch } from "@myrmidonai/shared";
 import { validate } from "../../middleware/validate.js";
 import { assertBoardOrgAccess, assertCompanyAccess, assertInstanceAdmin, getActorInfo } from "../../routes/authz.js";
 import { z } from "zod";
@@ -156,7 +156,7 @@ async function releaseAllLiveClaimRows(db: Db, now: Date): Promise<number> {
   const { swarmClaimTableReady, listAllLiveClaims, releaseClaim } = await import("./store.js");
   const { logActivity } = await import("../../services/activity-log.js");
   const { SWARM_CLAIM_RELEASE_REASON_DISABLED } = await import("./sweep.js");
-  const { SWARM_CLAIM_RELEASED_ACTION } = await import("@paperclipai/shared");
+  const { SWARM_CLAIM_RELEASED_ACTION } = await import("@myrmidonai/shared");
   if (!(await swarmClaimTableReady(db))) return 0;
   const rows = await listAllLiveClaims(db, 200);
   let released = 0;

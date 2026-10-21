@@ -63,7 +63,7 @@ to the wiring, not to this package.
 - [hybrid-search-index.integration.myrmidon.test.ts](hybrid-search-index.integration.myrmidon.test.ts)
   — runs against a database that allows `CREATE EXTENSION`, taken from the first source that works:
   the external stand named by `CORPUS_TEST_PGVECTOR_DSN`, or else the embedded PostgreSQL 18 test
-  cluster of `@paperclipai/db` with pgvector staged into it by [../test-pgvector.ts](../test-pgvector.ts)
+  cluster of `@myrmidonai/db` with pgvector staged into it by [../test-pgvector.ts](../test-pgvector.ts)
   (the same pair the store/queue suite uses). It creates the probe extensions, tables and indexes,
   seeds a synthetic corpus, and asserts the top-k contract, the dataset filter and recall@5 of hybrid
   retrieval on exact and noisy query vectors. It also measures p95 latency — `CORPUS_SEARCH_PERF_CHUNKS=100000`

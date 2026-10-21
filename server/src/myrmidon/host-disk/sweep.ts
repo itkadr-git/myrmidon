@@ -7,7 +7,7 @@ import {
   type HostDiskConsumerEntry,
   type HostDiskSettings,
   type HostDiskUsageSample,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import type { LogActivityInput } from "../../services/activity-log.js";
 import { measureHostDiskConsumer, readHostDiskUsage } from "./measure.js";
 import { HostDiskSampleRing, type HostDiskSweepResult } from "./state.js";

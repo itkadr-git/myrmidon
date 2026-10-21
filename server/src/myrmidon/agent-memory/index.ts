@@ -5,7 +5,7 @@
 // the bot-container routes use (routes-wiring.ts).
 
 import { eq } from "drizzle-orm";
-import { agents, type Db } from "@paperclipai/db";
+import { agents, type Db } from "@myrmidonai/db";
 import { assertBoard, hasCompanyAccess } from "../../routes/authz.js";
 import { agentMemoryRoutes } from "./routes.js";
 import { defaultAgentMemoryDeps } from "./service.js";

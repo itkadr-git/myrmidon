@@ -34,8 +34,8 @@
 
 import { and, eq, gte, isNotNull, lte, sql, type SQL } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
-import type { Db } from "@paperclipai/db";
-import { costEvents, heartbeatRuns, instanceSettings, litellmModels } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
+import { costEvents, heartbeatRuns, instanceSettings, litellmModels } from "@myrmidonai/db";
 
 /** Stored key of the threshold settings inside `instance_settings.general`. */
 export const PROMPT_BUDGET_SETTINGS_KEY = "promptBudget";

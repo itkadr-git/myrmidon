@@ -13,7 +13,7 @@
 // is a conversation the owner just continued, not a ticket waiting on a human.
 // See chat-backed.ts and docs/myrmidon/DIVERGENCE.md "CHAT-HOLD".
 import { and, eq, sql } from "drizzle-orm";
-import { issueRecoveryActions, issues, type Db } from "@paperclipai/db";
+import { issueRecoveryActions, issues, type Db } from "@myrmidonai/db";
 import { persistActivity } from "../../services/activity-log.js";
 import { executionBlockerPredicate } from "../../services/execution-blocker.js";
 import { explicitWakeBypassesSettledHold } from "../settled-holds/explicit-wake-bypass.js";

@@ -20,7 +20,7 @@ import { Button } from "@/components/ui/button";
 import { SearchableSelect } from "@/components/SearchableSelect";
 import { AgentIcon } from "@/components/AgentIconPicker";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
-import type { AgentPermissions } from "@paperclipai/shared";
+import type { AgentPermissions } from "@myrmidonai/shared";
 import { TrustPresetSection } from "@/components/TrustPresetSection";
 import {
   buildPermissionsForTrustPreset,

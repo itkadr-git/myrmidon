@@ -28,7 +28,7 @@ import {
   withoutAmbientOpenCodeCommand,
 } from "./opencode-proxy-command.js";
 import { OpenCodeProxyUsageLedger } from "./opencode-proxy-usage.js";
-import { readProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
+import { readProductEnv } from "@myrmidonai/shared/env-alias"; // myrmidon(REBRAND-C)
 
 type RpcMessage = {
   id?: string | number;

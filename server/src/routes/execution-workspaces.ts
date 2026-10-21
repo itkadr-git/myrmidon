@@ -3,8 +3,8 @@ import { accessSync, constants as fsConstants, existsSync, readFileSync } from "
 import path from "node:path";
 import { and, eq } from "drizzle-orm";
 import { Router, type Request, type Response } from "express";
-import type { Db } from "@paperclipai/db";
-import { issues, projects, projectWorkspaces } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
+import { issues, projects, projectWorkspaces } from "@myrmidonai/db";
 import {
   findWorkspaceCommandDefinition,
   matchWorkspaceRuntimeServiceToCommand,
@@ -12,13 +12,13 @@ import {
   updateExecutionWorkspaceSchema,
   workspaceOverviewQuerySchema,
   workspaceRuntimeControlTargetSchema,
-} from "@paperclipai/shared";
-import type { WorkspaceRuntimeDesiredState, WorkspaceRuntimeServiceStateMap } from "@paperclipai/shared";
+} from "@myrmidonai/shared";
+import type { WorkspaceRuntimeDesiredState, WorkspaceRuntimeServiceStateMap } from "@myrmidonai/shared";
 import {
   baseWorkspaceDeclaresInstanceConfig,
   resolveCanonicalWorktreeSeedSource,
   type CanonicalWorktreeSeedSource,
-} from "@paperclipai/shared/worktree-seed-source";
+} from "@myrmidonai/shared/worktree-seed-source";
 import { resolvePaperclipConfigPath } from "../paths.js";
 import { validate } from "../middleware/validate.js";
 import {

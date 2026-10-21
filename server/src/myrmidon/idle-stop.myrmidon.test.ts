@@ -1,9 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { IdleStopService, type IdleStopConfig, type IdleStopLogger } from './idle-stop.js';
 import { BotContainerDriver, BotContainerStatus } from './bot-containers/driver.js';
-import { heartbeatRuns, agents, botApplyJobs, instanceSettings } from '@paperclipai/db';
+import { heartbeatRuns, agents, botApplyJobs, instanceSettings } from '@myrmidonai/db';
 
-vi.mock('@paperclipai/db', () => ({
+vi.mock('@myrmidonai/db', () => ({
   heartbeatRuns: {
     id: 'id',
     agentId: 'agent_id',

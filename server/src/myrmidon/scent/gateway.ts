@@ -12,8 +12,8 @@
 // key-wise: an unknown caste key is dropped, so a hallucinated caste can
 // never land in `issues.scent` (design §9).
 
-import type { IssueScent } from "@paperclipai/shared";
-import { ISSUE_SCENT_MAX_TAGS, issueScentSchema } from "@paperclipai/shared";
+import type { IssueScent } from "@myrmidonai/shared";
+import { ISSUE_SCENT_MAX_TAGS, issueScentSchema } from "@myrmidonai/shared";
 
 export interface ScentGatewayDeps {
   fetch: typeof fetch;

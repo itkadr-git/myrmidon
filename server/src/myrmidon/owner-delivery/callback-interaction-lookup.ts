@@ -5,10 +5,10 @@
 // helper stays company-scoped and only widens the issue scope, never the
 // company or actor checks around it. See docs/myrmidon/DIVERGENCE.md, U2.
 import { and, eq } from "drizzle-orm";
-import { issueThreadInteractions, issues } from "@paperclipai/db";
-import type { Db } from "@paperclipai/db";
+import { issueThreadInteractions, issues } from "@myrmidonai/db";
+import type { Db } from "@myrmidonai/db";
 import { issueThreadInteractionService } from "../../services/issue-thread-interactions.js";
-import type { IssueThreadInteraction } from "@paperclipai/shared";
+import type { IssueThreadInteraction } from "@myrmidonai/shared";
 
 type LookupDb = Db;
 

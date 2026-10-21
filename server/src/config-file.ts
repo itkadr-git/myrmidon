@@ -3,7 +3,7 @@ import {
   findPaperclipConfigKeyWarnings,
   paperclipConfigSchema,
   type PaperclipConfig,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import { ZodError } from "zod";
 import { resolvePaperclipConfigPath } from "./paths.js";
 // myrmidon(B1c): product name in user-facing texts; see product.ts.

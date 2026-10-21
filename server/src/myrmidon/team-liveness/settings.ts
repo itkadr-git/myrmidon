@@ -12,12 +12,12 @@
 // (`packages/shared/src/myrmidon-team-liveness.ts`); this file only supplies
 // the stored row and the environment.
 
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
 import {
   resolveTeamLivenessSettings,
   TEAM_LIVENESS_SETTINGS_KEY,
   type ResolvedTeamLiveness,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 // The vendor settings service, narrowed to the two calls this module makes —
 // the same shape the review-routing and plugin-entitlement settings use, so a
 // vendor change to the service type cannot silently widen what we depend on.

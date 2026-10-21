@@ -26,7 +26,7 @@ release images retain their existing short-tag convention. Build arguments carry
 Preview builds do not import or overwrite the shared release cache or release
 aliases. Missing images are built for Linux amd64, matching managed deployments.
 
-When requested, both `@paperclipai/shared` and `@paperclipai/db` use
+When requested, both `@myrmidonai/shared` and `@myrmidonai/db` use
 `0.0.0-preview.g<FULL_SHA>`. Workspace dependencies are pinned to exact versions.
 Packages carry `gitHead` and `paperclipPreviewCommit` source identity. npm publishes
 them under the `preview` dist-tag only. Normal consumers of `latest` or `canary`
@@ -53,7 +53,7 @@ version 1, request ID, SHA, stage `build`, and status `ready`. It expires after
 
 The `Cloud artifacts` workflow starts a `cloud-migrator` dispatch of `release.yml`
 for every push to `master`. This dispatch builds and publishes only the exact-source
-`@paperclipai/shared` and `@paperclipai/db` preview packages. It starts independently
+`@myrmidonai/shared` and `@myrmidonai/db` preview packages. It starts independently
 of the full npm release and does not wait for the Docker image. The normal Docker
 workflow supplies the image separately.
 

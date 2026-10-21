@@ -16,7 +16,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Ui2TelegramNotifySettings } from "./Ui2TelegramNotifySettings";
 import { Ui2I18nProvider } from "../../../i18n/Ui2I18n";
-import type { TelegramNotifySettings } from "@paperclipai/shared";
+import type { TelegramNotifySettings } from "@myrmidonai/shared";
 
 const mockTelegramNotifyApi = vi.hoisted(() => ({
   get: vi.fn(),

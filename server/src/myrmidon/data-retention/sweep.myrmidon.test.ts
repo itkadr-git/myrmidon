@@ -42,8 +42,8 @@ import {
   statusDecisions,
   toolAccessAuditEvents,
   workAssessments,
-} from "@paperclipai/db";
-import { DATA_RETENTION_WAITING_FOR_BACKUP_ACTION } from "@paperclipai/shared";
+} from "@myrmidonai/db";
+import { DATA_RETENTION_WAITING_FOR_BACKUP_ACTION } from "@myrmidonai/shared";
 import { eq } from "drizzle-orm";
 import {
   getEmbeddedPostgresTestSupport,

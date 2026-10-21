@@ -1,1 +1,1 @@
-export { parseStdoutLine } from "@paperclipai/hermes-paperclip-adapter/gateway/ui";
+export { parseStdoutLine } from "@myrmidonai/hermes-paperclip-adapter/gateway/ui";

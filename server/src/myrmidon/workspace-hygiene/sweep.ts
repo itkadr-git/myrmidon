@@ -11,7 +11,7 @@ import {
   writeWorkspaceHygieneRecord,
   type WorkspaceHygieneLimits,
   type WorkspaceHygieneMeasurementRecord,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import type { LogActivityInput } from "../../services/activity-log.js";
 import { measureWorkspaceSize, type WorkspaceSizeMeasurement } from "./measure.js";
 import type { WorkspaceHygieneStore } from "./store.js";

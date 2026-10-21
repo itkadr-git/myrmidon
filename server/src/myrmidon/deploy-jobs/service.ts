@@ -41,7 +41,7 @@
 //   done; a rollback failure is failed_rollback with the window left on.
 
 import { randomUUID } from "node:crypto";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
 import { logger } from "../../middleware/logger.js";
 import { logActivity } from "../../services/activity-log.js";
 import {

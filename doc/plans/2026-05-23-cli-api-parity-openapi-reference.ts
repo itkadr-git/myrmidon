@@ -110,7 +110,7 @@ import {
   // Instance settings
   patchInstanceGeneralSettingsSchema,
   patchInstanceExperimentalSettingsSchema,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 
 extendZodWithOpenApi(z);
 

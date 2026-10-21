@@ -1,4 +1,4 @@
-import type { AdapterConfigSchema } from "@paperclipai/adapter-utils";
+import type { AdapterConfigSchema } from "@myrmidonai/adapter-utils";
 import { DEFAULT_EVENT_RECONNECT_MS, DEFAULT_TIMEOUT_SEC } from "../shared/constants.js";
 
 export function getConfigSchema(): AdapterConfigSchema {

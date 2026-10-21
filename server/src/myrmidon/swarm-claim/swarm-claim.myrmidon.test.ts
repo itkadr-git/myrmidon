@@ -26,7 +26,7 @@ import {
   type SwarmClaimLease,
   type SwarmClaimSettings,
   type SwarmQueueCandidate,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import {
   claimCovers,
   nextQueueTaskForAgent,

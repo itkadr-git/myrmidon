@@ -20,7 +20,7 @@ import {
   statusDecisionEffects,
   statusDecisions,
   workAssessments,
-} from "@paperclipai/db";
+} from "@myrmidonai/db";
 import {
   executeNativeSession,
   parseNativeExecutionInput,

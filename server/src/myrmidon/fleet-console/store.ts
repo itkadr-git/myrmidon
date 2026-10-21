@@ -5,7 +5,7 @@
 // to Drizzle. Every query is scoped by company.
 
 import { and, asc, eq } from "drizzle-orm";
-import { myrmidonFleetServers, type Db } from "@paperclipai/db";
+import { myrmidonFleetServers, type Db } from "@myrmidonai/db";
 import type { FleetConsoleProtocol, FleetServerInput, FleetServerView } from "./domain.js";
 
 export interface FleetServerStore {

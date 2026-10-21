@@ -3,7 +3,7 @@
 // myrmidon(1.6.6 PROCS-0.1): wiring of the process registry — the routes the
 // «Процессы» panel reads and the pulse the board starts at boot.
 
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
 import { serverVersion } from "../../version.js";
 import {
   boardProcessBootId,

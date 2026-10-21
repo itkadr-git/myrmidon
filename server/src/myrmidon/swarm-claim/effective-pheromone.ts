@@ -11,8 +11,8 @@
 // helper) about what a task ranks with.
 
 import { sql, type SQL } from "drizzle-orm";
-import { issues } from "@paperclipai/db";
-import { DEFAULT_PHEROMONE_DYNAMICS, type PheromoneDynamicsSettings } from "@paperclipai/shared";
+import { issues } from "@myrmidonai/db";
+import { DEFAULT_PHEROMONE_DYNAMICS, type PheromoneDynamicsSettings } from "@myrmidonai/shared";
 
 /**
  * The run statuses that evaporate pheromone (design §2.3: a run that ended

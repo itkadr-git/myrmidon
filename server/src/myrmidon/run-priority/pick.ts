@@ -40,7 +40,7 @@
 import {
   runPriorityWeight,
   type RunPrioritySettings,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 
 /**
  * Why a run stays queued while a more important task of the same agent wakes

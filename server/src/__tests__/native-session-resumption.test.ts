@@ -25,7 +25,7 @@ import {
   statusDecisionEffects,
   statusDecisions,
   workAssessments,
-} from "@paperclipai/db";
+} from "@myrmidonai/db";
 import {
   type NativeExecutionInputV1,
   type NativeExecutionInput,
@@ -33,7 +33,7 @@ import {
   type NativeSessionBackend,
   type PersistedNativeSession,
   type PrpEvent,
-} from "@paperclipai/paperclip-runner";
+} from "@myrmidonai/paperclip-runner";
 import {
   CONTROL_PLANE_CONFORMANCE_RESULT,
   CONTROL_PLANE_CONFORMANCE_TERMINAL,

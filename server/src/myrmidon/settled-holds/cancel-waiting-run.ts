@@ -23,7 +23,7 @@
 // and the same post-commit status effect for the caller to apply once the
 // transaction has committed.
 import { and, eq } from "drizzle-orm";
-import { agentWakeupRequests, heartbeatRuns, issues, type Db } from "@paperclipai/db";
+import { agentWakeupRequests, heartbeatRuns, issues, type Db } from "@myrmidonai/db";
 import { deriveCommentId } from "../../modules/run-dispatch/index.js";
 import type { PostCommitEffect } from "../../modules/run-dispatch/index.js";
 import { getExecutionBlocker } from "../../services/execution-blocker.js";

@@ -23,10 +23,10 @@ import {
   issues,
   toolApplications,
   toolConnections,
-} from "@paperclipai/db";
-import type { ChatProvider } from "@paperclipai/shared";
+} from "@myrmidonai/db";
+import type { ChatProvider } from "@myrmidonai/shared";
 // myrmidon(1.6.5-OWNER-DM-FILTER)
-import { OWNER_DELIVERY_SETTINGS_KEY } from "@paperclipai/shared";
+import { OWNER_DELIVERY_SETTINGS_KEY } from "@myrmidonai/shared";
 import { issueThreadInteractionService } from "../services/issue-thread-interactions.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { telegramConversationUserId } from "../myrmidon/agent-chat-bridge/identity.js";

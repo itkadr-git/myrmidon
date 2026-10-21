@@ -19,7 +19,7 @@ import {
   normalizePluginEntitlementKeys,
   pluginEntitlementKeySchema,
   type PluginEntitlementKey,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import type { instanceSettingsService } from "../../services/instance-settings.js";
 
 /** The forced env override for the verification public key. */

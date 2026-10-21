@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { AlertCircle, CheckCircle2, ChevronDown, Loader2, Search, Store, X } from "lucide-react";
-import type { Agent, AgentDesiredSkillEntry } from "@paperclipai/shared";
+import type { Agent, AgentDesiredSkillEntry } from "@myrmidonai/shared";
 import { agentsApi } from "../../api/agents";
 import { companySkillsApi } from "../../api/companySkills";
 import { instanceSettingsApi } from "../../api/instanceSettings";

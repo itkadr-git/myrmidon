@@ -1,4 +1,4 @@
-# @paperclipai/plugin-mail-imap
+# @myrmidonai/plugin-mail-imap
 
 Bundled Paperclip plugin: reads new mail from an IMAP mailbox and sorts it into
 folders by configurable rules. First slice of the mail-plugin epic (OPE-3383):
@@ -23,7 +23,7 @@ scope for this slice.
 ## Installation
 
 The plugin is bundled and auto-discovered from `packages/plugins/` by the
-server. Build it once (`pnpm --filter @paperclipai/plugin-mail-imap build`),
+server. Build it once (`pnpm --filter @myrmidonai/plugin-mail-imap build`),
 then enable it from company settings (Plugins section).
 
 ## Configuration (per company, in plugin settings)
@@ -78,9 +78,9 @@ is fetched — message bodies and attachments are never downloaded.
 ## Development
 
 ```bash
-pnpm --filter @paperclipai/plugin-mail-imap exec tsc --noEmit   # type check
-pnpm --filter @paperclipai/plugin-mail-imap test                # unit + in-process IMAP-double tests
-pnpm --filter @paperclipai/plugin-mail-imap build               # bundle dist/worker.js (esbuild)
+pnpm --filter @myrmidonai/plugin-mail-imap exec tsc --noEmit   # type check
+pnpm --filter @myrmidonai/plugin-mail-imap test                # unit + in-process IMAP-double tests
+pnpm --filter @myrmidonai/plugin-mail-imap build               # bundle dist/worker.js (esbuild)
 ```
 
 Tests run fully in-process against an in-memory IMAP double — no external

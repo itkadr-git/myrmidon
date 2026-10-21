@@ -21,7 +21,7 @@
  * never fail because this context could not be built.
  */
 import { and, desc, eq, gt, gte, inArray, isNotNull, isNull, ne, or, sql } from "drizzle-orm";
-import { chatConversations, chatMessageLinks, issueComments, issues, type Db } from "@paperclipai/db";
+import { chatConversations, chatMessageLinks, issueComments, issues, type Db } from "@myrmidonai/db";
 
 import { logger } from "../../middleware/logger.js";
 import { createRunSecretRedactionRegistry } from "../../services/run-secret-redaction.js";

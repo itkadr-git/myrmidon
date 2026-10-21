@@ -29,7 +29,7 @@ import {
 import { useNavigate, useSearchParams } from "@/lib/router";
 import { queryKeys } from "@/lib/queryKeys";
 import { copyTextToClipboard } from "@/lib/clipboard";
-import { isAgentStatusInvokable } from "@paperclipai/shared";
+import { isAgentStatusInvokable } from "@myrmidonai/shared";
 import { sanitizedSetupErrorMessage } from "./chat-setup-error";
 import {
   createGitHubPrivateKeyReadGuard,

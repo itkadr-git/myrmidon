@@ -15,7 +15,7 @@ and the board can be maintained and upgraded without losing work.
   [LICENSE](../LICENSE) (Copyright (c) 2025 Paperclip AI) is kept unchanged; see
   [NOTICE](../NOTICE) for attribution and third-party notices.
 - Myrmidon is **not affiliated with or endorsed by Paperclip AI**.
-- Package names (`@paperclipai/*`), `PAPERCLIP_*` variables and the `paperclipai`
+- Package names (`@myrmidonai/*`), `PAPERCLIP_*` variables and the `paperclipai`
   CLI keep their names for compatibility and easy upstream updates. They do not
   name this product.
 - Stable Paperclip releases are merged weekly. Every difference from upstream is

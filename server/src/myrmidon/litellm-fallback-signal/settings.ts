@@ -6,7 +6,7 @@
 // Until now the sweep's numbers came from `MYRMIDON_MODEL_FALLBACK_*` only and
 // were read once when the timer was armed, so changing the threshold or the
 // window meant restarting the board. This module follows the precedence decided
-// in `@paperclipai/shared` (stored settings, then a set environment variable,
+// in `@myrmidonai/shared` (stored settings, then a set environment variable,
 // then the built-in default) and is read on every sweep tick and on every
 // request, so an operator changes the signal from the settings API and the next
 // tick obeys — no restart.
@@ -22,7 +22,7 @@ import {
   resolveFallbackSignalSettings,
   type FallbackSignalSettingsPatch,
   type ResolvedFallbackSignalSettings,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import type { instanceSettingsService } from "../../services/instance-settings.js";
 
 export type FallbackSignalSettingsService = Pick<

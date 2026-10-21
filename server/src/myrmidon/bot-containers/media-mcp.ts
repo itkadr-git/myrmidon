@@ -17,7 +17,7 @@
  * (tools/media-mcp/bot-scripts/media_client.py) answers MediaNotConnectedError
  * instead of hammering the facade.
  */
-import type { AttentionSeverity } from "@paperclipai/shared";
+import type { AttentionSeverity } from "@myrmidonai/shared";
 
 export const MEDIA_MCP_SERVER_NAME = "media";
 export const MEDIA_MCP_TOKEN_ENV = "MEDIA_TOOLS_TOKEN";

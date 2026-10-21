@@ -9,7 +9,7 @@ import {
   WS_CARD_KEYS,
   wsDiskReportSchema,
   type WsDiskReport,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import {
   BOT_DISK_ARCHIVE_TTL_MS,
   buildAgentSilentCards,

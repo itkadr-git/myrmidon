@@ -4,13 +4,13 @@
 // module. The store (./store.js) carries the operations; this file binds them
 // to one nest — today `nestId === companyId` (decision registry, 08.10: one
 // knowledge container per company until K-4 splits nests) — and attaches the
-// pg `SearchIndex` implementation from `@paperclipai/db`, keeping the module
+// pg `SearchIndex` implementation from `@myrmidonai/db`, keeping the module
 // free of dialect SQL.
 //
 // K-2 (UI/API) and K-3 (delivery read path) call this module through the
 // object returned here; the plugin bridge stays until the K-6 transfer.
 
-import { createPgKnowledgeSearchIndex, type Db } from "@paperclipai/db";
+import { createPgKnowledgeSearchIndex, type Db } from "@myrmidonai/db";
 import { createKnowledgeService, type KnowledgeServiceOptions } from "./store.js";
 import type { KnowledgeRevisionLang, SearchIndex } from "./domain.js";
 

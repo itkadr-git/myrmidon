@@ -6,7 +6,7 @@ import { randomUUID } from "node:crypto";
 import express from "express";
 import request from "supertest";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { activityLog, companies, createDb, evalReferenceTasks, evalRuns } from "@paperclipai/db";
+import { activityLog, companies, createDb, evalReferenceTasks, evalRuns } from "@myrmidonai/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,

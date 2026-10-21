@@ -1,5 +1,5 @@
 import { and, asc, eq, inArray, isNotNull, lte } from "drizzle-orm";
-import { environmentLeases, heartbeatRuns, type Db } from "@paperclipai/db";
+import { environmentLeases, heartbeatRuns, type Db } from "@myrmidonai/db";
 import { logger } from "../middleware/logger.js";
 import type { environmentService } from "../services/environments.js";
 import type { environmentRuntimeService } from "../services/environment-runtime.js";

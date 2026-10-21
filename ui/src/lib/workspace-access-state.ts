@@ -3,7 +3,7 @@ import type {
   WorkspaceReadiness,
   WorkspaceReadinessState,
   WorkspaceRuntimeService,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 
 /**
  * Derives the workspace access state the UI shows (PAP-17572).

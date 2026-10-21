@@ -38,14 +38,14 @@ import {
   issueThreadInteractions,
   issues,
   type Db,
-} from "@paperclipai/db";
+} from "@myrmidonai/db";
 import {
   OWNER_MESSAGE_COMMENT_REASON,
   OWNER_MESSAGE_INTERACTION_LABEL,
   isOwnerDecisionAudience,
   type IssueCommentMetadata,
   type IssueThreadInteractionPayload,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import { logger } from "../../middleware/logger.js";
 import { logActivity } from "../../services/activity-log.js";
 import { issueService } from "../../services/issues.js";

@@ -1,4 +1,4 @@
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
 import { logger } from "../../../middleware/logger.js";
 import { instanceSettingsService, logActivity } from "../../../services/index.js";
 import { createDbAlertRecoveryIssuePort } from "./issues.js";

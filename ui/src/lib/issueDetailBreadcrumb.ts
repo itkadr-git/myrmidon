@@ -1,5 +1,5 @@
 // myrmidon(DEBRAND-c): persist browser state under the Myrmidon namespace.
-import type { Issue } from "@paperclipai/shared";
+import type { Issue } from "@myrmidonai/shared";
 
 type IssueDetailSource = "issues" | "inbox";
 

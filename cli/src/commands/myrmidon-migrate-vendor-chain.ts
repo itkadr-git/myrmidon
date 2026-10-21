@@ -1,4 +1,4 @@
-import { listMigrationChain, loadMigrationTargetSchema, type MigrationTargetSchema } from "@paperclipai/db";
+import { listMigrationChain, loadMigrationTargetSchema, type MigrationTargetSchema } from "@myrmidonai/db";
 import { VENDOR_EXTRA_RELEASES } from "./myrmidon-migrate-vendor-releases.js";
 
 // The vendor Paperclip releases this tool migrates from, and the shape of their

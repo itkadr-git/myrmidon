@@ -20,12 +20,12 @@
 // The card names no assignee: who does the work is a staffing decision the lead
 // makes, not something the planner may infer from prose (see the epic note).
 
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
 
 import { issueThreadInteractionService } from "../../services/issue-thread-interactions.js";
-import type { CtoChatPlan } from "@paperclipai/shared";
+import type { CtoChatPlan } from "@myrmidonai/shared";
 
-import { toSuggestTasksPayload } from "@paperclipai/shared";
+import { toSuggestTasksPayload } from "@myrmidonai/shared";
 
 /** A card that could not be created, with the vendor's own message. */
 export class CtoChatApprovalError extends Error {

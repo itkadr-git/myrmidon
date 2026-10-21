@@ -13,7 +13,7 @@ import {
 } from "../myrmidon/run-retry-policy/index.js";
 import { AGENT_CHAT_DIRECTIVE, conversationReplay, isConversation, isConversationExecutionWake, isWaitingConversation, prepareConversationTurn, settleConversationTurn } from "./agent-conversations.js";
 // myrmidon(B1): product name in the notice/prompt text below; see product.ts.
-import { INPUT_LIMIT_CONFIG_KEY } from "@paperclipai/adapter-utils/input-limit";
+import { INPUT_LIMIT_CONFIG_KEY } from "@myrmidonai/adapter-utils/input-limit";
 import {
   INPUT_LIMIT_EVENT_KEY,
   INPUT_LIMIT_FRESH_SESSION_ACTION,
@@ -61,12 +61,12 @@ import { clearChatHoldsOnOwnerMessage } from "../myrmidon/chat-holds/clear-on-me
 import { cancelWaitingRunDoomedByHold, carryRetryBudgetToSuccessor } from "../myrmidon/settled-holds/cancel-waiting-run.js";
 import { connectionIntentService } from "./connection-intents.js";
 import { prepareManagedAiRuntime, assertManagedAiProjectAuth, stripAiAuthBindings, isAiConnectionBusy, AI_AUTH_ENV_KEYS } from "./ai-connection-runtime.js";
-import { aiConnectionBindingSchema, type AiConnectionBinding } from "@paperclipai/shared";
+import { aiConnectionBindingSchema, type AiConnectionBinding } from "@myrmidonai/shared";
 // myrmidon(TEAM-LIVENESS-SETTINGS): the reader that resolves the stored instance
 // settings against the environment, plus the per-agent card switch, so the three
 // automatic behaviours obey the settings page without a restart.
 import { myrmidonTeamLivenessReader } from "../myrmidon/team-liveness/index.js";
-import { resolveAgentTeamLiveness } from "@paperclipai/shared";
+import { resolveAgentTeamLiveness } from "@myrmidonai/shared";
 import {
   COMPRESSION_TIMEOUT_ERROR_SIGNATURES,
   buildLongTaskContextResetNotice,
@@ -88,7 +88,7 @@ import {
 } from "./adapter-execution-control.js";
 import { executionFailureRetryCount } from "./execution-recovery-attempt.js";
 import { buildHeartbeatRunStatusLiveEventPayload } from "./heartbeat-run-status-payload.js";
-import { readProductEnv, readProductEnvFrom } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
+import { readProductEnv, readProductEnvFrom } from "@myrmidonai/shared/env-alias"; // myrmidon(REBRAND-C)
 export { buildHeartbeatRunStatusLiveEventPayload } from "./heartbeat-run-status-payload.js";
 import { buildExecutionContinuation } from "./execution-continuation.js";
 // myrmidon(RUN-SNAPSHOT-DEDUP): the single-copy continuation invariant.
@@ -97,10 +97,10 @@ import {
   runContextForPersistence,
   wakePayloadForDispatch,
 } from "./run-continuation-snapshot.js";
-import { renderPaperclipWakePrompt } from "@paperclipai/adapter-utils/server-utils";
-import { PROJECT_REPOSITORIES_DIR, readGitWorkspaceSnapshot } from "@paperclipai/adapter-utils/git-workspace-sync";
+import { renderPaperclipWakePrompt } from "@myrmidonai/adapter-utils/server-utils";
+import { PROJECT_REPOSITORIES_DIR, readGitWorkspaceSnapshot } from "@myrmidonai/adapter-utils/git-workspace-sync";
 import { isWorkspaceGitScanError, WorkspaceGitScanError, WORKSPACE_GIT_SCAN_ERROR_CODES } from "./workspace-git-operation-scheduler.js";
-import { captureDirectorySnapshot, mergeDirectoryWithBaseline } from "@paperclipai/adapter-utils/workspace-restore-merge";
+import { captureDirectorySnapshot, mergeDirectoryWithBaseline } from "@myrmidonai/adapter-utils/workspace-restore-merge";
 import { initializeRunIdentity, explicitOperatorRunIdentity } from "./run-identity.js";
 import {
   assertDurableChatWakeupReceipt,
@@ -110,15 +110,15 @@ import {
   unadmittedChatWakeupCondition,
   type DurableChatWakeupRequest,
 } from "./durable-chat-wakeup.js";
-import { githubBrokerEnvironment } from "@paperclipai/adapter-utils/github-launcher";
+import { githubBrokerEnvironment } from "@myrmidonai/adapter-utils/github-launcher";
 import {
   cleanupGitHubOperationLaunchers,
   prepareGitHubOperationLaunchers,
   prepareGitHubExecutionEnvironment,
   startAdapterExecutionTargetPaperclipBridge,
-} from "@paperclipai/adapter-utils/execution-target";
+} from "@myrmidonai/adapter-utils/execution-target";
 import { agentService } from "./agents.js";
-import { normalizeLegacyRunnerProvider } from "@paperclipai/adapter-utils";
+import { normalizeLegacyRunnerProvider } from "@myrmidonai/adapter-utils";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { execFile as execFileCallback } from "node:child_process";
@@ -143,7 +143,7 @@ import {
   or,
   sql,
 } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
 import {
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
   CHAT_PROVIDERS,
@@ -168,7 +168,7 @@ import {
   type RoutineRevisionSnapshotV1,
   type RunLivenessState,
   type SourceTrustMetadata,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import {
   agents,
   agentConfigRevisions,
@@ -226,7 +226,7 @@ import {
   workspaceOperations,
   runContextPersistenceFields,
   heartbeatRunListContextColumnProjections,
-} from "@paperclipai/db";
+} from "@myrmidonai/db";
 import { conflict, HttpError, notFound } from "../errors.js";
 import {
   getStartupTraceContext,
@@ -367,7 +367,7 @@ import {
   nativeChatWorkspaceCwd,
   nativeChatWorkspaceMatches,
 } from "./native-runtime/native-chat-workspace.js";
-import { trackAgentFirstHeartbeat } from "@paperclipai/shared/telemetry";
+import { trackAgentFirstHeartbeat } from "@myrmidonai/shared/telemetry";
 import { getTelemetryClient } from "../telemetry.js";
 import {
   emitAgentTaskRun,
@@ -476,7 +476,7 @@ import {
 import {
   PROJECT_TOKEN_QUOTA_EXCEEDED_ERROR_CODE,
   projectTokenQuotaRejectionMessage,
-} from "@paperclipai/shared"; // myrmidon(1.6.6 QUOTA-V2)
+} from "@myrmidonai/shared"; // myrmidon(1.6.6 QUOTA-V2)
 import {
   authorizationService,
   type AuthorizationActor,
@@ -646,18 +646,18 @@ import {
   resolveSessionCompactionPolicy,
   type RuntimeStatusUpdate,
   type SessionCompactionPolicy,
-} from "@paperclipai/adapter-utils";
+} from "@myrmidonai/adapter-utils";
 import {
   readPaperclipSkillSyncPreference,
   selectPaperclipTaskMarkdown,
   UNMANAGED_BACKGROUND_TASK_LIVENESS_REASON,
   UNMANAGED_BACKGROUND_TASK_STOP_REASON,
   writePaperclipSkillSyncPreference,
-} from "@paperclipai/adapter-utils/server-utils";
-import { extractSkillMentionIds, isUuidLike } from "@paperclipai/shared";
+} from "@myrmidonai/adapter-utils/server-utils";
+import { extractSkillMentionIds, isUuidLike } from "@myrmidonai/shared";
 // myrmidon(1.6.5-BOT-DISK-H4b): general.botDisk.defaultRepo rides the run context.
-import { normalizeStoredBotDiskSettings } from "@paperclipai/shared";
-import { evaluateCodexCredentialReadiness } from "@paperclipai/adapter-codex-local/server";
+import { normalizeStoredBotDiskSettings } from "@myrmidonai/shared";
+import { evaluateCodexCredentialReadiness } from "@myrmidonai/adapter-codex-local/server";
 import { environmentService } from "./environments.js";
 import { parseExecutionPolicyBootstrapEnv } from "./execution-policy-bootstrap.js";
 import { retryChatControlAdmission } from "./chat-control-admission-retry.js";
@@ -806,8 +806,8 @@ import {
   runMatchesCurrentRelease,
   type PriorityScoredRun,
 } from "../myrmidon/run-priority/scoring.js";
-import { runPriorityWeight, type RunPrioritySettings } from "@paperclipai/shared";
-import { effectivePheromone } from "@paperclipai/shared";
+import { runPriorityWeight, type RunPrioritySettings } from "@myrmidonai/shared";
+import { effectivePheromone } from "@myrmidonai/shared";
 // myrmidon(S2-hostcred): a run never inherits the host's GitHub credentials
 import {
   filterHostGitHubCredentialEnv,

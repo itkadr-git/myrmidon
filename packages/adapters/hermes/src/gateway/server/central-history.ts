@@ -20,7 +20,7 @@
 // container-side mount: the transport is the service's documented REST surface
 // (the same paths the memory plugin's client uses).
 
-import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
+import type { AdapterExecutionContext } from "@myrmidonai/adapter-utils";
 
 export type FetchLike = (url: string, init?: RequestInit) => Promise<Response>;
 

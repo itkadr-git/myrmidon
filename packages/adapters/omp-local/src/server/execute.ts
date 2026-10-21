@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { inferOpenAiCompatibleBiller, type AdapterExecutionContext, type AdapterExecutionResult } from "@paperclipai/adapter-utils";
+import { inferOpenAiCompatibleBiller, type AdapterExecutionContext, type AdapterExecutionResult } from "@myrmidonai/adapter-utils";
 import {
   adapterExecutionTargetIsRemote,
   adapterExecutionTargetRemoteCwd,
@@ -24,7 +24,7 @@ import {
   runAdapterExecutionTargetProcess,
   runAdapterExecutionTargetShellCommand,
   startAdapterExecutionTargetPaperclipBridge,
-} from "@paperclipai/adapter-utils/execution-target";
+} from "@myrmidonai/adapter-utils/execution-target";
 import {
   asString,
   asNumber,
@@ -49,15 +49,15 @@ import {
   isPaperclipRecoveryWakePayload,
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
   DEFAULT_PAPERCLIP_CONVERSATION_PROMPT_TEMPLATE,
-} from "@paperclipai/adapter-utils/server-utils";
-import { myrmidonInheritedProcessEnv, readInheritProcessEnvFlag } from "@paperclipai/adapter-utils/myrmidon-run-env";
+} from "@myrmidonai/adapter-utils/server-utils";
+import { myrmidonInheritedProcessEnv, readInheritProcessEnvFlag } from "@myrmidonai/adapter-utils/myrmidon-run-env";
 import {
   promptArgumentOverflowResult,
   writePromptFile,
   type PromptFile,
-} from "@paperclipai/adapter-utils/myrmidon-prompt-transport";
-import { shellQuote } from "@paperclipai/adapter-utils/ssh";
-import { PRODUCT_NAME } from "@paperclipai/adapter-utils";
+} from "@myrmidonai/adapter-utils/myrmidon-prompt-transport";
+import { shellQuote } from "@myrmidonai/adapter-utils/ssh";
+import { PRODUCT_NAME } from "@myrmidonai/adapter-utils";
 import { isOmpUnknownSessionError, parseOmpJsonl } from "./parse.js";
 import { ensureOmpModelConfiguredAndAvailable } from "./models.js";
 import { resolveOmpSkillsHome } from "./skills.js";

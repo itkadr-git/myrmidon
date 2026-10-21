@@ -5,7 +5,7 @@
 import express from "express";
 import request from "supertest";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { createDb, instanceSettings } from "@paperclipai/db";
+import { createDb, instanceSettings } from "@myrmidonai/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,

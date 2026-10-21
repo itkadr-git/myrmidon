@@ -6,7 +6,7 @@
 // not in the pilot set, a deprecated skill and a rolled-back revision all take
 // effect on the agents' next compile tick without a second code path.
 
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
 import { approvalService, logActivity } from "../../services/index.js";
 import { createSkillLifecycleService, type SkillLifecycleService } from "./service.js";
 import { createDbSkillLifecycleStore } from "./store.js";

@@ -19,12 +19,12 @@
 // skill-candidate.ts.
 
 import { Router, type Request, type Response } from "express";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
 import {
   agentExchangeSkillCandidateSchema,
   type AgentExchangeSkillCandidateInput,
   type AgentExchangeFeedSettingsPatch,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import { validate } from "../../middleware/validate.js";
 import { assertBoard, assertBoardOrgAccess, assertCompanyAccess, assertInstanceAdmin, getActorInfo } from "../../routes/authz.js";
 import { instanceSettingsService } from "../../services/instance-settings.js";

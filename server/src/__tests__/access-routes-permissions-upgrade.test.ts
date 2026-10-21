@@ -14,7 +14,7 @@ import {
   principalPermissionGrants,
   toolApplications,
   toolConnections,
-} from "@paperclipai/db";
+} from "@myrmidonai/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,

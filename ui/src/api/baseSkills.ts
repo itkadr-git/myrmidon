@@ -4,7 +4,7 @@ import type {
   CompanyBaseSkillMutationResponse,
   CompanyBaseSkillOverview,
   CompanyBaseSkillRemoveResponse,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import { api } from "./client";
 
 function baseSkillsPath(companyId: string) {

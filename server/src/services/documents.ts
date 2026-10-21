@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { and, asc, desc, eq } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
-import { documentRevisions, documents, issueDocuments, issues } from "@paperclipai/db";
-import { isSystemIssueDocumentKey, issueDocumentKeySchema } from "@paperclipai/shared";
+import type { Db } from "@myrmidonai/db";
+import { documentRevisions, documents, issueDocuments, issues } from "@myrmidonai/db";
+import { isSystemIssueDocumentKey, issueDocumentKeySchema } from "@myrmidonai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import { isUniqueViolation } from "../db-errors.js";
 // myrmidon(S5): mask secret values in document bodies at the single write point

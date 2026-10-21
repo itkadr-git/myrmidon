@@ -1,6 +1,6 @@
 import { and, asc, eq, or, sql } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
-import { heartbeatRunEvents, heartbeatRuns } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
+import { heartbeatRunEvents, heartbeatRuns } from "@myrmidonai/db";
 import { nativeSha256 } from "./native-runtime/canonical.js";
 import { enterLaneIfUntagged } from "../myrmidon/monitoring/board-load/lanes.js"; // myrmidon(1.6.6 PROCS-0.3A)
 

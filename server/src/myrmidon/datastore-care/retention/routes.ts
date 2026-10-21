@@ -11,11 +11,11 @@
 // without a restart.
 
 import { Router } from "express";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
 import {
   patchDatastoreCareRetentionSchema,
   type DatastoreCareRetentionPatch,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import { validate } from "../../../middleware/validate.js";
 import { assertBoardOrgAccess, assertInstanceAdmin } from "../../../routes/authz.js";
 import { instanceSettingsService } from "../../../services/instance-settings.js";

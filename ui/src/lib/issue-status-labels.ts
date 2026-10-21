@@ -2,7 +2,7 @@
 // inbox, and kanban surfaces. Falls back to the vendor English wording when
 // no translation is active.
 import type { TFunction } from "i18next";
-import type { IssueStatus } from "@paperclipai/shared";
+import type { IssueStatus } from "@myrmidonai/shared";
 
 const STATUS_KEYS: Record<IssueStatus, string> = {
   backlog: "status.backlog",

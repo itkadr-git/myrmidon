@@ -13,8 +13,8 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 // Mock the adapter-utils server-utils module that execute.ts imports from.
 // We intercept runChildProcess so we can inspect its opts without spawning
 // a real child process.
-vi.mock("@paperclipai/adapter-utils/server-utils", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@paperclipai/adapter-utils/server-utils")>();
+vi.mock("@myrmidonai/adapter-utils/server-utils", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@myrmidonai/adapter-utils/server-utils")>();
   return {
     ...actual,
     runChildProcess: vi.fn(async () => ({
@@ -39,7 +39,7 @@ vi.mock("node:fs/promises", () => ({
 }));
 
 import { execute } from "./execute.js";
-import * as serverUtils from "@paperclipai/adapter-utils/server-utils";
+import * as serverUtils from "@myrmidonai/adapter-utils/server-utils";
 
 function makeCtx(overrides: Record<string, unknown> = {}) {
   const onSpawn = vi.fn(async () => undefined);

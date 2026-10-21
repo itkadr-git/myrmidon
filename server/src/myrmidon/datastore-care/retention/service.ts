@@ -25,14 +25,14 @@
 // the same numbers.
 
 import { logger } from "../../../middleware/logger.js";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
 import {
   DATASTORE_RETENTION_APPLIED_ACTION,
   DATASTORE_RETENTION_WAITING_FOR_BACKUP_ACTION,
   emptyDatastoreCareRetentionLastRun,
   normalizeDatastoreCareRetentionLastRun,
   type DatastoreCareRetentionLastRun,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import { instanceSettingsService, logActivity } from "../../../services/index.js";
 import { isInstanceUnderMaintenance } from "../../maintenance/gate.js";
 import {

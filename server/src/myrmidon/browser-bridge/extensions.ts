@@ -20,7 +20,7 @@
 // - the payload is never journaled or logged here — only the type and the
 //   outcome are visible to a caller.
 
-import { BROWSER_BRIDGE_ERROR_CODES } from "@paperclipai/shared";
+import { BROWSER_BRIDGE_ERROR_CODES } from "@myrmidonai/shared";
 import type { InMemoryBridgeSessionRegistry, BridgeSession } from "./sessions.js";
 import { BrowserBridgeError } from "./service.js";
 

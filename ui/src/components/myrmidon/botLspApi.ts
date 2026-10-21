@@ -10,7 +10,7 @@ import type {
   BotLspSettings,
   BotLspSettingsPatch,
   EffectiveBotLspSettings,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import { api } from "@/api/client";
 
 export interface BotLspView {

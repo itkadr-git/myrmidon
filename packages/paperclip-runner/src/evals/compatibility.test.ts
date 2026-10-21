@@ -19,7 +19,7 @@ function compatible(): PaperclipRunnerEvalCompatibilityRequirement {
     runnerd: {
       schema: PAPERCLIP_RUNNERD_BUILD_METADATA_SCHEMA,
       binaryName: "paperclip-runnerd",
-      packageName: "@paperclipai/paperclip-runner",
+      packageName: "@myrmidonai/paperclip-runner",
       packageVersion: PAPERCLIP_RUNNER_BUILD_METADATA.package.version,
       binaryContractVersion: PAPERCLIP_RUNNER_BUILD_METADATA.contracts.runnerdArtifact,
       nativeExecutionVersion: 1,

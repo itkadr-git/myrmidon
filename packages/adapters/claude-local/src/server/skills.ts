@@ -4,13 +4,13 @@ import { fileURLToPath } from "node:url";
 import type {
   AdapterSkillContext,
   AdapterSkillSnapshot,
-} from "@paperclipai/adapter-utils";
+} from "@myrmidonai/adapter-utils";
 import {
   buildRuntimeMountedSkillSnapshot,
   readPaperclipRuntimeSkillEntries,
   readInstalledSkillTargets,
   resolveLegacyPaperclipDesiredSkillNames,
-} from "@paperclipai/adapter-utils/server-utils";
+} from "@myrmidonai/adapter-utils/server-utils";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 
@@ -18,7 +18,7 @@ function asString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
 // myrmidon(B1c): product name in user-facing texts; see shared myrmidon-product.
-import { PRODUCT_NAME } from "@paperclipai/adapter-utils";
+import { PRODUCT_NAME } from "@myrmidonai/adapter-utils";
 
 function resolveClaudeSkillsHome(config: Record<string, unknown>) {
   const env =

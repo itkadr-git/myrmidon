@@ -12,7 +12,7 @@ import {
   companies,
   createDb,
   issues,
-} from "@paperclipai/db";
+} from "@myrmidonai/db";
 import { issueThreadInteractionService } from "../../services/issue-thread-interactions.js";
 import { listInteractionForCallback } from "./callback-interaction-lookup.js";
 import {

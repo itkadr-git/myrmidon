@@ -17,7 +17,7 @@ import { readdir, stat } from "node:fs/promises";
 import path from "node:path";
 import { sql, type SQL } from "drizzle-orm";
 
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
 
 import type {
   DatastoreBackupMetric,

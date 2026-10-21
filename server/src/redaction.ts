@@ -1,4 +1,4 @@
-import { redactCommandText } from "@paperclipai/adapter-utils";
+import { redactCommandText } from "@myrmidonai/adapter-utils";
 // myrmidon(S5): value-based secret masking
 import { maskSecretsInText } from "./myrmidon/secret-masking.js";
 

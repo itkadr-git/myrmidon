@@ -1,4 +1,4 @@
-import { createDb } from "@paperclipai/db";
+import { createDb } from "@myrmidonai/db";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { Config } from "../config.js";
 import { createBetterAuthInstance } from "../auth/better-auth.js";

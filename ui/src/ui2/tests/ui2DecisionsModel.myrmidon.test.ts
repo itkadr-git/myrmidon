@@ -6,7 +6,7 @@
 // the screen and the vendor decision DTO — no server needed.
 
 import { describe, expect, it } from "vitest";
-import type { DecisionOption } from "@paperclipai/shared";
+import type { DecisionOption } from "@myrmidonai/shared";
 import type { Decision } from "@/api/decisions";
 import {
   ui2DecisionAge,

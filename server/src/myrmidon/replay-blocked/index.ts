@@ -8,7 +8,7 @@
 
 import { Router } from "express";
 import { and, desc, eq, inArray, notInArray, sql } from "drizzle-orm";
-import { heartbeatRuns, issueRecoveryActions, issues, type Db } from "@paperclipai/db";
+import { heartbeatRuns, issueRecoveryActions, issues, type Db } from "@myrmidonai/db";
 import { assertBoard, assertCompanyAccess } from "../../routes/authz.js";
 import { executionBlockerPredicate } from "../../services/execution-blocker.js";
 

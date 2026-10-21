@@ -12,7 +12,7 @@
 // entry point. A transport failure is thrown and surfaces as 503 with the
 // previous cache intact; an HTTP status is recorded per component.
 
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
 import { logger } from "../../middleware/logger.js";
 import {
   STACK_CHECKABLE_RELEASE_SOURCES,

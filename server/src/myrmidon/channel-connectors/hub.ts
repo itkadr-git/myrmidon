@@ -12,7 +12,7 @@
 // vendor path keeps the endpoint and no channel falls silent on a mistake of
 // ours. Every failure is logged with its area for the journal of the caller.
 
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
 import type {
   ChannelAdmission,
   ChannelConnector,

@@ -130,7 +130,7 @@ Every OAuth endpoint address is chosen by the remote server — in discovered
 metadata, in a `WWW-Authenticate` hint, in a pasted config, or in a gallery
 default — and the authorization endpoint additionally becomes a top-level browser
 navigation. All of them are parsed by one shared validator
-(`checkOAuthEndpointUrl` in `@paperclipai/shared`) and must be:
+(`checkOAuthEndpointUrl` in `@myrmidonai/shared`) and must be:
 
 - **`https:`.** Plain `http:` is refused, except for a loopback host under the
   local-development policy (the same policy that allows private remote

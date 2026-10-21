@@ -1,4 +1,4 @@
-import { PRODUCT_NAME } from "@paperclipai/shared";
+import { PRODUCT_NAME } from "@myrmidonai/shared";
 import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from "react";
 
 export interface Breadcrumb {

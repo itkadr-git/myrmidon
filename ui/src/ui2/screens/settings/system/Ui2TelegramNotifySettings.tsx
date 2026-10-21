@@ -11,7 +11,7 @@
 // that differ from the stored values (the core merges a partial body and
 // records every changed field in the changelog). Editing is board-only on
 // the server; a 403 on GET shows the denied state like the other System
-// sections. The contract types come from @paperclipai/shared so the UI
+// sections. The contract types come from @myrmidonai/shared so the UI
 // cannot drift from the core.
 
 import { useEffect, useMemo, useState } from "react";
@@ -22,7 +22,7 @@ import type {
   TelegramEscalationChannel,
   TelegramNotifySettings,
   TelegramProactivityMode,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import { telegramNotifyApi, telegramNotifyQueryKey } from "@/api/myrmidonTelegramNotify";
 import { useCompany } from "@/context/CompanyContext";
 import { formatDateTime } from "@/lib/utils";

@@ -15,7 +15,7 @@ import os from "node:os";
 import path from "node:path";
 import request from "supertest";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { createDb, plugins } from "@paperclipai/db";
+import { createDb, plugins } from "@myrmidonai/db";
 import { pluginLoader, REPO_ROOT } from "../services/plugin-loader.js";
 import {
   getEmbeddedPostgresTestSupport,
@@ -73,7 +73,7 @@ type FixturePlugin = {
  */
 async function createBuiltPluginFixture(parentDir: string, nameSuffix: string): Promise<FixturePlugin> {
   const slug = `plugin-install-guard-${nameSuffix}-${randomUUID().slice(0, 8)}`;
-  const packageName = `@paperclipai/${slug}`;
+  const packageName = `@myrmidonai/${slug}`;
   const pluginKey = `paperclip.${slug.replace(/^plugin-/, "").replace(/-/g, "_")}`;
   const packageRoot = path.join(parentDir, slug);
   const distDir = path.join(packageRoot, "dist");

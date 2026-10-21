@@ -19,7 +19,7 @@ import { createHash } from "node:crypto";
 // myrmidon(B1c): product name in the gateway tool description; see product.ts.
 import { PRODUCT_NAME } from "../product.js";
 
-import { agents, toolMcpGateways, toolMcpGatewayTokens, toolProfiles, type Db } from "@paperclipai/db";
+import { agents, toolMcpGateways, toolMcpGatewayTokens, toolProfiles, type Db } from "@myrmidonai/db";
 import { and, eq, isNull, sql } from "drizzle-orm";
 import { filterResolvedGitHubConnectionsForRun } from "../../services/git-credentials.js";
 import { toolAccessService } from "../../services/tool-access.js";

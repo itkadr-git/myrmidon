@@ -11,7 +11,7 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Leaf } from "lucide-react";
-import type { ForagingSettingsPatch, ForagingSettingsSource } from "@paperclipai/shared";
+import type { ForagingSettingsPatch, ForagingSettingsSource } from "@myrmidonai/shared";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";

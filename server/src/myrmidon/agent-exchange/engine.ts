@@ -26,7 +26,7 @@ import {
   type AgentExchangeParticipantSpec,
   type AgentExchangeRoom,
   type AgentExchangeSettings,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 
 /** Stable failure codes. Callers and tests switch on these, never messages. */
 export type AgentExchangeErrorCode =

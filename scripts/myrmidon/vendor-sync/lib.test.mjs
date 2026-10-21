@@ -22,7 +22,7 @@ describe("stable tags", () => {
         "nightly/v2026.927.0-nightly.0",
         "v2026.927.0-beta.1",
         "v2026.927.0-rc.1",
-        "@paperclipai/server@1.2.3",
+        "@myrmidonai/server@1.2.3",
         "v2026.916.0",
       ]),
       "v2026.916.1",

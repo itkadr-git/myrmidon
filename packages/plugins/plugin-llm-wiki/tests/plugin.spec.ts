@@ -2,9 +2,9 @@ import { readFileSync } from "node:fs";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createTestHarness } from "@paperclipai/plugin-sdk/testing";
-import { PLUGIN_RPC_ERROR_CODES } from "@paperclipai/plugin-sdk/protocol";
-import type { Agent, Issue, PluginJobDeclaration, PluginManagedRoutineResolution, Project } from "@paperclipai/plugin-sdk";
+import { createTestHarness } from "@myrmidonai/plugin-sdk/testing";
+import { PLUGIN_RPC_ERROR_CODES } from "@myrmidonai/plugin-sdk/protocol";
+import type { Agent, Issue, PluginJobDeclaration, PluginManagedRoutineResolution, Project } from "@myrmidonai/plugin-sdk";
 import manifest, {
   CURSOR_WINDOW_ROUTINE_KEY,
   FOLDER_HEALTH_CHECK_JOB_KEY,
@@ -4035,7 +4035,7 @@ Duplicate headings receive stable suffixes.
 
   describe("unknown action surface", () => {
     it("worker reports unknown actions with the full list of registered action keys", async () => {
-      const { PLUGIN_RPC_ERROR_CODES } = await import("@paperclipai/plugin-sdk/protocol");
+      const { PLUGIN_RPC_ERROR_CODES } = await import("@myrmidonai/plugin-sdk/protocol");
       const harness = createTestHarness({ manifest });
       await plugin.definition.setup(harness.ctx);
 

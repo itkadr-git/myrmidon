@@ -24,12 +24,12 @@ import {
   issues,
   issueThreadInteractions,
   userUiLanguage,
-} from "@paperclipai/db";
+} from "@myrmidonai/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "../../../__tests__/helpers/embedded-postgres.js";
-import { ctoChatPlanSchema, type CtoChatPlan } from "@paperclipai/shared";
+import { ctoChatPlanSchema, type CtoChatPlan } from "@myrmidonai/shared";
 import { createCtoChatPlanApproval } from "../../cto-chat/plan-approval.js";
 import { telegramConversationUserId } from "../identity.js";
 import { issueThreadInteractionService } from "../../../services/issue-thread-interactions.js";

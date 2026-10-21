@@ -22,8 +22,8 @@
 
 import { Router } from "express";
 import { eq } from "drizzle-orm";
-import { issues, type Db } from "@paperclipai/db";
-import type { DebateSettings } from "@paperclipai/shared";
+import { issues, type Db } from "@myrmidonai/db";
+import type { DebateSettings } from "@myrmidonai/shared";
 import { dbAutonomyGate } from "../autonomy/gate.js";
 import { assertBoardOrgAccess, assertCompanyAccess, assertInstanceAdmin, getActorInfo } from "../../routes/authz.js";
 import { forbidden } from "../../errors.js";

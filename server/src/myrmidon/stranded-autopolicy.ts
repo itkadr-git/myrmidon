@@ -55,8 +55,8 @@
 
 import { randomUUID } from "node:crypto";
 import { and, eq, gte, sql } from "drizzle-orm";
-import { agents, heartbeatRuns, type Db } from "@paperclipai/db";
-import { isAgentStatusInvokable, type IssueExecutionPolicy } from "@paperclipai/shared";
+import { agents, heartbeatRuns, type Db } from "@myrmidonai/db";
+import { isAgentStatusInvokable, type IssueExecutionPolicy } from "@myrmidonai/shared";
 import { applyIssueExecutionPolicyTransition } from "../services/issue-execution-policy.js";
 // myrmidon(B1): the two texts below that people and agents read name the
 // product through product.ts, like the rest of the server-generated text.

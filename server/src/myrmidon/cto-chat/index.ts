@@ -7,7 +7,7 @@
 // creates the tasks. This module is the half that runs on the server — the
 // planning step, the approval card and the Telegram entry point. The portal chat
 // screen is the other half (myrmidon 1.6-CTO-CHAT-A); the two meet only at the
-// shared proposal contract in `@paperclipai/shared` and at the board's own
+// shared proposal contract in `@myrmidonai/shared` and at the board's own
 // interaction API, so neither half calls into the other.
 //
 // Deliberately absent:

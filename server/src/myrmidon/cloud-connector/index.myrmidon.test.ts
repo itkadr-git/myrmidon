@@ -6,7 +6,7 @@
 // never another company's, and never null-but-silent when nobody connected.
 
 import { describe, expect, it } from "vitest";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
 import { createCloudConnector } from "./index.js";
 import { OAuthStateStore } from "./oauth.js";
 import { memoryCloudTokenStore } from "./token-store.js";

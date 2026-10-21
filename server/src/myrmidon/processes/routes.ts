@@ -7,8 +7,8 @@
 // `instance_settings.general.processes` and applies it without a restart; it is
 // instance-admin only, the same rule the rest of the instance settings follow.
 import { Router } from "express";
-import type { Db } from "@paperclipai/db";
-import { processesSettingsPatchSchema, type ProcessesSettingsPatch } from "@paperclipai/shared";
+import type { Db } from "@myrmidonai/db";
+import { processesSettingsPatchSchema, type ProcessesSettingsPatch } from "@myrmidonai/shared";
 import { validate } from "../../middleware/validate.js";
 import { assertBoardOrgAccess, assertInstanceAdmin, getActorInfo } from "../../routes/authz.js";
 import type { ProcessesSettingsService } from "./service.js";

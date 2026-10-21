@@ -9,13 +9,13 @@ import type {
   ToolConnection,
   ToolPolicy,
   ToolProfileWithDetails,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import {
   connectionDisplaySecondaryHint,
   humanizeConnectionDisplayName,
   aiSubscriptionNeedsIsolatedLogin,
   isToolConnectionAttentionHealth as isAttentionHealthStatus,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import { Navigate, useParams, useNavigate, useSearchParams } from "@/lib/router";
 import { useCompany } from "@/context/CompanyContext";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";

@@ -1,7 +1,7 @@
 import express from "express";
 import request from "supertest";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { JsonRpcCallError } from "@paperclipai/plugin-sdk";
+import { JsonRpcCallError } from "@myrmidonai/plugin-sdk";
 
 const mockRegistry = vi.hoisted(() => ({
   getById: vi.fn(),
@@ -162,16 +162,16 @@ describe.sequential("plugin install and upgrade authz", () => {
     const byPackageName = new Map(
       res.body.map((plugin: { packageName: string; experimental: boolean; hasBuiltEntrypoints: boolean }) => [plugin.packageName, plugin]),
     );
-    expect(packageNames).toContain("@paperclipai/plugin-workspace-diff");
-    expect(packageNames).toContain("@paperclipai/plugin-llm-wiki");
-    expect(packageNames).toContain("@paperclipai/plugin-modal");
-    expect(packageNames).toContain("@paperclipai/plugin-authoring-smoke-example");
-    expect(packageNames).not.toContain("@paperclipai/plugin-sdk");
-    expect(byPackageName.get("@paperclipai/plugin-workspace-diff")?.experimental).toBe(true);
-    expect(byPackageName.get("@paperclipai/plugin-llm-wiki")?.experimental).toBe(true);
-    expect(byPackageName.get("@paperclipai/plugin-modal")?.experimental).toBe(true);
-    expect(byPackageName.get("@paperclipai/plugin-authoring-smoke-example")?.experimental).toBe(false);
-    expect(typeof byPackageName.get("@paperclipai/plugin-workspace-diff")?.hasBuiltEntrypoints).toBe("boolean");
+    expect(packageNames).toContain("@myrmidonai/plugin-workspace-diff");
+    expect(packageNames).toContain("@myrmidonai/plugin-llm-wiki");
+    expect(packageNames).toContain("@myrmidonai/plugin-modal");
+    expect(packageNames).toContain("@myrmidonai/plugin-authoring-smoke-example");
+    expect(packageNames).not.toContain("@myrmidonai/plugin-sdk");
+    expect(byPackageName.get("@myrmidonai/plugin-workspace-diff")?.experimental).toBe(true);
+    expect(byPackageName.get("@myrmidonai/plugin-llm-wiki")?.experimental).toBe(true);
+    expect(byPackageName.get("@myrmidonai/plugin-modal")?.experimental).toBe(true);
+    expect(byPackageName.get("@myrmidonai/plugin-authoring-smoke-example")?.experimental).toBe(false);
+    expect(typeof byPackageName.get("@myrmidonai/plugin-workspace-diff")?.hasBuiltEntrypoints).toBe("boolean");
   }, 20_000);
 
   it("rejects plugin installation for non-admin board users", async () => {
@@ -1267,7 +1267,7 @@ describe.sequential("operator-hidden plugin management floor", () => {
     readyPlugin();
 
     const attempts: Array<[string, request.Test]> = [
-      ["install", request(app).post("/api/plugins/install").send({ packageName: "@paperclipai/plugin-modal" })],
+      ["install", request(app).post("/api/plugins/install").send({ packageName: "@myrmidonai/plugin-modal" })],
       ["uninstall", request(app).delete(`/api/plugins/${pluginId}`)],
       ["enable", request(app).post(`/api/plugins/${pluginId}/enable`)],
       ["disable", request(app).post(`/api/plugins/${pluginId}/disable`).send({})],

@@ -13,7 +13,7 @@ import {
   normalizeToolPolicyCacheSettings,
   type PatchToolPolicyCacheSettings,
   type ToolPolicyCacheSettings,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import type { instanceSettingsService } from "../../services/instance-settings.js";
 
 export { TOOL_POLICY_CACHE_SETTINGS_KEY };

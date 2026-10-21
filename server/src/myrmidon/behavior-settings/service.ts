@@ -17,13 +17,13 @@
 // runs through one queue (see `withBehaviorSettingsTransition`), exactly as the
 // runtime-limits transition does.
 
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
 import {
   resolveBehaviorSettings,
   mergeBehaviorSettings,
   type BehaviorSettingsPatch,
   type ResolvedBehaviorSettings,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import { logger } from "../../middleware/logger.js";
 import { instanceSettingsService, logActivity } from "../../services/index.js";
 import {

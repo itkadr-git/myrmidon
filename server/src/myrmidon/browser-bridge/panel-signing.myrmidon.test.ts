@@ -19,7 +19,7 @@ import {
   DEFAULT_BROWSER_BRIDGE_SIGNING,
   normalizeSigningSettings,
   browserBridgeSigningSchema,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import { isSignatureRow } from "./journal-view.js";
 import { BROWSER_BRIDGE_ACTIONS, type BrowserBridgeJournalEntry } from "./journal.js";
 import { browserBridgeService, type BrowserBridgeService, type BrowserBridgeServiceDeps } from "./service.js";

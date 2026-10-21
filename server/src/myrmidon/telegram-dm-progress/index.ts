@@ -5,7 +5,7 @@
 // settings are read by the milestone sweep (a few seconds of cache at most),
 // so there is no startup apply step.
 
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
 import { telegramDmProgressRoutes } from "./routes.js";
 import { telegramDmProgressService } from "./service.js";
 

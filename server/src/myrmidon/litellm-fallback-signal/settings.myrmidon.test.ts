@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 
-import { FALLBACK_SIGNAL_SETTINGS_KEY } from "@paperclipai/shared";
+import { FALLBACK_SIGNAL_SETTINGS_KEY } from "@myrmidonai/shared";
 import {
   preserveFallbackSignalGeneralKey,
   readResolvedFallbackSignalSettings,
