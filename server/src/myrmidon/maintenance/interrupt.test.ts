@@ -31,7 +31,9 @@ const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
 const ADMIN = { actorType: "user", actorId: "admin-user" };
-const SLOW = "setTimeout(() => process.exit(0), 20000)";
+// Stay alive until the heartbeat cancellation path sends SIGTERM; this makes
+// the maintenance test's lifecycle boundary explicit instead of wall-clock based.
+const SLOW = "process.on('SIGTERM', () => process.exit(0)); setInterval(() => {}, 1000)";
 const FAST = "process.exit(0)";
 
 describeEmbeddedPostgres("maintenance interrupt_and_retry", () => {
