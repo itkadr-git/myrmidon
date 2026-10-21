@@ -15,7 +15,7 @@ import {
   issues,
   projects,
   type Db,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 /** One closed task in the shape the distiller prompt is built from. */
 export interface DistillRawTask {
   identifier: string;

@@ -68,14 +68,14 @@ describe("classifyChanges", () => {
     ]) {
       const result = selectTests(
         [changedFile],
-        [{ name: "@paperclipai/server", dir: "server", vitestProject: true }],
+        [{ name: "@myrmidon/server", dir: "server", vitestProject: true }],
         [
           { file: "server/src/__tests__/app-private-hostname-gate.test.ts", source: "" },
           { file: "server/src/myrmidon/monitoring/dashboard/guard.myrmidon.test.ts", source: "" },
         ],
       );
       assert.deepEqual(result.files, [{
-        package: "@paperclipai/server",
+        package: "@myrmidon/server",
         files: [
           "server/src/__tests__/app-private-hostname-gate.test.ts",
           "server/src/myrmidon/monitoring/dashboard/guard.myrmidon.test.ts",

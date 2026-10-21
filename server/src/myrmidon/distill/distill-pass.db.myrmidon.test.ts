@@ -24,7 +24,7 @@ import {
   knowledgeSuggestions,
   projects,
   createDb,
-} from "@paperclipai/db";
+} from "@myrmidon/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,

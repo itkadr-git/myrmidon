@@ -183,7 +183,7 @@ export function selectTests(changedFiles, packages, testFiles, { selective = SEL
 
   if (changedFiles.some((file) => SHARED_GUARD_TRIGGERS.includes(file))) {
     const testFilesByPath = new Set(testFiles.map((testFile) => testFile.file));
-    const server = packages.find((pkg) => pkg.name === "@paperclipai/server");
+    const server = packages.find((pkg) => pkg.name === "@myrmidon/server");
     for (const file of SHARED_GUARD_TESTS) {
       if (testFilesByPath.has(file)) add(server, file, "shared-source guard");
     }

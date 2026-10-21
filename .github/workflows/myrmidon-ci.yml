@@ -185,12 +185,12 @@ jobs:
         run: |
           set -euo pipefail
           pnpm run preflight:workspace-links
-          pnpm -r --filter '!@paperclipai/paperclip-runner' typecheck
-          pnpm --filter @paperclipai/paperclip-runner typecheck:typescript
+          pnpm -r --filter '!@myrmidon/paperclip-runner' typecheck
+          pnpm --filter @myrmidon/paperclip-runner typecheck:typescript
 
       - name: Build Runner issue-thread viewer
         if: ${{ !cancelled() }}
-        run: pnpm --filter @paperclipai/paperclip-runner build:issue-thread
+        run: pnpm --filter @myrmidon/paperclip-runner build:issue-thread
 
       - name: Build
         if: ${{ !cancelled() && needs.plan.outputs.tier == 'full' }}
@@ -201,8 +201,8 @@ jobs:
         run: |
           set -euo pipefail
           pnpm run preflight:workspace-links
-          pnpm --filter @paperclipai/paperclip-runner build:typescript
-          pnpm -r --filter '!@paperclipai/paperclip-runner' build
+          pnpm --filter @myrmidon/paperclip-runner build:typescript
+          pnpm -r --filter '!@myrmidon/paperclip-runner' build
 
   tests-affected:
     name: tests (affected)
@@ -249,7 +249,7 @@ jobs:
           path: ${{ runner.temp }}
 
       - name: Build plugin SDK dependencies
-        run: pnpm --filter @paperclipai/plugin-sdk ensure-build-deps
+        run: pnpm --filter @myrmidon/plugin-sdk ensure-build-deps
 
       - name: Run affected tests
         run: node scripts/myrmidon/ci/affected-tests.mjs run --plan "$RUNNER_TEMP/plan.json"
@@ -387,14 +387,14 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Build plugin SDK dependencies
-        run: pnpm --filter @paperclipai/plugin-sdk ensure-build-deps
+        run: pnpm --filter @myrmidon/plugin-sdk ensure-build-deps
 
       - name: Run tests of the other packages
         run: node scripts/myrmidon/ci/affected-tests.mjs extra
 
       - name: Verify the runner (vendor's check:all lane)
         if: ${{ !cancelled() }}
-        run: pnpm --filter @paperclipai/paperclip-runner check:all
+        run: pnpm --filter @myrmidon/paperclip-runner check:all
   checks:
     # Cheap checks that run on every tier: node:test suites of our scripts,
     # gitleaks, the internal-address scan, dependency licenses and plugin
@@ -535,18 +535,18 @@ jobs:
       - name: Plugin compatibility — build plugin SDK and shared from the repository
         id: sdk
         if: ${{ !cancelled() }}
-        run: pnpm --filter @paperclipai/plugin-sdk ensure-build-deps
+        run: pnpm --filter @myrmidon/plugin-sdk ensure-build-deps
 
       - name: Plugin compatibility — manifest snapshots (offline)
         if: ${{ !cancelled() && steps.sdk.outcome == 'success' }}
-        run: pnpm --filter @paperclipai/server exec tsx ../scripts/myrmidon/plugin-compat/check.ts --fixtures-only
+        run: pnpm --filter @myrmidon/server exec tsx ../scripts/myrmidon/plugin-compat/check.ts --fixtures-only
 
       - name: Plugin compatibility — installed plugins against the host
         if: ${{ !cancelled() && steps.sdk.outcome == 'success' }}
         run: |
           set -euo pipefail
           node scripts/myrmidon/plugin-compat/install.mjs --work "$RUNNER_TEMP/plugin-compat"
-          pnpm --filter @paperclipai/server exec tsx ../scripts/myrmidon/plugin-compat/check.ts --work "$RUNNER_TEMP/plugin-compat"
+          pnpm --filter @myrmidon/server exec tsx ../scripts/myrmidon/plugin-compat/check.ts --work "$RUNNER_TEMP/plugin-compat"
 
   dockergate:
     # tools/dockergate (the allowlisting Docker proxy for the bot-container
@@ -625,7 +625,7 @@ jobs:
           set -euo pipefail
           out="$RUNNER_TEMP/dockergate-contract"
           rm -rf "$out" && mkdir -p "$out"
-          pnpm --filter @paperclipai/server exec tsx ../tools/dockergate/contract/emit-fixtures.ts "$out"
+          pnpm --filter @myrmidon/server exec tsx ../tools/dockergate/contract/emit-fixtures.ts "$out"
           # The static fixtures must equal the checked-in ones; traffic.json
           # carries wall-clock mtimes and is only replayed, not compared.
           diff -r -x traffic.json tools/dockergate/contract/testdata "$out"
