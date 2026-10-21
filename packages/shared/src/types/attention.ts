@@ -81,6 +81,7 @@ export const ATTENTION_SOURCE_KINDS = [
   "queue_stall",
   // myrmidon(OPE-7932): a due issue monitor has not produced a wake claim.
   "issue_monitor_overdue",
+  "provider_usage_warning",
 ] as const;
 
 export type AttentionSourceKind = (typeof ATTENTION_SOURCE_KINDS)[number];
@@ -265,6 +266,16 @@ export type AttentionItemDetail =
   | {
       kind: "generic";
       summaryExcerpt: string | null;
+      images: AttentionDetailImage[];
+    }
+  | {
+      kind: "provider_usage";
+      provider: string;
+      windowKind: "package" | "5h" | "week";
+      usedPercent: number;
+      thresholdPercent: number;
+      resetsAt: string;
+      credentialRef: string;
       images: AttentionDetailImage[];
     };
 

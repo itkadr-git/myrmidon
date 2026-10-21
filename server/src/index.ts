@@ -92,6 +92,7 @@ import {
   statusCardService,
   toolAccessService,
   workspaceOperationService,
+  providerUsageService,
 } from "./services/index.js";
 import { questionResponseDeliveryService } from "./services/question-response-delivery.js";
 import { deliverNativeQuestionResponse } from "./services/native-runtime/native-question-bridge.js";
@@ -1701,6 +1702,14 @@ async function startServerWithDatabaseTeardown(
     );
     heartbeatSchedulerInterval?.unref?.();
   };
+  const scheduleProviderUsageWarningDelivery = () => {
+    if (heartbeatSchedulerStopped || !processRoleProfile.runsBackground) return;
+    trackHeartbeatSchedulerWork(providerUsageService(db).deliverPendingWarnings()
+      .then((result) => {
+        if (result.delivered || result.failed) logger.info(result, "provider usage warning delivery sweep completed");
+      })
+      .catch((err) => logger.error({ err }, "provider usage warning delivery sweep failed")));
+  };
   const externalObjects = externalObjectService(db as any, {
     pluginWorkerManager,
     enabled: async () => (await instanceSettingsService(db).getExperimental()).enableExternalObjects === true,
@@ -2765,6 +2774,7 @@ async function startServerWithDatabaseTeardown(
     // the enabled path does.
     await runEnvironmentLeaseCleanupSweep(0);
     startHeartbeatSchedulerInterval(() => {
+      scheduleProviderUsageWarningDelivery();
       scheduleExternalObjectRefreshSweep(new Date());
       scheduleEnvironmentLeaseCleanupSweep();
       schedulePendingInteractionWakeSweep(); // myrmidon(P12)

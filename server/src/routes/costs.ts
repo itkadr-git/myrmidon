@@ -1,5 +1,6 @@
 import { Router } from "express";
 import type { Db } from "@paperclipai/db";
+import type { Request } from "express";
 import {
   createCostEventSchema,
   createFinanceEventSchema,
@@ -7,11 +8,17 @@ import {
   resolveBudgetIncidentSchema,
   updateBudgetSchema,
   upsertBudgetPolicySchema,
+  createProviderUsageReportedEventSchema,
+  updateProviderUsageWarningThresholdSchema,
+  PROVIDER_USAGE_WARNING_THRESHOLD_SETTING,
+  type ProviderUsageReportedEventV1,
+  type ProviderUsageAggregate,
+  type ProviderUsageWarning,
 } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
 import {
-  budgetService,
   costService,
+  budgetService,
   financeService,
   companyService,
   agentService,
@@ -20,7 +27,10 @@ import {
   accessService,
   logActivity,
 } from "../services/index.js";
+import { providerUsageService } from "../services/provider-usage.js";
 import { assertBoard, assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
+import { instanceSettings } from "@paperclipai/db";
+import { eq } from "drizzle-orm";
 import { fetchAllQuotaWindows } from "../services/quota-windows.js";
 import { badRequest } from "../errors.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
@@ -63,6 +73,7 @@ export function costRoutes(
   const agents = agentService(db);
   const issues = issueService(db);
   const access = accessService(db);
+  const providerUsage = providerUsageService(db);
 
   async function resolveIssueByRef(rawId: string) {
     const identifier = normalizeIssueIdentifier(rawId);
@@ -170,6 +181,69 @@ export function costRoutes(
     res.status(201).json(event);
   });
 
+  const emitWarning = async (companyId: string, req: Request, warning: ProviderUsageWarning, ownerIssueId?: string) => {
+    if (!ownerIssueId) return;
+    const ownerIssue = await resolveIssueByRef(ownerIssueId);
+    if (!ownerIssue || ownerIssue.companyId !== companyId) return;
+    const actor = getActorInfo(req);
+    if (actor.actorType === "agent" && !actor.runId) return;
+    const metricUsed = warning.limit > 0 ? warning.used / warning.limit * 100 : 0;
+    const description = `${warning.provider} usage reached ${metricUsed.toFixed(1)}% for ${warning.metric}; ${warning.remaining} remaining before ${warning.resetsAt}. Credential reference: ${warning.credentialRef}.`;
+    const commentContext = {
+      ...(actor.agentId ? { agentId: actor.agentId } : {}),
+      ...(actor.runId ? { runId: actor.runId } : {}),
+    };
+    await issues.addComment(ownerIssue.id, `Provider usage warning: ${description}`, commentContext, { authorType: actor.actorType, clientRequestId: `provider-usage-warning:${warning.key}` });
+  };
+  router.post("/companies/:companyId/provider-usage-reports", validate(createProviderUsageReportedEventSchema), async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    if (req.actor.type !== "agent") {
+      res.status(403).json({ error: "Provider usage reports must be submitted by an agent adapter" });
+      return;
+    }
+    const event = req.body as ProviderUsageReportedEventV1;
+    const result = await providerUsage.ingest(companyId, event);
+    if (result.duplicate) {
+      res.status(200).json({ accepted: false, duplicate: true });
+      return;
+    }
+    if (result.warning) await emitWarning(companyId, req, result.warning, event.ownerIssueId);
+    res.status(202).json({ accepted: result.accepted, aggregate: result.aggregate, warning: result.warning });
+  });
+
+  router.get("/companies/:companyId/provider-usage", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    if (!await assertCompanyCostReadAllowed(req, res, companyId)) return;
+    res.json({ thresholdPercent: await providerUsage.thresholdForCompany(companyId), usage: await providerUsage.list(companyId) });
+  });
+
+  router.patch("/companies/:companyId/provider-usage-warning-threshold", validate(updateProviderUsageWarningThresholdSchema), async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertBoard(req);
+    assertCompanyAccess(req, companyId);
+    const actor = getActorInfo(req);
+    const current = await db.select().from(instanceSettings).limit(1);
+    const general = { ...((current[0]?.general as Record<string, unknown> | undefined) ?? {}), [PROVIDER_USAGE_WARNING_THRESHOLD_SETTING]: req.body.thresholdPercent };
+    if (current[0]) {
+      await db.update(instanceSettings).set({ general, updatedAt: new Date() }).where(eq(instanceSettings.id, current[0].id));
+    } else {
+      await db.insert(instanceSettings).values({ general });
+    }
+    await logActivity(db, {
+      companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      action: "provider_usage.warning_threshold_updated",
+      entityType: "provider_usage_settings",
+      entityId: companyId,
+      details: { thresholdPercent: req.body.thresholdPercent },
+    });
+    res.json({ thresholdPercent: req.body.thresholdPercent });
+  });
+
   router.get("/companies/:companyId/costs/summary", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
@@ -178,7 +252,6 @@ export function costRoutes(
     const summary = await costs.summary(companyId, range);
     res.json(summary);
   });
-
   router.get("/issues/:id/cost-summary", async (req, res) => {
     const rawId = req.params.id as string;
     const issue = await getAccessibleResource(req, res, resolveIssueByRef(rawId), "Issue not found");

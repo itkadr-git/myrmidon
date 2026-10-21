@@ -2924,6 +2924,10 @@ export * from "./myrmidon-data-retention.js";
 // myrmidon(1.7-BUDGET-CONFIG-B): the shared contract of budget enforcement —
 // the global mode (signal_only / soft / hard), its storage key and resolver.
 export * from "./myrmidon-budget-enforcement.js";
+export * from "./myrmidon/provider-usage.js";
+export * from "./myrmidon/provider-usage-settings.js";
+export * from "./myrmidon/provider-usage-schema.js";
+
 
 // myrmidon(1.7, SETTINGS-TO-UI A): the generic behavior-settings registry and
 // precedence resolver shared by the server core, the settings validator and the

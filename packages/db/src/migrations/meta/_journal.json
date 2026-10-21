@@ -2375,6 +2375,20 @@
       "when": 1792395501000,
       "tag": "0401_wakeup_key_partial_unique_indexes",
       "breakpoints": true
+    },
+    {
+      "idx": 402,
+      "version": "7",
+      "when": 1792395502000,
+      "tag": "0402_provider_usage_snapshots",
+      "breakpoints": true
+    },
+    {
+      "idx": 403,
+      "version": "7",
+      "when": 1792395503000,
+      "tag": "0403_provider_usage_warning_deliveries",
+      "breakpoints": true
     }
   ]
 }
