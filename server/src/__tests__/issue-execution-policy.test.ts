@@ -2073,6 +2073,49 @@ describe("review round circuit breaker", () => {
     expect(a.recoveryInteraction?.idempotencyKey).toBe(b.recoveryInteraction?.idempotencyKey);
   });
 
+  it("replays the escalated continuation without opening a second review stage", () => {
+    const escalationPolicy = normalizeIssueExecutionPolicy({
+      stages: [{ id: reviewStageId, type: "review", participants: [{ type: "agent", agentId: qaAgentId }] }],
+      maxReviewRounds: 1,
+      reviewEscalationPolicy: {
+        participantRoles: ["lead"],
+        fallbackQueue: "review-recovery",
+        timeoutAt: null,
+        policyRevision: "rev-continuation",
+        participants: { lead: { type: "agent", agentId: ctoAgentId, projectId: null, casteKey: null } },
+      },
+    })!;
+    const base = { ...reviewPendingIssue({}, { changesRequestedCount: 0 }), id: "continuation-issue" };
+    const first = applyIssueExecutionPolicyTransition({
+      issue: base,
+      policy: escalationPolicy,
+      requestedStatus: "in_progress",
+      requestedAssigneePatch: {},
+      actor: { agentId: qaAgentId },
+      commentBody: "Round limit reached",
+    });
+    const firstState = first.patch.executionState as Record<string, unknown>;
+    const replay = applyIssueExecutionPolicyTransition({
+      issue: { ...base, status: "in_review", assigneeAgentId: ctoAgentId, executionState: firstState },
+      policy: escalationPolicy,
+      requestedStatus: "in_progress",
+      requestedAssigneePatch: {},
+      actor: { agentId: ctoAgentId },
+      commentBody: "Continuation replay",
+    });
+
+    expect(replay.patch.status).toBe("in_review");
+    expect(replay.patch.executionState).toMatchObject({
+      currentStageId: reviewStageId,
+      reviewCycleId: firstState.reviewCycleId,
+      escalationPolicyRevision: "rev-continuation",
+      escalationToParticipant: null,
+    });
+    expect(replay.recoveryInteraction?.idempotencyKey).toBe(
+      `review-recovery:continuation-issue:${firstState.reviewCycleId}:rev-continuation`,
+    );
+  });
+
   it("rejects a non-escalated actor advancing the agent-held stage", () => {
     expect(() =>
       applyIssueExecutionPolicyTransition({
