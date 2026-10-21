@@ -230,6 +230,7 @@ describe("myrmidon env coverage guard (code vs docs)", () => {
     "MYRMIDON_MAX_RUN_STARTS_PER_MINUTE",
     "MYRMIDON_MIN_FREE_MEMORY_MB",
     "MYRMIDON_RUN_MEMORY_ESTIMATE_MB",
+    "MYRMIDON_PROCESS_ROLE",
   ]);
 
   function listNonTestTsFiles(dir: string): string[] {
