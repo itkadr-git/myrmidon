@@ -192,11 +192,20 @@ describeEmbeddedPostgres("maintenance interrupt_and_retry", () => {
     const { agentId, issueId, runId } = seed;
     await waitFor(() => isReady(seed), 30_000);
 
-    const svc = maintenanceService(db, { heartbeat: maintenanceHeartbeatPort(heartbeatService(db)) });
+    // Keep enter's initial tick inside the grace window. A zero deadline lets
+    // enter race the explicit drain tick below before the child lifecycle is
+    // fully observable; advancing the injected clock makes the boundary
+    // explicit and leaves one owner for the interrupt transition.
+    let clock = Date.now();
+    const svc = maintenanceService(db, {
+      heartbeat: maintenanceHeartbeatPort(heartbeatService(db)),
+      now: () => new Date(clock),
+    });
     await svc.enter(
-      { scope: { type: "instance" }, reason: "deploy", drainTimeoutSec: 0, onTimeout: "interrupt_and_retry" },
+      { scope: { type: "instance" }, reason: "deploy", drainTimeoutSec: 1, onTimeout: "interrupt_and_retry" },
       ADMIN,
     );
+    clock += 1_000;
     await svc.tick();
 
     const interrupted = await run(runId);
