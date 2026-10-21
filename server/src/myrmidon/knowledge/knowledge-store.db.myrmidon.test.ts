@@ -317,17 +317,14 @@ describeEmbeddedPostgres("myrmidon(1.6.6 KNOWLEDGE-2.0 K-1) knowledge store over
 
   it("applies per-nest REDACT settings before create and draft persistence", async () => {
     companyId = await makeCompany();
-    const [nest] = await db
-      .insert(projects)
-      .values({ companyId, name: `nest-${randomUUID()}` })
-      .returning();
+    const nestId = companyId;
     const mod = createKnowledgeModule(db, companyId, {
-      nestId: nest!.id,
+      nestId,
       now: () => new Date("2026-10-08T00:00:00Z"),
       searchIndex: createMemorySearchIndex(),
     });
     await db.insert(nestRedactSettings).values({
-      nestId: nest!.id,
+      nestId,
       config: {
         mode: "redact",
         rules: { counterparties: true, signers: true, contracts: false, invoices: false },
