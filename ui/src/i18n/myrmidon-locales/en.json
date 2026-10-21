@@ -715,6 +715,9 @@
       "deprecated": "deprecated"
     },
     "revision": "revision {{count}}",
+    "gitDrift": "Git record drift: {{reason}}",
+    "gitDriftMissing": "missing from git",
+    "gitDriftContentMismatch": "content differs from git",
     "approver": {
       "unmanaged": "no approval needed (unmanaged)",
       "notApproved": "not approved",

@@ -197,6 +197,7 @@ import { myrmidonAgentMemoryRoutes, myrmidonAgentMemorySettingsRoutes } from "./
 import { myrmidonToolPolicyCacheRoutes } from "./myrmidon/tool-policy-cache/index.js"; // myrmidon(DB-PERF-C-P4)
 // myrmidon(1.6-SKILL-LIFE): company skill lifecycle (candidate/verified/deprecated, rollback)
 import { myrmidonSkillLifecycleRoutes } from "./myrmidon/skill-lifecycle/index.js";
+import { configuredGitSkillRecord, skillGitRecordRoutes } from "./myrmidon/skill-git-record/index.js";
 import {
   myrmidonBrowserBridgePublicRoutes,
   myrmidonBrowserBridgeRoutes,
@@ -796,6 +797,12 @@ export async function createApp(
     }),
   );
   app.use("/api", apiCompression());
+  // myrmidon(1.7 KNOWLEDGE-2.0 L-13): provider-authenticated git pushes must
+  // reach the signed ingress before normal board actor authentication.
+  app.use("/api", skillGitRecordRoutes({
+    gitRecord: configuredGitSkillRecord(),
+    secret: process.env.MYRMIDON_SKILL_GIT_WEBHOOK_SECRET,
+  }));
   app.use(httpLogger);
   // myrmidon(PROCS-1.1): one flag decides whether this app process performs its
   // own periodic work. The `api` role passes false; anything that omits the
@@ -844,6 +851,10 @@ export async function createApp(
     // which the split wiring fills in while booting.
     myrmidonProcessReadinessRoutes(db, { processSupervisor: opts.processSupervisor ?? null }),
   );
+  app.use("/api", skillGitRecordRoutes({
+    gitRecord: configuredGitSkillRecord(),
+    secret: process.env.MYRMIDON_SKILL_GIT_WEBHOOK_SECRET,
+  }));
   app.use("/api/auth", authRoutes(db));
   if (opts.betterAuthHandler) {
     app.all("/api/auth/{*authPath}", opts.betterAuthHandler);

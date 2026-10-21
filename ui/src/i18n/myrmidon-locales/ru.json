@@ -715,6 +715,9 @@
       "deprecated": "устарел"
     },
     "revision": "ревизия {{count}}",
+    "gitDrift": "Расхождение с Git: {{reason}}",
+    "gitDriftMissing": "нет в Git",
+    "gitDriftContentMismatch": "содержимое отличается от Git",
     "approver": {
       "unmanaged": "одобрение не требуется (без управления)",
       "notApproved": "не одобрен",

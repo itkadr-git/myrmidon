@@ -23,6 +23,8 @@ export interface SkillLifecycleView {
   reason: string | null;
   updatedAt: string | null;
   verifiedRevisionNumber: number | null;
+  /** A verified database snapshot is missing or differs in the configured git record. */
+  gitDrift?: "missing" | "content_mismatch" | null;
 }
 
 export interface SkillLifecycleEvent {

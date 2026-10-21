@@ -109,11 +109,16 @@ function fakeStore(seed: {
   return { store, records, events, currentVersionCalls, activities, skills, catalogueReads };
 }
 
-function serviceWith(store: SkillLifecycleStore, env: NodeJS.ProcessEnv = {}) {
+function serviceWith(
+  store: SkillLifecycleStore,
+  env: NodeJS.ProcessEnv = {},
+  gitRecord?: Parameters<typeof createSkillLifecycleService>[0]["gitRecord"],
+) {
   return createSkillLifecycleService({
     store,
     env,
     now: () => new Date("2026-10-02T10:00:00.000Z"),
+    gitRecord,
   });
 }
 
