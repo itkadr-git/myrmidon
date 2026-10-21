@@ -80,7 +80,10 @@ describe("myrmidon(1.7-GRD-MODES) GuardrailsJournal", () => {
   it("lists the journaled events with their columns", async () => {
     listEventsMock.mockResolvedValue({ events: [EVENT], count: 1, limit: 50 });
     render({});
-    await act(async () => {});
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
     const table = container.querySelector('[data-testid="guardrails-journal-table"]');
     expect(table).not.toBeNull();
     expect(table!.textContent).toContain("secret");
@@ -93,14 +96,20 @@ describe("myrmidon(1.7-GRD-MODES) GuardrailsJournal", () => {
   it("shows the empty state when no events match", async () => {
     listEventsMock.mockResolvedValue({ events: [], count: 0, limit: 50 });
     render({});
-    await act(async () => {});
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
     expect(container.querySelector('[data-testid="guardrails-journal-empty"]')).not.toBeNull();
   });
 
   it("shows the error state when the query fails", async () => {
     listEventsMock.mockRejectedValue(new Error("journal down"));
     render({});
-    await act(async () => {});
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
     expect(container.querySelector('[data-testid="guardrails-journal-error"]')).not.toBeNull();
   });
 

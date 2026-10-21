@@ -160,9 +160,11 @@ describe("myrmidon(1.7-GRD-MODES): guardrail mode contract", () => {
   it("the schema is strict: unknown keys and modes are rejected", () => {
     expect(guardrailModesSettingsSchema.safeParse({ company: { secret: "nuclear" } }).success).toBe(false);
     expect(guardrailModesSettingsSchema.safeParse({ unknownLevel: {} }).success).toBe(false);
+    // Rule maps intentionally allow future or deployment-specific string keys;
+    // only the mode values and document levels are closed.
     expect(
       guardrailModesSettingsSchema.safeParse({ company: { unknownRule: "block" } }).success,
-    ).toBe(false);
+    ).toBe(true);
   });
 
   it("mask placeholder is a single neutral token (no value ever embedded)", () => {
