@@ -110,12 +110,17 @@ vi.mock("../myrmidon/agent-instructions-revisions/service.js", () => ({
 }));
 
 // Mock the autonomy gate: the routes call decide() and map the verdict to
-// 403 codes themselves, so the mock only needs to return the verdict.
+// 403 codes themselves, so the mock only needs to return the verdict. The
+// pause/resume/wakeup routes call holdOrAssert() instead — it either answers
+// { held: true, approvalId } (approval_required, action held) or throws the
+// vendor 403 (forbidden), so the tests drive it directly.
 const mockDecide = vi.fn();
+const mockHoldOrAssert = vi.fn();
 vi.mock("../myrmidon/autonomy/gate.js", () => ({
   dbAutonomyGate: vi.fn(() => ({
     decide: mockDecide,
     assertAllowed: vi.fn(),
+    holdOrAssert: mockHoldOrAssert,
   })),
 }));
 
@@ -445,5 +450,95 @@ describe("Myrmidon Autonomy Matrix - Instructions Change Routes", () => {
       expect(mockDecide).toHaveBeenCalledWith(expect.anything(), "change_instructions");
       expect(res.status).not.toBe(403);
     });
+  });
+});
+
+describe("Myrmidon Autonomy Matrix - Pause / Resume / Wakeup holding (1.6.2)", () => {
+  const agentId = "11111111-2222-4333-8444-555555555555";
+  const holdCard = { held: true, approvalId: "card-1", verdict: "approval_required" };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockDecide.mockReset();
+    mockHoldOrAssert.mockReset();
+    agentSvcMock.getById.mockResolvedValue(testAgent);
+  });
+
+  it("POST /agents/:id/pause holds for approval_required: 202 + card, the agent is not paused", async () => {
+    mockHoldOrAssert.mockResolvedValue(holdCard);
+
+    const res = await request(agentApp()).post(`/api/agents/${agentId}/pause`);
+
+    expect(res.status).toBe(202);
+    expect(res.body).toMatchObject({ held: true, approvalId: "card-1" });
+    expect(agentSvcMock.pause).not.toHaveBeenCalled();
+    expect(mockHoldOrAssert).toHaveBeenCalledWith(
+      expect.anything(),
+      "pause_wake_agents",
+      expect.objectContaining({ route: `/agents/${agentId}/pause`, method: "POST", params: { agentId } }),
+    );
+  });
+
+  it("POST /agents/:id/resume holds for approval_required: 202 + card, the agent is not resumed", async () => {
+    mockHoldOrAssert.mockResolvedValue(holdCard);
+
+    const res = await request(agentApp()).post(`/api/agents/${agentId}/resume`);
+
+    expect(res.status).toBe(202);
+    expect(res.body).toMatchObject({ held: true, approvalId: "card-1" });
+    expect(agentSvcMock.resume).not.toHaveBeenCalled();
+    expect(mockHoldOrAssert).toHaveBeenCalledWith(
+      expect.anything(),
+      "pause_wake_agents",
+      expect.objectContaining({ route: `/agents/${agentId}/resume`, method: "POST", params: { agentId } }),
+    );
+  });
+
+  it("POST /agents/:id/wakeup holds for approval_required: 202 + card, no run is started", async () => {
+    mockHoldOrAssert.mockResolvedValue(holdCard);
+
+    const res = await request(agentApp()).post(`/api/agents/${agentId}/wakeup`).send({});
+
+    expect(res.status).toBe(202);
+    expect(res.body).toMatchObject({ held: true, approvalId: "card-1" });
+    expect(mockHoldOrAssert).toHaveBeenCalledWith(
+      expect.anything(),
+      "pause_wake_agents",
+      expect.objectContaining({ route: `/agents/${agentId}/wakeup`, method: "POST", params: { agentId } }),
+    );
+  });
+
+  it("pause: a forbidden verdict stays the vendor 403 and does not pause", async () => {
+    mockHoldOrAssert.mockRejectedValue(
+      new HttpError(403, "autonomy_forbidden", { code: "autonomy_forbidden" }),
+    );
+
+    const res = await request(agentApp()).post(`/api/agents/${agentId}/pause`);
+
+    expect(res.status).toBe(403);
+    expect(res.body).toMatchObject({ code: "autonomy_forbidden" });
+    expect(agentSvcMock.pause).not.toHaveBeenCalled();
+  });
+
+  it("pause: an allowed verdict falls through to the vendor path", async () => {
+    mockHoldOrAssert.mockResolvedValue({ held: false });
+    agentSvcMock.pause.mockResolvedValue({ ...testAgent, pausedAt: new Date() });
+
+    const res = await request(agentApp()).post(`/api/agents/${agentId}/pause`);
+
+    expect(res.status).toBe(200);
+    expect(agentSvcMock.pause).toHaveBeenCalledWith(agentId);
+    expect(mockHoldOrAssert).toHaveBeenCalledTimes(1);
+  });
+
+  it("pause: a board caller reaches the same seam (the gate is what exempts it)", async () => {
+    mockHoldOrAssert.mockResolvedValue({ held: false });
+    agentSvcMock.getById.mockResolvedValue(testAgent);
+    agentSvcMock.pause.mockResolvedValue({ ...testAgent, pausedAt: new Date() });
+
+    const res = await request(boardApp()).post(`/api/agents/${agentId}/pause`);
+
+    expect(mockHoldOrAssert).toHaveBeenCalledTimes(1);
+    expect(res.status).not.toBe(202);
   });
 });

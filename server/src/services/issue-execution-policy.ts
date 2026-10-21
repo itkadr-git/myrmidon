@@ -19,7 +19,12 @@ type AssigneeLike = {
 };
 
 type IssueLike = AssigneeLike & {
+  id?: string;
   status: string;
+  projectId?: string | null;
+  casteKey?: string | null;
+  reviewEscalationPolicy?: ReviewEscalationPolicyLike | null;
+  reviewEscalationParticipants?: Partial<Record<"lead" | "architect" | "secondary_reviewer", ReviewEscalationParticipant | null>>;
   responsibleUserId?: string | null;
   createdByUserId?: string | null;
   executionPolicy?: IssueExecutionPolicy | Record<string, unknown> | null;
@@ -31,6 +36,16 @@ type IssueLike = AssigneeLike & {
   monitorNotes?: string | null;
   monitorScheduledBy?: string | null;
 };
+
+type ReviewEscalationParticipant = IssueExecutionPolicy["reviewEscalationPolicy"] extends infer T
+  ? T extends { participants?: infer P }
+    ? NonNullable<P>[keyof NonNullable<P>] extends infer R
+      ? Exclude<R, undefined | null>
+      : never
+    : never
+  : never;
+
+type ReviewEscalationPolicyLike = NonNullable<IssueExecutionPolicy["reviewEscalationPolicy"]>;
 
 type ActorLike = {
   agentId?: string | null;
@@ -59,12 +74,24 @@ type TransitionResult = {
   patch: Record<string, unknown>;
   decision?: Pick<IssueExecutionDecision, "stageId" | "stageType" | "outcome" | "body">;
   workflowControlledAssignment?: boolean;
+  /** Recovery is materialized by each route after the policy transition. */
+  recoveryInteraction?: {
+    idempotencyKey: string;
+    queue: string;
+    title: string;
+    summary: string;
+  };
+  /**
+   * Telemetry is emitted by the route after the transaction computes an
+   * escalation, so all three PATCH/transition entry points share the metric.
+   */
+  escalationMetric?: "review_escalation_to_user_owner";
 };
 
 /**
  * Consecutive agent-initiated changes-requested rounds tolerated on one stage
- * before the pending review escalates to the responsible human. Policies can
- * override via `maxReviewRounds`; human decisions always reset the counter.
+ * before the pending review escalates to a configured technical reviewer or a
+ * recovery queue. Policies can override `maxReviewRounds`; human decisions reset the counter.
  */
 export const DEFAULT_MAX_REVIEW_ROUNDS = 3;
 
@@ -328,9 +355,8 @@ export function stripMonitorFromExecutionPolicy(policy: IssueExecutionPolicy | n
   if (!policy.monitor) return policy;
   if (policy.stages.length === 0) return null;
   return {
-    mode: policy.mode,
-    commentRequired: policy.commentRequired,
-    stages: policy.stages,
+    ...policy,
+    monitor: undefined,
   };
 }
 
@@ -402,7 +428,7 @@ export function normalizeIssueExecutionPolicy(input: unknown): IssueExecutionPol
   const reviewPreset = parsed.data.reviewPreset;
   const authorizationPolicy = parsed.data.authorizationPolicy;
 
-  if (stages.length === 0 && !monitor && !reviewPreset && !authorizationPolicy) return null;
+  if (stages.length === 0 && !monitor && !reviewPreset && !authorizationPolicy && !parsed.data.reviewEscalationPolicy) return null;
 
   return {
     mode: parsed.data.mode ?? "normal",
@@ -412,6 +438,14 @@ export function normalizeIssueExecutionPolicy(input: unknown): IssueExecutionPol
     ...(reviewPreset ? { reviewPreset } : {}),
     ...(authorizationPolicy ? { authorizationPolicy } : {}),
     ...(parsed.data.maxReviewRounds != null ? { maxReviewRounds: parsed.data.maxReviewRounds } : {}),
+    ...(parsed.data.reviewEscalationPolicy ? {
+      reviewEscalationPolicy: {
+        ...parsed.data.reviewEscalationPolicy,
+        participantRoles: ["lead", "architect", "secondary_reviewer"].filter((role) =>
+          parsed.data.reviewEscalationPolicy?.participantRoles.includes(role as "lead" | "architect" | "secondary_reviewer"),
+        ) as NonNullable<IssueExecutionPolicy["reviewEscalationPolicy"]>["participantRoles"],
+      },
+    } : {}),
   };
 }
 
@@ -445,21 +479,48 @@ function principalsEqual(a: IssueExecutionStagePrincipal | null, b: IssueExecuti
 }
 
 function resolveMaxReviewRounds(policy: IssueExecutionPolicy | null): number {
-  const configured = policy?.maxReviewRounds;
+  const configured = policy?.reviewEscalationPolicy?.maxReviewRounds ?? policy?.maxReviewRounds;
+  if (configured == null) return DEFAULT_MAX_REVIEW_ROUNDS;
   return typeof configured === "number" && configured > 0 ? configured : DEFAULT_MAX_REVIEW_ROUNDS;
 }
 
-/**
- * The human a review stage escalates to when agents exhaust their
- * changes-requested rounds. Without one the loop keeps handing back to the
- * return assignee (pre-existing behavior) rather than stalling the stage.
- */
-function reviewEscalationUserId(issue: IssueLike): string | null {
-  const responsible = issue.responsibleUserId?.trim();
-  if (responsible) return responsible;
-  const creator = issue.createdByUserId?.trim();
-  if (creator) return creator;
-  return null;
+export function resolveReviewEscalationParticipant(
+  issue: IssueLike,
+  policy: IssueExecutionPolicy | null,
+  current?: IssueExecutionStagePrincipal | null,
+  /** Already-escalated holder whose role the progression continues after. */
+  escalatedHolder?: IssueExecutionStagePrincipal | null,
+): IssueExecutionStagePrincipal | null {
+  const configured = policy?.reviewEscalationPolicy ?? issue.reviewEscalationPolicy;
+  const reviewOwnerIds = new Set([issue.responsibleUserId, issue.createdByUserId].filter((id): id is string => Boolean(id)));
+  if (
+    configured && configured.policyRevision.trim().length > 0 && configured.participantRoles.length > 0
+  ) {
+    const lookup = (role: (typeof configured.participantRoles)[number]) =>
+      issue.reviewEscalationParticipants?.[role] ?? configured.participants?.[role];
+    // Progression lead -> architect -> secondary: when the actor that just
+    // exhausted its rounds is itself an escalated reviewer, continue after its
+    // role; in every case never hand the stage back to the same actor.
+    const currentRoleIndex = escalatedHolder?.type === "agent" && escalatedHolder.agentId
+      ? configured.participantRoles.findIndex((role) => lookup(role)?.agentId === escalatedHolder.agentId)
+      : -1;
+    for (const role of configured.participantRoles.slice(currentRoleIndex + 1)) {
+      const participant = lookup(role);
+      if (!participant || participant.type !== "agent" || !participant.agentId) continue;
+      if (participant.projectId && participant.projectId !== issue.projectId) continue;
+      if (participant.casteKey && participant.casteKey !== issue.casteKey) continue;
+      if (reviewOwnerIds.has(participant.agentId)) continue;
+      if (current?.type === "agent" && current.agentId === participant.agentId) continue;
+      return { type: "agent", agentId: participant.agentId, userId: null };
+    }
+  }
+  // Preserve the legacy human hand-off when no technical escalation policy is
+  // configured. Configured policies are strict: they never fall back to the
+  // issue owner or another stage participant.
+  if (configured) return null;
+  return issue.responsibleUserId
+    ? { type: "user", userId: issue.responsibleUserId, agentId: null }
+    : null;
 }
 
 function findStageById(policy: IssueExecutionPolicy, stageId: string | null | undefined) {
@@ -579,6 +640,11 @@ function buildPendingState(input: {
   returnAssignee: IssueExecutionStagePrincipal | null;
   reviewRequest?: IssueExecutionState["reviewRequest"] | null;
   changesRequestedCount?: number;
+  reviewCycleId?: string | null;
+  escalationPolicyRevision?: string | null;
+  escalationReason?: IssueExecutionState["escalationReason"];
+  escalationFromParticipant?: IssueExecutionStagePrincipal | null;
+  escalationToParticipant?: IssueExecutionStagePrincipal | null;
 }): IssueExecutionState {
   return {
     status: PENDING_STATUS,
@@ -593,6 +659,25 @@ function buildPendingState(input: {
     lastDecisionOutcome: input.previous?.lastDecisionOutcome ?? null,
     monitor: input.previous?.monitor ?? null,
     changesRequestedCount: input.changesRequestedCount ?? input.previous?.changesRequestedCount ?? 0,
+    ...(input.reviewCycleId ? { reviewCycleId: input.reviewCycleId } : {}),
+    ...(input.escalationPolicyRevision || input.previous?.escalationPolicyRevision
+      ? { escalationPolicyRevision: input.escalationPolicyRevision ?? input.previous?.escalationPolicyRevision }
+      : {}),
+    ...(input.escalationReason !== undefined
+      ? { escalationReason: input.escalationReason }
+      : input.previous?.escalationReason !== undefined
+        ? { escalationReason: input.previous.escalationReason }
+        : {}),
+    ...(input.escalationFromParticipant !== undefined
+      ? { escalationFromParticipant: input.escalationFromParticipant }
+      : input.previous?.escalationFromParticipant !== undefined
+        ? { escalationFromParticipant: input.previous.escalationFromParticipant }
+        : {}),
+    ...(input.escalationToParticipant !== undefined
+      ? { escalationToParticipant: input.escalationToParticipant }
+      : input.previous?.escalationToParticipant !== undefined
+        ? { escalationToParticipant: input.previous.escalationToParticipant }
+        : {}),
   };
 }
 
@@ -620,6 +705,11 @@ function buildPendingStagePatch(input: {
   participant: IssueExecutionStagePrincipal;
   returnAssignee: IssueExecutionStagePrincipal | null;
   reviewRequest?: IssueExecutionState["reviewRequest"] | null;
+  reviewCycleId?: string | null;
+  escalationPolicyRevision?: string | null;
+  escalationReason?: IssueExecutionState["escalationReason"];
+  escalationFromParticipant?: IssueExecutionStagePrincipal | null;
+  escalationToParticipant?: IssueExecutionStagePrincipal | null;
   changesRequestedCount?: number;
 }) {
   input.patch.status = "in_review";
@@ -631,6 +721,11 @@ function buildPendingStagePatch(input: {
     participant: input.participant,
     returnAssignee: input.returnAssignee,
     reviewRequest: input.reviewRequest,
+    reviewCycleId: input.reviewCycleId,
+    escalationPolicyRevision: input.escalationPolicyRevision,
+    escalationReason: input.escalationReason,
+    escalationFromParticipant: input.escalationFromParticipant,
+    escalationToParticipant: input.escalationToParticipant,
     changesRequestedCount: input.changesRequestedCount,
   });
 }
@@ -716,15 +811,24 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
       throw unprocessable(`No eligible ${activeStage.type} participant is configured for this issue`);
     }
 
-    // An escalated review is deliberately held by a human who is not in the
-    // stage's configured participants. Re-selecting a configured (agent)
-    // participant would silently undo the escalation on the next unrelated
-    // PATCH, so the hold is sticky until the escalated human decides — their
-    // own decisions fall through to the participant decision branch below.
-    const escalatedHold =
+    // An escalated reviewer outside the stage roster must remain assigned for
+    // both human and agent principals until that reviewer makes the decision.
+    const hasEscalationMetadata = Boolean(
+      existingState?.reviewCycleId || existingState?.escalationPolicyRevision,
+    );
+    const escalatedAgentHold =
+      currentParticipant.type === "agent" &&
+      !stageHasParticipant(activeStage, currentParticipant) &&
+      hasEscalationMetadata &&
+      // A fresh technical reviewer starts with a zero round budget, so the
+      // hold is also sticky while the stage is assigned to the escalation target.
+      ((existingState?.changesRequestedCount ?? 0) >= resolveMaxReviewRounds(input.policy) ||
+        principalsEqual(existingState?.escalationToParticipant ?? null, currentParticipant));
+    const escalatedHumanHold =
       currentParticipant.type === "user" &&
       !stageHasParticipant(activeStage, currentParticipant) &&
       (existingState?.changesRequestedCount ?? 0) >= resolveMaxReviewRounds(input.policy);
+    const escalatedHold = escalatedAgentHold || escalatedHumanHold;
     if (escalatedHold && !principalsEqual(currentParticipant, actor)) {
       // An empty patch would not override the caller's own requested fields,
       // so a status or assignee change from a non-escalated actor must be
@@ -750,6 +854,11 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
           participant: currentParticipant,
           returnAssignee: existingState?.returnAssignee ?? null,
           reviewRequest: effectiveReviewRequest,
+          reviewCycleId: existingState?.reviewCycleId ?? null,
+          escalationPolicyRevision: existingState?.escalationPolicyRevision ?? null,
+          escalationReason: existingState?.escalationReason,
+          escalationFromParticipant: existingState?.escalationFromParticipant,
+          escalationToParticipant: existingState?.escalationToParticipant,
         });
       }
       return { patch };
@@ -868,27 +977,71 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
         const actorIsHuman = actor?.type === "user";
         const nextRounds = actorIsHuman ? 0 : (existingState.changesRequestedCount ?? 0) + 1;
         if (!actorIsHuman && nextRounds >= resolveMaxReviewRounds(input.policy)) {
-          const escalationUserId = reviewEscalationUserId(input.issue);
-          if (escalationUserId) {
-            // Rounds exhausted: keep the stage pending but hand it to the
-            // responsible human instead of bouncing back to the implementer.
-            // The recorded changes-requested decision carries the reviewer's
-            // reasoning; the human approves, requests changes (resetting the
-            // counter), or re-scopes.
+          const escalationParticipant = resolveReviewEscalationParticipant(
+            input.issue,
+            input.policy,
+            currentParticipant,
+            principalsEqual(existingState.escalationToParticipant ?? null, currentParticipant) ? currentParticipant : null,
+          );
+          if (escalationParticipant) {
+            // Keep the stage pending with the next technical reviewer. The
+            // decision records the reason for escalation and its review cycle.
             buildPendingStagePatch({
               patch,
               previous: existingState,
               policy: input.policy,
               stage: activeStage,
-              participant: { type: "user", agentId: null, userId: escalationUserId },
+              participant: escalationParticipant,
               returnAssignee: existingState.returnAssignee,
               reviewRequest: effectiveReviewRequest,
+              reviewCycleId: existingState.reviewCycleId || `${input.issue.id ?? "issue"}:${activeStage.id}:${input.policy.reviewEscalationPolicy?.policyRevision ?? "legacy"}`,
+              escalationPolicyRevision: input.policy.reviewEscalationPolicy?.policyRevision ?? null,
+              escalationReason: "review_round_limit",
+              escalationFromParticipant: currentParticipant,
+              escalationToParticipant: escalationParticipant,
+              // A technical reviewer starts with a fresh round budget, so the
+              // next exhaustion advances the progression one step further.
+              changesRequestedCount: escalationParticipant.type === "agent" ? 0 : nextRounds,
+            });
+            return {
+              patch,
+              decision,
+              workflowControlledAssignment: true,
+              ...(escalationParticipant.type === "user"
+                ? { escalationMetric: "review_escalation_to_user_owner" as const }
+                : {}),
+            };
+          }
+          if (input.policy.reviewEscalationPolicy) {
+            const reviewCycleId = existingState.reviewCycleId || `${input.issue.id ?? "issue"}:${activeStage.id}:${input.policy.reviewEscalationPolicy.policyRevision}`;
+            buildPendingStagePatch({
+              patch,
+              previous: existingState,
+              policy: input.policy,
+              stage: activeStage,
+              participant: currentParticipant,
+              returnAssignee: existingState.returnAssignee,
+              reviewRequest: effectiveReviewRequest,
+              reviewCycleId,
+              escalationPolicyRevision: input.policy.reviewEscalationPolicy.policyRevision,
+              escalationReason: "review_round_limit",
+              escalationFromParticipant: currentParticipant,
+              escalationToParticipant: null,
               changesRequestedCount: nextRounds,
             });
             return {
               patch,
               decision,
               workflowControlledAssignment: true,
+              // The recovery card is addressed to the human owner, so this
+              // branch counts toward review_escalation_to_user_owner as well.
+              escalationMetric: "review_escalation_to_user_owner" as const,
+              recoveryInteraction: {
+                idempotencyKey: `review-recovery:${input.issue.id}:${reviewCycleId}:${input.policy.reviewEscalationPolicy.policyRevision}`,
+                queue: input.policy.reviewEscalationPolicy.fallbackQueue,
+                title: "Review escalation needs recovery",
+                summary: `No eligible technical reviewer was available; recovery is owned by ${input.policy.reviewEscalationPolicy.fallbackQueue}.`,
+              },
             };
           }
         }

@@ -715,10 +715,24 @@ export interface IssueExecutionPolicy {
   authorizationPolicy?: TrustAuthorizationPolicy;
   /**
    * Maximum consecutive agent-initiated changes-requested rounds before the
-   * pending stage escalates to the responsible human. Null uses the server
-   * default. Human decisions reset the round counter.
+   * pending stage advances to a technical escalation reviewer. Null uses the
+   * server default. Human decisions reset the round counter.
    */
   maxReviewRounds?: number | null;
+  reviewEscalationPolicy?: {
+    maxReviewRounds?: number;
+    participantRoles: Array<"lead" | "architect" | "secondary_reviewer">;
+    fallbackQueue: string;
+    timeoutAt: string | null;
+    policyRevision: string;
+    participants?: Partial<Record<"lead" | "architect" | "secondary_reviewer", {
+      type: "agent" | "user";
+      agentId?: string | null;
+      userId?: string | null;
+      projectId?: string | null;
+      casteKey?: string | null;
+    } | null>>;
+  } | null;
 }
 
 export interface IssueExecutionMonitorState {
@@ -756,6 +770,11 @@ export interface IssueExecutionState {
   monitor?: IssueExecutionMonitorState | null;
   /** Consecutive agent-initiated changes-requested rounds on the current stage. */
   changesRequestedCount?: number;
+  reviewCycleId?: string | null;
+  escalationPolicyRevision?: string | null;
+  escalationReason?: "review_round_limit" | null;
+  escalationFromParticipant?: IssueExecutionStagePrincipal | null;
+  escalationToParticipant?: IssueExecutionStagePrincipal | null;
 }
 
 export interface IssueExecutionDecision {
