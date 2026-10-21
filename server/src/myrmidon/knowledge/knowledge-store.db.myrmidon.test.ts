@@ -329,9 +329,9 @@ describeEmbeddedPostgres("myrmidon(1.6.6 KNOWLEDGE-2.0 K-1) knowledge store over
       },
     });
     await mod.create({ slug: "counterparty-test", title: "Acme (test)", content: "Signed by Acme (test)" }, AGENT);
-    expect((await mod.listRevisions("counterparty-test", "counterparty-test"))[0]?.content).toBe("Signed by [COUNTERPARTY]");
+    expect((await mod.listRevisions("counterparty-test"))[0]?.content).toBe("Signed by [COUNTERPARTY]");
     await mod.draft("counterparty-test", { content: "Acme (test) renewal" }, AGENT);
-    expect((await mod.listRevisions("counterparty-test", "counterparty-test"))[1]?.content).toBe("[COUNTERPARTY] renewal");
+    expect((await mod.listRevisions("counterparty-test"))[1]?.content).toBe("[COUNTERPARTY] renewal");
   });
 
   it("the second company sees none of the first company's knowledge", async () => {
