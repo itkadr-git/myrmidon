@@ -106,6 +106,8 @@ export interface BotContainerStatus {
    */
   inspect?: unknown;
   idleStopped?: boolean;
+  /** Port the bot gateway listens on (optional, reported by remote/local drivers). */
+  gatewayPort?: number;
 }
 
 /** One template field whose live value (the container's inspect) no longer
