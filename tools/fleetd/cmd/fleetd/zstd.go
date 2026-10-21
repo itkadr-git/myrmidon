@@ -21,6 +21,9 @@ type zstdRawWriter struct {
 	closed  bool
 }
 
+// zstdWindowDescriptor encodes a 1 MB window (Window_Log 20); raw blocks are at most 128 KB.
+const zstdWindowDescriptor byte = 0x50
+
 func newZstdRawWriter(w io.Writer) *zstdRawWriter {
 	return &zstdRawWriter{
 		w:   w,
@@ -38,8 +41,10 @@ func (zw *zstdRawWriter) init() error {
 		return err
 	}
 	// Frame_Header_Descriptor: 0x00 (Single_Segment=0, FCS_Field_Size=0, Content_Checksum=0, Dict_ID=0)
-	// Window_Descriptor: 0xA0 (Window_Log = 20 -> 1MB window)
-	header := []byte{0x00, 0xa0}
+	// Window_Descriptor: Exponent (high 5 bits) and Mantissa (low 3 bits),
+	// Window_Log = 10 + Exponent. 0x50 = Exponent 10 -> Window_Log 20 -> 1 MB window.
+	// (0xA0 would be Exponent 20 -> 1 GB, which standard decoders reject.)
+	header := []byte{0x00, zstdWindowDescriptor}
 	_, err := zw.w.Write(header)
 	return err
 }

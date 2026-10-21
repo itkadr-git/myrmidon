@@ -679,6 +679,28 @@ func extractSnapshot(src io.Reader, dir string) (int, error) {
 	return http.StatusOK, nil
 }
 
+// botUID is the uid/gid the bot container runs as (BOT_CONTAINER_UID on the board).
+const botUID = 10001
+
+// lchown is replaceable in tests (they do not run as root).
+var lchown = os.Lchown
+
+// chownTree gives every entry below root (not root itself) to the bot user.
+// fleetd runs as root, so without this a restored datadir would be root-owned
+// with 0600/0700 modes and the bot could not read its sessions. The datadir root
+// stays root-owned, as the volume rules require; Lchown never follows symlinks.
+func chownTree(root string) error {
+	return filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if path == root {
+			return nil
+		}
+		return lchown(path, botUID, botUID)
+	})
+}
+
 // handleRestore unpacks into a staging directory next to the datadir and swaps
 // it in only after the archive passed verification. An existing datadir is
 // renamed aside (".replaced-<bot>-<ts>"), never merged into, so no stale file
@@ -699,6 +721,11 @@ func (s *server) handleRestore(w http.ResponseWriter, r *http.Request, botKey st
 	if status, err := extractSnapshot(newZstdRawReader(r.Body), staging); err != nil {
 		_ = os.RemoveAll(staging)
 		http.Error(w, err.Error(), status)
+		return
+	}
+	if err := chownTree(staging); err != nil {
+		_ = os.RemoveAll(staging)
+		http.Error(w, fmt.Sprintf("cannot hand the restored datadir to the bot user: %v", err), http.StatusInternalServerError)
 		return
 	}
 

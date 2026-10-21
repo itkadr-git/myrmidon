@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -448,6 +449,31 @@ func TestQuarantine(t *testing.T) {
 	}
 }
 
+// chownLog records the owner changes restore asks for; tests do not run as root,
+// so the real os.Lchown would be refused.
+var chownMu sync.Mutex
+var chownLog = map[string][2]int{}
+var chownErr error
+
+func init() {
+	lchown = func(path string, uid, gid int) error {
+		chownMu.Lock()
+		defer chownMu.Unlock()
+		if chownErr != nil {
+			return chownErr
+		}
+		chownLog[path] = [2]int{uid, gid}
+		return nil
+	}
+}
+
+func resetChownLog(err error) {
+	chownMu.Lock()
+	defer chownMu.Unlock()
+	chownLog = map[string][2]int{}
+	chownErr = err
+}
+
 // snapshotOf writes a small datadir for the bot and returns its snapshot archive.
 func snapshotOf(t *testing.T) (*server, string, []byte) {
 	t.Helper()
@@ -607,5 +633,54 @@ func TestSnapshotAbortsResponseOnWalkError(t *testing.T) {
 	routeRequest(s, http.MethodPost, "/v1/bots/"+key+"/snapshot", s.cfg.Token, "")
 	if !aborted {
 		t.Fatal("a snapshot that failed midway must abort the response, not end it as a valid archive")
+	}
+}
+
+func TestRestoreHandsDatadirToBotUser(t *testing.T) {
+	_, key, archive := snapshotOf(t)
+	resetChownLog(nil)
+	root := t.TempDir()
+	if rec := restoreInto(t, root, key, archive); rec.Code != http.StatusOK {
+		t.Fatalf("restore failed: %d %s", rec.Code, rec.Body.String())
+	}
+	chownMu.Lock()
+	defer chownMu.Unlock()
+	// staging dir is renamed to the datadir after chown, so compare by relative path.
+	rel := map[string][2]int{}
+	for p, own := range chownLog {
+		i := strings.Index(p, string(filepath.Separator)+"workspace")
+		if i < 0 {
+			t.Fatalf("unexpected chown target %s", p)
+		}
+		rel[p[i:]] = own
+	}
+	for _, want := range []string{"/workspace", "/workspace/code.txt", "/workspace/link.txt"} {
+		got, ok := rel[filepath.FromSlash(want)]
+		if !ok || got != [2]int{botUID, botUID} {
+			t.Fatalf("%s: owner %v (found %v), want %d:%d", want, got, ok, botUID, botUID)
+		}
+	}
+	for p := range chownLog {
+		if !strings.Contains(p, string(filepath.Separator)+"workspace") {
+			t.Fatalf("datadir root must stay root-owned, but chown asked for %s", p)
+		}
+	}
+}
+
+func TestRestoreFailsWhenOwnerCannotBeSet(t *testing.T) {
+	_, key, archive := snapshotOf(t)
+	resetChownLog(errors.New("operation not permitted"))
+	defer resetChownLog(nil)
+	root := t.TempDir()
+	rec := restoreInto(t, root, key, archive)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d %s", rec.Code, rec.Body.String())
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("a failed restore left %d entries in the volume root", len(entries))
 	}
 }
