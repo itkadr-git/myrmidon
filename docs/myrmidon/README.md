@@ -49,6 +49,7 @@ Myrmidon — система управления компаниями из ИИ-
 | [merge-queue.md](merge-queue.md) | Очередь слияний GitHub: кандидат проверяется поверх свежего main, роли ревьюера и стюарда (русская версия: [merge-queue.ru.md](merge-queue.ru.md)) |
 | [deploy.md](deploy.md) | Выкат, обновление и откат по отпечатку образа (русская версия: [deploy.ru.md](deploy.ru.md)) |
 | [dockergate.md](dockergate.md) | Allowlist-прокси к Docker-демону для контейнеров агентов (русская версия: [dockergate.ru.md](dockergate.ru.md)) |
+| [fleetd-vmexec.md](fleetd-vmexec.md) | Демон fleetd для удалённых площадок исполнения ботов (русская версия: [fleetd-vmexec.ru.md](fleetd-vmexec.ru.md)) |
 | [egress.md](egress.md) | Правила исходящих обращений во внешние сервисы |
 | [media-tools.md](media-tools.md) | Общие медиа- и офисные инструменты для контейнерных ботов: сервис media-mcp, хранилище и квоты, инструменты (ffmpeg, офис, OCR, `dwg_convert`), развёртывание и границы изоляции (русская версия: [media-tools.ru.md](media-tools.ru.md)) |
 | [board-key-rotation.md](board-key-rotation.md) | Runbook оператора: ротация и отзыв ключей доски / PAT по ролям (ROLE-SCOPED-TOKENS) |
@@ -80,6 +81,7 @@ Myrmidon — система управления компаниями из ИИ-
 | [guides/server-console.md](guides/server-console.md) | Раздел «Server console» в настройках компании: реестр серверов флота, одноразовый 5-минутный токен Guacamole, журнал, права владельца |
 | [guides/stack-registry.md](guides/stack-registry.md) | Реестр компонентов стека и экран «Стек» (Company → Stack): колонки, отстающие сверху, кнопки refresh/check (503 показан на месте), планирование обновления в backlog-задачу, сверка релизов и вердикт «патч закрыт» |
 | [guides/fleet-dashboard-monitoring.md](guides/fleet-dashboard-monitoring.md) | API данных дашборда флота (1.6.6 MONITORING C): настройки подключений VM/Zabbix (`env:`/`file:`-ссылки на токены), снимок флота `GET /api/myrmidon/monitoring/dashboard`, самопроверка источников |
+| [guides/remote-execution-sites.md](guides/remote-execution-sites.md) | Контракт site-agent и руководство оператора удалённых площадок исполнения ботов (русская версия: [guides/remote-execution-sites.ru.md](guides/remote-execution-sites.ru.md)) |
 | [guides/cloud-connector.md](guides/cloud-connector.md) | Облака через коннектор (1.4): аккаунт владельца, корни-папки, раздача доступа агентам, инструменты, журнал |
 | [guides/tracing-health.md](guides/tracing-health.md) | Здоровье LLM-трейсинга: карточка «LLM tracing» в настройках компании, состояния, сигнал оператору, журнал переходов |
 | [guides/tracing.md](guides/tracing.md) | LLM-трейсинг целиком: конвейер LiteLLM → OTLP → Langfuse v4 → ClickHouse `events_core`, проверка здоровья, deploy-гард 7b, пин пары образов, живой контракт-тест |
