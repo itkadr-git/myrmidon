@@ -1200,7 +1200,11 @@ export async function createApp(
     if (!endpoint || !apiKey) return null;
     return createPoolChatHttpTransport({ provider: input.provider, endpoint, apiKey });
   };
-  api.use(poolChatRoutes(db, resolvePoolChatTransport)); // myrmidon(1.6.6 POOL-CHAT): authenticated router boundary
+  // Keep provider-backed pool-chat disabled until an operator explicitly
+  // enables the deployment after recovery/settlement checks.
+  if (process.env.MYRMIDON_POOL_CHAT_ENABLED === "1") {
+    api.use(poolChatRoutes(db, resolvePoolChatTransport)); // myrmidon(1.6.6 POOL-CHAT): authenticated router boundary
+  }
   if (opts.databaseBackupService) {
     api.use(instanceDatabaseBackupRoutes(opts.databaseBackupService));
   }
