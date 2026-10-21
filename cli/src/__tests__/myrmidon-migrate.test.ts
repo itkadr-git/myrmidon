@@ -262,6 +262,20 @@ describe("myrmidon:migrate pure guards", () => {
       expect(checkCompatibility(analysis, required, index).problems).toEqual(["target-column-requires-value:user.keyboard_shortcuts"]);
     });
 
+    it("reports a vendor-only column of an empty table as excluded-empty, as the dry-run does", () => {
+      const analysis = analysisOf(
+        [table("agents", [col("id"), col("appearance")]), table("user", [col("id"), col("surprise")])],
+        { agents: 0, user: 0 },
+      );
+      const target = new Map([["agents", table("agents", [col("id")])], ["user", table("user", [col("id")])]]);
+      const result = checkCompatibility(analysis, target, index);
+      // an unknown column of an empty table is still no problem; a known vendor-only one is reported
+      expect(result.problems).toEqual([]);
+      expect(result.skippedSourceData).toEqual([
+        { table: "agents", column: "appearance", rows: 0, vendorRelease: "v2026.1012.0", decision: "excluded-empty" },
+      ]);
+    });
+
     it("treats columns dropped in migration chain as exclusions, not missing errors", () => {
       const droppedIndex: VendorOnlyIndex = {
         tables: new Map(),

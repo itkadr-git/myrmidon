@@ -330,7 +330,8 @@ async function analyzeSource(
     const tableIntroduced = vendorIndex.tables.get(info.name);
     if (tableIntroduced !== undefined) {
       vendorOnlyCandidates.push({ kind: "table", table: info.name, rows: digest.rows, introducedIn: tableIntroduced });
-    } else if (digest.rows > 0) {
+    } else {
+      // Empty tables count too: their vendor-only columns are reported as excluded-empty, in dry-run and in the real run alike.
       for (const col of info.columns) {
         const introduced = vendorIndex.columns.get(`${info.name}.${col.name}`);
         if (introduced === undefined) continue;
@@ -540,16 +541,16 @@ export function checkCompatibility(
     }
     const tgtCols = new Map(tgt.columns.map((c) => [c.name, c]));
     for (const col of info.columns) {
-      if (tgtCols.has(col.name) || rows === 0) continue;
+      if (tgtCols.has(col.name)) continue;
       const key = `${name}.${col.name}`;
       if (index.droppedColumns?.has(key)) {
-        exclusions.push({ kind: "column", name: key, reason: "dropped in migration chain; not needed in target" });
+        if (rows > 0) exclusions.push({ kind: "column", name: key, reason: "dropped in migration chain; not needed in target" });
         continue;
       }
       const introducedIn = index.columns.get(key);
       if (introducedIn !== undefined) {
         vendorOnly.push({ kind: "column", table: name, column: col.name, rows: candidateRows.get(key) ?? rows, introducedIn });
-      } else problems.push(`column-missing-in-target:${key}`);
+      } else if (rows > 0) problems.push(`column-missing-in-target:${key}`);
     }
     if (rows > 0) {
       const srcCols = new Set(info.columns.map((c) => c.name));
