@@ -351,7 +351,11 @@ export async function reconcileBot(input: ReconcileBotInput): Promise<ReconcileO
       return { kind: "applied_restart" };
     }
 
-    if (status.state === "running" && resourceDrift) {
+    // Live update only when nothing else needs the gateway down: a restart-class
+    // profile change must still restart (the marker would otherwise be recorded
+    // as applied and the change lost), and so must an unhealthy container (that
+    // state is not "running" and falls through to the paused branch below).
+    if (status.state === "running" && resourceDrift && changeClass !== "restart") {
       if (driver.updateResources) await driver.updateResources(spec);
       else await driver.recreate(spec);
       if (changeClass !== "none") await driver.writeProfile(botKey, profile);
@@ -384,10 +388,15 @@ export async function reconcileBot(input: ReconcileBotInput): Promise<ReconcileO
         : `bot container profile update (${botKey})`;
     const result = await withAgentPaused({ agentId, botKey, reason, maintenance, drainTimeoutSec, sleep, activity }, async () => {
       if (drifted) {
-        if (resourceDrift) {
-          if (driver.updateResources) await driver.updateResources(spec);
-          else await driver.recreate(spec);
-        } else await driver.recreate(spec);
+        // Resource-only drift on a live container: update in place, then the
+        // restart below still runs (restart-class change or unhealthy state).
+        if (resourceDrift && driver.updateResources) {
+          await driver.updateResources(spec);
+          if (changeClass !== "none") await driver.writeProfile(botKey, profile);
+          await driver.restart(botKey);
+          return;
+        }
+        await driver.recreate(spec);
         if (changeClass !== "none") await driver.writeProfile(botKey, profile);
         await driver.start(botKey);
         return;
