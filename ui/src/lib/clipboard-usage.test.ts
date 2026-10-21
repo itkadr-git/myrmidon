@@ -29,6 +29,6 @@ describe("clipboard usage", () => {
       .filter((file) => DIRECT_CLIPBOARD_WRITE.test(readFileSync(file, "utf8")))
       .map(relativeSourcePath);
 
-    expect(violations).toEqual(["ui/src/pages/UsersAdmin.tsx"]);
+    expect(violations).toEqual([]);
   });
 });

@@ -65,6 +65,16 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
+function flushQuery(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+async function settleQuery(): Promise<void> {
+  await flushQuery();
+  await flushQuery();
+  await flushQuery();
+}
+
 function render(filters: Parameters<typeof GuardrailsJournal>[0]["filters"], onFiltersChange = vi.fn()) {
   root = createRoot(container);
   act(() => {
@@ -80,10 +90,7 @@ describe("myrmidon(1.7-GRD-MODES) GuardrailsJournal", () => {
   it("lists the journaled events with their columns", async () => {
     listEventsMock.mockResolvedValue({ events: [EVENT], count: 1, limit: 50 });
     render({});
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 0));
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    });
+    await act(settleQuery);
     const table = container.querySelector('[data-testid="guardrails-journal-table"]');
     expect(table).not.toBeNull();
     expect(table!.textContent).toContain("secret");
@@ -96,20 +103,14 @@ describe("myrmidon(1.7-GRD-MODES) GuardrailsJournal", () => {
   it("shows the empty state when no events match", async () => {
     listEventsMock.mockResolvedValue({ events: [], count: 0, limit: 50 });
     render({});
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 0));
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    });
+    await act(settleQuery);
     expect(container.querySelector('[data-testid="guardrails-journal-empty"]')).not.toBeNull();
   });
 
   it("shows the error state when the query fails", async () => {
     listEventsMock.mockRejectedValue(new Error("journal down"));
     render({});
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 0));
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    });
+    await act(settleQuery);
     expect(container.querySelector('[data-testid="guardrails-journal-error"]')).not.toBeNull();
   });
 
