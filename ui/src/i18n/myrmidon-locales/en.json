@@ -320,6 +320,7 @@
     "export": "Export",
     "import": "Import",
     "members": "Members",
+    "users": "Users",
     "secrets": "Secrets",
     "profile": "Profile",
     "environments": "Environments",
