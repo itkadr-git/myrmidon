@@ -505,7 +505,7 @@ func createBody(key string) string {
 func TestCreateAppliesFixedTemplateToHostConfig(t *testing.T) {
 	s, _, fake := newServerWithDocker(t)
 	s.cfg.GatewayPortStart, s.cfg.GatewayPortEnd = 18801, 18810
-	s.cfg.GatewayBindIP = "10.10.100.1"
+	s.cfg.GatewayBindIP = "192.0.2.10"
 	s.docker.gatewayBindIP = s.cfg.GatewayBindIP
 	key := s.cfg.Bots[0].BotKey
 	rec := routeRequest(s, http.MethodPost, "/v1/bots", fakeBearer(), createBody(key))
@@ -543,7 +543,7 @@ func TestCreateAppliesFixedTemplateToHostConfig(t *testing.T) {
 		t.Fatalf("gateway port not bound: %v", host["PortBindings"])
 	}
 	port := ports.([]any)[0].(map[string]any)
-	if port["HostIp"] != "10.10.100.1" {
+	if port["HostIp"] != "192.0.2.10" {
 		t.Fatalf("gateway bind IP is %v", port["HostIp"])
 	}
 	// The profile volumes are mounted, so what writeProfile writes reaches the bot.
