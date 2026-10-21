@@ -314,6 +314,19 @@ export const instanceGeneralSettingsSchema = z.object({
   budgetEnforcement: budgetEnforcementSettingsSchema.optional(),
   // myrmidon(1.7 USERS-ADMIN-UI A): absent means self-registration is off.
   authSelfSignUp: authSelfSignUpSettingsSchema.optional(),
+  // myrmidon(1.7 USERS-ADMIN-UI A): runtime-managed per-user block metadata.
+  // The admin routes update this map without restarting the server; absent
+  // means no users are blocked.
+  myrmidonAuthBlockedUsers: z
+    .record(
+      z.string(),
+      z.object({
+        blockedAt: z.string(),
+        blockedBy: z.string().nullable(),
+        reason: z.string().nullable(),
+      }),
+    )
+    .optional(),
   // myrmidon(1.7-DEBATE-ASYM-A): the asymmetric-debates engine settings,
   // changed from /api/myrmidon/debate. Stored passthrough like the
   // swarm-claim journal: the debate service re-reads and validates the shape
