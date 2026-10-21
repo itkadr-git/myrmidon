@@ -282,18 +282,14 @@ export async function revertIdleClaimAssignment(
 }
 
 /**
- * 1.6.5 (OPE-6608 §4.1, review item 2): take the owner off a task whose lease
- * lapsed with no run behind it. The old pass left the assignee in place and
- * woke a DIFFERENT agent on the task; that run was then cancelled as
- * `reassigned` before its checkout — the failure this ticket exists for.
- * Conditional on purpose: a task that moved on (status left the queue, or the
- * owner changed meanwhile) is left exactly as it is, and the conditional update
- * is the same shape the claim path uses.
+ * Supervisor rebalance: take the owner off a queue-status task after the
+ * supervisor released that exact auto-match lease. Same guards as the expiry
+ * path: the claim must be the named, released, auto-match one with the given
+ * release reason, no newer lease may be open, and no run may hold the task.
  */
-/** Clear a released claim holder during supervisor rebalance. */
 export async function clearReleasedAssignee(
   db: Db,
-  input: { companyId: string; issueId: string; agentId: string; claimId: string; now: Date },
+  input: { companyId: string; issueId: string; agentId: string; claimId: string; releaseReason: string; now: Date },
 ): Promise<boolean> {
   const cleared = await db
     .update(issues)
@@ -315,6 +311,8 @@ export async function clearReleasedAssignee(
                 eq(issueClaims.companyId, input.companyId),
                 eq(issueClaims.issueId, input.issueId),
                 eq(issueClaims.agentId, input.agentId),
+                eq(issueClaims.origin, "auto_match"),
+                eq(issueClaims.releaseReason, input.releaseReason),
                 isNotNull(issueClaims.releasedAt),
               ),
             ),
@@ -337,6 +335,15 @@ export async function clearReleasedAssignee(
   return cleared.length > 0;
 }
 
+/**
+ * 1.6.5 (OPE-6608 §4.1, review item 2): take the owner off a task whose lease
+ * lapsed with no run behind it. The old pass left the assignee in place and
+ * woke a DIFFERENT agent on the task; that run was then cancelled as
+ * `reassigned` before its checkout — the failure this ticket exists for.
+ * Conditional on purpose: a task that moved on (status left the queue, or the
+ * owner changed meanwhile) is left exactly as it is, and the conditional update
+ * is the same shape the claim path uses.
+ */
 export async function clearExpiredAssignee(
   db: Db,
   input: { companyId: string; issueId: string; agentId: string; claimId: string; now: Date },

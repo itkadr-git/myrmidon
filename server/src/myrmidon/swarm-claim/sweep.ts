@@ -290,7 +290,6 @@ export function createSwarmClaimSweeper(deps: SwarmClaimSweeperDeps): SwarmClaim
           });
           if (!released) continue;
           result.expiredReleased += 1;
-          if (!hostGateOpen) continue;
           await deps.logActivity?.({
             companyId: row.companyId,
             actorType: "system",
@@ -322,6 +321,8 @@ export function createSwarmClaimSweeper(deps: SwarmClaimSweeperDeps): SwarmClaim
               entityId: row.issueId,
               details: { reason: SWARM_CLAIM_RELEASE_REASON_LEASE_EXPIRED },
             });
+            // Without a wake enqueuer there is nobody to start the re-match for.
+            if (!deps.enqueueWakeup) continue;
             const rematched = await matchIssue(
               matcherDeps(deps, settings, now, hostGateOpen),
               row.issueId,
@@ -487,13 +488,6 @@ export async function issueHasLiveClaimOrWake(
   }
   return false;
 }
-
-/**
- * 1.6.5 (OPE-6608 §4.1, review item 2): one expired lease, re-matched. A task
- * whose lease lapsed with no live run behind it is nobody's again — the owner
- * Cleared only when this exact expired auto-match lease is the latest evidence
- * for the assignee; legacy/manual ownership is deliberately retained.
- */
 
 /**
  * True while a queued/running/scheduled_retry run of the agent covers THIS task
