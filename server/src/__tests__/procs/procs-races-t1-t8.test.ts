@@ -168,11 +168,15 @@ describeProcs("PROCS-1.9: integration stand 'two processes, one database' and ra
     const testCompanyId = randomUUID();
     const testAgentId = randomUUID();
     const runCount = 8;
+    const testResponsibleUserId = `owner-${testCompanyId}`;
 
     await db.insert(companies).values({
       id: testCompanyId,
       name: "T1 Stand Company",
       issuePrefix: `T1${testCompanyId.slice(0, 4).toUpperCase()}`,
+      // Dispatch resolves a responsible user for every run; the stand gives the
+      // company a default owner so the real claim path can proceed.
+      defaultResponsibleUserId: testResponsibleUserId,
     });
     // The agent may run every queued run at once, so the only thing that can
     // keep a run from starting twice is the claim itself.
@@ -201,6 +205,7 @@ describeProcs("PROCS-1.9: integration stand 'two processes, one database' and ra
         triggerDetail: "system",
         status: "queued",
         contextSnapshot: {},
+        responsibleUserId: testResponsibleUserId,
         createdAt: new Date(now.getTime() + i),
       });
     }
