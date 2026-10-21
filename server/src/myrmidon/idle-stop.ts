@@ -1,6 +1,7 @@
 import { BotContainerDriver, BotContainerStatus } from './bot-containers/driver.js';
-import { Db, heartbeatRuns, agents } from '@paperclipai/db';
+import { Db, heartbeatRuns, agents, botApplyJobs } from '@paperclipai/db';
 import { and, eq, inArray, desc, sql } from 'drizzle-orm';
+import { readMaintenanceDocument } from './maintenance/store.js';
 
 // Logger type - matches pino Logger interface
 export interface IdleStopLogger {
@@ -170,13 +171,18 @@ export class IdleStopService {
       return;
     }
 
+    if (await this.isApplyOrMaintenanceActive(botKey, container)) {
+      this.logger.debug(`Bot ${botKey} is undergoing apply/recreate or maintenance, skipping`);
+      return;
+    }
+
     const hasActiveRuns = await this.hasActiveRuns(botKey);
     if (hasActiveRuns) {
       this.logger.debug(`Bot ${botKey} has active runs, skipping`);
       return;
     }
 
-    const idleDurationSec = await this.getIdleDurationSec(botKey);
+    const idleDurationSec = await this.getIdleDurationSec(botKey, container);
     if (idleDurationSec < this.config.afterSec) {
       this.logger.debug(
         `Bot ${botKey} is idle but not long enough (${idleDurationSec}s/${this.config.afterSec}s)`,
@@ -186,10 +192,61 @@ export class IdleStopService {
 
     this.logger.info(`Stopping idle container for bot ${botKey} (idle for ${idleDurationSec}s)`);
     try {
-      await this.driver.stop(botKey);
+      if (!this.driver.stopIdle) throw new Error('idle-stop route is not supported by this driver');
+      await this.driver.stopIdle(botKey);
     } catch (error) {
-      this.logger.error(`Failed to stop container for bot ${botKey}:`, error);
+      this.logger.error(`Failed to stop container for bot ${botKey} [${error instanceof Error ? error.message : String(error)}]`);
     }
+  }
+
+  private async isApplyOrMaintenanceActive(botKey: string, container: BotContainerStatus): Promise<boolean> {
+    const inspect = container.inspect as
+      | { State?: { Health?: { Status?: string }; StartedAt?: string } }
+      | undefined;
+    if (inspect?.State?.Health?.Status === 'starting') {
+      return true;
+    }
+    if (inspect?.State?.StartedAt) {
+      const startedAtMs = new Date(inspect.State.StartedAt).getTime();
+      if (Number.isFinite(startedAtMs) && (Date.now() - startedAtMs) < this.config.afterSec * 1000) {
+        return true;
+      }
+    }
+
+    let agentId: string | null = null;
+    try {
+      agentId = await this.resolveAgentId(botKey);
+      if (agentId) {
+        const [activeApply] = await this.db
+          .select({ id: botApplyJobs.id })
+          .from(botApplyJobs)
+          .where(
+            and(
+              eq(botApplyJobs.botId, agentId),
+              inArray(botApplyJobs.status, ['pending', 'running']),
+            ),
+          )
+          .limit(1);
+        if (activeApply) return true;
+      }
+    } catch {
+      // In tests with fakeDb or if table not configured in mock
+    }
+
+    try {
+      const doc = await readMaintenanceDocument(this.db);
+      const isMaintenance = doc.windows.some(
+        (w) =>
+          (w.state === 'entering' || w.state === 'on' || w.state === 'leaving') &&
+          (w.scope.type === 'instance' ||
+            (w.scope.type === 'agent' && (w.scope.id === botKey || (agentId && w.scope.id === agentId)))),
+      );
+      if (isMaintenance) return true;
+    } catch {
+      // ignore
+    }
+
+    return false;
   }
 
   /**
@@ -228,7 +285,7 @@ export class IdleStopService {
    * Gets the idle duration in seconds for a bot.
    * Idle = time since the last heartbeat run finished (or started, if none finished).
    */
-  private async getIdleDurationSec(botKey: string): Promise<number> {
+  private async getIdleDurationSec(botKey: string, container?: BotContainerStatus): Promise<number> {
     try {
       const agentId = await this.resolveAgentId(botKey);
       if (!agentId) {
@@ -258,7 +315,19 @@ export class IdleStopService {
         return 0;
       }
 
-      const idleMs = Date.now() - new Date(lastActivity).getTime();
+      let idleMs = Date.now() - new Date(lastActivity).getTime();
+      const inspect = container?.inspect as
+        | { State?: { StartedAt?: string } }
+        | undefined;
+      if (inspect?.State?.StartedAt) {
+        const startedAtMs = new Date(inspect.State.StartedAt).getTime();
+        if (Number.isFinite(startedAtMs)) {
+          const uptimeMs = Date.now() - startedAtMs;
+          if (uptimeMs >= 0 && uptimeMs < idleMs) {
+            idleMs = uptimeMs;
+          }
+        }
+      }
       return Math.floor(idleMs / 1000);
     } catch (error) {
       this.logger.error(`Error getting idle duration for bot ${botKey}:`, error);

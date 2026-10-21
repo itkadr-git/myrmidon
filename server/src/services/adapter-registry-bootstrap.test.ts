@@ -10,22 +10,25 @@ describe("parseAdapterRegistryEnv", () => {
     expect(parseAdapterRegistryEnv({})).toBeNull();
   });
 
-  it("parses inline PAPERCLIP_ADAPTERS JSON", () => {
-    const r = parseAdapterRegistryEnv({ PAPERCLIP_ADAPTERS: ENTRY });
-    expect(r).toHaveLength(1);
-    expect(r?.[0].adapterType).toBe("opencode_local");
-    expect(r?.[0].enabled).toBe(true);
+  it("parses MYRMIDON adapter env and gives it precedence over legacy values", () => {
+    const result = parseAdapterRegistryEnv({ MYRMIDON_ADAPTERS: ENTRY, PAPERCLIP_ADAPTERS: "bad" });
+    expect(result).toHaveLength(1);
+    expect(result?.[0].adapterType).toBe("opencode_local");
+  });
+
+  it("supports the legacy adapter env alias", () => {
+    expect(parseAdapterRegistryEnv({ PAPERCLIP_ADAPTERS: ENTRY })).toHaveLength(1);
   });
 
   it("throws on malformed JSON (fail loud)", () => {
-    expect(() => parseAdapterRegistryEnv({ PAPERCLIP_ADAPTERS: "{not json" })).toThrow(
-      /PAPERCLIP_ADAPTERS/,
+    expect(() => parseAdapterRegistryEnv({ MYRMIDON_ADAPTERS: "{not json" })).toThrow(
+      /MYRMIDON_ADAPTERS/,
     );
   });
 
   it("throws on schema-invalid content (fail loud)", () => {
     expect(() =>
-      parseAdapterRegistryEnv({ PAPERCLIP_ADAPTERS: JSON.stringify([{ enabled: true }]) }),
-    ).toThrow(/PAPERCLIP_ADAPTERS/);
+      parseAdapterRegistryEnv({ MYRMIDON_ADAPTERS: JSON.stringify([{ enabled: true }]) }),
+    ).toThrow(/MYRMIDON_ADAPTERS/);
   });
 });

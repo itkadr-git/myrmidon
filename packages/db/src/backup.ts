@@ -1,9 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
-import path from "node:path";
 import { formatDatabaseBackupResult, runDatabaseBackup } from "./backup-lib.js";
 import {
-  expandHomePrefix,
-  resolveDefaultBackupDir,
+  resolveDatabaseBackupDir,
   resolvePaperclipConfigPathForInstance,
 } from "@paperclipai/shared/home-paths";
 
@@ -52,13 +50,6 @@ function resolveConnectionString(config: PartialConfig | null): string {
   return `postgres://paperclip:paperclip@127.0.0.1:${port}/paperclip`;
 }
 
-function resolveBackupDir(config: PartialConfig | null): string {
-  const raw = config?.database?.backup?.dir;
-  if (typeof raw === "string" && raw.trim().length > 0) {
-    return path.resolve(expandHomePrefix(raw.trim()));
-  }
-  return resolveDefaultBackupDir();
-}
 
 function resolveRetentionDays(config: PartialConfig | null): number {
   return asPositiveInt(config?.database?.backup?.retentionDays) ?? 7;
@@ -68,7 +59,7 @@ async function main() {
   const configPath = resolvePaperclipConfigPathForInstance();
   const config = readConfig(configPath);
   const connectionString = resolveConnectionString(config);
-  const backupDir = resolveBackupDir(config);
+  const backupDir = resolveDatabaseBackupDir({ config });
   const retentionDays = resolveRetentionDays(config);
 
   console.log(`Config path: ${configPath}`);

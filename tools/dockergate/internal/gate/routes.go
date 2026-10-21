@@ -444,6 +444,14 @@ func (rs *reqState) requireNextCreated(ctx context.Context, key string) *deny.Er
 
 // a10: stop, only inside a recreate.
 func (rs *reqState) a10(ctx context.Context, st *runtime, rt *route.Route, bs *botState) *deny.Error {
+	return rs.stopMain(ctx, rt, bs, false)
+}
+
+func (rs *reqState) a17(ctx context.Context, st *runtime, rt *route.Route, bs *botState) *deny.Error {
+	return rs.stopMain(ctx, rt, bs, true)
+}
+
+func (rs *reqState) stopMain(ctx context.Context, rt *route.Route, bs *botState, idle bool) *deny.Error {
 	_, stop, _ := rs.timeouts()
 	unlock, derr := rs.g.lockBot(ctx, bs)
 	if derr != nil {
@@ -458,13 +466,36 @@ func (rs *reqState) a10(ctx context.Context, st *runtime, rt *route.Route, bs *b
 	if ct == nil {
 		return rs.notFound()
 	}
-	if derr := rs.requireNextCreated(ctx, rt.BotKey); derr != nil {
-		return derr
+	if idle {
+		if ct.Config.Labels["myrmidon.bot"] != rt.BotKey {
+			return deny.New(deny.ForeignContainer)
+		}
+		if ct.State.Health != nil && ct.State.Health.Status != nil && *ct.State.Health.Status == "starting" {
+			return deny.New(deny.IdleStopDenied).WithDetail("container_starting")
+		}
+		if next, inspectErr := rs.inspectOurs(ctx, rt.BotKey, route.SuffixNext); inspectErr != nil {
+			return inspectErr
+		} else if next != nil {
+			return statePrecondition("recreate_active")
+		}
+		if active, inspectErr := rs.inspectOurs(ctx, rt.BotKey, route.SuffixHelper); inspectErr != nil {
+			return inspectErr
+		} else if active != nil && active.Status() == "running" {
+			return deny.New(deny.IdleStopDenied).WithDetail("active_helper")
+		}
+	} else {
+		if derr := rs.requireNextCreated(ctx, rt.BotKey); derr != nil {
+			return derr
+		}
 	}
 	if derr := rs.g.allow(bs, rateStop); derr != nil {
 		return derr
 	}
-	ans, derr := rs.call(ctx, upstream.Request{Method: "POST", Target: containerPath(ct.ID, "/stop?t=30")},
+	target := "/stop?t=30"
+	if idle {
+		target += "&myrmidon-idle=true"
+	}
+	ans, derr := rs.call(ctx, upstream.Request{Method: "POST", Target: containerPath(ct.ID, target)},
 		stop, maxErrBody, deny.ResponseTooLarge)
 	if derr != nil {
 		return derr
