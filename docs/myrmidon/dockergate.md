@@ -85,7 +85,7 @@ Extra read-only bot mounts (shared directories) are described in
 | A9 | `DELETE .../myrmidon-bot-<K>[.next\|.helper]?force=true&v=true` | delete |
 | A10 | `POST .../myrmidon-bot-<K>/stop?t=30` | stop (only inside a recreate) |
 | A11 | `POST .../myrmidon-bot-<K>/restart?t=30` | restart (rate-limited) |
-| A18 | `POST .../myrmidon-bot-<K>/update` | update memory, memory-swap and pids without restart |
+| A18 | `POST .../myrmidon-bot-<K>/update` | update memory, memory-swap and pids without restart; the body is exactly `Memory`, `MemorySwap`, `PidsLimit` (integers, any other key is `json_unknown_key`), `MemorySwap` is from `Memory` to twice `Memory`, and the daemon gets a body that the gate rewrote from the checked numbers |
 | A12 | `POST .../myrmidon-bot-<K>.next/rename?name=myrmidon-bot-<K>` | finish the recreate |
 | A13 | `GET .../myrmidon-bot-<K>/archive?path=<clone-hygiene report>` | read the bot's clone-hygiene report (one fixed file, like A3) |
 
