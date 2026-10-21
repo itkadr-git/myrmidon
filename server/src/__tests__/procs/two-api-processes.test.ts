@@ -271,15 +271,27 @@ describeProcs("two api processes on one test database (PROCS-T1.5 skeleton)", ()
     // writes its own registry row (with the port it bound) before it reports
     // readiness, so a replica that did not bind the shared port or did not come
     // up cannot appear here. Rows of earlier fixtures are excluded by boot id.
-    const sharedRegistry = await readBoardProcesses(processes[0]!);
-    const replicaRows = sharedRegistry.processes.filter(
-      (row) => row.role === "api" && row.status === "live" && !previousBootIds.has(row.bootId),
-    );
-    expect(replicaRows.map((row) => row.apiPort)).toEqual(
+    let replicaRows: typeof beforeSharedPort.processes = [];
+    let lastRegistryError = "no registry read attempted";
+    const registryDeadline = Date.now() + 30_000;
+    while (Date.now() < registryDeadline) {
+      try {
+        const sharedRegistry = await readBoardProcesses(processes[0]!);
+        replicaRows = sharedRegistry.processes.filter(
+          (row) => row.role === "api" && row.status === "live" && !previousBootIds.has(row.bootId),
+        );
+        if (replicaRows.length === replicaCount) break;
+        lastRegistryError = `found ${replicaRows.length}/${replicaCount} new live replicas`;
+      } catch (error) {
+        lastRegistryError = error instanceof Error ? error.message : String(error);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    expect(replicaRows.map((row) => row.apiPort), lastRegistryError).toEqual(
       Array.from({ length: replicaCount }, () => sharedPort),
     );
     const replicaBootIds = new Set(replicaRows.map((row) => row.bootId));
-    expect(replicaBootIds.size).toBe(replicaCount);
+    expect(replicaBootIds.size, lastRegistryError).toBe(replicaCount);
 
     // Every request to the shared port is served by one of the registered
     // replicas (which one is the kernel's business and is not asserted).

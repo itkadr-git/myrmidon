@@ -447,6 +447,13 @@ describeProcs("drain and failover e2e: supervisor in-process, two api children (
     // a hair — tolerate at most one, and only inside the drain window.
     const loadPromise = runHeartbeatLoad({ rps: 10, durationMs: 6_000 });
     await new Promise((resolve) => setTimeout(resolve, 1_000)); // load flowing
+    // Wait for the supervisor's async startup transition to finish closing its
+    // own reuse-port listener before draining a child, keeping the survivor's
+    // health probe from racing that listener handoff.
+    await waitFor(
+      () => supervisor!.state() === "split" ? true : `supervisor state is ${supervisor!.state()}`,
+      { timeoutMs: SPLIT_READY_TIMEOUT_MS, label: "supervisor public-listener handoff" },
+    );
     await supervisor!.apply(splitSettings(1));
     const load = await loadPromise;
 
