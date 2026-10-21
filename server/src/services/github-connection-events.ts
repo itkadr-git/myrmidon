@@ -256,7 +256,7 @@ export function githubConnectionEventService(
 
   async function applyCiCompletionEvent(companyId: string, event: LeasedEvent) {
     if (!options.assignmentWakeup || (event.event !== "workflow_run" && event.event !== "check_suite")) return;
-    const payload = event.payload;
+    const payload = normalizeLeasedPayload(event);
     const status = stringValue(payload.status);
     const conclusion = stringValue(payload.conclusion);
     if (status && status !== "completed") return;
