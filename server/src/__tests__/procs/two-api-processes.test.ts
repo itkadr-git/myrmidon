@@ -250,6 +250,10 @@ describeProcs("two api processes on one test database (PROCS-T1.5 skeleton)", ()
     }
   }, 120_000);
   it("scenario 4: SO_REUSEPORT shares one public port across every api replica", async () => {
+    // Keep the boot ids from the first fixture so stale live rows from earlier
+    // runs cannot be mistaken for the replicas created by this scenario.
+    const beforeSharedPort = await readBoardProcesses(processes[0]!);
+    const previousBootIds = new Set(beforeSharedPort.processes.map((row) => row.bootId));
     await stopApiProcesses(processes);
     processes = [];
 
@@ -270,11 +274,14 @@ describeProcs("two api processes on one test database (PROCS-T1.5 skeleton)", ()
     // handle is not guaranteed to reach that handle's own process. Establish
     // the expected replica set from the shared registry instead of assuming
     // deterministic kernel routing for the first two requests.
-    // The harness-spawned PID is not the production process PID: the tsx
-    // loader starts the entry point in a child. Use each process's own registry
-    // identity to exclude stale rows from the shared database.
+    // The shared endpoint can route both requests to one replica. Identify the
+    // newly started replicas from the shared registry instead of using endpoint
+    // affinity or the harness PID as an identity signal.
+    const sharedRegistry = await readBoardProcesses(processes[0]!);
     const expectedBootIds = new Set(
-      await Promise.all(processes.map(async (handle) => (await readBoardProcesses(handle)).selfBootId)),
+      sharedRegistry.processes
+        .filter((row) => row.role === "api" && row.status === "live" && !previousBootIds.has(row.bootId))
+        .map((row) => row.bootId),
     );
     expect(expectedBootIds.size).toBe(replicaCount);
 
