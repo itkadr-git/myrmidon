@@ -285,15 +285,20 @@ INSERT INTO "company_skills" ("id", "company_id", "key", "slug", "name", "descri
 ON CONFLICT ("id") DO NOTHING;
 
 -- 9. Tool Connections & Grants
+INSERT INTO "tool_applications" ("id", "company_id", "name", "type") VALUES
+  ('a7c1e5d2-0000-4000-a000-000000000001', 'c0000000-0000-4000-a000-000000000001', 'GitHub', 'custom'),
+  ('a7c1e5d2-0000-4000-a000-000000000002', 'c0000000-0000-4000-a000-000000000001', 'Cloud Storage', 'custom')
+ON CONFLICT ("id") DO NOTHING;
+
 INSERT INTO "tool_connections" (
   "id", "company_id", "application_id", "name", "uid", "transport", "connection_kind", "auth_kind", "status"
 ) VALUES
-  ('df84b152-0000-4000-a000-000000000001', 'c0000000-0000-4000-a000-000000000001', 'github-app', 'GitHub Integration', 'conn-gh-01', 'http', 'source_control', 'bearer_token', 'active'),
-  ('df84b152-0000-4000-a000-000000000002', 'c0000000-0000-4000-a000-000000000001', 's3-storage', 'Cloud Bucket', 'conn-s3-01', 's3', 'storage', 'secret_key', 'active')
+  ('df84b152-0000-4000-a000-000000000001', 'c0000000-0000-4000-a000-000000000001', 'a7c1e5d2-0000-4000-a000-000000000001', 'GitHub Integration', 'conn-gh-01', 'rest_api', 'managed', 'api_key', 'active'),
+  ('df84b152-0000-4000-a000-000000000002', 'c0000000-0000-4000-a000-000000000001', 'a7c1e5d2-0000-4000-a000-000000000002', 'Cloud Bucket', 'conn-s3-01', 'rest_api', 'managed', 'api_key', 'active')
 ON CONFLICT ("id") DO NOTHING;
 
 INSERT INTO "connection_grants" ("id", "company_id", "connection_id", "kind") VALUES
-  ('58bf8ffe-0000-4000-a000-000000000001', 'c0000000-0000-4000-a000-000000000001', 'df84b152-0000-4000-a000-000000000001', 'source_control')
+  ('58bf8ffe-0000-4000-a000-000000000001', 'c0000000-0000-4000-a000-000000000001', 'df84b152-0000-4000-a000-000000000001', 'organization')
 ON CONFLICT ("id") DO NOTHING;
 
 -- 10. Heartbeat Runs
@@ -403,7 +408,7 @@ INSERT INTO "browser_use_runs" (
   'c0000000-0000-4000-a000-000000000001',
   'a19b60d8-0000-4000-a000-000000000001',
   '7e7aa34f-0000-4000-a000-000000000001',
-  'inv-001',
+  'b3d9f0a1-0000-4000-a000-000000000001',
   'completed'
 ) ON CONFLICT ("id") DO NOTHING;
 `;
@@ -413,6 +418,10 @@ INSERT INTO "browser_use_runs" (
     // 1012.0+: mcp_oauth_clients + mcp_oauth_grants + mcp_oauth_tokens
     sql += `
 -- Vendor-only table: mcp_oauth_tokens (present in 1012.0+)
+INSERT INTO "user" ("id", "name", "email", "created_at", "updated_at") VALUES
+  ('341041ea-0000-4000-a000-000000000001', 'Synthetic User', 'synthetic.user@example.com', now(), now())
+ON CONFLICT ("id") DO NOTHING;
+
 INSERT INTO "mcp_oauth_clients" (
   "id", "name", "redirect_uris"
 ) VALUES (

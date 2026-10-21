@@ -69,15 +69,20 @@ Instructions for log analysis.')
 ON CONFLICT ("id") DO NOTHING;
 
 -- 9. Tool Connections & Grants
+INSERT INTO "tool_applications" ("id", "company_id", "name", "type") VALUES
+  ('a7c1e5d2-0000-4000-a000-000000000001', 'c0000000-0000-4000-a000-000000000001', 'GitHub', 'custom'),
+  ('a7c1e5d2-0000-4000-a000-000000000002', 'c0000000-0000-4000-a000-000000000001', 'Cloud Storage', 'custom')
+ON CONFLICT ("id") DO NOTHING;
+
 INSERT INTO "tool_connections" (
   "id", "company_id", "application_id", "name", "uid", "transport", "connection_kind", "auth_kind", "status"
 ) VALUES
-  ('df84b152-0000-4000-a000-000000000001', 'c0000000-0000-4000-a000-000000000001', 'github-app', 'GitHub Integration', 'conn-gh-01', 'http', 'source_control', 'bearer_token', 'active'),
-  ('df84b152-0000-4000-a000-000000000002', 'c0000000-0000-4000-a000-000000000001', 's3-storage', 'Cloud Bucket', 'conn-s3-01', 's3', 'storage', 'secret_key', 'active')
+  ('df84b152-0000-4000-a000-000000000001', 'c0000000-0000-4000-a000-000000000001', 'a7c1e5d2-0000-4000-a000-000000000001', 'GitHub Integration', 'conn-gh-01', 'rest_api', 'managed', 'api_key', 'active'),
+  ('df84b152-0000-4000-a000-000000000002', 'c0000000-0000-4000-a000-000000000001', 'a7c1e5d2-0000-4000-a000-000000000002', 'Cloud Bucket', 'conn-s3-01', 'rest_api', 'managed', 'api_key', 'active')
 ON CONFLICT ("id") DO NOTHING;
 
 INSERT INTO "connection_grants" ("id", "company_id", "connection_id", "kind") VALUES
-  ('58bf8ffe-0000-4000-a000-000000000001', 'c0000000-0000-4000-a000-000000000001', 'df84b152-0000-4000-a000-000000000001', 'source_control')
+  ('58bf8ffe-0000-4000-a000-000000000001', 'c0000000-0000-4000-a000-000000000001', 'df84b152-0000-4000-a000-000000000001', 'organization')
 ON CONFLICT ("id") DO NOTHING;
 
 -- 10. Heartbeat Runs
