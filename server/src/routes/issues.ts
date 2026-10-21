@@ -14213,6 +14213,9 @@ export function issueRoutes(
       let handoffRunStopped = false;
       let handoffRollbackAttempted = false;
       let handoffCommitted = false;
+      // Set inside the transaction body, but only trusted once the transaction
+      // has returned: a later throw in the body rolls the whole commit back.
+      let handoffReceiptWrittenInTx = false;
       let handoffStateRevision: number | null = null;
       let handoffRevisionInTx: number | null = null;
       let handoffLockedRow: handoffCas.HandoffLockedRow | null = null;
@@ -14818,7 +14821,7 @@ export function issueRoutes(
                   interruptedRunId: interruptedRunId ?? null,
                 },
               });
-              handoffCommitted = true;
+              handoffReceiptWrittenInTx = true;
             }
 
             if (
@@ -14984,6 +14987,7 @@ export function issueRoutes(
         await runHandoffRollbackIfNeeded();
         throw err;
       }
+      if (issue && handoffReceiptWrittenInTx) handoffCommitted = true;
       if (!issue) {
         // myrmidon(HANDOFF-CAS): a transaction that returned null rolled
         // everything back — the same rollback duty applies.
