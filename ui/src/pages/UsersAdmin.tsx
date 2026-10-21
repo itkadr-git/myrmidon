@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { copyTextToClipboard } from "@/lib/clipboard";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 
 type ManagedUser = {
@@ -85,7 +86,7 @@ export function UsersAdmin() {
         <h2 className="font-semibold">One-time password setup link</h2>
         <p className="text-sm text-muted-foreground">Copy this link now. It is shown only once and is not retained here.</p>
         <div className="flex flex-wrap items-center gap-2"><code className="min-w-0 flex-1 break-all rounded bg-muted p-2 text-xs">{oneTimeLink}</code>
-          <Button onClick={() => void navigator.clipboard?.writeText(oneTimeLink)}>Copy link</Button>
+          <Button onClick={() => void copyTextToClipboard(oneTimeLink)}>Copy link</Button>
           <Button variant="outline" onClick={() => setOneTimeLink(null)}>Dismiss</Button></div>
       </Card>}
       <div className="grid gap-6 xl:grid-cols-[minmax(18rem,0.8fr)_minmax(0,1.5fr)]">

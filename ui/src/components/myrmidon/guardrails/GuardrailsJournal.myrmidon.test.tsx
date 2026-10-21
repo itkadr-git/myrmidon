@@ -82,6 +82,7 @@ describe("myrmidon(1.7-GRD-MODES) GuardrailsJournal", () => {
     render({});
     await act(async () => {
       await new Promise((resolve) => setTimeout(resolve, 0));
+      await new Promise((resolve) => setTimeout(resolve, 0));
     });
     const table = container.querySelector('[data-testid="guardrails-journal-table"]');
     expect(table).not.toBeNull();
@@ -97,6 +98,7 @@ describe("myrmidon(1.7-GRD-MODES) GuardrailsJournal", () => {
     render({});
     await act(async () => {
       await new Promise((resolve) => setTimeout(resolve, 0));
+      await new Promise((resolve) => setTimeout(resolve, 0));
     });
     expect(container.querySelector('[data-testid="guardrails-journal-empty"]')).not.toBeNull();
   });
@@ -105,6 +107,7 @@ describe("myrmidon(1.7-GRD-MODES) GuardrailsJournal", () => {
     listEventsMock.mockRejectedValue(new Error("journal down"));
     render({});
     await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
     expect(container.querySelector('[data-testid="guardrails-journal-error"]')).not.toBeNull();
