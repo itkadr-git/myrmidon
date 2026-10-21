@@ -532,6 +532,39 @@ func (rs *reqState) a11(ctx context.Context, st *runtime, rt *route.Route, bs *b
 	return nil
 }
 
+// a18: update mutable resource limits without restarting the container.
+func (rs *reqState) a18(ctx context.Context, st *runtime, rt *route.Route, bs *botState, bot config.Bot) *deny.Error {
+	def, _, _ := rs.timeouts()
+	body, derr := rs.readBody(st.cfg.Limits.MaxJSONBody, "application/json", deny.JSONSyntax)
+	if derr != nil {
+		return derr
+	}
+	var req struct {
+		Memory     int64 `json:"Memory"`
+		MemorySwap int64 `json:"MemorySwap"`
+		PidsLimit  int64 `json:"PidsLimit"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil || req.Memory <= 0 || req.MemorySwap < req.Memory || req.PidsLimit <= 0 || req.Memory > bot.MaxMemoryMB*1024*1024 || req.PidsLimit > bot.MaxPids {
+		return deny.New(deny.JSONValue)
+	}
+	ct, derr := rs.inspectOurs(ctx, rt.BotKey, route.SuffixMain)
+	if derr != nil {
+		return derr
+	}
+	if ct == nil {
+		return rs.notFound()
+	}
+	if derr := rs.g.allow(bs, rateCreate); derr != nil {
+		return derr
+	}
+	ans, derr := rs.call(ctx, upstream.Request{Method: "POST", Target: containerPath(ct.ID, "/update"), Body: body, ContentType: jsonType}, def, maxCreateRes, deny.ResponseTooLarge)
+	if derr != nil {
+		return derr
+	}
+	rs.respond(ans)
+	return nil
+}
+
 // a12: the rename of .next to the main name, once the main container is gone.
 func (rs *reqState) a12(ctx context.Context, st *runtime, rt *route.Route, bs *botState) *deny.Error {
 	def, _, _ := rs.timeouts()

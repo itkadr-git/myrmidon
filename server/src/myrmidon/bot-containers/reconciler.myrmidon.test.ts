@@ -45,7 +45,7 @@ function fakeDriver(
   opts: {
     drift?: boolean;
     driftFields?: TemplateDriftField[];
-    fail?: Partial<Record<"create" | "recreate" | "writeProfile" | "start" | "restart", string>>;
+    fail?: Partial<Record<"create" | "recreate" | "writeProfile" | "start" | "restart" | "updateResources", string>>;
   } = {},
 ): FakeDriver {
   const calls: string[] = [];
@@ -83,6 +83,10 @@ function fakeDriver(
       calls.push("recreate");
       maybeFail("recreate");
       current = { ...current, state: "stopped" };
+    },
+    async updateResources() {
+      calls.push("updateResources");
+      maybeFail("updateResources");
     },
     async writeProfile(_botKey, compiled) {
       calls.push("writeProfile");
@@ -566,6 +570,17 @@ describe("reconcileBot", () => {
       });
     });
 
+    it("applies resource drift without recreating the running container", async () => {
+      const applied = profile();
+      const driver = fakeDriver(
+        { botKey: "agent-a", state: "running", ...hashesOf(applied) },
+        { drift: true, driftFields: [{ field: "HostConfig.Memory", expected: 1024, actual: 2048 }] },
+      );
+      const outcome = await run(driver, fakeMaintenance([0]));
+      expect(outcome).toEqual({ kind: "applied_files" });
+      expect(driver.calls).toEqual(["status", "templateDrift", "updateResources"]);
+      expect(driver.current().state).toBe("running");
+    });
     it("logs which field drifted, with both values, before it recreates anything", async () => {
       const applied = profile();
       const driver = fakeDriver(

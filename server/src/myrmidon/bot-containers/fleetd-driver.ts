@@ -236,6 +236,10 @@ export function fleetdBotContainerDriver(
       return { drifted: res.drift === true, fields: res.fields ?? [] };
     },
 
+    async updateResources(spec: BotContainerSpec): Promise<void> {
+      await callVoid({ method: "POST", path: `/bots/${encodeURIComponent(spec.botKey)}/resources`, body: { spec } });
+    },
+
     async create(spec: BotContainerSpec): Promise<void> {
       await noticeSharedPackageCache();
       await callVoid({ method: "POST", path: "/bots", body: { spec } });

@@ -65,6 +65,11 @@ export function fleetRoutingDriver(
     async templateDrift(spec: BotContainerSpec, knownStatus?: BotContainerStatus): Promise<TemplateDriftReport> {
       return driverFor(deps, agentOf(spec.botKey)).templateDrift(spec, knownStatus);
     },
+    async updateResources(spec: BotContainerSpec): Promise<void> {
+      const driver = driverFor(deps, agentOf(spec.botKey));
+      if (driver.updateResources) await driver.updateResources(spec);
+      else await driver.recreate(spec);
+    },
     async create(spec: BotContainerSpec): Promise<void> {
       await driverFor(deps, agentOf(spec.botKey)).create(spec);
     },
