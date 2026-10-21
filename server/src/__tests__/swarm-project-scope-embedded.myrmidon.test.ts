@@ -35,7 +35,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { matchAgent, matchIssue, type SwarmMatcherDeps } from "../myrmidon/swarm-claim/matcher.js";
-import { listRoleQueue } from "../myrmidon/swarm-claim/queue.js";
+import { listRoleQueue, roleQueueRows } from "../myrmidon/swarm-claim/queue.js";
 import { listAgentProjectIds } from "../myrmidon/project-membership.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -234,6 +234,19 @@ describeEmbeddedPostgres("project-scoped automatic claim", () => {
 
     expect(outsiderQueue.map((entry) => entry.issueId)).toEqual([open]);
     expect(memberQueue.map((entry) => entry.issueId).sort()).toEqual([scoped, open].sort());
+  });
+
+  it("the agentless role queue keeps projectless unassigned tasks and hides project ones", async () => {
+    const companyId = await seedCompany();
+    await seedAgent(companyId, MEMBER_ID, "member-eng");
+    const projectId = await seedProject(companyId);
+    await join(companyId, projectId, MEMBER_ID);
+    await seedTask(companyId, "TASK-SCOPED", projectId);
+    const open = await seedTask(companyId, "TASK-OPEN", null);
+
+    const rows = await roleQueueRows(db, companyId, "engineer");
+
+    expect(rows.map((row) => row.issueId)).toEqual([open]);
   });
 
   it("a manual assignment is never gated: the assigned task stays in the assignee's queue", async () => {

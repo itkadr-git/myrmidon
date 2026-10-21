@@ -143,9 +143,10 @@ export function roleQueueRows(
             // in it only for a member of that project (lead or joined), the
             // same rule scope-wiring.listAgents answers for bot containers. A
             // task assigned to an agent is a manual action and is never gated.
-            // Without an agent there is no self-serve: the unassigned part
-            // stays empty rather than leaking project tasks.
-            agentId ? projectScopedClaimGate(agentId) : sql`false`,
+            // Without an agent there is no member to judge by: the unassigned
+            // part keeps only projectless tasks (open to the company), so
+            // the agentless read never leaks a project task.
+            agentId ? projectScopedClaimGate(agentId) : isNull(issues.projectId),
           ),
         ),
         // Not blocked by an unresolved blocker (the same rule idle-pickup uses).
