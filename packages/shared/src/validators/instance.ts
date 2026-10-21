@@ -57,6 +57,8 @@ import { ownerDeliverySettingsSchema } from "../myrmidon-owner-delivery.js";
 // settings row (absent = the fix on; `{enabled: false}` = the pre-fix agent
 // behaviour).
 import { issueListAgentDefaultsSchema } from "../myrmidon-issue-list-agent-defaults.js";
+// myrmidon(1.7-GRD-MODES): guardrail mode overrides under instance general settings
+import { guardrailModesSettingsSchema } from "../myrmidon-guardrail-modes.js";
 // myrmidon(REVIEW-ROUTING): the automatic reviewer routing settings stored in the same row.
 import { reviewRoutingSettingsSchema } from "../myrmidon-review-routing.js";
 // myrmidon(REVIEW-REWORK): the review-return loop settings stored in the same row.
@@ -144,17 +146,6 @@ export const backupRetentionPolicySchema = z.object({
 // (api, worker, and anything a later part adds). Every field has a default
 // and the defaults are the single-process board: nothing changes until an
 // operator explicitly switches `mode` to `split`.
-export const boardProcessesSettingsSchema = z
-  .object({
-    mode: z.enum(["single", "split"]).default("single"),
-    apiCount: z.number().int().min(1).max(4).default(1),
-    leaderLeaseTtlSec: z.number().int().min(5).max(300).default(30),
-    liveEventsBus: z.enum(["local", "pg"]).default("local"),
-    admissionStore: z.enum(["memory", "db"]).default("memory"),
-    singletonProxy: z.boolean().default(true),
-  })
-  .passthrough();
-
 export const instanceGeneralSettingsSchema = z.object({
   censorUsernameInLogs: z.boolean().default(false),
   keyboardShortcuts: z.boolean().default(false),
@@ -265,6 +256,10 @@ export const instanceGeneralSettingsSchema = z.object({
   // changed from /api/myrmidon/owner-delivery; absent means the default
   // "via_bot" (1.6.5-OWNER-VIA-BOT: no card, the author's message instead).
   ownerDelivery: ownerDeliverySettingsSchema.optional(),
+  // myrmidon(1.7-GRD-MODES): guardrail enforcement-mode overrides per company,
+  // caste and agent, changed from /api/myrmidon/companies/:id/guardrails/settings;
+  // absent means every rule is flag-only (the 1.6.1 behavior).
+  guardrailModes: guardrailModesSettingsSchema.optional(),
   // myrmidon(REVIEW-ROUTING): automatic reviewer routing, changed from
   // /api/myrmidon/companies/:id/review-routing/settings; absent means the defaults.
   reviewRouting: reviewRoutingSettingsSchema.optional(),

@@ -1799,7 +1799,6 @@ export {
   instanceSettingsSchema,
   instanceGeneralSettingsSchema,
   patchInstanceGeneralSettingsSchema,
-  boardProcessesSettingsSchema,
   type PatchInstanceGeneralSettings,
   instanceExperimentalSettingsSchema,
   instanceExperimentalSettingsWithManagedSchema,
@@ -2921,6 +2920,8 @@ export * from "./myrmidon-issue-list-agent-defaults.js";
 // myrmidon(1.6.5-DB-RETENTION): the shared contract of the database retention
 // sweep — the settings shape, the sweep-state view and the normalizers.
 export * from "./myrmidon-data-retention.js";
+// myrmidon(1.7-GRD-MODES): guardrail enforcement-mode contract
+export * from "./myrmidon-guardrail-modes.js";
 // myrmidon(1.7-BUDGET-CONFIG-B): the shared contract of budget enforcement —
 // the global mode (signal_only / soft / hard), its storage key and resolver.
 export * from "./myrmidon-budget-enforcement.js";

@@ -4,6 +4,13 @@ import { describe, expect, it } from "vitest";
 
 const DIRECT_CLIPBOARD_WRITE = /navigator\.clipboard|document\.execCommand/;
 
+function relativeSourcePath(file: string): string {
+  const normalized = file.replaceAll("\\", "/");
+  const marker = "/ui/";
+  const index = normalized.lastIndexOf(marker);
+  return index >= 0 ? `ui/${normalized.slice(index + marker.length)}` : normalized;
+}
+
 function sourceFiles(root: URL): string[] {
   return readdirSync(root, { withFileTypes: true }).flatMap((entry) => {
     const url = new URL(entry.name + (entry.isDirectory() ? "/" : ""), root);
@@ -19,7 +26,8 @@ describe("clipboard usage", () => {
     const pluginSource = new URL("../../../packages/plugins/plugin-workspace-diff/src/ui/", import.meta.url);
     const violations = [...sourceFiles(coreSource), ...sourceFiles(pluginSource)]
       .filter((file) => !file.replaceAll("\\", "/").endsWith("/lib/clipboard.ts"))
-      .filter((file) => DIRECT_CLIPBOARD_WRITE.test(readFileSync(file, "utf8")));
+      .filter((file) => DIRECT_CLIPBOARD_WRITE.test(readFileSync(file, "utf8")))
+      .map(relativeSourcePath);
 
     expect(violations).toEqual([]);
   });

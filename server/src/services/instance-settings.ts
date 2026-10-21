@@ -65,6 +65,8 @@ import { preserveBoardProcessesGeneralKey } from "../myrmidon/board-processes/se
 import { preserveOwnerDeliveryGeneralKey } from "../myrmidon/owner-delivery/settings.js"; // myrmidon(1.6.5-OWNER-DM-FILTER)
 // myrmidon(1.6.1 VOICE-STT A1): keep the per-company STT runtime settings across vendor writes of `general`
 import { preserveSttGeneralKey } from "../myrmidon/stt/store.js";
+// myrmidon(1.7-GRD-MODES): keep the stored guardrail modes across vendor writes of `general`
+import { preserveGuardrailModesGeneralKey } from "../myrmidon/guardrails/modes-settings.js";
 // myrmidon(1.7-BUDGET-CONFIG-B): keep the stored budget enforcement mode
 // across vendor writes of `general`
 import { preserveBudgetEnforcementGeneralKey } from "../myrmidon/budget-enforcement/settings.js";
@@ -333,6 +335,8 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
       // myrmidon(F16): the stored issue-list agent-defaults toggle survives
       // every general write (it is a rollback switch, not a settings page).
       ...(parsed.data.issuesListAgentDefaults ? { issuesListAgentDefaults: parsed.data.issuesListAgentDefaults } : {}),
+      // myrmidon(1.7-GRD-MODES): the stored guardrail modes survive every general write
+      ...(parsed.data.guardrailModes ? { guardrailModes: parsed.data.guardrailModes } : {}),
       // myrmidon(1.7-BUDGET-CONFIG-B): the stored budget enforcement mode
       // survives every general write (it is edited on its own settings page).
       ...(parsed.data.budgetEnforcement ? { budgetEnforcement: parsed.data.budgetEnforcement } : {}),
@@ -750,7 +754,7 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
       // cannot deadlock on the singleton insert (the on-conflict upsert still
       // runs under our own lock); `FOR UPDATE` serializes concurrent PATCHes
       // on the row, so each one re-reads the committed state of the previous.
-      const [updated] = await db.transaction(async (tx: InstanceSettingsTransaction) => {
+      const [updatedGeneral] = await db.transaction(async (tx: InstanceSettingsTransaction) => {
         await tx
           .select({ id: instanceSettings.id })
           .from(instanceSettings)
@@ -847,7 +851,7 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
         // row lock) — mirror the previous fallback and return the read row.
         return rows.length > 0 ? rows : [current];
       });
-      return toInstanceSettings(updated);
+      return toInstanceSettings(updatedGeneral);
     },
 
     updateExperimental: async (patch: PatchInstanceExperimentalSettings): Promise<InstanceSettings> => {
