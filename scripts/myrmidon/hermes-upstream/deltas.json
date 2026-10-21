@@ -317,7 +317,8 @@
         "gateway/run.py",
         "gateway/run_startup.py",
         "gateway/run_shutdown.py",
-        "tests/hermes_state/test_deleted_wal_generation_guard.py"
+        "tests/hermes_state/test_deleted_wal_generation_guard.py",
+        "tests/gateway/test_async_writer_acquire_contract.py"
       ],
       "reason": "worker-owned async writer acquire: one awaited scan, connect and registry/cache ownership transaction. Includes full OPE-7854 lifecycle A-G implementation.",
       "dropCondition": "Upstream implements the complete OPE-7854 A-G contract: strict complete scanner verdict before every writer connect, one shared sync/async registry, cancellation-safe ownership and cache drain, async lazy profile/routing/recovery opens, and awaited gateway startup/shutdown lifecycle.",
