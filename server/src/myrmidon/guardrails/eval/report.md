@@ -10,8 +10,8 @@ Total false blocks (active rules): **0**
 | Rule | Status | Support | TP | FP | FN | False blocks | Precision | Recall |
 |---|---|---|---|---|---|---|---|---|
 | injection | active | 20 | 6 | 0 | 14 | 0 | 1.0000 | 0.3000 |
-| pii | pending-base-layer | 20 | 0 | 0 | 0 | 0 | — | — |
-| secret | pending-base-layer | 20 | 0 | 0 | 0 | 0 | — | — |
+| pii | active | 20 | 16 | 3 | 4 | 0 | 0.8421 | 0.8000 |
+| secret | active | 20 | 7 | 0 | 13 | 0 | 1.0000 | 0.3500 |
 
 ## Rule `injection` — recall by expected subtype
 
@@ -43,43 +43,47 @@ Missed cases: inj-005, inj-006, inj-007, inj-010, inj-011, inj-012, inj-013, inj
 
 | Subtype | Support | Fired | Recall |
 |---|---|---|---|
-| card-amex-test | 1 | 0 | — |
-| card-number | 3 | 0 | — |
-| card-number-compact | 1 | 0 | — |
-| card-number-dashed | 1 | 0 | — |
-| combined-email-phone | 1 | 0 | — |
-| email | 2 | 0 | — |
-| email-plus-ru | 1 | 0 | — |
-| email-ru-work | 1 | 0 | — |
-| inn-ru-10 | 2 | 0 | — |
-| inn-ru-12 | 1 | 0 | — |
-| ip-address-pii | 1 | 0 | — |
-| phone | 2 | 0 | — |
-| phone-ru-format | 1 | 0 | — |
-| snils-ru | 1 | 0 | — |
-| snils-ru-plain | 1 | 0 | — |
+| card-amex-test | 1 | 1 | 1.0000 |
+| card-number | 3 | 0 | 0.0000 |
+| card-number-compact | 1 | 1 | 1.0000 |
+| card-number-dashed | 1 | 0 | 0.0000 |
+| combined-email-phone | 1 | 1 | 1.0000 |
+| email | 2 | 2 | 1.0000 |
+| email-plus-ru | 1 | 1 | 1.0000 |
+| email-ru-work | 1 | 1 | 1.0000 |
+| inn-ru-10 | 2 | 2 | 1.0000 |
+| inn-ru-12 | 1 | 1 | 1.0000 |
+| ip-address-pii | 1 | 1 | 1.0000 |
+| phone | 2 | 2 | 1.0000 |
+| phone-ru-format | 1 | 1 | 1.0000 |
+| snils-ru | 1 | 1 | 1.0000 |
+| snils-ru-plain | 1 | 1 | 1.0000 |
+
+Missed cases: pii-006, pii-007, pii-008, pii-009
 
 ## Rule `secret` — recall by expected subtype
 
 | Subtype | Support | Fired | Recall |
 |---|---|---|---|
-| anthropic-api-key | 1 | 0 | — |
-| aws-access-key-id | 1 | 0 | — |
-| aws-secret-access-key | 1 | 0 | — |
-| aws-secret-access-key-json | 1 | 0 | — |
-| github-fine-grained-pat | 1 | 0 | — |
-| github-oauth | 1 | 0 | — |
-| github-pat-classic | 1 | 0 | — |
-| google-api-key | 1 | 0 | — |
-| jwt-token | 1 | 0 | — |
-| npm-token | 1 | 0 | — |
-| openai-api-key | 1 | 0 | — |
-| password-basic | 1 | 0 | — |
-| private-key-block | 1 | 0 | — |
-| sendgrid-api-key | 1 | 0 | — |
-| slack-app-token | 1 | 0 | — |
-| slack-bot-token | 1 | 0 | — |
-| slack-webhook-url | 1 | 0 | — |
-| ssh-public-key | 1 | 0 | — |
-| stripe-secret-key | 1 | 0 | — |
-| url-embedded-credentials | 1 | 0 | — |
+| anthropic-api-key | 1 | 1 | 1.0000 |
+| aws-access-key-id | 1 | 1 | 1.0000 |
+| aws-secret-access-key | 1 | 0 | 0.0000 |
+| aws-secret-access-key-json | 1 | 0 | 0.0000 |
+| github-fine-grained-pat | 1 | 0 | 0.0000 |
+| github-oauth | 1 | 1 | 1.0000 |
+| github-pat-classic | 1 | 1 | 1.0000 |
+| google-api-key | 1 | 0 | 0.0000 |
+| jwt-token | 1 | 1 | 1.0000 |
+| npm-token | 1 | 0 | 0.0000 |
+| openai-api-key | 1 | 1 | 1.0000 |
+| password-basic | 1 | 0 | 0.0000 |
+| private-key-block | 1 | 0 | 0.0000 |
+| sendgrid-api-key | 1 | 0 | 0.0000 |
+| slack-app-token | 1 | 0 | 0.0000 |
+| slack-bot-token | 1 | 1 | 1.0000 |
+| slack-webhook-url | 1 | 0 | 0.0000 |
+| ssh-public-key | 1 | 0 | 0.0000 |
+| stripe-secret-key | 1 | 0 | 0.0000 |
+| url-embedded-credentials | 1 | 0 | 0.0000 |
+
+Missed cases: secret-002, secret-003, secret-005, secret-008, secret-011, secret-012, secret-013, secret-014, secret-016, secret-017, secret-018, secret-019, secret-020

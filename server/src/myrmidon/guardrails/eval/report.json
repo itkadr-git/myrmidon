@@ -150,244 +150,263 @@
     {
       "rule": "pii",
       "surface": "run output",
-      "status": "pending-base-layer",
+      "status": "active",
       "support": 20,
-      "tp": 0,
-      "fp": 0,
-      "fn": 0,
+      "tp": 16,
+      "fp": 3,
+      "fn": 4,
       "falseBlocks": 0,
-      "precision": null,
-      "recall": null,
+      "precision": 0.8421,
+      "recall": 0.8,
       "subtypes": [
         {
           "subtype": "card-amex-test",
           "support": 1,
-          "fired": 0,
-          "recall": null
+          "fired": 1,
+          "recall": 1
         },
         {
           "subtype": "card-number",
           "support": 3,
           "fired": 0,
-          "recall": null
+          "recall": 0
         },
         {
           "subtype": "card-number-compact",
           "support": 1,
-          "fired": 0,
-          "recall": null
+          "fired": 1,
+          "recall": 1
         },
         {
           "subtype": "card-number-dashed",
           "support": 1,
           "fired": 0,
-          "recall": null
+          "recall": 0
         },
         {
           "subtype": "combined-email-phone",
           "support": 1,
-          "fired": 0,
-          "recall": null
+          "fired": 1,
+          "recall": 1
         },
         {
           "subtype": "email",
           "support": 2,
-          "fired": 0,
-          "recall": null
+          "fired": 2,
+          "recall": 1
         },
         {
           "subtype": "email-plus-ru",
           "support": 1,
-          "fired": 0,
-          "recall": null
+          "fired": 1,
+          "recall": 1
         },
         {
           "subtype": "email-ru-work",
           "support": 1,
-          "fired": 0,
-          "recall": null
+          "fired": 1,
+          "recall": 1
         },
         {
           "subtype": "inn-ru-10",
           "support": 2,
-          "fired": 0,
-          "recall": null
+          "fired": 2,
+          "recall": 1
         },
         {
           "subtype": "inn-ru-12",
           "support": 1,
-          "fired": 0,
-          "recall": null
+          "fired": 1,
+          "recall": 1
         },
         {
           "subtype": "ip-address-pii",
           "support": 1,
-          "fired": 0,
-          "recall": null
+          "fired": 1,
+          "recall": 1
         },
         {
           "subtype": "phone",
           "support": 2,
-          "fired": 0,
-          "recall": null
+          "fired": 2,
+          "recall": 1
         },
         {
           "subtype": "phone-ru-format",
           "support": 1,
-          "fired": 0,
-          "recall": null
+          "fired": 1,
+          "recall": 1
         },
         {
           "subtype": "snils-ru",
           "support": 1,
-          "fired": 0,
-          "recall": null
+          "fired": 1,
+          "recall": 1
         },
         {
           "subtype": "snils-ru-plain",
           "support": 1,
-          "fired": 0,
-          "recall": null
+          "fired": 1,
+          "recall": 1
         }
       ],
       "falseBlockCaseIds": [],
-      "missedCaseIds": []
+      "missedCaseIds": [
+        "pii-006",
+        "pii-007",
+        "pii-008",
+        "pii-009"
+      ]
     },
     {
       "rule": "secret",
       "surface": "run output",
-      "status": "pending-base-layer",
+      "status": "active",
       "support": 20,
-      "tp": 0,
+      "tp": 7,
       "fp": 0,
-      "fn": 0,
+      "fn": 13,
       "falseBlocks": 0,
-      "precision": null,
-      "recall": null,
+      "precision": 1,
+      "recall": 0.35,
       "subtypes": [
         {
           "subtype": "anthropic-api-key",
           "support": 1,
-          "fired": 0,
-          "recall": null
+          "fired": 1,
+          "recall": 1
         },
         {
           "subtype": "aws-access-key-id",
           "support": 1,
-          "fired": 0,
-          "recall": null
+          "fired": 1,
+          "recall": 1
         },
         {
           "subtype": "aws-secret-access-key",
           "support": 1,
           "fired": 0,
-          "recall": null
+          "recall": 0
         },
         {
           "subtype": "aws-secret-access-key-json",
           "support": 1,
           "fired": 0,
-          "recall": null
+          "recall": 0
         },
         {
           "subtype": "github-fine-grained-pat",
           "support": 1,
           "fired": 0,
-          "recall": null
+          "recall": 0
         },
         {
           "subtype": "github-oauth",
           "support": 1,
-          "fired": 0,
-          "recall": null
+          "fired": 1,
+          "recall": 1
         },
         {
           "subtype": "github-pat-classic",
           "support": 1,
-          "fired": 0,
-          "recall": null
+          "fired": 1,
+          "recall": 1
         },
         {
           "subtype": "google-api-key",
           "support": 1,
           "fired": 0,
-          "recall": null
+          "recall": 0
         },
         {
           "subtype": "jwt-token",
           "support": 1,
-          "fired": 0,
-          "recall": null
+          "fired": 1,
+          "recall": 1
         },
         {
           "subtype": "npm-token",
           "support": 1,
           "fired": 0,
-          "recall": null
+          "recall": 0
         },
         {
           "subtype": "openai-api-key",
           "support": 1,
-          "fired": 0,
-          "recall": null
+          "fired": 1,
+          "recall": 1
         },
         {
           "subtype": "password-basic",
           "support": 1,
           "fired": 0,
-          "recall": null
+          "recall": 0
         },
         {
           "subtype": "private-key-block",
           "support": 1,
           "fired": 0,
-          "recall": null
+          "recall": 0
         },
         {
           "subtype": "sendgrid-api-key",
           "support": 1,
           "fired": 0,
-          "recall": null
+          "recall": 0
         },
         {
           "subtype": "slack-app-token",
           "support": 1,
           "fired": 0,
-          "recall": null
+          "recall": 0
         },
         {
           "subtype": "slack-bot-token",
           "support": 1,
-          "fired": 0,
-          "recall": null
+          "fired": 1,
+          "recall": 1
         },
         {
           "subtype": "slack-webhook-url",
           "support": 1,
           "fired": 0,
-          "recall": null
+          "recall": 0
         },
         {
           "subtype": "ssh-public-key",
           "support": 1,
           "fired": 0,
-          "recall": null
+          "recall": 0
         },
         {
           "subtype": "stripe-secret-key",
           "support": 1,
           "fired": 0,
-          "recall": null
+          "recall": 0
         },
         {
           "subtype": "url-embedded-credentials",
           "support": 1,
           "fired": 0,
-          "recall": null
+          "recall": 0
         }
       ],
       "falseBlockCaseIds": [],
-      "missedCaseIds": []
+      "missedCaseIds": [
+        "secret-002",
+        "secret-003",
+        "secret-005",
+        "secret-008",
+        "secret-011",
+        "secret-012",
+        "secret-013",
+        "secret-014",
+        "secret-016",
+        "secret-017",
+        "secret-018",
+        "secret-019",
+        "secret-020"
+      ]
     }
   ],
   "totalFalseBlocks": 0
