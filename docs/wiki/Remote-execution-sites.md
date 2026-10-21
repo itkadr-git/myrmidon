@@ -34,7 +34,7 @@ The contract defines 13 routes:
 
 | Method | Path | Purpose |
 |---|---|---|
-| `GET` | `/v1/health` | Signed health snapshot, current epoch, capacity, active leases |
+| `GET` | `/v1/health` | Health snapshot, current epoch, capacity, active leases |
 | `GET` | `/v1/bots` | List the container statuses managed on this site |
 | `POST` | `/v1/bots` | Create a container spec (created but stopped) |
 | `GET` | `/v1/bots/{botKey}/status` | Status, state, hashes, allocated `gatewayPort` |
@@ -62,9 +62,9 @@ no longer mutate containers.
   continues, the scheduler stops allocating new batches to the site.
 - `unavailable` — 3 consecutive probe misses (90 s); the board marks the site
   draining, new runs are rejected or held.
-- `fenced` — communication severed for more than 10 minutes; the board
-  increments `siteEpoch`, which invalidates the active leases, and the
-  site-agent refuses new lease claims until the epochs sync.
+- `fenced` — communication severed for more than 10 minutes or manually fenced
+  by an operator; the board increments `siteEpoch`, which invalidates active
+  leases, and the site-agent refuses new lease claims until the epochs sync.
 - `recovering` — the site reconnects; container digests and volume integrity
   are validated, stale orphaned containers are cleaned up, then the site
   returns to `healthy`.
