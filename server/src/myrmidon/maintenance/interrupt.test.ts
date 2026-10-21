@@ -249,6 +249,9 @@ describeEmbeddedPostgres("maintenance interrupt_and_retry", () => {
     for (let pass = 0; pass < 10 && (await svc.status()).instance?.runningRuns; pass += 1) {
       await svc.tick();
     }
+    // Cancellation updates the row before the adapter child fully tears down.
+    // Wait for that shared lifecycle barrier before asserting the window state.
+    await heartbeatService(db).drainActiveRunExecutions();
     expect((await svc.status()).instance).toMatchObject({ interruptedRuns: 5, runningRuns: 0 });
 
     for (const seed of seeds) {
