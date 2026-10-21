@@ -192,6 +192,7 @@ import {
 } from "./tool-content-guards.js";
 import { extendApprovedExecutionWaitDeadline } from "./approved-execution-wait.js";
 import { readProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
+import { browserConsoleMcpPauseForEndpoint } from "../myrmidon/browser-console/mcp-guard.js"; // myrmidon(BROWSER-CONSOLE-B)
 
 const DEFAULT_SESSION_TTL_MS = 15 * 60 * 1000;
 const MAX_SESSION_TTL_MS = 60 * 60 * 1000;
@@ -5982,6 +5983,16 @@ export function createToolGatewayService(
     let endpoint =
       composioSession?.url ??
       (await resolvedRemoteEndpoint(session, connection, grant));
+    // Pause live-browser MCP calls while an owner screen session is open.
+    const browserPause = await browserConsoleMcpPauseForEndpoint(endpoint);
+    if (browserPause) {
+      throw new ToolGatewayHttpError(
+        423,
+        browserPause.message,
+        "browser_console_mcp_paused",
+        { browserId: browserPause.browserId },
+      );
+    }
     // Method-defined headers are trusted catalog configuration. Treat them as
     // managed headers so callers cannot override the scope that was reviewed
     // during tools/list. Credentials remain authoritative on collisions.
