@@ -336,8 +336,8 @@ describeProcs("two api processes on one test database (PROCS-T1.5 skeleton)", ()
     }
 
     expect(seenBootIds).toEqual(expectedBootIds);
-    const registry = await readBoardProcesses(processes[0]!);
-    const liveApiRows = registry.processes.filter((row) => row.role === "api" && row.status === "live");
+    const finalRegistry = await readBoardProcesses(processes[0]!);
+    const liveApiRows = finalRegistry.processes.filter((row) => row.role === "api" && row.status === "live");
     expect(new Set(liveApiRows.map((row) => row.bootId))).toEqual(seenBootIds);
   }, 180_000);
 
