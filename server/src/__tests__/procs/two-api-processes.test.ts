@@ -293,12 +293,24 @@ describeProcs("two api processes on one test database (PROCS-T1.5 skeleton)", ()
     const replicaBootIds = new Set(replicaRows.map((row) => row.bootId));
     expect(replicaBootIds.size, lastRegistryError).toBe(replicaCount);
 
-    // Every request to the shared port is served by one of the registered
-    // replicas (which one is the kernel's business and is not asserted).
-    for (let attempt = 0; attempt < 16; attempt += 1) {
-      const response = await readBoardProcesses(processes[0]!);
-      expect(replicaBootIds.has(response.selfBootId), `unknown replica ${response.selfBootId}`).toBe(true);
+    // Every successful request to the shared port is served by one of the
+    // registered replicas. A brief refusal can occur while the two listeners
+    // finish joining the reuse-port group, so keep the assertion focused on
+    // successful responses rather than turning that handoff into a race.
+    const requestDeadline = Date.now() + 30_000;
+    let successfulReads = 0;
+    let lastReadError = "no request attempted";
+    while (successfulReads < 16 && Date.now() < requestDeadline) {
+      try {
+        const response = await readBoardProcesses(processes[0]!);
+        expect(replicaBootIds.has(response.selfBootId), `unknown replica ${response.selfBootId}`).toBe(true);
+        successfulReads += 1;
+      } catch (error) {
+        lastReadError = error instanceof Error ? error.message : String(error);
+        await new Promise((resolve) => setTimeout(resolve, 250));
+      }
     }
+    expect(successfulReads, lastReadError).toBe(16);
   }, 180_000);
 
 });

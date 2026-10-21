@@ -341,6 +341,7 @@ describe("myrmidon(1.6.6 KNOWLEDGE-2.0 K-1) module hygiene", () => {
     expect(sources).toEqual([
       "domain.ts",
       "index.ts",
+      "lint.ts",
       "seed-data.ts",
       "seed-product.ts",
       "seed.ts",
