@@ -300,6 +300,7 @@ export {
   type KnowledgeSourceKind,
   type KnowledgeSuggestionStatus,
 } from "./knowledge.js";
+export { nestRedactSettings } from "./nest_redact_settings.js";
 export { agentNests } from "./agent_nests.js";
 // myrmidon(DBC-4): datastore care — hourly snapshots and audit reports of the
 // board's own PostgreSQL (server/src/myrmidon/datastore-care/).

@@ -22,6 +22,8 @@ import {
   createPgKnowledgeSearchIndex,
   knowledgeItems,
   knowledgeLinks,
+  nestRedactSettings,
+  projects,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -53,6 +55,8 @@ describeEmbeddedPostgres("myrmidon(1.6.6 KNOWLEDGE-2.0 K-1) knowledge store over
   afterEach(async () => {
     await db.delete(activityLog);
     await db.delete(knowledgeItems);
+    await db.delete(nestRedactSettings);
+    await db.delete(projects);
     await db.delete(agents);
     await db.delete(companies);
   });
@@ -310,6 +314,36 @@ describeEmbeddedPostgres("myrmidon(1.6.6 KNOWLEDGE-2.0 K-1) knowledge store over
     expect(await mod.search("zebra")).toEqual([]); // drafts are not indexed until delivered
     await mod.publish("mars", AGENT, (await mod.listRevisions("mars"))[1]!.id);
     expect((await mod.search("zebra")).map((h) => h.slug)).toEqual(["mars"]);
+  });
+
+  it("applies per-nest REDACT settings before create and draft persistence", async () => {
+    companyId = await makeCompany();
+    const nest = await db
+      .insert(projects)
+      // Knowledge currently uses companyId as nestId, while REDACT settings
+      // reference projects.id. Give this test nest the shared ID accepted by both FKs.
+      .values({ id: companyId, companyId, name: `REDACT nest ${randomUUID()}` })
+      .returning()
+      .then((rows) => rows[0]!);
+    const nestId = nest.id;
+    const mod = createKnowledgeModule(db, companyId, {
+      nestId,
+      now: () => new Date("2026-10-08T00:00:00Z"),
+      searchIndex: createMemorySearchIndex(),
+    });
+    await db.insert(nestRedactSettings).values({
+      nestId,
+      config: {
+        mode: "redact",
+        rules: { counterparties: true, signers: true, contracts: false, invoices: false },
+        counterparties: { "Acme (test)": "[COUNTERPARTY]" },
+        signers: {}, contractNumbers: [], invoiceNumbers: [],
+      },
+    });
+    await mod.create({ slug: "counterparty-test", title: "Acme (test)", content: "Signed by Acme (test)" }, AGENT);
+    expect((await mod.listRevisions("counterparty-test"))[0]?.content).toBe("Signed by [COUNTERPARTY]");
+    await mod.draft("counterparty-test", { content: "Acme (test) renewal" }, AGENT);
+    expect((await mod.listRevisions("counterparty-test"))[1]?.content).toBe("[COUNTERPARTY] renewal");
   });
 
   it("the second company sees none of the first company's knowledge", async () => {
