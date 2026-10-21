@@ -32,7 +32,7 @@ import {
   principalPermissionGrants,
   activityLog,
   companySecrets,
-} from "@paperclipai/db";
+} from "@myrmidonai/db";
 import type { Thread } from "chat";
 import {
   chatChannelService,
@@ -55,7 +55,7 @@ import {
 } from "./errors.js";
 import { createTgNotifySweepRunner } from "./errors-sweep.js";
 import { readTelegramNotifyErrors, TELEGRAM_NOTIFY_SETTINGS_GENERAL_KEY } from "./errors-settings.js";
-import { emptyTelegramNotifyDocument } from "@paperclipai/shared";
+import { emptyTelegramNotifyDocument } from "@myrmidonai/shared";
 import { attentionService } from "../../services/attention.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();

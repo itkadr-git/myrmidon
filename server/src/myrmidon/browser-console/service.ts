@@ -15,8 +15,8 @@
 //      aimed at the browser while a session is open.
 
 import { randomUUID } from "node:crypto";
-import { parseBrowserFleet, type BrowserFleetEntry } from "@paperclipai/shared/myrmidon-browser-console";
-import type { Db } from "@paperclipai/db";
+import { parseBrowserFleet, type BrowserFleetEntry } from "@myrmidonai/shared/myrmidon-browser-console";
+import type { Db } from "@myrmidonai/db";
 import { logger } from "../../middleware/logger.js";
 import { autoCloseReason, readBrowserConsoleTimers, sessionDeadlines, type BrowserConsoleTimers } from "./timers.js";
 import type { ScreenConsoleClient, ScreenConsoleOpenResult } from "./screen-console-client.js";

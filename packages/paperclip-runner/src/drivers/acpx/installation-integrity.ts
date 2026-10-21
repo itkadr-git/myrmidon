@@ -31,7 +31,7 @@ import {
   VERIFIED_RUNTIME_EXECUTABLE_ENV,
   verifiedRuntimeExecutableHandoff,
 } from "./verified-runtime-executable.js";
-import { readProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
+import { readProductEnv } from "@myrmidonai/shared/env-alias"; // myrmidon(REBRAND-C)
 
 const MAX_PACKAGE_JSON_BYTES = 256 * 1024;
 const MAX_AGENT_COMMAND_BYTES = 16 * 1024 * 1024;

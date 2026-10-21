@@ -1,4 +1,4 @@
-# Manual smoke test — `@paperclipai/plugin-kubernetes`
+# Manual smoke test — `@myrmidonai/plugin-kubernetes`
 
 Manual sanity check that the plugin works end-to-end against a real
 paperclip-server instance and a real Kubernetes cluster (kind for local
@@ -33,7 +33,7 @@ cd /path/to/paperclip
 export PAPERCLIP_HOME=/tmp/paperclip-smoke
 export PAPERCLIP_INSTANCE_ID=smoke
 export PAPERCLIP_DEPLOYMENT_MODE=local_trusted
-pnpm --filter @paperclipai/server dev
+pnpm --filter @myrmidonai/server dev
 ```
 
 Wait for `Server listening on 127.0.0.1:3100`.

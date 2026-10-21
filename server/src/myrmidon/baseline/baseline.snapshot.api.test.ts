@@ -18,7 +18,7 @@ import { randomUUID } from "node:crypto";
 import express from "express";
 import request from "supertest";
 import { describe, expect, it, vi } from "vitest";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
 import { baselineRoutes } from "./routes.js";
 import type { BaselineMetricsResponse } from "./service.js";
 import type { BaselineWindow } from "./metrics.js";

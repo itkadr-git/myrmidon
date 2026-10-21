@@ -8,7 +8,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { ApiError } from "@/api/client";
 import { browsersApi, browsersQueryKey, formatDuration } from "./browsersApi";
-import type { BrowserConsoleStatus, BrowserScreenStatusResponse } from "@paperclipai/shared/myrmidon-browser-console";
+import type { BrowserConsoleStatus, BrowserScreenStatusResponse } from "@myrmidonai/shared/myrmidon-browser-console";
 
 const HEARTBEAT_MS = 30_000;
 

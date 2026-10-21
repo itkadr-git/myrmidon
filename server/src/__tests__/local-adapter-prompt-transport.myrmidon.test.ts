@@ -2,19 +2,19 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { execute as claudeExecute } from "@paperclipai/adapter-claude-local/server";
-import { execute as codexExecute } from "@paperclipai/adapter-codex-local/server";
-import { execute as cursorExecute } from "@paperclipai/adapter-cursor-local/server";
-import { execute as geminiExecute } from "@paperclipai/adapter-gemini-local/server";
-import { execute as grokExecute } from "@paperclipai/adapter-grok-local/server";
-import { execute as kimiExecute } from "@paperclipai/adapter-kimi-local/server";
-import { execute as opencodeExecute } from "@paperclipai/adapter-opencode-local/server";
-import { execute as piExecute } from "@paperclipai/adapter-pi-local/server";
-import { execute as ompExecute } from "@paperclipai/adapter-omp-local/server";
+import { execute as claudeExecute } from "@myrmidonai/adapter-claude-local/server";
+import { execute as codexExecute } from "@myrmidonai/adapter-codex-local/server";
+import { execute as cursorExecute } from "@myrmidonai/adapter-cursor-local/server";
+import { execute as geminiExecute } from "@myrmidonai/adapter-gemini-local/server";
+import { execute as grokExecute } from "@myrmidonai/adapter-grok-local/server";
+import { execute as kimiExecute } from "@myrmidonai/adapter-kimi-local/server";
+import { execute as opencodeExecute } from "@myrmidonai/adapter-opencode-local/server";
+import { execute as piExecute } from "@myrmidonai/adapter-pi-local/server";
+import { execute as ompExecute } from "@myrmidonai/adapter-omp-local/server";
 import {
   PROMPT_TOO_LARGE_FOR_ARGUMENT,
   resetCliFlagSupportCache,
-} from "@paperclipai/adapter-utils/myrmidon-prompt-transport";
+} from "@myrmidonai/adapter-utils/myrmidon-prompt-transport";
 
 // myrmidon(H4): every local adapter must hand a large prompt to its CLI without
 // putting it into argv (spawn E2BIG, and argv is visible in the process list).

@@ -15,7 +15,7 @@
 // no row to migrate: while the process lives the signal is fresh, and every
 // pass writes its own audit line into the activity log either way.
 
-import type { AttentionSeverity } from "@paperclipai/shared";
+import type { AttentionSeverity } from "@myrmidonai/shared";
 
 /** Stable dedup prefix: one card per company, refreshed by every pass. */
 export const PAUSE_GUARD_ATTENTION_DEDUP_PREFIX = "pause_guard";

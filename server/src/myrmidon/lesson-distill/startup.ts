@@ -8,7 +8,7 @@
 // the rest.
 
 import { logger } from "../../middleware/logger.js";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
 import { createMemoryHindsightClient } from "../agent-memory/hindsight-client.js";
 import { runLessonDistillPass, type LessonDistillPassResult } from "./service.js";
 import { resolveLessonDistillSettings, type LessonDistillSettings } from "./settings.js";

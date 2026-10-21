@@ -7,7 +7,7 @@
 // renders as "who turned this on, and when".
 
 import { describe, expect, it, vi } from "vitest";
-import { SWARM_CLAIM_SETTINGS_KEY } from "@paperclipai/shared";
+import { SWARM_CLAIM_SETTINGS_KEY } from "@myrmidonai/shared";
 import {
   SWARM_CLAIM_JOURNAL_KEY,
   SWARM_CLAIM_SETTINGS_UPDATED_ACTION,

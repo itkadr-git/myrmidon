@@ -7,7 +7,7 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { wsDiskApiResponseSchema, wsDiskReportSchema } from "@paperclipai/shared";
+import { wsDiskApiResponseSchema, wsDiskReportSchema } from "@myrmidonai/shared";
 import { i18n } from "@/i18n";
 import diskReportFixture from "../../../../docs/myrmidon/bot-disk-contract/disk-report.json";
 import dockergateDiskFixture from "../../../../docs/myrmidon/bot-disk-contract/dockergate-disk.json";

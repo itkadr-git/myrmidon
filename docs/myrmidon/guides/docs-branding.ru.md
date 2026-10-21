@@ -24,7 +24,7 @@ Myrmidon.
 перечислены в аллоулисте `scripts/myrmidon/docs-branding-guard.mjs` и живут до
 тех пор, пока эпики-владельцы не переименуют сначала код:
 
-- npm-пакеты `@paperclipai/*` и CLI `paperclipai` (`npx paperclipai …`).
+- npm-пакеты `@myrmidonai/*` и CLI `paperclipai` (`npx paperclipai …`).
 - Переменные окружения `PAPERCLIP_*`, HTTP-заголовки `X-Paperclip-*` и адреса
   репозитория вендора `github.com/paperclipai/paperclip`.
 - Внутренний путь навыков `skills/paperclip/` и имена навыков агентов вроде

@@ -1,6 +1,6 @@
 import { and, asc, eq } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
-import { toolPolicies, toolProfileBindings, toolProfiles } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
+import { toolPolicies, toolProfileBindings, toolProfiles } from "@myrmidonai/db";
 
 /**
  * Company-scoped policy snapshot row set, loaded once per tools/list request

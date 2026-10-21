@@ -45,7 +45,7 @@ import {
   type IssueCommentMetadata,
   type IssueCommentPresentation,
   type ReviewRoutingSettings,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import { logger } from "../../middleware/logger.js";
 import { prSignalSubjectId, replaceReviewRoutingSignals, type ReviewRoutingSignal } from "./attention.js";
 import {

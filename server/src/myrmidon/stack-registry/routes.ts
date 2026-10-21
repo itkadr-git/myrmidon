@@ -9,7 +9,7 @@
 // cache and answers 503 — a network outage never takes the board down.
 
 import { Router } from "express";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
 import { logger } from "../../middleware/logger.js";
 import { assertBoardOrgAccess, assertInstanceAdmin } from "../../routes/authz.js";
 import { checkStackReleases, type StackCheckOptions } from "./check.js";

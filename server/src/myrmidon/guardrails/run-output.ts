@@ -10,7 +10,7 @@
 // Off by default (MYRMIDON_GUARDRAILS_OUTPUT_ENABLED); the flag is turned on
 // at rollout. Nothing is masked and nothing is blocked in 1.6.1.
 
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
 import { recordRunOutputGuardrailEvents } from "./events.js";
 
 /** Options the heartbeat passes down; all fields optional in tests. */

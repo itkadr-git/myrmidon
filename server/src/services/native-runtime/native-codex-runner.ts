@@ -5,9 +5,9 @@ import { dirname, isAbsolute, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { and, eq } from "drizzle-orm";
 
-import type { AdapterExecutionResult } from "@paperclipai/adapter-utils";
-import type { Db } from "@paperclipai/db";
-import { agentSessionGoalActions, agentTaskSessions } from "@paperclipai/db";
+import type { AdapterExecutionResult } from "@myrmidonai/adapter-utils";
+import type { Db } from "@myrmidonai/db";
+import { agentSessionGoalActions, agentTaskSessions } from "@myrmidonai/db";
 
 import { resolvePaperclipInstanceRoot } from "../../home-paths.js";
 import { failRunnerGoalAction } from "../runner-goals.js";
@@ -16,7 +16,7 @@ import {
   type PaperclipSemanticToolDefinition,
 } from "../../vendor/paperclip-runner/index.js";
 import { runnerPrpCoordinator } from "./runner-prp-coordinator.js";
-import { readProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
+import { readProductEnv } from "@myrmidonai/shared/env-alias"; // myrmidon(REBRAND-C)
 
 const moduleDirectory = dirname(fileURLToPath(import.meta.url));
 const RUNNER_VERSION = "paperclip-runner-v1";
@@ -194,7 +194,7 @@ export function resolvePaperclipRunnerBinary(
     }
   }
   throw new Error(
-    "paperclip_runner_binary_missing: build @paperclipai/paperclip-runner or set PAPERCLIP_RUNNER_BINARY",
+    "paperclip_runner_binary_missing: build @myrmidonai/paperclip-runner or set PAPERCLIP_RUNNER_BINARY",
   );
 }
 

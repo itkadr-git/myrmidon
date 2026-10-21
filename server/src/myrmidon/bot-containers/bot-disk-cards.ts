@@ -23,7 +23,7 @@ import {
   type WsCardKey,
   type WsDiskReport,
   type WsReportCopy,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 
 /** A report older than this on a running container raises `agent-silent`. */
 export const BOT_DISK_AGENT_SILENT_MS = 30 * 60_000;

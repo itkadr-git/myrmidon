@@ -1,5 +1,5 @@
-import type { Db } from "@paperclipai/db";
-import type { ExternalObjectCanonicalUrl } from "@paperclipai/shared";
+import type { Db } from "@myrmidonai/db";
+import type { ExternalObjectCanonicalUrl } from "@myrmidonai/shared";
 import { DEFAULT_GITHUB_TOKEN_SECRET_NAMES } from "./git-credentials.js";
 import { ghFetch, gitHubApiBase } from "./github-fetch.js";
 import { secretService } from "./secrets.js";

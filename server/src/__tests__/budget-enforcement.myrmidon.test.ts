@@ -29,12 +29,12 @@ import {
   createDb,
   issueComments,
   issues,
-} from "@paperclipai/db";
+} from "@myrmidonai/db";
 import {
   DEFAULT_BUDGET_ENFORCEMENT_MODE,
   parseBudgetEnforcementMode,
   resolveBudgetEnforcement,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,

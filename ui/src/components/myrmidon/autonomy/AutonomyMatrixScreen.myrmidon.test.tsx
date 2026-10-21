@@ -11,7 +11,7 @@ import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AutonomyMatrixScreenView } from "./AutonomyMatrixScreen";
-import { resolveAutonomy, AGENT_ROLES, type AutonomyMatrix, type AutonomySnapshot as AutonomyView } from "@paperclipai/shared";
+import { resolveAutonomy, AGENT_ROLES, type AutonomyMatrix, type AutonomySnapshot as AutonomyView } from "@myrmidonai/shared";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;

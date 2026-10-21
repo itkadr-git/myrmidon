@@ -41,7 +41,7 @@ import {
   type BrowserBridgeSettingsPatch,
   type BrowserBridgeSignDecision,
   type PairingExchangeRequest,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import {
   actionEntry,
   allowlistUpdatedEntry,

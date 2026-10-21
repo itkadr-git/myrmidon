@@ -29,7 +29,7 @@ import {
   issueComments,
   issues,
   issueWorkProducts,
-} from "@paperclipai/db";
+} from "@myrmidonai/db";
 
 import { startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import { createLocalDiskStorageProvider } from "../../storage/local-disk-provider.js";

@@ -4,7 +4,7 @@
 // the pure math. The response shape is the one fixed in the BASELINE design
 // note and is additive-only from here on.
 
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
 import { eq, desc } from "drizzle-orm";
 import { badRequest } from "../../errors.js";
 import {
@@ -23,7 +23,7 @@ import {
   loadRuns,
   loadTransitions,
 } from "./queries.js";
-import { baselineMetricSnapshots } from "@paperclipai/db";
+import { baselineMetricSnapshots } from "@myrmidonai/db";
 
 export interface BaselineMetricsResponse {
   window: { from: string; to: string };

@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { agentWakeupRequests, chatActions } from "@paperclipai/db";
+import type { agentWakeupRequests, chatActions } from "@myrmidonai/db";
 import { describe, expect, it } from "vitest";
 import { createDurableChatWakeupRequest } from "./durable-chat-wakeup.js";
 import {

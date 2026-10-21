@@ -22,8 +22,8 @@
 // not configured. That is deliberate: a bot-container settings mistake must not
 // stop the whole board.
 
-import type { Db } from "@paperclipai/db";
-import { agents } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
+import { agents } from "@myrmidonai/db";
 import { eq } from "drizzle-orm";
 import { logger } from "../../middleware/logger.js";
 import { logActivity } from "../../services/activity-log.js";

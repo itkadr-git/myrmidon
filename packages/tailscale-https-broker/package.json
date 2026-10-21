@@ -1,5 +1,5 @@
 {
-  "name": "@paperclipai/tailscale-https-broker",
+  "name": "@myrmidonai/tailscale-https-broker",
   "version": "0.1.0",
   "private": true,
   "license": "MIT",

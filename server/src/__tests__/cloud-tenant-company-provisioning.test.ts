@@ -11,7 +11,7 @@ import {
   instanceUserRoles,
   issues,
   principalPermissionGrants,
-} from "@paperclipai/db";
+} from "@myrmidonai/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,

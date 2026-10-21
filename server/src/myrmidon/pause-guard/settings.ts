@@ -29,7 +29,7 @@ import {
   type PauseGuardSettings,
   type PauseGuardSettingsSource,
   type ResolvedPauseGuardSettings,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 
 export {
   DEFAULT_PAUSE_GUARD_INTERVAL_SEC,

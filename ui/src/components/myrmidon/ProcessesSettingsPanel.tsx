@@ -9,7 +9,7 @@ import type {
   ProcessesLiveEventsBus,
   ProcessesMode,
   ProcessesSettingsPatch,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";

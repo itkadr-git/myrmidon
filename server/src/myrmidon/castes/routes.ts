@@ -25,7 +25,7 @@ import {
   createCasteSchema,
   deleteCasteSchema,
   patchCasteSchema,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import type { ZodType } from "zod";
 import { badRequest } from "../../errors.js";
 import { assertBoard, assertCompanyAccess } from "../../routes/authz.js";

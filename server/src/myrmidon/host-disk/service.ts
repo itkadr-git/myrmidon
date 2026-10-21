@@ -11,7 +11,7 @@ import {
   type HostDiskSettingsPatch,
   type WsBotDiskPartitionSettings,
   type WsBotDiskPartitionSettingsPatch,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import { logger } from "../../middleware/logger.js";
 import type { LogActivityInput } from "../../services/activity-log.js";
 import type { HostDiskSweepResult } from "./state.js";

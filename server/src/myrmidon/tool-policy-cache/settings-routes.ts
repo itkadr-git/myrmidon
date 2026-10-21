@@ -20,7 +20,7 @@ import {
   TOOL_POLICY_CACHE_MIN_TTL_MS,
   type PatchToolPolicyCacheSettings,
   type ToolPolicyCacheSettings,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import { validate } from "../../middleware/validate.js";
 import { assertBoardOrgAccess, assertInstanceAdmin } from "../../routes/authz.js";
 import { readStoredToolPolicyCacheSettings } from "./settings.js";

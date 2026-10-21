@@ -8,7 +8,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { runDatabaseBackup, verifyBackupFile, BackupVerificationError } from "./backup-lib.js";
 
 
-import { backupRetentionPolicySchema } from "@paperclipai/shared/validators/instance";
+import { backupRetentionPolicySchema } from "@myrmidonai/shared/validators/instance";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,

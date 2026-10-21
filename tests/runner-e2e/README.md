@@ -50,7 +50,7 @@ runner binaries:
 ```bash
 pnpm install
 pnpm exec playwright install chromium
-pnpm --filter @paperclipai/paperclip-runner build:runner-binaries
+pnpm --filter @myrmidonai/paperclip-runner build:runner-binaries
 ```
 
 List cells without loading credentials or starting Paperclip:
@@ -147,7 +147,7 @@ GitHub discovery is simulated, scoped to a fixture-only credential; repository
 permissions and mutations remain real. Run it with:
 
 ```bash
-pnpm --filter @paperclipai/ui build
+pnpm --filter @myrmidonai/ui build
 pnpm test:e2e tests/e2e/agent-chat.spec.ts
 # Against a dedicated authenticated test instance configured per that suite:
 pnpm test:e2e:multiuser-authenticated --grep 'agent chats'

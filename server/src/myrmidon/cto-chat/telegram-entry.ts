@@ -28,9 +28,9 @@
 // contract is "plan, post the card, return a report", and the interaction id it
 // returns is all a callback needs.
 
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
 
-import type { CtoChatSource } from "@paperclipai/shared";
+import type { CtoChatSource } from "@myrmidonai/shared";
 
 import {
   generateCtoChatPlan,

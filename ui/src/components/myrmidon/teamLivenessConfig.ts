@@ -14,7 +14,7 @@
 import {
   agentTeamLivenessCardSchema,
   type AgentTeamLivenessCard,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 
 export const TEAM_LIVENESS_SWITCH_KEYS = ["autoResume", "runStall", "idlePickup"] as const;
 

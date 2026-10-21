@@ -15,7 +15,7 @@
 // "sponsor" so an untouched deployment behaves exactly as before.
 
 import { instanceSettingsService } from "../../services/instance-settings.js";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
 
 export type ChannelAccessMode = "sponsor" | "allowlist";
 

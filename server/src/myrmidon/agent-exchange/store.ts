@@ -11,8 +11,8 @@ import {
   type AgentExchangeMessageRow,
   type AgentExchangeRoomRow,
   type Db,
-} from "@paperclipai/db";
-import type { AgentExchangeMessage, AgentExchangeRoom } from "@paperclipai/shared";
+} from "@myrmidonai/db";
+import type { AgentExchangeMessage, AgentExchangeRoom } from "@myrmidonai/shared";
 import type {
   AgentExchangeStore,
   MessagePatch,

@@ -35,7 +35,7 @@ import { RoutineVariablesEditor, RoutineVariablesHint } from "../RoutineVariable
 import { RoutineTriggerCard } from "../RoutineTriggerCard";
 import { EnvironmentVariablesEditor } from "../environment-variables-editor";
 import { createDefaultNewTrigger, useRoutineDetail } from "./context";
-import type { EnvBinding, RoutineDetail as RoutineDetailType } from "@paperclipai/shared";
+import type { EnvBinding, RoutineDetail as RoutineDetailType } from "@myrmidonai/shared";
 
 const concurrencyPolicyOptions = [
   {

@@ -10,12 +10,12 @@
 // bound (resolveBotImageRolloutSettings, packages/shared).
 
 import { eq, sql } from "drizzle-orm";
-import { instanceSettings, type Db } from "@paperclipai/db";
+import { instanceSettings, type Db } from "@myrmidonai/db";
 import {
   BOT_IMAGE_ROLLOUT_SETTINGS_KEY,
   normalizeBotImageRolloutSettings,
   type BotImageRolloutSettings,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 
 export const BOT_IMAGE_ROLLOUT_GENERAL_KEY = BOT_IMAGE_ROLLOUT_SETTINGS_KEY;
 const SINGLETON_KEY = "default";

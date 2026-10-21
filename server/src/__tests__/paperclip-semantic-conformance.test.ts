@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { createDb } from "@paperclipai/db";
+import { createDb } from "@myrmidonai/db";
 import {
   CAPABILITY_HIGH_RISK_SEMANTIC_VECTORS,
   CAPABILITY_SEMANTIC_CONFORMANCE_IDS,

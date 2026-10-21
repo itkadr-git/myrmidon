@@ -8,7 +8,7 @@
 import {
   behaviorSettingRegistry,
   type ResolvedBehaviorSettings,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 
 let liveSettings: Record<string, unknown> = {};
 let liveSources: Record<string, string> = {};

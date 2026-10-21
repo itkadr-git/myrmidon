@@ -1,4 +1,4 @@
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
 export { parseObject, readNonEmptyString } from "./domain/values.js";
 import {
   createAdmissionTransactionScope as buildAdmissionTransactionScope,

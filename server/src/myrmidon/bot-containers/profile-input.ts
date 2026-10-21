@@ -14,12 +14,12 @@
 // missing key value). They name the setting or variable, never a value, so a
 // message is safe to show in the reconcile activity log.
 
-import { AGENT_DEFAULT_MAX_CONCURRENT_RUNS } from "@paperclipai/shared";
+import { AGENT_DEFAULT_MAX_CONCURRENT_RUNS } from "@myrmidonai/shared";
 // myrmidon(PARALLEL-HELPERS): card + company ceiling -> the values the compiler writes
 // into config.yaml's `delegation` section (and the toolset switch).
-import { PARALLEL_HELPERS_DEFAULT_MODEL_ENV, readParallelHelpersCard, resolveParallelHelpers, type ParallelHelpersSettings } from "@paperclipai/shared";
+import { PARALLEL_HELPERS_DEFAULT_MODEL_ENV, readParallelHelpersCard, resolveParallelHelpers, type ParallelHelpersSettings } from "@myrmidonai/shared";
 // myrmidon(BOT-LSP-DEFAULTS): the language-server mode per role/card.
-import { botLspHermesBlock, resolveBotLsp, type BotLspSettings } from "@paperclipai/shared";
+import { botLspHermesBlock, resolveBotLsp, type BotLspSettings } from "@myrmidonai/shared";
 import { BOT_BOARD_GATEWAY_SERVER_NAME } from "./board-gateway.js";
 import type {
   HermesProfileAdapterConfig,

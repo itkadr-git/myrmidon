@@ -10,7 +10,7 @@
 // is exactly this plus the sweep).
 //
 // The per-agent ceiling and the P0 order are NOT re-implemented here: they are
-// decisions of the shared contract (`@paperclipai/shared`) applied through
+// decisions of the shared contract (`@myrmidonai/shared`) applied through
 // `nextQueueTaskForAgent`, so the supervisor view and the core cannot disagree.
 //
 // The wake goes through the existing `enqueueWakeup` admission path (the same
@@ -18,7 +18,7 @@
 // this module re-deriving any of them.
 
 import { and, eq } from "drizzle-orm";
-import { agents, issues, type Db } from "@paperclipai/db";
+import { agents, issues, type Db } from "@myrmidonai/db";
 import {
   SWARM_CLAIM_RELEASED_ACTION,
   SWARM_CLAIM_RELEASE_REASON_LEASE_EXPIRED,
@@ -33,7 +33,7 @@ import {
   type SwarmClaimLease,
   type SwarmClaimSettings,
   type SwarmQueueCandidate,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import { logger } from "../../middleware/logger.js";
 import { logActivity as logActivityService } from "../../services/activity-log.js";
 import type { instanceSettingsService } from "../../services/instance-settings.js";

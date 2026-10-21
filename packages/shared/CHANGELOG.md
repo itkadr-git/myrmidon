@@ -1,4 +1,4 @@
-# @paperclipai/shared
+# @myrmidonai/shared
 
 ## 0.3.1
 

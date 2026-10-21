@@ -1,4 +1,4 @@
-import type { StatusCardRefreshPolicy } from "@paperclipai/shared";
+import type { StatusCardRefreshPolicy } from "@myrmidonai/shared";
 import { ChevronDown } from "lucide-react";
 
 import { Checkbox } from "@/components/ui/checkbox";

@@ -107,7 +107,7 @@ stories were inspected in the browser.
 Run from the worktree:
 
 ```sh
-pnpm --filter @paperclipai/ui exec storybook dev -p 6016 -c storybook/.storybook --no-open
+pnpm --filter @myrmidonai/ui exec storybook dev -p 6016 -c storybook/.storybook --no-open
 ```
 
 Open `http://localhost:6016/?path=/story/tasks-execution-controls--running-empty`.
@@ -120,8 +120,8 @@ verification belongs to the isolated browser suite below.
 ## Automated verification
 
 ```sh
-pnpm exec vitest run --project @paperclipai/ui ui/src/components/task-chat/TaskChatComposer.test.tsx ui/src/components/TaskChatThread.test.tsx ui/src/pages/IssueDetail.test.tsx ui/src/lib/wait-for-stopped-runs.test.ts
-pnpm exec vitest run --project @paperclipai/server server/src/__tests__/issue-tree-control-routes.test.ts
+pnpm exec vitest run --project @myrmidonai/ui ui/src/components/task-chat/TaskChatComposer.test.tsx ui/src/components/TaskChatThread.test.tsx ui/src/pages/IssueDetail.test.tsx ui/src/lib/wait-for-stopped-runs.test.ts
+pnpm exec vitest run --project @myrmidonai/server server/src/__tests__/issue-tree-control-routes.test.ts
 pnpm check:token-gates
 pnpm build-storybook
 pnpm -r typecheck

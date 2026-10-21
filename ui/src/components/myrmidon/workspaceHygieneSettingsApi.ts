@@ -13,7 +13,7 @@
 import type {
   WorkspaceHygieneLimitsPatch,
   WorkspaceHygieneLimitSource,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import { api } from "@/api/client";
 
 /** Mirrors server WorkspaceHygieneWorkspaceView (the server module is not importable from the UI). */

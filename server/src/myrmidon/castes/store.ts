@@ -15,8 +15,8 @@
 // the same 12 rows.
 
 import { and, asc, eq, inArray } from "drizzle-orm";
-import { BUILTIN_CASTE_SEED, BUILTIN_CASTE_SEED_DEFAULT_KEY } from "@paperclipai/shared";
-import { agentCastes, type Db } from "@paperclipai/db";
+import { BUILTIN_CASTE_SEED, BUILTIN_CASTE_SEED_DEFAULT_KEY } from "@myrmidonai/shared";
+import { agentCastes, type Db } from "@myrmidonai/db";
 import { conflict, notFound } from "../../errors.js";
 
 export type CasteRow = typeof agentCastes.$inferSelect;

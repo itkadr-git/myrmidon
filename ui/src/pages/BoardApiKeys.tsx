@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { KeyRound } from "lucide-react";
-import { BOARD_API_KEY_SCOPE_KINDS, type BoardApiKeyScopeKind } from "@paperclipai/shared";
+import { BOARD_API_KEY_SCOPE_KINDS, type BoardApiKeyScopeKind } from "@myrmidonai/shared";
 import { accessApi, type BoardApiKeyRecord, type CreatedBoardApiKey } from "@/api/access";
 import { ApiError } from "@/api/client";
 import { Button } from "@/components/ui/button";

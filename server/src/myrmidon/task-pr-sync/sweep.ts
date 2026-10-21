@@ -29,8 +29,8 @@ import {
   issueWorkProducts,
   issues,
   type Db,
-} from "@paperclipai/db";
-import type { IssueWorkProduct } from "@paperclipai/shared";
+} from "@myrmidonai/db";
+import type { IssueWorkProduct } from "@myrmidonai/shared";
 import { logger } from "../../middleware/logger.js";
 import { logActivity, publishActivity, type ActivityPublication } from "../../services/activity-log.js";
 import type { IssuePostCommitAction } from "../../services/issues.js";
@@ -54,7 +54,7 @@ import { readTaskPrSyncSettings, type TaskPrSyncSettings } from "./settings.js";
 /**
  * The service layer is loaded lazily. This module sits in the server entry
  * point's static import graph, and some vendor startup suites replace
- * `@paperclipai/db` and the service barrel with partial mocks; importing the
+ * `@myrmidonai/db` and the service barrel with partial mocks; importing the
  * issue and work-product services eagerly would pull their table reads into
  * that graph and fail those suites at import time. The modules are cached by the
  * runtime after the first pass, so the cost is one dynamic import per process.

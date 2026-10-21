@@ -8,7 +8,7 @@ import {
   normalizeAlertTrigger,
   type AlertRecoveryRecord,
   type AlertRecoverySettings,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import {
   renderAlertRecoverySection,
   selectAlertRecoveryRunbook,

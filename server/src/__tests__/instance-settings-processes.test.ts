@@ -3,8 +3,8 @@
 // key it does not list), survive an unrelated write, stay absent until someone
 // sets it, and be validated on the PATCH path.
 import { describe, expect, it } from "vitest";
-import type { Db } from "@paperclipai/db";
-import { patchInstanceGeneralSettingsSchema } from "@paperclipai/shared";
+import type { Db } from "@myrmidonai/db";
+import { patchInstanceGeneralSettingsSchema } from "@myrmidonai/shared";
 import { instanceSettingsService } from "../services/instance-settings.js";
 
 // updateGeneral reads the row through select().from().where().limit(1).for("update")

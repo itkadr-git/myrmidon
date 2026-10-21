@@ -7,14 +7,14 @@
 // revision a rollback restored (that pointer is what the delivery path reads).
 
 import { and, asc, desc, eq } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
 import {
   approvals,
   companySkillLifecycle,
   companySkillLifecycleEvents,
   companySkillVersions,
   companySkills,
-} from "@paperclipai/db";
+} from "@myrmidonai/db";
 import type {
   SkillLifecycleApprovalRef,
   SkillLifecycleEvent,

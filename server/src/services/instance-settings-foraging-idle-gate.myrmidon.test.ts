@@ -9,7 +9,7 @@
 // sequence of saves the way the settings page does and assert what the row
 // holds after each one.
 import { describe, expect, it } from "vitest";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
 import { instanceSettingsService } from "./instance-settings.js";
 
 /**

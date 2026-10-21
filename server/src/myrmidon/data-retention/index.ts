@@ -15,12 +15,12 @@
 // quota totals use.
 
 import { desc, eq } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
 import {
   DATA_RETENTION_WAITING_FOR_BACKUP_ACTION,
   DATA_RETENTION_SWEEP_THROTTLED_ACTION,
   type DataRetentionSettings,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import { logger } from "../../middleware/logger.js";
 import { instanceSettingsService, logActivity } from "../../services/index.js";
 import {
@@ -98,7 +98,7 @@ function createRuntime(db: Db, options: DataRetentionRuntimeOptions = {}): DataR
       // must never fail the pass — the persisted state already reports the
       // gate.
       try {
-        const { activityLog } = await import("@paperclipai/db");
+        const { activityLog } = await import("@myrmidonai/db");
         const rows = await db
           .select({ createdAt: activityLog.createdAt })
           .from(activityLog)

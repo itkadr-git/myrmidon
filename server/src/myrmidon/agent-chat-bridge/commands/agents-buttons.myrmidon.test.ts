@@ -26,8 +26,8 @@ import {
   issues,
   toolApplications,
   toolConnections,
-} from "@paperclipai/db";
-import type { SafeChatPublicationPayload } from "@paperclipai/shared";
+} from "@myrmidonai/db";
+import type { SafeChatPublicationPayload } from "@myrmidonai/shared";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,

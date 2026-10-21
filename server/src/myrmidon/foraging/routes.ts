@@ -28,8 +28,8 @@
 
 import { Router } from "express";
 import { z } from "zod";
-import type { Db } from "@paperclipai/db";
-import { patchForagingSettingsSchema, type ForagingSettingsPatch } from "@paperclipai/shared";
+import type { Db } from "@myrmidonai/db";
+import { patchForagingSettingsSchema, type ForagingSettingsPatch } from "@myrmidonai/shared";
 import { validate } from "../../middleware/validate.js";
 import {
   assertBoard,

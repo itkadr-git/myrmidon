@@ -9,7 +9,7 @@
 // Updates agent key allowlists to include enabled models.
 
 import { and, eq } from "drizzle-orm";
-import { modelProviderModels, modelProviders, type Db } from "@paperclipai/db";
+import { modelProviderModels, modelProviders, type Db } from "@myrmidonai/db";
 import { LitellmSyncPort } from "./port.js";
 
 export interface LitellmSyncServiceDeps {

@@ -16,7 +16,7 @@
 // against either system.
 
 import { Router, type Request } from "express";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
 import { validate } from "../../../middleware/validate.js";
 import {
   assertBoard,

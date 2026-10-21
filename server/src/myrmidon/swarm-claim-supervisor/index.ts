@@ -5,7 +5,7 @@
 // rebalance action (release a live lease, take the owner off the task and hand
 // it to the board matcher).
 
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
 import { logActivity } from "../../services/index.js";
 import { heartbeatService } from "../../services/index.js";
 import { swarmSupervisorRoutes } from "./routes.js";

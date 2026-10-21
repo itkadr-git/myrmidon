@@ -1,4 +1,4 @@
-import { sanitizeAssetNamespace, type AssetImage } from "@paperclipai/shared";
+import { sanitizeAssetNamespace, type AssetImage } from "@myrmidonai/shared";
 import { api } from "./client";
 
 export const assetsApi = {

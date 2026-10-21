@@ -1,4 +1,4 @@
-import { chatPublications, type Db } from "@paperclipai/db";
+import { chatPublications, type Db } from "@myrmidonai/db";
 import { logger } from "../../middleware/logger.js";
 import { projectSafeChatPublication } from "../../services/chat-publication-projection.js";
 import { defaultTelegramNotifySettings } from "../telegram-notify/settings.js";

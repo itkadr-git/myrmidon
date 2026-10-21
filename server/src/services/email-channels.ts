@@ -28,7 +28,7 @@ import {
   toolProfileBindings,
   companyMemberships,
   instanceUserRoles,
-} from "@paperclipai/db";
+} from "@myrmidonai/db";
 import type {
   AgentPermissions,
   EmailEndpointSetupInput,
@@ -37,7 +37,7 @@ import type {
   EmailThreadSummary,
   EmailPublicationSummary,
   EmailEnvelope,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import { badRequest, conflict, forbidden, notFound } from "../errors.js";
 import { environmentService } from "./environments.js";
 import { resolveExecutionWorkspaceEnvironmentId } from "./execution-workspace-policy.js";

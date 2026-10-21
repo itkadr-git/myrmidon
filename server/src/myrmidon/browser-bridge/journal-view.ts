@@ -11,8 +11,8 @@
 // (action type, status, document hash). `from`/`to` bound `createdAt`.
 
 import { and, desc, eq, gte, lte, sql, type SQL } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
-import { activityLog } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
+import { activityLog } from "@myrmidonai/db";
 import { BROWSER_BRIDGE_ENTITY_TYPE, BROWSER_BRIDGE_ACTIONS } from "./journal.js";
 
 /** Actions that describe an action attempt (the journal's action rows). */

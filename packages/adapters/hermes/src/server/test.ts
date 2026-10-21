@@ -9,7 +9,7 @@ import type {
   AdapterEnvironmentTestContext,
   AdapterEnvironmentTestResult,
   AdapterEnvironmentCheck,
-} from "@paperclipai/adapter-utils";
+} from "@myrmidonai/adapter-utils";
 
 import { execFile } from "node:child_process";
 import { readFileSync } from "node:fs";

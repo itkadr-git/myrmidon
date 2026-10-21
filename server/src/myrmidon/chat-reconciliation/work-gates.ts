@@ -37,7 +37,7 @@ import {
   chatPublications,
   heartbeatRuns,
   type Db,
-} from "@paperclipai/db";
+} from "@myrmidonai/db";
 import { sql, type SQL, type SQLWrapper } from "drizzle-orm";
 
 /** A `Db` narrowed to the one method a gate uses (a test seam). */

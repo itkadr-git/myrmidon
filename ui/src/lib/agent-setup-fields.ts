@@ -1,4 +1,4 @@
-import { DEFAULT_CODEX_LOCAL_MODEL } from "@paperclipai/adapter-codex-local";
+import { DEFAULT_CODEX_LOCAL_MODEL } from "@myrmidonai/adapter-codex-local";
 import { codexReasoningEffortOptions } from "./codex-reasoning-effort";
 import { PROVIDER_ENV_KEYS } from "./provider-credential";
 

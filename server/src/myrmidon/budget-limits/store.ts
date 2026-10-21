@@ -13,7 +13,7 @@
 // - Reads are company-scoped by construction.
 
 import { and, desc, eq } from "drizzle-orm";
-import { budgetLimitChanges, budgetLimits, issues, projects, type Db } from "@paperclipai/db";
+import { budgetLimitChanges, budgetLimits, issues, projects, type Db } from "@myrmidonai/db";
 import {
   BUDGET_LIMIT_FORAGING_REF,
   BUDGET_LIMIT_NEST_COMPANY_REF,
@@ -24,7 +24,7 @@ import {
   type BudgetLimitChangeView,
   type BudgetLimitUpsertInput,
   type EffectiveBudgetLimitView,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 
 export interface BudgetLimitRow {
   id: string;

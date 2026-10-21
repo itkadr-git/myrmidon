@@ -44,7 +44,7 @@ const LIGHT = [
 // Large packages are never tested whole in the fast tier: only their tests that
 // changed or directly import the change. Above this many selected files a
 // package gets the full tier instead.
-export const SELECTIVE_PACKAGES = ["@paperclipai/server", "@paperclipai/ui", "paperclipai"];
+export const SELECTIVE_PACKAGES = ["@myrmidonai/server", "@myrmidonai/ui", "paperclipai"];
 export const MAX_FAST_FILES_PER_PACKAGE = 60;
 
 // These suites read shared source or documentation directly, so import-based
@@ -183,7 +183,7 @@ export function selectTests(changedFiles, packages, testFiles, { selective = SEL
 
   if (changedFiles.some((file) => SHARED_GUARD_TRIGGERS.includes(file))) {
     const testFilesByPath = new Set(testFiles.map((testFile) => testFile.file));
-    const server = packages.find((pkg) => pkg.name === "@paperclipai/server");
+    const server = packages.find((pkg) => pkg.name === "@myrmidonai/server");
     for (const file of SHARED_GUARD_TESTS) {
       if (testFilesByPath.has(file)) add(server, file, "shared-source guard");
     }

@@ -8,8 +8,8 @@
 // entities only. The seeder is idempotent on (companyId, role, slug): a
 // re-run updates prompt/rubric/weight in place instead of duplicating rows.
 
-import type { Db } from "@paperclipai/db";
-import { evalReferenceTasks } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
+import { evalReferenceTasks } from "@myrmidonai/db";
 import { eq, and } from "drizzle-orm";
 import { isEvalRubric, type EvalRubric } from "./domain.js";
 

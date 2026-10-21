@@ -1,4 +1,4 @@
-import { asNumber, asString, parseJson } from "@paperclipai/adapter-utils/server-utils";
+import { asNumber, asString, parseJson } from "@myrmidonai/adapter-utils/server-utils";
 
 export interface ParsedOmpOutput {
   sessionId: string | null;

@@ -21,12 +21,12 @@ import {
   issueThreadInteractions,
   issues,
   type Db,
-} from "@paperclipai/db";
+} from "@myrmidonai/db";
 import {
   OWNER_MESSAGE_COMMENT_REASON,
   OWNER_MESSAGE_INTERACTION_LABEL,
   isOwnerDecisionAudience,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import { parseTelegramConversationUserId } from "../agent-chat-bridge/identity.js";
 import { resolveOwnerDecisionRecipient } from "./telegram-owner-bindings.js";
 

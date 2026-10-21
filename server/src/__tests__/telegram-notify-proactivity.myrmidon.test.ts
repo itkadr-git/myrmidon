@@ -40,8 +40,8 @@ import {
   instanceSettings,
   toolApplications,
   toolConnections,
-} from "@paperclipai/db";
-import type { ChatProvider } from "@paperclipai/shared";
+} from "@myrmidonai/db";
+import type { ChatProvider } from "@myrmidonai/shared";
 import { telegramConversationUserId } from "../myrmidon/agent-chat-bridge/identity.js";
 import {
   applyProactivityGate,

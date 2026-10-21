@@ -25,7 +25,7 @@ const docsRoot = path.join(repoRoot, "docs");
 // state.
 const ALLOWLIST = [
   "[Paperclip](https://github.com/paperclipai/paperclip)",
-  "paperclipai", // @paperclipai/* packages, the paperclipai CLI, vendor repo URLs
+  "paperclipai", // @myrmidonai/* packages, the paperclipai CLI, vendor repo URLs
   "PAPERCLIP_", // env vars
   "X-Paperclip-", // HTTP headers
   "Paperclip Cloud", "Paperclip Labs", "Paperclip EE", "Paperclip Enterprise",

@@ -160,6 +160,6 @@ describe("myrmidon(1.6-WIKI) regulation routes: no database imports", () => {
   it("keeps the module free of the db package", async () => {
     const fs = await import("node:fs/promises");
     const source = await fs.readFile(new URL("./routes.ts", import.meta.url), "utf8");
-    expect(source).not.toContain("@paperclipai/db");
+    expect(source).not.toContain("@myrmidonai/db");
   });
 });

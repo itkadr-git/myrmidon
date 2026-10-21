@@ -1,4 +1,4 @@
-import type { agentWakeupRequests, chatActions } from "@paperclipai/db";
+import type { agentWakeupRequests, chatActions } from "@myrmidonai/db";
 import {
   assertDurableChatWakeupReceipt,
   createDurableChatWakeupRequest,

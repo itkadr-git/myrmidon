@@ -38,7 +38,7 @@ import type {
   IssueThreadInteraction,
   AskUserQuestionsInteraction,
   AskUserQuestionsAnswer,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import { Link, useLocation, useNavigate, useParams, useSearchParams } from "@/lib/router";
 import {
   SearchableSelect,
@@ -126,7 +126,7 @@ import {
 import { FileTree, buildFileTree, type FileTreeNode } from "@/components/FileTree";
 import { MarkdownEditor } from "@/components/MarkdownEditor";
 import { FrontmatterPanel } from "@/components/FrontmatterPanel";
-import { joinFrontmatterBlock, splitFrontmatterBlock } from "@paperclipai/shared";
+import { joinFrontmatterBlock, splitFrontmatterBlock } from "@myrmidonai/shared";
 import { MarkdownBody } from "@/components/MarkdownBody";
 import { StatusBadge } from "@/components/StatusBadge";
 import { EmptyState } from "@/components/EmptyState";

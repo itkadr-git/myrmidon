@@ -1,4 +1,4 @@
-import type { ChatProvider } from "@paperclipai/shared";
+import type { ChatProvider } from "@myrmidonai/shared";
 
 type ProviderLinkInput = {
   provider: ChatProvider;

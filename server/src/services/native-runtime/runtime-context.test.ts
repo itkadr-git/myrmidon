@@ -1,11 +1,11 @@
 import { mkdtemp, mkdir, readFile, readdir, chmod, lstat, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
 import {
   PAPERCLIP_OPERATIONAL_SKILL_KEY,
   type PaperclipSkillEntry,
-} from "@paperclipai/adapter-utils/server-utils";
+} from "@myrmidonai/adapter-utils/server-utils";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const serviceMocks = vi.hoisted(() => ({

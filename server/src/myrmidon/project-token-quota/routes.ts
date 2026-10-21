@@ -11,8 +11,8 @@
 //   surfaces follow.
 
 import { Router } from "express";
-import type { Db } from "@paperclipai/db";
-import { projectTokenQuotaSchema } from "@paperclipai/shared";
+import type { Db } from "@myrmidonai/db";
+import { projectTokenQuotaSchema } from "@myrmidonai/shared";
 import { validate } from "../../middleware/validate.js";
 import { assertCompanyAccess, assertInstanceAdmin } from "../../routes/authz.js";
 import { readProjectTokenQuotaStatus, upsertProjectTokenQuota } from "./service.js";

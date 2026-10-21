@@ -1,5 +1,5 @@
 {
-  "name": "@paperclipai/corpus",
+  "name": "@myrmidonai/corpus",
   "version": "0.1.0",
   "description": "Knowledge corpus module: ports, domain model and PostgreSQL implementations (vector + FTS retrieval core).",
   "license": "MIT",
@@ -27,7 +27,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@paperclipai/db": "workspace:*",
+    "@myrmidonai/db": "workspace:*",
     "drizzle-orm": "^0.45.2"
   },
   "devDependencies": {

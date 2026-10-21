@@ -1,4 +1,4 @@
-import type { Issue } from "@paperclipai/shared";
+import type { Issue } from "@myrmidonai/shared";
 
 /**
  * myrmidon(X8f): Contract from X8a. A Telegram direct-message conversation

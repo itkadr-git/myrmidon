@@ -1,4 +1,4 @@
-import type { AiManagedConnectionSummary } from "@paperclipai/shared";
+import type { AiManagedConnectionSummary } from "@myrmidonai/shared";
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { aiConnectionsApi } from "../../api/ai-connections";

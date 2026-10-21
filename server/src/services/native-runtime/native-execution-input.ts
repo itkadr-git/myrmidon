@@ -17,7 +17,7 @@ import {
   isPaperclipExternalChatContractTurn,
   isPaperclipExternalChatQuestionResponseTurn,
   renderPaperclipWakePrompt,
-} from "@paperclipai/adapter-utils/server-utils";
+} from "@myrmidonai/adapter-utils/server-utils";
 // myrmidon(B1): product name in the agent-facing guidance below; see product.ts.
 import { PRODUCT_NAME } from "../../myrmidon/product.js";
 

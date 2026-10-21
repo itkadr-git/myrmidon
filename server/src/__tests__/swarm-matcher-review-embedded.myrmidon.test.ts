@@ -27,9 +27,9 @@ import {
   heartbeatRuns,
   issueClaims,
   issues,
-} from "@paperclipai/db";
+} from "@myrmidonai/db";
 import { and, eq, isNull } from "drizzle-orm";
-import { SWARM_MATCHED_WAKE_REASON, resolveSwarmClaimSettings } from "@paperclipai/shared";
+import { SWARM_MATCHED_WAKE_REASON, resolveSwarmClaimSettings } from "@myrmidonai/shared";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,

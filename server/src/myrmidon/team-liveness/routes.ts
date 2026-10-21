@@ -11,11 +11,11 @@
 // (`team-liveness/settings.ts`), so a change takes effect on the next pass.
 
 import { Router } from "express";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
 import {
   patchTeamLivenessSettingsSchema,
   type TeamLivenessSettingsPatch,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import { badRequest } from "../../errors.js";
 import { validate } from "../../middleware/validate.js";
 import {

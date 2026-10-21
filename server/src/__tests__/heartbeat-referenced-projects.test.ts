@@ -10,7 +10,7 @@ import {
   issues,
   projectWorkspaces,
   projects,
-} from "@paperclipai/db";
+} from "@myrmidonai/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -27,7 +27,7 @@ import {
   type ResolveRunReferencedProjectsOptions,
 } from "../services/heartbeat.ts";
 import type { AuthorizationActor, AuthorizationDecision } from "../services/authorization.ts";
-import { buildProjectMentionHref } from "@paperclipai/shared";
+import { buildProjectMentionHref } from "@myrmidonai/shared";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;

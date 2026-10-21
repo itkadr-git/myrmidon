@@ -1,5 +1,5 @@
 {
-  "name": "@paperclipai/paperclip-eval-kernel",
+  "name": "@myrmidonai/paperclip-eval-kernel",
   "version": "0.1.0",
   "private": true,
   "description": "Provider-neutral evaluation matrix kernel without Paperclip scenario content",

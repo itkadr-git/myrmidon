@@ -8,7 +8,7 @@
 import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle, Loader2, Plus, RefreshCw, ShieldCheck, Trash2 } from "lucide-react";
-import type { CompanyBaseSkillEntry, CompanyBaseSkillOverview } from "@paperclipai/shared";
+import type { CompanyBaseSkillEntry, CompanyBaseSkillOverview } from "@myrmidonai/shared";
 import { Link } from "@/lib/router";
 import { baseSkillsApi } from "@/api/baseSkills";
 import { companySkillsApi } from "@/api/companySkills";

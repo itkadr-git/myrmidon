@@ -1,7 +1,7 @@
 // @vitest-environment node
 
 import { describe, expect, it } from "vitest";
-import type { ResolvedWorkspaceResource } from "@paperclipai/shared";
+import type { ResolvedWorkspaceResource } from "@myrmidonai/shared";
 import {
   chunkWorkspaceFileAvailabilityRefs,
   workspaceFileAvailabilityFromResult,

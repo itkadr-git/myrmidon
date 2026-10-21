@@ -9,7 +9,7 @@
 // reused here: rel already carries the approval-required half there for the
 // pause/wake routes, so the deploy seam must not keep a second copy of it.
 
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
 import type { Request } from "express";
 import { dbAutonomyGate } from "./gate.js";
 

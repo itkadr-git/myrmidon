@@ -1,6 +1,6 @@
 // myrmidon(DEBRAND-c): persist browser state under the Myrmidon namespace.
 import { useCallback, useSyncExternalStore } from "react";
-import type { Agent } from "@paperclipai/shared";
+import type { Agent } from "@myrmidonai/shared";
 const eventName = "paperclip:recent-agent-chats";
 const key = (company: string, user?: string | null) =>
   `myrmidon.recentAgentChats:${company}:${user ?? "__local_board__"}`;

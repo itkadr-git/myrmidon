@@ -9,7 +9,7 @@
 // spentCents 0 — the limit view must never break because a sibling feature's
 // state read failed.
 
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
 import { foragingWiring } from "../foraging/index.js";
 import { logger } from "../../middleware/logger.js";
 

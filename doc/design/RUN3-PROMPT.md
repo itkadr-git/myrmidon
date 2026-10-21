@@ -74,7 +74,7 @@ DONE WHEN (all verified in this worktree)
    recorded in DECISION-SHEET.md.
 3. AgentDetail story exists and renders in the suite.
 4. pnpm check:token-gates 3/3 CLEAN; pnpm typecheck green;
-   pnpm --filter @paperclipai/ui build exit 0.
+   pnpm --filter @myrmidonai/ui build exit 0.
 5. Full visual suite passes against the updated baseline, and
    doc/design/run3-review/ contains the triplets for every story
    whose baseline changed, committed.

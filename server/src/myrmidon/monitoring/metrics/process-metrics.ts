@@ -23,7 +23,7 @@ import {
   subscribeAllCompanyLiveEvents,
   subscribeGlobalLiveEvents,
 } from "../../../services/live-events.js";
-import type { LiveEvent } from "@paperclipai/shared";
+import type { LiveEvent } from "@myrmidonai/shared";
 
 export type ProcessEventLoopSample = {
   p50Seconds: number;

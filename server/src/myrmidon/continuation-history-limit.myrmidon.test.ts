@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { ExecutionContinuationEnvelope } from "@paperclipai/shared";
+import type { ExecutionContinuationEnvelope } from "@myrmidonai/shared";
 import {
   DEFAULT_CONTINUATION_HISTORY_CHARS,
   DEFAULT_CONTINUATION_HISTORY_LIMIT,

@@ -11,7 +11,7 @@ import {
   issueThreadInteractions,
   issues,
   type Db,
-} from "@paperclipai/db";
+} from "@myrmidonai/db";
 import {
   normalizePrpResultSignals,
   type PrpStructuredRunResult,

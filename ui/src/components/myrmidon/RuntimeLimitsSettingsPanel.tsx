@@ -4,7 +4,7 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Gauge } from "lucide-react";
-import type { RunLimits, RunLimitsPatch, RunLimitKey } from "@paperclipai/shared";
+import type { RunLimits, RunLimitsPatch, RunLimitKey } from "@myrmidonai/shared";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";

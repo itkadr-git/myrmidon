@@ -20,7 +20,7 @@ import {
   readPaperclipSkillSyncPreference,
   resolveLegacyPaperclipDesiredSkillNames,
   type PaperclipSkillEntry,
-} from "@paperclipai/adapter-utils/server-utils";
+} from "@myrmidonai/adapter-utils/server-utils";
 import { skillVersionSelectionMap } from "../../services/runtime-skill-selections.js";
 import type { SkillLifecycleDelivery, SkillLifecycleReadCache } from "../skill-lifecycle/index.js";
 import type { BotProfileAgentRecord } from "./profile-compile.js";

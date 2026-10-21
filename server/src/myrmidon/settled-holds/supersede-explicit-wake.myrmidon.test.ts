@@ -6,7 +6,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog, agents, companies, createDb, heartbeatRuns, issueRecoveryActions, issues,
   nativeRunFinalizations,
-} from "@paperclipai/db";
+} from "@myrmidonai/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,

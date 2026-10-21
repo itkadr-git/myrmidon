@@ -50,9 +50,9 @@ import {
   agents,
   issues,
   heartbeatRuns,
-} from "@paperclipai/db";
+} from "@myrmidonai/db";
 import { eq } from "drizzle-orm";
-import { DEFAULT_PROCESSES_SETTINGS, type ProcessesSettings } from "@paperclipai/shared";
+import { DEFAULT_PROCESSES_SETTINGS, type ProcessesSettings } from "@myrmidonai/shared";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,

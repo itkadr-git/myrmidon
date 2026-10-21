@@ -6,7 +6,7 @@
 // No migrations, and an old image keeps working on the new schema.
 
 import { eq, sql } from "drizzle-orm";
-import { agents, instanceSettings, type Db } from "@paperclipai/db";
+import { agents, instanceSettings, type Db } from "@myrmidonai/db";
 import type {
   CloudAccount,
   CloudGrant,
@@ -14,7 +14,7 @@ import type {
   CloudJournalEntry,
   CloudProviderId,
   CloudRoot,
-} from "@paperclipai/shared/myrmidon-cloud-connector";
+} from "@myrmidonai/shared/myrmidon-cloud-connector";
 
 export const CLOUD_CONNECTOR_GENERAL_KEY = "myrmidonCloudConnector";
 

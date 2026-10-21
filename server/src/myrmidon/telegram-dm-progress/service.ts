@@ -12,7 +12,7 @@
 // overlapping requests cannot commit in one order and audit in the other
 // (same shape as the budget enforcement settings).
 
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
 import {
   TELEGRAM_DM_PROGRESS_SETTINGS_KEY,
   mergeTelegramDmProgressSettings,
@@ -20,7 +20,7 @@ import {
   type ResolvedTelegramDmProgress,
   type TelegramDmProgressPatch,
   type TelegramDmProgressSettings,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import { instanceSettingsService, logActivity } from "../../services/index.js";
 import {
   invalidateTelegramDmProgressSettingsCache,

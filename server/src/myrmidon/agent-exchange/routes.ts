@@ -15,7 +15,7 @@
 // body against the shared contract and translate the stable error codes.
 
 import { Router, type Request } from "express";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
 import {
   agentExchangeCreateRoomSchema,
   agentExchangeStopSchema,
@@ -23,8 +23,8 @@ import {
   type AgentExchangeCreateRoomInput,
   type AgentExchangeStopInput,
   type AgentExchangeSettingsPatch,
-} from "@paperclipai/shared";
-import { issues } from "@paperclipai/db";
+} from "@myrmidonai/shared";
+import { issues } from "@myrmidonai/db";
 import { eq } from "drizzle-orm";
 import { validate } from "../../middleware/validate.js";
 import { assertBoardOrgAccess, assertCompanyAccess, assertInstanceAdmin, getActorInfo } from "../../routes/authz.js";

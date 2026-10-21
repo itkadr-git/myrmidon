@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { StatusCard, StatusCardRefreshPolicy } from "@paperclipai/shared";
+import type { StatusCard, StatusCardRefreshPolicy } from "@myrmidonai/shared";
 import {
   deriveStatusCardLifecycle,
   describeRefreshPolicy,

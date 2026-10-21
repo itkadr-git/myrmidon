@@ -10,8 +10,8 @@
 //     call count after `stopRoom` equals the count before.
 
 import { describe, expect, it, beforeEach } from "vitest";
-import { DEFAULT_AGENT_EXCHANGE_SETTINGS, type AgentExchangeParticipantSpec } from "@paperclipai/shared";
-import type { AgentExchangeMessage, AgentExchangeRoom } from "@paperclipai/shared";
+import { DEFAULT_AGENT_EXCHANGE_SETTINGS, type AgentExchangeParticipantSpec } from "@myrmidonai/shared";
+import type { AgentExchangeMessage, AgentExchangeRoom } from "@myrmidonai/shared";
 import {
   finalizeRoom,
   openRoom,

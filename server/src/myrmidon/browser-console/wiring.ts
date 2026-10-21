@@ -3,7 +3,7 @@
 // One process-wide service: routes, the MCP guard registration and (later,
 // part B) the screen WebSocket proxy all share the same session state.
 
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
 import { browserConsoleService, type BrowserConsoleService } from "./service.js";
 import { readScreenConsoleSettings, screenConsoleClient } from "./screen-console-client.js";
 import { browserConsoleRoutes } from "./routes.js";

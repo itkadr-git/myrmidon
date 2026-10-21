@@ -19,5 +19,5 @@ npx paperclipai plugin install ./
 
 ## Build Options
 
-- `pnpm build` uses esbuild presets from `@paperclipai/plugin-sdk/bundlers`.
+- `pnpm build` uses esbuild presets from `@myrmidonai/plugin-sdk/bundlers`.
 - `pnpm build:rollup` uses rollup presets from the same SDK.

@@ -1,6 +1,6 @@
 import { and, eq } from "drizzle-orm";
-import { ALERT_RECOVERY_ORIGIN_KIND, isAgentStatusInvokable } from "@paperclipai/shared";
-import { issues, type Db } from "@paperclipai/db";
+import { ALERT_RECOVERY_ORIGIN_KIND, isAgentStatusInvokable } from "@myrmidonai/shared";
+import { issues, type Db } from "@myrmidonai/db";
 import { logger } from "../../../middleware/logger.js";
 import { listAgentsOfRole } from "../../swarm-claim/queue.js";
 import type { AlertRecoveryIssuePort, AlertRecoveryIssueWriteResult } from "./service.js";

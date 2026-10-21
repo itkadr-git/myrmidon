@@ -2,8 +2,8 @@ import type {
   AdapterEnvironmentCheck,
   AdapterEnvironmentTestContext,
   AdapterEnvironmentTestResult,
-} from "@paperclipai/adapter-utils";
-import { asString } from "@paperclipai/adapter-utils/server-utils";
+} from "@myrmidonai/adapter-utils";
+import { asString } from "@myrmidonai/adapter-utils/server-utils";
 import {
   allowsInsecureRemoteHttp,
   isLoopbackHostname,

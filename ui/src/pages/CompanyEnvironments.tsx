@@ -18,7 +18,7 @@ import {
   type EnvironmentProbeResult,
   type EnvironmentCustomImageSetupSession,
   type JsonSchema,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import {
   environmentsApi,
   type EnvironmentCustomImageActiveTemplateDrift,

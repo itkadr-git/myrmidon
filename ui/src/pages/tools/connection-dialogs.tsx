@@ -5,7 +5,7 @@ import type {
   CompanySecret,
   McpConnectionCredentialRef,
   ToolConnection,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import { queryKeys } from "@/lib/queryKeys";
 import { toolsApi, type CreateToolConnectionInput } from "@/api/tools";
 import { secretsApi } from "@/api/secrets";

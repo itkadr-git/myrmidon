@@ -12,7 +12,7 @@ import {
   normalizeReviewReworkSettings,
   parseReviewReworkVerdictMarkers,
   patchReviewReworkSettingsSchema,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 
 function comment(body: string, id = "comment-1", createdAt = "2026-10-04T16:57:00.000Z") {
   return { id, body, createdAt };

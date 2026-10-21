@@ -3,7 +3,7 @@
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { joinFrontmatterBlock, splitFrontmatterBlock } from "@paperclipai/shared";
+import { joinFrontmatterBlock, splitFrontmatterBlock } from "@myrmidonai/shared";
 import {
   FrontmatterPanel,
   type FrontmatterPanelChange,

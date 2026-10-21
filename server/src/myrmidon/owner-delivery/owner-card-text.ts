@@ -10,7 +10,7 @@
 // internal identifiers: no uuids, no run ids, no commit hashes, no internal
 // jargon — the text is the first thing the owner reads.
 
-import type { IssueThreadInteraction } from "@paperclipai/shared";
+import type { IssueThreadInteraction } from "@myrmidonai/shared";
 
 const OWNER_DECISION_PREFIX = "Нужно ваше решение";
 

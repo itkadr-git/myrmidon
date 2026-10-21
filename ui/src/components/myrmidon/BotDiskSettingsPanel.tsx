@@ -32,7 +32,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { useTranslation } from "@/i18n";
-import type { BotDiskSettingsPatch } from "@paperclipai/shared";
+import type { BotDiskSettingsPatch } from "@myrmidonai/shared";
 import {
   BOT_DISK_DEFAULT_GIT_MIRROR_REFRESH_MS,
   BOT_DISK_DEFAULT_IDLE_TTL_MS,
@@ -46,7 +46,7 @@ import {
   BOT_DISK_MIN_GIT_MIRROR_REFRESH_MS,
   BOT_DISK_MIN_IDLE_TTL_MS,
   WS_BOT_DISK_SETTING_DEFAULTS,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import { botDiskApi, botDiskQueryKey, type BotDiskView } from "./botDiskApi";
 import {
   BOT_DISK_REPORT_STALE_MS,

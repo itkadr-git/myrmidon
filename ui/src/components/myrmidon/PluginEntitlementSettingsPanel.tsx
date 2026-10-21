@@ -10,7 +10,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { pluginEntitlementApi, pluginEntitlementPublicKeyQueryKey, pluginEntitlementQueryKey } from "./pluginEntitlementApi";
-import type { PluginEntitlementKeyView } from "@paperclipai/shared";
+import type { PluginEntitlementKeyView } from "@myrmidonai/shared";
 import { useTranslation } from "@/i18n";
 
 function formatExpiry(value: PluginEntitlementKeyView["expiresAt"]): string | null {

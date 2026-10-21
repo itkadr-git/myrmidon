@@ -7,7 +7,7 @@
 // the vendored instructions-bundle routes.
 
 import { Router } from "express";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
 import { unprocessable } from "../../errors.js";
 import {
   agentInstructionsBundleMode,

@@ -19,7 +19,7 @@ There are two distinct things people loosely call "the skills store":
 
 | Layer | What it is | Lives in |
 |---|---|---|
-| **The catalog** | A curated, read-only set of skills that ships with Myrmidon | The `@paperclipai/skills-catalog` package |
+| **The catalog** | A curated, read-only set of skills that ships with Myrmidon | The `@myrmidonai/skills-catalog` package |
 | **Your company library** | The skills actually installed in *your* company, which agents can run | The `company_skills` database table |
 
 The catalog is the shelf you browse. Your company library is the cart you've checked
@@ -310,7 +310,7 @@ in the company activity log.
 
 ## Reference: the catalog package
 
-The catalog is its own publishable package, `@paperclipai/skills-catalog`:
+The catalog is its own publishable package, `@myrmidonai/skills-catalog`:
 
 - `catalog/bundled/**` and `catalog/optional/**` — the source skill directories
 - `scripts/build-catalog-manifest.ts` — compiles the directories into `generated/catalog.json`

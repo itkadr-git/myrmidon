@@ -1,5 +1,5 @@
 // myrmidon(DEBRAND-c): persist browser state under the Myrmidon namespace.
-import type { Issue, IssueStatus } from "@paperclipai/shared";
+import type { Issue, IssueStatus } from "@myrmidonai/shared";
 
 export const RECENT_TASKS_LIMIT = 5;
 export const RECENT_TASKS_UPDATED_EVENT = "paperclip:recent-tasks-updated";

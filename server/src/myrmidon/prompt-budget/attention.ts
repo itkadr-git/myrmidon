@@ -9,12 +9,12 @@
 // threshold, and disappears or re-grades (warn ↔ crit) the moment a newer run
 // says otherwise.
 
-import type { AttentionSeverity } from "@paperclipai/shared";
+import type { AttentionSeverity } from "@myrmidonai/shared";
 import {
   PROMPT_BUDGET_ATTENTION_DEDUP_PREFIX,
   topPromptBudgetParts,
   type PromptBudgetAgentStatus,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 
 /** One attention card the feed renders for an over-threshold agent. */
 export interface PromptBudgetAttentionCard {

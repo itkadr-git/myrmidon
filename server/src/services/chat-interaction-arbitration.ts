@@ -1,11 +1,11 @@
 import { and, eq, exists, inArray, or, sql } from "drizzle-orm";
 
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
 import {
   chatPublications,
   heartbeatRuns,
   issueThreadInteractions,
-} from "@paperclipai/db";
+} from "@myrmidonai/db";
 
 type ChatInteractionArbitrationDb = Pick<Db, "select">;
 

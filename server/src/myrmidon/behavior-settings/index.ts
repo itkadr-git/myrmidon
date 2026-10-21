@@ -1,7 +1,7 @@
 // Behavior settings module entry point (myrmidon 1.7, SETTINGS-TO-UI A)
 
-import type { Db } from "@paperclipai/db";
-import { resolveBehaviorSettings } from "@paperclipai/shared";
+import type { Db } from "@myrmidonai/db";
+import { resolveBehaviorSettings } from "@myrmidonai/shared";
 import { logger } from "../../middleware/logger.js";
 import { behaviorSettingsRoutes } from "./routes.js";
 import { behaviorSettingsService, type BehaviorSettingsServiceDeps } from "./service.js";

@@ -8,8 +8,8 @@
 // (agents never read or write it).
 
 import { Router } from "express";
-import type { Db } from "@paperclipai/db";
-import { patchBridgeLanguageSchema, type PatchBridgeLanguage } from "@paperclipai/shared";
+import type { Db } from "@myrmidonai/db";
+import { patchBridgeLanguageSchema, type PatchBridgeLanguage } from "@myrmidonai/shared";
 import { validate } from "../../middleware/validate.js";
 import { assertBoardOrgAccess, assertInstanceAdmin, getActorInfo } from "../../routes/authz.js";
 import type { BridgeLanguageService } from "./service.js";

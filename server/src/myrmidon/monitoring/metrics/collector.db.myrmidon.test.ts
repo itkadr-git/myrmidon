@@ -13,7 +13,7 @@ import {
   issueClaims,
   issues,
   litellmCostEvents,
-} from "@paperclipai/db";
+} from "@myrmidonai/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,

@@ -7,7 +7,7 @@
 
 import { Router } from "express";
 import { sql } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
 
 import { BOARD_CONNECTION_REF, implicitDatastoreTargets, type DatastoreTarget } from "./domain.js";
 import { readDatastoreCareSettings, type DatastoreCareSettings } from "./settings.js";

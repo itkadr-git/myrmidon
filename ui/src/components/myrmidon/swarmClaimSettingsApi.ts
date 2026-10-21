@@ -14,7 +14,7 @@ import type {
   SwarmClaimSettingsPatch,
   SwarmClaimSettingKey,
   SwarmClaimSettingSource,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import { api } from "@/api/client";
 
 /** One journal entry: who changed what, and when. */

@@ -34,7 +34,7 @@ import {
   type ScopeLayout,
   type ScopeSettingInput,
   type SettableScopeKind,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import { badRequest, conflict, notFound } from "../../errors.js";
 
 export interface ScopeAgentRow extends ScopeAgentInput {

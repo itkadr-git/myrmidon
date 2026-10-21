@@ -1,5 +1,5 @@
 import { and, desc, eq, inArray, sql } from "drizzle-orm";
-import { agents, heartbeatRuns, issues, type Db } from "@paperclipai/db";
+import { agents, heartbeatRuns, issues, type Db } from "@myrmidonai/db";
 import { HttpError } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { parseObject, readNonEmptyString } from "../modules/wake-queue/index.js";

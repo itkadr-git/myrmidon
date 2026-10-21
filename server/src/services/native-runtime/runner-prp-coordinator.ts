@@ -2,13 +2,13 @@ import { resolve } from "node:path";
 
 import { and, eq } from "drizzle-orm";
 
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
 import {
   agents,
   completionContracts,
   heartbeatRuns,
   issues,
-} from "@paperclipai/db";
+} from "@myrmidonai/db";
 import {
   DurablePrpControlPlane,
   type PaperclipSemanticToolDefinition,

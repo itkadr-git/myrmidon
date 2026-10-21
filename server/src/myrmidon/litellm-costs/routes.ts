@@ -14,7 +14,7 @@
 // instead of showing a bare error.
 
 import { Router } from "express";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
 import { secretService } from "../../services/index.js";
 import { assertBoard, assertCompanyAccess } from "../../routes/authz.js";
 import { parseCostDateRange } from "../../routes/costs.js";

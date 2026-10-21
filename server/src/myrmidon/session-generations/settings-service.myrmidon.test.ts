@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type { Db } from "@paperclipai/db";
-import { SESSION_GENERATIONS_SETTINGS_KEY, instanceGeneralSettingsSchema } from "@paperclipai/shared";
+import type { Db } from "@myrmidonai/db";
+import { SESSION_GENERATIONS_SETTINGS_KEY, instanceGeneralSettingsSchema } from "@myrmidonai/shared";
 import { instanceSettingsService } from "../../services/instance-settings.js";
 
 // myrmidon(PERF-DIET-K): the service half of the session-generations settings. The

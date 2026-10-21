@@ -19,7 +19,7 @@
 // `shouldSuppressRunForIssue` return false afterwards, so the cache can only
 // hold a suppress decision that no longer applies for a bounded window.
 
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
 import {
   isThrottleCandidateIssueRewake,
   type IssueRewakeCandidateInput,

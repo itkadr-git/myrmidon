@@ -2,7 +2,7 @@
 // GET/PATCH /api/myrmidon/bot-image-rollout
 // (server/src/myrmidon/bot-containers/bot-image-rollout-routes.ts).
 import { api } from "@/api/client";
-import type { BotImageRolloutSettings, BotImageRolloutSettingsPatch, ResolvedBotImageRolloutSettings } from "@paperclipai/shared";
+import type { BotImageRolloutSettings, BotImageRolloutSettingsPatch, ResolvedBotImageRolloutSettings } from "@myrmidonai/shared";
 
 export interface BotImageRolloutView {
   /** The stored overrides (absent fields come from env / defaults). */

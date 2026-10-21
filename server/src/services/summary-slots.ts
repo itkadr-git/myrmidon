@@ -1,5 +1,5 @@
 import { and, desc, eq, gte, inArray, isNull } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
 import {
   documentRevisions,
   documents,
@@ -8,7 +8,7 @@ import {
   projectWorkspaces,
   projects,
   summarySlots,
-} from "@paperclipai/db";
+} from "@myrmidonai/db";
 import {
   type GenerateSummarySlotResponse,
   type GetSummarySlotResponse,
@@ -22,7 +22,7 @@ import {
   type SummarySlotScopeSelector,
   summarySlotScopeSelectorSchema,
   type WriteSummarySlotResponse,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import { readBuiltInAgentMarker } from "./built-in-agent-metadata.js";
 import { builtInAgentService } from "./built-in-agents.js";

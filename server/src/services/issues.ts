@@ -7,7 +7,7 @@ import { notifySwarmIssueEvent } from "../myrmidon/swarm-claim/events.js";
 import { parseTaskSearch, taskSearchCtes, taskSearchScore } from "./task-search.js";
 import { createdFromIssueCondition } from "./issue-creation-origin.js";
 import { executionProjectionsForRuns } from "./execution-projection.js";
-import type { ExecutionProjection } from "@paperclipai/shared";
+import type { ExecutionProjection } from "@myrmidonai/shared";
 import { Buffer } from "node:buffer";
 import { createHash, randomUUID } from "node:crypto";
 import {
@@ -29,7 +29,7 @@ import {
   sql,
   type SQL,
 } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
 import {
   activityLog,
   chatActions,
@@ -73,7 +73,7 @@ import {
   projects,
   toolConnections,
   workspaceOperations,
-} from "@paperclipai/db";
+} from "@myrmidonai/db";
 import type {
   AcceptedPlanDecomposition,
   IssueComment,
@@ -90,7 +90,7 @@ import type {
   IssueWatchdogSummary,
   LowTrustBoundary,
   SuccessfulRunHandoffState,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import {
   clampIssueRequestDepth,
   extractAgentMentionIds,
@@ -103,8 +103,8 @@ import {
   resolveSwarmClaimSettings,
   readScentSettings,
   pheromoneStrengthForPriority,
-} from "@paperclipai/shared";
-import type { IssueScent } from "@paperclipai/shared";
+} from "@myrmidonai/shared";
+import type { IssueScent } from "@myrmidonai/shared";
 import { deriveScentAuto } from "../myrmidon/scent/create-hook.js";
 import { conflict, HttpError, notFound, unprocessable } from "../errors.js";
 import { isForeignKeyViolation } from "../db-errors.js";

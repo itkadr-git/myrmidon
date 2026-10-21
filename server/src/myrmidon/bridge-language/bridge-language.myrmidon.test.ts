@@ -9,14 +9,14 @@
 import express from "express";
 import request from "supertest";
 import { describe, expect, it } from "vitest";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
 import {
   BRIDGE_LANGUAGE_ENV,
   BRIDGE_LANGUAGE_SETTINGS_KEY,
   DEFAULT_BRIDGE_LANGUAGE,
   readStoredBridgeLanguage,
   resolveBridgeLanguage,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import { errorHandler } from "../../middleware/index.js";
 import { bridgeLanguageRoutes } from "./routes.js";
 import {

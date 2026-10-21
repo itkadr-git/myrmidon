@@ -68,7 +68,7 @@ while it is enabled:
 ```json
 [
   {
-    "packageName": "@paperclipai/hermes-paperclip-adapter",
+    "packageName": "@myrmidonai/hermes-paperclip-adapter",
     "localPath": "/absolute/path/to/paperclip/packages/adapters/hermes",
     "type": "hermes_local",
     "installedAt": "2026-06-23T00:00:00.000Z"
@@ -146,11 +146,11 @@ with `POST /v1/runs/{run_id}/stop`.
 
 ### Compatibility with the old gateway package
 
-`@paperclipai/adapter-hermes-gateway` remains as a deprecated compatibility shim
+`@myrmidonai/adapter-hermes-gateway` remains as a deprecated compatibility shim
 for one release. It re-exports the gateway entrypoints from
-`@paperclipai/hermes-paperclip-adapter/gateway` and preserves the legacy exports
+`@myrmidonai/hermes-paperclip-adapter/gateway` and preserves the legacy exports
 for existing plugin installs. New installs and built-in Paperclip registrations
-should use `@paperclipai/hermes-paperclip-adapter`; the adapter type remains
+should use `@myrmidonai/hermes-paperclip-adapter`; the adapter type remains
 `hermes_gateway`.
 
 ### Runtime API guidance

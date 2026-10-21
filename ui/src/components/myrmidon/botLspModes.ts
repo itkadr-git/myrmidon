@@ -1,6 +1,6 @@
 // myrmidon(BOT-LSP-DEFAULTS): labels for the language-server modes, shared by
 // the settings panel and the agent card.
-import type { BotLspMode } from "@paperclipai/shared";
+import type { BotLspMode } from "@myrmidonai/shared";
 
 export const BOT_LSP_MODE_LABELS: Record<BotLspMode, string> = {
   off: "Off",

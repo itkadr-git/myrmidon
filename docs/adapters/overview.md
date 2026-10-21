@@ -25,8 +25,8 @@ When a heartbeat fires, Myrmidon:
 | OpenCode | `opencode_local` | Runs OpenCode CLI locally (multi-provider `provider/model`) |
 | Cursor | `cursor` | Runs Cursor in background mode |
 | Pi | `pi_local` | Runs an embedded Pi agent locally |
-| Hermes | `hermes_local` | Runs the local Hermes CLI through `@paperclipai/hermes-paperclip-adapter` |
-| Hermes Gateway | `hermes_gateway` | Calls an already-running Hermes API server through `@paperclipai/hermes-paperclip-adapter/gateway` |
+| Hermes | `hermes_local` | Runs the local Hermes CLI through `@myrmidonai/hermes-paperclip-adapter` |
+| Hermes Gateway | `hermes_gateway` | Calls an already-running Hermes API server through `@myrmidonai/hermes-paperclip-adapter/gateway` |
 | OpenClaw Gateway | `openclaw_gateway` | Connects to an OpenClaw gateway endpoint |
 | [Process](/adapters/process) | `process` | Executes arbitrary shell commands |
 | [HTTP](/adapters/http) | `http` | Sends webhooks to external agents |
@@ -61,9 +61,9 @@ running as an HTTP/SSE API server and Myrmidon should call that server instead
 of spawning a process. Both type keys are stable built-ins.
 
 The unified Hermes package owns both built-in adapters. The older
-`@paperclipai/adapter-hermes-gateway` package remains only as a deprecated
+`@myrmidonai/adapter-hermes-gateway` package remains only as a deprecated
 compatibility shim that re-exports the gateway entrypoints for one release.
-New plugin overrides should target `@paperclipai/hermes-paperclip-adapter` and
+New plugin overrides should target `@myrmidonai/hermes-paperclip-adapter` and
 set the desired type key (`hermes_local` or `hermes_gateway`).
 
 ### External (plugin) adapters

@@ -12,7 +12,7 @@
 // myrmidon(1.6.1 VOICE-STT A1) there).
 
 import { eq, sql } from "drizzle-orm";
-import { instanceSettings, type Db } from "@paperclipai/db";
+import { instanceSettings, type Db } from "@myrmidonai/db";
 import type { StoredSttOverrides } from "./settings.js";
 
 export const STT_COMPANIES_GENERAL_KEY = "myrmidonSttCompanies";

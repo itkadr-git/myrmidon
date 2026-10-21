@@ -4,7 +4,7 @@ import { existsSync, realpathSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { parseBuildCommit, readBuildCommit } from "./build-commit.js";
 import { parseBuildVersion, readBuildVersion } from "./build-version.js";
-import { readProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
+import { readProductEnv } from "@myrmidonai/shared/env-alias"; // myrmidon(REBRAND-C)
 
 type PackageJson = {
   version?: string;

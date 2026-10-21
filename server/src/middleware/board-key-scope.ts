@@ -5,8 +5,8 @@
 // explicitly "full") keep unrestricted board access, so existing operator and
 // CLI flows are unaffected.
 import type { Request, Response, NextFunction } from "express";
-import type { BoardApiKeyScope } from "@paperclipai/shared";
-import { isMonitoringLinkScope } from "@paperclipai/shared";
+import type { BoardApiKeyScope } from "@myrmidonai/shared";
+import { isMonitoringLinkScope } from "@myrmidonai/shared";
 import { forbidden } from "../errors.js";
 
 const READ_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);

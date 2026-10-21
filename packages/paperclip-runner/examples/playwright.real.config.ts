@@ -1,5 +1,5 @@
 import { defineConfig } from "@playwright/test";
-import { readProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
+import { readProductEnv } from "@myrmidonai/shared/env-alias"; // myrmidon(REBRAND-C)
 
 export default defineConfig({
   testDir: ".",

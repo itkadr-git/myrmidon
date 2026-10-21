@@ -4,7 +4,7 @@ import {
   findFallbackTopologyCycles,
   parseFallbackTopology,
   type FallbackChain,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import { unprocessable } from "../../errors.js";
 
 /**

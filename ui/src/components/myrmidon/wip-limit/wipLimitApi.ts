@@ -8,7 +8,7 @@
 //   GET /api/myrmidon/companies/:companyId/wip-limit/status
 //        -> [{ agentId, inProgress, inReview, wip, limit, overLimit }]
 //
-// Types live here (not in @paperclipai/shared) while part A is unmerged, so
+// Types live here (not in @myrmidonai/shared) while part A is unmerged, so
 // the UI does not touch server or shared files; once A lands, the types move
 // to the shared contract and this module keeps only the calls.
 import { api } from "@/api/client";

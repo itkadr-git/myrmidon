@@ -27,7 +27,7 @@ import {
 import type {
   IssueQueuedCommentEntry,
   IssueQueuedCommentQueue,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import { cn } from "@/lib/utils";
 import {
   DropdownMenu,

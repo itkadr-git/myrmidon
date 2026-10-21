@@ -17,13 +17,13 @@
 //     verdict and the caller decides. 1.6 ships the deny half and the resolver;
 //     the held-action half for invocation-less routes is a documented follow-up.
 
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
 import type { Request } from "express";
 import {
   resolveAutonomy,
   type AutonomyActionClass,
   type AutonomyVerdict,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import { forbidden } from "../../errors.js";
 import { dbAutonomyStore, agentRoleFromDb, type AutonomyStore } from "./store.js";
 

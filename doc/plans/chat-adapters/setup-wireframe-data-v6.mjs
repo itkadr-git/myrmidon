@@ -183,7 +183,7 @@ export const setupFlows = [
         rail: ["Agent selected", "Create Teams app", "Install Maya", "Try Maya"],
         active: 1,
         mode: "default",
-        code: "npx @paperclipai/teams-connect --setup PC-7K4M",
+        code: "npx @myrmidonai/teams-connect --setup PC-7K4M",
         instructions: [
           ["Copy and run the command", "Run it in a terminal on a computer where you can sign in to Microsoft 365."],
           ["Sign in to Microsoft", "Approve the Microsoft login when the browser opens. The command creates the bot and returns here when it is ready."]

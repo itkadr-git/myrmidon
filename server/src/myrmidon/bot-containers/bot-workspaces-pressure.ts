@@ -6,7 +6,7 @@
 // `quotaPercent` stays null while the per-bot quota is off. Unmeasured partition
 // (dockergate down / never measured) is "no data": null, so the service answers `none`.
 
-import type { WsBotDiskPartitionSettings } from "@paperclipai/shared";
+import type { WsBotDiskPartitionSettings } from "@myrmidonai/shared";
 import type { BotPartitionThresholdState } from "../host-disk/partition.js";
 import type { BotWorkspacePressure } from "./bot-workspaces-service.js";
 

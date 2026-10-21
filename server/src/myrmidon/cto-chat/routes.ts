@@ -26,10 +26,10 @@
 // anywhere and nothing about it is stored.
 
 import { Router } from "express";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
 import type { Request, Response } from "express";
 
-import { ctoChatPlanRequestSchema } from "@paperclipai/shared";
+import { ctoChatPlanRequestSchema } from "@myrmidonai/shared";
 
 import { assertCompanyAccess } from "../../routes/authz.js";
 import { badRequest } from "../../errors.js";

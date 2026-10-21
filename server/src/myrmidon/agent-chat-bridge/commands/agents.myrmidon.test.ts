@@ -16,7 +16,7 @@ import {
   getEmbeddedPostgresTestSupport,
   issues,
   startEmbeddedPostgresTestDatabase,
-} from "@paperclipai/db";
+} from "@myrmidonai/db";
 import { telegramConversationUserId } from "../identity.js";
 import {
   addDefaultAliases,

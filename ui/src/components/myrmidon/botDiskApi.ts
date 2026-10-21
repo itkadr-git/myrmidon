@@ -6,7 +6,7 @@
 // without restarting the server. This client edits the cache path, the
 // mirrored repositories (1.6.2-BOT-DISK-C) and the shared bot runtime
 // (1.6.5-BOT-DISK-H11).
-import type { BotDiskSettingsPatch } from "@paperclipai/shared";
+import type { BotDiskSettingsPatch } from "@myrmidonai/shared";
 import { api } from "@/api/client";
 
 export interface BotDiskView {

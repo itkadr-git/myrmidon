@@ -5,7 +5,7 @@
 import express from "express";
 import request from "supertest";
 import { describe, expect, it } from "vitest";
-import { emptyTelegramNotifyDocument, parseTelegramNotifyDocument } from "@paperclipai/shared";
+import { emptyTelegramNotifyDocument, parseTelegramNotifyDocument } from "@myrmidonai/shared";
 import { errorHandler } from "../../middleware/index.js";
 import { telegramNotifyRoutes } from "./routes.js";
 import { applyTelegramNotifyPatch, telegramNotifyService } from "./service.js";

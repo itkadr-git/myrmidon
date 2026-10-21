@@ -45,7 +45,7 @@
 // level, so a broken source never stops the sweep.
 
 import { and, eq, inArray } from "drizzle-orm";
-import { heartbeatRuns, type Db } from "@paperclipai/db";
+import { heartbeatRuns, type Db } from "@myrmidonai/db";
 import { liveClaimCountsByAgent } from "../swarm-claim/matcher.js";
 import { listAgentsOfRole, listRoleQueue } from "../swarm-claim/queue.js";
 import { logger } from "../../middleware/logger.js";
@@ -70,12 +70,12 @@ import {
   utcDayStart,
   utcMonthStart,
 } from "./limits.js";
-import type { ForagingSettings } from "@paperclipai/shared";
+import type { ForagingSettings } from "@myrmidonai/shared";
 import type { ForagingStore } from "./store.js";
 import { readForagingIdleGate, type ForagingIdleGateServiceDeps } from "./idle-gate-settings.js";
 // myrmidon(1.6.3-FORAGING-IDLE-GATE, UI half): the pass journal of this pass.
 import type { ForagingPassJournalService } from "./pass-journal.js";
-import type { ForagingPassSkip } from "@paperclipai/shared";
+import type { ForagingPassSkip } from "@myrmidonai/shared";
 
 export interface ForagingReaderResult {
   /** The raw text of the source; the pass normalizes it. */

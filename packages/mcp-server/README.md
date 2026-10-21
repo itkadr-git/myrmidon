@@ -20,13 +20,13 @@ Inside an active heartbeat, Paperclip also injects `PAPERCLIP_RUNTIME_TOOLS_*` v
 ## Usage
 
 ```sh
-npx -y @paperclipai/mcp-server
+npx -y @myrmidonai/mcp-server
 ```
 
 Or locally in this repo:
 
 ```sh
-pnpm --filter @paperclipai/mcp-server build
+pnpm --filter @myrmidonai/mcp-server build
 node packages/mcp-server/dist/stdio.js
 ```
 

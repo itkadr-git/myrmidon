@@ -1,4 +1,4 @@
-# @paperclipai/adapter-utils
+# @myrmidonai/adapter-utils
 
 ## Unreleased
 

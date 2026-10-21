@@ -1,6 +1,6 @@
 import { BotContainerDriver } from './bot-containers/driver.js';
 import { IdleStopService } from './idle-stop.js';
-import { Db } from '@paperclipai/db';
+import { Db } from '@myrmidonai/db';
 import { logger } from '../middleware/logger.js';
 
 let idleStopService: IdleStopService | undefined;

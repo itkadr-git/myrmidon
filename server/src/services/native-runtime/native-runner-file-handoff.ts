@@ -14,7 +14,7 @@ import path from "node:path";
 
 import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
 import {
   agents,
   assets,
@@ -23,7 +23,7 @@ import {
   issueComments,
   issues,
   issueWorkProducts,
-} from "@paperclipai/db";
+} from "@myrmidonai/db";
 
 import {
   isAllowedContentType,

@@ -16,8 +16,8 @@
 // one `training_charge` event per pass, and the baseline port feeds the
 // cost-per-task auto-off rule.
 
-import type { Db } from "@paperclipai/db";
-import { financeEvents } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
+import { financeEvents } from "@myrmidonai/db";
 import { secretService } from "../../services/index.js";
 import { instanceSettingsService } from "../../services/instance-settings.js";
 import { logger } from "../../middleware/logger.js";

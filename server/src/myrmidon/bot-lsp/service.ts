@@ -13,7 +13,7 @@
 // Every write runs through one queue so the audit order matches the stored
 // value, as the parallel-helpers and runtime-limits settings do.
 
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
 import {
   countBotLspModes,
   effectiveBotLspSettings,
@@ -23,7 +23,7 @@ import {
   type BotLspSettings,
   type BotLspSettingsPatch,
   type EffectiveBotLspSettings,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import { logger } from "../../middleware/logger.js";
 import { instanceSettingsService, logActivity } from "../../services/index.js";
 

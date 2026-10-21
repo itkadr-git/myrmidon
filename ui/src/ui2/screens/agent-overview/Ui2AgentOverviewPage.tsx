@@ -8,7 +8,7 @@
 // ui2 route the card can link to under the flag.
 
 import { useQuery } from "@tanstack/react-query";
-import type { HeartbeatRun } from "@paperclipai/shared";
+import type { HeartbeatRun } from "@myrmidonai/shared";
 import { agentsApi } from "@/api/agents";
 import { heartbeatsApi } from "@/api/heartbeats";
 import { queryKeys } from "@/lib/queryKeys";

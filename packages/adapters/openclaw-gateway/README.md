@@ -1,6 +1,6 @@
 # OpenClaw Gateway Adapter
 
-This document describes how `@paperclipai/adapter-openclaw-gateway` invokes OpenClaw over the Gateway protocol.
+This document describes how `@myrmidonai/adapter-openclaw-gateway` invokes OpenClaw over the Gateway protocol.
 
 ## Transport
 
@@ -77,7 +77,7 @@ Like every Paperclip adapter, this one must treat the local execution-workspace
 cwd as the only persistence boundary across runs — no `git push` from runtime
 code, no assuming a `git remote` exists. The gateway transport here doesn't
 touch the workspace directly, but if you extend the adapter to ship code to
-the OpenClaw side, use the round-trip helpers in `@paperclipai/adapter-utils`
+the OpenClaw side, use the round-trip helpers in `@myrmidonai/adapter-utils`
 (`prepareWorkspaceForSshExecution` → `restoreWorkspaceFromSshExecution`)
 rather than reaching for a git remote. See
 [`packages/adapters/AUTHORING.md`](../AUTHORING.md#no-remote-git-contract-cross-run-persistence)

@@ -8,7 +8,7 @@ import {
   type ExternalObjectMention,
   type ExternalObjectStatusCategory,
   type ExternalObjectSummary,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import { ExternalObjectPill } from "@/components/ExternalObjectPill";
 import { ExternalObjectStatusIcon } from "@/components/ExternalObjectStatusIcon";
 import { ExternalObjectStatusSummary } from "@/components/ExternalObjectStatusSummary";

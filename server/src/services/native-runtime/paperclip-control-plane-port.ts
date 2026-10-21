@@ -1,11 +1,11 @@
 import { and, asc, eq, gt, or } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
 import {
   heartbeatRunEvents,
   heartbeatRuns,
   nativeRunFinalizations,
   nativeRunResults,
-} from "@paperclipai/db";
+} from "@myrmidonai/db";
 import type {
   CompleteControlPlaneRunInput,
   ControlPlanePort,

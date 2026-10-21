@@ -104,7 +104,7 @@ Tailscale-operator service account distinct from the Paperclip app account.
    needed).
 
    ```sh
-   pnpm --filter @paperclipai/tailscale-https-broker build
+   pnpm --filter @myrmidonai/tailscale-https-broker build
    sudo install -d -m 0755 /opt/paperclip/packages/tailscale-https-broker
    sudo cp -r packages/tailscale-https-broker/dist \
      /opt/paperclip/packages/tailscale-https-broker/
@@ -243,7 +243,7 @@ redacted.
 ## Tests
 
 ```sh
-pnpm --filter @paperclipai/tailscale-https-broker test        # 72 tests
-pnpm --filter @paperclipai/tailscale-https-broker typecheck
-pnpm --filter @paperclipai/tailscale-https-broker build
+pnpm --filter @myrmidonai/tailscale-https-broker test        # 72 tests
+pnpm --filter @myrmidonai/tailscale-https-broker typecheck
+pnpm --filter @myrmidonai/tailscale-https-broker build
 ```

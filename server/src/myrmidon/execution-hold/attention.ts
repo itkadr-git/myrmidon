@@ -17,8 +17,8 @@ import { and, desc, eq, inArray } from "drizzle-orm";
 import {
   EXECUTION_RECONCILIATION_CAUSES,
   type AttentionSeverity,
-} from "@paperclipai/shared";
-import { agents, companies, issueRecoveryActions, issues, type Db } from "@paperclipai/db";
+} from "@myrmidonai/shared";
+import { agents, companies, issueRecoveryActions, issues, type Db } from "@myrmidonai/db";
 
 export interface ExecutionHoldCardInput {
   actionId: string;

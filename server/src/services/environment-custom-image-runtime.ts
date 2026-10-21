@@ -1,13 +1,13 @@
 import { createHash } from "node:crypto";
 import { and, desc, eq } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
-import { environmentCustomImageTemplates } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
+import { environmentCustomImageTemplates } from "@myrmidonai/db";
 import {
   ENVIRONMENT_CUSTOM_IMAGE_TEMPLATE_KINDS,
   type EnvironmentCustomImageTemplate,
   type EnvironmentCustomImageTemplateKind,
   type SandboxEnvironmentConfig,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import { readConfigValueAtPath, writeConfigValueAtPath } from "./json-schema-secret-refs.js";
 
 type TemplateRow = typeof environmentCustomImageTemplates.$inferSelect;

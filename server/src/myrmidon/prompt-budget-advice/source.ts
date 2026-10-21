@@ -16,8 +16,8 @@
 // `heartbeat_runs.usage_json` column.
 
 import { and, desc, eq, sql } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
-import { agents, heartbeatRuns } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
+import { agents, heartbeatRuns } from "@myrmidonai/db";
 
 /** How many recent runs are scanned for a usable breakdown. */
 export const PROMPT_BUDGET_ADVICE_SCAN_LIMIT = 20;

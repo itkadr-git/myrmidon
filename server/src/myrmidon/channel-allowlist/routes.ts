@@ -7,11 +7,11 @@
 // contract resolves it (query parameter first, then the single membership).
 
 import { Router, type Request } from "express";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
 import {
   channelAllowedUserCreateSchema,
   channelAllowedUserUpdateSchema,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import { unprocessable } from "../../errors.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "../../routes/authz.js";
 import type { ChannelAllowlistService } from "./service.js";

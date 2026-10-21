@@ -12,7 +12,7 @@
 import {
   HELPER_TURN_BUDGET_MAX,
   HELPER_TURN_BUDGET_MIN,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 
 export type BotParallelHelpersCard = Record<string, unknown>;
 

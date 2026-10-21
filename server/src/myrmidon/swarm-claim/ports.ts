@@ -4,8 +4,8 @@
 // paths hand around. Split out of index.ts so the matcher factory and the claim
 // service can use it without importing the wiring point (no import cycle).
 
-import type { Db } from "@paperclipai/db";
-import type { CompanyCastesReader } from "@paperclipai/shared";
+import type { Db } from "@myrmidonai/db";
+import type { CompanyCastesReader } from "@myrmidonai/shared";
 import { logActivity as logActivityService } from "../../services/activity-log.js";
 import type { instanceSettingsService } from "../../services/instance-settings.js";
 import type { SwarmClaimEnqueueWakeup, SwarmClaimServicePorts } from "./service.js";

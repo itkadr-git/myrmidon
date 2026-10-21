@@ -2,12 +2,12 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { and, eq, gt, inArray, isNull, lte, ne, or } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
-import { providerTraceRecords } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
+import { providerTraceRecords } from "@myrmidonai/db";
 import type {
   ProviderTraceFrame,
   ProviderTraceMetadata,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 import { logActivity } from "./activity-log.js";
 

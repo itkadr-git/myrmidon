@@ -35,8 +35,8 @@ submission.
 - `packages/adapters/`: agent adapter implementations (Claude, Codex, Cursor, etc.)
 - `packages/adapter-utils/`: shared adapter utilities
 - `packages/plugins/`: plugin system packages
-- `packages/skills-catalog/`: app-shipped skills catalog (`@paperclipai/skills-catalog`)
-- `packages/teams-catalog/`: app-shipped teams catalog (`@paperclipai/teams-catalog`)
+- `packages/skills-catalog/`: app-shipped skills catalog (`@myrmidonai/skills-catalog`)
+- `packages/teams-catalog/`: app-shipped teams catalog (`@myrmidonai/teams-catalog`)
 - `cli/`: `paperclipai` CLI package (published bin, agent-facing commands)
 - `skills/`: Paperclip runtime/operational skills (not part of the app catalog)
 - `doc/`: operational and product docs

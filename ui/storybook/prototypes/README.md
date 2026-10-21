@@ -3,7 +3,7 @@
 Run Storybook:
 
 ```sh
-pnpm --filter @paperclipai/ui exec storybook dev --port 6010 --host 127.0.0.1 --no-open -c storybook/.storybook
+pnpm --filter @myrmidonai/ui exec storybook dev --port 6010 --host 127.0.0.1 --no-open -c storybook/.storybook
 ```
 
 ## Existing onboarding

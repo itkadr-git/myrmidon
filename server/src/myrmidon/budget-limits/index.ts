@@ -3,10 +3,10 @@
 // myrmidon(1.7-BUDGET-CONFIG A): the wiring point of the per-level spend
 // limits. app.ts mounts `budgetLimitsRoutes` from here. The shared contract
 // (levels, periods, modes, signal-only resolution, window math) lives in
-// `@paperclipai/shared` so a later UI part reads the same decisions this
+// `@myrmidonai/shared` so a later UI part reads the same decisions this
 // module serves.
 
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
 import { budgetLimitsRoutes } from "./routes.js";
 import { createForagingBudgetStatePort } from "./foraging-port.js";
 

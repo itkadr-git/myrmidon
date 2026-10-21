@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import type { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
+import type { AdapterExecutionContext, AdapterExecutionResult } from "@myrmidonai/adapter-utils";
 import {
   adapterExecutionTargetIsRemote,
   adapterExecutionTargetRemoteCwd,
@@ -16,7 +16,7 @@ import {
   resolveAdapterExecutionTargetCommandForLogs,
   resolveAdapterExecutionTargetTimeoutSec,
   runAdapterExecutionTargetProcess,
-} from "@paperclipai/adapter-utils/execution-target";
+} from "@myrmidonai/adapter-utils/execution-target";
 import {
   asBoolean,
   asNumber,
@@ -40,22 +40,22 @@ import {
   refreshPaperclipWorkspaceEnvForExecution,
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
   DEFAULT_PAPERCLIP_CONVERSATION_PROMPT_TEMPLATE,
-} from "@paperclipai/adapter-utils/server-utils";
+} from "@myrmidonai/adapter-utils/server-utils";
 // myrmidon(S2): allow-listed run environment
-import { myrmidonInheritedProcessEnv, readInheritProcessEnvFlag } from "@paperclipai/adapter-utils/myrmidon-run-env";
+import { myrmidonInheritedProcessEnv, readInheritProcessEnvFlag } from "@myrmidonai/adapter-utils/myrmidon-run-env";
 // myrmidon(H4): prompt transport helpers
 import {
   cliHelpMentionsFlag,
   promptArgumentOverflowResult,
   writePromptFile,
   type PromptFile,
-} from "@paperclipai/adapter-utils/myrmidon-prompt-transport";
+} from "@myrmidonai/adapter-utils/myrmidon-prompt-transport";
 import { DEFAULT_GROK_LOCAL_MODEL } from "../index.js";
 import { copyBackGrokAuth } from "./grok-auth-copyback.js";
 import { resolveManagedGrokHomeDir, stageGrokHomeForSync } from "./grok-home.js";
 import { isGrokUnknownSessionError, parseGrokJsonl } from "./parse.js";
 // myrmidon(B1c): product name in the runtime notes; see shared myrmidon-product.
-import { PRODUCT_NAME } from "@paperclipai/adapter-utils";
+import { PRODUCT_NAME } from "@myrmidonai/adapter-utils";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 

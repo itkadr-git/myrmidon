@@ -1,5 +1,5 @@
-import type { ToolConnection } from "@paperclipai/shared";
-import { humanizeConnectionDisplayName } from "@paperclipai/shared";
+import type { ToolConnection } from "@myrmidonai/shared";
+import { humanizeConnectionDisplayName } from "@myrmidonai/shared";
 import { Identity } from "@/components/Identity";
 import type { CompanyUserProfile } from "@/lib/company-members";
 

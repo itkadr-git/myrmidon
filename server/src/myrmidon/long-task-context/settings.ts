@@ -19,7 +19,7 @@ import {
   normalizeLongTaskContextSettings,
   type LongTaskContextSettingKey,
   type LongTaskContextSettings,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import type { instanceSettingsService } from "../../services/instance-settings.js";
 
 export type LongTaskContextSettingsService = Pick<

@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { PaperclipPluginManifestV1 } from "@paperclipai/shared";
+import type { PaperclipPluginManifestV1 } from "@myrmidonai/shared";
 import { createManagedBundledPluginWorkerRecovery } from "../app.js";
 import { listReadyPluginEnvironmentDrivers } from "../services/plugin-environment-driver.js";
 import { pluginLoader, type PluginLoader } from "../services/plugin-loader.js";
@@ -354,7 +354,7 @@ describe("listReadyPluginEnvironmentDrivers worker recovery", () => {
   it("lets callers suppress shared error-state writes on activation failure", async () => {
     const plugin = {
       ...createPlugin("ready"),
-      packageName: "@paperclipai/missing-sandbox-provider",
+      packageName: "@myrmidonai/missing-sandbox-provider",
       packagePath: null,
       version: "1.0.0",
     };
@@ -404,7 +404,7 @@ describe("listReadyPluginEnvironmentDrivers worker recovery", () => {
       fs.writeFileSync(
         path.join(fixtureDir, "package.json"),
         JSON.stringify({
-          name: "@paperclipai/daytona-sandbox-provider",
+          name: "@myrmidonai/daytona-sandbox-provider",
           version: "1.0.0",
           paperclipPlugin: { manifest: "manifest.mjs" },
         }),
@@ -418,7 +418,7 @@ describe("listReadyPluginEnvironmentDrivers worker recovery", () => {
 
       const plugin = {
         ...createPlugin("ready"),
-        packageName: "@paperclipai/daytona-sandbox-provider",
+        packageName: "@myrmidonai/daytona-sandbox-provider",
         packagePath: fixtureDir,
         version: "1.0.0",
       };

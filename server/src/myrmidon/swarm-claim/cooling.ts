@@ -12,8 +12,8 @@
 // the matcher works per task and wants a yes/no, the rule takes the company,
 // the settings and the clock and answers a status.
 
-import type { Db } from "@paperclipai/db";
-import type { SwarmSettings } from "@paperclipai/shared";
+import type { Db } from "@myrmidonai/db";
+import type { SwarmSettings } from "@myrmidonai/shared";
 import { isIssueCoolingDown, readSwarmSettings } from "../wake-task-guard.js";
 
 /** The settings of the cooling window the rule reads (`general.swarm`). */

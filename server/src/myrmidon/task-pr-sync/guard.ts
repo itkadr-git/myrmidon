@@ -14,7 +14,7 @@
 // is already terminal, is never suppressed.
 
 import { eq } from "drizzle-orm";
-import { issueWorkProducts, issues, type Db } from "@paperclipai/db";
+import { issueWorkProducts, issues, type Db } from "@myrmidonai/db";
 import { settlePendingForProducts } from "./policy.js";
 
 export async function shouldSuppressRunForIssue(issueId: string, db: Db): Promise<boolean> {

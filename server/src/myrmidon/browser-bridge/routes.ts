@@ -15,7 +15,7 @@
 
 import { Router, type Request, type Response } from "express";
 import { z } from "zod";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
 import {
   BROWSER_BRIDGE_ERROR_CODES,
   BROWSER_BRIDGE_PAIR_PATH,
@@ -24,7 +24,7 @@ import {
   pairingExchangeRequestSchema,
   type BrowserBridgeSettingsPatch,
   type PairingExchangeRequest,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import { validate } from "../../middleware/validate.js";
 import { assertBoardOrgAccess, assertCompanyAccess, assertInstanceAdmin, getActorInfo } from "../../routes/authz.js";
 import { bridgeJournalService } from "./journal-view.js";

@@ -3,7 +3,7 @@ import {
   BOARD_PROCESSES_SETTINGS_KEY,
   resolveBoardProcesses,
   type BoardProcessesResolution,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 
 /**
  * myrmidon(1.6.6 PROCS-J): reading the board's process composition out of

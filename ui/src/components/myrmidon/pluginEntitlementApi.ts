@@ -5,7 +5,7 @@
 // The keys list never carries key values (the server strips them); accepting a
 // key and rotating the verification public key take effect without a restart
 // (the loader gate re-reads the settings row on every activation pass).
-import type { PluginEntitlementKeyView, PluginEntitlementPublicKeyView } from "@paperclipai/shared";
+import type { PluginEntitlementKeyView, PluginEntitlementPublicKeyView } from "@myrmidonai/shared";
 import { api } from "@/api/client";
 
 export const pluginEntitlementQueryKey = ["myrmidon", "plugin-entitlement", "keys"] as const;

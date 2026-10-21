@@ -19,13 +19,13 @@
  *    never mutate an unknown/manual mapping or the primary `:443` route (the
  *    broker's `list` never returns those, and remove requires an owned handle).
  */
-import type { RuntimeExposureConfigInput, RuntimeExposureStatus } from "@paperclipai/shared";
+import type { RuntimeExposureConfigInput, RuntimeExposureStatus } from "@myrmidonai/shared";
 import {
   buildRuntimeExposureHealthUrl,
   buildRuntimeExposureUrl,
   deriveViteHmrPort,
   isRuntimeExposureAppPort,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 
 import {
   BrokerClientError,

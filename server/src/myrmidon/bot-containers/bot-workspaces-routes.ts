@@ -7,8 +7,8 @@
 // botd reads either as "keep all local state".
 
 import { Router } from "express";
-import type { Db } from "@paperclipai/db";
-import { wsDesiredStateSchema } from "@paperclipai/shared";
+import type { Db } from "@myrmidonai/db";
+import { wsDesiredStateSchema } from "@myrmidonai/shared";
 import { HttpError, forbidden, unauthorized } from "../../errors.js";
 import {
   botWorkspacesService,

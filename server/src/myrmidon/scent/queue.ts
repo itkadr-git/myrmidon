@@ -13,7 +13,7 @@
 // so a dead gateway burns at most batchSize ledger entries per tick and the
 // same records are not hammered again within the hour.
 
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
 import { sql } from "drizzle-orm";
 // Raw sql on `companies` (the drizzle schema export for it differs across
 // stacked release branches; the table itself is stable since 1.5).
@@ -22,7 +22,7 @@ import { logActivity } from "../../services/activity-log.js";
 import { instanceSettingsService } from "../../services/instance-settings.js";
 import { secretService } from "../../services/index.js";
 import { createCasteStore } from "../castes/store.js";
-import { DEFAULT_SCENT_SETTINGS, readScentSettings } from "@paperclipai/shared";
+import { DEFAULT_SCENT_SETTINGS, readScentSettings } from "@myrmidonai/shared";
 import { classifyAgentScent, classifyIssueScent, type ScentGatewayDeps } from "./gateway.js";
 import { baseStrengthFromGeneral, createScentService, scentSettingsFromGeneral } from "./service.js";
 

@@ -8,7 +8,7 @@
 // a special path that could drift from the board's own rules (transitions,
 // dedup, activity log, notifications).
 
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
 import {
   createMonitoringLinkWatchdog,
   type MonitoringLinkAlertRef,

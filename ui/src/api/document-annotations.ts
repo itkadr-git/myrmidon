@@ -6,7 +6,7 @@ import type {
   DocumentAnnotationThreadStatus,
   DocumentAnnotationThreadWithComments,
   UpdateDocumentAnnotationThreadRequest,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import { api } from "./client";
 
 export type DocumentAnnotationListFilter = "open" | "resolved" | "all";

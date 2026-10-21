@@ -13,7 +13,7 @@ planning route, the approval card and the Telegram entry
 (`server/src/myrmidon/cto-chat/`). The portal chat screen (part A — the
 Commander chat of the UI 2.0 shell, merged as its own PR) calls the same
 `POST /api/myrmidon/cto-chat/plan` and renders the proposal it gets; the two
-halves meet only at the shared proposal contract in `@paperclipai/shared`.
+halves meet only at the shared proposal contract in `@myrmidonai/shared`.
 
 The planner is off by default. It opens when both `MYRMIDON_CTO_CHAT_BASE_URL`
 and `MYRMIDON_CTO_CHAT_KEY_SECRET` are set — see [../SETTINGS.md](../SETTINGS.md),

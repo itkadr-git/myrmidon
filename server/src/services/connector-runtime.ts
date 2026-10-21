@@ -2,14 +2,14 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
-import type { Db } from "@paperclipai/db";
-import type { AgentSkillSnapshot } from "@paperclipai/shared";
+import type { Db } from "@myrmidonai/db";
+import type { AgentSkillSnapshot } from "@myrmidonai/shared";
 import {
   resolvePaperclipSkillsDir,
   readPaperclipSkillSyncPreference,
   writePaperclipSkillSyncPreference,
   type PaperclipSkillEntry,
-} from "@paperclipai/adapter-utils/server-utils";
+} from "@myrmidonai/adapter-utils/server-utils";
 import { forbidden } from "../errors.js";
 import { emailChannelService } from "./email-channels.js";
 import {

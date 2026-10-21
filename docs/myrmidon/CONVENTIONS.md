@@ -197,7 +197,7 @@ The goal is to keep the weekly vendor port as conflict-free as possible.
   `rollback.sh` restores the image but not the database, so the old image must keep working
   on the new schema. Vendor migration numbers grow every week: take the next free number and
   check it again before merging; duplicate numbers are caught by `check:migrations`. Generate
-  migrations with the regular `pnpm --filter @paperclipai/db generate`: a hand-written schema
+  migrations with the regular `pnpm --filter @myrmidonai/db generate`: a hand-written schema
   snapshot breaks the next migration. We still prefer storing state in existing JSON fields:
   `instance_settings.general`, `adapterConfig`, `metadata`. A non-additive migration — stop
   the step, describe it in the PR and in the report; the decision belongs to the maintainer.

@@ -7,7 +7,7 @@
 // An empty list is "the whole company": the agent may take every task. The
 // server reads the pairs fresh on every matcher pass, so saving the
 // multi-select in the agent card changes the match without a restart.
-import type { AgentNestsView } from "@paperclipai/shared";
+import type { AgentNestsView } from "@myrmidonai/shared";
 import { api } from "@/api/client";
 
 export type { AgentNestsView };

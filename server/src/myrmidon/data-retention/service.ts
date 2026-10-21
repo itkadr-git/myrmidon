@@ -22,7 +22,7 @@ import {
   normalizeDatastoreCareRetention,
   type DataRetentionSettingsPatch,
   type DataRetentionView,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import type { LogActivityInput } from "../../services/activity-log.js";
 import {
   readDataRetentionSettings,

@@ -1,7 +1,7 @@
 import { createHmac } from "node:crypto";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
-import type { AskUserQuestionsInteraction } from "@paperclipai/shared";
+import type { AskUserQuestionsInteraction } from "@myrmidonai/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   buildChatQuestionFormModal,

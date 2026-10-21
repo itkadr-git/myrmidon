@@ -1,5 +1,5 @@
 // myrmidon(DEBRAND-c): persist browser state under the Myrmidon namespace.
-import { announcementIdSchema } from "@paperclipai/shared";
+import { announcementIdSchema } from "@myrmidonai/shared";
 
 const memory = new Map<string, boolean>();
 export function announcementStoragePrefix(userId: string) {

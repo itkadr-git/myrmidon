@@ -6,7 +6,7 @@
 // a stub whose liveSession never expires).
 
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { createDb, instanceSettings, type Db } from "@paperclipai/db";
+import { createDb, instanceSettings, type Db } from "@myrmidonai/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,

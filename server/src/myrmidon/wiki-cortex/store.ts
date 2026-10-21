@@ -8,7 +8,7 @@
 // edits cannot take the same revision number.
 
 import { and, eq, sql } from "drizzle-orm";
-import { myrmidonWikiRegulations, type Db, type MyrmidonWikiRegulationRevision } from "@paperclipai/db";
+import { myrmidonWikiRegulations, type Db, type MyrmidonWikiRegulationRevision } from "@myrmidonai/db";
 import type { RegulationStore } from "./service.js";
 import type { RegulationPageRecord, RegulationRevisionRecord } from "./types.js";
 

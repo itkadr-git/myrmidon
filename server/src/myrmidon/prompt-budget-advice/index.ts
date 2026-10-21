@@ -8,7 +8,7 @@
 // Nothing is scheduled: the advice is computed on request, the deep pass is
 // started by the operator's button.
 
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
 import { promptBudgetAdviceRoutes } from "./routes.js";
 
 export * from "./advice.js";

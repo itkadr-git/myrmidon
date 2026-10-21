@@ -1,6 +1,6 @@
 import { useId, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import type { Project } from "@paperclipai/shared";
+import type { Project } from "@myrmidonai/shared";
 import { projectsApi } from "@/api/projects";
 import { castesApi, castesQueryKey } from "@/components/myrmidon/castes/castesApi";
 import { queryKeys } from "@/lib/queryKeys";

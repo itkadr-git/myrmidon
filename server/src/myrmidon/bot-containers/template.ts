@@ -10,7 +10,7 @@
 // volume or the driver's reserved bookkeeping paths — only what these functions
 // accept ever reaches the Docker API.
 
-import { isScopeInstanceDirName, WS_BOTD_BOARD_KEY_ENV_VALUE, WS_PROFILE_ENV, type BotDiskMechanics } from "@paperclipai/shared"; // myrmidon(1.6.5-BOT-DISK-H5c)
+import { isScopeInstanceDirName, WS_BOTD_BOARD_KEY_ENV_VALUE, WS_PROFILE_ENV, type BotDiskMechanics } from "@myrmidonai/shared"; // myrmidon(1.6.5-BOT-DISK-H5c)
 import type { BotContainerSpec, BotExtraMount } from "./driver.js";
 import type { CompiledProfileFile } from "./types.js";
 
@@ -253,7 +253,7 @@ export const BOT_RUNTIME_SCOPE_LABEL = "myrmidon.bot-runtime.scope";
 /** A member's place: the instance directory name under the shared root. */
 export interface BotScopeMount {
   scopeRoot: string;
-  /** `<kind>-<id>`, see `scopeInstanceDirName` in @paperclipai/shared. */
+  /** `<kind>-<id>`, see `scopeInstanceDirName` in @myrmidonai/shared. */
   dirName: string;
 }
 

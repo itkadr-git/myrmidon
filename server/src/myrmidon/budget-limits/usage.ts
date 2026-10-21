@@ -16,14 +16,14 @@
 // caste levels; they always count for the company nest.
 
 import { and, eq, gte, lt, sql } from "drizzle-orm";
-import { agents, issues, litellmCostEvents, type Db } from "@paperclipai/db";
+import { agents, issues, litellmCostEvents, type Db } from "@myrmidonai/db";
 import {
   budgetLimitWindow,
   BUDGET_LIMIT_FORAGING_REF,
   BUDGET_LIMIT_NEST_COMPANY_REF,
   type BudgetLimitLevel,
   type BudgetLimitPeriod,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 
 /** A spend view one level: the summed cents and the event count behind them. */
 export interface BudgetLimitUsage {

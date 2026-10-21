@@ -1,15 +1,15 @@
 import { Router, urlencoded, type Request } from "express";
-import type { Db } from "@paperclipai/db";
-import type { DeploymentExposure, DeploymentMode } from "@paperclipai/shared";
+import type { Db } from "@myrmidonai/db";
+import type { DeploymentExposure, DeploymentMode } from "@myrmidonai/shared";
 import {
   createSmokeRunSchema,
   recordSmokeRunStepSchema,
   updateSmokeRunSchema,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import { validate } from "../middleware/validate.js";
 import { assertBoard, assertBoardOrAgent, assertCompanyAccess, getActorInfo } from "./authz.js";
 import { logActivity, smokeLabService } from "../services/index.js";
-import { readProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
+import { readProductEnv } from "@myrmidonai/shared/env-alias"; // myrmidon(REBRAND-C)
 
 function configuredPublicBaseUrl() {
   const raw = (

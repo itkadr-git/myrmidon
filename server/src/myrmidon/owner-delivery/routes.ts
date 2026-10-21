@@ -21,14 +21,14 @@
 
 import { and, eq } from "drizzle-orm";
 import { Router, type Request } from "express";
-import { companyMemberships, type Db } from "@paperclipai/db";
+import { companyMemberships, type Db } from "@myrmidonai/db";
 import {
   ownerDeliverySettingsSchema,
   ownerMessageRequestSchema,
   ownerReplyResolutionSchema,
   type OwnerMessageRequest,
   type OwnerReplyResolution,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import { forbidden } from "../../errors.js";
 import { validate } from "../../middleware/validate.js";
 import { assertBoardOrgAccess, assertInstanceAdmin } from "../../routes/authz.js";

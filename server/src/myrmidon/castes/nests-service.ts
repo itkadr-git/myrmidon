@@ -8,8 +8,8 @@
 // (`agentNests` / `agentNestsAllowSql` in resolve.ts).
 
 import { and, eq } from "drizzle-orm";
-import { agents, type Db } from "@paperclipai/db";
-import type { AgentNestsView } from "@paperclipai/shared";
+import { agents, type Db } from "@myrmidonai/db";
+import type { AgentNestsView } from "@myrmidonai/shared";
 import { badRequest, notFound } from "../../errors.js";
 import type { AgentNestStore } from "./nests-store.js";
 

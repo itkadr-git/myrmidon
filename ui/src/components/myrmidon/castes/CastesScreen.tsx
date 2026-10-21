@@ -23,7 +23,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { getAgentIcon } from "@/lib/agent-icons";
-import { AGENT_ICON_NAMES } from "@paperclipai/shared";
+import { AGENT_ICON_NAMES } from "@myrmidonai/shared";
 import type { AddCasteInput, CasteView, UpdateCasteInput } from "./castesApi";
 import type { CasteCounts } from "./casteCounts";
 

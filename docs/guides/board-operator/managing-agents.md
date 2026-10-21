@@ -35,7 +35,7 @@ Common adapter choices:
 Use `hermes_local` when Myrmidon should start the local Hermes CLI. Use
 `hermes_gateway` when Hermes is already running as an API server and Myrmidon
 should call that server. Both are built-in adapter types from the unified
-`@paperclipai/hermes-paperclip-adapter` package.
+`@myrmidonai/hermes-paperclip-adapter` package.
 
 For `opencode_local`, configure an explicit `adapterConfig.model` (`provider/model`).
 Myrmidon validates the selected model against live `opencode models` output.

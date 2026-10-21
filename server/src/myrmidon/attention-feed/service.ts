@@ -12,7 +12,7 @@ import {
   type AttentionFeedSettingsPatch,
   type AttentionFeedStoredPatch,
   type StoredAttentionFeedSettings,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import { logger } from "../../middleware/logger.js";
 import type { LogActivityInput } from "../../services/activity-log.js";
 

@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { companies, createDb, evalReferenceTasks as evalTasksTable, evalRuns as evalRunsTable } from "@paperclipai/db";
+import { companies, createDb, evalReferenceTasks as evalTasksTable, evalRuns as evalRunsTable } from "@myrmidonai/db";
 import { eq } from "drizzle-orm";
 import {
   getEmbeddedPostgresTestSupport,

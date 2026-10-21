@@ -9,8 +9,8 @@ import { randomUUID } from "node:crypto";
 import express from "express";
 import request from "supertest";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { activityLog, companies, createDb, instanceSettings } from "@paperclipai/db";
-import { DATA_RETENTION_UPDATED_ACTION } from "@paperclipai/shared";
+import { activityLog, companies, createDb, instanceSettings } from "@myrmidonai/db";
+import { DATA_RETENTION_UPDATED_ACTION } from "@myrmidonai/shared";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,

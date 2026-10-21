@@ -10,7 +10,7 @@ import {
   issueThreadInteractions,
   issueWorkProducts,
   issues,
-} from "@paperclipai/db";
+} from "@myrmidonai/db";
 import type { PullRequestMergeDetailsResolver } from "../../services/github-pull-request-merge.js";
 import {
   getEmbeddedPostgresTestSupport,

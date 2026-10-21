@@ -5,7 +5,7 @@ import type {
   ChatPublicationState,
   ChatFileTransferPhase,
   IssueAttachment,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import {
   chatEndpointsApi,
   type ChatProvider,

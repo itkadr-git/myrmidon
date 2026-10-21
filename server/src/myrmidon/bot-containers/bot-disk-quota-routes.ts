@@ -9,13 +9,13 @@
 // no restart: the sweep and the admission check both read the row at use time.
 
 import { Router } from "express";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
 import {
   normalizeBotDiskQuotaSettings,
   patchBotDiskQuotaSettingsSchema,
   type BotDiskQuotaSettings,
   type BotDiskQuotaSettingsPatch,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import { validate } from "../../middleware/validate.js";
 import { assertBoardOrgAccess, assertInstanceAdmin, getActorInfo } from "../../routes/authz.js";
 import { instanceSettingsService, logActivity } from "../../services/index.js";

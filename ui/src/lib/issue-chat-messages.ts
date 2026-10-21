@@ -1,4 +1,4 @@
-import type { ExecutionProjection } from "@paperclipai/shared";
+import type { ExecutionProjection } from "@myrmidonai/shared";
 import type {
   ReasoningMessagePart,
   TextMessagePart,
@@ -8,7 +8,7 @@ import type {
   ThreadSystemMessage,
   ThreadUserMessage,
 } from "@assistant-ui/react";
-import type { Agent, IssueComment } from "@paperclipai/shared";
+import type { Agent, IssueComment } from "@myrmidonai/shared";
 import type { ActiveRunForIssue, LiveRunForIssue } from "../api/heartbeats";
 import { formatAssigneeUserLabel } from "./assignees";
 import { isOperatorInterruptedRun } from "./interrupt-handoff";

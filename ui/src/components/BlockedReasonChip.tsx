@@ -1,12 +1,12 @@
 import { AlertTriangle, Clock, Pause, User, Wrench } from "lucide-react";
 import type { ComponentType } from "react";
-import type { IssueBlockedInboxSeverity } from "@paperclipai/shared";
+import type { IssueBlockedInboxSeverity } from "@myrmidonai/shared";
 import { cn } from "../lib/utils";
 import {
   blockedReasonVariant,
   type BlockedReasonVariant,
 } from "../lib/blockedInbox";
-import type { IssueBlockedInboxReason } from "@paperclipai/shared";
+import type { IssueBlockedInboxReason } from "@myrmidonai/shared";
 // myrmidon(UI-RU): blocked-reason copy runs through the fork i18n catalog.
 import { useTranslation } from "@/i18n";
 

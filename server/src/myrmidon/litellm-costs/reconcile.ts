@@ -32,7 +32,7 @@
 //    rows left and writes nothing.
 
 import { and, eq, gte, isNotNull, lt, sql } from "drizzle-orm";
-import { agents, companies, costEvents, litellmCostEvents, type Db } from "@paperclipai/db";
+import { agents, companies, costEvents, litellmCostEvents, type Db } from "@myrmidonai/db";
 
 /** The provider string the hermes_gateway adapter reports. */
 const HERMES_GATEWAY_PROVIDER = "hermes_gateway";

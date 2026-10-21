@@ -7,7 +7,7 @@
 // cannot be resolved reads as `null`, and the service turns that into a 503
 // instead of issuing a token the Guacamole client would reject.
 
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
 import { logger } from "../../middleware/logger.js";
 import { secretService } from "../../services/secrets.js";
 import { activityConsoleJournal } from "./journal.js";

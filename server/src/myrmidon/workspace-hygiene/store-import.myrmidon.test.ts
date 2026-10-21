@@ -1,7 +1,7 @@
 // myrmidon(WORKSPACE-HYGIENE) part C: importing the store must not touch the
 // database module at import time.
 //
-// The server startup test mocks `@paperclipai/db` with only the exports it
+// The server startup test mocks `@myrmidonai/db` with only the exports it
 // needs. The store read `executionWorkspaces` while the module was being
 // imported (a column list built at module scope), so importing the server —
 // which now imports this module from the scheduler tick — crashed the startup
@@ -10,7 +10,7 @@
 
 import { describe, expect, it, vi } from "vitest";
 
-vi.mock("@paperclipai/db", () => ({}));
+vi.mock("@myrmidonai/db", () => ({}));
 
 describe("myrmidon(WORKSPACE-HYGIENE): the store under a partial db mock", () => {
   it("imports and constructs without reading the mocked tables at import time", async () => {

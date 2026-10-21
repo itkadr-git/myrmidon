@@ -13,7 +13,7 @@
 // assert, so tests can prove the 401/403 contract.
 
 import { Router, type Request } from "express";
-import { browserScreenHeartbeatSchema, browserSiteDataDeleteSchema } from "@paperclipai/shared/myrmidon-browser-console";
+import { browserScreenHeartbeatSchema, browserSiteDataDeleteSchema } from "@myrmidonai/shared/myrmidon-browser-console";
 import { badRequest, forbidden, HttpError, unauthorized } from "../../errors.js";
 import { validate } from "../../middleware/validate.js";
 import { assertAuthenticated } from "../../routes/authz.js";

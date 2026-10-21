@@ -1,7 +1,7 @@
 import { nativePhotonInteraction } from "./photon/interactions.js";
 import { randomBytes } from "node:crypto";
 import { and, eq, inArray, sql } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
 import {
   chatActions,
   chatConversations,
@@ -9,14 +9,14 @@ import {
   chatPublications,
   heartbeatRuns,
   issues,
-} from "@paperclipai/db";
+} from "@myrmidonai/db";
 import type {
   AskUserQuestionsInteraction,
   AskUserQuestionsQuestion,
   IssueThreadInteraction,
   RequestConfirmationInteraction,
   SafeExternalChatCardAction,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import { readConfigFile } from "../config-file.js";
 // myrmidon(B1): product name in the user-facing text below; see product.ts.
 import { PRODUCT_NAME } from "../myrmidon/product.js";
@@ -30,7 +30,7 @@ import {
   chatQuestionFormActionRecords,
   createChatQuestionFormDraft,
 } from "./chat-question-forms.js";
-import { readProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
+import { readProductEnv } from "@myrmidonai/shared/env-alias"; // myrmidon(REBRAND-C)
 
 const MAX_NATIVE_QUESTION_OPTIONS = 12;
 const QUESTION_ACTION_PREFIX = "pcq:";

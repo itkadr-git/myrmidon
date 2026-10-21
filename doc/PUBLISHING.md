@@ -19,9 +19,9 @@ Paperclip no longer uses release branches or Changesets for publishing.
 
 The CLI package, `paperclipai`, imports code from workspace packages such as:
 
-- `@paperclipai/server`
-- `@paperclipai/db`
-- `@paperclipai/shared`
+- `@myrmidonai/server`
+- `@myrmidonai/db`
+- `@myrmidonai/shared`
 - adapter packages under `packages/adapters/`
 
 Those workspace references are valid in development but not in a publishable npm package. The release flow rewrites versions temporarily, then builds a publishable CLI bundle.
@@ -66,7 +66,7 @@ The version rewrite step now uses [`scripts/release-package-map.mjs`](../scripts
 
 Those rewrites are temporary. The working tree is restored after publish or dry-run.
 
-## `@paperclipai/ui` packaging
+## `@myrmidonai/ui` packaging
 
 The UI package publishes prebuilt static assets, not the source workspace.
 
@@ -78,20 +78,20 @@ The `ui` package uses [`scripts/generate-ui-package-json.mjs`](../scripts/genera
 
 After packing or publishing, `postpack` restores the development manifest automatically.
 
-### Manual first publish for `@paperclipai/ui`
+### Manual first publish for `@myrmidonai/ui`
 
 If you need to publish only the UI package once by hand, use the real package name:
 
-- `@paperclipai/ui`
+- `@myrmidonai/ui`
 
 Recommended flow from the repo root:
 
 ```bash
 # optional sanity check: this 404s until the first publish exists
-npm view @paperclipai/ui version
+npm view @myrmidonai/ui version
 
 # make sure the dist payload is fresh
-pnpm --filter @paperclipai/ui build
+pnpm --filter @myrmidonai/ui build
 
 # confirm your local npm auth before the real publish
 npm whoami
@@ -108,12 +108,12 @@ Notes:
 
 - Publish from `ui/`, not the repo root.
 - `prepack` automatically rewrites `ui/package.json` to the lean publish manifest, and `postpack` restores the dev manifest after the command finishes.
-- If `npm view @paperclipai/ui version` already returns the same version that is in [`ui/package.json`](../ui/package.json), do not republish. Bump the version or use the normal repo-wide release flow in [`scripts/release.sh`](../scripts/release.sh).
+- If `npm view @myrmidonai/ui version` already returns the same version that is in [`ui/package.json`](../ui/package.json), do not republish. Bump the version or use the normal repo-wide release flow in [`scripts/release.sh`](../scripts/release.sh).
 
 If the first real publish returns npm `E404`, check npm-side prerequisites before retrying:
 
 - `npm whoami` must succeed first. An expired or missing npm login will block the publish.
-- For an organization-scoped package like `@paperclipai/ui`, the `paperclipai` npm organization must exist and the publisher must be a member with permission to publish to that scope.
+- For an organization-scoped package like `@myrmidonai/ui`, the `paperclipai` npm organization must exist and the publisher must be a member with permission to publish to that scope.
 - The initial publish must include `--access public` for a public scoped package.
 - npm also requires either account 2FA for publishing or a granular token that is allowed to bypass 2FA.
 
@@ -148,7 +148,7 @@ npx paperclipai@canary onboard
 The release script now verifies two things after a canary publish:
 
 - the `canary` dist-tag resolves to the version that was just published
-- every published internal `@paperclipai/*` dependency referenced by that manifest exists on npm
+- every published internal `@myrmidonai/*` dependency referenced by that manifest exists on npm
 
 It also treats `latest -> canary` as a failure by default, because npm metadata can otherwise leave the default install path pointing at an unreleased canary dependency graph. Only pass `./scripts/release.sh canary --allow-canary-latest` when that `latest` behavior is explicitly intended.
 
@@ -210,16 +210,16 @@ Example for a newly added public package from the repo root:
 
 ```bash
 # safe preview (stages the placeholder and runs npm publish --dry-run)
-pnpm run release:bootstrap-package -- @paperclipai/new-package
+pnpm run release:bootstrap-package -- @myrmidonai/new-package
 
 # one-time placeholder publish from an authenticated maintainer machine
 # (prompts for npm one-time passwords; they are never passed as arguments)
-pnpm run release:bootstrap-package -- @paperclipai/new-package --publish
+pnpm run release:bootstrap-package -- @myrmidonai/new-package --publish
 ```
 
 The helper script:
 
-- refuses names outside the `@paperclipai/` scope
+- refuses names outside the `@myrmidonai/` scope
 - checks that the package does not already exist on npm
 - stages the placeholder in a temporary directory and previews it with `npm publish --dry-run --access public`
 - with `--publish`, prompts for a one-time password and publishes. Codes are entered interactively and handed to npm through its environment (`npm_config_otp`), so they never appear on a command line, in shell history, or in a process listing; a rejected or expired code re-prompts
@@ -237,7 +237,7 @@ That local human auth is fine for the one-time bootstrap publish; we just do not
 
 After the placeholder publish succeeds:
 
-1. open `https://www.npmjs.com/package/@paperclipai/new-package`
+1. open `https://www.npmjs.com/package/@myrmidonai/new-package`
 2. go to `Settings` → `Trusted publishing`
 3. add repository `paperclipai/paperclip`
 4. set workflow filename to `release.yml`

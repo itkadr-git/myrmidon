@@ -36,7 +36,7 @@ import {
   PROCESS_ROLE_API_HOST,
   PROCESS_ROLE_API_PORT,
 } from "../../services/process-role.js";
-import type { ProcessesSettings } from "@paperclipai/shared";
+import type { ProcessesSettings } from "@myrmidonai/shared";
 
 /** Env var the child reads to correlate its boot with the worker's. */
 export const PARENT_BOOT_ID_ENV = "PAPERCLIP_PARENT_BOOT_ID";

@@ -5,7 +5,7 @@
 // cancelled) action targeted by `actionId`; see
 // docs/myrmidon/DIVERGENCE.md "L2".
 import { eq } from "drizzle-orm";
-import { issueRecoveryActions, type Db } from "@paperclipai/db";
+import { issueRecoveryActions, type Db } from "@myrmidonai/db";
 import { notFound } from "../../errors.js";
 import { logActivity, type ActivityPublication } from "../../services/activity-log.js";
 

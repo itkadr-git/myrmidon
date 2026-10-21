@@ -3,7 +3,7 @@ import { IssueGalleryContext } from "@/context/IssueGalleryContext";
 import { ImageGalleryModal } from "@/components/ImageGalleryModal";
 import { isImageContentType, isVideoLikeOutput } from "@/lib/issue-output";
 import { attachmentDownloadPath } from "@/lib/issue-attachments";
-import type { IssueWorkProduct } from "@paperclipai/shared";
+import type { IssueWorkProduct } from "@myrmidonai/shared";
 import {
   ExternalLink,
   Maximize2,

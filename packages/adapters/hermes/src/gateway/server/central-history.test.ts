@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
+import type { AdapterExecutionContext } from "@myrmidonai/adapter-utils";
 
 import {
   createCentralHistoryClient,

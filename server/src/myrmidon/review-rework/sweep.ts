@@ -39,7 +39,7 @@ import {
   REVIEW_REWORK_WAKE_IDEMPOTENCY_PREFIX,
   REVIEW_REWORK_WAKE_REASON,
   type ReviewReworkSettings,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import { logger } from "../../middleware/logger.js";
 import {
   REVIEW_REWORK_HEAD_ACK_MARKER,

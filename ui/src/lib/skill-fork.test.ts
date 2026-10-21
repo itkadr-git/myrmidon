@@ -3,7 +3,7 @@ import type {
   CompanySkillForkSummary,
   CompanySkillOriginalSummary,
   CompanySkillUsageAgent,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import {
   agentUsageSentence,
   formatForkSourceName,

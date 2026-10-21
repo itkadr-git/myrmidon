@@ -1,6 +1,6 @@
 import { sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { agentCastes, companies, createDb, projects as projectsTable } from "@paperclipai/db";
+import { agentCastes, companies, createDb, projects as projectsTable } from "@myrmidonai/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,

@@ -1,4 +1,4 @@
-import { normalizeAlertTrigger } from "@paperclipai/shared";
+import { normalizeAlertTrigger } from "@myrmidonai/shared";
 
 /**
  * The runbook registry of alert recovery (myrmidon 1.6.6 MONITORING, part D).

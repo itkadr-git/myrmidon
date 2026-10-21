@@ -10,7 +10,7 @@ import type {
   AgentExchangeSettingsPatch,
   AgentExchangeSettingSource,
   ResolvedAgentExchangeSettings,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import { api } from "@/api/client";
 
 export type AgentExchangeSettingsView = ResolvedAgentExchangeSettings;

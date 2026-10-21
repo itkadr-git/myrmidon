@@ -10,9 +10,9 @@
 // credential is visible in the very place the alarm must look.
 
 import { and, eq, sql } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
-import { agents, boardApiKeys, issueCreateIdempotencyKeys, issues } from "@paperclipai/db";
-import { monitoringLinkScopeSchema } from "@paperclipai/shared";
+import type { Db } from "@myrmidonai/db";
+import { agents, boardApiKeys, issueCreateIdempotencyKeys, issues } from "@myrmidonai/db";
+import { monitoringLinkScopeSchema } from "@myrmidonai/shared";
 import { logger } from "../../../middleware/logger.js";
 import type { MonitoringLinkKeyRow } from "./health.js";
 

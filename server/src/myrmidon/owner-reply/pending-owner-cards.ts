@@ -16,8 +16,8 @@
 // care which door the sentence came through.
 
 import { and, eq, inArray, lt } from "drizzle-orm";
-import { issueThreadInteractions, issues, type Db } from "@paperclipai/db";
-import { isOwnerDecisionAudience } from "@paperclipai/shared";
+import { issueThreadInteractions, issues, type Db } from "@myrmidonai/db";
+import { isOwnerDecisionAudience } from "@myrmidonai/shared";
 import {
   OWNER_DIALOGUE_KINDS,
   isPlainOwnerDecisionPayload,

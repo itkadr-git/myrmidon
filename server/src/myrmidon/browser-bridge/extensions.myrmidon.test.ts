@@ -5,7 +5,7 @@
 // payloads are neutral on purpose — the registry is generic.
 
 import { describe, expect, it } from "vitest";
-import { BROWSER_BRIDGE_ERROR_CODES } from "@paperclipai/shared";
+import { BROWSER_BRIDGE_ERROR_CODES } from "@myrmidonai/shared";
 import {
   BRIDGE_EXTENSION_MAX_TIMEOUT_MS,
   createBridgeExtensionRegistry,

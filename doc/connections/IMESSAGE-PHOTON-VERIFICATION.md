@@ -83,7 +83,7 @@ Slack, Discord, GitHub, Teams, and Telegram surfaces.
 | Shared catalog project | 727 passed, including exact catalog and branding coverage. |
 | Repository Vitest suite | The initial `pnpm test:run` overlapped edits/rebase and was stopped; it is not a final-commit pass. Fresh targeted and CI checks supersede it. The serialized route run found the missing Photon OpenAPI contract, which is fixed and passes its 8-case suite. Full gate status is recorded in the linked PR. |
 | Build | Full `pnpm build` passed before and after rebase. |
-| Generated forward migration | Generated through `pnpm db:generate`; `@paperclipai/db check:migrations` passed. Disposable database migrations exercised by integration tests. |
+| Generated forward migration | Generated through `pnpm db:generate`; `@myrmidonai/db check:migrations` passed. Disposable database migrations exercised by integration tests. |
 | Native HEIF platform packages | macOS arm64 executed; other published platforms not executed. |
 
 ### Local test prerequisites

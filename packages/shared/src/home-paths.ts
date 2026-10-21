@@ -1,6 +1,6 @@
 import os from "node:os";
 import path from "node:path";
-import { readProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
+import { readProductEnv } from "@myrmidonai/shared/env-alias"; // myrmidon(REBRAND-C)
 
 export const DEFAULT_PAPERCLIP_INSTANCE_ID = "default";
 export const PAPERCLIP_CONFIG_BASENAME = "config.json";

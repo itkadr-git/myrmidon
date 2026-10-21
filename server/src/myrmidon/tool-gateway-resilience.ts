@@ -22,8 +22,8 @@
 
 import { randomUUID } from "node:crypto";
 import { and, eq, inArray, isNull } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
-import { toolApplications, toolCatalogEntries, toolConnections } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
+import { toolApplications, toolCatalogEntries, toolConnections } from "@myrmidonai/db";
 import { logger } from "../middleware/logger.js";
 import { validateToolContent } from "../services/tool-content-guards.js";
 

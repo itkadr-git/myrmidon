@@ -33,7 +33,7 @@ import { fileURLToPath } from "node:url";
 
 export const PLACEHOLDER_VERSION = "0.0.0";
 
-const SCOPE_RE = /^@paperclipai\/[a-z0-9][a-z0-9._-]*$/;
+const SCOPE_RE = /^@myrmidonai\/[a-z0-9][a-z0-9._-]*$/;
 
 const REGISTRY_POLL_INTERVAL_MS = 15_000;
 const REGISTRY_POLL_ATTEMPTS = 40; // ~10 minutes
@@ -58,8 +58,8 @@ function usage() {
       "environment, so codes never appear on a command line.",
       "",
       "Examples:",
-      "  node scripts/bootstrap-npm-package.mjs @paperclipai/new-package",
-      "  node scripts/bootstrap-npm-package.mjs @paperclipai/new-package --publish",
+      "  node scripts/bootstrap-npm-package.mjs @myrmidonai/new-package",
+      "  node scripts/bootstrap-npm-package.mjs @myrmidonai/new-package --publish",
       "",
     ].join("\n"),
   );
@@ -105,7 +105,7 @@ export function validatePackageName(packageName) {
   if (!SCOPE_RE.test(packageName)) {
     throw new Error(
       `refusing to publish a placeholder for ${JSON.stringify(packageName)}: ` +
-        "the name must be a lowercase package inside the @paperclipai scope " +
+        "the name must be a lowercase package inside the @myrmidonai scope " +
         "(this guard prevents accidental publishes to names we do not own).",
     );
   }
@@ -189,7 +189,7 @@ export function ensureNpmAuth() {
       [
         "npm auth check failed.",
         "This usually means the machine is either not logged into npm yet or has a stale token in ~/.npmrc.",
-        "Run `npm logout --registry=https://registry.npmjs.org/` and then `npm login` or `npm adduser` on this maintainer machine with an npm account that can publish to the @paperclipai scope, then rerun with --publish.",
+        "Run `npm logout --registry=https://registry.npmjs.org/` and then `npm login` or `npm adduser` on this maintainer machine with an npm account that can publish to the @myrmidonai scope, then rerun with --publish.",
         "Do not use this auth flow in CI; it is only for the one-time human bootstrap publish.",
       ].join(" "),
     );

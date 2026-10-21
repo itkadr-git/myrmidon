@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { agents, companies, createDb, heartbeatRuns } from "@paperclipai/db";
+import { agents, companies, createDb, heartbeatRuns } from "@myrmidonai/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -85,7 +85,7 @@ describeEmbeddedPostgres("run start dispatch, notify mode: two processes, one da
     db = createDb(tempDb.connectionString);
     // The dispatcher reads the mode from the singleton row of
     // instance_settings.general.processes — seed the notify mode once.
-    const { instanceSettings } = await import("@paperclipai/db");
+    const { instanceSettings } = await import("@myrmidonai/db");
     const inserted = await db
       .insert(instanceSettings)
       .values({

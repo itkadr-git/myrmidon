@@ -48,7 +48,7 @@ import {
   issueClaims,
   issues,
   type Db,
-} from "@paperclipai/db";
+} from "@myrmidonai/db";
 import {
   SWARM_CLAIM_QUEUE_ISSUE_STATUSES,
   SWARM_CLAIM_WAKE_REASON,
@@ -62,7 +62,7 @@ import {
   swarmMatchedIdempotencyKey,
   type SwarmClaimSettings,
   type SwarmSettings,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import type { IssuePostCommitAction } from "../../services/issues.js";
 import { queueIssueAssignmentWakeup, type IssueAssignmentWakeupDeps } from "../../services/issue-assignment-wakeup.js";
 import { logActivity as logActivityInTx, publishActivity, type ActivityPublication } from "../../services/activity-log.js";

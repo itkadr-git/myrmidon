@@ -1,4 +1,4 @@
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
 import { instanceSettingsService, logActivity } from "../../services/index.js";
 import { attentionFeedRoutes } from "./routes.js";
 import {

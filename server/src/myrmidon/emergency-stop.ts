@@ -40,7 +40,7 @@
 import { Router } from "express";
 import type { Request } from "express";
 import { eq } from "drizzle-orm";
-import { agents, type Db } from "@paperclipai/db";
+import { agents, type Db } from "@myrmidonai/db";
 import { forbidden, notFound } from "../errors.js";
 import { heartbeatService, accessService } from "../services/index.js";
 import { logActivity } from "../services/activity-log.js";

@@ -12,7 +12,7 @@ import path from "node:path";
 
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 import { runtimePublicOrigin } from "./cloud-runtime-identity.js";
-import { readProductEnv, readProductEnvFrom } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
+import { readProductEnv, readProductEnvFrom } from "@myrmidonai/shared/env-alias"; // myrmidon(REBRAND-C)
 
 const IDENTITY_VERSION = 1;
 const ENROLLMENT_FILE = "paperclip-cloud-connector.json";

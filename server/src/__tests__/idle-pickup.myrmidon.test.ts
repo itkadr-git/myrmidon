@@ -12,7 +12,7 @@ import {
   issuePlanDecompositions,
   issueRelations,
   issues,
-} from "@paperclipai/db";
+} from "@myrmidonai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 
 vi.mock("../middleware/logger.js", () => ({

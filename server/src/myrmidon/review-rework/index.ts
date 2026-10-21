@@ -1,7 +1,7 @@
 // myrmidon(REVIEW-REWORK): entry point — one import and one call site in the
 // server entry (CONVENTIONS.md §12) plus one router in app.ts.
 
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
 import { logger } from "../../middleware/logger.js";
 import { instanceSettingsService } from "../../services/instance-settings.js";
 import { isInstanceUnderMaintenance } from "../maintenance/gate.js";

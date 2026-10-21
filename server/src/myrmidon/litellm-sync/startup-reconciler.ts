@@ -17,10 +17,10 @@
 // nothing is dialled by default and the secret NAME is never sent as a key.
 // The admin key VALUE is resolved per company through the secret store.
 
-import type { Db } from "@paperclipai/db";
-import { companies } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
+import { companies } from "@myrmidonai/db";
 import { isNotNull } from "drizzle-orm";
-import { readGatewayKeySettings } from "@paperclipai/shared";
+import { readGatewayKeySettings } from "@myrmidonai/shared";
 import { logger } from "../../middleware/logger.js";
 import { secretService } from "../../services/index.js";
 import { createLitellmSyncClient } from "./client.js";

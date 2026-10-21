@@ -6,7 +6,7 @@
 // the minimum spacing between two scan passes and how many runs one pass
 // inspects. PATCH saves them to the instance settings and they apply
 // immediately, without restarting the server.
-import type { RunStallPatch, RunStallSource, RunStallKey, RunStallValues } from "@paperclipai/shared";
+import type { RunStallPatch, RunStallSource, RunStallKey, RunStallValues } from "@myrmidonai/shared";
 
 /** The two keys this panel edits; `enabled` and the threshold belong to team-liveness. */
 export type RunStallEditablePatch = Pick<RunStallPatch, "checkIntervalSec" | "pageSize">;

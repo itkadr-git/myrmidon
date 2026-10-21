@@ -23,17 +23,17 @@ import { useCompany } from "@/context/CompanyContext";
 import { useQueryClient } from "@tanstack/react-query";
 import { queryKeys } from "@/lib/queryKeys";
 import { agentsApi } from "@/api/agents";
-import type { AdapterEnvironmentTestResult, Agent } from "@paperclipai/shared";
+import type { AdapterEnvironmentTestResult, Agent } from "@myrmidonai/shared";
 import { storybookAgents, storybookHiredAgent } from "../fixtures/paperclipData";
 import { PREVIEW_AGENT_ID, PREVIEW_COMPANY_ID, runtimeTestResult, useNewAgentFixtures, type TestOutcome, type TestState } from "./new-agent-fixtures";
 import { stepMotion } from "@/components/onboarding/onboarding-motion";
-import { models as claudeModels } from "@paperclipai/adapter-claude-local";
-import { models as codexModels } from "@paperclipai/adapter-codex-local";
-import { models as openCodeModels } from "@paperclipai/adapter-opencode-local";
-import { models as cursorModels } from "@paperclipai/adapter-cursor-local";
-import { models as geminiModels } from "@paperclipai/adapter-gemini-local";
-import { models as grokModels } from "@paperclipai/adapter-grok-local";
-import { models as kimiModels } from "@paperclipai/adapter-kimi-local";
+import { models as claudeModels } from "@myrmidonai/adapter-claude-local";
+import { models as codexModels } from "@myrmidonai/adapter-codex-local";
+import { models as openCodeModels } from "@myrmidonai/adapter-opencode-local";
+import { models as cursorModels } from "@myrmidonai/adapter-cursor-local";
+import { models as geminiModels } from "@myrmidonai/adapter-gemini-local";
+import { models as grokModels } from "@myrmidonai/adapter-grok-local";
+import { models as kimiModels } from "@myrmidonai/adapter-kimi-local";
 
 const modelLists = {
   claude_local: claudeModels, codex_local: codexModels, opencode_local: openCodeModels,

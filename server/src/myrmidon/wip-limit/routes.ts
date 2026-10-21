@@ -14,8 +14,8 @@
 // two endpoints, and this file must not change their shape.
 
 import { Router } from "express";
-import type { Db } from "@paperclipai/db";
-import { wipLimitSettingsSchema, type WipLimitSettings } from "@paperclipai/shared";
+import type { Db } from "@myrmidonai/db";
+import { wipLimitSettingsSchema, type WipLimitSettings } from "@myrmidonai/shared";
 import { validate } from "../../middleware/validate.js";
 import { assertCompanyAccess, assertInstanceAdmin } from "../../routes/authz.js";
 import { issueService } from "../../services/issues.js";

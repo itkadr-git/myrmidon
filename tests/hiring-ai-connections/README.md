@@ -110,7 +110,7 @@ pnpm exec vitest run server/src/__tests__/agent-hire-ai-connections.test.ts \
   server/src/services/execution-recovery-attempt.test.ts \
   server/src/services/native-runtime/runner-api.integration.test.ts \
   ui/src/features/connections/ConnectionIntentInteractionBody.test.tsx
-pnpm --filter @paperclipai/ui exec storybook dev -p 6010 -c storybook/.storybook --ci --no-open
+pnpm --filter @myrmidonai/ui exec storybook dev -p 6010 -c storybook/.storybook --ci --no-open
 HIRING_AI_STORYBOOK_URL=http://127.0.0.1:6010 \
   pnpm exec playwright test --config tests/hiring-ai-connections/playwright.config.ts --grep storybook
 ```

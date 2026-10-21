@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { Command } from "commander";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { readZipArchive } from "@paperclipai/shared/portability-zip";
+import { readZipArchive } from "@myrmidonai/shared/portability-zip";
 import {
   CHUNKED_IMPORT_THRESHOLD_BYTES,
   IMPORT_TRANSFER_PART_SIZE_BYTES,

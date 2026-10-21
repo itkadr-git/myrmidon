@@ -37,10 +37,10 @@ import path from "node:path";
 import fs from "node:fs/promises";
 
 import { and, eq } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
-import { agents, companySkills } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
+import { agents, companySkills } from "@myrmidonai/db";
 import { companySkillService } from "../../services/index.js";
-import { readPaperclipSkillSyncPreference, writePaperclipSkillSyncPreference } from "@paperclipai/adapter-utils/server-utils";
+import { readPaperclipSkillSyncPreference, writePaperclipSkillSyncPreference } from "@myrmidonai/adapter-utils/server-utils";
 import { BOT_BACKIMPORT_ORIGIN_METADATA_KEY, skillLifecycleService } from "../skill-lifecycle/index.js";
 import type {
   BackimportSkillFile,

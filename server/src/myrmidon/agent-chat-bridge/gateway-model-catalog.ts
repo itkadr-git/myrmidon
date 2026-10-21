@@ -21,8 +21,8 @@
 // owns (same base URL, same secret store) instead of a second HTTP path.
 // This is a fork-owned module (server/src/myrmidon/...).
 
-import type { Db } from "@paperclipai/db";
-import { agentKeySecretName, readGatewayKeySettings } from "@paperclipai/shared";
+import type { Db } from "@myrmidonai/db";
+import { agentKeySecretName, readGatewayKeySettings } from "@myrmidonai/shared";
 import { logger } from "../../middleware/logger.js";
 import { redactSensitiveText } from "../../redaction.js";
 import { secretService } from "../../services/index.js";

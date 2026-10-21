@@ -1,6 +1,6 @@
 import { AiConnectionField, aiProviderForAdapter } from "../ai-connections/AiConnectionField";
-import type { AiConnectionBinding } from "@paperclipai/shared";
-import { DEFAULT_CODEX_LOCAL_MODEL } from "@paperclipai/adapter-codex-local";
+import type { AiConnectionBinding } from "@myrmidonai/shared";
+import { DEFAULT_CODEX_LOCAL_MODEL } from "@myrmidonai/adapter-codex-local";
 import {
   SETUP_CREDENTIAL_KEYS,
   SETUP_LOGIN_HINTS,
@@ -18,8 +18,8 @@ import type {
   AdapterEnvironmentTestResult,
   Agent,
   EnvBinding,
-} from "@paperclipai/shared";
-import { ADAPTER_AUTH_MISSING_CHECK_CODE } from "@paperclipai/shared";
+} from "@myrmidonai/shared";
+import { ADAPTER_AUTH_MISSING_CHECK_CODE } from "@myrmidonai/shared";
 import { useNavigate, useSearchParams } from "@/lib/router";
 import { agentsApi } from "@/api/agents";
 import { adaptersApi } from "@/api/adapters";

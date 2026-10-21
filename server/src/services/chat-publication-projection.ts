@@ -3,7 +3,7 @@ import type {
   SafeExternalChatCard,
   SafeExternalChatCardAction,
   SafeExternalChatCardKind,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import { redactSensitiveText } from "../redaction.js";
 // myrmidon(B1): product name in the user-facing fallback text below; see product.ts.
 import { PRODUCT_NAME } from "../myrmidon/product.js";

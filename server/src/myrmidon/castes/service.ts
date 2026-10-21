@@ -28,8 +28,8 @@ import {
   type CreateCasteInput,
   type CasteView,
   type PatchCasteInput,
-} from "@paperclipai/shared";
-import { agents, agentCastes, type Db } from "@paperclipai/db";
+} from "@myrmidonai/shared";
+import { agents, agentCastes, type Db } from "@myrmidonai/db";
 import { badRequest, conflict, notFound } from "../../errors.js";
 import { createCasteStore, type CasteStore } from "./store.js";
 

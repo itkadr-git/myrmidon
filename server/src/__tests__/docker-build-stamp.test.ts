@@ -59,7 +59,7 @@ describe("docker build-stamp wiring", () => {
   it("declares PAPERCLIP_BUILD_COMMIT in the build stage before the server build", () => {
     const build = stageBody(dockerfile, "build");
     const argIdx = build.search(/^ARG PAPERCLIP_BUILD_COMMIT\b/m);
-    const serverBuildIdx = build.search(/^RUN pnpm --filter @paperclipai\/server build\b/m);
+    const serverBuildIdx = build.search(/^RUN pnpm --filter @myrmidonai\/server build\b/m);
     expect(argIdx, "build stage must declare ARG PAPERCLIP_BUILD_COMMIT").toBeGreaterThanOrEqual(0);
     expect(serverBuildIdx, "build stage must run the server build").toBeGreaterThanOrEqual(0);
     expect(

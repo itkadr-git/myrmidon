@@ -15,7 +15,7 @@ Paperclip ships both Hermes adapters as built-ins:
 
 No Adapter manager installation is required for normal use. Adapter manager is
 only needed when you intentionally install an external
-`@paperclipai/hermes-paperclip-adapter` package to override or shadow a built-in
+`@myrmidonai/hermes-paperclip-adapter` package to override or shadow a built-in
 adapter while developing the Hermes package. If the external override is paused
 or removed, Paperclip restores the built-in `hermes_local` / `hermes_gateway`
 adapter.
@@ -188,6 +188,6 @@ Use these entry points depending on who is driving setup:
   verification and `pnpm smoke:hermes-gateway-join` for an already-running
   gateway.
 - Adapter development override: Adapter manager can install
-  `@paperclipai/hermes-paperclip-adapter` as an external override, but normal
+  `@myrmidonai/hermes-paperclip-adapter` as an external override, but normal
   operators should use the built-in `hermes_local` and `hermes_gateway`
   adapters.

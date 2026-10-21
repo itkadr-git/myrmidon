@@ -1,6 +1,6 @@
 // myrmidon(CLOUD-CONNECTOR): server-side types for the cloud storage connector.
 //
-// The wire contract lives in @paperclipai/shared/myrmidon-cloud-connector;
+// The wire contract lives in @myrmidonai/shared/myrmidon-cloud-connector;
 // this file adds the error type and the provider-facing shapes.
 
 export type CloudConnectorStatus = 400 | 403 | 404 | 409 | 423 | 502;

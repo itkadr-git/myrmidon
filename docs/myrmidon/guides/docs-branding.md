@@ -23,7 +23,7 @@ systems, agent skills, or the vendor-merge workflow. They are allowlisted in
 `scripts/myrmidon/docs-branding-guard.mjs` and stay until the epics that own
 them rename the code side first:
 
-- npm packages `@paperclipai/*` and the `paperclipai` CLI (`npx paperclipai …`).
+- npm packages `@myrmidonai/*` and the `paperclipai` CLI (`npx paperclipai …`).
 - Environment variables `PAPERCLIP_*`, HTTP headers `X-Paperclip-*`, and the
   vendor repo URLs `github.com/paperclipai/paperclip`.
 - The internal skill path `skills/paperclip/` and agent skill names such as

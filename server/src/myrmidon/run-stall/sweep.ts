@@ -1,9 +1,9 @@
 import { and, asc, eq, inArray, isNotNull, sql } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
-import { agentWakeupRequests, agents, heartbeatRuns, issues } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
+import { agentWakeupRequests, agents, heartbeatRuns, issues } from "@myrmidonai/db";
 // myrmidon(TEAM-LIVENESS-SETTINGS): the instance settings (and the per-agent card
 // switch) this pass obeys, so the threshold can be changed without a restart.
-import { resolveAgentTeamLiveness, type ResolvedTeamLiveness, type TeamLivenessSettings } from "@paperclipai/shared";
+import { resolveAgentTeamLiveness, type ResolvedTeamLiveness, type TeamLivenessSettings } from "@myrmidonai/shared";
 import { logger } from "../../middleware/logger.js";
 import {
   RUN_STALL_ACTIVITY_ACTION,
@@ -14,7 +14,7 @@ import {
 } from "./constants.js";
 import { classifyRunStall, progressAnchorAt, shouldReturnIssueToTodo, type RunProgressTimestamps } from "./policy.js";
 import { readRunStallSettings, type RunStallSettings } from "./settings.js";
-import type { RunStallValues } from "@paperclipai/shared";
+import type { RunStallValues } from "@myrmidonai/shared";
 
 /**
  * One pass over the running runs of the instance: interrupt the ones whose

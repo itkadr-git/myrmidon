@@ -12,7 +12,7 @@ import {
   REVIEW_ROUTING_STEWARD_TASK_CREATED_ACTION,
   normalizeReviewRoutingSettings,
   type ReviewRoutingSettings,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import { readReviewRoutingSignals, resetReviewRoutingSignals } from "./attention.js";
 import type { CreatePrRoutingTaskInput, InReviewIssueRow, PrCandidateRow, PrRoutingKind, ReviewRoutingStore, RoutingHistory } from "./store.js";
 import type { PrRoutedTask } from "./pr-policy.js";

@@ -12,7 +12,7 @@ import { fileURLToPath } from "node:url";
 // copy lists clean+pushed; an unpushed commit flips pushed; a modified file
 // flips clean; a registry entry whose directory the bot deleted is marked
 // missing; `--json` passes the contract schema (myrWsListResultSchema from
-// @paperclipai/shared — the H0 contract module). Everything runs under
+// @myrmidonai/shared — the H0 contract module). Everything runs under
 // MYRMIDON_WS_HOME pointed at the fixture root, the contract's test override.
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");

@@ -15,7 +15,7 @@
 
 import { Router, type Request, type Response } from "express";
 import { and, eq, ne } from "drizzle-orm";
-import { companySecrets, type Db } from "@paperclipai/db";
+import { companySecrets, type Db } from "@myrmidonai/db";
 import { secretService } from "../../../services/secrets.js";
 import {
   clampErrorWindowSec,

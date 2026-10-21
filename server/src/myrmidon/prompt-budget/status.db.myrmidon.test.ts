@@ -16,8 +16,8 @@
 import { randomUUID } from "node:crypto";
 import { and, desc, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { agents, companies, createDb, heartbeatRuns, type Db } from "@paperclipai/db";
-import { defaultPromptBudgetSettings } from "@paperclipai/shared";
+import { agents, companies, createDb, heartbeatRuns, type Db } from "@myrmidonai/db";
+import { defaultPromptBudgetSettings } from "@myrmidonai/shared";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,

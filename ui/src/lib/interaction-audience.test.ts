@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { AttentionItem, AttentionResolverAudience } from "@paperclipai/shared";
+import type { AttentionItem, AttentionResolverAudience } from "@myrmidonai/shared";
 import type { RequestConfirmationInteraction } from "./issue-thread-interactions";
 import {
   DEFAULT_RESOLVER_POLICY,

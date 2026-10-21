@@ -8,7 +8,7 @@
 // into company activity (S9). Nothing here spells dialect SQL: the module
 // keeps the "0 triggers, 0 `sql\`` with dialect operators" guarantee — full
 // text search is the `SearchIndex` PORT (domain.ts), implemented for pg in
-// `@paperclipai/db` (tsvector + pg_trgm + unaccent) and injected by wiring.
+// `@myrmidonai/db` (tsvector + pg_trgm + unaccent) and injected by wiring.
 //
 // The pointer discipline (the acceptance criteria):
 //   - `draft()` writes a revision and NEVER touches `delivered_revision_id`;
@@ -23,7 +23,7 @@
 //     byte-for-byte identical.
 
 import { and, asc, eq, inArray, isNull, or } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
 import {
   knowledgeEvents,
   knowledgeItems,
@@ -31,7 +31,7 @@ import {
   knowledgeRevisions,
   knowledgeSources,
   knowledgeSuggestions,
-} from "@paperclipai/db";
+} from "@myrmidonai/db";
 import { logActivity } from "../../services/activity-log.js";
 import {
   KnowledgeDomainError,

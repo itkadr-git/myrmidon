@@ -18,7 +18,7 @@ import {
   formatDuration,
 } from "./browsersApi";
 import { bridgeApi, bridgeSettingsQueryKey, type BridgeSettings, type BridgeSigningSettings } from "../connectorPanelApi";
-import type { BrowserConsoleStatus } from "@paperclipai/shared/myrmidon-browser-console";
+import type { BrowserConsoleStatus } from "@myrmidonai/shared/myrmidon-browser-console";
 import { BrowserScreenPanel } from "./BrowserScreenPanel";
 
 function readable(error: unknown): string {

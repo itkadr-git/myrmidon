@@ -15,7 +15,7 @@
 // for its contour.
 
 import { randomUUID } from "node:crypto";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
 
 import { secretService } from "../../services/secrets.js";
 import {

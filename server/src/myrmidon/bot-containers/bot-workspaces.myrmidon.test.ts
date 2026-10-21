@@ -9,7 +9,7 @@ import { resolve } from "node:path";
 import express from "express";
 import request from "supertest";
 import { describe, expect, it } from "vitest";
-import { wsDesiredStateSchema } from "@paperclipai/shared";
+import { wsDesiredStateSchema } from "@myrmidonai/shared";
 import { errorHandler } from "../../middleware/index.js";
 import { botWorkspacePressureFromPartition } from "./bot-workspaces-pressure.js";
 import { botWorkspacesRoutes } from "./bot-workspaces-routes.js";

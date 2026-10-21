@@ -1,5 +1,5 @@
-import type { DeploymentMode, DeploymentExposure } from "@paperclipai/shared";
-import { readProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
+import type { DeploymentMode, DeploymentExposure } from "@myrmidonai/shared";
+import { readProductEnv } from "@myrmidonai/shared/env-alias"; // myrmidon(REBRAND-C)
 
 /** Same server-host boundary as local stdio runtimes. */
 export function supportsLocalAiLogin(options: {

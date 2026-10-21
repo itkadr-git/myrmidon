@@ -1,1 +1,1 @@
-module.exports = require("@paperclipai/hermes-paperclip-adapter/gateway/ui-parser");
+module.exports = require("@myrmidonai/hermes-paperclip-adapter/gateway/ui-parser");

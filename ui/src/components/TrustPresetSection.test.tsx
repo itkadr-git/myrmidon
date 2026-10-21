@@ -2,7 +2,7 @@
 import { createRoot, type Root } from "react-dom/client";
 import { flushSync } from "react-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { AgentPermissions } from "@paperclipai/shared";
+import type { AgentPermissions } from "@myrmidonai/shared";
 import { TrustPresetSection } from "./TrustPresetSection";
 import { TooltipProvider } from "@/components/ui/tooltip";
 

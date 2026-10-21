@@ -15,9 +15,9 @@ import {
   type JsonRpcRequestFrame,
   type JsonRpcResponseFrame,
   type JsonRpcSuccessFrame,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 
-export type { JsonRpcResponseFrame } from "@paperclipai/shared";
+export type { JsonRpcResponseFrame } from "@myrmidonai/shared";
 
 /** A request id the bridge accepts: a JSON string or number, never null. */
 export function isJsonRpcId(value: unknown): value is string | number {

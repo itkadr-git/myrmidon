@@ -10,8 +10,8 @@
 // When disabled, uninstalled, or errored, it is automatically unregistered,
 // returning the type to unavailable status (fail-closed).
 
-import type { Db } from "@paperclipai/db";
-import { plugins as pluginsTable } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
+import { plugins as pluginsTable } from "@myrmidonai/db";
 import {
   DEFAULT_CHATGPT_POOL_MODELS,
   registerModelProviderConnector,
@@ -19,7 +19,7 @@ import {
   unregisterModelProviderConnectorsByPlugin,
   type PaperclipPluginManifestV1,
   type PluginRecord,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import type { PluginLifecycleManager } from "../../services/plugin-lifecycle.js";
 import { pluginRegistryService } from "../../services/plugin-registry.js";
 import { logger } from "../../middleware/logger.js";

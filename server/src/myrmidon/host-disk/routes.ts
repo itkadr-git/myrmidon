@@ -1,12 +1,12 @@
 import { Router } from "express";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
 import {
   patchHostDiskSettingsSchema,
   patchWsBotDiskPartitionSettingsSchema,
   wsBotDiskPartitionSettingsSchema,
   type HostDiskSettingsPatch,
   type WsBotDiskPartitionSettingsPatch,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import { validate } from "../../middleware/validate.js";
 import { assertBoardOrgAccess, assertInstanceAdmin, getActorInfo } from "../../routes/authz.js";
 import type { HostDiskService } from "./service.js";

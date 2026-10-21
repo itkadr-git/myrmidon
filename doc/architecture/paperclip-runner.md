@@ -23,7 +23,7 @@ OpenCode, Claude Managed, AWS AgentCore, and pinned Claude/Codex ACPX profiles.
 
 ## Decision
 
-Add a standalone package named `@paperclipai/paperclip-runner`. The package owns
+Add a standalone package named `@myrmidonai/paperclip-runner`. The package owns
 the language-neutral Paperclip Runner Protocol (PRP), the Rust runner process,
 provider drivers, deterministic replay, and semantic action dispatch contracts.
 
@@ -103,8 +103,8 @@ the server implementation.
 
 The initial public package surfaces are:
 
-- `@paperclipai/paperclip-runner` for runtime contracts and clients.
-- `@paperclipai/paperclip-runner/testing` for deterministic fakes and
+- `@myrmidonai/paperclip-runner` for runtime contracts and clients.
+- `@myrmidonai/paperclip-runner/testing` for deterministic fakes and
   conformance helpers.
 
 Every export must have an implementation and a clean-consumer test before it is

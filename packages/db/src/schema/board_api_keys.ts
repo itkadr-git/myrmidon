@@ -1,5 +1,5 @@
 import { pgTable, uuid, text, timestamp, index, uniqueIndex, jsonb } from "drizzle-orm/pg-core";
-import type { BoardApiKeyScope } from "@paperclipai/shared";
+import type { BoardApiKeyScope } from "@myrmidonai/shared";
 import { authUsers } from "./auth.js";
 
 export const boardApiKeys = pgTable(

@@ -39,11 +39,11 @@ use a separate clean operator workspace rather than bypassing that guard.
 ## Step 1: Run the focused conformance checks
 
 ```sh
-pnpm --filter @paperclipai/paperclip-runner typecheck:typescript
-pnpm --filter @paperclipai/paperclip-runner exec vitest run \
+pnpm --filter @myrmidonai/paperclip-runner typecheck:typescript
+pnpm --filter @myrmidonai/paperclip-runner exec vitest run \
   src/drivers/codex/app-server-transport.test.ts \
   src/drivers/codex/codex-app-server-driver.test.ts
-pnpm --filter @paperclipai/paperclip-runner check:forbidden-imports
+pnpm --filter @myrmidonai/paperclip-runner check:forbidden-imports
 ```
 
 Confirm that the driver tests pass and the package boundary check says
@@ -56,7 +56,7 @@ Choose a temporary directory and trace file:
 ```sh
 codex_workspace="$(mktemp -d)"
 codex_trace="$codex_workspace/trace.json"
-pnpm --filter @paperclipai/paperclip-runner trace:codex -- \
+pnpm --filter @myrmidonai/paperclip-runner trace:codex -- \
   --working-directory "$codex_workspace" \
   --output "$codex_trace"
 ```
@@ -143,7 +143,7 @@ Use a new directory:
 
 ```sh
 codex_steer_workspace="$(mktemp -d)"
-pnpm --filter @paperclipai/paperclip-runner trace:codex -- \
+pnpm --filter @myrmidonai/paperclip-runner trace:codex -- \
   --working-directory "$codex_steer_workspace" \
   --steer "Keep the answer short and verify the exact file text."
 ```
@@ -157,7 +157,7 @@ Use a new directory:
 
 ```sh
 codex_interrupt_workspace="$(mktemp -d)"
-pnpm --filter @paperclipai/paperclip-runner trace:codex -- \
+pnpm --filter @myrmidonai/paperclip-runner trace:codex -- \
   --working-directory "$codex_interrupt_workspace" \
   --interrupt
 ```
@@ -169,7 +169,7 @@ event. It must not create a replacement session.
 ## Step 7: Run the package verification path
 
 ```sh
-pnpm --filter @paperclipai/paperclip-runner verify
+pnpm --filter @myrmidonai/paperclip-runner verify
 ```
 
 This command is the package acceptance path. The real Codex example remains a

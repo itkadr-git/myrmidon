@@ -26,8 +26,8 @@
 
 import { randomUUID } from "node:crypto";
 import { and, eq, or, lt, sql } from "drizzle-orm";
-import { boardLeases } from "@paperclipai/db";
-import type { Db } from "@paperclipai/db";
+import { boardLeases } from "@myrmidonai/db";
+import type { Db } from "@myrmidonai/db";
 
 
 /** The named leases of the board (design §5.1). */

@@ -12,8 +12,8 @@
 //   400 body fails upsertUi2LanguageSchema (repo convention: Zod parse failures answer 400)
 
 import { Router, type Request, type Response } from "express";
-import type { Db } from "@paperclipai/db";
-import { upsertUi2LanguageSchema, type Ui2Language } from "@paperclipai/shared";
+import type { Db } from "@myrmidonai/db";
+import { upsertUi2LanguageSchema, type Ui2Language } from "@myrmidonai/shared";
 import { validate } from "../../middleware/validate.js";
 import { getActorInfo } from "../../routes/authz.js";
 // myrmidon(1.7-TG-LOCALE): the Settings → Language screen shows the source of

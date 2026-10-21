@@ -8,7 +8,7 @@
 // `CORPUS_PARSE_SWEEP_INTERVAL_MS`.
 //
 // Everything shared with the other parts — the settings shape, the wire shapes,
-// the route paths — comes from `@paperclipai/shared` (myrmidon-corpus.ts), so
+// the route paths — comes from `@myrmidonai/shared` (myrmidon-corpus.ts), so
 // part D (MCP tools) and part E (the UI screen) read the same contract this part
 // serves, and part E cannot drift from it.
 
@@ -95,7 +95,7 @@ export const resolveCorpusPorts: CorpusPortsResolver = () => null;
 // Nothing here touches the corpus or the network at import time: an instance
 // that never enables the module pays one row read per MCP call and nothing else.
 
-import { instanceSettings, type Db } from "@paperclipai/db";
+import { instanceSettings, type Db } from "@myrmidonai/db";
 import { eq } from "drizzle-orm";
 import type { CorpusMcpDeps, CorpusMcpPort, CorpusMcpPortProvider } from "./contract.js";
 import { myrmidonCorpusMcpRoutes as createCorpusMcpRoutes } from "./mcp.js";

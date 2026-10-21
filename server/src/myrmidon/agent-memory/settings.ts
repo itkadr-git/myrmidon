@@ -9,7 +9,7 @@
 // The key is optional. The instance setting general.agentMemory wins over the
 // environment and is re-read on every request (no restart).
 
-import type { AgentMemorySettings } from "@paperclipai/shared";
+import type { AgentMemorySettings } from "@myrmidonai/shared";
 
 export const MEMORY_HINDSIGHT_API_URL_ENV = "MYRMIDON_HINDSIGHT_API_URL";
 /** Same service as seen by the bot containers; the fallback address. */

@@ -24,7 +24,7 @@ import {
   type DebateOutcome,
   type DebateSettings,
   type DebateSettingsResolution,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 
 export interface DebateTaskRef {
   id: string;

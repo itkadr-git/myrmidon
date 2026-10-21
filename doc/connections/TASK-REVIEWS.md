@@ -108,7 +108,7 @@ credentials or account/provider access are untested dependencies, never a pass.
 ## Storybook
 
 ```sh
-pnpm --filter @paperclipai/ui exec storybook dev -p 6018 -c storybook/.storybook --no-open --ci
+pnpm --filter @myrmidonai/ui exec storybook dev -p 6018 -c storybook/.storybook --no-open --ci
 ```
 
 Open **Chat & Comments / Connection Reviews**. The production task thread/card and

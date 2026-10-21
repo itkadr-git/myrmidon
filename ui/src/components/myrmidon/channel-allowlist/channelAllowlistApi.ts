@@ -2,7 +2,7 @@
 // list of who may write to the company's bots (channel identity; a board
 // account is optional). The server routes are /api/myrmidon/channel-allowlist.
 import { api } from "@/api/client";
-import type { ChannelAllowedUser } from "@paperclipai/shared";
+import type { ChannelAllowedUser } from "@myrmidonai/shared";
 
 export type { ChannelAllowedUser };
 

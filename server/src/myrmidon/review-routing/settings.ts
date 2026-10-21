@@ -10,7 +10,7 @@ import {
   normalizeReviewRoutingSettings,
   reviewRoutingSettingsSchema,
   type ReviewRoutingSettings,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import type { instanceSettingsService } from "../../services/instance-settings.js";
 
 export type ReviewRoutingSettingsService = Pick<

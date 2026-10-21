@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, afterEach } from "vitest";
-import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
+import type { AdapterExecutionContext } from "@myrmidonai/adapter-utils";
 import { execute, readReattachGatewayRunIdForTest, stopGatewayRunForBoard } from "./execute.js";
 
 // myrmidon(HERMES-RUN-REATTACH): after a board restart, the reattach sweep

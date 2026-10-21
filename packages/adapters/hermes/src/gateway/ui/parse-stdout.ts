@@ -1,4 +1,4 @@
-import type { TranscriptEntry } from "@paperclipai/adapter-utils";
+import type { TranscriptEntry } from "@myrmidonai/adapter-utils";
 
 // myrmidon(G4): gateway/server/execute.ts now writes tool/assistant/thinking
 // progress in the same textual shape `hermes chat` prints without -Q (see its

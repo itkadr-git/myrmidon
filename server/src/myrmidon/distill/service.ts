@@ -10,8 +10,8 @@
 // whole run reports itself into the knowledge journal (`knowledge_events`),
 // so the spend is visible without a second board.
 
-import { knowledgeEvents } from "@paperclipai/db";
-import type { Db } from "@paperclipai/db";
+import { knowledgeEvents } from "@myrmidonai/db";
+import type { Db } from "@myrmidonai/db";
 import type { KnowledgeModule } from "../knowledge/service.js";
 import {
   DEFAULT_DISTILL_BUDGET,

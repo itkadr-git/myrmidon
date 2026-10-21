@@ -11,7 +11,7 @@
 // preserve line marked myrmidon(GITHUB-SHARED-IDENTITY) there).
 
 import { eq, sql } from "drizzle-orm";
-import { instanceSettings, type Db } from "@paperclipai/db";
+import { instanceSettings, type Db } from "@myrmidonai/db";
 import {
   GITHUB_SHARED_IDENTITY_GENERAL_KEY,
   parseStoredGitHubSharedIdentitySettings,

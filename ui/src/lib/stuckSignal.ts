@@ -1,4 +1,4 @@
-import type { AttentionItem, Issue, AgentListItem } from "@paperclipai/shared";
+import type { AttentionItem, Issue, AgentListItem } from "@myrmidonai/shared";
 
 export interface StuckSignalCounts {
   attentionIssuesWithoutMotion: number;

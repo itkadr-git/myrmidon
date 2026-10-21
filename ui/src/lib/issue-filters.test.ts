@@ -1,7 +1,7 @@
 // @vitest-environment node
 
 import { describe, expect, it } from "vitest";
-import type { ExternalObjectSummary, Issue } from "@paperclipai/shared";
+import type { ExternalObjectSummary, Issue } from "@myrmidonai/shared";
 import {
   applyIssueFilters,
   countActiveIssueFilters,

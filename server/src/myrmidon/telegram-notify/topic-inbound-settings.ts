@@ -18,12 +18,12 @@
 // it merges, per the epic's continuation convention).
 
 import { eq } from "drizzle-orm";
-import { instanceSettings, type Db } from "@paperclipai/db";
+import { instanceSettings, type Db } from "@myrmidonai/db";
 // myrmidon(TG-NOTIFY-D): the shared TG-NOTIFY settings contract.
 import {
   defaultTelegramNotifySettings,
   telegramNotifySettingsSchema,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 
 // myrmidon(TG-NOTIFY-D): the `inbound` sub-settings type is owned by the
 // contract module (part B) — imported and re-exported here so a caller of this

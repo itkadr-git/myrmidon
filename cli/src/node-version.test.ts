@@ -5,7 +5,7 @@ import {
   MINIMUM_NODE_VERSION,
   NODE_VERSION_INSTALL_GUIDE_URL,
   warnIfUnsupportedNodeVersion,
-} from "@paperclipai/shared/node-version";
+} from "@myrmidonai/shared/node-version";
 
 describe("isSupportedNodeVersion", () => {
   it("accepts the Node 24 LTS floor and newer releases", () => {

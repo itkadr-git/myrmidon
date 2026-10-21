@@ -5,7 +5,7 @@ import type {
   ToolMcpGatewayToken,
   ToolMcpGatewayWithTokens,
   ToolProfileWithDetails,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import { describe, expect, it } from "vitest";
 import {
   activeTokenCount,

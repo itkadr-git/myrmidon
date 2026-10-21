@@ -46,7 +46,7 @@
  * broker. Every caller injects its own view, which is what makes all five
  * PAP-17419 regression cases testable without touching host Serve state.
  */
-import { deriveViteHmrPort, isRuntimeExposureAppPort } from "@paperclipai/shared";
+import { deriveViteHmrPort, isRuntimeExposureAppPort } from "@myrmidonai/shared";
 
 /**
  * Who holds (or wants) a port pair. Every field is optional evidence — a

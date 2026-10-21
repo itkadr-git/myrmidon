@@ -11,7 +11,7 @@
 //
 // The mode values, the default and the normalizer are owned by the shared
 // contract `packages/shared/src/myrmidon-owner-delivery.ts`, which part A
-// ships through the `@paperclipai/shared` package index. This module re-exports
+// ships through the `@myrmidonai/shared` package index. This module re-exports
 // them for its own consumers and keeps no second copy of the mode values.
 import {
   OWNER_DELIVERY_DEFAULT_MODE,
@@ -19,7 +19,7 @@ import {
   normalizeOwnerDeliverySettings,
   type OwnerDeliveryMode,
   type OwnerDeliverySettings,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import { api } from "@/api/client";
 
 export { OWNER_DELIVERY_DEFAULT_MODE, normalizeOwnerDeliverySettings };

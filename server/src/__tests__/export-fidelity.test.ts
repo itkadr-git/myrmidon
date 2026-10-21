@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { companies, createDb, issueLabels, issueRelations, issues, labels } from "@paperclipai/db";
+import { companies, createDb, issueLabels, issueRelations, issues, labels } from "@myrmidonai/db";
 
 import { buildExportFidelityReport, collectExportFidelityCounts } from "../services/export-fidelity.js";
 import {

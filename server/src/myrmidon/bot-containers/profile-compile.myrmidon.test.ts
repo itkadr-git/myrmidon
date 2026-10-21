@@ -27,7 +27,7 @@ import {
 } from "./profile-compile.js";
 import { BOT_EGRESS_MODE_ENV, BOT_EGRESS_PROXY_ENV } from "./egress.js";
 import { readMediaMcpSignals, resetMediaMcpSignals } from "./media-mcp.js";
-import { WS_BOTD_BOARD_KEY_ENV_VALUE, WS_BOT_DISK_SETTING_DEFAULTS, WS_PROFILE_ENV } from "@paperclipai/shared";
+import { WS_BOTD_BOARD_KEY_ENV_VALUE, WS_BOT_DISK_SETTING_DEFAULTS, WS_PROFILE_ENV } from "@myrmidonai/shared";
 import { classifyProfileChange, type CompiledProfile } from "./types.js";
 
 // Placeholder data only: fake ids, example.com URLs, obviously-fake secrets.

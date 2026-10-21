@@ -11,7 +11,7 @@ import {
   RotateCcw,
   X,
 } from "lucide-react";
-import type { Agent, AttentionDetailImage, AttentionItem } from "@paperclipai/shared";
+import type { Agent, AttentionDetailImage, AttentionItem } from "@myrmidonai/shared";
 import { Link } from "@/lib/router";
 import { accessApi } from "../api/access";
 import { approvalsApi } from "../api/approvals";

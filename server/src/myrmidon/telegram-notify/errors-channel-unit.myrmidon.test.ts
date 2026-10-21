@@ -4,7 +4,7 @@
 // transport) lives in errors-channel.myrmidon.test.ts.
 
 import { describe, expect, it } from "vitest";
-import { defaultTelegramNotifySettings } from "@paperclipai/shared";
+import { defaultTelegramNotifySettings } from "@myrmidonai/shared";
 import {
   ERROR_CHANNEL_SOURCE_KINDS,
   ERROR_CHANNEL_TEXT_MAX,

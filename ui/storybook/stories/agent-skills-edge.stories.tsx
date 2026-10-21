@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { useQueryClient } from "@tanstack/react-query";
-import type { Agent, AgentSkillSnapshot, CompanySkillListItem } from "@paperclipai/shared";
+import type { Agent, AgentSkillSnapshot, CompanySkillListItem } from "@myrmidonai/shared";
 import { AgentSkillsTab } from "@/pages/agent-skills/AgentSkillsTab";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";

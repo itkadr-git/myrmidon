@@ -84,7 +84,7 @@ For a command that must run the local checked-out source with a value, use the
 direct-exec form: `node cli/node_modules/tsx/dist/cli.mjs cli/src/index.ts
 <command> <args>`.
 
-The `pnpm --filter @paperclipai/*` build and test commands are not CLI
+The `pnpm --filter @myrmidonai/*` build and test commands are not CLI
 invocation. They do not change.
 
 ### Offline and air-gapped use
@@ -678,7 +678,7 @@ also creates agents.
 
 ### Catalog (app-shipped skills)
 
-The Paperclip app ships a curated catalog under `@paperclipai/skills-catalog`.
+The Paperclip app ships a curated catalog under `@myrmidonai/skills-catalog`.
 Browse and inspect commands never mutate company state; `install` adds a catalog
 skill to the company library.
 
@@ -782,7 +782,7 @@ still enforced by the server in both cases.
 ## Teams Commands
 
 `paperclipai teams` works with the app-shipped team catalog in
-`@paperclipai/teams-catalog`. Browse, search, inspect, and file reads do not
+`@myrmidonai/teams-catalog`. Browse, search, inspect, and file reads do not
 change company state. `preview` runs the company import planner, and `install`
 imports the catalog team into an existing company.
 

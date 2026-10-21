@@ -1,6 +1,6 @@
 import { createHash, createHmac } from "node:crypto";
 import { S3Client } from "@aws-sdk/client-s3";
-import type { DeploymentMode, SecretProviderConfigDiscoveryPreviewResult } from "@paperclipai/shared";
+import type { DeploymentMode, SecretProviderConfigDiscoveryPreviewResult } from "@myrmidonai/shared";
 import { unprocessable } from "../errors.js";
 import type {
   PreparedSecretVersion,
@@ -16,7 +16,7 @@ import type {
 import { SecretProviderClientError } from "./types.js";
 // myrmidon(B1c): product name in user-facing provider texts; see product.ts.
 import { PRODUCT_NAME as PN } from "../myrmidon/product.js";
-import { readProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
+import { readProductEnv } from "@myrmidonai/shared/env-alias"; // myrmidon(REBRAND-C)
 
 const AWS_SECRETS_MANAGER_SCHEME = "aws_secrets_manager_v1";
 const DEFAULT_PREFIX = "paperclip";

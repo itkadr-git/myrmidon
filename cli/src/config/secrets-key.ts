@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { PaperclipConfig } from "./schema.js";
 import { resolveRuntimeLikePath } from "../utils/path-resolver.js";
-import { readProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
+import { readProductEnv } from "@myrmidonai/shared/env-alias"; // myrmidon(REBRAND-C)
 
 export type EnsureSecretsKeyResult =
   | { status: "created"; path: string }

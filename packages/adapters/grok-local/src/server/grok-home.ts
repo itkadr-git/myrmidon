@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { resolvePaperclipInstanceRootForAdapter } from "@paperclipai/adapter-utils/server-utils";
+import { resolvePaperclipInstanceRootForAdapter } from "@myrmidonai/adapter-utils/server-utils";
 
 // The Grok credential home. `GROK_HOME` replaces `~/.grok` and holds one file,
 // `auth.json`. Unlike Codex, a Grok `auth.json` has no fixed top-level key: it

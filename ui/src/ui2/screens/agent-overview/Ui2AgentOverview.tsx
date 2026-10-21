@@ -10,7 +10,7 @@
 
 import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
-import type { Agent, HeartbeatRun } from "@paperclipai/shared";
+import type { Agent, HeartbeatRun } from "@myrmidonai/shared";
 import { costsApi } from "@/api/costs";
 import { budgetsApi } from "@/api/budgets";
 import { heartbeatsApi } from "@/api/heartbeats";

@@ -1,6 +1,6 @@
 import {
   PAPERCLIP_RUNNER_DEFAULT_MODELS,
-} from "@paperclipai/adapter-utils";
+} from "@myrmidonai/adapter-utils";
 
 export const type = "codex_local";
 export const label = "Codex";

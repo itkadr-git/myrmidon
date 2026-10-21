@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import type { Issue, IssueComment } from "@paperclipai/shared";
+import type { Issue, IssueComment } from "@myrmidonai/shared";
 import { useQueryClient } from "@tanstack/react-query";
 import { TaskDetailTasksPanel } from "@/components/task-detail/TaskDetailTasksPanel";
 import { Button } from "@/components/ui/button";

@@ -118,7 +118,7 @@ try {
     "pnpm",
     [
       "--filter",
-      "@paperclipai/paperclip-runner",
+      "@myrmidonai/paperclip-runner",
       "deploy",
       "--prod",
       temporaryRoot,
@@ -207,7 +207,7 @@ try {
       "node_modules",
       ".pnpm",
       "node_modules",
-      "@paperclipai",
+      "@myrmidonai",
       "paperclip-runner",
     ),
     { recursive: true, force: true },

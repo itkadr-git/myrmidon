@@ -7,7 +7,7 @@ import type {
   IssueAttachment,
   IssueDocument,
   IssueWorkProduct,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import {
   buildReRunRequest,
   buildCreateRunRequest,

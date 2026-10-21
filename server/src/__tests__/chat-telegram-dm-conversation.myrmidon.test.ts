@@ -33,8 +33,8 @@ import {
   issues,
   myrmidonChannelAllowedUsers,
   principalPermissionGrants,
-} from "@paperclipai/db";
-import type { ChatProvider } from "@paperclipai/shared";
+} from "@myrmidonai/db";
+import type { ChatProvider } from "@myrmidonai/shared";
 import type { Attachment, Author, Message, Thread } from "chat";
 import {
   chatChannelService,

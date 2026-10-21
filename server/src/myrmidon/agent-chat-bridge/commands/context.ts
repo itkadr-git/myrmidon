@@ -6,8 +6,8 @@
 // authorization logic and the (locale-free) context shapes.
 
 import { and, eq, inArray, sql } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
-import { agents, heartbeatRuns, issues } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
+import { agents, heartbeatRuns, issues } from "@myrmidonai/db";
 import { conversationChannel, conversationOwnerUserId } from "../identity.js";
 
 export interface BridgedCommandIssueContext {

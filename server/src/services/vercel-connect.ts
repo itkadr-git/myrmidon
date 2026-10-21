@@ -19,10 +19,10 @@ import type {
   ConnectionGrantKind,
   VercelConnectCredentialReference,
   VercelConnectGrantReference,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 // myrmidon(B1c): product name in user-facing texts; see product.ts.
 import { PRODUCT_NAME as PN } from "../myrmidon/product.js";
-import { readProductEnv, readProductEnvFrom } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
+import { readProductEnv, readProductEnvFrom } from "@myrmidonai/shared/env-alias"; // myrmidon(REBRAND-C)
 
 export type VercelConnectFailureCode =
   | "vercel_connect_unavailable"

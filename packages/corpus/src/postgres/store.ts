@@ -1,12 +1,12 @@
 // myrmidon(CORPUS-A): PostgreSQL CorpusStore. This file is part of the store
-// layer — the only place in @paperclipai/corpus where drizzle/Postgres
+// layer — the only place in @myrmidonai/corpus where drizzle/Postgres
 // specifics may appear. Everything it returns is a plain domain value.
 import { and, desc, eq, sql } from "drizzle-orm";
 import {
   corpusChunks,
   corpusDatasets,
   corpusDocuments,
-} from "@paperclipai/db";
+} from "@myrmidonai/db";
 import {
   CORPUS_DEFAULT_EMBEDDING_MODEL,
   assertDocumentStatusTransition,

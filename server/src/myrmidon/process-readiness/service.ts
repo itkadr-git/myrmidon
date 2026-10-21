@@ -16,7 +16,7 @@
 //                    not report a healthy board as unready on a check that its
 //                    deployment never uses.
 
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
 import { sql } from "drizzle-orm";
 import { getStartupRecoveryState } from "../../startup-recovery-state.js";
 import {

@@ -10,7 +10,7 @@
 // proxy presents when it fetches the policy.
 
 import { and, eq } from "drizzle-orm";
-import { myrmidonEgressPolicies, projects, type Db } from "@paperclipai/db";
+import { myrmidonEgressPolicies, projects, type Db } from "@myrmidonai/db";
 import {
   BOT_EGRESS_REFUSALS_URL_ENV,
   BOT_EGRESS_TOKEN_ENV,

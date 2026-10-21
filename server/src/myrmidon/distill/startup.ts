@@ -7,7 +7,7 @@
 // a daily rhythm by default — so the tick arms on `intervalSec` and the very
 // first pass waits for the interval rather than firing at boot.
 
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
 import { logger } from "../../middleware/logger.js";
 import { instanceSettingsService } from "../../services/instance-settings.js";
 import { createKnowledgeModule } from "../knowledge/service.js";

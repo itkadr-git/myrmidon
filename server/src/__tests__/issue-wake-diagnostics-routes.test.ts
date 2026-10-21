@@ -13,8 +13,8 @@ import {
   issueRelations,
   issues,
   projects,
-} from "@paperclipai/db";
-import { LOW_TRUST_REVIEW_PRESET } from "@paperclipai/shared";
+} from "@myrmidonai/db";
+import { LOW_TRUST_REVIEW_PRESET } from "@myrmidonai/shared";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,

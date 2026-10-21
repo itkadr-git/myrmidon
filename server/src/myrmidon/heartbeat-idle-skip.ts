@@ -1,5 +1,5 @@
 import { and, eq, isNull, sql } from "drizzle-orm";
-import { issueThreadInteractions, issues, type Db } from "@paperclipai/db";
+import { issueThreadInteractions, issues, type Db } from "@myrmidonai/db";
 
 /**
  * Skip idle timer heartbeats (M3, part 1).

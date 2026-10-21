@@ -5,7 +5,7 @@
 // per-role regulations with Draft → Approved and revision history, and the
 // change log. The matrix PATCH and the regulation CRUD go through Part A's
 // landed API (packages/shared/src/myrmidon-autonomy.ts,
-// server/src/myrmidon/autonomy): types import from @paperclipai/shared. Per
+// server/src/myrmidon/autonomy): types import from @myrmidonai/shared. Per
 // the epic design note §3.4, the reminders/night-mode/answer-
 // channel fields are read-only placeholders in 1.6 — they need the reminder
 // scheduler, a later follow-up.
@@ -38,7 +38,7 @@ import {
   type AutonomyRegulation,
   type AutonomyVerdict,
   type AutonomySnapshot as AutonomyView,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 // myrmidon(1.6.1 CUSTOM-CASTES C): the role rows come from the caste
 // directory (with the built-in fallback), not the hardcoded 12-role const.
 import type { CasteOption } from "@/components/myrmidon/castes/useCasteOptions";

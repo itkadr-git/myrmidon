@@ -1,13 +1,13 @@
 /**
- * `@paperclipai/plugin-sdk` — Paperclip plugin worker-side SDK.
+ * `@myrmidonai/plugin-sdk` — Paperclip plugin worker-side SDK.
  *
  * This is the main entrypoint for plugin worker code.  For plugin UI bundles,
- * import from `@paperclipai/plugin-sdk/ui` instead.
+ * import from `@myrmidonai/plugin-sdk/ui` instead.
  *
  * @example
  * ```ts
  * // Plugin worker entrypoint (dist/worker.ts)
- * import { definePlugin, runWorker, z } from "@paperclipai/plugin-sdk";
+ * import { definePlugin, runWorker, z } from "@myrmidonai/plugin-sdk";
  *
  * const plugin = definePlugin({
  *   async setup(ctx) {
@@ -328,9 +328,9 @@ export type {
   EnvSecretRefBinding,
 } from "./types.js";
 
-// Manifest and constant types re-exported from @paperclipai/shared
+// Manifest and constant types re-exported from @myrmidonai/shared
 // Plugin authors import manifest types from here so they have a single
-// dependency (@paperclipai/plugin-sdk) for all plugin authoring needs.
+// dependency (@myrmidonai/plugin-sdk) for all plugin authoring needs.
 export type {
   PaperclipPluginManifestV1,
   PluginJobDeclaration,
@@ -413,7 +413,7 @@ export type {
  *
  * @example
  * ```ts
- * import { z } from "@paperclipai/plugin-sdk";
+ * import { z } from "@myrmidonai/plugin-sdk";
  *
  * const configSchema = z.object({
  *   apiKey: z.string().describe("Your API key"),
@@ -447,4 +447,4 @@ export {
   HUMAN_COMPANY_MEMBERSHIP_ROLE_LABELS,
   MEMBERSHIP_STATUSES,
   PRINCIPAL_TYPES,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";

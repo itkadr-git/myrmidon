@@ -10,7 +10,7 @@ Paperclip ships with **opt-in** OpenTelemetry auto-instrumentation for the
 server process. When activated it produces **traces only** — no metrics and no
 logs are exported by this integration.
 
-`@opentelemetry/api` is a normal dependency of `@paperclipai/server`. Every
+`@opentelemetry/api` is a normal dependency of `@myrmidonai/server`. Every
 install includes it. It stays a no-op interface until an SDK registers a
 provider, so it exports no telemetry by itself.
 
@@ -852,7 +852,7 @@ Read-only listings validate caches without downloading or repairing them. A
 publication lock left by an abruptly terminated process is reported for operator
 cleanup; remove it only after confirming its recorded PID is no longer running.
 
-Run `pnpm --filter @paperclipai/server exec tsx ../scripts/benchmark-skill-preparation.ts` for an isolated embedded
+Run `pnpm --filter @myrmidonai/server exec tsx ../scripts/benchmark-skill-preparation.ts` for an isolated embedded
 PostgreSQL benchmark with 114 mixed skills and at least 400 remote files. It
 reports one cold sample and ten warm samples (one in a new process), refresh and
 fetch counts, rebuilds, missing entries, and content checks. Upstream responses are

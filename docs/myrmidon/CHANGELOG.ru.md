@@ -596,7 +596,7 @@
 
 ### Тексты UI дебрендированы: видимые строки «Paperclip» переименованы в Myrmidon (DB1)
 
-- Все пользовательские строки «Paperclip Cloud»/«Paperclip Labs»/«Paperclip EE»/«Paperclip Enterprise» в веб-UI (страницы, компоненты, потоки подключения, ошибки OAuth-хендоффа, примеры-плейсхолдеры) переименованы в «Myrmidon …». Локали en/ru и общие каталоги локалей прочищены на всех языках; строки MIT-атрибуции (`about.base`, `about.attribution`) сохранены слово-в-слово. Идентификаторы протокола (`paperclip.*.v1`-ключи localStorage, типы адаптеров, `paperclip_vault`, `X-Paperclip-*`, `@paperclipai/*`) не переименованы — это часть c / этап 4.
+- Все пользовательские строки «Paperclip Cloud»/«Paperclip Labs»/«Paperclip EE»/«Paperclip Enterprise» в веб-UI (страницы, компоненты, потоки подключения, ошибки OAuth-хендоффа, примеры-плейсхолдеры) переименованы в «Myrmidon …». Локали en/ru и общие каталоги локалей прочищены на всех языках; строки MIT-атрибуции (`about.base`, `about.attribution`) сохранены слово-в-слово. Идентификаторы протокола (`paperclip.*.v1`-ключи localStorage, типы адаптеров, `paperclip_vault`, `X-Paperclip-*`, `@myrmidonai/*`) не переименованы — это часть c / этап 4.
 - Тест-сторож брендинга (`ui/src/lib/myrmidon-branding-guard.myrmidon.test.ts`) ужесточён до голого скана `\bPaperclip\b`: исключения по словам вендора (Cloud/Labs/EE/Enterprise) из аллоулиста убраны — любая новая видимая строка «Paperclip …» не пройдёт CI.
 
 ### Ядро модуля корпуса знаний: порты, домен, миграции, PostgreSQL store/очередь (CORPUS-A)
@@ -2654,13 +2654,13 @@ HTTP с `reusePort`. Режим задаётся в интерфейсе: нас
   `general.botDisk.graceClosingMinutes` / `scratchTtlHours` (по умолчанию
   30 мин / 24 ч); `pressure` равен `none`, пока снимок dockergate не подключён.
 - Правило жизненного цикла — чистая функция (`workspaceStateOf`), ответ перед
-  отправкой проверяется схемой C3 из `@paperclipai/shared`.
+  отправкой проверяется схемой C3 из `@myrmidonai/shared`.
 
 ### Доска принимает отчёт о диске каждого бота (1.6.5 BOT-DISK-H, часть H4b)
 
 - Новый маршрут `POST /api/myrmidon/bots/me/disk-report` — только для собственного
   ключа агента-бота (другой актор получает 403, без авторизации — 401). Тело
-  проверяется схемой C4 из `@paperclipai/shared`: битое тело — 400, прошлый отчёт
+  проверяется схемой C4 из `@myrmidonai/shared`: битое тело — 400, прошлый отчёт
   остаётся; тело больше 1 МиБ — 413; отчёт с ключом другого бота — 403. Ответ —
   `{ok, nextReportSec}` (300 с).
 - Последний отчёт каждого бота хранится в памяти со временем приёма, так же как
@@ -6022,7 +6022,7 @@ instance-портов до, 6 после (по одному на порт; ше�
 ### Руководство по установке плагина LLM Wiki и тест релизного контура (WIKI-PLUGIN-RELEASE)
 
 - `docs/wiki-plugin-install-guide.md` — установка, настройка каталога вики,
-  обновление и диагностика `@paperclipai/plugin-llm-wiki`.
+  обновление и диагностика `@myrmidonai/plugin-llm-wiki`.
 - `scripts/myrmidon/wiki-plugin/wiki-plugin-release.test.mjs` — статический
   контракт `node:test`, закрепляющий релизную обвязку плагина (сборочный
   скрипт esbuild, SDK из воркспейса репозитория, точки входа

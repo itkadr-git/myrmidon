@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { AskUserQuestionsInteraction } from "@paperclipai/shared";
+import type { AskUserQuestionsInteraction } from "@myrmidonai/shared";
 
 import { formatDurableQuestionResponseSummary } from "../question-response-delivery.js";
 import { buildNativeExecutionInput } from "./native-execution-input.js";

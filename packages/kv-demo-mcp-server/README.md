@@ -32,8 +32,8 @@ recorded walkthrough in [doc/MCP-DEMO-SCRIPT.md](../../doc/MCP-DEMO-SCRIPT.md).
 From the repo root:
 
 ```sh
-pnpm --filter @paperclipai/kv-demo-mcp-server build
-pnpm --filter @paperclipai/kv-demo-mcp-server start
+pnpm --filter @myrmidonai/kv-demo-mcp-server build
+pnpm --filter @myrmidonai/kv-demo-mcp-server start
 ```
 
 Or run the source directly during development:

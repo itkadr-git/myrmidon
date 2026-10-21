@@ -18,12 +18,12 @@
 // signal. The value behind it is documented in settings.ts.
 
 import { Router } from "express";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
 import {
   litellmWorkersTargetSchema,
   readGatewayKeySettings,
   type LitellmWorkersTargetBody,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import { validate } from "../../middleware/validate.js";
 import { logger } from "../../middleware/logger.js";
 import { assertCompanyAccess, assertInstanceAdmin, getActorInfo } from "../../routes/authz.js";

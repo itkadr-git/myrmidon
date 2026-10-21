@@ -21,8 +21,8 @@ import {
   issueWorkProducts,
   issues,
   type Db,
-} from "@paperclipai/db";
-import { REVIEW_REWORK_ORIGIN_KIND, isAgentStatusInvokable } from "@paperclipai/shared";
+} from "@myrmidonai/db";
+import { REVIEW_REWORK_ORIGIN_KIND, isAgentStatusInvokable } from "@myrmidonai/shared";
 import { decodeReworkFingerprint } from "./domain.js";
 import type { ReviewReworkChildFacts, ReviewReworkTaskFacts } from "./domain.js";
 
@@ -334,7 +334,7 @@ export function createPgReviewReworkStore(db: Db): ReviewReworkStore {
     async invokableAgentIds(companyId, agentIds) {
       const unique = [...new Set(agentIds.filter(Boolean))];
       if (unique.length === 0) return new Set<string>();
-      const { agents } = await import("@paperclipai/db");
+      const { agents } = await import("@myrmidonai/db");
       const rows = await db
         .select({ id: agents.id, status: agents.status })
         .from(agents)

@@ -2,7 +2,7 @@ import { z } from "zod";
 // myrmidon(B1): product name in the AgentMail-visible key label; see product.ts.
 import { PRODUCT_NAME } from "../myrmidon/product.js";
 import { Webhook } from "svix";
-import type { EmailEnvelope } from "@paperclipai/shared";
+import type { EmailEnvelope } from "@myrmidonai/shared";
 
 const strings = z.array(z.string());
 export const agentmailMessageSchema = z.object({

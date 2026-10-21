@@ -5,7 +5,7 @@ import { createServer } from "node:net";
 import * as p from "@clack/prompts";
 import pc from "picocolors";
 import { Option, type Command } from "commander";
-import type { Agent, Company, InstanceExperimentalSettings } from "@paperclipai/shared";
+import type { Agent, Company, InstanceExperimentalSettings } from "@myrmidonai/shared";
 import { PaperclipApiClient } from "../client/http.js";
 import { openUrl } from "../client/board-auth.js";
 import {
@@ -17,7 +17,7 @@ import { readConfig } from "../config/store.js";
 import type { PaperclipConfig } from "../config/schema.js";
 import { runCommand, type StartedServer } from "./run.js";
 import { isLinkedGitWorktree } from "./git-workspace.js";
-import { readProductEnv, writeProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
+import { readProductEnv, writeProductEnv } from "@myrmidonai/shared/env-alias"; // myrmidon(REBRAND-C)
 
 export const TEST_DRIVE_HARNESSES = ["claude", "codex", "opencode"] as const;
 export type TestDriveHarness = (typeof TEST_DRIVE_HARNESSES)[number];

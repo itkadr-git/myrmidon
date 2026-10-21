@@ -11,13 +11,13 @@
 // for). Everything is computed on the fly — no new tables.
 
 import { eq, sql } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
-import { agents, heartbeatRuns, litellmModels } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
+import { agents, heartbeatRuns, litellmModels } from "@myrmidonai/db";
 import {
   buildPromptBudgetRunStatus,
   type PromptBudgetAgentStatus,
   type PromptBudgetSettings,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import { parsePromptBreakdown } from "../prompt-budget-advice/source.js";
 
 /** How many recent runs per agent are scanned for a usable prompt size. */

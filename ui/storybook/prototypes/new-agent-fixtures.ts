@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import type { AdapterEnvironmentTestResult, Agent } from "@paperclipai/shared";
+import type { AdapterEnvironmentTestResult, Agent } from "@myrmidonai/shared";
 import { storybookAgents, storybookIssues } from "../fixtures/paperclipData";
 
 export type TestOutcome = "pass" | "fail";

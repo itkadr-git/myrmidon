@@ -27,7 +27,7 @@ enabled outside test runners.
   main.
 - The bus starts only in a multi-process deployment
   (`PAPERCLIP_PROCESS_ROLE` set to a role value). Its postgres.js client is
-  dedicated (`max: 1`, `createPostgresJsClient` in `@paperclipai/db`): a
+  dedicated (`max: 1`, `createPostgresJsClient` in `@myrmidonai/db`): a
   `sql.listen` connection is pinned for the lifetime of the listener and
   never shares the drizzle pool. A bus that fails to start degrades the
   `notify` mode to the resweep — logged, never fatal.
@@ -56,7 +56,7 @@ enabled outside test runners.
   `PAPERCLIP_PROCESS_ROLE`) — поведение части A и main байт в байт.
 - Шина стартует только в многопроцессном развёртывании
   (`PAPERCLIP_PROCESS_ROLE` задан). Её postgres.js-клиент выделенный
-  (`max: 1`, `createPostgresJsClient` в `@paperclipai/db`): соединение
+  (`max: 1`, `createPostgresJsClient` в `@myrmidonai/db`): соединение
   `sql.listen` закреплено за слушателем на всё время жизни и не делит пул
   drizzle. Шина, которая не поднялась, деградирует режим `notify` до
   resweep — с записью в лог, никогда не фатально.

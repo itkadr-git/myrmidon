@@ -11,7 +11,7 @@ import {
 } from "../services/service-manager.js";
 import { buildLocalHealthUrl } from "../utils/health-url.js";
 import type { CheckResult } from "./index.js";
-import { readProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
+import { readProductEnv } from "@myrmidonai/shared/env-alias"; // myrmidon(REBRAND-C)
 
 type HealthResult = { ok: boolean; version: string | null; error?: string };
 type ServiceCheckDependencies = {

@@ -48,8 +48,8 @@ import type {
   ExternalObjectMentionConfidence,
   ExternalObjectMentionSourceKind,
   EnvSecretRefBinding,
-} from "@paperclipai/shared";
-export type { PluginLauncherRenderContextSnapshot } from "@paperclipai/shared";
+} from "@myrmidonai/shared";
+export type { PluginLauncherRenderContextSnapshot } from "@myrmidonai/shared";
 
 import type {
   PluginEvent,

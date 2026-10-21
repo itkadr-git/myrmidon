@@ -12,7 +12,7 @@ import {
   createDb,
   invites,
   joinRequests,
-} from "@paperclipai/db";
+} from "@myrmidonai/db";
 import {
   buildJoinDefaultsPayloadForAccept,
   normalizeAgentDefaultsForJoin,

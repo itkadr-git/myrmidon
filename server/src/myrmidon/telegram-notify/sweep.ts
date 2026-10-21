@@ -17,7 +17,7 @@
 // coalesces pending cards (which cannot appear for a default installation
 // that never enabled owner delivery), and the digest step has an empty queue.
 
-import { chatPublications, type Db } from "@paperclipai/db";
+import { chatPublications, type Db } from "@myrmidonai/db";
 import { projectSafeChatPublication } from "../../services/chat-publication-projection.js";
 import { PRODUCT_NAME } from "../product.js";
 import { sweepTelegramNotifyCardBundles } from "./card-bundler.js";

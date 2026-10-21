@@ -14,8 +14,8 @@
 // endpoints use, so the interface can say why instead of showing a bare error.
 
 import { Router, type Response } from "express";
-import type { Db } from "@paperclipai/db";
-import { readGatewayKeySettings } from "@paperclipai/shared";
+import type { Db } from "@myrmidonai/db";
+import { readGatewayKeySettings } from "@myrmidonai/shared";
 import { assertBoard, assertCompanyAccess } from "../../routes/authz.js";
 import {
   assertAgentMayReadOwnGatewayKey,

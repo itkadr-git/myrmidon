@@ -412,6 +412,6 @@ Myrmidon распространяется под MIT. Он основан на
 [Paperclip](https://github.com/paperclipai/paperclip) (версия 2026.916.1),
 Copyright (c) 2025 Paperclip AI, лицензия MIT — см. [LICENSE](LICENSE) и
 [NOTICE](NOTICE). Myrmidon не связан с Paperclip AI и не одобрен ими. Имя
-Paperclip остаётся в именах пакетов (`@paperclipai/*`), переменных окружения
+Paperclip остаётся в именах пакетов (`@myrmidonai/*`), переменных окружения
 (`PAPERCLIP_*`) и CLI `paperclipai` только ради совместимости. Сторонние
 уведомления, сохранённые в дереве, перечислены в [NOTICE](NOTICE).

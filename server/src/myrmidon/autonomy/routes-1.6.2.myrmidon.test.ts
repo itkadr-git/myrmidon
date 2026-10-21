@@ -17,7 +17,7 @@
 import express from "express";
 import request from "supertest";
 import { describe, expect, it, vi } from "vitest";
-import { AUTONOMY_SAFE_DEFAULTS, type AutonomyChangeLogEntry } from "@paperclipai/shared";
+import { AUTONOMY_SAFE_DEFAULTS, type AutonomyChangeLogEntry } from "@myrmidonai/shared";
 import { errorHandler } from "../../middleware/index.js";
 import { autonomyRoutes } from "./routes.js";
 import { autonomyGate, AUTONOMY_FORBIDDEN_CODE, AUTONOMY_APPROVAL_REQUIRED_CODE } from "./gate.js";

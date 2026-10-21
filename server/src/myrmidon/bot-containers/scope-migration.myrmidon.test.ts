@@ -2,7 +2,7 @@
 // on an in-memory host: moves, conflicts that refuse everything, rollback.
 
 import { describe, expect, it } from "vitest";
-import type { HostPathState, ScopeLayout } from "@paperclipai/shared";
+import type { HostPathState, ScopeLayout } from "@myrmidonai/shared";
 import { scopeMigrator, ScopeMigrationRefused, type ScopeMigrationHost } from "./scope-migration.js";
 
 const ROOTS = { volumeRoot: "/v", scopeRoot: "/v/.scopes" };

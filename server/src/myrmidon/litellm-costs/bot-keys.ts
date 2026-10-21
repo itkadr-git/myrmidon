@@ -26,7 +26,7 @@
 // leave this process's memory and are never logged.
 
 import { and, eq, ne } from "drizzle-orm";
-import { agents, type Db } from "@paperclipai/db";
+import { agents, type Db } from "@myrmidonai/db";
 import { secretService } from "../../services/index.js";
 import { cardUsesLlmGateway } from "../bot-containers/profile-input.js";
 

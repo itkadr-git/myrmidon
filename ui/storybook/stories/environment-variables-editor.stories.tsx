@@ -1,6 +1,6 @@
 import { useState, type ReactNode } from "react";
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import type { CompanySecret, EnvBinding, SecretStatus } from "@paperclipai/shared";
+import type { CompanySecret, EnvBinding, SecretStatus } from "@myrmidonai/shared";
 import { EnvironmentVariablesEditor } from "@/components/environment-variables-editor";
 import { ToastProvider } from "@/context/ToastContext";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";

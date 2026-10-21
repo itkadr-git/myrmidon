@@ -40,7 +40,7 @@ import type {
   CompanySkillUpdateStatus,
   CompanySkillVersion,
   CompanySkillVersionCreateRequest,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import { api } from "./client";
 
 export interface CatalogListQuery {

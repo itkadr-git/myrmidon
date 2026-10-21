@@ -5,7 +5,7 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlarmClock } from "lucide-react";
-import type { RunStallKey, RunStallValues } from "@paperclipai/shared";
+import type { RunStallKey, RunStallValues } from "@myrmidonai/shared";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";

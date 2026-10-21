@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   RUNTIME_EXPOSURE_APP_PORT_MIN,
   RUNTIME_EXPOSURE_HMR_PORT_OFFSET,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 
 import { allocateExposurePortPair } from "./port-pair.js";
 

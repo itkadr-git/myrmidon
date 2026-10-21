@@ -31,7 +31,7 @@ import {
   wipLimitSettingsSchema,
   type WipLimitAgentStatus,
   type WipLimitSettings,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import { buildWipLimitAttentionCards } from "./attention.js";
 import { deliverWipLimitSignal, type WipLimitSignalPorts } from "./signal.js";
 import { createWipLimitSweeper, wipLimitsAllDisabled } from "./sweep.js";

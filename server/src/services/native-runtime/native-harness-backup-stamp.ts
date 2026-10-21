@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { lstatSync, readFileSync, readdirSync, readlinkSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { resolvePaperclipInstanceRoot } from "../../home-paths.js";
-import { readProductEnv } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
+import { readProductEnv } from "@myrmidonai/shared/env-alias"; // myrmidon(REBRAND-C)
 
 export interface NativeHarnessBackupStamp {
   schema: "paperclip.native-harness-backup-stamp.v2";

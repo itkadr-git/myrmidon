@@ -37,12 +37,12 @@ import {
   issueThreadInteractions,
   issues,
   type Db,
-} from "@paperclipai/db";
+} from "@myrmidonai/db";
 import {
   isOwnerDecisionAudience,
   type IssueThreadInteractionCanonicalResolverPolicy,
   type SourceTrustMetadata,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import { logger } from "../../middleware/logger.js";
 import { logActivity } from "../../services/activity-log.js";
 import { issueThreadInteractionService } from "../../services/issue-thread-interactions.js";

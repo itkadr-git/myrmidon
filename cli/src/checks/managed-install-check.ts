@@ -7,7 +7,7 @@ import {
   type InstallStorePaths,
 } from "../install-store.js";
 import type { CheckResult } from "./index.js";
-import { isSupportedNodeVersion, MINIMUM_NODE_VERSION } from "@paperclipai/shared/node-version";
+import { isSupportedNodeVersion, MINIMUM_NODE_VERSION } from "@myrmidonai/shared/node-version";
 
 function pathContains(directory: string): boolean {
   const normalized = path.resolve(directory);

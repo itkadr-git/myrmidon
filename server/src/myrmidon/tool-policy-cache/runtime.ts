@@ -14,8 +14,8 @@
 // operator's change applies to the next gateway call without a restart (the
 // same contract the agent-memory settings follow).
 
-import type { Db } from "@paperclipai/db";
-import { resolveToolPolicyCacheTtlMs } from "@paperclipai/shared";
+import type { Db } from "@myrmidonai/db";
+import { resolveToolPolicyCacheTtlMs } from "@myrmidonai/shared";
 import { instanceSettingsService } from "../../services/instance-settings.js";
 import { createToolPolicyCache, type ToolPolicyCache, type ToolPolicyCacheStats } from "./cache.js";
 import { createToolPolicySnapshotLoader } from "./loader.js";

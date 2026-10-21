@@ -25,7 +25,7 @@ import {
   it,
   vi,
 } from "vitest";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
 import {
   agents,
   instanceSettings,
@@ -37,7 +37,7 @@ import {
   toolProfileBindings,
   toolProfileEntries,
   toolProfiles,
-} from "@paperclipai/db";
+} from "@myrmidonai/db";
 import {
   applyToolPolicyCachePatch,
   instanceGeneralSettingsSchema,
@@ -47,7 +47,7 @@ import {
   TOOL_POLICY_CACHE_DEFAULT_TTL_MS,
   TOOL_POLICY_CACHE_MAX_TTL_MS,
   toolPolicyCacheSettingsSchema,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import { instanceSettingsService } from "../../services/instance-settings.js";
 import { toolAccessPolicyService } from "../../services/tool-access-policy.js";
 import { createToolPolicyCache } from "./cache.js";

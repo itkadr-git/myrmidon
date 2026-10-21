@@ -1,5 +1,5 @@
 import { and, eq, inArray, ne, notInArray, sql } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
 import {
   companyMemberships,
   companySecretBindings,
@@ -13,8 +13,8 @@ import {
   toolAccessAuditEvents,
   toolConnections,
   userSecretDeclarations,
-} from "@paperclipai/db";
-import type { PermissionKey, PrincipalType } from "@paperclipai/shared";
+} from "@myrmidonai/db";
+import type { PermissionKey, PrincipalType } from "@myrmidonai/shared";
 import { conflict } from "../errors.js";
 import { assertAssignableAgent } from "./agent-assignability.js";
 import { authorizationService, type AuthorizationActor, type AuthorizationResource } from "./authorization.js";

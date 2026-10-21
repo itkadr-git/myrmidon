@@ -8,7 +8,7 @@ import {
   agents,
   companies,
   createDb,
-} from "@paperclipai/db";
+} from "@myrmidonai/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,

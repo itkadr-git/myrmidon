@@ -12,7 +12,7 @@ import type {
   CompanyPortabilityInclude,
   CompanyPortabilityPreviewResult,
   CompanyPortabilityImportResult,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import {
   buildAlreadyImportedMessage,
   companyImportTransferApplyPath,
@@ -21,7 +21,7 @@ import {
   COMPANY_IMPORT_TRANSFERS_ROUTE_PATH,
   type CompanyImportTransferCreated,
   type CompanyImportTransferDeclaration,
-} from "@paperclipai/shared/company-import-transfer";
+} from "@myrmidonai/shared/company-import-transfer";
 import { getTelemetryClient, trackCompanyImported } from "../../telemetry.js";
 import { ApiRequestError, type PaperclipApiClient } from "../../client/http.js";
 import { openUrl } from "../../client/board-auth.js";

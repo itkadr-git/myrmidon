@@ -9,7 +9,7 @@ import {
   costEvents,
   createDb,
   projects,
-} from "@paperclipai/db";
+} from "@myrmidonai/db";
 import { budgetService } from "../services/budgets.ts";
 import {
   getEmbeddedPostgresTestSupport,

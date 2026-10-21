@@ -1,8 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
-import { companySecretBindings, toolConnections } from "@paperclipai/db";
-import type { ToolCredentialSecretRef } from "@paperclipai/shared";
+import type { Db } from "@myrmidonai/db";
+import { companySecretBindings, toolConnections } from "@myrmidonai/db";
+import type { ToolCredentialSecretRef } from "@myrmidonai/shared";
 import { unprocessable } from "../errors.js";
 import { createComposioClient, type ComposioClient } from "./composio.js";
 import { secretService } from "./secrets.js";

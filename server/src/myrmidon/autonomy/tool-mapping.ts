@@ -22,7 +22,7 @@
 //   matrix, but no tool is classified into them by default — an operator adds
 //   such a mapping from the settings key.
 
-import type { AutonomyActionClass } from "@paperclipai/shared";
+import type { AutonomyActionClass } from "@myrmidonai/shared";
 
 /** Entry shape of the configurable mapping (both the defaults and overrides). */
 export interface ToolAutonomyMappingEntry {

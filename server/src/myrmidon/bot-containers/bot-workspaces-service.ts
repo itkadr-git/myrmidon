@@ -26,7 +26,7 @@ import {
   issues,
   projectWorkspaces,
   type Db,
-} from "@paperclipai/db";
+} from "@myrmidonai/db";
 import {
   WS_BOT_DISK_SETTING_DEFAULTS,
   WS_TASK_BRANCH_PREFIX,
@@ -37,7 +37,7 @@ import {
   wsBotDiskSettingsSchema,
   type WsDesiredState,
   type WsDesiredWorkspace,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import { instanceSettingsService } from "../../services/instance-settings.js";
 import { effectivePullRequestState, readPullRequestMetadata } from "../task-pr-sync/policy.js";
 import { prStateOf, workspaceStateOf, type WorkspacePrFact } from "./workspace-state.js";

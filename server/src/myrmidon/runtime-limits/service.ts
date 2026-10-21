@@ -16,7 +16,7 @@
 // runs through one queue (see `withRuntimeLimitsTransition`), exactly as the
 // task-drain transition does.
 
-import type { Db } from "@paperclipai/db";
+import type { Db } from "@myrmidonai/db";
 import {
   RUN_LIMITS_PATCH_KEYS,
   mergeRunLimits,
@@ -24,7 +24,7 @@ import {
   type RunLimits,
   type RunLimitsPatch,
   type ResolvedRunLimits,
-} from "@paperclipai/shared";
+} from "@myrmidonai/shared";
 import { logger } from "../../middleware/logger.js";
 import { instanceSettingsService, logActivity } from "../../services/index.js";
 import type { HostCpuGate } from "../run-admission.js";

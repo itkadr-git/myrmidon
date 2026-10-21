@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { INSTANCE_FEATURE_CATALOG } from "@paperclipai/shared";
+import { INSTANCE_FEATURE_CATALOG } from "@myrmidonai/shared";
 import {
   applyCloudCatalogDefaults,
   applyExperimentalSettingsPatch,

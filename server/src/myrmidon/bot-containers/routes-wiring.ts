@@ -12,7 +12,7 @@
 // of guessing.
 
 import { and, desc, eq, gte } from "drizzle-orm";
-import { agents, heartbeatRuns, type Db } from "@paperclipai/db";
+import { agents, heartbeatRuns, type Db } from "@myrmidonai/db";
 import { forbidden } from "../../errors.js";
 import { accessService } from "../../services/index.js";
 import { authorizationDeniedDetails } from "../../services/authorization.js";

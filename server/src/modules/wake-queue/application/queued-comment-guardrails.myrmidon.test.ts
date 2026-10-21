@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
-import type { IssueComment } from "@paperclipai/shared";
+import type { IssueComment } from "@myrmidonai/shared";
 import { createEditQueuedComment } from "./queued-comment-use-cases.js";
 import type {
   LockedQueuedCommentState,

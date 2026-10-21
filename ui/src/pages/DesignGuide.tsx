@@ -163,7 +163,7 @@ import {
   pendingConnectionIntentInteraction,
   retryConnectionIntentInteraction,
 } from "@/fixtures/issueThreadInteractionFixtures";
-import type { CompanySecret, EnvBinding, Issue } from "@paperclipai/shared";
+import type { CompanySecret, EnvBinding, Issue } from "@myrmidonai/shared";
 import { CollectionToolbar } from "@/components/CollectionToolbar";
 import { IssueRow } from "@/components/IssueRow";
 import {
@@ -185,7 +185,7 @@ import {
   sampleTeam,
   warnTeam,
 } from "@/pages/TeamCatalog.fixtures";
-import type { IssueWorkProduct } from "@paperclipai/shared";
+import type { IssueWorkProduct } from "@myrmidonai/shared";
 
 /* ------------------------------------------------------------------ */
 /*  Sample data for the Issue Output surface showcase                  */

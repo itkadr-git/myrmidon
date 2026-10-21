@@ -3,7 +3,7 @@
 // the server keeps its import paths; adapter-utils and other shared packages
 // import the name from here without reaching into server-only code.
 //
-// This does not rename package names (@paperclipai/*), environment variables
+// This does not rename package names (@myrmidonai/*), environment variables
 // (PAPERCLIP_*), the paperclipai CLI, API paths, HTTP headers, log messages,
 // or database identifiers — those stay untouched for vendor compatibility
 // (see NOTICE and docs/myrmidon/CONVENTIONS.md §8).

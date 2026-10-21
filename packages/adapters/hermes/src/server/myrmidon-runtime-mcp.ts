@@ -24,7 +24,7 @@ import fs from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import type { AdapterRuntimeMcpServer } from "@paperclipai/adapter-utils";
+import type { AdapterRuntimeMcpServer } from "@myrmidonai/adapter-utils";
 
 type LogFn = (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
 
