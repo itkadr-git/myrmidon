@@ -100,7 +100,7 @@ function placementInput(card: ScheduledAgentCard): AgentPlacementInput | null {
   };
 }
 
-function isUnfinished(move: FleetMoveRecord | null): move is FleetMoveRecord {
+function isUnfinished(move: FleetMoveRecord | null): boolean {
   return move !== null && move.phase !== "done" && move.phase !== "failed";
 }
 
@@ -203,7 +203,7 @@ export function startSiteSchedulerLane(deps: SiteSchedulerLaneDeps): {
             // Affinity wants the bot on another site: a move, paced and never overlapping itself.
             const latest = await deps.getLatestMove(companyId, decision.botKey);
             if (movesInFlight.has(decision.botKey)) continue;
-            if (isUnfinished(latest)) {
+            if (latest !== null && isUnfinished(latest)) {
               // Left unfinished by a restart: resume it (the move continues after its last phase).
               if (movesInFlight.size < maxConcurrentMoves) {
                 launchMove(companyId, decision.botKey, latest.dstSite, "resume unfinished move");

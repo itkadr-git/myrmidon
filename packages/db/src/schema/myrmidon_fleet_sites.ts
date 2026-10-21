@@ -29,7 +29,7 @@ export const myrmidonFleetSites = pgTable(
   "myrmidon_fleet_sites",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    companyId: uuid("company_id").notNull().references(() => companies.id),
+    companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
     name: text("name").notNull(),
     url: text("url").notNull(),
     tokenSecret: text("token_secret"),

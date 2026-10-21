@@ -2,6 +2,20 @@
 settings-section: Track 5 — operations
 ---
 
+## settings-en
+
+| `MYRMIDON_SITE_SCHEDULER` | REMOTE-SITES-T5 | unset (off) | Turns on the `site-scheduler` lane (30 s): moves a bot whose affinity site differs from its current one through the move state machine; a bot whose affinity site is full is marked `pending_placement` on its card and logged, never placed locally. Read at server startup; needs `MYRMIDON_BOT_CONTAINERS` | Unset or any value but `1` — the lane is not started |
+| `MYRMIDON_SITE_SCHEDULER_PREEMPTION` | REMOTE-SITES-T5 | unset (off) | Lets the scheduler displace a low-priority bot from a full site for a critical (P0) one | Unset or any value but `1` — no preemption. Applies only while `MYRMIDON_SITE_SCHEDULER` is on |
+| `MYRMIDON_LOCAL_SITE_AGENT_URL` | REMOTE-SITES-T5 | unset | Address of the site-agent on the board host itself, needed to move a bot to or from the board host | Unset — a move that touches the board host fails with a configuration error before anything is stopped |
+| `MYRMIDON_LOCAL_SITE_AGENT_TOKEN_SECRET` | REMOTE-SITES-T5 | unset | Name of the company secret that holds the token of the board host's site-agent | Unset — same as above; the token itself is never in the setting or the log |
+
+## settings-ru
+
+| `MYRMIDON_SITE_SCHEDULER` | REMOTE-SITES-T5 | не задан (выключено) | Включает lane `site-scheduler` (30 с): переносит бота, чья affinity-площадка отличается от текущей, автоматом переноса; бот, чья affinity-площадка заполнена, помечается в карточке `pending_placement` и попадает в журнал, на локальную площадку не уходит. Читается при запуске сервера; нужен `MYRMIDON_BOT_CONTAINERS` | Не задан или не `1` — lane не запускается |
+| `MYRMIDON_SITE_SCHEDULER_PREEMPTION` | REMOTE-SITES-T5 | не задан (выключено) | Разрешает планировщику вытеснить бота низкого приоритета с заполненной площадки ради критичного (P0) | Не задан или не `1` — вытеснения нет. Действует, только пока включён `MYRMIDON_SITE_SCHEDULER` |
+| `MYRMIDON_LOCAL_SITE_AGENT_URL` | REMOTE-SITES-T5 | не задан | Адрес site-agent на самом хосте доски: нужен для переноса бота на хост доски и с него | Не задан — перенос, затрагивающий хост доски, падает с ошибкой настройки до остановки бота |
+| `MYRMIDON_LOCAL_SITE_AGENT_TOKEN_SECRET` | REMOTE-SITES-T5 | не задан | Имя секрета компании с токеном site-agent хоста доски | Не задан — как выше; сам токен в настройке и журнале не хранится |
+
 ## changelog-en
 
 ### REMOTE-SITES-T5: site scheduler and bot move between sites (OPE-7652)

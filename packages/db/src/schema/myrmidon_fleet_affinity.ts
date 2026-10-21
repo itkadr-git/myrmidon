@@ -11,7 +11,7 @@ export const myrmidonFleetAffinity = pgTable(
   "myrmidon_fleet_affinity",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    companyId: uuid("company_id").notNull().references(() => companies.id),
+    companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
     scope: text("scope").notNull(), // "project" | "company" | "agent"
     targetId: text("target_id").notNull(),
     siteName: text("site_name").notNull(),
