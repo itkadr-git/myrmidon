@@ -39,11 +39,11 @@
       "issuePrefix": "ACME"
     },
     "project": {
-      "id": "p0000000-0000-4000-a000-000000000001",
+      "id": "f7f1434e-0000-4000-a000-000000000001",
       "name": "Core Platform"
     },
     "issue": {
-      "id": "i0000000-0000-4000-a000-000000000001",
+      "id": "57fdbf2f-0000-4000-a000-000000000001",
       "identifier": "ACME-1",
       "title": "Setup initial robotics pipeline"
     },
@@ -53,13 +53,13 @@
       "role": "lead"
     },
     "secret": {
-      "id": "sec00000-0000-4000-a000-000000000001",
+      "id": "6b5c0bb8-0000-4000-a000-000000000001",
       "key": "SYNTH_API_KEY",
       "expectedPlaintext": "synth-token-42-test-api-key-for-migration-proof",
       "expectedSha256": "b0cb631dc3f3e42fbdd1c4ac71c7d2614e109dba7c3fb21be6f81c7802a4c639"
     },
     "secret2": {
-      "id": "sec00000-0000-4000-a000-000000000002",
+      "id": "6b5c0bb8-0000-4000-a000-000000000002",
       "key": "SYNTH_DATABASE_PASSWORD",
       "expectedPlaintext": "synth-pg-pass-99-neutral-credential-string",
       "expectedSha256": "801ce49eb49dfec1ab9dc52efc4b594455f6e6283f0c0a7fdd578241bb95e5ba"

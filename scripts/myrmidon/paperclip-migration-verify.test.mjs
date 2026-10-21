@@ -255,7 +255,7 @@ describe("Paperclip Migration Verification Suite (Multi-Release)", () => {
 
       const plain = "synth-token-42-test-api-key-for-migration-proof";
       const targetSecrets = {
-        "sec00000-0000-4000-a000-000000000001": {
+        "6b5c0bb8-0000-4000-a000-000000000001": {
           material: encryptAes256Gcm(targetKeyBuf, plain),
           expectedSha256: sha256Hex(plain),
         },
