@@ -199,6 +199,7 @@ describeEmbeddedPostgres("swarm idle queue claims on the server, then wakes", ()
       agentId,
       role: "engineer",
       runId: null,
+      origin: "auto_match",
       claimedAt: NOW,
       heartbeatAt: NOW,
       expiresAt: new Date(NOW.getTime() + 900_000),
@@ -354,9 +355,9 @@ describeEmbeddedPostgres("swarm idle queue claims on the server, then wakes", ()
     expect([first, second].every((id) => assigned.some((row) => row.assigneeAgentId === id))).toBe(true);
   });
 
-  it("takes the task off an owner whose lease expired with no run, then re-matches it", async () => {
+  it("preserves an explicit assignee when an expired claim has unknown provenance", async () => {
     const companyId = await seedCompany();
-    const agentId = await seedAgent(companyId, { name: "agent-a" });
+    const agentId = await seedAgent(companyId, { name: "manual-owner" });
     const issueId = await seedTask(companyId);
     await db.update(issues).set({ assigneeAgentId: agentId }).where(eq(issues.id, issueId));
     await db.insert(issueClaims).values({
@@ -365,6 +366,35 @@ describeEmbeddedPostgres("swarm idle queue claims on the server, then wakes", ()
       agentId,
       role: "engineer",
       runId: null,
+      origin: null,
+      claimedAt: new Date(NOW.getTime() - 3_600_000),
+      heartbeatAt: new Date(NOW.getTime() - 3_600_000),
+      expiresAt: new Date(NOW.getTime() - 60_000),
+    });
+
+    const wakeCalls: WakeCall[] = [];
+    const result = await sweeper(wakeCalls).sweep(NOW);
+
+    expect(result.expiredReleased).toBe(1);
+    const [task] = await db.select({ assigneeAgentId: issues.assigneeAgentId }).from(issues).where(eq(issues.id, issueId));
+    expect(task?.assigneeAgentId).toBe(agentId);
+    expect(wakeCalls).toHaveLength(0);
+  });
+
+  it("takes the task off an owner whose lease expired with no run, then re-matches it", async () => {
+    const companyId = await seedCompany();
+    const agentId = await seedAgent(companyId, { name: "agent-a" });
+    const issueId = await seedTask(companyId);
+    await db.update(issues).set({ assigneeAgentId: agentId }).where(eq(issues.id, issueId));
+    const claimId = randomUUID();
+    await db.insert(issueClaims).values({
+      id: claimId,
+      companyId,
+      issueId,
+      agentId,
+      role: "engineer",
+      runId: null,
+      origin: "auto_match",
       claimedAt: new Date(NOW.getTime() - 3_600_000),
       heartbeatAt: new Date(NOW.getTime() - 3_600_000),
       // Expired, and no run of the agent is live: the task is nobody's again.

@@ -469,6 +469,7 @@ async function claimTaskForAgent(
     agentId: target.agentId,
     role: target.role,
     runId: null,
+    origin: "auto_match",
     now: deps.now,
     settings: { leaseTtlSec: deps.settings.leaseTtlSec },
   });
@@ -490,7 +491,7 @@ async function claimTaskForAgent(
       ) {
         throw new MatcherClaimLost();
       }
-      const claim = await insertClaim(txDb, { companyId, ...plan });
+      const claim = await insertClaim(txDb, { companyId, ...plan, origin: plan.origin ?? "auto_match" });
       if (!claim) throw new MatcherClaimLost();
 
       const { issueService } = await import("../../services/issues.js");

@@ -8,9 +8,9 @@
 // `releaseClaim` from here rather than writing the table itself — that is the
 // interface the two parts agreed on.
 
-import { and, asc, eq, inArray, isNull, lt, notInArray, or, sql } from "drizzle-orm";
+import { sql, and, asc, eq, inArray, isNull, isNotNull, exists, notExists, notInArray, lt, or } from "drizzle-orm";
 import { isUniqueViolation } from "../../db-errors.js";
-import { issueClaims, issues, type Db } from "@paperclipai/db";
+import { issueClaims, issues, heartbeatRuns, type Db } from "@paperclipai/db";
 import {
   SWARM_CLAIM_QUEUE_ISSUE_STATUSES,
   type SwarmClaimLease,
@@ -22,6 +22,7 @@ function toLease(row: typeof issueClaims.$inferSelect): SwarmClaimLease {
     id: row.id,
     issueId: row.issueId,
     agentId: row.agentId,
+    origin: row.origin === "auto_match" || row.origin === "checkout" ? row.origin : null,
     heartbeatAt: row.heartbeatAt,
     expiresAt: row.expiresAt,
     releasedAt: row.releasedAt,
@@ -189,6 +190,7 @@ export async function insertClaim(
     claimedAt: Date;
     heartbeatAt: Date;
     expiresAt: Date;
+    origin: "auto_match" | "checkout";
   },
 ): Promise<SwarmClaimLease | null> {
   const existing = await db
@@ -206,6 +208,7 @@ export async function insertClaim(
       agentId: input.agentId,
       role: input.role,
       runId: input.runId,
+      origin: input.origin,
       claimedAt: input.claimedAt,
       heartbeatAt: input.heartbeatAt,
       expiresAt: input.expiresAt,
@@ -287,9 +290,10 @@ export async function revertIdleClaimAssignment(
  * owner changed meanwhile) is left exactly as it is, and the conditional update
  * is the same shape the claim path uses.
  */
-export async function clearExpiredAssignee(
+/** Clear a released claim holder during supervisor rebalance. */
+export async function clearReleasedAssignee(
   db: Db,
-  input: { companyId: string; issueId: string; agentId: string; now: Date },
+  input: { companyId: string; issueId: string; agentId: string; claimId: string; now: Date },
 ): Promise<boolean> {
   const cleared = await db
     .update(issues)
@@ -300,6 +304,81 @@ export async function clearExpiredAssignee(
         eq(issues.companyId, input.companyId),
         eq(issues.assigneeAgentId, input.agentId),
         inArray(issues.status, [...SWARM_CLAIM_QUEUE_ISSUE_STATUSES]),
+        isNull(issues.executionRunId),
+        exists(
+          db
+            .select({ id: issueClaims.id })
+            .from(issueClaims)
+            .where(
+              and(
+                eq(issueClaims.id, input.claimId),
+                eq(issueClaims.companyId, input.companyId),
+                eq(issueClaims.issueId, input.issueId),
+                eq(issueClaims.agentId, input.agentId),
+                isNotNull(issueClaims.releasedAt),
+              ),
+            ),
+        ),
+        notExists(
+          db
+            .select({ id: issueClaims.id })
+            .from(issueClaims)
+            .where(
+              and(
+                eq(issueClaims.companyId, input.companyId),
+                eq(issueClaims.issueId, input.issueId),
+                isNull(issueClaims.releasedAt),
+              ),
+            ),
+        ),
+      ),
+    )
+    .returning({ id: issues.id });
+  return cleared.length > 0;
+}
+
+export async function clearExpiredAssignee(
+  db: Db,
+  input: { companyId: string; issueId: string; agentId: string; claimId: string; now: Date },
+): Promise<boolean> {
+  const cleared = await db
+    .update(issues)
+    .set({ assigneeAgentId: null, updatedAt: input.now })
+    .where(
+      and(
+        eq(issues.id, input.issueId),
+        eq(issues.companyId, input.companyId),
+        eq(issues.assigneeAgentId, input.agentId),
+        inArray(issues.status, [...SWARM_CLAIM_QUEUE_ISSUE_STATUSES]),
+        isNull(issues.executionRunId),
+        exists(
+          db
+            .select({ id: issueClaims.id })
+            .from(issueClaims)
+            .where(
+              and(
+                eq(issueClaims.id, input.claimId),
+                eq(issueClaims.companyId, input.companyId),
+                eq(issueClaims.issueId, input.issueId),
+                eq(issueClaims.agentId, input.agentId),
+                eq(issueClaims.origin, "auto_match"),
+                isNotNull(issueClaims.releasedAt),
+                eq(issueClaims.releaseReason, "lease_expired"),
+              ),
+            ),
+        ),
+        notExists(
+          db
+            .select({ id: issueClaims.id })
+            .from(issueClaims)
+            .where(
+              and(
+                eq(issueClaims.companyId, input.companyId),
+                eq(issueClaims.issueId, input.issueId),
+                isNull(issueClaims.releasedAt),
+              ),
+            ),
+        ),
       ),
     )
     .returning({ id: issues.id });
