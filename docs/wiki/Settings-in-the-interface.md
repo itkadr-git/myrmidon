@@ -174,6 +174,35 @@ environment variable, so the stored row (then the built-in default) is the
 only source; a hand-edited value that is not a whole number within the bounds
 reads as the default — the same fallback the feed itself applies.
 
+- **Run stall detection** — the "Run stall detection" section on Instance →
+  General (since 1.6.5) edits the stalled-run sweep live, without a restart:
+  the sweep interval (`checkIntervalSec`, 15 s – 24 h) and the scan page
+  size (`pageSize`, 1–200). The master switch and the silence threshold are
+  shown read-only with a link to the Team liveness section, which owns them
+  (`runStallEnabled`, `runStallThresholdSec` at
+  `/api/myrmidon/team-liveness`). Each value shows where it came from — the
+  saved settings row (`instance_settings.general.runStall`), the deployment
+  environment (`MYRMIDON_RUN_STALL_*`) or the built-in default. Written by
+  an instance administrator via `GET`/`PATCH` on `/api/myrmidon/run-stall`.
+- **Board process composition** (since 1.6.6) — how many HTTP processes
+  (`api`) and how many scheduler processes (`worker`) the deployment runs,
+  read once at startup from the instance settings key `general.processes`.
+  An absent key means `{ api: 1, worker: 0 }` — the single process, as
+  before; a malformed row refuses startup with the fix in the log. With
+  several processes, the per-process readiness endpoint
+  `GET /internal/ready` and the aggregate `GET /healthz` (200 only when all
+  api processes are ready) report the state to the load balancer.
+- **Long task context** — a task whose history no longer fits the model
+  window is reset automatically instead of failing the run on context
+  compression: a session already past `resetPct` (default 70 %) of the
+  model window is dropped before the next run resumes it, and the launch
+  payload's history is bounded by volume as well as by count. Tuned by
+  `MYRMIDON_LONG_TASK_CONTEXT_*` and `MYRMIDON_CONTINUATION_*` (since 1.6.6)
+  — details in the
+  [long-task-context](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/long-task-context.md)
+  guide and in
+  [SETTINGS.md](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/SETTINGS.md).
+
 ## Also in the interface
 
 - **Host disk threshold** — Instance → General, "Host disk" (default 85 %);
