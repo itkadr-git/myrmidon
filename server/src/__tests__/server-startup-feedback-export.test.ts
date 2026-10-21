@@ -238,6 +238,10 @@ vi.mock("../services/native-runtime/native-session-executor.js", () => ({
 }));
 
 vi.mock("../myrmidon/process-registry/index.js", () => ({
+  boardProcessRegistryIdentity: vi.fn(() => ({
+    bootId: "test-boot-id",
+    pid: process.pid,
+  })),
   startBoardProcessRegistry: startBoardProcessRegistryMock,
   stopBoardProcessRegistry: vi.fn(),
   myrmidonBoardProcessRegistryRoutes: vi.fn(() => ({ use: vi.fn() })),
