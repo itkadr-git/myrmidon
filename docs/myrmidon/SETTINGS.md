@@ -1,9 +1,5 @@
 # Myrmidon settings
 
-## Instance administrator
-
-The `admin-assistant` built-in agent is provisioned as the instance administrator and uses the existing gateway adapter. Its owner-provided model routing is read from the agent's adapter configuration: `adminAssistant.routing.routineModel`, `complexModel`, and optional `reserveModel`. Values must be model IDs exposed by the connected LiteLLM catalog; changes are read on the next task and do not require a restart. Routine tasks use the cheap model, complex tasks use the senior model, and an unavailable preferred model falls back to the reserve.
-
 > Russian version: [SETTINGS.ru.md](SETTINGS.ru.md)
 
 Our settings are environment variables `MYRMIDON_<AREA>_<NAME>`. Vendor `PAPERCLIP_*`
