@@ -305,11 +305,12 @@ export function botWorkspacesStore(db: Db): BotWorkspacesStore {
             eq(activityLog.companyId, companyId),
             eq(activityLog.entityType, "issue"),
             eq(activityLog.action, "issue.updated"),
-            // Keep reassignment history unbounded so old copies cannot become
-            // unknown keys and remain forever due to fail-closed cleanup.
+            // Not bounded by `since`: an old reassigned copy would otherwise become an
+            // unknown key and stay forever (fail-closed cleanup). Bounded by count instead.
             sql`${activityLog.details}->'_previous'->>'assigneeAgentId' = ${agentId}`,
           ),
-        );
+        )
+        .limit(5000);
       const reassignedIds = reassigned.map((r) => r.entityId);
       const selected = {
         id: issues.id,
