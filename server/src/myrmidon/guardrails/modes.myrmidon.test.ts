@@ -254,10 +254,8 @@ describeEmbeddedPostgres("myrmidon(1.7-GRD-MODES): enforcement modes integration
       env: {},
       now: FIXED_NOW,
     });
-    if (!decision) throw new Error("Expected guardrail decision");
-    expect(decision.hits).toBe(0);
-    expect(decision.mode).toBe("flag");
-    expect(decision.text).toBe(secretText());
+    // The detector layer is disabled when its rollout switch is absent.
+    expect(decision).toBeNull();
     expect(await db.select().from(guardrailEvents)).toHaveLength(0);
   });
 
