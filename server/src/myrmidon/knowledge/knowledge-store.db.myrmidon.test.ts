@@ -320,7 +320,9 @@ describeEmbeddedPostgres("myrmidon(1.6.6 KNOWLEDGE-2.0 K-1) knowledge store over
     companyId = await makeCompany();
     const nest = await db
       .insert(projects)
-      .values({ companyId, name: `REDACT nest ${randomUUID()}` })
+      // Knowledge currently uses companyId as nestId, while REDACT settings
+      // reference projects.id. Give this test nest the shared ID accepted by both FKs.
+      .values({ id: companyId, companyId, name: `REDACT nest ${randomUUID()}` })
       .returning()
       .then((rows) => rows[0]!);
     const nestId = nest.id;
