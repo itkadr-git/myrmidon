@@ -3020,16 +3020,13 @@ export function recoveryService(
   async function resolveContinuationWaitingOnReview(
     issue: typeof issues.$inferSelect,
   ) {
-    const [existingBlockers, openChildren] = await Promise.all([
-      existingUnresolvedBlockerIssues(issue.companyId, issue.id),
-      openChildIssues(issue),
-    ]);
-    const blockedByIssueIds = [
-      ...new Set([
-        ...existingBlockers.map((row) => row.id),
-        ...openChildren.map((row) => row.id),
-      ]),
-    ];
+    // Parent/child membership is not an active dependency: a blocker relation
+    // may have been explicitly removed while the child remains open.
+    const existingBlockers = await existingUnresolvedBlockerIssues(
+      issue.companyId,
+      issue.id,
+    );
+    const blockedByIssueIds = existingBlockers.map((row) => row.id);
     if (blockedByIssueIds.length === 0) return null;
 
     const updated = await updateDependencyWait(
@@ -3039,10 +3036,7 @@ export function recoveryService(
     );
     if (!updated) return null;
 
-    const waitingOn = formatIssueLinksForComment([
-      ...openChildren,
-      ...existingBlockers,
-    ]);
+    const waitingOn = formatIssueLinksForComment(existingBlockers);
     await issuesSvc.addComment(
       issue.id,
       `This task is waiting on ${waitingOn} to finish. ` +
