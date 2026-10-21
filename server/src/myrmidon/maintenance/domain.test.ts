@@ -143,10 +143,14 @@ describe("maintenance tick decisions", () => {
   });
 
   describe("stuck open window backstop", () => {
-    it("an open window past deadline + grace is stuck", () => {
+    it("an entering window past deadline + grace is stuck", () => {
       const past = new Date(now.getTime() + 60_000 + DEFAULT_STUCK_GRACE_MS + 1_000);
       expect(isStuckOpenWindow(entering, past)).toBe(true);
-      expect(isStuckOpenWindow({ ...entering, state: "on" }, past)).toBe(true);
+    });
+
+    it("an `on` window is never closed by the clock backstop", () => {
+      const past = new Date(now.getTime() + 60_000 + DEFAULT_STUCK_GRACE_MS + 1_000);
+      expect(isStuckOpenWindow({ ...entering, state: "on" }, past)).toBe(false);
     });
 
     it("within the grace the window is not stuck; leaving is the tick's own path", () => {

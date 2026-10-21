@@ -209,21 +209,19 @@ export function decideTick(window: MaintenanceWindow, runningRunIds: string[], n
   const deadlineMs = Date.parse(window.drainDeadlineAt);
   if (nowMs < deadlineMs) return { kind: "none" };
   if (window.onTimeout === "interrupt_and_retry") {
-    // Teardown must finish before retries are promoted or the window leaves
-    // entering. Any running run, including one already interrupted by us, is
-    // still holding the drain open.
-    if (runningRunIds.length > 0) {
-      const unowned = runningRunIds.filter((id) => !window.interruptedRunIds.includes(id));
-      return unowned.length > 0 ? { kind: "interrupt", runIds: unowned } : { kind: "none" };
-    }
-    return window.interruptedRunIds.length > 0 ? { kind: "drained_after_interrupts" } : { kind: "mark_on" };
+    // Here runningRunIds is non-empty (the empty case returned above). Teardown
+    // must finish before retries are promoted or the window leaves entering:
+    // any running run, including one already interrupted by us, holds the
+    // drain open; only the not-yet-interrupted ones are interrupted now.
+    const unowned = runningRunIds.filter((id) => !window.interruptedRunIds.includes(id));
+    return unowned.length > 0 ? { kind: "interrupt", runIds: unowned } : { kind: "none" };
   }
   return window.drainTimedOut ? { kind: "none" } : { kind: "mark_timed_out" };
 }
 
 /**
- * myrmidon(L6-PROFILE-UPDATE-STARVATION): backstop check for an open
- * (entering/on) window: has it been open past drain deadline + grace without
+ * myrmidon(L6-PROFILE-UPDATE-STARVATION): backstop check for an
+ * `entering` window: has it been open past drain deadline + grace without
  * completing? A stuck window is retired with an error record so later card
  * changes for the same scope are not blocked (a same-scope `enter` while a
  * window is still `leaving` gets 409).
@@ -235,7 +233,10 @@ export function isStuckOpenWindow(
 ): boolean {
   // The backstop is only authorized for agent-scoped profile maintenance;
   // never retire deployment-wide or company maintenance windows here.
-  if (window.scope.type !== "agent" || window.state === "leaving") return false;
+  // Only `entering` is stuck: an `on` window is one the reconciler (or an
+  // operator) holds deliberately while it applies the profile; closing it by
+  // the clock could cut a profile apply short.
+  if (window.scope.type !== "agent" || window.state !== "entering") return false;
   const cutoff = Date.parse(window.drainDeadlineAt) + stuckGraceMs;
   return now.getTime() >= cutoff;
 }
