@@ -563,7 +563,10 @@ describe("shouldBlockPublicationOnReadiness", () => {
 
   it("reads the deployment-level mode from the environment", () => {
     expect(resolveWorkspaceReadinessGateMode({})).toBe("auto");
+    expect(resolveWorkspaceReadinessGateMode({ MYRMIDON_WORKSPACE_READINESS_GATE: "STRICT" })).toBe("strict");
     expect(resolveWorkspaceReadinessGateMode({ PAPERCLIP_WORKSPACE_READINESS_GATE: "STRICT" })).toBe("strict");
+    expect(resolveWorkspaceReadinessGateMode({ MYRMIDON_WORKSPACE_READINESS_GATE: "auto", PAPERCLIP_WORKSPACE_READINESS_GATE: "STRICT" })).toBe("auto");
+    expect(resolveWorkspaceReadinessGateMode({ MYRMIDON_WORKSPACE_READINESS_GATE: "", PAPERCLIP_WORKSPACE_READINESS_GATE: "STRICT" })).toBe("auto");
     expect(resolveWorkspaceReadinessGateMode({ PAPERCLIP_WORKSPACE_READINESS_GATE: "anything-else" })).toBe("auto");
   });
 });

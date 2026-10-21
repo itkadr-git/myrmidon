@@ -71,7 +71,7 @@ describe("getOperatorSettingDefaults", () => {
 
   it("throws on malformed policy JSON (fail closed)", () => {
     expect(() => getOperatorSettingDefaults(defaultsEnv("{broken"))).toThrow(
-      /PAPERCLIP_SETTING_DEFAULTS/,
+      /MYRMIDON_SETTING_DEFAULTS/,
     );
   });
 });

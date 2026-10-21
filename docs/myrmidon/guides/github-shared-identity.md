@@ -206,6 +206,21 @@ prompt switch and the commit identity are taken from the broker's answer, so a
 broker-supplied credential helper can never replace the staged one that names
 the repository.
 
+## Reading pull requests and issues (external-object resolver)
+
+The server-side resolver that reads GitHub pull-request and issue state (done
+gate, work-product sync, link cards) uses the same Apps to read private
+repositories. For each repository it takes, in order: a company secret named
+`GITHUB_TOKEN` / `GH_TOKEN` / `PAPERCLIP_GITHUB_TOKEN`; otherwise the single
+App whose `allowedRepos` matches the repository (agent scope is not
+consulted — the reader is the board itself), with a read-only installation
+token (`contents: read`, `pull_requests: read`, metadata) for that one
+repository; otherwise an anonymous request. Two Apps matching one repository
+is an error and no token is issued. The key is read as the system consumer
+`github-external-object-resolver`. When a PR still cannot be read, the done
+gate says that the board has no access to the repository and asks to configure
+a GitHub App or PAT, instead of saying the PR is not merged yet.
+
 ## Limits
 
 - The App's own MCP tools are not wired: App tokens serve shell git/gh
