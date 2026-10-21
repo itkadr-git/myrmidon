@@ -29,6 +29,10 @@ Myrmidon — система управления командой ИИ-аген�
 - [Коннекторы и инструменты](Connectors-and-tools.ru) — мост браузера,
   коннекторы MCP, облачные хранилища и Microsoft 365, медиа и OCR, GitHub.
 
+## Corpus
+
+- [Интеграция сервера Corpus](../myrmidon/changes/ope-7844-corpus-integration.md) — настройка и сквозная проверка.
+
 ## Начало работы
 
 - [Системные требования](System-requirements.ru) — поддерживаемые ОС и
