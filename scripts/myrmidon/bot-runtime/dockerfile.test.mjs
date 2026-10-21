@@ -337,8 +337,6 @@ describe("docker/bot-runtime/patches/", () => {
         assert.match(patch, /class SidecarScanIncompleteError/);
         assert.match(patch, /async def acquire_async/);
         assert.match(patch, /close_all_db_handles_async/);
-        assert.match(patch, /myrmidon\(G1\)/);
-        continue;
       }
       // Every edit to hermes code carries the fork label (CONVENTIONS.md §8).
       assert.match(patch, /myrmidon\(G1\)/, `${file} must carry the myrmidon(G1) label`);

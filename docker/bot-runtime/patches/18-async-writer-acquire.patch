@@ -784,8 +784,8 @@ diff --git a/hermes_state.py b/hermes_state.py
      def _connect_and_init(self) -> None:
 +        # myrmidon(G1): scanner, refusal gate, file preparation and connect share one off-loop
 +        # worker transaction; every retry re-enters here and performs a fresh complete scan.
-+        if threading.current_thread() is threading.main_thread():
-+            raise RuntimeError("state DB writer open must run in a worker thread")
++        if self._deferred_open and threading.current_thread() is threading.main_thread():
++            raise RuntimeError("deferred state DB writer open must run in a worker thread")
          # Refuse before sqlite3.connect (under the startup lock) so we cannot mint
          # a replacement WAL while a live writer still holds a deleted sidecar inode.
          refuse_deleted_wal_generation(self.db_path)
