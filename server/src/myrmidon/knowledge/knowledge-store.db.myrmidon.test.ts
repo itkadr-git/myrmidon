@@ -55,6 +55,7 @@ describeEmbeddedPostgres("myrmidon(1.6.6 KNOWLEDGE-2.0 K-1) knowledge store over
   afterEach(async () => {
     await db.delete(activityLog);
     await db.delete(knowledgeItems);
+    await db.delete(nestRedactSettings);
     await db.delete(projects);
     await db.delete(agents);
     await db.delete(companies);
@@ -317,7 +318,12 @@ describeEmbeddedPostgres("myrmidon(1.6.6 KNOWLEDGE-2.0 K-1) knowledge store over
 
   it("applies per-nest REDACT settings before create and draft persistence", async () => {
     companyId = await makeCompany();
-    const nestId = companyId;
+    const nest = await db
+      .insert(projects)
+      .values({ companyId, name: `REDACT nest ${randomUUID()}` })
+      .returning()
+      .then((rows) => rows[0]!);
+    const nestId = nest.id;
     const mod = createKnowledgeModule(db, companyId, {
       nestId,
       now: () => new Date("2026-10-08T00:00:00Z"),
