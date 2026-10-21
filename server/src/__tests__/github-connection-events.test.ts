@@ -348,13 +348,15 @@ describeEmbeddedPostgres.sequential("GitHub connection event delivery", () => {
     }));
     const connector = { getCapabilities: vi.fn(async () => ["github.code" as const]), startAuthorization: vi.fn(), claim: vi.fn(), refresh: vi.fn(), revoke: vi.fn(), setWebhookBinding: vi.fn(async () => undefined), leaseEvents: vi.fn(async () => ({ leaseId: randomUUID(), events })), acknowledgeEvents: vi.fn(async () => 2) } as unknown as PaperclipCloudConnector;
     const wakeup = vi.fn(async () => undefined);
-    const service = githubConnectionEventService(db, { connector, assignmentWakeup: wakeup, now: () => new Date("2026-09-04T12:00:05.000Z") });
+    let currentTime = new Date("2026-09-04T12:00:05.000Z");
+    const service = githubConnectionEventService(db, { connector, assignmentWakeup: wakeup, now: () => currentTime });
     await expect(service.pollOnce()).resolves.toMatchObject({ processed: 2, failed: 0 });
     expect(wakeup).toHaveBeenCalledTimes(2);
     expect(wakeup).toHaveBeenCalledWith(agentId, expect.objectContaining({ reason: "ci_completed", payload: expect.objectContaining({ conclusion: "failure", headSha, pullRequestNumber: 123 }) }));
     expect(wakeup.mock.calls[0]?.[1].idempotencyKey).toContain(headSha);
     expect(wakeup.mock.calls[1]?.[1].idempotencyKey).toContain(headSha);
     expect(wakeup.mock.calls[0]?.[1].payload).not.toHaveProperty("accessToken");
+    currentTime = new Date(currentTime.getTime() + 5_000);
     await expect(service.pollOnce()).resolves.toMatchObject({ processed: 0, duplicate: 2, failed: 0 });
     expect(wakeup).toHaveBeenCalledTimes(2);
   });
