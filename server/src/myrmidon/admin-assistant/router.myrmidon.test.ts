@@ -8,8 +8,12 @@ describe("instance administrator model routing", () => {
     expect(routeAdminTask("routine", routing, ["cheap", "strong"])).toEqual({ model: "cheap", escalated: false });
   });
 
-  it("uses the senior model for complex work and reserves on failure", () => {
+  it("falls back to the reserve model when the complex model is unavailable", () => {
     expect(routeAdminTask("complex", routing, ["backup"])).toEqual({ model: "backup", escalated: true });
+  });
+
+  it("falls back to the reserve model when the routine model is unavailable", () => {
+    expect(routeAdminTask("routine", routing, ["backup"])).toEqual({ model: "backup", escalated: false });
   });
 
   it("rejects a route when LiteLLM does not expose any configured model", () => {

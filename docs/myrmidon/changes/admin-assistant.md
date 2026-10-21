@@ -22,10 +22,10 @@ divergence-section: Трек 1 — платформа
 
 ### Instance administrator
 
-The `admin-assistant` built-in agent is provisioned as the instance administrator and uses the existing gateway adapter. Its owner-provided model routing is read from the agent's adapter configuration: `adminAssistant.routing.routineModel`, `complexModel`, and optional `reserveModel`. Values must be model IDs exposed by the connected LiteLLM catalog; changes are read on the next task and do not require a restart. Routine tasks use the cheap model, complex tasks use the senior model, and an unavailable preferred model falls back to the reserve.
+The `admin-assistant` built-in agent is provisioned as the instance administrator and uses the existing gateway adapter. Its owner-provided model routing is read from `adapterConfig.adminAssistant.routing` (`routineModel`, `complexModel`, and optional `reserveModel`), with effective values and their source shown in settings. Values must be model IDs exposed by the connected LiteLLM catalog; changes apply to the next task without a restart. Routine tasks use the cheap model, complex tasks use the senior model, and an unavailable preferred model falls back to the reserve.
 
 ## settings-ru-new
 
 ### Агент-администратор инстанса
 
-Встроенный агент `admin-assistant` регистрируется как администратор инстанса и использует существующий gateway-адаптер. Владелец задаёт маршрутизацию в конфигурации адаптера агента: `adminAssistant.routing.routineModel`, `complexModel` и необязательный `reserveModel`. Значения должны быть идентификаторами моделей из подключённого каталога LiteLLM; изменения применяются на следующей задаче без перезапуска. Рутинные задачи идут на дешёвую модель, сложные — на старшую, а недоступная предпочтительная модель заменяется резервной.
+Встроенный агент `admin-assistant` регистрируется как администратор инстанса и использует существующий gateway-адаптер. Маршрутизация владельца берётся из `adapterConfig.adminAssistant.routing` (`routineModel`, `complexModel` и необязательный `reserveModel`); экран настроек показывает эффективные значения и их источник. Значения должны быть идентификаторами моделей из подключённого каталога LiteLLM; изменения применяются на следующей задаче без перезапуска. Рутинные задачи идут на дешёвую модель, сложные — на старшую, а недоступная предпочтительная модель заменяется резервной.
