@@ -15,17 +15,27 @@ import { isUi2RouteElementAPlaceholder } from "../routes";
 import { fleetStatus } from "../screens/agent-overview/Ui2AgentsFleetPage";
 
 describe("myrmidon(UI2) route table integration", () => {
-  it("ships exactly the six contract entries plus the commander chat", () => {
+  it("ships exactly the contract entries, the commander chat and the knowledge screens", () => {
     expect(UI2_ROUTE_TABLE.map((entry) => entry.key).sort()).toEqual([
       "agent-overview",
       "agents-fleet",
       "commander-chat",
       "costs",
       "decisions",
+      "knowledge",
+      "knowledge-page",
+      "settings-autonomy-regulations",
       "settings-language",
       "settings-runs-queue",
       "settings-system",
     ]);
+  });
+
+  it("marks the knowledge and regulations nav items as gated on the knowledge API", () => {
+    const items = UI2_NAV_GROUPS.flatMap((group) => group.items);
+    for (const to of ["/knowledge", "/company/settings/autonomy/regulations"]) {
+      expect(items.find((item) => item.to === to)?.requires).toBe("knowledge");
+    }
   });
 
   it("keeps the fleet route reachable from both desktop and phone navigation", () => {
