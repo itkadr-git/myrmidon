@@ -43,7 +43,7 @@ export interface GuardrailRunOutputInput {
   /** The final text of the run — what the comment would carry. */
   text: string | null;
   /** Whose run this is — mode resolution is per agent (1.7-GRD-MODES). */
-  agentId: string;
+  agentId?: string;
   env?: NodeJS.ProcessEnv;
   now?(): Date;
 }
@@ -63,6 +63,9 @@ export interface GuardrailRunOutputDecision {
   text: string | null;
   /** How many detector hits fired (0 when the layer is off or text empty). */
   hits: number;
+  /** Legacy event counts retained for existing callers. */
+  total?: number;
+  recorded?: number;
 }
 
 export async function guardrailsOnRunOutput(
@@ -73,7 +76,7 @@ export async function guardrailsOnRunOutput(
   const enforcement = await resolveGuardrailModeForAgent({
     db: input.db,
     companyId: input.companyId,
-    agentId: input.agentId,
+    agentId: input.agentId ?? "00000000-0000-0000-0000-000000000000",
     env: input.env,
     rule: "secret",
   });
@@ -95,6 +98,8 @@ export async function guardrailsOnRunOutput(
       caste: null,
       text: input.text,
       hits: 0,
+      total: 0,
+      recorded: 0,
     };
   }
   // The rule whose mode governs the whole text: secrets win over pii (the
@@ -109,6 +114,8 @@ export async function guardrailsOnRunOutput(
       caste: mode.caste,
       text: input.text,
       hits: base.total,
+      total: base.total,
+      recorded: base.recorded,
     };
   }
   const spans = detectGuardrailHits(input.text)
@@ -122,6 +129,8 @@ export async function guardrailsOnRunOutput(
       caste: mode.caste,
       text: maskGuardrailSpans(input.text, spans),
       hits: base.total,
+      total: base.total,
+      recorded: base.recorded,
     };
   }
   return {
@@ -148,7 +157,7 @@ async function enforcementForRule(
   return resolveGuardrailModeForAgent({
     db: input.db,
     companyId: input.companyId,
-    agentId: input.agentId,
+    agentId: input.agentId ?? "00000000-0000-0000-0000-000000000000",
     env: input.env,
     rule,
   });

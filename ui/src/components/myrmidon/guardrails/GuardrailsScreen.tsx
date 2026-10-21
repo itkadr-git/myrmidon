@@ -78,14 +78,14 @@ export function GuardrailsScreenView({
   for (const rule of GUARDRAIL_RULES) {
     const drafted = companyDraft?.[rule];
     const stored = settings?.company?.[rule];
-    currentCompany[rule] = drafted !== undefined ? drafted : stored ?? INHERIT;
+    currentCompany[rule] = drafted ?? stored ?? INHERIT;
   }
   const activeCaste = casteDraft ?? "";
   const currentCasteRules: Partial<Record<GuardrailRule, string>> = {};
   for (const rule of GUARDRAIL_RULES) {
     const drafted = agentDraft?.[activeCaste]?.[rule];
     const stored = activeCaste ? settings?.castes?.[activeCaste]?.[rule] : undefined;
-    currentCasteRules[rule] = drafted !== undefined ? drafted : stored ?? INHERIT;
+    currentCasteRules[rule] = drafted ?? stored ?? INHERIT;
   }
 
   const castes = Array.from(
@@ -264,11 +264,11 @@ export function GuardrailsScreenView({
                         {GUARDRAIL_RULES.map((rule) => {
                           const drafts = agentDraft?.[agent.agentId] ?? {};
                           const stored = settings.agents?.[agent.agentId]?.[rule];
-                          const value = drafts[rule] !== undefined ? drafts[rule] : stored ?? INHERIT;
+                          const value = drafts[rule] ?? stored ?? INHERIT;
                           return (
                             <td key={rule} className="py-1.5 pr-4">
                               <Select
-                                value={value}
+                                value={value ?? INHERIT}
                                 onValueChange={(next) =>
                                   setAgentDraft({
                                     ...(agentDraft ?? {}),

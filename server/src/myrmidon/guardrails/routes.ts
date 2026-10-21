@@ -24,7 +24,6 @@
 
 import { Router } from "express";
 import type { Db } from "@paperclipai/db";
-import { assertBoard, assertCompanyAccess } from "../../routes/authz.js";
 import { guardrailModesSettingsSchema, type GuardrailModesSettings } from "@paperclipai/shared";
 import { assertCompanyAccess, assertBoard, getActorInfo } from "../../routes/authz.js";
 import { logActivity } from "../../services/activity-log.js";
