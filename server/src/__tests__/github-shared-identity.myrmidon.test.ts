@@ -438,10 +438,13 @@ const support = await getEmbeddedPostgresTestSupport();
       expect(text).not.toContain("PRIVATE KEY");
     }
 
-    // A second operation reuses the cached token without another GitHub call.
+    // A second operation reuses the cached token without another GitHub call
+    // or a duplicate issuance activity row.
     github.calls = [];
     expect((await resolveGitHubOperationCredentials(db, { ...input, repository: "owner-a/repo-a" })).env.GH_TOKEN).toBe(token);
     expect(github.calls).toEqual([]);
+    const repeatedActivity = await db.select().from(activityLog).where(eq(activityLog.companyId, input.companyId));
+    expect(repeatedActivity.filter((row) => row.action === "myrmidon.github_app.issued")).toHaveLength(1);
   });
 
   it("separates products: product A under App A, product B under App B, neither absent, both an error", async () => {
