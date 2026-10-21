@@ -136,7 +136,7 @@ export function Ui2Costs() {
   const utilizationTone = utilizationPercent >= 90 ? "danger" : utilizationPercent >= 70 ? "warning" : "ok";
   const hasSpend = (byAgentQuery.data ?? []).some((row) => row.costCents > 0);
   const budgetHint = summary && summary.budgetCents > 0
-    ? t("ui2.costs.tile.budgetHint", { budget: formatCents(summary.budgetCents) })
+    ? t("ui2.costs.tile.remaining", { amount: formatCents(Math.max(0, summary.budgetCents - summary.spendCents)) })
     : undefined;
 
   return (
@@ -214,7 +214,7 @@ export function Ui2Costs() {
         {!hasSpend ? (
           <Ui2EmptyStateView variant="done" title={t("ui2.costs.chart.empty")} />
         ) : (
-          <div className="ui2-costs-chart flex flex-col gap-2" role="img" aria-label={t("ui2.costs.chart.aria")}>
+          <div className="ui2-costs-chart flex flex-col gap-2">
             {(byAgentQuery.data ?? []).slice().sort((a, b) => b.costCents - a.costCents).slice(0, 8).map((row) => {
               const maximum = Math.max(...(byAgentQuery.data ?? []).map((item) => item.costCents), 1);
               const width = `${Math.max(2, Math.round((row.costCents / maximum) * 100))}%`;
