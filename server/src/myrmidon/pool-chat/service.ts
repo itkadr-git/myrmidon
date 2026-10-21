@@ -1,6 +1,6 @@
 import type { Db } from "@paperclipai/db";
 import { poolChatModuleInstances, poolChatQuotaReservations, poolChatRequestAttempts, poolChatRequests } from "@paperclipai/db";
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import { conflict, notFound, HttpError } from "../../errors.js";
 import { canonicalRequestHash, type PoolChatRequestBody } from "./protocol.js";
 import { selectPoolChatAccount } from "./router.js";
@@ -18,6 +18,16 @@ export type PoolChatTransportResolver = (input: {
 function providerOf(value: string): PoolChatProvider {
   if (value === "chatgpt" || value === "google") return value;
   throw new HttpError(503, "Pool-chat provider is not configured");
+}
+
+/**
+ * Quota unit = one token. The reservation is an upper bound taken before the
+ * upstream call: estimated input (4 chars per token, rounded up) plus the
+ * requested output ceiling. Settlement later replaces it with actual usage.
+ */
+export function estimateReservationUnits(body: PoolChatRequestBody): number {
+  const chars = body.messages.reduce((sum, message) => sum + message.content.length, 0);
+  return Math.max(1, Math.ceil(chars / 4) + (body.maxOutputTokens ?? 2048));
 }
 
 export function poolChatService(db: Db, resolveTransport: PoolChatTransportResolver) {
@@ -62,6 +72,7 @@ export function poolChatService(db: Db, resolveTransport: PoolChatTransportResol
       const provider = providerOf(module.provider);
       const config = module.config ?? {};
       const outcome = await db.transaction(async (tx) => {
+        await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`pool-chat:${input.companyId}:${input.moduleId}`}, 0))`);
         const existing = await tx.select().from(poolChatRequests).where(and(eq(poolChatRequests.companyId, input.companyId), eq(poolChatRequests.moduleId, input.moduleId), eq(poolChatRequests.channel, input.channel), eq(poolChatRequests.subjectId, input.subjectId), eq(poolChatRequests.idempotencyKey, input.idempotencyKey))).then((rows) => rows[0]);
         if (existing) {
           if (existing.requestHash !== hash) throw conflict("Idempotency key was reused with a different request");
@@ -80,8 +91,34 @@ export function poolChatService(db: Db, resolveTransport: PoolChatTransportResol
         }
         // Select and reserve only for a new logical request. Replays must
         // return the durable result even if account availability changed.
-        const account = selectPoolChatAccount(config, provider, 1);
-        const [created] = await tx.insert(poolChatRequests).values({ companyId: input.companyId, moduleId: input.moduleId, channel: input.channel, subjectId: input.subjectId, conversationId: input.body.conversationId, clientMessageId: input.body.clientMessageId, idempotencyKey: input.idempotencyKey, requestHash: hash, model: input.body.model, status: "dispatching", reservationUnits: 1 }).onConflictDoNothing().returning();
+        // Quota check and reservation are atomic per module: the advisory lock
+        // above serializes concurrent submits, and usage is read from the
+        // durable ledger (live attempts count their reservation, sent ones
+        // their settled units, failed ones nothing) on top of the operator's
+        // configured baseline.
+        const units = estimateReservationUnits(input.body);
+        const usage = await tx.select({
+          accountRef: poolChatRequestAttempts.accountRef,
+          used: sql<string>`coalesce(sum(coalesce(${poolChatRequestAttempts.settledUnits}, ${poolChatRequestAttempts.reservedUnits})), 0)`,
+        }).from(poolChatRequestAttempts)
+          .innerJoin(poolChatRequests, eq(poolChatRequests.id, poolChatRequestAttempts.requestId))
+          .where(and(
+            eq(poolChatRequests.companyId, input.companyId),
+            eq(poolChatRequests.moduleId, input.moduleId),
+            inArray(poolChatRequestAttempts.state, ["dispatching", "sent", "uncertain"]),
+          ))
+          .groupBy(poolChatRequestAttempts.accountRef);
+        const ledgerUsed = new Map<string | null, number>(usage.map((row): [string | null, number] => [row.accountRef, Number(row.used)]));
+        const accounts = Array.isArray(config.accounts)
+          ? config.accounts.map((raw: unknown) => {
+            const account = raw as Record<string, unknown>;
+            const baseline = typeof account?.usedUnits === "number" ? account.usedUnits : 0;
+            const ref = typeof account?.accountRef === "string" ? account.accountRef : "";
+            return { ...account, usedUnits: baseline + (ledgerUsed.get(ref) ?? 0) };
+          })
+          : [];
+        const account = selectPoolChatAccount({ ...config, accounts }, provider, units);
+        const [created] = await tx.insert(poolChatRequests).values({ companyId: input.companyId, moduleId: input.moduleId, channel: input.channel, subjectId: input.subjectId, conversationId: input.body.conversationId, clientMessageId: input.body.clientMessageId, idempotencyKey: input.idempotencyKey, requestHash: hash, model: input.body.model, status: "dispatching", reservationUnits: units }).onConflictDoNothing().returning();
         if (!created) {
           // A concurrent submit may have won either scoped uniqueness race.
           // Read back the durable winner instead of surfacing a 500 or sending twice.
@@ -102,8 +139,8 @@ export function poolChatService(db: Db, resolveTransport: PoolChatTransportResol
           if (raced.requestHash !== hash) throw conflict("Pool-chat identity was reused with a different request");
           return { request: raced, created: false as const };
         }
-        await tx.insert(poolChatQuotaReservations).values({ companyId: input.companyId, requestId: created.id, units: 1, state: "reserved" });
-        await tx.insert(poolChatRequestAttempts).values({ companyId: input.companyId, requestId: created.id, attemptNo: 1, state: "dispatching", provider, accountRef: account.accountRef, reservedUnits: 1 });
+        await tx.insert(poolChatQuotaReservations).values({ companyId: input.companyId, requestId: created.id, units, state: "reserved" });
+        await tx.insert(poolChatRequestAttempts).values({ companyId: input.companyId, requestId: created.id, attemptNo: 1, state: "dispatching", provider, accountRef: account.accountRef, reservedUnits: units });
         return { request: created, created: true as const, accountRef: account.accountRef };
       });
       // Only the transaction winner may perform upstream I/O. Replays must
