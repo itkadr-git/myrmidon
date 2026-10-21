@@ -239,17 +239,17 @@ describeEmbeddedPostgres("project-scoped automatic claim", () => {
     expect(memberQueue.map((entry) => entry.issueId).sort()).toEqual([scoped, open].sort());
   });
 
-  it("the agentless role queue keeps projectless unassigned tasks and hides project ones", async () => {
+  it("the agentless role queue is the role-wide view: project and projectless tasks both", async () => {
     const companyId = await seedCompany();
     await seedAgent(companyId, MEMBER_ID, "member-eng");
     const projectId = await seedProject(companyId);
     await join(companyId, projectId, MEMBER_ID);
-    await seedTask(companyId, "TASK-SCOPED", projectId);
+    const scoped = await seedTask(companyId, "TASK-SCOPED", projectId);
     const open = await seedTask(companyId, "TASK-OPEN", null);
 
     const rows = await roleQueueRows(db, companyId, "engineer");
 
-    expect(rows.map((row) => row.issueId)).toEqual([open]);
+    expect(rows.map((row) => row.issueId).sort()).toEqual([scoped, open].sort());
   });
 
   it("a manual assignment is never gated: the assigned task stays in the assignee's queue", async () => {
