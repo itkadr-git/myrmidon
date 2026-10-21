@@ -154,6 +154,15 @@ answers it with ordinary text in the same Telegram chat.
   [SETTINGS.md](../SETTINGS.md). The owner-delivery extension reuses the
   standing conversations the bridge maintains.
 
+## Answering by text (`via_bot`)
+
+The owner answers in the same chat in plain words. The inbound Telegram message is passed to the owner-reply handler (`server/src/myrmidon/owner-reply/telegram-door.ts`):
+
+- a **reply** to a bot message closes only the decisions that exact message explained; a reply to a message that explains nothing closes nothing and never falls back to another decision;
+- **without a reply**, the single open explained decision closes; with several open the bot asks which one the answer is for;
+- a number or option name picks that option, other words are a free answer where the question allows one; "yes/no" accepts or rejects a confirmation; unclear words keep the decision open and the bot asks again once;
+- the resolution is attributed to the owner, and the agent is woken with the answer through the ordinary continuation path. Confirmations the board holds only in its interface (secrets, tool permissions) are never closed from Telegram.
+
 ## Source of truth
 
 - Mode contract: `packages/shared/src/myrmidon-owner-delivery.ts`
