@@ -2,9 +2,10 @@
 
 > Russian version: [migration-from-paperclip.ru.md](migration-from-paperclip.ru.md)
 
-This guide shows how to copy one Paperclip instance (database, files and secrets) into a clean
-Myrmidon installation with the `myrmidon:migrate` command. The command never changes the source.
-It stops before it writes anything to the target if the source or a key does not fit.
+The `myrmidon:migrate` command copies one Paperclip instance (database, files and secrets) into a
+clean Myrmidon installation. It never changes the source: it writes only to the empty target that
+it creates itself. It stops before the transfer if the migration chain, a key, the schema or the
+data do not pass its checks.
 
 Read the whole guide once before you start: the rollback section matters most **before** you
 cut over.
@@ -33,7 +34,9 @@ is yours to carry over.
 
 Paperclip releases after `v2026.916.1` added tables and columns that Myrmidon does not have (for
 example browser-use runs, MCP OAuth clients, chat endpoints, the appearance of an agent). This is
-not an error, but that data is **not** copied. The dry run lists it under `vendorOnlyData`: the
+not an error, but that data is **not** copied into the target database: it goes into the report
+instead. The report is the JSON that the command prints; a real run also saves it as `report.json`
+in `--state-dir`. Read it under `vendorOnlyData` (there is no `skippedSourceData` field). It lists the
 table or column, the number of rows that hold data (for a column: not null and not just the
 default value) and the release that introduced it.
 

@@ -21,8 +21,15 @@ describe("parseAdapterModelsEnv", () => {
     const m = parseAdapterModelsEnv({ PAPERCLIP_ADAPTER_MODELS: JSON.stringify({ pi_local: [{ id: "tensorix/x/y" }] }) });
     expect(m?.pi_local?.[0]).toEqual({ id: "tensorix/x/y", label: "tensorix/x/y" });
   });
+  it("prefers MYRMIDON_ADAPTER_MODELS when both names are provided", () => {
+    const models = parseAdapterModelsEnv({ MYRMIDON_ADAPTER_MODELS: ENV, PAPERCLIP_ADAPTER_MODELS: "bad" });
+    expect(models?.opencode_local).toHaveLength(2);
+  });
+  it("parses legacy adapter models configuration", () => {
+    expect(parseAdapterModelsEnv({ PAPERCLIP_ADAPTER_MODELS: ENV })?.opencode_local).toHaveLength(2);
+  });
   it("throws on invalid JSON (fail loud)", () => {
-    expect(() => parseAdapterModelsEnv({ PAPERCLIP_ADAPTER_MODELS: "{bad" })).toThrow(/PAPERCLIP_ADAPTER_MODELS/);
+    expect(() => parseAdapterModelsEnv({ MYRMIDON_ADAPTER_MODELS: "{bad" })).toThrow(/MYRMIDON_ADAPTER_MODELS/);
   });
   it("throws when an entry lacks a string id", () => {
     expect(() => parseAdapterModelsEnv({ PAPERCLIP_ADAPTER_MODELS: JSON.stringify({ a: [{ label: "x" }] }) })).toThrow();
