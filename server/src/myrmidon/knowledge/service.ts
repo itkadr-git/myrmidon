@@ -11,6 +11,7 @@
 // object returned here; the plugin bridge stays until the K-6 transfer.
 
 import { createPgKnowledgeSearchIndex, type Db } from "@paperclipai/db";
+import { redactNestText } from "../redact/service.js";
 import { createKnowledgeService, type KnowledgeServiceOptions } from "./store.js";
 import type { KnowledgeRevisionLang, SearchIndex } from "./domain.js";
 
@@ -36,10 +37,14 @@ export function createKnowledgeModule(db: Db, companyId: string, options: Knowle
   return {
     companyId,
     nestId,
-    create: (input: Omit<Parameters<typeof service.create>[0], "companyId" | "nestId">, actor: Parameters<typeof service.create>[1]) =>
-      service.create({ ...input, companyId, nestId }, actor),
-    draft: (idOrSlug: string, input: Parameters<typeof service.draft>[2], actor: Parameters<typeof service.draft>[3]) =>
-      service.draft(nestId, idOrSlug, input, actor),
+    create: async (input: Omit<Parameters<typeof service.create>[0], "companyId" | "nestId">, actor: Parameters<typeof service.create>[1]) => {
+      const redacted = await redactNestText(db, nestId, input.content);
+      return service.create({ ...input, content: redacted.text, companyId, nestId }, actor);
+    },
+    draft: async (idOrSlug: string, input: Parameters<typeof service.draft>[2], actor: Parameters<typeof service.draft>[3]) => {
+      const redacted = await redactNestText(db, nestId, input.content);
+      return service.draft(nestId, idOrSlug, { ...input, content: redacted.text }, actor);
+    },
     submit: (idOrSlug: string, actor: Parameters<typeof service.submit>[2], revisionId?: string) =>
       service.submit(nestId, idOrSlug, actor, revisionId),
     publish: (idOrSlug: string, actor: Parameters<typeof service.publish>[2], revisionId?: string) =>
