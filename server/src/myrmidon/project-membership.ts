@@ -1,8 +1,8 @@
 // server/src/myrmidon/project-membership.ts
 //
 // myrmidon(1.6.6 PROJECT-SCOPED-CLAIM): the canonical agent→project membership
-// predicate, shared by every automatic task-taking path (swarm claim matcher and
-// wake) and by the agent roster the board UI filters by (OPE-7282).
+// predicate, shared by every automatic task-taking path (swarm matcher and the
+// claim API's role queue) and by the agent roster the board UI filters by (OPE-7282).
 //
 // The rule is the one `scope-wiring.listAgents` already answers for bot
 // containers, stated once here so the paths cannot drift apart:
