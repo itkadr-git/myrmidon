@@ -105,7 +105,7 @@ import { DesignGuide } from "./pages/DesignGuide";
 import { InstanceExperimentalSettings } from "./pages/InstanceExperimentalSettings";
 import { InstanceAccess } from "./pages/InstanceAccess";
 import { AdminUsers } from "./pages/AdminUsers";
-import { UsersAdmin } from "./pages/UsersAdmin"
+import { UsersAdmin } from "./pages/UsersAdmin";
 import { BoardApiKeysPage } from "./pages/BoardApiKeys";
 import { LicensesPage } from "./components/myrmidon/LicensesPage"; // myrmidon(LICENSING)
 import { ProfileSettings } from "./pages/ProfileSettings";

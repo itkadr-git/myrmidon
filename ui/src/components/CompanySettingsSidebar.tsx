@@ -183,10 +183,10 @@ export function CompanySettingsSidebar() {
               end
             />
           )}
-          {showPage("instance.access") && (
+          {isInstanceAdmin && (
             <SidebarNavItem
               to={`${INSTANCE_SETTINGS_PATH_PREFIX}/users`}
-              label="Users"
+              label="Instance users"
               icon={Users}
               end
             />
