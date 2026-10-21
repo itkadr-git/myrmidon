@@ -4,12 +4,13 @@
 // integration test stand "two processes, one database" and race tests T1–T8.
 //
 // Tests verify:
-//   - T1: two executors do not duplicate starts (queued runs transition to running
-//         with exactly one controllerBootId, no double start or double execution)
+//   - T1: two executors dispatching one queue through the real claim path do not
+//         duplicate starts (exactly one `running` transition per run)
 //   - T2: sweeps under dual leader / lease expiration (standby does not steal live lease;
 //         sweeps and backup remain idempotent and serialized)
-//   - T3: bot container reconciliation gate (unpinned/api child receives 403
-//         caller_not_board_main; bot container state is not mutated)
+//   - T3: bot container apply on an api process answers 409
+//         bot_containers_disabled; no apply job is journaled, the card is untouched
+//         (caller_not_board_main itself is the docker gate's verdict, Go tests)
 //   - T4: gateway run reattach (live lease protected, expired lease adopted by
 //         exactly one survivor, hot-restart snapshot adopted immediately)
 //   - T5: settings propagation & parallel edit lock (cross-process propagation
@@ -20,12 +21,12 @@
 //   - T8: worker abrupt kill -9 recovery (lease expires, reattach/reaper cleans up,
 //         no stuck runs)
 
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { and, eq, inArray, isNull, sql } from "drizzle-orm";
+import { eq, inArray, sql } from "drizzle-orm";
 import {
   createDb,
   boardProcesses,
@@ -37,6 +38,7 @@ import {
   agents,
   issues,
   heartbeatRuns,
+  botApplyJobs,
 } from "@paperclipai/db";
 import {
   DEFAULT_PROCESSES_SETTINGS,
@@ -55,6 +57,9 @@ import {
   stopApiProcesses,
   type ApiProcessHandle,
 } from "./helpers/api-process-harness.js";
+import { heartbeatService } from "../../services/heartbeat.js";
+import { subscribeCompanyLiveEvents } from "../../services/live-events.js";
+import { BOT_CONTAINERS_ENV } from "../../myrmidon/bot-containers/agent-config.js";
 import { leaderLeaseService } from "../../services/leader-lease.js";
 import { sweepGatewayRunReattach } from "../../myrmidon/gateway-run-reattach.js";
 import { legacyControllerBootId } from "../../services/legacy-controller-lease.js";
@@ -63,6 +68,23 @@ import {
   PROCESS_BUS_SCHEMA_VERSION,
   type ProcessBusSql,
 } from "../../services/process-bus.js";
+
+// The claim path under test pulls in telemetry; neighbours of this suite mock it
+// the same way so a run start does not reach for a real client.
+vi.mock("../../telemetry.js", () => ({
+  getTelemetryClient: () => ({ track: vi.fn() }),
+}));
+
+/** Polls until the condition holds; throws with the label on timeout. Used in
+ * place of fixed sleeps, which are what makes a timer-based race test flaky. */
+async function waitFor(label: string, condition: () => boolean | Promise<boolean>, timeoutMs = 10_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await condition()) return;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error(`timed out waiting for: ${label}`);
+}
 
 const externalTestDatabaseUrl = process.env.PAPERCLIP_TEST_DATABASE_URL?.trim();
 const embeddedPostgresSupport = externalTestDatabaseUrl
@@ -117,6 +139,11 @@ describeProcs("PROCS-1.9: integration stand 'two processes, one database' and ra
       })
       .onConflictDoNothing();
 
+    // T3 asserts the gate of an instance without bot containers: the children
+    // inherit the environment, so a developer shell with the flag on must not
+    // change what the stand checks.
+    delete process.env[BOT_CONTAINERS_ENV];
+
     // Start two api processes on the one shared test database
     processes = await startApiProcesses({
       count: 2,
@@ -137,29 +164,32 @@ describeProcs("PROCS-1.9: integration stand 'two processes, one database' and ra
     }
   });
 
-  it("T1: two executors do not duplicate starts (queued runs transition to running with single controllerBootId)", async () => {
+  it("T1: two executors do not duplicate starts (real claim path, one 'running' transition per run)", async () => {
     const testCompanyId = randomUUID();
     const testAgentId = randomUUID();
+    const runCount = 8;
 
     await db.insert(companies).values({
       id: testCompanyId,
       name: "T1 Stand Company",
       issuePrefix: `T1${testCompanyId.slice(0, 4).toUpperCase()}`,
     });
-
+    // The agent may run every queued run at once, so the only thing that can
+    // keep a run from starting twice is the claim itself.
     await db.insert(agents).values({
       id: testAgentId,
       companyId: testCompanyId,
       name: "T1 Agent",
       role: "general",
-      adapterType: "hermes_gateway",
+      adapterType: "process",
+      adapterConfig: {},
+      runtimeConfig: { heartbeat: { maxConcurrentRuns: runCount } },
+      permissions: {},
       status: "idle",
     });
 
-    const runCount = 20;
     const runIds: string[] = [];
     const now = new Date();
-
     for (let i = 0; i < runCount; i++) {
       const runId = randomUUID();
       runIds.push(runId);
@@ -169,117 +199,173 @@ describeProcs("PROCS-1.9: integration stand 'two processes, one database' and ra
         agentId: testAgentId,
         invocationSource: "assignment",
         triggerDetail: "system",
-        runtimeMode: "legacy",
         status: "queued",
-        executionStage: "queued",
+        contextSnapshot: {},
         createdAt: new Date(now.getTime() + i),
       });
     }
 
-    // Simulate two competing worker instances racing to claim queued runs
-    const workerBootA = randomUUID();
-    const workerBootB = randomUUID();
+    // Every claim announces itself with a `running` status event. Counting them
+    // per run id is the observable of "started exactly once".
+    const runningEvents = new Map<string, number>();
+    const unsubscribe = subscribeCompanyLiveEvents(testCompanyId, (event) => {
+      const payload = (event.payload ?? {}) as { runId?: string; status?: string };
+      if (event.type === "heartbeat.run.status" && payload.status === "running" && payload.runId) {
+        runningEvents.set(payload.runId, (runningEvents.get(payload.runId) ?? 0) + 1);
+      }
+    });
 
-    // Atomically claim a queued run in a race using the vendor WHERE status='queued' condition
-    const claimRun = async (workerBootId: string, runId: string) => {
-      const leaseExpiry = new Date(Date.now() + 30_000);
-      const updated = await db
-        .update(heartbeatRuns)
-        .set({
-          status: "running",
-          executionStage: "running",
-          controllerBootId: workerBootId,
-          controllerLeaseExpiresAt: leaseExpiry,
-        })
-        .where(
-          and(
-            eq(heartbeatRuns.id, runId),
-            eq(heartbeatRuns.status, "queued"),
-          ),
-        )
-        .returning({ id: heartbeatRuns.id, controllerBootId: heartbeatRuns.controllerBootId });
-      return updated.length > 0 ? updated[0] : null;
-    };
-
-    // Both workers attempt to claim each run concurrently
-    const claims = await Promise.all(
-      runIds.map(async (runId) => {
-        const [claimA, claimB] = await Promise.all([
-          claimRun(workerBootA, runId),
-          claimRun(workerBootB, runId),
-        ]);
-        return { runId, claimA, claimB };
-      }),
-    );
-
-    // Assert that for every run, exactly one worker won the claim
-    for (const { runId, claimA, claimB } of claims) {
-      const wonA = claimA !== null;
-      const wonB = claimB !== null;
-      expect(wonA !== wonB, `Run ${runId} must be claimed by exactly one worker (wonA=${wonA}, wonB=${wonB})`).toBe(true);
+    // Two independent executors (two service instances with their own start
+    // locks, one database) dispatch the same agent's queue at the same moment.
+    const executorA = heartbeatService(db);
+    const executorB = heartbeatService(db);
+    try {
+      await Promise.all([
+        executorA.dispatchRunStart(testAgentId),
+        executorB.dispatchRunStart(testAgentId),
+      ]);
+      await waitFor("every T1 run to leave the queue", async () => {
+        const rows = await db
+          .select({ status: heartbeatRuns.status })
+          .from(heartbeatRuns)
+          .where(inArray(heartbeatRuns.id, runIds));
+        return rows.every((row) => row.status !== "queued");
+      });
+      await executorA.drainActiveRunExecutions();
+      await executorB.drainActiveRunExecutions();
+    } finally {
+      unsubscribe();
     }
 
-    // Verify database state: all 20 runs are running, each with one unique controllerBootId
-    const claimedRuns = await db
-      .select({
-        id: heartbeatRuns.id,
-        status: heartbeatRuns.status,
-        controllerBootId: heartbeatRuns.controllerBootId,
-      })
+    for (const runId of runIds) {
+      expect(runningEvents.get(runId), `run ${runId} must be claimed exactly once`).toBe(1);
+    }
+    const rows = await db
+      .select({ id: heartbeatRuns.id, status: heartbeatRuns.status, startedAt: heartbeatRuns.startedAt })
       .from(heartbeatRuns)
       .where(inArray(heartbeatRuns.id, runIds));
-
-    expect(claimedRuns.length).toBe(runCount);
-    for (const row of claimedRuns) {
-      expect(row.status).toBe("running");
-      expect([workerBootA, workerBootB]).toContain(row.controllerBootId);
+    expect(rows).toHaveLength(runCount);
+    for (const row of rows) {
+      expect(row.status).not.toBe("queued");
+      expect(row.startedAt).not.toBeNull();
     }
-  });
+  }, 60_000);
 
-  it("T2: sweeps under dual leader / lease expiration (standby does not steal live lease; sweeps serialized)", async () => {
+  it("T2: dual leader and lease expiry (standby never steals a live lease; sweeps are idempotent)", async () => {
     await db.delete(boardLeases);
     const a = leaderLeaseService(db, { ttlMs: 4_000 });
     const b = leaderLeaseService(db, { ttlMs: 4_000 });
     const leaseName = "scheduler";
-
-    // Contender 1 acquires lease
     const lease1 = a.lease(leaseName);
     const lease2 = b.lease(leaseName);
 
-    lease1.start();
-    await new Promise((r) => setTimeout(r, 60));
-    lease1.stop();
-    expect(lease1.isLeader()).toBe(true);
+    try {
+      lease1.start();
+      await waitFor("contender 1 to become leader", () => lease1.isLeader());
 
-    // Contender 2 cannot steal live lease
-    lease2.start();
-    await new Promise((r) => setTimeout(r, 60));
-    lease2.stop();
-    expect(lease2.isLeader()).toBe(false);
+      // Contender 2 runs its acquire pass (the first one is immediate) and then
+      // several more while the lease is live: it must stay a standby. The
+      // negative check has a bounded window by nature; the positive waits above
+      // and below are polled, so a slow runner cannot flip them.
+      lease2.start();
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      expect(lease2.isLeader()).toBe(false);
+      expect(lease1.isLeader()).toBe(true);
 
-    // Graceful release hands over lease
-    await lease1.release();
-    expect(lease1.isLeader()).toBe(false);
+      // Graceful release hands the lease over.
+      await lease1.release();
+      expect(lease1.isLeader()).toBe(false);
+      await waitFor("contender 2 to take over after release", () => lease2.isLeader());
+    } finally {
+      lease1.stop();
+      lease2.stop();
+      await lease2.release().catch(() => undefined);
+    }
 
-    lease2.start();
-    await new Promise((r) => setTimeout(r, 60));
-    lease2.stop();
-    expect(lease2.isLeader()).toBe(true);
+    // Sweeps stay idempotent when both processes run the same pass at once: an
+    // expired gateway run is adopted by exactly one of them.
+    const company = await db
+      .insert(companies)
+      .values({
+        name: `T2 Sweep Company ${randomUUID()}`,
+        issuePrefix: `S2${randomUUID().slice(0, 4).toUpperCase()}`,
+      })
+      .returning()
+      .then((rows) => rows[0]!);
+    const agent = await db
+      .insert(agents)
+      .values({
+        companyId: company.id,
+        name: `T2 Sweep Agent ${randomUUID()}`,
+        adapterType: "hermes_gateway",
+        status: "busy",
+      })
+      .returning()
+      .then((rows) => rows[0]!);
+    const expiredRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: expiredRunId,
+      companyId: company.id,
+      agentId: agent.id,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      runtimeMode: "legacy",
+      status: "running",
+      controllerBootId: randomUUID(),
+      controllerLeaseExpiresAt: new Date(Date.now() - 10_000),
+      externalRunId: `ext-${expiredRunId}`,
+    });
+    const adopted: string[] = [];
+    const port = {
+      executeRunForGatewayReattach: async (runId: string) => {
+        adopted.push(runId);
+      },
+    };
+    await Promise.all([
+      sweepGatewayRunReattach(db, port as any),
+      sweepGatewayRunReattach(db, port as any),
+    ]);
+    expect(adopted.filter((id) => id === expiredRunId)).toEqual([expiredRunId]);
+  }, 60_000);
 
-    await lease2.release();
-  });
-
-  it("T3: bot reconciliation rejection for unpinned process (caller_not_board_main / 403)", async () => {
-    // Process without pinned dockergate credentials cannot mutate bot container state
-    // Calling bot container or admin route from unpinned API process returns 403 or 404
-    const response = await requestApi(processes[0].baseUrl, "/api/myrmidon/bot-containers/reconcile", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ force: true }),
+  it("T3: an api process does not change bot container state (409 bot_containers_disabled, no job, card untouched)", async () => {
+    // The caller_not_board_main verdict itself belongs to the docker gate and is
+    // pinned by its own Go tests (tools/dockergate/internal/peer/auth_test.go).
+    // What the two-process stand can check is the Node side of the same
+    // guarantee: the one route that would change a bot container answers a
+    // fixed, specific refusal and leaves the card and the apply journal alone.
+    const companyId = randomUUID();
+    const botId = randomUUID();
+    const adapterConfig = { marker: "t3-unchanged" };
+    await db.insert(companies).values({
+      id: companyId,
+      name: "T3 Stand Company",
+      issuePrefix: `T3${companyId.slice(0, 4).toUpperCase()}`,
+    });
+    await db.insert(agents).values({
+      id: botId,
+      companyId,
+      name: "T3 Bot",
+      role: "general",
+      adapterType: "hermes_gateway",
+      adapterConfig,
+      status: "idle",
     });
 
-    // Unpinned api child cannot reconcile bot containers (expect 403 or 404 route gate)
-    expect([401, 403, 404]).toContain(response.status);
+    for (const proc of processes) {
+      const response = await requestApi(proc.baseUrl, `/api/myrmidon/agents/${botId}/bot-container/apply`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+      });
+      expect(response.status, response.text.slice(0, 400)).toBe(409);
+      expect(response.text).toContain("bot_containers_disabled");
+    }
+
+    const jobs = await db.select({ id: botApplyJobs.id }).from(botApplyJobs).where(eq(botApplyJobs.botId, botId));
+    expect(jobs).toHaveLength(0);
+    const [after] = await db.select({ adapterConfig: agents.adapterConfig }).from(agents).where(eq(agents.id, botId));
+    expect(after.adapterConfig).toEqual(adapterConfig);
   });
 
   it("T4: gateway run reattach (live lease protected, expired lease adopted by survivor)", async () => {
@@ -479,31 +565,26 @@ describeProcs("PROCS-1.9: integration stand 'two processes, one database' and ra
       externalRunId: `ext-${victimRunId}`,
     });
 
-    // Reaper / reattach recovers the run by reclaiming or marking expired
     const [runBefore] = await db
       .select({ controllerBootId: heartbeatRuns.controllerBootId })
       .from(heartbeatRuns)
       .where(eq(heartbeatRuns.id, victimRunId));
     expect(runBefore.controllerBootId).toBe(killedBootId);
 
-    // Simulate recovery pass adopting the run
-    await db
-      .update(heartbeatRuns)
-      .set({
-        controllerBootId: legacyControllerBootId,
-        controllerLeaseExpiresAt: new Date(Date.now() + 30_000),
-      })
-      .where(
-        and(
-          eq(heartbeatRuns.id, victimRunId),
-          eq(heartbeatRuns.controllerBootId, killedBootId),
-        ),
-      );
+    // The survivor's real reattach sweep adopts the run of the dead worker.
+    const adopted: string[] = [];
+    await sweepGatewayRunReattach(db, {
+      executeRunForGatewayReattach: async (runId: string) => {
+        adopted.push(runId);
+      },
+    } as any);
 
     const [runAfter] = await db
-      .select({ controllerBootId: heartbeatRuns.controllerBootId })
+      .select({ controllerBootId: heartbeatRuns.controllerBootId, leaseExpiresAt: heartbeatRuns.controllerLeaseExpiresAt })
       .from(heartbeatRuns)
       .where(eq(heartbeatRuns.id, victimRunId));
+    expect(adopted).toContain(victimRunId);
     expect(runAfter.controllerBootId).toBe(legacyControllerBootId);
+    expect(runAfter.leaseExpiresAt!.getTime()).toBeGreaterThan(Date.now());
   });
 });
