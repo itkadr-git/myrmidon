@@ -97,8 +97,8 @@ export async function guardrailsOnRunOutput(
     return {
       mode: "flag",
       rule: "secret",
-      source: "default",
-      caste: null,
+      source: enforcement.source,
+      caste: enforcement.caste,
       text: input.text,
       hits: 0,
       total: 0,
