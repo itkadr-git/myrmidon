@@ -34,7 +34,16 @@ export type ChannelBridgeThemeKey =
   | "telegram-notify/topic-inbound"
   | "telegram-notify/topic-inbound-settings"
   | "telegram-voice-stt-intake/index"
-  | "telegram-voice-stt-intake/wiring";
+  | "telegram-voice-stt-intake/wiring"
+  // CH-CONNECTOR-D2: DM progress/status and draft transport themes.
+  | "telegram-dm-progress/runtime-steps"
+  | "telegram-dm-status-settings"
+  | "telegram-dm-status-progress"
+  | "services/chat-telegram-draft-stop"
+  | "services/chat-telegram-video-note"
+  | "telegram-dm-progress/settings"
+  | "telegram-dm-progress/sweep"
+  | "telegram-dm-progress/throttle";
 
 /**
  * The symbols a connector serves for one theme. Every symbol left out keeps
