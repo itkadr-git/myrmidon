@@ -7,10 +7,10 @@
   - T2: Dual leader / lease expiry: a standby does not steal a live lease and takes over after release; two concurrent reattach sweeps adopt an expired run exactly once.
   - T3: Bot container apply on an api process answers 409 `bot_containers_disabled`, journals no apply job and leaves the card untouched (the `caller_not_board_main` verdict is the docker gate's and is covered by its Go tests).
   - T4: Gateway run reattach protects active controller leases and ensures expired leases are adopted by exactly one surviving process.
-  - T5: Instance settings propagation across processes and concurrent row-level locking (`SELECT ... FOR UPDATE`) preserves all updates.
-  - T6: Live events cross-process flow delivers events to peer subscribers and origin filtering prevents reflection loops.
-  - T7: Single <-> split mode switching under concurrent requests maintains zero connection errors and zero 5xx responses.
-  - T8: Abrupt worker exit (`kill -9`) recovery verifies lease expiration and reattach/reaper cleanup.
+  - T5: A real `PATCH /api/myrmidon/processes` through one api process is read through the other, and concurrent PATCHes of different keys through both processes lose no edit.
+  - T6: Two real `ProcessBus` instances with their own LISTEN connections on the shared database: a `live_event` published on one process reaches the other, the origin filter keeps it from coming back, and another channel is not delivered. (The bus itself is covered here; this build does not yet publish live events onto it.)
+  - T7: The real process supervisor moves single -> split (two real api children) -> single under a steady request load against the shared port, with zero 5xx; the budget is at most one connection error per transition (same as the drain/failover suite). It runs as a second suite in the same file with its own database.
+  - T8: A real `SIGKILL` of an api process holding a run lease: the survivor keeps serving, the dead process's registry row stays until the reaper window, the live lease is not stolen, and after it expires the reattach sweep re-claims the run exactly once. The reaper's 2 minute window is not waited for.
 
 ## changelog-ru
 
@@ -21,7 +21,7 @@
   - Т2: Двойной лидер и истечение аренды: резервный процесс не перехватывает живую аренду и принимает её после release; два одновременных свипа reattach подхватывают просроченный прогон ровно один раз.
   - Т3: Применение контейнера бота на api-процессе отвечает 409 `bot_containers_disabled`, не пишет apply-задачу и не меняет карточку (вердикт `caller_not_board_main` принадлежит docker-гейту и покрыт его Go-тестами).
   - Т4: Протокол reattach защищает живые аренды контроллера, а прогоны с истёкшей арендой подхватываются ровно одним выжившим процессом.
-  - Т5: Распространение настроек между процессами и параллельные правки под блокировкой `FOR UPDATE` сохраняют все изменения без потерь.
-  - Т6: Поток live-событий между процессами доставляет события подписчикам на соседних процессах, а origin bootId предотвращает эхо-петли.
-  - Т7: Переключение режимов single <-> split под нагрузкой проходит с 0 ошибок соединения и 0 5xx.
-  - Т8: Восстановление при резком падении воркера (`kill -9`) гарантирует истечение аренды и очистку/подхват через reattach и reaper.
+  - Т5: Настоящий `PATCH /api/myrmidon/processes` через один api-процесс виден через другой, а параллельные PATCH разных ключей через оба процесса не теряют правок.
+  - Т6: Две настоящие шины `ProcessBus` со своими LISTEN-соединениями на общей базе: `live_event`, опубликованный в одном процессе, доходит до другого, origin-фильтр не возвращает его обратно, сообщение другого канала не доставляется. (Покрыта сама шина; в этой сборке live-события в неё ещё не публикуются.)
+  - Т7: Настоящий супервизор процессов переводит single -> split (два настоящих api-потомка) -> single под ровной нагрузкой на общий порт: 0 ответов 5xx, допуск — не более одной ошибки соединения на переход (как в наборе drain/failover). Идёт вторым набором в том же файле на своей базе.
+  - Т8: Настоящий `SIGKILL` api-процесса, держащего аренду прогона: выживший продолжает отвечать, строка мёртвого процесса остаётся до окна reaper, живая аренда не отбирается, после её истечения свип reattach подхватывает прогон ровно один раз. Окно reaper в 2 минуты не ждётся.
