@@ -320,6 +320,19 @@ describe("issue assignee invokability guard", () => {
       .patch(`/api/issues/${existing.id}`)
       .send({ status: "in_review", assigneeAgentId: NON_ENGINEER_AGENT_ID });
 
+    expect(res.status).not.toBe(422);
+    expect(res.body?.details?.code).not.toBe("issue_requires_engineer");
+  });
+
+  it("does not refuse an ordinary issue without any code signal for a non-engineer", async () => {
+    const existing = makeIssue({ assigneeAgentId: null, casteKey: null, projectId: null });
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueService.update.mockResolvedValue({ ...existing, assigneeAgentId: NON_ENGINEER_AGENT_ID });
+
+    const res = await request(createApp(boardActor()))
+      .patch(`/api/issues/${existing.id}`)
+      .send({ assigneeAgentId: NON_ENGINEER_AGENT_ID });
+
     expect(res.status).toBe(200);
     expect(mockIssueService.update).toHaveBeenCalled();
   });
@@ -337,8 +350,10 @@ describe("issue assignee invokability guard", () => {
 
       const res = await request(createApp(boardActor())).patch(`/api/issues/${existing.id}`).send({ status });
 
-      expect(res.status).toBe(200);
-      expect(mockIssueService.update).toHaveBeenCalled();
+      // The gate must not interfere: a status move by the current holder is never
+      // refused as "requires an engineer" (other validators may still apply).
+      expect(res.status).not.toBe(422);
+      expect(res.body?.details?.code).not.toBe("issue_requires_engineer");
     },
   );
 });

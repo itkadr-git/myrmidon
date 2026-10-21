@@ -82,7 +82,6 @@ import {
 } from "@paperclipai/db";
 import { dbAutonomyGate } from "../myrmidon/autonomy/gate.js";
 import { normalizeLabels, requiresEngineer } from "../myrmidon/swarm-claim/requires-engineer.js";
-import { resolveTaskCaste } from "../myrmidon/castes/index.js";
 import {
   addIssueCommentSchema,
   acceptIssueThreadInteractionSchema,
@@ -3749,9 +3748,11 @@ export function issueRoutes(
               .where(and(eq(labels.companyId, input.companyId), inArray(labels.id, [...input.labelIds])))
               .then((rows) => rows.map((row) => row.name));
       }
-      if (!casteKey && input.issue) {
-        casteKey = await resolveTaskCaste(db, { companyId: input.companyId, issueId: input.issue.id });
-      } else if (!casteKey && input.projectId) {
+      // Only explicit signals count: the issue's own caste, else its project's
+      // default. The company-wide default caste (seeded as engineer) is NOT a
+      // signal, otherwise every plain issue would look like a code issue.
+      if (!casteKey) casteKey = input.issue?.casteKey ?? null;
+      if (!casteKey && input.projectId) {
         projectDefaultCasteKey = (await projectsSvc.getById(input.projectId))?.defaultCasteKey ?? null;
       }
     } catch (err) {

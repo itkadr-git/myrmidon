@@ -18,7 +18,6 @@
 import { and, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import { agents, issues, type Db } from "@paperclipai/db";
 import {
-  swarmRoleForUnassignedTask,
   swarmRoleFromLabels,
   SWARM_CLAIM_QUEUE_ISSUE_STATUSES,
   SWARM_DEFAULT_UNASSIGNED_ROLE,
@@ -109,10 +108,6 @@ export function engineerCasteRequired(
   const casteKey = taskCasteKey?.trim() || projectDefaultCasteKey?.trim();
   if (casteKey) return casteKey.toLowerCase() === "engineer";
   return unassignedTaskRoutedToRoleByLabels("engineer", roleLabels);
-}
-
-export function engineerRoutedByLabels(labels: readonly string[]): boolean {
-  return labels.some((label) => /^role:[\s]*engineer$/i.test(label.trim()));
 }
 
 /**

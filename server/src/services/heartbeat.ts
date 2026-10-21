@@ -469,7 +469,6 @@ import {
 } from "./runner-goals.js";
 import { resolveChatRunPresentationAuthorizationReason } from "./chat-run-publications.js";
 import { requiresEngineer } from "../myrmidon/swarm-claim/requires-engineer.js";
-import { resolveTaskCaste } from "../myrmidon/castes/index.js";
 import { projectService } from "./projects.js";
 import {
   getProjectTokenQuotaBlock,
@@ -29830,17 +29829,12 @@ export function heartbeatService(
                 hasResolvablePriorSessionWorkspace,
               })
             ) {
-              // Read inside the same transaction and without swallowing
-              // errors: a failed statement aborts the transaction, so a
-              // silent fallback here would only hide the real failure.
-              const resolvedCaste = await resolveTaskCaste(tx, {
-                companyId: issue.companyId,
-                issueId: issue.id,
-              });
+              // Only the issue's own caste / project default count; the company
+              // default caste is not a code signal (it would requeue every issue).
               const effectiveLabels = issue.labels ?? [];
               if (requiresEngineer({
                 labels: effectiveLabels,
-                casteKey: resolvedCaste,
+                casteKey: issue.casteKey,
                 projectDefaultCasteKey: issue.projectDefaultCasteKey,
                 harnessKind: issue.harnessKind,
                 executionWorkspacePreference: issue.executionWorkspacePreference,

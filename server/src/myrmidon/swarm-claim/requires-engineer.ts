@@ -1,4 +1,3 @@
-import { swarmRoleForUnassignedTask } from "@paperclipai/shared/myrmidon-swarm-claim";
 import { engineerCasteRequired } from "./queue.js";
 
 export const NEEDS_ENGINEER_LABEL = "needs-engineer";
