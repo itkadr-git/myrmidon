@@ -28930,6 +28930,31 @@ export function heartbeatService(
             .then((rows) => rows[0] ?? null);
 
           if (!issue) {
+            const sourceQueueId =
+              opts.queuedCommentInterruptId ??
+              opts.queuedCommentRequestId ??
+              executionWaitRequestId ??
+              (opts.idempotencyKey?.startsWith("queued-comment-interrupt:")
+                ? opts.idempotencyKey.slice("queued-comment-interrupt:".length)
+                : null);
+            if (sourceQueueId && isUuidLike(sourceQueueId)) {
+              const now = new Date();
+              await tx
+                .update(agentWakeupRequests)
+                .set({
+                  status: "cancelled",
+                  error: "issue_not_found",
+                  finishedAt: now,
+                  updatedAt: now,
+                })
+                .where(
+                  and(
+                    eq(agentWakeupRequests.id, sourceQueueId),
+                    eq(agentWakeupRequests.companyId, agent.companyId),
+                    eq(agentWakeupRequests.status, "deferred_issue_execution"),
+                  ),
+                );
+            }
             await tx.insert(agentWakeupRequests).values({
               ...durableReceiptFields,
               companyId: agent.companyId,
@@ -29210,6 +29235,51 @@ export function heartbeatService(
               idempotencyKey: opts.idempotencyKey ?? null,
               finishedAt: new Date(),
             });
+
+            // myrmidon(DEFERRED-WAKE-LEAK): after first skipped due to closed task,
+            // close the original deferred wakeup request so it does not repeat indefinitely.
+            const sourceQueueId =
+              opts.queuedCommentInterruptId ??
+              opts.queuedCommentRequestId ??
+              executionWaitRequestId ??
+              (opts.idempotencyKey?.startsWith("queued-comment-interrupt:")
+                ? opts.idempotencyKey.slice("queued-comment-interrupt:".length)
+                : null);
+            if (["done", "cancelled"].includes(issue.status)) {
+              const now = new Date();
+              if (sourceQueueId && isUuidLike(sourceQueueId)) {
+                await tx
+                  .update(agentWakeupRequests)
+                  .set({
+                    status: "cancelled",
+                    error: "issue_closed",
+                    finishedAt: now,
+                    updatedAt: now,
+                  })
+                  .where(
+                    and(
+                      eq(agentWakeupRequests.id, sourceQueueId),
+                      eq(agentWakeupRequests.companyId, agent.companyId),
+                      eq(agentWakeupRequests.status, "deferred_issue_execution"),
+                    ),
+                  );
+              }
+              await tx
+                .update(agentWakeupRequests)
+                .set({
+                  status: "cancelled",
+                  error: "issue_closed",
+                  finishedAt: now,
+                  updatedAt: now,
+                })
+                .where(
+                  and(
+                    eq(agentWakeupRequests.companyId, agent.companyId),
+                    eq(agentWakeupRequests.status, "deferred_issue_execution"),
+                    sql`(${agentWakeupRequests.payload}->>'issueId' = ${issue.id} or ${agentWakeupRequests.payload}->>'taskId' = ${issue.id} or ${agentWakeupRequests.payload}->'_paperclipWakeContext'->>'issueId' = ${issue.id} or ${agentWakeupRequests.payload}->'_paperclipWakeContext'->>'taskId' = ${issue.id})`,
+                  ),
+                );
+            }
             return { kind: "skipped" as const };
           }
 
