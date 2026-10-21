@@ -88,11 +88,9 @@ describe("bridge seam: theme selection", () => {
   });
 });
 
-// The converted call sites: every symbol of the first batch is imported from the
-// seam, and none of them is left on the bridge module directly. The list is the
-// call map of the task: points 1-8 (addressing aliases), 41-45 (forum topics),
-// 46-49 (voice intake) and 55-63 (conversation identity) — 26 points in seven
-// files; the next batches extend it.
+// The converted call sites: every symbol of each batch is imported from the
+// seam, and none remains imported from its legacy module.
+// Batch 1 covers points 1-26. Batch 2 covers points 27-52 in the inventory.
 const CONVERTED: {
   file: string;
   legacy: string;
@@ -189,6 +187,76 @@ const CONVERTED: {
     legacy: "myrmidon/telegram-voice-stt-intake/wiring.js",
     seam: "channel-connectors/bridge/voice-stt.js",
     symbols: ["createTelegramVoiceSttWiring"],
+  },
+  {
+    file: "services/chat-run-publications.ts",
+    legacy: "myrmidon/telegram-dm-status-settings.js",
+    seam: "channel-connectors/bridge/dm-status-settings.js",
+    symbols: ["telegramDmStatusEnabled"],
+  },
+  {
+    file: "services/chat-run-publications.ts",
+    legacy: "myrmidon/telegram-dm-status-progress.js",
+    seam: "channel-connectors/bridge/dm-status-progress.js",
+    symbols: ["composeDmStatusText", "readDmStatusSteps"],
+  },
+  {
+    file: "services/chat-run-publications.ts",
+    legacy: "myrmidon/telegram-dm-progress/runtime-steps.js",
+    seam: "channel-connectors/bridge/dm-progress.js",
+    symbols: ["readDmProgressRuntimeSteps"],
+  },
+  {
+    file: "services/chat-run-publications.ts",
+    legacy: "myrmidon/telegram-dm-progress/sweep.js",
+    seam: "channel-connectors/bridge/dm-progress-sweep.js",
+    symbols: ["readTelegramDmProgressForSweep"],
+  },
+  {
+    file: "services/chat-run-publications.ts",
+    legacy: "myrmidon/telegram-dm-progress/throttle.js",
+    seam: "channel-connectors/bridge/dm-progress-throttle.js",
+    symbols: ["decideDmStatusPublish"],
+  },
+  {
+    file: "services/chat-channels.ts",
+    legacy: "./chat-telegram-draft-stop.js",
+    seam: "channel-connectors/bridge/telegram-draft-stop.js",
+    symbols: ["isTelegramDraftStopped", "parseTelegramDraftBinding"],
+  },
+  {
+    file: "services/chat-sdk-runtime.ts",
+    legacy: "./chat-telegram-draft-stop.js",
+    seam: "channel-connectors/bridge/telegram-draft-stop.js",
+    symbols: ["captureTelegramGenerationStopped", "telegramPrivateDraftDestination"],
+  },
+  {
+    file: "services/chat-sdk-runtime.ts",
+    legacy: "./chat-telegram-video-note.js",
+    seam: "channel-connectors/bridge/telegram-video-note.js",
+    symbols: ["normalizeTelegramVideoNoteAttachments"],
+  },
+  {
+    file: "services/heartbeat.ts",
+    legacy: "myrmidon/telegram-dm-progress/runtime-steps.js",
+    seam: "channel-connectors/bridge/dm-progress.js",
+    symbols: ["recordDmProgressLogChunk"],
+  },
+  {
+    file: "services/heartbeat-run-runtime-status.ts",
+    legacy: "myrmidon/telegram-dm-progress/runtime-steps.js",
+    seam: "channel-connectors/bridge/dm-progress.js",
+    symbols: [
+      "recordDmProgressRuntimeStatus",
+      "clearDmProgressRuntimeSteps",
+      "clearAllDmProgressRuntimeSteps",
+    ],
+  },
+  {
+    file: "services/instance-settings.ts",
+    legacy: "myrmidon/telegram-dm-progress/settings.js",
+    seam: "channel-connectors/bridge/dm-progress-settings.js",
+    symbols: ["preserveTelegramDmProgressGeneralKey"],
   },
 ];
 

@@ -38,7 +38,7 @@ import { inboundCommentCandidateIds } from "../myrmidon/chat-reconciliation/inbo
 // The milestone key is one durable row per run so the later milestone edits
 // the same provider message instead of stacking noise (see the delivery-side
 // replacement in chat-channels.ts).
-import { telegramDmStatusEnabled } from "../myrmidon/telegram-dm-status-settings.js";
+import { telegramDmStatusEnabled } from "../myrmidon/channel-connectors/bridge/dm-status-settings.js";
 // myrmidon(1.6.6 CH-CONNECTOR-D): the conversation identity theme is reached
 // through the bridge seam, so a channel connector can serve it.
 import { parseTelegramConversationUserId } from "../myrmidon/channel-connectors/bridge/identity.js";
@@ -46,12 +46,12 @@ import { parseTelegramConversationUserId } from "../myrmidon/channel-connectors/
 import {
   composeDmStatusText,
   readDmStatusSteps,
-} from "../myrmidon/telegram-dm-status-progress.js";
+} from "../myrmidon/channel-connectors/bridge/dm-status-progress.js";
 // myrmidon(DM-PROGRESS): live steps for legacy adapters, the UI settings
 // (on/off, edit interval) and the edit throttle of the DM status message.
-import { readDmProgressRuntimeSteps } from "../myrmidon/telegram-dm-progress/runtime-steps.js";
-import { readTelegramDmProgressForSweep } from "../myrmidon/telegram-dm-progress/sweep.js";
-import { decideDmStatusPublish } from "../myrmidon/telegram-dm-progress/throttle.js";
+import { readDmProgressRuntimeSteps } from "../myrmidon/channel-connectors/bridge/dm-progress.js";
+import { readTelegramDmProgressForSweep } from "../myrmidon/channel-connectors/bridge/dm-progress-sweep.js";
+import { decideDmStatusPublish } from "../myrmidon/channel-connectors/bridge/dm-progress-throttle.js";
 import type { ResolvedTelegramDmProgress } from "@paperclipai/shared";
 import {
   SAFE_NATIVE_CHAT_PROGRESS_EVENT_TYPES,
