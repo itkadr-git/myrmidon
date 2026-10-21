@@ -17410,6 +17410,24 @@ export function heartbeatService(
     companyAgents?: AgentOrgRow[],
   ) {
     if (run.status !== "queued") return run;
+    // Recheck at the last centralized queue boundary so sources that bypass
+    // maintenance-aware sweeps cannot start a run after a window opens.
+    const maintenanceWindows = await maintenanceWindowsForAgent(db, run.agentId);
+    if (maintenanceWindows.length > 0) {
+      const wake = run.wakeupRequestId
+        ? await db
+            .select({ requestedByActorType: agentWakeupRequests.requestedByActorType })
+            .from(agentWakeupRequests)
+            .where(eq(agentWakeupRequests.id, run.wakeupRequestId))
+            .limit(1)
+            .then((rows) => rows[0] ?? null)
+        : null;
+      const chatExempt = isChatWakeExemptFromBotProfileWindow(maintenanceWindows, {
+        contextSource: readNonEmptyString(parseObject(run.contextSnapshot).source) ?? null,
+        requestedByActorType: wake?.requestedByActorType ?? null,
+      });
+      if (!chatExempt) return null;
+    }
     const agent = await getAgent(run.agentId);
     if (!agent) {
       await cancelRunInternal(
