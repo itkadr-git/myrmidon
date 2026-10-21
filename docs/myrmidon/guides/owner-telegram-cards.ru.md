@@ -144,19 +144,8 @@ Telegram delivery»). Режимы:
 
 ## Источник истины
 
-- Контракт режимов: `packages/shared/src/myrmidon-owner-delivery.ts`
-  (`OWNER_DELIVERY_MODES`, `ownerDeliveryAllowsCard`); чтение и запись
-  настройки: `server/src/myrmidon/owner-delivery/settings.ts`
-  (метки `myrmidon(1.6.5-OWNER-DM-FILTER)` и `myrmidon(1.6.5-OWNER-VIA-BOT)`).
-- Хранение режима и маршруты: `server/src/myrmidon/owner-delivery/settings.ts`,
-  `server/src/myrmidon/owner-delivery/routes.ts`.
-- Сообщение бота и закрытие по ответу владельца:
-  `server/src/myrmidon/owner-delivery/owner-message.ts`,
-  `server/src/myrmidon/owner-delivery/routes.ts`.
-- Точка вызова доставки карточек: `server/src/services/chat-interaction-publications.ts`
-  (метка `myrmidon(U2)`, после вендорского поиска биндингов; фильтр режима
-  живёт внутри поиска биндингов).
-- Поиск биндингов: `server/src/myrmidon/owner-delivery/telegram-owner-bindings.ts`.
-- Человекочитаемый префикс карточки: `server/src/myrmidon/owner-delivery/owner-card-text.ts`.
+- Точка вызова: `server/src/services/chat-interaction-publications.ts`
+  (метка `myrmidon(U2)`, после вендорского поиска биндингов).
+- Поиск биндингов: `server/src/myrmidon/owner-active-channel/owner-delivery-gate.ts` (с 1.7-ACTIVE-CHANNEL; там же выбор активного канала).
 - Резолюция колбэков: `server/src/myrmidon/owner-delivery/callback-interaction-lookup.ts`.
 - Запись о поведении: [../DIVERGENCE.md](../DIVERGENCE.md), строка U2.

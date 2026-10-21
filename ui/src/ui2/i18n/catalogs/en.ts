@@ -331,7 +331,15 @@ export const en = {
         navLabel: "Settings sections",
       },
       owner: "Owner",
-      ownerChannel: "Web",
+      // myrmidon(1.7-ACTIVE-CHANNEL): the shell shows the channel the owner is
+      // really active in; the "Web · now" literal is gone.
+      shell: {
+        activeChannel: {
+          web: "Active · Web",
+          telegram: "Active · Telegram",
+          none: "Active · not seen recently",
+        },
+      },
       nests: {
         all: "All nests",
       },
@@ -698,7 +706,13 @@ export type Ui2Catalog = {
         navLabel: string;
       },
     owner: string;
-    ownerChannel: string;
+    shell: {
+      activeChannel: {
+        web: string;
+        telegram: string;
+        none: string;
+      };
+    };
     nests: {
       all: string;
     },

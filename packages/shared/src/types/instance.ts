@@ -59,6 +59,8 @@ import type { TelegramDmProgressSettings } from "../myrmidon-telegram-dm-progres
 import type { SharedMountSettings } from "../myrmidon-shared-mount.js";
 // myrmidon(BOT-RUNTIME-TUNING D2): the fallback-signal settings of the same row.
 import type { StoredFallbackSignalSettings } from "../myrmidon-fallback-signal.js";
+// myrmidon(1.7-ACTIVE-CHANNEL): the stored owner active-channel settings type.
+import type { OwnerActiveChannelSettings } from "../myrmidon-owner-active-channel.js";
 // myrmidon(1.6.5-PAUSE-GUARD): the forgotten-operator-pause guard of the same
 // general settings row.
 import type { StoredPauseGuardSettings } from "../myrmidon-pause-guard.js";
@@ -477,6 +479,8 @@ export interface InstanceGeneralSettings {
    * validator of the same field (packages/shared/src/validators/instance.ts).
    */
   pluginEntitlementPublicKey?: string;
+  /** Owner active-channel inactivity threshold. */
+  ownerActiveChannel?: OwnerActiveChannelSettings;
 }
 
 

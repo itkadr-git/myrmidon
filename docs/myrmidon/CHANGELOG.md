@@ -4589,7 +4589,7 @@ it lower through the settings area.
   `issue_comments.ts`, label `myrmidon(DB-CARE)`), and the `0308`/`0309`
   snapshots record them, so `db:generate` stays clean and the schema tells the
   same story as production's `pg_indexes`. Compression is a storage parameter,
-  so it adds no schema object and `0309_snapshot.json` repeats the `0308`
+  so it adds no schema object and `0402_snapshot.json` repeats the `0308`
   snapshot.
 - The identifier indexes of `issues` need no change: production carries
   `issues_identifier_idx` (unique btree) and `issues_identifier_search_idx`

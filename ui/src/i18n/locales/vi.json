@@ -105,7 +105,6 @@
       "badge": "{{count}} decisions waiting"
     },
     "owner": "Owner",
-    "ownerChannel": "Web · now",
     "commander": {
       "aria": "Tell the Commander (Ctrl K)",
       "placeholder": "Tell the Commander…",
@@ -140,6 +139,13 @@
       "guards": "Guardrails",
       "castes": "Castes and models",
       "system": "System"
+    },
+    "shell": {
+      "activeChannel": {
+        "web": "Active · Web",
+        "telegram": "Active · Telegram",
+        "none": "Active · not seen recently"
+      }
     }
   },
   "connectorPanel": {

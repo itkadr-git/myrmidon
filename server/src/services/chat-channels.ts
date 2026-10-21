@@ -290,6 +290,8 @@ import {
 import { stripLeadingMentionToken as x9StripAddressToken } from "../myrmidon/channel-connectors/bridge/addressing.js";
 import { resolveBridgedAddressee } from "../myrmidon/channel-connectors/bridge/agent-bridge.js";
 import type { TelegramAddressee } from "../myrmidon/channel-connectors/bridge/addressing.js";
+// myrmidon(1.7-ACTIVE-CHANNEL): Telegram inbound activity tracking.
+import { markOwnerActivityBestEffort } from "../myrmidon/owner-active-channel/store.js";
 // myrmidon(U2): company-wide interaction lookup for callbacks on cards
 // delivered to the owner's Telegram conversation from other tasks.
 import { listInteractionForCallback } from "../myrmidon/owner-delivery/callback-interaction-lookup.js";
@@ -17318,30 +17320,12 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         publishActivity(publication);
       }
       const { actorUserId, comment, conversation, issue } = taskMutation;
-      // myrmidon(1.6.5-F10-A): this ingest is the inbound half of a wizard test
-      // round trip; the automatic completion needs the outbound half too, so an
-      // endpoint with only inbound traffic stays in `verifying`.
-      await tryLiveTrafficActivation(endpoint.id, { inboundObserved: true });
-      // myrmidon(1.6.5-F21-AUTOCLOSE): the owner's own message in the task's
-      // chat closes the single open owner decision of that task (F-21, the
-      // pre-via_bot path). Placed before processInboundWakeup below so the
-      // agent's run already sees the card resolved, and it never throws — a
-      // refusal is reported, not raised into the ingest.
-      if (actorUserId) {
-        await autoCloseOwnerDecisionOnOwnerComment({
-          db,
-          companyId: endpoint.companyId,
-          issueId: issue.id,
-          ownerUserId: actorUserId,
-          commentId: comment.id,
-          replyText: comment.body ?? "",
-          commentCreatedAt: comment.createdAt,
-          commentSourceTrust: comment.sourceTrust ?? null,
-          // myrmidon(1.6.5-F21-A): read the words with the owner-reply parser
-          // (numbers, letters, the card's recommended option) instead of the
-          // writer's built-in free-text fallback.
-          deps: { heartbeat: options.heartbeat, classifyReply: classifyOwnerReplyText },
-        });
+      // myrmidon(1.7-ACTIVE-CHANNEL): an inbound Telegram DM from a linked
+      // owner marks the Telegram channel active for them; the next report
+      // decision reads it. Advisory and fire-and-forget — the delivery path
+      // never waits on it and never fails on it.
+      if (x8Dm.applies && actorUserId) {
+        markOwnerActivityBestEffort(db, { userId: actorUserId, channel: "telegram" });
       }
       // myrmidon(X8b): resume a paused bridged conversation on a literal
       // "/new" comment (the web /new route does the same), and deliver any

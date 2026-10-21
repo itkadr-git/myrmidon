@@ -20,9 +20,10 @@ import type {
 import { readConfigFile } from "../config-file.js";
 // myrmidon(B1): product name in the user-facing text below; see product.ts.
 import { PRODUCT_NAME } from "../myrmidon/product.js";
-// myrmidon(U2): owner-delivery bindings for tasks without their own chat thread.
-import { telegramOwnerDeliveryBindings } from "../myrmidon/owner-delivery/telegram-owner-bindings.js";
-// myrmidon(1.6.5-OWNER-DM-FILTER): human-readable owner-DM card text (U2 branch only).
+// myrmidon(U2): owner-delivery bindings for tasks without their own chat thread
+// (the U2 path now lives behind the 1.7-ACTIVE-CHANNEL gate).
+import { telegramOwnerDeliveryBindings } from "../myrmidon/owner-active-channel/owner-delivery-gate.js";
+// myrmidon(1.6.5-OWNER-DM-FILTER): preserve human-readable owner card text.
 import { ownerDeliveryCardText } from "../myrmidon/owner-delivery/owner-card-text.js";
 import { projectSafeChatPublication } from "./chat-publication-projection.js";
 import { safeChatTaskUrl } from "./chat-task-url.js";
