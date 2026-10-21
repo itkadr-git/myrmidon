@@ -15,10 +15,11 @@ import { isUi2RouteElementAPlaceholder } from "../routes";
 import { fleetStatus } from "../screens/agent-overview/Ui2AgentsFleetPage";
 
 describe("myrmidon(UI2) route table integration", () => {
-  it("ships exactly the six contract entries plus the commander chat", () => {
+  it("ships the six contract entries plus Commander and Commander chat", () => {
     expect(UI2_ROUTE_TABLE.map((entry) => entry.key).sort()).toEqual([
       "agent-overview",
       "agents-fleet",
+      "commander",
       "commander-chat",
       "costs",
       "decisions",
