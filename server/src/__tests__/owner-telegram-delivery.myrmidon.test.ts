@@ -320,9 +320,14 @@ describeEmbeddedPostgres(
       await instanceSettingsService(db).updateGeneral({
         [OWNER_DELIVERY_SETTINGS_KEY]: { mode: "owner_decisions_only" },
       });
-      const publications = await enqueueIssueInteractionChatPublications(db, interaction);
+      await enqueueIssueInteractionChatPublications(db, interaction);
+      const publications = await publicationsForInteraction(
+        fixture.companyId,
+        interaction.id,
+      );
       const publication = publications.find((item) => item.provider === "telegram");
-      expect((publication?.payload as { text?: string }).text).toContain(
+      expect(publication).toBeDefined();
+      expect((publication!.payload as { text?: string }).text).toContain(
         `https://myrmidon.example/issues/${fixture.workIssue.id}`,
       );
     });
