@@ -234,3 +234,21 @@ model the gateway returns in its response, then the LiteLLM `model_group`
 the request was routed to, then the model configured on the launch. Empty
 strings and the sentinel `unknown` are dropped at each step, so the field is
 either a real model name or absent.
+
+## UI 2.0 shell and interface language
+
+The Myrmidon 2.0 shell runs in parallel with the 1.x shell and is activated
+via **Instance Settings → Experimental → "Myrmidon UI 2.0 Shell"**
+(`enableMyrmidonUi2`), with per-browser override via `?ui=2` or `?ui=1`.
+
+- **Live status chips in the 56 px top bar**:
+  - **Colony**: running agents out of active colony total (`running / (active + running + paused + error)`);
+  - **Runs**: live runs (`queued + running`) and today's failures (UTC `runActivity[today].failed`);
+  - **Spend**: current month spend against budget (when budget is 0, renders spend alone without "of $0");
+  - **"Wait for me" badge**: union of pending approvals, open decisions, and pending interactions;
+  - Unresolved or loading sources render `—`; data refreshes every 30s and on window focus.
+- **Interface language**:
+  - The default language for new users is English (`en`).
+  - Users can switch to Russian (`ru`) on **Settings → Language** dynamically without a page reload; the choice updates i18next, flat catalog, and the root `lang` attribute.
+  - The language preference is preserved in browser `localStorage` and saved to the server via `PUT /api/myrmidon/ui2/language/me` across devices and logins.
+

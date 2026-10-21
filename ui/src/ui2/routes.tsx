@@ -51,64 +51,54 @@ export interface Ui2RouteEntry {
   legacyPath: string;
 }
 
-/**
- * Wrap a screen in the ui2 language provider. The provider is the interim
- * catalog (until the i18n part merges); it is the single seam to swap for
- * the merged module, and the import path contract is pinned by the
- * language-settings guard test.
- */
-function ui2Screen(element: ReactNode): ReactNode {
-  return <Ui2I18nProvider>{element}</Ui2I18nProvider>;
-}
-
 export const UI2_ROUTE_TABLE: Ui2RouteEntry[] = [
   {
     key: "decisions",
     path: "decisions",
     titleKey: "ui2.screens.decisions",
-    element: ui2Screen(<Ui2Decisions />),
+    element: <Ui2Decisions />,
     legacyPath: "/decisions",
   },
   {
     key: "costs",
     path: "activity/costs",
     titleKey: "ui2.screens.costs",
-    element: ui2Screen(<Ui2Costs />),
+    element: <Ui2Costs />,
     legacyPath: "/activity/costs",
   },
   {
     key: "agent-overview",
     path: "agents/:agentId/overview",
     titleKey: "ui2.screens.agentOverview",
-    element: ui2Screen(<Ui2AgentOverviewPage />),
+    element: <Ui2AgentOverviewPage />,
     legacyPath: "/agents/:agentId",
   },
   {
     key: "agents-fleet",
     path: "agents",
     titleKey: "ui2.screens.agents",
-    element: ui2Screen(<Ui2AgentsFleetPage />),
+    element: <Ui2AgentsFleetPage />,
     legacyPath: "/agents",
   },
   {
     key: "settings-runs-queue",
     path: "company/settings/runs-queue",
     titleKey: "ui2.screens.runsQueue",
-    element: ui2Screen(<Ui2RunsSettings />),
+    element: <Ui2RunsSettings />,
     legacyPath: "/company/settings",
   },
   {
     key: "settings-system",
     path: "company/settings/system",
     titleKey: "ui2.screens.system",
-    element: ui2Screen(<Ui2SystemSettings />),
+    element: <Ui2SystemSettings />,
     legacyPath: "/company/settings",
   },
   {
     key: "settings-language",
     path: "company/settings/language",
     titleKey: "ui2.screens.language",
-    element: ui2Screen(<Ui2LanguageSettings />),
+    element: <Ui2LanguageSettings />,
     legacyPath: "/company/settings",
   },
   // myrmidon(1.6-CTO-CHAT-A): the Commander chat — own route under the ui2
@@ -129,14 +119,14 @@ export const UI2_ROUTE_TABLE: Ui2RouteEntry[] = [
     key: "knowledge",
     path: "knowledge",
     titleKey: "ui2.screens.knowledge",
-    element: ui2Screen(<Ui2Knowledge />),
+    element: <Ui2Knowledge />,
     legacyPath: "/wiki",
   },
   {
     key: "knowledge-page",
     path: "knowledge/:spaceKey/:slug",
     titleKey: "ui2.screens.knowledge",
-    element: ui2Screen(<Ui2Knowledge />),
+    element: <Ui2Knowledge />,
     legacyPath: "/wiki/:spaceKey/:slug",
   },
   // The regulations of Autonomy: the same screen the matrix tab carries, so a
@@ -145,7 +135,7 @@ export const UI2_ROUTE_TABLE: Ui2RouteEntry[] = [
     key: "settings-autonomy-regulations",
     path: "company/settings/autonomy/regulations",
     titleKey: "ui2.screens.regulations",
-    element: ui2Screen(<Ui2Regulations />),
+    element: <Ui2Regulations />,
     legacyPath: "/company/settings",
   },
 ];
@@ -165,8 +155,8 @@ export function ui2ScreenRoutes(): ReactNode[] {
 /**
  * True when the element is still the shell part's placeholder component.
  * The re-skin pass replaces every entry with a real screen wrapped in the
- * ui2 language provider; the guard test uses this identity check to prove
- * no entry is left on the placeholder.
+ * ui2 shell; the guard test uses this identity check to prove no entry is
+ * left on the placeholder.
  */
 export function isUi2RouteElementAPlaceholder(element: ReactNode): boolean {
   const candidate = element as { type?: unknown } | null;

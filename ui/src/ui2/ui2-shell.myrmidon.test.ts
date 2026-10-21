@@ -96,11 +96,14 @@ describe("ui2 integration contracts (UI-0b / UI-0c)", () => {
     }
   }, 30_000);
 
-  it("Ui2Root exists and mounts the shell (UI-0b's provider line)", async () => {
-    const mod = await import("./Ui2Root");
-    expect(typeof mod.Ui2Root).toBe("function");
-    const root = mod.Ui2Root({} as never);
-    expect(root).toBeTruthy();
+  it("places one locale provider around the complete shell", () => {
+    const root = readFileSync(join(UI_SRC, "ui2", "Ui2Root.tsx"), "utf8");
+    const routes = readFileSync(join(UI_SRC, "ui2", "routes.tsx"), "utf8");
+    expect(root.indexOf("<Ui2I18nProvider>")).toBeLessThan(root.lastIndexOf("<Ui2Shell"));
+    expect(root.lastIndexOf("</Ui2Shell>")).toBeLessThan(root.indexOf("</Ui2I18nProvider>"));
+    expect(routes).not.toContain("<Ui2I18nProvider>");
+    expect(routes).not.toContain("</Ui2I18nProvider>");
+    expect(routes).not.toContain("ui2Screen(");
   });
 
   it("the theme keys the RU display-font switch on [lang=ru] and keeps the wordmark font", () => {
