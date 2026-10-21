@@ -6,7 +6,7 @@ import { readFleetdDriverConfig } from "./fleetd-driver.js";
 // Everything here is placeholder data: fake names and example.com addresses.
 
 const ENTRY = (over: Record<string, unknown> = {}): string =>
-  JSON.stringify([{ name: "host-a", url: "http://fleetd.example.com:9100", tokenSecret: "secret-a", ...over }]);
+  JSON.stringify([{ name: "host-a", url: "https://fleetd.example.com:9100", tokenSecret: "secret-a", ...over }]);
 
 describe("myrmidon(FLEETD-VMEXEC) fleet hosts — parsing", () => {
   it("an unset or empty setting yields no hosts", () => {
@@ -17,11 +17,11 @@ describe("myrmidon(FLEETD-VMEXEC) fleet hosts — parsing", () => {
 
   it("parses name/url/tokenSecret, trims and strips trailing slashes", () => {
     const hosts = parseFleetHosts(
-      JSON.stringify([{ name: " host-a ", url: "http://fleetd.example.com:9100/", tokenSecret: " secret-a " }]),
+      JSON.stringify([{ name: " host-a ", url: "https://fleetd.example.com:9100/", tokenSecret: " secret-a " }]),
     );
     expect(hosts.get("host-a")).toEqual({
       name: "host-a",
-      url: "http://fleetd.example.com:9100",
+      url: "https://fleetd.example.com:9100",
       tokenSecret: "secret-a",
     });
   });
@@ -39,13 +39,13 @@ describe("myrmidon(FLEETD-VMEXEC) fleet hosts — parsing", () => {
 
   it("rejects a bad name, a non-http url, an empty token name, duplicates", () => {
     expect(() => parseFleetHosts(ENTRY({ name: "Host A" }))).toThrow(/host name must match/);
-    expect(() => parseFleetHosts(ENTRY({ url: "https://fleetd.example.com" }))).toThrow(/url must be http/);
+    expect(() => parseFleetHosts(ENTRY({ url: "http://fleetd.example.com" }))).toThrow(/url must be https/);
     expect(() => parseFleetHosts(ENTRY({ tokenSecret: "  " }))).toThrow(/missing tokenSecret/);
     expect(() =>
       parseFleetHosts(
         JSON.stringify([
-          { name: "host-a", url: "http://a:1", tokenSecret: "s" },
-          { name: "host-a", url: "http://b:2", tokenSecret: "s" },
+          { name: "host-a", url: "https://a:1", tokenSecret: "s" },
+          { name: "host-a", url: "https://b:2", tokenSecret: "s" },
         ]),
       ),
     ).toThrow(/duplicate host name/);
@@ -56,7 +56,7 @@ describe("myrmidon(FLEETD-VMEXEC) fleet hosts — parsing", () => {
 describe("myrmidon(FLEETD-VMEXEC) fleet hosts — per-host overrides", () => {
   it("carries no override fields when the entry states none", () => {
     const host = parseFleetHosts(ENTRY()).get("host-a");
-    expect(host).toEqual({ name: "host-a", url: "http://fleetd.example.com:9100", tokenSecret: "secret-a" });
+    expect(host).toEqual({ name: "host-a", url: "https://fleetd.example.com:9100", tokenSecret: "secret-a" });
   });
 
   it("parses every override field, trimmed, with trailing slashes stripped from urls", () => {
@@ -72,7 +72,7 @@ describe("myrmidon(FLEETD-VMEXEC) fleet hosts — per-host overrides", () => {
     ).get("host-a");
     expect(host).toEqual({
       name: "host-a",
-      url: "http://fleetd.example.com:9100",
+      url: "https://fleetd.example.com:9100",
       tokenSecret: "secret-a",
       hindsightUrl: "http://hindsight.internal:8890",
       llmBaseUrl: "http://llm.internal:4000",
@@ -84,7 +84,7 @@ describe("myrmidon(FLEETD-VMEXEC) fleet hosts — per-host overrides", () => {
   });
 
   it("rejects a non-http override url and an empty required string", () => {
-    expect(() => parseFleetHosts(ENTRY({ hindsightUrl: "https://hindsight.internal:8890" }))).toThrow(/hindsightUrl" must be http/);
+    expect(() => parseFleetHosts(ENTRY({ hindsightUrl: "ftp://hindsight.internal:8890" }))).toThrow(/hindsightUrl" must be http/);
     expect(() => parseFleetHosts(ENTRY({ llmBaseUrl: "llm.internal:4000" }))).toThrow(/llmBaseUrl" must be http/);
     expect(() => parseFleetHosts(ENTRY({ network: "   " }))).toThrow(/network" is empty/);
   });
@@ -120,12 +120,18 @@ describe("myrmidon(FLEETD-VMEXEC) fleet hosts — the card's host", () => {
 
 describe("myrmidon(FLEETD-VMEXEC) fleet hosts — driver config binding", () => {
   it("reads the token from the environment when no explicit values are given", () => {
-    const cfg = readFleetdDriverConfig({ MYRMIDON_FLEET_HOST_URL: "http://f:9100", MYRMIDON_FLEET_HOST_TOKEN: "t" });
-    expect(cfg).toEqual({ baseUrl: "http://f:9100", token: "t" });
+    const cfg = readFleetdDriverConfig({
+      MYRMIDON_FLEET_HOST_URL: "https://f:9100",
+      MYRMIDON_FLEET_HOST_TOKEN: "t",
+      MYRMIDON_FLEET_HOST_CA: "ca",
+      MYRMIDON_FLEET_HOST_CERT: "cert",
+      MYRMIDON_FLEET_HOST_KEY: "key",
+    });
+    expect(cfg).toEqual({ baseUrl: "https://f:9100", token: "t", ca: "ca", cert: "cert", key: "key" });
   });
 
   it("throws when the url or the token is missing", () => {
     expect(() => readFleetdDriverConfig({ MYRMIDON_FLEET_HOST_TOKEN: "t" })).toThrow(/MYRMIDON_FLEET_HOST_URL/);
-    expect(() => readFleetdDriverConfig({ MYRMIDON_FLEET_HOST_URL: "http://f:9100" })).toThrow(/MYRMIDON_FLEET_HOST_TOKEN/);
+    expect(() => readFleetdDriverConfig({ MYRMIDON_FLEET_HOST_URL: "https://f:9100" })).toThrow(/MYRMIDON_FLEET_HOST_TOKEN/);
   });
 });

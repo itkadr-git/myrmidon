@@ -5,7 +5,7 @@
 // is the local docker driver. Each named host is a fleetd service entry:
 //
 //   MYRMIDON_FLEET_HOSTS='[
-//     {"name":"vmexec","url":"http://fleetd.internal:9100","tokenSecret":"fleetd-vmexec-token",
+//     {"name":"vmexec","url":"https://fleetd.internal:9100","tokenSecret":"fleetd-vmexec-token",
 //      "hindsightUrl":"http://hindsight.internal:8890","llmBaseUrl":"http://llm.internal:4000",
 //      "boardExtraHost":"paperclip-server-1","volumeRoot":"/srv/myrmidon-bots",
 //      "network":"myrmidon-bots","imageAllowlist":["ghcr.io/example/bot@sha256:*"]}
@@ -85,9 +85,14 @@ function optionalString(entry: Record<string, unknown>, key: string, host: strin
 function optionalHttpUrl(entry: Record<string, unknown>, key: string, host: string): string | undefined {
   const value = optionalString(entry, key, host);
   if (value === undefined) return undefined;
-  if (!/^http:\/\//.test(value)) {
+  if (key === "url" && !/^https:\/\//.test(value)) {
     throw new Error(
-      `${FLEET_HOSTS_ENV}: host "${host}" field "${key}" must be http:// (it is reachable from the internal network only)`,
+      `${FLEET_HOSTS_ENV}: host "${host}" field "${key}" must be https://`,
+    );
+  }
+  if (key !== "url" && !/^https?:\/\//.test(value)) {
+    throw new Error(
+      `${FLEET_HOSTS_ENV}: host "${host}" field "${key}" must be http:// or https://`,
     );
   }
   return value.replace(/\/+$/, "");
@@ -117,8 +122,8 @@ export function parseFleetHosts(raw: string | undefined): Map<string, FleetHostC
       throw new Error(`${FLEET_HOSTS_ENV}: host name must match ${NAME_PATTERN} (got "${name}")`);
     }
     const url = typeof entry.url === "string" ? entry.url.trim().replace(/\/+$/, "") : "";
-    if (!/^http:\/\//.test(url)) {
-      throw new Error(`${FLEET_HOSTS_ENV}: host "${name}" url must be http:// (the fleetd listener lives on the internal network)`);
+    if (!/^https:\/\//.test(url)) {
+      throw new Error(`${FLEET_HOSTS_ENV}: host "${name}" url must be https://`);
     }
     const tokenSecret = typeof entry.tokenSecret === "string" ? entry.tokenSecret.trim() : "";
     if (!tokenSecret) throw new Error(`${FLEET_HOSTS_ENV}: host "${name}" is missing tokenSecret (a company secret name)`);
