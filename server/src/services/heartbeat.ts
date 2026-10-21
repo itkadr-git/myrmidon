@@ -5,7 +5,10 @@ import { readQueuedInteractionResponse } from "../myrmidon/upstream-steer/queued
 // describeRunRetrySchedule and the issue payload reads it back with
 // readRunRetryPolicySnapshot (see docs/myrmidon/SETTINGS.md).
 import {
+  DEFAULT_RUN_RETRY_MAX_ATTEMPTS,
   describeRunRetrySchedule,
+  isPermanentAgentFailure,
+  isTransientFailure,
   readRunRetryPolicySnapshot,
 } from "../myrmidon/run-retry-policy/index.js";
 import { AGENT_CHAT_DIRECTIVE, conversationReplay, isConversation, isConversationExecutionWake, isWaitingConversation, prepareConversationTurn, settleConversationTurn } from "./agent-conversations.js";
@@ -58,7 +61,7 @@ import { clearChatHoldsOnOwnerMessage } from "../myrmidon/chat-holds/clear-on-me
 import { cancelWaitingRunDoomedByHold, carryRetryBudgetToSuccessor } from "../myrmidon/settled-holds/cancel-waiting-run.js";
 import { connectionIntentService } from "./connection-intents.js";
 import { prepareManagedAiRuntime, assertManagedAiProjectAuth, stripAiAuthBindings, isAiConnectionBusy, AI_AUTH_ENV_KEYS } from "./ai-connection-runtime.js";
-import { aiConnectionBindingSchema } from "@paperclipai/shared";
+import { aiConnectionBindingSchema, type AiConnectionBinding } from "@paperclipai/shared";
 // myrmidon(TEAM-LIVENESS-SETTINGS): the reader that resolves the stored instance
 // settings against the environment, plus the per-agent card switch, so the three
 // automatic behaviours obey the settings page without a restart.
@@ -709,6 +712,7 @@ import {
   isRunUnderMaintenance,
   maintenanceWindowsForAgent,
 } from "../myrmidon/maintenance/gate.js";
+import { MAINTENANCE_INTERRUPT_ERROR_CODE, MAINTENANCE_RETRY_REASON } from "../myrmidon/maintenance/domain.js";
 // myrmidon(D2): uuid-typed json comparisons for the board DB hot path. See
 // docs/myrmidon/DIVERGENCE.md.
 import { jsonTextUuid } from "../myrmidon/db-hot-path/json-uuid.js";
@@ -774,6 +778,11 @@ import {
   type RunQueuedBus,
 } from "../myrmidon/run-dispatch/index.js";
 import { loadRunDispatchSettings } from "../myrmidon/run-dispatch/settings.js";
+// myrmidon(1.6.6 INBOX-BATCH): the comment-wake debounce window.
+import {
+  readWakeBatchWindowMs,
+  splitBatchedWakeRuns,
+} from "../myrmidon/wake-batch.js";
 // myrmidon(PERF-DIET-K): issue-scoped session generations for the container
 // Hermes gateway — one task's session key gains a `:g<N>` once it passes its
 // age/activity threshold, so the task's Hermes state stays bounded
@@ -1328,7 +1337,13 @@ function readHeartbeatRunErrorFamily(
   if (
     run.errorCode === "codex_transient_upstream" ||
     run.errorCode === "claude_transient_upstream" ||
-    run.errorCode === "codex_harness_crash"
+    run.errorCode === "codex_harness_crash" ||
+    run.errorCode === "continuation_source_context_missing" ||
+    run.errorCode === "controller_lease_lost" ||
+    run.errorCode === "legacy_controller_lease_lost" ||
+    run.errorCode === "native_session_lease_lost" ||
+    run.errorCode === "stream_interrupted" ||
+    run.errorCode === "transient_network_error"
   ) {
     return "transient_upstream";
   }
@@ -3881,6 +3896,7 @@ export interface WakeupOptions {
   requestedByActorType?: "user" | "agent" | "system";
   requestedByActorId?: string | null;
   contextSnapshot?: Record<string, unknown>;
+  externalSession?: { connectionId: string; grantId: string; model: string };
   issueStateGuard?: {
     statuses: string[];
     assigneeAgentId: string;
@@ -7034,6 +7050,14 @@ function enrichWakeContextSnapshot(input: {
   const commentIdFromPayload = readNonEmptyString(payload?.["commentId"]);
   const taskKey = deriveTaskKey(contextSnapshot, payload);
   const wakeCommentId = deriveCommentId(contextSnapshot, payload);
+  const externalSession = parseObject(contextSnapshot.externalSession);
+  if (Object.keys(externalSession).length) {
+    contextSnapshot.externalSession = {
+      connectionId: externalSession.connectionId,
+      grantId: externalSession.grantId,
+      model: externalSession.model,
+    };
+  }
   const wakeCommentIds = mergeWakeCommentIds(
     contextSnapshot,
     commentIdFromPayload,
@@ -11873,10 +11897,8 @@ export function heartbeatService(
     if (!issue.assigneeAgentId || issue.assigneeUserId) {
       throw conflict("Issue monitor requires an agent assignee");
     }
-    if (!["in_progress", "in_review"].includes(issue.status)) {
-      throw conflict(
-        "Issue monitor can only run while the issue is in progress or in review",
-      );
+    if (!["in_progress", "in_review", "blocked"].includes(issue.status)) {
+      throw conflict("Issue monitor cannot run for a closed issue");
     }
 
     const staleClaimThreshold = new Date(now.getTime() - 5 * 60 * 1000);
@@ -11893,7 +11915,7 @@ export function heartbeatService(
             sql`${issues.monitorNextCheckAt} is not null`,
             isNull(issues.assigneeUserId),
             sql`${issues.assigneeAgentId} is not null`,
-            inArray(issues.status, ["in_progress", "in_review"]),
+            inArray(issues.status, ["in_progress", "in_review", "blocked"]),
             or(
               isNull(issues.monitorWakeRequestedAt),
               lt(issues.monitorWakeRequestedAt, staleClaimThreshold),
@@ -11935,7 +11957,7 @@ export function heartbeatService(
           lte(issues.monitorNextCheckAt, now),
           isNull(issues.assigneeUserId),
           sql`${issues.assigneeAgentId} is not null`,
-          inArray(issues.status, ["in_progress", "in_review"]),
+          inArray(issues.status, ["in_progress", "in_review", "blocked"]),
           or(
             isNull(issues.monitorWakeRequestedAt),
             lt(issues.monitorWakeRequestedAt, staleClaimThreshold),
@@ -11963,7 +11985,7 @@ export function heartbeatService(
               lte(issues.monitorNextCheckAt, now),
               isNull(issues.assigneeUserId),
               sql`${issues.assigneeAgentId} is not null`,
-              inArray(issues.status, ["in_progress", "in_review"]),
+              inArray(issues.status, ["in_progress", "in_review", "blocked"]),
               or(
                 isNull(issues.monitorWakeRequestedAt),
                 lt(issues.monitorWakeRequestedAt, staleClaimThreshold),
@@ -15391,11 +15413,13 @@ export function heartbeatService(
       ),
     );
     const nextAttempt =
-      (retryReason === WORKSPACE_BUSY_RETRY_REASON ||
-      retryReason === AI_CONNECTION_BUSY_RETRY_REASON ||
-      retryReason === MAX_TURN_CONTINUATION_RETRY_REASON
-        ? (run.scheduledRetryAttempt ?? 0)
-        : executionFailureRetryCount(run)) + 1;
+      retryReason === MAINTENANCE_RETRY_REASON
+        ? 1
+        : (retryReason === WORKSPACE_BUSY_RETRY_REASON ||
+            retryReason === AI_CONNECTION_BUSY_RETRY_REASON ||
+            retryReason === MAX_TURN_CONTINUATION_RETRY_REASON
+            ? (run.scheduledRetryAttempt ?? 0)
+            : executionFailureRetryCount(run)) + 1;
     // myrmidon(HERMES-RUN-REATTACH): with a gateway Retry-After hint, the
     // schedule's base delay is the hint itself (clamped to a sane ceiling)
     // instead of the fixed 30s array, and the attempt ceiling is the
@@ -15489,7 +15513,12 @@ export function heartbeatService(
       };
     }
 
-    if (legacyExecutionNeedsReconciliation(run)) {
+    // A maintenance interruption explicitly requests a retry; the bounded
+    // retry scheduler, not failure-reconciliation, owns its attempt budget.
+    if (
+      run.errorCode !== MAINTENANCE_INTERRUPT_ERROR_CODE &&
+      legacyExecutionNeedsReconciliation(run)
+    ) {
       return {
         outcome: "not_scheduled" as const,
         reason:
@@ -18098,7 +18127,12 @@ export function heartbeatService(
     agentId: string,
     outcome: "succeeded" | "interrupted" | "failed" | "cancelled" | "timed_out",
     failureReason?: string | null,
-    options?: { keepIdleOnFailure?: boolean; wasFirstHeartbeat?: boolean },
+    options?: {
+      keepIdleOnFailure?: boolean;
+      wasFirstHeartbeat?: boolean;
+      errorCode?: string | null;
+      errorFamily?: string | null;
+    },
   ) {
     const existing = await getAgent(agentId);
     if (!existing) return;
@@ -18111,20 +18145,68 @@ export function heartbeatService(
       options?.wasFirstHeartbeat ?? !existing.lastHeartbeatAt;
 
     const runningCount = await countRunningRunsForAgent(agentId);
-    const nextStatus =
-      runningCount > 0
-        ? "running"
-        : outcome === "succeeded" ||
-            outcome === "interrupted" ||
-            outcome === "cancelled" ||
-            (outcome === "failed" && options?.keepIdleOnFailure)
-          ? "idle"
-          : "error";
+    const metadata = parseObject(existing.metadata);
+    const currentFailures =
+      typeof metadata.consecutiveFailures === "number" &&
+      Number.isFinite(metadata.consecutiveFailures) &&
+      metadata.consecutiveFailures >= 0
+        ? metadata.consecutiveFailures
+        : 0;
+
+    let nextFailures = currentFailures;
+    let nextStatus: "idle" | "running" | "error";
+
+    if (runningCount > 0) {
+      nextStatus = "running";
+    } else if (
+      outcome === "succeeded" ||
+      outcome === "interrupted" ||
+      outcome === "cancelled"
+    ) {
+      nextFailures = 0;
+      nextStatus = "idle";
+    } else {
+      nextFailures = currentFailures + 1;
+      const failureInput = {
+        errorCode: options?.errorCode,
+        errorFamily: options?.errorFamily,
+        errorMessage: failureReason,
+      };
+      const isPermanent = isPermanentAgentFailure(failureInput);
+      const isTransient =
+        Boolean(options?.keepIdleOnFailure) || isTransientFailure(failureInput);
+      const maxFailures = DEFAULT_RUN_RETRY_MAX_ATTEMPTS;
+
+      if (isTransient) {
+        // An explicit idle override means a bounded retry owns recovery. This
+        // is important for quota reset retries: the provider failure is
+        // persistent, but the agent itself remains available for the retry.
+        if (nextFailures >= maxFailures) {
+          nextStatus = "error";
+          failureReason = `${nextFailures} consecutive runs failed: ${failureReason ?? "transient failure"}`;
+        } else {
+          nextStatus = "idle";
+        }
+      } else if (isPermanent) {
+        nextStatus = "error";
+      } else if (nextFailures >= maxFailures) {
+        nextStatus = "error";
+        failureReason = `${nextFailures} consecutive runs failed: ${failureReason ?? "failure"}`;
+      } else {
+        nextStatus = "idle";
+      }
+    }
+
+    const nextMetadata: Record<string, unknown> = {
+      ...metadata,
+      consecutiveFailures: nextFailures,
+    };
 
     const updated = await db
       .update(agents)
       .set({
         status: nextStatus,
+        metadata: nextMetadata,
         // Persist a human-readable reason on the agent record when it enters
         // error so operators see it on the agent page without digging into run
         // events; clear it whenever the agent leaves error.
@@ -19471,6 +19553,12 @@ export function heartbeatService(
 
       await finalizeAgentStatus(run.agentId, "failed", baseMessage, {
         wasFirstHeartbeat: timerClaimWasFirstHeartbeat(run),
+        errorCode: finalizedRun.errorCode,
+        keepIdleOnFailure:
+          isTransientFailure({
+            errorCode: finalizedRun.errorCode,
+            errorMessage: baseMessage,
+          }) || Boolean(retriedRun),
       });
       // myrmidon(1.6.6 RUN-DISPATCH-NOTIFY, OPE-6977): through the dispatcher.
       await runStartDispatcher.dispatchRunStart(run.agentId);
@@ -20341,6 +20429,21 @@ export function heartbeatService(
     );
   }
 
+  // myrmidon(1.6.6 INBOX-BATCH): a held comment wake is retried when its window
+  // closes instead of waiting for the next scheduler tick. The resweep timer is
+  // one per process, so a pending admission resweep already covers the wait and
+  // this call is then a no-op (the run starts at that sweep, still with the
+  // comments its window collected).
+  function scheduleWakeBatchResweep(delayMs: number) {
+    scheduleQueuedResweep(
+      () =>
+        resumeQueuedRuns().catch((err) =>
+          logger.error({ err }, "queued run resweep after the wake batch window failed"),
+        ),
+      Math.max(delayMs, 250),
+    );
+  }
+
   async function recoverActiveSessionGoals() {
     if ((await getSchedulingSuppression()).suppressed) {
       return { scanned: 0, enqueued: 0 };
@@ -20997,6 +21100,33 @@ export function heartbeatService(
       });
 
       const claimedRuns: Array<typeof heartbeatRuns.$inferSelect> = [];
+      // myrmidon(1.6.6 INBOX-BATCH): a comment wake waits out its debounce
+      // window before it starts (see myrmidon/wake-batch). The comments that
+      // arrive inside the window find this run as the task's execution and the
+      // ordinary coalescing path merges their ids into its wakeCommentIds, so
+      // the burst costs one run carrying the whole list in arrival order. Held
+      // runs are left out of the pass below: they must not take an admission
+      // slot for a start that will not happen yet.
+      const wakeBatchWindowMs = readWakeBatchWindowMs();
+      const wakeBatch = splitBatchedWakeRuns(prioritizedRuns, {
+        now: new Date(),
+        windowMs: wakeBatchWindowMs,
+      });
+      if (wakeBatch.held.length > 0) {
+        logger.debug(
+          {
+            agentId,
+            heldRunIds: wakeBatch.held.map((hold) => hold.runId),
+            heldIssueIds: wakeBatch.held.map((hold) => hold.issueId),
+            commentIds: wakeBatch.held.flatMap((hold) => hold.commentIds),
+            windowMs: wakeBatchWindowMs,
+            resweepDelayMs: wakeBatch.resweepDelayMs,
+          },
+          "wake batch window holds comment wakes back",
+        );
+        scheduleWakeBatchResweep(wakeBatch.resweepDelayMs ?? 0);
+      }
+      const startableRuns = wakeBatch.runnable;
       // myrmidon: instance-wide cap, start rate and free memory on top of the
       // per-agent slots; slots are taken synchronously, so no lock is needed.
       // myrmidon(1.6.5 RUN-FAIRNESS): the reservation names its agent, so the
@@ -21006,15 +21136,15 @@ export function heartbeatService(
       // of the queue, so the front of the reservation is exactly them — the
       // count is that prefix, not every owner turn (a run whose dependencies
       // are not settled stays behind the ready ones).
-      const ownerChatTurns = countLeadingOwnerChatTurns(prioritizedRuns, startableOwnerChatRunIds);
+      const ownerChatTurns = countLeadingOwnerChatTurns(startableRuns, startableOwnerChatRunIds);
       const admitted = admission.reserve(availableSlots, {
         agentId,
         ownerChatTurns,
       });
       // myrmidon(1.6.5 RUN-FAIRNESS): the runs an admission gate leaves
       // queued say why they wait; a claimed run drops the note.
-      const runsLeftQueued = admitted < prioritizedRuns.length
-        ? prioritizedRuns.slice(Math.max(admitted, 0))
+      const runsLeftQueued = admitted < startableRuns.length
+        ? startableRuns.slice(Math.max(admitted, 0))
         : [];
       if (runsLeftQueued.length > 0) {
         // myrmidon(1.6.5 RUN-PRIORITY A): a run that was ready and still lost its
@@ -21036,7 +21166,7 @@ export function heartbeatService(
         await writeQueuedRunWaitReason(passedOver, "priority");
       }
       try {
-        for (const [queuedIndex, queuedRun] of prioritizedRuns.entries()) {
+        for (const [queuedIndex, queuedRun] of startableRuns.entries()) {
           if (claimedRuns.length >= admitted) break;
           const claimed = await claimQueuedRun(queuedRun, companyAgents);
           if (claimed) claimedRuns.push(claimed);
@@ -21049,7 +21179,7 @@ export function heartbeatService(
       } finally {
         admission.release(admitted - claimedRuns.length);
       }
-      if (admitted < availableSlots && admitted < prioritizedRuns.length) {
+      if (admitted < availableSlots && admitted < startableRuns.length) {
         scheduleAdmissionResweep();
       }
       if (claimedRuns.length === 0) return [];
@@ -21471,6 +21601,7 @@ export function heartbeatService(
       }
       const runtime = await ensureRuntimeState(agent);
       const context = parseObject(run.contextSnapshot);
+      const externalSessionOverride = parseObject(context.externalSession);
       const authorizeFailedChatRetryExecution = () =>
         db.transaction((tx) =>
           authorizeFailedChatRunRetryWake(db, tx as unknown as Db, {
@@ -22568,10 +22699,32 @@ export function heartbeatService(
       // credential choice — host-credential inheritance is off unless the
       // emergency switch is set. See ../myrmidon/host-github-credentials.ts.
       const runHostGitHubCredentials = resolveRunHostGitHubCredentials(useHostGitHub);
+      const externalSession = externalSessionOverride;
       const aiBinding = agent.runtimeConfig?.aiConnection ? aiConnectionBindingSchema.parse(agent.runtimeConfig.aiConnection) : undefined;
+      let runScopedAiBinding: AiConnectionBinding | undefined = aiBinding;
+      if (Object.keys(externalSession).length > 0) {
+        if (
+          typeof externalSession.model !== "string" ||
+          typeof externalSession.connectionId !== "string" ||
+          typeof externalSession.grantId !== "string" ||
+          !aiBinding ||
+          aiBinding.mode !== "shared" ||
+          aiBinding.connectionId !== externalSession.connectionId ||
+          aiBinding.grantId !== externalSession.grantId
+        ) {
+          throw new HttpError(422, "External session binding is no longer valid");
+        }
+        runScopedAiBinding = { ...aiBinding };
+      }
+      const runAdapterConfig: Record<string, unknown> = {
+        ...executionRunConfig,
+        ...(typeof externalSession.model === "string"
+          ? { model: externalSession.model }
+          : {}),
+      };
       const { resolvedConfig, secretKeys, secretManifest } =
         await resolveExecutionRunAdapterConfig({
-          managedAiCredentials: Boolean(aiBinding),
+          managedAiCredentials: Boolean(runScopedAiBinding),
           managedGitHubCredentials: !runHostGitHubCredentials,
           companyId: agent.companyId,
           agentId: agent.id,
@@ -22584,15 +22737,15 @@ export function heartbeatService(
           projectId: projectContext?.id ?? null,
           routineId: routineEnvContext.routineId,
           responsibleUserId,
-          executionRunConfig: aiBinding ? { ...executionRunConfig, env: stripAiAuthBindings(executionRunConfig.env) } : executionRunConfig,
-          projectEnv: aiBinding ? stripAiAuthBindings(projectContext?.env) : projectContext?.env ?? null,
-          routineEnv: aiBinding ? stripAiAuthBindings(routineEnvContext.env) : routineEnvContext.env,
+          executionRunConfig: runScopedAiBinding ? { ...runAdapterConfig, env: stripAiAuthBindings(runAdapterConfig.env) } : runAdapterConfig,
+          projectEnv: runScopedAiBinding ? stripAiAuthBindings(projectContext?.env) : projectContext?.env ?? null,
+          routineEnv: runScopedAiBinding ? stripAiAuthBindings(routineEnvContext.env) : routineEnvContext.env,
           secretsSvc,
           trustPreset,
         });
-      if (aiBinding) {
+      if (runScopedAiBinding) {
         try {
-          managedAiRuntime = await prepareManagedAiRuntime(db, { companyId: agent.companyId, agentId: agent.id, responsibleUserId, adapterType: agent.adapterType, binding: aiBinding, config: resolvedConfig });
+          managedAiRuntime = await prepareManagedAiRuntime(db, { companyId: agent.companyId, agentId: agent.id, responsibleUserId, adapterType: agent.adapterType, binding: runScopedAiBinding, config: { ...resolvedConfig, ...(typeof externalSession.model === "string" ? { model: externalSession.model } : {}) } });
         } catch (error) {
           // Only fresh executions can receive a pre-provider wait receipt. A
           // persisted native input may already have provider effects to recover.
@@ -22606,15 +22759,15 @@ export function heartbeatService(
             await finalizeAiConnectionBusyDeferral(run, error, !authorizedNonAssigneeWake);
             return;
           }
-          if (responsibleUserId && issueId && aiBinding.mode === "responsible_user") {
+          if (responsibleUserId && issueId && aiBinding?.mode === "responsible_user") {
             await connectionIntentService(db).request({ sub: agent.id, company_id: agent.companyId, run_id: run.id, responsible_user_id: responsibleUserId }, aiBinding.provider, { purpose: "ai" }).catch(() => {
               logger.warn({ runId: run.id, agentId: agent.id }, "Could not attach AI connection request; runtime configuration action remains available");
             });
           }
           throw new ConfigurationIncompleteFailure(error instanceof Error ? error.message : "Configure this agent’s AI connection", {
-            configurationIncomplete: { reason: "ai_connection_unavailable", companyId: agent.companyId, agentId: agent.id, responsibleUserId,
+            configurationIncomplete: aiBinding ? { reason: "ai_connection_unavailable", companyId: agent.companyId, agentId: agent.id, responsibleUserId,
               provider: aiBinding.provider, method: aiBinding.method, actionUrl: `/agents/${agent.id}/runtime`,
-              fingerprint: `ai:${agent.id}:${responsibleUserId}:${JSON.stringify(aiBinding)}` },
+              fingerprint: `ai:${agent.id}:${responsibleUserId}:${JSON.stringify(aiBinding)}` } : undefined,
           });
         }
         if (persistedNativeExecutionInput && parseObject(run.contextSnapshot?.aiConnection).identity !== managedAiRuntime.identity) {
@@ -26859,7 +27012,11 @@ export function heartbeatService(
             }
           }
         }
+        const adapterErrorFamily = readHeartbeatRunErrorFamily(finalizedRun ?? run);
+        const effectiveErrorCode = finalizedRun?.errorCode ?? runErrorCode;
         await finalizeAgentStatus(agent.id, outcome, runErrorMessage, {
+          errorCode: effectiveErrorCode,
+          errorFamily: adapterErrorFamily,
           keepIdleOnFailure:
             outcome === "failed" &&
             ((finalizedRun
@@ -26870,8 +27027,12 @@ export function heartbeatService(
               // resource wait, not an agent health problem: the bounded retry
               // is already scheduled, so the agent stays idle instead of
               // going to error while its own runs are simply queued out.
-              readHeartbeatRunErrorFamily(finalizedRun ?? run) ===
-                "transient_upstream" ||
+              adapterErrorFamily === "transient_upstream" ||
+              isTransientFailure({
+                errorCode: effectiveErrorCode,
+                errorFamily: adapterErrorFamily,
+                errorMessage: runErrorMessage,
+              }) ||
               isWorkspaceSyncConflictFailure(adapterResult.errorMessage) ||
               isContextWindowError(runErrorMessage)),
           wasFirstHeartbeat: timerClaimWasFirstHeartbeat(run),
@@ -27060,7 +27221,15 @@ export function heartbeatService(
           nonRetryablePreflightFailureCode(err) ??
           recordedResponsibleUserDenialCode ??
           nativeTerminalFailureCode ??
-          "adapter_failed";
+          (err instanceof Error && /stream (?:was )?interrupted|interrupted stream/i.test(err.message)
+            ? "stream_interrupted"
+            : err instanceof Error && /lease lost/i.test(err.message)
+            ? "controller_lease_lost"
+            : err instanceof Error && err.message === "continuation_source_context_missing"
+            ? "continuation_source_context_missing"
+            : err instanceof Error && /ECONNRESET|ETIMEDOUT|socket hang up|fetch failed/i.test(err.message)
+            ? "transient_network_error"
+            : "adapter_failed");
         logger.error({ err, runId }, "heartbeat execution failed");
 
         let logSummary: {
@@ -27229,8 +27398,13 @@ export function heartbeatService(
         }
 
         await finalizeAgentStatus(agent.id, "failed", message, {
+          errorCode: failureErrorCode,
           wasFirstHeartbeat: timerClaimWasFirstHeartbeat(run),
           keepIdleOnFailure:
+            isTransientFailure({
+              errorCode: failureErrorCode,
+              errorMessage: message,
+            }) ||
             Boolean(nonRetryablePreflightFailureCode(err)) ||
             isWorkspaceSyncConflictFailure(message) ||
             isContextWindowError(message),
@@ -27311,7 +27485,17 @@ export function heartbeatService(
             : null) ??
           recordedResponsibleUserDenialCode ??
           nonRetryablePreflightCode ??
-          "setup_failed";
+          (outerErr instanceof Error && /continuation_source_context_missing/i.test(outerErr.message)
+            ? "continuation_source_context_missing"
+            : outerErr instanceof Error && /stream (?:was )?interrupted|interrupted stream/i.test(outerErr.message)
+            ? "stream_interrupted"
+            : outerErr instanceof Error && /lease lost/i.test(outerErr.message)
+            ? "controller_lease_lost"
+            : outerErr instanceof Error && /continuation_user_authorization_missing/i.test(outerErr.message)
+            ? "continuation_user_authorization_missing"
+            : outerErr instanceof Error && /ECONNRESET|ETIMEDOUT|socket hang up|fetch failed/i.test(outerErr.message)
+            ? "transient_network_error"
+            : "setup_failed");
         logger.error(
           { err: outerErr, runId },
           "heartbeat execution setup failed",
@@ -27430,16 +27614,23 @@ export function heartbeatService(
                 () => undefined,
               );
             }
-            // No provider work began. Retry temporary host scan failures with
-            // the existing durable failure budget, before releasing execution.
-            // Generic recovery must not grant a second budget on exhaustion.
-            await (isTransientWorkspaceGitScanCode(livenessRun.errorCode)
+            // No provider work began. Retry temporary host scan failures or transient
+            // infrastructure/continuation failures with the existing durable failure budget,
+            // before releasing execution. Generic recovery must not grant a second budget on exhaustion.
+            const setupTransient =
+              isTransientWorkspaceGitScanCode(livenessRun.errorCode) ||
+              isTransientFailure({
+                errorCode: livenessRun.errorCode,
+                errorFamily: readHeartbeatRunErrorFamily(livenessRun),
+                errorMessage: message,
+              });
+            await (setupTransient
               ? scheduleBoundedRetryForRun(livenessRun, failedAgent)
               : scheduleInteractionContinuationInfrastructureRetryIfEligible(livenessRun, failedAgent)
             ).catch((retryError) => {
               logger.warn(
                 { err: retryError, runId: livenessRun.id },
-                "failed to schedule interaction continuation retry after setup failure",
+                "failed to schedule retry after setup failure",
               );
             });
           }
@@ -27469,14 +27660,23 @@ export function heartbeatService(
         // path owned the terminal transition. If another path already finalized
         // the run, keep that terminal outcome authoritative.
         if (setupFailureWrite.updated) {
+          const setupErrorFamily = readHeartbeatRunErrorFamily(failedRun ?? run);
           await finalizeAgentStatus(run.agentId, "failed", message, {
             wasFirstHeartbeat: timerClaimWasFirstHeartbeat(run),
+            errorCode: setupFailureErrorCode,
+            errorFamily: setupErrorFamily,
             // Low-trust admission failures are task/principal preconditions,
             // not evidence that the immutable endpoint agent is unhealthy.
             // Keep the failed run and its safe provider refusal authoritative,
             // but return the agent to idle so clients do not also announce a
             // misleading agent-wide error for the same rejected chat turn.
-            keepIdleOnFailure: Boolean(nonRetryablePreflightCode),
+            keepIdleOnFailure:
+              Boolean(nonRetryablePreflightCode) ||
+              isTransientFailure({
+                errorCode: setupFailureErrorCode,
+                errorFamily: setupErrorFamily,
+                errorMessage: message,
+              }),
           }).catch(() => undefined);
         }
       }
@@ -27839,6 +28039,7 @@ export function heartbeatService(
     const triggerDetail = opts.triggerDetail ?? null;
     const contextSnapshot: Record<string, unknown> = {
       ...(opts.contextSnapshot ?? {}),
+      ...(opts.externalSession ? { externalSession: opts.externalSession } : {}),
     };
     const reason = opts.reason ?? null;
     let payload = opts.payload ? { ...opts.payload } : null;
@@ -28778,6 +28979,31 @@ export function heartbeatService(
             .then((rows) => rows[0] ?? null);
 
           if (!issue) {
+            const sourceQueueId =
+              opts.queuedCommentInterruptId ??
+              opts.queuedCommentRequestId ??
+              executionWaitRequestId ??
+              (opts.idempotencyKey?.startsWith("queued-comment-interrupt:")
+                ? opts.idempotencyKey.slice("queued-comment-interrupt:".length)
+                : null);
+            if (sourceQueueId && isUuidLike(sourceQueueId)) {
+              const now = new Date();
+              await tx
+                .update(agentWakeupRequests)
+                .set({
+                  status: "cancelled",
+                  error: "issue_not_found",
+                  finishedAt: now,
+                  updatedAt: now,
+                })
+                .where(
+                  and(
+                    eq(agentWakeupRequests.id, sourceQueueId),
+                    eq(agentWakeupRequests.companyId, agent.companyId),
+                    eq(agentWakeupRequests.status, "deferred_issue_execution"),
+                  ),
+                );
+            }
             await tx.insert(agentWakeupRequests).values({
               ...durableReceiptFields,
               companyId: agent.companyId,
@@ -29058,6 +29284,51 @@ export function heartbeatService(
               idempotencyKey: opts.idempotencyKey ?? null,
               finishedAt: new Date(),
             });
+
+            // myrmidon(DEFERRED-WAKE-LEAK): after first skipped due to closed task,
+            // close the original deferred wakeup request so it does not repeat indefinitely.
+            const sourceQueueId =
+              opts.queuedCommentInterruptId ??
+              opts.queuedCommentRequestId ??
+              executionWaitRequestId ??
+              (opts.idempotencyKey?.startsWith("queued-comment-interrupt:")
+                ? opts.idempotencyKey.slice("queued-comment-interrupt:".length)
+                : null);
+            if (["done", "cancelled"].includes(issue.status)) {
+              const now = new Date();
+              if (sourceQueueId && isUuidLike(sourceQueueId)) {
+                await tx
+                  .update(agentWakeupRequests)
+                  .set({
+                    status: "cancelled",
+                    error: "issue_closed",
+                    finishedAt: now,
+                    updatedAt: now,
+                  })
+                  .where(
+                    and(
+                      eq(agentWakeupRequests.id, sourceQueueId),
+                      eq(agentWakeupRequests.companyId, agent.companyId),
+                      eq(agentWakeupRequests.status, "deferred_issue_execution"),
+                    ),
+                  );
+              }
+              await tx
+                .update(agentWakeupRequests)
+                .set({
+                  status: "cancelled",
+                  error: "issue_closed",
+                  finishedAt: now,
+                  updatedAt: now,
+                })
+                .where(
+                  and(
+                    eq(agentWakeupRequests.companyId, agent.companyId),
+                    eq(agentWakeupRequests.status, "deferred_issue_execution"),
+                    sql`(${agentWakeupRequests.payload}->>'issueId' = ${issue.id} or ${agentWakeupRequests.payload}->>'taskId' = ${issue.id} or ${agentWakeupRequests.payload}->'_paperclipWakeContext'->>'issueId' = ${issue.id} or ${agentWakeupRequests.payload}->'_paperclipWakeContext'->>'taskId' = ${issue.id})`,
+                  ),
+                );
+            }
             return { kind: "skipped" as const };
           }
 
