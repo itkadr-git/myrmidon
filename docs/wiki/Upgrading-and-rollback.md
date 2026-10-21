@@ -8,10 +8,10 @@ On a server installed with the one-line command, updating is the same
 command again:
 
 ```sh
-curl -fsSL https://github.com/itkadr-git/myrmidon/releases/download/myr-v1.6.6-rc.11/install.sh | sudo bash
+curl -fsSL https://github.com/itkadr-git/myrmidon/releases/download/myr-v1.6.6-rc.12/install.sh | sudo bash
 ```
 
-The current published candidate is 1.6.6-rc.11. The installer is available
+The current published candidate is 1.6.6-rc.12. The installer is available
 from release 1.6.5 onward; `releases/latest/download/install.sh` follows the
 latest stable release, so use the exact RC tag to install a candidate. The
 installer resolves the release, **dumps the database before anything changes**, switches to it and
@@ -196,3 +196,6 @@ without downtime** — it is deliberately not part of these scripts. (The
 decision to keep one shared PostgreSQL 18 server for the board, the LLM
 gateway, tracing and agent memory is the owner's storage decision; each
 program keeps its own database and role there.)
+The settings page also keeps a deploy journal. Filter it by deployment mode,
+status, or outcome; the API exposes the same filters as `mode`, `status`, and
+`outcome` query parameters on `GET /api/myrmidon/deploy-jobs`.
