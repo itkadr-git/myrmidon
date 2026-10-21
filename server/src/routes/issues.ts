@@ -11,10 +11,13 @@ import { supersedeExplicitWakeSettledHold } from "../myrmidon/settled-holds/supe
 // clears the issue's settled replay hold and re-plans its parked wakes.
 import {
   clearReplayHoldsOnHumanUnblock,
+  isAssigneeChangePatch,
   isHumanUnblock,
   issueHasSettledReplayHold,
   mayBeHumanUnblock,
   replanParkedWakesAfterUnblock,
+  HUMAN_UNBLOCK_NOTE,
+  REASSIGN_UNBLOCK_NOTE,
   type HumanUnblockResult,
 } from "../myrmidon/settled-holds/human-unblock.js";
 import { extractIssueReferenceIdentifiers, requiresExecutionReconciliation, EXECUTION_RECONCILIATION_CAUSES } from "@paperclipai/shared";
@@ -13334,6 +13337,7 @@ export function issueRoutes(
         interrupt: interruptRequested,
         deferWakeForGoal,
         hiddenAt: hiddenAtRaw,
+        blockerMetadata: blockerMetadataRaw,
         onBehalfOfUserId: _requestedOnBehalfOfUserId,
         ...updateFields
       } = req.body;
@@ -13709,6 +13713,14 @@ export function issueRoutes(
         throw unprocessable("unblockDescriptor requires blocked status");
       }
       const descriptor = updateFields.unblockDescriptor ?? null;
+      if (blockerMetadataRaw !== undefined) {
+        updateFields.blockerMetadata = blockerMetadataRaw;
+      }
+      const blockerOwner = blockerMetadataRaw?.owner;
+      if (blockerMetadataRaw && blockerOwner && Object.keys(blockerOwner).length !== 1) {
+        res.status(422).json({ error: "blocker owner must identify exactly one principal" });
+        return;
+      }
       if (descriptor && typeof descriptor === "object") {
         const owner = descriptor.owner;
         if (
@@ -13765,6 +13777,33 @@ export function issueRoutes(
       }
       const enteringBlocked =
         existing.status !== "blocked" && updateFields.status === "blocked";
+      if (
+        enteringBlocked &&
+        req.actor.type === "agent" &&
+        blockerMetadataRaw == null
+      ) {
+        res.status(422).json({ error: "Entering blocked requires blockerMetadata" });
+        return;
+      }
+      // myrmidon(BLOCKED-GUARD P0.6): typed blocker metadata describes the current block only;
+      // a transition out of blocked without new metadata clears it, so no stale reason survives.
+      const leavingBlocked =
+        existing.status === "blocked" &&
+        updateFields.status !== undefined &&
+        updateFields.status !== "blocked";
+      if (leavingBlocked && blockerMetadataRaw === undefined) {
+        updateFields.blockerMetadata = null;
+      }
+      if (blockerMetadataRaw?.blockReason === "external_wait") {
+        const monitor =
+          (updateFields.executionPolicy as { monitor?: unknown } | undefined)?.monitor ??
+          (existing.executionPolicy as { monitor?: unknown } | null)?.monitor;
+        if (!monitor) {
+          res.status(422).json({ error: "external_wait requires executionPolicy.monitor" });
+          return;
+        }
+        updateFields.status = "in_review";
+      }
       // myrmidon(BLOCKED-LOOP): signature of an agent return to blocked, kept
       // in the issue.updated details so the next attempt can compare with it.
       let blockedLoopSignature: BlockedLoopSignature | null = null;
@@ -14129,22 +14168,36 @@ export function issueRoutes(
       // myrmidon(HOLD-READY): a possible board unblock of an issue that has
       // a settled replay hold runs the update in a transaction, so the hold
       // is cleared atomically with it.
+      // myrmidon(REPLAY-BLOCK-TRIAGE): the same for an assignee change by ANY
+      // actor — the hold belongs to the previous executor's stopped run, so
+      // the new executor must not inherit it (the OPE-6329 lock-in).
+      const assigneeChangeRequested =
+        normalizedAssigneeAgentId !== undefined ||
+        req.body.assigneeUserId !== undefined;
+      const reassignHoldClearPossible =
+        assigneeChangeRequested &&
+        isAssigneeChangePatch({
+          existing,
+          assigneeAgentIdPatch: normalizedAssigneeAgentId,
+          assigneeUserIdPatch:
+            req.body.assigneeUserId === undefined
+              ? undefined
+              : (req.body.assigneeUserId as string | null),
+        }) &&
+        (await issueHasSettledReplayHold(db, existing.companyId, existing.id));
       const humanUnblockPossible =
-        mayBeHumanUnblock({
+        reassignHoldClearPossible ||
+        (mayBeHumanUnblock({
           requestActorType: req.actor.type,
           runId: actor.runId,
           existingStatus: existing.status,
-          assigneeChangeRequested:
-            normalizedAssigneeAgentId !== undefined ||
-            req.body.assigneeUserId !== undefined,
-          // myrmidon(OPE-6954): a person moving the issue into a workable
-          // status is the same "carry on" as moving it out of `blocked`.
-          // Since REQUEUE-HOLD the settle leaves a re-queued task in its own
-          // status, so this is the action an operator has left.
+          assigneeChangeRequested,
+          // myrmidon(OPE-6954): status changes are another operator "carry on"
+          // action since REQUEUE-HOLD leaves re-queued tasks in their status.
           statusChangeRequested:
             updateFields.status !== undefined && updateFields.status !== existing.status,
         }) &&
-        (await issueHasSettledReplayHold(db, existing.companyId, existing.id));
+        (await issueHasSettledReplayHold(db, existing.companyId, existing.id)));
       let humanUnblock: HumanUnblockResult | null = null;
       const updateIssue = (tx?: Parameters<typeof svc.update>[2]) => {
         if (tx) {
@@ -14359,24 +14412,29 @@ export function issueRoutes(
             }
             // myrmidon(HOLD-READY): an explicit human unblock is an operator
             // resolve of the settled "do not replay" hold.
-            if (
-              humanUnblockPossible &&
-              updated.assigneeAgentId &&
-              isHumanUnblock({
+            // myrmidon(REPLAY-BLOCK-TRIAGE): so is any change of executor —
+            // the hold belongs to the previous executor's run.
+            if (updated.assigneeAgentId && humanUnblockPossible) {
+              const humanUnblockMatch = isHumanUnblock({
                 requestActorType: req.actor.type,
                 runId: actor.runId,
                 before: existing,
                 after: updated,
-              })
-            ) {
-              humanUnblock = await clearReplayHoldsOnHumanUnblock({
-                tx: tx as unknown as Db,
-                companyId: updated.companyId,
-                issueId: updated.id,
-                assigneeAgentId: updated.assigneeAgentId,
-                actor: { actorType: actor.actorType, actorId: actor.actorId },
-                postCommitActivityPublications,
               });
+              const reassignMatch =
+                updated.assigneeAgentId !== existing.assigneeAgentId ||
+                updated.assigneeUserId !== existing.assigneeUserId;
+              if (humanUnblockMatch || reassignMatch) {
+                humanUnblock = await clearReplayHoldsOnHumanUnblock({
+                  tx: tx as unknown as Db,
+                  companyId: updated.companyId,
+                  issueId: updated.id,
+                  assigneeAgentId: updated.assigneeAgentId,
+                  actor: { actorType: actor.actorType, actorId: actor.actorId },
+                  note: humanUnblockMatch ? HUMAN_UNBLOCK_NOTE : REASSIGN_UNBLOCK_NOTE,
+                  postCommitActivityPublications,
+                });
+              }
             }
             if (commentAttachmentIds?.length) {
               // Reassignment, comment creation and upload binding commit together.
@@ -14473,6 +14531,7 @@ export function issueRoutes(
           issueId: issue.id,
           agentId: committedUnblock.replanAgentId,
           actorId: actor.actorId,
+          actorType: actor.actorType === "agent" ? "agent" : "user",
           clearedActionIds: committedUnblock.clearedActionIds,
         });
       }
@@ -15598,6 +15657,13 @@ export function issueRoutes(
           !["done", "cancelled"].includes(existing.status) &&
           ["done", "cancelled"].includes(issue.status);
         if (becameTerminal) {
+          if (svc.cancelDeferredExecutionsForTerminalIssue) {
+            await svc.cancelDeferredExecutionsForTerminalIssue(
+              issue.id,
+              issue.companyId,
+              db,
+            );
+          }
           const expiredInteractions = await issueThreadInteractionService(
             db,
           ).expirePendingInteractionsForTerminalIssue(issue, {
@@ -19039,6 +19105,13 @@ export function issueRoutes(
           !["done", "cancelled"].includes(issueBeforeCommentDecision.status) &&
           ["done", "cancelled"].includes(currentIssue.status);
         if (becameTerminal) {
+          if (svc.cancelDeferredExecutionsForTerminalIssue) {
+            await svc.cancelDeferredExecutionsForTerminalIssue(
+              currentIssue.id,
+              currentIssue.companyId,
+              db,
+            );
+          }
           const expiredInteractions = await issueThreadInteractionService(
             db,
           ).expirePendingInteractionsForTerminalIssue(currentIssue, {
