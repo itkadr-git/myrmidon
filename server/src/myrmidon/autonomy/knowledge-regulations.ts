@@ -386,7 +386,7 @@ export async function approveKnowledgeAutonomyRegulation(
   if ("notFound" in txResult) {
     return fail({ kind: "regulation_not_found", regulationId });
   }
-  if ("refusal" in txResult) {
+  if ("refusal" in txResult && txResult.refusal) {
     return fail(txResult.refusal);
   }
   if ("alreadyApproved" in txResult) {
@@ -479,7 +479,7 @@ export async function restoreKnowledgeAutonomyRegulation(
   if ("notFound" in txResult) {
     return fail({ kind: "regulation_not_found", regulationId: input.id });
   }
-  if ("refusal" in txResult) {
+  if ("refusal" in txResult && txResult.refusal) {
     return fail(txResult.refusal);
   }
   if ("revisionNotFound" in txResult) {
