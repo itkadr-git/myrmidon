@@ -102,6 +102,10 @@ const ALLOWLIST = [
 const PRODUCT_NAME = /(?<![\w@./-])Paperclip(?![\w-])/;
 const BRANDING_EXEMPTIONS = new Set([
   path.join(docsRoot, "architecture", "README.md"),
+  path.join(docsRoot, "architecture", "adr", "ADR-0006-2026-09-27-myrmidon-fork.md"),
+  path.join(docsRoot, "architecture", "adr", "ADR-0007-2026-09-27-mit-license.md"),
+  path.join(docsRoot, "architecture", "adr", "ADR-0008-2026-09-27-no-upstream.md"),
+  path.join(docsRoot, "architecture", "adr", "ADR-0011-2026-09-28-brand-first.md"),
   path.join(docsRoot, "wiki", "Home.md"),
   path.join(docsRoot, "wiki", "Home.ru.md"),
 ]);
