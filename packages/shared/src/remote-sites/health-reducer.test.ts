@@ -15,16 +15,20 @@ const tick = (previous: ReturnType<typeof createSiteHealthSnapshot> | ReturnType
 };
 
 describe("reduceSiteHealth", () => {
-  it("drains on the third consecutive poll miss, with before/at/after coverage", () => {
-    const atMissBoundary = (timestamp: number) => {
-      let snapshot: ReturnType<typeof reduceSiteHealth> = tick(createSiteHealthSnapshot(), 0, "success");
-      snapshot = tick(snapshot, 30_000);
-      snapshot = tick(snapshot, 60_000);
-      return tick(snapshot, timestamp);
-    };
-    expect(atMissBoundary(89_999)).toMatchObject({ state: "unreachable", missCount: 3, intents: ["drain"] });
-    expect(atMissBoundary(90_000)).toMatchObject({ state: "unreachable", missCount: 3, intents: ["drain"] });
-    expect(atMissBoundary(90_001)).toMatchObject({ state: "unreachable", missCount: 3, intents: ["drain"] });
+  it("drains exactly on the third consecutive poll miss", () => {
+    let snapshot: ReturnType<typeof reduceSiteHealth> = tick(createSiteHealthSnapshot(), 0, "success");
+
+    snapshot = tick(snapshot, 30_000);
+    expect(snapshot).toMatchObject({ state: "healthy", missCount: 1, intents: [] });
+
+    snapshot = tick(snapshot, 60_000);
+    expect(snapshot).toMatchObject({ state: "healthy", missCount: 2, intents: [] });
+
+    snapshot = tick(snapshot, 90_000);
+    expect(snapshot).toMatchObject({ state: "unreachable", missCount: 3, intents: ["drain"] });
+
+    snapshot = tick(snapshot, 120_000);
+    expect(snapshot).toMatchObject({ state: "unreachable", missCount: 4, intents: [] });
   });
 
   it("resets misses and outage clock on recovery", () => {
