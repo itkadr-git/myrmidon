@@ -31977,6 +31977,18 @@ export function heartbeatService(
       }),
 
     wakeup: trackWakeup,
+    // myrmidon(PROCS-1.8): apply committed team-liveness settings immediately
+    // when another process publishes settings_changed.
+    applyTeamLiveness: async () => {
+      const liveness = await teamLivenessRead();
+      idleWakeBudget.configure({
+        perMinute: liveness.settings.idlePickupWakeBudgetPerMin,
+        batch: Math.min(
+          liveness.settings.idlePickupWakeBatch,
+          liveness.settings.idlePickupWakeBudgetPerMin,
+        ),
+      });
+    },
     insertReviewAdmissionWakeup,
     dispatchPendingNativeStatusWakeups,
     triggerIssueMonitor,

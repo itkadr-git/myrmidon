@@ -65,7 +65,7 @@ describe("instance settings routes", () => {
     return { errorHandler, instanceSettingsRoutes };
   });
 
-  function createApp(actor: any) {
+  function createApp(actor: any, routeOptions: Record<string, unknown> = {}) {
     const { errorHandler, instanceSettingsRoutes } = routeModules.value;
     const app = express();
     app.use(express.json());
@@ -73,7 +73,7 @@ describe("instance settings routes", () => {
       req.actor = actor;
       next();
     });
-    app.use("/api", instanceSettingsRoutes(mockDb as any));
+    app.use("/api", instanceSettingsRoutes(mockDb as any, routeOptions as any));
     app.use(errorHandler);
     return app;
   }
@@ -638,6 +638,44 @@ describe("instance settings routes", () => {
 
     expect(res.status).toBe(403);
     expect(mockInstanceSettingsService.getGeneral).not.toHaveBeenCalled();
+  });
+
+  it("publishes settings_changed with the changed keys after the general update commits", async () => {
+    const publish = vi.fn().mockResolvedValue(undefined);
+    const app = await createApp(
+      { type: "board", userId: "local-board", source: "local_implicit", isInstanceAdmin: true },
+      { processBus: { publish } },
+    );
+
+    const res = await request(app)
+      .patch("/api/instance/settings/general")
+      .send({ keyboardShortcuts: true, censorUsernameInLogs: true });
+
+    expect(res.status).toBe(200);
+    expect(publish).toHaveBeenCalledTimes(1);
+    expect(publish).toHaveBeenCalledWith("settings_changed", {
+      changedKeys: ["censorUsernameInLogs", "keyboardShortcuts"],
+    });
+    expect(mockInstanceSettingsService.updateGeneral.mock.invocationCallOrder[0]).toBeLessThan(
+      publish.mock.invocationCallOrder[0],
+    );
+  });
+
+  it("does not publish settings_changed when the general update fails, and ignores a publish failure", async () => {
+    const publish = vi.fn().mockRejectedValue(new Error("bus down"));
+    const app = await createApp(
+      { type: "board", userId: "local-board", source: "local_implicit", isInstanceAdmin: true },
+      { processBus: { publish } },
+    );
+
+    mockInstanceSettingsService.updateGeneral.mockRejectedValueOnce(new Error("db down"));
+    const failed = await request(app).patch("/api/instance/settings/general").send({ keyboardShortcuts: true });
+    expect(failed.status).toBe(500);
+    expect(publish).not.toHaveBeenCalled();
+
+    const ok = await request(app).patch("/api/instance/settings/general").send({ keyboardShortcuts: true });
+    expect(ok.status).toBe(200);
+    expect(publish).toHaveBeenCalledTimes(1);
   });
 
   it("rejects non-admin board users from updating general settings", async () => {
