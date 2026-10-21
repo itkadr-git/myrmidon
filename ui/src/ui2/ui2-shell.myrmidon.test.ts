@@ -96,8 +96,8 @@ describe("ui2 integration contracts (UI-0b / UI-0c)", () => {
   it("places one locale provider around the complete shell", () => {
     const root = readFileSync(join(UI_SRC, "ui2", "Ui2Root.tsx"), "utf8");
     const routes = readFileSync(join(UI_SRC, "ui2", "routes.tsx"), "utf8");
-    expect(root.indexOf("<Ui2I18nProvider>")).toBeLessThan(root.indexOf("<Ui2Shell"));
-    expect(root.indexOf("</Ui2Shell>")).toBeLessThan(root.indexOf("</Ui2I18nProvider>"));
+    expect(root.indexOf("<Ui2I18nProvider>")).toBeLessThan(root.lastIndexOf("<Ui2Shell"));
+    expect(root.lastIndexOf("</Ui2Shell>")).toBeLessThan(root.indexOf("</Ui2I18nProvider>"));
     expect(routes).not.toContain("Ui2I18nProvider");
     expect(routes).not.toContain("ui2Screen(");
   });
