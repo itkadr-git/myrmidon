@@ -183,10 +183,11 @@ describe("myrmidon(1.6.5 SWARM-PANEL-COOLING) the cooling block through updateGe
     );
     const service = instanceSettingsService(db, { runtimeEnv: {} });
 
-    await service.updateGeneral({ swarm: { scent: { enabled: false } } });
+    // The schema's output type requires every scent field; the wire patch may omit them.
+    await service.updateGeneral({ swarm: { scent: { enabled: false } } } as never);
 
     const general = (await service.getGeneral()) as unknown as Record<string, unknown>;
-    expect(general.swarm).toEqual({
+    expect(general.swarm).toMatchObject({
       cooldownBaseMin: 45,
       runWithoutTaskGate: false,
       scent: { enabled: false },

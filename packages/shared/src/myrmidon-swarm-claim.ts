@@ -351,9 +351,9 @@ export type PheromoneNumberKey = (typeof PHEROMONE_NUMBER_KEYS)[number];
  * `cooldownCapMin` lived in the `pheromone` subset but no server code ever
  * read them — the real cooling rule is `general.swarm` (F-26 wake guard,
  * `myrmidon-swarm-wake.ts` + `wake-task-guard.ts`). They are retired here:
- * the schema refuses them (`pheromoneSchema` is `.strict()`), and a stored
- * row that still carries them is stripped, not rejected, so an existing
- * swarm-claim block keeps parsing.
+ * they are no longer part of the schema, and a stored or incoming row that
+ * still carries them has them silently stripped (not rejected), so an
+ * existing swarm-claim block keeps parsing.
  */
 export const PHEROMONE_RETIRED_KEYS = ["cooldownBaseMin", "cooldownCapMin"] as const;
 

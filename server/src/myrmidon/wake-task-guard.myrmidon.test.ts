@@ -408,16 +408,30 @@ describeEmbeddedPostgres("myrmidon(1.6.5 F-26 T5) wake guard against Postgres", 
 
     // what PATCH /api/instance/settings/general stores for the cooling block
     // (the panel's save path): base 10 minutes.
-    await db.insert(instanceSettings).values({
-      general: { swarm: { cooldownBaseMin: 10, cooldownCeilingHours: 24, runWithoutTaskGate: true } },
-      experimental: {},
-    });
-
-    const saved = await readSwarmSettings(db);
-    expect(saved.cooldownBaseMin).toBe(10);
-    // the same task, the same clock: the saved value lifted the window, so
-    // the wake goes through (not cooling).
-    expect((await isIssueCoolingDown(db, companyId, issueId, saved, now)).cooling).toBe(false);
+    // The singleton row may already exist (shared embedded DB): upsert it and
+    // restore the previous value afterwards so other tests see no residue.
+    const [previous] = await db.select().from(instanceSettings).limit(1);
+    const general = { swarm: { cooldownBaseMin: 10, cooldownCeilingHours: 24, runWithoutTaskGate: true } };
+    await db
+      .insert(instanceSettings)
+      .values({ general, experimental: {} })
+      .onConflictDoUpdate({ target: instanceSettings.singletonKey, set: { general } });
+    try {
+      const saved = await readSwarmSettings(db);
+      expect(saved.cooldownBaseMin).toBe(10);
+      // the same task, the same clock: the saved value lifted the window, so
+      // the wake goes through (not cooling).
+      expect((await isIssueCoolingDown(db, companyId, issueId, saved, now)).cooling).toBe(false);
+    } finally {
+      if (previous) {
+        await db
+          .update(instanceSettings)
+          .set({ general: previous.general })
+          .where(eq(instanceSettings.singletonKey, "default"));
+      } else {
+        await db.delete(instanceSettings).where(eq(instanceSettings.singletonKey, "default"));
+      }
+    }
   });
 
   it("heartbeat seam: automatic swarm wake without issueId creates no run and never reaches the adapter", async () => {
