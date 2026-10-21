@@ -9823,6 +9823,45 @@ export function issueRoutes(
               commentBody: resolutionNote ?? null,
             });
             Object.assign(updateFields, transition.patch);
+            if (transition.recoveryInteraction) {
+              await issueThreadInteractionService(tx as unknown as Db).create(
+                lockedIssue,
+                {
+                  kind: "ask_user_questions",
+                  idempotencyKey: transition.recoveryInteraction.idempotencyKey,
+                  resolverPolicy: "human_only",
+                  addresseeUserId: lockedIssue.responsibleUserId ?? lockedIssue.createdByUserId ?? null,
+                  continuationPolicy: "none",
+                  sourceRunId: actor.runId ?? undefined,
+                  title: transition.recoveryInteraction.title,
+                  summary: `${transition.recoveryInteraction.summary} SLA owner: ${transition.recoveryInteraction.queue}.`,
+                  payload: {
+                    version: 1,
+                    title: transition.recoveryInteraction.title,
+                    submitLabel: "Acknowledge recovery",
+                    questions: [{
+                      id: "recovery_acknowledged",
+                      prompt: `${transition.recoveryInteraction.summary} Please acknowledge ownership by ${transition.recoveryInteraction.queue}.`,
+                      selectionMode: "single",
+                      options: [{ id: "acknowledged", label: "Acknowledged" }],
+                    }],
+                  },
+                },
+                {
+                  identityContextId: req.actor.identityContextId,
+                  agentId: actor.agentId,
+                  userId: actor.actorType === "user" ? actor.actorId : null,
+                },
+              );
+            }
+            if (transition.escalationMetric) {
+              getTelemetryClient()?.trackDynamic(transition.escalationMetric, {
+                issue_id: lockedIssue.id,
+                policy_revision:
+                  executionPolicy?.reviewEscalationPolicy?.policyRevision ?? "unknown",
+                target_type: "user",
+              });
+            }
             if (transition.decision) {
               const decisionId = randomUUID();
               const nextExecutionState = updateFields.executionState;
@@ -13812,6 +13851,44 @@ export function issueRoutes(
         };
       }
       Object.assign(updateFields, transition.patch);
+      if (transition.recoveryInteraction) {
+        await issueThreadInteractionService(db).create(
+          existing,
+          {
+            kind: "ask_user_questions",
+            idempotencyKey: transition.recoveryInteraction.idempotencyKey,
+            resolverPolicy: "human_only",
+            addresseeUserId: existing.responsibleUserId ?? existing.createdByUserId ?? null,
+            continuationPolicy: "none",
+            title: transition.recoveryInteraction.title,
+            summary: `${transition.recoveryInteraction.summary} SLA owner: ${transition.recoveryInteraction.queue}.`,
+            payload: {
+              version: 1,
+              title: transition.recoveryInteraction.title,
+              submitLabel: "Acknowledge recovery",
+              questions: [{
+                id: "recovery_acknowledged",
+                prompt: `${transition.recoveryInteraction.summary} Please acknowledge ownership by ${transition.recoveryInteraction.queue}.`,
+                selectionMode: "single",
+                options: [{ id: "acknowledged", label: "Acknowledged" }],
+              }],
+            },
+          },
+          {
+            identityContextId: req.actor.identityContextId,
+            agentId: actor.agentId,
+            userId: actor.actorType === "user" ? actor.actorId : null,
+          },
+        );
+      }
+      if (transition.escalationMetric) {
+        getTelemetryClient()?.trackDynamic(transition.escalationMetric, {
+          issue_id: existing.id,
+          policy_revision:
+            nextExecutionPolicy?.reviewEscalationPolicy?.policyRevision ?? "unknown",
+          target_type: "user",
+        });
+      }
 
       const nextStatus = updateFields.status ?? existing.status;
       if (updateFields.unblockDescriptor && nextStatus !== "blocked") {
@@ -18591,6 +18668,14 @@ export function issueRoutes(
           commentBody: req.body.body,
         });
         const decisionId = transition.decision ? randomUUID() : null;
+        if (transition.escalationMetric) {
+          getTelemetryClient()?.trackDynamic(transition.escalationMetric, {
+            issue_id: currentIssue.id,
+            policy_revision:
+              currentExecutionPolicy?.reviewEscalationPolicy?.policyRevision ?? "unknown",
+            target_type: "user",
+          });
+        }
         if (decisionId) {
           const nextExecutionState = transition.patch.executionState;
           if (!nextExecutionState || typeof nextExecutionState !== "object") {
@@ -18672,6 +18757,36 @@ export function issueRoutes(
             // has been concurrently deleted between the initial fetch and the in-transaction update.
             if (!updated) throw new AutoApprovalIssueMissingError();
 
+            if (transition.recoveryInteraction) {
+              await issueThreadInteractionService(tx as unknown as Db).create(
+                currentIssue,
+                {
+                  kind: "ask_user_questions",
+                  idempotencyKey: transition.recoveryInteraction.idempotencyKey,
+                  resolverPolicy: "human_only",
+                  addresseeUserId: currentIssue.responsibleUserId ?? currentIssue.createdByUserId ?? null,
+                  continuationPolicy: "none",
+                  title: transition.recoveryInteraction.title,
+                  summary: `${transition.recoveryInteraction.summary} SLA owner: ${transition.recoveryInteraction.queue}.`,
+                  payload: {
+                    version: 1,
+                    title: transition.recoveryInteraction.title,
+                    submitLabel: "Acknowledge recovery",
+                    questions: [{
+                      id: "recovery_acknowledged",
+                      prompt: `${transition.recoveryInteraction.summary} Please acknowledge ownership by ${transition.recoveryInteraction.queue}.`,
+                      selectionMode: "single",
+                      options: [{ id: "acknowledged", label: "Acknowledged" }],
+                    }],
+                  },
+                },
+                {
+                  identityContextId: req.actor.identityContextId,
+                  agentId: actor.agentId,
+                  userId: actor.actorType === "user" ? actor.actorId : null,
+                },
+              );
+            }
             if (transition.decision && decisionId) {
               await tx.insert(issueExecutionDecisions).values({
                 id: decisionId,
