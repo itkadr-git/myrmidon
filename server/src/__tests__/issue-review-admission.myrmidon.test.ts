@@ -25,7 +25,7 @@ const ctx = useEmbeddedPostgres("myrmidon-review-admission-", {
   resetEach: async (db) => {
     await db.transaction(async (tx) => {
       // Freeze writers to every table whose rows are drained below. The lock
-      // mode conflicts with INSERT on each table, so no dependent wake/activity
+      // mode conflicts with INSERT on these tables, so no dependent wake/activity
       // row can appear between cleanup statements and the agent delete.
       await tx.execute(
         sql`LOCK TABLE activity_log, agent_wakeup_requests, issues, agents IN SHARE ROW EXCLUSIVE MODE`,
