@@ -29,21 +29,23 @@ case "$1" in
         if [ -f "$SANDBOX/local-image" ]; then exit 0; fi
         exit 1 ;;
     esac ;;
-  buildx)
+  *imagetools*inspect*)
     case "$*" in
-      *imagetools*inspect*)
-        case "$*" in
-          *'{{json .Manifest}}'*)
-            if [ -f "$SANDBOX/unknown-manifest" ]; then echo '{"Layers":[{"size":"unknown"}]}' ; else echo '{"Layers":[{"size":2097152},{"size":4194304}]}' ; fi ;;
-          *) echo '{"Labels":{}}' ;;
-        esac
-        exit 0 ;;
-    esac ;;
+      *'@sha256:amd64'*) echo '{"Config":{"size":1048576},"Layers":[{"size":2097152},{"size":4194304}]}' ;;
+      *'{{json .Manifest}}'*)
+        if [ -f "$SANDBOX/index-manifest" ]; then
+          cat <<'EOF'
+{"mediaType":"application/vnd.oci.image.index.v1+json","manifests":[{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"sha256:amd64","platform":{"architecture":"amd64","os":"linux"}},{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"sha256:attestation","platform":{"architecture":"unknown","os":"unknown"}}]}
+EOF
+        elif [ -f "$SANDBOX/unknown-manifest" ]; then echo '{"Layers":[{"size":"unknown"}]}' ; else echo '{"Layers":[{"size":2097152},{"size":4194304}]}' ; fi ;;
+      *) echo '{"Labels":{}}' ;;
+    esac
+    exit 0 ;;
 esac
 exit 0
 `;
 
-function fixture({ freeGb, localImage = "", unknownManifest = false } = {}) {
+function fixture({ freeGb, localImage = "", unknownManifest = false, indexManifest = false } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "deploy-disk-precheck-"));
   const bin = path.join(dir, "bin");
   fs.mkdirSync(bin);
@@ -52,6 +54,7 @@ function fixture({ freeGb, localImage = "", unknownManifest = false } = {}) {
   fs.writeFileSync(path.join(dir, "free-kb"), String(freeGb * 1024 * 1024));
   if (localImage) fs.writeFileSync(path.join(dir, "local-image"), localImage);
   if (unknownManifest) fs.writeFileSync(path.join(dir, "unknown-manifest"), "1");
+  if (indexManifest) fs.writeFileSync(path.join(dir, "index-manifest"), "1");
   fs.writeFileSync(path.join(dir, "calls.log"), "");
   return { dir, bin };
 }
@@ -88,6 +91,22 @@ describe("deploy_disk_precheck", () => {
     const result = run(sb, [ref]);
     assert.equal(result.code, 0, result.out);
     assert.doesNotMatch(result.calls, /buildx imagetools inspect/);
+  });
+
+  it("uses the linux/amd64 platform manifest from an OCI image index", () => {
+    const sb = fixture({ freeGb: 20, indexManifest: true });
+    const result = run(sb, ["registry.example/app@sha256:abc"]);
+    assert.equal(result.code, 0, result.out);
+    assert.match(result.calls, /@sha256:amd64/);
+    assert.doesNotMatch(result.out, /invalid registry layer sizes/i);
+  });
+
+  it("warns and continues when registry size is unknown in dry-run", () => {
+    const sb = fixture({ freeGb: 2, unknownManifest: true });
+    const script = ["set -euo pipefail", `source ${LIB}`, "DRY_RUN=1", 'MYRMIDON_DEPLOY_IMAGE_REFS=("registry.example/app@sha256:abc")', "MYRMIDON_DEPLOY_DB_DUMP_RESERVE_GB=5", "deploy_disk_precheck /var/lib/docker"].join("\n");
+    const result = spawnSync("bash", ["-c", script], { env: { ...process.env, PATH: `${sb.bin}:${process.env.PATH}`, SANDBOX: sb.dir, BASH_ENV: "", MYRMIDON_DEPLOY_MIN_FREE_GB: "1" }, encoding: "utf8" });
+    assert.equal(result.status, 0, `${result.stdout}${result.stderr}`);
+    assert.match(`${result.stdout}${result.stderr}`, /WARNING:.*continuing dry run/i);
   });
 
   it("fails closed on unknown registry layer sizes", () => {
