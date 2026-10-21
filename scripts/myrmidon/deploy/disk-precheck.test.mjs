@@ -29,7 +29,7 @@ case "$1" in
         if [ -f "$SANDBOX/local-image" ]; then exit 0; fi
         exit 1 ;;
     esac ;;
-  *imagetools*inspect*)
+  buildx)
     case "$*" in
       *'@sha256:amd64'*) echo '{"Config":{"size":1048576},"Layers":[{"size":2097152},{"size":4194304}]}' ;;
       *'{{json .Manifest}}'*)
