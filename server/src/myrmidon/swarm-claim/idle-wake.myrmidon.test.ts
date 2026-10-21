@@ -61,7 +61,19 @@ describe("myrmidon(1.6.1 SWARM-IDLE-WAKE) released work", () => {
 describe("myrmidon(1.6.1 SWARM-IDLE-WAKE) sweep pass", () => {
   it("E2-E5: the next sweep hands released work to its new owner", async () => {
     const wakes: Array<{ agentId: string; opts: Record<string, unknown> }> = [];
-    const empty = <T>() => Promise.resolve([] as T[]);
+    // Every drizzle builder step (where/orderBy/limit/groupBy/for) is chainable
+    // AND awaitable, so the matcher can end a query at any step.
+    const terminal = (rows: unknown[]): Record<string, unknown> => {
+      const t: Record<string, unknown> = {
+        then: (resolve: (rows: unknown[]) => unknown, reject?: (e: unknown) => unknown) =>
+          Promise.resolve(rows).then(resolve, reject),
+        limit: (n: number) => terminal(rows.slice(0, n)),
+        orderBy: () => terminal(rows),
+        groupBy: () => terminal(rows),
+        for: () => terminal(rows),
+      };
+      return t;
+    };
     const issueTable = {
       findMany: vi.fn(async () => [{
         id: "released-issue",
@@ -80,18 +92,11 @@ describe("myrmidon(1.6.1 SWARM-IDLE-WAKE) sweep pass", () => {
         from: (table: unknown) => {
           const selectQuery = {
             innerJoin: (joinedTable: unknown) => ({
-              where: () => {
-                if (joinedTable === issues) {
-                  return {
-                    orderBy: () => ({ limit: () => Promise.resolve([]) }),
-                  };
-                }
-                return {
-                  orderBy: () => Promise.resolve([
-                    { id: "idle-agent", companyId: "company-1", name: "Idle agent", reportsTo: null, role: "engineer", status: "idle", metadata: {} },
-                  ]),
-                };
-              },
+              where: () => joinedTable === issues
+                ? terminal([])
+                : terminal([
+                  { id: "idle-agent", companyId: "company-1", name: "Idle agent", reportsTo: null, role: "engineer", status: "idle", metadata: {} },
+                ]),
             }),
             leftJoin: () => ({
               leftJoin: () => ({
@@ -148,60 +153,24 @@ describe("myrmidon(1.6.1 SWARM-IDLE-WAKE) sweep pass", () => {
                 responsibleUserId: null,
                 createdByUserId: null,
               };
-              if (table === companies) {
-                return { limit: (limit: number) => Promise.resolve([{ id: "company-1" }].slice(0, limit)) };
-              }
+              if (table === companies) return terminal([{ id: "company-1" }]);
               if (table === instanceSettings) {
-                return { then: (resolve: (rows: unknown[]) => unknown) => Promise.resolve([{ id: "settings-1", general: {}, experimental: {}, createdAt: NOW, updatedAt: NOW }]).then(resolve) };
+                return terminal([{ id: "settings-1", general: {}, experimental: {}, createdAt: NOW, updatedAt: NOW }]);
               }
-              if (table === goals) {
-                return { orderBy: () => ({ then: (resolve: (rows: unknown[]) => unknown) => Promise.resolve([]).then(resolve) }) };
-              }
-              if (table === issueLabels) {
-                return { orderBy: () => Promise.resolve([]) };
-              }
-              if (table === issueWatchdogs) {
-                return Promise.resolve([]);
-              }
-              if (table === agentWakeupRequests) {
-                return Promise.resolve([]);
-              }
-              if (table === heartbeatRuns) {
-                return {
-                  limit: () => Promise.resolve([]),
-                  groupBy: empty,
-                  then: (resolve: (rows: unknown[]) => unknown) => Promise.resolve([]).then(resolve),
-                };
-              }
-              if (table === chatConversations) {
-                return { limit: () => Promise.resolve([]) };
+              if (table === goals || table === issueLabels || table === issueWatchdogs
+                || table === agentWakeupRequests || table === heartbeatRuns || table === chatConversations) {
+                return terminal([]);
               }
               if (table === issueClaims) {
-                if (projection && "agentId" in projection) return Promise.resolve([]);
-                if (projection && "id" in projection) return { limit: () => Promise.resolve([]) };
-                return {
-                  orderBy: () => ({ limit: (limit: number) => Promise.resolve([expiredClaim].slice(0, limit)) }),
-                };
+                if (projection && ("agentId" in projection || "id" in projection)) return terminal([]);
+                return terminal([expiredClaim]);
               }
-              if (table === agents && projection && "reportsTo" in projection) {
-                return { then: (resolve: (rows: unknown[]) => unknown) => Promise.resolve([idleAgent]).then(resolve) };
-              }
+              if (table === agents && projection && "reportsTo" in projection) return terminal([idleAgent]);
               if (table === issues && projection && "companyId" in projection && "assigneeAgentId" in projection) {
-                return { limit: (limit: number) => Promise.resolve([{ id: issue.id, companyId: issue.companyId, status: issue.status, assigneeAgentId: issue.assigneeAgentId }].slice(0, limit)) };
+                return terminal([{ id: issue.id, companyId: issue.companyId, status: issue.status, assigneeAgentId: issue.assigneeAgentId }]);
               }
-              if (projection && "agentId" in projection) return Promise.resolve([]);
-              if (projection && "activeClaims" in projection) return Promise.resolve([]);
-              return {
-                orderBy: () => ({
-                  limit: (limit: number) => Promise.resolve([issue].slice(0, limit)),
-                }),
-                limit: (limit: number) => Promise.resolve([issue].slice(0, limit)),
-                groupBy: empty,
-                then: (resolve: (rows: unknown[]) => unknown) => Promise.resolve([issue]).then(resolve),
-                for: () => ({
-                  then: (resolve: (rows: unknown[]) => unknown) => Promise.resolve([issue]).then(resolve),
-                }),
-              };
+              if (projection && ("agentId" in projection || "activeClaims" in projection)) return terminal([]);
+              return terminal([issue]);
             },
             for: () => ({
               then: (resolve: (rows: unknown[]) => unknown) => Promise.resolve([
