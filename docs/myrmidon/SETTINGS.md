@@ -2537,3 +2537,13 @@ code against FLAGS.md / SETTINGS.md / the change fragments): entries restored fo
 code reads and that were never classified — `MYRMIDON_BOT_SCOPE_SUBDIR` (the bot workspace
 subdirectory, F-12), plus `MYRMIDON_CONTINUATION_MESSAGE_CHARS` and
 `MYRMIDON_CONTINUATION_MESSAGE_BODY_CHARS` (continuation-history character budgets, DBC-3). They are not part of the swarm settings and are listed here only for the gate.
+
+
+## 1.7 — USERS-ADMIN-UI A: instance user access
+
+| Setting | Default | Scope / source | Behavior |
+|---|---|---|---|
+| `instance_settings.general.authSelfSignUp.enabled` | `false` | Instance → General → User access; environment override `MYRMIDON_AUTH_SELF_SIGN_UP` is authoritative | Enables public self-registration only when explicitly set. The page shows the effective value and whether it comes from the instance setting or environment. Changes apply immediately without a restart. |
+| `instance_settings.general.myrmidonAuthBlockedUsers` | empty object | Managed by the user administration routes | Per-user block state/reason metadata; do not edit directly. Blocking closes live sessions and prevents new sign-ins. |
+
+See [the user administration guide](guides/users-admin-a.md) for route and precedence details.

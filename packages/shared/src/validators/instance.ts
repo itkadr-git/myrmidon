@@ -64,6 +64,7 @@ import { reviewReworkSettingsSchema } from "../myrmidon-review-rework.js";
 // myrmidon(1.7-BUDGET-CONFIG-B): the budget enforcement mode stored in the
 // same general settings row.
 import { budgetEnforcementSettingsSchema } from "../myrmidon-budget-enforcement.js";
+import { authSelfSignUpSettingsSchema } from "../myrmidon-auth-self-signup.js";
 // myrmidon(1.7-AGENT-EXCHANGE-A): the discussion-room settings of the same row.
 import { agentExchangeSettingsSchema } from "../myrmidon-agent-exchange.js";
 // myrmidon(1.7-AGENT-EXCHANGE-B): the feed of discussion rooms of the same row.
@@ -311,6 +312,8 @@ export const instanceGeneralSettingsSchema = z.object({
   // or refuse new runs with the budget reason (hard); changed from
   // /api/myrmidon/budget-enforcement; absent means the default (signal only).
   budgetEnforcement: budgetEnforcementSettingsSchema.optional(),
+  // myrmidon(1.7 USERS-ADMIN-UI A): absent means self-registration is off.
+  authSelfSignUp: authSelfSignUpSettingsSchema.optional(),
   // myrmidon(1.7-DEBATE-ASYM-A): the asymmetric-debates engine settings,
   // changed from /api/myrmidon/debate. Stored passthrough like the
   // swarm-claim journal: the debate service re-reads and validates the shape
