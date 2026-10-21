@@ -2134,7 +2134,8 @@ async function editOrPostProviderPublication<T>(
   }
 }
 
-function safeCardForPublication(
+// myrmidon(U2): exported so the owner Telegram text-only provider payload can be asserted.
+export function safeCardForPublication(
   payload: SafeChatPublicationPayload,
   provider: ChatProvider,
 ) {

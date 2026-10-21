@@ -55,6 +55,8 @@ import {
   preserveAutonomyGeneralKey,
   preserveAutonomyToolMappingGeneralKey,
 } from "../myrmidon/autonomy/store.js";
+// myrmidon(1.6.6 K-7): preserve the skill lifecycle pilot list across vendor writes.
+import { preserveSkillPilotAgentsGeneralKey } from "../myrmidon/skill-lifecycle/pilot-agents-store.js";
 // myrmidon(1.6-TG-PROACTIVITY-E, 1.6.1-TG-NOTIFY-B): keep the telegram-notify state across vendor writes of `general`
 import { preserveTelegramNotifyGeneralKey } from "../myrmidon/telegram-notify/proactivity-policy.js";
 import { preserveTelegramNotifySettingsGeneralKey } from "../myrmidon/telegram-notify/settings-store.js";
@@ -799,6 +801,7 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
               ...preserveCloudConnectorGeneralKey(current.general), // myrmidon(CLOUD-CONNECTOR)
               ...preserveAutonomyGeneralKey(current.general), // myrmidon(1.6-AUTONOMY)
               ...preserveAutonomyToolMappingGeneralKey(current.general), // myrmidon(1.6-AUTONOMY-GW)
+              ...preserveSkillPilotAgentsGeneralKey(current.general), // myrmidon(1.6.6 K-7)
               ...preserveTelegramNotifyGeneralKey(current.general), // myrmidon(1.6-TG-PROACTIVITY-E)
               ...preserveTelegramNotifySettingsGeneralKey(current.general), // myrmidon(TG-NOTIFY-A)
               ...preserveWipLimitGeneralKey(current.general), // myrmidon(1.6.1-WIP-LIMIT-A)
