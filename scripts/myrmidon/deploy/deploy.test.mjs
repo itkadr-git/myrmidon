@@ -1711,10 +1711,10 @@ exit 0
 
     const enable = (sb, extra = {}) => {
       // the anchor's git repository (the step commits only into a real .git dir)
-      fs.mkdirSync(path.join(extra.git ?? path.join(sb.dir, "repo"), ".git"), { recursive: true });
+      fs.mkdirSync(path.join(extra.git ?? sb.dir, ".git"), { recursive: true });
       fs.appendFileSync(sb.config, [
         `MYRMIDON_COMPOSE_SET_ANCHOR_FILE=${extra.file ?? path.join(sb.dir, "checklist.md")}`,
-        `MYRMIDON_COMPOSE_SET_ANCHOR_GIT=${extra.git ?? path.join(sb.dir, "repo")}`,
+        `MYRMIDON_COMPOSE_SET_ANCHOR_GIT=${extra.git ?? sb.dir}`,
         extra.label ? `MYRMIDON_COMPOSE_SET_LABEL_SOURCE='${extra.label}'` : "",
       ].filter(Boolean).join("\n") + "\n");
     };
@@ -1757,8 +1757,8 @@ exit 0
       assert.match(rewritten, new RegExp(`board-mount-set:begin\\n\\s*compose/docker-compose\\.yml\\n\\s*compose/docker-compose\\.myrmidon-image\\.yml\\n\\s*docker-compose\\.myrmidon-dockergate\\.yml\\n\\s*board-mount-set:end`));
       assert.match(rewritten, /# image update checklist/);
       // one commit, naming the deploy reference
-      assert.match(calls(sb), /git -C \S+repo add -- checklist\.md/);
-      assert.match(calls(sb), /git -C \S+repo commit -m chore\(deploy\): sync board-mount-set anchor to the live compose set/);
+      assert.match(calls(sb), /git -C \S+ add -- checklist\.md/);
+      assert.match(calls(sb), /git -C \S+ commit -m chore\(deploy\): sync board-mount-set anchor to the live compose set/);
       // the digest of this deploy is in the commit message
       assert.match(calls(sb), new RegExp(`deploy \\S*sha256:b{63}b`));
     });

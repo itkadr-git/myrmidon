@@ -917,7 +917,9 @@ sync_compose_set_anchor() {
   # relative to a project directory, the label carries absolute paths.
   local label_basenames anchor_basenames
   label_basenames="$(printf '%s\n' "$label_raw" | tr ',' '\n' | sed 's#.*/##; s/^[[:space:]]*//; s/[[:space:]]*$//' | sed '/^$/d' | sort -u)"
-  anchor_basenames="$(sed -n '/board-mount-set:begin/,/board-mount-set:end/p' "$anchor_file" | grep -oE '^[[:space:]]*[A-Za-z0-9._/-]+\.ya?ml[[:space:]]*$' | sed 's#^.*/##; s/^[[:space:]]*//; s/[[:space:]]*$//' | sort -u)"
+  # grep exits 1 when the block has no fragment line: that is the "no readable
+  # block" case handled below, not an error under set -e / pipefail.
+  anchor_basenames="$(sed -n '/board-mount-set:begin/,/board-mount-set:end/p' "$anchor_file" | { grep -oE '^[[:space:]]*[A-Za-z0-9._/-]+\.ya?ml[[:space:]]*$' || true; } | sed 's#^.*/##; s/^[[:space:]]*//; s/[[:space:]]*$//' | sort -u)"
   if [[ -z "$anchor_basenames" ]]; then
     log "WARNING: COMPOSE-SET-ANCHOR: no readable board-mount-set block in $anchor_file (the block format is the watchdog's contract and is not created here); the anchor was not re-checked"
     return 0
@@ -982,8 +984,9 @@ sync_compose_set_anchor() {
   fi
   ANCHOR_SYNC_ACTION="rewritten"
   log "COMPOSE-SET-ANCHOR: the live set differs from the anchor; the block was rewritten from the live label:"
-  log "  anchor had: $(printf '%s' "$anchor_basenames" | tr '\n' ' ')"
-  log "  live label: $(printf '%s' "$label_basenames" | tr '\n' ' ')"
+  # shown in the file's / the label's own order (the comparison above is sorted)
+  log "  anchor had: $(sed -n '/board-mount-set:begin/,/board-mount-set:end/p' "$anchor_file" | { grep -oE '^[[:space:]]*[A-Za-z0-9._/-]+\.ya?ml[[:space:]]*$' || true; } | sed 's#^.*/##; s/^[[:space:]]*//; s/[[:space:]]*$//' | tr '\n' ' ')"
+  log "  live label: $(printf '%s\n' "$label_raw" | tr ',' '\n' | sed 's#.*/##; s/^[[:space:]]*//; s/[[:space:]]*$//' | sed '/^$/d' | tr '\n' ' ')"
   # One commit naming the deploy, when the anchor lives in a git repository.
   if command -v git >/dev/null 2>&1 && [[ -n "$MYRMIDON_COMPOSE_SET_ANCHOR_GIT" && -d "$MYRMIDON_COMPOSE_SET_ANCHOR_GIT/.git" ]]; then
     local rel msg
