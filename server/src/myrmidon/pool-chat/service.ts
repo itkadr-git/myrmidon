@@ -81,7 +81,27 @@ export function poolChatService(db: Db, resolveTransport: PoolChatTransportResol
         // Select and reserve only for a new logical request. Replays must
         // return the durable result even if account availability changed.
         const account = selectPoolChatAccount(config, provider, 1);
-        const [created] = await tx.insert(poolChatRequests).values({ companyId: input.companyId, moduleId: input.moduleId, channel: input.channel, subjectId: input.subjectId, conversationId: input.body.conversationId, clientMessageId: input.body.clientMessageId, idempotencyKey: input.idempotencyKey, requestHash: hash, model: input.body.model, status: "dispatching", reservationUnits: 1 }).returning();
+        const [created] = await tx.insert(poolChatRequests).values({ companyId: input.companyId, moduleId: input.moduleId, channel: input.channel, subjectId: input.subjectId, conversationId: input.body.conversationId, clientMessageId: input.body.clientMessageId, idempotencyKey: input.idempotencyKey, requestHash: hash, model: input.body.model, status: "dispatching", reservationUnits: 1 }).onConflictDoNothing().returning();
+        if (!created) {
+          // A concurrent submit may have won either scoped uniqueness race.
+          // Read back the durable winner instead of surfacing a 500 or sending twice.
+          const raced = await tx.select().from(poolChatRequests).where(and(
+            eq(poolChatRequests.companyId, input.companyId),
+            eq(poolChatRequests.moduleId, input.moduleId),
+            eq(poolChatRequests.channel, input.channel),
+            eq(poolChatRequests.subjectId, input.subjectId),
+            eq(poolChatRequests.idempotencyKey, input.idempotencyKey),
+          )).then((rows) => rows[0]) ?? await tx.select().from(poolChatRequests).where(and(
+            eq(poolChatRequests.companyId, input.companyId),
+            eq(poolChatRequests.moduleId, input.moduleId),
+            eq(poolChatRequests.channel, input.channel),
+            eq(poolChatRequests.subjectId, input.subjectId),
+            eq(poolChatRequests.clientMessageId, input.body.clientMessageId),
+          )).then((rows) => rows[0]);
+          if (!raced) throw conflict("Pool-chat request could not be created");
+          if (raced.requestHash !== hash) throw conflict("Pool-chat identity was reused with a different request");
+          return { request: raced, created: false as const };
+        }
         await tx.insert(poolChatQuotaReservations).values({ companyId: input.companyId, requestId: created.id, units: 1, state: "reserved" });
         await tx.insert(poolChatRequestAttempts).values({ companyId: input.companyId, requestId: created.id, attemptNo: 1, state: "dispatching", provider, accountRef: account.accountRef, reservedUnits: 1 });
         return { request: created, created: true as const, accountRef: account.accountRef };
