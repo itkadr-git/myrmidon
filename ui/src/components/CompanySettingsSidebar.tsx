@@ -130,6 +130,9 @@ export function CompanySettingsSidebar() {
               end
             />
           )}
+          {showPage("instance.access") && (
+            <SidebarNavItem to="/company/settings/users" label="Users" icon={Users} end />
+          )}
           {companySettingsPluginSlots
             .filter((slot) => slot.routePath)
             .map((slot) => (
