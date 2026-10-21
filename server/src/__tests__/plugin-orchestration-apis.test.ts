@@ -1284,4 +1284,151 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
       services.issues.getAttachmentContent({ attachmentId, companyId, maxBytes: 1_000_000 }),
     ).rejects.toThrow("over the");
   });
+
+  it("uploadAttachment writes bytes and attachment record with audit attribution", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Issue with uploaded attachment",
+      status: "todo",
+      priority: "medium",
+    });
+    const services = buildHostServices(db, "plugin-record-id", "paperclip.gateway", createEventBusStub());
+    const content = "Hello world attachment";
+    const contentBase64 = Buffer.from(content).toString("base64");
+    const attachment = await services.issues.uploadAttachment({
+      issueId,
+      companyId,
+      filename: "hello.txt",
+      contentType: "text/plain",
+      contentBase64,
+      actor: { actorAgentId: agentId },
+    });
+    expect(attachment.id).toBeDefined();
+    expect(attachment.issueId).toBe(issueId);
+    expect(attachment.companyId).toBe(companyId);
+    expect(attachment.originalFilename).toBe("hello.txt");
+    expect(attachment.contentType).toBe("text/plain");
+    expect(attachment.byteSize).toBe(Buffer.from(content).length);
+
+    const dbAttachments = await db
+      .select()
+      .from(issueAttachments)
+      .where(eq(issueAttachments.id, attachment.id));
+    expect(dbAttachments).toHaveLength(1);
+    expect(dbAttachments[0]!.issueId).toBe(issueId);
+
+    const logs = await db
+      .select()
+      .from(activityLog)
+      .where(
+        and(
+          eq(activityLog.companyId, companyId),
+          eq(activityLog.action, "issue.attachment.uploaded"),
+          eq(activityLog.entityId, issueId),
+        ),
+      );
+    expect(logs).toHaveLength(1);
+    expect(logs[0]!.agentId).toBe(agentId);
+    expect(logs[0]!.details).toMatchObject({
+      attachmentId: attachment.id,
+      byteSize: attachment.byteSize,
+      contentType: "text/plain",
+    });
+
+    const contentRead = await services.issues.getAttachmentContent({
+      attachmentId: attachment.id,
+      companyId,
+    });
+    expect(contentRead).not.toBeNull();
+    expect(contentRead!.contentBase64).toBe(contentBase64);
+  });
+
+  it("uploadAttachment refuses cross-company issue upload", async () => {
+    const { companyId: companyA } = await seedCompanyAndAgent();
+    const companyB = randomUUID();
+    await db.insert(companies).values({
+      id: companyB,
+      name: "Other Company",
+      issuePrefix: issuePrefix(companyB),
+      requireBoardApprovalForNewAgents: false,
+    });
+    const otherIssueId = randomUUID();
+    await db.insert(issues).values({
+      id: otherIssueId,
+      companyId: companyB,
+      title: "Company B Issue",
+      status: "todo",
+      priority: "medium",
+    });
+    const services = buildHostServices(db, "plugin-record-id", "paperclip.gateway", createEventBusStub());
+    await expect(
+      services.issues.uploadAttachment({
+        issueId: otherIssueId,
+        companyId: companyA,
+        filename: "test.txt",
+        contentType: "text/plain",
+        contentBase64: Buffer.from("hello").toString("base64"),
+      }),
+    ).rejects.toThrow("Issue not found in company scope");
+  });
+
+  it("uploadAttachment enforces size limit, canonical base64, and allowed content types", async () => {
+    const { companyId } = await seedCompanyAndAgent();
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Test validation issue",
+      status: "todo",
+      priority: "medium",
+    });
+    const services = buildHostServices(db, "plugin-record-id", "paperclip.gateway", createEventBusStub());
+
+    // 1. Over size limit (10 MiB)
+    const overLimitBytes = Buffer.alloc(10 * 1024 * 1024 + 1, "x");
+    await expect(
+      services.issues.uploadAttachment({
+        issueId,
+        companyId,
+        filename: "oversize.txt",
+        contentType: "text/plain",
+        contentBase64: overLimitBytes.toString("base64"),
+      }),
+    ).rejects.toThrow("Attachment data must be valid base64 and within the size limit");
+
+    // 2. Empty / non-canonical base64
+    await expect(
+      services.issues.uploadAttachment({
+        issueId,
+        companyId,
+        filename: "empty.txt",
+        contentType: "text/plain",
+        contentBase64: "",
+      }),
+    ).rejects.toThrow("Attachment data must be valid base64 and within the size limit");
+
+    await expect(
+      services.issues.uploadAttachment({
+        issueId,
+        companyId,
+        filename: "corrupt.txt",
+        contentType: "text/plain",
+        contentBase64: "not===valid===base64???",
+      }),
+    ).rejects.toThrow("Attachment data must be valid base64 and within the size limit");
+
+    // 3. Disallowed MIME type
+    await expect(
+      services.issues.uploadAttachment({
+        issueId,
+        companyId,
+        filename: "executable.exe",
+        contentType: "application/x-msdownload",
+        contentBase64: Buffer.from("MZbinary").toString("base64"),
+      }),
+    ).rejects.toThrow("Unsupported attachment content type");
+  });
 });
