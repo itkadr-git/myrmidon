@@ -20,7 +20,6 @@ const WORKSPACE_PREFERENCES = new Set([
   "agent_default",
 ]);
 const CHECKOUT_PREFERENCES = new Set<string>([
-  "isolated_workspace",
   "operator_branch",
   "reuse_existing",
 ]);

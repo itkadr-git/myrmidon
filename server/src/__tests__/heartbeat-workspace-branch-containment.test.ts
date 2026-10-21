@@ -1033,9 +1033,9 @@ describeEmbeddedPostgres("heartbeat workspace branch containment", () => {
         executionAgentNameKey: null,
       });
       const activity = await db.select({ action: activityLog.action })
-        .from(activityLog).where(eq(activityLog.entityId, issueId))
-        .then((rows) => rows[0] ?? null);
-      expect(activity?.action).toBe("issue.engineer_workspace_requeued");
+        .from(activityLog)
+        .where(and(eq(activityLog.entityId, issueId), eq(activityLog.action, "issue.engineer_workspace_requeued")));
+      expect(activity).toHaveLength(1);
       return;
     }
     expect(resultingIssue).toEqual({

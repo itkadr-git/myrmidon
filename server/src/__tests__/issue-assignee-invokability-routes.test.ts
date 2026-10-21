@@ -324,22 +324,23 @@ describe("issue assignee invokability guard", () => {
     expect(mockIssueService.update).toHaveBeenCalled();
   });
 
-  it("still refuses a non-engineer for the same code issue when it goes back to todo", async () => {
-    const existing = makeIssue({
-      status: "in_review",
-      assigneeAgentId: NON_ENGINEER_AGENT_ID,
-      executionWorkspacePreference: "reuse_existing",
-    });
-    mockIssueService.getById.mockResolvedValue(existing);
+  it.each(["todo", "blocked", "in_progress"])(
+    "lets a non-engineer who already holds a code issue move it to %s",
+    async (status) => {
+      const existing = makeIssue({
+        status: "in_review",
+        assigneeAgentId: NON_ENGINEER_AGENT_ID,
+        executionWorkspacePreference: "reuse_existing",
+      });
+      mockIssueService.getById.mockResolvedValue(existing);
+      mockIssueService.update.mockResolvedValue({ ...existing, status });
 
-    const res = await request(createApp(boardActor()))
-      .patch(`/api/issues/${existing.id}`)
-      .send({ status: "todo" });
+      const res = await request(createApp(boardActor())).patch(`/api/issues/${existing.id}`).send({ status });
 
-    expect(res.status).toBe(422);
-    expect(res.body.details).toMatchObject({ code: "issue_requires_engineer" });
-    expect(mockIssueService.update).not.toHaveBeenCalled();
-  });
+      expect(res.status).toBe(200);
+      expect(mockIssueService.update).toHaveBeenCalled();
+    },
+  );
 });
 
 describe("agent delegation cycle guard", () => {

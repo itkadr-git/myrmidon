@@ -13549,13 +13549,12 @@ export function issueRoutes(
         normalizedAssigneeAgentId === undefined
           ? existing.assigneeAgentId
           : normalizedAssigneeAgentId;
+      // Only a change of assignee is gated. A non-engineer who already holds the
+      // issue must still be able to move it (blocked, in_progress, todo, labels):
+      // refusing that would be a new silent stall (fail-open, Q1).
       if (
-        normalizedAssigneeAgentId !== undefined ||
-        req.body.status !== undefined ||
-        req.body.labelIds !== undefined ||
-        req.body.casteKey !== undefined ||
-        req.body.harnessKind !== undefined ||
-        req.body.executionWorkspacePreference !== undefined
+        normalizedAssigneeAgentId !== undefined &&
+        normalizedAssigneeAgentId !== existing.assigneeAgentId
       ) {
         await assertEngineerForCodeIssue({
           companyId: existing.companyId,

@@ -29,6 +29,7 @@ describe("requiresEngineer", () => {
     expect(requiresEngineer({ executionWorkspacePreference: "inherit" })).toBe(false);
     expect(requiresEngineer({ executionWorkspacePreference: "reuse_existing" })).toBe(true);
     expect(requiresEngineer({ executionWorkspacePreference: "isolated" as never })).toBe(false);
+    expect(requiresEngineer({ executionWorkspacePreference: "isolated_workspace" })).toBe(false);
   });
 
   it("does not infer from unrelated labels or prose signals", () => {
@@ -49,7 +50,7 @@ describe("isCheckoutRequiredPreference", () => {
     expect(isCheckoutRequiredPreference(value)).toBe(true);
   });
 
-  it.each(["isolated", "none", "invalid", undefined])("keeps %s fail-open", (value) => {
+  it.each(["isolated", "isolated_workspace", "none", "invalid", undefined])("keeps %s fail-open", (value) => {
     expect(isCheckoutRequiredPreference(value)).toBe(false);
   });
 });

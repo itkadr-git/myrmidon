@@ -433,7 +433,6 @@ import {
 import {
   logActivity,
   publishPluginDomainEvent,
-  type ActivityPublication,
   type LogActivityInput,
 } from "./activity-log.js";
 import {
