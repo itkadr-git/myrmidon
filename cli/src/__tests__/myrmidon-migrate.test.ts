@@ -255,6 +255,9 @@ describe("myrmidon:migrate pure guards", () => {
       expect(ok.problems).toEqual([]);
       expect(ok.vendorOnly).toEqual([]);
       expect(ok.exclusions).toEqual([{ kind: "table", name: "browser_use_runs", reason: "absent in target and empty in source" }]);
+      expect(ok.skippedSourceData).toEqual([
+        { table: "browser_use_runs", rows: 0, vendorRelease: "v2026.1012.0", decision: "excluded-empty" },
+      ]);
       const required = new Map([["user", table("user", [col("id"), col("keyboard_shortcuts", { nullable: false })])]]);
       expect(checkCompatibility(analysis, required, index).problems).toEqual(["target-column-requires-value:user.keyboard_shortcuts"]);
     });
@@ -273,6 +276,17 @@ describe("myrmidon:migrate pure guards", () => {
       expect(result.exclusions).toEqual([
         { kind: "column", name: "user.keyboard_shortcuts", reason: "dropped in migration chain; not needed in target" },
       ]);
+    });
+
+    it("accepts unknown tables when acceptUnknownSourceObjects is enabled", () => {
+      const analysis = analysisOf([table("custom_extension", [col("id")])], { custom_extension: 2 });
+      const target = new Map();
+      const rejected = checkCompatibility(analysis, target, index);
+      expect(rejected.problems).toEqual(["table-missing-in-target:custom_extension"]);
+
+      const accepted = checkCompatibility(analysis, target, index, { acceptUnknownSourceObjects: true });
+      expect(accepted.problems).toEqual([]);
+      expect(accepted.exclusions).toEqual([{ kind: "table", name: "custom_extension", reason: "unknown source table accepted by flag" }]);
     });
   });
 

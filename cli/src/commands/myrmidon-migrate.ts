@@ -109,6 +109,8 @@ export type MigrationOptions = {
   allowMissingFiles?: boolean;
   /** Go on when the source holds data of Paperclip features that Myrmidon does not have (it is not transferred). */
   acceptVendorOnlyData?: boolean;
+  /** Alias for acceptVendorOnlyData and permission to accept source objects absent from target. */
+  acceptUnknownSourceObjects?: boolean;
   json?: boolean;
   /** Test seams; not exposed as CLI flags. */
   failureInjection?: FailureInjection;
@@ -481,18 +483,32 @@ function buildInventory(analysis: SourceAnalysis) {
   };
 }
 
-export type CompatResult = { problems: string[]; exclusions: Exclusion[]; vendorOnly: VendorOnlyFinding[] };
+export type SkippedSourceDatum = {
+  table: string;
+  column?: string;
+  rows: number;
+  vendorRelease: string;
+  decision: string;
+};
+
+export type CompatResult = {
+  problems: string[];
+  exclusions: Exclusion[];
+  vendorOnly: VendorOnlyFinding[];
+  skippedSourceData: SkippedSourceDatum[];
+};
 
 /**
  * Compares the source schema with the target. A table or column that only a
  * later Paperclip release has, and the target lacks, is not an error: it is
  * returned in `vendorOnly` (its data is not transferred). Every other mismatch
- * stays a problem.
+ * stays a problem unless accepted by explicit option.
  */
 export function checkCompatibility(
   analysis: Pick<SourceAnalysis, "tables" | "digests" | "vendorOnlyCandidates">,
   target: Map<string, TableInfo>,
   index: VendorOnlyIndex = buildVendorOnlyIndex(),
+  options?: Pick<MigrationOptions, "acceptVendorOnlyData" | "acceptUnknownSourceObjects">,
 ): CompatResult {
   const problems: string[] = [];
   const exclusions: Exclusion[] = [];
@@ -510,9 +526,16 @@ export function checkCompatibility(
           continue;
         }
         const introducedIn = index.tables.get(name);
-        if (introducedIn !== undefined) vendorOnly.push({ kind: "table", table: name, rows, introducedIn });
-        else problems.push(`table-missing-in-target:${name}`);
-      } else exclusions.push({ kind: "table", name, reason: "absent in target and empty in source" });
+        if (introducedIn !== undefined) {
+          vendorOnly.push({ kind: "table", table: name, rows, introducedIn });
+        } else if (options?.acceptUnknownSourceObjects) {
+          exclusions.push({ kind: "table", name, reason: "unknown source table accepted by flag" });
+        } else {
+          problems.push(`table-missing-in-target:${name}`);
+        }
+      } else {
+        exclusions.push({ kind: "table", name, reason: "absent in target and empty in source" });
+      }
       continue;
     }
     const tgtCols = new Map(tgt.columns.map((c) => [c.name, c]));
@@ -537,7 +560,23 @@ export function checkCompatibility(
       }
     }
   }
-  return { problems, exclusions, vendorOnly };
+  const accepted = Boolean(options?.acceptVendorOnlyData || options?.acceptUnknownSourceObjects);
+  const skippedSourceData: SkippedSourceDatum[] = [
+    ...vendorOnly.map((f) => ({
+      table: f.table,
+      ...(f.column ? { column: f.column } : {}),
+      rows: f.rows,
+      vendorRelease: f.introducedIn,
+      decision: f.rows > 0 ? (accepted ? "accepted" : "requires-flag") : "excluded-empty",
+    })),
+    ...exclusions.filter((e) => e.kind === "table" && e.reason.includes("empty")).map((e) => ({
+      table: e.name,
+      rows: 0,
+      vendorRelease: index.tables.get(e.name) ?? "unknown",
+      decision: "excluded-empty",
+    })),
+  ];
+  return { problems, exclusions, vendorOnly, skippedSourceData };
 }
 
 const INT_RANK: Record<string, number> = { smallint: 1, integer: 2, bigint: 3 };
@@ -651,7 +690,7 @@ function describeFinding(f: VendorOnlyFinding): string {
 /** Stops, before anything is written, when data of features Myrmidon lacks would be left behind without the owner's word. */
 export function assertVendorOnlyAccepted(options: MigrationOptions, analysis: SourceAnalysis): void {
   const withData = analysis.vendorOnlyCandidates.filter((c) => c.rows > 0);
-  if (withData.length === 0 || options.acceptVendorOnlyData) return;
+  if (withData.length === 0 || options.acceptVendorOnlyData || options.acceptUnknownSourceObjects) return;
   const shown = withData.slice(0, 8).map(describeFinding).join(", ");
   throw new Error(
     `The source holds data of Paperclip features that Myrmidon does not have, and that data would not be transferred: ${shown}${withData.length > 8 ? `, and ${withData.length - 8} more` : ""}. ` +
@@ -948,6 +987,23 @@ async function execute(
 
       if (options.dryRun) {
         const candidates = vendorOnlyReport(analysis.vendorOnlyCandidates);
+        const accepted = Boolean(options.acceptVendorOnlyData || options.acceptUnknownSourceObjects);
+        const skippedSourceData: SkippedSourceDatum[] = [
+          ...candidates.withData.map((f) => ({
+            table: f.table,
+            ...(f.column ? { column: f.column } : {}),
+            rows: f.rows,
+            vendorRelease: f.introducedIn,
+            decision: accepted ? "accepted" : "requires-flag",
+          })),
+          ...candidates.empty.map((f) => ({
+            table: f.table,
+            ...(f.column ? { column: f.column } : {}),
+            rows: 0,
+            vendorRelease: f.introducedIn,
+            decision: "excluded-empty",
+          })),
+        ];
         return {
           ...base,
           vendorOnlyData: {
@@ -956,6 +1012,7 @@ async function execute(
             flag: "--accept-vendor-only-data",
             ...candidates,
           },
+          skippedSourceData,
           mode: "dry-run",
           status: "ok",
           writesPerformed: false,
@@ -1049,7 +1106,7 @@ async function realRun(ctx: Context, input: RealRunInput): Promise<MigrationResu
 
     const targetInfo = await introspectTables(tq);
     const vendorIndex = await loadVendorOnlyIndex();
-    const compat = checkCompatibility(analysis, targetInfo, vendorIndex);
+    const compat = checkCompatibility(analysis, targetInfo, vendorIndex, ctx.options);
     const narrowing = compat.problems.length === 0 ? await checkNarrowing(src, analysis, targetInfo) : [];
     const problems = [...compat.problems, ...narrowing];
     if (problems.length > 0) {
@@ -1170,7 +1227,8 @@ async function realRun(ctx: Context, input: RealRunInput): Promise<MigrationResu
       phases,
       load: copyInfo,
       verification: report,
-      vendorOnlyData: { acceptedByFlag: Boolean(ctx.options.acceptVendorOnlyData), transferred: false, ...vendorOnlyReport(compat.vendorOnly) },
+      vendorOnlyData: { acceptedByFlag: Boolean(ctx.options.acceptVendorOnlyData || ctx.options.acceptUnknownSourceObjects), transferred: false, ...vendorOnlyReport(compat.vendorOnly) },
+      skippedSourceData: compat.skippedSourceData,
       stateDir,
     };
     await writeFile(path.join(stateDir, "report.json"), `${JSON.stringify(result, null, 2)}\n`, { mode: 0o600 });
@@ -1261,7 +1319,12 @@ async function rollbackRun(ctx: Context, targetUrl: string): Promise<MigrationRe
 }
 
 export async function myrmidonMigrateCommand(options: MigrationOptions): Promise<void> {
-  const result = await runMigration(options);
+  const normalized: MigrationOptions = {
+    ...options,
+    acceptVendorOnlyData: Boolean(options.acceptVendorOnlyData || options.acceptUnknownSourceObjects),
+    acceptUnknownSourceObjects: Boolean(options.acceptUnknownSourceObjects || options.acceptVendorOnlyData),
+  };
+  const result = await runMigration(normalized);
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
 }
 
@@ -1288,6 +1351,10 @@ export function registerMyrmidonMigrateCommand(program: { command: (name: string
     .option(
       "--accept-vendor-only-data",
       "Continue when the source holds data of Paperclip features Myrmidon does not have (it is listed and not transferred)",
+    )
+    .option(
+      "--accept-unknown-source-objects",
+      "Alias for --accept-vendor-only-data; continue when source holds objects unknown to target",
     )
     .option("--allow-missing-files", "Continue when asset files are missing or differ (they are reported)")
     .option("--json", "Accepted for compatibility; output is always JSON")

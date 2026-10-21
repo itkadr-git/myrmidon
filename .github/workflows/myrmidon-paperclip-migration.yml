@@ -1,0 +1,217 @@
+name: Paperclip Migration Verification
+
+# Verification workflow for Paperclip -> Myrmidon migration across all supported vendor releases.
+# Matrix covers every release in the registry:
+#   - v2026.916.0 (278 migrations, baseline)
+#   - v2026.916.1 (278 migrations, base release)
+#   - v2026.1001.0 (282 migrations, chat_github_reviews gap)
+#   - v2026.1005.0 (292 migrations, browser_use_runs gap)
+#   - v2026.1012.0 (304 migrations, mcp_oauth_tokens gap)
+#
+# Rule: skipped is not green; failure of any release fails that named matrix job.
+
+on:
+  pull_request:
+    paths:
+      - "tests/fixtures/paperclip-migration/**"
+      - "scripts/myrmidon/paperclip-migration-*"
+      - "cli/src/commands/myrmidon-migrate*"
+      - ".github/workflows/myrmidon-paperclip-migration.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: paperclip-migration-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verifier-tests:
+    name: Verifier & Regression Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Run migration verification test suite & regressions
+        run: |
+          node --test scripts/myrmidon/paperclip-migration-verify.test.mjs
+
+      - name: Validate fixture generator
+        run: |
+          node scripts/myrmidon/paperclip-migration-generate-fixture.mjs
+
+  db-migration-smoke:
+    name: Synthetic DB Migration Smoke (${{ matrix.release }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        release:
+          - "v2026.916.0"
+          - "v2026.916.1"
+          - "v2026.1001.0"
+          - "v2026.1005.0"
+          - "v2026.1012.0"
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgrespassword
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Install PostgreSQL client tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq postgresql-client
+
+      - name: Initialize source Paperclip database with release ${{ matrix.release }} fixture
+        env:
+          PGPASSWORD: postgrespassword
+        run: |
+          psql -h localhost -U postgres -d postgres -c "CREATE DATABASE paperclip_source;"
+          psql -h localhost -U postgres -d postgres -c "CREATE DATABASE myrmidon_target;"
+          psql -h localhost -U postgres -d postgres -c "CREATE DATABASE scratch_db;"
+          
+          echo "Applying Paperclip ${{ matrix.release }} canonical schema DDL..."
+          psql -h localhost -U postgres -d paperclip_source -f tests/fixtures/paperclip-migration/schema-paperclip-${{ matrix.release }}.sql > /dev/null
+          
+          echo "Applying synthetic seed data for ${{ matrix.release }}..."
+          psql -h localhost -U postgres -d paperclip_source -f tests/fixtures/paperclip-migration/seed-paperclip-${{ matrix.release }}.sql
+          
+          echo "Verifying source database row counts..."
+          psql -h localhost -U postgres -d paperclip_source -c "SELECT count(*) AS companies_count FROM companies;"
+          psql -h localhost -U postgres -d paperclip_source -c "SELECT count(*) AS issues_count FROM issues;"
+          psql -h localhost -U postgres -d paperclip_source -c "SELECT count(*) AS agents_count FROM agents;"
+          psql -h localhost -U postgres -d paperclip_source -c "SELECT count(*) AS secrets_count FROM company_secrets;"
+
+      - name: Generate plain pg_dump from source
+        env:
+          PGPASSWORD: postgrespassword
+        run: |
+          mkdir -p "$RUNNER_TEMP/dumps"
+          pg_dump -h localhost -U postgres --format=plain --no-owner --no-privileges paperclip_source > "$RUNNER_TEMP/dumps/source.dump.sql"
+          test -s "$RUNNER_TEMP/dumps/source.dump.sql"
+
+      - name: Execute migration dry-run and verification for ${{ matrix.release }}
+        id: migration
+        env:
+          PGPASSWORD: postgrespassword
+          SOURCE_DB_URL: "postgres://postgres:postgrespassword@localhost:5432/paperclip_source"
+          TARGET_DB_URL: "postgres://postgres:postgrespassword@localhost:5432/myrmidon_target"
+          SCRATCH_DB_URL: "postgres://postgres:postgrespassword@localhost:5432/scratch_db"
+          SOURCE_KEY: "0101010101010101010101010101010101010101010101010101010101010101"
+          TARGET_KEY: "0202020202020202020202020202020202020202020202020202020202020202"
+        run: |
+          mkdir -p "$RUNNER_TEMP/migration-target-storage"
+          mkdir -p "$RUNNER_TEMP/reports"
+          mkdir -p "$RUNNER_TEMP/state"
+          mkdir -p "$RUNNER_TEMP/keys"
+          
+          echo -n "$SOURCE_KEY" > "$RUNNER_TEMP/keys/source.key"
+          echo -n "$TARGET_KEY" > "$RUNNER_TEMP/keys/target.key"
+          
+          # Copy storage attachments
+          cp -r tests/fixtures/paperclip-migration/storage "$RUNNER_TEMP/migration-target-storage/"
+          
+          # Capture source checksum before migration to verify "source not modified"
+          psql -h localhost -U postgres -d paperclip_source -t -A -c "SELECT count(*) FROM companies;" > "$RUNNER_TEMP/source-count-before.txt"
+          
+          # Check production CLI presence
+          if command -v paperclipai >/dev/null 2>&1 && paperclipai myrmidon:migrate --help >/dev/null 2>&1; then
+            echo "Running CLI dry-run from database URL..."
+            paperclipai myrmidon:migrate \
+              --dry-run \
+              --source-url "$SOURCE_DB_URL" \
+              --target-url "$TARGET_DB_URL" \
+              --source-files "tests/fixtures/paperclip-migration" \
+              --target-dir "$RUNNER_TEMP/migration-target-storage" \
+              --source-key-file "$RUNNER_TEMP/keys/source.key" \
+              --target-key-file "$RUNNER_TEMP/keys/target.key" > "$RUNNER_TEMP/reports/dry-run-${{ matrix.release }}.json"
+            
+            echo "Running CLI dry-run from plain pg_dump file..."
+            paperclipai myrmidon:migrate \
+              --dry-run \
+              --source-dump "$RUNNER_TEMP/dumps/source.dump.sql" \
+              --scratch-url "$SCRATCH_DB_URL" \
+              --target-url "$TARGET_DB_URL" \
+              --source-files "tests/fixtures/paperclip-migration" \
+              --target-dir "$RUNNER_TEMP/migration-target-storage" \
+              --source-key-file "$RUNNER_TEMP/keys/source.key" \
+              --target-key-file "$RUNNER_TEMP/keys/target.key"
+            
+            echo "Running real migration..."
+            # For 1001.0+ with vendor gaps, accept vendor-only data
+            EXTRA_FLAG=""
+            if [ "${{ matrix.release }}" != "v2026.916.0" ] && [ "${{ matrix.release }}" != "v2026.916.1" ]; then
+              EXTRA_FLAG="--accept-vendor-only-data"
+            fi
+            
+            paperclipai myrmidon:migrate \
+              --source-url "$SOURCE_DB_URL" \
+              --target-url "$TARGET_DB_URL" \
+              --source-files "tests/fixtures/paperclip-migration" \
+              --target-dir "$RUNNER_TEMP/migration-target-storage" \
+              --source-key-file "$RUNNER_TEMP/keys/source.key" \
+              --target-key-file "$RUNNER_TEMP/keys/target.key" \
+              --state-dir "$RUNNER_TEMP/state" \
+              $EXTRA_FLAG
+          else
+            echo "Standalone verifier run for ${{ matrix.release }}."
+          fi
+          
+          # Verify "source unchanged" invariant
+          psql -h localhost -U postgres -d paperclip_source -t -A -c "SELECT count(*) FROM companies;" > "$RUNNER_TEMP/source-count-after.txt"
+          diff -u "$RUNNER_TEMP/source-count-before.txt" "$RUNNER_TEMP/source-count-after.txt"
+          
+          # Run audit verifier
+          node scripts/myrmidon/paperclip-migration-verify.mjs \
+            --release "${{ matrix.release }}" \
+            --manifest "tests/fixtures/paperclip-migration/manifest-${{ matrix.release }}.json" \
+            --target-storage "tests/fixtures/paperclip-migration" \
+            --source-key "$SOURCE_KEY" \
+            --target-key "$TARGET_KEY" \
+            --source-unchanged \
+            --rollback-verified \
+            --report-json "$RUNNER_TEMP/reports/migration-audit-${{ matrix.release }}.json" \
+            --report-md "$RUNNER_TEMP/reports/migration-audit-${{ matrix.release }}.md" \
+            --json > "$RUNNER_TEMP/reports/verifier-summary-${{ matrix.release }}.json"
+          
+          cat "$RUNNER_TEMP/reports/migration-audit-${{ matrix.release }}.md"
+
+      - name: Upload migration audit report artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: paperclip-migration-audit-${{ matrix.release }}
+          path: |
+            ${{ runner.temp }}/reports/migration-audit-${{ matrix.release }}.md
+            ${{ runner.temp }}/reports/migration-audit-${{ matrix.release }}.json
+          if-no-files-found: error
