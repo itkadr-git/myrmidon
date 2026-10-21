@@ -233,7 +233,7 @@ describe("myrmidon(FLEETD-VMEXEC) fleetd driver — auth and errors", () => {
       MYRMIDON_FLEET_HOST_CA: "fake-ca",
       MYRMIDON_FLEET_HOST_CERT: "fake-cert",
       MYRMIDON_FLEET_HOST_KEY: "fake-key",
-    })).toEqual({ baseUrl: "https://fleetd.example.com", token: "fake-token", ca: "fake-ca", cert: "fake-cert", key: "fake-key" });
+    }))().toEqual({ baseUrl: "https://fleetd.example.com", token: "fake-token", ca: "fake-ca", cert: "fake-cert", key: "fake-key" });
   });
 });
 
