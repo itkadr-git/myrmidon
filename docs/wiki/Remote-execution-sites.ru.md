@@ -10,7 +10,7 @@
 
 Авторитетная версия — руководство оператора
 `docs/myrmidon/guides/remote-execution-sites.ru.md`
-(английская);
+(английская: `.md`);
 детали VM-exec агента площадки — в
 `docs/myrmidon/fleetd-vmexec.ru.md`.
 Эта страница вики сжимает их до обзора.

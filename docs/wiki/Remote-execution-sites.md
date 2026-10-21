@@ -9,8 +9,7 @@ site-agent (`fleetd`) performs only the enrolled container operations. The
 feature ships in 1.6.6.
 
 The authoritative version is the operator guide
-`docs/myrmidon/guides/remote-execution-sites.md`
-(Russian);
+`docs/myrmidon/guides/remote-execution-sites.md` (Russian: `.ru.md`);
 the site-agent's VM-exec details are in
 `docs/myrmidon/fleetd-vmexec.md`.
 This wiki page condenses them.
