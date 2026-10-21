@@ -91,7 +91,7 @@ export function poolChatService(db: Db, resolveTransport: PoolChatTransportResol
       if (!outcome.created) return outcome.request;
       let transport: PoolChatTransport | null;
       try {
-        transport = await resolveTransport({ companyId: input.companyId, provider, moduleId: input.moduleId, credentialSecretName: module.credentialSecretName, accountRef: outcome.accountRef, config });
+        transport = await resolveTransport({ companyId: input.companyId, provider, moduleId: input.moduleId, credentialSecretName: module.credentialSecretName ?? null, accountRef: outcome.accountRef, config });
       } catch {
         // Secret/provider resolution is before upstream I/O, so release the
         // reservation instead of leaving a new request permanently dispatching.
