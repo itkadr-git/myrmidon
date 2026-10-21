@@ -753,6 +753,7 @@ import {
   recordSwarmClaimOnCheckoutImpl,
   releaseSwarmClaimsForRunImpl,
 } from "../myrmidon/swarm-claim/hooks.js";
+import { dbAdmissionAllowsClaim, usesDatabaseAdmission } from "../myrmidon/db-run-admission.js";
 import {
   // myrmidon(1.6.5 RUN-FAIRNESS): the fair-share rule and the sweep order.
   DEFAULT_MAX_PER_AGENT_START_SHARE_PERCENT,
@@ -17882,15 +17883,34 @@ export function heartbeatService(
       void emitAgentTaskRun(db, queuedCommentClaim.run);
       return null;
     }
+    // PROCS-2/T2.1: when admission is stored in Postgres, the counters and
+    // the queued->running transition must share one transaction lock. This
+    // keeps two worker processes from both observing the last slot.
+    const useDatabaseAdmission = queuedCommentClaim
+      ? false
+      : usesDatabaseAdmission(await instanceSettings.getGeneral());
+    const dbAdmissionLimits = useDatabaseAdmission
+      ? sharedRunAdmission().limits()
+      : null;
     const claimed = queuedCommentClaim
       ? queuedCommentClaim.run
-      : await withChatControlRecoveryGate(run, "claim", async (tx) =>
-          tx
+      : await withChatControlRecoveryGate(run, "claim", async (tx) => {
+          if (
+            useDatabaseAdmission &&
+            !(await dbAdmissionAllowsClaim(tx, {
+              agentId: run.agentId,
+              agentLimit: parseHeartbeatPolicy(agent).maxConcurrentRuns,
+              globalLimit: dbAdmissionLimits?.maxConcurrentRuns ?? null,
+            }))
+          ) {
+            return null;
+          }
+          return tx
             .update(heartbeatRuns)
             .set({
               status: "running",
               runnerProfileJson: sql`(case when jsonb_typeof(${heartbeatRuns.runnerProfileJson}) = 'object' then ${heartbeatRuns.runnerProfileJson} else '{}'::jsonb end) || ${JSON.stringify({ adapterDispatch: { adapterType: agent.adapterType } })}::jsonb`,
-                    ...legacyControllerClaim(run.runtimeMode),
+              ...legacyControllerClaim(run.runtimeMode),
               responsibleUserId,
               startedAt: run.startedAt ?? claimedAt,
               updatedAt: claimedAt,
@@ -17902,8 +17922,8 @@ export function heartbeatService(
               ),
             )
             .returning()
-            .then((rows) => rows[0] ?? null),
-        );
+            .then((rows) => rows[0] ?? null);
+        });
     if (!claimed) return null;
 
     publishLiveEvent({
@@ -31963,6 +31983,18 @@ export function heartbeatService(
       }),
 
     wakeup: trackWakeup,
+    // myrmidon(PROCS-1.8): apply committed team-liveness settings immediately
+    // when another process publishes settings_changed.
+    applyTeamLiveness: async () => {
+      const liveness = await teamLivenessRead();
+      idleWakeBudget.configure({
+        perMinute: liveness.settings.idlePickupWakeBudgetPerMin,
+        batch: Math.min(
+          liveness.settings.idlePickupWakeBatch,
+          liveness.settings.idlePickupWakeBudgetPerMin,
+        ),
+      });
+    },
     insertReviewAdmissionWakeup,
     dispatchPendingNativeStatusWakeups,
     triggerIssueMonitor,
