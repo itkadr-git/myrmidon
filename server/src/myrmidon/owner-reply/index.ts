@@ -48,6 +48,11 @@ export type {
 
 /** The door: one entry point for both the web comment and the chat message. */
 export { handleOwnerTextReply } from "./owner-task-reply.js";
+export {
+  handleTelegramOwnerReply,
+  loadRepliedInteractionIds,
+  narrowCardsToReply,
+} from "./telegram-door.js";
 export type {
   OwnerReplyDeps,
   OwnerReplyInput,
