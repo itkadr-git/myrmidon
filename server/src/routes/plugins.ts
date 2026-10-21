@@ -786,6 +786,8 @@ export function pluginRoutes(
         agentId: null,
         runId: req.actor.runId ?? null,
         companyId: scopedCompanyId,
+        // myrmidon(PLUGIN-INSTANCE-ADMIN): the host-verified instance-admin flag.
+        isInstanceAdmin: req.actor.isInstanceAdmin === true,
       };
     }
     return {
@@ -2255,10 +2257,11 @@ export function pluginRoutes(
    *
    * Request body (optional):
    * - version: Target version (defaults to latest)
+   * - approvedCapabilities: Exact capability names explicitly approved for this upgrade
    *
    * If the upgrade adds new capabilities, the plugin transitions to
-   * 'upgrade_pending' state for board approval. Otherwise, it goes
-   * directly to 'ready'.
+   * 'upgrade_pending' state unless `approvedCapabilities` exactly matches the
+   * added capabilities. Otherwise, it goes directly to 'ready'.
    *
    * Response: PluginRecord
    * Errors: 404 if plugin not found, 400 for lifecycle errors
@@ -2267,8 +2270,12 @@ export function pluginRoutes(
     assertInstanceAdmin(req);
     assertPluginManagementVisible();
     const { pluginId } = req.params;
-    const body = req.body as { version?: string } | undefined;
+    const body = req.body as { version?: string; approvedCapabilities?: string[] } | undefined;
     const version = body?.version;
+    const approvedCapabilities = body?.approvedCapabilities;
+    if (approvedCapabilities !== undefined && (!Array.isArray(approvedCapabilities) || approvedCapabilities.some((capability) => typeof capability !== "string"))) {
+      throw badRequest("approvedCapabilities must be an array of capability names");
+    }
 
     const plugin = await resolvePlugin(registry, pluginId);
     if (!plugin) {
@@ -2282,13 +2289,18 @@ export function pluginRoutes(
       // 2. Compare capabilities
       // 3. If new capabilities, mark as upgrade_pending
       // 4. Otherwise, transition to ready
-      const result = await lifecycle.upgrade(plugin.id, version);
-      await logPluginMutationActivity(req, "plugin.upgraded", plugin.id, {
+      const result = approvedCapabilities === undefined
+        ? await lifecycle.upgrade(plugin.id, version)
+        : await lifecycle.upgrade(plugin.id, version, approvedCapabilities);
+      await logPluginMutationActivity(req, approvedCapabilities === undefined ? "plugin.upgraded" : "plugin.upgrade.approved", plugin.id, {
         pluginId: plugin.id,
         pluginKey: plugin.pluginKey,
         previousVersion: plugin.version,
         version: result?.version ?? plugin.version,
         targetVersion: version ?? null,
+        approvedCapabilities: approvedCapabilities ?? [],
+        approvedBy: approvedCapabilities === undefined ? null : getActorInfo(req).actorId,
+        approvedAt: approvedCapabilities === undefined ? null : new Date().toISOString(),
       });
       publishGlobalLiveEvent({ type: "plugin.ui.updated", payload: { pluginId: plugin.id, action: "upgraded" } });
       res.json(result);

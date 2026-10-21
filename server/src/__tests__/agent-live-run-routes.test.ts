@@ -38,9 +38,20 @@ const mockInstanceSettingsService = vi.hoisted(() => ({
 
 const mockRunSecretRedactionRegistry = vi.hoisted(() => ({
   redactForRuns: vi.fn(async (_companyId: string, values: unknown[]) => values),
-  redactForRun: vi.fn(
-    async (_companyId: string, _runId: string, value: unknown) => value,
-  ),
+  redactForRun: vi.fn(async (_companyId: string, _runId: string, value: unknown) => {
+    const redact = (item: unknown): unknown => {
+      if (Array.isArray(item)) return item.map(redact);
+      if (typeof item === "string") return item;
+      if (typeof item !== "object" || item === null) return item;
+      return Object.fromEntries(
+        Object.entries(item).map(([key, nested]) => [
+          key,
+          /api.?key|token|secret|credential/i.test(key) ? "[REDACTED]" : redact(nested),
+        ]),
+      );
+    };
+    return redact(value);
+  }),
 }));
 
 const mockProviderTraceStore = vi.hoisted(() => ({
@@ -715,6 +726,38 @@ describe("agent live run routes", () => {
     expect(mockHeartbeatService.buildRunOutputSilence).toHaveBeenCalledTimes(
       50,
     );
+  });
+
+  it("lists scoped external sessions with run status and log/cancel controls", async () => {
+    const row = {
+      id: "run-session-1", agentId: "agent-1", status: "running", startedAt: new Date(), finishedAt: null,
+      createdAt: new Date(), logBytes: 12, exitCode: null, errorCode: null,
+      externalSession: { provider: "claude_code", model: "sonnet" }, issueId: "issue-1",
+    };
+    const { db, limit } = createLiveRunsDbStub([row]);
+    const res = await requestApp(await createApp(db), (baseUrl) =>
+      request(baseUrl).get("/api/companies/company-1/external-sessions?issueId=issue-1&limit=500"),
+    );
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(limit).toHaveBeenCalledWith(200);
+    expect(res.body).toEqual([expect.objectContaining({
+      id: "run-session-1", status: "running", issueId: "issue-1",
+      logUrl: "/api/heartbeat-runs/run-session-1/log",
+      cancelUrl: "/api/heartbeat-runs/run-session-1/cancel",
+    })]);
+  });
+
+  it("does not return external-session credentials", async () => {
+    const { db } = createLiveRunsDbStub([{
+      id: "run-session-2", agentId: "agent-1", status: "completed", startedAt: null, finishedAt: new Date(),
+      createdAt: new Date(), logBytes: 12, exitCode: 0, errorCode: null,
+      externalSession: { provider: "claude_code", apiKey: "never-return-this" }, issueId: null,
+    }]);
+    const res = await requestApp(await createApp(db), (baseUrl) =>
+      request(baseUrl).get("/api/companies/company-1/external-sessions"),
+    );
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(JSON.stringify(res.body)).not.toContain("never-return-this");
   });
 
   it("treats explicit zero or invalid live run limit as the capped default", async () => {

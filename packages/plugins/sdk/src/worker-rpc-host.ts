@@ -1077,6 +1077,9 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
             maxBytes: options?.maxBytes ?? null,
           });
         },
+        async uploadAttachment(input) {
+          return callHost("issues.uploadAttachment", input);
+        },
 
         documents: {
           async list(issueId: string, companyId: string) {
@@ -1989,6 +1992,8 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
       agentId: stringOrNull(rawActor?.agentId),
       runId: stringOrNull(rawActor?.runId),
       companyId: stringOrNull(rawActor?.companyId),
+      // myrmidon(PLUGIN-INSTANCE-ADMIN): only a literal true from the host counts.
+      isInstanceAdmin: rawActor?.isInstanceAdmin === true,
     });
     return Object.freeze({
       actor,

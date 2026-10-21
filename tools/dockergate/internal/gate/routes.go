@@ -470,6 +470,9 @@ func (rs *reqState) stopMain(ctx context.Context, rt *route.Route, bs *botState,
 		if ct.Config.Labels["myrmidon.bot"] != rt.BotKey {
 			return deny.New(deny.ForeignContainer)
 		}
+		if ct.State.Health != nil && ct.State.Health.Status != nil && *ct.State.Health.Status == "starting" {
+			return deny.New(deny.IdleStopDenied).WithDetail("container_starting")
+		}
 		if next, inspectErr := rs.inspectOurs(ctx, rt.BotKey, route.SuffixNext); inspectErr != nil {
 			return inspectErr
 		} else if next != nil {
