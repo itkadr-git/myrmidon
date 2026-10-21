@@ -340,6 +340,9 @@ describe("myrmidon(1.6.6 KNOWLEDGE-2.0 K-1) module hygiene", () => {
     // seed-product.ts (data). New files must be listed here deliberately.
     expect(sources).toEqual([
       "domain.ts",
+      "git-export-git.ts",
+      "git-export-job.ts",
+      "git-export.ts",
       "index.ts",
       "seed-data.ts",
       "seed-product.ts",
