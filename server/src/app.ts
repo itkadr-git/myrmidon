@@ -741,6 +741,7 @@ export async function createApp(
      * Absent on today's single process and on an api child; `/healthz` then
      * answers for this process itself. */
     processSupervisor?: import("./myrmidon/processes/index.js").ProcessSupervisor | null;
+    processBus?: { publish(channel: "settings_changed", payload: unknown): Promise<void> } | null;
     // ProcessSupervisor (PROCS-1.2) is structurally assignable to the
     // readiness view (PROCS-1.5) — state() and children() match, so one
     // declaration serves both call sites.
@@ -1081,7 +1082,7 @@ export async function createApp(
   api.use(announcementRoutes(db, { ...opts.announcements, version: opts.hostVersion ?? serverVersion }));
   api.use(resourceMembershipRoutes(db));
   api.use(inboxDismissalRoutes(db));
-  api.use(instanceSettingsRoutes(db));
+  api.use(instanceSettingsRoutes(db, { processBus: opts.processBus ?? undefined }));
   api.use(myrmidonMaintenanceRoutes(db)); // myrmidon(R3)
   api.use(datastoreCareRetentionRoutes(db)); // myrmidon(1.6.5-DBC1)
   api.use(boardLoadApp(db)); // myrmidon(1.6.6 PROCS-0.3A): lanes, api-load p95, pg_stat_statements, cpu-profile
