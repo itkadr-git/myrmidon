@@ -189,6 +189,10 @@ describeEmbeddedPostgres("maintenance interrupt_and_retry", () => {
     const interrupted = await run(runId);
     expect(interrupted).toMatchObject({ status: "cancelled", errorCode: MAINTENANCE_INTERRUPT_ERROR_CODE });
     expect(await holds(issueId)).toEqual([]);
+    // Cancellation updates the row before the adapter child fully tears down;
+    // wait for that lifecycle barrier, then let the window observe it.
+    await heartbeatService(db).drainActiveRunExecutions();
+    await svc.tick();
     const window = (await svc.status()).instance!;
     expect(window).toMatchObject({ state: "on", interruptedRuns: 1, runningRuns: 0 });
 
