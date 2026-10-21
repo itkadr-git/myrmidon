@@ -270,16 +270,11 @@ describeProcs("two api processes on one test database (PROCS-T1.5 skeleton)", ()
     // handle is not guaranteed to reach that handle's own process. Establish
     // the expected replica set from the shared registry instead of assuming
     // deterministic kernel routing for the first two requests.
-    const currentPids = new Set(
-      processes.map((handle) => handle.child.pid).filter((pid): pid is number => typeof pid === "number"),
-    );
-    const registry = await readBoardProcesses(processes[0]!);
+    // The harness-spawned PID is not the production process PID: the tsx
+    // loader starts the entry point in a child. Use each process's own registry
+    // identity to exclude stale rows from the shared database.
     const expectedBootIds = new Set(
-      registry.processes
-        // The database retains recently stopped rows until reaping; count only
-        // the live processes started by this scenario's fixture.
-        .filter((row) => row.role === "api" && row.status === "live" && currentPids.has(row.pid))
-        .map((row) => row.bootId),
+      await Promise.all(processes.map(async (handle) => (await readBoardProcesses(handle)).selfBootId)),
     );
     expect(expectedBootIds.size).toBe(replicaCount);
 
