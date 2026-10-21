@@ -101,7 +101,7 @@ describeEmbeddedPostgres("maintenance interrupt_and_retry", () => {
 
   /** An agent working on an assigned issue, its run already started. */
   async function seedIssueRun(requested: string, start = true) {
-    const marker = path.join(markerDir, );
+    const marker = path.join(markerDir, `${randomUUID()}.ready`);
     const script = requested === SLOW ? slowScript(marker) : requested;
     const companyId = randomUUID();
     const agentId = randomUUID();
@@ -152,7 +152,7 @@ describeEmbeddedPostgres("maintenance interrupt_and_retry", () => {
     return { companyId, agentId, issueId, runId: run!.id, marker };
   }
 
-  /** The run row is  and its child process has installed its handler. */
+  /** The run row is `running` and its child process has installed its handler. */
   async function isReady(seed: { runId: string; marker: string }) {
     return (await run(seed.runId)).status === "running" && existsSync(seed.marker);
   }
