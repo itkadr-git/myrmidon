@@ -32,6 +32,7 @@ import {
   boardLeases,
   authUsers,
   instanceUserRoles,
+  instanceSettings,
   companies,
   agents,
   issues,
@@ -176,8 +177,8 @@ describeProcs("PROCS-1.9: integration stand 'two processes, one database' and ra
     }
 
     // Simulate two competing worker instances racing to claim queued runs
-    const workerBootA = `worker-a-${randomUUID()}`;
-    const workerBootB = `worker-b-${randomUUID()}`;
+    const workerBootA = randomUUID();
+    const workerBootB = randomUUID();
 
     // Atomically claim a queued run in a race using the vendor WHERE status='queued' condition
     const claimRun = async (workerBootId: string, runId: string) => {
@@ -236,28 +237,34 @@ describeProcs("PROCS-1.9: integration stand 'two processes, one database' and ra
   });
 
   it("T2: sweeps under dual leader / lease expiration (standby does not steal live lease; sweeps serialized)", async () => {
-    const leaderService = leaderLeaseService(db, { ttlMs: 4_000 });
+    await db.delete(boardLeases);
+    const a = leaderLeaseService(db, { ttlMs: 4_000 });
+    const b = leaderLeaseService(db, { ttlMs: 4_000 });
     const leaseName = "scheduler";
 
     // Contender 1 acquires lease
-    const lease1 = leaderService.lease(leaseName);
-    const acquired1 = await lease1.acquire();
-    expect(acquired1).toBe(true);
-    expect(lease1.isHeld()).toBe(true);
+    const lease1 = a.lease(leaseName);
+    const lease2 = b.lease(leaseName);
+
+    lease1.start();
+    await new Promise((r) => setTimeout(r, 60));
+    lease1.stop();
+    expect(lease1.isLeader()).toBe(true);
 
     // Contender 2 cannot steal live lease
-    const lease2 = leaderService.lease(leaseName);
-    const acquired2 = await lease2.acquire();
-    expect(acquired2).toBe(false);
-    expect(lease2.isHeld()).toBe(false);
+    lease2.start();
+    await new Promise((r) => setTimeout(r, 60));
+    lease2.stop();
+    expect(lease2.isLeader()).toBe(false);
 
     // Graceful release hands over lease
     await lease1.release();
-    expect(lease1.isHeld()).toBe(false);
+    expect(lease1.isLeader()).toBe(false);
 
-    const handoverAcquired = await lease2.acquire();
-    expect(handoverAcquired).toBe(true);
-    expect(lease2.isHeld()).toBe(true);
+    lease2.start();
+    await new Promise((r) => setTimeout(r, 60));
+    lease2.stop();
+    expect(lease2.isLeader()).toBe(true);
 
     await lease2.release();
   });
@@ -296,8 +303,8 @@ describeProcs("PROCS-1.9: integration stand 'two processes, one database' and ra
       .returning()
       .then((rows) => rows[0]!);
 
-    const deadBootId = `dead-worker-${randomUUID()}`;
-    const liveOtherBootId = `live-worker-${randomUUID()}`;
+    const deadBootId = randomUUID();
+    const liveOtherBootId = randomUUID();
 
     // 1. Run with live controller lease
     const liveRunId = randomUUID();
@@ -331,18 +338,13 @@ describeProcs("PROCS-1.9: integration stand 'two processes, one database' and ra
 
     let reattachedRunId: string | null = null;
     const heartbeatPort = {
-      reattachGatewayRun: async (run: { id: string }) => {
-        reattachedRunId = run.id;
-        return { ok: true as const };
+      executeRunForGatewayReattach: async (runId: string) => {
+        reattachedRunId = runId;
       },
     };
 
     // Run reattach sweep from current process
-    await sweepGatewayRunReattach(db, heartbeatPort as any, {
-      info: () => undefined,
-      warn: () => undefined,
-      error: () => undefined,
-    });
+    await sweepGatewayRunReattach(db, heartbeatPort as any);
 
     // The live lease run was NOT touched
     const [liveAfter] = await db
@@ -369,6 +371,16 @@ describeProcs("PROCS-1.9: integration stand 'two processes, one database' and ra
     expect(resA.status).toBe(200);
     expect(resB.status).toBe(200);
 
+    // Ensure instance_settings row exists with singleton_key = 'default'
+    await db
+      .insert(instanceSettings)
+      .values({
+        singletonKey: "default",
+        general: {},
+        experimental: {},
+      })
+      .onConflictDoNothing();
+
     // Simulate 10 parallel atomic updates on the shared settings row using transaction row lock
     const updates = Array.from({ length: 10 }, (_, i) => i);
     await Promise.all(
@@ -376,7 +388,7 @@ describeProcs("PROCS-1.9: integration stand 'two processes, one database' and ra
         await db.transaction(async (tx) => {
           // SELECT ... FOR UPDATE verifies row-level serialization across processes
           await tx.execute(
-            sql`SELECT id FROM instance_settings WHERE id = 'default' FOR UPDATE`,
+            sql`SELECT id FROM instance_settings WHERE singleton_key = 'default' FOR UPDATE`,
           );
         });
       }),
@@ -450,7 +462,7 @@ describeProcs("PROCS-1.9: integration stand 'two processes, one database' and ra
       status: "busy",
     });
 
-    const killedBootId = `killed-worker-${randomUUID()}`;
+    const killedBootId = randomUUID();
     const victimRunId = randomUUID();
 
     // Run was owned by killed worker; lease expired 5 seconds ago
