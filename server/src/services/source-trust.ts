@@ -5,7 +5,7 @@ import {
   LOW_TRUST_REVIEW_PRESET,
   type SourceTrustMetadata,
 } from "@paperclipai/shared";
-import { forbidden } from "../errors.js";
+import { forbidden, unprocessable } from "../errors.js";
 import { readObject } from "../lib/objects.js";
 import { resolveCoreTrustPreset } from "./trust-preset-resolver.js";
 
@@ -92,6 +92,7 @@ export type SourceTrustIssueContext = {
   companyId: string;
   projectId?: string | null;
   executionPolicy?: unknown;
+  responsibleUserId?: string | null;
 };
 
 export function isLowTrustQuarantined(sourceTrust: SourceTrustMetadata | null | undefined): boolean {
@@ -129,6 +130,7 @@ export function buildLowTrustSourceTrust(input: {
   issueId: string;
   runId?: string | null;
   agentId?: string | null;
+  promotionOwnerUserId?: string | null;
 }): SourceTrustMetadata {
   return {
     preset: LOW_TRUST_REVIEW_PRESET,
@@ -136,6 +138,7 @@ export function buildLowTrustSourceTrust(input: {
     sourceIssueId: input.issueId,
     sourceRunId: input.runId ?? null,
     sourceAgentId: input.agentId ?? null,
+    promotionOwnerUserId: input.promotionOwnerUserId ?? null,
   };
 }
 
@@ -145,6 +148,7 @@ export function buildPromotedSourceTrust(input: {
   sourceArtifactId: string;
   promotedByActorType: "agent" | "user" | "system";
   promotedByActorId: string;
+  promotionOwnerUserId?: string | null;
   promotedAt?: Date;
 }): SourceTrustMetadata {
   return {
@@ -158,14 +162,25 @@ export function buildPromotedSourceTrust(input: {
     },
     promotedByActorType: input.promotedByActorType,
     promotedByActorId: input.promotedByActorId,
+    promotionOwnerUserId: input.promotionOwnerUserId ?? null,
     promotedAt: (input.promotedAt ?? new Date()).toISOString(),
   };
+}
+
+export function buildLowTrustQuarantineNotice(input: {
+  promotionOwnerUserId: string | null;
+}): string {
+  if (!input.promotionOwnerUserId) {
+    throw new Error("Low-trust quarantine notice requires a promotion owner");
+  }
+  return `${LOW_TRUST_QUARANTINED_BODY}\n\nPromotion owner: ${input.promotionOwnerUserId}. An operator must review and promote quarantined output before it is trusted.`;
 }
 
 export async function resolveActorSourceTrustForIssue(input: {
   db: Db;
   issue: SourceTrustIssueContext;
   actor: SourceTrustActor;
+  requirePromotionOwner?: boolean;
 }): Promise<SourceTrustMetadata | null> {
   if (input.actor.actorType !== "agent" || !input.actor.agentId) return null;
 
@@ -217,6 +232,7 @@ export async function resolveActorSourceTrustForIssue(input: {
         issueId: input.issue.id,
         runId: input.actor.runId,
         agentId: input.actor.agentId,
+        promotionOwnerUserId: input.issue.responsibleUserId,
       });
     }
   }
@@ -244,9 +260,13 @@ export async function resolveActorSourceTrustForIssue(input: {
     throw forbidden(resolution.detail);
   }
   if (resolution.kind !== "low_trust_review") return null;
+  if (input.requirePromotionOwner && !input.issue.responsibleUserId) {
+    throw unprocessable("Low-trust output cannot be quarantined without a promotion owner");
+  }
   return buildLowTrustSourceTrust({
     issueId: input.issue.id,
     runId: input.actor.runId,
     agentId: input.actor.agentId,
+    promotionOwnerUserId: input.issue.responsibleUserId,
   });
 }

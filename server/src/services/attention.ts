@@ -2996,7 +2996,7 @@ async function buildAttentionFeedSnapshot(
             companyId,
             title: signal.title ?? "Task",
             identifier: signal.identifier,
-            status: "in_progress",
+            status: signal.targetStatus ?? "in_progress",
             href: signal.identifier ? `/${prefix}/issues/${signal.identifier}` : null,
             metadata: {
               liftedAt: signal.liftedAt,
