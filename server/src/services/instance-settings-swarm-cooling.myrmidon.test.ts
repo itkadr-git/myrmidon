@@ -9,6 +9,7 @@
 // The stub harness mirrors instance-settings-foraging-idle-gate.myrmidon.test.ts.
 import { describe, expect, it } from "vitest";
 import type { Db } from "@paperclipai/db";
+import { resolveSwarmSettings, SWARM_SETTINGS_DEFAULTS } from "@paperclipai/shared";
 import { instanceSettingsService } from "./instance-settings.js";
 
 function stubRows<T>(values: T[]) {
@@ -140,5 +141,55 @@ describe("myrmidon(1.6.5 SWARM-PANEL-COOLING) the cooling block through updateGe
     expect(kept.enabled).toBe(false);
     expect(kept.tagWeight).toBe(77);
     expect(kept.model).toBe("scent-model-x");
+  });
+
+  it("a save with a cleared cooling field resets the stored value to the default", async () => {
+    const scent = { enabled: false, tagWeight: 77 };
+    const { db } = await stubSeededDb(
+      settingsRow({
+        swarm: { cooldownBaseMin: 45, cooldownCeilingHours: 12, runWithoutTaskGate: false, scent },
+      }),
+    );
+    const service = instanceSettingsService(db, { runtimeEnv: {} });
+
+    // The panel omits an empty field; the gate flag is always sent.
+    await service.updateGeneral({ swarm: { runWithoutTaskGate: true, cooldownCeilingHours: 6 } });
+
+    const general = (await service.getGeneral()) as unknown as Record<string, unknown>;
+    const swarm = general.swarm as Record<string, unknown>;
+    expect(swarm.cooldownBaseMin).toBeUndefined();
+    expect(swarm.cooldownCeilingHours).toBe(6);
+    expect(swarm.runWithoutTaskGate).toBe(true);
+    expect((swarm.scent as Record<string, unknown>).tagWeight).toBe(77);
+    expect(resolveSwarmSettings(swarm).cooldownBaseMin).toBe(SWARM_SETTINGS_DEFAULTS.cooldownBaseMin);
+  });
+
+  it("clearing every cooling field leaves only the gate and the scent block", async () => {
+    const scent = { enabled: true };
+    const { db } = await stubSeededDb(
+      settingsRow({ swarm: { cooldownBaseMin: 45, cooldownCeilingHours: 12, scent } }),
+    );
+    const service = instanceSettingsService(db, { runtimeEnv: {} });
+
+    await service.updateGeneral({ swarm: { runWithoutTaskGate: true } });
+
+    const general = (await service.getGeneral()) as unknown as Record<string, unknown>;
+    expect(general.swarm).toEqual({ runWithoutTaskGate: true, scent });
+  });
+
+  it("a scent-only patch keeps the stored cooling keys", async () => {
+    const { db } = await stubSeededDb(
+      settingsRow({ swarm: { cooldownBaseMin: 45, runWithoutTaskGate: false } }),
+    );
+    const service = instanceSettingsService(db, { runtimeEnv: {} });
+
+    await service.updateGeneral({ swarm: { scent: { enabled: false } } });
+
+    const general = (await service.getGeneral()) as unknown as Record<string, unknown>;
+    expect(general.swarm).toEqual({
+      cooldownBaseMin: 45,
+      runWithoutTaskGate: false,
+      scent: { enabled: false },
+    });
   });
 });
