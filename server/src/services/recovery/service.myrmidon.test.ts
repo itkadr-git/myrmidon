@@ -9,7 +9,7 @@
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { agents, companies, createDb, heartbeatRuns, issueRecoveryActions, issues } from "@paperclipai/db";
+import { agents, companies, createDb, heartbeatRuns, issueRecoveryActions, issueRelations, issues } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -22,19 +22,25 @@ const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : 
 describeEmbeddedPostgres("reconcileStrandedAssignedIssues: infrastructure interruptions (L1)", () => {
   let db!: ReturnType<typeof createDb>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+  const originalAutoPolicyEnabled = process.env.MYRMIDON_STRANDED_AUTOPOLICY_ENABLED;
 
   beforeAll(async () => {
+    process.env.MYRMIDON_STRANDED_AUTOPOLICY_ENABLED = "false";
     tempDb = await startEmbeddedPostgresTestDatabase("myrmidon-infra-interrupts-stranded-");
     db = createDb(tempDb.connectionString);
   }, 60_000);
 
   afterAll(async () => {
     await tempDb?.cleanup();
+    if (originalAutoPolicyEnabled === undefined) delete process.env.MYRMIDON_STRANDED_AUTOPOLICY_ENABLED;
+    else process.env.MYRMIDON_STRANDED_AUTOPOLICY_ENABLED = originalAutoPolicyEnabled;
   });
 
   async function seedStrandedIssue(input: {
     errorCode: string | null;
+    blockerIssueId?: string;
     scheduledRetryAttempt?: number;
+    createdAtOffsetMs?: number;
     scheduledRetryReason?: string | null;
     contextSnapshotExtra?: Record<string, unknown>;
     // myrmidon(L1): the run's claimed adapter (runnerProfileJson.adapterDispatch).
@@ -43,6 +49,7 @@ describeEmbeddedPostgres("reconcileStrandedAssignedIssues: infrastructure interr
     // positive path; pass a non-conversation adapter (or null) to exercise
     // the gate that keeps the vendor's escalation in place for those.
     adapterType?: string | null;
+    runtimeMode?: "native" | "conversation";
     // myrmidon(L1): the run's persisted resultJson, e.g. an
     // executionCancellation state the provider stop left behind.
     resultJson?: Record<string, unknown> | null;
@@ -79,13 +86,22 @@ describeEmbeddedPostgres("reconcileStrandedAssignedIssues: infrastructure interr
       priority: "medium",
       assigneeAgentId: agentId,
       responsibleUserId: "user-a",
-      createdAt: new Date(now.getTime() - 60 * 60 * 1000),
+      createdAt: new Date(now.getTime() - (input.createdAtOffsetMs ?? 60 * 60 * 1000)),
     });
+    if (input.blockerIssueId) {
+      await db.insert(issueRelations).values({
+        companyId,
+        issueId,
+        relatedIssueId: input.blockerIssueId,
+        type: "blocks",
+      });
+    }
     const claimedAdapterType = input.adapterType === undefined ? "codex_local" : input.adapterType;
     await db.insert(heartbeatRuns).values({
       id: runId,
       companyId,
       agentId,
+      runtimeMode: input.runtimeMode ?? (claimedAdapterType === null ? "native" : "conversation"),
       status: "cancelled",
       contextSnapshot: { issueId, ...input.contextSnapshotExtra },
       errorCode: input.errorCode,
@@ -132,9 +148,76 @@ describeEmbeddedPostgres("reconcileStrandedAssignedIssues: infrastructure interr
     expect(issue!.status).toBe("in_progress");
   }, 30_000);
 
+  it("returns stranded work to the shared unassigned engineer queue", async () => {
+    const { issueId } = await seedStrandedIssue({
+      errorCode: "agent_paused",
+      runtimeMode: "conversation",
+      adapterType: "hermes_gateway",
+      scheduledRetryAttempt: 0,
+      contextSnapshotExtra: { retryReason: "issue_continuation_needed" },
+    });
+
+    await heartbeatService(db).reconcileStrandedAssignedIssues();
+
+    const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
+    expect(issue!.status).toBe("todo");
+    expect(issue!.assigneeAgentId).toBeNull();
+    expect(await activeRecoveryActionsFor(issueId)).toHaveLength(0);
+  }, 30_000);
+
+  it("keeps real unresolved blockers on blocked issues during reroute", async () => {
+    const blockerId = randomUUID();
+    const { companyId, issueId } = await seedStrandedIssue({
+      errorCode: "adapter_failed",
+      runtimeMode: "native",
+      scheduledRetryAttempt: 0,
+      createdAtOffsetMs: 0,
+      scheduledRetryReason: "Recovery retry budget was exhausted",
+    });
+    await db.insert(issues).values({
+      id: blockerId,
+      companyId,
+      title: "Unresolved prerequisite",
+      status: "in_progress",
+      priority: "medium",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: blockerId,
+      relatedIssueId: issueId,
+      type: "blocks",
+    });
+
+    await heartbeatService(db).reconcileStrandedAssignedIssues();
+
+    const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
+    expect(issue!.status).toBe("blocked");
+  }, 30_000);
+
+  it("returns an assigned terminal reroute to todo and wakes the same engineer", async () => {
+    const { companyId, agentId, issueId } = await seedStrandedIssue({
+      errorCode: "agent_paused",
+      runtimeMode: "native",
+      scheduledRetryAttempt: 0,
+      createdAtOffsetMs: 0,
+      scheduledRetryReason: "Recovery retry budget was exhausted",
+      contextSnapshotExtra: { retryReason: "issue_continuation_needed" },
+    });
+    await db.update(agents).set({ status: "active" }).where(eq(agents.id, agentId));
+
+    await heartbeatService(db).reconcileStrandedAssignedIssues();
+
+    const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
+    expect(issue!.status).toBe("todo");
+    expect(issue!.assigneeAgentId).toBe(agentId);
+    const wake = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+    expect(wake.some((run: typeof heartbeatRuns.$inferSelect) => run.contextSnapshot && (run.contextSnapshot as Record<string, unknown>).issueId === issueId)).toBe(true);
+  }, 30_000);
+
   it("still escalates to the board once the shared infra-interrupt retry budget is exhausted", async () => {
     const { issueId } = await seedStrandedIssue({ errorCode: "agent_paused", scheduledRetryAttempt: 2 });
-
     await heartbeatService(db).reconcileStrandedAssignedIssues();
 
     const actions = await activeRecoveryActionsFor(issueId);
@@ -233,6 +316,7 @@ describeEmbeddedPostgres("reconcileStrandedAssignedIssues: infrastructure interr
   it("does not escalate while paused and within budget when the provider stop was acknowledged", async () => {
     const { issueId } = await seedStrandedIssue({
       errorCode: "agent_paused",
+      runtimeMode: "native",
       scheduledRetryAttempt: 0,
       resultJson: { executionCancellation: { state: "acknowledged", acknowledgedAt: new Date().toISOString() } },
     });
@@ -247,6 +331,7 @@ describeEmbeddedPostgres("reconcileStrandedAssignedIssues: infrastructure interr
   it("still escalates while paused and within budget when the stranded run's adapter was never claimed", async () => {
     const { issueId } = await seedStrandedIssue({
       errorCode: "agent_paused",
+      runtimeMode: "conversation",
       scheduledRetryAttempt: 0,
       adapterType: null,
     });
