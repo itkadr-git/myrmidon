@@ -320,7 +320,7 @@ describeEmbeddedPostgres("users-admin-a: admin-managed users", () => {
       .patch(`/api/myrmidon/users-admin-a/users/${created.id}`)
       .send({ resetPassword: true });
     expect(reset.status, JSON.stringify(reset.body)).toBe(200);
-    expect(reset.body.passwordSetLink).toMatch(/^\/api\/myrmidon\/password-set\?token=/);
+    expect(reset.body.passwordSetLink).toMatch(/^\/myrmidon\/password-set\?token=/);
 
     const token = new URL(reset.body.passwordSetLink, "http://localhost").searchParams.get("token") ?? "";
 
@@ -365,7 +365,7 @@ describeEmbeddedPostgres("users-admin-a: admin-managed users", () => {
       role: "member",
       actorUserId: "00000000-0000-0000-0000-000000000001",
     });
-    expect(created.passwordSetLink).toMatch(/^\/api\/myrmidon\/password-set\?token=/);
+    expect(created.passwordSetLink).toMatch(/^\/myrmidon\/password-set\?token=/);
 
     const user = (await usersAdminListUsers(db)).find((entry) => entry.username === "linkuser");
     const reset = await request(app)
