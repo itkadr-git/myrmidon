@@ -9,10 +9,10 @@
 зачисленные контейнерные операции. Возможность появляется в 1.6.6.
 
 Авторитетная версия — руководство оператора
-[`docs/myrmidon/guides/remote-execution-sites.ru.md`](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/remote-execution-sites.ru.md)
-([английская](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/remote-execution-sites.md));
+`docs/myrmidon/guides/remote-execution-sites.ru.md`
+(английская);
 детали VM-exec агента площадки — в
-[`docs/myrmidon/fleetd-vmexec.ru.md`](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/fleetd-vmexec.ru.md).
+`docs/myrmidon/fleetd-vmexec.ru.md`.
 Эта страница вики сжимает их до обзора.
 
 ## Односторонняя плоскость управления
@@ -105,9 +105,9 @@
 
 ## Источники
 
-- [Руководство оператора удалённых площадок (RU)](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/remote-execution-sites.ru.md)
-  · [EN](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/remote-execution-sites.md)
-- [Руководство fleetd VM-exec (RU)](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/fleetd-vmexec.ru.md)
-  · [EN](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/fleetd-vmexec.md)
-- [`remote-site-contract.ts`](https://github.com/itkadr-git/myrmidon/blob/main/server/src/myrmidon/bot-containers/remote-site-contract.ts) — разбор и валидация контракта
+Поставляются вместе с функцией удалённых площадок исполнения (1.6.6):
+
+- `docs/myrmidon/guides/remote-execution-sites.ru.md` (RU) и `.md` (EN) — руководство оператора
+- `docs/myrmidon/fleetd-vmexec.ru.md` (RU) и `.md` (EN) — руководство fleetd VM-exec
+- `server/src/myrmidon/bot-containers/remote-site-contract.ts` — разбор и валидация контракта
 - [`tools/fleetd`](https://github.com/itkadr-git/myrmidon/tree/main/tools/fleetd) — реализация агента площадки

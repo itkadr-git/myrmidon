@@ -9,10 +9,10 @@ site-agent (`fleetd`) performs only the enrolled container operations. The
 feature ships in 1.6.6.
 
 The authoritative version is the operator guide
-[`docs/myrmidon/guides/remote-execution-sites.md`](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/remote-execution-sites.md)
-([Russian](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/remote-execution-sites.ru.md));
+`docs/myrmidon/guides/remote-execution-sites.md`
+(Russian);
 the site-agent's VM-exec details are in
-[`docs/myrmidon/fleetd-vmexec.md`](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/fleetd-vmexec.md).
+`docs/myrmidon/fleetd-vmexec.md`.
 This wiki page condenses them.
 
 ## One-way management plane
@@ -104,9 +104,9 @@ undisturbed.
 
 ## References
 
-- [Remote execution sites operator guide (EN)](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/remote-execution-sites.md)
-  · [RU](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/guides/remote-execution-sites.ru.md)
-- [fleetd VM-exec guide](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/fleetd-vmexec.md)
-  · [RU](https://github.com/itkadr-git/myrmidon/blob/main/docs/myrmidon/fleetd-vmexec.ru.md)
-- [`remote-site-contract.ts`](https://github.com/itkadr-git/myrmidon/blob/main/server/src/myrmidon/bot-containers/remote-site-contract.ts) — contract parsing and validation
+Shipped together with the remote execution sites feature (1.6.6):
+
+- `docs/myrmidon/guides/remote-execution-sites.md` (EN) and `.ru.md` (RU) — the operator guide
+- `docs/myrmidon/fleetd-vmexec.md` (EN) and `.ru.md` (RU) — the fleetd VM-exec guide
+- `server/src/myrmidon/bot-containers/remote-site-contract.ts` — contract parsing and validation
 - [`tools/fleetd`](https://github.com/itkadr-git/myrmidon/tree/main/tools/fleetd) — site-agent implementation
