@@ -24,10 +24,12 @@ import { heartbeatService } from "../services/heartbeat.js";
 const ctx = useEmbeddedPostgres("myrmidon-review-admission-", {
   resetEach: async (db) => {
     await db.transaction(async (tx) => {
-      // Bound wake/activity writes to agents with a FK. Acquire the agent table
-      // lock before draining these tables so no concurrent insert can race the
-      // cleanup window. SHARE ROW EXCLUSIVE conflicts with INSERT's ROW EXCLUSIVE.
-      await tx.execute(sql`LOCK TABLE agents IN SHARE ROW EXCLUSIVE MODE`);
+      // Freeze writers to every table whose rows are drained below. The lock
+      // mode conflicts with INSERT on each table, so no dependent wake/activity
+      // row can appear between cleanup statements and the agent delete.
+      await tx.execute(
+        sql`LOCK TABLE activity_log, agent_wakeup_requests, issues, agents IN SHARE ROW EXCLUSIVE MODE`,
+      );
       await tx.delete(agentWakeupRequests);
       await tx.delete(activityLog);
       await tx.delete(issues);
