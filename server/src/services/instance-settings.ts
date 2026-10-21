@@ -1,5 +1,6 @@
 import type { Db } from "@paperclipai/db";
 import { companies, instanceSettings } from "@paperclipai/db";
+import { readProductEnvFrom } from "@paperclipai/shared/env-alias";
 
 /**
  * A `Db` or an open transaction handle — the subset of query builders the
@@ -54,6 +55,8 @@ import {
   preserveAutonomyGeneralKey,
   preserveAutonomyToolMappingGeneralKey,
 } from "../myrmidon/autonomy/store.js";
+// myrmidon(1.6.6 K-7): preserve the skill lifecycle pilot list across vendor writes.
+import { preserveSkillPilotAgentsGeneralKey } from "../myrmidon/skill-lifecycle/pilot-agents-store.js";
 // myrmidon(1.6-TG-PROACTIVITY-E, 1.6.1-TG-NOTIFY-B): keep the telegram-notify state across vendor writes of `general`
 import { preserveTelegramNotifyGeneralKey } from "../myrmidon/telegram-notify/proactivity-policy.js";
 import { preserveTelegramNotifySettingsGeneralKey } from "../myrmidon/telegram-notify/settings-store.js";
@@ -132,7 +135,7 @@ export function isTruthyRuntimeEnvValue(value: string | undefined) {
 }
 
 function getRuntimeInstanceId(env: Record<string, string | undefined>) {
-  const instanceId = env.PAPERCLIP_INSTANCE_ID?.trim();
+  const instanceId = readProductEnvFrom(env, "INSTANCE_ID")?.trim();
   return instanceId ? instanceId : null;
 }
 
@@ -180,7 +183,7 @@ export function applyExperimentalSettingsPatch(
   }
 
   const runtimeEnv = options.runtimeEnv ?? process.env;
-  if (!isTruthyRuntimeEnvValue(runtimeEnv.PAPERCLIP_IN_WORKTREE)) {
+  if (!isTruthyRuntimeEnvValue(readProductEnvFrom(runtimeEnv, "IN_WORKTREE"))) {
     return nextExperimental;
   }
 
@@ -244,7 +247,7 @@ export async function resolveWorktreeRunExecutionActivationState(options: {
   runtimeEnv?: Record<string, string | undefined>;
 }): Promise<WorktreeRunExecutionActivationState> {
   const runtimeEnv = options.runtimeEnv ?? process.env;
-  if (!isTruthyRuntimeEnvValue(runtimeEnv.PAPERCLIP_IN_WORKTREE)) {
+  if (!isTruthyRuntimeEnvValue(readProductEnvFrom(runtimeEnv, "IN_WORKTREE"))) {
     return suppressWorktreeRunExecution("not_worktree_runtime");
   }
   try {
@@ -797,6 +800,7 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
               ...preserveCloudConnectorGeneralKey(current.general), // myrmidon(CLOUD-CONNECTOR)
               ...preserveAutonomyGeneralKey(current.general), // myrmidon(1.6-AUTONOMY)
               ...preserveAutonomyToolMappingGeneralKey(current.general), // myrmidon(1.6-AUTONOMY-GW)
+              ...preserveSkillPilotAgentsGeneralKey(current.general), // myrmidon(1.6.6 K-7)
               ...preserveTelegramNotifyGeneralKey(current.general), // myrmidon(1.6-TG-PROACTIVITY-E)
               ...preserveTelegramNotifySettingsGeneralKey(current.general), // myrmidon(TG-NOTIFY-A)
               ...preserveWipLimitGeneralKey(current.general), // myrmidon(1.6.1-WIP-LIMIT-A)

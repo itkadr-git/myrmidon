@@ -112,7 +112,10 @@ function withTaskDrainTransition<T>(run: () => Promise<T>): Promise<T> {
   return turn;
 }
 
-export function instanceSettingsRoutes(db: Db) {
+export function instanceSettingsRoutes(
+  db: Db,
+  options: { processBus?: { publish(channel: "settings_changed", payload: unknown): Promise<void> } } = {},
+) {
   const router = Router();
   const svc = instanceSettingsService(db);
   const environments = environmentService(db);
@@ -217,6 +220,13 @@ export function instanceSettingsRoutes(db: Db) {
         (field) => hidden.has(`instance.general.${field}`),
       );
       const updated = await svc.updateGeneral(req.body);
+      const changedKeys = Object.keys(req.body).sort();
+      // Failure is non-fatal because periodic settings readers are the fallback.
+      if (options.processBus) {
+        void options.processBus.publish("settings_changed", { changedKeys }).catch((err: unknown) => {
+          logger.warn({ err }, "settings change committed but process notification failed");
+        });
+      }
       const actor = getActorInfo(req);
       const companyIds = await svc.listCompanyIds();
       await Promise.all(
