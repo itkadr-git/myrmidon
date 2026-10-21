@@ -27,9 +27,13 @@ export function registerSettingsAppliers(
   bus: { subscribe<T>(channel: "settings_changed", handler: (payload: T) => void): () => void },
   deps: SettingsApplierDeps,
 ): () => void {
+  // Applies run one at a time in arrival order, so a slow earlier apply cannot overwrite a later one.
+  let chain: Promise<void> = Promise.resolve();
   return bus.subscribe<SettingsChangedPayload>("settings_changed", (payload) => {
-    void applySettingsChanged(payload ?? {}, deps).catch(() => {
-      // Timer-driven settings readers remain the fallback if local application fails.
-    });
+    chain = chain
+      .then(() => applySettingsChanged(payload ?? {}, deps))
+      .catch(() => {
+        // Timer-driven settings readers remain the fallback if local application fails.
+      });
   });
 }

@@ -7,7 +7,7 @@ divergence-section: Трек 2 — ядро побудок и прогонов
 ### Processes apply committed instance settings across processes (SETTINGS-APPLIERS)
 
 - A successful PATCH commits the settings document under the row lock, then publishes `settings_changed` with the changed keys. Each process treats the event as an invalidation hint and re-reads the committed row before applying local effects; it never applies request-body values from the event.
-- The applier registry handles `runLimits`, `teamLiveness`, `myrmidonMaintenance`, and `processes`. Applies are serialized per process, and periodic sweeps remain the fallback for processes that were offline or temporarily disconnected.
+- The applier registry handles `runLimits`, `teamLiveness`, `myrmidonMaintenance`, and `processes`. Applies run one at a time per process in arrival order, and periodic sweeps remain the fallback for processes that were offline or temporarily disconnected.
 
 ## changelog-ru
 
