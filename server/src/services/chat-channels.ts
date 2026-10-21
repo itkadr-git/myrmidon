@@ -432,6 +432,14 @@ import {
   type AgentsScreen,
 } from "../myrmidon/agent-chat-bridge/commands/agents-buttons.js";
 import { telegramDmMenuLocale } from "../myrmidon/agent-chat-bridge/locales/index.js";
+// myrmidon(HUB): the connector hub and the inbound read of the webhook path.
+// See server/src/myrmidon/channel-connectors/ingress.ts and
+// docs/myrmidon/design/chat-channel-connector.md, section 4.
+import { myrmidonChannelConnectorHub } from "../myrmidon/channel-connectors/hub.js";
+import {
+  channelLogSinkOf,
+  readInboundEventThroughConnector,
+} from "../myrmidon/channel-connectors/ingress.js";
 // myrmidon(CHAT-HOLD): no silent queue in a bridged Telegram chat.
 import {
   chatNoticeLanguage,
@@ -3181,6 +3189,11 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     }
   >();
   const persistence = createChatSdkStatePersistence(db);
+  // myrmidon(HUB): the only connection between the vendor chat service and our
+  // channel connectors. Everything channel-specific lives in
+  // server/src/myrmidon/channel-connectors/.
+  const channelHubLog = channelLogSinkOf(logger);
+  const channelHub = myrmidonChannelConnectorHub(db, { logger: channelHubLog });
   const fetchImpl = options.fetch ?? globalThis.fetch;
   const publicBaseUrl = absoluteBaseUrl(options.publicBaseUrl);
   const webhookPublicBaseUrl =
@@ -28406,6 +28419,16 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       if (preflight === "invalid_signature") {
         return new Response("Invalid signature", { status: 401 });
       }
+    }
+    // myrmidon(HUB): the inbound flow of this endpoint. When a connector is
+    // registered for the provider it reads the update and answers whether the
+    // turn enters our pipeline; a turn it refuses — including its own
+    // `duplicate` answer — stops here, so one update cannot be delivered twice
+    // and an update it read as no message for us never reaches the queue.
+    if (
+      await readInboundEventThroughConnector(channelHub, { endpoint, request }, { logger: channelHubLog })
+    ) {
+      return new Response("ignored", { status: 200 });
     }
     const lifecycleInspection = request.clone();
     const slackCallbackInspection =
