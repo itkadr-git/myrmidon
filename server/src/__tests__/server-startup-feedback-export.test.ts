@@ -255,6 +255,7 @@ vi.mock("@paperclipai/db", async (importOriginal) => ({
   // of table exports at module scope, and a partial mock breaks as soon as the
   // graph gains a new edge. Only the startup-path functions are overridden.
   ...(await importOriginal<typeof import("@paperclipai/db")>()),
+  createPostgresJsClient: vi.fn(() => ({ listen: vi.fn(async () => ({ unlisten: vi.fn(async () => undefined) })), unsafe: vi.fn(async () => undefined) })),
   createDb: createDbMock,
   ensurePostgresDatabase: vi.fn(),
   getPostgresDataDirectory: vi.fn(),
