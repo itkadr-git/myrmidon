@@ -62,7 +62,6 @@ import {
   chatPublications,
   companyMemberships,
   documents,
-  projects as projectRows,
   executionWorkspaces,
   heartbeatRuns,
   issueApprovals,
@@ -72,7 +71,6 @@ import {
   issueRelations,
   issueRecoveryActions,
   issueThreadInteractions,
-  issueLabels,
   labels,
   issues as issueRows,
   issueWorkProducts,
@@ -83,7 +81,7 @@ import {
   projectWorkspaces,
 } from "@paperclipai/db";
 import { dbAutonomyGate } from "../myrmidon/autonomy/gate.js";
-import { requiresEngineer } from "../myrmidon/swarm-claim/requires-engineer.js";
+import { normalizeLabels, requiresEngineer } from "../myrmidon/swarm-claim/requires-engineer.js";
 import { resolveTaskCaste } from "../myrmidon/castes/index.js";
 import {
   addIssueCommentSchema,
@@ -415,12 +413,13 @@ import {
 } from "../services/issue-queued-comment-queue.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
+// Statuses in which a non-engineer may hold a code issue (review, finished).
+const ENGINEER_GATE_EXEMPT_STATUSES = new Set(["in_review", "done", "cancelled"]);
 // myrmidon(STALE-BLOCK): updateIssueSchema now carries a superRefine; zod
 // requires .safeExtend() on refined objects. interrupt was already optional
 // in the shared schema, so the refine is preserved via superRefine here.
 const updateIssueRouteSchema = updateIssueSchema.safeExtend({
   interrupt: z.boolean().optional(),
-  labels: z.array(z.string().trim().min(1).max(48)).max(20).optional(),
 });
 const queuedCommentMutationTargetSchema = z.object({
   queueId: z.string().min(1),
@@ -3717,55 +3716,66 @@ export function issueRoutes(
   const documentAnnotationsSvc = documentAnnotationService(db);
   const decisionTrainingSvc = decisionTrainingService(db);
   const issueReferencesSvc = issueReferenceService(db);
-  async function issueRequiresEngineer(
-    issue: typeof issueRows.$inferSelect & { labels?: unknown },
-    patch?: {
-      labels?: readonly string[] | null;
-      casteKey?: string | null;
-      harnessKind?: string | null;
-      executionWorkspacePreference?: string | null;
-    },
-  ): Promise<boolean> {
-    const existingLabels = Array.isArray(issue.labels)
-      ? (issue.labels as Array<string | { name?: string }>).map((l) =>
-          typeof l === "string" ? l : (l?.name ?? "")
-        ).filter(Boolean)
-      : [];
-    let labelsForIssue = existingLabels;
-    if (labelsForIssue.length === 0 && typeof (db as any)?.select === "function") {
-      try {
-        const rows = await db
-          .select({ name: labels.name })
-          .from(issueLabels)
-          .innerJoin(labels, eq(issueLabels.labelId, labels.id))
-          .where(eq(issueLabels.issueId, issue.id));
-        labelsForIssue = Array.isArray(rows) ? rows.map((row: any) => row?.name).filter(Boolean) : [];
-      } catch {
-        // Fallback for mock db
+  // Gate for code issues (OPE-7776, Q1): an agent that is not an engineer cannot
+  // take an issue that requires one. Humans are never refused, and neither are
+  // issues in review or finished (a reviewer/manager legitimately holds those).
+  // The database-derived signals are fail-open and logged: an unreadable
+  // signal must not turn into a new silent stall (S2 recovery is the backstop).
+  async function assertEngineerForCodeIssue(input: {
+    companyId: string;
+    issue: (typeof issueRows.$inferSelect & { labels?: unknown }) | null;
+    status: string | null | undefined;
+    assigneeAgentId: string | null | undefined;
+    projectId: string | null | undefined;
+    labelIds?: readonly string[];
+    casteKey?: string | null;
+    harnessKind?: string | null;
+    executionWorkspacePreference?: string | null;
+  }): Promise<void> {
+    if (!input.assigneeAgentId) return;
+    if (input.status && ENGINEER_GATE_EXEMPT_STATUSES.has(input.status)) return;
+    const agent = await agentsSvc.getById(input.assigneeAgentId);
+    if (agent?.role === "engineer") return;
+    let issueLabelNames = normalizeLabels(input.issue?.labels);
+    let casteKey = input.casteKey ?? null;
+    let projectDefaultCasteKey: string | null = null;
+    try {
+      if (input.labelIds !== undefined) {
+        issueLabelNames = input.labelIds.length === 0
+          ? []
+          : await db
+              .select({ name: labels.name })
+              .from(labels)
+              .where(and(eq(labels.companyId, input.companyId), inArray(labels.id, [...input.labelIds])))
+              .then((rows) => rows.map((row) => row.name));
       }
+      if (!casteKey && input.issue) {
+        casteKey = await resolveTaskCaste(db, { companyId: input.companyId, issueId: input.issue.id });
+      } else if (!casteKey && input.projectId) {
+        projectDefaultCasteKey = (await projectsSvc.getById(input.projectId))?.defaultCasteKey ?? null;
+      }
+    } catch (err) {
+      logger.warn(
+        { err, companyId: input.companyId, issueId: input.issue?.id ?? null },
+        "engineer gate: signal lookup failed, treating signal as absent (fail-open)",
+      );
     }
-    let resolvedCaste = patch?.casteKey ?? issue.casteKey ?? null;
-    if (!resolvedCaste && typeof (db as any)?.execute === "function") {
-      resolvedCaste = await resolveTaskCaste(db, {
-        companyId: issue.companyId,
-        issueId: issue.id,
-      }).catch(() => issue.casteKey ?? null);
+    if (
+      requiresEngineer({
+        labels: issueLabelNames,
+        casteKey,
+        projectDefaultCasteKey,
+        harnessKind: input.harnessKind ?? input.issue?.harnessKind ?? null,
+        executionWorkspacePreference:
+          input.executionWorkspacePreference ?? input.issue?.executionWorkspacePreference ?? null,
+      })
+    ) {
+      throw unprocessable("This issue requires an engineer", {
+        code: "issue_requires_engineer",
+        issueId: input.issue?.id ?? null,
+        assigneeAgentId: input.assigneeAgentId,
+      });
     }
-    const project =
-      issue.projectId && typeof projectsSvc?.getById === "function"
-        ? await projectsSvc.getById(issue.projectId).catch(() => null)
-        : null;
-    const patchedLabels = patch?.labels
-      ? patch.labels.filter((label) => !labelsForIssue.some((row) => row.toLowerCase() === label.toLowerCase()))
-      : [];
-    return requiresEngineer({
-      labels: [...labelsForIssue, ...patchedLabels],
-      casteKey: patch?.casteKey ?? resolvedCaste,
-      projectDefaultCasteKey: project?.defaultCasteKey ?? null,
-      harnessKind: patch?.harnessKind ?? issue.harnessKind,
-      executionWorkspacePreference:
-        patch?.executionWorkspacePreference ?? issue.executionWorkspacePreference as any,
-    });
   }
   const issueThreadInteractionsSvc = issueThreadInteractionService(db);
   const questionResponseDeliveries = questionResponseDeliveryService(db, {
@@ -12362,29 +12372,20 @@ export function issueRoutes(
           rawCreateBody.assigneeAgentId as string | null | undefined,
           { actorType: req.actor.type },
         );
-      if (normalizedAssigneeAgentId || rawCreateBody.assigneeUserId) {
-        const requestedAgent = normalizedAssigneeAgentId
-          ? await agentsSvc.getById(normalizedAssigneeAgentId)
-          : null;
-        const explicitCaste = typeof rawCreateBody.casteKey === "string" ? rawCreateBody.casteKey : null;
-        if ((rawCreateBody.assigneeUserId || requestedAgent?.role !== "engineer") && requiresEngineer({
-          labels: Array.isArray(rawCreateBody.labels) ? rawCreateBody.labels as string[] : [],
-          casteKey: explicitCaste,
-          projectDefaultCasteKey:
-            rawCreateBody.projectId && typeof projectsSvc?.getById === "function"
-              ? (await projectsSvc.getById(rawCreateBody.projectId).catch(() => null))?.defaultCasteKey ?? null
-              : null,
-          harnessKind: typeof rawCreateBody.harnessKind === "string" ? rawCreateBody.harnessKind : null,
-          executionWorkspacePreference: typeof rawCreateBody.executionWorkspacePreference === "string"
-            ? rawCreateBody.executionWorkspacePreference as any
+      await assertEngineerForCodeIssue({
+        companyId,
+        issue: null,
+        status: typeof rawCreateBody.status === "string" ? rawCreateBody.status : "todo",
+        assigneeAgentId: normalizedAssigneeAgentId,
+        projectId: typeof rawCreateBody.projectId === "string" ? rawCreateBody.projectId : null,
+        labelIds: Array.isArray(rawCreateBody.labelIds) ? (rawCreateBody.labelIds as string[]) : undefined,
+        casteKey: typeof rawCreateBody.casteKey === "string" ? rawCreateBody.casteKey : null,
+        harnessKind: typeof rawCreateBody.harnessKind === "string" ? rawCreateBody.harnessKind : null,
+        executionWorkspacePreference:
+          typeof rawCreateBody.executionWorkspacePreference === "string"
+            ? rawCreateBody.executionWorkspacePreference
             : null,
-        })) {
-          throw unprocessable("This issue requires an engineer", {
-            code: "issue_requires_engineer",
-            assigneeAgentId: normalizedAssigneeAgentId,
-          });
-        }
-      }
+      });
       await assertNoAgentDelegationCycle({
         actorType: req.actor.type,
         parentIssueId:
@@ -13548,42 +13549,28 @@ export function issueRoutes(
         normalizedAssigneeAgentId === undefined
           ? existing.assigneeAgentId
           : normalizedAssigneeAgentId;
-      const effectiveAssigneeUserId =
-        req.body.assigneeUserId !== undefined
-          ? req.body.assigneeUserId
-          : (normalizedAssigneeAgentId !== undefined ? null : existing.assigneeUserId);
-      const isAssigningOrSignalsChanged =
+      if (
         normalizedAssigneeAgentId !== undefined ||
-        req.body.assigneeUserId !== undefined ||
-        req.body.labels !== undefined ||
+        req.body.status !== undefined ||
+        req.body.labelIds !== undefined ||
         req.body.casteKey !== undefined ||
         req.body.harnessKind !== undefined ||
-        req.body.executionWorkspacePreference !== undefined;
-      if (
-        isAssigningOrSignalsChanged &&
-        (requestedAssigneeAgentId || effectiveAssigneeUserId)
+        req.body.executionWorkspacePreference !== undefined
       ) {
-        const requestedAgent = requestedAssigneeAgentId
-          ? await agentsSvc.getById(requestedAssigneeAgentId)
-          : null;
-        if (
-          (effectiveAssigneeUserId || requestedAgent?.role !== "engineer") &&
-          await issueRequiresEngineer(existing, {
-            labels: Array.isArray(req.body.labels) ? req.body.labels as string[] : undefined,
-            casteKey: typeof req.body.casteKey === "string" ? req.body.casteKey : undefined,
-            harnessKind: typeof req.body.harnessKind === "string" ? req.body.harnessKind : undefined,
-            executionWorkspacePreference:
-              typeof req.body.executionWorkspacePreference === "string"
-                ? req.body.executionWorkspacePreference
-                : undefined,
-          })
-        ) {
-          throw unprocessable("This issue requires an engineer", {
-            code: "issue_requires_engineer",
-            issueId: existing.id,
-            assigneeAgentId: requestedAssigneeAgentId,
-          });
-        }
+        await assertEngineerForCodeIssue({
+          companyId: existing.companyId,
+          issue: existing,
+          status: typeof req.body.status === "string" ? req.body.status : existing.status,
+          assigneeAgentId: requestedAssigneeAgentId,
+          projectId: existing.projectId,
+          labelIds: Array.isArray(req.body.labelIds) ? (req.body.labelIds as string[]) : undefined,
+          casteKey: typeof req.body.casteKey === "string" ? req.body.casteKey : null,
+          harnessKind: typeof req.body.harnessKind === "string" ? req.body.harnessKind : null,
+          executionWorkspacePreference:
+            typeof req.body.executionWorkspacePreference === "string"
+              ? req.body.executionWorkspacePreference
+              : null,
+        });
       }
       const titleOrDescriptionChanged =
         req.body.title !== undefined || req.body.description !== undefined;
@@ -13603,7 +13590,6 @@ export function issueRoutes(
         hiddenAt: hiddenAtRaw,
         blockerMetadata: blockerMetadataRaw,
         onBehalfOfUserId: _requestedOnBehalfOfUserId,
-        labels: _patchLabels,
         ...updateFields
       } = req.body;
       if (existing.conversationAgentId && req.actor.type === "board" && commentBody) {

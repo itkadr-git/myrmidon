@@ -29831,20 +29831,14 @@ export function heartbeatService(
                 hasResolvablePriorSessionWorkspace,
               })
             ) {
-              const resolvedCaste = await resolveTaskCaste(db, {
+              // Read inside the same transaction and without swallowing
+              // errors: a failed statement aborts the transaction, so a
+              // silent fallback here would only hide the real failure.
+              const resolvedCaste = await resolveTaskCaste(tx, {
                 companyId: issue.companyId,
                 issueId: issue.id,
-              }).catch(() => issue.casteKey ?? null);
-              const issueLabelRows = await tx
-                .select({ name: labels.name })
-                .from(issueLabels)
-                .innerJoin(labels, eq(issueLabels.labelId, labels.id))
-                .where(eq(issueLabels.issueId, issue.id))
-                .then((rows) => rows.map((r) => r.name))
-                .catch(() => []);
-              const effectiveLabels = issueLabelRows.length > 0
-                ? issueLabelRows
-                : (issue.labels ?? []);
+              });
+              const effectiveLabels = issue.labels ?? [];
               if (requiresEngineer({
                 labels: effectiveLabels,
                 casteKey: resolvedCaste,

@@ -281,14 +281,60 @@ describe("issue assignee invokability guard", () => {
   });
 
   it("rejects a PATCH that adds a code-task signal while assigning a non-engineer", async () => {
-    const existing = makeIssue({ assigneeAgentId: null, labels: [] });
-    const updated = { ...existing, labels: ["needs-engineer"], assigneeAgentId: NON_ENGINEER_AGENT_ID };
+    const existing = makeIssue({ assigneeAgentId: null });
     mockIssueService.getById.mockResolvedValue(existing);
-    mockIssueService.update.mockResolvedValue(updated);
+    mockIssueService.update.mockResolvedValue({ ...existing, assigneeAgentId: NON_ENGINEER_AGENT_ID });
 
     const res = await request(createApp(boardActor()))
       .patch(`/api/issues/${existing.id}`)
-      .send({ labels: ["needs-engineer"], assigneeAgentId: NON_ENGINEER_AGENT_ID });
+      .send({ executionWorkspacePreference: "reuse_existing", assigneeAgentId: NON_ENGINEER_AGENT_ID });
+
+    expect(res.status).toBe(422);
+    expect(res.body.details).toMatchObject({ code: "issue_requires_engineer" });
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("allows assigning a code issue to a human", async () => {
+    const existing = makeIssue({ assigneeAgentId: null, executionWorkspacePreference: "reuse_existing" });
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueService.update.mockResolvedValue({ ...existing, assigneeUserId: "local-board" });
+
+    const res = await request(createApp(boardActor()))
+      .patch(`/api/issues/${existing.id}`)
+      .send({ assigneeUserId: "local-board" });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalled();
+  });
+
+  it("lets a non-engineer reviewer hold a code issue in review", async () => {
+    const existing = makeIssue({ assigneeAgentId: null, executionWorkspacePreference: "reuse_existing" });
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueService.update.mockResolvedValue({
+      ...existing,
+      status: "in_review",
+      assigneeAgentId: NON_ENGINEER_AGENT_ID,
+    });
+
+    const res = await request(createApp(boardActor()))
+      .patch(`/api/issues/${existing.id}`)
+      .send({ status: "in_review", assigneeAgentId: NON_ENGINEER_AGENT_ID });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalled();
+  });
+
+  it("still refuses a non-engineer for the same code issue when it goes back to todo", async () => {
+    const existing = makeIssue({
+      status: "in_review",
+      assigneeAgentId: NON_ENGINEER_AGENT_ID,
+      executionWorkspacePreference: "reuse_existing",
+    });
+    mockIssueService.getById.mockResolvedValue(existing);
+
+    const res = await request(createApp(boardActor()))
+      .patch(`/api/issues/${existing.id}`)
+      .send({ status: "todo" });
 
     expect(res.status).toBe(422);
     expect(res.body.details).toMatchObject({ code: "issue_requires_engineer" });
