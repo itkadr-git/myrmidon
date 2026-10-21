@@ -1192,7 +1192,10 @@ export async function createApp(
   const eventBus = createPluginEventBus();
   setPluginEventBus(eventBus);
   const jobStore = pluginJobStore(db);
-  const lifecycle = pluginLifecycleManager(db, { workerManager });
+  const lifecycle = pluginLifecycleManager(db, {
+    workerManager,
+    providerModelSync: createPluginProviderModelSync(db),
+  });
   const scheduler = createPluginJobScheduler({
     db,
     jobStore,

@@ -103,6 +103,21 @@ describe("updateAgentAllowlistsForCompany", () => {
     expect(result).toEqual({ attempted: 1, updated: 1, skipped: [] });
   });
 
+  it("adds lifecycle models and removes only explicitly retired names", async () => {
+    const gateway = recordingGateway();
+    const db = scriptedDb([MODELS[0], [{ id: "agent-1", name: "Engineer One" }]]);
+    const result = await updateAgentAllowlistsForCompany(
+      db,
+      deps({ db, gateway: () => gateway, findSecretId: async () => "id-key" }),
+      "company-a",
+      ["plugin/model"],
+      ["anthropic/claude"],
+      true,
+    );
+    const alias = agentKeySecretName({ agentId: "agent-1", agentSlug: "Engineer One" });
+    expect(gateway.calls).toEqual([{ alias, models: ["openai/gpt-4o", "plugin/model"] }]);
+    expect(result).toMatchObject({ attempted: 1, updated: 1 });
+  });
   it("leaves keys untouched when the registry has no enabled models (no lockout)", async () => {
     const gateway = recordingGateway();
     const db = scriptedDb([[], []]);
