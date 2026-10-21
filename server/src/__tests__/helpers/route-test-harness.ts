@@ -21,7 +21,7 @@ type Db = ReturnType<typeof createDb>;
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 
 /** `describe` on hosts that can run embedded Postgres, `describe.skip` elsewhere. */
-export const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
+export const describeEmbeddedPostgres: typeof describe = embeddedPostgresSupport.supported ? describe : describe.skip;
 
 export type EmbeddedPostgresContext = { readonly db: Db };
 
