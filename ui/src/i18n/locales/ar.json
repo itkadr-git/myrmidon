@@ -72,7 +72,8 @@
         "observe": "Observe",
         "decide": "Decide & talk",
         "manage": "Manage",
-        "more": "المزيد"
+        "more": "المزيد",
+        "work": "Work"
       },
       "center": "Command center",
       "fleet": "Server fleet",
@@ -86,7 +87,9 @@
         "attention": "{{count}} waiting"
       },
       "swarmQueues": "السرب: قوائم الانتظار",
-      "foraging": "البحث عن الطعام"
+      "foraging": "البحث عن الطعام",
+      "knowledge": "Knowledge",
+      "regulations": "Regulations"
     },
     "nests": {
       "all": "All nests"
@@ -121,7 +124,9 @@
       "language": "Language",
       "placeholderTitle": "Not in this wave yet",
       "placeholderBody": "This screen is part of the UI 2.0 rollout plan and lands with its wave. The current data lives on the existing screen; this placeholder exists so the 2.0 frame and routing are real from day one.",
-      "placeholderLegacyLink": "Continue to the current screen"
+      "placeholderLegacyLink": "Continue to the current screen",
+      "knowledge": "Knowledge",
+      "regulations": "Regulations"
     },
     "settings": {
       "navLabel": "Settings navigation",

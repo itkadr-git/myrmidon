@@ -21,6 +21,8 @@ func fakeBearer() string {
 
 func testConfig() *config {
 	cfg := &config{
+		SiteId: "myr-vm1",
+		Epoch:  1,
 		Listen: "127.0.0.1:0",
 		Bots: []bot{
 			{BotKey: "bot-example-one", MaxMemoryMb: 1536, MaxCpus: 1, MaxPids: 256},
@@ -80,6 +82,10 @@ func routeRequest(s *server, method, path, token, body string) *httptest.Respons
 	}
 	rec := httptest.NewRecorder()
 	s.requireAuth(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/health" {
+			s.health(w, r)
+			return
+		}
 		if r.URL.Path == "/v1/bots" {
 			s.list(w, r)
 			return
@@ -87,6 +93,24 @@ func routeRequest(s *server, method, path, token, body string) *httptest.Respons
 		s.route(w, r)
 	})(rec, req)
 	return rec
+}
+
+func TestHealthEndpoint(t *testing.T) {
+	s, _ := newServer(t)
+	rec := routeRequest(s, http.MethodGet, "/v1/health", s.cfg.Token, "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("got status %d", rec.Code)
+	}
+	var h siteHealth
+	if err := json.Unmarshal(rec.Body.Bytes(), &h); err != nil {
+		t.Fatalf("failed to decode health: %v", err)
+	}
+	if h.Status != "healthy" || h.Epoch != 1 || h.SiteId != "myr-vm1" || h.Version != "1.6.6" {
+		t.Fatalf("unexpected health payload: %+v", h)
+	}
+	if h.Capacity.MemoryMb <= 0 || !h.EgressCheck.Ok || h.EgressCheck.Timestamp == "" {
+		t.Fatalf("unexpected capacity or egress: %+v", h)
+	}
 }
 
 func TestAuth(t *testing.T) {
@@ -185,7 +209,30 @@ func TestValidateConfig(t *testing.T) {
 	if err := validate(cfg); err != nil {
 		t.Fatalf("valid config rejected: %v", err)
 	}
+	cfgOmitDefaults := &config{
+		Listen: "127.0.0.1:0",
+		Bots: []bot{
+			{BotKey: "bot-example-one", MaxMemoryMb: 1536, MaxCpus: 1, MaxPids: 256},
+		},
+	}
+	cfgOmitDefaults.Token = fakeBearer()
+	if err := validate(cfgOmitDefaults); err != nil {
+		t.Fatalf("config with omitted siteId and epoch rejected: %v", err)
+	}
+	if cfgOmitDefaults.SiteId != "fleetd-local" || cfgOmitDefaults.Epoch != 1 {
+		t.Fatalf("defaults not populated: %+v", cfgOmitDefaults)
+	}
 	bad := testConfig()
+	bad.SiteId = "-invalid-site-"
+	if err := validate(bad); err == nil || !strings.Contains(err.Error(), "siteId") {
+		t.Fatalf("bad siteId accepted: %v", err)
+	}
+	bad = testConfig()
+	bad.Epoch = -5
+	if err := validate(bad); err == nil || !strings.Contains(err.Error(), "epoch") {
+		t.Fatalf("negative epoch accepted: %v", err)
+	}
+	bad = testConfig()
 	bad.Token = "short"
 	if err := validate(bad); err == nil || !strings.Contains(err.Error(), "token") {
 		t.Fatalf("short token accepted: %v", err)
@@ -199,6 +246,19 @@ func TestValidateConfig(t *testing.T) {
 	bad.Bots[0].BotKey = "-leading-dash-"
 	if err := validate(bad); err == nil || !strings.Contains(err.Error(), "botKey") {
 		t.Fatalf("bad key accepted: %v", err)
+	}
+}
+
+func TestValidSiteId(t *testing.T) {
+	for _, ok := range []string{"a", "myr-vm1", "site-01", "fleetd-local"} {
+		if !validSiteId(ok) {
+			t.Fatalf("%q rejected", ok)
+		}
+	}
+	for _, no := range []string{"", "-a", "a-", "A", "a_b", "a.b", strings.Repeat("a", 64)} {
+		if validSiteId(no) {
+			t.Fatalf("%q accepted", no)
+		}
 	}
 }
 
