@@ -10,6 +10,7 @@ import { serverVersion } from "../../version.js";
 import { parseBuildCommit, readBuildCommit } from "../../build-commit.js";
 import { parseBuildVersion, readBuildVersion } from "../../build-version.js";
 import { PRODUCT_NAME } from "../product.js";
+import { readProductEnvFrom } from "@paperclipai/shared/env-alias";
 
 /** Build metadata exposed on the About surface. Null = not available. */
 export interface AboutBuildInfo {
@@ -59,14 +60,14 @@ function parseImageDigest(value: string | null): string | null {
 
 /** The commit the running code was built from, with the same fallbacks as /api/health. */
 function resolveCommit(env: NodeJS.ProcessEnv): string | null {
-  const stamped = parseBuildCommit(env.PAPERCLIP_BUILD_COMMIT);
+  const stamped = parseBuildCommit(readProductEnvFrom(env, "BUILD_COMMIT"));
   if (stamped) return stamped;
   return readBuildCommit();
 }
 
 /** The release version, with the same resolution chain as `serverVersion`. */
 export function resolveAboutVersion(env: NodeJS.ProcessEnv): string {
-  const stamped = parseBuildVersion(env.PAPERCLIP_BUILD_VERSION);
+  const stamped = parseBuildVersion(readProductEnvFrom(env, "BUILD_VERSION"));
   if (stamped) return stamped;
   return serverVersion;
 }

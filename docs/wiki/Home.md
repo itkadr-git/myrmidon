@@ -44,6 +44,9 @@ needs one. It is an independent product maintained as a fork of
   with a maintenance window, for experienced administrators.
 - [Operations and maintenance](Server-maintenance) — backups, disk,
   monitoring, maintenance windows and automatic rollback.
+- [Remote execution sites](Remote-execution-sites) — running bot
+  containers on dedicated remote hosts behind `fleetd`: the site-agent
+  API, health states and the rollout runbook.
 
 ## Releases
 
