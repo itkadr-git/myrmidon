@@ -340,23 +340,24 @@ export async function startApiProcesses(options: {
   const ports = options.sharedPort !== undefined
     ? Array.from({ length: options.count }, () => options.sharedPort!)
     : await Promise.all(Array.from({ length: options.count }, () => pickFreePort()));
-  const handles: ApiProcessHandle[] = [];
-  try {
-    for (let index = 0; index < options.count; index += 1) {
-      handles.push(
-        await startApiProcess({
-          baseDir: options.baseDir,
-          index,
-          connectionString: options.connectionString,
-          port: ports[index],
-          role: options.role,
-          readyTimeoutMs: options.readyTimeoutMs,
-        }),
-      );
-    }
-    return handles;
-  } catch (error) {
+  const starts = Array.from({ length: options.count }, (_, index) =>
+    startApiProcess({
+      baseDir: options.baseDir,
+      index,
+      connectionString: options.connectionString,
+      port: ports[index],
+      role: options.role,
+      readyTimeoutMs: options.readyTimeoutMs,
+    }),
+  );
+  const results = await Promise.allSettled(starts);
+  const handles = results.flatMap((result) =>
+    result.status === "fulfilled" ? [result.value] : [],
+  );
+  const failure = results.find((result) => result.status === "rejected");
+  if (failure?.status === "rejected") {
     await stopApiProcesses(handles);
-    throw error;
+    throw failure.reason;
   }
+  return handles;
 }
