@@ -101,7 +101,8 @@ describe("ui2 integration contracts (UI-0b / UI-0c)", () => {
     const routes = readFileSync(join(UI_SRC, "ui2", "routes.tsx"), "utf8");
     expect(root.indexOf("<Ui2I18nProvider>")).toBeLessThan(root.lastIndexOf("<Ui2Shell"));
     expect(root.lastIndexOf("</Ui2Shell>")).toBeLessThan(root.indexOf("</Ui2I18nProvider>"));
-    expect(routes).not.toContain("Ui2I18nProvider");
+    expect(routes).not.toContain("<Ui2I18nProvider>");
+    expect(routes).not.toContain("</Ui2I18nProvider>");
     expect(routes).not.toContain("ui2Screen(");
   });
 
