@@ -17,6 +17,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog,
+  agentNests,
   agentWakeupRequests,
   agents,
   companies,
@@ -64,6 +65,7 @@ describeEmbeddedPostgres("project-scoped automatic claim", () => {
     await db.delete(agentWakeupRequests);
     await db.delete(issueClaims);
     await db.delete(issues);
+    await db.delete(agentNests);
     await db.delete(projectMemberships);
     await db.delete(projects);
     await db.delete(agents);
@@ -113,6 +115,10 @@ describeEmbeddedPostgres("project-scoped automatic claim", () => {
 
   async function join(companyId: string, projectId: string, userId: string, state = "joined") {
     await db.insert(projectMemberships).values({ companyId, projectId, userId, state });
+  }
+
+  async function nest(companyId: string, projectId: string, agentId: string) {
+    await db.insert(agentNests).values({ companyId, projectId, agentId });
   }
 
   async function seedTask(companyId: string, identifier: string, projectId: string | null) {
@@ -257,5 +263,29 @@ describeEmbeddedPostgres("project-scoped automatic claim", () => {
     expect(byAgent.get(OUTSIDER_ID)).toEqual([ledProject]);
     expect(byAgent.get(MEMBER_ID)).toEqual([joinedProject]);
     expect(byAgent.has("human-user-1")).toBe(false);
+  });
+
+  it("an agent nested in the project, with no membership row, is a member everywhere", async () => {
+    const companyId = await seedCompany();
+    await seedAgent(companyId, OUTSIDER_ID, "outsider-eng");
+    await seedAgent(companyId, MEMBER_ID, "nested-eng");
+    const projectId = await seedProject(companyId);
+    await nest(companyId, projectId, MEMBER_ID);
+    const scoped = await seedTask(companyId, "TASK-SCOPED", projectId);
+
+    // role queue (SQL gate)
+    const nestedQueue = await listRoleQueue(db, companyId, "engineer", MEMBER_ID);
+    const outsiderQueue = await listRoleQueue(db, companyId, "engineer", OUTSIDER_ID);
+    expect(nestedQueue.map((entry) => entry.issueId)).toEqual([scoped]);
+    expect(outsiderQueue).toEqual([]);
+
+    // roster projectIds
+    const byAgent = await listAgentProjectIds(db, companyId);
+    expect(byAgent.get(MEMBER_ID)).toEqual([projectId]);
+    expect(byAgent.has(OUTSIDER_ID)).toBe(false);
+
+    // matcher: the nested agent wins over the outsider that sorts first
+    const pair = await matchIssue(matcher(), scoped);
+    expect(pair?.agentId).toBe(MEMBER_ID);
   });
 });

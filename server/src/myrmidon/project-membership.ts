@@ -10,6 +10,8 @@
 //   agent ∈ project ⇔ projects.lead_agent_id = agent.id
 //                     ∨ exists project_memberships(company_id, project_id,
 //                           user_id = agent.id, state = 'joined')
+//                     ∨ exists agent_nests(company_id, project_id,
+//                           agent_id = agent.id)       -- nest (decision 18.10)
 //
 // `project_memberships.user_id` is polymorphic. For an agent, membership
 // counts only when that ID resolves to an agent in the same company; this
@@ -17,14 +19,14 @@
 // project stays open to the company. A manually assigned task is never gated.
 
 import { and, eq, isNotNull, sql, type SQL } from "drizzle-orm";
-import { agents, issues, projectMemberships, projects, type Db } from "@paperclipai/db";
+import { agentNests, agents, issues, projectMemberships, projects, type Db } from "@paperclipai/db";
 
 /**
  * The claim gate over the outer `issues` row (a SQL twin of
  * `unassignedTaskRoutedToRole`'s style): TRUE when the row's task may be
  * self-served by `agentId` — a projectless task is open to the company, a
- * project task only to a member of that project (its lead or a joined
- * member).
+ * project task only to a member of that project (its lead, a joined
+ * member, or an agent nested in it).
  */
 export function projectScopedClaimGate(agentId: string): SQL {
   const agentRef = sql`${agentId}::uuid`;
@@ -54,6 +56,13 @@ export function projectScopedClaimGate(agentId: string): SQL {
               and pm.state = 'joined'
               and a.id = ${agentRef}
           )
+          or exists (
+            select 1
+            from agent_nests n
+            where n.company_id = ${issues.companyId}
+              and n.project_id = ${issues.projectId}
+              and n.agent_id = ${agentRef}
+          )
         )
     )
   )`;
@@ -68,7 +77,7 @@ export async function projectMembershipByProject(
   db: Db,
   companyId: string,
 ): Promise<Map<string, Set<string>>> {
-  const [ledRows, joinedRows] = await Promise.all([
+  const [ledRows, joinedRows, nestRows] = await Promise.all([
     db
       .select({ projectId: projects.id, leadAgentId: projects.leadAgentId })
       .from(projects)
@@ -92,6 +101,10 @@ export async function projectMembershipByProject(
           eq(projectMemberships.state, "joined"),
         ),
       ),
+    db
+      .select({ projectId: agentNests.projectId, agentId: agentNests.agentId })
+      .from(agentNests)
+      .where(eq(agentNests.companyId, companyId)),
   ]);
   const byProject = new Map<string, Set<string>>();
   const add = (projectId: string, agentId: string | null) => {
@@ -102,6 +115,7 @@ export async function projectMembershipByProject(
   };
   for (const row of ledRows) add(row.projectId, row.leadAgentId);
   for (const row of joinedRows) add(row.projectId, row.userId);
+  for (const row of nestRows) add(row.projectId, row.agentId);
   return byProject;
 }
 
@@ -114,7 +128,7 @@ export async function projectMemberAgentIds(
   companyId: string,
   projectId: string,
 ): Promise<Set<string>> {
-  const [ledRows, joinedRows] = await Promise.all([
+  const [ledRows, joinedRows, nestRows] = await Promise.all([
     db
       .select({ leadAgentId: projects.leadAgentId })
       .from(projects)
@@ -136,10 +150,15 @@ export async function projectMemberAgentIds(
           eq(projectMemberships.state, "joined"),
         ),
       ),
+    db
+      .select({ agentId: agentNests.agentId })
+      .from(agentNests)
+      .where(and(eq(agentNests.companyId, companyId), eq(agentNests.projectId, projectId))),
   ]);
   const members = new Set<string>();
   for (const row of ledRows) if (row.leadAgentId) members.add(row.leadAgentId);
   for (const row of joinedRows) members.add(row.userId);
+  for (const row of nestRows) members.add(row.agentId);
   return members;
 }
 
