@@ -1,3 +1,5 @@
+import { readProductEnvFrom } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
+
 export type CloudInstanceEnv = Record<string, string | undefined>;
 
 export type CloudStackContext = {
@@ -16,17 +18,15 @@ function normalizeOptionalEnvValue(value: string | undefined): string | null {
 /**
  * The canonical Paperclip Cloud instance predicate.
  *
- * The tenant token is the signal injected on live cloud stacks. The managed
- * config document is the legacy/bootstrap signal used by managed feature and
- * plugin floors. Their union is intentionally monotonic: either prior signal
- * keeps every restrictive cloud floor enabled.
+ * The managed-config flag and tenant-server credential indicate a Cloud-managed
+ * instance. Either non-empty new-name or compatibility name keeps the restrictive floor.
  */
 export function isCloudManagedInstance(
   env: CloudInstanceEnv = process.env,
 ): boolean {
   return (
-    normalizeOptionalEnvValue(env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN) !== null ||
-    env.PAPERCLIP_MANAGED_CONFIG !== undefined
+    normalizeOptionalEnvValue(readProductEnvFrom(env, "CLOUD_TENANT_SERVER_TOKEN")) !== null ||
+    readProductEnvFrom(env, "MANAGED_CONFIG") !== undefined
   );
 }
 
@@ -43,10 +43,10 @@ export function getCloudStackContext(
   if (!isCloudManagedInstance(env)) return null;
 
   return {
-    stackId: normalizeOptionalEnvValue(env.PAPERCLIP_CLOUD_STACK_ID),
-    stackSlug: normalizeOptionalEnvValue(env.PAPERCLIP_STACK_SLUG),
-    accountGroupId: normalizeOptionalEnvValue(env.PAPERCLIP_CLOUD_ACCOUNT_GROUP_ID),
-    primaryHost: normalizeOptionalEnvValue(env.PAPERCLIP_PRIMARY_HOST),
-    cloudOrigin: normalizeOptionalEnvValue(env.PAPERCLIP_CLOUD_API_ORIGIN),
+    stackId: normalizeOptionalEnvValue(readProductEnvFrom(env, "CLOUD_STACK_ID")),
+    stackSlug: normalizeOptionalEnvValue(readProductEnvFrom(env, "STACK_SLUG")),
+    accountGroupId: normalizeOptionalEnvValue(readProductEnvFrom(env, "CLOUD_ACCOUNT_GROUP_ID")),
+    primaryHost: normalizeOptionalEnvValue(readProductEnvFrom(env, "PRIMARY_HOST")),
+    cloudOrigin: normalizeOptionalEnvValue(readProductEnvFrom(env, "CLOUD_API_ORIGIN")),
   };
 }
