@@ -14,8 +14,12 @@ export type { InvokableAgentSnapshot, IssueSnapshot, ReleaseRecoveryBlockedNotic
 export type LockedIssueExecution = {
   /** Plan bounded recovery without draining messages while the finishing owner cleans up. */
   recoveryOnly?: boolean;
+  /** The primary release gate already resolved to released; drain only a released sibling. */
+  primaryReleaseOnly?: boolean;
   primaryIssue: IssueSnapshot;
   run: RunSnapshot;
+  /** One released sibling to drain after the selected primary's existing path. */
+  releasedSiblingIssue?: IssueSnapshot;
 };
 
 export type ReleaseTransactionResult = {
@@ -110,6 +114,10 @@ export type PromoteDeferredWakeInput = {
  */
 export interface WakeQueueTransaction {
   findInvokableAgent(input: { companyId: string; agentId: string }): Promise<InvokableAgentSnapshot | null>;
+  findIssue(input: { companyId: string; issueId: string }): Promise<IssueSnapshot | null>;
+  claimIssueExecutionLease(input: { companyId: string; issueId: string; runId: string }): Promise<boolean>;
+  /** Undo a claim made for a sibling drain that found nothing to drain. */
+  releaseIssueExecutionLease(input: { companyId: string; issueId: string; runId: string }): Promise<void>;
   findNextDeferredWake(input: { companyId: string; issueId: string; excludedWakeIds?: string[] }): Promise<DeferredWakeCandidate | null>;
   getQueuedCommentLiveness(input: {
     companyId: string;
@@ -222,13 +230,14 @@ export interface WakeQueueTransaction {
 /**
  * Owns the module's own transaction: loads the finishing run, locks the
  * context issue and every sibling issue in id order, clears the two
- * release-lock columns, and picks the primary issue. When the primary
- * issue is missing, already reclaimed, or resolved by an early exit
- * (workspace-validation block, legacy reconciliation, a native-runtime
- * terminal failure), the adapter returns that outcome directly without
- * calling `fn`. Otherwise it calls `fn` with the locked issue and run, and
- * with `host`/`transaction` ports, so every call `fn` makes through the
- * transaction port participates in the one transaction this method owns.
+ * release-lock columns, picks the primary issue, and may include one released
+ * sibling for a bounded immediate drain. When the primary issue is missing, already
+ * reclaimed, or resolved by an early exit (workspace-validation block, legacy
+ * reconciliation, a native-runtime terminal failure), the adapter returns
+ * that outcome directly without calling `fn`. Otherwise it calls `fn` with
+ * the locked issue and run, and with `host`/`transaction` ports, so every call
+ * `fn` makes through the transaction port participates in the transaction
+ * this method owns.
  */
 export interface IssueLockWriter {
   withIssueExecutionLock(
@@ -238,6 +247,7 @@ export interface IssueLockWriter {
       ports: { host: WakeQueueHost; transaction: WakeQueueTransaction },
     ) => Promise<ReleaseTransactionResult>,
   ): Promise<ReleaseTransactionResult & { run: RunSnapshot }>;
+  claimIssueExecutionLease(input: { companyId: string; issueId: string; runId: string }): Promise<boolean>;
 }
 
 export type StrandedAssignedIssueEscalationInput = {

@@ -6105,10 +6105,29 @@ it.each(["held-ack", "lost-ack", "rejected-attach"] as const)(
       const runnerPid = bundle.evidence().runnerPid;
       providerPid = bundle.evidence().codexPid;
       const rotations: (typeof core.store.state)[] = [];
+      let retiredSnapshot: typeof core.store.state | null = null;
+      const originalCommit = core.store.commit.bind(core.store);
+      vi.spyOn(core.store, "commit").mockImplementation((candidate) => {
+        if (
+          candidate.warmTransition?.phase === "prepared" &&
+          candidate.identity.runId === oldIdentity.runId
+        ) {
+          retiredSnapshot = structuredClone(candidate);
+        } else if (
+          core.store.state.warmTransition?.phase === "prepared" &&
+          core.store.state.identity.runId === oldIdentity.runId &&
+          retiredSnapshot === null
+        ) {
+          retiredSnapshot = structuredClone(core.store.state);
+        }
+        return originalCommit(candidate);
+      });
       const rotate = core.rotateRunIdentity.bind(core);
       vi.spyOn(core, "rotateRunIdentity").mockImplementation(
         (identity, template) => {
-          rotations.push(structuredClone(core.store.state));
+          rotations.push(
+            retiredSnapshot ?? structuredClone(core.store.state),
+          );
           return rotate(identity, template);
         },
       );

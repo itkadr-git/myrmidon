@@ -1195,35 +1195,27 @@ describe.each(["unchanged", "newer_active", "stale_idle"] as const)(
           .from(agentWakeupRequests)
           .where(eq(agentWakeupRequests.idempotencyKey, newerWakeKey));
         expect(receipt.payload).toMatchObject({ commentId: newerCommentId });
-        expect(receipt.status).toBe("completed");
-        expect(receipt.runId).not.toBe(runId);
-        expect(freshStartTurn).toHaveBeenCalledOnce();
-        const [freshRun] = await db
-          .select()
-          .from(heartbeatRuns)
-          .where(eq(heartbeatRuns.id, receipt.runId!));
-        expect(freshRun).toMatchObject({
-          status: "succeeded",
-          nativePhase: "committed",
-        });
-        expect(
-          await db
-            .select()
-            .from(nativeRunResults)
-            .where(eq(nativeRunResults.runId, receipt.runId!)),
-        ).toHaveLength(1);
+        // Terminal issue cleanup cancels a deferred wake even when it was
+        // admitted for a newer comment while the original run recovered.
+        expect(receipt.status).toBe("cancelled");
+        expect(receipt.error).toBe("issue_closed");
+        // The original run closes the issue before the independently admitted
+        // wake can start a replacement turn. Terminal cleanup must therefore
+        // leave the receipt without a child run and without provider activity.
+        expect(receipt.runId).toBeNull();
+        expect(freshStartTurn).not.toHaveBeenCalled();
         expect(
           factoryInputs.filter((input) => input.binding.runId === runId),
         ).toHaveLength(1);
         await heartbeat.reapOrphanedRuns({ staleThresholdMs: 0 });
         await drainHeartbeatRunsToQuiescence(db, heartbeat);
-        expect(freshStartTurn).toHaveBeenCalledOnce();
+        expect(freshStartTurn).not.toHaveBeenCalled();
         expect(
           await db
             .select()
             .from(heartbeatRuns)
             .where(eq(heartbeatRuns.companyId, companyId)),
-        ).toHaveLength(2);
+        ).toHaveLength(1);
         return;
       }
       const recoveryState = {

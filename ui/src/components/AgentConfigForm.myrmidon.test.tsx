@@ -14,6 +14,7 @@ import { ToastProvider } from "../context/ToastContext";
 import { AgentConfigForm } from "./AgentConfigForm";
 import { botContainerApi, type BotContainerStatus } from "./myrmidon/botContainerApi";
 import { ApiError } from "../api/client";
+import { BOT_CONTAINER_DEFAULTS } from "./myrmidon/botContainerConfig";
 
 const mockAgentsApi = vi.hoisted(() => ({
   adapterModels: vi.fn(),
@@ -383,7 +384,8 @@ describe("myrmidon(W2b) agent form container section", () => {
     expect(result.onSave).toHaveBeenCalledWith(
       expect.objectContaining({
         replaceAdapterConfig: true,
-        adapterConfig: expect.objectContaining({ container: CARD }),
+        // the section fills in BOT_CONTAINER_DEFAULTS; memory default is 1024 MB since #1480
+        adapterConfig: expect.objectContaining({ container: { ...CARD, memoryMb: BOT_CONTAINER_DEFAULTS.memoryMb } }),
       }),
     );
   });

@@ -5,7 +5,9 @@ import {
   TRANSIENT_RUN_FAILURE_ERROR_CODES,
   TRANSIENT_RUN_FAILURE_ERROR_FAMILIES,
   classifyRunFailureForRetry,
+  isPermanentAgentFailure,
   isRetryableRunFailure,
+  isTransientFailure,
 } from "./classification.js";
 
 describe("run retry policy: failure classification", () => {
@@ -128,5 +130,68 @@ describe("run retry policy: failure classification", () => {
       isRetryableRunFailure(classifyRunFailureForRetry({ errorCode: "budget_exhausted" })),
     ).toBe(false);
     expect(isRetryableRunFailure(classifyRunFailureForRetry({}))).toBe(false);
+  });
+
+  it("classifies transient error messages when errorCode is generic (e.g. setup_failed, adapter_failed)", () => {
+    expect(
+      classifyRunFailureForRetry({
+        errorCode: "setup_failed",
+        errorMessage: "Error: continuation_source_context_missing",
+      }),
+    ).toMatchObject({
+      classification: "transient",
+      reason: "transient_error_message",
+    });
+    expect(
+      classifyRunFailureForRetry({
+        errorCode: "adapter_failed",
+        errorMessage: "stream was interrupted",
+      }),
+    ).toMatchObject({
+      classification: "transient",
+      reason: "transient_error_message",
+    });
+    expect(
+      classifyRunFailureForRetry({
+        errorCode: "adapter_failed",
+        errorMessage: "controller lease lost",
+      }),
+    ).toMatchObject({
+      classification: "transient",
+      reason: "transient_error_message",
+    });
+    expect(
+      classifyRunFailureForRetry({
+        errorCode: "adapter_failed",
+        errorMessage: "connect ECONNRESET 127.0.0.1:443",
+      }),
+    ).toMatchObject({
+      classification: "transient",
+      reason: "transient_error_message",
+    });
+  });
+
+  it("evaluates isTransientFailure and isPermanentAgentFailure accurately", () => {
+    expect(isTransientFailure({ errorCode: "continuation_source_context_missing" })).toBe(true);
+    expect(isTransientFailure({ errorCode: "stream_interrupted" })).toBe(true);
+    expect(isTransientFailure({ errorCode: "controller_lease_lost" })).toBe(true);
+    expect(isTransientFailure({ errorCode: "transient_network_error" })).toBe(true);
+    expect(isTransientFailure({ errorMessage: "response stream was interrupted" })).toBe(true);
+    expect(isTransientFailure({ errorMessage: "fetch failed" })).toBe(true);
+    expect(isTransientFailure({ errorCode: "provider_quota" })).toBe(true); // Retryable run failure
+
+    // Permanent agent failures
+    expect(isPermanentAgentFailure({ errorCode: "provider_quota" })).toBe(true);
+    expect(isPermanentAgentFailure({ errorCode: "continuation_user_authorization_missing" })).toBe(true);
+    expect(isPermanentAgentFailure({ errorFamily: "refresh_token_reused" })).toBe(true);
+    expect(isPermanentAgentFailure({ errorCode: "configuration_incomplete" })).toBe(true);
+    expect(isPermanentAgentFailure({ errorMessage: "key not allowed to access model" })).toBe(true);
+
+    // Transient errors are NOT permanent agent failures
+    expect(isPermanentAgentFailure({ errorCode: "continuation_source_context_missing" })).toBe(false);
+    expect(isPermanentAgentFailure({ errorCode: "stream_interrupted" })).toBe(false);
+    expect(isPermanentAgentFailure({ errorCode: "controller_lease_lost" })).toBe(false);
+    expect(isPermanentAgentFailure({ errorCode: "transient_network_error" })).toBe(false);
+    expect(isPermanentAgentFailure({ errorMessage: "controller lease lost" })).toBe(false);
   });
 });
