@@ -6,13 +6,17 @@
 package main
 
 import (
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
+	"time"
 )
 
 // botStatus is the driver contract's BotContainerStatus.
@@ -59,6 +63,12 @@ type config struct {
 	Upstream string        `json:"upstream"`
 	Bots     []bot         `json:"bots"`
 	Memory   *memoryConfig `json:"memory,omitempty"`
+
+	// mTLS material for the site API. All three are set together; serving
+	// requires them (requireTLS), --check-config does not.
+	SiteCA     string `json:"siteCA,omitempty"`
+	ServerCert string `json:"serverCert,omitempty"`
+	ServerKey  string `json:"serverKey,omitempty"`
 }
 
 type bot struct {
@@ -103,17 +113,84 @@ func main() {
 		fmt.Println("configuration is valid")
 		return
 	}
+	if err := requireTLS(&cfg); err != nil {
+		log.Fatalf("config is invalid: %v", err)
+	}
+	tlsConf, err := buildTLSConfig(&cfg)
+	if err != nil {
+		log.Fatalf("TLS setup failed: %v", err)
+	}
 	memory, err := newMemoryClient(cfg.Memory)
 	if cfg.Memory != nil && cfg.Memory.Enabled && err != nil {
 		log.Fatalf("config is invalid: %v", err)
 	}
 	srv := &server{cfg: &cfg, memory: memory}
-	http.HandleFunc("/v1/bots", srv.requireAuth(srv.list))
-	http.HandleFunc("/v1/bots/", srv.requireAuth(srv.route))
-	http.HandleFunc("/v1/memory/recall", srv.requireAuth(srv.memoryRecall))
-	http.HandleFunc("/v1/memory/retain", srv.requireAuth(srv.memoryRetain))
-	log.Printf("fleetd listening on %s", cfg.Listen)
-	log.Fatal(http.ListenAndServe(cfg.Listen, nil))
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/bots", srv.requireAuth(srv.list))
+	mux.HandleFunc("/v1/bots/", srv.requireAuth(srv.route))
+	mux.HandleFunc("/v1/memory/recall", srv.requireAuth(srv.memoryRecall))
+	mux.HandleFunc("/v1/memory/retain", srv.requireAuth(srv.memoryRetain))
+	log.Printf("fleetd listening on %s (mTLS)", cfg.Listen)
+	log.Fatal((&http.Server{
+		Addr:              cfg.Listen,
+		Handler:           mux,
+		TLSConfig:         tlsConf,
+		ReadHeaderTimeout: 5 * time.Second,
+	}).ListenAndServeTLS("", ""))
+}
+
+// requireTLS is the serving-time check: the site API is mTLS-only, so the CA
+// and the server key pair must be configured, absolute and readable.
+func requireTLS(cfg *config) error {
+	if cfg.SiteCA == "" || cfg.ServerCert == "" || cfg.ServerKey == "" {
+		return fmt.Errorf("siteCA, serverCert and serverKey are required")
+	}
+	return checkTLSPaths(cfg)
+}
+
+// checkTLSPaths rejects a partial TLS block and non-absolute paths.
+func checkTLSPaths(cfg *config) error {
+	set := 0
+	for _, p := range []string{cfg.SiteCA, cfg.ServerCert, cfg.ServerKey} {
+		if p != "" {
+			set++
+		}
+	}
+	if set == 0 {
+		return nil
+	}
+	if set != 3 {
+		return fmt.Errorf("siteCA, serverCert and serverKey must be set together")
+	}
+	for name, p := range map[string]string{"siteCA": cfg.SiteCA, "serverCert": cfg.ServerCert, "serverKey": cfg.ServerKey} {
+		if !filepath.IsAbs(p) {
+			return fmt.Errorf("%s path must be absolute", name)
+		}
+	}
+	return nil
+}
+
+// buildTLSConfig returns a server config that demands a client certificate
+// signed by the site CA. Errors carry no key material.
+func buildTLSConfig(cfg *config) (*tls.Config, error) {
+	pair, err := tls.LoadX509KeyPair(cfg.ServerCert, cfg.ServerKey)
+	if err != nil {
+		return nil, fmt.Errorf("load server certificate")
+	}
+	caPEM, err := os.ReadFile(cfg.SiteCA)
+	if err != nil {
+		return nil, fmt.Errorf("read site CA")
+	}
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(caPEM) {
+		return nil, fmt.Errorf("site CA contains no certificates")
+	}
+	return &tls.Config{
+		MinVersion:   tls.VersionTLS12,
+		Certificates: []tls.Certificate{pair},
+		ClientCAs:    pool,
+		ClientAuth:   tls.RequireAndVerifyClientCert,
+	}, nil
 }
 
 func validate(cfg *config) error {
@@ -122,6 +199,9 @@ func validate(cfg *config) error {
 	}
 	if len(cfg.Token) < 32 {
 		return fmt.Errorf("token must be at least 32 characters")
+	}
+	if err := checkTLSPaths(cfg); err != nil {
+		return err
 	}
 	if cfg.Upstream == "" {
 		cfg.Upstream = "/var/run/docker.sock"
