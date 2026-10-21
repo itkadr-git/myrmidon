@@ -325,7 +325,8 @@ describeEmbeddedPostgres(
         fixture.companyId,
         interaction.id,
       );
-      const publication = publications.find((item) => item.provider === "telegram");
+      expect(publications).toHaveLength(1);
+      const publication = publications[0];
       expect(publication).toBeDefined();
       expect((publication!.payload as { text?: string }).text).toContain(
         `https://myrmidon.example/issues/${fixture.workIssue.id}`,
