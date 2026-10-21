@@ -1363,6 +1363,11 @@
       "maxActiveTasks": "Max active tasks per agent",
       "sweepIntervalSec": "Sweep interval, seconds"
     },
+    "help": {
+      "leaseTtlSec": "How long a claim on a task lasts before it expires and the task returns to the queue (60–86400 seconds).",
+      "maxActiveTasks": "Most tasks one agent may hold at once (1–100). Leave empty for no ceiling.",
+      "sweepIntervalSec": "How often the board sweeps for expired claims and re-matches tasks (5 seconds or more)."
+    },
     "noCeilingPlaceholder": "No ceiling",
     "requiredPlaceholder": "Required",
     "saving": "Saving...",

@@ -16,15 +16,21 @@ import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import enCatalog from "@/i18n/myrmidon-locales/en.json";
+import ruCatalog from "@/i18n/myrmidon-locales/ru.json";
 
 // The tests run outside the app bootstrap, so i18n.init has not run; make
 // t() return the key's EN text from the fork catalog ({{count}}-style
 // placeholders are interpolated from the options).
+// Keys t() could not resolve in en.json — a missing key must fail a test, not
+// silently render as the raw key.
+const missingKeys = vi.hoisted(() => new Set<string>());
+
 vi.mock("@/i18n", () => ({
   useTranslation: () => ({
     t: (key: string, options?: Record<string, unknown>) => {
       let node: unknown = enCatalog;
       for (const part of key.split(".")) node = (node as Record<string, unknown>)?.[part];
+      if (typeof node !== "string") missingKeys.add(key);
       return typeof node === "string"
         ? node.replace(/\{\{\s*(\w+)\s*\}\}/g, (_m, name: string) => String(options?.[name] ?? ""))
         : key;
@@ -393,5 +399,23 @@ describe("myrmidon(1.6.5 OPE-6894) task cooling block", () => {
   it("shows a save error from the server", () => {
     renderCooling({}, vi.fn(), { error: "Instance admin access required" });
     expect(container.textContent).toContain("Instance admin access required");
+  });
+
+  it("every i18n key the panels render exists in en.json, and ru.json mirrors the swarmClaim keys", () => {
+    missingKeys.clear();
+    render(view);
+    expect([...missingKeys]).toEqual([]);
+    renderCooling({});
+    expect([...missingKeys]).toEqual([]);
+
+    const flatten = (node: unknown, prefix: string, out: string[]) => {
+      if (node && typeof node === "object") {
+        for (const [k, v] of Object.entries(node)) flatten(v, prefix ? `${prefix}.${k}` : k, out);
+      } else out.push(prefix);
+      return out;
+    };
+    const en = flatten(enCatalog.swarmClaim, "swarmClaim", []).sort();
+    const ru = flatten(ruCatalog.swarmClaim, "swarmClaim", []).sort();
+    expect(ru).toEqual(en);
   });
 });
