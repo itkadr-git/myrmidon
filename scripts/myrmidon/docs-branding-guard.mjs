@@ -58,6 +58,9 @@ const ALLOWLIST = [
   "PaperclipLockup", "PaperclipLoading", "AnimatedPaperclipIcon",
   "Paperclip-managed skills", "Paperclip skill", "Навык Paperclip",
   "Paperclip needs a disposition", // legacy notification body, still recognized
+  "Paperclip v2026.916.1", // source release in the migration changelog
+  "Paperclip → Myrmidon", // source product named in the migration changelog
+  "пользователей Paperclip на Myrmidon", // Russian migration changelog wording
   "Close the current Paperclip task", // frozen legacy Discord command digest
   "«Paperclip ", "Paperclip connections", "Paperclip projects",
   "Paperclip connected",
@@ -67,7 +70,7 @@ const ALLOWLIST = [
   "отличий Myrmidon от Paperclip",
   "вместо Paperclip", "остаётся Paperclip",
   "Paperclip — только основа", "Paperclip 2026.916.1",
-  "Paperclip v2026.916.1", "Paperclip → Myrmidon", "пользователей Paperclip", // MIGRATE-A changelog (myrmidon:migrate moves a Paperclip instance)
+  "Paperclip v2026.916.1", "Paperclip → Myrmidon", "пользователей Paperclip", "Migration from Paperclip", "Миграция с Paperclip", "Migration-from-Paperclip", // MIGRATE-A changelog (myrmidon:migrate moves a Paperclip instance)
   "Paperclip base", "Paperclip в основе", "основы Paperclip",
   "рутина Paperclip", "рутине Paperclip", "за основу",
   "Base Paperclip version", "base Paperclip version", "базового Paperclip",
@@ -80,12 +83,17 @@ const ALLOWLIST = [
   "Allow Paperclip reads", "upstream Paperclip", "вендорского Paperclip",
   "Paperclip server failed to start", "Paperclip вендора",
   "Paperclip v2026.1001.0",
+  "Paperclip v2026.916.1", "Paperclip → Myrmidon", "пользователей Paperclip",
   "from Paperclip to Myrmidon", "с Paperclip на Myrmidon",
   "Paperclip instance", "экземпляр Paperclip",
-  "Paperclip release", "Paperclip релиза",
+  "Paperclip release",
   "Paperclip state", "состояние Paperclip",
   "Paperclip server", "сервер Paperclip",
   "old Paperclip", "старый Paperclip",
+  // MIGRATE-D: supported source releases and features of the vendor that Myrmidon lacks
+  "Paperclip releases", "Paperclip features", "Paperclip feature",
+  "релизов Paperclip", "релизы Paperclip", "релиз Paperclip", "возможностей Paperclip",
+  "Возможности Paperclip", "Релизы Paperclip",
   "/paperclip", // docker container/volume paths
   "paperclip/", // repo-relative internal paths
 ];

@@ -103,6 +103,7 @@ export interface AgentWakeRequest {
   idempotencyKey?: string | null;
   forceFreshSession?: boolean;
   debug?: { providerTrace: "raw" };
+  externalSession?: { connectionId: string; grantId: string; model: string };
 }
 
 function withCompanyScope(path: string, companyId?: string) {
@@ -263,6 +264,12 @@ export const agentsApi = {
   },
   invoke: (id: string, companyId?: string, data: AgentWakeRequest = {}) =>
     api.post<HeartbeatRun>(agentPath(id, companyId, "/heartbeat/invoke"), data),
+  externalSession: (id: string, data: AgentWakeRequest, companyId?: string) =>
+    api.post<AgentWakeupResponse | HeartbeatRun>(agentPath(id, companyId, "/wakeup"), {
+      ...data,
+      source: "on_demand",
+      triggerDetail: "manual",
+    }),
   wakeup: (
     id: string,
     data: AgentWakeRequest,

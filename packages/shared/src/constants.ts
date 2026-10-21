@@ -954,6 +954,9 @@ export const LIVE_EVENT_TYPES = [
   "plugin.ui.updated",
   "plugin.worker.crashed",
   "plugin.worker.restarted",
+  // myrmidon(1.6.6 PROCS-1.7, design OPE-5394 §5.4.4): a board lease changed
+  // holder — payload carries { lease, holderBootId, epoch }.
+  "board.leader_changed",
 ] as const;
 export type LiveEventType = (typeof LIVE_EVENT_TYPES)[number];
 
@@ -1366,6 +1369,8 @@ export const PLUGIN_CAPABILITIES = [
   // Read issue attachment metadata and, via the capability-scoped host
   // bridge, attachment content bytes (bytes-only, company-scoped, audit-logged).
   "issue.attachments.read",
+  // Upload bounded issue attachments through the host's scoped storage path.
+  "issue.attachments.write",
   // Read company approvals (list + get). The host redacts approval payloads to
   // match the web app's own approval read surface.
   "approvals.read",

@@ -28,8 +28,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { existsSync, readFileSync } from "node:fs";
 import {
-  expandHomePrefix,
-  resolveDefaultBackupDir,
+  resolveDatabaseBackupDir,
   resolvePaperclipConfigPathForInstance,
 } from "@paperclipai/shared/home-paths";
 
@@ -57,11 +56,7 @@ function readConfig(configPath: string): PartialBackupConfig | null {
 /** The directory the database backups land in (config, then instance default). */
 export function resolveBackupDir(input: { homeDir?: string } = {}): string {
   const config = readConfig(resolvePaperclipConfigPathForInstance(input));
-  const raw = config?.database?.backup?.dir;
-  if (typeof raw === "string" && raw.trim().length > 0) {
-    return path.resolve(expandHomePrefix(raw.trim()));
-  }
-  return resolveDefaultBackupDir(input);
+  return resolveDatabaseBackupDir({ homeDir: input.homeDir, config });
 }
 
 /**
