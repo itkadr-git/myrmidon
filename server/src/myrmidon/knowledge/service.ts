@@ -69,6 +69,8 @@ export function createKnowledgeModule(db: Db, companyId: string, options: Knowle
       service.suggest(nestId, actor, { ...input, companyId }),
     decideSuggestion: (actor: Parameters<typeof service.decideSuggestion>[1], input: Omit<Parameters<typeof service.decideSuggestion>[2], "companyId"> & { suggestionId: string; decision: "accepted" | "declined" }) =>
       service.decideSuggestion(nestId, actor, { ...input, companyId }),
+    editSuggestion: (actor: Parameters<typeof service.editSuggestion>[1], input: Omit<Parameters<typeof service.editSuggestion>[2], "companyId"> & { suggestionId: string }) =>
+      service.editSuggestion(nestId, actor, { ...input, companyId }),
     listSuggestions: (status?: Parameters<typeof service.listSuggestions>[1]) => service.listSuggestions(nestId, status),
     exportTree: () => service.exportTree(nestId),
     importTree: (buf: Buffer, actor: Parameters<typeof service.importTree>[3], opts?: Parameters<typeof service.importTree>[4]) =>

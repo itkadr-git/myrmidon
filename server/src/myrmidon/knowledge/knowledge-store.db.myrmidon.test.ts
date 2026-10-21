@@ -276,9 +276,14 @@ describeEmbeddedPostgres("myrmidon(1.6.6 KNOWLEDGE-2.0 K-1) knowledge store over
     const suggestion = await store.suggest(companyId, BOT, { companyId, body: "add deploy note", rationale: "seen in run", targetSlug: "t", sourceKind: "run", sourceRef: "run-9" });
     expect(suggestion.status).toBe("pending");
     expect(suggestion.targetItemId).not.toBeNull();
-    expect((await store.listSuggestions(companyId, "pending")).length).toBe(1);
+    const pendingRows = await store.listSuggestions(companyId, "pending");
+    expect(pendingRows).toHaveLength(1);
+    expect(pendingRows[0]).toMatchObject({ rationale: "seen in run", sourceKind: "run", sourceRef: "run-9" });
+    await expect(store.editSuggestion(companyId, BOT, { suggestionId: suggestion.id, companyId, body: "updated deploy note", rationale: "verified in run" })).resolves.toMatchObject({ status: "pending" });
+    expect((await store.listSuggestions(companyId, "pending"))[0]).toMatchObject({ body: "updated deploy note", rationale: "verified in run" });
 
     await store.decideSuggestion(companyId, OWNER, { suggestionId: suggestion.id, companyId, decision: "accepted" });
+    await expect(store.editSuggestion(companyId, BOT, { suggestionId: suggestion.id, companyId, body: "late edit" })).rejects.toMatchObject({ code: "suggestion_decided" });
     await store.decideSuggestion(companyId, OWNER, { suggestionId: suggestion.id, companyId, decision: "declined" }).catch((e) => {
       expect((e as KnowledgeDomainError).code).toBe("suggestion_decided");
     });
