@@ -1,5 +1,5 @@
 import { ChangeEvent, useEffect, useState } from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   type InteractionResolverGovernance,
   type IssueThreadInteractionKind,
@@ -8,6 +8,7 @@ import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useCloudInstance } from "../hooks/useCloudInstance";
 import { companiesApi } from "../api/companies";
+import { accessApi } from "../api/access";
 import { assetsApi } from "../api/assets";
 import { queryKeys } from "../lib/queryKeys";
 import { Button } from "@/components/ui/button";
@@ -51,6 +52,7 @@ export function CompanySettings() {
   const [logoUrl, setLogoUrl] = useState("");
   const [logoUploadError, setLogoUploadError] = useState<string | null>(null);
   const [governance, setGovernance] = useState<InteractionResolverGovernance>({});
+  const [responsibleUserId, setResponsibleUserId] = useState<string | null>(null);
 
   // Sync local state from selected company
   useEffect(() => {
@@ -59,7 +61,14 @@ export function CompanySettings() {
     setDescription(selectedCompany.description ?? "");
     setLogoUrl(selectedCompany.logoUrl ?? "");
     setGovernance(selectedCompany.interactionResolverGovernance ?? {});
+    setResponsibleUserId(selectedCompany.defaultResponsibleUserId);
   }, [selectedCompany]);
+
+  const userDirectoryQuery = useQuery({
+    queryKey: ["company-user-directory", selectedCompanyId],
+    queryFn: () => accessApi.listUserDirectory(selectedCompanyId!),
+    enabled: Boolean(selectedCompanyId),
+  });
 
   const generalDirty =
     !!selectedCompany &&
@@ -93,6 +102,18 @@ export function CompanySettings() {
       setGovernance(company.interactionResolverGovernance ?? {});
       queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
     }
+  });
+
+  const companyPolicyMutation = useMutation({
+    mutationFn: (data: {
+      defaultResponsibleUserId?: string | null;
+      feedbackDataSharingEnabled?: boolean;
+      status?: "active" | "paused";
+    }) => companiesApi.update(selectedCompanyId!, data),
+    onSuccess: (company) => {
+      setResponsibleUserId(company.defaultResponsibleUserId);
+      queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
+    },
   });
 
   function handleGovernanceChange(
@@ -308,6 +329,57 @@ export function CompanySettings() {
           )}
         </div>
       )}
+
+      {/* Company policies */}
+      <div className="max-w-2xl space-y-4" data-testid="company-settings-policies-section">
+        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+          {t("settings.policies")}
+        </div>
+        <div className="space-y-3">
+          <ToggleField
+            label={t("settings.feedbackDataSharing")}
+            hint={t("settings.feedbackDataSharingHint")}
+            checked={selectedCompany.feedbackDataSharingEnabled}
+            onChange={(value) => companyPolicyMutation.mutate({ feedbackDataSharingEnabled: value })}
+            toggleTestId="company-settings-feedback-sharing-toggle"
+          />
+          <Field label={t("settings.defaultResponsibleUser")} hint={t("settings.defaultResponsibleUserHint")}>
+            <select
+              className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
+              value={responsibleUserId ?? ""}
+              onChange={(event) => {
+                const value = event.target.value || null;
+                setResponsibleUserId(value);
+                companyPolicyMutation.mutate({ defaultResponsibleUserId: value });
+              }}
+              disabled={userDirectoryQuery.isLoading || companyPolicyMutation.isPending}
+              data-testid="company-settings-responsible-user"
+            >
+              <option value="">{t("settings.noResponsibleUser")}</option>
+              {(userDirectoryQuery.data?.users ?? []).map((entry) => (
+                <option key={entry.principalId} value={entry.principalId}>
+                  {entry.user?.name || entry.user?.email || entry.principalId}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <div className="flex items-center justify-between gap-3 rounded-md border border-border px-3 py-2">
+            <div>
+              <div className="text-sm">{t("settings.companyPause")}</div>
+              <div className="text-xs text-muted-foreground">{t("settings.companyPauseHint")}</div>
+            </div>
+            <Button
+              size="sm"
+              variant={selectedCompany.status === "paused" ? "outline" : "secondary"}
+              disabled={companyPolicyMutation.isPending || selectedCompany.status === "archived"}
+              onClick={() => companyPolicyMutation.mutate({ status: selectedCompany.status === "paused" || selectedCompany.status === "archived" ? "active" : "paused" })}
+              data-testid="company-settings-pause-button"
+            >
+              {selectedCompany.status === "paused" || selectedCompany.status === "archived" ? t("settings.resumeCompany") : t("settings.pauseCompany")}
+            </Button>
+          </div>
+        </div>
+      </div>
 
       {/* Hiring */}
       <div className="max-w-2xl space-y-4" data-testid="company-settings-team-section">

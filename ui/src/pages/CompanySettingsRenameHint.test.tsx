@@ -16,6 +16,9 @@ const mockCompaniesApi = vi.hoisted(() => ({
 const mockAssetsApi = vi.hoisted(() => ({
   uploadCompanyLogo: vi.fn(),
 }));
+const mockAccessApi = vi.hoisted(() => ({
+  listUserDirectory: vi.fn(),
+}));
 
 const mockSetBreadcrumbs = vi.hoisted(() => vi.fn());
 const mockSetSelectedCompanyId = vi.hoisted(() => vi.fn());
@@ -31,9 +34,12 @@ const SELECTED_COMPANY = {
   attachmentMaxBytes: null,
   requireBoardApprovalForNewAgents: false,
   interactionResolverGovernance: {},
+  defaultResponsibleUserId: "user-1",
+  feedbackDataSharingEnabled: false,
 };
 
 vi.mock("../api/companies", () => ({ companiesApi: mockCompaniesApi }));
+vi.mock("../api/access", () => ({ accessApi: mockAccessApi }));
 vi.mock("../api/assets", () => ({ assetsApi: mockAssetsApi }));
 
 vi.mock("../context/BreadcrumbContext", () => ({
@@ -84,6 +90,10 @@ describe("CompanySettings rename hint", () => {
   beforeEach(() => {
     container = document.createElement("div");
     document.body.appendChild(container);
+    mockAccessApi.listUserDirectory.mockResolvedValue({ users: [
+      { principalId: "user-1", status: "active", user: { id: "user-1", name: "A. User", email: "a@example.test", image: null } },
+    ] });
+    mockCompaniesApi.update.mockResolvedValue(SELECTED_COMPANY);
   });
 
   afterEach(() => {
@@ -127,6 +137,14 @@ describe("CompanySettings rename hint", () => {
   it("stays silent on a self-hosted instance, where a rename keeps the prefix", () => {
     const root = render(SELF_HOSTED_HEALTH);
     expect(hintText()).toBeUndefined();
+    flushSync(() => root.unmount());
+  });
+
+  it("shows feedback sharing, responsible user, and pause controls", async () => {
+    const root = render(SELF_HOSTED_HEALTH);
+    await vi.waitFor(() => expect(container.querySelector('[data-testid="company-settings-responsible-user"] option[value="user-1"]')).not.toBeNull());
+    expect(container.querySelector('[data-testid="company-settings-feedback-sharing-toggle"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="company-settings-pause-button"]')?.textContent).toContain("Pause company");
     flushSync(() => root.unmount());
   });
 });
