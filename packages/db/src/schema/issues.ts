@@ -20,7 +20,7 @@ import { companies } from "./companies.js";
 import { heartbeatRuns } from "./heartbeat_runs.js";
 import { projectWorkspaces } from "./project_workspaces.js";
 import { executionWorkspaces } from "./execution_workspaces.js";
-import type { IssueReviewPolicy, IssueUnblockDescriptor, SourceTrustMetadata } from "@paperclipai/shared";
+import type { IssueReviewPolicy, IssueUnblockDescriptor, SourceTrustMetadata, IssueBlockerMetadata } from "@paperclipai/shared";
 
 export const issues = pgTable(
   "issues",
@@ -85,6 +85,7 @@ export const issues = pgTable(
     assigneeAdapterOverrides: jsonb("assignee_adapter_overrides").$type<Record<string, unknown>>(),
     executionPolicy: jsonb("execution_policy").$type<Record<string, unknown>>(),
     executionState: jsonb("execution_state").$type<Record<string, unknown>>(),
+    blockerMetadata: jsonb("blocker_metadata").$type<IssueBlockerMetadata | null>(),
     monitorNextCheckAt: timestamp("monitor_next_check_at", { withTimezone: true }),
     monitorWakeRequestedAt: timestamp("monitor_wake_requested_at", { withTimezone: true }),
     monitorLastTriggeredAt: timestamp("monitor_last_triggered_at", { withTimezone: true }),
@@ -107,7 +108,7 @@ export const issues = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
     // myrmidon(DB-PERF-P7): denormalized "last activity" of an issue —
     // greatest(updated_at, newest comment, newest activity_log row outside the
-    // local-inbox actions). Kept current by the triggers of migration 0307;
+    // local-inbox actions). Kept current by the triggers of migration 0355;
     // the issue list orders and reports by this column instead of running two
     // correlated MAX subqueries per candidate row.
     lastActivityAt: timestamp("last_activity_at", { withTimezone: true }).notNull().defaultNow(),

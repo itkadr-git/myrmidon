@@ -33,6 +33,7 @@ import { MobileBottomNav } from "./MobileBottomNav";
 import { WorktreeBanner } from "./WorktreeBanner";
 import { DevRestartBanner } from "./DevRestartBanner";
 import { MaintenanceBanner } from "./myrmidon/MaintenanceBanner"; // myrmidon(R3)
+import { LicenseAttentionBanner } from "./myrmidon/LicenseAttentionBanner"; // myrmidon(LICENSING)
 import { StandaloneBrowserControls } from "./StandaloneBrowserControls";
 import { RouteErrorBoundary } from "./RouteErrorBoundary";
 import { SidebarShell } from "./SidebarShell.production";
@@ -657,6 +658,7 @@ export function Layout() {
         <WorktreeBanner />
         <DevRestartBanner devServer={health?.devServer} />
         <MaintenanceBanner companyId={selectedCompanyId ?? null} /> {/* myrmidon(R3) */}
+        <LicenseAttentionBanner /> {/* myrmidon(LICENSING): a closed module without a working license */}
         <div
           className={cn(
             "min-h-0 flex-1",

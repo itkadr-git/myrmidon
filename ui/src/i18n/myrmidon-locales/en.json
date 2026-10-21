@@ -246,7 +246,12 @@
     "agentView": "Agent view",
     "live": "Live",
     "liveCount": "Live ({{count}})",
-    "sandbox": "Sandbox"
+    "sandbox": "Sandbox",
+    "scopeCompany": "Company",
+    "scopeCompanyNamed": "Company: {{name}}",
+    "filterRole": "Role",
+    "filterModel": "Model",
+    "filterAll": "All"
   },
   "inbox": {
     "title": "Inbox",
@@ -315,6 +320,7 @@
     "export": "Export",
     "import": "Import",
     "members": "Members",
+    "users": "Users",
     "secrets": "Secrets",
     "profile": "Profile",
     "environments": "Environments",
@@ -1050,7 +1056,8 @@
     "weightOff": "off",
     "source": {
       "settings": "Saved here",
-      "env": "From the server environment"
+      "env": "From the server environment",
+      "default": "Default"
     },
     "currentRelease": "Current release",
     "currentReleaseOff": "off",
@@ -1064,8 +1071,7 @@
     "loadFailed": "Failed to load the queue priority settings.",
     "saveFailed": "Saving the queue priority settings failed.",
     "error": {
-      "wholeNumber": "Enter a whole number of 0 or more",
-      "range": "Enter a whole number from 0 to {{max}}"
+      "wholeNumber": "Enter a whole number of 0 or more, or leave it empty"
     },
     "position": {
       "of": "Queue position {{position}} of {{total}}",
@@ -1120,7 +1126,13 @@
     "ageSeconds": "{{seconds}} s ago",
     "ageMinutes": "{{minutes}} min ago",
     "ageHours": "{{hours}} h ago",
-    "cadence": "Pulse every {{pulse}} s; a row older than {{stale}} s is stale."
+    "cadence": "Pulse every {{pulse}} s; a row older than {{stale}} s is stale.",
+    "colReady": "Ready",
+    "colRestarts": "Restarts",
+    "readyYes": "ready",
+    "readyNo": "not ready",
+    "restartCount": "{{count}}",
+    "groupSummary": "{{role}} — {{ready}} of {{count}} ready"
   },
   "boardLeases": {
     "title": "Leader leases",
@@ -1196,34 +1208,90 @@
     "saveFailed": "Could not save"
   },
   "licensing": {
-    "title": "Licensing",
-    "description": "Installation id and licenses of the closed connector modules. A client copies the license request and sends it to the owner; the owner signs a license here. The signing key stays on the server.",
-    "loading": "Loading licensing…",
+    "title": "Licenses",
+    "description": "Licenses of the closed connector modules installed on this server. Copy the license request and send it to the vendor; install the license you receive here — the modules on this server read it from the same file.",
+    "loading": "Loading licenses…",
+    "adminOnly": "Only the instance administrator can manage licenses.",
     "installId": "Installation id:",
     "sourceEnv": "The id is set by an environment override, not derived from the machine id. Make sure the modules use the same value.",
-    "sourceGenerated": "No machine id found: the id was generated and cached. Mount the host machine id read-only, otherwise a new install may get a new id and its license stops matching.",
-    "requestModules": "Modules in the request",
+    "sourceGenerated": "No machine id found: the id was generated and cached. Mount the host machine id read-only, otherwise a new installation may get a new id and the license will stop matching.",
+    "statusTitle": "License state",
+    "notInstalled": "not installed",
+    "licensePath": "License file: {{path}}",
+    "sourceIsEnv": "The license is set by the MYR_LICENSE variable of the board.",
+    "notShared": "{{path}} is inside the board container and not mounted from the host: modules on the host will not see a license saved here. Mount the host license directory into the board read-write (see the licensing guide).",
+    "state": {
+      "validForever": "Valid, no expiry",
+      "validUntil": "Valid until {{date}}",
+      "expiring": "Expires {{date}}",
+      "expired": "Expired",
+      "wrong_instance": "Not for this installation",
+      "missing": "No license",
+      "not_granted": "Not included in the license",
+      "bad_signature": "Invalid signature",
+      "invalid": "License damaged or unreadable"
+    },
+    "requestTitle": "Request a license",
+    "requestHint": "Pick the modules, copy the request and send it to the vendor in one message.",
     "requestLabel": "License request",
-    "copyRequest": "Copy license request",
+    "copyRequest": "Copy request",
     "copied": "Copied",
-    "issueTitle": "Issue a license",
-    "issuerNotConfigured": "The license signing key is not configured on this server (MYRMIDON_LICENSE_ISSUER_KEY_FILE). Issuing is unavailable.",
-    "pasteLabel": "License request from the client",
-    "notARequest": "This does not look like a license request. Ask the client to press \"Copy license request\" again.",
-    "manualId": "Or enter the installation id manually",
-    "modules": "Modules",
-    "days": "Term, days",
-    "noExpiry": "No expiry",
-    "client": "Client / watermark",
-    "issue": "Issue license",
-    "issuing": "Issuing…",
-    "issueFailed": "Could not issue the license. Check the fields and try again.",
-    "resultLabel": "License",
-    "copyLicense": "Copy license",
-    "download": "Download file",
-    "installHint": "Place the text into the license file of the modules on that installation.",
-    "issuedTitle": "Issued licenses",
-    "issuedEmpty": "No licenses issued yet.",
-    "until": "until {{date}}"
+    "installTitle": "Install a license",
+    "pasteLicense": "License (one line starting with MYR1.)",
+    "loadFile": "Load license.key file",
+    "save": "Save license",
+    "saving": "Saving…",
+    "saved": "License saved. The modules pick it up on their next check, no restart needed.",
+    "saveError": {
+      "badFormat": "This is not a license: expected one line starting with MYR1.",
+      "badPayload": "The license content is damaged. Ask the vendor for the file again.",
+      "badSignature": "The license signature is invalid: the text was changed or it was not issued by the vendor.",
+      "unsupportedRev": "This license format is not supported by this board version. Update the board.",
+      "instanceMismatch": "This license was issued for another installation: the installation id does not match. Send the vendor the request from this screen.",
+      "expired": "This license has already expired. Ask the vendor for a new one.",
+      "noCore": "This license does not allow any module to start.",
+      "envOverride": "The license is set by the MYR_LICENSE variable of the board, so a license cannot be saved here. Change the variable or remove it to use the license file.",
+      "unwritable": "Cannot write the license file {{path}}: the host license directory is not mounted into the board for writing (see the licensing guide).",
+      "fileUnreadable": "Cannot read the selected file.",
+      "generic": "Could not save the license. Try again."
+    },
+    "banner": "A closed module has no valid license: {{modules}}.",
+    "bannerLink": "Open Licenses"
+  },
+  "remoteSites": {
+    "title": "Remote sites",
+    "loading": "Loading sites…",
+    "error": "Unable to load sites: {{error}}",
+    "empty": "No sites configured",
+    "fixture": "Fixture preview — not production data",
+    "stale": "Stale health",
+    "expired": "Client certificate expired",
+    "capacity": "Capacity: {{used}}/{{total}}",
+    "botsCount": "Bots: {{count}}",
+    "driftCount": "Drift: {{count}}",
+    "showBots": "Show bots for {{name}}",
+    "hideBots": "Hide bots for {{name}}",
+    "showBotsLabel": "Show bots",
+    "hideBotsLabel": "Hide bots",
+    "image": "Image:",
+    "state": "State:",
+    "api": "API:",
+    "drift": "Drift",
+    "noBots": "No bots",
+    "status": {
+      "reachable": "Reachable",
+      "degraded": "Degraded",
+      "unreachable": "Unreachable",
+      "draining": "Draining",
+      "quarantined": "Quarantined",
+      "disabled": "Disabled"
+    },
+    "action": {
+      "restart": "Restart",
+      "stop": "Stop",
+      "move": "Move",
+      "drain": "Drain",
+      "resume": "Resume"
+    }
   }
 }

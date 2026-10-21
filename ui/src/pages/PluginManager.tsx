@@ -93,6 +93,8 @@ export function PluginManager() {
 
   const [installPackage, setInstallPackage] = useState("");
   const [installDialogOpen, setInstallDialogOpen] = useState(false);
+  const [upgradePrompt, setUpgradePrompt] = useState<{ plugin: PluginRecord; capabilities: string[] } | null>(null);
+  const [upgradeError, setUpgradeError] = useState<string | null>(null);
   const [uninstallPluginId, setUninstallPluginId] = useState<string | null>(null);
   const [uninstallPluginName, setUninstallPluginName] = useState<string>("");
   const [errorDetailsPlugin, setErrorDetailsPlugin] = useState<PluginRecord | null>(null);
@@ -143,6 +145,29 @@ export function PluginManager() {
     },
     onError: (err: Error) => {
       pushToast({ title: "Failed to uninstall plugin", body: err.message, tone: "error" });
+    },
+  });
+
+  const upgradeMutation = useMutation<PluginRecord, Error, { pluginId: string; approvedCapabilities?: string[] }>({
+    mutationFn: (input) =>
+      pluginsApi.upgrade(input.pluginId, { approvedCapabilities: input.approvedCapabilities }),
+    onSuccess: () => {
+      invalidatePluginQueries();
+      setUpgradePrompt(null);
+      setUpgradeError(null);
+      pushToast({ title: "Plugin upgraded successfully", tone: "success" });
+    },
+    onError: (err: Error, input: { pluginId: string; approvedCapabilities?: string[] }) => {
+      const match = err.message.match(/introduces new capabilities that require approval:\s*(.+?)\. The previous version declared/i);
+      if (match) {
+        const plugin = installedPlugins.find((candidate) => candidate.id === input.pluginId);
+        if (plugin) {
+          setUpgradePrompt({ plugin, capabilities: match[1].split(", ").map((cap) => cap.trim()) });
+        }
+        setUpgradeError(null);
+      } else {
+        setUpgradeError(err.message);
+      }
     },
   });
 
@@ -479,12 +504,25 @@ export function PluginManager() {
                           <Trash className="h-4 w-4" />
                         </Button>
                       </div>
-                      <Button variant="outline" size="sm" className="mt-2 h-8" asChild>
-                        <Link to={`/company/settings/instance/plugins/${plugin.id}`}>
-                          <Settings className="h-4 w-4" />
-                          Configure
-                        </Link>
-                      </Button>
+                      <div className="mt-2 flex gap-2">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          disabled={upgradeMutation.isPending}
+                          onClick={() => {
+                            setUpgradeError(null);
+                            upgradeMutation.mutate({ pluginId: plugin.id });
+                          }}
+                        >
+                          Upgrade
+                        </Button>
+                        <Button variant="outline" size="sm" className="h-8" asChild>
+                          <Link to={`/company/settings/instance/plugins/${plugin.id}`}>
+                            <Settings className="h-4 w-4" />
+                            Configure
+                          </Link>
+                        </Button>
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -496,8 +534,37 @@ export function PluginManager() {
       </section>
 
       <Dialog
+        open={upgradePrompt !== null}
+        onOpenChange={(open: boolean) => { if (!open) setUpgradePrompt(null); }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Approve additional plugin capabilities?</DialogTitle>
+            <DialogDescription>
+              This upgrade requests additional capabilities. Review them before approving and upgrading.
+            </DialogDescription>
+          </DialogHeader>
+          <ul className="list-disc space-y-1 pl-5 text-sm">
+            {upgradePrompt?.capabilities.map((capability) => <li key={capability}>{capability}</li>)}
+          </ul>
+          {upgradeError && <p className="text-sm text-destructive">{upgradeError}</p>}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setUpgradePrompt(null)}>Cancel</Button>
+            <Button
+              disabled={!upgradePrompt || upgradeMutation.isPending}
+              onClick={() => upgradePrompt && upgradeMutation.mutate({
+                pluginId: upgradePrompt.plugin.id,
+                approvedCapabilities: upgradePrompt.capabilities,
+              })}
+            >
+              {upgradeMutation.isPending ? "Upgrading..." : "Approve and upgrade"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      <Dialog
         open={uninstallPluginId !== null}
-        onOpenChange={(open) => { if (!open) setUninstallPluginId(null); }}
+        onOpenChange={(open: boolean) => { if (!open) setUninstallPluginId(null); }}
       >
         <DialogContent>
           <DialogHeader>
@@ -527,7 +594,7 @@ export function PluginManager() {
 
       <Dialog
         open={errorDetailsPlugin !== null}
-        onOpenChange={(open) => { if (!open) setErrorDetailsPlugin(null); }}
+        onOpenChange={(open: boolean) => { if (!open) setErrorDetailsPlugin(null); }}
       >
         <DialogContent className="sm:max-w-2xl">
           <DialogHeader>
