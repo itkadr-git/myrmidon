@@ -58,6 +58,8 @@ const {
   routineServiceFactoryMock,
   routineServiceMock,
   existingSettingsRows,
+  connectionDeliverySweepPendingMock,
+  questionResponseDeliverySweepPendingMock,
 } = vi.hoisted(() => {
   const createAppMock = vi.fn(async () => Object.assign((_: unknown, __: unknown) => {}, {
     locals: {
@@ -116,6 +118,14 @@ const {
     tickTimers: vi.fn(async () => ({ checked: 0, enqueued: 0, skipped: 0 })),
   };
   const inspectMigrationsMock = vi.fn(async () => ({ status: "upToDate" }));
+  const connectionDeliverySweepPendingMock = vi.fn(async () => ({ scanned: 0, failed: 0 }));
+  const questionResponseDeliverySweepPendingMock = vi.fn(async () => ({
+    scanned: 0,
+    steered: 0,
+    coalesced: 0,
+    wakeFallback: 0,
+    failed: 0,
+  }));
   const heartbeatServiceFactoryMock = vi.fn(() => heartbeatServiceMock);
   const issueThreadInteractionServiceMock = {
     sweepSupersededPendingRequestConfirmations: vi.fn(async () => ({ expired: 0 })),
@@ -417,19 +427,13 @@ vi.mock("../services/index.js", () => ({
 
 vi.mock("../services/connection-intent-delivery.js", () => ({
   connectionIntentDeliveryService: vi.fn(() => ({
-    sweepPending: vi.fn(async () => ({ scanned: 0, failed: 0 })),
+    sweepPending: connectionDeliverySweepPendingMock,
   })),
 }));
 
 vi.mock("../services/question-response-delivery.js", () => ({
   questionResponseDeliveryService: vi.fn(() => ({
-    sweepPending: vi.fn(async () => ({
-      scanned: 0,
-      steered: 0,
-      coalesced: 0,
-      wakeFallback: 0,
-      failed: 0,
-    })),
+    sweepPending: questionResponseDeliverySweepPendingMock,
   })),
 }));
 
@@ -710,6 +714,8 @@ describe("startServer feedback export wiring", () => {
       expect(issueThreadInteractionServiceMock.sweepMergedPullRequestConfirmations).not.toHaveBeenCalled();
       expect(executionWorkspaceServiceMock.sweepTerminalWorkspaces).not.toHaveBeenCalled();
       expect(routineServiceMock.tickScheduledTriggers).not.toHaveBeenCalled();
+      expect(connectionDeliverySweepPendingMock).not.toHaveBeenCalled();
+      expect(questionResponseDeliverySweepPendingMock).not.toHaveBeenCalled();
     } finally {
       setIntervalSpy.mockRestore();
       if (originalRole === undefined) delete process.env.PAPERCLIP_PROCESS_ROLE;
