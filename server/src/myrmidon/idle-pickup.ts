@@ -8,6 +8,7 @@ import { resolveAgentTeamLiveness, type ResolvedTeamLiveness } from "@paperclipa
 import { issueHasNoExecutionHold, wakeNotParkedOnExecutionHold } from "./settled-holds/ready-predicate.js";
 // myrmidon(1.6.5 F-26 T5): the cooling window of stale wake candidates (design §4.3).
 import { isIssueCoolingDown, readSwarmSettings } from "./wake-task-guard.js";
+import { projectScopedClaimGate } from "./project-membership.js";
 
 /**
  * Idle pickup (IDLE-PICKUP, Myrmidon 1.3).
@@ -367,6 +368,9 @@ function idlePickupCandidateRows(db: Db, companyId: string, agentId: string) {
       and(
         eq(issues.companyId, companyId),
         eq(issues.assigneeAgentId, agentId),
+        // A task assigned manually to this agent remains theirs, but stale or
+        // cross-project assignments must not turn into an automatic pickup.
+        projectScopedClaimGate(agentId),
         isNull(issues.assigneeUserId),
         isNull(issues.hiddenAt),
         isNull(issues.conversationAgentId),
