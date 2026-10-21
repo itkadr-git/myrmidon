@@ -366,8 +366,8 @@ export function instanceSettingsRoutes(
         await svc.updateGeneral({
           taskDrain: {
             draining: true,
-            startedAt: computed.startedAt.toISOString(),
-            expiresAt: computed.expiresAt?.toISOString() ?? null,
+            startedAt: computed.startedAt instanceof Date ? computed.startedAt.toISOString() : computed.startedAt,
+            expiresAt: computed.expiresAt instanceof Date ? computed.expiresAt.toISOString() : computed.expiresAt,
           },
         });
         if (options.processBus) {
