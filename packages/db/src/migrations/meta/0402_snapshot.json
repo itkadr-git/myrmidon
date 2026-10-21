@@ -1,5 +1,5 @@
 {
-  "id": "f1d852f8-a16d-4f70-9e52-529ebfaf0da2",
+  "id": "092a1f4b-cf6a-4533-9c4d-290e5847b7c9",
   "prevId": "65fb8a87-cfd0-4446-80c9-cc0b04810311",
   "version": "7",
   "dialect": "postgresql",
@@ -820,13 +820,6 @@
           "primaryKey": false,
           "notNull": true,
           "default": "'light'"
-        },
-        "sensitive": {
-          "name": "sensitive",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": true,
-          "default": false
         }
       },
       "indexes": {
@@ -54943,13 +54936,6 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
-        },
-        "roles": {
-          "name": "roles",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'[]'::jsonb"
         }
       },
       "indexes": {
