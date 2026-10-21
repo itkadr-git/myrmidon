@@ -67,6 +67,7 @@ export function normalizeRememberedInstanceSettingsPath(rawPath: string | null):
     suffix === "/access" ||
     suffix === "/plugins" ||
     suffix === "/experimental" ||
+    suffix === "/features" || // myrmidon(FEATURES)
     suffix === "/adapters"
   ) {
     return `${INSTANCE_SETTINGS_PATH_PREFIX}${suffix}${search}${hash}`;

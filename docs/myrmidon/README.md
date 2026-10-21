@@ -65,6 +65,7 @@ Myrmidon — система управления компаниями из ИИ-
 
 | Файл | О чём |
 |---|---|
+| [guides/features-page.md](guides/features-page.md) | Страница Instance → Features: реестр возможностей форка, их настройки и живое здоровье, сигнал во внимание, как добавить возможность |
 | [guides/run-limits.md](guides/run-limits.md) | Лимиты допуска прогонов: четыре лимита, источники значений, изменение из UI и API; причины ожидания queued-прогонов (`waitReason`) и отмена нестартуемых (F-09) |
 | [guides/queued-run-stall.md](guides/queued-run-stall.md) | Сигнал о застрявшем queued-прогоне (F-09): карточка внимания `queue_stall`, пороги, действия оператора |
 | [guides/run-stall.md](guides/run-stall.md) | Обнаружение зависших прогонов: что считается прогрессом, прерывание `run_stalled`, возврат задачи в `todo`, настройки |

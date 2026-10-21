@@ -2952,6 +2952,8 @@ export * from "./myrmidon-model-providers.js";
 // myrmidon(1.6.5-TG-LOCALE-C): instance-wide default language of the bridged
 // Telegram DM — storage key, precedence and resolver.
 export * from "./myrmidon-bridge-language.js";
+// myrmidon(FEATURES): the Instance -> Features page contract (registry view, health report).
+export * from "./myrmidon-features.js";
 // myrmidon(REVIEW-ROUTING): automatic reviewer routing for tasks that enter
 // in_review with no reviewer — settings contract and activity actions.
 export * from "./myrmidon-review-routing.js";
