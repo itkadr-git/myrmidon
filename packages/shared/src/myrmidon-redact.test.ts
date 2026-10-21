@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { defaultNestRedactConfig, redactText } from "./myrmidon-redact.js";
+import { defaultNestRedactConfig, mergeNestRedactConfig, redactText } from "./myrmidon-redact.js";
 
 describe("nest redaction", () => {
   it("uses the nest dictionary and rules", () => {
@@ -12,6 +12,13 @@ describe("nest redaction", () => {
     const config = defaultNestRedactConfig();
     config.counterparties = { "A+B (test)": "[COUNTERPARTY]" };
     expect(redactText("A+B (test) and AB test", config).text).toBe("[COUNTERPARTY] and AB test");
+  });
+
+  it("replaces dictionaries when a new patch supplies them", () => {
+    const config = defaultNestRedactConfig();
+    config.counterparties = { OldCo: "[OLD]" };
+    const next = mergeNestRedactConfig(config, { counterparties: { NewCo: "[NEW]" } });
+    expect(next.counterparties).toEqual({ NewCo: "[NEW]" });
   });
 
   it("keeps disabled rules untouched", () => {

@@ -52,8 +52,8 @@ export function mergeNestRedactConfig(
   return {
     mode: patch.mode ?? base.mode,
     rules: { ...base.rules, ...(patch.rules ?? {}) },
-    counterparties: { ...base.counterparties, ...(patch.counterparties ?? {}) },
-    signers: { ...base.signers, ...(patch.signers ?? {}) },
+    counterparties: patch.counterparties ?? base.counterparties,
+    signers: patch.signers ?? base.signers,
     contractNumbers: patch.contractNumbers ?? base.contractNumbers,
     invoiceNumbers: patch.invoiceNumbers ?? base.invoiceNumbers,
   };
