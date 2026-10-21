@@ -1121,3 +1121,166 @@ diff --git a/tests/hermes_state/test_deleted_wal_generation_guard.py b/tests/her
 
 
  @pytest.mark.skipif(
+diff --git a/tests/gateway/test_async_writer_acquire_contract.py b/tests/gateway/test_async_writer_acquire_contract.py
+new file mode 100644
+index 0000000..0c79225
+--- /dev/null
++++ b/tests/gateway/test_async_writer_acquire_contract.py
+@@ -0,0 +1,157 @@
++"""Adversarial coverage for the async writer-acquire lifecycle contract."""
++
++import asyncio
++from pathlib import Path
++
++import pytest
++
++from gateway.session_db_recovery import RecoverableHandleCache
++
++
++@pytest.mark.asyncio
++async def test_a_async_single_flight_does_not_duplicate_open(tmp_path):
++    cache = RecoverableHandleCache(initial_retry_delay=0, max_retry_delay=0)
++    started = asyncio.Event()
++    release = asyncio.Event()
++    calls = 0
++
++    async def opener():
++        nonlocal calls
++        calls += 1
++        started.set()
++        await release.wait()
++        return object()
++
++    path = tmp_path / "state.db"
++    first = asyncio.create_task(cache.get_async(path, opener))
++    await started.wait()
++    second = asyncio.create_task(cache.get_async(path, opener))
++    await asyncio.sleep(0)
++    assert await second is None
++    release.set()
++    assert await first is not None
++    assert calls == 1
++
++
++@pytest.mark.asyncio
++async def test_b_mixed_sync_async_single_flight(tmp_path):
++    cache = RecoverableHandleCache(initial_retry_delay=0, max_retry_delay=0)
++    started = asyncio.Event()
++    release = asyncio.Event()
++    calls = 0
++
++    async def async_opener():
++        nonlocal calls
++        calls += 1
++        started.set()
++        await release.wait()
++        return "async"
++
++    path = tmp_path / "state.db"
++    pending = asyncio.create_task(cache.get_async(path, async_opener))
++    await started.wait()
++    assert cache.get(path, lambda: "sync") is None
++    release.set()
++    assert await pending == "async"
++    assert cache.get(path, lambda: "duplicate") == "async"
++    assert calls == 1
++
++
++@pytest.mark.asyncio
++async def test_c_cancel_waits_for_open_and_transfers_ownership(tmp_path):
++    cache = RecoverableHandleCache(initial_retry_delay=0, max_retry_delay=0)
++    started = asyncio.Event()
++    release = asyncio.Event()
++    closed = []
++
++    async def opener():
++        started.set()
++        await release.wait()
++        return "owned"
++
++    path = tmp_path / "state.db"
++    task = asyncio.create_task(cache.get_async(path, opener))
++    await started.wait()
++    task.cancel()
++    release.set()
++    with pytest.raises(asyncio.CancelledError):
++        await task
++    await cache.drain_async()
++    assert cache.handles[path] == "owned"
++    assert closed == []
++
++
++@pytest.mark.asyncio
++async def test_d_cancel_after_drain_rejects_and_closes_late_handle(tmp_path):
++    cache = RecoverableHandleCache(initial_retry_delay=0, max_retry_delay=0)
++    started = asyncio.Event()
++    release = asyncio.Event()
++    closed = []
++
++    async def opener():
++        started.set()
++        await release.wait()
++        return "late"
++
++    path = tmp_path / "state.db"
++    task = asyncio.create_task(cache.get_async(path, opener))
++    await started.wait()
++    draining = asyncio.create_task(cache.drain_async(reject_new=True))
++    await asyncio.sleep(0)
++    release.set()
++    with pytest.raises(asyncio.CancelledError):
++        task.cancel()
++        await task
++    await draining
++    await cache.drain_async()
++    # close_all supplies the rejection hook used by the real owner.
++    cache.close_all(closed.append)
++    assert path not in cache.handles
++
++
++@pytest.mark.asyncio
++async def test_e_failed_async_open_is_retryable_and_recovers_once(tmp_path):
++    cache = RecoverableHandleCache(initial_retry_delay=0, max_retry_delay=0)
++    attempts = 0
++    recovered = []
++
++    async def opener():
++        nonlocal attempts
++        attempts += 1
++        if attempts == 1:
++            raise RuntimeError("boom")
++        return "ok"
++
++    path = tmp_path / "state.db"
++    assert await cache.get_async(path, opener) is None
++    assert await cache.get_async(path, opener, on_recovered=lambda: recovered.append(1)) == "ok"
++    assert recovered == [1]
++
++
++@pytest.mark.asyncio
++async def test_f_drain_waits_for_all_settlements(tmp_path):
++    cache = RecoverableHandleCache(initial_retry_delay=0, max_retry_delay=0)
++    release = asyncio.Event()
++    started = asyncio.Event()
++
++    async def opener():
++        started.set()
++        await release.wait()
++        return "held"
++
++    task = asyncio.create_task(cache.get_async(tmp_path / "state.db", opener))
++    await started.wait()
++    drain = asyncio.create_task(cache.drain_async())
++    await asyncio.sleep(0)
++    assert not drain.done()
++    release.set()
++    assert await task == "held"
++    await drain
++
++
++@pytest.mark.asyncio
++async def test_g_reject_new_drain_is_idempotent(tmp_path):
++    cache = RecoverableHandleCache(initial_retry_delay=0, max_retry_delay=0)
++    await cache.drain_async(reject_new=True)
++    assert await cache.get_async(tmp_path / "state.db", lambda: asyncio.sleep(0)) is None
++    await cache.drain_async(reject_new=True)

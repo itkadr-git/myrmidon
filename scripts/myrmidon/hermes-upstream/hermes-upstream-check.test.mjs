@@ -34,6 +34,7 @@ it("registers the async writer-acquire delta with fail-closed markers", () => {
     "gateway/session_recovery.py", "gateway/session_lifecycle.py", "gateway/session_transcript.py",
     "gateway/run.py", "gateway/run_startup.py", "gateway/run_shutdown.py",
     "tests/hermes_state/test_deleted_wal_generation_guard.py",
+    "tests/gateway/test_async_writer_acquire_contract.py",
   ]);
   assert.match(delta.reason, /worker-owned async writer acquire/);
   assert.match(delta.probe.upstreamMarker, /SidecarScanIncompleteError/);
