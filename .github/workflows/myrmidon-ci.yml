@@ -37,8 +37,12 @@ concurrency:
   # reports no `CI result`, so it can never look green. A cancelled
   # merge_group run evicts the group from the queue, so queue runs are never
   # cancelled.
-  group: myrmidon-ci-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ github.event_name != 'merge_group' }}
+  #
+  # `labeled` only matters for `full-ci` and `review-approved`. A run started
+  # by any other label (review-in-progress, needs-rebase, ...) goes to its own
+  # group, so it cannot cancel the real run, and every job in it is skipped.
+  group: myrmidon-ci-${{ github.event.pull_request.number || github.ref }}${{ (github.event_name != 'pull_request' || github.event.action != 'labeled' || github.event.label.name == 'full-ci' || github.event.label.name == 'review-approved') && '' || '-label-noop' }}
+  cancel-in-progress: ${{ github.event_name != 'merge_group' && (github.event_name != 'pull_request' || github.event.action != 'labeled' || github.event.label.name == 'full-ci' || github.event.label.name == 'review-approved') }}
 
 env:
   NPM_CONFIG_AUDIT: "false"
@@ -48,6 +52,7 @@ env:
 jobs:
   plan:
     name: plan
+    if: ${{ (github.event_name != 'pull_request' || github.event.action != 'labeled' || github.event.label.name == 'full-ci' || github.event.label.name == 'review-approved') }}
     runs-on: ${{ fromJSON(vars.MYR_RUNNER || '"ubuntu-latest"') }}
     timeout-minutes: 10
     outputs:
@@ -404,6 +409,7 @@ jobs:
     # gitleaks, the internal-address scan, dependency licenses and plugin
     # compatibility. Every step runs even if an earlier one failed.
     name: checks
+    if: ${{ (github.event_name != 'pull_request' || github.event.action != 'labeled' || github.event.label.name == 'full-ci' || github.event.label.name == 'review-approved') }}
     runs-on: ${{ fromJSON(vars.MYR_RUNNER || '"ubuntu-latest"') }}
     timeout-minutes: 20
     env:
@@ -562,6 +568,7 @@ jobs:
     name: go tools (dockergate + fleetd)
     # fleetd is folded in (one checkout, one runner): tools/fleetd, see
     # docs/myrmidon/fleetd-vmexec.md. Every step runs even if an earlier one failed.
+    if: ${{ (github.event_name != 'pull_request' || github.event.action != 'labeled' || github.event.label.name == 'full-ci' || github.event.label.name == 'review-approved') }}
     runs-on: ${{ fromJSON(vars.MYR_RUNNER || '"ubuntu-latest"') }}
     timeout-minutes: 30
     env:
@@ -661,7 +668,7 @@ jobs:
     # Single stable name for the ruleset. Lanes the plan did not need are
     # skipped; any failure, or a skip without a successful plan, fails it.
     name: CI result
-    if: ${{ !cancelled() }}
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || github.event.action != 'labeled' || github.event.label.name == 'full-ci' || github.event.label.name == 'review-approved') }}
     needs: [plan, typecheck, tests-affected, tests, tests-other, checks, dockergate]
     runs-on: ${{ fromJSON(vars.MYR_RUNNER || '"ubuntu-latest"') }}
     timeout-minutes: 5
