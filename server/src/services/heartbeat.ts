@@ -28998,9 +28998,7 @@ export function heartbeatService(
               statusVersion: issues.statusVersion,
               projectId: issues.projectId,
               casteKey: issues.casteKey,
-              projectDefaultCasteKey: sql<string | null>`(select p.default_caste_key from projects p where p.id = ${issues.projectId})`,
               harnessKind: issues.harnessKind,
-              labels: sql<string[]>`coalesce((select json_agg(l.name) from issue_labels il inner join labels l on l.id = il.label_id where il.issue_id = ${issues.id}), '[]'::json)`,
               projectWorkspaceId: issues.projectWorkspaceId,
               executionWorkspaceId: issues.executionWorkspaceId,
               executionWorkspacePreference: issues.executionWorkspacePreference,
@@ -29831,11 +29829,24 @@ export function heartbeatService(
             ) {
               // Only the issue's own caste / project default count; the company
               // default caste is not a code signal (it would requeue every issue).
-              const effectiveLabels = issue.labels ?? [];
+              const effectiveLabels = (
+                await tx
+                  .select({ name: labels.name })
+                  .from(issueLabels)
+                  .innerJoin(labels, eq(labels.id, issueLabels.labelId))
+                  .where(eq(issueLabels.issueId, issue.id))
+              ).map((row) => row.name);
+              const projectDefaultCasteKey = issue.projectId
+                ? await tx
+                    .select({ defaultCasteKey: projects.defaultCasteKey })
+                    .from(projects)
+                    .where(eq(projects.id, issue.projectId))
+                    .then((rows) => rows[0]?.defaultCasteKey ?? null)
+                : null;
               if (requiresEngineer({
                 labels: effectiveLabels,
                 casteKey: issue.casteKey,
-                projectDefaultCasteKey: issue.projectDefaultCasteKey,
+                projectDefaultCasteKey,
                 harnessKind: issue.harnessKind,
                 executionWorkspacePreference: issue.executionWorkspacePreference,
               })) {
