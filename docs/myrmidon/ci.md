@@ -14,12 +14,13 @@ Workflow [`myrmidon-ci.yml`](../../.github/workflows/myrmidon-ci.yml) — на �
 |---|---|---|
 | **docs** | PR меняет только `docs/myrmidon/**`, `scripts/myrmidon/**` (кроме `scripts/myrmidon/ci/**`), `CLAUDE.md`, `NOTICE`, `.github/README.md`, `.gitleaks.toml` | `checks` |
 | **fast** | Остальные PR | `typecheck` (без Rust раннера), `build` (без релизной сборки Rust), `tests (affected)`, `checks` |
-| **full** | `push` в `main`; ручной запуск; merge queue; PR с меткой `full-ci` или `review-approved`; PR, который трогает основу (список ниже); PR, где отбор дал больше 60 файлов тестов на один большой пакет | Всё: `typecheck` и `build` полностью, 13 частей `tests (…)` (= `pnpm test:run`), `tests (other packages)`, `tests (runner)`, `checks` |
+| **full** | `push` в `main`; ручной запуск; merge queue (кандидат группы всегда идёт полным уровнем); PR с меткой `full-ci`; PR, который трогает основу (список ниже); PR, где отбор дал больше 60 файлов тестов на один большой пакет | Всё: `typecheck` и `build` полностью, 13 частей `tests (…)` (= `pnpm test:run`), `tests (other packages)`, `tests (runner)`, `checks` |
 
-**Экономия заданий:** обычный PR выполняет до 6 jobs вместо примерно 13 jobs полного прогона: сокращение около 54% (не считая отдельного перезапуска с меткой `full-ci`/`review-approved`). При `full-ci` или перед слиянием выполняется полный набор.
+**Экономия заданий:** обычный PR выполняет только `plan`, `checks`, `typecheck`+`build`, `tests (affected)` и сводную `CI result` вместо всех частей полного прогона (около 13 заданий по замеру из OPE-8531). Новый push в тот же PR отменяет предыдущий прогон. Метка `review-approved` прогон не запускает: полный уровень перед вливанием даёт merge queue (`merge_group`).
 
 **Обязателен для слияния быстрый уровень** (сводная проверка `CI result` на PR). Полный
-уровень гарантируется на `main` после слияния; его сбой сразу виден (ниже).
+уровень проходит кандидат merge queue до вливания и затем `main` после слияния; сбой на
+`main` сразу виден (ниже).
 
 **Основа — PR получает полный уровень:** `pnpm-lock.yaml`, `pnpm-workspace.yaml`, корневой
 `package.json`, `.npmrc`, `patches/**`, корневые `tsconfig*.json` и `vitest.config.*`,
