@@ -1,17 +1,26 @@
 ## changelog-en
 
-### Trace deployment Chromium login-profile lifecycles (OPE-7738)
+### Browser and runtime temp path trace (OPE-7738)
 
-- Document the Google AI and ChatGPT deployment browser-profile roots, TTLs, and cleanup paths; exact `chr-p*` and deployment `native-*` temp writers remain unidentified.
+- Document the confirmed product-owned run temp writers and the Google AI and ChatGPT login-profile roots, TTLs, and cleanup; the `chr-p*` and `native-*` writers are not yet attributed.
 
 ## changelog-ru
 
-### Трассировка профилей Chromium в deployment (OPE-7738)
+### Трассировка временных путей браузера и рантайма (OPE-7738)
 
-- Документированы корни, TTL и очистка профилей браузера Google AI и ChatGPT; точные deployment-писатели путей `chr-p*` и `native-*` пока не выявлены.
-
+- Задокументированы подтверждённые писатели временных каталогов запусков и корни, TTL и очистка профилей входа Google AI и ChatGPT; писатели `chr-p*` и `native-*` пока не установлены.
 
 The product repository was inspected at `origin/main` (2026-10-15). It contains none of the task's literal `chr-p*` or Chromium config writer names. The deployment paths below come from the separate `myrmidon-deploy` repository at branch `main`, commit `43a6169c2e6da642f4d14bd5b09c029cc75e691c`. Exact `chr-p*` and deployment `native-*` temporary writers were not identified; do not remove matching host paths based on name alone.
+
+### Runtime observations on vm-core (OPE-7742, OPE-7744 in progress)
+
+Read-only observations recorded on 2026-10-15; they establish what exists, not who writes it.
+
+- Host `/tmp` is `tmpfs` (`findmnt -T`, size about 34 GiB). It held 27 surviving `/tmp/native-*` directories, dated 2026-10-11 to 2026-10-12, owned by `openclaw-adm2`. Their creator, command, TTL and cleanup are not established; they sit on tmpfs, so they consume RAM until removed.
+- No `chr-p*` directory was found in host `/tmp`, in `paperclip-server-1` `/tmp`, or under `/tmp`, `/dev/shm`, `/run`, `/bot` of running `myrmidon-bot-*` containers at the sampling time. Short-lived instances elsewhere cannot be ruled out.
+- Bot containers mount `/tmp` as tmpfs, `/dev/shm` as tmpfs (64 MiB), and `/bot` as an XFS bind from `/srv/myrmidon-bots/<id>`. No Chromium executable was found on the sampled bot's PATH.
+- Searches of `/app` in `paperclip-server-1` and of bot runtime source found no production writer of `chr-p*` or `native-*` (matches are tests and unrelated identifiers). The `myrmidon-dockergate` and `process-exporter` containers have no exec-able shell, so they were not inspected; this is a visibility limit, not a negative finding.
+- Not established: the originating job and command, owning PID, TTL/age policy, and success, handled-error, crash and `finally`/trap cleanup for `chr-p*` and `native-*`. The follow-up OPE-7744 is still collecting this; this report must be updated before the ownership of these paths is claimed. The 27 directories are unowned by this report and must not be deleted on the strength of their names.
 
 ### Confirmed product-owned writers
 
