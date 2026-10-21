@@ -84,6 +84,13 @@ describe("stale block signal registry", () => {
     expect(text).toContain("in_progress");
   });
 
+  it("the why-now line names the return to todo without assignee for bare blocks", () => {
+    const text = staleBlockSignalWhyNow(signal({ targetStatus: "todo", reasonTexts: ["blocked without a reason"] }));
+    expect(text).toContain("blocked without a reason");
+    expect(text).toContain("todo");
+    expect(text).toContain("without an assignee");
+  });
+
   it("severity is medium: visible, not alarming", () => {
     expect(staleBlockSignalSeverity()).toBe("medium");
   });
