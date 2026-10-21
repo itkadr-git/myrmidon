@@ -21,7 +21,7 @@ import {
 } from "@myrmidon/shared";
 import { forbidden } from "../../errors.js";
 import { dbAutonomyStore, agentRoleFromDb, type AutonomyStore } from "./store.js";
-import { toolActionRequests, toolInvocations } from "@paperclipai/db";
+import { toolActionRequests, toolInvocations } from "@myrmidon/db";
 import { autonomyDescriptorColumns, autonomyToolName } from "./action-execution.js";
 
 /** Stable error code the UI and tests match on. */

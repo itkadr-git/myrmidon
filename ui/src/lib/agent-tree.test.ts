@@ -4,7 +4,7 @@
 // sibling ordering, orphan group, `reportsTo` cycle protection and the
 // "every agent appears exactly once" invariant.
 import { describe, expect, it } from "vitest";
-import type { Agent } from "@paperclipai/shared";
+import type { Agent } from "@myrmidon/shared";
 import {
   buildAgentForest,
   expandedIdsForSearch,
