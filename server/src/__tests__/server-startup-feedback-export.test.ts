@@ -494,6 +494,7 @@ vi.mock("../auth/better-auth.js", () => ({
 import { startServer } from "../index.ts";
 import { reconcileSafeNativeReplacements } from "../services/native-runtime/native-safe-replacement.js";
 import { EXECUTION_RECONCILIATION_INTERVAL_MS } from "../services/execution-control-deadline.js";
+import { logger } from "../middleware/logger.js";
 
 describe("startServer feedback export wiring", () => {
   beforeEach(() => {
@@ -788,6 +789,23 @@ describe("startServer feedback export wiring", () => {
     } finally {
       setIntervalSpy.mockRestore();
     }
+  });
+
+  it("logs cleanup sweep failures for non-api roles instead of leaking rejections", async () => {
+    process.env.PAPERCLIP_PROCESS_ROLE = "worker";
+    loadConfigMock.mockReturnValue(buildTestConfig({
+      heartbeatSchedulerEnabled: false,
+      heartbeatSchedulerIntervalMs: 30000,
+    }));
+    heartbeatServiceMock.sweepPendingCleanupLeases.mockRejectedValueOnce(new Error("cleanup unavailable"));
+
+    await startServer();
+
+    expect(heartbeatServiceMock.sweepPendingCleanupLeases).toHaveBeenCalledWith({ backoffMs: 0 });
+    expect(logger.error).toHaveBeenCalledWith(
+      expect.objectContaining({ err: expect.any(Error) }),
+      "environment lease cleanup sweep failed",
+    );
   });
 
   it("does not replay hot-restart adoption when the orphan reaper retries", async () => {

@@ -1767,9 +1767,9 @@ async function startServerWithDatabaseTeardown(
   const interactionContinuationOutboxDeliveries =
     interactionContinuationOutboxService(db as any, backgroundHeartbeat);
   const runEnvironmentLeaseCleanupSweep = (backoffMs: number) =>
-    environmentLeaseCleanupHeartbeat
+    (environmentLeaseCleanupHeartbeat
       ? environmentLeaseCleanupHeartbeat.sweepPendingCleanupLeases({ backoffMs })
-      : Promise.resolve({ destroyed: 0, capped: 0 })
+      : Promise.resolve({ destroyed: 0, capped: 0 }))
       .then((result) => {
         if (result.destroyed > 0 || result.capped > 0) {
           logger.info(result, "environment lease cleanup sweep retried orphan sandbox teardowns");
