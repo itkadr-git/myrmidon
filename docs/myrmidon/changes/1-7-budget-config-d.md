@@ -16,4 +16,4 @@ settings-section: Track 5 — operations
 | `MYRMIDON_DISTILL_MODEL` | DISTILL | unset | Model identifier used for distillation | Unset — distillation model must be configured elsewhere |
 | `MYRMIDON_DISTILL_WINDOW_SEC` | DISTILL | `3600` | Lookback window for eligible distillation work | Invalid or non-positive values use the default |
 
-The budget-limits API exposes `GET /api/myrmidon/companies/:companyId/budget-limits/effective/:issueId`. It resolves the active issue limit using issue, foraging, caste, project nest, then company nest precedence and returns the selected amount, period, mode, and source metadata. PUT rejects project and issue refs outside the requested company.
+| Effective limit API | 1.7 BUDGET-CONFIG | GET `/api/myrmidon/companies/:companyId/budget-limits/effective/:issueId` | Resolves issue, foraging, caste, project nest, then company nest precedence and returns amount, period, mode, and source metadata; reads current rows on every request | PUT rejects project and issue refs outside the requested company |
