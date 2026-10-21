@@ -28,7 +28,10 @@ settings-section: Track 4 — chats and skills
 
 | `MYRMIDON_POOL_CHAT_ENABLED` | OPE-8207 | unset (off) | Включает границу pool-chat; до live-использования необходимы deployment-specific конфигурация модуля, разрешение секретов, transport провайдера, миграция, quota recovery и acceptance-проверка | не задано или любое значение кроме `1` — выключено |
 
-## operator-acceptance-en
+## divergence-append
+<!-- section: Трек 4 — чаты и навыки -->
+
+### Operator acceptance runbook
 
 This is a deployment runbook, not a claim of live-pool qualification. The implementation and CI tests use a fake transport. Only an authorized operator may enable a real deployment, and this task did not perform that run.
 
@@ -59,7 +62,10 @@ This is a deployment runbook, not a claim of live-pool qualification. The implem
 
 The feature remains off until every non-live row has CI/staging evidence and an authorized operator records the live rows. Without that record, report the state as “implementation and CI verified; live-pool acceptance pending”, never as live-qualified.
 
-## operator-acceptance-ru
+## divergence-append
+<!-- section: Трек 4 — чаты и навыки -->
+
+### Operator acceptance runbook (RU)
 
 Это runbook для deployment, а не утверждение о live-pool qualification. В реализации и CI-тестах используется fake transport. Включать реальный deployment может только уполномоченный оператор; в рамках этой задачи такой запуск не выполнялся.
 
