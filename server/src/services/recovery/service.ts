@@ -1978,10 +1978,12 @@ export function recoveryService(
     reason:
       | "issue_assignment_recovery"
       | "issue_continuation_needed"
+      | "stranded_recovery_reroute"
       | typeof EXECUTION_REVIEW_PARTICIPANT_RECOVERY_REASON;
     retryReason:
       | "assignment_recovery"
       | "issue_continuation_needed"
+      | "stranded_recovery_reroute"
       | typeof EXECUTION_REVIEW_PARTICIPANT_RECOVERY_REASON;
     source: string;
     retryOfRunId?: string | null;
@@ -2551,13 +2553,99 @@ export function recoveryService(
     };
   }
 
+  async function rerouteStrandedIssueToSharedQueue(input: {
+    issue: typeof issues.$inferSelect;
+    reason: string;
+    latestRun: LatestIssueRun;
+    previousStatus: StrandedPreviousStatus;
+    recoveryCause?: StrandedRecoveryCause;
+    successfulRunHandoffEvidence?: SuccessfulRunHandoffRecoveryEvidence | null;
+    scheduledRetryAttempt?: number | null;
+    scheduledRetryReason?: string | null;
+  }) {
+    const latestRun = await getLatestIssueRun(input.issue.companyId, input.issue.id);
+    if (!latestRun || (latestRun.status !== "failed" && latestRun.status !== "timed_out" && latestRun.status !== "cancelled" && latestRun.status !== "interrupted" && latestRun.status !== "succeeded")) return false;
+    const assignee = input.issue.assigneeAgentId
+      ? await getAgent(input.issue.assigneeAgentId)
+      : null;
+    const invokability = assignee
+      ? await evaluateAgentInvokabilityFromDb(db, assignee)
+      : null;
+    const targetAssigneeId = invokability?.invokable ? input.issue.assigneeAgentId : null;
+    const stillAssigned = targetAssigneeId !== null;
+    const [retryColumns] = await db
+      .select({
+        scheduledRetryAttempt: heartbeatRuns.scheduledRetryAttempt,
+        scheduledRetryReason: heartbeatRuns.scheduledRetryReason,
+      })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, latestRun.id))
+      .limit(1);
+    if (
+      latestRun.errorCode &&
+      isInfraInterruptErrorCode(latestRun.errorCode) &&
+      infraInterruptRetryBudgetExhausted({
+        scheduledRetryAttempt: input.scheduledRetryAttempt ?? retryColumns?.scheduledRetryAttempt ?? null,
+        scheduledRetryReason: input.scheduledRetryReason ?? retryColumns?.scheduledRetryReason ?? null,
+        contextSnapshot: latestRun.contextSnapshot,
+      })
+    ) {
+      return false;
+    }
+    const [existingIssue] = await db
+      .select({
+        id: issues.id,
+        companyId: issues.companyId,
+        status: issues.status,
+      })
+      .from(issues)
+      .where(and(eq(issues.id, input.issue.id), eq(issues.companyId, input.issue.companyId)))
+      .limit(1);
+    if (!existingIssue || existingIssue.status === "done" || existingIssue.status === "cancelled") return false;
+    const blockers = await existingUnresolvedBlockerIssues(input.issue.companyId, existingIssue.id);
+    const blockedByIssueIds = blockers.map((blocker) => blocker.id);
+    if (blockedByIssueIds.length > 0) {
+      const [reblockedIssue] = await db
+        .update(issues)
+        .set({ status: "blocked", updatedAt: new Date() })
+        .where(and(eq(issues.id, existingIssue.id), eq(issues.companyId, input.issue.companyId)))
+        .returning();
+      if (!reblockedIssue) return false;
+      await issuesSvc.update(reblockedIssue.id, { status: "blocked", blockedByIssueIds });
+      return false;
+    }
+    // A shared-queue reroute is the recovery disposition itself. Do not create
+    // a board-owned recovery action first: that action would reclassify the
+    // issue as blocked and prevent the todo handoff below.
+    const [updatedIssue] = await db
+      .update(issues)
+      .set({
+        status: "todo",
+        assigneeAgentId: targetAssigneeId,
+        updatedAt: new Date(),
+      })
+      .where(and(eq(issues.id, existingIssue.id), eq(issues.companyId, input.issue.companyId)))
+      .returning();
+    if (!updatedIssue) return false;
+    await issuesSvc.addComment(
+      updatedIssue.id,
+      `Recovery returned this stranded issue to the ${stillAssigned ? "original available engineer assignment" : "unassigned engineer queue"} (${input.reason}).`,
+      {},
+      { authorType: "system" },
+    );
+    await issuesSvc.update(updatedIssue.id, { status: "todo", assigneeAgentId: targetAssigneeId });
+    return true;
+  }
+
   async function ensureSourceScopedStrandedRecoveryAction(input: {
     issue: typeof issues.$inferSelect;
     latestRun: LatestIssueRun;
     previousStatus: StrandedPreviousStatus;
     recoveryCause?: StrandedRecoveryCause;
     successfulRunHandoffEvidence?: SuccessfulRunHandoffRecoveryEvidence | null;
+    rerouteToSharedQueue?: boolean;
   }) {
+    if (input.issue.originKind === "stranded_issue_recovery") return null;
     const recoveryCause = resolveStrandedRecoveryCause(
       input.latestRun,
       input.recoveryCause,
@@ -2636,7 +2724,9 @@ export function recoveryService(
                     : recoveryCause === "execution_review_participant_recovery"
                       ? "Board operator: repair the failed review participant path, restore a live reviewer, explicitly reassign, or record an intentional resolution."
                       : "Board operator: inspect the evidence, repair the runtime if appropriate, then explicitly retry the original owner, reassign, or intentionally resolve the task.",
-      wakePolicy: isProviderQuotaWait
+      wakePolicy: input.rerouteToSharedQueue
+        ? { type: "system_retry", reason: "stranded_recovery" }
+        : isProviderQuotaWait
         ? {
             type: "monitor_only",
             reason: recoveryCause,
@@ -3890,20 +3980,60 @@ export function recoveryService(
     notice?: StrandedRecoveryNoticeSeed | null;
     recoveryCause?: StrandedRecoveryCause;
     successfulRunHandoffEvidence?: SuccessfulRunHandoffRecoveryEvidence | null;
+    rerouteToSharedQueue?: boolean;
+    scheduledRetryAttempt?: number | null;
+    scheduledRetryReason?: string | null;
   }) {
-    if (isStrandedIssueRecoveryIssue(input.issue)) {
-      return escalateStrandedRecoveryIssueInPlace({
-        issue: input.issue,
-        previousStatus: input.previousStatus,
-        latestRun: input.latestRun,
-      });
-    }
-
     const recoveryCause = resolveStrandedRecoveryCause(
       input.latestRun,
       input.recoveryCause,
     );
 
+    // legacy stranded-recovery issues retain their in-place escalation.
+    if (
+      input.rerouteToSharedQueue &&
+      !isStrandedIssueRecoveryIssue(input.issue) &&
+      recoveryCause !== SUCCESSFUL_RUN_MISSING_STATE_REASON &&
+      input.latestRun?.contextSnapshot &&
+      typeof input.latestRun.contextSnapshot === "object" &&
+      "retryReason" in input.latestRun.contextSnapshot &&
+      isInfraInterruptErrorCode(input.latestRun.errorCode) &&
+      input.recoveryCause !== "configuration_incomplete" &&
+      input.latestRun.status !== "failed" &&
+      input.recoveryCause !== SUCCESSFUL_RUN_MISSING_STATE_REASON &&
+      !infraInterruptRetryBudgetExhausted({
+        scheduledRetryAttempt: input.scheduledRetryAttempt,
+        scheduledRetryReason: input.scheduledRetryReason,
+        contextSnapshot: input.latestRun.contextSnapshot,
+      })
+    ) {
+      const rerouted = await rerouteStrandedIssueToSharedQueue({
+        issue: input.issue,
+        reason: input.notice?.title ?? "stranded recovery issue",
+        latestRun: input.latestRun,
+        previousStatus: input.previousStatus,
+        recoveryCause: input.recoveryCause,
+        scheduledRetryAttempt: input.scheduledRetryAttempt,
+        scheduledRetryReason: input.scheduledRetryReason,
+        successfulRunHandoffEvidence: input.successfulRunHandoffEvidence,
+      });
+      return rerouted ? input.issue : null;
+    }
+    if (isStrandedIssueRecoveryIssue(input.issue)) {
+      const activeActions = await db
+        .select({ id: issueRecoveryActions.id })
+        .from(issueRecoveryActions)
+        .where(
+          and(
+            eq(issueRecoveryActions.sourceIssueId, input.issue.id),
+            eq(issueRecoveryActions.companyId, input.issue.companyId),
+            inArray(issueRecoveryActions.status, ["active", "escalated"]),
+            eq(issueRecoveryActions.kind, "assigned_issue"),
+          ),
+        )
+        .limit(1);
+      if (activeActions.length > 0) return null;
+    }
     // myrmidon(L4): a successful run that leaves the issue without a
     // disposition resolves by bounded auto-retry, then manager review,
     // instead of escalating straight to an owner card. Only the last-run-
@@ -3927,6 +4057,7 @@ export function recoveryService(
     if (
       readStrandedAutoPolicyEnabled() &&
       strandedAutoPolicyLatestRun?.status === "succeeded" &&
+      !input.rerouteToSharedQueue &&
       isStrandedAutoPolicyCause(recoveryCause) &&
       (input.previousStatus === "in_progress" || input.issue.status === "in_progress") &&
       input.issue.assigneeAgentId &&
@@ -4294,13 +4425,87 @@ export function recoveryService(
       // autoPolicyDecision.kind === "vendor_default" falls through as-is.
     }
 
+    const approvedInfraReroute = Boolean(
+      input.rerouteToSharedQueue &&
+        !isStrandedIssueRecoveryIssue(input.issue) &&
+        input.latestRun &&
+        input.latestRun.contextSnapshot &&
+        typeof input.latestRun.contextSnapshot === "object" &&
+        "retryReason" in input.latestRun.contextSnapshot &&
+        input.latestRun.status !== "failed" &&
+        input.recoveryCause !== "configuration_incomplete" &&
+        input.recoveryCause !== SUCCESSFUL_RUN_MISSING_STATE_REASON &&
+        isInfraInterruptErrorCode(input.latestRun.errorCode) &&
+        !infraInterruptRetryBudgetExhausted({
+          contextSnapshot: input.latestRun.contextSnapshot,
+        }),
+    );
+
+    // L1 infrastructure reroutes must happen before the board recovery action;
+    // generic escalation callers still need the action to establish `blocked`.
+    if (
+      approvedInfraReroute &&
+      !isStrandedIssueRecoveryIssue(input.issue)
+    ) {
+      // Rerouting is the recovery disposition itself. Apply it before creating
+      // a board action, which would otherwise turn the issue blocked first.
+      const rerouted = await rerouteStrandedIssueToSharedQueue({
+        issue: input.issue,
+        reason: input.notice?.title ?? recoveryCause,
+        latestRun: input.latestRun,
+        previousStatus: input.previousStatus,
+        recoveryCause,
+        successfulRunHandoffEvidence: input.successfulRunHandoffEvidence,
+        scheduledRetryAttempt: input.scheduledRetryAttempt,
+        scheduledRetryReason: input.scheduledRetryReason,
+      });
+      if (rerouted) {
+        return (await db.query.issues.findFirst({
+          where: and(eq(issues.id, input.issue.id), eq(issues.companyId, input.issue.companyId)),
+        })) ?? null;
+      }
+      // The helper returns false for a real blocker or exhausted infra budget;
+      // preserve those established paths instead of masking them with a todo.
+      const blockerIds = await existingUnresolvedBlockerIssueIds(
+        input.issue.companyId,
+        input.issue.id,
+      );
+      if (blockerIds.length === 0) return input.issue;
+    }
+
     const recoveryAction = await ensureSourceScopedStrandedRecoveryAction({
       issue: input.issue,
       previousStatus: input.previousStatus,
       latestRun: input.latestRun,
       recoveryCause,
       successfulRunHandoffEvidence: input.successfulRunHandoffEvidence,
+      rerouteToSharedQueue: input.rerouteToSharedQueue,
     });
+    if (!recoveryAction && input.issue.originKind === "stranded_issue_recovery") {
+      // Approved infra reroutes bypass recovery actions; exhausted retries and
+      // legacy recovery cases retain the board escalation disposition.
+      if (
+        approvedInfraReroute &&
+        input.latestRun?.contextSnapshot &&
+        typeof input.latestRun.contextSnapshot === "object" &&
+        !infraInterruptRetryBudgetExhausted({
+          scheduledRetryAttempt: input.scheduledRetryAttempt,
+          scheduledRetryReason: input.scheduledRetryReason,
+          contextSnapshot: input.latestRun.contextSnapshot,
+        })
+      ) {
+        return false;
+      }
+      const blockerIds = await existingUnresolvedBlockerIssueIds(
+        input.issue.companyId,
+        input.issue.id,
+      );
+      return issuesSvc.update(input.issue.id, {
+        status: "blocked",
+        blockedByIssueIds: blockerIds,
+      });
+    }
+    if (!recoveryAction) return input.issue;
     const isProviderQuotaWait =
       recoveryCause === "provider_quota" &&
       !recoveryAction.ownerAgentId &&
@@ -4317,6 +4522,40 @@ export function recoveryService(
       input.issue.companyId,
       input.issue.id,
     );
+    if (
+      input.rerouteToSharedQueue &&
+      !isStrandedIssueRecoveryIssue(input.issue) &&
+      input.latestRun?.contextSnapshot &&
+      typeof input.latestRun.contextSnapshot === "object" &&
+      "retryReason" in input.latestRun.contextSnapshot &&
+      isInfraInterruptErrorCode(input.latestRun.errorCode) &&
+      recoveryCause !== SUCCESSFUL_RUN_MISSING_STATE_REASON &&
+      input.latestRun.status !== "failed" &&
+      recoveryCause !== "configuration_incomplete" &&
+      !infraInterruptRetryBudgetExhausted({
+        scheduledRetryAttempt: input.scheduledRetryAttempt ?? null,
+        scheduledRetryReason: input.scheduledRetryReason ?? null,
+        contextSnapshot: input.latestRun.contextSnapshot,
+      }) &&
+      blockerIds.length === 0
+    ) {
+      const rerouted = await rerouteStrandedIssueToSharedQueue({
+        issue: input.issue,
+        reason: input.notice?.title ?? recoveryCause,
+        latestRun: input.latestRun,
+        previousStatus: input.previousStatus,
+        recoveryCause,
+        scheduledRetryAttempt: input.scheduledRetryAttempt,
+        scheduledRetryReason: input.scheduledRetryReason,
+        successfulRunHandoffEvidence: input.successfulRunHandoffEvidence,
+      });
+      if (rerouted) {
+        return (await db.query.issues.findFirst({
+          where: and(eq(issues.id, input.issue.id), eq(issues.companyId, input.issue.companyId)),
+        })) ?? null;
+      }
+      return input.issue;
+    }
     const updated = await issuesSvc.update(input.issue.id, {
       status: "blocked",
       blockedByIssueIds: blockerIds,
@@ -4692,6 +4931,7 @@ export function recoveryService(
 
   async function reconcileStrandedAssignedIssues(opts?: {
     issueCreatedAtGte?: Date | null;
+    issueIds?: string[];
   }) {
     const candidates = await db
       .select()
@@ -4707,6 +4947,7 @@ export function recoveryService(
           opts?.issueCreatedAtGte
             ? gte(issues.createdAt, opts.issueCreatedAtGte)
             : undefined,
+          opts?.issueIds ? inArray(issues.id, opts.issueIds) : undefined,
           isNull(issues.hiddenAt),
           not(unadmittedChatWakeupCondition(issues.id, issues.companyId)),
         ),
@@ -4843,6 +5084,16 @@ export function recoveryService(
         result.skipped += 1;
         continue;
       }
+      const scheduledRetryColumns = latestRun
+        ? await db
+            .select({
+              scheduledRetryAttempt: heartbeatRuns.scheduledRetryAttempt,
+              scheduledRetryReason: heartbeatRuns.scheduledRetryReason,
+            })
+            .from(heartbeatRuns)
+            .where(eq(heartbeatRuns.id, latestRun.id))
+            .then((rows) => rows[0] ?? null)
+        : null;
       // myrmidon(L1): the agent is non-invokable only because it is paused
       // (infrastructure), and the terminal run itself ended on an
       // infrastructure interrupt code within its retry budget, on a run
@@ -4862,7 +5113,12 @@ export function recoveryService(
         agent?.status === "paused" &&
         isInfraInterruptErrorCode(latestRun?.errorCode ?? null) &&
         adapterQualifiesForInfraInterruptRelief(latestRun ?? {}) &&
-        !infraInterruptStopUnconfirmed(latestRun ?? {})
+        !infraInterruptStopUnconfirmed(latestRun ?? {}) &&
+        !(
+          latestRun?.contextSnapshot &&
+          typeof latestRun.contextSnapshot === "object" &&
+          "retryReason" in latestRun.contextSnapshot
+        )
       ) {
         // getLatestIssueRun's projection omits scheduledRetryAttempt; read it
         // directly for the one run this candidate already resolved.
@@ -4881,16 +5137,17 @@ export function recoveryService(
           .from(heartbeatRuns)
           .where(eq(heartbeatRuns.id, latestRun!.id))
           .then((rows) => rows[0] ?? null);
-        if (
-          !infraInterruptRetryBudgetExhausted({
+        const retryBudgetExhausted = infraInterruptRetryBudgetExhausted({
             scheduledRetryAttempt: scheduledRetryColumns?.scheduledRetryAttempt ?? null,
             scheduledRetryReason: scheduledRetryColumns?.scheduledRetryReason ?? null,
             contextSnapshot: latestRun!.contextSnapshot,
-          })
-        ) {
+          });
+        if (!retryBudgetExhausted) {
           result.skipped += 1;
           continue;
         }
+        // ADM decision: once the bounded infra retry budget is spent, keep
+        // the existing escalation path below; do not hand back to todo.
       }
       if (issue.status !== "in_review" && !agentInvokable) {
         const classification = classifyContinuationFailure(latestRun);
@@ -4906,13 +5163,30 @@ export function recoveryService(
             result.skipped += 1;
           }
         } else {
+          const recoveryCause = resolveStrandedRecoveryCause(latestRun);
+          const rerouteRequested =
+            latestRun?.contextSnapshot &&
+            typeof latestRun.contextSnapshot === "object" &&
+            "retryReason" in latestRun.contextSnapshot &&
+            recoveryCause !== "configuration_incomplete" &&
+            latestRun.status !== "failed" &&
+            recoveryCause !== SUCCESSFUL_RUN_MISSING_STATE_REASON &&
+            !infraInterruptRetryBudgetExhausted({
+              scheduledRetryAttempt: scheduledRetryColumns?.scheduledRetryAttempt ?? null,
+              scheduledRetryReason: scheduledRetryColumns?.scheduledRetryReason ?? null,
+              contextSnapshot: latestRun.contextSnapshot,
+            });
           const updated = await escalateStrandedAssignedIssue({
             issue,
             previousStatus: issue.status as StrandedPreviousStatus,
             latestRun,
+            recoveryCause: "stranded_assigned_issue",
             comment:
               productSaid("cannot safely continue automatic recovery because the original assignee is not invokable. ") +
               "The source assignment is unchanged and the board must choose the next action.",
+            ...(rerouteRequested ? { rerouteToSharedQueue: true } : {}),
+            scheduledRetryAttempt: scheduledRetryColumns?.scheduledRetryAttempt ?? null,
+            scheduledRetryReason: scheduledRetryColumns?.scheduledRetryReason ?? null,
           });
           if (updated) {
             result.escalated += 1;
@@ -5555,10 +5829,13 @@ export function recoveryService(
               body:
                 productSaid("automatically retried dispatch for this assigned `todo` issue after a lost wake/run, ") +
                 "but it still has no live execution path. " +
-                "Moving it to `blocked` so it is visible for intervention.",
+                "Returning it to the shared engineer queue for intervention.",
               title: "No live execution path",
               tone: "danger",
             },
+            rerouteToSharedQueue: true,
+            scheduledRetryAttempt: scheduledRetryColumns?.scheduledRetryAttempt ?? null,
+            scheduledRetryReason: scheduledRetryColumns?.scheduledRetryReason ?? null,
           });
           if (updated) {
             result.escalated += 1;
@@ -5626,6 +5903,9 @@ export function recoveryService(
           latestRun,
           recoveryCause: SUCCESSFUL_RUN_MISSING_STATE_REASON,
           successfulRunHandoffEvidence: handoffEvidence,
+          rerouteToSharedQueue: true,
+          scheduledRetryAttempt: scheduledRetryColumns?.scheduledRetryAttempt ?? null,
+          scheduledRetryReason: scheduledRetryColumns?.scheduledRetryReason ?? null,
         });
         if (updated) {
           result.successfulRunHandoffEscalated += 1;
@@ -5673,7 +5953,8 @@ export function recoveryService(
               latestRun: successfulRun,
               comment:
                 productSaid("automatically retried continuation for this assigned `in_progress` issue and the retry ") +
-                "made progress, but it still has no live execution path. Moving it to `blocked` so it is visible for intervention.",
+                "made progress, but it still has no live execution path. Returning it to the shared engineer queue for intervention.",
+              rerouteToSharedQueue: true,
             });
             if (updated) {
               result.escalated += 1;
@@ -5775,11 +6056,11 @@ export function recoveryService(
               notice: {
                 body:
                   productSaid("automatically retried continuation for this assigned `in_progress` issue after its live ") +
-                  `execution disappeared, but it still has no live execution path${attemptCopy}. ` +
-                  "Moving it to `blocked` so it is visible for intervention.",
+                  `execution disappeared, but it still has no live execution path${attemptCopy}. Returning it to the shared engineer queue for intervention.`,
                 title: "No live execution path",
                 tone: "danger",
               },
+              rerouteToSharedQueue: true,
             });
             if (updated) {
               result.escalated += 1;
