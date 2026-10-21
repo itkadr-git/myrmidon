@@ -169,7 +169,7 @@ describe("myrmidon(1.7) behavior settings: access", () => {
   it("allows company members to read and write company settings", async () => {
     const h = harness();
     await request(h.withActor(member)).get(COMPANY_URL(COMPANY_ID)).expect(200);
-    await request(h.withActor(member)).patch(COMPANY_URL(COMPANY_ID)).send({ debug_mode: true }).expect(200);
+    await request(h.withActor(member)).patch(COMPANY_URL(COMPANY_ID)).send({ review_routing_enabled: true }).expect(200);
     expect(h.updated.length).toBeGreaterThan(0);
   });
 
