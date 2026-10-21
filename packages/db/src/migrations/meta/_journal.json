@@ -2375,6 +2375,13 @@
       "when": 1792395501000,
       "tag": "0401_wakeup_key_partial_unique_indexes",
       "breakpoints": true
+    },
+    {
+      "idx": 402,
+      "version": "7",
+      "when": 1792395501001,
+      "tag": "0402_user_ui_custom_catalogs",
+      "breakpoints": true
     }
   ]
 }

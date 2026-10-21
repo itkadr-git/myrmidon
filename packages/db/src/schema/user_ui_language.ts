@@ -1,4 +1,4 @@
-import { pgTable, text, timestamp, uuid, uniqueIndex } from "drizzle-orm/pg-core";
+import { pgTable, text, timestamp, uuid, uniqueIndex, jsonb } from "drizzle-orm/pg-core";
 
 // myrmidon(UI2-I18N): per-user board UI language preference for the 2.0 UI
 // tree. Instance-wide personal preference keyed by user id (same pattern as
@@ -12,6 +12,7 @@ export const userUiLanguage = pgTable(
     id: uuid("id").primaryKey().defaultRandom(),
     userId: text("user_id").notNull(),
     language: text("language").notNull().default("en"),
+    customCatalogs: jsonb("custom_catalogs").notNull().default({}),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },

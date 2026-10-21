@@ -109,6 +109,19 @@ export const en = {
     instanceLanguageSaved: "Instance language for the Telegram bot: {{language}}.",
     instanceLanguageFailed: "Could not save the instance language.",
     instanceLanguageAdminOnly: "Only an instance admin can change the instance language.",
+    uploadTitle: "Upload a custom translation",
+    uploadDescription: "Choose a locale and upload a complete JSON catalog. Keys and placeholders must match English.",
+    uploadLocale: "Locale",
+    uploadFile: "Catalog JSON file",
+    uploadPreview: "Preview",
+    uploadApply: "Apply translation",
+    uploadInvalid: "The catalog does not match the English keys or placeholders.",
+    uploadSaved: "Custom translation saved.",
+    uploadError: "Could not save the catalog. Please try again.",
+    uploadSizeError: "Catalog must be 256 KiB or smaller.",
+    uploadMissingCount: "{{count}} missing keys",
+    uploadUnknownCount: "{{count}} unknown keys",
+    uploadPlaceholderCount: "{{count}} placeholder mismatches",
   },
   status: {
     open: "Open",
@@ -474,6 +487,19 @@ export type Ui2Catalog = {
     instanceLanguageSaved: string;
     instanceLanguageFailed: string;
     instanceLanguageAdminOnly: string;
+    uploadTitle: string;
+    uploadDescription: string;
+    uploadLocale: string;
+    uploadFile: string;
+    uploadPreview: string;
+    uploadApply: string;
+    uploadInvalid: string;
+    uploadSaved: string;
+    uploadError: string;
+    uploadSizeError: string;
+    uploadMissingCount: string;
+    uploadUnknownCount: string;
+    uploadPlaceholderCount: string;
   };
   status: Record<
     | "open"
