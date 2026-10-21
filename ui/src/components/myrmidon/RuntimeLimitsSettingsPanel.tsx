@@ -9,7 +9,9 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
+  describeAdmissionDenials,
   describeHostLoad,
+  describeMemorySnapshot,
   describeQueueSnapshot,
   describeRunLimitSource,
   runtimeLimitsApi,
@@ -193,6 +195,12 @@ export function RuntimeLimitsSettingsPanelView({
   // myrmidon(1.6.5 RUN-FAIRNESS): the queue snapshot — admitted runs against
   // the ceiling, the queue length, and the head of the queue.
   const queueLine = describeQueueSnapshot(view?.queue);
+  const memoryLine = describeMemorySnapshot(view?.memory);
+  // myrmidon(1.6.5 F-09 B): the admission's refusal counter — how often the
+  // sweep left a queued run waiting on a global/host ceiling, by reason and
+  // with the time of the last one. `null` when the server sends no counter, so
+  // the block is simply absent on an older server.
+  const denialsLine = describeAdmissionDenials(view?.admissionDenials);
 
   return (
     <section className="space-y-4" data-testid="myrmidon-runtime-limits">
@@ -256,6 +264,22 @@ export function RuntimeLimitsSettingsPanelView({
               className="text-xs text-muted-foreground md:col-span-2"
             >
               {queueLine}
+            </p>
+          ) : null}
+          {denialsLine ? (
+            <p
+              data-testid="runtime-limit-admission-denials"
+              className="text-xs text-muted-foreground md:col-span-2"
+            >
+              {denialsLine}
+            </p>
+          ) : null}
+          {memoryLine ? (
+            <p
+              data-testid="runtime-limit-memory"
+              className="text-xs text-muted-foreground md:col-span-2"
+            >
+              {memoryLine}
             </p>
           ) : null}
           <div className="md:col-span-2">
