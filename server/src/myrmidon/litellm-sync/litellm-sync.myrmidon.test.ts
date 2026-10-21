@@ -58,6 +58,26 @@ describe("LitellmSyncService", () => {
     };
   });
 
+  it("preserves LiteLLM's upstream model identifier for plugin registrations", async () => {
+    const service = createLitellmSyncService({ db: scriptedDb([]), litellm: port });
+
+    await service.registerPluginModel({
+      modelName: "chatgpt-pool/gpt-4o",
+      providerType: "openai",
+      baseUrl: "https://api.openai.com/v1",
+      credentialSecretName: "pool-key",
+      additionalConfig: { model: "openai/gpt-4o" },
+    });
+
+    expect(port.registerModel).toHaveBeenCalledWith({
+      litellmModelName: "chatgpt-pool/gpt-4o",
+      providerType: "openai",
+      baseUrl: "https://api.openai.com/v1",
+      credentialSecretName: "pool-key",
+      additionalConfig: { model: "openai/gpt-4o" },
+    });
+  });
+
   it("registers model when enabled", async () => {
     // select order in syncModel: the model row, then its provider
     const service = createLitellmSyncService({

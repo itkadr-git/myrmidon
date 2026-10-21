@@ -147,6 +147,15 @@ export function createPluginProviderModelSync(
   const declaration = (plugin: PluginRecord): PluginProviderModelDeclaration | null =>
     (plugin.manifestJson as { providerModels?: PluginProviderModelDeclaration } | null)?.providerModels ?? null;
 
+  // Manifest provider names are stable Paperclip identifiers, not LiteLLM
+  // provider names. Keep the board-facing alias while sending LiteLLM the
+  // provider/model pair it can route.
+  const litellmProvider = (provider: string): string => {
+    if (provider === "chatgpt-pool") return "openai";
+    if (provider === "google-ai-gemini") return "gemini";
+    return provider;
+  };
+
   return {
     async sync(companyId, plugin) {
       const provider = declaration(plugin);
@@ -164,11 +173,13 @@ export function createPluginProviderModelSync(
 
       const modelNames = provider.models.map((model: PluginProviderModelDeclaration["models"][number]) => `${provider.provider}/${model.id}`);
       for (const modelName of modelNames) {
+        const modelId = modelName.slice(provider.provider.length + 1);
         await gateway.registerPluginModel({
           modelName,
-          providerType: provider.provider,
+          providerType: litellmProvider(provider.provider),
           baseUrl: provider.baseUrl,
           credentialSecretName: provider.credentialSecretName,
+          additionalConfig: { model: `${litellmProvider(provider.provider)}/${modelId}` },
         });
       }
       // Lifecycle models are separate from provider-table models; add only these
