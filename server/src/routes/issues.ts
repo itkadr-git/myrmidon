@@ -52,6 +52,7 @@ import type { Db } from "@paperclipai/db";
 import type { ChatChannelService } from "../services/chat-channels.js";
 import type { WakeupOptions } from "../services/heartbeat.js";
 import {
+  companies,
   activityLog,
   agentWakeupRequests,
   agents,
@@ -182,8 +183,8 @@ import {
   agentService,
   budgetService,
   companySkillService,
-  companyService,
   companySearchService,
+  companyService,
   executionWorkspaceService,
   enrichWorkProductMetadataWithDiff,
   goalService,
@@ -337,6 +338,7 @@ import { parseIssueExecutionWorkspaceSettings } from "../services/execution-work
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import {
   buildPromotedSourceTrust,
+  buildLowTrustQuarantineNotice,
   isLowTrustQuarantined,
   redactQuarantinedBodyForHigherTrust,
   resolveActorSourceTrustForIssue,
@@ -1469,19 +1471,67 @@ const ISSUE_WAKE_DIAGNOSTIC_KNOWN_SOURCES = new Set([
   "automation",
 ]);
 
+// Every wake reason the engine and its enqueue sites write. The projection
+// masks anything else as "other" (issue-wake-diagnostic-reasons-guard.test.ts
+// fails when a writer starts enqueuing a reason that is missing here).
 const ISSUE_WAKE_DIAGNOSTIC_KNOWN_REASONS = new Set([
-  "issue_assigned",
-  "issue_blockers_resolved",
-  "issue_commented",
-  "issue_comment_mentioned",
-  "issue_dependencies_blocked",
-  "issue_tree_hold_active",
-  "missing_issue_comment",
-  "process_lost_retry",
-  "run_liveness_continuation",
+  "agent.not_invokable",
+  "approval_approved",
+  "budget.blocked",
+  "company.inactive",
+  "email_received",
+  "execution_reconciliation_required",
+  "execution_review_participant_recovery",
+  "execution_review_requested",
+  "finish_successful_run_handoff",
+  "goal_control",
   "heartbeat.disabled",
+  "heartbeat.scheduling_suppressed",
+  "heartbeat.timer.cached_identical_prompt",
   "heartbeat.timer.no_actionable_work",
   "heartbeat.wakeOnDemand.disabled",
+  "heartbeat.worktree_execution_cutoff",
+  "heartbeat_timer",
+  "idle_pickup",
+  "interaction_pending",
+  "issue_assigned",
+  "issue_blockers_resolved",
+  "issue_checked_out",
+  "issue_comment_mentioned",
+  "issue_commented",
+  "issue_dependencies_blocked",
+  "issue_disposition_repair",
+  "issue_execution_deferred",
+  "issue_execution_hold_confirmed",
+  "issue_execution_issue_not_found",
+  "issue_execution_promoted",
+  "issue_execution_same_name",
+  "issue_monitor_recovery",
+  "issue_monitor_recovery_issue",
+  "issue_recovery_action_restored",
+  "issue_review_path_lost",
+  "issue_rewake_throttled",
+  "issue_state_guard_mismatch",
+  "issue_tree_hold_active",
+  "issue_tree_restored",
+  "issue_tree_resumed",
+  "issue_unblock_requested",
+  "missing_issue_comment",
+  "native_safe_replacement",
+  "pause_resume",
+  "process_lost_retry",
+  "project.token_quota_exceeded",
+  "provider_quota_recovery",
+  "resurrection_execution_reconciliation_required",
+  "retry_failed_run",
+  "run_liveness_continuation",
+  "run_stalled",
+  "skill_test_run_created",
+  "swarm_claim_queue",
+  "task_watchdog_stopped_subtree",
+  "wake_skipped_pr_settle_pending",
+  "worktree_execution_cutoff",
+  "workspace_worktree_requires_project",
 ]);
 
 const ISSUE_WAKE_DIAGNOSTIC_KNOWN_STATUSES = new Set([
@@ -3980,10 +4030,30 @@ export function issueRoutes(
       companyId: string;
       projectId?: string | null;
       executionPolicy?: unknown;
+      responsibleUserId?: string | null;
     },
     actor: ReturnType<typeof getActorInfo>,
+    requirePromotionOwner = false,
   ) {
-    return resolveActorSourceTrustForIssue({ db, issue, actor });
+    const company = await companiesSvc.getById(issue.companyId);
+    const promotionOwnerUserId =
+      issue.responsibleUserId ??
+      (actor.actorType === "user" ? actor.actorId : null) ??
+      company?.defaultResponsibleUserId ??
+      null;
+    const sourceTrust = await resolveActorSourceTrustForIssue({
+      db,
+      issue: { ...issue, responsibleUserId: promotionOwnerUserId },
+      actor,
+      requirePromotionOwner,
+    });
+    if (!sourceTrust || sourceTrust.disposition !== "quarantined") {
+      return sourceTrust;
+    }
+    if (requirePromotionOwner && !promotionOwnerUserId) {
+      throw unprocessable("Low-trust output cannot be quarantined without a promotion owner");
+    }
+    return { ...sourceTrust, promotionOwnerUserId };
   }
 
   async function assertCrossIssueInfluenceWithinRunCap(
@@ -9753,6 +9823,45 @@ export function issueRoutes(
               commentBody: resolutionNote ?? null,
             });
             Object.assign(updateFields, transition.patch);
+            if (transition.recoveryInteraction) {
+              await issueThreadInteractionService(tx as unknown as Db).create(
+                lockedIssue,
+                {
+                  kind: "ask_user_questions",
+                  idempotencyKey: transition.recoveryInteraction.idempotencyKey,
+                  resolverPolicy: "human_only",
+                  addresseeUserId: lockedIssue.responsibleUserId ?? lockedIssue.createdByUserId ?? null,
+                  continuationPolicy: "none",
+                  sourceRunId: actor.runId ?? undefined,
+                  title: transition.recoveryInteraction.title,
+                  summary: `${transition.recoveryInteraction.summary} SLA owner: ${transition.recoveryInteraction.queue}.`,
+                  payload: {
+                    version: 1,
+                    title: transition.recoveryInteraction.title,
+                    submitLabel: "Acknowledge recovery",
+                    questions: [{
+                      id: "recovery_acknowledged",
+                      prompt: `${transition.recoveryInteraction.summary} Please acknowledge ownership by ${transition.recoveryInteraction.queue}.`,
+                      selectionMode: "single",
+                      options: [{ id: "acknowledged", label: "Acknowledged" }],
+                    }],
+                  },
+                },
+                {
+                  identityContextId: req.actor.identityContextId,
+                  agentId: actor.agentId,
+                  userId: actor.actorType === "user" ? actor.actorId : null,
+                },
+              );
+            }
+            if (transition.escalationMetric) {
+              getTelemetryClient()?.trackDynamic(transition.escalationMetric, {
+                issue_id: lockedIssue.id,
+                policy_revision:
+                  executionPolicy?.reviewEscalationPolicy?.policyRevision ?? "unknown",
+                target_type: "user",
+              });
+            }
             if (transition.decision) {
               const decisionId = randomUUID();
               const nextExecutionState = updateFields.executionState;
@@ -10637,7 +10746,7 @@ export function issueRoutes(
       }
 
       const actor = getActorInfo(req);
-      const sourceTrust = await sourceTrustForActorWrite(issue, actor);
+      const sourceTrust = await sourceTrustForActorWrite(issue, actor, true);
       const referenceSummaryBefore =
         await issueReferencesSvc.listIssueReferenceSummary(issue.id);
       const result = await documentsSvc.upsertIssueDocument({
@@ -11447,7 +11556,8 @@ export function issueRoutes(
       )
         return;
       const actor = getActorInfo(req);
-      if (await sourceTrustForActorWrite(issue, actor)) {
+      const issueSourceTrust = await resolveActorSourceTrustForIssue({ db, issue, actor });
+      if (issueSourceTrust) {
         res.status(403).json({
           error: "Low-trust actors cannot promote quarantined output",
         });
@@ -11468,7 +11578,6 @@ export function issueRoutes(
         });
         return;
       }
-
       const promotedAt = new Date();
       const promotionTrust = buildPromotedSourceTrust({
         sourceIssueId: issue.id,
@@ -11477,6 +11586,7 @@ export function issueRoutes(
         promotedByActorType: actor.actorType,
         promotedByActorId: actor.actorId,
         promotedAt,
+        promotionOwnerUserId: sourceTrust.promotionOwnerUserId,
       });
       const product = await db.transaction(async (tx) => {
         const markPromoted = {
@@ -11651,7 +11761,7 @@ export function issueRoutes(
           return;
         }
       }
-      const sourceTrust = await sourceTrustForActorWrite(issue, actor);
+      const sourceTrust = await sourceTrustForActorWrite(issue, actor, true);
       const product = await workProductsSvc.update(id, {
         ...patch,
         ...(sourceTrust ? { sourceTrust } : {}),
@@ -12313,15 +12423,26 @@ export function issueRoutes(
         Boolean(executionPolicy?.monitor),
       );
       const issueId = randomUUID();
+      const company = await companiesSvc.getById(companyId);
+      const promotionOwnerUserId =
+        authenticatedActorResponsibleUserId(req) ??
+        (actor.actorType === "user" ? actor.actorId : null) ??
+        company?.defaultResponsibleUserId ??
+        null;
       const sourceTrust = await sourceTrustForActorWrite(
         {
           id: issueId,
           companyId,
           projectId: createBody.projectId ?? null,
           executionPolicy,
+          responsibleUserId: promotionOwnerUserId,
         },
         actor,
+        true,
       );
+      if (sourceTrust?.disposition === "quarantined" && !promotionOwnerUserId) {
+        throw unprocessable("Low-trust output cannot be quarantined without a promotion owner");
+      }
       let deduplicationReason: "idempotency_key" | "recent_open_title" | null =
         null;
       const createInput = {
@@ -12335,7 +12456,8 @@ export function issueRoutes(
         createdByAgentId: actor.agentId,
         createdByUserId: actor.actorType === "user" ? actor.actorId : null,
         actorRunId: actor.runId,
-        actorResponsibleUserId: authenticatedActorResponsibleUserId(req),
+        actorResponsibleUserId:
+          authenticatedActorResponsibleUserId(req) ?? promotionOwnerUserId,
         trustExplicitResponsibleUserId: actor.actorType === "user",
         watchdogActorRunId: actor.runId,
         onDeduplicated: (reason: "idempotency_key" | "recent_open_title") => {
@@ -12662,20 +12784,29 @@ export function issueRoutes(
         Boolean(executionPolicy?.monitor),
       );
       const issueId = randomUUID();
+      const company = await companiesSvc.getById(parent.companyId);
+      const promotionOwnerUserId =
+        authenticatedActorResponsibleUserId(req) ??
+        (actor.actorType === "user" ? actor.actorId : parent.responsibleUserId) ??
+        company?.defaultResponsibleUserId ??
+        null;
       const sourceTrust = await sourceTrustForActorWrite(
         {
           id: issueId,
           companyId: parent.companyId,
           projectId: createBody.projectId ?? parent.projectId ?? null,
           executionPolicy,
+          responsibleUserId: promotionOwnerUserId,
         },
         actor,
+        true,
       );
       const { issue, parentBlockerAdded } = await svc.createChild(parent.id, {
         ...createBody,
         ...(taskBridgeOriginForActor(req) ?? {}),
         id: issueId,
         executionPolicy,
+        ...(sourceTrust ? { sourceTrust } : {}),
         ...(currentSerializedChild
           ? {
               status: "blocked",
@@ -12685,11 +12816,11 @@ export function issueRoutes(
               ),
             }
           : {}),
-        ...(sourceTrust ? { sourceTrust } : {}),
         createdByAgentId: actor.agentId,
         createdByUserId: actor.actorType === "user" ? actor.actorId : null,
         actorRunId: actor.runId,
-        actorResponsibleUserId: authenticatedActorResponsibleUserId(req),
+        actorResponsibleUserId:
+          authenticatedActorResponsibleUserId(req) ?? promotionOwnerUserId,
         trustExplicitResponsibleUserId: actor.actorType === "user",
         actorAgentId: actor.agentId,
         actorUserId: actor.actorType === "user" ? actor.actorId : null,
@@ -12872,6 +13003,13 @@ export function issueRoutes(
       }
 
       const actor = getActorInfo(req);
+      const company = await companiesSvc.getById(sourceIssue.companyId);
+      const promotionOwnerUserId =
+        authenticatedActorResponsibleUserId(req) ??
+        (actor.actorType === "user" ? actor.actorId : null) ??
+        sourceIssue.responsibleUserId ??
+        company?.defaultResponsibleUserId ??
+        null;
       const normalizedChildren = [];
       for (const child of requestedChildren) {
         const executionPolicy = applyActorMonitorScheduledBy(
@@ -12892,9 +13030,14 @@ export function issueRoutes(
             companyId: sourceIssue.companyId,
             projectId: child.projectId ?? sourceIssue.projectId ?? null,
             executionPolicy,
+            responsibleUserId: promotionOwnerUserId,
           },
           actor,
+          true,
         );
+        if (sourceTrust?.disposition === "quarantined" && !promotionOwnerUserId) {
+          throw unprocessable("Low-trust output cannot be quarantined without a promotion owner");
+        }
         normalizedChildren.push({
           ...child,
           id: childIssueId,
@@ -12903,7 +13046,8 @@ export function issueRoutes(
           createdByAgentId: actor.agentId,
           createdByUserId: actor.actorType === "user" ? actor.actorId : null,
           actorRunId: actor.runId,
-          actorResponsibleUserId: authenticatedActorResponsibleUserId(req),
+          actorResponsibleUserId:
+            authenticatedActorResponsibleUserId(req) ?? promotionOwnerUserId,
           trustExplicitResponsibleUserId: actor.actorType === "user",
           actorAgentId: actor.agentId,
           actorUserId: actor.actorType === "user" ? actor.actorId : null,
@@ -13707,6 +13851,44 @@ export function issueRoutes(
         };
       }
       Object.assign(updateFields, transition.patch);
+      if (transition.recoveryInteraction) {
+        await issueThreadInteractionService(db).create(
+          existing,
+          {
+            kind: "ask_user_questions",
+            idempotencyKey: transition.recoveryInteraction.idempotencyKey,
+            resolverPolicy: "human_only",
+            addresseeUserId: existing.responsibleUserId ?? existing.createdByUserId ?? null,
+            continuationPolicy: "none",
+            title: transition.recoveryInteraction.title,
+            summary: `${transition.recoveryInteraction.summary} SLA owner: ${transition.recoveryInteraction.queue}.`,
+            payload: {
+              version: 1,
+              title: transition.recoveryInteraction.title,
+              submitLabel: "Acknowledge recovery",
+              questions: [{
+                id: "recovery_acknowledged",
+                prompt: `${transition.recoveryInteraction.summary} Please acknowledge ownership by ${transition.recoveryInteraction.queue}.`,
+                selectionMode: "single",
+                options: [{ id: "acknowledged", label: "Acknowledged" }],
+              }],
+            },
+          },
+          {
+            identityContextId: req.actor.identityContextId,
+            agentId: actor.agentId,
+            userId: actor.actorType === "user" ? actor.actorId : null,
+          },
+        );
+      }
+      if (transition.escalationMetric) {
+        getTelemetryClient()?.trackDynamic(transition.escalationMetric, {
+          issue_id: existing.id,
+          policy_revision:
+            nextExecutionPolicy?.reviewEscalationPolicy?.policyRevision ?? "unknown",
+          target_type: "user",
+        });
+      }
 
       const nextStatus = updateFields.status ?? existing.status;
       if (updateFields.unblockDescriptor && nextStatus !== "blocked") {
@@ -15657,6 +15839,13 @@ export function issueRoutes(
           !["done", "cancelled"].includes(existing.status) &&
           ["done", "cancelled"].includes(issue.status);
         if (becameTerminal) {
+          if (svc.cancelDeferredExecutionsForTerminalIssue) {
+            await svc.cancelDeferredExecutionsForTerminalIssue(
+              issue.id,
+              issue.companyId,
+              db,
+            );
+          }
           const expiredInteractions = await issueThreadInteractionService(
             db,
           ).expirePendingInteractionsForTerminalIssue(issue, {
@@ -18479,6 +18668,14 @@ export function issueRoutes(
           commentBody: req.body.body,
         });
         const decisionId = transition.decision ? randomUUID() : null;
+        if (transition.escalationMetric) {
+          getTelemetryClient()?.trackDynamic(transition.escalationMetric, {
+            issue_id: currentIssue.id,
+            policy_revision:
+              currentExecutionPolicy?.reviewEscalationPolicy?.policyRevision ?? "unknown",
+            target_type: "user",
+          });
+        }
         if (decisionId) {
           const nextExecutionState = transition.patch.executionState;
           if (!nextExecutionState || typeof nextExecutionState !== "object") {
@@ -18503,7 +18700,10 @@ export function issueRoutes(
           actorUserId: actor.actorType === "user" ? actor.actorId : null,
         };
 
-        const sourceTrust = await sourceTrustForActorWrite(currentIssue, actor);
+        const sourceTrust =
+          actor.actorType === "agent"
+            ? await sourceTrustForActorWrite(currentIssue, actor, true)
+            : null;
         const commentOptions = {
           authorType:
             req.body.authorType ??
@@ -18557,6 +18757,36 @@ export function issueRoutes(
             // has been concurrently deleted between the initial fetch and the in-transaction update.
             if (!updated) throw new AutoApprovalIssueMissingError();
 
+            if (transition.recoveryInteraction) {
+              await issueThreadInteractionService(tx as unknown as Db).create(
+                currentIssue,
+                {
+                  kind: "ask_user_questions",
+                  idempotencyKey: transition.recoveryInteraction.idempotencyKey,
+                  resolverPolicy: "human_only",
+                  addresseeUserId: currentIssue.responsibleUserId ?? currentIssue.createdByUserId ?? null,
+                  continuationPolicy: "none",
+                  title: transition.recoveryInteraction.title,
+                  summary: `${transition.recoveryInteraction.summary} SLA owner: ${transition.recoveryInteraction.queue}.`,
+                  payload: {
+                    version: 1,
+                    title: transition.recoveryInteraction.title,
+                    submitLabel: "Acknowledge recovery",
+                    questions: [{
+                      id: "recovery_acknowledged",
+                      prompt: `${transition.recoveryInteraction.summary} Please acknowledge ownership by ${transition.recoveryInteraction.queue}.`,
+                      selectionMode: "single",
+                      options: [{ id: "acknowledged", label: "Acknowledged" }],
+                    }],
+                  },
+                },
+                {
+                  identityContextId: req.actor.identityContextId,
+                  agentId: actor.agentId,
+                  userId: actor.actorType === "user" ? actor.actorId : null,
+                },
+              );
+            }
             if (transition.decision && decisionId) {
               await tx.insert(issueExecutionDecisions).values({
                 id: decisionId,
@@ -18625,12 +18855,17 @@ export function issueRoutes(
           attachmentIds: req.body.attachmentIds,
           clientRequestId: actor.actorType === "user" ? req.body.clientRequestId : undefined,
           authorizationReason: commentAuthorizationReason,
-          sourceTrust: await sourceTrustForActorWrite(currentIssue, actor),
+          sourceTrust: await sourceTrustForActorWrite(currentIssue, actor, true),
         };
         const add = (dbOrTx: Db = db) =>
           svc.addComment(
             id,
-            req.body.body,
+            commentOptions.sourceTrust?.disposition === "quarantined"
+              ? buildLowTrustQuarantineNotice({
+                  promotionOwnerUserId:
+                    commentOptions.sourceTrust.promotionOwnerUserId ?? null,
+                })
+              : req.body.body,
             {
               agentId: actor.agentId ?? undefined,
               userId: actor.actorType === "user" ? actor.actorId : undefined,
@@ -19098,6 +19333,13 @@ export function issueRoutes(
           !["done", "cancelled"].includes(issueBeforeCommentDecision.status) &&
           ["done", "cancelled"].includes(currentIssue.status);
         if (becameTerminal) {
+          if (svc.cancelDeferredExecutionsForTerminalIssue) {
+            await svc.cancelDeferredExecutionsForTerminalIssue(
+              currentIssue.id,
+              currentIssue.companyId,
+              db,
+            );
+          }
           const expiredInteractions = await issueThreadInteractionService(
             db,
           ).expirePendingInteractionsForTerminalIssue(currentIssue, {

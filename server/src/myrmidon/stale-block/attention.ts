@@ -30,6 +30,8 @@ export interface StaleBlockSignal {
   reasonTexts: string[];
   /** ISO timestamp of the sweep pass that lifted the block. */
   liftedAt: string;
+  /** Target status the task was returned to; defaults to in_progress. */
+  targetStatus?: "in_progress" | "todo";
 }
 
 interface RegisteredSignal extends StaleBlockSignal {
@@ -85,6 +87,11 @@ export function staleBlockSignalDedupKey(signal: StaleBlockSignal): string {
 
 /** Why-now line for the card. */
 export function staleBlockSignalWhyNow(signal: StaleBlockSignal): string {
+  const target = signal.targetStatus ?? "in_progress";
+  if (target === "todo") {
+    const reasons = signal.reasonTexts.length > 0 ? signal.reasonTexts.join("; ") : "no reason specified";
+    return `The stale-block watchdog lifted this task's block without a reason (${reasons}); the task is back in todo without an assignee and needs an owner decision.`;
+  }
   const reasons = signal.reasonTexts.length > 0 ? signal.reasonTexts.join("; ") : "its blocking reason ended";
   return `The stale-block watchdog lifted this task's dead block (${reasons}); the task is back in in_progress and needs an owner decision.`;
 }

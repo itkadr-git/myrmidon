@@ -3,6 +3,7 @@ import {
   parseSettingDefaults,
   type OperatorSettingDefaults,
 } from "@paperclipai/shared";
+import { readProductEnvFrom } from "@paperclipai/shared/env-alias"; // myrmidon(REBRAND-C)
 import { logger } from "../middleware/logger.js";
 
 export { SETTING_DEFAULTS_ENV_KEY };
@@ -12,7 +13,7 @@ export type SettingDefaultsEnv = Record<string, string | undefined>;
 let cache: { raw: string | undefined; defaults: OperatorSettingDefaults | null } | null = null;
 
 /**
- * Operator setting defaults from the `PAPERCLIP_SETTING_DEFAULTS` env var
+ * Operator setting defaults from the `MYRMIDON_SETTING_DEFAULTS` env var
  * (JSON object validated against the shared registry). Parse-once accessor
  * keyed on the raw value, mirroring settings-visibility.ts: tests passing a
  * custom env re-parse when the raw value differs; process.env callers share
@@ -26,7 +27,7 @@ let cache: { raw: string | undefined; defaults: OperatorSettingDefaults | null }
 export function getOperatorSettingDefaults(
   env: SettingDefaultsEnv = process.env,
 ): OperatorSettingDefaults | null {
-  const raw = env[SETTING_DEFAULTS_ENV_KEY];
+  const raw = readProductEnvFrom(env, "SETTING_DEFAULTS");
   if (cache && cache.raw === raw) return cache.defaults;
   const { defaults, unknown } = parseSettingDefaults(raw);
   if (unknown.length > 0) {

@@ -18,6 +18,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "../../__tests__/helpers/embedded-postgres.js";
 import { createStaleBlockSweep, type StaleBlockSweepDeps } from "./sweep.js";
+import { toBlockedLoopEvent } from "../blocked-loop/history.js";
 import { readStaleBlockSignals, resetStaleBlockSignals } from "./attention.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -59,6 +60,7 @@ describeEmbeddedPostgres("stale block sweep", () => {
     blockerStatus?: string;
     withRelation?: boolean;
     unblockDescriptor?: Record<string, unknown> | null;
+    updatedAt?: Date;
   }) {
     const companyId = randomUUID();
     const agentId = randomUUID();
@@ -93,6 +95,7 @@ describeEmbeddedPostgres("stale block sweep", () => {
         action: "finish the blocker first",
       }) as any,
       blockedTransitionAt: new Date("2026-09-30T08:00:00.000Z"),
+      ...(input.updatedAt ? { updatedAt: input.updatedAt } : {}),
     });
     if (input.blockerStatus !== undefined) {
       await db.insert(issues).values({
@@ -326,24 +329,116 @@ describeEmbeddedPostgres("stale block sweep", () => {
     expect(issue!.status).toBe("blocked");
   });
 
-  it("skips a blocked task with no recognizable reason at all", async () => {
+  it("T4: unblocks a blocked task with no reasons (reasons.length === 0) to todo without assignee", async () => {
     const seeded = await seed({
       blockerStatus: undefined,
       unblockDescriptor: { owner: "board", action: "waiting" },
     });
     const { sweep } = sweepWith();
+
     const result = await sweep.sweep();
-    expect(result).toMatchObject({ scanned: 1, unblocked: 0, skippedLive: 0, skippedUnknown: 1 });
+
+    expect(result).toMatchObject({ scanned: 1, unblocked: 1, skippedLive: 0, skippedUnknown: 0, failed: 0 });
     const [issue] = await db.select().from(issues).where(eq(issues.id, seeded.issueId));
-    expect(issue!.status).toBe("blocked");
+    expect(issue!.status).toBe("todo");
+    expect(issue!.assigneeAgentId).toBeNull();
+    expect(issue!.unblockDescriptor).toBeNull();
+
+    const comments = await db
+      .select()
+      .from(issueComments)
+      .where(eq(issueComments.issueId, seeded.issueId));
+    expect(comments).toHaveLength(1);
+    expect(comments[0]!.authorType).toBe("system");
+    expect(comments[0]!.body).toContain("todo");
+    expect(comments[0]!.body).toContain("without assignee");
+
+    const signals = readStaleBlockSignals(seeded.companyId, NOW);
+    expect(signals).toHaveLength(1);
+    expect(signals[0]).toMatchObject({
+      issueId: seeded.issueId,
+      targetStatus: "todo",
+      reasonTexts: ["blocked without a reason"],
+      liftedAt: NOW.toISOString(),
+    });
   });
 
-  it("writes the activity log row for an unblock", async () => {
+  it("P1: a bare block behind a full page of live blocks is still reached in one pass", async () => {
+    // 50 old live blocks fill the page (page size 50); the bare block is the
+    // newest row, so without the reserved slot it would never be scanned and
+    // the T4 backfill would starve. The sweep must include it anyway.
+    const OLD = new Date("2026-09-20T08:00:00.000Z");
+    for (let i = 0; i < 50; i++) {
+      await seed({
+        blockerStatus: undefined,
+        unblockDescriptor: {
+          owner: "board",
+          action: "wait",
+          reasonRef: { kind: "date", dueAt: "2026-10-10T00:00:00.000Z" },
+        },
+        updatedAt: OLD,
+      });
+    }
+    const bare = await seed({
+      blockerStatus: undefined,
+      unblockDescriptor: { owner: "board", action: "waiting" },
+      updatedAt: new Date("2026-10-02T08:00:00.000Z"),
+    });
+    const { sweep } = sweepWith();
+
+    const result = await sweep.sweep();
+
+    expect(result.scanned).toBe(50);
+    expect(result.unblocked).toBe(1);
+    expect(result).toMatchObject({ skippedLive: 49, failed: 0 });
+    const [issue] = await db.select().from(issues).where(eq(issues.id, bare.issueId));
+    expect(issue!.status).toBe("todo");
+    expect(issue!.assigneeAgentId).toBeNull();
+  });
+
+  it("T6: leaves a blocked task with a valid live reasonRef alone in blocked", async () => {
+    const seeded = await seed({
+      blockerStatus: undefined,
+      unblockDescriptor: {
+        owner: "board",
+        action: "wait until future date",
+        reasonRef: { kind: "date", dueAt: "2026-10-10T00:00:00.000Z" },
+      },
+    });
+    const { sweep } = sweepWith();
+
+    const result = await sweep.sweep();
+
+    expect(result).toMatchObject({ scanned: 1, unblocked: 0, skippedLive: 1, failed: 0 });
+    const [issue] = await db.select().from(issues).where(eq(issues.id, seeded.issueId));
+    expect(issue!.status).toBe("blocked");
+    expect(issue!.assigneeAgentId).toBe(seeded.agentId);
+    expect(issue!.unblockDescriptor).not.toBeNull();
+
+    const comments = await db
+      .select()
+      .from(issueComments)
+      .where(eq(issueComments.issueId, seeded.issueId));
+    expect(comments).toHaveLength(0);
+  });
+
+  it("writes the activity log rows for an unblock: marker plus issue.updated for BLOCKED-LOOP", async () => {
     const seeded = await seed({ blockerStatus: "done", withRelation: true });
     const { injected, sweep } = sweepWith();
     await sweep.sweep();
-    expect(injected.logActivity).toHaveBeenCalledTimes(1);
+    expect(injected.logActivity).toHaveBeenCalledTimes(2);
     expect((injected.logActivity as ReturnType<typeof vi.fn>).mock.calls[0]![0]).toMatchObject({
+      companyId: seeded.companyId,
+      actorType: "system",
+      actorId: "stale_block_sweep",
+      action: "issue.updated",
+      entityType: "issue",
+      entityId: seeded.issueId,
+    });
+    expect((injected.logActivity as ReturnType<typeof vi.fn>).mock.calls[0]![0].details).toMatchObject({
+      changes: { status: { from: "blocked", to: "in_progress" } },
+    });
+    expect((injected.logActivity as ReturnType<typeof vi.fn>).mock.calls[1]![0]).toMatchObject({
       companyId: seeded.companyId,
       actorType: "system",
       actorId: "stale_block_sweep",
@@ -351,6 +446,23 @@ describeEmbeddedPostgres("stale block sweep", () => {
       entityType: "issue",
       entityId: seeded.issueId,
     });
+  });
+
+  it("P2: the sweep-written issue.updated row parses as a left_blocked event for BLOCKED-LOOP", async () => {
+    const seeded = await seed({ blockerStatus: "done", withRelation: true });
+    const { injected, sweep } = sweepWith();
+    await sweep.sweep();
+    const transitionCall = (injected.logActivity as ReturnType<typeof vi.fn>).mock.calls.find(
+      (call) => (call[0] as { action: string }).action === "issue.updated",
+    );
+    expect(transitionCall).toBeDefined();
+    const event = toBlockedLoopEvent({
+      createdAt: NOW,
+      actorType: "system",
+      details: (transitionCall![0] as { details: unknown }).details,
+    });
+    expect(event).toMatchObject({ kind: "left_blocked" });
+    expect(event!.blockerSetKey).toBeNull();
   });
 
   it("records the operator signal for the attention feed after an unblock", async () => {
