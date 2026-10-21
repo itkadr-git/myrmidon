@@ -40,7 +40,7 @@ function body(over: Record<string, unknown> = {}) {
   };
 }
 
-const KEY = "idempotency-key-0001";
+const IDEM = "request-token-0001";
 
 async function seed(db: Db, accounts: unknown[]) {
   const companyId = randomUUID();
@@ -62,7 +62,7 @@ const account = (over: Record<string, unknown> = {}) => ({
 describeEmbeddedPostgres("pool-chat service (embedded PG)", () => {
   const pg = useEmbeddedPostgres("pool-chat-service");
 
-  function submit(svc: ReturnType<typeof poolChatService>, s: { companyId: string; moduleId: string }, over: Record<string, unknown> = {}, key = KEY) {
+  function submit(svc: ReturnType<typeof poolChatService>, s: { companyId: string; moduleId: string }, over: Record<string, unknown> = {}, key = IDEM) {
     return svc.submit({ companyId: s.companyId, moduleId: s.moduleId, channel: "tg", subjectId: "u1", idempotencyKey: key, body: body(over) });
   }
 
@@ -84,7 +84,7 @@ describeEmbeddedPostgres("pool-chat service (embedded PG)", () => {
     const svc = poolChatService(pg.db, () => okTransport());
     await submit(svc, s);
     await expect(submit(svc, s, { messages: [{ role: "user", content: "other" }] })).rejects.toMatchObject({ status: 409 });
-    await expect(submit(svc, s, { messages: [{ role: "user", content: "other" }] }, "idempotency-key-0002")).rejects.toMatchObject({ status: 409 });
+    await expect(submit(svc, s, { messages: [{ role: "user", content: "other" }] }, "request-token-0002")).rejects.toMatchObject({ status: 409 });
   });
 
   it("sends once when the same request is submitted concurrently", async () => {
@@ -103,7 +103,7 @@ describeEmbeddedPostgres("pool-chat service (embedded PG)", () => {
     const s = await seed(pg.db, [account({ quotaUnits: units * 2 })]);
     const transport: PoolChatTransport = { provider: "chatgpt", send: vi.fn(async () => { await new Promise((r) => setTimeout(r, 400)); return { text: "a", inputUnits: 1, outputUnits: 1, providerRequestRef: null }; }) };
     const svc = poolChatService(pg.db, () => transport);
-    const settled = await Promise.allSettled(Array.from({ length: 5 }, (_, i) => submit(svc, s, { clientMessageId: `m-${i}` }, `idempotency-key-${i}0000`)));
+    const settled = await Promise.allSettled(Array.from({ length: 5 }, (_, i) => submit(svc, s, { clientMessageId: `m-${i}` }, `request-token-${i}0000`)));
     expect(settled.filter((r) => r.status === "fulfilled")).toHaveLength(2);
     const rejected = settled.filter((r): r is PromiseRejectedResult => r.status === "rejected");
     expect(rejected).toHaveLength(3);
@@ -153,7 +153,7 @@ describeEmbeddedPostgres("pool-chat service (embedded PG)", () => {
     const ra = await submit(svc, a);
     await expect(svc.status(b.companyId, b.moduleId, ra.id)).rejects.toMatchObject({ status: 404 });
     await expect(svc.status(a.companyId, b.moduleId, ra.id)).rejects.toMatchObject({ status: 404 });
-    const other = await svc.submit({ companyId: a.companyId, moduleId: a.moduleId, channel: "tg", subjectId: "u2", idempotencyKey: KEY, body: body() });
+    const other = await svc.submit({ companyId: a.companyId, moduleId: a.moduleId, channel: "tg", subjectId: "u2", idempotencyKey: IDEM, body: body() });
     expect(other.id).not.toBe(ra.id);
   });
 });
@@ -183,11 +183,11 @@ describeEmbeddedPostgres("pool-chat routes and authorization (embedded PG)", () 
   it("allows only the exact module/channel/subject tuple granted", async () => {
     const s = await seed(pg.db, [account()]);
     const actor = await principal(s.companyId, { moduleId: s.moduleId, channelId: "tg", subjectId: "u1" });
-    const ok = await request(app(actor)).post(`${base(s)}/requests`).set("Idempotency-Key", KEY).send({ ...body(), channelId: "tg", subjectId: "u1" });
+    const ok = await request(app(actor)).post(`${base(s)}/requests`).set("Idempotency-Key", IDEM).send({ ...body(), channelId: "tg", subjectId: "u1" });
     expect(ok.status).toBe(201);
     expect(ok.body.request.status).toBe("completed");
     for (const wrong of [{ channelId: "other", subjectId: "u1" }, { channelId: "tg", subjectId: "u2" }, {}]) {
-      const res = await request(app(actor)).post(`${base(s)}/requests`).set("Idempotency-Key", "idempotency-key-9999").send({ ...body(), ...wrong });
+      const res = await request(app(actor)).post(`${base(s)}/requests`).set("Idempotency-Key", "request-token-9999").send({ ...body(), ...wrong });
       expect(res.status).toBe(403);
     }
   });
@@ -218,7 +218,7 @@ describeEmbeddedPostgres("pool-chat routes and authorization (embedded PG)", () 
   it("authorizes status reads against the persisted request scope", async () => {
     const s = await seed(pg.db, [account()]);
     const owner = await principal(s.companyId, { moduleId: s.moduleId, channelId: "tg", subjectId: "u1" });
-    const created = await request(app(owner)).post(`${base(s)}/requests`).set("Idempotency-Key", KEY).send({ ...body(), channelId: "tg", subjectId: "u1" });
+    const created = await request(app(owner)).post(`${base(s)}/requests`).set("Idempotency-Key", IDEM).send({ ...body(), channelId: "tg", subjectId: "u1" });
     const id = created.body.request.id as string;
     expect((await request(app(owner)).get(`${base(s)}/requests/${id}`)).status).toBe(200);
     const stranger = await principal(s.companyId, { moduleId: s.moduleId, channelId: "tg", subjectId: "u2" });
