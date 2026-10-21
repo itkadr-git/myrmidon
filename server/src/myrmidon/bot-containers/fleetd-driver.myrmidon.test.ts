@@ -282,11 +282,13 @@ describe("myrmidon(FLEETD-VMEXEC) fleetd driver — request injection hooks", ()
     await expect(driver.status("bot-a")).rejects.toThrow(/no response left/);
   });
 
-  it("parseFleetdEndpoint accepts http host:port and rejects anything else", async () => {
+  it("parseFleetdEndpoint accepts http and https host:port and rejects anything else", async () => {
     const { parseFleetdEndpoint } = await import("./fleetd-driver.js");
-    expect(parseFleetdEndpoint("http://fleetd.example.com")).toEqual({ host: "fleetd.example.com", port: 80 });
-    expect(parseFleetdEndpoint("http://fleetd.example.com:9100")).toEqual({ host: "fleetd.example.com", port: 9100 });
-    expect(() => parseFleetdEndpoint("https://fleetd.example.com")).toThrow(/must be http/);
+    expect(parseFleetdEndpoint("http://fleetd.example.com")).toEqual({ host: "fleetd.example.com", port: 80, protocol: "http:" });
+    expect(parseFleetdEndpoint("http://fleetd.example.com:9100")).toEqual({ host: "fleetd.example.com", port: 9100, protocol: "http:" });
+    expect(parseFleetdEndpoint("https://fleetd.example.com")).toEqual({ host: "fleetd.example.com", port: 443, protocol: "https:" });
+    expect(parseFleetdEndpoint("https://fleetd.example.com:9443")).toEqual({ host: "fleetd.example.com", port: 9443, protocol: "https:" });
+    expect(() => parseFleetdEndpoint("ftp://fleetd.example.com")).toThrow(/must be http:\/\/ or https:\/\//);
     expect(() => parseFleetdEndpoint("http://fleetd.example.com:notaport")).toThrow();
   });
 });
