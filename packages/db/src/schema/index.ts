@@ -307,6 +307,8 @@ export { datastoreSnapshots, datastoreAuditReports } from "./datastore_care.js";
 
 // myrmidon(1.6-GRD): flag-only guardrail events (secrets/pii detected on run output).
 export { guardrailEvents } from "./guardrail_events.js";
+// myrmidon(1.7-GUARDRAILS): hierarchical per-rule mode overrides.
+export { guardrailModeSettings } from "./guardrail_mode_settings.js";
 // myrmidon(1.7-BUDGET-CONFIG A): spend limits per hierarchy level, their change
 // journal, and the level/period/mode types.
 export {

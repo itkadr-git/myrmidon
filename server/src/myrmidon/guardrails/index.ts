@@ -24,3 +24,16 @@ export {
   type GuardrailSubtype,
 } from "./detect.js";
 export { guardrailsOnRunOutput } from "./run-output.js";
+export {
+  GUARDRAIL_LEVELS,
+  GUARDRAIL_MODES,
+  GUARDRAIL_RULES,
+  resolveGuardrailMode,
+  type EffectiveGuardrailMode,
+  type GuardrailLevel,
+  type GuardrailMode,
+  type GuardrailOverride,
+  type GuardrailRule,
+} from "./modes.js";
+export { createGuardrailModeStore } from "./mode-store.js";
+export { guardrailModeRoutes } from "./mode-routes.js";
