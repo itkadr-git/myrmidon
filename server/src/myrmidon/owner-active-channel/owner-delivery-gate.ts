@@ -74,6 +74,9 @@ export async function telegramOwnerDeliveryBindings(
     companyId: string;
     issueId: string;
     createdByAgentId: string | null | undefined;
+    effectiveResolverPolicy?: string | null;
+    addresseeAgentId?: string | null;
+    addresseeUserId?: string | null;
   },
 ): Promise<OwnerDeliveryBinding[]> {
   if (!input.createdByAgentId) return [];
@@ -116,6 +119,9 @@ export async function telegramOwnerDeliveryBindingsU2(
     companyId: string;
     issueId: string;
     createdByAgentId: string | null | undefined;
+    effectiveResolverPolicy?: string | null;
+    addresseeAgentId?: string | null;
+    addresseeUserId?: string | null;
   },
 ): Promise<OwnerDeliveryBinding[]> {
   if (!input.createdByAgentId) return [];
