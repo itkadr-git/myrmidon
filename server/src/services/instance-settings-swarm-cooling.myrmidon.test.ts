@@ -120,4 +120,25 @@ describe("myrmidon(1.6.5 SWARM-PANEL-COOLING) the cooling block through updateGe
     expect(general.swarm).toEqual({ cooldownBaseMin: 10, cooldownCeilingHours: 2 });
     expect(((general.swarmClaim as unknown) as Record<string, unknown>).leaseTtlSec).toBe(600);
   });
+
+  it("a cooling save keeps the stored general.swarm.scent (T10 classifier settings)", async () => {
+    const scent = { enabled: false, tagWeight: 77, model: "scent-model-x" };
+    const { db } = await stubSeededDb(
+      settingsRow({ swarm: { cooldownBaseMin: 45, scent } }),
+    );
+    const service = instanceSettingsService(db, { runtimeEnv: {} });
+
+    await service.updateGeneral({
+      swarm: { cooldownBaseMin: 20, cooldownCeilingHours: 6, runWithoutTaskGate: false },
+    });
+
+    const general = (await service.getGeneral()) as unknown as Record<string, unknown>;
+    const swarm = general.swarm as Record<string, unknown>;
+    expect(swarm.cooldownBaseMin).toBe(20);
+    expect(swarm.cooldownCeilingHours).toBe(6);
+    const kept = swarm.scent as Record<string, unknown>;
+    expect(kept.enabled).toBe(false);
+    expect(kept.tagWeight).toBe(77);
+    expect(kept.model).toBe("scent-model-x");
+  });
 });

@@ -766,7 +766,16 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
         // so changing or unsetting the variable later still takes effect.
         const nextGeneral = stripOperatorGeneralEchoes(
           storedGeneral,
-          normalizeGeneralSettings({ ...storedGeneral, ...patch }),
+          normalizeGeneralSettings({
+            ...storedGeneral,
+            ...patch,
+            // myrmidon(OPE-6894): `general.swarm` is shared by sibling blocks
+            // (T5 cooling keys, T10 `scent`); a PATCH carrying one of them
+            // must not erase the others, so merge one level deep.
+            ...(patch.swarm !== undefined
+              ? { swarm: { ...(storedGeneral.swarm ?? {}), ...patch.swarm } }
+              : {}),
+          }),
           operatorDefaults,
         );
         // OPE-6406: a PATCH rewrites the whole `general` document, so it must
