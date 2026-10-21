@@ -148,6 +148,8 @@ export function bindModelProviderPluginLifecycle(
   };
 
   const handlePluginDeactivated = (payload: { pluginId: string; pluginKey: string }) => {
+    // Remove the event's provider immediately; registry lookup is asynchronous.
+    unregisterOwnedConnectors(payload.pluginKey);
     void resolvePluginRecord(payload.pluginId, payload.pluginKey)
       .then((plugin) => unregisterOwnedConnectors(plugin.pluginKey, plugin.manifestJson))
       .catch((err) => {
