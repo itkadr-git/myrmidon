@@ -228,7 +228,7 @@ const CONVERTED: {
     file: "services/chat-sdk-runtime.ts",
     legacy: "./chat-telegram-draft-stop.js",
     seam: "channel-connectors/bridge/telegram-draft-stop.js",
-    symbols: ["isTelegramDraftStopped", "parseTelegramDraftBinding"],
+    symbols: ["captureTelegramGenerationStopped", "telegramPrivateDraftDestination"],
   },
   {
     file: "services/chat-sdk-runtime.ts",
