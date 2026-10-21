@@ -8,6 +8,17 @@ name: Paperclip Migration Verification
 #   - v2026.1005.0 (292 migrations, browser_use_runs gap)
 #   - v2026.1012.0 (304 migrations, mcp_oauth_tokens gap)
 #
+# The matrix job builds the PRODUCTION CLI from this checkout (no standalone fallback) and runs
+# dry-run (database URL and plain pg_dump), refused runs, real migration (URL and dump) and
+# rollback. Every verdict is read back from the databases and the copied files:
+#   - the source is snapshotted (row counts + content hashes of every table) and must be
+#     identical after every CLI run;
+#   - skippedSourceData of the CLI report must equal what information_schema says the source has
+#     and the target lacks;
+#   - 1001.0+ carries vendor-only data and is migrated with --accept-vendor-only-data ONLY; a run
+#     without it (and a run with only --accept-unknown-source-objects) must be refused;
+#   - secrets are read from the target: the old key must not decrypt, the new key must.
+#
 # Rule: skipped is not green; failure of any release fails that named matrix job.
 
 on:
@@ -34,16 +45,19 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: 24
+          package-manager-cache: false
 
       - name: Run migration verification test suite & regressions
         run: |
-          node --test scripts/myrmidon/paperclip-migration-verify.test.mjs
+          node --test scripts/myrmidon/paperclip-migration-verify.test.mjs scripts/myrmidon/paperclip-migration-live.test.mjs
 
       - name: Validate fixture generator
         run: |
@@ -52,7 +66,7 @@ jobs:
   db-migration-smoke:
     name: Synthetic DB Migration Smoke (${{ matrix.release }})
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -80,138 +94,134 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: 24
+          package-manager-cache: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+        with:
+          version: 9.15.4
+          run_install: false
+
+      - name: Install the production CLI from this checkout
+        run: pnpm install --frozen-lockfile --filter "paperclipai..."
 
       - name: Install PostgreSQL client tools
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq postgresql-client
 
-      - name: Initialize source Paperclip database with release ${{ matrix.release }} fixture
+      - name: Migrate ${{ matrix.release }} with the production CLI and verify from the databases
+        shell: bash
         env:
           PGPASSWORD: postgrespassword
         run: |
-          psql -h localhost -U postgres -d postgres -c "CREATE DATABASE paperclip_source;"
-          psql -h localhost -U postgres -d postgres -c "CREATE DATABASE myrmidon_target;"
-          psql -h localhost -U postgres -d postgres -c "CREATE DATABASE scratch_db;"
-          
-          echo "Applying Paperclip ${{ matrix.release }} canonical schema DDL..."
-          psql -h localhost -U postgres -d paperclip_source -f tests/fixtures/paperclip-migration/schema-paperclip-${{ matrix.release }}.sql > /dev/null
-          
-          echo "Applying synthetic seed data for ${{ matrix.release }}..."
-          psql -h localhost -U postgres -d paperclip_source -f tests/fixtures/paperclip-migration/seed-paperclip-${{ matrix.release }}.sql
-          
-          echo "Verifying source database row counts..."
-          psql -h localhost -U postgres -d paperclip_source -c "SELECT count(*) AS companies_count FROM companies;"
-          psql -h localhost -U postgres -d paperclip_source -c "SELECT count(*) AS issues_count FROM issues;"
-          psql -h localhost -U postgres -d paperclip_source -c "SELECT count(*) AS agents_count FROM agents;"
-          psql -h localhost -U postgres -d paperclip_source -c "SELECT count(*) AS secrets_count FROM company_secrets;"
+          set -euo pipefail
+          R="${{ matrix.release }}"
+          FIX="$GITHUB_WORKSPACE/tests/fixtures/paperclip-migration"
+          MANIFEST="$FIX/manifest-$R.json"
+          W="$RUNNER_TEMP/work"
+          mkdir -p "$W/reports" "$W/keys" "$W/dumps"
+          BASE="postgres://postgres:postgrespassword@localhost:5432"
+          SRC="$BASE/paperclip_source"
+          TGT="$BASE/myrmidon_target"
+          SCR="$BASE/scratch_db"
+          LIVE="node $GITHUB_WORKSPACE/scripts/myrmidon/paperclip-migration-live.mjs"
+          PSQL="psql -X -q -v ON_ERROR_STOP=1 -h localhost -U postgres"
 
-      - name: Generate plain pg_dump from source
-        env:
-          PGPASSWORD: postgrespassword
-        run: |
-          mkdir -p "$RUNNER_TEMP/dumps"
-          pg_dump -h localhost -U postgres --format=plain --no-owner --no-privileges paperclip_source > "$RUNNER_TEMP/dumps/source.dump.sql"
-          test -s "$RUNNER_TEMP/dumps/source.dump.sql"
+          # The production CLI, run from source. No fallback: if it cannot run, the job is red.
+          mig() { pnpm --silent --dir "$GITHUB_WORKSPACE/cli" exec tsx src/index.ts myrmidon:migrate "$@"; }
 
-      - name: Execute migration dry-run and verification for ${{ matrix.release }}
-        id: migration
-        env:
-          PGPASSWORD: postgrespassword
-          SOURCE_DB_URL: "postgres://postgres:postgrespassword@localhost:5432/paperclip_source"
-          TARGET_DB_URL: "postgres://postgres:postgrespassword@localhost:5432/myrmidon_target"
-          SCRATCH_DB_URL: "postgres://postgres:postgrespassword@localhost:5432/scratch_db"
-          SOURCE_KEY: "0101010101010101010101010101010101010101010101010101010101010101"
-          TARGET_KEY: "0202020202020202020202020202020202020202020202020202020202020202"
-        run: |
-          mkdir -p "$RUNNER_TEMP/migration-target-storage"
-          mkdir -p "$RUNNER_TEMP/reports"
-          mkdir -p "$RUNNER_TEMP/state"
-          mkdir -p "$RUNNER_TEMP/keys"
-          
-          echo -n "$SOURCE_KEY" > "$RUNNER_TEMP/keys/source.key"
-          echo -n "$TARGET_KEY" > "$RUNNER_TEMP/keys/target.key"
-          
-          # Copy storage attachments
-          cp -r tests/fixtures/paperclip-migration/storage "$RUNNER_TEMP/migration-target-storage/"
-          
-          # Capture source checksum before migration to verify "source not modified"
-          psql -h localhost -U postgres -d paperclip_source -t -A -c "SELECT count(*) FROM companies;" > "$RUNNER_TEMP/source-count-before.txt"
-          
-          # Check production CLI presence
-          if command -v paperclipai >/dev/null 2>&1 && paperclipai myrmidon:migrate --help >/dev/null 2>&1; then
-            echo "Running CLI dry-run from database URL..."
-            paperclipai myrmidon:migrate \
-              --dry-run \
-              --source-url "$SOURCE_DB_URL" \
-              --target-url "$TARGET_DB_URL" \
-              --source-files "tests/fixtures/paperclip-migration" \
-              --target-dir "$RUNNER_TEMP/migration-target-storage" \
-              --source-key-file "$RUNNER_TEMP/keys/source.key" \
-              --target-key-file "$RUNNER_TEMP/keys/target.key" > "$RUNNER_TEMP/reports/dry-run-${{ matrix.release }}.json"
-            
-            echo "Running CLI dry-run from plain pg_dump file..."
-            paperclipai myrmidon:migrate \
-              --dry-run \
-              --source-dump "$RUNNER_TEMP/dumps/source.dump.sql" \
-              --scratch-url "$SCRATCH_DB_URL" \
-              --target-url "$TARGET_DB_URL" \
-              --source-files "tests/fixtures/paperclip-migration" \
-              --target-dir "$RUNNER_TEMP/migration-target-storage" \
-              --source-key-file "$RUNNER_TEMP/keys/source.key" \
-              --target-key-file "$RUNNER_TEMP/keys/target.key"
-            
-            echo "Running real migration..."
-            # For 1001.0+ with vendor gaps, accept vendor-only data
-            EXTRA_FLAG=""
-            if [ "${{ matrix.release }}" != "v2026.916.0" ] && [ "${{ matrix.release }}" != "v2026.916.1" ]; then
-              EXTRA_FLAG="--accept-vendor-only-data"
-            fi
-            
-            paperclipai myrmidon:migrate \
-              --source-url "$SOURCE_DB_URL" \
-              --target-url "$TARGET_DB_URL" \
-              --source-files "tests/fixtures/paperclip-migration" \
-              --target-dir "$RUNNER_TEMP/migration-target-storage" \
-              --source-key-file "$RUNNER_TEMP/keys/source.key" \
-              --target-key-file "$RUNNER_TEMP/keys/target.key" \
-              --state-dir "$RUNNER_TEMP/state" \
-              $EXTRA_FLAG
-          else
-            echo "Standalone verifier run for ${{ matrix.release }}."
+          node -e 'const m=require(process.argv[1]);process.stdout.write(m.keys.sourceMasterKeyHex)' "$MANIFEST" > "$W/keys/source.key"
+          node -e 'const m=require(process.argv[1]);process.stdout.write(m.keys.targetMasterKeyHex)' "$MANIFEST" > "$W/keys/target.key"
+          chmod 600 "$W/keys/"*.key
+          VENDOR_DATA=$(node -e 'const m=require(process.argv[1]);console.log(Object.keys(m.vendorGapCounts||{}).length>0)' "$MANIFEST")
+          echo "release=$R vendor-only data in source: $VENDOR_DATA"
+
+          $PSQL -d postgres -c "CREATE DATABASE paperclip_source;"
+          $PSQL -d postgres -c "CREATE DATABASE myrmidon_target;"
+          $PSQL -d postgres -c "CREATE DATABASE scratch_db;"
+          reset_target() { $PSQL -d postgres -c "DROP DATABASE IF EXISTS myrmidon_target WITH (FORCE);" -c "CREATE DATABASE myrmidon_target;"; }
+          reset_scratch() { $PSQL -d postgres -c "DROP DATABASE IF EXISTS scratch_db WITH (FORCE);" -c "CREATE DATABASE scratch_db;"; }
+
+          $PSQL -d paperclip_source -f "$FIX/schema-paperclip-$R.sql" > /dev/null
+          $PSQL -d paperclip_source -f "$FIX/seed-paperclip-$R.sql" > /dev/null
+          pg_dump -h localhost -U postgres --format=plain --no-owner --no-privileges paperclip_source > "$W/dumps/source.dump.sql"
+          test -s "$W/dumps/source.dump.sql"
+
+          # Source evidence, taken from the database itself.
+          $LIVE snapshot --url "$SRC" --out "$W/source-before.json"
+          unchanged() { $LIVE same-snapshot --before "$W/source-before.json" --url "$SRC" --label "$1"; }
+
+          COMMON_URL=(--source-url "$SRC" --target-url "$TGT" --source-files "$FIX" --source-key-file "$W/keys/source.key" --target-key-file "$W/keys/target.key")
+          COMMON_DUMP=(--source-dump "$W/dumps/source.dump.sql" --scratch-url "$SCR" --target-url "$TGT" --source-files "$FIX" --source-key-file "$W/keys/source.key" --target-key-file "$W/keys/target.key")
+
+          echo "::group::dry-run from database URL and from plain pg_dump (no acceptance flags)"
+          mig --dry-run "${COMMON_URL[@]}" --target-dir "$W/dry-files-url" > "$W/reports/dry-run-url.json"
+          mig --dry-run "${COMMON_DUMP[@]}" --target-dir "$W/dry-files-dump" > "$W/reports/dry-run-dump.json"
+          $LIVE dry-run-release --report "$W/reports/dry-run-url.json" --manifest "$MANIFEST"
+          $LIVE dry-run-release --report "$W/reports/dry-run-dump.json" --manifest "$MANIFEST"
+          $LIVE compare-reports --a "$W/reports/dry-run-url.json" --b "$W/reports/dry-run-dump.json"
+          unchanged "after dry-run"
+          test ! -e "$W/dry-files-url" && test ! -e "$W/dry-files-dump"
+          echo "::endgroup::"
+
+          if [ "$VENDOR_DATA" = "true" ]; then
+            echo "::group::runs without --accept-vendor-only-data must be refused"
+            for EXTRA in "" "--accept-unknown-source-objects"; do
+              if mig "${COMMON_URL[@]}" --target-dir "$W/refused-files" --state-dir "$W/refused-state" $EXTRA > "$W/reports/refused.out" 2> "$W/reports/refused.err"; then
+                echo "::error::migration of $R without --accept-vendor-only-data (extra: '$EXTRA') was NOT refused"
+                exit 1
+              fi
+              grep -q "Paperclip features" "$W/reports/refused.err" "$W/reports/refused.out" || { echo "::error::refusal does not name the vendor-only data"; cat "$W/reports/refused.err"; exit 1; }
+              $LIVE verify-refused --target-url "$TGT" --label "extra '$EXTRA'"
+              unchanged "after refused run"
+            done
+            echo "::endgroup::"
           fi
-          
-          # Verify "source unchanged" invariant
-          psql -h localhost -U postgres -d paperclip_source -t -A -c "SELECT count(*) FROM companies;" > "$RUNNER_TEMP/source-count-after.txt"
-          diff -u "$RUNNER_TEMP/source-count-before.txt" "$RUNNER_TEMP/source-count-after.txt"
-          
-          # Run audit verifier
-          node scripts/myrmidon/paperclip-migration-verify.mjs \
-            --release "${{ matrix.release }}" \
-            --manifest "tests/fixtures/paperclip-migration/manifest-${{ matrix.release }}.json" \
-            --target-storage "tests/fixtures/paperclip-migration" \
-            --source-key "$SOURCE_KEY" \
-            --target-key "$TARGET_KEY" \
-            --source-unchanged \
-            --rollback-verified \
-            --report-json "$RUNNER_TEMP/reports/migration-audit-${{ matrix.release }}.json" \
-            --report-md "$RUNNER_TEMP/reports/migration-audit-${{ matrix.release }}.md" \
-            --json > "$RUNNER_TEMP/reports/verifier-summary-${{ matrix.release }}.json"
-          
-          cat "$RUNNER_TEMP/reports/migration-audit-${{ matrix.release }}.md"
 
-      - name: Upload migration audit report artifact
+          ACCEPT=()
+          if [ "$VENDOR_DATA" = "true" ]; then ACCEPT=(--accept-vendor-only-data); fi
+          ACCEPTED=$VENDOR_DATA
+
+          verify_real() { # $1 label, $2 report, $3 target dir
+            $LIVE verify-target --manifest "$MANIFEST" --source-snapshot "$W/source-before.json" --source-url "$SRC" \
+              --target-url "$TGT" --target-dir "$3" --label "$1" --report-json "$W/reports/migration-audit-$R-$1.json"
+            $LIVE check-skipped --source-snapshot "$W/source-before.json" --target-url "$TGT" --report "$2" --accepted "$ACCEPTED" --label "$1 real report"
+            $LIVE check-skipped --source-snapshot "$W/source-before.json" --target-url "$TGT" --report "$W/reports/dry-run-url.json" --accepted false --label "$1 dry-run report"
+            unchanged "after $1 migration"
+          }
+          roll_back() { # $1 label, $2 state dir, $3 target dir
+            mig --rollback --target-url "$TGT" --state-dir "$2" --target-dir "$3" > "$W/reports/rollback-$1.json"
+            $LIVE verify-rollback --manifest "$MANIFEST" --target-url "$TGT" --target-dir "$3" --label "$1"
+            unchanged "after $1 rollback"
+          }
+
+          echo "::group::real migration from database URL, then rollback"
+          mig "${COMMON_URL[@]}" --target-dir "$W/files-url" --state-dir "$W/state-url" "${ACCEPT[@]}" > "$W/reports/real-url.json"
+          verify_real url "$W/reports/real-url.json" "$W/files-url"
+          roll_back url "$W/state-url" "$W/files-url"
+          echo "::endgroup::"
+
+          echo "::group::real migration from plain pg_dump, then rollback"
+          reset_scratch
+          mig "${COMMON_DUMP[@]}" --target-dir "$W/files-dump" --state-dir "$W/state-dump" "${ACCEPT[@]}" > "$W/reports/real-dump.json"
+          verify_real dump "$W/reports/real-dump.json" "$W/files-dump"
+          roll_back dump "$W/state-dump" "$W/files-dump"
+          echo "::endgroup::"
+
+      - name: Upload migration audit reports
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: paperclip-migration-audit-${{ matrix.release }}
           path: |
-            ${{ runner.temp }}/reports/migration-audit-${{ matrix.release }}.md
-            ${{ runner.temp }}/reports/migration-audit-${{ matrix.release }}.json
+            ${{ runner.temp }}/work/reports/
           if-no-files-found: error

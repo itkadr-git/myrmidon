@@ -238,6 +238,7 @@ export function verifyMigration({
   rollbackVerified = null,
   dryRunReport = null,
   schemaSql = null,
+  requireAll = false,
 }) {
   const report = {
     timestamp: new Date().toISOString(),
@@ -383,6 +384,27 @@ export function verifyMigration({
       }
     }
     report.checks.dryRunReport = dryRunCheck;
+  }
+
+  // Skipped is not green: when the caller demands full evidence, a check that
+  // could not run is a failure, not a pass.
+  if (requireAll) {
+    for (const [name, check] of Object.entries(report.checks)) {
+      if (check?.skipped) {
+        report.status = "fail";
+        report.errors.push(`Check "${name}" was skipped: ${check.reason}`);
+      }
+    }
+    for (const required of ["entityCounts", "storageFiles", "secretReEncryption"]) {
+      if (!report.checks[required]) {
+        report.status = "fail";
+        report.errors.push(`Required check "${required}" did not run.`);
+      }
+    }
+    if (report.checks.secretReEncryption?.verifiedCount === 0) {
+      report.status = "fail";
+      report.errors.push("No secret carrier was verified.");
+    }
   }
 
   return report;

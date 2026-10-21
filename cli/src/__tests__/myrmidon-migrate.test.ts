@@ -284,6 +284,9 @@ describe("myrmidon:migrate pure guards", () => {
       const rejected = checkCompatibility(analysis, target, index);
       expect(rejected.problems).toEqual(["table-missing-in-target:custom_extension"]);
 
+      const vendorFlagOnly = checkCompatibility(analysis, target, index, { acceptVendorOnlyData: true });
+      expect(vendorFlagOnly.problems).toEqual(["table-missing-in-target:custom_extension"]);
+
       const accepted = checkCompatibility(analysis, target, index, { acceptUnknownSourceObjects: true });
       expect(accepted.problems).toEqual([]);
       expect(accepted.exclusions).toEqual([{ kind: "table", name: "custom_extension", reason: "unknown source table accepted by flag" }]);

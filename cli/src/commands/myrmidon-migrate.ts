@@ -109,7 +109,7 @@ export type MigrationOptions = {
   allowMissingFiles?: boolean;
   /** Go on when the source holds data of Paperclip features that Myrmidon does not have (it is not transferred). */
   acceptVendorOnlyData?: boolean;
-  /** Alias for acceptVendorOnlyData and permission to accept source objects absent from target. */
+  /** Continue when the source holds tables absent from the target that are NOT known Paperclip features (not transferred). Does not imply acceptVendorOnlyData. */
   acceptUnknownSourceObjects?: boolean;
   json?: boolean;
   /** Test seams; not exposed as CLI flags. */
@@ -560,7 +560,7 @@ export function checkCompatibility(
       }
     }
   }
-  const accepted = Boolean(options?.acceptVendorOnlyData || options?.acceptUnknownSourceObjects);
+  const accepted = Boolean(options?.acceptVendorOnlyData);
   const skippedSourceData: SkippedSourceDatum[] = [
     ...vendorOnly.map((f) => ({
       table: f.table,
@@ -690,7 +690,7 @@ function describeFinding(f: VendorOnlyFinding): string {
 /** Stops, before anything is written, when data of features Myrmidon lacks would be left behind without the owner's word. */
 export function assertVendorOnlyAccepted(options: MigrationOptions, analysis: SourceAnalysis): void {
   const withData = analysis.vendorOnlyCandidates.filter((c) => c.rows > 0);
-  if (withData.length === 0 || options.acceptVendorOnlyData || options.acceptUnknownSourceObjects) return;
+  if (withData.length === 0 || options.acceptVendorOnlyData) return;
   const shown = withData.slice(0, 8).map(describeFinding).join(", ");
   throw new Error(
     `The source holds data of Paperclip features that Myrmidon does not have, and that data would not be transferred: ${shown}${withData.length > 8 ? `, and ${withData.length - 8} more` : ""}. ` +
@@ -987,7 +987,7 @@ async function execute(
 
       if (options.dryRun) {
         const candidates = vendorOnlyReport(analysis.vendorOnlyCandidates);
-        const accepted = Boolean(options.acceptVendorOnlyData || options.acceptUnknownSourceObjects);
+        const accepted = Boolean(options.acceptVendorOnlyData);
         const skippedSourceData: SkippedSourceDatum[] = [
           ...candidates.withData.map((f) => ({
             table: f.table,
@@ -1227,7 +1227,7 @@ async function realRun(ctx: Context, input: RealRunInput): Promise<MigrationResu
       phases,
       load: copyInfo,
       verification: report,
-      vendorOnlyData: { acceptedByFlag: Boolean(ctx.options.acceptVendorOnlyData || ctx.options.acceptUnknownSourceObjects), transferred: false, ...vendorOnlyReport(compat.vendorOnly) },
+      vendorOnlyData: { acceptedByFlag: Boolean(ctx.options.acceptVendorOnlyData), transferred: false, ...vendorOnlyReport(compat.vendorOnly) },
       skippedSourceData: compat.skippedSourceData,
       stateDir,
     };
@@ -1319,12 +1319,7 @@ async function rollbackRun(ctx: Context, targetUrl: string): Promise<MigrationRe
 }
 
 export async function myrmidonMigrateCommand(options: MigrationOptions): Promise<void> {
-  const normalized: MigrationOptions = {
-    ...options,
-    acceptVendorOnlyData: Boolean(options.acceptVendorOnlyData || options.acceptUnknownSourceObjects),
-    acceptUnknownSourceObjects: Boolean(options.acceptUnknownSourceObjects || options.acceptVendorOnlyData),
-  };
-  const result = await runMigration(normalized);
+  const result = await runMigration(options);
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
 }
 
@@ -1354,7 +1349,7 @@ export function registerMyrmidonMigrateCommand(program: { command: (name: string
     )
     .option(
       "--accept-unknown-source-objects",
-      "Alias for --accept-vendor-only-data; continue when source holds objects unknown to target",
+      "Continue when the source holds tables absent from the target that are not known Paperclip features (not transferred); does not imply --accept-vendor-only-data",
     )
     .option("--allow-missing-files", "Continue when asset files are missing or differ (they are reported)")
     .option("--json", "Accepted for compatibility; output is always JSON")
