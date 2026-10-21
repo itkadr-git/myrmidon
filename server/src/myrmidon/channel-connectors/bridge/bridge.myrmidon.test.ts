@@ -246,7 +246,12 @@ const CONVERTED: {
     file: "services/heartbeat-run-runtime-status.ts",
     legacy: "myrmidon/telegram-dm-progress/runtime-steps.js",
     seam: "channel-connectors/bridge/dm-progress.js",
-    symbols: ["recordDmProgressStep", "recordDmProgressRuntimeStatus"],
+    symbols: [
+      "recordDmProgressStep",
+      "recordDmProgressRuntimeStatus",
+      "clearDmProgressRuntimeSteps",
+      "clearAllDmProgressRuntimeSteps",
+    ],
   },
   {
     file: "services/instance-settings.ts",
