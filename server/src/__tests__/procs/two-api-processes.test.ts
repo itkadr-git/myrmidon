@@ -252,7 +252,10 @@ describeProcs("two api processes on one test database (PROCS-T1.5 skeleton)", ()
   it("scenario 5: SO_REUSEPORT shares one public port across every api replica", async () => {
     // Keep the boot ids from the first fixture so stale live rows from earlier
     // runs cannot be mistaken for the replicas created by this scenario.
-    const beforeSharedPort = await readBoardProcesses(processes[0]!);
+    // Scenario 3 drained processes[0], so read through whichever replica is still alive.
+    const survivor = processes.find((handle) => handle.alive());
+    expect(survivor, "a live api process from the earlier scenarios").toBeDefined();
+    const beforeSharedPort = await readBoardProcesses(survivor!);
     const previousBootIds = new Set(beforeSharedPort.processes.map((row) => row.bootId));
     await stopApiProcesses(processes);
     processes = [];
