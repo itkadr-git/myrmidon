@@ -1485,6 +1485,7 @@ const ISSUE_WAKE_DIAGNOSTIC_KNOWN_REASONS = new Set([
   "goal_control",
   "heartbeat.disabled",
   "heartbeat.scheduling_suppressed",
+  "heartbeat.timer.cached_identical_prompt",
   "heartbeat.timer.no_actionable_work",
   "heartbeat.wakeOnDemand.disabled",
   "heartbeat.worktree_execution_cutoff",
