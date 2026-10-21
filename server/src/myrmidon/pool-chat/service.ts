@@ -10,6 +10,8 @@ export type PoolChatTransportResolver = (input: {
   companyId: string;
   provider: PoolChatProvider;
   moduleId: string;
+  credentialSecretName: string | null;
+  accountRef: string;
   config: Record<string, unknown>;
 }) => PoolChatTransport | null | Promise<PoolChatTransport | null>;
 
@@ -89,7 +91,7 @@ export function poolChatService(db: Db, resolveTransport: PoolChatTransportResol
       if (!outcome.created) return outcome.request;
       let transport: PoolChatTransport | null;
       try {
-        transport = await resolveTransport({ companyId: input.companyId, provider, moduleId: input.moduleId, config: { ...config, credentialSecretName: module.credentialSecretName, selectedAccountRef: outcome.accountRef } });
+        transport = await resolveTransport({ companyId: input.companyId, provider, moduleId: input.moduleId, credentialSecretName: module.credentialSecretName, accountRef: outcome.accountRef, config });
       } catch {
         // Secret/provider resolution is before upstream I/O, so release the
         // reservation instead of leaving a new request permanently dispatching.
