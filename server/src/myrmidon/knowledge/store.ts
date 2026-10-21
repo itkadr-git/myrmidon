@@ -1127,7 +1127,7 @@ export function createKnowledgeService(db: Db, options: KnowledgeServiceOptions 
     const [row] = await db
       .select()
       .from(knowledgeSuggestions)
-      .where(and(eq(knowledgeSuggestions.nestId, nestId), eq(knowledgeSuggestions.id, input.suggestionId), eq(knowledgeSuggestions.status, "pending")))
+      .where(and(eq(knowledgeSuggestions.nestId, nestId), eq(knowledgeSuggestions.id, input.suggestionId)))
       .limit(1);
     if (!row) throw new KnowledgeDomainError("suggestion_not_found", 404, "No such suggestion.");
     if (row.status !== "pending") {
