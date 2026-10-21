@@ -18,6 +18,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -92,6 +93,7 @@ type config struct {
 	AllowedMounts    []string      `json:"allowedMounts,omitempty"`
 	BoardExtraHost   string        `json:"boardExtraHost,omitempty"`
 	BoardAddress     string        `json:"boardAddress,omitempty"`
+	GatewayBindIP    string        `json:"gatewayBindIp,omitempty"`
 	GatewayPortStart int           `json:"gatewayPortStart,omitempty"`
 	GatewayPortEnd   int           `json:"gatewayPortEnd,omitempty"`
 	Bots             []bot         `json:"bots"`
@@ -241,9 +243,10 @@ func (c c) in(set string) bool { return strings.ContainsRune(set, rune(c)) }
 // server holds the per-request state. The memory client is optional and has
 // no host filesystem dependency.
 type server struct {
-	cfg    *config
-	memory *memoryClient
-	docker *dockerClient
+	cfg       *config
+	memory    *memoryClient
+	docker    *dockerClient
+	gatewayMu sync.Mutex
 }
 
 func (s *server) memoryRecall(w http.ResponseWriter, r *http.Request) {

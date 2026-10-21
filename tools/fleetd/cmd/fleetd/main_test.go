@@ -54,9 +54,11 @@ func newServer(t *testing.T) (*server, *httptest.Server) {
 // fakeDocker is a minimal Docker Engine API on the fake socket: it keeps the
 // create bodies so tests can read back the HostConfig fleetd asked for.
 type fakeDocker struct {
-	mu         sync.Mutex
-	containers map[string]map[string]any
-	calls      []string
+	mu              sync.Mutex
+	containers      map[string]map[string]any
+	calls           []string
+	startStopStatus int
+	logsBody        []byte
 }
 
 func (f *fakeDocker) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -99,7 +101,13 @@ func (f *fakeDocker) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		out := map[string]any{"State": map[string]any{"Status": "running"}, "Config": map[string]any{"Image": c["Image"], "User": c["User"]}, "HostConfig": c["HostConfig"]}
 		_ = json.NewEncoder(w).Encode(out)
 	case r.Method == http.MethodPost && (strings.HasSuffix(path, "/start") || strings.HasSuffix(path, "/stop")):
-		w.WriteHeader(http.StatusNoContent)
+		if f.startStopStatus != 0 {
+			w.WriteHeader(f.startStopStatus)
+		} else {
+			w.WriteHeader(http.StatusNoContent)
+		}
+	case r.Method == http.MethodGet && strings.HasSuffix(path, "/logs"):
+		_, _ = w.Write(f.logsBody)
 	default:
 		http.NotFound(w, r)
 	}
@@ -268,6 +276,10 @@ func TestMountPolicy(t *testing.T) {
 		{{Source: "/etc", Destination: "/data"}},
 		{{Source: "/srv/bots", Destination: "/"}},
 		{{Source: "/srv/bots/../secret", Destination: "/data"}},
+		{{Source: "/srv/bots/x:y", Destination: "/safe"}},
+		{{Source: "/srv/bots/x,y", Destination: "/safe"}},
+		{{Source: "/srv/bots/x", Destination: "/safe:bad"}},
+		{{Source: "/srv/bots/x", Destination: "/data/hermes/config"}},
 	} {
 		if err := validateMounts(mounts, []string{"/srv/bots"}); err == nil {
 			t.Fatalf("unsafe mount accepted: %#v", mounts)
@@ -493,6 +505,8 @@ func createBody(key string) string {
 func TestCreateAppliesFixedTemplateToHostConfig(t *testing.T) {
 	s, _, fake := newServerWithDocker(t)
 	s.cfg.GatewayPortStart, s.cfg.GatewayPortEnd = 18801, 18810
+	s.cfg.GatewayBindIP = "10.10.100.1"
+	s.docker.gatewayBindIP = s.cfg.GatewayBindIP
 	key := s.cfg.Bots[0].BotKey
 	rec := routeRequest(s, http.MethodPost, "/v1/bots", fakeBearer(), createBody(key))
 	if rec.Code != http.StatusOK {
@@ -524,8 +538,13 @@ func TestCreateAppliesFixedTemplateToHostConfig(t *testing.T) {
 	if hosts, _ := host["ExtraHosts"].([]any); len(hosts) != 1 || hosts[0] != "board.example.test:192.0.2.1" {
 		t.Fatalf("ExtraHosts is %v", host["ExtraHosts"])
 	}
-	if _, ok := host["PortBindings"].(map[string]any)["8642/tcp"]; !ok {
+	ports, ok := host["PortBindings"].(map[string]any)["8642/tcp"]
+	if !ok {
 		t.Fatalf("gateway port not bound: %v", host["PortBindings"])
+	}
+	port := ports.([]any)[0].(map[string]any)
+	if port["HostIp"] != "10.10.100.1" {
+		t.Fatalf("gateway bind IP is %v", port["HostIp"])
 	}
 	// The profile volumes are mounted, so what writeProfile writes reaches the bot.
 	binds, _ := host["Binds"].([]any)
@@ -676,5 +695,51 @@ func TestHealthReportsRealResourcesAndDockerState(t *testing.T) {
 	}
 	if h.Status != "degraded" {
 		t.Fatalf("docker outage not reported: %+v", h)
+	}
+}
+
+func TestDockerActionsAcceptAlreadyApplied304(t *testing.T) {
+	s, _, fake := newServerWithDocker(t)
+	fake.startStopStatus = http.StatusNotModified
+	key := s.cfg.Bots[0].BotKey
+	for _, action := range []string{"start", "stop", "restart"} {
+		if err := s.docker.action(t.Context(), key, action); err != nil {
+			t.Fatalf("%s: %v", action, err)
+		}
+	}
+}
+
+func TestDemuxDockerLogsBeforeRedaction(t *testing.T) {
+	frame := func(stream byte, body string) []byte {
+		b := make([]byte, 8+len(body))
+		b[0] = stream
+		n := len(body)
+		b[4], b[5], b[6], b[7] = byte(n>>24), byte(n>>16), byte(n>>8), byte(n)
+		copy(b[8:], body)
+		return b
+	}
+	got := redactLogs(demuxDockerLogs(append(frame(1, `token=first`), frame(2, ` second`)...)))
+	if string(got) != "token=<redacted> second" {
+		t.Fatalf("unexpected logs: %q", got)
+	}
+}
+
+func TestDockerLogsDemuxesFramesBeforeRedaction(t *testing.T) {
+	s, _, fake := newServerWithDocker(t)
+	frame := func(stream byte, body string) []byte {
+		b := make([]byte, 8+len(body))
+		b[0] = stream
+		n := len(body)
+		b[4], b[5], b[6], b[7] = byte(n>>24), byte(n>>16), byte(n>>8), byte(n)
+		copy(b[8:], body)
+		return b
+	}
+	fake.logsBody = append(frame(1, "token=first"), frame(2, " second")...)
+	got, err := s.docker.logs(t.Context(), s.cfg.Bots[0].BotKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "token=<redacted> second" {
+		t.Fatalf("unexpected logs: %q", got)
 	}
 }

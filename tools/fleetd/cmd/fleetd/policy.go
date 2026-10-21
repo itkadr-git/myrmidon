@@ -118,6 +118,8 @@ func (s *server) createFromSpec(ctx context.Context, botKey string, sp *spec, re
 	if err := s.checkSpec(botKey, sp); err != nil {
 		return http.StatusForbidden, err
 	}
+	s.gatewayMu.Lock()
+	defer s.gatewayMu.Unlock()
 	if err := s.applyGatewayPort(sp); err != nil {
 		return http.StatusConflict, err
 	}
@@ -144,7 +146,7 @@ func validateMounts(mounts []mountSpec, allowed []string) error {
 		if m.Source == "" || m.Destination == "" || !filepath.IsAbs(m.Destination) || m.Destination == "/" {
 			return fmt.Errorf("mount_invalid")
 		}
-		if filepath.Clean(m.Destination) != m.Destination || strings.Contains(m.Source, "..") {
+		if filepath.Clean(m.Destination) != m.Destination || strings.Contains(m.Source, "..") || strings.ContainsAny(m.Source, ":,") || strings.ContainsAny(m.Destination, ":,") {
 			return fmt.Errorf("mount_invalid")
 		}
 		ok := false
@@ -152,6 +154,11 @@ func validateMounts(mounts []mountSpec, allowed []string) error {
 			if m.Source == root || strings.HasPrefix(m.Source, strings.TrimSuffix(root, "/")+"/") {
 				ok = true
 				break
+			}
+		}
+		for _, protected := range []string{"/data/hermes", "/workspace", "/scratch"} {
+			if m.Destination == protected || strings.HasPrefix(m.Destination, protected+"/") {
+				return fmt.Errorf("mount_invalid")
 			}
 		}
 		if !ok {

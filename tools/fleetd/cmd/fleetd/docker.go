@@ -14,11 +14,12 @@ import (
 )
 
 type dockerClient struct {
-	socket     string
-	api        string
-	volumeRoot string
-	network    string
-	images     []string
+	socket        string
+	api           string
+	volumeRoot    string
+	network       string
+	images        []string
+	gatewayBindIP string
 }
 
 const dockerAPIVersion = "v1.41"
@@ -28,7 +29,7 @@ func newDockerClient(c *config) *dockerClient {
 	if api == "" {
 		api = strings.TrimPrefix(dockerAPIVersion, "v")
 	}
-	return &dockerClient{socket: c.Upstream, api: api, volumeRoot: c.VolumeRoot, network: c.Network, images: c.Images}
+	return &dockerClient{socket: c.Upstream, api: api, volumeRoot: c.VolumeRoot, network: c.Network, images: c.Images, gatewayBindIP: c.GatewayBindIP}
 }
 func (d *dockerClient) prefix() string { return "v" + d.api }
 func (d *dockerClient) request(ctx context.Context, method, path string, body any, out any) error {
@@ -55,6 +56,9 @@ func (d *dockerClient) request(ctx context.Context, method, path string, body an
 		return err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotModified && (strings.HasSuffix(path, "/start") || strings.HasSuffix(path, "/stop")) {
+		return nil
+	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		return fmt.Errorf("docker %s: %s", resp.Status, string(b))
@@ -101,7 +105,7 @@ func (d *dockerClient) create(ctx context.Context, sp spec, binds []string) erro
 		host["NetworkMode"] = d.network
 	}
 	if sp.GatewayPort > 0 {
-		host["PortBindings"] = map[string][]map[string]string{"8642/tcp": {{"HostPort": fmt.Sprint(sp.GatewayPort)}}}
+		host["PortBindings"] = map[string][]map[string]string{"8642/tcp": {{"HostIp": d.gatewayBindIP, "HostPort": fmt.Sprint(sp.GatewayPort)}}}
 	}
 	if sp.BoardExtraHost != "" {
 		host["ExtraHosts"] = []string{sp.BoardExtraHost}
@@ -164,5 +168,25 @@ func (d *dockerClient) logs(ctx context.Context, bot string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return string(redactLogs(b)), nil
+	return string(redactLogs(demuxDockerLogs(b))), nil
+}
+
+// demuxDockerLogs removes Docker stream headers for non-TTY logs.
+func demuxDockerLogs(b []byte) []byte {
+	var out bytes.Buffer
+	for len(b) >= 8 {
+		if (b[0] != 1 && b[0] != 2) || b[1] != 0 || b[2] != 0 || b[3] != 0 {
+			return b
+		}
+		size := int(b[4])<<24 | int(b[5])<<16 | int(b[6])<<8 | int(b[7])
+		if size > len(b)-8 {
+			return b
+		}
+		out.Write(b[8 : 8+size])
+		b = b[8+size:]
+	}
+	if len(b) != 0 {
+		return b
+	}
+	return out.Bytes()
 }
