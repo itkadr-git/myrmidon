@@ -285,11 +285,13 @@ import {
 // call site and the leading-token strip for an addressed turn's body (reply
 // prefixing and the mention quote live in issues.ts / cross-channel.ts; the
 // addressed reply rides the normal publication lane).
-import { stripLeadingMentionToken as x9StripAddressToken } from "../myrmidon/agent-chat-bridge/addressing.js";
-import { resolveBridgedAddressee } from "../myrmidon/agent-chat-bridge/bridge.js";
-// myrmidon(1.7-ACTIVE-CHANNEL): owner activity touch for the Telegram intake path.
+// myrmidon(1.6.6 CH-CONNECTOR-D): the addressing theme is reached through the
+// bridge seam, so a channel connector can serve it.
+import { stripLeadingMentionToken as x9StripAddressToken } from "../myrmidon/channel-connectors/bridge/addressing.js";
+import { resolveBridgedAddressee } from "../myrmidon/channel-connectors/bridge/agent-bridge.js";
+import type { TelegramAddressee } from "../myrmidon/channel-connectors/bridge/addressing.js";
+// myrmidon(1.7-ACTIVE-CHANNEL): Telegram inbound activity tracking.
 import { markOwnerActivityBestEffort } from "../myrmidon/owner-active-channel/store.js";
-import type { TelegramAddressee } from "../myrmidon/agent-chat-bridge/addressing.js";
 // myrmidon(U2): company-wide interaction lookup for callbacks on cards
 // delivered to the owner's Telegram conversation from other tasks.
 import { listInteractionForCallback } from "../myrmidon/owner-delivery/callback-interaction-lookup.js";
