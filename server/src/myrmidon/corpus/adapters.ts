@@ -151,19 +151,15 @@ export function createCorpusPorts(db: Db, context: CorpusPortContext, config: Co
               order by next_attempt_at asc, created_at asc
               for update skip locked
             ),
-            one_per_company as (
-              select distinct on (company_id) id, company_id, next_attempt_at, created_at
+            ranked as (
+              select id, next_attempt_at, created_at,
+                row_number() over (partition by company_id order by next_attempt_at asc, created_at asc) as company_rank
               from eligible
-              order by company_id, next_attempt_at asc, created_at asc
             ),
             selected as (
-              select id, next_attempt_at, created_at from one_per_company
-              union all
-              select e.id, e.next_attempt_at, e.created_at
-              from eligible e
-              where not exists (select 1 from one_per_company o where o.id = e.id)
-              order by next_attempt_at asc, created_at asc
-              limit greatest(${limit} - (select count(*) from one_per_company), 0)
+              select id from ranked
+              order by company_rank asc, next_attempt_at asc, created_at asc
+              limit ${limit}
             )
             select id from selected
           )

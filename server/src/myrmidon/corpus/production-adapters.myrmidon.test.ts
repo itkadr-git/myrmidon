@@ -103,6 +103,16 @@ run("production corpus adapters", () => {
     expect(claimed.map((entry) => entry.companyId)).toEqual(expect.arrayContaining([companyId, otherCompanyId]));
     const thirdClaimed = await ports.queue.claim({ limit: 2 });
     expect(thirdClaimed.map((entry) => entry.companyId)).toContain(thirdCompanyId);
+    // Fairness: two pending jobs of one company plus one of another, limit 2 -> one per company, exactly 2 rows.
+    for (let i = 0; i < 2; i += 1) {
+      const doc = await ports.store.createDocument({ companyId, datasetId: dataset.id, filename: `a${i}.txt`, mimeType: "text/plain", byteSize: 5, blobRef: `a${i}`, maxAttempts: 2 });
+      await ports.queue.enqueue({ companyId, datasetId: dataset.id, documentId: doc.id, maxAttempts: 2 });
+    }
+    const otherDoc2 = await otherPorts.store.createDocument({ companyId: otherCompanyId, datasetId: otherDataset.id, filename: "b.txt", mimeType: "text/plain", byteSize: 5, blobRef: "b", maxAttempts: 2 });
+    await otherPorts.queue.enqueue({ companyId: otherCompanyId, datasetId: otherDataset.id, documentId: otherDoc2.id, maxAttempts: 2 });
+    const fair = await ports.queue.claim({ limit: 2 });
+    expect(fair).toHaveLength(2);
+    expect(new Set(fair.map((entry) => entry.companyId))).toEqual(new Set([companyId, otherCompanyId]));
     const first = claimed[0]!;
     const released = await ports.queue.fail(first.companyId, first.id, "temporary parser error");
     expect(released?.state).toBe("queued");
