@@ -49,7 +49,6 @@ import { clearChatHoldsOnOwnerMessage } from "../myrmidon/chat-holds/clear-on-me
 // bypassed hold would cancel at its claim, so the wake is not lost with it.
 import { cancelWaitingRunDoomedByHold, carryRetryBudgetToSuccessor } from "../myrmidon/settled-holds/cancel-waiting-run.js";
 import { connectionIntentService } from "./connection-intents.js";
-import { ExternalSessionScheduler } from "./external-session-scheduler.js";
 import { prepareManagedAiRuntime, assertManagedAiProjectAuth, stripAiAuthBindings, isAiConnectionBusy, AI_AUTH_ENV_KEYS } from "./ai-connection-runtime.js";
 import { aiConnectionBindingSchema, type AiConnectionBinding } from "@paperclipai/shared";
 // myrmidon(TEAM-LIVENESS-SETTINGS): the reader that resolves the stored instance
@@ -9465,12 +9464,6 @@ export function heartbeatService(
   };
 
   const runLogStore = getRunLogStore();
-  const externalSessionScheduler = new ExternalSessionScheduler({
-    concurrencyPerCredential: Math.max(
-      1,
-      Number.parseInt(process.env.EXTERNAL_SESSION_CONCURRENCY_PER_CREDENTIAL ?? "1", 10) || 1,
-    ),
-  });
   const traceStore = providerTraceStore(db);
   const secretsSvc = secretService(db);
   const companySkills = companySkillService(db);
@@ -25763,12 +25756,7 @@ export function heartbeatService(
                 },
               );
             if (!guardedDispatch.dispatched) return;
-            adapterResult = externalSession.connectionId
-              ? await externalSessionScheduler.schedule(
-                  `${run.companyId}:${externalSession.connectionId}:${externalSession.grantId}`,
-                  () => guardedDispatch.resultPromise,
-                )
-              : await guardedDispatch.resultPromise;
+            adapterResult = await guardedDispatch.resultPromise;
           }
           // Adapter returned cleanly, which means its workspace-restore finally
           // block also ran without throwing. Record the workspace_finalize
