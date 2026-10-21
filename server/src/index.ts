@@ -1969,7 +1969,9 @@ async function startServerWithDatabaseTeardown(
   // independent sweeps: the enabled tick owns it, and the disabled path starts
   // its own runtime for it, so there is never a second instance of the sweep.
   const scheduleAutoResumeSweep = () => {
-    if (!backgroundWorkEnabled) return;
+    if (heartbeatSchedulerStopped || !backgroundWorkEnabled) return;
+    // Some vendor test doubles for the heartbeat service are partial and omit
+    // this method; skip the pass instead of crashing the startup path.
     if (typeof backgroundHeartbeat.sweepAutoResume !== "function") return;
     trackHeartbeatSchedulerWork(backgroundHeartbeat.sweepAutoResume(new Date())
       .then((result) => {
