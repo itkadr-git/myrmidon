@@ -10,6 +10,7 @@
 import type { ReactNode } from "react";
 import { Route } from "@/lib/router";
 import { Ui2PlaceholderScreen } from "./screens/Ui2PlaceholderScreen";
+import { Ui2I18nProvider } from "./i18n/Ui2I18n";
 import { Ui2Decisions } from "./screens/decisions/Ui2Decisions";
 import { Ui2Costs } from "./screens/costs/Ui2Costs";
 import { Ui2AgentOverviewPage } from "./screens/agent-overview/Ui2AgentOverviewPage";
@@ -118,14 +119,14 @@ export const UI2_ROUTE_TABLE: Ui2RouteEntry[] = [
     key: "knowledge",
     path: "knowledge",
     titleKey: "ui2.screens.knowledge",
-    element: ui2Screen(<Ui2Knowledge />),
+    element: <Ui2Knowledge />,
     legacyPath: "/wiki",
   },
   {
     key: "knowledge-page",
     path: "knowledge/:spaceKey/:slug",
     titleKey: "ui2.screens.knowledge",
-    element: ui2Screen(<Ui2Knowledge />),
+    element: <Ui2Knowledge />,
     legacyPath: "/wiki/:spaceKey/:slug",
   },
   // The regulations of Autonomy: the same screen the matrix tab carries, so a
@@ -134,7 +135,7 @@ export const UI2_ROUTE_TABLE: Ui2RouteEntry[] = [
     key: "settings-autonomy-regulations",
     path: "company/settings/autonomy/regulations",
     titleKey: "ui2.screens.regulations",
-    element: ui2Screen(<Ui2Regulations />),
+    element: <Ui2Regulations />,
     legacyPath: "/company/settings",
   },
 ];
