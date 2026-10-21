@@ -2,12 +2,6 @@
 
 ### Chat flakes stabilization: durable callback order and credential-lease isolation (OPE-6916)
 
-- Inbound wakeup acceptance now retries a rolled-back endpoint-lock refusal
-  (55P03 from the NOWAIT authorization against a concurrent ingress
-  transaction) in-process instead of pushing the delivery into a durable
-  >=2s backoff. That backoff consumed one of the delivery's five attempts and
-  delayed conversation/task creation, which is what made the same-second
-  GitHub callback ordering tests flake.
 - The pending receipt-reaction sweep treats a busy credential-mutation lease
   (409 `chat_endpoint_credentials_busy`) as a skip for this pass: the refusal
   is transient by design and the action stays retryable, so a leaked lease
@@ -27,12 +21,6 @@
 
 ### Стабилизация флейков чата: детерминированный порядок callback'ов и изоляция credential-lease (OPE-6916)
 
-- Приём inbound-пробуждения теперь повторяет откатанный отказ по блокировке
-  endpoint (55P03 от NOWAIT-авторизации при конкурентной ingress-транзакции)
-  прямо в процессе, вместо перевода доставки в durable-бэкофф >=2 c. Тот
-  бэкофф сжигал одну из пяти попыток доставки и задерживал создание
-  конверсации/задачи — именно он ронял тесты порядка same-second callback'ов
-  GitHub.
 - Свип pending receipt-реакций считает занятый credential-mutation lease
   (409 `chat_endpoint_credentials_busy`) пропуском текущего прохода: отказ
   транзиентен по замыслу, действие остаётся retryable, поэтому утёкший lease
@@ -40,7 +28,7 @@
 - Интеграционный suite теперь удаляет строки `chat_endpoint_leases` компаний
   фикстур в `afterEach`: сервис, погибший с удерживаемым lease, не сможет
   заставить следующий кейс ждать 10 с окна acquire и бросить 409.
-- Тест runner-транспорта проверяет steady-state read timeout сок с допуском
+- Тест runner-транспорта проверяет steady-state read timeout с допуском
   на тик ядра (250–260 мс) вместо точного равенства: `SO_RCVTIMEO`
-  округляется до jiffies, и на загруженном CI-раннере (HZ=250 →granularity
-  4 мс) законный результат для 250 мс — например 252 мс.
+  округляется до jiffies, и на загруженном CI-раннере (HZ=250 →
+  гранулярность 4 мс) законный результат для 250 мс — например 252 мс.
