@@ -26,11 +26,11 @@ settings-section: Track 4 — chats and skills
 
 | `MYRMIDON_POOL_CHAT_ENABLED` | OPE-8207 | unset (off) | Включает границу pool-chat; до live-использования необходимы deployment-specific конфигурация модуля, разрешение секретов, transport провайдера, миграция, quota recovery и acceptance-проверка | не задано или любое значение кроме `1` — выключено |
 
-## operator-acceptance-en
+### Operator acceptance runbook (EN)
 
 This is a deployment runbook, not a claim of live-pool qualification. The implementation and CI tests use a fake transport. Only an authorized operator may enable a real deployment, and this task did not perform that run.
 
-### Required sequence
+#### Required sequence
 
 1. Keep `MYRMIDON_POOL_CHAT_ENABLED` unset (or any value other than `1`) while deploying and validating the database change.
 2. Integrate the schema, server, and test commits into the target `main` lineage first. Generate the migration on that integrated head, then inspect the generated SQL and migration journal. Apply it once in a disposable/staging database and verify all four tables, foreign keys, and unique indexes before production rollout. Do not hand-edit the generated snapshot or reuse migration number `0401` if another migration has landed first.
@@ -57,11 +57,11 @@ This is a deployment runbook, not a claim of live-pool qualification. The implem
 
 The feature remains off until every non-live row has CI/staging evidence and an authorized operator records the live rows. Without that record, report the state as “implementation and CI verified; live-pool acceptance pending”, never as live-qualified.
 
-## operator-acceptance-ru
+### Operator acceptance runbook (RU)
 
 Это runbook для deployment, а не утверждение о live-pool qualification. В реализации и CI-тестах используется fake transport. Включать реальный deployment может только уполномоченный оператор; в рамках этой задачи такой запуск не выполнялся.
 
-### Обязательная последовательность
+#### Обязательная последовательность
 
 1. Оставьте `MYRMIDON_POOL_CHAT_ENABLED` не заданным (или со значением не `1`) во время выкладки и проверки изменения базы.
 2. Сначала интегрируйте schema, server и test-коммиты в целевую линию `main`. На этом интегрированном head сгенерируйте migration, затем проверьте SQL и migration journal. Один раз примените её в disposable/staging базе и проверьте четыре таблицы, внешние ключи и unique indexes перед production rollout. Не редактируйте вручную generated snapshot и не переиспользуйте номер `0401`, если раньше уже появилась другая migration.
