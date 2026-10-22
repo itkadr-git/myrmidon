@@ -13,7 +13,7 @@ import express from "express";
 import request from "supertest";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { errorHandler } from "../../middleware/index.js";
-import { hashToInstallId, resolveInstallId } from "./install-id.js";
+import { computeInitialInstallId, hashToInstallId } from "./install-id.js";
 import { verifyLicense } from "./license.js";
 import { licensingRoutes } from "./routes.js";
 
@@ -31,32 +31,31 @@ beforeEach(() => {
 
 afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
-describe("install id", () => {
+describe("install id: the first-start choice", () => {
   it("matches the module-side algorithm on a reference machine id", () => {
     expect(hashToInstallId(MACHINE_ID)).toBe(MACHINE_ID_INSTALL_ID);
     expect(hashToInstallId(`  ${MACHINE_ID}\n`)).toBe(MACHINE_ID_INSTALL_ID);
-    expect(resolveInstallId({ env: {}, machineIdPaths: [machineIdFile] })).toEqual({
+    expect(computeInitialInstallId({ env: {}, machineIdPaths: [machineIdFile] })).toEqual({
       installId: MACHINE_ID_INSTALL_ID,
       source: "machine-id",
     });
   });
 
-  it("falls through the machine id paths and honours the env override", () => {
-    expect(resolveInstallId({ env: {}, machineIdPaths: [path.join(dir, "missing"), machineIdFile] }).installId).toBe(
-      MACHINE_ID_INSTALL_ID,
-    );
+  it("falls through the machine id paths and honours the env override first", () => {
     expect(
-      resolveInstallId({ env: { MYR_LICENSE_INSTANCE_ID: " custom-id " }, machineIdPaths: [machineIdFile] }),
+      computeInitialInstallId({ env: {}, machineIdPaths: [path.join(dir, "missing"), machineIdFile] }).installId,
+    ).toBe(MACHINE_ID_INSTALL_ID);
+    expect(
+      computeInitialInstallId({ env: { MYR_LICENSE_INSTANCE_ID: " custom-id " }, machineIdPaths: [machineIdFile] }),
     ).toEqual({ installId: "custom-id", source: "env" });
   });
 
-  it("generates a stable cached id when no machine id exists", () => {
-    const env = { MYR_LICENSE_STATE_DIR: path.join(dir, "state") };
-    const first = resolveInstallId({ env, machineIdPaths: [] });
-    const second = resolveInstallId({ env, machineIdPaths: [] });
+  it("generates a myr- id from a random UUID when there is no machine id", () => {
+    const first = computeInitialInstallId({ env: {}, machineIdPaths: [] });
+    const second = computeInitialInstallId({ env: {}, machineIdPaths: [] });
     expect(first.source).toBe("generated");
     expect(first.installId).toMatch(/^myr-[0-9a-f]{20}$/);
-    expect(second.installId).toBe(first.installId);
+    expect(second.installId).not.toBe(first.installId);
   });
 });
 
@@ -113,7 +112,7 @@ function app(actor: unknown, env: NodeJS.ProcessEnv) {
     (req as unknown as { actor: unknown }).actor = actor;
     next();
   });
-  a.use("/api", licensingRoutes({ env, machineIdPaths: [machineIdFile], now: () => new Date("2026-10-16T08:00:00Z") }));
+  a.use("/api", licensingRoutes({ env, installId: async () => ({ installId: MACHINE_ID_INSTALL_ID, source: "machine-id" }), now: () => new Date("2026-10-16T08:00:00Z") }));
   a.use(errorHandler);
   return a;
 }

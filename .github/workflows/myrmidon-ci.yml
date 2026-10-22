@@ -3,22 +3,26 @@ name: Myrmidon CI
 # Myrmidon's own CI (the vendor's pr.yml calls unpinned upstream code and is
 # disabled). Two tiers, chosen by the `plan` job:
 #   docs - only Myrmidon docs/scripts changed: script checks only;
-#   fast - pull requests: typecheck (no Rust), build (no Rust release binary)
+#   fast - ordinary pull requests: typecheck (no Rust), build (no Rust release binary)
 #          and only the tests that the change touches directly;
-#   full - push to main, manual runs, PRs labelled `full-ci` (from the next
-#          push on), and PRs touching
+#   full - push to main, manual runs, merge queue (always full), PRs labelled
+#          `full-ci` or `review-approved` (the label itself starts a full run:
+#          the owner account has no merge queue, so the approval label is the
+#          "ready to land" gate), and PRs touching
 #          shared foundations (lockfile, db, shared, runner, CI...): every lane.
 # A red full run on main opens (or updates) an issue labelled `main-red`.
 # Everything runs on GitHub-hosted runners without secrets. See docs/myrmidon/ci.md.
 #
 # Merge queue: the `merge_group` event re-runs the same checks on a candidate
 # commit built on top of the fresh main, so two PRs that are green separately
-# cannot land a broken combination. The plan compares the candidate with its
-# base, so the tier matches the tier of the PR inside the group.
+# cannot land a broken combination. The candidate always gets the full tier.
 # See docs/myrmidon/merge-queue.md.
 
 on:
   pull_request:
+    # `labeled` makes the `review-approved` (and `full-ci`) label start a run
+    # on the same head, which the plan then escalates to the full tier.
+    types: [opened, synchronize, reopened, labeled]
   merge_group:
     types: [checks_requested]
   push:
@@ -33,8 +37,12 @@ concurrency:
   # reports no `CI result`, so it can never look green. A cancelled
   # merge_group run evicts the group from the queue, so queue runs are never
   # cancelled.
-  group: myrmidon-ci-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ github.event_name != 'merge_group' }}
+  #
+  # `labeled` only matters for `full-ci` and `review-approved`. A run started
+  # by any other label (review-in-progress, needs-rebase, ...) goes to its own
+  # group, so it cannot cancel the real run, and every job in it is skipped.
+  group: myrmidon-ci-${{ github.event.pull_request.number || github.ref }}${{ (github.event_name != 'pull_request' || github.event.action != 'labeled' || github.event.label.name == 'full-ci' || github.event.label.name == 'review-approved') && '' || '-label-noop' }}
+  cancel-in-progress: ${{ github.event_name != 'merge_group' && (github.event_name != 'pull_request' || github.event.action != 'labeled' || github.event.label.name == 'full-ci' || github.event.label.name == 'review-approved') }}
 
 env:
   NPM_CONFIG_AUDIT: "false"
@@ -44,6 +52,7 @@ env:
 jobs:
   plan:
     name: plan
+    if: ${{ (github.event_name != 'pull_request' || github.event.action != 'labeled' || github.event.label.name == 'full-ci' || github.event.label.name == 'review-approved') }}
     runs-on: ${{ fromJSON(vars.MYR_RUNNER || '"ubuntu-latest"') }}
     timeout-minutes: 10
     outputs:
@@ -84,7 +93,7 @@ jobs:
           EVENT: ${{ github.event_name }}
           BASE: ${{ github.event_name == 'merge_group' && github.event.merge_group.base_sha || github.event.pull_request.base.sha }}
           HEAD: ${{ github.event_name == 'merge_group' && github.event.merge_group.head_sha || github.event.pull_request.head.sha }}
-          FULL_LABEL: ${{ github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'full-ci') }}
+          FULL_LABEL: ${{ github.event_name == 'merge_group' || (github.event_name == 'pull_request' && (contains(github.event.pull_request.labels.*.name, 'full-ci') || contains(github.event.pull_request.labels.*.name, 'review-approved'))) }}
           BASE_REF: ${{ github.event.pull_request.base.ref }}
         run: |
           set -euo pipefail
@@ -400,6 +409,7 @@ jobs:
     # gitleaks, the internal-address scan, dependency licenses and plugin
     # compatibility. Every step runs even if an earlier one failed.
     name: checks
+    if: ${{ (github.event_name != 'pull_request' || github.event.action != 'labeled' || github.event.label.name == 'full-ci' || github.event.label.name == 'review-approved') }}
     runs-on: ${{ fromJSON(vars.MYR_RUNNER || '"ubuntu-latest"') }}
     timeout-minutes: 20
     env:
@@ -558,6 +568,7 @@ jobs:
     name: go tools (dockergate + fleetd)
     # fleetd is folded in (one checkout, one runner): tools/fleetd, see
     # docs/myrmidon/fleetd-vmexec.md. Every step runs even if an earlier one failed.
+    if: ${{ (github.event_name != 'pull_request' || github.event.action != 'labeled' || github.event.label.name == 'full-ci' || github.event.label.name == 'review-approved') }}
     runs-on: ${{ fromJSON(vars.MYR_RUNNER || '"ubuntu-latest"') }}
     timeout-minutes: 30
     env:
@@ -657,7 +668,7 @@ jobs:
     # Single stable name for the ruleset. Lanes the plan did not need are
     # skipped; any failure, or a skip without a successful plan, fails it.
     name: CI result
-    if: ${{ !cancelled() }}
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || github.event.action != 'labeled' || github.event.label.name == 'full-ci' || github.event.label.name == 'review-approved') }}
     needs: [plan, typecheck, tests-affected, tests, tests-other, checks, dockergate]
     runs-on: ${{ fromJSON(vars.MYR_RUNNER || '"ubuntu-latest"') }}
     timeout-minutes: 5

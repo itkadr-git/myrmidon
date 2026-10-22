@@ -85,6 +85,7 @@ describe("CompanySettingsNav", () => {
     expect(getCompanySettingsTab("/company/settings/instance/access")).toBe("instance-access");
     expect(getCompanySettingsTab("/PAP/company/settings/instance/access")).toBe("instance-access");
     expect(getCompanySettingsTab("/company/settings/instance/experimental")).toBe("instance-experimental");
+    expect(getCompanySettingsTab("/company/settings/instance/features")).toBe("instance-features"); // myrmidon(FEATURES)
     expect(getCompanySettingsTab("/PAP/company/settings/instance/plugins/example")).toBe("instance-plugins");
     expect(getCompanySettingsTab("/company/settings/instance/adapters")).toBe("instance-adapters");
     // myrmidon(1.6.5 F-26 T3 CASTES-AND-NESTS): IA v2 — the pre-IA-v2
@@ -93,6 +94,9 @@ describe("CompanySettingsNav", () => {
     expect(getCompanySettingsTab("/company/settings/caste-directory")).toBe("castes");
     expect(getCompanySettingsTab("/PAP/company/settings/caste-directory")).toBe("castes");
     expect(getCompanySettingsTab("/company/settings/castes")).toBe("castes");
+    // myrmidon(1.7 BUDGET-CONFIG D): the Budgets section.
+    expect(getCompanySettingsTab("/company/settings/budgets")).toBe("budgets");
+    expect(getCompanySettingsTab("/PAP/company/settings/budgets")).toBe("budgets");
     // myrmidon(1.6.6 CORPUS E): the knowledge corpus tab.
     expect(getCompanySettingsTab("/company/settings/corpus")).toBe("corpus");
     expect(getCompanySettingsTab("/PAP/company/settings/corpus")).toBe("corpus");
@@ -141,6 +145,7 @@ describe("CompanySettingsNav", () => {
           { value: "instance-access", label: "Access" },
           { value: "instance-board-api-keys", label: "Board API keys" },
           { value: "instance-experimental", label: "Experimental" },
+          { value: "instance-features", label: "Features" }, // myrmidon(FEATURES)
           { value: "instance-plugins", label: "Plugins" },
           { value: "instance-adapters", label: "Adapters" },
           { value: "browsers", label: "Browsers" }, // myrmidon(BROWSER-CONSOLE)
@@ -148,6 +153,7 @@ describe("CompanySettingsNav", () => {
           { value: "autonomy", label: "Autonomy" }, // myrmidon(1.6 AUTONOMY-MATRIX B)
           { value: "wip-limit", label: "WIP limit" }, // myrmidon(1.6.1 WIP-LIMIT B)
           { value: "review-routing", label: "Review routing" }, // myrmidon(REVIEW-ROUTING)
+          { value: "budgets", label: "Budgets" }, // myrmidon(1.7 BUDGET-CONFIG D)
 
           { value: "castes", label: "Agent castes" }, // myrmidon(1.6.5 F-26 T3)
           { value: "models", label: "Models & providers" }, // myrmidon(1.6.5 F-26 T3)
@@ -196,12 +202,14 @@ describe("CompanySettingsNav", () => {
       "instance-access",
       "instance-board-api-keys",
       "instance-experimental",
+      "instance-features", // myrmidon(FEATURES)
       "instance-adapters",
       "browsers", // myrmidon(BROWSER-CONSOLE)
       "clouds", // myrmidon(CLOUD-CONNECTOR)
       "autonomy", // myrmidon(1.6 AUTONOMY-MATRIX B)
       "wip-limit", // myrmidon(1.6.1 WIP-LIMIT B)
       "review-routing", // myrmidon(REVIEW-ROUTING)
+      "budgets", // myrmidon(1.7 BUDGET-CONFIG D)
 
       "castes", // myrmidon(1.6.5 F-26 T3)
       "models", // myrmidon(1.6.5 F-26 T3)

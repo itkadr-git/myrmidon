@@ -144,7 +144,7 @@ describe("startBotContainers with the flag off", () => {
 });
 
 describe("startBotContainers with the flag on", () => {
-  it("builds the runtime and starts the sweep with the agents query", () => {
+  it("builds the runtime and starts the sweep with the agents query", async () => {
     const h = harness();
     startBotContainers(DB, { env: ENABLED, ports: h.ports });
     try {
@@ -159,7 +159,7 @@ describe("startBotContainers with the flag on", () => {
       const [listAgents, runtime, opts] = h.spies.startReconciliation.mock.calls[0];
       expect(listAgents).toBe(h.agentsSweep);
       expect(runtime).toEqual({
-        driver: h.theDriver,
+        driver: expect.any(Object),
         compile: h.compile,
         syncCard: h.syncCard,
         maintenance: h.maintenance,
@@ -172,6 +172,9 @@ describe("startBotContainers with the flag on", () => {
         readSharedMountSettings: expect.any(Function),
         network: DRIVER_CONFIG.network,
       });
+      // Verifying default (no host on card) routes to the local driver
+      const res = await runtime.driver.status("bot-a");
+      expect(res).toEqual({ botKey: "bot-a", state: "running", restartHash: "r", filesHash: "f" });
       expect(opts).toEqual({ intervalMs: 60_000, env: ENABLED });
     } finally {
       stopBotContainers();
@@ -324,5 +327,148 @@ describe("createBotContainerLogSink", () => {
       "bot containers: reconcile failed",
     );
     expect(log.info).toHaveBeenCalledWith({ agentId: "a2", botKey: "b2" }, "bot containers: created");
+  });
+});
+
+describe("myrmidon(1.6.6 T1) fleet routing in startup", () => {
+  it("routes card with host=myr-vm1 to fleet client and card without host to local driver", async () => {
+    const h = harness();
+    const remoteStatus = { botKey: "bot-remote", state: "running" as const, image: "remote-image" };
+    const remoteClient: BotContainerDriver = {
+      status: vi.fn(async () => remoteStatus),
+      list: vi.fn(async () => [remoteStatus]),
+      templateDrift: vi.fn(async () => ({ drifted: false, fields: [] })),
+      create: vi.fn(async () => {}),
+      recreate: vi.fn(async () => {}),
+      writeProfile: vi.fn(async () => {}),
+      start: vi.fn(async () => {}),
+      restart: vi.fn(async () => {}),
+      stop: vi.fn(async () => {}),
+    };
+
+    const mockManager = {
+      getClients: vi.fn(() => new Map([["comp-1/myr-vm1", remoteClient]])),
+      refresh: vi.fn(async () => new Map([["comp-1/myr-vm1", remoteClient]])),
+      getVersion: vi.fn(() => 1),
+      ensureFresh: vi.fn(async () => {}),
+      close: vi.fn(),
+    };
+
+    h.ports.createFleetClientManager = () => mockManager;
+    h.ports.readAgent = () => async (botKey: string) => {
+      if (botKey === "bot-remote") {
+        return {
+          id: "bot-remote",
+          companyId: "comp-1",
+          name: "Remote Bot",
+          adapterType: "hermes_gateway",
+          adapterConfig: { container: { enabled: true, host: "myr-vm1" } },
+        } as unknown as BotContainerAgent;
+      }
+      return {
+        id: "bot-local",
+        companyId: "comp-1",
+        name: "Local Bot",
+        adapterType: "hermes_gateway",
+        adapterConfig: { container: { enabled: true } },
+      } as unknown as BotContainerAgent;
+    };
+
+    startBotContainers(DB, { env: ENABLED, ports: h.ports });
+    try {
+      const [, runtime] = h.spies.startReconciliation.mock.calls[0];
+
+      // Call for bot-local routes to local driver
+      const localRes = await runtime.driver.status("bot-local");
+      expect(localRes.botKey).toBe("bot-local");
+      expect(remoteClient.status).not.toHaveBeenCalled();
+
+      // Call for bot-remote routes to remoteClient (myr-vm1)
+      const remoteRes = await runtime.driver.status("bot-remote");
+      expect(remoteRes).toEqual(remoteStatus);
+      expect(remoteClient.status).toHaveBeenCalledWith("bot-remote");
+    } finally {
+      stopBotContainers();
+      expect(mockManager.close).toHaveBeenCalled();
+    }
+  });
+
+  it("reloads the fleet clients before routing (hot-reload) and fails closed when the agent read fails", async () => {
+    const h = harness();
+    const remoteClient = {
+      status: vi.fn(async () => ({ botKey: "bot-remote", state: "running" as const })),
+      list: vi.fn(async () => []),
+      templateDrift: vi.fn(async () => ({ drifted: false, fields: [] })),
+      create: vi.fn(async () => {}),
+      recreate: vi.fn(async () => {}),
+      writeProfile: vi.fn(async () => {}),
+      start: vi.fn(async () => {}),
+      restart: vi.fn(async () => {}),
+      stop: vi.fn(async () => {}),
+    } as unknown as BotContainerDriver;
+    const clients = new Map<string, BotContainerDriver>();
+    const mockManager = {
+      getClients: vi.fn(() => clients),
+      refresh: vi.fn(async () => clients),
+      getVersion: vi.fn(() => 1),
+      // A registry change shows up only after ensureFresh runs.
+      ensureFresh: vi.fn(async () => {
+        clients.set("comp-1/myr-vm1", remoteClient);
+      }),
+      close: vi.fn(),
+    };
+    h.ports.createFleetClientManager = () => mockManager;
+    let failRead = false;
+    h.ports.readAgent = () => async (botKey: string) => {
+      if (failRead) throw new Error("agent read failed");
+      return {
+        id: botKey,
+        companyId: "comp-1",
+        name: "Remote Bot",
+        adapterType: "hermes_gateway",
+        adapterConfig: { container: { enabled: true, host: "myr-vm1" } },
+      } as unknown as BotContainerAgent;
+    };
+
+    startBotContainers(DB, { env: ENABLED, ports: h.ports });
+    try {
+      const [, runtime] = h.spies.startReconciliation.mock.calls[0];
+      await runtime.driver.status("bot-remote");
+      expect(mockManager.ensureFresh).toHaveBeenCalled();
+      expect(remoteClient.status).toHaveBeenCalledWith("bot-remote");
+
+      // A failing agent read must not silently route to the local driver.
+      failRead = true;
+      await expect(runtime.driver.status("bot-remote")).rejects.toThrow("agent read failed");
+    } finally {
+      stopBotContainers();
+    }
+  });
+
+  it("survives invalid fleet registry or env errors and logs them", async () => {
+    const h = harness();
+    h.ports.bootstrapFleetSitesFromEnv = async () => {
+      throw new Error("Corrupted fleet site JSON in env");
+    };
+    const mockManager = {
+      getClients: vi.fn(() => new Map()),
+      refresh: vi.fn(async () => {
+        throw new Error("Registry database connection error");
+      }),
+      getVersion: vi.fn(() => 1),
+      ensureFresh: vi.fn(async () => {}),
+      close: vi.fn(),
+    };
+    h.ports.createFleetClientManager = () => mockManager;
+
+    expect(() => startBotContainers(DB, { env: ENABLED, ports: h.ports })).not.toThrow();
+
+    // Board survived and reconciliation was started
+    expect(h.spies.startReconciliation).toHaveBeenCalledTimes(1);
+
+    // Wait a tick for async error handler to log
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(h.spies.log.error).toHaveBeenCalled();
+    stopBotContainers();
   });
 });

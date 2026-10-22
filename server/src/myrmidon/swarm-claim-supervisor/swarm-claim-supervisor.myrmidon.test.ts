@@ -31,7 +31,7 @@ interface FakePort extends SwarmSupervisorReadPort {
     now: Date,
   ) => Promise<boolean>;
   released: { claimId: string; reason: string }[];
-  unassignIssue: (companyId: string, issueId: string, agentId: string, now: Date) => Promise<boolean>;
+  unassignIssue: (companyId: string, issueId: string, agentId: string, claimId: string, now: Date) => Promise<boolean>;
   unassigned: { issueId: string; agentId: string }[];
 }
 
@@ -151,7 +151,7 @@ function fakePort(input: {
       input.trace?.push("release");
       return input.releaseResult ?? true;
     },
-    async unassignIssue(_companyId, issueId, agentId) {
+    async unassignIssue(_companyId, issueId, agentId, _claimId, _now) {
       input.trace?.push("unassign");
       if (input.unassignError) throw new Error("db down");
       unassigned.push({ issueId, agentId });

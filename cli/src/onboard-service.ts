@@ -102,7 +102,7 @@ export async function handoffToOnboardedService(
   if (!runtime) {
     deps.warn(
       `The background service started, but the dashboard is not ready yet. ` +
-        `Open ${dashboardUrl} after checking \`paperclipai service logs\`.`,
+        `Open ${dashboardUrl} after checking \`myrmidon service logs\`.`,
     );
     return;
   }
@@ -171,7 +171,7 @@ const defaultDependencies: OnboardServiceDependencies = {
           installedNow: false,
           reason:
             `this build reports version ${packageVersion}, which is not an installable release; ` +
-            "run `paperclipai install` (or `paperclipai install --repo <repo> --ref <ref>` for source builds) first",
+            "run `myrmidon install` (or `myrmidon install --repo <repo> --ref <ref>` for source builds) first",
         };
       }
     } catch (error) {
@@ -221,7 +221,7 @@ export async function handleOnboardService(
   const canPrompt = options.yes !== true && deps.isInteractive();
   if (!explicitlyRequested && !canPrompt) {
     deps.info(
-      "Background service not installed. Use `paperclipai onboard --install-service` or `paperclipai service install` to opt in.",
+      "Background service not installed. Use `myrmidon onboard --install-service` or `myrmidon service install` to opt in.",
     );
     return false;
   }
@@ -243,12 +243,12 @@ export async function handleOnboardService(
   if (!shim.ok) {
     deps.warn(
       `Background service not installed: ${shim.reason ?? "the managed install could not be completed"}. ` +
-        "Run `paperclipai install`, then `paperclipai service install`.",
+        "Run `myrmidon install`, then `myrmidon service install`.",
     );
     return false;
   }
   if (shim.installedNow) {
-    deps.success("Installed the managed paperclipai payload and command shim for the service.");
+    deps.success("Installed the managed myrmidon payload and command shim for the service.");
   }
 
   await detection.manager.install({ startNow: true, startOnLogin: true });

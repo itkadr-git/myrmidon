@@ -128,6 +128,12 @@ export interface ChatEndpoint {
     };
     callbacksNeedUpdate?: boolean;
   };
+  /**
+   * myrmidon(1.6.5-F10-A): true when the endpoint has been sitting in the
+   * wizard's `test` stage for over a day while traffic still flows through it
+   * (an attention signal, not an error).
+   */
+  verifyingStale?: boolean;
 }
 
 export interface ChatCallbackSurfaceState {

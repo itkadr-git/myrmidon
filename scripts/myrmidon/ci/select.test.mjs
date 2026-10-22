@@ -5,7 +5,7 @@ import { applyReleaseFast, classifyChanges, importSpecifiers, selectTests, MAX_F
 const packages = [
   { name: "@myrmidon/server", dir: "server" },
   { name: "@myrmidon/ui", dir: "ui" },
-  { name: "paperclipai", dir: "cli" },
+  { name: "myrmidon", dir: "cli" },
   { name: "@myrmidon/adapter-a-local", dir: "packages/adapters/a-local" },
   { name: "@myrmidon/adapter-b-local", dir: "packages/adapters/b-local" },
 ];

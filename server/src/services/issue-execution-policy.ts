@@ -212,6 +212,8 @@ function derivePersistedMonitorState(input: {
   if (fromState?.status === "cleared") {
     return {
       ...fromState,
+      // myrmidon(MON-RESTORE): retain this field through persisted-state normalization.
+      nextScheduledAt: fromState.nextScheduledAt ?? null,
       notes,
       scheduledBy,
       attemptCount,
@@ -244,6 +246,8 @@ function buildScheduledMonitorState(
   return {
     status: "scheduled",
     nextCheckAt: monitor.nextCheckAt,
+    // myrmidon(MON-RESTORE): carry attempts and schedule lineage when a monitor is restored.
+    nextScheduledAt: monitor.nextCheckAt,
     lastTriggeredAt: previous?.lastTriggeredAt ?? null,
     attemptCount: previous?.attemptCount ?? 0,
     notes: monitor.notes ?? null,
@@ -279,6 +283,11 @@ function buildClearedMonitorState(input: {
   return {
     status: "cleared",
     nextCheckAt: null,
+    // myrmidon(MON-RESTORE): preserve the prior scheduled time for recovery-only restore.
+    nextScheduledAt:
+      input.previous?.status === "scheduled"
+        ? input.previous.nextCheckAt
+        : input.previous?.nextScheduledAt ?? null,
     lastTriggeredAt: input.previous?.lastTriggeredAt ?? null,
     attemptCount: input.previous?.attemptCount ?? 0,
     notes: input.previous?.notes ?? null,
@@ -1285,8 +1294,82 @@ function applyMonitorTransition(input: TransitionInput, stagePatch: Record<strin
     });
   }
 
+  // myrmidon(MON-RESTORE): a status-only clear also removes the policy object; preserve its notice.
+  if (
+    previousPolicy?.monitor &&
+    !input.policy?.monitor &&
+    currentMonitorState?.status === "scheduled" &&
+    targetMonitorState?.status === "cleared"
+  ) {
+    patch.monitorClearNotice = {
+      reason: targetMonitorState.clearReason,
+      notes: currentMonitorState.notes,
+    };
+  }
+
+  // myrmidon(MON-RESTORE): restore only invalid-status clears for an active agent assignment.
+  if (
+    !input.policy?.monitor &&
+    currentMonitorState?.status === "cleared" &&
+    currentMonitorState.clearReason === "invalid_status" &&
+    (nextStatus === "in_progress" || nextStatus === "in_review") &&
+    Boolean(assigneeAgentId) &&
+    !assigneeUserId
+  ) {
+    const originalScheduledAt = currentMonitorState.nextScheduledAt;
+    const lastTriggeredAt = currentMonitorState.lastTriggeredAt;
+    const scheduleInterval = originalScheduledAt && lastTriggeredAt
+      ? new Date(originalScheduledAt).getTime() - new Date(lastTriggeredAt).getTime()
+      : 60 * 60 * 1000;
+    const nextCheckAt = new Date(Date.now() + Math.max(0, scheduleInterval)).toISOString();
+    const restoredMonitor: IssueExecutionMonitorPolicy = {
+      nextCheckAt,
+      notes: currentMonitorState.notes,
+      scheduledBy: currentMonitorState.scheduledBy ?? "board",
+      kind: currentMonitorState.kind,
+      serviceName: currentMonitorState.serviceName,
+      externalRef: currentMonitorState.externalRef,
+      timeoutAt: currentMonitorState.timeoutAt,
+      maxAttempts: currentMonitorState.maxAttempts,
+      recoveryPolicy: currentMonitorState.recoveryPolicy,
+    };
+    // myrmidon(MON-RESTORE): recovery must not bypass monitor bounds.
+    const exhaustedRestoreReason = exhaustedMonitorClearReason({
+      monitor: restoredMonitor,
+      attemptCount: currentMonitorState.attemptCount,
+      now: new Date(),
+    });
+    if (exhaustedRestoreReason) {
+      targetMonitorState = {
+        ...currentMonitorState,
+        clearReason: exhaustedRestoreReason,
+      };
+    } else {
+      patch.executionPolicy = {
+        ...(input.policy ?? previousPolicy ?? { mode: "sequential", commentRequired: false, stages: [] }),
+        monitor: restoredMonitor,
+      };
+      patch.monitorNextCheckAt = new Date(nextCheckAt);
+      patch.monitorWakeRequestedAt = null;
+      patch.monitorNotes = restoredMonitor.notes ?? null;
+      patch.monitorScheduledBy = restoredMonitor.scheduledBy;
+      targetMonitorState = buildScheduledMonitorState(currentMonitorState, restoredMonitor);
+    }
+  }
+
+  // myrmidon(MON-RESTORE): send clear details out-of-band; the route strips this transient field.
+  if (currentMonitorState?.status === "scheduled" && targetMonitorState?.status === "cleared") {
+    patch.monitorClearNotice = {
+      reason: targetMonitorState.clearReason,
+      notes: currentMonitorState.notes,
+    };
+  }
+
   if (stagePatch.executionState !== undefined || !monitorStatesEqual(currentMonitorState, targetMonitorState)) {
     patch.executionState = executionStateWithMonitor(stageState, targetMonitorState);
+    if (targetMonitorState) {
+      patch.monitorAttemptCount = targetMonitorState.attemptCount;
+    }
   }
 
   return patch;

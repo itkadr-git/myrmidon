@@ -312,6 +312,12 @@ export interface DockerCreateContainerBody {
   };
 }
 
+export interface DockerUpdateContainerBody {
+  Memory: number;
+  MemorySwap: number;
+  PidsLimit: number;
+}
+
 /**
  * Pure builder for the `POST /containers/create` body — the actual "fixed
  * template" enforcement. Never adds anything a caller passed beyond `spec`'s
@@ -1640,6 +1646,21 @@ export function dockerBotContainerDriver(
     return templateDriftOf(existing, spec);
   }
 
+  async function updateResources(spec: BotContainerSpec): Promise<void> {
+    const body: DockerUpdateContainerBody = {
+      Memory: Math.round(spec.memoryMb * 1024 * 1024),
+      MemorySwap: Math.round(spec.memoryMb * 2 * 1024 * 1024),
+      PidsLimit: spec.pidsLimit,
+    };
+    const res = await requestWithRateLimitRetry({
+      method: "POST",
+      path: `/containers/${nameSegment(containerNameFor(spec.botKey))}/update`,
+      body: Buffer.from(JSON.stringify(body)),
+      headers: { "Content-Type": "application/json" },
+    });
+    if (res.status >= 400) throw describeFailure(`docker update ${spec.botKey}`, res);
+  }
+
   /** myrmidon(1.6.5-DOCKERGATE-A2A3-STORM): status and drift from ONE inspect
    *  (A2) plus the marker read (A3): two gate requests per bot per pass. The
    *  status carries its own inspect (OPE-4789), which the drift check reuses. */
@@ -1795,5 +1816,5 @@ export function dockerBotContainerDriver(
     }
   }
 
-  return { status, list, listRunning, templateDrift, statusWithDrift, create, recreate, writeProfile, start, restart, stop, stopIdle, readCloneReport, readBotSkills };
+  return { status, list, listRunning, templateDrift, statusWithDrift, updateResources, create, recreate, writeProfile, start, restart, stop, stopIdle, readCloneReport, readBotSkills };
 }

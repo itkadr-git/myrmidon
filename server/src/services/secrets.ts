@@ -1408,7 +1408,15 @@ export function secretService(db: Db | DbTransaction) {
         db
           .update(companySecrets)
           .set({ lastResolvedAt: new Date(), updatedAt: new Date() })
-          .where(eq(companySecrets.id, secret.id))
+          .where(
+            and(
+              eq(companySecrets.id, secret.id),
+              or(
+                sql`${companySecrets.lastResolvedAt} IS NULL`,
+                sql`${companySecrets.lastResolvedAt} < ${new Date(Date.now() - 5 * 60_000).toISOString()}`,
+              ),
+            ),
+          )
           .catch(() => undefined),
         recordAccessEvent({
           companyId,

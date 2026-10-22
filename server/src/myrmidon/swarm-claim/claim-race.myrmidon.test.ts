@@ -79,6 +79,7 @@ function claimInput(agentId: string, now: Date) {
     agentId,
     role: "engineer",
     runId: null,
+    origin: "auto_match" as const,
     claimedAt: now,
     heartbeatAt: now,
     expiresAt: new Date(now.getTime() + 60 * 60 * 1000),

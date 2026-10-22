@@ -124,6 +124,30 @@ describe("chat connector UI contract", () => {
     }
   });
 
+  it("finishes a verifying endpoint with live traffic without re-walking the wizard", () => {
+    const detail = source("./ChatEndpointDetail.tsx");
+    // myrmidon(1.6.5-F10-B): a direct action on the detail page for endpoints
+    // already parked in the wizard's `test` stage, not a link back into the
+    // wizard (the wizard "Finish setup" stays for the reconnect path).
+    expect(detail).toContain(
+      'endpoint.status === "verifying" && endpoint.setup?.step === "test"',
+    );
+    expect(detail).toContain("chatEndpointsApi.test(endpoint!.id)");
+    expect(detail).toContain("finishSetup.isPending");
+    expect(detail).toContain("chat_test_round_trip_incomplete");
+    expect(detail).toContain(
+      "Wait for the agent to reply to the test conversation, then try again.",
+    );
+    expect(detail).toContain("queryKeys.chatEndpoints.detail(endpointId)");
+  });
+
+  it("flags a verifying endpoint stuck over 24 hours with live traffic", () => {
+    const detail = source("./ChatEndpointDetail.tsx");
+    expect(detail).toContain("endpoint.verifyingStale");
+    expect(detail).toContain("Verifying over 24 hours with live traffic");
+    expect(detail).toContain("border-amber-500/25 bg-amber-500/10");
+  });
+
   it("states the provider boundary for reconnect and removal", () => {
     const detail = source("./ChatEndpointDetail.tsx");
     const setup = source("./ChatEndpointSetup.tsx");

@@ -76,8 +76,7 @@ describe("myrmidon(1.6-AUTONOMY) resolver", () => {
   it("is total: every action class resolves even with an empty ruleset", () => {
     const m = matrix();
     for (const actionClass of AUTONOMY_ACTION_CLASSES) {
-      const expected = actionClass === "deploy" ? "approval_required" : "allowed";
-      expect(resolveAutonomy("engineer", actionClass, m)).toBe(expected);
+      expect(resolveAutonomy("engineer", actionClass, m)).toBe(AUTONOMY_SAFE_DEFAULTS[actionClass]);
     }
   });
 
