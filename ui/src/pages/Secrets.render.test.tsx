@@ -409,7 +409,7 @@ describe("Secrets page layout", () => {
   });
 
   it("shows the remaining provider usage on a secret matched by its key", async () => {
-    mockSecretsApi.list.mockResolvedValue([makeCompanySecret({ id: "s-usage", key: "nghi_llm_key", name: "nghi/llm/key" })]);
+    mockSecretsApi.list.mockResolvedValue([makeCompanySecret({ id: "s-usage", key: "nghi_llm_key", name: "nghi_llm_key" })]);
     mockCostsApi.providerUsage.mockResolvedValue({
       thresholdPercent: 80,
       usage: [{
