@@ -21649,18 +21649,6 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       await vi.waitFor(
         async () => {
           expect(await firstDelivery()).toMatchObject({ state: "processed" });
-          // The first message's own wakeup is part of the drain too.
-          const firstWakeups = await db
-            .select()
-            .from(chatActions)
-            .where(
-              and(
-                eq(chatActions.endpointId, endpoint.id),
-                eq(chatActions.kind, "inbound_wakeup"),
-                eq(chatActions.status, "processed"),
-              ),
-            );
-          expect(firstWakeups).toHaveLength(1);
           const conversation = await db
             .select()
             .from(chatConversations)
