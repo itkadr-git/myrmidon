@@ -120,6 +120,19 @@ export type ReleaseIssueExecutionInput = {
   runId: string;
   now: Date;
   suppressImmediateRecovery?: boolean;
+  /**
+   * Set by the stranded-wake sweep only when every deferred wake of the issue
+   * was requested after the finishing run ended. An acknowledged operator Stop
+   * must not promote work queued before it, but input that arrived after the
+   * Stop is new work and is not covered by it (OPE-8268).
+   */
+  deferredWakesPostdateRun?: boolean;
+  /**
+   * Set by the stranded-wake sweep: a failed or cancelled legacy run that has
+   * no recorded execution hold does not by itself stop the drain. A recorded
+   * hold still does, through the execution-blocker gate in the lock adapter.
+   */
+  ignoreUnrecordedReconciliation?: boolean;
 };
 
 type PauseHoldFacts = Awaited<ReturnType<WakeQueueTransaction["getPauseHoldFacts"]>>;
@@ -992,7 +1005,11 @@ export function createReleaseIssueExecution(deps: {
     input: ReleaseIssueExecutionInput,
   ): Promise<{ outcome: ReleaseOutcome; postCommitEffects: PostCommitEffect[] }> {
     const result = await deps.issueLock.withIssueExecutionLock(
-      { companyId: input.companyId, runId: input.runId, now: input.now },
+      {
+        companyId: input.companyId, runId: input.runId, now: input.now,
+        ...(input.deferredWakesPostdateRun ? { deferredWakesPostdateRun: true } : {}),
+        ...(input.ignoreUnrecordedReconciliation ? { ignoreUnrecordedReconciliation: true } : {}),
+      },
       (locked, ports) => runReleaseDrain(locked, ports, input),
     );
 
